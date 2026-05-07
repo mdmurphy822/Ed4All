@@ -2200,6 +2200,40 @@ workflows:
               on_error: fail_closed
             description: Wave 4 W4.B — per-pair learning-outcome refs subset check. Critical because phantom-LO refs are a structural mismatch; mirrors AssessmentObjectiveAlignmentValidator severity.
 
+          # Wave 4 W4.C MEDIUM: per-pair tri-axis objective-delivery
+          # audit. Mirrors BlockObjectiveDeliveryValidator on the pair
+          # surface — for every (pair, declared LO) combination, runs
+          # NLI entailment of the objective statement against the pair
+          # body, Bloom-gap check between the pair's bloom level and
+          # the LO's bloom level, and cooccurrence check of the LO's
+          # bloom verb in the pair body. Warning day-1 (NLI confidence
+          # is fuzzy on a fresh corpus); operator promotes to critical
+          # via gate.config.severity once the per-corpus baseline is
+          # calibrated. Per-pair filter still drops the rejecting pair
+          # at synthesis time — the gate is the on-disk audit replay.
+          # NOTE: per-gate input paths are routed via the standard
+          # MCP/core gate-input-routing infra
+          # (phase_outputs.training_synthesis.* +
+          # phase_outputs.libv2_archival.course_dir +
+          # phase_outputs.course_planning.synthesized_objectives_path);
+          # the meta-schema does not permit a per-gate ``inputs_from``
+          # block, so the validator pulls its inputs from the phase's
+          # exposed outputs at gate-runner dispatch time.
+          - gate_id: pair_objective_delivery
+            validator: lib.validators.pair_objective_delivery.PairObjectiveDeliveryValidator
+            severity: warning
+            config:
+              thresholds:
+                instruction_entailment_floor: 0.40
+                preference_entailment_floor: 0.45
+                deterministic_template_entailment_floor: 0.30
+                contradiction_floor: 0.50
+                bloom_gap_threshold: 2
+            behavior:
+              on_fail: warn
+              on_error: fail_closed
+            description: Wave 4 W4.C MEDIUM — per-pair-per-objective tri-axis (NLI entailment + Bloom-gap + verb cooccurrence) delivery audit. Mirrors BlockObjectiveDeliveryValidator on the pair surface. Warning day-1 (NLI confidence is fuzzy on a fresh corpus); operator promotes to critical via gate.config.severity once the per-corpus baseline is calibrated.
+
           - gate_id: pair_promotion
             validator: lib.validators.training_pair_promotion.TrainingPairPromotionValidator
             severity: critical

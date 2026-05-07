@@ -159,30 +159,37 @@ class SynthesisStats:
     # post-run pilot report and the audit script.
     abstention_pairs_emitted: int = 0
     schema_translation_pairs_emitted: int = 0
-    # Wave 4 W4.C: per-pair claim-support (W4.A) + LO-refs (W4.B)
-    # filter counters. Both validators run AFTER
-    # TrainingPairPromotionValidator (W2.E) returns ``validated`` and
-    # before the pair lands on disk; rejects increment the matching
-    # counter here AND the existing ``promotion_rejection_reasons``
-    # dict (which is free-form and admits the four new reason keys
-    # ``unsupported_claim`` / ``contradicted_claim`` /
-    # ``phantom_pair_lo_refs`` / ``missing_pair_lo_refs`` without a
-    # schema change). ``pair_validation_passed`` is the count of
-    # pairs that survived ALL of W2.E + W4.A + W4.B (i.e. the W2.E
-    # ``validated_pairs_total`` minus the W4.A/W4.B reject deltas).
+    # Wave 4 W4.C: per-pair claim-support (W4.A) + LO-refs (W4.B) +
+    # objective-delivery (W4.C) filter counters. All three validators
+    # run AFTER TrainingPairPromotionValidator (W2.E) returns
+    # ``validated`` and before the pair lands on disk; rejects
+    # increment the matching counter here AND the existing
+    # ``promotion_rejection_reasons`` dict (which is free-form and
+    # admits the seven new reason keys ``unsupported_claim`` /
+    # ``contradicted_claim`` / ``phantom_pair_lo_refs`` /
+    # ``missing_pair_lo_refs`` / ``objective_statement_undersupported`` /
+    # ``objective_bloom_undermet`` / ``objective_verb_absent`` without
+    # a schema change). ``pair_validation_passed`` is the count of
+    # pairs that survived ALL of W2.E + W4.A + W4.B + W4.C (i.e. the
+    # W2.E ``validated_pairs_total`` minus the W4.A/W4.B/W4.C reject
+    # deltas).
     # Invariant:
     #   pair_validation_passed
-    #     == validated_pairs_total - claim_support_rejected - lo_refs_rejected
+    #     == validated_pairs_total
+    #        - claim_support_rejected
+    #        - lo_refs_rejected
+    #        - objective_delivery_rejected
     # Bookkeeping note: ``validated_pairs_total`` keeps the W2.E
     # promotion-validator semantics — it counts pairs that the
     # 7-criterion promotion filter accepted, regardless of whether
-    # W4.A/W4.B subsequently rejected them. The new counter
-    # ``pair_validation_passed`` is the post-W4.A/W4.B survivor count.
-    # This preserves the W2.E counter invariant
+    # W4.A/W4.B/W4.C subsequently rejected them. The new counter
+    # ``pair_validation_passed`` is the post-W4.A/W4.B/W4.C survivor
+    # count. This preserves the W2.E counter invariant
     # (``candidate == validated + rejected_promotion``) while still
     # exposing the additional W4 filter delta to the audit trail.
     claim_support_rejected: int = 0
     lo_refs_rejected: int = 0
+    objective_delivery_rejected: int = 0
     pair_validation_passed: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
@@ -227,14 +234,15 @@ class SynthesisStats:
             "pairs_with_prereq_recap": self.pairs_with_prereq_recap,
             "source_grounded_pairs": self.source_grounded_pairs,
             "instruction_variants_per_chunk": self.instruction_variants_per_chunk,
-            # Wave 4 W4.C: per-pair claim-support (W4.A) + LO-refs (W4.B)
-            # filter counters projected into the
-            # ``synthesis.last_run`` block of dataset_config.json so
-            # the W2.B aggregator + the eval_report.json pass-through
-            # both see the post-W2.E filter deltas without parsing
-            # decision-capture JSONL.
+            # Wave 4 W4.C: per-pair claim-support (W4.A) + LO-refs
+            # (W4.B) + objective-delivery (W4.C) filter counters
+            # projected into the ``synthesis.last_run`` block of
+            # dataset_config.json so the W2.B aggregator + the
+            # eval_report.json pass-through both see the post-W2.E
+            # filter deltas without parsing decision-capture JSONL.
             "claim_support_rejected": self.claim_support_rejected,
             "lo_refs_rejected": self.lo_refs_rejected,
+            "objective_delivery_rejected": self.objective_delivery_rejected,
             "pair_validation_passed": self.pair_validation_passed,
         }
 
@@ -1743,6 +1751,60 @@ def run_synthesis(
         _claim_support_validator = PairClaimSupportValidator()
         _lo_refs_validator = PairLearningOutcomeRefsValidator()
 
+        # Wave 4 W4.C MEDIUM: per-pair tri-axis objective-delivery
+        # filter. Runs AFTER W4.A/W4.B return ``validated``. Rejects
+        # increment ``objective_delivery_rejected`` and the matching
+        # key in the free-form ``promotion_rejection_reasons`` dict
+        # (three new reason keys: ``objective_statement_undersupported``,
+        # ``objective_bloom_undermet``, ``objective_verb_absent``).
+        # Warning-severity day-1 at the gate-runner surface (NLI
+        # confidence is fuzzy on a fresh corpus); the per-pair filter
+        # still drops the pair so the audit trail and disk emit stay
+        # consistent. ``_load_synthesized_objectives_for_w4c`` is a
+        # thin helper around ``lib.validators.abcd_objective._flatten_objectives``
+        # that returns ``{lo.id: {"statement", "bloom_level",
+        # "bloom_verb"}}`` — accepts both Courseforge-form
+        # (``terminal_objectives``/``chapter_objectives``) and LibV2-form
+        # (``terminal_outcomes``/``component_objectives``) so the same
+        # call site works whether the corpus is being rebuilt from a
+        # fresh Courseforge run or replayed from a LibV2 archive.
+        from lib.validators.pair_objective_delivery import (
+            PairObjectiveDeliveryValidator,
+            _load_synthesized_objectives_for_w4c,
+        )
+        # Resolve synthesized_objectives.json from one of three
+        # canonical layouts (priority order):
+        #   1. Courseforge run layout: <corpus_dir>/course_planning/synthesized_objectives.json
+        #   2. LibV2 archive layout: <corpus_dir>/objectives.json
+        #   3. Trainforge sibling layout: <corpus_dir>/synthesized_objectives.json
+        # The helper accepts both schema shapes so the call site does
+        # not need to discriminate. None on missing file → the helper
+        # returns ``{}`` so the validator no-ops every per-pair call
+        # (returns ``"validated"`` with empty ``new_fields``) and
+        # legacy corpora never block.
+        _objectives_candidates = (
+            corpus_dir / "course_planning" / "synthesized_objectives.json",
+            corpus_dir / "objectives.json",
+            corpus_dir / "synthesized_objectives.json",
+        )
+        _objectives_path: Optional[Path] = next(
+            (p for p in _objectives_candidates if p.exists()), None,
+        )
+        try:
+            _objectives_map = (
+                _load_synthesized_objectives_for_w4c(_objectives_path)
+                if _objectives_path is not None
+                else {}
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "Wave 4 W4.C: failed to load synthesized_objectives "
+                "from %s: %s — W4.C will no-op for this run.",
+                _objectives_path, exc,
+            )
+            _objectives_map = {}
+        _objective_delivery_validator = PairObjectiveDeliveryValidator()
+
         for idx, chunk in iter_chunks:
             if _budget_exhausted_exc is not None:
                 break
@@ -2072,10 +2134,53 @@ def run_synthesis(
                             )
                             stats.lo_refs_rejected += 1
                             continue
-                        # All three validators (W2.E + W4.A + W4.B)
-                        # passed — surface on both the W2.E counter
-                        # (preserves the invariant) and the new W4.C
-                        # post-W4 survivor counter.
+                        # Wave 4 W4.C MEDIUM: per-pair tri-axis
+                        # objective-delivery filter runs AFTER W4.B
+                        # passes. Mirrors the W4.A/W4.B reject
+                        # bookkeeping (W2.E ladder counters +
+                        # W4-specific counter + ``rejected_reasons``
+                        # bucket). Always stamps ``_obj_fields`` on
+                        # the pair so ``pair_objective_alignment``
+                        # lands on disk regardless of pass/fail —
+                        # downstream consumers can replay the per-LO
+                        # entailment / Bloom / verb signal even on
+                        # passing pairs.
+                        _obj_status, _obj_reason, _obj_fields = (
+                            _objective_delivery_validator.validate_pair(
+                                inst_result.pair,
+                                kind="instruction",
+                                chunk=chunk,
+                                objectives=_objectives_map,
+                                decision_capture=capture,
+                            )
+                        )
+                        inst_result.pair.update(_obj_fields)
+                        if _obj_status == "rejected":
+                            inst_result.pair["promotion_status"] = "rejected"
+                            inst_result.pair["rejection_reason"] = _obj_reason
+                            stats.instruction_pairs_rejected += 1
+                            _obj_key = (
+                                f"instruction:objective_delivery:{_obj_reason}"
+                            )
+                            stats.rejected_reasons[_obj_key] = (
+                                stats.rejected_reasons.get(_obj_key, 0) + 1
+                            )
+                            stats.dropped_count += 1
+                            stats.rejected_promotion_pairs += 1
+                            _obj_reason_key = _obj_reason or "unknown"
+                            stats.promotion_rejection_reasons[
+                                _obj_reason_key
+                            ] = (
+                                stats.promotion_rejection_reasons.get(
+                                    _obj_reason_key, 0,
+                                ) + 1
+                            )
+                            stats.objective_delivery_rejected += 1
+                            continue
+                        # All four validators (W2.E + W4.A + W4.B +
+                        # W4.C) passed — surface on both the W2.E
+                        # counter (preserves the invariant) and the
+                        # new W4.C post-W4 survivor counter.
                         stats.pair_validation_passed += 1
                     # Worker W3.B: validated counter increments on
                     # promotion_status != "rejected".
@@ -2368,8 +2473,66 @@ def run_synthesis(
                                         stats.lo_refs_rejected += 1
                                         _pref_w4_rejected = True
                                     else:
-                                        # All three validators passed.
-                                        stats.pair_validation_passed += 1
+                                        # Wave 4 W4.C MEDIUM: per-pair
+                                        # tri-axis objective-delivery
+                                        # filter on the preference
+                                        # branch. Mirrors the
+                                        # instruction-pair branch
+                                        # exactly. Uses the same
+                                        # ``_pref_w4_rejected`` flag so
+                                        # the surrounding nested-if
+                                        # structure (preference branch
+                                        # uses if/else rather than
+                                        # ``continue``) falls through
+                                        # to the chunk-loop progress
+                                        # block without appending the
+                                        # rejected pair to
+                                        # ``preference_records``.
+                                        # Always stamps ``_pref_obj_fields``
+                                        # so ``pair_objective_alignment``
+                                        # lands on disk regardless of
+                                        # pass/fail.
+                                        _pref_obj_status, _pref_obj_reason, _pref_obj_fields = (
+                                            _objective_delivery_validator.validate_pair(
+                                                pref_result.pair,
+                                                kind="preference",
+                                                chunk=chunk,
+                                                objectives=_objectives_map,
+                                                decision_capture=capture,
+                                            )
+                                        )
+                                        pref_result.pair.update(_pref_obj_fields)
+                                        if _pref_obj_status == "rejected":
+                                            pref_result.pair["promotion_status"] = "rejected"
+                                            pref_result.pair["rejection_reason"] = _pref_obj_reason
+                                            stats.preference_pairs_rejected += 1
+                                            _pref_obj_key = (
+                                                f"preference:objective_delivery:{_pref_obj_reason}"
+                                            )
+                                            stats.rejected_reasons[_pref_obj_key] = (
+                                                stats.rejected_reasons.get(
+                                                    _pref_obj_key, 0,
+                                                ) + 1
+                                            )
+                                            stats.dropped_count += 1
+                                            stats.rejected_promotion_pairs += 1
+                                            _pref_obj_reason_key = (
+                                                _pref_obj_reason or "unknown"
+                                            )
+                                            stats.promotion_rejection_reasons[
+                                                _pref_obj_reason_key
+                                            ] = (
+                                                stats.promotion_rejection_reasons.get(
+                                                    _pref_obj_reason_key, 0,
+                                                ) + 1
+                                            )
+                                            stats.objective_delivery_rejected += 1
+                                            _pref_w4_rejected = True
+                                        else:
+                                            # All four validators
+                                            # (W2.E + W4.A + W4.B +
+                                            # W4.C) passed.
+                                            stats.pair_validation_passed += 1
                             if _pref_w4_rejected:
                                 # Skip the emit branch — fall through
                                 # to the chunk-loop progress block.

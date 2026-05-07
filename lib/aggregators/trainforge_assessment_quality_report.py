@@ -72,6 +72,18 @@ graceful-degradation defaults, so a missing input resolves to
 ``WorkflowRunner`` wraps the aggregator call in try/except so a build
 failure does NOT change ``final_status``; the per-phase reports remain
 the authoritative quality signal.
+
+Wave 4 W4.C MEDIUM passthrough note: the new
+``objective_delivery_rejected`` counter on ``SynthesisStats`` and its
+three companion reason keys (``objective_statement_undersupported`` /
+``objective_bloom_undermet`` / ``objective_verb_absent``) flow through
+this aggregator unchanged via the
+``dataset_config.json::statistics.synthesis.last_run`` projection +
+the free-form ``promotion_rejection_reasons`` dict — no schema change
+to the aggregator surface; the W4.C signal surfaces in the same
+``synthesis_quality.pair_objective_delivery`` gate-projection slot the
+``training_synthesis`` validation_gates loop populates from
+``_extract_phase_gates``.
 """
 
 from __future__ import annotations

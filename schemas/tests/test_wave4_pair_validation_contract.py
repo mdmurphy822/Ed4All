@@ -795,3 +795,203 @@ def test_wave4_strict_pair_schema_round_trip() -> None:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         # Should not raise.
         jsonschema.Draft7Validator(schema).validate(base_pair)
+
+
+# --------------------------------------------------------------------------- #
+# W4.C.2 schema-migration tests — pair_objective_alignment shape
+# --------------------------------------------------------------------------- #
+
+
+_W4C_PAIR_SCHEMA_PATHS = [
+    "schemas/knowledge/instruction_pair.schema.json",
+    "schemas/knowledge/instruction_pair.strict.schema.json",
+    "schemas/knowledge/preference_pair.schema.json",
+]
+
+
+def _w4c_minimal_instruction_pair() -> Dict[str, Any]:
+    """Minimum-required-field instruction pair valid against both
+    instruction-pair schemas (lenient + strict)."""
+    return {
+        "prompt": "X" * 50,
+        "completion": "Y" * 100,
+        "chunk_id": "ch1#sec1",
+        "lo_refs": ["TO-02"],
+        "bloom_level": "understand",
+        "content_type": "overview",
+        "seed": 42,
+        "decision_capture_id": "evt_w4c_round_trip",
+    }
+
+
+def _w4c_minimal_preference_pair() -> Dict[str, Any]:
+    """Minimum-required-field preference pair valid against
+    preference_pair.schema.json."""
+    return {
+        "prompt": "X" * 50,
+        "chosen": "Y" * 100,
+        "rejected": "Z" * 100,
+        "chunk_id": "ch1#sec1",
+        "lo_refs": ["TO-02"],
+        "seed": 42,
+        "decision_capture_id": "evt_w4c_round_trip_pref",
+    }
+
+
+def _w4c_validate(pair: Dict[str, Any], schema_rel_path: str) -> None:
+    """Helper — Draft-07 validate the pair against the named schema."""
+    jsonschema = pytest.importorskip("jsonschema")
+    schema_path = PROJECT_ROOT / schema_rel_path
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    jsonschema.Draft7Validator(schema).validate(pair)
+
+
+def _w4c_assert_invalid(pair: Dict[str, Any], schema_rel_path: str) -> None:
+    """Helper — assert the pair FAILS Draft-07 validation against the
+    named schema (negative test)."""
+    jsonschema = pytest.importorskip("jsonschema")
+    schema_path = PROJECT_ROOT / schema_rel_path
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft7Validator(schema).validate(pair)
+
+
+def test_pair_objective_alignment_populated_passes_all_three_schemas() -> None:
+    """W4.C.2 positive — a fully-populated pair_objective_alignment[]
+    array passes Draft-07 validation against all three pair schemas
+    (instruction, strict instruction, preference).
+
+    Mirrors the W4.A / W4.B day-1 contract: the audit field is
+    optional, but a well-formed populated array MUST validate so
+    downstream emitters can ship the surface without schema drift.
+    """
+    populated_alignment = [
+        {
+            "objective_id": "TO-02",
+            "status": "delivered",
+            "statement_entailment_score": 0.91,
+            "contradiction_score": 0.03,
+            "bloom_gap": 0,
+            "verb_match_count": 2,
+            "declared_bloom": "understand",
+            "observed_bloom": "understand",
+            "entailment_threshold": 0.70,
+        },
+        {
+            # Demonstrates nullable-field tolerance — every optional
+            # field is null and the entry still validates.
+            "objective_id": "TO-07",
+            "status": "unverifiable",
+            "statement_entailment_score": None,
+            "contradiction_score": None,
+            "bloom_gap": None,
+            "verb_match_count": None,
+            "declared_bloom": None,
+            "observed_bloom": None,
+            "entailment_threshold": None,
+        },
+    ]
+    pass_rate = 0.5  # 1 of 2 entries delivered
+
+    # Validate against the two instruction-pair schemas.
+    for schema_rel_path in _W4C_PAIR_SCHEMA_PATHS[:2]:
+        pair = _w4c_minimal_instruction_pair()
+        pair["pair_objective_alignment"] = [dict(e) for e in populated_alignment]
+        pair["pair_objective_alignment_pass_rate"] = pass_rate
+        _w4c_validate(pair, schema_rel_path)
+
+    # Validate against preference_pair.schema.json.
+    pref_pair = _w4c_minimal_preference_pair()
+    pref_pair["pair_objective_alignment"] = [
+        dict(e) for e in populated_alignment
+    ]
+    pref_pair["pair_objective_alignment_pass_rate"] = pass_rate
+    _w4c_validate(pref_pair, _W4C_PAIR_SCHEMA_PATHS[2])
+
+
+def test_pair_objective_alignment_rejects_malformed_status_enum() -> None:
+    """W4.C.2 negative #1 — an entry with an unknown ``status`` enum
+    value MUST fail Draft-07 validation against all three pair schemas.
+    Closes the regression class where a future emitter ships a
+    typo'd / out-of-spec status string.
+    """
+    bad_alignment = [
+        {
+            "objective_id": "TO-02",
+            # NOT in the canonical 4-value enum.
+            "status": "partially_delivered",
+            "statement_entailment_score": 0.55,
+            "contradiction_score": 0.10,
+            "bloom_gap": 1,
+            "verb_match_count": 1,
+            "declared_bloom": "apply",
+            "observed_bloom": "understand",
+            "entailment_threshold": 0.70,
+        }
+    ]
+
+    for schema_rel_path in _W4C_PAIR_SCHEMA_PATHS[:2]:
+        pair = _w4c_minimal_instruction_pair()
+        pair["pair_objective_alignment"] = [dict(e) for e in bad_alignment]
+        _w4c_assert_invalid(pair, schema_rel_path)
+
+    pref_pair = _w4c_minimal_preference_pair()
+    pref_pair["pair_objective_alignment"] = [dict(e) for e in bad_alignment]
+    _w4c_assert_invalid(pref_pair, _W4C_PAIR_SCHEMA_PATHS[2])
+
+
+def test_pair_objective_alignment_rejects_missing_objective_id() -> None:
+    """W4.C.2 negative #2 — an entry missing the required
+    ``objective_id`` field MUST fail Draft-07 validation against all
+    three pair schemas. Closes the regression class where a future
+    emitter ships an alignment entry without the canonical LO id.
+
+    Defence-in-depth on the ``additionalProperties: false`` discipline
+    by also asserting that an entry with an unminted extra property
+    (mistyped key) fails alongside the missing-required-field case.
+    """
+    missing_objective_id = [
+        {
+            # objective_id deliberately omitted.
+            "status": "delivered",
+            "statement_entailment_score": 0.91,
+            "contradiction_score": 0.03,
+            "bloom_gap": 0,
+            "verb_match_count": 2,
+            "declared_bloom": "understand",
+            "observed_bloom": "understand",
+            "entailment_threshold": 0.70,
+        }
+    ]
+
+    for schema_rel_path in _W4C_PAIR_SCHEMA_PATHS[:2]:
+        pair = _w4c_minimal_instruction_pair()
+        pair["pair_objective_alignment"] = [
+            dict(e) for e in missing_objective_id
+        ]
+        _w4c_assert_invalid(pair, schema_rel_path)
+
+    pref_pair = _w4c_minimal_preference_pair()
+    pref_pair["pair_objective_alignment"] = [
+        dict(e) for e in missing_objective_id
+    ]
+    _w4c_assert_invalid(pref_pair, _W4C_PAIR_SCHEMA_PATHS[2])
+
+    # Defence-in-depth — additionalProperties: false catches an
+    # unminted key (e.g. emitter-side typo).
+    typo_alignment = [
+        {
+            "objective_id": "TO-02",
+            "status": "delivered",
+            # Typo'd field (should be statement_entailment_score).
+            "statement_entail_score": 0.91,
+        }
+    ]
+    for schema_rel_path in _W4C_PAIR_SCHEMA_PATHS[:2]:
+        pair = _w4c_minimal_instruction_pair()
+        pair["pair_objective_alignment"] = [dict(e) for e in typo_alignment]
+        _w4c_assert_invalid(pair, schema_rel_path)
+
+    pref_pair = _w4c_minimal_preference_pair()
+    pref_pair["pair_objective_alignment"] = [dict(e) for e in typo_alignment]
+    _w4c_assert_invalid(pref_pair, _W4C_PAIR_SCHEMA_PATHS[2])

@@ -172,6 +172,70 @@
         }
       },
       "description": "GPT Feedback v2 Wave 4 W4.B — audit-trail surface for the per-pair LO-resolution check. Null when the validator hasn't run on this pair (legacy / pre-Wave-4 corpora)."
+    },
+    "pair_objective_alignment": {
+      "type": ["array", "null"],
+      "description": "GPT Feedback v2 Wave 4 W4.C — per-(pair, objective_id) delivery-alignment audit emitted by PairObjectiveDeliveryValidator. One entry per learning-outcome ref the pair claims to teach / assess. Mirrors the W1.7.C Block.objectiveAlignment surface but at pair scope (NLI entailment of the objective statement against prompt+completion + Bloom-level gap + action-verb presence). Null when the validator hasn't run on this pair (legacy / pre-Wave-4 corpora) or NLI deps are missing (graceful-degrade). Mirrors the W4.A / W4.B day-1 contract: optional now, may upgrade to required-conditional once the validator has rolled across every active corpus.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["objective_id", "status"],
+        "properties": {
+          "objective_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Canonical learning-outcome id (TO-NN / CO-NN) the pair claims to teach / assess. Preserves emit case."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["delivered", "underdelivered", "verb_only", "unverifiable"],
+            "description": "Tri-axis verdict per the W4.C contract: 'delivered' (NLI-entailed AND Bloom-met AND verb present), 'underdelivered' (NLI-unsupported OR Bloom-undermet), 'verb_only' (action-verb hit but NLI-unsupported), 'unverifiable' (NLI deps missing or LO statement absent — graceful-degrade)."
+          },
+          "statement_entailment_score": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Post-softmax NLI entailment probability for (premise=prompt+completion, hypothesis=objective_statement). Null when NLI deps are missing or the LO statement couldn't be resolved."
+          },
+          "contradiction_score": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Post-softmax NLI contradiction probability for the same (premise, hypothesis) pair. Null when NLI deps are missing."
+          },
+          "bloom_gap": {
+            "type": ["integer", "null"],
+            "description": "Difference declared_bloom_index - observed_bloom_index over the canonical 6-value Bloom enum (remember=0 .. create=5). Positive = pair operates BELOW the declared Bloom level (under-delivery); zero = aligned; negative = above. Null when observed_bloom couldn't be classified."
+          },
+          "verb_match_count": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Number of declared-LO action-verb tokens (from the LO statement's leading verb phrase, normalised) found in the pair's prompt+completion. Null when the LO statement couldn't be resolved."
+          },
+          "declared_bloom": {
+            "type": ["string", "null"],
+            "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create", null],
+            "description": "Declared Bloom level of the cited learning objective (canonical 6-value enum). Null when the LO statement couldn't be resolved."
+          },
+          "observed_bloom": {
+            "type": ["string", "null"],
+            "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create", null],
+            "description": "BERT-ensemble classification of the pair's prompt+completion (canonical 6-value enum). Null when the classifier didn't run."
+          },
+          "entailment_threshold": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1,
+            "description": "NLI entailment floor used to decide the 'delivered' vs 'underdelivered' axis on this call. Captures the per-call threshold so audit replay is deterministic across threshold-recalibration waves."
+          }
+        }
+      }
+    },
+    "pair_objective_alignment_pass_rate": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "GPT Feedback v2 Wave 4 W4.C — fraction of pair_objective_alignment[] entries whose status == 'delivered'. Null when pair_objective_alignment is null or empty."
     }
   },
   "if": {
