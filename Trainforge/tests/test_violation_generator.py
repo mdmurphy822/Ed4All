@@ -63,10 +63,29 @@ class _FakeCapture:
 
 
 def _validate_pair(pair: Dict[str, Any]) -> None:
-    import jsonschema
+    """W-D4: pair schema $refs the canonical sibling
+    ``pair_audit_fields.schema.json``; build a referencing registry
+    over every sibling schema so $ref resolution works.
+    """
+    from jsonschema import Draft202012Validator
+    from referencing import Registry, Resource
+    from referencing.jsonschema import DRAFT202012
 
     schema = json.loads(PAIR_SCHEMA_PATH.read_text(encoding="utf-8"))
-    jsonschema.validate(pair, schema)
+    knowledge_dir = PROJECT_ROOT / "schemas" / "knowledge"
+    resources = []
+    for sib in knowledge_dir.glob("*.schema.json"):
+        try:
+            sib_schema = json.loads(sib.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        sid = sib_schema.get("$id")
+        if sid:
+            resources.append(
+                (sid, Resource.from_contents(sib_schema, default_specification=DRAFT202012))
+            )
+    registry = Registry().with_resources(resources)
+    Draft202012Validator(schema, registry=registry).validate(pair)
 
 
 def test_built_in_catalog_preserves_pinned_fixture_names() -> None:

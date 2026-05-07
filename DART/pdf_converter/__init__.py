@@ -19,7 +19,7 @@ Features:
   - Print styles
 
 Workflow:
-1. Run: python convert.py document.pdf
+1. Run: python -m DART.pdf_converter document.pdf
 2. Text is extracted and saved to output/document_extracted.txt
 3. In Claude Code, say: "Review the extracted text and generate accessible HTML"
 4. Claude Code generates gold-standard WCAG-compliant HTML

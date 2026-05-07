@@ -101,6 +101,33 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def _build_pair_validator(schema):
+    """W-D4 — Draft202012 validator wired to resolve cross-schema $refs
+    against every sibling under schemas/knowledge/. Mirrors
+    ``schemas/tests/test_wave1_additive_contract.py::_build_registry``.
+    """
+    import jsonschema  # noqa: F401 — pytest.importorskip is upstream
+    from referencing import Registry, Resource
+    from referencing.jsonschema import DRAFT202012
+
+    knowledge_dir = PROJECT_ROOT / "schemas" / "knowledge"
+    resources = []
+    for sib in knowledge_dir.glob("*.schema.json"):
+        try:
+            sib_schema = json.loads(sib.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        sid = sib_schema.get("$id")
+        if sid:
+            resources.append(
+                (sid, Resource.from_contents(sib_schema, default_specification=DRAFT202012))
+            )
+    registry = Registry().with_resources(resources)
+    from jsonschema import Draft202012Validator
+
+    return Draft202012Validator(schema, registry=registry)
+
+
 # --------------------------------------------------------------------------- #
 # Helpers — stub NLI classifier + DecisionCapture stub
 # --------------------------------------------------------------------------- #
@@ -794,7 +821,7 @@ def test_wave4_strict_pair_schema_round_trip() -> None:
     for schema_path in schema_paths:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         # Should not raise.
-        jsonschema.Draft202012Validator(schema).validate(base_pair)
+        _build_pair_validator(schema).validate(base_pair)
 
 
 # --------------------------------------------------------------------------- #
@@ -839,21 +866,21 @@ def _w4c_minimal_preference_pair() -> Dict[str, Any]:
 
 
 def _w4c_validate(pair: Dict[str, Any], schema_rel_path: str) -> None:
-    """Helper — Draft-07 validate the pair against the named schema."""
-    jsonschema = pytest.importorskip("jsonschema")
+    """Helper — validate the pair against the named schema."""
+    pytest.importorskip("jsonschema")
     schema_path = PROJECT_ROOT / schema_rel_path
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    jsonschema.Draft202012Validator(schema).validate(pair)
+    _build_pair_validator(schema).validate(pair)
 
 
 def _w4c_assert_invalid(pair: Dict[str, Any], schema_rel_path: str) -> None:
-    """Helper — assert the pair FAILS Draft-07 validation against the
-    named schema (negative test)."""
+    """Helper — assert the pair FAILS validation against the named
+    schema (negative test)."""
     jsonschema = pytest.importorskip("jsonschema")
     schema_path = PROJECT_ROOT / schema_rel_path
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.Draft202012Validator(schema).validate(pair)
+        _build_pair_validator(schema).validate(pair)
 
 
 def test_pair_objective_alignment_populated_passes_all_three_schemas() -> None:

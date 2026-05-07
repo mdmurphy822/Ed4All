@@ -181,10 +181,9 @@ exports/YYYYMMDD_HHMMSS_coursename/
 
 Textbooks must be pre-processed through DART before use:
 
-1. Run textbook PDF through DART (set `DART_PATH` environment variable):
+1. Run textbook PDF through DART:
    ```bash
-   cd $DART_PATH
-   python convert.py textbook.pdf -o /path/to/courseforge/inputs/textbooks/
+   python -m DART.pdf_converter textbook.pdf -o /path/to/courseforge/inputs/textbooks/
    ```
 2. DART produces WCAG 2.2 AA accessible HTML
 3. Place output in `inputs/textbooks/`
