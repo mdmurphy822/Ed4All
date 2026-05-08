@@ -89,6 +89,15 @@ MISSING_STAGE_REPORT = "missing_stage_report"
 # T11.2 (pair-side). The aggregator harvests these rates onto the per-arrow
 # ``evidence_quote_metrics`` field whenever the matching gate fired against
 # an arrow's phase.
+#
+# Schema-vs-validation seam (W-D11.D debt-sweep note): the chunk schema
+# (``schemas/knowledge/chunk_v4.schema.json::key_claims`` structured arm)
+# admits ``evidence_quote`` on EVERY chunk, including DART chunks at Arrow 2.
+# But the validators that POPULATE the field — ``claim_support`` (block-side)
+# and ``pair_claim_support`` (pair-side) — run at ``post_rewrite_validation``
+# (Arrow 3) and ``training_synthesis`` (Arrow 7), not at chunking time.
+# Therefore Arrow 2 carries the substrate but ``evidence_quote_metrics`` is
+# correctly omitted from its row; this is a deliberate seam, not a gap.
 _EVIDENCE_QUOTE_GATE_IDS = ("claim_support", "pair_claim_support")
 
 # Canonical metadata keys lifted onto the arrow row's
@@ -374,6 +383,8 @@ class PromotionChainAggregator:
             return _missing_arrow_row(2, ARROW_NAMES[2])
         coverage = self._coerce_coverage(payload.get("source_coverage"))
         passed = self._coverage_passes(coverage)
+        # ``evidence_quote_metrics`` intentionally omitted; see
+        # ``_EVIDENCE_QUOTE_GATE_IDS`` comment for seam rationale.
         return {
             "arrow_id": 2,
             "name": ARROW_NAMES[2],
