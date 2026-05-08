@@ -1,0 +1,27 @@
+{
+  "id": "wave_d11_chunk_00001",
+  "schema_version": "v4",
+  "chunk_type": "explanation",
+  "text": "A SHACL node shape declares constraints that fire on target nodes when their properties violate the shape's predicates.",
+  "html": "<p>A SHACL node shape declares constraints that fire on target nodes when their properties violate the shape's predicates.</p>",
+  "follows_chunk": null,
+  "source": {
+    "course_id": "WAVE_D11_TEST",
+    "module_id": "week_01_overview",
+    "lesson_id": "shacl_basics"
+  },
+  "concept_tags": ["shacl", "node-shape", "constraint"],
+  "learning_outcome_refs": ["TO-01"],
+  "difficulty": "foundational",
+  "tokens_estimate": 22,
+  "word_count": 20,
+  "bloom_level": "understand",
+  "key_claims": [
+    {
+      "claim": "A SHACL node shape carries the constraint set evaluated on its target nodes.",
+      "source_chunk_ids": ["wave_d11_chunk_00001"],
+      "evidence_quote": "A SHACL node shape declares constraints that fire on target nodes",
+      "evidence_char_span": [0, 65]
+    }
+  ]
+}
