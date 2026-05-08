@@ -88,19 +88,9 @@ python server.py
 Ed4All/
 ├── DART/                    # PDF to accessible HTML conversion
 ├── Courseforge/             # Course content generation & packaging
-├── Trainforge/              # Assessment-based RAG training
-│   └── chunker/             # Canonical chunker shared by DART + IMSCC + Trainforge synthesis (post-Phase-8 re-merge)
+├── Trainforge/              # Assessment-based RAG training (incl. canonical chunker)
 ├── LibV2/                   # Course content repository
-│   ├── courses/             # Educational content storage
-│   ├── catalog/             # Derived indexes
-│   └── tools/               # CLI & retrieval engine
-├── MCP/
-│   ├── server.py            # FastMCP server (core file tools)
-│   ├── tools/               # Domain tool modules
-│   ├── core/                # Orchestrator config, executor, workflow runner
-│   ├── hardening/           # Error classifier, validation gates, checkpointing
-│   ├── ipc/                 # Inter-process status tracking
-│   └── tests/               # MCP tool & orchestrator tests
+├── MCP/                     # FastMCP server, orchestrator, IPC, tools
 ├── cli/                     # CLI commands (ed4all entry point)
 ├── lib/                     # Shared libraries & validators
 ├── config/                  # Workflow & agent configs
@@ -110,6 +100,8 @@ Ed4All/
 ├── ci/                      # CI integrity checks
 └── .github/                 # CI/CD workflows
 ```
+
+Per-subsystem layout lives in each subsystem's `CLAUDE.md` (see § Individual Project Guides).
 
 ### Test fixtures
 
@@ -189,42 +181,9 @@ Every decision event MUST include:
 
 ### Using Decision Capture
 
-```python
-from lib.decision_capture import DecisionCapture
+Helper: `lib/decision_capture.py::DecisionCapture` — instantiate with `course_code`, `phase`, `tool`, then call `log_decision(decision_type, decision, rationale, alternatives_considered=[...])`. Output lands under `training-captures/<tool>/<COURSE_CODE>/phase_<phase>/decisions_*.jsonl`.
 
-capture = DecisionCapture(
-    course_code="INT_101",
-    phase="content-generator",
-    tool="courseforge",
-    streaming=True
-)
-
-capture.log_decision(
-    decision_type="content_structure",
-    decision="Use 6-week modular structure",
-    rationale="Aligns with competency-based approach and allows flexible pacing for diverse learners",
-    alternatives_considered=[
-        "8-week linear: Too rigid for self-paced learning",
-        "4-week intensive: Insufficient depth for foundational content"
-    ]
-)
-```
-
-### Output Locations
-
-```
-training-captures/
-├── dart/{COURSE_CODE}/
-│   └── decisions_{PDF_NAME}_{TIMESTAMP}.jsonl
-├── courseforge/{COURSE_CODE}/
-│   ├── phase_input-research/
-│   ├── phase_content-generator/
-│   └── phase_brightspace-packager/
-└── trainforge/{COURSE_CODE}/
-    ├── phase_content-analysis/
-    ├── phase_question-generation/
-    └── phase_validation/
-```
+Canonical decision-event shape: `schemas/events/decision_event.schema.json`. Long-form rationale + LLM call-site precedents: `docs/architecture/decision-capture.md`.
 
 ---
 
@@ -391,57 +350,11 @@ tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")
 
 ### Course Generation Workflow
 
-```
-1. planning
-   └── Course outline, week structure, objectives mapping
+`planning → content_generation (batches of 10) → packaging (IMSCC) → validation (QA + WCAG) → finalization`. Full phase shapes: `config/workflows.yaml::course_generation`.
 
-2. content_generation
-   └── Generate all modules (parallel batches of 10)
+### Other workflows
 
-3. packaging
-   └── Create IMSCC package
-
-4. validation
-   └── QA checks, accessibility, structure
-
-5. finalization
-   └── Export captures, archive logs
-```
-
-### Intake Remediation Workflow
-
-```
-1. parsing
-   └── Extract IMSCC contents
-
-2. analysis
-   └── Identify issues, plan remediation
-
-3. remediation
-   └── Fix identified issues
-
-4. validation
-   └── Verify fixes
-
-5. packaging
-   └── Repackage IMSCC
-```
-
-### RAG Training Workflow (Trainforge)
-
-```
-1. extraction
-   └── Parse IMSCC, extract content & learning objectives
-
-2. indexing
-   └── Build vector index for RAG retrieval
-
-3. assessment_generation
-   └── Generate questions with full decision capture
-
-4. validation
-   └── Validate assessment quality and Bloom's alignment
-```
+`intake_remediation` (IMSCC parse → remediate → repackage) and `rag_training` (extraction → indexing → assessment_generation → validation) — see `config/workflows.yaml` for canonical phase shapes.
 
 ### Textbook-to-Course Workflow
 
@@ -565,34 +478,9 @@ Every decision rationale MUST:
 
 ### LLM call-site instrumentation
 
-Every LLM call site MUST wire up a `DecisionCapture`
-instance and emit at least one decision per call (per-batch when the
-call is batched). Static boilerplate rationales are forbidden —
-rationale must interpolate dynamic signals specific to the call
-(block IDs, image hashes, page numbers, model + max_tokens, confidence
-distributions, etc.) so captures are replayable post-hoc. A regression
-test MUST assert that the capture fires on the call path. Precedents:
+Every LLM call site MUST wire up a `DecisionCapture` instance and emit at least one decision per call (per-batch when batched). Static boilerplate rationales are forbidden — rationale must interpolate dynamic signals specific to the call (block IDs, image hashes, page numbers, model + max_tokens, confidence distributions, etc.) so captures are replayable post-hoc. A regression test MUST assert that the capture fires on the call path.
 
-- DART LLM classifier: `DART/converter/llm_classifier.py` → one
-  `structure_detection` capture per batch (see
-  `DART/tests/test_llm_classifier_capture_wiring.py`).
-- DART alt-text generator: `DART/pdf_converter/alt_text_generator.py`
-  → one `alt_text_generation` capture per figure (see
-  `DART/tests/test_alt_text_generator_capture_wiring.py`).
-- DART pipeline entry point: `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html`
-  → one `pipeline_run_attribution` capture per run (see
-  `DART/tests/test_pipeline_run_attribution.py`).
-- Trainforge synthesis provider: `Trainforge/generators/_anthropic_provider.py`
-  → one `synthesis_provider_call` capture per call (see
-  `Trainforge/tests/test_anthropic_synthesis_provider.py`).
-- Trainforge curriculum-alignment provider: `Trainforge/generators/_curriculum_provider.py`
-  (consumed by `Trainforge/align_chunks.py::classify_teaching_roles`)
-  → one `curriculum_alignment_call` capture per teaching-role classification
-  (see `Trainforge/tests/test_curriculum_alignment_provider.py`).
-- Trainforge OpenAI-compatible HTTP client: `Trainforge/generators/_openai_compatible_client.py`
-  → one `llm_chat_call` capture per call when wired with a capture; surface
-  used by future task providers that compose the client directly (see
-  `Trainforge/tests/test_openai_compatible_client.py`).
+Precedent call sites + regression tests: `docs/architecture/decision-capture.md`.
 
 ### Assessment Quality (Trainforge)
 
@@ -948,37 +836,13 @@ Each member's `revision` field is pinned to a concrete HuggingFace commit SHA, a
 
 ## Training Pipeline
 
-SLM training is a **post-import LibV2 stage**, not a step in `Trainforge/process_course.py`. The trainer reads `training_specs/*.jsonl` from an already-imported LibV2 course and writes `LibV2/courses/<slug>/models/<model_id>/`. End-state: courses carry trained QLoRA adapters with model card + eval report + decision log; Hugging Face is the upload target.
-
-- **Top-level command**: `ed4all run trainforge_train --course-code <slug> --base-model qwen2.5-1.5b`.
-- **Direct entry point**: `python -m Trainforge.train_course --course-code <slug> --base-model <name> [--dry-run] [--backend local|runpod]`. Requires `pip install ed4all[training]` for non-dry-run mode.
-- **Schemas**: `schemas/models/model_card.schema.json` (with `holdout_graph_hash`) and `schemas/models/model_pointers.schema.json` (promotion ledger).
-- **Deep dive**: `Trainforge/CLAUDE.md` § "Training Pipeline" — base model registry, provider configuration, 5×3 eval matrix, 7-hash provenance, promotion workflow, decision-capture contract.
-- **Stage diagram**: see `LibV2/CLAUDE.md` for the post-import sub-stage ASCII.
-- **Eval checkpointing**: `SLMEvalHarness._run_stage` appends each completed evaluator to `<adapter>/eval/.eval_results_checkpoint.jsonl`; on resume the harness short-circuits cached stages, unlinks on clean exit, and preserves on exception. Opt out via `--no-eval-checkpoint`.
+SLM training is a post-import LibV2 stage, not a step in `Trainforge/process_course.py`. Top-level command: `ed4all run trainforge_train --course-code <slug> --base-model <name>`. Full deep-dive (base-model registry, provider config, 5×3 eval matrix, 7-hash provenance, promotion workflow, decision-capture contract): `Trainforge/CLAUDE.md § Training Pipeline`.
 
 ---
 
 ## Training Data Export
 
-### Formats Supported
-
-| Format | Use Case |
-|--------|----------|
-| `alpaca` | Fine-tuning with instruction format |
-| `openai` | OpenAI-compatible training |
-| `dpo` | Direct Preference Optimization |
-| `raw` | Raw JSONL for custom processing |
-
-### Export Command
-
-```bash
-# Via CLI
-ed4all export-training <run_id> --format dpo
-
-# Via MCP tool
-export_training_data(format="dpo", date_range={"start": "2025-01-01", "end": "2025-01-31"}, min_quality="proficient")
-```
+Formats: `alpaca`, `openai`, `dpo`, `raw`. CLI: `ed4all export-training <run_id> --format <fmt>`. Full reference: `Trainforge/CLAUDE.md § Training Data Export`.
 
 ---
 
