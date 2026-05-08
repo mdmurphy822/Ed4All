@@ -114,13 +114,54 @@ Then add `TOGETHER_API_KEY` to the env. Together AI's ToS explicitly permits usi
 
 ## What's NOT covered (engineering-wave gaps)
 
-The four-env-var recipe above closes the largest training-data exposure paths in the pipeline. Two surfaces remain Anthropic-pinned at the time this recipe ships:
+The four-env-var recipe above closes the largest training-data exposure paths in the pipeline. One surface remains Anthropic-pinned at the time this recipe ships:
 
-### DART (PDF → HTML conversion)
+## DART (W-D13) — PDF → HTML conversion now license-clean
 
-DART's PDF converter (`DART/pdf_converter/converter.py`) currently routes through Anthropic via the `DART_CLAUDE_MODEL` env var (default `claude-sonnet-4-20250514`). DART HTML output is later ingested as Trainforge training chunks, so this is a real training-data exposure. There is no `DART_PROVIDER=local` flag yet — vision-mode OSS routing via a multimodal local model (Qwen2.5-VL or Llama-3.2-Vision) is the W-D12 / W-D13 wave forthcoming.
+DART's PDF converter (`DART/pdf_converter/converter.py`) routes through the W-D13 `DART_PROVIDER` + `DART_VISION_PROVIDER` env vars. Default unset → the legacy Anthropic path stays in place (`DART_CLAUDE_MODEL` pinning `claude-sonnet-4-20250514`); set the W-D13 vars to flip the converter onto a license-clean backend. DART HTML output is later ingested as Trainforge training chunks, so closing this seam was the dominant remaining DART training-data exposure.
 
-Workaround until that wave lands: pre-convert PDFs through DART on a separate machine that has the Anthropic agreement, archive the resulting HTML, and feed the HTML directly into the textbook-to-course pipeline (skipping the dart_conversion phase via `--reuse-objectives` once DART has run). The Anthropic exposure is then bounded to the one-time pre-conversion step and does not leak into the synthesis phase.
+**License-clean DART recipe (W-D13):**
+
+```bash
+# Text-mode structure detection: route through local Ollama / vLLM.
+export DART_PROVIDER=local
+export LOCAL_SYNTHESIS_MODEL=qwen2.5:14b-instruct-q4_K_M  # Apache 2.0
+
+# Vision-mode alt-text: pick ONE of the three options below.
+
+# (a) Local vision model (cheapest, fully offline; needs ~22 GB VRAM
+# for qwen2.5-vl:32b or ~16 GB for qwen2.5-vl:7b):
+export DART_VISION_PROVIDER=local
+export LOCAL_VISION_CAPABLE=true
+# Operator picks: load a vision model into the local server.
+# The resolver heuristic auto-flips when LOCAL_SYNTHESIS_MODEL contains
+# vision / llava / -vl substrings, so an explicit env opt-in isn't
+# required when the model identifier already names the modality.
+
+# (b) Together AI's Llama-3.2-Vision (cloud OSS, ToS-clean for
+# training-data; needs TOGETHER_API_KEY + ~$0.0006/image at 90B):
+export DART_VISION_PROVIDER=together-vision
+export TOGETHER_API_KEY=sk-...
+# TOGETHER_VISION_MODEL=meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo (default)
+
+# (c) Keep vision on Anthropic for now (text is license-clean; vision
+# is bounded to a per-figure exposure that's smaller than running
+# Sonnet over the full text payload):
+export DART_VISION_PROVIDER=anthropic
+```
+
+The CLI flags `--dart-provider` and `--dart-vision-provider` override the env vars per invocation. The `AltTextGenerator` constructor raises `ValueError` IMMEDIATELY when the resolved provider is not vision-capable, so a misconfigured local-server-without-vision fails at startup, not mid-PDF.
+
+**Calibration risk acknowledgment.** This wave SHIPS the path; the underlying calibration of vision-quality vs the Anthropic baseline (alt-text accuracy on dense scientific figures, OCR-blended diagrams, math-heavy plates) is operator-side follow-up. Recommended calibration loop, mirroring the `assessment_item` recipe under "Calibration prerequisite for `assessment_item`" above:
+
+1. Pick a representative chapter with figure-heavy content (10-20 figures spanning charts / diagrams / photos / equations).
+2. Run DART against the chapter under both routings (license-clean variant vs canonical Anthropic).
+3. Compare the per-figure alt-text outputs against a hand-authored reference: assess accessibility-utility (does a screen-reader user get the figure's purpose?), specificity (does it call out the data being illustrated?), and accuracy (no hallucinated values).
+4. If the local / together-vision variant fails materially more often (e.g. >2× the hand-edit rate of the Anthropic baseline on the same chapter), keep `DART_VISION_PROVIDER=anthropic` and accept the per-figure ToS hit on alt-text only — the text-mode structure detection at `DART_PROVIDER=local` still ships license-clean.
+
+Until that calibration loop closes for a given course family, courses built under the license-clean DART variant should not promote past `non_certified_archive` on the Wave-3 promotion chain (`lib/governance/course_status.py::derive_course_status`) for vision-quality reasons. The text-mode change is structurally sound (Qwen 2.5 14B has been calibrated for the analogous Trainforge synthesis surface) but the vision surface is a fresh seam.
+
+**Workaround if the calibration shows local vision underperforms.** Pre-convert PDFs through DART on a separate machine that has the Anthropic agreement, archive the resulting HTML, and feed the HTML directly into the textbook-to-course pipeline (skipping the `dart_conversion` phase via `--reuse-objectives` once DART has run). The Anthropic exposure is then bounded to the one-time pre-conversion step and does not leak into the synthesis phase. W-D13 makes this workaround optional rather than mandatory: an operator who's run the calibration and accepts the local-vision quality can route everything in-process.
 
 ### Assessment-generator subagent
 

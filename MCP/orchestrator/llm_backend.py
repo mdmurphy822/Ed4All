@@ -769,12 +769,17 @@ class OpenAIBackend(_CaptureMixin):
 # uses) — composition-over-inheritance, lazy-imported so the orchestrator
 # stays light when only Anthropic / Mock paths are exercised.
 #
-# Vision (image inputs) is OUT of scope for W-D12 — passing ``images=``
-# raises ``NotImplementedError`` referencing W-D13.
+# Vision (image inputs) lands in W-D13 — the backend now passes
+# ``images=`` through to the underlying ``OpenAICompatibleClient``
+# (which translates to OpenAI's content-block shape on the wire).
+# Per-provider vision capability is declared in
+# ``_OPENAI_COMPATIBLE_PROVIDERS[name]["vision_capable"]``; non-vision
+# providers raise a clear ``RuntimeError`` BEFORE the HTTP round-trip.
 
 OPENAI_COMPATIBLE_VISION_MESSAGE = (
-    "OpenAICompatibleBackend vision support lands in W-D13; pass anthropic "
-    "provider for vision today."
+    "Provider {provider!r} is not vision-capable; set vision_capable=True "
+    "in the registry entry or pick a vision-capable provider "
+    "(e.g. anthropic, together-vision, or local with LOCAL_VISION_CAPABLE=true)."
 )
 
 
@@ -807,6 +812,24 @@ OPENAI_COMPATIBLE_VISION_MESSAGE = (
 #     stub that hasn't been verified against the provider's docs;
 #     callers see a warning at resolve time so an operator knows to
 #     double-check the base_url / model name before relying on it.
+#   - ``vision_capable`` (optional, W-D13): truthy when the
+#     resolved-by-default model under this entry can accept image
+#     inputs. The backend reads this flag to short-circuit a vision
+#     request against a non-vision-capable provider with a clear
+#     error BEFORE the wire round-trip. ``local`` defaults to
+#     ``False`` (default Qwen 14B is text-only); operators with a
+#     vision model loaded into Ollama / vLLM flip this on via the
+#     ``LOCAL_VISION_CAPABLE=true`` env var (or via a substring check
+#     on ``LOCAL_SYNTHESIS_MODEL`` containing ``vision`` /
+#     ``llava`` / ``-vl-``). ``together-vision`` is a sibling entry
+#     pinned to Llama-3.2-90B-Vision-Instruct-Turbo for cloud OSS
+#     vision; ``together`` (text) stays vision-incapable to avoid
+#     silently flipping the default text model into vision mode.
+#   - ``vision_capable_env`` (optional, W-D13): env var the resolver
+#     consults to override ``vision_capable`` per deployment. When
+#     set to a truthy value (``true`` / ``1`` / ``yes`` / ``on``,
+#     case-insensitive), the resolved entry's ``vision_capable``
+#     flips to ``True`` regardless of the registry default.
 _OPENAI_COMPATIBLE_PROVIDERS: Dict[str, Dict[str, Any]] = {
     "local": {
         "base_url_env": "LOCAL_SYNTHESIS_BASE_URL",
@@ -816,6 +839,8 @@ _OPENAI_COMPATIBLE_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "model_env": "LOCAL_SYNTHESIS_MODEL",
         "model_default": "qwen2.5:14b-instruct-q4_K_M",
         "api_key_required": False,
+        "vision_capable": False,
+        "vision_capable_env": "LOCAL_VISION_CAPABLE",
     },
     "together": {
         "base_url_env": None,  # fixed cloud endpoint
@@ -825,6 +850,24 @@ _OPENAI_COMPATIBLE_PROVIDERS: Dict[str, Dict[str, Any]] = {
         "model_env": "TOGETHER_SYNTHESIS_MODEL",
         "model_default": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
         "api_key_required": True,
+        "vision_capable": False,
+    },
+    "together-vision": {
+        # Sibling entry for Together AI's Llama-3.2-Vision endpoint.
+        # Same base_url + api_key plumbing as ``together`` (Together
+        # serves text + vision off one endpoint); the registry split
+        # exists so an operator can pin DART (or any vision-mode call
+        # site) at the vision model without flipping every text-mode
+        # call to it. Reuses ``TOGETHER_API_KEY`` so one cloud key
+        # serves both.
+        "base_url_env": None,
+        "base_url_default": "https://api.together.xyz/v1",
+        "api_key_env": "TOGETHER_API_KEY",
+        "api_key_default": None,
+        "model_env": "TOGETHER_VISION_MODEL",
+        "model_default": "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
+        "api_key_required": True,
+        "vision_capable": True,
     },
     # Illustrative stubs — base URLs match each provider's documented
     # OpenAI-compatible endpoint as of 2026-05. Marked ``unverified`` so a
@@ -897,8 +940,13 @@ class OpenAICompatibleBackend(_CaptureMixin):
     HTTP retry / JSON parse / error-mapping code instead of duplicating
     it here.
 
-    Vision is out of scope — pass ``images=`` and the call raises
-    ``NotImplementedError`` referencing W-D13. Streaming is also
+    Vision support (W-D13): when the provider entry sets
+    ``vision_capable=True`` (or the resolver flips it via
+    ``vision_capable_env``), the backend forwards ``images=`` through
+    to the underlying ``OpenAICompatibleClient.chat_completion`` which
+    translates to OpenAI's content-block shape on the wire. Calling
+    with ``images=`` against a non-vision-capable provider raises
+    ``RuntimeError`` BEFORE the HTTP round-trip. Streaming stays
     deferred per project decision O3.
     """
 
@@ -910,6 +958,7 @@ class OpenAICompatibleBackend(_CaptureMixin):
         api_key: Optional[str] = None,
         capture: Optional[Any] = None,
         request_timeout: float = 120.0,
+        vision_capable: bool = False,
     ):
         if not provider_name:
             raise ValueError("OpenAICompatibleBackend requires a provider_name")
@@ -928,6 +977,12 @@ class OpenAICompatibleBackend(_CaptureMixin):
         self.default_model = str(default_model)
         self.api_key = api_key
         self.request_timeout = float(request_timeout)
+        # W-D13: declarative vision capability. The flag is set at
+        # construction time from the registry entry (or operator
+        # override); calling ``complete_sync(..., images=...)`` against
+        # a backend with ``vision_capable=False`` raises before the
+        # wire round-trip.
+        self.vision_capable = bool(vision_capable)
         self._client = None  # lazy
         self._set_capture(capture)
 
@@ -958,6 +1013,7 @@ class OpenAICompatibleBackend(_CaptureMixin):
                 capture=None,
                 timeout=self.request_timeout,
                 provider_label=self.provider_label,
+                vision_capable=self.vision_capable,
             )
         return self._client
 
@@ -980,8 +1036,18 @@ class OpenAICompatibleBackend(_CaptureMixin):
         temperature: float = 0.7,
         images: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        if images:
-            raise NotImplementedError(OPENAI_COMPATIBLE_VISION_MESSAGE)
+        # W-D13: vision-capability gate. Fail loudly BEFORE the wire
+        # round-trip if the operator routed an image-bearing call
+        # against a non-vision-capable provider entry. The error
+        # message points at every escape hatch (registry flag,
+        # vision_capable_env, sibling vision provider entries) so the
+        # operator sees the fix inline.
+        if images and not self.vision_capable:
+            raise RuntimeError(
+                OPENAI_COMPATIBLE_VISION_MESSAGE.format(
+                    provider=self.provider_name
+                )
+            )
 
         resolved_model = model or self.default_model
         messages = self._build_messages(system, user)
@@ -1000,6 +1066,7 @@ class OpenAICompatibleBackend(_CaptureMixin):
                 messages,
                 max_tokens=int(max_tokens),
                 temperature=float(temperature),
+                images=images,
             )
             return text
         finally:
@@ -1015,9 +1082,13 @@ class OpenAICompatibleBackend(_CaptureMixin):
                 # ``provider_name`` is the dynamic field — it records
                 # WHICH OSS provider produced each call. Adding a new
                 # provider via the registry surfaces here unchanged.
+                # ``images_count`` lets the audit trail distinguish
+                # vision calls from text-only calls without the rationale
+                # branching on the value.
                 extra={
                     "provider_name": self.provider_name,
                     "base_url": _redact_base_url_for_capture(self.base_url),
+                    "images_count": len(images) if images else 0,
                 },
             )
 
@@ -1123,6 +1194,28 @@ def resolve_openai_compatible_backend(
             provider_name, base_url, resolved_model,
         )
 
+    # W-D13: per-entry vision capability with an env-var override
+    # path. ``vision_capable_env`` (when set on the entry) lets an
+    # operator flip the entry's default at deployment time — e.g.
+    # ``LOCAL_VISION_CAPABLE=true`` for an Ollama install carrying a
+    # vision-capable model (llava, llama3.2-vision, qwen2.5-vl).
+    # Heuristic: the model identifier carrying ``vision`` / ``llava``
+    # / ``-vl`` substrings ALSO flips the flag (covers the common
+    # case where an operator just sets ``LOCAL_SYNTHESIS_MODEL`` to a
+    # vision model without remembering the env-var hatch).
+    vision_capable = bool(entry.get("vision_capable", False))
+    vision_env = entry.get("vision_capable_env")
+    if vision_env:
+        env_val = (os.environ.get(vision_env) or "").strip().lower()
+        if env_val in {"true", "1", "yes", "on"}:
+            vision_capable = True
+    if not vision_capable:
+        # Substring heuristic on the resolved model identifier — common
+        # surface forms across Ollama / vLLM / Together's vision models.
+        model_lower = (resolved_model or "").lower()
+        if any(token in model_lower for token in ("vision", "llava", "-vl")):
+            vision_capable = True
+
     return OpenAICompatibleBackend(
         provider_name=provider_name,
         base_url=base_url,
@@ -1130,6 +1223,7 @@ def resolve_openai_compatible_backend(
         api_key=resolved_api_key,
         capture=capture,
         request_timeout=request_timeout,
+        vision_capable=vision_capable,
     )
 
 

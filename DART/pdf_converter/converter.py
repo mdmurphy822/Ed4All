@@ -21,7 +21,11 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 # > ``DART_CLAUDE_MODEL_DEFAULT``). Reused by every constructor in
 # ``DART/pdf_converter/`` so a single env var pin propagates to every
 # call site.
-from .claude_processor import _resolve_dart_claude_model
+from .claude_processor import (
+    _resolve_dart_claude_model,
+    _resolve_dart_provider,
+    _resolve_dart_vision_provider,
+)
 
 if TYPE_CHECKING:
     from .claude_processor import ClaudeProcessor, DocumentStructure
@@ -91,6 +95,9 @@ class PDFToAccessibleHTML:
         # WCAG validation options
         validate_wcag: bool = True,
         wcag_strict: bool = False,
+        # W-D13: provider routing
+        provider: Optional[str] = None,
+        vision_provider: Optional[str] = None,
     ):
         """
         Initialize the converter.
@@ -116,6 +123,22 @@ class PDFToAccessibleHTML:
             vector_render_dpi: DPI for rendering vector regions as images
             validate_wcag: Whether to validate output against WCAG 2.2 AA
             wcag_strict: If True, treat AA failures as blocking
+            provider: Wave W-D13. Text-mode provider for the structure-
+                detection ``ClaudeProcessor``. Resolution chain via
+                ``_resolve_dart_provider``: explicit kwarg >
+                ``DART_PROVIDER`` env var > ``"anthropic"`` (legacy
+                default). Threaded into ``ClaudeProcessor(provider=...)``.
+            vision_provider: Wave W-D13. Vision-mode provider for
+                ``AltTextGenerator``. Resolution chain via
+                ``_resolve_dart_vision_provider``: explicit kwarg >
+                ``DART_VISION_PROVIDER`` env var > ``DART_PROVIDER`` env
+                var > ``"anthropic"`` (legacy default). The split lets
+                an operator pin a small text model for cheap structure
+                detection AND a 90B+ vision model for alt-text without
+                flipping every text call to the larger model.
+                ``AltTextGenerator(provider=...)`` raises
+                ``ValueError`` at construction if the resolved provider
+                is not vision-capable.
         """
         self.dpi = dpi
         self.lang = lang
@@ -137,10 +160,18 @@ class PDFToAccessibleHTML:
         # teacher model set ``DART_CLAUDE_MODEL`` once; explicit constructor
         # kwarg still wins for callers that need a per-instance override.
         self._claude = None
+        # W-D13: resolve text + vision providers once at construction
+        # time and stash them for the lazy ClaudeProcessor / downstream
+        # AltTextGenerator builds. The vision_provider is stored on the
+        # instance so callers that build their own AltTextGenerator
+        # outside the converter can read the operator-supplied default.
+        self.provider = _resolve_dart_provider(provider)
+        self.vision_provider = _resolve_dart_vision_provider(vision_provider)
         self._claude_config = {
             'api_key': claude_api_key,
             'model': _resolve_dart_claude_model(claude_model),
             'enable_cache': enable_cache,
+            'provider': self.provider,
         }
 
     @property

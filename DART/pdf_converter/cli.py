@@ -130,6 +130,45 @@ def parse_args(args: list = None) -> argparse.Namespace:
         ),
     )
 
+    # Wave W-D13: provider routing. ``--dart-provider`` selects the
+    # backend for the text-mode structure-detection LLM call;
+    # ``--dart-vision-provider`` selects the backend for the
+    # vision-mode alt-text generator. Both default unset → fall through
+    # to env vars (DART_PROVIDER / DART_VISION_PROVIDER) → "anthropic"
+    # (legacy default). The split mirrors the Courseforge
+    # OUTLINE_PROVIDER / REWRITE_PROVIDER split: an operator can pin a
+    # small text model for cheap classification AND a 90B+ vision
+    # model for alt-text without flipping every text call to the
+    # larger model.
+    parser.add_argument(
+        '--dart-provider',
+        type=str,
+        default=None,
+        help=(
+            'Provider for DART text-mode structure detection. '
+            'Resolution chain: this flag > DART_PROVIDER env var > '
+            '"anthropic" (legacy default). Values: "anthropic", '
+            '"local" (Ollama / vLLM), "together", or any provider '
+            'registered in MCP/orchestrator/llm_backend.py::'
+            '_OPENAI_COMPATIBLE_PROVIDERS.'
+        ),
+    )
+
+    parser.add_argument(
+        '--dart-vision-provider',
+        type=str,
+        default=None,
+        help=(
+            'Provider for DART vision-mode alt-text generation. '
+            'Resolution chain: this flag > DART_VISION_PROVIDER env '
+            'var > DART_PROVIDER env var > "anthropic" (legacy '
+            'default). The selected provider MUST be vision-capable; '
+            'use "anthropic", "together-vision", or "local" with '
+            'LOCAL_VISION_CAPABLE=true (or a vision-substring model '
+            'ID like qwen2.5-vl / llava / llama3.2-vision).'
+        ),
+    )
+
     parser.add_argument(
         '--no-cache',
         action='store_true',
@@ -241,6 +280,12 @@ def main(args: list = None) -> int:
         extract_vector_graphics=not parsed.no_vector_graphics,
         vector_min_drawings=parsed.vector_min_drawings,
         vector_render_dpi=parsed.vector_dpi,
+        # Wave W-D13: provider routing. ``None`` falls through to env
+        # var resolution inside ``_resolve_dart_provider`` /
+        # ``_resolve_dart_vision_provider`` so an unset CLI flag
+        # preserves the legacy env-driven default.
+        provider=parsed.dart_provider,
+        vision_provider=parsed.dart_vision_provider,
     )
 
     # Convert
