@@ -322,6 +322,13 @@ class LocalSynthesisProvider:
         )
         out["provider"] = self._provider_name
 
+        # W-D11 T11.3 — thread structured-claim arrays through emit
+        # when the LLM produced them. Optional emit; absent on the
+        # today-default (prompt, completion) shape.
+        for k in ("key_claims", "per_claim_support"):
+            if k in parsed:
+                out[k] = parsed[k]
+
         self._emit_decision(
             kind="instruction",
             draft=draft,
@@ -330,6 +337,7 @@ class LocalSynthesisProvider:
             concept_tags=list((chunk.get("concept_tags") or [])[:3]),
             usage=usage,
             retry_count=retry_count,
+            parsed=parsed,
         )
         return out
 
@@ -373,6 +381,12 @@ class LocalSynthesisProvider:
         )
         out["provider"] = self._provider_name
 
+        # W-D11 T11.3 — thread structured-claim arrays through emit
+        # when the LLM produced them.
+        for k in ("key_claims", "per_claim_support"):
+            if k in parsed:
+                out[k] = parsed[k]
+
         self._emit_decision(
             kind="preference",
             draft=draft,
@@ -381,6 +395,7 @@ class LocalSynthesisProvider:
             concept_tags=list((chunk.get("concept_tags") or [])[:3]),
             usage=usage,
             retry_count=retry_count,
+            parsed=parsed,
         )
         return out
 
@@ -687,6 +702,9 @@ class LocalSynthesisProvider:
         cls, draft: Dict[str, Any], chunk_id: str,
         preserve_tokens: Optional[List[str]] = None,
     ) -> str:
+        from Trainforge.generators._base_synthesis_provider import (
+            EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
+        )
         preserve = cls._preserve_directive(
             preserve_tokens or [], "the prompt or completion",
         )
@@ -726,6 +744,7 @@ class LocalSynthesisProvider:
             f"'prompt' and 'completion'."
             f"{preserve}"
             f"{definition_directive}"
+            f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
             f"{cls._INSTRUCTION_JSON_DIRECTIVE}"
         )
 
@@ -734,6 +753,9 @@ class LocalSynthesisProvider:
         cls, draft: Dict[str, Any], chunk_id: str,
         preserve_tokens: Optional[List[str]] = None,
     ) -> str:
+        from Trainforge.generators._base_synthesis_provider import (
+            EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
+        )
         preserve = cls._preserve_directive(
             preserve_tokens or [], "the chosen completion",
         )
@@ -750,6 +772,7 @@ class LocalSynthesisProvider:
             f"Rewrite all three. Return JSON with keys 'prompt', "
             f"'chosen', and 'rejected'."
             f"{preserve}"
+            f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
             f"{cls._PREFERENCE_JSON_DIRECTIVE}"
         )
 
@@ -788,6 +811,7 @@ class LocalSynthesisProvider:
         concept_tags: List[str],
         usage: Dict[str, int],
         retry_count: int,
+        parsed: Optional[Dict[str, Any]] = None,
     ) -> None:
         if self._capture is None:
             return
@@ -812,6 +836,7 @@ class LocalSynthesisProvider:
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     retry_count=retry_count,
+                    parsed=parsed,
                 ),
             )
         except Exception as exc:  # pragma: no cover — defensive
@@ -853,6 +878,7 @@ class LocalSynthesisProvider:
         prompt_tokens: int,
         completion_tokens: int,
         retry_count: int,
+        parsed: Optional[Dict[str, Any]] = None,
     ) -> str:
         # Wave 115: interpolate per-chunk pedagogical signals
         # (bloom_level, concept_tags) so the rationale string varies
@@ -860,7 +886,12 @@ class LocalSynthesisProvider:
         # formulaic rationales as 'developing'; chunk-specific
         # interpolation lifts the score to 'proficient' without
         # changing what gets sent to the model.
+        # W-D11 T11.3: append per-claim evidence_quote emit rate.
+        from Trainforge.generators._base_synthesis_provider import (
+            render_evidence_quote_rationale_fragment,
+        )
         tags_repr = ",".join(concept_tags) if concept_tags else "<none>"
+        evidence_fragment = render_evidence_quote_rationale_fragment(parsed)
         return (
             f"Routing template-generated {kind} draft "
             f"(template_id={draft.get('template_id','n/a')}, "
@@ -875,7 +906,8 @@ class LocalSynthesisProvider:
             f"hardware capability and 5-30s per-call latency. "
             f"prompt_tokens={prompt_tokens}, "
             f"completion_tokens={completion_tokens}, "
-            f"http_retries={retry_count}."
+            f"http_retries={retry_count}. "
+            f"{evidence_fragment}."
         )
 
 

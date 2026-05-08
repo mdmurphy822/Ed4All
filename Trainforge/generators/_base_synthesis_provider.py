@@ -243,6 +243,181 @@ def extract_usage_anthropic(response: Any) -> _Usage:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# W-D11 T11.3 — per-claim evidence-quote emit (synthesis side).
+#
+# T11.0 (commit 92d1bf8) landed two additive optional fields on the
+# claim-bearing schemas:
+#
+#   * ``schemas/knowledge/chunk_v4.schema.json::key_claims`` structured
+#     arm: ``evidence_quote`` (string, ≤240 chars, nullable) +
+#     ``evidence_char_span`` ([start, end), nullable).
+#   * ``schemas/knowledge/pair_audit_fields.schema.json::$defs.PerClaimSupport``:
+#     same two fields, same null arms.
+#
+# T11.3 teaches every synthesis provider to ASK the LLM for the
+# verbatim quote at synthesis time — the consumer-side validator
+# (T11.2) handles the missing-quote case as warning-only so a small
+# local model that ignores the schema gracefully degrades. The
+# directive + schema fragment + emit-rate helper live ONCE here so
+# every concrete provider (Anthropic / Together / Local /
+# ClaudeSession) imports a single source of truth.
+#
+# Cap is structural — schema enforces ``maxLength: 240`` so a provider
+# that emits a longer quote fails at downstream schema validation
+# rather than the synthesis surface itself.
+# ---------------------------------------------------------------------------
+
+
+# Per-claim object shape, referenced by every provider's structured-
+# output schema in JSON-mode. Optional fields → providers that fail to
+# emit them gracefully degrade.
+EVIDENCE_QUOTE_SCHEMA_FRAGMENT: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "claim": {"type": "string", "minLength": 1},
+        "source_chunk_ids": {
+            "anyOf": [
+                {"type": "array", "items": {"type": "string"}},
+                {"type": "null"},
+            ],
+        },
+        # T11.3 optional emit — LLM is asked to fill these per-claim.
+        "evidence_quote": {
+            "anyOf": [
+                {"type": "string", "minLength": 1, "maxLength": 240},
+                {"type": "null"},
+            ],
+        },
+        "evidence_char_span": {
+            "anyOf": [
+                {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "items": {"type": "integer", "minimum": 0},
+                },
+                {"type": "null"},
+            ],
+        },
+    },
+}
+
+
+# Canonical per-claim prompt directive. Appended to every claim-bearing
+# user prompt (block-emit instruction-paraphrase, block-emit
+# preference-paraphrase, pair-side per_claim_support emit). The
+# directive text mirrors the schema description so a small local model
+# has the same contract whether it reads the prompt or the schema.
+EVIDENCE_QUOTE_PROMPT_DIRECTIVE: str = (
+    "\n\nIf your response includes per-claim attribution (a `key_claims[]` "
+    "array on a chunk, or a `per_claim_support[]` array on a pair), "
+    "include for each claim entry an `evidence_quote` field whose value "
+    "is a contiguous verbatim substring (≤240 chars) copied character-"
+    "for-character from the cited chunk's text that supports the claim. "
+    "The quote MUST appear in the chunk text exactly as written — do "
+    "NOT paraphrase. If you also emit `evidence_char_span`, it must be "
+    "the [start, end) char offsets of the quote within the chunk's "
+    "text field. If you cannot locate a contiguous span that supports "
+    "the claim, emit `evidence_quote: null` and `evidence_char_span: "
+    "null` rather than fabricating one. Example claim entry: "
+    '{"claim": "SHACL shapes constrain RDF graphs.", '
+    '"source_chunk_ids": ["chunk_001"], '
+    '"evidence_quote": "SHACL shapes constrain RDF graphs.", '
+    '"evidence_char_span": [12, 46]}.'
+)
+
+
+def _iter_claim_entries(parsed: Any) -> List[Dict[str, Any]]:
+    """Walk a parsed provider response and return every claim-bearing
+    object entry under ``key_claims[]`` or ``per_claim_support[]``.
+
+    Tolerant of:
+    - Missing keys (returns empty list).
+    - Legacy List[str] shape on ``key_claims[]`` (skipped — bare-string
+      claims have no per-claim object to stamp ``evidence_quote`` onto;
+      they count as 0 claims for the emit-rate calculation since the
+      provider can't be asked to attach a quote to a string).
+    - Non-dict entries (skipped).
+    - Nested envelope shapes (e.g. ``{"chunk": {...}}``). Walks dict
+      values recursively but caps at depth 4 to bound cost.
+    """
+    out: List[Dict[str, Any]] = []
+    if not isinstance(parsed, dict):
+        return out
+
+    def _walk(node: Any, depth: int) -> None:
+        if depth > 4 or not isinstance(node, dict):
+            return
+        for key in ("key_claims", "per_claim_support"):
+            arr = node.get(key)
+            if isinstance(arr, list):
+                for entry in arr:
+                    if isinstance(entry, dict):
+                        out.append(entry)
+        for v in node.values():
+            if isinstance(v, dict):
+                _walk(v, depth + 1)
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        _walk(item, depth + 1)
+
+    _walk(parsed, 0)
+    return out
+
+
+def compute_evidence_quote_emit_rate(parsed: Any) -> Tuple[int, int, float]:
+    """Return ``(claims_with_quote, total_claims, emit_rate)``.
+
+    Used by every concrete provider's ``_emit_per_call_decision`` to
+    interpolate a dynamic ``evidence_quote_emit_rate`` signal into the
+    ``synthesis_provider_call`` rationale. Mirrors the W5.D pattern of
+    piggybacking on the existing decision_type rather than minting a
+    new enum value.
+
+    A claim entry "has a quote" when ``entry["evidence_quote"]`` is a
+    non-empty string after strip. Null / missing / empty-string all
+    count as "no quote", which aligns with the day-1 graceful-degrade
+    contract — the consumer-side validator (T11.2) handles those arms
+    as warning-only.
+
+    When no claim-bearing arrays are present (the common case for
+    today's providers, which paraphrase ``(prompt, completion)`` /
+    ``(prompt, chosen, rejected)`` shapes only), returns ``(0, 0, 0.0)``
+    — the rationale interpolates ``emit_rate=0.000 (no claims)`` so an
+    operator can tell apart "no claims emitted" from "claims emitted
+    without quotes".
+    """
+    entries = _iter_claim_entries(parsed)
+    total = len(entries)
+    if total == 0:
+        return (0, 0, 0.0)
+    with_quote = 0
+    for entry in entries:
+        q = entry.get("evidence_quote")
+        if isinstance(q, str) and q.strip():
+            with_quote += 1
+    return (with_quote, total, with_quote / total)
+
+
+def render_evidence_quote_rationale_fragment(parsed: Any) -> str:
+    """Build the rationale-fragment string every provider appends.
+
+    Returns a single-line interpolation suitable for concatenation
+    into the broader ``synthesis_provider_call`` rationale. Always
+    safe to append regardless of provider response shape.
+    """
+    with_quote, total, rate = compute_evidence_quote_emit_rate(parsed)
+    if total == 0:
+        return "evidence_quote_emit_rate=0.000 (no claims emitted)"
+    return (
+        f"evidence_quote_emit_rate={rate:.3f} "
+        f"({with_quote}/{total} claims carry verbatim quotes)"
+    )
+
+
 def emit_decision_safely(
     capture: Optional[Any],
     *,
@@ -518,4 +693,9 @@ __all__ = [
     "extract_text_anthropic",
     "extract_usage_anthropic",
     "emit_decision_safely",
+    # W-D11 T11.3 — per-claim evidence-quote synthesis surface.
+    "EVIDENCE_QUOTE_SCHEMA_FRAGMENT",
+    "EVIDENCE_QUOTE_PROMPT_DIRECTIVE",
+    "compute_evidence_quote_emit_rate",
+    "render_evidence_quote_rationale_fragment",
 ]

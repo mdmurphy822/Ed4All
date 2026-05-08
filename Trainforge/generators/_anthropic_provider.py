@@ -239,11 +239,20 @@ class AnthropicSynthesisProvider:
         )
         out["provider"] = "anthropic"
 
+        # W-D11 T11.3 — thread structured-claim arrays (key_claims /
+        # per_claim_support) through the emit when the LLM produced
+        # them. Optional emit; absent on the today-default
+        # (prompt, completion) shape.
+        for k in ("key_claims", "per_claim_support"):
+            if k in parsed:
+                out[k] = parsed[k]
+
         self._emit_decision(
             kind="instruction",
             draft=draft,
             chunk_id=chunk_id,
             usage=usage,
+            parsed=parsed,
         )
         return out
 
@@ -286,11 +295,19 @@ class AnthropicSynthesisProvider:
         )
         out["provider"] = "anthropic"
 
+        # W-D11 T11.3 — thread structured-claim arrays (key_claims /
+        # per_claim_support) through the emit when the LLM produced
+        # them.
+        for k in ("key_claims", "per_claim_support"):
+            if k in parsed:
+                out[k] = parsed[k]
+
         self._emit_decision(
             kind="preference",
             draft=draft,
             chunk_id=chunk_id,
             usage=usage,
+            parsed=parsed,
         )
         return out
 
@@ -390,6 +407,11 @@ class AnthropicSynthesisProvider:
     def _render_instruction_user(
         draft: Dict[str, Any], chunk_id: str
     ) -> str:
+        # Lazy import — avoids a circular import (the base imports
+        # symbols from this module).
+        from Trainforge.generators._base_synthesis_provider import (
+            EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
+        )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Bloom level: {draft.get('bloom_level','unknown')}\n"
@@ -402,12 +424,16 @@ class AnthropicSynthesisProvider:
             f"\n"
             f"Rewrite the prompt and completion. Return JSON with keys "
             f"'prompt' and 'completion'."
+            f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
         )
 
     @staticmethod
     def _render_preference_user(
         draft: Dict[str, Any], chunk_id: str
     ) -> str:
+        from Trainforge.generators._base_synthesis_provider import (
+            EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
+        )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Source: {draft.get('rejected_source','unknown')}\n"
@@ -420,6 +446,7 @@ class AnthropicSynthesisProvider:
             f"\n"
             f"Rewrite all three. Return JSON with keys 'prompt', "
             f"'chosen', and 'rejected'."
+            f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
         )
 
     @staticmethod
@@ -554,9 +581,19 @@ class AnthropicSynthesisProvider:
         draft: Dict[str, Any],
         chunk_id: str,
         usage: _Usage,
+        parsed: Optional[Dict[str, Any]] = None,
     ) -> None:
         if self._capture is None:
             return
+        # W-D11 T11.3 — extend the existing ``synthesis_provider_call``
+        # decision_type with a per-claim ``evidence_quote_emit_rate``
+        # signal interpolated into the rationale. NO schema enum
+        # change — mirrors the W5.D pattern that piggybacked on
+        # existing decision_types.
+        from Trainforge.generators._base_synthesis_provider import (
+            render_evidence_quote_rationale_fragment,
+        )
+        evidence_fragment = render_evidence_quote_rationale_fragment(parsed)
         try:
             self._capture.log_decision(
                 decision_type="synthesis_provider_call",
@@ -574,7 +611,8 @@ class AnthropicSynthesisProvider:
                     f"chunk_id={chunk_id}) to add lexical and stylistic "
                     f"diversity beyond the deterministic mock catalog. "
                     f"Cache_control on chunk-text system block keeps "
-                    f"per-chunk cost roughly O(output_tokens={usage.output_tokens})."
+                    f"per-chunk cost roughly O(output_tokens={usage.output_tokens}). "
+                    f"{evidence_fragment}."
                 ),
             )
         except Exception as exc:  # pragma: no cover — defensive
