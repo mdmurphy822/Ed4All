@@ -103,6 +103,7 @@ class OpenAICompatibleClient:
         client: Optional[httpx.Client] = None,
         sleep_fn: Optional[Callable[[float], None]] = None,
         json_mode: bool = False,
+        vision_capable: bool = False,
     ) -> None:
         """Build an LLM-agnostic chat-completions client.
 
@@ -147,6 +148,15 @@ class OpenAICompatibleClient:
                 local servers (Ollama, vLLM, llama.cpp, LM Studio) at
                 once. Default ``False`` for backward compat — providers
                 explicitly opt in.
+            vision_capable: Wave W-D13 — declarative flag the BACKEND
+                layer reads to decide whether to permit ``images=...``
+                on a ``chat_completion`` call. The client itself does
+                NOT enforce this (vision content-block translation is
+                always wired); the flag is metadata so a calling
+                ``OpenAICompatibleBackend`` can short-circuit a vision
+                request against a non-vision-capable model server with
+                a clear error before paying the HTTP round-trip.
+                Default ``False``.
         """
         if not base_url:
             raise ValueError("OpenAICompatibleClient requires a non-empty base_url")
@@ -168,6 +178,7 @@ class OpenAICompatibleClient:
         # working post-refactor. Default is the stdlib ``time.sleep``.
         self._sleep_fn = sleep_fn or time.sleep
         self._json_mode = bool(json_mode)
+        self._vision_capable = bool(vision_capable)
 
     # ------------------------------------------------------------------
     # Properties
@@ -186,6 +197,10 @@ class OpenAICompatibleClient:
         return self._provider_label
 
     @property
+    def vision_capable(self) -> bool:
+        return self._vision_capable
+
+    @property
     def api_url(self) -> str:
         """Full chat-completions endpoint URL."""
         return f"{self._base_url}/chat/completions"
@@ -202,12 +217,13 @@ class OpenAICompatibleClient:
 
     def chat_completion(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         *,
         max_tokens: int = 800,
         temperature: float = 0.4,
         decision_metadata: Optional[Dict[str, Any]] = None,
         extra_payload: Optional[Dict[str, Any]] = None,
+        images: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Issue one chat-completion call and return the assistant text.
 
@@ -256,6 +272,33 @@ class OpenAICompatibleClient:
                 just passes them through to the wire. Servers that
                 don't recognise a given field silently ignore it
                 (Wave-113 ``json_mode`` uses the same pattern).
+            images: Wave W-D13 — optional list of base64-encoded image
+                blocks. Each entry is ``{"media_type": "image/jpeg" |
+                "image/png" | ..., "data": "<base64>"}``. When
+                non-empty, the LAST user message in ``messages`` is
+                rewritten from ``{"role": "user", "content": <str>}``
+                to OpenAI's vision content-block list shape:
+
+                ::
+
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "<original prompt>"},
+                        {"type": "image_url", "image_url": {
+                            "url": "data:<media_type>;base64,<data>"
+                        }},
+                        ...
+                    ]}
+
+                This shape matches the public OpenAI vision API,
+                Together AI's Llama-3.2-Vision endpoints, and Ollama's
+                vision-capable models (llava, llama3.2-vision,
+                qwen2.5-vl). Servers that don't speak vision will
+                surface a 400 from this client — the calling backend
+                is expected to short-circuit on
+                ``vision_capable=False`` BEFORE reaching the wire.
+                Non-user messages are left unchanged. ``None`` /
+                empty list keeps the legacy ``content: <str>`` shape
+                so existing callers don't regress.
 
         Returns:
             The assistant message ``content`` string from the first
@@ -269,6 +312,17 @@ class OpenAICompatibleClient:
         """
         if not isinstance(messages, list) or not messages:
             raise ValueError("messages must be a non-empty list")
+        # Wave W-D13: vision content-block translation. When images
+        # are supplied, rewrite the LAST user message from a string
+        # ``content`` to OpenAI's content-block list shape so the
+        # server sees the canonical multimodal payload. Non-user
+        # messages and intermediate user messages stay untouched —
+        # the caller always attaches images to the most recent
+        # prompt. ``None`` / empty list preserves the legacy
+        # string-content shape verbatim so non-vision callers don't
+        # regress.
+        if images:
+            messages = self._attach_vision_blocks(messages, images)
         payload: Dict[str, Any] = {
             "model": self._model,
             "messages": messages,
@@ -294,6 +348,81 @@ class OpenAICompatibleClient:
             decision_metadata=decision_metadata or {},
         )
         return text
+
+    # ------------------------------------------------------------------
+    # Internals — vision content-block translation (Wave W-D13)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _attach_vision_blocks(
+        messages: List[Dict[str, Any]],
+        images: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Rewrite the LAST user message to carry vision content blocks.
+
+        Builds a fresh messages list (does NOT mutate the caller's list
+        in place) so a caller that retains a reference to ``messages``
+        after the call still sees the original string-content shape.
+        Picks the last user message because that's where the prompt
+        attached to the image lives by convention; non-user messages
+        and intermediate user messages pass through unchanged.
+
+        Each image dict must carry ``media_type`` and ``data`` (base64
+        string). The resulting content block uses OpenAI's
+        ``image_url`` shape with a ``data:`` URI — the same format
+        Together AI's Llama-3.2-Vision endpoints + Ollama's vision
+        models accept.
+        """
+        # Find the index of the last user message. Iterate in reverse
+        # so we land on it without scanning past the front of the list.
+        last_user_idx: Optional[int] = None
+        for idx in range(len(messages) - 1, -1, -1):
+            entry = messages[idx]
+            if isinstance(entry, dict) and entry.get("role") == "user":
+                last_user_idx = idx
+                break
+        if last_user_idx is None:
+            # No user message to attach to. Vision without a user-side
+            # prompt is meaningless — bail loudly so the caller learns
+            # they're holding the API wrong rather than silently
+            # sending an image with no prompt.
+            raise ValueError(
+                "vision images supplied but no user message present in "
+                "messages; vision attaches to the last user message"
+            )
+
+        original = messages[last_user_idx]
+        original_text = original.get("content", "")
+        if not isinstance(original_text, str):
+            # The caller already pre-built a content-block list — leave
+            # it alone (caller's contract). Just append our image blocks.
+            new_content: List[Dict[str, Any]] = list(original_text)
+        else:
+            new_content = [{"type": "text", "text": original_text}]
+        for img in images:
+            media_type = img.get("media_type")
+            data = img.get("data")
+            if not media_type or not data:
+                raise ValueError(
+                    "vision image entry missing required "
+                    "'media_type' or 'data' field"
+                )
+            new_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{media_type};base64,{data}",
+                    },
+                }
+            )
+
+        rewritten = list(messages)
+        rewritten[last_user_idx] = {
+            **{k: v for k, v in original.items() if k != "content"},
+            "role": "user",
+            "content": new_content,
+        }
+        return rewritten
 
     # ------------------------------------------------------------------
     # Internals — HTTP
