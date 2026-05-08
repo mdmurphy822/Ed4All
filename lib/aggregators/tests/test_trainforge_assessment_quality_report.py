@@ -1018,3 +1018,102 @@ class TestPromotionLadderPassthrough:
             "rejected_promotion_pairs": 0,
             "promotion_rejection_reasons": {},
         }
+
+
+# --------------------------------------------------------------------------
+# Worker W-D11 T11.5 — evidence_quote_* metadata flow into synthesis_quality
+# --------------------------------------------------------------------------
+
+
+def _gate_row_with_metadata(
+    gate_id: str,
+    *,
+    metadata: Optional[Dict[str, Any]] = None,
+    passed: bool = True,
+    severity: str = "warning",
+) -> Dict[str, Any]:
+    """GateResult.to_dict() row carrying a free-form metadata block."""
+    row = _gate_row(
+        gate_id, passed=passed, severity=severity, score=1.0,
+    )
+    if metadata is not None:
+        row["metadata"] = metadata
+    return row
+
+
+class TestEvidenceQuoteSurfacing:
+    """Wave W-D11 T11.5 — pair-side claim_support metadata flows into the
+    ``synthesis_quality.evidence_quote`` block. Mirrors the promotion-chain
+    aggregator wiring on the chunks-and-pairs surface.
+    """
+
+    def test_pair_claim_support_metadata_flows_to_evidence_quote_block(
+        self,
+    ):
+        phase_outputs = {
+            "training_synthesis": _phase(
+                _gate_row_with_metadata(
+                    "pair_claim_support",
+                    metadata={
+                        "evidence_quote_coverage_rate": 0.87,
+                        "evidence_quote_substring_fail_rate": 0.06,
+                        "evidence_quote_char_span_mismatch_rate": 0.02,
+                    },
+                ),
+            ),
+        }
+        agg = TrainforgeAssessmentQualityReport(
+            phase_outputs=phase_outputs,
+            course_code="C", run_id="WF-EQ-PAIR",
+        )
+        report = agg.build()
+        evidence = report["synthesis_quality"]["evidence_quote"]
+        assert evidence == {
+            "evidence_quote_coverage_rate": 0.87,
+            "evidence_quote_substring_fail_rate": 0.06,
+            "evidence_quote_char_span_mismatch_rate": 0.02,
+        }
+
+    def test_legacy_pair_claim_support_without_metadata_defaults_to_zero(
+        self,
+    ):
+        # GateResult that ran before T11.2 metadata stamping. The
+        # aggregator MUST default each rate to 0.0 (graceful-degrade
+        # contract) without raising.
+        phase_outputs = {
+            "training_synthesis": _phase(
+                _gate_row_with_metadata("pair_claim_support", metadata=None),
+            ),
+        }
+        agg = TrainforgeAssessmentQualityReport(
+            phase_outputs=phase_outputs,
+            course_code="C", run_id="WF-EQ-LEG",
+        )
+        report = agg.build()
+        evidence = report["synthesis_quality"]["evidence_quote"]
+        assert evidence == {
+            "evidence_quote_coverage_rate": 0.0,
+            "evidence_quote_substring_fail_rate": 0.0,
+            "evidence_quote_char_span_mismatch_rate": 0.0,
+        }
+
+    def test_pair_claim_support_absent_yields_zero_evidence_block(self):
+        # No pair_claim_support gate fired. The aggregator still emits
+        # the evidence_quote block with zeros so the wire shape is
+        # invariant.
+        phase_outputs = {
+            "training_synthesis": _phase(
+                _gate_row("synthesis_diversity", passed=True),
+            ),
+        }
+        agg = TrainforgeAssessmentQualityReport(
+            phase_outputs=phase_outputs,
+            course_code="C", run_id="WF-EQ-NONE",
+        )
+        report = agg.build()
+        evidence = report["synthesis_quality"]["evidence_quote"]
+        assert evidence == {
+            "evidence_quote_coverage_rate": 0.0,
+            "evidence_quote_substring_fail_rate": 0.0,
+            "evidence_quote_char_span_mismatch_rate": 0.0,
+        }

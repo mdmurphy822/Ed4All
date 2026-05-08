@@ -177,6 +177,7 @@ class _GateProjection:
     code: Optional[str]
     message: Optional[str]
     is_blocking_fail: bool
+    metadata: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -189,6 +190,16 @@ class _GateProjection:
             "code": self.code,
             "message": self.message,
         }
+
+
+# Wave W-D11 T11.5 — canonical metadata keys lifted onto the
+# ``synthesis_quality.evidence_quote`` block from the pair-side
+# pair_claim_support GateResult.metadata stamped by T11.2.
+_EVIDENCE_QUOTE_METADATA_KEYS = (
+    "evidence_quote_coverage_rate",
+    "evidence_quote_substring_fail_rate",
+    "evidence_quote_char_span_mismatch_rate",
+)
 
 
 class TrainforgeAssessmentQualityReport:
@@ -259,6 +270,15 @@ class TrainforgeAssessmentQualityReport:
             synthesis_quality[gate_id] = (
                 projection.to_dict() if projection else None
             )
+        # Wave W-D11 T11.5 — surface the pair-side claim_support
+        # evidence_quote_* rates so an operator scanning the assessment-
+        # quality report sees the per-claim grounding signal alongside the
+        # other synthesis-quality dimensions. T11.2 stamps the rates onto
+        # GateResult.metadata; this aggregator covers the chunks-and-pairs
+        # surface so the pair-side gate is the right input.
+        synthesis_quality["evidence_quote"] = (
+            self._build_evidence_quote_block(synthesis_gates)
+        )
 
         # 2. Trainforge-assessment summary fields (single_correct_rate,
         # bloom_alignment_rate, placeholder_rate). Score is the per-gate
@@ -433,6 +453,13 @@ class TrainforgeAssessmentQualityReport:
         except (TypeError, ValueError):
             score = None
         is_blocking_fail = (not passed) and severity == "critical"
+        # Wave W-D11 T11.5 — lift the GateResult.metadata payload as-is so
+        # downstream bucket builders (e.g. synthesis_quality.evidence_quote)
+        # can read validator-specific keys without re-walking the source.
+        raw_metadata = gate_result.get("metadata")
+        metadata = (
+            dict(raw_metadata) if isinstance(raw_metadata, Mapping) else None
+        )
         return _GateProjection(
             gate_id=str(gate_result.get("gate_id") or ""),
             severity=severity,
@@ -443,6 +470,7 @@ class TrainforgeAssessmentQualityReport:
             code=(first or {}).get("code") if first else None,
             message=(first or {}).get("message") if first else None,
             is_blocking_fail=is_blocking_fail,
+            metadata=metadata,
         )
 
     def _extract_retrieval_grounding_score(self) -> Optional[float]:
@@ -773,6 +801,32 @@ class TrainforgeAssessmentQualityReport:
                     placeholder_count += 1
                     break
         return round(placeholder_count / total, 4)
+
+    @staticmethod
+    def _build_evidence_quote_block(
+        synthesis_gates: Mapping[str, _GateProjection],
+    ) -> Dict[str, float]:
+        """Project pair_claim_support metadata to the evidence_quote bucket.
+
+        Wave W-D11 T11.5 — reads the three canonical rates pinned in
+        ``_EVIDENCE_QUOTE_METADATA_KEYS`` from the pair-side
+        ``pair_claim_support`` GateResult.metadata (stamped by T11.2).
+        Uses ``.get(key, 0.0)`` so legacy GateResults without metadata
+        aggregate to 0.0 with no exception. Returns the same shape every
+        time (three keys, all floats) so downstream consumers see a
+        wire-stable block whether the gate ran in legacy mode or not.
+        """
+        projection = synthesis_gates.get("pair_claim_support")
+        metadata: Mapping[str, Any] = {}
+        if projection is not None and isinstance(projection.metadata, Mapping):
+            metadata = projection.metadata
+        block: Dict[str, float] = {}
+        for key in _EVIDENCE_QUOTE_METADATA_KEYS:
+            try:
+                block[key] = float(metadata.get(key, 0.0) or 0.0)
+            except (TypeError, ValueError):
+                block[key] = 0.0
+        return block
 
     @staticmethod
     def _build_kg_quality_bucket(
