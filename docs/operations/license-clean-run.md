@@ -12,6 +12,7 @@ Cross-reference: `docs/LICENSING.md` is the canonical ToS-posture document. Read
 |---------|---------------------|-----------------|
 | `COURSEFORGE_REWRITE_PROVIDER` | `local` | Routes the Courseforge rewrite-tier authoring surface through a local OSS server (Ollama / vLLM) instead of Anthropic. |
 | `COURSEPLANNER_PROVIDER` | `local` | **W-D14**: routes the Courseforge course-outliner surface (canonical `TO-NN` / `CO-NN` objective synthesis from `textbook_structure.json`) through `Courseforge/generators/_outliner_provider.py::OutlinerProvider`. The synthesised objective text propagates to every downstream chunk's `learning_outcome_refs[]`, so this surface IS training-data exposure. Bypasses the Claude Code `course-outliner` subagent dispatch. Reuses the same `LOCAL_SYNTHESIS_*` env vars as the other local-OSS surfaces. |
+| `TRAINFORGE_ASSESSMENT_PROVIDER` | `local` | **W-D15**: routes the Trainforge assessment-generator surface (assessment-question authoring grounded in course content chunks) through `Trainforge/generators/_assessment_provider.py::AssessmentGeneratorProvider`. The authored questions land in `assessments.json` and feed into the downstream `training_synthesis` instruction-pair / preference-pair surface, so this surface IS training-data exposure. Bypasses the Claude Code `assessment-generator` subagent dispatch. Reuses the same `LOCAL_SYNTHESIS_*` env vars as the other local-OSS surfaces. |
 | `TRAINFORGE_TARGET_MODELS` | `local/qwen2.5-14b,together/llama-3.3-70b` (or similar — operator-chosen CSV) | Cosmetic dataset_config.json field documenting which teacher models the corpus was synthesized against; lets the LibV2 audit trail record the actual ToS-clean teachers used. |
 | `ED4ALL_LLM_JUDGE_PROVIDER` | `local_nli` | Wave-102 ablation eval routes its qualitative-judge calls through a local NLI classifier (`MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`) instead of the default `none` (no LLM judge) or `anthropic`. |
 | `COURSEFORGE_BLOCK_ROUTING_PATH` | `Courseforge/config/block_routing.license_clean.yaml` | Points the two-pass router at the sibling routing YAML that overrides the `large` capability tier from `claude-sonnet-4-6` to a 32B local Qwen. See "Calibration prerequisite" below. |
@@ -74,7 +75,8 @@ unset ANTHROPIC_API_KEY
 
 # Provider routing — the documented env vars.
 export COURSEFORGE_REWRITE_PROVIDER=local
-export COURSEPLANNER_PROVIDER=local        # W-D14 — course-outliner surface
+export COURSEPLANNER_PROVIDER=local             # W-D14 — course-outliner surface
+export TRAINFORGE_ASSESSMENT_PROVIDER=local     # W-D15 — assessment-generator surface
 export TRAINFORGE_TARGET_MODELS="local/qwen2.5-14b,together/llama-3.3-70b"
 export ED4ALL_LLM_JUDGE_PROVIDER=local_nli
 export COURSEFORGE_BLOCK_ROUTING_PATH=Courseforge/config/block_routing.license_clean.yaml
@@ -114,7 +116,7 @@ Then add `TOGETHER_API_KEY` to the env. Together AI's ToS explicitly permits usi
 
 ## What's NOT covered (engineering-wave gaps)
 
-The four-env-var recipe above closes the largest training-data exposure paths in the pipeline. One surface remains Anthropic-pinned at the time this recipe ships:
+The five-env-var recipe above closes the largest training-data exposure paths in the pipeline. The Anthropic-pinned subagent surfaces have all been routed through in-process license-clean providers as of Wave W-D15:
 
 ## DART (W-D13) — PDF → HTML conversion now license-clean
 
@@ -163,19 +165,13 @@ Until that calibration loop closes for a given course family, courses built unde
 
 **Workaround if the calibration shows local vision underperforms.** Pre-convert PDFs through DART on a separate machine that has the Anthropic agreement, archive the resulting HTML, and feed the HTML directly into the textbook-to-course pipeline (skipping the `dart_conversion` phase via `--reuse-objectives` once DART has run). The Anthropic exposure is then bounded to the one-time pre-conversion step and does not leak into the synthesis phase. W-D13 makes this workaround optional rather than mandatory: an operator who's run the calibration and accepts the local-vision quality can route everything in-process.
 
-### Assessment-generator subagent
+### Assessment-generator subagent (W-D15) — closed
 
-One Claude Code subagent currently dispatches through `ED4ALL_AGENT_DISPATCH=true` with no provider flag:
-
-- `assessment-generator` (Trainforge) — generates assessment questions + distractors. The questions land in `assessments.json` and feed into `instruction_pair` / `preference_pair` synthesis.
-
-The W-D15 wave will route this through the same `OpenAICompatibleClient` infrastructure (via a `TRAINFORGE_ASSESSMENT_PROVIDER` env var) as the synthesis / curriculum-alignment / content-generator / course-outliner surfaces.
-
-W-D14 (this commit) closed the symmetrical gap on the `course-outliner` subagent — `COURSEPLANNER_PROVIDER=local` (or any registered OpenAI-compatible provider) now routes objective synthesis through the in-process `OutlinerProvider`. No equivalent workaround exists for assessment-generator at this time.
+W-D15 closes the assessment-generator subagent gap. `TRAINFORGE_ASSESSMENT_PROVIDER=local` (or any registered OpenAI-compatible provider) now routes assessment-question authoring through `Trainforge/generators/_assessment_provider.py::AssessmentGeneratorProvider`, mirroring the W-D14 `OutlinerProvider` pattern. The authored questions land in `assessments.json` and feed into the downstream `training_synthesis` instruction-pair / preference-pair surface — so closing this seam was the dominant remaining training-data exposure on the Trainforge assessment surface. The provider's user prompt instructs the LLM to emit an `evidence_quote` field per question per the W-D11 T11.3 grounding contract; the per-call `assessment_generator_call` decision event surfaces the dynamic `evidence_quote_emit_rate` so a post-hoc audit can replay grounding quality.
 
 ### Honest scope
 
-This recipe documents a license-clean COURSEWARE / TRAINING-CORPUS run for the dominant code paths. It does not yet guarantee a 100% ToS-clean trained-SLM pipeline — the two waves above must land before the trained adapter can be redistributed without per-component ToS analysis. Operators training adapters for redistribution today should bound the Anthropic-pinned surfaces (DART pre-conversion, subagent dispatch) to a separate compliance-reviewed step and document that bounding in the corpus's audit trail.
+This recipe documents a license-clean COURSEWARE / TRAINING-CORPUS run for every dominant code path with the W-D15 wave landed: every Anthropic-defaulted subagent surface that touches training data now has a license-clean provider seam (`COURSEFORGE_PROVIDER` for content-generator, `COURSEPLANNER_PROVIDER` for course-outliner, `TRAINFORGE_ASSESSMENT_PROVIDER` for assessment-generator, `CURRICULUM_ALIGNMENT_PROVIDER` for align_chunks, `DART_PROVIDER` / `DART_VISION_PROVIDER` for DART). Operators training adapters for redistribution should still verify the calibration prerequisites for the affected block-types + DART vision quality and document any per-block Anthropic exposure (e.g. an uncalibrated `assessment_item` block staying on Anthropic per the calibration loop above) in the corpus's audit trail.
 
 ---
 
