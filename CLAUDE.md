@@ -228,44 +228,9 @@ for i in range(50):
 | `write_file` | Write to files (RESTRICTED sandbox: runtime/, state/) |
 | `file_info` | Get file/directory metadata (READ_ONLY sandbox) |
 
-### DART Tools
+**DART tools** — see `DART/CLAUDE.md § MCP Tools` (includes Source-Provenance Output contract).
 
-| Tool | Description |
-|------|-------------|
-| `convert_pdf_multi_source` | Convert PDF via multi-source synthesis |
-| `batch_convert_multi_source` | Batch convert multiple PDFs |
-| `validate_wcag_compliance` | Validate HTML accessibility |
-| `get_dart_status` | Get DART processing status |
-| `list_available_campuses` | List configured campus sources |
-| `extract_and_convert_pdf` | Extract and convert a single PDF |
-
-### Courseforge Tools
-
-| Tool | Description |
-|------|-------------|
-| `create_course_project` **[DEPRECATED]** | Initialize a standalone (non-pipeline) course project. Still functional for external MCP clients, but new integrations should route through the pipeline-internal `extract_textbook_structure` + `plan_course_structure`. |
-| `generate_course_content` | Generate content for weeks |
-| `package_imscc` | Package course as IMSCC. Runtime delegates to `Courseforge/scripts/package_multifile_imscc.py` (IMS CC v1.3 namespaces, per-week LO validation, `course_metadata.json` bundling). |
-| `intake_imscc_package` | Import existing IMSCC |
-| `remediate_course_content` | Fix content issues |
-| `get_courseforge_status` | Get project status |
-
-### Courseforge Metadata Output
-
-Courseforge HTML pages include machine-readable metadata for downstream Trainforge consumption:
-- **`data-cf-*` attributes**: Inline metadata on HTML elements (role, objective IDs, Bloom's levels/verbs, cognitive domain, content types, teaching role, key terms, component, purpose). See `Courseforge/CLAUDE.md` for the canonical attribute table.
-- **JSON-LD blocks**: Structured `<script type="application/ld+json">` per page with learning objectives, section metadata, misconceptions, and assessment suggestions. Canonical shape: `schemas/knowledge/courseforge_jsonld_v1.schema.json`.
-
-This metadata follows priority extraction in Trainforge: JSON-LD > data-cf-* attributes > regex heuristics.
-
-### DART Source-Provenance Output
-
-DART-produced HTML + synthesized JSON carry per-block source attribution so downstream consumers can trace every claim back to its PDF origin:
-- **`data-dart-*` attributes**: `data-dart-block-id`, `data-dart-source`, `data-dart-sources`, `data-dart-pages`, `data-dart-confidence`, `data-dart-strategy` on `<section>` + component wrappers. See `DART/CLAUDE.md` § "Source provenance" for the canonical attribute table + confidence scale.
-- **Per-block envelopes** in `*_synthesized.json` `data.contacts[]`, `data.rows[]`, `data.pair_provenance[]`: `{value, source, pages, confidence, method}` shape.
-- **Canonical shape**: `schemas/knowledge/source_reference.schema.json` (shared by Courseforge JSON-LD and Trainforge chunks + evidence arms).
-
-Priority extraction chain (extends the Courseforge chain above): JSON-LD > `data-cf-*` > `data-dart-*` > regex heuristics.
+**Courseforge tools** — see `Courseforge/CLAUDE.md § MCP Tools` (includes Metadata Output contract: `data-cf-*` + JSON-LD).
 
 ### Orchestrator Tools
 
@@ -281,17 +246,7 @@ Priority extraction chain (extends the Courseforge chain above): JSON-LD > `data
 | `acquire_batch_lock` | Lock resource for batch |
 | `release_batch_lock` | Release batch lock |
 
-### Trainforge Tools
-
-| Tool | Description |
-|------|-------------|
-| `analyze_imscc_content` | Analyze IMSCC for assessment |
-| `generate_assessments` | Generate questions |
-| `validate_assessment` | Validate assessment quality |
-| `export_training_data` | Export training captures |
-| `get_trainforge_status` | Get processing status. Surfaces per-course in-flight resume-checkpoint sidecars (synthesize_training pairs, align_chunks teaching-role, slm_eval_harness per-stage course + adapter) and the latest `eval_report.json::content_type_role_alignment_summary.alignment_rate` per adapter so operators see role-alignment health without parsing JSON. |
-| `analyze_teaching_role_alignment` | Tier-2 graph-derived check. Wraps `Trainforge.eval.teaching_role_alignment.TeachingRoleAlignmentEvaluator` so an external MCP client can probe a corpus's `content_type_label` -> `teaching_role` distribution without invoking the full SLM eval harness. Pure file read; no LLM dispatch. Returns `content_type_role_alignment` + `summary` (alignment_rate + mismatched_content_types). Useful as a pre-flight check before retraining. |
-| `synthesize_training` | Synthesize SFT + DPO training pairs from a Trainforge corpus. `provider` accepts `"mock"`, `"anthropic"`, `"claude_session"`, `"together"` (Together AI's OSS-teacher path; ToS-clean for training-data generation, default model `meta-llama/Llama-3.3-70B-Instruct-Turbo`, override via `TOGETHER_SYNTHESIS_MODEL`; requires `TOGETHER_API_KEY`), or `"local"` (a local OpenAI-compatible model server such as Ollama / vLLM / llama.cpp / LM Studio; default base URL `http://localhost:11434/v1`, override via `LOCAL_SYNTHESIS_BASE_URL`; default model `qwen2.5:14b-instruct-q4_K_M`, override via `LOCAL_SYNTHESIS_MODEL`; API key optional). |
+**Trainforge tools** — see `Trainforge/CLAUDE.md § MCP Tools`.
 
 ### Pipeline Tools
 
