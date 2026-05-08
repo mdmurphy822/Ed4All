@@ -1117,3 +1117,203 @@ class TestEvidenceQuoteSurfacing:
             "evidence_quote_substring_fail_rate": 0.0,
             "evidence_quote_char_span_mismatch_rate": 0.0,
         }
+
+
+# --------------------------------------------------------------------------
+# Wave W-D11.A — schema conformance
+# --------------------------------------------------------------------------
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_SCHEMA_PATH = (
+    _REPO_ROOT / "schemas" / "aggregators"
+    / "trainforge_assessment_quality_report.schema.json"
+)
+_PROMOTION_CHAIN_SCHEMA_PATH = (
+    _REPO_ROOT / "schemas" / "governance" / "promotion_chain.schema.json"
+)
+
+
+def _load_schema_validator():
+    """Build a Draft202012Validator with the cross-schema $ref pre-resolved.
+
+    Mirrors ``test_promotion_chain_report.py::_load_schema_validator`` so the
+    cross-schema reference to ``promotion_chain.schema.json#/$defs/EvidenceQuoteMetrics``
+    resolves locally without an HTTPS dereference.
+    """
+    try:
+        from jsonschema import Draft202012Validator, RefResolver
+    except ImportError:  # pragma: no cover — depends on env
+        pytest.skip("jsonschema not installed")
+    schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    promotion_chain_schema = json.loads(
+        _PROMOTION_CHAIN_SCHEMA_PATH.read_text(encoding="utf-8")
+    )
+    resolver = RefResolver.from_schema(schema)
+    resolver.store[promotion_chain_schema["$id"]] = promotion_chain_schema
+    return Draft202012Validator(schema, resolver=resolver)
+
+
+class TestSchemaConformance:
+    """Wave W-D11.A — emitted reports validate against the pinned schema."""
+
+    def test_schema_self_validates(self):
+        try:
+            from jsonschema import Draft202012Validator
+        except ImportError:  # pragma: no cover
+            pytest.skip("jsonschema not installed")
+        schema = json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        # MUST NOT raise.
+        Draft202012Validator.check_schema(schema)
+
+    def test_minimal_fixture_validates(self):
+        validator = _load_schema_validator()
+        agg = TrainforgeAssessmentQualityReport(
+            phase_outputs={},
+            course_code="MIN",
+            run_id="WF-MIN-SCHEMA",
+        )
+        report = agg.build()
+        errors = sorted(
+            validator.iter_errors(report), key=lambda e: e.path
+        )
+        assert errors == [], (
+            "minimal fixture failed schema validation: "
+            + "\n".join(
+                f"{list(e.absolute_path)}: {e.message}" for e in errors
+            )
+        )
+
+    def test_full_fixture_validates(self, tmp_path):
+        """Rich fixture: every contributing surface populated."""
+        validator = _load_schema_validator()
+
+        # Trainforge dir with quality_report.json + dataset_config.json.
+        tdir = tmp_path / "trainforge"
+        tdir.mkdir()
+        _write_assessment_quality_report(
+            tdir,
+            total_questions=10,
+            placeholder_issues=0,
+            bloom_misaligned_issues=1,
+            distinct_correct_answer_ratio=0.95,
+        )
+        _seed_promotion_ladder_dataset_config(
+            tdir,
+            candidate=20,
+            validated=14,
+            trainable=14,
+            rejected=6,
+            rejection_reasons={
+                "placeholder_residue": 2,
+                "unsupported_answer": 1,
+                "weak_distractor": 1,
+                "unanswerable_stem": 1,
+                "source_free_generation": 1,
+            },
+        )
+
+        # LibV2 course dir with eval_report.json.
+        course_dir = tmp_path / "rdf-shacl-551-2"
+        course_dir.mkdir()
+        _write_eval_report(
+            course_dir, faithfulness=0.85, yes_rate=0.55,
+            negative_grounding_accuracy=0.82,
+        )
+
+        phase_outputs = {
+            "training_synthesis": _phase(
+                _gate_row("synthesis_diversity", passed=True, score=0.78),
+                _gate_row("synthesis_leakage", passed=True, score=0.02),
+                _gate_row("curie_anchoring", passed=True, score=0.99),
+                _gate_row("property_coverage", passed=True, score=1.0),
+                _gate_row("min_edge_count", passed=True, score=1.0),
+                _gate_row_with_metadata(
+                    "pair_claim_support",
+                    metadata={
+                        "evidence_quote_coverage_rate": 0.87,
+                        "evidence_quote_substring_fail_rate": 0.06,
+                        "evidence_quote_char_span_mismatch_rate": 0.02,
+                    },
+                ),
+            ),
+            "trainforge_assessment": {
+                "_completed": True,
+                "_gates_passed": True,
+                "_gate_results": [
+                    _gate_row(
+                        "assessment_quality", passed=True, score=0.95,
+                    ),
+                    _gate_row(
+                        "assessment_objective_alignment", passed=True,
+                    ),
+                ],
+                "trainforge_dir": str(tdir),
+            },
+            "libv2_archival": {
+                "_completed": True,
+                "_gates_passed": True,
+                "_gate_results": [
+                    _gate_row(
+                        "kg_quality_report", passed=True, score=0.97,
+                    ),
+                    _gate_row("libv2_manifest", passed=True),
+                ],
+                "course_dir": str(course_dir),
+            },
+            "post_rewrite_validation": _phase(
+                _gate_row(
+                    "rewrite_assessment_retrieval_grounding",
+                    passed=True, severity="warning", score=0.82,
+                ),
+            ),
+        }
+
+        agg = TrainforgeAssessmentQualityReport(
+            phase_outputs=phase_outputs,
+            course_code="rdf-shacl-551-2",
+            run_id="WF-FULL-SCHEMA",
+            trainforge_dir=tdir,
+            libv2_course_path=course_dir,
+        )
+        report = agg.build()
+        errors = sorted(
+            validator.iter_errors(report), key=lambda e: e.path
+        )
+        assert errors == [], (
+            "full fixture failed schema validation: "
+            + "\n".join(
+                f"{list(e.absolute_path)}: {e.message}" for e in errors
+            )
+        )
+
+    def test_evidence_quote_cross_ref_resolves(self):
+        """Cross-schema $ref to promotion_chain::EvidenceQuoteMetrics resolves.
+
+        Constructs a payload whose synthesis_quality.evidence_quote block
+        violates the cross-referenced shape (rate > 1.0) and asserts the
+        validator surfaces the violation. If the $ref were broken the
+        validator would silently pass the bad payload.
+        """
+        validator = _load_schema_validator()
+        agg = TrainforgeAssessmentQualityReport(
+            phase_outputs={},
+            course_code="C",
+            run_id="WF-XREF",
+        )
+        report = agg.build()
+        # Mutate the evidence_quote block to violate maximum: 1.0 on the
+        # cross-referenced EvidenceQuoteMetrics.evidence_quote_coverage_rate.
+        report["synthesis_quality"]["evidence_quote"][
+            "evidence_quote_coverage_rate"
+        ] = 5.0
+        errors = list(validator.iter_errors(report))
+        assert any(
+            "evidence_quote_coverage_rate" in str(list(e.absolute_path))
+            or "5.0" in e.message
+            for e in errors
+        ), (
+            "cross-schema $ref to EvidenceQuoteMetrics did not resolve — "
+            "validator failed to flag rate=5.0 (>1.0) on the "
+            "synthesis_quality.evidence_quote block"
+        )
