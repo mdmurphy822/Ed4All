@@ -15,6 +15,9 @@ import re
 
 __all__ = [
     "_CODE_DART_DISAGREEMENT_RATE_HIGH",
+    "_CODE_EVIDENCE_CHAR_SPAN_MISMATCH",
+    "_CODE_EVIDENCE_QUOTE_MISSING",
+    "_CODE_EVIDENCE_QUOTE_NOT_SUBSTRING",
     "_CODE_MISSING_CLAIM_SUPPORT_RATE",
     "_CODE_MISSING_INPUTS",
     "_CODE_MISSING_PER_CLAIM_SUPPORT",
@@ -75,6 +78,37 @@ _CODE_MISSING_PER_CLAIM_SUPPORT: str = "MISSING_PER_CLAIM_SUPPORT"
 _CODE_MISSING_CLAIM_SUPPORT_RATE: str = "MISSING_CLAIM_SUPPORT_RATE"
 _CODE_PAIRS_FILE_READ_ERROR: str = "PAIRS_FILE_READ_ERROR"
 _CODE_MISSING_INPUTS: str = "MISSING_INPUTS"
+
+
+# --------------------------------------------------------------------- #
+# Wave W-D11 T11.2: evidence-quote enforcement codes
+# --------------------------------------------------------------------- #
+#
+# Day-1 severity: WARNING. Mirror of T11.1 on the pair surface — the
+# validator's overall ``passed`` field MUST NOT flip to False solely
+# because of evidence-quote findings; only the existing NLI-outcome
+# (UNSUPPORTED_CLAIM / CONTRADICTED_CLAIM rates) gate the per-pair
+# reject as before. These codes are emitted alongside aggregate-rate
+# counters on ``GateResult.metadata`` so the T11.5 promotion-chain
+# aggregator can roll them up without re-walking the per-claim shape.
+# Code names match T11.1 (block surface) verbatim so T11.4
+# (decision-capture rationale) + T11.5 (aggregator) can match on a
+# single set across both seams.
+
+#: Quote is set on the matched per-claim entry but is not a substring
+#: of any of the cited chunks' text fields.
+_CODE_EVIDENCE_QUOTE_NOT_SUBSTRING: str = "EVIDENCE_QUOTE_NOT_SUBSTRING"
+
+#: ``evidence_char_span`` is set but ``chunk_text[start:end]`` does
+#: not equal ``evidence_quote``. Indicates either a stale offset or a
+#: wrong-chunk mismatch.
+_CODE_EVIDENCE_CHAR_SPAN_MISMATCH: str = "EVIDENCE_CHAR_SPAN_MISMATCH"
+
+#: Reserved for the threshold-gated "claims missing a quote" warning
+#: path. Currently never emitted by the validator (day-1 the
+#: ``claims_without_quote`` counter is reported via
+#: ``GateResult.metadata`` only). T11.5 / T11.6 wires the threshold.
+_CODE_EVIDENCE_QUOTE_MISSING: str = "EVIDENCE_QUOTE_MISSING"
 
 
 #: Sentence-split regex.

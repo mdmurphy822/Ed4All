@@ -124,6 +124,9 @@ logger = logging.getLogger(__name__)
 # resolving without change.
 from lib.validators.pair._claim_support_thresholds import (  # noqa: F401
     _CODE_DART_DISAGREEMENT_RATE_HIGH,
+    _CODE_EVIDENCE_CHAR_SPAN_MISMATCH,
+    _CODE_EVIDENCE_QUOTE_MISSING,
+    _CODE_EVIDENCE_QUOTE_NOT_SUBSTRING,
     _CODE_MISSING_CLAIM_SUPPORT_RATE,
     _CODE_MISSING_INPUTS,
     _CODE_MISSING_PER_CLAIM_SUPPORT,
@@ -197,10 +200,13 @@ def _resolve_chunk_key_claims_with_attribution(
     Returns ``(per_claim_entries, structured_flag)``:
 
     - ``per_claim_entries``: ordered list of normalised
-      ``{"claim": str, "source_chunk_ids": List[str]}`` entries (only
-      those carrying both keys; defensive against malformed entries).
-      Empty list when ``key_claims`` is absent, malformed, the legacy
-      ``List[str]`` shape, or carries no usable structured entries.
+      ``{"claim": str, "source_chunk_ids": List[str],
+      "evidence_quote": Optional[str],
+      "evidence_char_span": Optional[Tuple[int, int]]}`` entries
+      (only those carrying ``claim`` + ``source_chunk_ids[]``;
+      defensive against malformed entries). Empty list when
+      ``key_claims`` is absent, malformed, the legacy ``List[str]``
+      shape, or carries no usable structured entries.
     - ``structured_flag``: ``True`` when at least one entry carried
       ``source_chunk_ids[]`` with at least one usable string ID. When
       ``False``, the caller MUST fall back to whole-chunk-text NLI
@@ -212,6 +218,13 @@ def _resolve_chunk_key_claims_with_attribution(
     no structured entries here — those entries' attribution lives at
     the chunk level, not per-claim, so per-claim scoping is a no-op
     on legacy corpora).
+
+    Wave W-D11 T11.2: structured entries additionally carry the
+    optional ``evidence_quote`` / ``evidence_char_span`` fields admitted
+    by ``schemas/knowledge/chunk_v4.schema.json::key_claims`` (T11.0
+    foundation). Entries with malformed quote/span shapes get ``None``
+    for the malformed field; this is graceful-degrade — legacy entries
+    without quotes pass through cleanly.
     """
     if not isinstance(chunk, dict):
         return [], False
@@ -246,12 +259,90 @@ def _resolve_chunk_key_claims_with_attribution(
             # rate). Per-claim scoping requires at least one named
             # source chunk.
             continue
+        # W-D11 T11.2 — pull optional evidence_quote + evidence_char_span
+        # off the structured entry.
+        quote_raw = entry.get("evidence_quote")
+        evidence_quote: Optional[str] = (
+            quote_raw if isinstance(quote_raw, str) and quote_raw else None
+        )
+        span_raw = entry.get("evidence_char_span")
+        evidence_char_span: Optional[Tuple[int, int]] = None
+        if (
+            isinstance(span_raw, (list, tuple))
+            and len(span_raw) == 2
+            and all(isinstance(v, int) for v in span_raw)
+            and span_raw[0] >= 0
+            and span_raw[1] >= span_raw[0]
+        ):
+            evidence_char_span = (int(span_raw[0]), int(span_raw[1]))
         per_claim_entries.append({
             "claim": claim_raw.strip(),
             "source_chunk_ids": ids,
+            "evidence_quote": evidence_quote,
+            "evidence_char_span": evidence_char_span,
         })
         structured_flag = True
     return per_claim_entries, structured_flag
+
+
+def _check_evidence_quote(
+    *,
+    evidence_quote: Optional[str],
+    evidence_char_span: Optional[Tuple[int, int]],
+    candidate_chunks: List[str],
+) -> Tuple[Optional[bool], Optional[bool]]:
+    """Wave W-D11 T11.2: substring + char_span verification.
+
+    Mirror of :func:`lib.validators.claim_support._check_evidence_quote`
+    on the pair surface — same signature, same 3-state return so the
+    T11.4 (decision-capture) + T11.5 (aggregator) helpers downstream
+    can share a single utility across both seams.
+
+    Returns ``(substring_ok, char_span_ok)``. Each value is one of:
+
+    * ``None`` — the corresponding check was not attempted (no quote
+      set, or no char_span set).
+    * ``True`` — the check passed.
+    * ``False`` — the check failed.
+
+    A claim is considered to have a "valid" evidence quote when
+    ``substring_ok`` is True AND (``char_span_ok`` is None OR True).
+    The caller increments aggregate counters from this 3-state result.
+
+    Substring semantics: the quote is searched against EACH candidate
+    chunk's text in order. The first chunk that contains the quote is
+    used as the matched chunk for the char_span check (when
+    ``evidence_char_span`` is also set). If multiple chunks are cited,
+    the quote must match SOME cited chunk's text, not all — this
+    mirrors how the existing per-claim ``outcome`` aggregates across
+    cited chunks (``max`` over cited chunks for entailment /
+    contradiction at lines 891-896 above) so a sentence backed by ANY
+    cited chunk can have its supporting quote pulled from THAT chunk.
+    """
+    if not evidence_quote:
+        return None, None
+
+    # Substring check: search the quote against every candidate chunk.
+    matched_chunk: Optional[str] = None
+    for chunk_text in candidate_chunks:
+        if evidence_quote in chunk_text:
+            matched_chunk = chunk_text
+            break
+
+    if matched_chunk is None:
+        # Quote not in any candidate chunk → substring fail; the
+        # char_span check is skipped (no chunk to slice).
+        return False, None
+
+    if evidence_char_span is None:
+        return True, None
+
+    start, end = evidence_char_span
+    if 0 <= start <= end <= len(matched_chunk):
+        char_span_ok = matched_chunk[start:end] == evidence_quote
+    else:
+        char_span_ok = False
+    return True, char_span_ok
 
 
 def _try_load_embedder_safe() -> Optional[Any]:
@@ -745,6 +836,17 @@ class PairClaimSupportValidator:
         per_sentence_premises: List[List[str]] = [
             [chunk_text] for _ in sentences
         ]
+        # W-D11 T11.2 — per-sentence evidence_quote / evidence_char_span
+        # carried over from the matched per-claim entry. Same indexing
+        # as ``sentences`` / ``per_sentence_premises``. When the
+        # per-claim attribution path doesn't fire for a sentence, both
+        # stay None (legacy / pre-W-D11 corpora pass through cleanly).
+        sentence_evidence_quotes: List[Optional[str]] = [
+            None for _ in sentences
+        ]
+        sentence_evidence_char_spans: List[Optional[Tuple[int, int]]] = [
+            None for _ in sentences
+        ]
         if structured_attribution_used:
             embedder = _try_load_embedder_safe()
             if embedder is not None:
@@ -806,6 +908,17 @@ class PairClaimSupportValidator:
                         continue
                     per_sentence_premises[s_idx] = candidate_texts
                     sentence_attributions[s_idx] = list(matched_ids)
+                    # W-D11 T11.2 — copy the matched entry's
+                    # evidence_quote + evidence_char_span (when set)
+                    # onto the sentence-indexed arrays so the
+                    # per_claim_support[] entry can stamp them and
+                    # validate() can verify them on the audit walk.
+                    sentence_evidence_quotes[s_idx] = matched_entry.get(
+                        "evidence_quote"
+                    )
+                    sentence_evidence_char_spans[s_idx] = matched_entry.get(
+                        "evidence_char_span"
+                    )
                     per_claim_match_count += 1
             else:
                 # Embedder couldn't load (default-mode degrade) — fall
@@ -903,13 +1016,30 @@ class PairClaimSupportValidator:
             else:
                 outcome = "unsupported"
                 unsupported_count += 1
-            per_claim_support.append({
+            entry: Dict[str, Any] = {
                 "sentence": sentence,
                 "entailment": entailment,
                 "contradiction": contradiction,
                 "outcome": outcome,
                 "source_chunk_ids": sentence_attributions[s_idx],
-            })
+            }
+            # W-D11 T11.2 — stamp evidence_quote / evidence_char_span
+            # on the per_claim_support entry when the per-claim
+            # attribution path matched a structured entry that carried
+            # them. Schema admits both as optional + nullable; we omit
+            # the keys entirely on legacy / unmatched sentences so the
+            # additive contract stays byte-clean (downstream
+            # PerClaimSupport readers tolerate both absent and null
+            # per the T11.0 schema).
+            ev_quote = sentence_evidence_quotes[s_idx]
+            ev_span = sentence_evidence_char_spans[s_idx]
+            if ev_quote is not None:
+                entry["evidence_quote"] = ev_quote
+            if ev_span is not None:
+                # Stamp as List[int] so JSON-roundtrip is byte-stable
+                # (tuples serialize as lists and re-read as lists).
+                entry["evidence_char_span"] = [ev_span[0], ev_span[1]]
+            per_claim_support.append(entry)
 
         # ---- Wave 9 TIGHT: dual-source DART cross-check ---- #
         # AFTER the IMSCC NLI fan-out scores a sentence as ``entailed``,
@@ -1195,6 +1325,23 @@ class PairClaimSupportValidator:
                 action="block",
             )
 
+        # W-D11 T11.2 — optional chunk_id_to_text_map for the on-disk
+        # evidence-quote enforcement walk. When threaded, every
+        # per_claim_support[] entry's evidence_quote / evidence_char_span
+        # is verified against the cited chunks. When None / absent,
+        # the substring check is skipped (counters report 0) and the
+        # gate degrades to a structural-key-presence audit only —
+        # mirrors the W2.E pattern of "validate_pair has the chunks,
+        # validate has the audit fields".
+        chunk_id_to_text_map_raw = inputs.get("chunk_id_to_text_map")
+        chunk_id_to_text_map: Dict[str, str] = {}
+        if isinstance(chunk_id_to_text_map_raw, dict):
+            chunk_id_to_text_map = {
+                str(k): v
+                for k, v in chunk_id_to_text_map_raw.items()
+                if isinstance(v, str)
+            }
+
         # Walk both files; missing files are tolerated (a course may
         # have only instruction pairs or only preference pairs).
         issues: List[GateIssue] = []
@@ -1207,6 +1354,19 @@ class PairClaimSupportValidator:
         # counts at most once toward the disagreement count regardless
         # of how many of its per-claim entries flipped.
         dart_disagreement_pairs = 0
+
+        # W-D11 T11.2 — corpus-wide evidence-quote counters. Mirror of
+        # the T11.1 block-side counters (same key names so T11.5
+        # aggregator can roll them up via shared logic). Day-1
+        # warning-only — does NOT contribute to ``passed``.
+        total_claims_seen: int = 0
+        claims_with_valid_quote: int = 0
+        claims_without_quote: int = 0
+        substring_attempts: int = 0
+        substring_fails: int = 0
+        char_span_attempts: int = 0
+        char_span_mismatches: int = 0
+
         for path in (inst_path, pref_path):
             if path is None or not path.exists():
                 continue
@@ -1268,6 +1428,146 @@ class PairClaimSupportValidator:
                                 ):
                                     dart_disagreement_pairs += 1
                                     break
+
+                            # W-D11 T11.2 — per-claim evidence-quote
+                            # walk. Iterates every per_claim_support
+                            # entry; when the entry carries
+                            # evidence_quote, increments
+                            # substring_attempts and (when chunks are
+                            # threaded) verifies via
+                            # _check_evidence_quote. Counters land in
+                            # GateResult.metadata regardless of
+                            # severity-flip flag — day-1 warning
+                            # surface only.
+                            for entry in pcs:
+                                if not isinstance(entry, dict):
+                                    continue
+                                total_claims_seen += 1
+                                ev_quote = entry.get("evidence_quote")
+                                ev_span = entry.get(
+                                    "evidence_char_span"
+                                )
+                                # Coerce span back from JSON list to
+                                # tuple for the helper signature; allow
+                                # malformed shapes to fall through to
+                                # None so the helper short-circuits.
+                                ev_span_tuple: Optional[
+                                    Tuple[int, int]
+                                ] = None
+                                if (
+                                    isinstance(ev_span, (list, tuple))
+                                    and len(ev_span) == 2
+                                    and all(
+                                        isinstance(v, int)
+                                        for v in ev_span
+                                    )
+                                ):
+                                    ev_span_tuple = (
+                                        int(ev_span[0]), int(ev_span[1])
+                                    )
+                                if not isinstance(ev_quote, str) or not ev_quote:
+                                    claims_without_quote += 1
+                                    continue
+                                # Resolve candidate chunk texts from
+                                # the entry's source_chunk_ids[]. When
+                                # no map is threaded OR the entry
+                                # carries no source_chunk_ids, the
+                                # candidate list is empty and the
+                                # substring check is skipped (no
+                                # attempt counted; the quote is
+                                # neither validated nor rejected —
+                                # downstream calibration wave decides
+                                # whether unverifiable quotes should
+                                # increment substring_fails).
+                                ids = entry.get("source_chunk_ids")
+                                candidate_chunks: List[str] = []
+                                if isinstance(ids, list) and chunk_id_to_text_map:
+                                    for sid in ids:
+                                        if not isinstance(sid, str):
+                                            continue
+                                        text = chunk_id_to_text_map.get(sid)
+                                        if isinstance(text, str) and text.strip():
+                                            candidate_chunks.append(text)
+                                if not candidate_chunks:
+                                    # Quote present but no candidate
+                                    # chunk surface to verify against
+                                    # — counts toward total_claims_seen
+                                    # but not toward
+                                    # claims_with_valid_quote /
+                                    # claims_without_quote (the quote
+                                    # IS present, just unverifiable).
+                                    # Skip clean.
+                                    continue
+                                substring_attempts += 1
+                                substring_ok, char_span_ok = (
+                                    _check_evidence_quote(
+                                        evidence_quote=ev_quote,
+                                        evidence_char_span=ev_span_tuple,
+                                        candidate_chunks=candidate_chunks,
+                                    )
+                                )
+                                if substring_ok is False:
+                                    substring_fails += 1
+                                    if len(issues) < _GATE_ISSUE_CAP:
+                                        issues.append(GateIssue(
+                                            severity="warning",
+                                            code=_CODE_EVIDENCE_QUOTE_NOT_SUBSTRING,
+                                            message=(
+                                                f"{path.name}:{line_num} "
+                                                f"per_claim_support[].evidence_quote="
+                                                f"{ev_quote!r} is not a "
+                                                f"substring of any of the "
+                                                f"{len(candidate_chunks)} "
+                                                f"cited chunk(s) listed in "
+                                                f"source_chunk_ids[]."
+                                            ),
+                                            location=str(path),
+                                            suggestion=(
+                                                "Ensure the synthesis "
+                                                "provider emits a "
+                                                "verbatim quote from one "
+                                                "of the chunks named in "
+                                                "source_chunk_ids[]; "
+                                                "re-prompt with strict-"
+                                                "quote constraint."
+                                            ),
+                                        ))
+                                if (
+                                    ev_span_tuple is not None
+                                    and substring_ok
+                                ):
+                                    char_span_attempts += 1
+                                    if char_span_ok is False:
+                                        char_span_mismatches += 1
+                                        if len(issues) < _GATE_ISSUE_CAP:
+                                            issues.append(GateIssue(
+                                                severity="warning",
+                                                code=_CODE_EVIDENCE_CHAR_SPAN_MISMATCH,
+                                                message=(
+                                                    f"{path.name}:"
+                                                    f"{line_num} "
+                                                    f"per_claim_support[]."
+                                                    f"evidence_char_span="
+                                                    f"{ev_span!r} does not "
+                                                    f"slice to "
+                                                    f"evidence_quote="
+                                                    f"{ev_quote!r} in the "
+                                                    f"matched cited chunk."
+                                                ),
+                                                location=str(path),
+                                                suggestion=(
+                                                    "Re-emit the synthesis "
+                                                    "pair with [start, end) "
+                                                    "offsets matching the "
+                                                    "verbatim quote, or null "
+                                                    "both fields."
+                                                ),
+                                            ))
+                                if (
+                                    substring_ok
+                                    and (char_span_ok in (None, True))
+                                ):
+                                    claims_with_valid_quote += 1
             except OSError as exc:
                 issues.append(GateIssue(
                     severity="critical",
@@ -1312,6 +1612,45 @@ class PairClaimSupportValidator:
         )
         action: Optional[str] = None if passed else "block"
 
+        # W-D11 T11.2 — corpus-wide evidence-quote rates surfaced on
+        # GateResult.metadata for downstream aggregator wiring (T11.5).
+        # All three rate keys are always present (0.0 default) so
+        # consumers don't need to handle the missing case. Mirrors the
+        # T11.1 block-side metadata shape verbatim.
+        evidence_quote_coverage_rate = (
+            (claims_with_valid_quote / total_claims_seen)
+            if total_claims_seen > 0
+            else 0.0
+        )
+        evidence_quote_substring_fail_rate = (
+            (substring_fails / substring_attempts)
+            if substring_attempts > 0
+            else 0.0
+        )
+        evidence_quote_char_span_mismatch_rate = (
+            (char_span_mismatches / char_span_attempts)
+            if char_span_attempts > 0
+            else 0.0
+        )
+        metadata: Dict[str, Any] = {
+            "total_claims": total_claims_seen,
+            "claims_with_valid_quote": claims_with_valid_quote,
+            "claims_without_quote": claims_without_quote,
+            "evidence_quote_substring_attempts": substring_attempts,
+            "evidence_quote_substring_fails": substring_fails,
+            "evidence_quote_char_span_attempts": char_span_attempts,
+            "evidence_quote_char_span_mismatches": char_span_mismatches,
+            "evidence_quote_coverage_rate": round(
+                evidence_quote_coverage_rate, 4
+            ),
+            "evidence_quote_substring_fail_rate": round(
+                evidence_quote_substring_fail_rate, 4
+            ),
+            "evidence_quote_char_span_mismatch_rate": round(
+                evidence_quote_char_span_mismatch_rate, 4
+            ),
+        }
+
         if capture is not None:
             try:
                 capture.log_decision(
@@ -1328,7 +1667,13 @@ class PairClaimSupportValidator:
                         f"fields, dart_disagreement_pairs="
                         f"{dart_disagreement_pairs} "
                         f"(rate={dart_disagreement_rate:.4f}, ceiling="
-                        f"{_DART_DISAGREEMENT_RATE_WARN_CEILING}). "
+                        f"{_DART_DISAGREEMENT_RATE_WARN_CEILING}), "
+                        f"evidence_quote_coverage_rate="
+                        f"{evidence_quote_coverage_rate:.4f}, "
+                        f"evidence_quote_substring_fail_rate="
+                        f"{evidence_quote_substring_fail_rate:.4f}, "
+                        f"evidence_quote_char_span_mismatch_rate="
+                        f"{evidence_quote_char_span_mismatch_rate:.4f}. "
                         f"inst_path="
                         f"{inst_path.name if inst_path else 'n/a'}, "
                         f"pref_path="
@@ -1342,6 +1687,11 @@ class PairClaimSupportValidator:
                     exc,
                 )
 
+        # ``passed`` stays governed by the structural-key-presence
+        # audit (existing W4.A contract). Evidence-quote findings
+        # (W-D11 T11.2) are warning-only and do NOT contribute to
+        # ``passed`` flipping False — day-1 calibration-deferred
+        # contract per the W1.5 / W1.6 / W1.7.C precedent.
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
@@ -1354,6 +1704,7 @@ class PairClaimSupportValidator:
             ),
             issues=issues,
             action=action,
+            metadata=metadata,
         )
 
 
@@ -1373,7 +1724,11 @@ __all__ = [
     "_CODE_MISSING_PER_CLAIM_SUPPORT",
     "_CODE_MISSING_CLAIM_SUPPORT_RATE",
     "_CODE_DART_DISAGREEMENT_RATE_HIGH",
+    "_CODE_EVIDENCE_QUOTE_NOT_SUBSTRING",
+    "_CODE_EVIDENCE_CHAR_SPAN_MISMATCH",
+    "_CODE_EVIDENCE_QUOTE_MISSING",
     "_OUTCOME_DART_DISAGREEMENT",
+    "_check_evidence_quote",
     "_resolve_chunk_key_claims_with_attribution",
     "_resolve_dart_block_texts_for_chunk",
 ]
