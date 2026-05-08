@@ -156,6 +156,34 @@ _CODE_UNSUPPORTED_CLAIM: str = "UNSUPPORTED_CLAIM"
 _CODE_CONTRADICTED_CLAIM: str = "CONTRADICTED_CLAIM"
 _CODE_NLI_DEPS_MISSING: str = "NLI_DEPS_MISSING"
 
+# --------------------------------------------------------------------- #
+# Wave W-D11 T11.1: evidence-quote enforcement codes
+# --------------------------------------------------------------------- #
+#
+# Day-1 severity: WARNING. Mirrors the W1.7.C / W4.A / W4.C
+# calibration-deferred contract — the validator's overall ``passed``
+# field MUST NOT flip to False solely because of evidence-quote
+# findings; only the existing NLI-outcome (UNSUPPORTED_CLAIM /
+# CONTRADICTED_CLAIM) failures gate the regenerate signal as before.
+# These codes are emitted alongside aggregate-rate counters on
+# ``GateResult.metadata`` so the T11.5 promotion-chain aggregator can
+# roll them up without re-walking the per-claim shape.
+
+#: Quote is set on the structured claim entry but is not a substring
+#: of any of the cited chunks' text fields.
+_CODE_EVIDENCE_QUOTE_NOT_SUBSTRING: str = "EVIDENCE_QUOTE_NOT_SUBSTRING"
+
+#: ``evidence_char_span`` is set but ``chunk_text[start:end]`` does
+#: not equal ``evidence_quote``. Indicates either a stale offset or a
+#: wrong-chunk mismatch.
+_CODE_EVIDENCE_CHAR_SPAN_MISMATCH: str = "EVIDENCE_CHAR_SPAN_MISMATCH"
+
+#: Reserved for the threshold-gated "claims missing a quote" warning
+#: path. Currently never emitted by the validator (day-1 the
+#: ``claims_without_quote`` counter is reported via
+#: ``GateResult.metadata`` only). T11.5 / T11.6 wires the threshold.
+_CODE_EVIDENCE_QUOTE_MISSING: str = "EVIDENCE_QUOTE_MISSING"
+
 
 def _coerce_blocks(
     inputs: Dict[str, Any],
@@ -204,15 +232,22 @@ def _resolve_key_claims(
 
     Returns a tuple of ``(normalized_claims, is_structured)``. Each
     entry in ``normalized_claims`` carries ``{"claim": str,
-    "source_chunk_ids": Optional[List[str]]}``. ``is_structured`` is
-    True when at least one entry carried per-claim attribution (the
-    Wave 1.5 W1.5.A structured shape); False when every entry was a
-    bare string (legacy shape).
+    "source_chunk_ids": Optional[List[str]],
+    "evidence_quote": Optional[str],
+    "evidence_char_span": Optional[Tuple[int, int]]}``.
+    ``is_structured`` is True when at least one entry carried per-claim
+    attribution (the Wave 1.5 W1.5.A structured shape); False when
+    every entry was a bare string (legacy shape).
 
     For mixed shapes (a contract violation per Wave 1.5 schema) the
     helper accepts each entry on its own terms — bare strings get
     ``source_chunk_ids=None`` (block-level fallback), structured
     entries keep their attribution. The schema gate fires upstream.
+
+    Wave W-D11 T11.1: structured entries additionally carry the
+    optional ``evidence_quote`` / ``evidence_char_span`` fields admitted
+    by ``schemas/knowledge/chunk_v4.schema.json::key_claims`` (T11.0
+    foundation). Legacy ``List[str]`` entries get ``None`` for both.
     """
     content = block.content
     if not isinstance(content, dict):
@@ -228,13 +263,32 @@ def _resolve_key_claims(
             text = entry.strip()
             if text:
                 normalized.append(
-                    {"claim": text, "source_chunk_ids": None}
+                    {
+                        "claim": text,
+                        "source_chunk_ids": None,
+                        "evidence_quote": None,
+                        "evidence_char_span": None,
+                    }
                 )
         elif isinstance(entry, dict):
             text_raw = entry.get("claim")
             if not isinstance(text_raw, str) or not text_raw.strip():
                 continue
             attribution = entry.get("source_chunk_ids")
+            quote_raw = entry.get("evidence_quote")
+            quote: Optional[str] = (
+                quote_raw if isinstance(quote_raw, str) and quote_raw else None
+            )
+            span_raw = entry.get("evidence_char_span")
+            span: Optional[Tuple[int, int]] = None
+            if (
+                isinstance(span_raw, (list, tuple))
+                and len(span_raw) == 2
+                and all(isinstance(v, int) for v in span_raw)
+                and span_raw[0] >= 0
+                and span_raw[1] >= span_raw[0]
+            ):
+                span = (int(span_raw[0]), int(span_raw[1]))
             if isinstance(attribution, list):
                 # Filter to non-empty strings; preserve order.
                 ids = [
@@ -245,6 +299,8 @@ def _resolve_key_claims(
                     {
                         "claim": text_raw.strip(),
                         "source_chunk_ids": ids if ids else None,
+                        "evidence_quote": quote,
+                        "evidence_char_span": span,
                     }
                 )
                 if ids:
@@ -254,9 +310,63 @@ def _resolve_key_claims(
                     {
                         "claim": text_raw.strip(),
                         "source_chunk_ids": None,
+                        "evidence_quote": quote,
+                        "evidence_char_span": span,
                     }
                 )
     return normalized, is_structured
+
+
+def _check_evidence_quote(
+    *,
+    evidence_quote: Optional[str],
+    evidence_char_span: Optional[Tuple[int, int]],
+    candidate_chunks: List[str],
+) -> Tuple[Optional[bool], Optional[bool]]:
+    """Wave W-D11 T11.1: substring + char_span verification.
+
+    Returns ``(substring_ok, char_span_ok)``. Each value is one of:
+
+    * ``None`` — the corresponding check was not attempted (no quote
+      set, or no char_span set).
+    * ``True`` — the check passed.
+    * ``False`` — the check failed.
+
+    A claim is considered to have a "valid" evidence quote when
+    ``substring_ok`` is True AND (``char_span_ok`` is None OR True).
+    The caller increments aggregate counters from this 3-state result.
+
+    Substring semantics: the quote is searched against EACH candidate
+    chunk's text in order. The first chunk that contains the quote is
+    used as the matched chunk for the char_span check (when
+    ``evidence_char_span`` is also set). This mirrors the schema
+    description (W-D11 T11.0): "verbatim substring of one of the
+    cited chunks' text field".
+    """
+    if not evidence_quote:
+        return None, None
+
+    # Substring check: search the quote against every candidate chunk.
+    matched_chunk: Optional[str] = None
+    for chunk_text in candidate_chunks:
+        if evidence_quote in chunk_text:
+            matched_chunk = chunk_text
+            break
+
+    if matched_chunk is None:
+        # Quote not in any candidate chunk → substring fail; the
+        # char_span check is skipped (no chunk to slice).
+        return False, None
+
+    if evidence_char_span is None:
+        return True, None
+
+    start, end = evidence_char_span
+    if 0 <= start <= end <= len(matched_chunk):
+        char_span_ok = matched_chunk[start:end] == evidence_quote
+    else:
+        char_span_ok = False
+    return True, char_span_ok
 
 
 def _candidate_chunks_for_claim(
@@ -514,6 +624,17 @@ class ClaimSupportValidator:
         audited_blocks = 0
         passed_blocks = 0
 
+        # Wave W-D11 T11.1: corpus-wide evidence-quote counters.
+        # All five always present in metadata so downstream
+        # aggregators (T11.5) don't need to handle missing keys.
+        total_claims_seen: int = 0
+        claims_with_valid_quote: int = 0
+        claims_without_quote: int = 0
+        substring_attempts: int = 0
+        substring_fails: int = 0
+        char_span_attempts: int = 0
+        char_span_mismatches: int = 0
+
         for block in blocks:
             if _block_should_skip(block):
                 # Skip silently — no event, no issue. Skip set is
@@ -602,6 +723,80 @@ class ClaimSupportValidator:
                     contradicted_count += 1
                 else:
                     unsupported_count += 1
+
+                # Wave W-D11 T11.1: evidence-quote substring + char_span
+                # enforcement. Day-1 warning per calibration-deferred
+                # contract (mirrors W1.7.C / W4.A / W4.C); does NOT
+                # gate the validator's overall ``passed`` field.
+                total_claims_seen += 1
+                evidence_quote = claim_entry.get("evidence_quote")
+                evidence_char_span = claim_entry.get("evidence_char_span")
+                if not evidence_quote:
+                    claims_without_quote += 1
+                else:
+                    substring_attempts += 1
+                    substring_ok, char_span_ok = _check_evidence_quote(
+                        evidence_quote=evidence_quote,
+                        evidence_char_span=evidence_char_span,
+                        candidate_chunks=candidate_chunks,
+                    )
+                    if substring_ok is False:
+                        substring_fails += 1
+                        if len(issues) < _ISSUE_LIST_CAP:
+                            issues.append(
+                                GateIssue(
+                                    severity="warning",
+                                    code=_CODE_EVIDENCE_QUOTE_NOT_SUBSTRING,
+                                    message=(
+                                        f"Block {block.block_id!r} "
+                                        f"(block_type={block.block_type!r}): "
+                                        f"evidence_quote={evidence_quote!r} "
+                                        f"is not a substring of any of "
+                                        f"the {len(candidate_chunks)} "
+                                        f"candidate cited chunk(s) for "
+                                        f"claim={claim_text!r}."
+                                    ),
+                                    location=block.block_id,
+                                    suggestion=(
+                                        "Ensure the synthesis provider "
+                                        "emits a verbatim quote from one "
+                                        "of the chunks named in "
+                                        "source_chunk_ids[]; re-prompt "
+                                        "with strict-quote constraint."
+                                    ),
+                                )
+                            )
+                    if evidence_char_span is not None and substring_ok:
+                        char_span_attempts += 1
+                        if char_span_ok is False:
+                            char_span_mismatches += 1
+                            if len(issues) < _ISSUE_LIST_CAP:
+                                issues.append(
+                                    GateIssue(
+                                        severity="warning",
+                                        code=_CODE_EVIDENCE_CHAR_SPAN_MISMATCH,
+                                        message=(
+                                            f"Block {block.block_id!r} "
+                                            f"(block_type="
+                                            f"{block.block_type!r}): "
+                                            f"evidence_char_span="
+                                            f"{evidence_char_span!r} "
+                                            f"does not slice to "
+                                            f"evidence_quote in the "
+                                            f"matched cited chunk for "
+                                            f"claim={claim_text!r}."
+                                        ),
+                                        location=block.block_id,
+                                        suggestion=(
+                                            "Re-emit the synthesis pair "
+                                            "with [start, end) offsets "
+                                            "matching the verbatim quote, "
+                                            "or null both fields."
+                                        ),
+                                    )
+                                )
+                    if substring_ok and (char_span_ok in (None, True)):
+                        claims_with_valid_quote += 1
 
             total_claims = (
                 entailed_count + unsupported_count + contradicted_count
@@ -710,9 +905,50 @@ class ClaimSupportValidator:
             if audited_blocks == 0
             else round(passed_blocks / audited_blocks, 4)
         )
+
+        # Wave W-D11 T11.1: corpus-wide evidence-quote rates surfaced
+        # on GateResult.metadata for downstream aggregator wiring
+        # (T11.5). All three rate keys are always present (0.0 default)
+        # so consumers don't need to handle the missing case.
+        evidence_quote_coverage_rate = (
+            (claims_with_valid_quote / total_claims_seen)
+            if total_claims_seen > 0
+            else 0.0
+        )
+        evidence_quote_substring_fail_rate = (
+            (substring_fails / substring_attempts)
+            if substring_attempts > 0
+            else 0.0
+        )
+        evidence_quote_char_span_mismatch_rate = (
+            (char_span_mismatches / char_span_attempts)
+            if char_span_attempts > 0
+            else 0.0
+        )
+        metadata: Dict[str, Any] = {
+            "total_claims": total_claims_seen,
+            "claims_with_valid_quote": claims_with_valid_quote,
+            "claims_without_quote": claims_without_quote,
+            "evidence_quote_substring_attempts": substring_attempts,
+            "evidence_quote_substring_fails": substring_fails,
+            "evidence_quote_char_span_attempts": char_span_attempts,
+            "evidence_quote_char_span_mismatches": char_span_mismatches,
+            "evidence_quote_coverage_rate": round(
+                evidence_quote_coverage_rate, 4
+            ),
+            "evidence_quote_substring_fail_rate": round(
+                evidence_quote_substring_fail_rate, 4
+            ),
+            "evidence_quote_char_span_mismatch_rate": round(
+                evidence_quote_char_span_mismatch_rate, 4
+            ),
+        }
+
         # ``passed`` stays True because every issue is warning-severity
         # by construction (Day-1 contract). Action toggles to
         # ``regenerate`` when any block fired a real failure.
+        # Evidence-quote findings (W-D11 T11.1) are warning-only and
+        # do NOT contribute to ``any_regenerate``.
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
@@ -721,6 +957,7 @@ class ClaimSupportValidator:
             score=score,
             issues=issues,
             action="regenerate" if any_regenerate else None,
+            metadata=metadata,
         )
 
 
@@ -733,5 +970,8 @@ __all__ = [
     "_CODE_UNSUPPORTED_CLAIM",
     "_CODE_CONTRADICTED_CLAIM",
     "_CODE_NLI_DEPS_MISSING",
+    "_CODE_EVIDENCE_QUOTE_NOT_SUBSTRING",
+    "_CODE_EVIDENCE_CHAR_SPAN_MISMATCH",
+    "_CODE_EVIDENCE_QUOTE_MISSING",
     "_SKIPPED_BLOCK_TYPES",
 ]

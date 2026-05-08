@@ -65,6 +65,15 @@ class GateResult:
     # the router calls `derive_default_action()` to interpret them as
     # "pass" on success / "block" on failure.
     action: Optional[Literal["pass", "regenerate", "escalate", "block"]] = None
+    # Wave W-D11 T11.1: optional per-validator aggregate counters /
+    # diagnostic signals surfaced for downstream aggregators (e.g.
+    # T11.5 promotion-chain rollup) without polluting the issues[]
+    # surface. Validators that don't set this leave it ``None``;
+    # consumers MUST handle ``metadata is None`` as "no signal" rather
+    # than "zero". Free-form dict shape is intentional — each validator
+    # owns its own keys, and downstream aggregators read by validator
+    # name + key.
+    metadata: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
