@@ -1340,7 +1340,16 @@ Concept nodes optionally carry `occurrences: List[str]` — the sorted-ASC list 
 
 ### Opt-in flags (behavior toggles)
 
-Environment-variable flags gate opt-in behavior to preserve backward-compat with legacy corpora. All default off; each flag represents a toggle a regeneration run can flip to enforce the newer contract. Wave 98 sweep added the five Wave 82 / 84-85 / Worker-L rule-graph + provenance-test flags that had been live in code without doc rows. Root `CLAUDE.md` carries the canonical table; this table mirrors the v0.2.0 / Wave 82-85 subset.
+Environment-variable flags gate opt-in behavior to preserve backward-compat with legacy corpora. All default off; each flag represents a toggle a regeneration run can flip to enforce the newer contract. Wave 98 sweep added the five Wave 82 / 84-85 / Worker-L rule-graph + provenance-test flags that had been live in code without doc rows.
+
+Per-flag rows now live in subsystem CLAUDE.md files (one row per flag, one owner per prefix):
+
+- `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` → `Trainforge/CLAUDE.md § Opt-In Behavior Flags`.
+- `DART_*` → `DART/CLAUDE.md § Opt-In Behavior Flags`.
+- `COURSEFORGE_*` → `Courseforge/CLAUDE.md § Opt-In Behavior Flags`.
+- `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) → root `CLAUDE.md § Opt-In Behavior Flags`.
+
+The table below mirrors the v0.2.0 / Wave 82-85 subset for historical context; the canonical per-flag rows are in the subsystem files above.
 
 | Flag | When on |
 | ---- | ------- |
