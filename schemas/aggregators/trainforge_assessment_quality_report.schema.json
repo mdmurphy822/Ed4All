@@ -1,0 +1,375 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/aggregators/v1/trainforge_assessment_quality_report.schema.json",
+  "title": "Ed4All trainforge_assessment_quality_report.json",
+  "description": "Top-level Trainforge assessment-quality aggregator output (Worker W2.B). Aggregates four signals — synthesis-pair quality (training_synthesis gate results), assessment-corpus quality (trainforge_assessment gate results + quality_report.json::assessments dimension), KG quality (libv2_archival gate results), and post-training eval gating (LibV2 adapter eval_report.json) — into a single canonical <libv2_course>/quality/trainforge_assessment_quality_report.json so operators can decide whether the assessment corpus is shippable as training data. Built by lib/aggregators/trainforge_assessment_quality_report.py::TrainforgeAssessmentQualityReport post-workflow. Wave W-D11.A schema pin.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "course_code",
+    "run_id",
+    "status",
+    "summary",
+    "synthesis_quality",
+    "kg_quality",
+    "eval_summary",
+    "per_question_issues",
+    "blocking_failures",
+    "warnings",
+    "promotion_decision",
+    "phase_results"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version. 1.0 == Wave W-D11.A pin."
+    },
+    "generated_at": {
+      "type": "string",
+      "description": "ISO 8601 UTC timestamp of the build call. Emitter uses datetime.utcnow().isoformat() + 'Z' (not strict RFC 3339) so the value is not constrained to format: date-time."
+    },
+    "course_code": {
+      "type": "string",
+      "description": "Operator-facing course code so cross-run diffs key cleanly."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Workflow run ID."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "warn", "fail"],
+      "description": "Top-level aggregator status. pass == clean run; warn == warnings only or fully-degraded inputs; fail == any blocking signal fired."
+    },
+    "summary": {
+      "$ref": "#/$defs/Summary"
+    },
+    "synthesis_quality": {
+      "$ref": "#/$defs/SynthesisQuality"
+    },
+    "kg_quality": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/KgQualityBlock" }
+      ],
+      "description": "Projected libv2_archival KG-quality bucket. Null when no KG gate ran (graceful degradation); the key is always present."
+    },
+    "eval_summary": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/EvalSummary" }
+      ],
+      "description": "Passthrough projection of the most-recently-imported adapter's eval_report.json. Null when no adapter has been imported; the key is always present."
+    },
+    "per_question_issues": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "Passthrough rows from quality_report.json::assessments.per_question_issues. Free-form per-row shape (validator-specific issue codes); the aggregator does not constrain row structure."
+    },
+    "blocking_failures": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/GateFailureRow" },
+      "description": "Critical-severity failed gates aggregated across training_synthesis, trainforge_assessment, and libv2_archival phases."
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/GateFailureRow" },
+      "description": "Warning-severity failed gates aggregated across training_synthesis, trainforge_assessment, and libv2_archival phases."
+    },
+    "promotion_decision": {
+      "$ref": "#/$defs/PromotionDecision"
+    },
+    "phase_results": {
+      "$ref": "#/$defs/PhaseResults"
+    }
+  },
+  "$defs": {
+    "GateProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_id",
+        "severity",
+        "passed",
+        "action",
+        "score",
+        "issue_count",
+        "code",
+        "message"
+      ],
+      "properties": {
+        "gate_id": {
+          "type": "string",
+          "description": "Canonical gate id (matches config/workflows.yaml::validation_gates.gate_id)."
+        },
+        "severity": {
+          "type": "string",
+          "description": "Gate severity (critical | warning) lower-cased on emit."
+        },
+        "passed": {
+          "type": "boolean",
+          "description": "Whether the gate passed."
+        },
+        "action": {
+          "type": ["string", "null"],
+          "description": "GateResult.action when set (e.g. regenerate / escalate / block); null when the validator did not stamp one."
+        },
+        "score": {
+          "type": ["number", "null"],
+          "description": "Gate score float when emitted; null when the validator did not produce one."
+        },
+        "issue_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Length of GateResult.issues."
+        },
+        "code": {
+          "type": ["string", "null"],
+          "description": "First-issue code (canonical issue identifier); null when issues[] is empty."
+        },
+        "message": {
+          "type": ["string", "null"],
+          "description": "First-issue message; null when issues[] is empty."
+        }
+      }
+    },
+    "Summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_questions",
+        "answerable_rate",
+        "single_correct_rate",
+        "bloom_alignment_rate",
+        "placeholder_rate",
+        "source_support_rate"
+      ],
+      "properties": {
+        "total_questions": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Total question count from quality_report.json::assessments.total_questions; null when the dimension is unavailable."
+        },
+        "answerable_rate": {
+          "type": ["number", "null"],
+          "description": "Retrieval-grounding score (rewrite seam preferred over outline). Null when no retrieval-grounding gate fired."
+        },
+        "single_correct_rate": {
+          "type": ["number", "null"],
+          "description": "distinct_correct_answer_ratio from the assessments dimension, or assessment_quality gate score when the dimension is unavailable; null otherwise."
+        },
+        "bloom_alignment_rate": {
+          "type": ["number", "null"],
+          "description": "Share of questions whose observed Bloom level matched targeted, derived from per_question_issues; null when total_questions is missing."
+        },
+        "placeholder_rate": {
+          "type": ["number", "null"],
+          "description": "Share of questions carrying a placeholder-class issue in per_question_issues; null when total_questions is missing."
+        },
+        "source_support_rate": {
+          "type": ["number", "null"],
+          "description": "Mirrors answerable_rate (same retrieval-grounding score)."
+        }
+      }
+    },
+    "SynthesisQuality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "synthesis_diversity",
+        "synthesis_leakage",
+        "curie_anchoring",
+        "property_coverage",
+        "min_edge_count",
+        "evidence_quote"
+      ],
+      "properties": {
+        "synthesis_diversity": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/GateProjection" }
+          ],
+          "description": "Projection of training_synthesis::synthesis_diversity; null when the gate did not fire."
+        },
+        "synthesis_leakage": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/GateProjection" }
+          ],
+          "description": "Projection of training_synthesis::synthesis_leakage; null when the gate did not fire."
+        },
+        "curie_anchoring": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/GateProjection" }
+          ],
+          "description": "Projection of training_synthesis::curie_anchoring; null when the gate did not fire."
+        },
+        "property_coverage": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/GateProjection" }
+          ],
+          "description": "Projection of training_synthesis::property_coverage; null when the gate did not fire."
+        },
+        "min_edge_count": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/GateProjection" }
+          ],
+          "description": "Projection of training_synthesis::min_edge_count; null when the gate did not fire."
+        },
+        "evidence_quote": {
+          "$ref": "https://ed4all.dev/ns/governance/v1/promotion_chain.schema.json#/$defs/EvidenceQuoteMetrics",
+          "description": "Wave W-D11 T11.5 — pair-side claim_support evidence_quote_* rates lifted from the pair_claim_support GateResult.metadata. Always present (zeros when the gate did not fire / lacked metadata) so downstream consumers see a wire-stable block."
+        }
+      }
+    },
+    "KgQualityBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gates", "summary"],
+      "properties": {
+        "gates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/GateProjection" },
+          "description": "Per-gate projection rows for libv2_archival KG-quality gates (kg_quality_report, libv2_manifest)."
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "total",
+            "passed",
+            "failed",
+            "any_blocking_fail",
+            "any_warning_only"
+          ],
+          "properties": {
+            "total": { "type": "integer", "minimum": 0 },
+            "passed": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "any_blocking_fail": { "type": "boolean" },
+            "any_warning_only": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "EvalSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Subset projection of LibV2/courses/<slug>/models/<id>/eval/eval_report.json. Every field is optional — the aggregator only emits keys the source payload carried.",
+      "properties": {
+        "faithfulness": { "type": ["number", "null"] },
+        "yes_rate": { "type": ["number", "null"] },
+        "negative_grounding_accuracy": { "type": ["number", "null"] },
+        "source_match": { "type": ["number", "null"] },
+        "baseline_delta": { "type": ["number", "null"] },
+        "per_property_accuracy": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": ["number", "null"] }
+        },
+        "alignment_rate": { "type": ["number", "null"] },
+        "calibration_ece": { "type": ["number", "null"] },
+        "metrics": {
+          "type": ["object", "null"]
+        },
+        "smoke_mode": { "type": ["boolean", "null"] },
+        "content_type_role_alignment_summary": {
+          "type": ["object", "null"]
+        }
+      }
+    },
+    "GateFailureRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "gate_id", "severity", "code", "message"],
+      "properties": {
+        "phase": {
+          "type": "string",
+          "description": "Phase name the gate fired against (e.g. training_synthesis, trainforge_assessment, libv2_archival)."
+        },
+        "gate_id": {
+          "type": ["string", "null"],
+          "description": "Gate ID; null when the upstream KG-quality row did not carry one."
+        },
+        "severity": {
+          "type": "string",
+          "description": "Gate severity (critical | warning)."
+        },
+        "code": {
+          "type": ["string", "null"],
+          "description": "First-issue code; null when issues[] was empty."
+        },
+        "message": {
+          "type": ["string", "null"],
+          "description": "First-issue message; null when issues[] was empty."
+        }
+      }
+    },
+    "PromotionDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "rationale", "contributing_gate_ids"],
+      "properties": {
+        "value": {
+          "type": "string",
+          "enum": ["failed", "non_certified_archive", "trainable"],
+          "description": "Three-way W2.B-internal heuristic. Wave 3 W3.G's master promotion-chain compose supersedes this for course_status; this field stays for back-compat with consumers reading the per-aggregator verdict."
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 20,
+          "description": "Replayable rationale string interpolating dynamic signals (blocking_failures count, placeholder_rate, answerable_rate, eval-gating signals, total_questions, resolved decision)."
+        },
+        "contributing_gate_ids": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Gate IDs that contributed to a 'failed' verdict. Empty for 'trainable' / 'non_certified_archive'."
+        }
+      }
+    },
+    "PromotionLadder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_pairs_total",
+        "validated_pairs_total",
+        "trainable_pairs_total",
+        "rejected_promotion_pairs",
+        "promotion_rejection_reasons"
+      ],
+      "properties": {
+        "candidate_pairs_total": { "type": "integer", "minimum": 0 },
+        "validated_pairs_total": { "type": "integer", "minimum": 0 },
+        "trainable_pairs_total": { "type": "integer", "minimum": 0 },
+        "rejected_promotion_pairs": { "type": "integer", "minimum": 0 },
+        "promotion_rejection_reasons": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 },
+          "description": "Histogram of rejection reasons keyed by reason name (alphabetised on emit)."
+        }
+      }
+    },
+    "PhaseResults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["synthesis"],
+      "properties": {
+        "synthesis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["promotion_ladder"],
+          "properties": {
+            "promotion_ladder": {
+              "$ref": "#/$defs/PromotionLadder"
+            }
+          }
+        }
+      }
+    }
+  }
+}
