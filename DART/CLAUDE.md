@@ -67,6 +67,15 @@ DART-produced HTML + synthesized JSON carry per-block source attribution so down
 
 Priority extraction chain (extends the Courseforge chain): JSON-LD > `data-cf-*` > `data-dart-*` > regex heuristics.
 
+## Opt-In Behavior Flags
+
+DART-owned env-var toggles. Long-form rationale also lives in `schemas/ONTOLOGY.md` § 12.
+
+| Flag | When on |
+|------|---------|
+| `DART_LLM_CLASSIFICATION` | DART's block classifier routes through an LLM via `LLMClassifier` instead of heuristic regex. Requires an injected `LLMBackend`. |
+| `DART_CLAUDE_MODEL` | Pins the Anthropic model ID used by every DART converter surface (`DART/pdf_converter/cli.py::_resolve_default_model`, `claude_processor.py::_resolve_dart_claude_model`, `converter.py::PDFToAccessibleHTML.__init__`, `alt_text_generator.py::AltTextGenerator.__init__`). Resolution chain: explicit constructor / CLI arg > `DART_CLAUDE_MODEL` env var > `DART_CLAUDE_MODEL_DEFAULT` literal (`claude-sonnet-4-20250514`). Single source of truth lives in `DART/pdf_converter/claude_processor.py` (`DART_CLAUDE_MODEL_ENV` / `DART_CLAUDE_MODEL_DEFAULT` constants); the converter, alt-text generator, and CLI all import that helper so an operator retraining DART against a different teacher only sets one variable. (License: Anthropic Commercial Terms — DART HTML output may be ingested as Trainforge training chunks; see `docs/LICENSING.md` for the per-provider ToS posture.) |
+
 ## Architecture
 
 ```
