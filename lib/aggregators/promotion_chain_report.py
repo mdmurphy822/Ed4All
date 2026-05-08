@@ -84,6 +84,23 @@ SCHEMA_VERSION = "1.0"
 # the report sees the silent-skip class.
 MISSING_STAGE_REPORT = "missing_stage_report"
 
+# Wave W-D11 T11.5 — gate IDs whose ``GateResult.metadata`` carries the
+# ``evidence_quote_*`` aggregate rates stamped by T11.1 (block-side) and
+# T11.2 (pair-side). The aggregator harvests these rates onto the per-arrow
+# ``evidence_quote_metrics`` field whenever the matching gate fired against
+# an arrow's phase.
+_EVIDENCE_QUOTE_GATE_IDS = ("claim_support", "pair_claim_support")
+
+# Canonical metadata keys lifted onto the arrow row's
+# ``evidence_quote_metrics`` block. All three are stamped as 0.0 (not None)
+# when the upstream gate ran in legacy mode without metadata, so a numeric
+# downstream consumer never has to handle a None vs 0.0 split.
+_EVIDENCE_QUOTE_METADATA_KEYS = (
+    "evidence_quote_coverage_rate",
+    "evidence_quote_substring_fail_rate",
+    "evidence_quote_char_span_mismatch_rate",
+)
+
 # Canonical 9-arrow chain definitions. Each tuple is
 # ``(arrow_id, arrow_name)`` so the aggregator's emit + tests share a
 # single source of truth.
@@ -270,6 +287,9 @@ class PromotionChainAggregator:
             )
             course_status = "failed"
 
+        # Wave W-D11 T11.5: corpus-wide evidence_quote_summary rollup.
+        evidence_quote_summary = self._compute_evidence_quote_summary(arrows)
+
         report = {
             "schema_version": SCHEMA_VERSION,
             "course_code": self.course_code,
@@ -278,6 +298,7 @@ class PromotionChainAggregator:
             "arrows": arrows,
             "chain_hash": chain_hash,
             "course_status": course_status,
+            "evidence_quote_summary": evidence_quote_summary,
         }
 
         self._emit_aggregator_decision(report)
@@ -450,7 +471,14 @@ class PromotionChainAggregator:
             "page_objectives",
             "source_refs",
         ])
-        return {
+        # Wave W-D11 T11.5: harvest evidence_quote_* rates from the
+        # block-side claim_support gate (post_rewrite_validation phase).
+        # When the gate fired against this arrow, append ``claim_support``
+        # to the validator_set and stamp the evidence_quote_metrics block.
+        evidence_metrics = self._extract_evidence_quote_metrics(
+            "post_rewrite_validation", "claim_support",
+        )
+        row: Dict[str, Any] = {
             "arrow_id": 3,
             "name": ARROW_NAMES[3],
             "input_hash": _sha256_file(inter_tier_report) if inter_tier_report.exists() else None,
@@ -461,6 +489,11 @@ class PromotionChainAggregator:
             "source_coverage": coverage,
             "promotion_decision": promotion_decision,
         }
+        if evidence_metrics is not None:
+            if "claim_support" not in validator_set:
+                validator_set.append("claim_support")
+            row["evidence_quote_metrics"] = evidence_metrics
+        return row
 
     def _build_arrow_4(self) -> Dict[str, Any]:
         """Arrow 4 — rewritten HTML -> IMSCC. Reads packaging_report.json."""
@@ -623,7 +656,15 @@ class PromotionChainAggregator:
         if ladder_seen:
             validator_set.append("promotion_ladder_telemetry")
 
-        return {
+        # Wave W-D11 T11.5: harvest evidence_quote_* rates from the
+        # pair-side pair_claim_support gate (training_synthesis phase).
+        # When the gate fired against this arrow, append
+        # ``pair_claim_support`` to the validator_set and stamp the
+        # evidence_quote_metrics block.
+        evidence_metrics = self._extract_evidence_quote_metrics(
+            "training_synthesis", "pair_claim_support",
+        )
+        row: Dict[str, Any] = {
             "arrow_id": 7,
             "name": ARROW_NAMES[7],
             "input_hash": _sha256_file(summary_path),
@@ -634,6 +675,11 @@ class PromotionChainAggregator:
             "source_coverage": coverage,
             "promotion_decision": "pass" if passed else "fail",
         }
+        if evidence_metrics is not None:
+            if "pair_claim_support" not in validator_set:
+                validator_set.append("pair_claim_support")
+            row["evidence_quote_metrics"] = evidence_metrics
+        return row
 
     def _build_arrow_8(self) -> Dict[str, Any]:
         """Arrow 8 — training pairs -> adapter. Reads model_card.json."""
@@ -750,6 +796,69 @@ class PromotionChainAggregator:
         if staging_dir:
             return Path(staging_dir) / "staging_manifest.json"
         return None
+
+    def _extract_evidence_quote_metrics(
+        self, phase_name: str, gate_id: str
+    ) -> Optional[Dict[str, float]]:
+        """Lift the three ``evidence_quote_*`` rates from a gate's metadata.
+
+        Wave W-D11 T11.5 helper. Walks
+        ``phase_outputs[phase_name]._gate_results`` and matches the first
+        row whose ``gate_id`` equals ``gate_id``; returns a compact dict
+        of the three canonical rates pinned in
+        ``_EVIDENCE_QUOTE_METADATA_KEYS``. Returns ``None`` when the gate
+        didn't run (so the caller can omit the field on arrows whose
+        validator set doesn't include the seam-relevant gate). Uses
+        ``.get(key, 0.0)`` so legacy GateResults that ran before T11.1 /
+        T11.2 metadata stamping aggregate to 0.0 rather than crashing.
+        """
+        phase_payload = self.phase_outputs.get(phase_name) or {}
+        gate_results = phase_payload.get("_gate_results") or []
+        for gr in gate_results:
+            if not isinstance(gr, Mapping):
+                continue
+            if str(gr.get("gate_id") or "") != gate_id:
+                continue
+            metadata = gr.get("metadata") or {}
+            if not isinstance(metadata, Mapping):
+                metadata = {}
+            return {
+                key: float(metadata.get(key, 0.0) or 0.0)
+                for key in _EVIDENCE_QUOTE_METADATA_KEYS
+            }
+        return None
+
+    @staticmethod
+    def _compute_evidence_quote_summary(
+        arrows: Sequence[Mapping[str, Any]],
+    ) -> Dict[str, float]:
+        """Top-level ``evidence_quote_summary.coverage_rate`` rollup.
+
+        Computes the **unweighted mean** of ``coverage_rate`` across every
+        arrow that surfaced an ``evidence_quote_metrics`` block — the
+        unweighted choice is intentional because the two contributing
+        arrows (3: rewritten HTML / 7: training pairs) operate on
+        structurally different units (blocks vs pairs) and a
+        sample-count-weighted mean would silently let the larger
+        population dominate. Operators reading this rollup want the
+        per-seam parity signal, not a population-weighted blend. Returns
+        ``coverage_rate=0.0`` when no arrow exposed metrics so the field
+        shape is invariant.
+        """
+        rates: List[float] = []
+        for arrow in arrows:
+            metrics = arrow.get("evidence_quote_metrics") if (
+                isinstance(arrow, Mapping)
+            ) else None
+            if isinstance(metrics, Mapping):
+                rate = metrics.get("evidence_quote_coverage_rate", 0.0) or 0.0
+                try:
+                    rates.append(float(rate))
+                except (TypeError, ValueError):
+                    continue
+        if not rates:
+            return {"coverage_rate": 0.0}
+        return {"coverage_rate": round(sum(rates) / len(rates), 4)}
 
     @staticmethod
     def _coerce_coverage(raw: Any) -> Optional[Dict[str, Any]]:

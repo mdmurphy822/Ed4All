@@ -798,3 +798,313 @@ class TestBestEffortPosture:
         rehydrated = json.loads(out.read_text(encoding="utf-8"))
         assert rehydrated["course_status"] == report["course_status"]
         assert rehydrated["chain_hash"] == report["chain_hash"]
+
+
+# --------------------------------------------------------------------------
+# Test 9 — Wave W-D11 T11.5 evidence_quote_* metadata surfacing
+# --------------------------------------------------------------------------
+
+
+def _gate_result_with_metadata(
+    gate_id: str,
+    *,
+    coverage_rate: float,
+    substring_fail_rate: float,
+    char_span_mismatch_rate: float,
+) -> Dict[str, Any]:
+    """Build a synthetic GateResult.to_dict() row with evidence_quote_* metadata."""
+    return {
+        "gate_id": gate_id,
+        "validator_name": gate_id,
+        "validator_version": "1.0",
+        "passed": True,
+        "severity": "warning",
+        "score": 1.0,
+        "issues": [],
+        "execution_time_ms": 0,
+        "action": None,
+        "metadata": {
+            "evidence_quote_coverage_rate": coverage_rate,
+            "evidence_quote_substring_fail_rate": substring_fail_rate,
+            "evidence_quote_char_span_mismatch_rate": char_span_mismatch_rate,
+        },
+    }
+
+
+class TestEvidenceQuoteMetricsSurfacing:
+    """Wave W-D11 T11.5 — evidence_quote_* rates flow from
+    GateResult.metadata onto the per-arrow evidence_quote_metrics block,
+    plus the corpus-wide evidence_quote_summary rollup.
+    """
+
+    def test_arrow_3_with_claim_support_metadata_surfaces_metrics(
+        self, tmp_path,
+    ):
+        layout = _build_full_layout(tmp_path)
+        phase_outputs = {
+            "post_rewrite_validation": {
+                "_completed": True,
+                "_gates_passed": True,
+                "_gate_results": [
+                    _gate_result_with_metadata(
+                        "claim_support",
+                        coverage_rate=0.92,
+                        substring_fail_rate=0.04,
+                        char_span_mismatch_rate=0.01,
+                    ),
+                ],
+            },
+        }
+        agg = PromotionChainAggregator(
+            course_path=layout["course_dir"],
+            project_path=layout["project_dir"],
+            staging_manifest_path=layout["staging_dir"] / "staging_manifest.json",
+            course_code="TEST",
+            run_id="WF-EQM-3",
+            phase_outputs=phase_outputs,
+        )
+        report = agg.build()
+
+        arrow_3 = next(a for a in report["arrows"] if a["arrow_id"] == 3)
+        assert "evidence_quote_metrics" in arrow_3, (
+            "arrow 3 should carry evidence_quote_metrics when "
+            "claim_support metadata is present in phase_outputs"
+        )
+        metrics = arrow_3["evidence_quote_metrics"]
+        assert metrics["evidence_quote_coverage_rate"] == 0.92
+        assert metrics["evidence_quote_substring_fail_rate"] == 0.04
+        assert metrics["evidence_quote_char_span_mismatch_rate"] == 0.01
+        # claim_support gate ID also surfaces on the validator_set so an
+        # operator can correlate the rates with their source gate.
+        assert "claim_support" in arrow_3["validator_set"]
+
+    def test_arrow_7_with_pair_claim_support_metadata_surfaces_metrics(
+        self, tmp_path,
+    ):
+        layout = _build_full_layout(tmp_path)
+        phase_outputs = {
+            "training_synthesis": {
+                "_completed": True,
+                "_gates_passed": True,
+                "_gate_results": [
+                    _gate_result_with_metadata(
+                        "pair_claim_support",
+                        coverage_rate=0.78,
+                        substring_fail_rate=0.10,
+                        char_span_mismatch_rate=0.03,
+                    ),
+                ],
+            },
+        }
+        agg = PromotionChainAggregator(
+            course_path=layout["course_dir"],
+            project_path=layout["project_dir"],
+            staging_manifest_path=layout["staging_dir"] / "staging_manifest.json",
+            course_code="TEST",
+            run_id="WF-EQM-7",
+            phase_outputs=phase_outputs,
+        )
+        report = agg.build()
+
+        arrow_7 = next(a for a in report["arrows"] if a["arrow_id"] == 7)
+        assert "evidence_quote_metrics" in arrow_7
+        metrics = arrow_7["evidence_quote_metrics"]
+        assert metrics["evidence_quote_coverage_rate"] == 0.78
+        assert metrics["evidence_quote_substring_fail_rate"] == 0.10
+        assert metrics["evidence_quote_char_span_mismatch_rate"] == 0.03
+        assert "pair_claim_support" in arrow_7["validator_set"]
+
+    def test_arrow_excluding_both_gates_omits_metrics(self, tmp_path):
+        layout = _build_full_layout(tmp_path)
+        # No phase_outputs entries for post_rewrite_validation /
+        # training_synthesis, so neither gate fired.
+        agg = PromotionChainAggregator(
+            course_path=layout["course_dir"],
+            project_path=layout["project_dir"],
+            staging_manifest_path=layout["staging_dir"] / "staging_manifest.json",
+            course_code="TEST",
+            run_id="WF-EQM-NONE",
+            phase_outputs={},
+        )
+        report = agg.build()
+
+        # No arrow should carry evidence_quote_metrics.
+        for arrow in report["arrows"]:
+            assert "evidence_quote_metrics" not in arrow, (
+                f"arrow {arrow['arrow_id']} should NOT carry "
+                f"evidence_quote_metrics when neither claim_support nor "
+                f"pair_claim_support fired: {arrow}"
+            )
+        # Top-level summary still emits coverage_rate=0.0 (invariant shape).
+        assert report["evidence_quote_summary"] == {"coverage_rate": 0.0}
+
+    def test_legacy_gate_result_without_metadata_does_not_crash(
+        self, tmp_path,
+    ):
+        # Wave W-D11 T11.5 anti-regression: a GateResult that fired before
+        # T11.1/T11.2 metadata stamping (legacy mode) carries no metadata
+        # field. Aggregator MUST NOT crash; rates default to 0.0.
+        layout = _build_full_layout(tmp_path)
+        phase_outputs = {
+            "post_rewrite_validation": {
+                "_completed": True,
+                "_gates_passed": True,
+                "_gate_results": [
+                    {
+                        "gate_id": "claim_support",
+                        "validator_name": "claim_support",
+                        "validator_version": "0.9",  # pre-T11.1
+                        "passed": True,
+                        "severity": "warning",
+                        "score": 1.0,
+                        "issues": [],
+                        "execution_time_ms": 0,
+                        "action": None,
+                        # No "metadata" field at all — legacy shape.
+                    },
+                ],
+            },
+        }
+        agg = PromotionChainAggregator(
+            course_path=layout["course_dir"],
+            project_path=layout["project_dir"],
+            staging_manifest_path=layout["staging_dir"] / "staging_manifest.json",
+            course_code="TEST",
+            run_id="WF-EQM-LEG",
+            phase_outputs=phase_outputs,
+        )
+        # Must not raise.
+        report = agg.build()
+        arrow_3 = next(a for a in report["arrows"] if a["arrow_id"] == 3)
+        # The aggregator still surfaces the metrics block (the gate ran),
+        # but every rate degrades to 0.0 because metadata is absent.
+        assert "evidence_quote_metrics" in arrow_3
+        metrics = arrow_3["evidence_quote_metrics"]
+        assert metrics["evidence_quote_coverage_rate"] == 0.0
+        assert metrics["evidence_quote_substring_fail_rate"] == 0.0
+        assert metrics["evidence_quote_char_span_mismatch_rate"] == 0.0
+
+    def test_evidence_quote_summary_is_unweighted_mean_across_arrows(
+        self, tmp_path,
+    ):
+        # 2 arrows surface metrics: arrow 3 at 0.8, arrow 7 at 0.6.
+        # Unweighted mean must be 0.7 (NOT a sample-count-weighted mean).
+        layout = _build_full_layout(tmp_path)
+        phase_outputs = {
+            "post_rewrite_validation": {
+                "_completed": True,
+                "_gates_passed": True,
+                "_gate_results": [
+                    _gate_result_with_metadata(
+                        "claim_support",
+                        coverage_rate=0.80,
+                        substring_fail_rate=0.05,
+                        char_span_mismatch_rate=0.02,
+                    ),
+                ],
+            },
+            "training_synthesis": {
+                "_completed": True,
+                "_gates_passed": True,
+                "_gate_results": [
+                    _gate_result_with_metadata(
+                        "pair_claim_support",
+                        coverage_rate=0.60,
+                        substring_fail_rate=0.15,
+                        char_span_mismatch_rate=0.04,
+                    ),
+                ],
+            },
+        }
+        agg = PromotionChainAggregator(
+            course_path=layout["course_dir"],
+            project_path=layout["project_dir"],
+            staging_manifest_path=layout["staging_dir"] / "staging_manifest.json",
+            course_code="TEST",
+            run_id="WF-EQM-MEAN",
+            phase_outputs=phase_outputs,
+        )
+        report = agg.build()
+
+        # Both arrows carry metrics.
+        arrow_3 = next(a for a in report["arrows"] if a["arrow_id"] == 3)
+        arrow_7 = next(a for a in report["arrows"] if a["arrow_id"] == 7)
+        assert arrow_3["evidence_quote_metrics"][
+            "evidence_quote_coverage_rate"
+        ] == 0.80
+        assert arrow_7["evidence_quote_metrics"][
+            "evidence_quote_coverage_rate"
+        ] == 0.60
+
+        # Top-level summary is the unweighted mean.
+        assert report["evidence_quote_summary"]["coverage_rate"] == 0.70
+
+    def test_emit_with_evidence_metrics_validates_against_schema(
+        self, tmp_path,
+    ):
+        # Schema-validation regression — the new optional fields must
+        # validate against the bumped schema.
+        layout = _build_full_layout(tmp_path)
+        phase_outputs = {
+            "post_rewrite_validation": {
+                "_completed": True,
+                "_gates_passed": True,
+                "_gate_results": [
+                    _gate_result_with_metadata(
+                        "claim_support",
+                        coverage_rate=0.92,
+                        substring_fail_rate=0.04,
+                        char_span_mismatch_rate=0.01,
+                    ),
+                ],
+            },
+        }
+        out_path = layout["course_dir"] / "courseforge_promotion_chain_report.json"
+        agg = PromotionChainAggregator(
+            course_path=layout["course_dir"],
+            project_path=layout["project_dir"],
+            staging_manifest_path=layout["staging_dir"] / "staging_manifest.json",
+            course_code="TEST",
+            run_id="WF-EQM-SCHEMA",
+            phase_outputs=phase_outputs,
+        )
+        agg.write(out_path)
+        emitted = json.loads(out_path.read_text(encoding="utf-8"))
+
+        validator = _load_schema_validator()
+        errors = list(validator.iter_errors(emitted))
+        assert errors == [], (
+            f"emitted report with evidence_quote_metrics failed schema "
+            f"validation: {[e.message for e in errors]}"
+        )
+
+    def test_legacy_emit_without_evidence_fields_still_validates(
+        self, tmp_path,
+    ):
+        # Schema-validation regression — a report emitted without any
+        # evidence_quote_* metadata (no per-arrow evidence_quote_metrics
+        # blocks) still validates against the bumped schema. Confirms
+        # the additive-only contract.
+        layout = _build_full_layout(tmp_path)
+        out_path = layout["course_dir"] / "courseforge_promotion_chain_report.json"
+        agg = PromotionChainAggregator(
+            course_path=layout["course_dir"],
+            project_path=layout["project_dir"],
+            staging_manifest_path=layout["staging_dir"] / "staging_manifest.json",
+            course_code="TEST",
+            run_id="WF-EQM-LEGACY",
+            phase_outputs={},
+        )
+        agg.write(out_path)
+        emitted = json.loads(out_path.read_text(encoding="utf-8"))
+
+        # No arrow carries evidence_quote_metrics in this scenario.
+        for arrow in emitted["arrows"]:
+            assert "evidence_quote_metrics" not in arrow
+
+        validator = _load_schema_validator()
+        errors = list(validator.iter_errors(emitted))
+        assert errors == [], (
+            f"legacy emit (no evidence metadata) failed schema "
+            f"validation: {[e.message for e in errors]}"
+        )

@@ -48,6 +48,10 @@
     "course_status": {
       "$ref": "https://ed4all.dev/ns/governance/v1/course_status.schema.json",
       "description": "5-value Wave 1 G2 enum referencing schemas/governance/course_status.schema.json. Driven by lib.governance.course_status.derive_course_status."
+    },
+    "evidence_quote_summary": {
+      "$ref": "https://ed4all.dev/ns/governance/v1/promotion_chain.schema.json#/$defs/EvidenceQuoteSummary",
+      "description": "Wave W-D11 T11.5 — corpus-wide evidence_quote rollup. Carries the unweighted-mean coverage_rate across arrows that surfaced an evidence_quote_metrics block. Optional for back-compat with legacy reports emitted before W-D11 T11.5."
     }
   },
   "$defs": {
@@ -109,6 +113,10 @@
           "type": "string",
           "enum": ["pass", "warn", "fail", "escalate"],
           "description": "Per-arrow verdict consumed by the course_status decision logic."
+        },
+        "evidence_quote_metrics": {
+          "$ref": "#/$defs/EvidenceQuoteMetrics",
+          "description": "Wave W-D11 T11.5 — optional per-arrow evidence_quote_* rate block. Stamped on arrows whose validator_set includes claim_support (block-side, Arrow 3) or pair_claim_support (pair-side, Arrow 7). Omitted on arrows whose seam doesn't run either gate. Optional for back-compat with legacy reports."
         }
       }
     },
@@ -131,6 +139,48 @@
           "additionalProperties": { "type": "integer", "minimum": 0 }
         },
         "coverage_pct": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+      }
+    },
+    "EvidenceQuoteMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_quote_coverage_rate",
+        "evidence_quote_substring_fail_rate",
+        "evidence_quote_char_span_mismatch_rate"
+      ],
+      "properties": {
+        "evidence_quote_coverage_rate": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Wave W-D11 T11.5 — share of claims with a non-null evidence_quote that resolved against a cited chunk. Sourced from claim_support / pair_claim_support GateResult.metadata."
+        },
+        "evidence_quote_substring_fail_rate": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Wave W-D11 T11.5 — share of evidence_quote attempts that failed substring containment vs the cited chunk text."
+        },
+        "evidence_quote_char_span_mismatch_rate": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Wave W-D11 T11.5 — share of evidence_quote attempts whose evidence_char_span did not bracket the matched substring."
+        }
+      }
+    },
+    "EvidenceQuoteSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverage_rate"],
+      "properties": {
+        "coverage_rate": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Wave W-D11 T11.5 — unweighted mean of evidence_quote_coverage_rate across arrows that surfaced an evidence_quote_metrics block. 0.0 when no arrow exposed metrics."
+        }
       }
     }
   }
