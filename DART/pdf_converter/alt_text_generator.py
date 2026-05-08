@@ -16,7 +16,12 @@ from typing import TYPE_CHECKING, Optional
 # ``DART/pdf_converter/claude_processor.py``; importing here avoids
 # duplicating the helper and keeps a single env var pin
 # (``DART_CLAUDE_MODEL``) in charge of every DART call site.
-from .claude_processor import _resolve_dart_claude_model
+from .claude_processor import (
+    DART_CLAUDE_MODEL_DEFAULT,
+    _resolve_dart_claude_model,
+    _resolve_dart_model_for_provider,
+    _resolve_dart_vision_provider,
+)
 
 if TYPE_CHECKING:
     from MCP.orchestrator.llm_backend import LLMBackend
@@ -50,13 +55,15 @@ class AltTextGenerator:
         use_ocr_fallback: bool = True,
         llm: Optional["LLMBackend"] = None,
         capture: Optional[object] = None,
+        provider: Optional[str] = None,
     ):
         """
         Initialize alt text generator.
 
         Args:
             api_key: Anthropic API key (or from ANTHROPIC_API_KEY env). Ignored
-                when ``llm`` is provided.
+                when ``llm`` is provided OR when ``provider`` resolves to a
+                non-anthropic backend.
             model: Claude model to use for vision. When ``None``, resolves
                 via env-var-first chain: ``DART_CLAUDE_MODEL`` env var, then
                 the legacy default ``claude-sonnet-4-20250514`` (Phase 6
@@ -77,27 +84,91 @@ class AltTextGenerator:
                 (page, bbox, image hash, detected type, caption
                 presence). When ``None`` (the default), logging is
                 silently skipped so existing tests keep passing.
+            provider: Wave W-D13. Vision-mode provider name. Resolution
+                chain (`_resolve_dart_vision_provider`): explicit kwarg
+                > ``DART_VISION_PROVIDER`` env var > ``DART_PROVIDER``
+                env var > ``"anthropic"`` (legacy default). When the
+                resolved provider is not vision-capable
+                (``OpenAICompatibleBackend.vision_capable=False``), the
+                constructor raises ``ValueError`` IMMEDIATELY rather
+                than letting the operator discover the misconfiguration
+                mid-PDF. ``"anthropic"`` (legacy default) is always
+                vision-capable; the new vision-capable OSS opt-ins are
+                ``"together-vision"`` and ``"local"`` with
+                ``LOCAL_VISION_CAPABLE=true`` (or a vision-substring
+                model ID like ``qwen2.5-vl`` / ``llava`` /
+                ``llama3.2-vision``).
         """
         self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
-        # Phase 6 Subtask 22: resolve effective model via env-var-first chain.
-        self.model = _resolve_dart_claude_model(model)
+        # Wave W-D13: resolve vision-mode provider FIRST so the model
+        # resolver knows which backend it's resolving for. Stored before
+        # the backend build so a constructor-time vision-capability
+        # check can fail loudly on misconfiguration.
+        self.provider = _resolve_dart_vision_provider(provider)
+        # Phase 6 Subtask 22 + W-D13: provider-aware model resolution.
+        # Anthropic stays on the legacy Claude resolver; non-anthropic
+        # providers fall through to the registry's vision-model env
+        # (LOCAL_SYNTHESIS_MODEL with a vision-substring identifier,
+        # TOGETHER_VISION_MODEL, etc.) when the operator hasn't pinned a
+        # non-default DART_CLAUDE_MODEL.
+        self.model = _resolve_dart_model_for_provider(model, self.provider)
         self.use_ocr_fallback = use_ocr_fallback
         self._llm = llm
         self.capture = capture
 
         # Either an injected backend or a resolvable API key enables AI.
-        self.use_ai = use_ai and (llm is not None or self.api_key is not None)
+        # When the provider is non-anthropic the api_key check doesn't
+        # apply (local servers don't need ANTHROPIC_API_KEY); rely on
+        # the registry resolver to surface its own missing-key error.
+        if llm is not None:
+            self.use_ai = use_ai
+        elif self.provider != "anthropic":
+            self.use_ai = use_ai
+        else:
+            self.use_ai = use_ai and self.api_key is not None
 
         self._client = None
         if self.use_ai and llm is None:
             try:
-                from MCP.orchestrator.llm_backend import AnthropicBackend
+                if self.provider == "anthropic":
+                    from MCP.orchestrator.llm_backend import AnthropicBackend
 
-                self._client = AnthropicBackend(
-                    api_key=self.api_key,
-                    default_model=self.model,
+                    self._client = AnthropicBackend(
+                        api_key=self.api_key,
+                        default_model=self.model or DART_CLAUDE_MODEL_DEFAULT,
+                    )
+                else:
+                    from MCP.orchestrator.llm_backend import (
+                        resolve_openai_compatible_backend,
+                    )
+
+                    self._client = resolve_openai_compatible_backend(
+                        self.provider,
+                        model_override=self.model,
+                    )
+                    # Wave W-D13 vision-capability gate: fail at
+                    # construction time so the operator learns about a
+                    # misconfigured provider BEFORE running the PDF
+                    # through the converter and discovering it
+                    # mid-figure.
+                    if not getattr(self._client, "vision_capable", False):
+                        raise ValueError(
+                            f"DART vision provider {self.provider!r} resolved "
+                            f"to a non-vision-capable backend (model="
+                            f"{self.model!r}). Set LOCAL_VISION_CAPABLE=true "
+                            f"for a local Ollama / vLLM vision model, pick "
+                            f"DART_VISION_PROVIDER=together-vision for "
+                            f"cloud OSS vision, or fall back to "
+                            f"DART_VISION_PROVIDER=anthropic."
+                        )
+                logger.debug(
+                    f"LLM backend initialized with provider={self.provider} "
+                    f"model={self.model}"
                 )
-                logger.debug(f"LLM backend initialized with model {self.model}")
+            except ValueError:
+                # Vision-capability misconfiguration is operator-visible;
+                # don't swallow it.
+                raise
             except ImportError:
                 logger.warning("anthropic package not installed. AI alt text unavailable.")
                 self.use_ai = False

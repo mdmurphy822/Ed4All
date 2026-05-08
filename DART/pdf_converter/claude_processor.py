@@ -41,6 +41,19 @@ if TYPE_CHECKING:
 DART_CLAUDE_MODEL_ENV = "DART_CLAUDE_MODEL"
 DART_CLAUDE_MODEL_DEFAULT = "claude-sonnet-4-20250514"
 
+# Wave W-D13: DART provider routing. Operators running a license-clean
+# pipeline route DART through a local OSS server (Ollama / vLLM / llama.cpp
+# / LM Studio) or Together AI's OSS endpoint instead of Anthropic. Default
+# preserves the legacy ``anthropic`` behaviour. The split between
+# ``DART_PROVIDER`` (text-mode block classification, structure detection)
+# and ``DART_VISION_PROVIDER`` (alt-text generation) lets an operator pin
+# a small text model for cheap classification AND a 90B+ vision model for
+# alt-text without flipping every call to the larger model. Mirrors the
+# Courseforge ``OUTLINE_PROVIDER`` / ``REWRITE_PROVIDER`` split.
+DART_PROVIDER_ENV = "DART_PROVIDER"
+DART_VISION_PROVIDER_ENV = "DART_VISION_PROVIDER"
+DART_PROVIDER_DEFAULT = "anthropic"
+
 
 def _resolve_dart_claude_model(explicit: Optional[str] = None) -> str:
     """Pick the effective Claude model for DART call sites.
@@ -56,6 +69,89 @@ def _resolve_dart_claude_model(explicit: Optional[str] = None) -> str:
     if explicit:
         return explicit
     return os.environ.get(DART_CLAUDE_MODEL_ENV) or DART_CLAUDE_MODEL_DEFAULT
+
+
+def _resolve_dart_model_for_provider(
+    explicit: Optional[str], provider: str
+) -> Optional[str]:
+    """Wave W-D13. Resolve a model identifier appropriate for ``provider``.
+
+    For ``provider="anthropic"`` (legacy default), always returns the
+    Anthropic model from the canonical resolver — preserving the
+    pre-W-D13 contract verbatim.
+
+    For any non-anthropic provider, returns:
+      1. ``explicit`` when truthy (operator pinned a specific model).
+      2. ``DART_CLAUDE_MODEL`` env var when set AND not equal to the
+         Anthropic legacy default (operator opted into a model name
+         appropriate for the new backend).
+      3. ``None`` — letting the registry resolver pick the
+         provider-appropriate default (e.g. ``LOCAL_SYNTHESIS_MODEL``
+         for ``provider="local"``, the registry's ``model_default`` for
+         ``provider="together-vision"``, etc.).
+
+    Without this helper a DART call routed to ``provider="local"``
+    would stamp ``claude-sonnet-4-20250514`` as the model identifier on
+    the local server, which does not understand it. Returning ``None``
+    on the non-anthropic happy path lets the registry handle model
+    resolution per its own env-var chain.
+    """
+    if provider == "anthropic":
+        return _resolve_dart_claude_model(explicit)
+    if explicit:
+        return explicit
+    env_value = os.environ.get(DART_CLAUDE_MODEL_ENV)
+    if env_value and env_value != DART_CLAUDE_MODEL_DEFAULT:
+        return env_value
+    return None
+
+
+def _resolve_dart_provider(explicit: Optional[str] = None) -> str:
+    """Pick the effective DART text-mode provider.
+
+    Resolution chain:
+      1. ``explicit`` constructor kwarg when truthy.
+      2. ``DART_PROVIDER`` env var when set (and non-empty).
+      3. ``DART_PROVIDER_DEFAULT`` (``"anthropic"``) — legacy default.
+
+    Returns a provider name from the universe of registered backends:
+    ``"anthropic"`` (legacy default; routes through ``AnthropicBackend``),
+    or any entry registered in
+    ``MCP/orchestrator/llm_backend.py::_OPENAI_COMPATIBLE_PROVIDERS``
+    (``"local"``, ``"together"``, ``"together-vision"``, ...). Adding a
+    new provider is a registry-entry change in that file — DART picks it
+    up automatically.
+    """
+
+    if explicit:
+        return explicit
+    return os.environ.get(DART_PROVIDER_ENV) or DART_PROVIDER_DEFAULT
+
+
+def _resolve_dart_vision_provider(explicit: Optional[str] = None) -> str:
+    """Pick the effective DART vision-mode provider (alt-text generation).
+
+    Resolution chain:
+      1. ``explicit`` constructor kwarg when truthy.
+      2. ``DART_VISION_PROVIDER`` env var when set (and non-empty).
+      3. Falls THROUGH to ``DART_PROVIDER`` (when set) — operators who
+         want one provider for text + vision set ``DART_PROVIDER`` once
+         and don't need to set both.
+      4. ``DART_PROVIDER_DEFAULT`` (``"anthropic"``) — legacy default.
+
+    The split exists so an operator can pin text-mode DART on a small
+    7B/14B model AND vision-mode DART on a 90B Llama-3.2-Vision model
+    without flipping every text call to the larger model. Mirrors the
+    Courseforge ``OUTLINE_PROVIDER`` / ``REWRITE_PROVIDER`` split.
+    """
+
+    if explicit:
+        return explicit
+    return (
+        os.environ.get(DART_VISION_PROVIDER_ENV)
+        or os.environ.get(DART_PROVIDER_ENV)
+        or DART_PROVIDER_DEFAULT
+    )
 
 
 class BlockType(str, Enum):
@@ -258,13 +354,15 @@ Return ONLY the JSON object, no other text.'''
         cache_dir: Optional[str] = None,
         enable_cache: bool = True,
         llm: Optional["LLMBackend"] = None,
+        provider: Optional[str] = None,
     ):
         """
         Initialize Claude processor.
 
         Args:
             api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var).
-                Ignored when ``llm`` is provided.
+                Ignored when ``llm`` is provided OR ``provider`` resolves to
+                a non-anthropic backend.
             model: Claude model to use. When ``None``, resolves via
                 env-var-first chain: ``DART_CLAUDE_MODEL`` env var, then the
                 legacy default ``claude-sonnet-4-20250514`` (Phase 6 Subtask
@@ -275,12 +373,31 @@ Return ONLY the JSON object, no other text.'''
             llm: Optional pre-built LLM backend (e.g., an
                 :class:`MCP.orchestrator.LLMBackend` instance). When provided,
                 the processor routes completions through it instead of
-                constructing an Anthropic client directly. Keeps existing
+                constructing a backend from ``provider``. Keeps existing
                 callers that pass ``api_key`` working unchanged.
+            provider: Wave W-D13. Provider name to route the structure-
+                detection LLM call through. Resolution chain
+                (`_resolve_dart_provider`): explicit kwarg > ``DART_PROVIDER``
+                env var > ``"anthropic"`` (legacy default). Values:
+                ``"anthropic"`` (legacy AnthropicBackend), or any entry
+                registered in
+                ``MCP/orchestrator/llm_backend.py::_OPENAI_COMPATIBLE_PROVIDERS``
+                (``"local"``, ``"together"``, etc). Adding a new provider is
+                a registry-entry change in that file. Ignored when ``llm``
+                is supplied (the injected backend wins).
         """
         self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
-        # Phase 6 Subtask 22: resolve effective model via env-var-first chain.
-        self.model = _resolve_dart_claude_model(model)
+        # Wave W-D13: resolve effective text-mode provider FIRST so the
+        # model resolver knows which backend it's resolving for. Stored
+        # on the instance so the lazy ``client`` property knows which
+        # backend class to build.
+        self.provider = _resolve_dart_provider(provider)
+        # Phase 6 Subtask 22 + W-D13: provider-aware model resolution.
+        # Anthropic provider keeps the legacy Claude resolver; non-
+        # anthropic providers fall through to the registry's
+        # provider-specific model env (LOCAL_SYNTHESIS_MODEL etc.) when
+        # the operator hasn't pinned a non-default DART_CLAUDE_MODEL.
+        self.model = _resolve_dart_model_for_provider(model, self.provider)
         self.max_tokens = max_tokens
         self.cache = ResponseCache(cache_dir) if enable_cache else None
         self._client = None
@@ -288,24 +405,53 @@ Return ONLY the JSON object, no other text.'''
 
     @property
     def client(self):
-        """Lazy initialization of Anthropic client.
+        """Lazy initialization of an LLM backend per the resolved provider.
 
         Only used when no injected ``llm`` backend was supplied. New callers
         should prefer ``llm=...`` in the constructor so that mode switching
         (local / api / mock) works uniformly. This path is retained for
         backward compatibility with direct-SDK callers.
+
+        W-D13: when ``self.provider == "anthropic"`` the legacy
+        ``AnthropicBackend`` path stays unchanged. For any other registered
+        OpenAI-compatible provider, build the generic
+        ``OpenAICompatibleBackend`` via the registry resolver. The model
+        override (``self.model``) flows through so an operator pinning
+        ``DART_CLAUDE_MODEL`` to a non-Anthropic identifier still gets
+        their model honoured (the resolver short-circuits on the
+        ``model_override`` argument).
         """
         if self._client is None:
             try:
-                from MCP.orchestrator.llm_backend import AnthropicBackend
+                if self.provider == "anthropic":
+                    from MCP.orchestrator.llm_backend import AnthropicBackend
 
-                self._client = AnthropicBackend(
-                    api_key=self.api_key,
-                    default_model=self.model,
-                )
+                    self._client = AnthropicBackend(
+                        api_key=self.api_key,
+                        default_model=self.model or DART_CLAUDE_MODEL_DEFAULT,
+                    )
+                else:
+                    from MCP.orchestrator.llm_backend import (
+                        resolve_openai_compatible_backend,
+                    )
+
+                    # ``model`` override applies only when the operator
+                    # explicitly pinned a non-default DART_CLAUDE_MODEL
+                    # (per ``_resolve_dart_model_for_provider``). When
+                    # ``self.model`` is ``None`` the registry resolver
+                    # picks the provider-appropriate default — so
+                    # ``DART_PROVIDER=local`` without a custom
+                    # ``DART_CLAUDE_MODEL`` lands on
+                    # ``LOCAL_SYNTHESIS_MODEL`` (or the registry's
+                    # ``qwen2.5:14b-instruct-q4_K_M`` default).
+                    self._client = resolve_openai_compatible_backend(
+                        self.provider,
+                        model_override=self.model,
+                    )
             except Exception as exc:  # noqa: BLE001
                 raise ClaudeProcessingError(
-                    f"Could not initialize LLM backend: {exc}"
+                    f"Could not initialize LLM backend for provider "
+                    f"{self.provider!r}: {exc}"
                 ) from exc
         return self._client
 

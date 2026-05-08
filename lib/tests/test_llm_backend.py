@@ -552,12 +552,13 @@ class _FakeChatCompletion:
 
     def __call__(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, Any]],
         *,
         max_tokens: int,
         temperature: float,
         decision_metadata: Dict[str, Any] | None = None,
         extra_payload: Dict[str, Any] | None = None,
+        images: List[Dict[str, Any]] | None = None,
     ) -> str:
         self.calls.append(
             {
@@ -566,6 +567,7 @@ class _FakeChatCompletion:
                 "temperature": temperature,
                 "decision_metadata": decision_metadata,
                 "extra_payload": extra_payload,
+                "images": images,
             }
         )
         return self.response_text
@@ -681,13 +683,24 @@ class TestOpenAICompatibleBackend:
         assert "base_url=https://api.together.xyz" in event["decision"]
         assert "model=meta-llama/Llama-3.3-70B-Instruct-Turbo" in event["rationale"]
 
-    def test_vision_raises_not_implemented(self):
+    def test_vision_raises_runtime_error_when_not_vision_capable(self):
+        """W-D13: non-vision-capable provider raises RuntimeError on images=.
+
+        Replaces the W-D12 NotImplementedError pre-W-D13 behaviour. The
+        backend now passes ``images=`` through to the underlying client
+        on vision-capable providers; non-vision-capable providers fail
+        loudly BEFORE the wire round-trip with a message that points at
+        every escape hatch (registry flag, vision_capable_env, sibling
+        vision providers).
+        """
+
         backend = OpenAICompatibleBackend(
             provider_name="local",
             base_url="http://localhost:11434/v1",
             default_model="qwen2.5",
+            vision_capable=False,
         )
-        with pytest.raises(NotImplementedError, match="W-D13"):
+        with pytest.raises(RuntimeError, match="not vision-capable"):
             backend.complete_sync(
                 "sys",
                 "user",
