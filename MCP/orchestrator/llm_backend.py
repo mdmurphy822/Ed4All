@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
@@ -40,6 +41,7 @@ from typing import (
     Union,
     runtime_checkable,
 )
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -749,6 +751,389 @@ class OpenAIBackend(_CaptureMixin):
 
 
 # =============================================================================
+# OpenAICompatibleBackend — generic backend for any OpenAI-compatible provider
+# =============================================================================
+#
+# DESIGN INVARIANT (Wave W-D12): there is exactly ONE class for every
+# OpenAI-compatible provider (local Ollama / vLLM / llama.cpp / LM Studio,
+# Together AI, Groq, Fireworks, DeepSeek, Mistral, Gemini-via-OpenAI-shim,
+# etc.) — driven entirely by configuration in
+# ``_OPENAI_COMPATIBLE_PROVIDERS``. There are NO per-provider subclasses.
+# Adding a new provider is a registry-entry change, not a new class file.
+# The dynamic ``provider_name`` argument is opaque metadata — it surfaces
+# in decision-capture rationales for the audit trail but never branches
+# behavior inside the class.
+#
+# The backend wraps ``Trainforge.generators._openai_compatible_client.
+# OpenAICompatibleClient`` (the same HTTP client the synthesis pipeline
+# uses) — composition-over-inheritance, lazy-imported so the orchestrator
+# stays light when only Anthropic / Mock paths are exercised.
+#
+# Vision (image inputs) is OUT of scope for W-D12 — passing ``images=``
+# raises ``NotImplementedError`` referencing W-D13.
+
+OPENAI_COMPATIBLE_VISION_MESSAGE = (
+    "OpenAICompatibleBackend vision support lands in W-D13; pass anthropic "
+    "provider for vision today."
+)
+
+
+# Provider registry — module-level dict, NOT a separate file. Each entry
+# declares the env-var resolution chain for ``base_url`` / ``api_key`` /
+# ``default_model`` plus whether the provider rejects requests without a
+# valid api_key (cloud OSS providers like Together require one; local
+# servers like Ollama do not). To add a new provider (Groq, Fireworks,
+# DeepSeek, Mistral, hosted Gemini-via-OpenAI-shim, ...), append a new
+# entry — DO NOT add a subclass.
+#
+# Schema per entry:
+#   - ``base_url_env``: env var that overrides the base URL, or ``None``
+#     if the URL is fixed (cloud providers usually have a single
+#     production endpoint).
+#   - ``base_url_default``: default base URL the resolver returns when
+#     ``base_url_env`` is unset.
+#   - ``api_key_env``: env var the resolver reads for the bearer token.
+#   - ``api_key_default``: optional fallback when the env var is unset.
+#     ``None`` means "no fallback" — combined with
+#     ``api_key_required=True`` this triggers a ``RuntimeError`` at
+#     resolve time. Local-style providers use a placeholder string
+#     (``"local"``) so reverse-proxy servers that DO check auth see a
+#     stable value.
+#   - ``model_env``: env var that overrides the default model.
+#   - ``model_default``: default model identifier.
+#   - ``api_key_required``: whether a missing api_key fails closed at
+#     resolve time. Cloud providers: ``True``. Local servers: ``False``.
+#   - ``unverified`` (optional): truthy when the registry entry is a
+#     stub that hasn't been verified against the provider's docs;
+#     callers see a warning at resolve time so an operator knows to
+#     double-check the base_url / model name before relying on it.
+_OPENAI_COMPATIBLE_PROVIDERS: Dict[str, Dict[str, Any]] = {
+    "local": {
+        "base_url_env": "LOCAL_SYNTHESIS_BASE_URL",
+        "base_url_default": "http://localhost:11434/v1",
+        "api_key_env": "LOCAL_SYNTHESIS_API_KEY",
+        "api_key_default": "local",
+        "model_env": "LOCAL_SYNTHESIS_MODEL",
+        "model_default": "qwen2.5:14b-instruct-q4_K_M",
+        "api_key_required": False,
+    },
+    "together": {
+        "base_url_env": None,  # fixed cloud endpoint
+        "base_url_default": "https://api.together.xyz/v1",
+        "api_key_env": "TOGETHER_API_KEY",
+        "api_key_default": None,
+        "model_env": "TOGETHER_SYNTHESIS_MODEL",
+        "model_default": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "api_key_required": True,
+    },
+    # Illustrative stubs — base URLs match each provider's documented
+    # OpenAI-compatible endpoint as of 2026-05. Marked ``unverified`` so a
+    # post-resolve audit log surfaces the entry; flip the flag once the
+    # entry is exercised against a live key. New providers are added
+    # here — NEVER as a subclass.
+    "groq": {
+        "base_url_env": None,
+        "base_url_default": "https://api.groq.com/openai/v1",
+        "api_key_env": "GROQ_API_KEY",
+        "api_key_default": None,
+        "model_env": "GROQ_SYNTHESIS_MODEL",
+        "model_default": "llama-3.3-70b-versatile",
+        "api_key_required": True,
+        "unverified": True,
+    },
+    "fireworks": {
+        "base_url_env": None,
+        "base_url_default": "https://api.fireworks.ai/inference/v1",
+        "api_key_env": "FIREWORKS_API_KEY",
+        "api_key_default": None,
+        "model_env": "FIREWORKS_SYNTHESIS_MODEL",
+        "model_default": "accounts/fireworks/models/llama-v3p3-70b-instruct",
+        "api_key_required": True,
+        "unverified": True,
+    },
+    "deepseek": {
+        "base_url_env": None,
+        "base_url_default": "https://api.deepseek.com/v1",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "api_key_default": None,
+        "model_env": "DEEPSEEK_SYNTHESIS_MODEL",
+        "model_default": "deepseek-chat",
+        "api_key_required": True,
+        "unverified": True,
+    },
+}
+
+
+def _redact_base_url_for_capture(base_url: str) -> str:
+    """Return host-only form of ``base_url`` for decision-capture rationale.
+
+    Stripping the path keeps the rationale string tight and avoids
+    leaking deployment-specific suffixes (e.g. ``/v1/openai`` proxy
+    routes) into the audit trail. Returns the input verbatim when the
+    URL is unparseable so we never crash the capture path.
+    """
+    try:
+        parsed = urlparse(base_url)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:  # noqa: BLE001 — defensive
+        pass
+    return base_url
+
+
+class OpenAICompatibleBackend(_CaptureMixin):
+    """Generic ``LLMBackend`` for any OpenAI-compatible chat provider.
+
+    ONE class. NO subclasses. Provider semantics (base_url, default
+    model, api_key resolution, "must I have an api_key?") flow through
+    the registry, not via inheritance. The ``provider_name`` constructor
+    arg is opaque metadata — it surfaces in decision-capture rationales
+    so the audit trail records which OSS provider produced each call,
+    but no branch inside the class body keys on the value.
+
+    Wraps ``Trainforge.generators._openai_compatible_client.
+    OpenAICompatibleClient``: lazy import keeps the orchestrator slim
+    when only Anthropic / Mock paths are wired, and reuses the existing
+    HTTP retry / JSON parse / error-mapping code instead of duplicating
+    it here.
+
+    Vision is out of scope — pass ``images=`` and the call raises
+    ``NotImplementedError`` referencing W-D13. Streaming is also
+    deferred per project decision O3.
+    """
+
+    def __init__(
+        self,
+        provider_name: str,
+        base_url: str,
+        default_model: str,
+        api_key: Optional[str] = None,
+        capture: Optional[Any] = None,
+        request_timeout: float = 120.0,
+    ):
+        if not provider_name:
+            raise ValueError("OpenAICompatibleBackend requires a provider_name")
+        if not base_url:
+            raise ValueError("OpenAICompatibleBackend requires a base_url")
+        if not default_model:
+            raise ValueError(
+                "OpenAICompatibleBackend requires a non-empty default_model"
+            )
+        # provider_label is the canonical _CaptureMixin field that flows
+        # into the rationale. Setting it from the constructor arg means a
+        # new provider is one registry-entry away — no per-provider class.
+        self.provider_label = str(provider_name)
+        self.provider_name = str(provider_name)
+        self.base_url = str(base_url).rstrip("/")
+        self.default_model = str(default_model)
+        self.api_key = api_key
+        self.request_timeout = float(request_timeout)
+        self._client = None  # lazy
+        self._set_capture(capture)
+
+    @property
+    def client(self):
+        """Lazy ``OpenAICompatibleClient``. Built on first use."""
+        if self._client is None:
+            try:
+                # Lazy import — keeps the orchestrator import-light in
+                # paths that never reach an OpenAI-compatible provider.
+                from Trainforge.generators._openai_compatible_client import (  # noqa: PLC0415
+                    OpenAICompatibleClient,
+                )
+            except ImportError as exc:  # pragma: no cover — defensive
+                raise ImportError(
+                    "OpenAICompatibleBackend requires "
+                    "Trainforge.generators._openai_compatible_client. "
+                    "This module is shipped with the project; if you see "
+                    "this error your install is incomplete."
+                ) from exc
+            self._client = OpenAICompatibleClient(
+                base_url=self.base_url,
+                model=self.default_model,
+                api_key=self.api_key,
+                # Capture is wired at the backend layer (this class), not
+                # at the inner client layer — we want a single
+                # ``llm_chat_call`` event per backend call, not two.
+                capture=None,
+                timeout=self.request_timeout,
+                provider_label=self.provider_label,
+            )
+        return self._client
+
+    @staticmethod
+    def _build_messages(system: str, user: str) -> List[Dict[str, str]]:
+        """Translate ``LLMBackend``-style (system, user) → OpenAI messages."""
+        messages: List[Dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": user})
+        return messages
+
+    def complete_sync(
+        self,
+        system: str,
+        user: str,
+        *,
+        model: Optional[str] = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        images: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        if images:
+            raise NotImplementedError(OPENAI_COMPATIBLE_VISION_MESSAGE)
+
+        resolved_model = model or self.default_model
+        messages = self._build_messages(system, user)
+        client = self.client
+        # If the caller overrides the default model, swap the inner
+        # client's model field for this call only.
+        previous_model: Optional[str] = None
+        if model and model != client.model:
+            previous_model = client.model
+            client._model = str(model)  # noqa: SLF001 — client owns its own state
+
+        start = time.monotonic()
+        text: str = ""
+        try:
+            text = client.chat_completion(
+                messages,
+                max_tokens=int(max_tokens),
+                temperature=float(temperature),
+            )
+            return text
+        finally:
+            if previous_model is not None:
+                client._model = previous_model  # noqa: SLF001
+            self._emit_llm_chat_capture(
+                model=resolved_model,
+                max_tokens=int(max_tokens),
+                temperature=float(temperature),
+                messages_count=len(messages),
+                response_text_len=len(text or ""),
+                latency_ms=(time.monotonic() - start) * 1000.0,
+                # ``provider_name`` is the dynamic field — it records
+                # WHICH OSS provider produced each call. Adding a new
+                # provider via the registry surfaces here unchanged.
+                extra={
+                    "provider_name": self.provider_name,
+                    "base_url": _redact_base_url_for_capture(self.base_url),
+                },
+            )
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        model: Optional[str] = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        stream: bool = False,
+        images: Optional[List[Dict[str, Any]]] = None,
+    ) -> Union[str, AsyncIterator[str]]:
+        if stream:
+            raise NotImplementedError(
+                "OpenAICompatibleBackend does not support streaming "
+                "(deferred per decision O3). Call with stream=False."
+            )
+        # Off-thread the blocking HTTP call so the event loop isn't pinned.
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        loop = _asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.complete_sync(
+                system,
+                user,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                images=images,
+            ),
+        )
+
+
+def resolve_openai_compatible_backend(
+    provider_name: str,
+    *,
+    model_override: Optional[str] = None,
+    api_key_override: Optional[str] = None,
+    capture: Optional[Any] = None,
+    request_timeout: float = 120.0,
+) -> OpenAICompatibleBackend:
+    """Resolve a registry entry into a built ``OpenAICompatibleBackend``.
+
+    The resolution chain per registry field:
+
+    - ``base_url``: env var (when ``base_url_env`` is set and populated)
+      → ``base_url_default``.
+    - ``api_key``: explicit ``api_key_override`` → env var → registry
+      ``api_key_default`` (which may be ``None``). When the registry
+      entry sets ``api_key_required=True`` and the resolved key is
+      empty, a ``RuntimeError`` fires before the backend is built.
+    - ``default_model``: explicit ``model_override`` → env var →
+      ``model_default``.
+
+    Unknown ``provider_name`` raises ``ValueError`` listing every
+    registered provider so the operator sees the registry surface
+    inline. Add a new provider by appending an entry to
+    ``_OPENAI_COMPATIBLE_PROVIDERS`` — there is no subclassing path.
+    """
+    entry = _OPENAI_COMPATIBLE_PROVIDERS.get(provider_name)
+    if entry is None:
+        registered = sorted(_OPENAI_COMPATIBLE_PROVIDERS.keys())
+        raise ValueError(
+            f"Unknown OpenAI-compatible provider: {provider_name!r}. "
+            f"Registered providers: {registered}. Add a registry entry "
+            f"to _OPENAI_COMPATIBLE_PROVIDERS in "
+            f"MCP/orchestrator/llm_backend.py — no subclassing required."
+        )
+
+    base_url_env = entry.get("base_url_env")
+    base_url = (
+        os.environ.get(base_url_env) if base_url_env else None
+    ) or entry["base_url_default"]
+
+    api_key_env = entry.get("api_key_env")
+    resolved_api_key = api_key_override
+    if not resolved_api_key and api_key_env:
+        resolved_api_key = os.environ.get(api_key_env)
+    if not resolved_api_key:
+        resolved_api_key = entry.get("api_key_default")
+
+    if entry.get("api_key_required", False) and not resolved_api_key:
+        raise RuntimeError(
+            f"Provider {provider_name!r} requires {api_key_env}; set the "
+            f"environment variable or pass api_key_override="
+        )
+
+    model_env = entry.get("model_env")
+    resolved_model = (
+        model_override
+        or (os.environ.get(model_env) if model_env else None)
+        or entry["model_default"]
+    )
+
+    if entry.get("unverified", False):
+        logger.warning(
+            "resolve_openai_compatible_backend: provider %r is marked "
+            "unverified in the registry; double-check base_url=%s and "
+            "model=%s before relying on it.",
+            provider_name, base_url, resolved_model,
+        )
+
+    return OpenAICompatibleBackend(
+        provider_name=provider_name,
+        base_url=base_url,
+        default_model=resolved_model,
+        api_key=resolved_api_key,
+        capture=capture,
+        request_timeout=request_timeout,
+    )
+
+
+# =============================================================================
 # MockBackend — deterministic fixture-driven backend for tests
 # =============================================================================
 
@@ -1007,10 +1392,47 @@ def build_backend(
             capture=capture,
         )
     if provider == "openai":
-        api_key = overrides.get("api_key") or spec.api_key
-        return OpenAIBackend(
-            api_key=api_key,
-            default_model=model or DEFAULT_OPENAI_MODEL,
+        # W-D12: ``provider="openai"`` is now a deprecated alias for the
+        # ``local`` OpenAI-compatible registry entry. The pre-W-D12
+        # ``OpenAIBackend`` was a stub that raised on every call —
+        # routing legacy callers through ``local`` lets a deployment
+        # that pinned the legacy spelling keep running against a local
+        # OpenAI-compatible server (Ollama / vLLM / llama.cpp / LM
+        # Studio) with no code edit beyond an env tweak. Operators
+        # should migrate to ``provider="local"`` (or another registry
+        # entry) explicitly.
+        warnings.warn(
+            "LLM_PROVIDER=openai is deprecated; use 'local' or another "
+            "OpenAI-compatible provider name. Available providers: "
+            f"{sorted(_OPENAI_COMPATIBLE_PROVIDERS.keys())}. See the "
+            "_OPENAI_COMPATIBLE_PROVIDERS registry in "
+            "MCP/orchestrator/llm_backend.py.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        api_key_override = overrides.get("api_key") or spec.api_key
+        return resolve_openai_compatible_backend(
+            "local",
+            model_override=model,
+            api_key_override=api_key_override,
             capture=capture,
         )
-    raise ValueError(f"Unknown LLM provider: {provider}")
+    if provider in _OPENAI_COMPATIBLE_PROVIDERS:
+        # W-D12 dynamic dispatch: any registered OpenAI-compatible
+        # provider resolves through the registry, NOT via a
+        # per-provider subclass. Adding a new provider is a registry
+        # entry change.
+        api_key_override = overrides.get("api_key") or spec.api_key
+        return resolve_openai_compatible_backend(
+            provider,
+            model_override=model,
+            api_key_override=api_key_override,
+            capture=capture,
+        )
+    raise ValueError(
+        f"Unknown LLM provider: {provider!r}. Built-in providers: "
+        f"['anthropic', 'mock']. OpenAI-compatible registry: "
+        f"{sorted(_OPENAI_COMPATIBLE_PROVIDERS.keys())}. To add a new "
+        f"provider, append a registry entry to "
+        f"_OPENAI_COMPATIBLE_PROVIDERS in MCP/orchestrator/llm_backend.py."
+    )
