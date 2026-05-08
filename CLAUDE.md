@@ -495,13 +495,17 @@ All errors logged to:
 
 ## Aggregators
 
-Top-level workflow aggregators run post-loop in `WorkflowRunner.run_workflow` and roll up per-phase signals into a single operator-facing JSON. Best-effort: aggregator failure logs a warning but does not change `final_status` (per-phase reports remain authoritative). Live aggregators:
+Top-level workflow aggregators run post-loop in `WorkflowRunner.run_workflow` and roll up per-phase signals into a single operator-facing JSON. Best-effort: aggregator failure logs a warning but does not change `final_status`. Long-form per-aggregator detail: `docs/architecture/aggregators.md`.
 
-- `lib/aggregators/courseforge_validation_report.py::CourseforgeValidationReport` — walks every per-phase `report.json` (inter_tier_validation, post_rewrite_validation) plus in-memory `_gate_results` chains and writes `<project_path>/courseforge_validation_report.json` (schema 1.1). Carries `per_block_results[]`, `source_grounding_results`, `accessibility_results`, `statistical_semantic_results`, `manifest_hash_results`, plus the `final_promotion_decision` enum (`failed | non_certified_archive | certified_accessible | certified_instructional | certified_trainable`). Emits `courseforge_validation_aggregated` decision per build.
-- `lib/aggregators/trainforge_assessment_quality_report.py::TrainforgeAssessmentQualityReport` — aggregates `training_synthesis` / `trainforge_assessment` / `libv2_archival` `_gate_results`, the `<trainforge_dir>/quality/quality_report.json::assessments` dimension, and (when an adapter is imported) `LibV2/courses/<slug>/models/<id>/eval/eval_report.json` into a single `<libv2_course>/quality/trainforge_assessment_quality_report.json` (schema 1.0). Falls back to `<trainforge_dir>/trainforge_assessment_quality_report.json` when archival hasn't run. Carries `summary` (total_questions, answerable_rate, single_correct_rate, bloom_alignment_rate, placeholder_rate, source_support_rate), `synthesis_quality`, `kg_quality`, `eval_summary`, `per_question_issues`, plus a 3-way `promotion_decision` enum (`failed | non_certified_archive | trainable`). Emits `trainforge_quality_aggregated` decision per build. Heuristic replaced by Wave 3 G1's master promotion-chain compose.
-- `lib/aggregators/coverage_map.py::CoverageMapAggregator` — builds an objective-keyed coverage table linking objectives -> chunks -> questions -> training_pairs from `course_planning` synthesized objectives, `imscc_chunks/chunks.jsonl::learning_outcome_refs[]`, `assessments.json::questions[]` `objective_id` / `source_chunks[]`, and `training_specs/{instruction,preference}_pairs.jsonl::lo_refs[]`. Writes `<libv2_course>/coverage_map.json` (schema 1.0; canonical shape pinned at `schemas/aggregators/coverage_map.schema.json`). Falls back to `<trainforge_dir>/coverage_map.json` when archival hasn't run. Surfaces three orphan classes — `summary.orphan_objectives` (objective with no chunks AND no questions AND no training_pairs), `summary.orphan_chunks` (chunk with empty / non-extant `learning_outcome_refs[]`), `summary.orphan_questions` (question with empty / non-extant `objective_id` / `objective_ids[]`) — plus per-objective `answers_grounded_in_chunks[]` (questions whose `source_chunks[]` intersect the objective's collated chunk list). Emits `coverage_map_aggregated` decision per build.
-- `lib/aggregators/promotion_chain_report.py::PromotionChainAggregator` — Wave 3 W3.G master governance aggregator. Walks all 9 arrows of the DART -> eval-report chain (DART source -> DART HTML -> CourseForge blocks -> rewritten HTML -> IMSCC -> IMSCC chunks -> assessment items -> training pairs -> adapter -> eval report), reads each per-stage report best-effort, and writes a single canonical `<libv2_course>/courseforge_promotion_chain_report.json` (schema 1.0; canonical shape pinned at `schemas/governance/promotion_chain.schema.json`). Falls back to `<trainforge_dir>/courseforge_promotion_chain_report.json` when archival hasn't run. Per-arrow rows carry `{arrow_id, name, input_hash, output_hash, validator_set[], passed, warnings_count, source_coverage, promotion_decision}`. Top-level `chain_hash` is a deterministic SHA-256 over the canonicalised arrow rows in chain order; `course_status` references the Wave 1 G2 5-value enum (`failed | non_certified_archive | certified_accessible | certified_instructional | certified_trainable`) and is composed by `lib/governance/course_status.py::derive_course_status`. **Anti-silent-degradation contract**: when a per-stage report is missing the aggregator MUST emit `promotion_decision: "fail"` on that arrow with `validator_set: ["missing_stage_report"]` and surface `course_status: "failed"`. Emits `promotion_chain_aggregated` decision per build. Supersedes the per-aggregator `final_promotion_decision` heuristics in W2.A (`courseforge_validation_report.json`) and W2.B (`trainforge_assessment_quality_report.json`).
-- `lib/governance/course_status.py::derive_course_status` — Wave 3 W3.G full 5-branch composer. Walks the per-arrow rows produced by `PromotionChainAggregator` and returns the canonical `course_status` enum value via the cohort table: `ACCESSIBILITY_GATE_IDS = {wcag_compliance, wcag_aa_compliance}` (gates `certified_accessible`); `INSTRUCTIONAL_GATE_IDS = {content_grounding, oscqr_score, page_objectives, source_refs}` (gates `certified_instructional`); `TRAINABLE_GATE_IDS = {min_edge_count, synthesis_diversity, eval_gating, family_completeness}` (gates `certified_trainable`). Anti-silent-degradation: a missing cohort gate disqualifies the cohort (silent crediting an absent gate is the silent-degradation class the helper closes); a hard-fail arrow attached to any critical-cohort gate (or an unattributed `missing_stage_report`) shorts to `failed`. Wave 1 (`compose_course_status`) is preserved for the legacy `failed` / `non_certified_archive`-only branches.
+| Aggregator | Output | Schema |
+|------------|--------|--------|
+| `CourseforgeValidationReport` | `<project>/courseforge_validation_report.json` | schema 1.1 |
+| `TrainforgeAssessmentQualityReport` | `<libv2_course>/quality/trainforge_assessment_quality_report.json` | schema 1.0 |
+| `CoverageMapAggregator` | `<libv2_course>/coverage_map.json` | `schemas/aggregators/coverage_map.schema.json` |
+| `PromotionChainAggregator` (W3.G master) | `<libv2_course>/courseforge_promotion_chain_report.json` | `schemas/governance/promotion_chain.schema.json` |
+| `lib/governance/course_status.py::derive_course_status` | composes `course_status` enum on chain report | (helper, no separate file) |
+
+`PromotionChainAggregator` supersedes the per-aggregator `final_promotion_decision` heuristics. `derive_course_status` returns the canonical 5-value enum (`failed | non_certified_archive | certified_accessible | certified_instructional | certified_trainable`); a missing per-stage report shorts to `course_status: failed` (anti-silent-degradation contract).
 
 ## Validation Gates
 
@@ -735,45 +739,23 @@ Default posture: training-data synthesis routes to license-clean providers — `
 
 ## Canonical Helpers
 
-Single-source-of-truth loaders under `lib/ontology/`:
+Long-form per-validator detail + BERT ensemble member detail + pyproject extras: `docs/validation/validators.md`.
+
+Single-source-of-truth loaders (`lib/ontology/`):
 
 - `lib/ontology/bloom.py` — Bloom verb / level / cognitive-domain detection.
 - `lib/ontology/slugs.py::canonical_slug` — unified slug helper.
 - `lib/ontology/teaching_roles.py` — `(component, purpose) → role` mapper.
-- `lib/ontology/taxonomy.py::load_taxonomy(name)` — generic JSON-taxonomy loader, reads from `schemas/taxonomies/`.
+- `lib/ontology/taxonomy.py::load_taxonomy(name)` — generic JSON-taxonomy loader (reads `schemas/taxonomies/`).
+- `lib/ontology/learning_objectives.py` — single source of truth for LO identity (`mint_lo_id`, `validate_lo_id`, `hierarchy_from_id`, `split_terminal_chapter`). Pattern `^[A-Z]{2,}-\\d{2,}$` mirrors `schemas/knowledge/courseforge_jsonld_v1.schema.json`.
 
-Validators under `lib/validators/` (see Active Gates above for wiring):
+Validators (`lib/validators/`) — wiring in `docs/validation/gates.md`. Load-bearing thresholds:
 
-- `lib/validators/page_objectives.py` — objective coverage per page.
-- `lib/validators/content_type.py` — content_type enum enforcement (gated).
-- `lib/validators/evidence.py` — per-rule evidence discriminator loader; strict mode drops FallbackProvenance.
-- `lib/validators/assessment_objective_alignment.py` — fail-loud gate keeping every assessment question's `objective_id` covered by at least one chunk's `learning_outcome_refs`.
-- `lib/validators/source_refs.py` — verifies every emitted Courseforge `sourceId` resolves against the DART staging manifest.
-- `lib/validators/libv2_manifest.py` — validates LibV2 manifest JSON, scaffold completeness, and on-disk artifact hash/size agreement.
-- `lib/validators/libv2_model.py` — validates emitted `model_card.json` against `schemas/models/model_card.schema.json`. Critical: schema match, weights file presence + size + sha256 agreement, `pedagogy_graph_hash` resolves to extant graph in same course. Warning: missing eval scores, missing license, malformed HF repo regex. Wired as the `libv2_model` gate.
-- `lib/validators/kg_quality.py` — KG-quality report (completeness / consistency / accuracy / coverage); thin wrapper over `Trainforge/rag/kg_quality_report.py::KGQualityReporter`. Thresholds: 0.95 / 0.95 / 0.95 / 0.5.
-- `lib/validators/min_edge_count.py` — Pre-synthesis gate: critical-fails on pedagogy graph with <100 edges, <4 distinct edge types, or concept graph with <50 nodes. Closes the silent zero-edge regression class for the synthesis surface.
-- `lib/validators/synthesis_diversity.py` — Post-synthesis gate: critical-fails when top-3 templates >60% of pairs, single template >35%, or distinct templates <8. Warns when total pairs <100.
-- `lib/validators/synthesis_leakage.py` — Post-synthesis gate covering two contamination vectors: (a) verbatim-span leakage from `chunk.text` (default 5% rate / 50-char span); (b) assessment-outline scaffolding patterns like `Question N (XX-NN, Bloom: ...)` (default 0% — zero tolerance, structural contamination). Tunable via gate `config.thresholds.leak_rate_threshold`, `leak_span_chars`, `assessment_scaffold_rate_threshold`.
-- `lib/validators/objective_assessment_similarity.py` — Cosine-similarity floor between every assessment-item block stem and its referenced learning-objective text. Default `min_cosine = 0.55` (calibrated against the embedder's intrinsic similarity floor — topically-related but not semantically-aligned pairs cluster below ~0.40). Below threshold emits `action="regenerate"`. Wired symmetrically as `outline_objective_assessment_similarity` (inter_tier_validation) and `rewrite_objective_assessment_similarity` (post_rewrite_validation).
-- `lib/validators/concept_example_similarity.py` — Cosine-similarity floor between every concept-block definition and its illustrating example. Default `min_cosine = 0.50` — strictly looser than the objective↔assessment gate's 0.55 because examples are intentionally more concrete than the abstract concept they illustrate.
-- `lib/validators/objective_roundtrip_similarity.py` — Cosine-similarity floor between the rewrite-tier learning-objective paraphrase and the source objective. Default `min_cosine = 0.70` — strictly tighter than the prior two gates because a paraphrase MUST preserve meaning; below 0.70 indicates semantic drift, not just surface-form variation.
-- `lib/validators/courseforge_outline_shacl.py` — Statistical-tier wrapper around the `schemas/context/courseforge_v1.shacl-rules.ttl` shape constraints, applied to outline-tier Block emit before the rewrite tier sees it.
-- `lib/validators/bloom_classifier_disagreement.py` — Wraps `lib/classifiers/bloom_bert_ensemble.py::BloomBertEnsemble`. Fires `action="regenerate"` on (a) majority-vote disagreement with the block's declared `bloomLevel` (`bert_ensemble_disagreement` decision event) or (b) ensemble dispersion above default `bert_dispersion = 0.7` (`bert_ensemble_dispersion_high` decision event; entropy of normalised per-level scores, range `[0, 1]`).
+- `kg_quality.py` — KG-quality report; thresholds **0.95 / 0.95 / 0.95 / 0.5** (completeness / consistency / accuracy / coverage).
+- `curie_anchoring` (binary per-pair anchoring sentinel) — default **`min_pair_anchoring_rate=0.95`**; supersedes deprecated `curie_preservation` shim (Wave 135c→135d migration).
+- Statistical-tier embedding validators (`objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`, `bloom_classifier_disagreement`) graceful-degrade contract: missing `[embedding]` pyproject extras emit warning-severity `EMBEDDING_DEPS_MISSING` GateIssue with `passed=True` unless `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips to fail-closed.
 
-**BERT ensemble members** (`lib/classifiers/bloom_bert_ensemble.py::_DEFAULT_ENSEMBLE_MEMBERS`):
-
-1. `kabir5297/bloom_taxonomy_classifier` — purpose-built 6-class Bloom classifier; natively aligned with the canonical `BLOOM_LEVELS` enum (`remember` / `understand` / `apply` / `analyze` / `evaluate` / `create`).
-2. `distilbert-base-uncased-finetuned-sst-2-english` — sentiment model contributing dispersion via the low-resolution `_SST2_TO_BLOOM` heuristic mapping (POSITIVE → `evaluate`, NEGATIVE → `remember`); intentionally a low-confidence vote whose role is dispersion contribution, not majority dominance.
-3. `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` — zero-shot NLI classifier; given a candidate text + the six Bloom-level labels as hypotheses, picks the highest-entailment level.
-
-Each member's `revision` field is pinned to a concrete HuggingFace commit SHA, and each resolved revision is captured in the `bert_ensemble_member_loaded` decision event so the audit trail records which revision produced each classification.
-
-**Optional pyproject extras** (`pyproject.toml::[project.optional-dependencies]`):
-
-- `embedding` — `sentence-transformers>=2.5,<4`, `transformers>=4.49,<4.50`, `torch>=2`, `numpy>=1.24`. Required for the four statistical-tier validators above. `pip install -e '.[embedding]'`. Kept out of the default install so CPU-only dev boxes don't pull in torch + transformers wheels just to run the orchestrator. There is no separate `[bert]` extras group: the BERT ensemble reuses the `transformers` pin from `[embedding]`, so `pip install -e '.[embedding]'` enables both the embedding-similarity validators AND the BERT ensemble disagreement gate. Missing extras degrade gracefully (warning-severity GateIssue, `passed=True`) unless `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips to fail-closed.
-
-**Canonical LO helper**: `lib/ontology/learning_objectives.py` owns the single source of truth for LO identity (`mint_lo_id`, `validate_lo_id`, `hierarchy_from_id`, `split_terminal_chapter`). Pattern `^[A-Z]{2,}-\\d{2,}$` mirrors `schemas/knowledge/courseforge_jsonld_v1.schema.json`. `schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json` consumed by LibV2.
+`schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json` consumed by LibV2.
 
 ---
 
