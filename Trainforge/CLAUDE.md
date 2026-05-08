@@ -713,7 +713,7 @@ Profiles select the active matrix: `Trainforge/eval/configs/rdf_shacl.yaml` (all
 - `Trainforge/eval/source_match.py` accepts a multi-chunk ground-truth set (`ground_truth_chunk_ids: List[str]` populated by `HoldoutBuilder._build_probes` from all chunks teaching/exemplifying/assessing the same target). A model that cites ANY of them is credited; legacy single-source `withheld_edges` still work via fallback to `edge.source`.
 - `Trainforge/eval/syntactic.py::evaluate_predicate_usage` is a CURIE-aware strict-mode check that the generated Turtle uses each REQUIRED predicate URI (no synonym credit for `sh:class` when `sh:datatype` was required).
 
-These five fixes close the regression class where a template-recognizer adapter on a mock-provider corpus scored high on the prior eval. The signals are then gated by `lib/validators/eval_gating.py::EvalGatingValidator` on the `trainforge_train::post_training_validation` phase — see the Active Gates table in root `CLAUDE.md`.
+These five fixes close the regression class where a template-recognizer adapter on a mock-provider corpus scored high on the prior eval. The signals are then gated by `lib/validators/eval_gating.py::EvalGatingValidator` on the `trainforge_train::post_training_validation` phase — see `docs/validation/gates.md`.
 
 **Eval-gating thresholds (default, override via gate `inputs.thresholds`):**
 
