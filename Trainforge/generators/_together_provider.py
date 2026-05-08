@@ -310,12 +310,19 @@ class TogetherSynthesisProvider:
         )
         out["provider"] = self._provider_name
 
+        # W-D11 T11.3 — thread structured-claim arrays through emit
+        # when the LLM produced them.
+        for k in ("key_claims", "per_claim_support"):
+            if k in parsed:
+                out[k] = parsed[k]
+
         self._emit_decision(
             kind="instruction",
             draft=draft,
             chunk_id=chunk_id,
             usage=usage,
             retry_count=retry_count,
+            parsed=parsed,
         )
         return out
 
@@ -348,12 +355,19 @@ class TogetherSynthesisProvider:
         )
         out["provider"] = self._provider_name
 
+        # W-D11 T11.3 — thread structured-claim arrays through emit
+        # when the LLM produced them.
+        for k in ("key_claims", "per_claim_support"):
+            if k in parsed:
+                out[k] = parsed[k]
+
         self._emit_decision(
             kind="preference",
             draft=draft,
             chunk_id=chunk_id,
             usage=usage,
             retry_count=retry_count,
+            parsed=parsed,
         )
         return out
 
@@ -504,6 +518,9 @@ class TogetherSynthesisProvider:
     def _render_instruction_user(
         cls, draft: Dict[str, Any], chunk_id: str
     ) -> str:
+        from Trainforge.generators._base_synthesis_provider import (
+            EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
+        )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Bloom level: {draft.get('bloom_level','unknown')}\n"
@@ -516,6 +533,7 @@ class TogetherSynthesisProvider:
             f"\n"
             f"Rewrite the prompt and completion. Return JSON with keys "
             f"'prompt' and 'completion'."
+            f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
             f"{cls._INSTRUCTION_JSON_DIRECTIVE}"
         )
 
@@ -523,6 +541,9 @@ class TogetherSynthesisProvider:
     def _render_preference_user(
         cls, draft: Dict[str, Any], chunk_id: str
     ) -> str:
+        from Trainforge.generators._base_synthesis_provider import (
+            EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
+        )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Source: {draft.get('rejected_source','unknown')}\n"
@@ -535,6 +556,7 @@ class TogetherSynthesisProvider:
             f"\n"
             f"Rewrite all three. Return JSON with keys 'prompt', "
             f"'chosen', and 'rejected'."
+            f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
             f"{cls._PREFERENCE_JSON_DIRECTIVE}"
         )
 
@@ -612,6 +634,7 @@ class TogetherSynthesisProvider:
         chunk_id: str,
         usage: Dict[str, int],
         retry_count: int,
+        parsed: Optional[Dict[str, Any]] = None,
     ) -> None:
         if self._capture is None:
             return
@@ -634,6 +657,7 @@ class TogetherSynthesisProvider:
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     retry_count=retry_count,
+                    parsed=parsed,
                 ),
             )
         except Exception as exc:  # pragma: no cover — defensive
@@ -672,7 +696,16 @@ class TogetherSynthesisProvider:
         prompt_tokens: int,
         completion_tokens: int,
         retry_count: int,
+        parsed: Optional[Dict[str, Any]] = None,
     ) -> str:
+        # W-D11 T11.3 — interpolate per-claim evidence_quote emit rate
+        # into the rationale. Mirrors the W5.D pattern (extend an
+        # existing decision_type's rationale with a new dynamic
+        # signal; no new enum value).
+        from Trainforge.generators._base_synthesis_provider import (
+            render_evidence_quote_rationale_fragment,
+        )
+        evidence_fragment = render_evidence_quote_rationale_fragment(parsed)
         return (
             f"Routing template-generated {kind} draft "
             f"(template_id={draft.get('template_id','n/a')}, "
@@ -684,7 +717,8 @@ class TogetherSynthesisProvider:
             f"is the ToS-clean teacher pass for the SLM corpus. "
             f"prompt_tokens={prompt_tokens}, "
             f"completion_tokens={completion_tokens}, "
-            f"http_retries={retry_count}."
+            f"http_retries={retry_count}. "
+            f"{evidence_fragment}."
         )
 
 

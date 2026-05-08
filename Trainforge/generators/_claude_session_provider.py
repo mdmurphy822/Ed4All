@@ -236,7 +236,16 @@ class ClaudeSessionProvider:
         out["prompt"] = str(outputs["prompt"])
         out["completion"] = str(outputs["completion"])
         out["provider"] = "claude_session"
-        self._emit_decision(kind="instruction", draft=draft, chunk_id=chunk_id)
+        # W-D11 T11.3 — thread structured-claim arrays through emit
+        # when the subagent produced them. Optional emit; absent on
+        # the today-default (prompt, completion) shape.
+        for k in ("key_claims", "per_claim_support"):
+            if k in outputs:
+                out[k] = outputs[k]
+        self._emit_decision(
+            kind="instruction", draft=draft, chunk_id=chunk_id,
+            parsed=outputs,
+        )
         return out
 
     def paraphrase_preference(
@@ -303,7 +312,15 @@ class ClaudeSessionProvider:
         out["chosen"] = str(outputs["chosen"])
         out["rejected"] = str(outputs["rejected"])
         out["provider"] = "claude_session"
-        self._emit_decision(kind="preference", draft=draft, chunk_id=chunk_id)
+        # W-D11 T11.3 — thread structured-claim arrays through emit
+        # when the subagent produced them.
+        for k in ("key_claims", "per_claim_support"):
+            if k in outputs:
+                out[k] = outputs[k]
+        self._emit_decision(
+            kind="preference", draft=draft, chunk_id=chunk_id,
+            parsed=outputs,
+        )
         return out
 
     async def _dispatch(
@@ -318,12 +335,23 @@ class ClaudeSessionProvider:
         # Wave 111 / Phase E: circuit breaker fail-fast on repeated timeouts.
         # Raises SynthesisCircuitOpen before contacting the dispatcher.
         self._breaker.before_dispatch()
+        # W-D11 T11.3 — thread the per-claim evidence_quote directive
+        # into the dispatch task params so the training-synthesizer
+        # subagent receives the same per-claim contract every other
+        # provider gets via prompt-string concatenation. Subagent may
+        # ignore the field (graceful-degrade); the consumer-side
+        # validator (T11.2) handles the missing-quote case as
+        # warning-only.
+        from Trainforge.generators._base_synthesis_provider import (
+            EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
+        )
         task_params = {
             "kind": kind,
             "draft": draft,
             "chunk_id": chunk_id,
             "chunk_text": chunk_text,
             "expected_keys": expected_keys,
+            "evidence_quote_directive": EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
         }
         result = await self._dispatcher.dispatch_task(
             task_name=_DISPATCH_TASK_NAME,
@@ -371,6 +399,7 @@ class ClaudeSessionProvider:
         kind: str,
         draft: Dict[str, Any],
         chunk_id: str,
+        parsed: Optional[Dict[str, Any]] = None,
     ) -> None:
         # Wave W-D5 § 6.8 / § 4.6: swallow + warn on capture-write
         # failure, mirroring Anthropic / Together / Local / Curriculum
@@ -381,11 +410,19 @@ class ClaudeSessionProvider:
         # `log_decision` doesn't raise on the happy path.
         if self._capture is None:
             return
+        # W-D11 T11.3 — interpolate per-claim evidence_quote emit rate
+        # into the rationale. Same pattern as Anthropic / Together /
+        # Local providers.
+        from Trainforge.generators._base_synthesis_provider import (
+            render_evidence_quote_rationale_fragment,
+        )
+        evidence_fragment = render_evidence_quote_rationale_fragment(parsed)
         template_id = draft.get("template_id") or "<unknown>"
         rationale = (
             f"Routed {kind} paraphrase for chunk_id={chunk_id} "
             f"template_id={template_id} via claude_session provider "
-            f"(version={self._provider_version}, run_id={self._run_id})."
+            f"(version={self._provider_version}, run_id={self._run_id}). "
+            f"{evidence_fragment}."
         )
         try:
             self._capture.log_decision(
