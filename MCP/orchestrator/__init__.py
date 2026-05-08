@@ -22,7 +22,9 @@ from .llm_backend import (
     LocalBackend,
     MockBackend,
     OpenAIBackend,
+    OpenAICompatibleBackend,
     build_backend,
+    resolve_openai_compatible_backend,
 )
 from .pipeline_orchestrator import PipelineOrchestrator
 from .worker_contracts import GateResult, PhaseInput, PhaseOutput
@@ -34,8 +36,10 @@ __all__ = [
     "LocalBackend",
     "MockBackend",
     "OpenAIBackend",
+    "OpenAICompatibleBackend",
     "PhaseInput",
     "PhaseOutput",
     "PipelineOrchestrator",
     "build_backend",
+    "resolve_openai_compatible_backend",
 ]
