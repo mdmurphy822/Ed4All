@@ -31,12 +31,12 @@ Wave 3 W3.G addition:
       - ``certified_accessible`` — the WCAG arrow row passes; the
         instructional + trainable cohorts may be partial.
       - ``certified_instructional`` — WCAG passes AND every gate in the
-        instructional cohort (``content_grounding`` / ``oscqr_score`` /
-        ``page_objectives`` / ``source_refs``) passes.
+        instructional cohort (``claim_support`` / ``content_grounding`` /
+        ``oscqr_score`` / ``page_objectives`` / ``source_refs``) passes.
       - ``certified_trainable`` — ``certified_instructional`` AND every
-        gate in the trainable cohort (``min_edge_count`` /
-        ``synthesis_diversity`` / ``eval_gating`` /
-        ``family_completeness``) passes.
+        gate in the trainable cohort (``eval_gating`` /
+        ``family_completeness`` / ``min_edge_count`` /
+        ``pair_claim_support`` / ``synthesis_diversity``) passes.
 
 The enum values are the five members of
 ``schemas/governance/course_status.schema.json``:
@@ -256,11 +256,21 @@ ACCESSIBILITY_GATE_IDS: frozenset = frozenset({
 })
 
 #: Gates whose joint pass status promotes ``certified_accessible`` to
-#: ``certified_instructional``. Surfaces the four content-quality dimensions
-#: that make a course teach something coherently: source grounding, OSCQR
-#: course-quality scoring, per-page LO coverage, and per-emit source-ref
-#: integrity.
+#: ``certified_instructional``. Surfaces the content-quality dimensions
+#: that make a course teach something coherently: per-claim NLI entailment
+#: against cited chunks, source grounding, OSCQR course-quality scoring,
+#: per-page LO coverage, and per-emit source-ref integrity.
+#:
+#: ``claim_support`` (Wave W-D11.B) — block-side per-claim NLI entailment
+#: gate fired at the ``post_rewrite_validation`` phase (Arrow 3 cohort).
+#: Sibling to ``content_grounding`` and ``source_refs``. Currently
+#: warning-severity day-1 per the calibration-deferred contract; the
+#: cohort entry is dormant until operator calibration flips severity to
+#: critical, at which point a critical-fail must gate the instructional
+#: cohort rather than short-circuit to ``"failed"`` via the critical-cohort
+#: branch in :func:`derive_course_status`.
 INSTRUCTIONAL_GATE_IDS: frozenset = frozenset({
+    "claim_support",
     "content_grounding",
     "oscqr_score",
     "page_objectives",
@@ -268,14 +278,25 @@ INSTRUCTIONAL_GATE_IDS: frozenset = frozenset({
 })
 
 #: Gates whose joint pass status promotes ``certified_instructional`` to
-#: ``certified_trainable``. Surfaces the four training-corpus quality
-#: dimensions: KG edge density, synthesis-template diversity, post-training
-#: eval-gating thresholds, and per-family CURIE-coverage symmetry.
+#: ``certified_trainable``. Surfaces the training-corpus quality
+#: dimensions: KG edge density, synthesis-template diversity,
+#: post-training eval-gating thresholds, per-family CURIE-coverage
+#: symmetry, and per-pair per-claim NLI entailment.
+#:
+#: ``pair_claim_support`` (Wave W-D11.B) — pair-side per-claim NLI
+#: entailment gate fired at the ``training_synthesis`` phase (Arrow 7
+#: cohort). Sibling to ``synthesis_diversity`` and ``synthesis_leakage``.
+#: Currently warning-severity day-1 per the calibration-deferred
+#: contract; the cohort entry is dormant until operator calibration
+#: flips severity to critical, at which point a critical-fail must
+#: gate the trainable cohort rather than short-circuit to ``"failed"``
+#: via the critical-cohort branch in :func:`derive_course_status`.
 TRAINABLE_GATE_IDS: frozenset = frozenset({
-    "min_edge_count",
-    "synthesis_diversity",
     "eval_gating",
     "family_completeness",
+    "min_edge_count",
+    "pair_claim_support",
+    "synthesis_diversity",
 })
 
 # Pre-arrow-5 boundary used by the ``failed`` / ``non_certified_archive``
