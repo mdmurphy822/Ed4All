@@ -233,9 +233,33 @@ Border Gray: #e0e0e0
 
 ---
 
+## MCP Tools
+
+Courseforge is exposed via the Ed4All MCP server with these tools:
+
+| Tool | Description |
+|------|-------------|
+| `create_course_project` **[DEPRECATED]** | Initialize a standalone (non-pipeline) course project. Still functional for external MCP clients, but new integrations should route through the pipeline-internal `extract_textbook_structure` + `plan_course_structure`. |
+| `generate_course_content` | Generate content for weeks |
+| `package_imscc` | Package course as IMSCC. Runtime delegates to `Courseforge/scripts/package_multifile_imscc.py` (IMS CC v1.3 namespaces, per-week LO validation, `course_metadata.json` bundling). |
+| `intake_imscc_package` | Import existing IMSCC |
+| `remediate_course_content` | Fix content issues |
+| `get_courseforge_status` | Get project status |
+
+---
+
 ## Metadata Output
 
 Courseforge HTML pages embed machine-readable instructional design metadata for downstream consumption by Trainforge.
+
+### Summary (downstream contract)
+
+Courseforge HTML pages include machine-readable metadata for downstream Trainforge consumption:
+
+- **`data-cf-*` attributes**: Inline metadata on HTML elements (role, objective IDs, Bloom's levels/verbs, cognitive domain, content types, teaching role, key terms, component, purpose). Canonical attribute table below.
+- **JSON-LD blocks**: Structured `<script type="application/ld+json">` per page with learning objectives, section metadata, misconceptions, and assessment suggestions. Canonical shape: `schemas/knowledge/courseforge_jsonld_v1.schema.json`.
+
+Priority extraction in Trainforge: JSON-LD > `data-cf-*` attributes > regex heuristics.
 
 ### HTML Data Attributes (`data-cf-*`)
 

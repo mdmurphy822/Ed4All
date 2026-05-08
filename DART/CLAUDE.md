@@ -49,13 +49,23 @@ DART is exposed via the Ed4All MCP server with these tools:
 
 | Tool | Description |
 |------|-------------|
-| `convert_pdf_multi_source` | Convert single PDF using multi-source synthesis |
-| `batch_convert_multi_source` | Batch convert all PDFs |
-| `validate_wcag_compliance` | Validate HTML for WCAG 2.2 AA |
+| `convert_pdf_multi_source` | Convert PDF via multi-source synthesis |
+| `batch_convert_multi_source` | Batch convert multiple PDFs |
+| `validate_wcag_compliance` | Validate HTML accessibility (WCAG 2.2 AA) |
 | `validate_dart_markers` | Validate DART output markers. Wired as the `dart_markers` gate on `batch_dart` and `textbook_to_course`. |
-| `get_dart_status` | Get DART capabilities |
-| `list_available_campuses` | List available combined JSONs |
+| `get_dart_status` | Get DART processing status / capabilities |
+| `list_available_campuses` | List configured campus sources / combined JSONs |
 | `extract_and_convert_pdf` | Extract and convert a single PDF to accessible HTML |
+
+### Source-Provenance Output (downstream contract)
+
+DART-produced HTML + synthesized JSON carry per-block source attribution so downstream consumers can trace every claim back to its PDF origin:
+
+- **`data-dart-*` attributes**: `data-dart-block-id`, `data-dart-source`, `data-dart-sources`, `data-dart-pages`, `data-dart-confidence`, `data-dart-strategy` on `<section>` + component wrappers. See § "Source provenance" below for the canonical attribute table + confidence scale.
+- **Per-block envelopes** in `*_synthesized.json` `data.contacts[]`, `data.rows[]`, `data.pair_provenance[]`: `{value, source, pages, confidence, method}` shape.
+- **Canonical shape**: `schemas/knowledge/source_reference.schema.json` (shared by Courseforge JSON-LD and Trainforge chunks + evidence arms).
+
+Priority extraction chain (extends the Courseforge chain): JSON-LD > `data-cf-*` > `data-dart-*` > regex heuristics.
 
 ## Architecture
 
