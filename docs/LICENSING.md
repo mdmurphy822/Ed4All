@@ -60,6 +60,7 @@ These are the providers that actually produce paraphrased training pairs. Each r
 | `local` (Llama 70B) | `llama3.3:70b-instruct-q4_K_M` | Llama 3.3 Community License | N/A | **Yes** (with attribution) | Strong instruction following |
 | `local` (Mistral 24B) | `mistral-small:24b-instruct-q4_K_M` | Apache 2.0 | N/A | **Yes** | Faster on 16 GB GPU |
 | `local` (Phi-3.5 mini) | `phi3.5:3.8b-mini-instruct-q4_K_M` | MIT | N/A | **Yes** | Smallest OSS option |
+| `COURSEFORGE_BLOCK_ROUTING_PATH=Courseforge/config/block_routing.license_clean.yaml` | n/a (router-level YAML; large tier defaults to `qwen2.5:32b-instruct-q4_K_M`) | Apache 2.0 (when `large` resolves to local Qwen) | n/a (your hardware) — or Together AI ToS when `large` is swapped to a hosted Apache-2.0 OSS model | **Yes** | **Recommended for ToS-clean Courseforge two-pass** runs. Sibling YAML override that swaps the canonical `large` capability tier (`claude-sonnet-4-6`) for a local 32B Qwen. See `docs/operations/license-clean-run.md` for the 4-env-var deployment recipe and the calibration prerequisite for `assessment_item` distractor quality. |
 
 ### Citation links (verbatim)
 
