@@ -481,6 +481,7 @@ def _emit_decision(
     per_claim_match_count: int = 0,
     dart_check_fired_count: int = 0,
     dart_disagreement_count: int = 0,
+    evidence_quote_metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Emit one ``pair_claim_support_check`` decision per
     :meth:`PairClaimSupportValidator.validate_pair` invocation.
@@ -492,6 +493,21 @@ def _emit_decision(
     loaded flag. A static rationale would violate the
     ``DECISION_VALIDATION_STRICT`` contract — every signal must be
     dynamic per call.
+
+    Wave W-D11 T11.4: additionally interpolates the three evidence-
+    quote health rates (coverage / substring_fail / char_span_mismatch)
+    so the captured decision records evidence-quote health alongside
+    the per-pair NLI verdict. The substring + char_span verification
+    happens at the gate-walk surface (``validate()``), not here, so
+    the per-pair rationale carries the per-pair coverage rate (count
+    of per_claim_support entries with evidence_quote stamped /
+    total per_claim entries) and ``0.0`` defaults for the verification-
+    derived rates — matches the ``GateResult.metadata`` default-key
+    contract from T11.2 so the corpus-wide capture in ``validate()``
+    fills in the verification rates and downstream readers see a
+    stable shape across both surfaces. Mirrors the W5.D pattern of
+    piggybacking on existing decision_types rather than minting a new
+    enum value.
     """
     if capture is None:
         return
@@ -510,6 +526,19 @@ def _emit_decision(
         if claim_contradicted_rate is not None
         else "n/a"
     )
+    # Wave W-D11 T11.4: pull the three evidence-quote rates off the
+    # per-pair stats dict (defensive ``.get(..., 0.0)`` so the
+    # graceful-degrade / mock-provider path doesn't raise on missing
+    # keys). Same key names as the corpus-wide ``GateResult.metadata``
+    # contract from T11.2 so a single grep finds both surfaces.
+    eq_meta = evidence_quote_metadata or {}
+    eq_coverage = float(eq_meta.get("evidence_quote_coverage_rate", 0.0))
+    eq_substring_fail = float(
+        eq_meta.get("evidence_quote_substring_fail_rate", 0.0)
+    )
+    eq_char_span_mismatch = float(
+        eq_meta.get("evidence_quote_char_span_mismatch_rate", 0.0)
+    )
     rationale = (
         f"Per-claim NLI support check on {pair_kind!r} pair "
         f"chunk_id={chunk_id!r}: total_claims={total_claims}, "
@@ -523,6 +552,9 @@ def _emit_decision(
         f"per_claim_match_count={per_claim_match_count}, "
         f"dart_check_fired_count={dart_check_fired_count}, "
         f"dart_disagreement_count={dart_disagreement_count}, "
+        f"evidence_quote: coverage={eq_coverage:.2%}, "
+        f"substring_fail={eq_substring_fail:.2%}, "
+        f"char_span_mismatch={eq_char_span_mismatch:.2%}, "
         f"promotion_status={promotion_status}, "
         f"rejection_reason={rejection_reason or 'none'}."
     )
@@ -760,6 +792,14 @@ class PairClaimSupportValidator:
         # Arm 1: NLI deps missing. Stamp deps_missing=True and pass.
         # Arm 2: chunk text unresolvable. Same shape as arm 1 — W2.E
         #        catches source_free upstream, this is defense in depth.
+        # Wave W-D11 T11.4: ``evidence_quote_metadata`` deliberately
+        # NOT passed on this branch — the validator short-circuits
+        # before touching ``per_claim_support`` / ``evidence_quote``
+        # so the per-pair counters were never populated. The
+        # ``_emit_decision`` defensive ``.get(key, 0.0)`` defaults
+        # all three rates to 0.0 in the rationale, which is the
+        # accurate signal: "evidence_quote check did not fire on
+        # this pair".
         if not nli_loaded or not chunk_text:
             new_fields: Dict[str, Any] = {
                 "per_claim_support": None,
@@ -1221,6 +1261,30 @@ class PairClaimSupportValidator:
             "deps_missing": False,
         }
 
+        # Wave W-D11 T11.4: per-pair evidence-quote coverage rate from
+        # the just-stamped per_claim_support entries. Substring +
+        # char_span verification happens at the gate-walk surface
+        # (``validate()``), not here, so those two rates default to
+        # 0.0 — matches the ``GateResult.metadata`` default-key
+        # contract from T11.2 so corpus-wide and per-pair captures
+        # speak the same vocabulary.
+        pair_claims_with_quote = sum(
+            1 for entry in per_claim_support
+            if entry.get("evidence_quote")
+        )
+        pair_total_per_claim = len(per_claim_support)
+        pair_evidence_quote_metadata: Dict[str, Any] = {
+            "evidence_quote_coverage_rate": (
+                round(
+                    pair_claims_with_quote / pair_total_per_claim,
+                    4,
+                )
+                if pair_total_per_claim > 0
+                else 0.0
+            ),
+            "evidence_quote_substring_fail_rate": 0.0,
+            "evidence_quote_char_span_mismatch_rate": 0.0,
+        }
         _emit_decision(
             decision_capture,
             pair_kind=kind,
@@ -1239,6 +1303,7 @@ class PairClaimSupportValidator:
             per_claim_match_count=per_claim_match_count,
             dart_check_fired_count=dart_check_fired_count,
             dart_disagreement_count=dart_disagreement_count,
+            evidence_quote_metadata=pair_evidence_quote_metadata,
         )
 
         return promotion_status, rejection_reason, new_fields
@@ -1668,12 +1733,15 @@ class PairClaimSupportValidator:
                         f"{dart_disagreement_pairs} "
                         f"(rate={dart_disagreement_rate:.4f}, ceiling="
                         f"{_DART_DISAGREEMENT_RATE_WARN_CEILING}), "
-                        f"evidence_quote_coverage_rate="
-                        f"{evidence_quote_coverage_rate:.4f}, "
-                        f"evidence_quote_substring_fail_rate="
-                        f"{evidence_quote_substring_fail_rate:.4f}, "
-                        f"evidence_quote_char_span_mismatch_rate="
-                        f"{evidence_quote_char_span_mismatch_rate:.4f}. "
+                        # Wave W-D11 T11.4: same evidence_quote format
+                        # token as the per-block + per-pair rationales
+                        # so a single grep finds all three surfaces.
+                        f"evidence_quote: "
+                        f"coverage={evidence_quote_coverage_rate:.2%}, "
+                        f"substring_fail="
+                        f"{evidence_quote_substring_fail_rate:.2%}, "
+                        f"char_span_mismatch="
+                        f"{evidence_quote_char_span_mismatch_rate:.2%}. "
                         f"inst_path="
                         f"{inst_path.name if inst_path else 'n/a'}, "
                         f"pref_path="

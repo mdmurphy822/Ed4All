@@ -546,3 +546,248 @@ def test_quote_present_but_no_chunks_threaded_skips_check(
     assert md["evidence_quote_substring_attempts"] == 0
     assert md["evidence_quote_substring_fails"] == 0
     assert md["claims_with_valid_quote"] == 0
+
+
+# ===================================================================== #
+# Wave W-D11 T11.4 — gate-walk decision-capture rationale signals
+# ===================================================================== #
+#
+# Asserts that ``pair_claim_support_check`` decision events emitted by
+# the on-disk gate-walk (``validate()``) interpolate the three
+# evidence-quote rates (coverage / substring_fail / char_span_mismatch)
+# in the rationale string. Mirrors the W5.D pattern of piggybacking on
+# existing ``decision_type`` enum values.
+
+
+class _CaptureStub:
+    """Minimal DecisionCapture stand-in for rationale-content tests."""
+
+    def __init__(self) -> None:
+        self.calls: List[Dict[str, Any]] = []
+
+    def log_decision(
+        self,
+        *,
+        decision_type: str,
+        decision: str,
+        rationale: str,
+        **_: Any,
+    ) -> None:
+        self.calls.append(
+            {
+                "decision_type": decision_type,
+                "decision": decision,
+                "rationale": rationale,
+            }
+        )
+
+
+def test_t11_4_gate_walk_rationale_carries_evidence_quote_signals(
+    tmp_path: Path,
+) -> None:
+    """Gate-walk valid quote + char_span: rationale carries
+    coverage=100%, substring_fail=0%, char_span_mismatch=0%; per-corpus
+    metadata rates match."""
+    inst = tmp_path / "instruction_pairs.jsonl"
+    pair = _pair_with_per_claim_support(
+        per_claim_entries=[
+            _per_claim_entry(
+                source_chunk_ids=["c1"],
+                evidence_quote=_VALID_QUOTE,
+                evidence_char_span=list(_VALID_QUOTE_OFFSET),
+            ),
+        ],
+    )
+    _write_jsonl(inst, [pair])
+    capture = _CaptureStub()
+
+    result = PairClaimSupportValidator().validate({
+        "instruction_pairs_path": str(inst),
+        "chunk_id_to_text_map": {"c1": _CHUNK_PRIMARY},
+        "decision_capture": capture,
+    })
+
+    events = [
+        e for e in capture.calls
+        if e["decision_type"] == "pair_claim_support_check"
+    ]
+    assert len(events) == 1
+    rationale = events[0]["rationale"]
+    md = result.metadata or {}
+    # Format token: matches the block-side + per-pair format so a
+    # single grep finds all three surfaces.
+    assert "evidence_quote: coverage=" in rationale
+    assert "substring_fail=" in rationale
+    assert "char_span_mismatch=" in rationale
+    assert md["evidence_quote_coverage_rate"] == 1.0
+    assert md["evidence_quote_substring_fail_rate"] == 0.0
+    assert md["evidence_quote_char_span_mismatch_rate"] == 0.0
+    assert "coverage=100.00%" in rationale
+    assert "substring_fail=0.00%" in rationale
+    assert "char_span_mismatch=0.00%" in rationale
+
+
+def test_t11_4_gate_walk_rationale_records_substring_fail_above_zero(
+    tmp_path: Path,
+) -> None:
+    """Substring-fail fixture: gate-walk rationale records
+    substring_fail>0%."""
+    inst = tmp_path / "instruction_pairs.jsonl"
+    pair = _pair_with_per_claim_support(
+        per_claim_entries=[
+            _per_claim_entry(
+                source_chunk_ids=["c1"],
+                evidence_quote="fabricated quote not in chunk",
+            ),
+        ],
+    )
+    _write_jsonl(inst, [pair])
+    capture = _CaptureStub()
+
+    result = PairClaimSupportValidator().validate({
+        "instruction_pairs_path": str(inst),
+        "chunk_id_to_text_map": {"c1": _CHUNK_PRIMARY},
+        "decision_capture": capture,
+    })
+
+    events = [
+        e for e in capture.calls
+        if e["decision_type"] == "pair_claim_support_check"
+    ]
+    assert len(events) == 1
+    rationale = events[0]["rationale"]
+    md = result.metadata or {}
+    assert md["evidence_quote_substring_fail_rate"] == 1.0
+    assert "substring_fail=100.00%" in rationale
+    assert "coverage=0.00%" in rationale
+
+
+def test_t11_4_gate_walk_rationale_records_char_span_mismatch_above_zero(
+    tmp_path: Path,
+) -> None:
+    """Char-span-mismatch fixture: gate-walk rationale records
+    char_span_mismatch>0%."""
+    inst = tmp_path / "instruction_pairs.jsonl"
+    bad_span = (
+        _VALID_QUOTE_OFFSET[0] - 5,
+        _VALID_QUOTE_OFFSET[1] - 5,
+    )
+    pair = _pair_with_per_claim_support(
+        per_claim_entries=[
+            _per_claim_entry(
+                source_chunk_ids=["c1"],
+                evidence_quote=_VALID_QUOTE,
+                evidence_char_span=list(bad_span),
+            ),
+        ],
+    )
+    _write_jsonl(inst, [pair])
+    capture = _CaptureStub()
+
+    result = PairClaimSupportValidator().validate({
+        "instruction_pairs_path": str(inst),
+        "chunk_id_to_text_map": {"c1": _CHUNK_PRIMARY},
+        "decision_capture": capture,
+    })
+
+    events = [
+        e for e in capture.calls
+        if e["decision_type"] == "pair_claim_support_check"
+    ]
+    assert len(events) == 1
+    rationale = events[0]["rationale"]
+    md = result.metadata or {}
+    assert md["evidence_quote_char_span_mismatch_rate"] == 1.0
+    assert "char_span_mismatch=100.00%" in rationale
+    assert "substring_fail=0.00%" in rationale
+
+
+def test_t11_4_gate_walk_legacy_pair_rationale_constructs_cleanly(
+    tmp_path: Path,
+) -> None:
+    """Legacy pair without evidence_quote: gate-walk rationale still
+    constructs cleanly with coverage=0.00%, no exception."""
+    inst = tmp_path / "instruction_pairs.jsonl"
+    pair = _pair_with_per_claim_support(
+        # No per_claim entries with evidence_quote.
+        per_claim_entries=[_per_claim_entry(source_chunk_ids=["c1"])],
+    )
+    _write_jsonl(inst, [pair])
+    capture = _CaptureStub()
+
+    result = PairClaimSupportValidator().validate({
+        "instruction_pairs_path": str(inst),
+        "chunk_id_to_text_map": {"c1": _CHUNK_PRIMARY},
+        "decision_capture": capture,
+    })
+
+    events = [
+        e for e in capture.calls
+        if e["decision_type"] == "pair_claim_support_check"
+    ]
+    assert len(events) == 1
+    rationale = events[0]["rationale"]
+    assert "coverage=0.00%" in rationale
+    assert "substring_fail=0.00%" in rationale
+    assert "char_span_mismatch=0.00%" in rationale
+    assert result.passed is True
+
+
+# ===================================================================== #
+# Wave W-D11 T11.4 — per-pair (validate_pair) rationale signals
+# ===================================================================== #
+#
+# Asserts that ``pair_claim_support_check`` decision events emitted by
+# ``validate_pair`` (per-pair, in-process during synthesis) interpolate
+# the three evidence-quote rates. Per-pair surface only computes
+# coverage_rate (substring + char_span verification happens at the
+# gate-walk surface, not here); the verification-derived rates default
+# to 0.0 in the rationale per the metadata default-key contract.
+
+
+def test_t11_4_validate_pair_rationale_carries_evidence_quote_signals() -> None:
+    """validate_pair on a deps-missing branch (no NLI) still emits a
+    rationale with the three evidence_quote signals defaulted to 0.0%
+    — the deps-missing arm short-circuits before counters populate,
+    and the format token must still appear so downstream rationale
+    parsers see a stable shape across both branches."""
+    validator = PairClaimSupportValidator()
+    capture = _CaptureStub()
+
+    # Provide an instruction pair + chunk so validate_pair fires; pass
+    # a chunk that triggers the deps-missing branch by passing nli=None
+    # via the validator-internal _get_nli() — done by NOT installing
+    # the embedding extras (which is the default for the test
+    # environment). The deps-missing branch emits the decision event
+    # with all rates defaulted to 0.0.
+    pair = {
+        "prompt": "x" * 50,
+        "completion": "x" * 60,
+        "chunk_id": "c1",
+        "lo_refs": ["TO-01"],
+        "bloom_level": "remember",
+        "content_type": "explanation",
+    }
+    chunk = {
+        "id": "c1",
+        "text": "Some chunk text for grounding.",
+        "source": {},
+    }
+    _result = validator.validate_pair(
+        pair=pair,
+        kind="instruction",
+        chunk=chunk,
+        decision_capture=capture,
+    )
+    events = [
+        e for e in capture.calls
+        if e["decision_type"] == "pair_claim_support_check"
+    ]
+    assert len(events) >= 1
+    rationale = events[-1]["rationale"]
+    # The format token is present regardless of which branch fired.
+    assert "evidence_quote: coverage=" in rationale
+    assert "substring_fail=" in rationale
+    assert "char_span_mismatch=" in rationale
+    # Rationale stays well past the 20-character minimum.
+    assert len(rationale) >= 100

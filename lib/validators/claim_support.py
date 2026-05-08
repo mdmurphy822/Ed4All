@@ -408,6 +408,7 @@ def _emit_decision(
     contradicted_rate: Optional[float],
     is_structured: bool,
     nli_loaded: bool,
+    evidence_quote_metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Emit one ``claim_support_check`` decision per audited block.
 
@@ -415,6 +416,17 @@ def _emit_decision(
     Wave 2 W2.F brief: block_id, total_claims, entailed_count,
     unsupported_count, contradicted_count, resolved
     unsupported_claim_rate.
+
+    Wave W-D11 T11.4: additionally interpolates the three evidence-
+    quote health rates (coverage / substring_fail / char_span_mismatch)
+    so the captured decision records evidence-quote health alongside
+    the per-block NLI verdict. When ``evidence_quote_metadata`` is
+    ``None`` (NLI-deps-missing branch and other callers that never
+    populated the counters), the three rates default to ``0.0`` per
+    the T11.1 metadata contract — matches the ``GateResult.metadata``
+    default-key contract so downstream readers see a stable shape.
+    Mirrors the W5.D pattern of piggybacking on existing decision_types
+    rather than minting a new enum value.
     """
     if capture is None:
         return
@@ -429,6 +441,19 @@ def _emit_decision(
         if contradicted_rate is not None
         else "n/a"
     )
+    # Wave W-D11 T11.4: pull the three evidence-quote rates off the
+    # per-block stats dict (defensive ``.get(..., 0.0)`` so the
+    # graceful-degrade / mock-provider path doesn't raise on missing
+    # keys). Same key names as the corpus-wide ``GateResult.metadata``
+    # contract from T11.1 so a single grep finds both surfaces.
+    eq_meta = evidence_quote_metadata or {}
+    eq_coverage = float(eq_meta.get("evidence_quote_coverage_rate", 0.0))
+    eq_substring_fail = float(
+        eq_meta.get("evidence_quote_substring_fail_rate", 0.0)
+    )
+    eq_char_span_mismatch = float(
+        eq_meta.get("evidence_quote_char_span_mismatch_rate", 0.0)
+    )
     rationale = (
         f"Per-claim NLI support check on Block {block.block_id!r}: "
         f"block_type={block.block_type!r}, "
@@ -440,6 +465,9 @@ def _emit_decision(
         f"contradicted_claim_rate={cont_rate_str}, "
         f"is_structured_attribution={is_structured}, "
         f"nli_loaded={nli_loaded}, "
+        f"evidence_quote: coverage={eq_coverage:.2%}, "
+        f"substring_fail={eq_substring_fail:.2%}, "
+        f"char_span_mismatch={eq_char_span_mismatch:.2%}, "
         f"failure_codes={','.join(failure_codes) or 'none'}."
     )
     try:
@@ -672,6 +700,19 @@ class ClaimSupportValidator:
             unsupported_count = 0
             contradicted_count = 0
 
+            # Wave W-D11 T11.4: per-block evidence-quote running counts
+            # so the per-block decision-capture rationale records this
+            # block's own evidence-quote health (truly dynamic-per-call
+            # signal). Corpus-wide rates on GateResult.metadata stay
+            # the T11.5-aggregator surface; per-block rationale is the
+            # per-call-dynamic surface.
+            block_total_claims_seen = 0
+            block_claims_with_valid_quote = 0
+            block_substring_attempts = 0
+            block_substring_fails = 0
+            block_char_span_attempts = 0
+            block_char_span_mismatches = 0
+
             for claim_entry in normalized_claims:
                 claim_text = claim_entry["claim"]
                 attribution = claim_entry.get("source_chunk_ids")
@@ -729,12 +770,14 @@ class ClaimSupportValidator:
                 # contract (mirrors W1.7.C / W4.A / W4.C); does NOT
                 # gate the validator's overall ``passed`` field.
                 total_claims_seen += 1
+                block_total_claims_seen += 1
                 evidence_quote = claim_entry.get("evidence_quote")
                 evidence_char_span = claim_entry.get("evidence_char_span")
                 if not evidence_quote:
                     claims_without_quote += 1
                 else:
                     substring_attempts += 1
+                    block_substring_attempts += 1
                     substring_ok, char_span_ok = _check_evidence_quote(
                         evidence_quote=evidence_quote,
                         evidence_char_span=evidence_char_span,
@@ -742,6 +785,7 @@ class ClaimSupportValidator:
                     )
                     if substring_ok is False:
                         substring_fails += 1
+                        block_substring_fails += 1
                         if len(issues) < _ISSUE_LIST_CAP:
                             issues.append(
                                 GateIssue(
@@ -768,8 +812,10 @@ class ClaimSupportValidator:
                             )
                     if evidence_char_span is not None and substring_ok:
                         char_span_attempts += 1
+                        block_char_span_attempts += 1
                         if char_span_ok is False:
                             char_span_mismatches += 1
+                            block_char_span_mismatches += 1
                             if len(issues) < _ISSUE_LIST_CAP:
                                 issues.append(
                                     GateIssue(
@@ -797,6 +843,7 @@ class ClaimSupportValidator:
                                 )
                     if substring_ok and (char_span_ok in (None, True)):
                         claims_with_valid_quote += 1
+                        block_claims_with_valid_quote += 1
 
             total_claims = (
                 entailed_count + unsupported_count + contradicted_count
@@ -885,6 +932,41 @@ class ClaimSupportValidator:
             if block_passed:
                 passed_blocks += 1
 
+            # Wave W-D11 T11.4: roll the per-block evidence-quote
+            # running counts into the same three-rate shape the
+            # T11.1 corpus-wide ``GateResult.metadata`` carries, so
+            # the per-block decision rationale and the corpus-wide
+            # metadata speak the same vocabulary. Defaults to 0.0 on
+            # zero-attempt branches (no claims, no quote-bearing
+            # claims) so the rationale always constructs cleanly.
+            block_evidence_quote_metadata: Dict[str, Any] = {
+                "evidence_quote_coverage_rate": (
+                    round(
+                        block_claims_with_valid_quote
+                        / block_total_claims_seen,
+                        4,
+                    )
+                    if block_total_claims_seen > 0
+                    else 0.0
+                ),
+                "evidence_quote_substring_fail_rate": (
+                    round(
+                        block_substring_fails / block_substring_attempts,
+                        4,
+                    )
+                    if block_substring_attempts > 0
+                    else 0.0
+                ),
+                "evidence_quote_char_span_mismatch_rate": (
+                    round(
+                        block_char_span_mismatches
+                        / block_char_span_attempts,
+                        4,
+                    )
+                    if block_char_span_attempts > 0
+                    else 0.0
+                ),
+            }
             _emit_decision(
                 capture, block,
                 passed=block_passed,
@@ -897,6 +979,7 @@ class ClaimSupportValidator:
                 contradicted_rate=contradicted_rate,
                 is_structured=is_structured,
                 nli_loaded=nli_loaded,
+                evidence_quote_metadata=block_evidence_quote_metadata,
             )
 
         # Score = pass rate over audited blocks.

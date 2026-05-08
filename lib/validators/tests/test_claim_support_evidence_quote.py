@@ -501,3 +501,273 @@ def test_nli_outcome_passed_unchanged_by_evidence_quote_findings() -> None:
     )
     assert result.passed is True
     assert result.action is None
+
+
+# ===================================================================== #
+# Wave W-D11 T11.4 — decision-capture rationale evidence_quote signals
+# ===================================================================== #
+#
+# Asserts that ``claim_support_check`` decision events interpolate the
+# three evidence-quote rates (coverage / substring_fail /
+# char_span_mismatch) in the rationale string. Mirrors the W5.D pattern
+# of piggybacking on existing ``decision_type`` enum values rather
+# than minting a new one.
+#
+# Each test uses a SINGLE block fixture so the per-block rates carried
+# in the rationale match the corpus-wide rates surfaced on
+# ``GateResult.metadata`` exactly. Multi-block fan-out is exercised by
+# the existing W2.F suite at ``test_claim_support.py``.
+
+
+class _CaptureStub:
+    """Minimal DecisionCapture stand-in for rationale-content tests."""
+
+    def __init__(self) -> None:
+        self.calls: List[Dict[str, Any]] = []
+
+    def log_decision(
+        self,
+        *,
+        decision_type: str,
+        decision: str,
+        rationale: str,
+        **_: Any,
+    ) -> None:
+        self.calls.append(
+            {
+                "decision_type": decision_type,
+                "decision": decision,
+                "rationale": rationale,
+            }
+        )
+
+
+def test_t11_4_rationale_carries_evidence_quote_signals_on_valid_quote() -> None:
+    """Valid quote + char_span: rationale records 100% coverage,
+    0% substring_fail, 0% char_span_mismatch — and the rates match
+    ``GateResult.metadata`` exactly (single-block fixture so per-block
+    rates collapse onto corpus-wide rates)."""
+    chunk_text = "RDF is a graph data model. SHACL validates RDF graphs."
+    quote = "RDF is a graph data model."
+    start = chunk_text.index(quote)
+    end = start + len(quote)
+
+    nli = _StubNli()
+    validator = ClaimSupportValidator(nli=nli)
+    capture = _CaptureStub()
+
+    block = _make_block(
+        key_claims=[
+            {
+                "claim": "RDF is a graph data model.",
+                "source_chunk_ids": ["dart:slug#blk_0"],
+                "evidence_quote": quote,
+                "evidence_char_span": [start, end],
+            }
+        ],
+        source_ids=("dart:slug#blk_0",),
+    )
+    result = validator.validate(
+        {
+            "blocks": [block],
+            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "decision_capture": capture,
+        }
+    )
+
+    events = [
+        e for e in capture.calls if e["decision_type"] == "claim_support_check"
+    ]
+    assert len(events) == 1
+    rationale = events[0]["rationale"]
+    # Format token: "evidence_quote: coverage=<pct>, substring_fail=<pct>,
+    # char_span_mismatch=<pct>". Asserted by literal substring on the
+    # exact percentages emitted for this fixture.
+    assert "evidence_quote: coverage=" in rationale
+    assert "substring_fail=" in rationale
+    assert "char_span_mismatch=" in rationale
+    # Single block, single claim with valid quote + valid span →
+    # per-block rates collapse onto the corpus-wide metadata rates.
+    md = result.metadata or {}
+    assert md["evidence_quote_coverage_rate"] == 1.0
+    assert md["evidence_quote_substring_fail_rate"] == 0.0
+    assert md["evidence_quote_char_span_mismatch_rate"] == 0.0
+    assert "coverage=100.00%" in rationale
+    assert "substring_fail=0.00%" in rationale
+    assert "char_span_mismatch=0.00%" in rationale
+    # Rationale stays well past the 20-character minimum.
+    assert len(rationale) >= 100
+
+
+def test_t11_4_rationale_records_substring_fail_above_zero() -> None:
+    """Substring-fail fixture: rationale records substring_fail>0%."""
+    chunk_text = "RDF is a graph data model."
+    bogus_quote = "Quote that is nowhere in the chunk."
+
+    nli = _StubNli()
+    validator = ClaimSupportValidator(nli=nli)
+    capture = _CaptureStub()
+
+    block = _make_block(
+        key_claims=[
+            {
+                "claim": "Some claim.",
+                "source_chunk_ids": ["dart:slug#blk_0"],
+                "evidence_quote": bogus_quote,
+            }
+        ],
+        source_ids=("dart:slug#blk_0",),
+    )
+    result = validator.validate(
+        {
+            "blocks": [block],
+            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "decision_capture": capture,
+        }
+    )
+
+    events = [
+        e for e in capture.calls if e["decision_type"] == "claim_support_check"
+    ]
+    assert len(events) == 1
+    rationale = events[0]["rationale"]
+    md = result.metadata or {}
+    assert md["evidence_quote_substring_fail_rate"] == 1.0
+    # Per-block (single-block fixture) rate matches metadata rate; emit
+    # format renders 100% as "100.00%".
+    assert "substring_fail=100.00%" in rationale
+    assert "coverage=0.00%" in rationale
+
+
+def test_t11_4_rationale_records_char_span_mismatch_above_zero() -> None:
+    """Char-span-mismatch fixture: rationale records
+    char_span_mismatch>0%."""
+    chunk_text = "RDF is a graph data model. SHACL validates RDF graphs."
+    quote = "RDF is a graph data model."
+    # Quote is a valid substring, but the span points at a different region.
+    bad_start = 27  # offset of "SHACL"
+    bad_end = bad_start + len(quote)
+
+    nli = _StubNli()
+    validator = ClaimSupportValidator(nli=nli)
+    capture = _CaptureStub()
+
+    block = _make_block(
+        key_claims=[
+            {
+                "claim": "RDF is a graph data model.",
+                "source_chunk_ids": ["dart:slug#blk_0"],
+                "evidence_quote": quote,
+                "evidence_char_span": [bad_start, bad_end],
+            }
+        ],
+        source_ids=("dart:slug#blk_0",),
+    )
+    result = validator.validate(
+        {
+            "blocks": [block],
+            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "decision_capture": capture,
+        }
+    )
+
+    events = [
+        e for e in capture.calls if e["decision_type"] == "claim_support_check"
+    ]
+    assert len(events) == 1
+    rationale = events[0]["rationale"]
+    md = result.metadata or {}
+    assert md["evidence_quote_char_span_mismatch_rate"] == 1.0
+    assert "char_span_mismatch=100.00%" in rationale
+    # Quote IS a substring; only the span check failed.
+    assert "substring_fail=0.00%" in rationale
+
+
+def test_t11_4_rationale_constructs_cleanly_on_legacy_no_quote_block() -> None:
+    """Legacy block (no evidence_quote field) → rationale still
+    constructs cleanly with coverage=0.00% and no exception."""
+    chunk_text = "Source chunk text."
+    nli = _StubNli()
+    validator = ClaimSupportValidator(nli=nli)
+    capture = _CaptureStub()
+
+    block = _make_block(
+        key_claims=[
+            # Legacy List[str] entry — no evidence_quote at all.
+            "A legacy bare-string claim.",
+        ],
+        source_ids=("dart:slug#blk_0",),
+    )
+    result = validator.validate(
+        {
+            "blocks": [block],
+            "source_chunks": {"dart:slug#blk_0": chunk_text},
+            "decision_capture": capture,
+        }
+    )
+
+    events = [
+        e for e in capture.calls if e["decision_type"] == "claim_support_check"
+    ]
+    assert len(events) == 1
+    rationale = events[0]["rationale"]
+    # No quote anywhere → coverage 0%, substring_fail 0%,
+    # char_span_mismatch 0% — and zero exceptions.
+    assert "coverage=0.00%" in rationale
+    assert "substring_fail=0.00%" in rationale
+    assert "char_span_mismatch=0.00%" in rationale
+    assert result.passed is True
+
+
+def test_t11_4_nli_deps_missing_branch_emits_no_decision_event() -> None:
+    """NLI-deps-missing branch returns early before any decision
+    capture fires — regression guard for the skip path. The branch
+    emits the deps-missing GateIssue but no ``claim_support_check``
+    decision event, so the evidence-quote rationale extension cannot
+    raise on this path."""
+    # NliClassifier.get_or_load() returns None when transformers / torch
+    # aren't available. We simulate that by passing nli=None — the
+    # validator's internal _get_nli() respects the explicit None.
+    validator = ClaimSupportValidator(nli=None)
+    capture = _CaptureStub()
+
+    block = _make_block(
+        key_claims=[
+            {
+                "claim": "Some claim.",
+                "source_chunk_ids": ["dart:slug#blk_0"],
+                "evidence_quote": "ignored on this branch",
+            }
+        ],
+        source_ids=("dart:slug#blk_0",),
+    )
+    # Without an NLI classifier, the validator short-circuits to the
+    # graceful-degrade path: warning-severity NLI_DEPS_MISSING issue,
+    # no per-block decision event.
+    result = validator.validate(
+        {
+            "blocks": [block],
+            "source_chunks": {"dart:slug#blk_0": "Source."},
+            "decision_capture": capture,
+        }
+    )
+
+    # Validator returned a result and did NOT raise.
+    assert result is not None
+    # Either the deps-missing path fired (no decision event) OR the NLI
+    # class somehow loaded for testing — in either case the rationale-
+    # extension path must not have raised.
+    events = [
+        e for e in capture.calls if e["decision_type"] == "claim_support_check"
+    ]
+    # If we hit the deps-missing branch, no events fire.
+    if not events:
+        # Confirm we DID hit deps-missing (warning issue present).
+        deps_issues = [
+            i for i in result.issues if i.code == "NLI_DEPS_MISSING"
+        ]
+        assert len(deps_issues) == 1
+    else:
+        # NLI happened to load (CI with embedding extras): rationale
+        # still must contain the evidence_quote signals.
+        assert "evidence_quote: coverage=" in events[0]["rationale"]
