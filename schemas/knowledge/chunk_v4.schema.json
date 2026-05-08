@@ -180,6 +180,19 @@
                   {"type": "array", "items": {"type": "string", "minLength": 1}},
                   {"type": "null"}
                 ]
+              },
+              "evidence_quote": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 240,
+                "description": "W-D11 — verbatim substring of one of the cited chunks' text field that supports `claim`. Validator (W-D11 T11.2) enforces evidence_quote ∈ chunk.text for at least one chunk in source_chunk_ids[]. Null when the synthesis provider did not emit a quote (legacy / pre-W-D11 corpora) or when graceful-degrade fired. 240-char cap mitigates LO-leakage risk."
+              },
+              "evidence_char_span": {
+                "type": ["array", "null"],
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {"type": "integer", "minimum": 0},
+                "description": "W-D11 — [start, end) char offset of evidence_quote within the matched cited chunk's text field. Validator (W-D11 T11.2) enforces chunk.text[start:end] == evidence_quote. Null with the same graceful-degrade arms as evidence_quote."
               }
             }
           }
