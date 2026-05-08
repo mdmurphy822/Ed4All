@@ -394,13 +394,13 @@ Legacy validators returning `action=None, passed=False` retain regenerate-loop s
 
 ### Statistical-tier validators
 
-Layered on top of the structural seam (CURIE / content_type / page_objectives / source_refs), the statistical tier catches semantic drift — output that parses cleanly but says the wrong thing. Wired symmetrically at both `inter_tier_validation` and `post_rewrite_validation`. Default thresholds in root `CLAUDE.md` § Canonical Helpers.
+Layered on top of the structural seam (CURIE / content_type / page_objectives / source_refs), the statistical tier catches semantic drift — output that parses cleanly but says the wrong thing. Wired symmetrically at both `inter_tier_validation` and `post_rewrite_validation`. Default thresholds in `docs/validation/validators.md`.
 
 - `lib/validators/objective_assessment_similarity.py::ObjectiveAssessmentSimilarityValidator` — cosine-similarity floor between assessment-item stem and referenced LO text.
 - `lib/validators/concept_example_similarity.py::ConceptExampleSimilarityValidator` — cosine-similarity floor between concept definition and illustrating example.
 - `lib/validators/objective_roundtrip_similarity.py::ObjectiveRoundtripSimilarityValidator` — cosine-similarity floor between rewrite-tier LO paraphrase and source objective.
 - `lib/validators/courseforge_outline_shacl.py::CourseforgeOutlineShaclValidator` — wrapper around `schemas/context/courseforge_v1.shacl-rules.ttl` shape constraints, applied to outline-tier Block emit.
-- `lib/validators/bloom_classifier_disagreement.py::BloomClassifierDisagreementValidator` — wraps `lib/classifiers/bloom_bert_ensemble.py::BloomBertEnsemble` (three SHA-pinned HuggingFace classifiers vote on Bloom level). Fires `action="regenerate"` on (a) ensemble majority disagrees with declared `bloomLevel` (`bert_ensemble_disagreement` event) or (b) ensemble dispersion above `_DISPERSION_THRESHOLD = 0.7` (`bert_ensemble_dispersion_high` event). See root `CLAUDE.md` for the BERT ensemble member list.
+- `lib/validators/bloom_classifier_disagreement.py::BloomClassifierDisagreementValidator` — wraps `lib/classifiers/bloom_bert_ensemble.py::BloomBertEnsemble` (three SHA-pinned HuggingFace classifiers vote on Bloom level). Fires `action="regenerate"` on (a) ensemble majority disagrees with declared `bloomLevel` (`bert_ensemble_disagreement` event) or (b) ensemble dispersion above `_DISPERSION_THRESHOLD = 0.7` (`bert_ensemble_dispersion_high` event). See `docs/validation/validators.md` for the BERT ensemble member list.
 
 The embedding wrapper at `lib/embedding/` degrades gracefully when the optional `[embedding]` extras are absent (warning-severity `EMBEDDING_DEPS_MISSING` GateIssue, `passed=True, action=None`); set `TRAINFORGE_REQUIRE_EMBEDDINGS=true` to fail-closed in production.
 
