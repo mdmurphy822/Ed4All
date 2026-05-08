@@ -1,0 +1,282 @@
+# Courseforge two-pass router block-routing policy — LICENSE-CLEAN VARIANT
+# (W-D11.F).
+#
+# Schema: schemas/courseforge/block_routing.schema.json
+# Loader: Courseforge/router/policy.py::load_block_routing_policy
+# Consumer: Courseforge/router/router.py::CourseforgeRouter._resolve_spec
+#
+# This is the OPT-IN sibling of the canonical
+# Courseforge/config/block_routing.yaml. Operators wanting a license-
+# clean Courseforge two-pass run point COURSEFORGE_BLOCK_ROUTING_PATH
+# at this file:
+#
+#   export COURSEFORGE_TWO_PASS=true
+#   export COURSEFORGE_BLOCK_ROUTING_PATH=Courseforge/config/block_routing.license_clean.yaml
+#   ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101
+#
+# Cross-references:
+#   - docs/operations/license-clean-run.md (4-env-var deployment recipe)
+#   - docs/LICENSING.md (per-provider ToS posture + per-model license)
+#
+# ----------------------------------------------------------------------
+# What this file changes vs. block_routing.yaml
+# ----------------------------------------------------------------------
+#
+# Only the `large` capability tier — every per-block-type mapping below
+# is identical to the canonical file. The default `large` tier is
+# `provider: anthropic / model: claude-sonnet-4-6` because pedagogy-
+# critical blocks (assessment_item distractors, prereq-chain reasoning)
+# benefit from the cloud teacher's instruction-following margin. This
+# variant swaps `large` to a 32B Apache-2.0 local model (Qwen2.5-32B,
+# 4-bit quant; ~22 GB VRAM) for a fully license-clean run.
+#
+# ----------------------------------------------------------------------
+# CALIBRATION RISK on `assessment_item` (read this before adopting)
+# ----------------------------------------------------------------------
+#
+# The canonical Courseforge/CLAUDE.md states that `assessment_item`
+# rewrite "MUST stay on Anthropic to avoid silent regression". That
+# guidance was calibrated against `claude-sonnet-4-6`; the 32B local
+# substitute below is the right shape for license-clean ops but its
+# distractor-quality + misconception-targeting performance has NOT been
+# empirically validated against the Courseforge eval suite at the time
+# this file ships.
+#
+# Before promoting a course built with this variant past
+# `non_certified_archive` on the Wave-3 promotion chain
+# (lib/governance/course_status.py::derive_course_status), operators
+# MUST run a calibration loop:
+#
+#   1. Pick a representative chapter (10-20 blocks of every type).
+#   2. Rebuild the chapter under both routings (this file vs. canonical).
+#   3. Compare outputs against the four validators wired into the
+#      `assessment_item.validators.required` matrix:
+#        - objective_assessment_similarity (≥0.55 cosine floor)
+#        - bloom_alignment
+#        - answerability
+#      plus the `optional` distractor_entropy advisory.
+#   4. If the local-32B variant fails any required gate at a
+#      meaningfully higher rate than the Anthropic baseline, KEEP
+#      `assessment_item.rewrite` cascade pinned to the canonical
+#      `large` tier (i.e. comment out the override below) and accept
+#      the per-block ToS hit on assessment_item only.
+#
+# The license-clean / calibration tradeoff is operator-owned, not a
+# pipeline default — that's why this file is opt-in and the canonical
+# `block_routing.yaml` keeps the Anthropic default.
+
+version: 1
+
+capability_tiers:
+  # Small tier — unchanged: 7B local Qwen for outline-tier first draft.
+  # Apache 2.0; ToS-clean for training-data ingestion.
+  small:
+    provider: local
+    model: qwen2.5:7b-instruct-q4_K_M
+    base_url: http://localhost:11434/v1
+    temperature: 0.0
+    max_tokens: 1200
+
+  # Medium tier — unchanged: 14B local Qwen for rewrite of structurally-
+  # simple blocks (concept, example, misconception, summary_takeaway,
+  # callout, recap). Apache 2.0; ToS-clean.
+  medium:
+    provider: local
+    model: qwen2.5:14b-instruct-q4_K_M
+    base_url: http://localhost:11434/v1
+    temperature: 0.4
+    max_tokens: 2400
+
+  # Large tier — LICENSE-CLEAN OVERRIDE: 32B local Qwen instead of
+  # claude-sonnet-4-6. Apache 2.0; ToS-clean. See "CALIBRATION RISK"
+  # header above before adopting for assessment_item production runs.
+  #
+  # Hardware floor: ~22 GB VRAM in 4-bit (24 GB consumer GPU works;
+  # 16 GB does not without further quantization). Operators on
+  # smaller hardware should set `provider: together` and pin the
+  # model to a hosted Apache-2.0 OSS model (e.g.
+  # `Qwen/Qwen2.5-72B-Instruct-Turbo`) — see
+  # docs/operations/license-clean-run.md for the Together fallback
+  # configuration.
+  large:
+    provider: local
+    model: qwen2.5:32b-instruct-q4_K_M
+    base_url: http://localhost:11434/v1
+    temperature: 0.4
+    max_tokens: 2400
+
+defaults:
+  outline:
+    capability_tier: small
+  rewrite:
+    capability_tier: medium
+
+blocks:
+  # Per-block-type entries below are intentionally byte-identical to
+  # the canonical Courseforge/config/block_routing.yaml — only the
+  # `large` tier definition above changes. The cascading-regen list
+  # form on assessment_item still works: `[medium, large]` first tries
+  # the 14B local rewrite, then escalates to the 32B local on per-tier
+  # sub-budget exhaustion. The cascade SEMANTICS are unchanged from
+  # the canonical file; only the model behind `large` differs.
+  #
+  # If empirical calibration shows the 32B local degrades assessment_item
+  # distractor quality below the canonical Anthropic baseline, the
+  # right play is to comment out the assessment_item entry below so
+  # the global `defaults.rewrite.capability_tier: medium` applies and
+  # cascade is disabled — the Anthropic-pinned canonical file remains
+  # the production default for assessment_item until the calibration
+  # loop closes.
+
+  assessment_item:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: [medium, large]
+    validators:
+      required:
+        - objective_assessment_similarity
+        - bloom_alignment
+        - answerability
+      optional:
+        - distractor_entropy
+      fail_action: escalate
+
+  concept:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: medium
+    validators:
+      required:
+        - source_ref
+        - content_type
+        - similarity
+      optional:
+        - curie_anchoring
+      fail_action: regenerate
+
+  example:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: medium
+    validators:
+      required:
+        - concept_example_similarity
+        - source_ref
+      optional:
+        - bloom_classifier_disagreement
+      fail_action: regenerate
+
+  misconception:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: medium
+    validators:
+      required:
+        - source_ref
+        - distractor_misconception_alignment
+      optional: []
+      fail_action: regenerate
+
+  summary_takeaway:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: medium
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  flip_card_grid:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: small
+    validators:
+      required:
+        - source_ref
+        - content_type
+      optional: []
+      fail_action: regenerate
+
+  prereq_set:
+    escalate_immediately: true
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  objective:
+    validators:
+      required:
+        - curie_anchoring
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  explanation:
+    validators:
+      required:
+        - source_ref
+        - content_type
+      optional:
+        - similarity
+      fail_action: regenerate
+
+  activity:
+    validators:
+      required:
+        - objective_ref
+        - source_ref
+      optional:
+        - accessibility
+      fail_action: regenerate
+
+  callout:
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  self_check_question:
+    validators:
+      required:
+        - objective_ref
+        - answerability
+      optional:
+        - bloom_classifier_disagreement
+      fail_action: escalate
+
+  reflection_prompt:
+    validators:
+      required:
+        - objective_ref
+      optional: []
+      fail_action: regenerate
+
+  discussion_prompt:
+    validators:
+      required:
+        - objective_ref
+      optional: []
+      fail_action: regenerate
+
+  chrome:
+    validators:
+      required: []
+      optional: []
+      fail_action: regenerate
+
+  recap:
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
