@@ -924,6 +924,28 @@ class TaskExecutor:
         _force_inprocess_for_courseplanner = (
             _courseplanner_provider_set and agent_type == "course-outliner"
         )
+        # Wave W-D15 ToS-unblock: TRAINFORGE_ASSESSMENT_PROVIDER
+        # short-circuits the Wave-74 subagent dispatch for the
+        # assessment-generator agent only. Mirrors the
+        # COURSEFORGE_PROVIDER / COURSEPLANNER_PROVIDER semantics above —
+        # setting the env var routes assessment-question synthesis
+        # through an in-process OpenAI-compatible / Anthropic provider
+        # via
+        # ``Trainforge.generators._assessment_provider.AssessmentGeneratorProvider``
+        # so the authored questions (which land in ``assessments.json``
+        # and feed into the downstream ``training_synthesis``
+        # instruction-pair / preference-pair surface — i.e. they ARE
+        # training data for the resulting SLM adapter) are produced by
+        # an operator-selected license-clean provider rather than the
+        # Claude Code subagent. Other Wave-74 agents keep dispatching
+        # unchanged.
+        _trainforge_assessment_provider_set = bool(
+            os.environ.get("TRAINFORGE_ASSESSMENT_PROVIDER", "").strip()
+        )
+        _force_inprocess_for_trainforge_assessment = (
+            _trainforge_assessment_provider_set
+            and agent_type == "assessment-generator"
+        )
         if (
             _agent_dispatch_enabled()
             and self.dispatcher is not None
@@ -932,6 +954,7 @@ class TaskExecutor:
             and hasattr(self.dispatcher, "dispatch_task")
             and not _force_inprocess_for_courseforge
             and not _force_inprocess_for_courseplanner
+            and not _force_inprocess_for_trainforge_assessment
         ):
             # Param-mapping still runs so downstream agent prompts see
             # the same shape the Python tool would have received.
@@ -972,6 +995,11 @@ class TaskExecutor:
             logger.info(
                 "COURSEPLANNER_PROVIDER set; bypassing course-outliner "
                 "subagent dispatch."
+            )
+        if _force_inprocess_for_trainforge_assessment:
+            logger.info(
+                "TRAINFORGE_ASSESSMENT_PROVIDER set; bypassing "
+                "assessment-generator subagent dispatch."
             )
 
         # Legacy in-process path — unchanged from pre-Wave-74.

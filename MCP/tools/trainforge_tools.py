@@ -38,6 +38,19 @@ try:
 except ImportError:
     HAS_ASSESSMENT_GENERATOR = False
 
+# Wave W-D15: in-process license-clean assessment-generator provider.
+# Imported best-effort so legacy environments without the W-D12
+# OpenAI-compatible registry still work — when the import fails the
+# legacy ``AssessmentGenerator`` path is the only available branch.
+try:
+    from Trainforge.generators._assessment_provider import (  # noqa: F401
+        AssessmentGeneratorProvider,
+        AssessmentGeneratorProviderError,
+    )
+    HAS_ASSESSMENT_PROVIDER = True
+except ImportError:
+    HAS_ASSESSMENT_PROVIDER = False
+
 try:
     from lib.trainforge_capture import QuestionData, create_trainforge_capture  # noqa: F401
     HAS_LEGACY_CAPTURE = True
@@ -373,6 +386,123 @@ def register_trainforge_tools(mcp):
                     ),
                 })
 
+            # Wave W-D15: TRAINFORGE_ASSESSMENT_PROVIDER short-circuits
+            # the legacy AssessmentGenerator's deterministic-template
+            # path with an in-process LLM provider so the questions
+            # land license-clean. Default unset => legacy
+            # AssessmentGenerator fires byte-stable for every existing
+            # run (mirrors the W-D14 COURSEPLANNER_PROVIDER pattern in
+            # ``MCP/tools/pipeline_tools.py::_plan_course_structure``).
+            import os as _os
+            _trainforge_assessment_provider_env = _os.environ.get(
+                "TRAINFORGE_ASSESSMENT_PROVIDER", ""
+            ).strip()
+
+            llm_provider_questions: Optional[list] = None
+            llm_provider_skipped: Optional[list] = None
+            if (
+                _trainforge_assessment_provider_env
+                and HAS_ASSESSMENT_PROVIDER
+            ):
+                try:
+                    # Resolve source_chunks for the in-process provider.
+                    # When RAG is wired we collect the top-K chunks per
+                    # objective once; otherwise we use the IMSCC
+                    # extracted chunks directly. The provider needs
+                    # the chunk text bodies to ground questions.
+                    provider_chunks: list = []
+                    if rag:
+                        for obj_id in objectives:
+                            try:
+                                rag_chunks, _metrics = (
+                                    rag.retrieve_with_fallback(
+                                        objective_text=obj_id,
+                                        bloom_level=levels[0]
+                                        if levels else "understand",
+                                    )
+                                )
+                                for c in rag_chunks:
+                                    provider_chunks.append(c.to_dict())
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "RAG retrieval failed for objective "
+                                    "%s during in-process provider "
+                                    "dispatch: %s", obj_id, exc,
+                                )
+                    else:
+                        provider_chunks = list(imscc_content_chunks)
+
+                    if not provider_chunks:
+                        logger.warning(
+                            "TRAINFORGE_ASSESSMENT_PROVIDER=%s set but "
+                            "no source chunks resolved; falling back to "
+                            "legacy AssessmentGenerator path.",
+                            _trainforge_assessment_provider_env,
+                        )
+                    else:
+                        # Materialise minimal objectives list from the
+                        # objective_ids the caller threaded in. The
+                        # provider needs ``id`` + ``statement`` per
+                        # objective; we synthesize a stub statement
+                        # from the ID since the caller has not threaded
+                        # the canonical objective text.
+                        provider_objectives = [
+                            {
+                                "id": oid,
+                                "statement": (
+                                    f"Learning objective {oid}"
+                                ),
+                            }
+                            for oid in objectives
+                        ]
+                        provider_obj = AssessmentGeneratorProvider(
+                            capture=capture,
+                        )
+                        logger.info(
+                            "TRAINFORGE_ASSESSMENT_PROVIDER=%s; routing "
+                            "assessment-generator through in-process "
+                            "provider.",
+                            _trainforge_assessment_provider_env,
+                        )
+                        provider_payload = (
+                            provider_obj.generate_assessments(
+                                chunks=provider_chunks,
+                                objectives=provider_objectives,
+                                target_count=question_count,
+                                course_code=safe_course_id,
+                                bloom_levels=levels,
+                            )
+                        )
+                        llm_provider_questions = list(
+                            provider_payload.get("questions") or []
+                        )
+                        llm_provider_skipped = list(
+                            provider_payload.get("skipped_items") or []
+                        )
+                except AssessmentGeneratorProviderError as exc:
+                    # LLM tier exhausted parse — log and fall back to
+                    # the legacy AssessmentGenerator path. Rationale
+                    # for fallback (rather than fail-closed like W-D14):
+                    # the legacy generator emits SkippedItem on missing
+                    # content rather than placeholders, so a fallback
+                    # is structurally safe; the provider exhaustion
+                    # surface is captured via the
+                    # assessment_generator_call decision event so the
+                    # operator's intent is auditable post-hoc.
+                    logger.warning(
+                        "AssessmentGeneratorProvider exhausted "
+                        "(provider=%s): %s; falling back to legacy "
+                        "AssessmentGenerator path.",
+                        _trainforge_assessment_provider_env, exc,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception(
+                        "AssessmentGeneratorProvider init/dispatch "
+                        "failed (provider=%s): %s — falling back to "
+                        "legacy path.",
+                        _trainforge_assessment_provider_env, exc,
+                    )
+
             # Dispatch to the canonical generator. If we have a RAG
             # bridge, pass it; otherwise hand the extracted IMSCC chunks
             # directly so the generator's ContentExtractor can operate
@@ -400,6 +530,119 @@ def register_trainforge_tools(mcp):
                     "error": f"AssessmentGenerator.generate() failed: {e}",
                     "cause": "generator_exception",
                 })
+
+            # W-D15: when the in-process provider produced questions,
+            # PREFER its emit over the legacy generator's
+            # deterministic-template output. The legacy generator
+            # still ran above so its capture / leak-check / SkippedItem
+            # surfaces fire — its output dict provides the fallback
+            # shape but the actual questions[] are replaced when the
+            # license-clean provider succeeded. Provider questions are
+            # folded into the canonical AssessmentData.to_dict()
+            # envelope through the dict the legacy generator already
+            # built.
+            if llm_provider_questions is not None:
+                # Convert provider-emitted dicts into the canonical
+                # QuestionData.to_dict() shape expected by downstream
+                # consumers (the legacy generator already emits
+                # this shape; we mirror its keys).
+                fold_questions = [
+                    {
+                        "question_id": q.get("question_id", ""),
+                        "question_type": q.get("question_type", ""),
+                        "stem": q.get("stem", ""),
+                        "bloom_level": q.get("bloom_level", ""),
+                        "objective_id": q.get("objective_id", ""),
+                        "choices": q.get("choices") or [],
+                        "correct_answer": q.get("correct_answer"),
+                        "points": float(q.get("points") or 1.0),
+                        "feedback": q.get("feedback"),
+                        "source_chunks": q.get("source_chunks") or [],
+                        "generation_rationale": q.get(
+                            "generation_rationale"
+                        ),
+                        "evidence_quote": q.get("evidence_quote"),
+                        "observed_bloom_level": q.get(
+                            "observed_bloom_level"
+                        ),
+                        "bloom_alignment": q.get("bloom_alignment"),
+                    }
+                    for q in llm_provider_questions
+                ]
+                # Mutate the legacy generator's AssessmentData object
+                # so the in-process provider's questions ARE the
+                # surface that lands on disk + reaches downstream
+                # consumers; the legacy generator's questions[] are
+                # discarded in favor of the license-clean emit.
+                # SkippedItem objects from the provider's refusals
+                # also append onto the AssessmentData.skipped_items
+                # so the operator sees both structural skips + LLM
+                # refusals in one place.
+                from Trainforge.generators.assessment_generator import (  # noqa: PLC0415
+                    QuestionData as _QData,
+                    SkippedItem as _SkipItem,
+                )
+                rebuilt: list = []
+                for fq in fold_questions:
+                    try:
+                        rebuilt.append(_QData(
+                            question_id=str(fq["question_id"] or ""),
+                            question_type=str(fq["question_type"] or ""),
+                            stem=str(fq["stem"] or ""),
+                            bloom_level=str(fq["bloom_level"] or ""),
+                            objective_id=str(fq["objective_id"] or ""),
+                            choices=list(fq["choices"] or []),
+                            correct_answer=fq.get("correct_answer"),
+                            points=float(fq.get("points") or 1.0),
+                            feedback=fq.get("feedback"),
+                            source_chunks=list(
+                                fq["source_chunks"] or []
+                            ),
+                            generation_rationale=fq.get(
+                                "generation_rationale"
+                            ),
+                            observed_bloom_level=fq.get(
+                                "observed_bloom_level"
+                            ),
+                            bloom_alignment=fq.get("bloom_alignment"),
+                        ))
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "Failed to rebuild QuestionData entry "
+                            "from provider emit: %s", exc,
+                        )
+                # Replace the legacy generator's questions wholesale.
+                assessment_data.questions = rebuilt
+                # Append provider refusals to skipped_items (preserve
+                # existing structural skips from the legacy path).
+                if llm_provider_skipped:
+                    for sk in llm_provider_skipped:
+                        try:
+                            assessment_data.skipped_items.append(
+                                _SkipItem(
+                                    question_id=(
+                                        f"Q-LLM-SKIP-{len(assessment_data.skipped_items):03d}"
+                                    ),
+                                    question_type="unknown",
+                                    bloom_level=str(
+                                        sk.get("bloom_level", "")
+                                    ),
+                                    objective_id=str(
+                                        sk.get("objective_id", "")
+                                    ),
+                                    reason=str(
+                                        sk.get(
+                                            "reason",
+                                            "no_extractable_content",
+                                        )
+                                    ),
+                                )
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug(
+                                "Failed to append provider skipped item: "
+                                "%s", exc,
+                            )
 
             # Convert to serializable dict + augment with MCP-surface fields
             assessment = assessment_data.to_dict()
