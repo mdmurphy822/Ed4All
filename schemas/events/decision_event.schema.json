@@ -116,6 +116,7 @@
         "content_selection",
         "content_structure",
         "content_structure_check",
+        "course_outline_call",
         "courseforge_outline_shacl_check",
         "courseforge_validation_aggregated",
         "coverage_map_aggregated",
@@ -222,7 +223,7 @@
         "violation_generation",
         "wcag_compliance_check"
       ],
-      "description": "Category of decision from decision taxonomy (alphabetised; Wave 22 adds: assessment_generation, assessment_planning, boilerplate_strip, content_selection, pipeline_run_attribution, question_type_selection; Phase 3 two-pass router adds: block_escalation, block_outline_call, block_rewrite_call, block_validation_action; Phase 4 statistical tier adds: bert_ensemble_disagreement, bert_ensemble_dispersion_high, bert_ensemble_member_loaded, statistical_validation_fail, statistical_validation_pass)"
+      "description": "Category of decision from decision taxonomy (alphabetised; Wave 22 adds: assessment_generation, assessment_planning, boilerplate_strip, content_selection, pipeline_run_attribution, question_type_selection; Phase 3 two-pass router adds: block_escalation, block_outline_call, block_rewrite_call, block_validation_action; Phase 4 statistical tier adds: bert_ensemble_disagreement, bert_ensemble_dispersion_high, bert_ensemble_member_loaded, statistical_validation_fail, statistical_validation_pass; Wave W-D14 course-outliner in-process provider adds: course_outline_call — emitted by Courseforge.generators._outliner_provider.OutlinerProvider per synthesize_objectives() invocation; rationale interpolates provider, model, course_name, chapter_count_input, weeks_input, terminal_count_emit, chapter_count_emit, output_chars, retry_count, success, optional last_error)"
     },
     "decision": {
       "type": "string",

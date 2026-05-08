@@ -1653,10 +1653,27 @@ def _raw_text_to_accessible_html(
                 else "heuristic"
             )
             backend = "heuristic" if classifier_mode == "heuristic" else "claude"
+            # W-D13: surface resolved DART provider names so the audit
+            # trail records WHICH backend produced each DART artifact —
+            # parallel to how the Trainforge synthesis providers
+            # interpolate ``provider=...`` in their decision rationales.
+            try:
+                from DART.pdf_converter.claude_processor import (
+                    _resolve_dart_provider as _dart_provider_resolver,
+                    _resolve_dart_vision_provider as _dart_vision_provider_resolver,
+                )
+
+                _dart_text_provider = _dart_provider_resolver()
+                _dart_vision_provider_name = _dart_vision_provider_resolver()
+            except Exception:  # noqa: BLE001 — resolver is best-effort
+                _dart_text_provider = "unknown"
+                _dart_vision_provider_name = "unknown"
             rationale = (
                 f"Ran DART pipeline against "
                 f"{Path(source_pdf).name if source_pdf else 'raw_text_only'}; "
                 f"backend={backend}; classifier_mode={classifier_mode}; "
+                f"provider={_dart_text_provider}; "
+                f"vision_provider={_dart_vision_provider_name}; "
                 f"raw_text len={len(raw_text or '')} chars; "
                 f"title={title!r}; "
                 f"output_path={'set' if output_path else 'unset'}; "
@@ -4636,10 +4653,126 @@ def _build_tool_registry() -> dict:
                 chapter = list(supplied_chapter)
                 mint_method = "user_supplied_objectives_json"
             else:
-                terminal, chapter = _cgh.synthesize_objectives_from_topics(
-                    topics, duration_weeks,
-                )
-                mint_method = "synthesize_objectives_from_topics"
+                # W-D14: COURSEPLANNER_PROVIDER short-circuits the
+                # deterministic ``synthesize_objectives_from_topics`` path
+                # when the operator opts into the in-process LLM seam for
+                # the course-outliner agent. Mirrors the W-D11.A
+                # COURSEFORGE_PROVIDER pattern at ``_generate_course_content``.
+                # Default unset => deterministic synthesizer fires
+                # byte-stable for every existing run.
+                _courseplanner_provider_env = os.environ.get(
+                    "COURSEPLANNER_PROVIDER", ""
+                ).strip()
+                terminal: List[Dict[str, Any]] = []
+                chapter: List[Dict[str, Any]] = []
+                mint_method = ""
+                if _courseplanner_provider_env:
+                    try:
+                        from Courseforge.generators._outliner_provider import (
+                            OutlinerProvider,
+                            OutlinerProviderError,
+                        )
+                        # Build a textbook_structure dict from disk when
+                        # the extractor has emitted one; fall back to an
+                        # empty stub so the provider's prompt block
+                        # surfaces "(none)" without raising. ``structure_path``
+                        # below in this function is recomputed; we reference
+                        # the same canonical location here so both paths see
+                        # the same on-disk artifact.
+                        _structure_path_local = (
+                            project_path
+                            / "01_learning_objectives"
+                            / "textbook_structure.json"
+                        )
+                        outliner_structure: Dict[str, Any] = {}
+                        if _structure_path_local.exists():
+                            try:
+                                outliner_structure = json.loads(
+                                    _structure_path_local.read_text(
+                                        encoding="utf-8"
+                                    )
+                                )
+                            except (OSError, ValueError) as exc:
+                                logger.warning(
+                                    "plan_course_structure: "
+                                    "textbook_structure read failed (%s); "
+                                    "calling OutlinerProvider with empty "
+                                    "chapters[]", exc,
+                                )
+                        outliner_capture = None
+                        try:
+                            from lib.decision_capture import DecisionCapture
+                            outliner_capture = DecisionCapture(
+                                course_code=course_name,
+                                phase="course-outliner",
+                                tool="courseforge",
+                                streaming=True,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "DecisionCapture init failed for "
+                                "course-outliner: %s", exc,
+                            )
+                            outliner_capture = None
+                        outliner_provider = OutlinerProvider(
+                            capture=outliner_capture,
+                        )
+                        logger.info(
+                            "COURSEPLANNER_PROVIDER=%s; routing "
+                            "course-outliner through in-process provider.",
+                            _courseplanner_provider_env,
+                        )
+                        synthesised = outliner_provider.synthesize_objectives(
+                            outliner_structure,
+                            course_name=course_name,
+                            chapter_count=len(
+                                outliner_structure.get("chapters") or []
+                            ),
+                            weeks=duration_weeks,
+                        )
+                        terminal = list(
+                            synthesised.get("terminal_objectives") or []
+                        )
+                        # Provider returns chapter_objectives in the
+                        # group-of-groups shape; flatten so this
+                        # function's downstream assembly stays consistent
+                        # with both the user-supplied and deterministic
+                        # paths (which deliver flat dicts).
+                        chapter_groups = (
+                            synthesised.get("chapter_objectives") or []
+                        )
+                        for grp in chapter_groups:
+                            if not isinstance(grp, dict):
+                                continue
+                            for entry in grp.get("objectives") or []:
+                                if isinstance(entry, dict):
+                                    chapter.append(entry)
+                        mint_method = synthesised.get(
+                            "mint_method"
+                        ) or f"courseplanner_provider:{_courseplanner_provider_env}"
+                    except OutlinerProviderError as exc:
+                        # LLM tier exhausted parse — fail loud rather
+                        # than silently falling back so the operator's
+                        # opt-in intent is honored or surfaced clearly.
+                        logger.exception(
+                            "OutlinerProvider exhausted (provider=%s): %s",
+                            _courseplanner_provider_env, exc,
+                        )
+                        raise
+                    except Exception as exc:
+                        logger.exception(
+                            "OutlinerProvider init/dispatch failed "
+                            "(provider=%s): %s",
+                            _courseplanner_provider_env, exc,
+                        )
+                        raise
+                if not terminal and not chapter:
+                    terminal, chapter = _cgh.synthesize_objectives_from_topics(
+                        topics, duration_weeks,
+                    )
+                    mint_method = mint_method or (
+                        "synthesize_objectives_from_topics"
+                    )
 
             # Wave 1.8 — objective-driven dynamic week count. The
             # extractor phase auto-scaled ``duration_weeks`` to
