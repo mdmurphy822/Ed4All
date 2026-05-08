@@ -133,7 +133,11 @@ credentials.json
 secrets.json
 
 # Claude workspace
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/skills/**
+!.claude/agents/
+!.claude/agents/**
 
 # OS files
 .DS_Store
