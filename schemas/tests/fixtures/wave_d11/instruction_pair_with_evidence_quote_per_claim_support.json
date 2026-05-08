@@ -1,0 +1,27 @@
+{
+  "prompt": "Explain in your own words what a SHACL node shape contributes to RDF validation.",
+  "completion": "A SHACL node shape carries the constraints that fire on its target nodes; when a target node's properties violate any predicate in the shape, the validator emits a ValidationResult naming the focus node, the failed shape, and the reason for the violation.",
+  "chunk_id": "wave_d11_chunk_00001",
+  "lo_refs": ["TO-01"],
+  "bloom_level": "understand",
+  "content_type": "explanation",
+  "seed": 42,
+  "decision_capture_id": "EVT_wave_d11_per_claim_support_demo",
+  "provider": "local",
+  "promotion_status": "trainable",
+  "source_chunk_id": "wave_d11_chunk_00001",
+  "per_claim_support": [
+    {
+      "sentence": "A SHACL node shape carries the constraints that fire on its target nodes.",
+      "entailment": 0.93,
+      "contradiction": 0.02,
+      "outcome": "entailed",
+      "source_chunk_ids": ["wave_d11_chunk_00001"],
+      "evidence_quote": "A SHACL node shape declares constraints that fire on target nodes",
+      "evidence_char_span": [0, 65]
+    }
+  ],
+  "claim_support_rate": 1.0,
+  "claim_contradicted_rate": 0.0,
+  "deps_missing": false
+}
