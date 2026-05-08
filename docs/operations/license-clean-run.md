@@ -11,6 +11,7 @@ Cross-reference: `docs/LICENSING.md` is the canonical ToS-posture document. Read
 | Env var | License-clean value | What it changes |
 |---------|---------------------|-----------------|
 | `COURSEFORGE_REWRITE_PROVIDER` | `local` | Routes the Courseforge rewrite-tier authoring surface through a local OSS server (Ollama / vLLM) instead of Anthropic. |
+| `COURSEPLANNER_PROVIDER` | `local` | **W-D14**: routes the Courseforge course-outliner surface (canonical `TO-NN` / `CO-NN` objective synthesis from `textbook_structure.json`) through `Courseforge/generators/_outliner_provider.py::OutlinerProvider`. The synthesised objective text propagates to every downstream chunk's `learning_outcome_refs[]`, so this surface IS training-data exposure. Bypasses the Claude Code `course-outliner` subagent dispatch. Reuses the same `LOCAL_SYNTHESIS_*` env vars as the other local-OSS surfaces. |
 | `TRAINFORGE_TARGET_MODELS` | `local/qwen2.5-14b,together/llama-3.3-70b` (or similar — operator-chosen CSV) | Cosmetic dataset_config.json field documenting which teacher models the corpus was synthesized against; lets the LibV2 audit trail record the actual ToS-clean teachers used. |
 | `ED4ALL_LLM_JUDGE_PROVIDER` | `local_nli` | Wave-102 ablation eval routes its qualitative-judge calls through a local NLI classifier (`MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`) instead of the default `none` (no LLM judge) or `anthropic`. |
 | `COURSEFORGE_BLOCK_ROUTING_PATH` | `Courseforge/config/block_routing.license_clean.yaml` | Points the two-pass router at the sibling routing YAML that overrides the `large` capability tier from `claude-sonnet-4-6` to a 32B local Qwen. See "Calibration prerequisite" below. |
@@ -71,8 +72,9 @@ ollama pull qwen2.5:32b-instruct-q4_K_M
 # Belt-and-braces: explicitly unset Anthropic key.
 unset ANTHROPIC_API_KEY
 
-# Provider routing — the four documented env vars.
+# Provider routing — the documented env vars.
 export COURSEFORGE_REWRITE_PROVIDER=local
+export COURSEPLANNER_PROVIDER=local        # W-D14 — course-outliner surface
 export TRAINFORGE_TARGET_MODELS="local/qwen2.5-14b,together/llama-3.3-70b"
 export ED4ALL_LLM_JUDGE_PROVIDER=local_nli
 export COURSEFORGE_BLOCK_ROUTING_PATH=Courseforge/config/block_routing.license_clean.yaml
@@ -120,16 +122,15 @@ DART's PDF converter (`DART/pdf_converter/converter.py`) currently routes throug
 
 Workaround until that wave lands: pre-convert PDFs through DART on a separate machine that has the Anthropic agreement, archive the resulting HTML, and feed the HTML directly into the textbook-to-course pipeline (skipping the dart_conversion phase via `--reuse-objectives` once DART has run). The Anthropic exposure is then bounded to the one-time pre-conversion step and does not leak into the synthesis phase.
 
-### Course-outliner + assessment-generator subagents
+### Assessment-generator subagent
 
-Two Claude Code subagents currently dispatch through `ED4ALL_AGENT_DISPATCH=true` with no provider flag:
+One Claude Code subagent currently dispatches through `ED4ALL_AGENT_DISPATCH=true` with no provider flag:
 
-- `course-outliner` (Courseforge) — synthesizes canonical `TO-NN` / `CO-NN` learning objectives from textbook structure. Routes via `plan_course_structure` MCP tool. The synthesized objectives JSON is consumed by every downstream phase, so this is real training-data exposure (objective text lands in `course.json` and propagates to `chunk.learning_outcome_refs[]`).
 - `assessment-generator` (Trainforge) — generates assessment questions + distractors. The questions land in `assessments.json` and feed into `instruction_pair` / `preference_pair` synthesis.
 
-There is no `*_PROVIDER=local` flag for either subagent yet. The W-D14 / W-D15 waves will route both through the same `OpenAICompatibleClient` infrastructure as the synthesis / curriculum-alignment / content-generator surfaces.
+The W-D15 wave will route this through the same `OpenAICompatibleClient` infrastructure (via a `TRAINFORGE_ASSESSMENT_PROVIDER` env var) as the synthesis / curriculum-alignment / content-generator / course-outliner surfaces.
 
-Workaround: the `--reuse-objectives` flag on `ed4all run textbook-to-course` lets an operator hand-curate (or pre-generate via a local provider out-of-band) the synthesized objectives JSON and pin the pipeline to it, side-stepping the course-outliner dispatch entirely. No equivalent workaround exists for assessment-generator at this time.
+W-D14 (this commit) closed the symmetrical gap on the `course-outliner` subagent — `COURSEPLANNER_PROVIDER=local` (or any registered OpenAI-compatible provider) now routes objective synthesis through the in-process `OutlinerProvider`. No equivalent workaround exists for assessment-generator at this time.
 
 ### Honest scope
 

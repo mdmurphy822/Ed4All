@@ -906,6 +906,24 @@ class TaskExecutor:
         _force_inprocess_for_courseforge = (
             _courseforge_provider_set and agent_type == "content-generator"
         )
+        # Wave W-D14 ToS-unblock: COURSEPLANNER_PROVIDER short-circuits
+        # the Wave-74 subagent dispatch for the course-outliner agent
+        # only. Mirrors the COURSEFORGE_PROVIDER semantics above —
+        # setting the env var routes objective synthesis through an
+        # in-process OpenAI-compatible / Anthropic provider via
+        # ``Courseforge.generators._outliner_provider.OutlinerProvider``
+        # so the synthesised LO text (which lands in
+        # ``synthesized_objectives.json`` and propagates to every
+        # downstream chunk's ``learning_outcome_refs[]``) is produced
+        # by an operator-selected license-clean provider rather than
+        # the Claude Code subagent. Other Wave-74 agents keep dispatching
+        # unchanged.
+        _courseplanner_provider_set = bool(
+            os.environ.get("COURSEPLANNER_PROVIDER", "").strip()
+        )
+        _force_inprocess_for_courseplanner = (
+            _courseplanner_provider_set and agent_type == "course-outliner"
+        )
         if (
             _agent_dispatch_enabled()
             and self.dispatcher is not None
@@ -913,6 +931,7 @@ class TaskExecutor:
             and agent_type in AGENT_SUBAGENT_SET
             and hasattr(self.dispatcher, "dispatch_task")
             and not _force_inprocess_for_courseforge
+            and not _force_inprocess_for_courseplanner
         ):
             # Param-mapping still runs so downstream agent prompts see
             # the same shape the Python tool would have received.
@@ -947,6 +966,11 @@ class TaskExecutor:
         if _force_inprocess_for_courseforge:
             logger.info(
                 "COURSEFORGE_PROVIDER set; bypassing content-generator "
+                "subagent dispatch."
+            )
+        if _force_inprocess_for_courseplanner:
+            logger.info(
+                "COURSEPLANNER_PROVIDER set; bypassing course-outliner "
                 "subagent dispatch."
             )
 
