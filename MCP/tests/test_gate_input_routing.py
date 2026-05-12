@@ -758,3 +758,265 @@ def test_outline_seam_uses_block_validators() -> None:
         "Expected inter_tier_validation in both textbook_to_course and "
         f"course_generation; saw it in {workflows_with_inter_tier}."
     )
+
+
+# ---------------------------------------------------------------------- #
+# Wave2-I9 — Finding 5: chunkset_manifest / concept_graph / abcd_objective
+# builders. Pre-Wave2-I9 the gate router silently skipped these validators
+# via ``__no_builder_registered__``, downgrading three critical-shape
+# gates to passed=True no-ops.
+# ---------------------------------------------------------------------- #
+
+
+WAVE2_I9_VALIDATOR_PATHS = [
+    "lib.validators.chunkset_manifest.ChunksetManifestValidator",
+    "lib.validators.concept_graph.ConceptGraphValidator",
+    "lib.validators.abcd_objective.AbcdObjectiveValidator",
+]
+
+
+@pytest.mark.parametrize("validator_path", WAVE2_I9_VALIDATOR_PATHS)
+def test_wave2_i9_validators_have_builders_registered(validator_path: str):
+    """Every Wave2-I9 validator must resolve to a real builder.
+
+    Regression guard against silent ``__no_builder_registered__`` skips.
+    """
+    r = default_router()
+    assert validator_path in r.builders, (
+        f"Wave2-I9 regression: no builder registered for {validator_path}; "
+        f"gate will silently skip via __no_builder_registered__."
+    )
+
+
+# ---- ChunksetManifestValidator ---------------------------------------- #
+
+
+def test_chunkset_manifest_builder_resolves_dart_manifest_from_chunks_path(
+    tmp_path: Path,
+):
+    """DART chunking emits dart_chunks_path; manifest sits beside it."""
+    chunks_dir = tmp_path / "dart_chunks"
+    chunks_dir.mkdir()
+    chunks_path = chunks_dir / "chunks.jsonl"
+    chunks_path.write_text("", encoding="utf-8")
+
+    phase_outputs = _make_phase_outputs(
+        chunking={"dart_chunks_path": str(chunks_path)},
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.chunkset_manifest.ChunksetManifestValidator",
+        phase_outputs,
+        {},
+    )
+    assert missing == []
+    assert inputs["chunkset_manifest_path"] == str(chunks_dir / "manifest.json")
+
+
+def test_chunkset_manifest_builder_resolves_imscc_manifest_from_chunks_path(
+    tmp_path: Path,
+):
+    """IMSCC chunking emits imscc_chunks_path; manifest sits beside it."""
+    chunks_dir = tmp_path / "imscc_chunks"
+    chunks_dir.mkdir()
+    chunks_path = chunks_dir / "chunks.jsonl"
+    chunks_path.write_text("", encoding="utf-8")
+
+    phase_outputs = _make_phase_outputs(
+        imscc_chunking={"imscc_chunks_path": str(chunks_path)},
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.chunkset_manifest.ChunksetManifestValidator",
+        phase_outputs,
+        {},
+    )
+    assert missing == []
+    assert inputs["chunkset_manifest_path"] == str(chunks_dir / "manifest.json")
+
+
+def test_chunkset_manifest_builder_prefers_explicit_manifest_path():
+    """Explicit manifest_path on the chunking phase output wins."""
+    phase_outputs = _make_phase_outputs(
+        chunking={
+            "dart_chunks_path": "/tmp/dart_chunks/chunks.jsonl",
+            "manifest_path": "/tmp/dart_chunks/explicit_manifest.json",
+        },
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.chunkset_manifest.ChunksetManifestValidator",
+        phase_outputs,
+        {},
+    )
+    assert missing == []
+    assert inputs["chunkset_manifest_path"] == "/tmp/dart_chunks/explicit_manifest.json"
+
+
+def test_chunkset_manifest_builder_skips_when_no_chunks_path():
+    """No chunking phase output → skip with structured reason."""
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.chunkset_manifest.ChunksetManifestValidator",
+        {},
+        {},
+    )
+    assert missing == ["chunkset_manifest_path"]
+
+
+# ---- ConceptGraphValidator -------------------------------------------- #
+
+
+def test_concept_graph_builder_resolves_from_concept_extraction_phase():
+    """ConceptGraphValidator needs concept_graph_path."""
+    phase_outputs = _make_phase_outputs(
+        concept_extraction={
+            "concept_graph_path": "/tmp/course/concept_graph/concept_graph_semantic.json",
+        },
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.concept_graph.ConceptGraphValidator",
+        phase_outputs,
+        {},
+    )
+    assert missing == []
+    assert (
+        inputs["concept_graph_path"]
+        == "/tmp/course/concept_graph/concept_graph_semantic.json"
+    )
+
+
+def test_concept_graph_builder_falls_back_to_locate_scan():
+    """Missing concept_extraction phase but the key surfaces elsewhere."""
+    phase_outputs = _make_phase_outputs(
+        course_planning={
+            "concept_graph_path": "/tmp/course/concept_graph/concept_graph_semantic.json",
+        },
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.concept_graph.ConceptGraphValidator",
+        phase_outputs,
+        {},
+    )
+    assert missing == []
+    assert (
+        inputs["concept_graph_path"]
+        == "/tmp/course/concept_graph/concept_graph_semantic.json"
+    )
+
+
+def test_concept_graph_builder_skips_when_path_missing():
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.concept_graph.ConceptGraphValidator",
+        {},
+        {},
+    )
+    assert missing == ["concept_graph_path"]
+
+
+# ---- AbcdObjectiveValidator ------------------------------------------- #
+
+
+def test_abcd_objective_builder_resolves_from_course_planning_phase():
+    """AbcdObjectiveValidator needs synthesized_objectives_path."""
+    phase_outputs = _make_phase_outputs(
+        course_planning={
+            "synthesized_objectives_path": "/tmp/course/synthesized_objectives.json",
+        },
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.abcd_objective.AbcdObjectiveValidator",
+        phase_outputs,
+        {},
+    )
+    assert missing == []
+    assert (
+        inputs["synthesized_objectives_path"]
+        == "/tmp/course/synthesized_objectives.json"
+    )
+
+
+def test_abcd_objective_builder_honors_workflow_params_override():
+    """workflow_params.objectives_path is the canonical override."""
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.abcd_objective.AbcdObjectiveValidator",
+        {},
+        {"objectives_path": "/tmp/reuse/synthesized_objectives.json"},
+    )
+    assert missing == []
+    assert (
+        inputs["synthesized_objectives_path"]
+        == "/tmp/reuse/synthesized_objectives.json"
+    )
+
+
+def test_abcd_objective_builder_skips_when_path_unresolvable():
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.abcd_objective.AbcdObjectiveValidator",
+        {},
+        {},
+    )
+    assert missing == ["synthesized_objectives_path"]
+
+
+# ---- Integration: routing dispatches to the right builder ------------- #
+
+
+def test_wave2_i9_router_dispatches_to_correct_builder(tmp_path: Path):
+    """Top-level routing function should pick the right builder per name.
+
+    Integration-shaped guard: a single phase_outputs dict carrying
+    inputs for all three Wave2-I9 validators routes each validator
+    through its own builder, producing the validator-specific shape.
+    """
+    chunks_dir = tmp_path / "dart_chunks"
+    chunks_dir.mkdir()
+    chunks_path = chunks_dir / "chunks.jsonl"
+    chunks_path.write_text("", encoding="utf-8")
+
+    phase_outputs = _make_phase_outputs(
+        chunking={"dart_chunks_path": str(chunks_path)},
+        concept_extraction={
+            "concept_graph_path": "/tmp/concept_graph_semantic.json",
+        },
+        course_planning={
+            "synthesized_objectives_path": "/tmp/synthesized_objectives.json",
+        },
+    )
+    r = default_router()
+
+    chunkset_in, chunkset_missing = r.build(
+        "lib.validators.chunkset_manifest.ChunksetManifestValidator",
+        phase_outputs,
+        {},
+    )
+    assert chunkset_missing == []
+    assert "chunkset_manifest_path" in chunkset_in
+    assert "concept_graph_path" not in chunkset_in
+    assert "synthesized_objectives_path" not in chunkset_in
+
+    concept_in, concept_missing = r.build(
+        "lib.validators.concept_graph.ConceptGraphValidator",
+        phase_outputs,
+        {},
+    )
+    assert concept_missing == []
+    assert "concept_graph_path" in concept_in
+    assert "chunkset_manifest_path" not in concept_in
+    assert "synthesized_objectives_path" not in concept_in
+
+    abcd_in, abcd_missing = r.build(
+        "lib.validators.abcd_objective.AbcdObjectiveValidator",
+        phase_outputs,
+        {},
+    )
+    assert abcd_missing == []
+    assert "synthesized_objectives_path" in abcd_in
+    assert "concept_graph_path" not in abcd_in
+    assert "chunkset_manifest_path" not in abcd_in

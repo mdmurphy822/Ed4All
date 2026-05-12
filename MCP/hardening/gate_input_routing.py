@@ -1099,6 +1099,127 @@ def _build_degraded_chunk_input(
     return {}, ["wrong_validator_class"]
 
 
+def _build_chunkset_manifest_inputs(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Wave2-I9 — input builder for ChunksetManifestValidator.
+
+    The validator's ``validate()`` reads ``inputs["chunkset_manifest_path"]``
+    (see ``lib/validators/chunkset_manifest.py:213``). This gate fires
+    symmetrically at two phases:
+
+    * ``chunking`` (DART) — emits ``dart_chunks_path``; manifest.json
+      sits in the same directory.
+    * ``imscc_chunking`` (IMSCC) — emits ``imscc_chunks_path``; manifest
+      sits beside chunks.jsonl.
+
+    Resolution chain (high → low):
+
+    * Explicit ``manifest_path`` key in either chunking phase output
+      (Phase 7c emits this directly even though the YAML
+      ``outputs:`` block doesn't yet declare it).
+    * Derive ``<chunks_dir>/manifest.json`` from the sibling
+      ``dart_chunks_path`` (DART) or ``imscc_chunks_path`` (IMSCC).
+
+    Pre-Wave2-I9 the validator silently skipped with
+    ``__no_builder_registered__`` because no builder was registered;
+    the gate ran ``passed=True warning-severity`` (gate config
+    ``severity: warning``, ``on_fail: warn``, ``on_error: warn``),
+    so the manifest was never inspected. Finding 5 / Wave2-I9.
+    """
+    chunking = phase_outputs.get("chunking") or {}
+    imscc_chunking = phase_outputs.get("imscc_chunking") or {}
+
+    # Prefer an explicit manifest_path emitted by the phase tool (the
+    # _run_dart_chunking / _run_imscc_chunking helpers both emit it
+    # even though YAML outputs:block doesn't currently declare it).
+    manifest_path = (
+        chunking.get("manifest_path")
+        or imscc_chunking.get("manifest_path")
+    )
+
+    # Derive from the sibling chunks.jsonl path. DART takes priority;
+    # if both are present the chunking phase fired first so its
+    # manifest is the one tested at the chunking-phase gate. The
+    # imscc_chunking gate runs later and re-reads the IMSCC manifest
+    # at that point (phase_outputs.chunking won't have a manifest
+    # for the IMSCC sibling, so we won't mis-route).
+    if not manifest_path:
+        chunks_path_raw = (
+            chunking.get("dart_chunks_path")
+            or imscc_chunking.get("imscc_chunks_path")
+        )
+        if isinstance(chunks_path_raw, str) and chunks_path_raw:
+            try:
+                chunks_jsonl = Path(chunks_path_raw)
+                manifest_path = str(chunks_jsonl.parent / "manifest.json")
+            except (TypeError, ValueError):
+                manifest_path = None
+
+    if not manifest_path:
+        return {}, ["chunkset_manifest_path"]
+
+    return {"chunkset_manifest_path": manifest_path}, []
+
+
+def _build_concept_graph_inputs(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Wave2-I9 — input builder for ConceptGraphValidator.
+
+    The validator's ``validate()`` reads ``inputs["concept_graph_path"]``
+    (see ``lib/validators/concept_graph.py:218``). Phase
+    ``concept_extraction`` declares ``concept_graph_path`` as a YAML
+    ``outputs:`` key (``config/workflows.yaml:873``), so it surfaces
+    directly in ``phase_outputs["concept_extraction"]``.
+
+    Optional ``min_nodes`` / ``min_edge_types`` thresholds flow
+    through ``gate.config`` via the executor's
+    ``executor.py:1442`` merge — the builder doesn't need to surface
+    them. Pre-Wave2-I9 the gate skipped silently with
+    ``__no_builder_registered__``.
+    """
+    ce = phase_outputs.get("concept_extraction") or {}
+    candidate = ce.get("concept_graph_path")
+    if not candidate:
+        # Fallback: scan any phase that surfaced this key. Mirrors
+        # the resilience of other builders that use `_locate`.
+        candidate = _locate(phase_outputs, "concept_graph_path")
+    if not isinstance(candidate, str) or not candidate:
+        return {}, ["concept_graph_path"]
+    return {"concept_graph_path": candidate}, []
+
+
+def _build_abcd_objective_inputs(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Wave2-I9 — input builder for AbcdObjectiveValidator.
+
+    The validator's ``_coerce_objectives`` resolution chain reads
+    (in priority order) ``inputs["objectives"]`` >
+    ``inputs["synthesized_objectives_path"]`` (see
+    ``lib/validators/abcd_objective.py:179``). Phase
+    ``course_planning`` declares ``synthesized_objectives_path`` as
+    a YAML ``outputs:`` key (``config/workflows.yaml:938``), so we
+    route through the canonical
+    :func:`_resolve_objectives_path` helper to keep the resolution
+    surface consistent with every other synthesized-objectives
+    consumer (course_planning emit > workflow_params override >
+    derived from objective_extraction.project_path).
+
+    Pre-Wave2-I9 the gate skipped silently with
+    ``__no_builder_registered__`` despite being wired as
+    ``abcd_verb_alignment`` at the course_planning phase.
+    """
+    objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
+    if not objectives_path:
+        return {}, ["synthesized_objectives_path"]
+    return {"synthesized_objectives_path": objectives_path}, []
+
+
 def _build_assessment_objective_alignment(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -1496,6 +1617,33 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.chunkset_drift.ChunksetDriftValidator",
         _build_chunkset_drift,
+    )
+
+    # Wave2-I9 — Finding 5: three validators silently skipped via
+    # ``__no_builder_registered__`` because the router didn't know how
+    # to derive their required inputs from phase outputs. The gate ran
+    # ``passed=True warning-severity`` (a no-op), preventing the
+    # validator from ever inspecting the artifact.
+    #
+    # ChunksetManifestValidator fires at both ``chunking`` (DART) and
+    # ``imscc_chunking`` (IMSCC) phases; the builder handles both by
+    # deriving ``<chunks_dir>/manifest.json`` from the sibling
+    # chunks.jsonl path.
+    r.register(
+        "lib.validators.chunkset_manifest.ChunksetManifestValidator",
+        _build_chunkset_manifest_inputs,
+    )
+    # ConceptGraphValidator fires at ``concept_extraction`` and needs
+    # the path to concept_graph_semantic.json (a declared YAML output).
+    r.register(
+        "lib.validators.concept_graph.ConceptGraphValidator",
+        _build_concept_graph_inputs,
+    )
+    # AbcdObjectiveValidator fires at ``course_planning`` as
+    # ``abcd_verb_alignment`` and needs synthesized_objectives.json.
+    r.register(
+        "lib.validators.abcd_objective.AbcdObjectiveValidator",
+        _build_abcd_objective_inputs,
     )
 
     return r
