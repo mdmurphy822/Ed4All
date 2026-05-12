@@ -7700,6 +7700,68 @@ def _build_tool_registry() -> dict:
         if staging_dir is not None and staging_dir.exists():
             html_files = sorted(staging_dir.rglob("*.html"))
 
+        # Wave1-I2: resume-safety guard. If we have no real input to
+        # chunk (no staging_dir resolved, OR staging_dir exists but
+        # produced zero HTML files), do NOT overwrite a previously-emitted
+        # chunks.jsonl with an empty-bytes shell. On a workflow resume
+        # that drops the input path from carried-forward phase context,
+        # the prior fail-soft empty-shell behaviour silently destroyed
+        # real chunks (see plans/dispatch-7-execution-inspection-2026-05.md
+        # Finding 2; cost ~92 chunks during the 2026-05-12 OpenStax run).
+        # Preserve when an existing artifact is found; fail-closed when
+        # there's nothing to preserve.
+        if not html_files:
+            existing_chunks_path = (
+                _resolve_libv2_root(kwargs.get("libv2_root"))
+                / "courses"
+                / course_slug
+                / "dart_chunks"
+                / "chunks.jsonl"
+            )
+            if existing_chunks_path.exists():
+                existing_sha = _hashlib.sha256(
+                    existing_chunks_path.read_bytes()
+                ).hexdigest()
+                existing_count = sum(
+                    1
+                    for line in existing_chunks_path.read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    if line.strip()
+                )
+                logger.warning(
+                    "Wave1-I2: _run_dart_chunking input missing or empty "
+                    "(staging_dir_kw=%r, resolved=%r); preserving existing "
+                    "chunks.jsonl at %s (%d chunks, sha256=%s) instead of "
+                    "overwriting with empty shell.",
+                    staging_dir_kw,
+                    str(staging_dir) if staging_dir else None,
+                    existing_chunks_path,
+                    existing_count,
+                    existing_sha,
+                )
+                manifest_path = existing_chunks_path.parent / "manifest.json"
+                return json.dumps({
+                    "success": True,
+                    "preserved_existing": True,
+                    "dart_chunks_path": str(existing_chunks_path),
+                    "dart_chunks_sha256": existing_sha,
+                    "manifest_path": str(manifest_path),
+                    "course_slug": course_slug,
+                    "chunks_count": existing_count,
+                    "source_html_count": 0,
+                    "chunker_version": _resolve_chunker_version(),
+                })
+            raise RuntimeError(
+                "Wave1-I2: _run_dart_chunking refusing to emit empty "
+                "chunks.jsonl shell — no DART HTML input found "
+                f"(staging_dir_kw={staging_dir_kw!r}, "
+                f"resolved={str(staging_dir) if staging_dir else None!r}) "
+                f"and no pre-existing artifact at {existing_chunks_path}. "
+                "On a workflow resume, ensure the staging_dir kwarg is "
+                "carried forward via phase_outputs."
+            )
+
         # Compute aggregated source SHA-256 over the DART HTML inputs.
         # Per the schema's ``source_dart_html_sha256`` description, we
         # emit a deterministic merkle-ish digest: sort by filename,
@@ -8115,10 +8177,77 @@ def _build_tool_registry() -> dict:
                 imscc_path = cand
 
         if imscc_path is None:
-            logger.warning(
-                "Phase 7c ST 16: imscc_path %r missing or not a file; "
-                "emitting empty chunks shell.",
-                imscc_path_kw,
+            # Wave1-I2: resume-safety guard. Do NOT overwrite a
+            # previously-emitted chunks.jsonl with an empty-bytes shell
+            # on a workflow resume that drops imscc_path from carried-
+            # forward phase context. The prior fail-soft empty-shell
+            # behaviour silently destroyed real chunks (see
+            # plans/dispatch-7-execution-inspection-2026-05.md Finding 2;
+            # cost ~92 chunks during the 2026-05-12 OpenStax run).
+            # Preserve when an existing artifact is found; fail-closed
+            # when there's nothing to preserve.
+            existing_chunks_path = (
+                _resolve_libv2_root(kwargs.get("libv2_root"))
+                / "courses"
+                / course_slug
+                / "imscc_chunks"
+                / "chunks.jsonl"
+            )
+            if existing_chunks_path.exists():
+                existing_sha = _hashlib.sha256(
+                    existing_chunks_path.read_bytes()
+                ).hexdigest()
+                existing_count = sum(
+                    1
+                    for line in existing_chunks_path.read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    if line.strip()
+                )
+                logger.warning(
+                    "Wave1-I2: _run_imscc_chunking imscc_path %r missing "
+                    "or not a file; preserving existing chunks.jsonl at "
+                    "%s (%d chunks, sha256=%s) instead of overwriting "
+                    "with empty shell.",
+                    imscc_path_kw,
+                    existing_chunks_path,
+                    existing_count,
+                    existing_sha,
+                )
+                manifest_path = existing_chunks_path.parent / "manifest.json"
+                # Read source_imscc_sha256 from the existing manifest if
+                # available; otherwise emit None so callers know it's
+                # not derivable without the archive on hand.
+                preserved_source_sha: Optional[str] = None
+                if manifest_path.exists():
+                    try:
+                        preserved_manifest = json.loads(
+                            manifest_path.read_text(encoding="utf-8")
+                        )
+                        preserved_source_sha = preserved_manifest.get(
+                            "source_imscc_sha256"
+                        )
+                    except (OSError, json.JSONDecodeError):
+                        preserved_source_sha = None
+                return json.dumps({
+                    "success": True,
+                    "preserved_existing": True,
+                    "imscc_chunks_path": str(existing_chunks_path),
+                    "imscc_chunks_sha256": existing_sha,
+                    "manifest_path": str(manifest_path),
+                    "course_slug": course_slug,
+                    "chunks_count": existing_count,
+                    "source_html_count": 0,
+                    "source_imscc_sha256": preserved_source_sha,
+                    "chunker_version": _resolve_chunker_version(),
+                })
+            raise RuntimeError(
+                "Wave1-I2: _run_imscc_chunking refusing to emit empty "
+                "chunks.jsonl shell — imscc_path "
+                f"{imscc_path_kw!r} is missing or not a file, and no "
+                f"pre-existing artifact at {existing_chunks_path}. "
+                "On a workflow resume, ensure imscc_path is carried "
+                "forward via phase_outputs.packaging.package_path."
             )
 
         # Compute source SHA-256 over the .imscc archive bytes. Per
