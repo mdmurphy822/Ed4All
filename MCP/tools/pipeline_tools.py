@@ -415,6 +415,170 @@ def _resolve_libv2_root(explicit: Optional[str] = None) -> Path:
     return _PROJECT_ROOT / "LibV2"
 
 
+def _project_synthesized_objectives_to_course_json(
+    synthesized_objectives_path: Path,
+    course_json_path: Path,
+    *,
+    course_code: str,
+    course_title: str,
+) -> Optional[Dict[str, Any]]:
+    """Project ``synthesized_objectives.json`` to a packaging-shaped
+    ``course.json`` at ``<project>/03_content_development/course.json``.
+
+    Wave2-I3 (Finding 3 of plans/dispatch-7-execution-inspection-2026-05.md):
+    closes ``PAGE_OBJECTIVES_PATH_MISSING`` blocker. The
+    ``PageObjectivesValidator`` (``lib/validators/page_objectives.py:192-249``)
+    auto-discovers ``content_dir / "course.json"`` and fails closed
+    critical-severity when absent; ``package_multifile_imscc.package_imscc``
+    has the same auto-discovery contract via ``load_canonical_objectives``
+    (``Courseforge/scripts/generate_course.py:615-646``), which reads
+    ``terminal_objectives`` + ``chapter_objectives``.
+
+    Projection is idempotent: when ``course_json_path`` already exists
+    (e.g. ``--reuse-objectives`` ran or Trainforge's ``_build_course_json``
+    emitted), this function logs INFO and returns ``None`` without
+    overwriting. Returns the on-disk dict on a fresh emit.
+
+    Source-shape handling is defensive: ``synthesized_objectives.json``
+    normally carries the Courseforge synthesized form
+    (``terminal_objectives[]`` + ``chapter_objectives[]`` per
+    ``MCP/tools/pipeline_tools.py::_plan_course_structure`` at line
+    ~4948); the root ``CLAUDE.md`` ``--reuse-objectives`` doc says the
+    runner normalizes the LibV2 archive form
+    (``terminal_outcomes[]`` + ``component_objectives[]``) to the
+    former on disk, but we handle both forms here so a hand-edited
+    legacy file doesn't silently emit an empty course.json.
+
+    Args:
+        synthesized_objectives_path: Path to the input JSON
+            (``01_learning_objectives/synthesized_objectives.json``).
+        course_json_path: Path to the target packaging-shaped
+            ``course.json`` (``03_content_development/course.json``).
+        course_code: Stable course identifier (e.g. ``PHYS_101``).
+        course_title: Human-readable course title.
+
+    Returns:
+        The emitted course.json dict on a fresh write, or ``None`` if
+        the target already exists (idempotent skip) or the synthesized
+        objectives file is missing / malformed.
+    """
+    if course_json_path.exists():
+        logger.info(
+            "_project_synthesized_objectives_to_course_json: target "
+            "%s already exists; skipping idempotent emit.",
+            course_json_path,
+        )
+        return None
+    if not synthesized_objectives_path.exists():
+        logger.warning(
+            "_project_synthesized_objectives_to_course_json: synthesized "
+            "objectives not found at %s; cannot emit course.json. "
+            "PageObjectivesValidator will fail closed with "
+            "PAGE_OBJECTIVES_PATH_MISSING at the packaging gate.",
+            synthesized_objectives_path,
+        )
+        return None
+    try:
+        synthesized = json.loads(
+            synthesized_objectives_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "_project_synthesized_objectives_to_course_json: failed to "
+            "parse %s (%s); skipping course.json emit.",
+            synthesized_objectives_path, exc,
+        )
+        return None
+    if not isinstance(synthesized, dict):
+        logger.warning(
+            "_project_synthesized_objectives_to_course_json: %s did not "
+            "parse to a dict (got %s); skipping course.json emit.",
+            synthesized_objectives_path, type(synthesized).__name__,
+        )
+        return None
+
+    # Defensive: accept both the Courseforge synthesized form
+    # (terminal_objectives + chapter_objectives) and the LibV2 archive
+    # form (terminal_outcomes + component_objectives).
+    terminal = (
+        synthesized.get("terminal_objectives")
+        or synthesized.get("terminal_outcomes")
+        or []
+    )
+    chapter_groups_raw = (
+        synthesized.get("chapter_objectives")
+        or synthesized.get("component_objectives")
+        or []
+    )
+    # The pre-emitted ``learning_outcomes`` flat list (Courseforge
+    # form) is the canonical Trainforge-shaped roll-up. Reuse when
+    # present; reconstruct from terminal + chapter otherwise so the
+    # LibV2 archive form (which doesn't pre-emit the flat list)
+    # still produces a usable course.json.
+    learning_outcomes_raw = synthesized.get("learning_outcomes")
+    if not isinstance(learning_outcomes_raw, list) or not learning_outcomes_raw:
+        learning_outcomes_raw = []
+        for t in terminal if isinstance(terminal, list) else []:
+            if isinstance(t, dict):
+                lo = dict(t)
+                lo.setdefault("hierarchy_level", "terminal")
+                learning_outcomes_raw.append(lo)
+        for grp in chapter_groups_raw if isinstance(chapter_groups_raw, list) else []:
+            if not isinstance(grp, dict):
+                continue
+            for c in grp.get("objectives") or []:
+                if isinstance(c, dict):
+                    lo = dict(c)
+                    lo.setdefault("hierarchy_level", "chapter")
+                    learning_outcomes_raw.append(lo)
+
+    duration_weeks = synthesized.get("duration_weeks")
+
+    course_json: Dict[str, Any] = {
+        # Required by schemas/knowledge/course.schema.json + consumed by
+        # Trainforge's load_course_outcomes.
+        "course_code": course_code,
+        "title": course_title,
+        # PageObjectivesValidator (lib/validators/page_objectives.py:192-249)
+        # auto-discovers content_dir / "course.json" then routes to
+        # load_canonical_objectives (Courseforge/scripts/generate_course.py:615)
+        # which reads these two keys verbatim.
+        "terminal_objectives": list(terminal)
+        if isinstance(terminal, list) else [],
+        "chapter_objectives": list(chapter_groups_raw)
+        if isinstance(chapter_groups_raw, list) else [],
+        # LibV2 course.json shape (schemas/knowledge/course.schema.json:32-87):
+        # flat learning_outcomes[] with id/statement/hierarchy_level. Carries
+        # bloom_level/bloom_verb/key_concepts/cognitive_domain when synthesizer
+        # populated them so downstream Trainforge consumers (process_course
+        # _build_course_json) keep parity with the synthesized payload.
+        "learning_outcomes": learning_outcomes_raw,
+        # Provenance: chunker_version mirrors course_manifest.json so
+        # downstream Trainforge consumers don't graceful-degrade on a
+        # missing version field.
+        "chunker_version": _resolve_chunker_version(),
+    }
+    if duration_weeks is not None:
+        course_json["duration_weeks"] = duration_weeks
+
+    course_json_path.parent.mkdir(parents=True, exist_ok=True)
+    course_json_path.write_text(
+        json.dumps(course_json, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    logger.info(
+        "_project_synthesized_objectives_to_course_json: emitted %s "
+        "with %d terminal_objectives + %d chapter_objective groups + "
+        "%d learning_outcomes (closes PAGE_OBJECTIVES_PATH_MISSING "
+        "blocker; Wave2-I3).",
+        course_json_path,
+        len(course_json["terminal_objectives"]),
+        len(course_json["chapter_objectives"]),
+        len(course_json["learning_outcomes"]),
+    )
+    return course_json
+
+
 def _resolve_chunker_version() -> str:
     """Resolve the chunker-schema-contract version stamped on chunkset
     sidecar manifests + ``course_manifest.json``.
@@ -5486,6 +5650,43 @@ def _build_tool_registry() -> dict:
                 _Path(objectives_path_kw) if objectives_path_kw else None
             )
             skip_validation = bool(kwargs.get("skip_validation", False))
+
+            # Wave2-I3 (Finding 3, plans/dispatch-7-execution-inspection-
+            # 2026-05.md): emit packaging-shaped course.json from
+            # synthesized_objectives.json BEFORE the mature packager + the
+            # PageObjectivesValidator gate fire. Pre-fix, no phase wrote
+            # course.json at the Courseforge content root, so the
+            # PageObjectivesValidator (lib/validators/page_objectives.py
+            # :192-249) auto-discovery hit a missing file and fail-closed
+            # critical-severity with PAGE_OBJECTIVES_PATH_MISSING — blocking
+            # every textbook_to_course packaging gate. Now the synthesized
+            # objectives from the course_planning phase are projected to
+            # the canonical packaging shape (terminal_objectives +
+            # chapter_objectives + learning_outcomes[]) at the location
+            # both the mature packager and the validator auto-discover.
+            # Idempotent: when course.json already exists (e.g.
+            # --reuse-objectives ran or a future Trainforge phase emitted
+            # one), the projection logs INFO and skips without overwrite.
+            synthesized_objectives_path = (
+                project_path
+                / "01_learning_objectives"
+                / "synthesized_objectives.json"
+            )
+            content_course_json_path = content_dir / "course.json"
+            try:
+                _project_synthesized_objectives_to_course_json(
+                    synthesized_objectives_path,
+                    content_course_json_path,
+                    course_code=course_name,
+                    course_title=course_title,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort projection
+                logger.warning(
+                    "_package_imscc: course.json projection raised %s; "
+                    "packaging will continue but PageObjectivesValidator "
+                    "may fail closed downstream.",
+                    exc,
+                )
 
             package_path = final_dir / f"{course_name}.imscc"
             # W3.H sub-task H3: emit a sibling packaging_report.json
