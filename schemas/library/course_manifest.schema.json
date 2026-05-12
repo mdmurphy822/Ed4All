@@ -31,6 +31,29 @@
       "pattern": "^[0-9a-f]{64}$",
       "description": "Phase 7c: SHA-256 of LibV2/courses/<slug>/imscc_chunks/chunks.jsonl produced by the imscc_chunking workflow phase (Phase 7c ST 16). Required by Phase 7c Subtask 17; ties the archived IMSCC chunkset to the course manifest. Validator: lib.validators.libv2_manifest.LibV2ManifestValidator._check_imscc_chunks_sha256."
     },
+    "source_documents_sha256_index": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+      "uniqueItems": true,
+      "description": "GPT Feedback v2 (May 12 / item 3): set of SHA-256 hashes for every upstream source document (PDFs, IMSCC archive) that contributed to this archived course. Populated from source_artifacts.pdf[].checksum and source_artifacts.imscc.checksum at archive time. Optional: legacy manifests (pre-May-2026) lack this field and continue to validate. Provides a single auditor-friendly join key from manifest to upstream bytes without walking the source_artifacts subtree."
+    },
+    "graph_build_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "GPT Feedback v2 (May 12 / item 3): mirror of concept_graph_semantic.json::graph_build_hash, copied onto the manifest at archive time so an auditor reading the manifest alone sees graph-input lineage without opening the graph artifact. Optional: legacy manifests lack this field and continue to validate."
+    },
+    "rulepack_version": {
+      "type": "string",
+      "pattern": "^v[0-9a-f]+$",
+      "description": "GPT Feedback v2 (May 12 / item 3): mirror of concept_graph_semantic.json::rulepack_version, aggregate version of the rulepack that produced the archived graph. Optional: legacy manifests lack this field and continue to validate. See Trainforge.rag.inference_rules.RULEPACK_VERSION for the producer."
+    },
+    "course_package_version": {
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {"type": "null"}
+      ],
+      "description": "GPT Feedback v2 (May 12 / item 3): mirror of concept_graph_semantic.json::course_package_version, Courseforge run signature / IMSCC archive version that produced this course. Emitted as null today (Courseforge does not yet produce a stable signature); schema admits a future string value without a migration. Optional."
+    },
     "slug": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$",

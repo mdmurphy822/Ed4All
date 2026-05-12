@@ -1789,6 +1789,20 @@ class CourseProcessor:
         if item.get("item_path"):
             source["item_path"] = item["item_path"]
 
+        # GPT Feedback v2 (May 12 / item 3): thread an aggregate
+        # source-document SHA into every chunk's source block when the
+        # caller has stamped it onto the CourseProcessor instance via
+        # ``self._source_document_sha256``. Same value across every
+        # chunk in this run; gives downstream consumers a byte-stable
+        # join key from chunk → upstream-source artifact. Off by
+        # default (legacy parity): when the attribute is absent /
+        # falsy, the field is simply omitted. See
+        # schemas/knowledge/chunk_v4.schema.json::
+        # $defs.Source.source_document_sha256.
+        _src_doc_sha = getattr(self, "_source_document_sha256", None)
+        if isinstance(_src_doc_sha, str) and _src_doc_sha:
+            source["source_document_sha256"] = _src_doc_sha
+
         # Wave 10: fold DART source provenance into source.source_references[].
         # Precedence chain (same first-seen-wins policy as the parser):
         #   1. page-level JSON-LD sourceReferences (full shape)

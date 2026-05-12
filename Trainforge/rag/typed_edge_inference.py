@@ -386,6 +386,7 @@ def build_semantic_graph_with_dataset(
     questions: Optional[List[Dict[str, Any]]] = None,
     objectives_metadata: Optional[List[Dict[str, Any]]] = None,
     emit_trig: Optional[bool] = None,
+    course_package_version: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Optional[Any]]:
     """Phase 3 sibling of ``build_semantic_graph`` that additionally
     composes an ``rdflib.Dataset`` of per-rule named graphs.
@@ -421,6 +422,7 @@ def build_semantic_graph_with_dataset(
         misconceptions=misconceptions,
         questions=questions,
         objectives_metadata=objectives_metadata,
+        course_package_version=course_package_version,
     )
 
     if not emit_trig:
@@ -462,6 +464,7 @@ def build_semantic_graph(
     misconceptions: Optional[List[Dict[str, Any]]] = None,
     questions: Optional[List[Dict[str, Any]]] = None,
     objectives_metadata: Optional[List[Dict[str, Any]]] = None,
+    course_package_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the typed-edge concept graph.
 
@@ -518,8 +521,55 @@ def build_semantic_graph(
         misconceptions=misconceptions,
         questions=questions,
         objectives_metadata=objectives_metadata,
+        course_package_version=course_package_version,
     )
     return json_dict
+
+
+def _compute_graph_build_hash(
+    *,
+    course_id: Any,
+    concept_graph: Dict[str, Any],
+    chunks: List[Dict[str, Any]],
+    rule_versions: Dict[str, int],
+    rulepack_version: str,
+) -> str:
+    """GPT Feedback v2 (May 12 / item 3): deterministic build-hash.
+
+    SHA-256 over a canonicalised JSON payload of the inputs that produced
+    this graph. ``generated_at`` is excluded so two byte-identical runs
+    against the same upstream inputs hash to the same value; any input
+    change flips the hash loudly. See
+    ``schemas/knowledge/concept_graph_semantic.schema.json::properties.graph_build_hash``
+    for the consumer contract.
+    """
+    import hashlib
+    import json as _json
+
+    # Pull node IDs from the upstream co-occurrence concept_graph. Use the
+    # raw `nodes[].id` field (the same ID the rules see), sorted for
+    # determinism. Falling back to an empty list keeps a None-input graph
+    # deterministic instead of crashing.
+    raw_nodes = concept_graph.get("nodes") if isinstance(concept_graph, dict) else None
+    node_ids = sorted(
+        n.get("id", "")
+        for n in (raw_nodes or [])
+        if isinstance(n, dict) and isinstance(n.get("id"), str)
+    )
+    chunk_ids = sorted(
+        c.get("id", "")
+        for c in chunks
+        if isinstance(c, dict) and isinstance(c.get("id"), str)
+    )
+    payload = {
+        "course_id": course_id or "",
+        "node_ids": node_ids,
+        "chunk_ids": chunk_ids,
+        "rule_versions": dict(sorted(rule_versions.items())),
+        "rulepack_version": rulepack_version,
+    }
+    canonical = _json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _build_semantic_graph_internal(
@@ -536,6 +586,7 @@ def _build_semantic_graph_internal(
     misconceptions: Optional[List[Dict[str, Any]]],
     questions: Optional[List[Dict[str, Any]]],
     objectives_metadata: Optional[List[Dict[str, Any]]],
+    course_package_version: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], List[Any]]:
     """Phase 3 internal: compute the JSON artifact AND the per-rule
     output list (``RuleOutput`` records) so the TriG writer can emit
@@ -680,10 +731,33 @@ def _build_semantic_graph_internal(
 
     generated_at = effective_now.isoformat()
 
+    # GPT Feedback v2 (May 12 / item 3): aggregate lineage fields.
+    sorted_rule_versions = dict(sorted(rule_versions.items()))
+    course_id_for_hash = course.get("course_id") if isinstance(course, dict) else None
+    resolved_course_package_version = course_package_version
+    if resolved_course_package_version is None and isinstance(course, dict):
+        # Best-effort pickup from course.json. Courseforge doesn't emit
+        # a package_version today; the field stays null when absent.
+        cv = course.get("package_version")
+        if isinstance(cv, str) and cv:
+            resolved_course_package_version = cv
+    graph_build_hash = _compute_graph_build_hash(
+        course_id=course_id_for_hash,
+        concept_graph=concept_graph,
+        chunks=chunks,
+        rule_versions=sorted_rule_versions,
+        rulepack_version=RULEPACK_VERSION,
+    )
+
     json_dict = {
         "kind": ARTIFACT_KIND,
         "generated_at": generated_at,
-        "rule_versions": dict(sorted(rule_versions.items())),
+        "rule_versions": sorted_rule_versions,
+        # GPT Feedback v2 (May 12 / item 3): see
+        # schemas/knowledge/concept_graph_semantic.schema.json.
+        "rulepack_version": RULEPACK_VERSION,
+        "graph_build_hash": graph_build_hash,
+        "course_package_version": resolved_course_package_version,
         "nodes": nodes,
         "edges": resolved,
     }
