@@ -647,7 +647,13 @@ class TestRunDartChunkingEmitsChunksJsonl:
         assert actual_lines == payload["chunks_count"]
 
     def test_empty_staging_emits_chunks_shell(self, tmp_path, monkeypatch):
-        """Empty staging dir -> empty chunks.jsonl shell + valid manifest."""
+        """Wave1-I2: empty staging dir + no pre-existing chunks -> fail-closed.
+
+        Previously this emitted an empty-bytes chunks.jsonl shell, which on a
+        workflow resume silently overwrote real chunks. Now the helper raises
+        RuntimeError when there's nothing to chunk and nothing to preserve.
+        See plans/dispatch-7-execution-inspection-2026-05.md Finding 2.
+        """
         fake_root = tmp_path / "root"
         fake_root.mkdir()
         monkeypatch.setattr(pipeline_tools, "_PROJECT_ROOT", fake_root)
@@ -663,20 +669,14 @@ class TestRunDartChunkingEmitsChunksJsonl:
 
         registry = _build_tool_registry()
         tool = registry["run_dart_chunking"]
-        result = asyncio.run(
-            tool(
-                course_name="EMPTY_777",
-                staging_dir=str(empty_staging),
+        with pytest.raises(RuntimeError, match=r"Wave1-I2: _run_dart_chunking refusing"):
+            asyncio.run(
+                tool(
+                    course_name="EMPTY_777",
+                    staging_dir=str(empty_staging),
+                    libv2_root=str(tmp_path / "libv2"),
+                )
             )
-        )
-        payload = json.loads(result)
-        assert payload["success"] is True
-        assert payload["chunks_count"] == 0
-        # Empty file but still emitted, valid SHA-256 shape.
-        assert _SHA256_RE.match(payload["dart_chunks_sha256"])
-        chunks_path = Path(payload["dart_chunks_path"])
-        assert chunks_path.exists()
-        assert chunks_path.read_bytes() == b""
 
     def test_run_dart_chunking_registered_in_registry(self):
         """Forward-reference closure from Phase 7b ST 9's
@@ -900,7 +900,14 @@ class TestRunImsccChunkingEmitsChunksJsonl:
         assert actual_lines == payload["chunks_count"]
 
     def test_missing_imscc_emits_chunks_shell(self, tmp_path, monkeypatch):
-        """Missing imscc_path -> empty chunks.jsonl shell + valid manifest."""
+        """Wave1-I2: missing imscc_path + no pre-existing chunks -> fail-closed.
+
+        Previously this emitted an empty-bytes chunks.jsonl shell with an
+        all-zeros source-SHA sentinel, which on a workflow resume silently
+        overwrote real chunks. Now the helper raises RuntimeError when there's
+        nothing to chunk and nothing to preserve. See
+        plans/dispatch-7-execution-inspection-2026-05.md Finding 2.
+        """
         fake_root = tmp_path / "root"
         fake_root.mkdir()
         monkeypatch.setattr(pipeline_tools, "_PROJECT_ROOT", fake_root)
@@ -913,27 +920,14 @@ class TestRunImsccChunkingEmitsChunksJsonl:
 
         registry = _build_tool_registry()
         tool = registry["run_imscc_chunking"]
-        result = asyncio.run(
-            tool(
-                course_name="EMPTY_888",
-                imscc_path=str(tmp_path / "does_not_exist.imscc"),
+        with pytest.raises(RuntimeError, match=r"Wave1-I2: _run_imscc_chunking refusing"):
+            asyncio.run(
+                tool(
+                    course_name="EMPTY_888",
+                    imscc_path=str(tmp_path / "does_not_exist.imscc"),
+                    libv2_root=str(tmp_path / "libv2"),
+                )
             )
-        )
-        payload = json.loads(result)
-        assert payload["success"] is True
-        assert payload["chunks_count"] == 0
-        # Empty file but still emitted, valid SHA-256 shape.
-        assert _SHA256_RE.match(payload["imscc_chunks_sha256"])
-        chunks_path = Path(payload["imscc_chunks_path"])
-        assert chunks_path.exists()
-        assert chunks_path.read_bytes() == b""
-
-        # Manifest still valid with empty-bytes-SHA sentinel.
-        manifest_path = Path(payload["manifest_path"])
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        assert manifest["chunkset_kind"] == "imscc"
-        assert _SHA256_RE.match(manifest["source_imscc_sha256"])
-        assert manifest["chunks_count"] == 0
 
     def test_run_imscc_chunking_registered_in_registry(self):
         """The tool must be registered for phase-name dispatch from
