@@ -1533,6 +1533,48 @@ def register_pipeline_tools(mcp):
             if imscc_chunks_sha256 and _re_sha.match(_SHA_RE, imscc_chunks_sha256):
                 manifest["imscc_chunks_sha256"] = imscc_chunks_sha256
 
+            # GPT Feedback v2 (May 12 / item 3): lineage mirror. Same shape
+            # as the registry variant — build a dedup'd index of every
+            # source-document SHA from source_artifacts, then mirror the
+            # graph-level lineage fields from concept_graph_semantic.json.
+            _src_doc_shas: set = set()
+            for entry in source_artifacts.get("pdf", []) or []:
+                cs = entry.get("checksum") if isinstance(entry, dict) else None
+                if isinstance(cs, str) and _re_sha.match(_SHA_RE, cs):
+                    _src_doc_shas.add(cs)
+            for entry in source_artifacts.get("html", []) or []:
+                cs = entry.get("checksum") if isinstance(entry, dict) else None
+                if isinstance(cs, str) and _re_sha.match(_SHA_RE, cs):
+                    _src_doc_shas.add(cs)
+            imscc_entry = source_artifacts.get("imscc")
+            if isinstance(imscc_entry, dict):
+                cs = imscc_entry.get("checksum")
+                if isinstance(cs, str) and _re_sha.match(_SHA_RE, cs):
+                    _src_doc_shas.add(cs)
+            if _src_doc_shas:
+                manifest["source_documents_sha256_index"] = sorted(_src_doc_shas)
+
+            # Mirror graph-level lineage when graph already on disk.
+            _cg_path = course_dir / "graph" / "concept_graph_semantic.json"
+            if _cg_path.exists() and _cg_path.is_file():
+                try:
+                    _cg_json = json.loads(_cg_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    _cg_json = None
+                if isinstance(_cg_json, dict):
+                    _gbh = _cg_json.get("graph_build_hash")
+                    if isinstance(_gbh, str) and _re_sha.match(_SHA_RE, _gbh):
+                        manifest["graph_build_hash"] = _gbh
+                    _rpv = _cg_json.get("rulepack_version")
+                    if isinstance(_rpv, str) and _re_sha.match(r"^v[0-9a-f]+$", _rpv):
+                        manifest["rulepack_version"] = _rpv
+                    if "course_package_version" in _cg_json:
+                        _cpv = _cg_json["course_package_version"]
+                        if _cpv is None or (
+                            isinstance(_cpv, str) and _cpv
+                        ):
+                            manifest["course_package_version"] = _cpv
+
             manifest_path = course_dir / "manifest.json"
             with open(manifest_path, "w") as f:
                 json.dump(manifest, f, indent=2)
@@ -6689,6 +6731,65 @@ def _build_tool_registry() -> dict:
         ):
             manifest["imscc_chunks_sha256"] = imscc_chunks_sha256_kw
 
+        # GPT Feedback v2 (May 12 / item 3): lineage mirror.
+        # Build a sorted, deduped index of every upstream source-document
+        # SHA from source_artifacts. Lets an auditor read the manifest
+        # alone and see the full "what bytes produced this course" list
+        # without walking source_artifacts.pdf[].checksum + .imscc.checksum
+        # subtrees by hand.
+        _src_doc_shas: set = set()
+        for entry in source_artifacts.get("pdf", []) or []:
+            cs = entry.get("checksum") if isinstance(entry, dict) else None
+            if isinstance(cs, str) and _re_cg.match(r"^[0-9a-f]{64}$", cs):
+                _src_doc_shas.add(cs)
+        for entry in source_artifacts.get("html", []) or []:
+            cs = entry.get("checksum") if isinstance(entry, dict) else None
+            if isinstance(cs, str) and _re_cg.match(r"^[0-9a-f]{64}$", cs):
+                _src_doc_shas.add(cs)
+        imscc_entry = source_artifacts.get("imscc")
+        if isinstance(imscc_entry, dict):
+            cs = imscc_entry.get("checksum")
+            if isinstance(cs, str) and _re_cg.match(r"^[0-9a-f]{64}$", cs):
+                _src_doc_shas.add(cs)
+        if _src_doc_shas:
+            manifest["source_documents_sha256_index"] = sorted(_src_doc_shas)
+
+        # GPT Feedback v2 (May 12 / item 3): copy lineage fields from
+        # the on-disk concept_graph_semantic.json onto the manifest.
+        # Best-effort: missing / unreadable / pre-May-2026 graph → fields
+        # omitted (manifest tolerates absence). The graph itself is the
+        # source of truth; the manifest mirror exists so an auditor
+        # reading the manifest alone sees the lineage without opening
+        # the graph artifact.
+        _cg_path = course_dir / "graph" / "concept_graph_semantic.json"
+        if _cg_path.exists() and _cg_path.is_file():
+            try:
+                _cg_json = json.loads(_cg_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as _exc:
+                logger.debug(
+                    "archive_to_libv2: failed to read concept graph for "
+                    "lineage mirror (%s); skipping.",
+                    _exc,
+                )
+            else:
+                if isinstance(_cg_json, dict):
+                    _gbh = _cg_json.get("graph_build_hash")
+                    if isinstance(_gbh, str) and _re_cg.match(
+                        r"^[a-f0-9]{64}$", _gbh,
+                    ):
+                        manifest["graph_build_hash"] = _gbh
+                    _rpv = _cg_json.get("rulepack_version")
+                    if isinstance(_rpv, str) and _re_cg.match(
+                        r"^v[0-9a-f]+$", _rpv,
+                    ):
+                        manifest["rulepack_version"] = _rpv
+                    if "course_package_version" in _cg_json:
+                        _cpv = _cg_json["course_package_version"]
+                        if _cpv is None or (
+                            isinstance(_cpv, str) and _cpv
+                        ):
+                            manifest["course_package_version"] = _cpv
+
         manifest_path = course_dir / "manifest.json"
         with open(manifest_path, "w") as f:
             json.dump(manifest, f, indent=2)
@@ -7739,6 +7840,15 @@ def _build_tool_registry() -> dict:
                 source["char_span"] = list(char_span)
             if item.get("item_path"):
                 source["item_path"] = item["item_path"]
+            # GPT Feedback v2 (May 12 / item 3): thread the aggregate
+            # source-document SHA from the sidecar manifest into every
+            # chunk's source block. Same value across every chunk from
+            # this chunking run; gives downstream consumers a byte-stable
+            # join key from chunk → upstream-source without a sidecar
+            # lookup. See schemas/knowledge/chunk_v4.schema.json::
+            # $defs.Source.source_document_sha256.
+            if source_dart_html_sha256:
+                source["source_document_sha256"] = source_dart_html_sha256
             return {
                 "id": chunk_id,
                 "schema_version": "v4",
@@ -8158,6 +8268,12 @@ def _build_tool_registry() -> dict:
                 source["char_span"] = list(char_span)
             if item.get("item_path"):
                 source["item_path"] = item["item_path"]
+            # GPT Feedback v2 (May 12 / item 3): thread the aggregate
+            # IMSCC zip SHA from the sidecar manifest into every chunk's
+            # source block. See schemas/knowledge/chunk_v4.schema.json::
+            # $defs.Source.source_document_sha256.
+            if source_imscc_sha256:
+                source["source_document_sha256"] = source_imscc_sha256
             return {
                 "id": chunk_id,
                 "schema_version": "v4",

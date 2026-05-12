@@ -280,6 +280,11 @@
           "type": "string",
           "description": "IMSCC-relative path to the source HTML file, for auditor navigation without imsmanifest.xml traversal."
         },
+        "source_document_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "GPT Feedback v2 (May 12 / item 3): SHA-256 of the upstream source document (the DART HTML aggregate or the IMSCC zip) the chunk was produced from. For DART-emitted chunks, value matches the sidecar manifest's source_dart_html_sha256; for IMSCC-emitted chunks, matches source_imscc_sha256. Same value across every chunk from the same chunking run — provides a byte-stable join key from chunk → source-document without a sidecar lookup. Optional: legacy chunks (pre-May-2026) lack this field and continue to validate. Threaded forward into concept-graph and LibV2 manifest lineage fields per `plans/gptfeedback-may12-item3-version-lineage-2026-05.md`."
+        },
         "source_references": {
           "type": "array",
           "items": { "$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json" },
