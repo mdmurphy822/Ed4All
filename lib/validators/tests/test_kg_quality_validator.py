@@ -153,6 +153,78 @@ def test_validator_fails_closed_on_missing_pedagogy_graph(tmp_path: Path):
     assert result.issues[0].severity == "critical"
 
 
+def test_edge_consensus_attenuates_consistency(tmp_path: Path):
+    """GPT feedback 12-may item 2: a semantic graph with a circular
+    prerequisite drives contradiction_rate > 0; the consistency axis is
+    multiplied by (1 - contradiction_rate) before threshold comparison,
+    and an edge_consensus_report.json lands next to kg_quality_report.json.
+    """
+    import json
+
+    # Build a graph with two reverse-direction prerequisite edges (a
+    # circular-prerequisite finding) — contradiction_rate = 1.0.
+    semantic_payload = {
+        "kind": "concept_semantic",
+        "generated_at": "2026-05-12T00:00:00Z",
+        "nodes": [],
+        "edges": [
+            {
+                "source": "lo_a", "target": "lo_b",
+                "type": "prerequisite",
+                "confidence": 0.6,
+                "provenance": {
+                    "rule": "prerequisite_from_lo_order",
+                    "rule_version": 1, "evidence": {},
+                },
+            },
+            {
+                "source": "lo_b", "target": "lo_a",
+                "type": "prerequisite",
+                "confidence": 0.6,
+                "provenance": {
+                    "rule": "prerequisite_from_lo_order",
+                    "rule_version": 1, "evidence": {},
+                },
+            },
+        ],
+        "rule_versions": {"prerequisite_from_lo_order": 1},
+    }
+    semantic_path = tmp_path / "concept_graph_semantic.json"
+    semantic_path.write_text(json.dumps(semantic_payload), encoding="utf-8")
+    concept_path = tmp_path / "concept_graph.json"
+    concept_path.write_text("{}", encoding="utf-8")
+    output_dir = tmp_path / "out"
+
+    validator = KGQualityValidator(reporter_factory=_factory({
+        "completeness": 1.0, "consistency": 1.0,
+        "accuracy": 1.0, "coverage": 1.0,
+    }))
+    result = validator.validate({
+        "course_slug": "test-course",
+        "run_id": "test-run-001",
+        "output_dir": str(output_dir),
+        "concept_graph_path": str(concept_path),
+        "semantic_graph_path": str(semantic_path),
+    })
+
+    assert result.passed is True
+    # edge_consensus_report.json lands next to kg_quality_report.json.
+    consensus_report_path = output_dir / "edge_consensus_report.json"
+    assert consensus_report_path.exists()
+    consensus_report = json.loads(
+        consensus_report_path.read_text(encoding="utf-8")
+    )
+    assert consensus_report["summary"]["contradicted_count"] == 2
+    assert consensus_report["summary"]["contradiction_rate"] == 1.0
+
+    # Gate metadata surfaces the rate.
+    assert result.metadata is not None
+    assert result.metadata.get("edge_contradiction_rate") == 1.0
+    # Composite score reflects attenuated consistency = 1.0 * (1 - 1.0) = 0.
+    # composite = (1.0 + 0.0 + 1.0 + 1.0) / 4 = 0.75
+    assert result.score == 0.75
+
+
 def test_validator_fails_closed_on_reporter_exception(tmp_path: Path):
     """Audit C3: a reporter raise was previously swallowed as
     ``passed=True``; now it critical-fails with the exception class +
@@ -205,8 +277,15 @@ def test_validator_emits_decision_capture_on_pass(tmp_path: Path):
         decision_capture=capture,
     )
     validator.validate(_base_inputs(tmp_path))
-    assert len(capture.calls) == 1
-    call = capture.calls[0]
+    # Filter to the kg_quality_report_check events specifically — the
+    # validator also emits one edge_consensus_resolution event via the
+    # same capture instance (GPT-feedback-12-may item 2).
+    kg_calls = [
+        c for c in capture.calls
+        if c["decision_type"] == "kg_quality_report_check"
+    ]
+    assert len(kg_calls) == 1
+    call = kg_calls[0]
     assert call["decision_type"] == "kg_quality_report_check"
     assert call["decision"] == "passed"
     metrics = call["metrics"]
@@ -260,8 +339,14 @@ def test_validator_emits_decision_capture_on_reporter_exception(tmp_path: Path):
         decision_capture=capture,
     )
     validator.validate(_base_inputs(tmp_path))
-    assert len(capture.calls) == 1
-    call = capture.calls[0]
+    # On the reporter-exception path we return before consensus runs,
+    # so only the kg_quality_report_check fires.
+    kg_calls = [
+        c for c in capture.calls
+        if c["decision_type"] == "kg_quality_report_check"
+    ]
+    assert len(kg_calls) == 1
+    call = kg_calls[0]
     assert call["decision_type"] == "kg_quality_report_check"
     assert call["metrics"]["failure_code"] == "KG_QUALITY_REPORTER_ERROR"
     assert call["metrics"]["passed"] is False
@@ -282,8 +367,14 @@ def test_validator_threads_capture_via_inputs(tmp_path: Path):
     inputs = _base_inputs(tmp_path)
     inputs["decision_capture"] = per_call_capture
     validator.validate(inputs)
-    # Per-call wins; constructor capture is untouched.
-    assert len(per_call_capture.calls) == 1
+    # Per-call wins; constructor capture is untouched. Filter to
+    # kg_quality_report_check — the consensus aggregator also fires
+    # via per_call_capture (additive).
+    per_call_kg = [
+        c for c in per_call_capture.calls
+        if c["decision_type"] == "kg_quality_report_check"
+    ]
+    assert len(per_call_kg) == 1
     assert len(constructor_capture.calls) == 0
 
 

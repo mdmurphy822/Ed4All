@@ -131,6 +131,7 @@
         "distractor_padding_skipped",
         "distractor_plausibility_check",
         "distractor_structural_check",
+        "edge_consensus_resolution",
         "error_handling",
         "eval_gating_decision",
         "eval_run_decision",

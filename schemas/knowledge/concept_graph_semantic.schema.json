@@ -404,9 +404,72 @@
         "evidence": {"$ref": "#/$defs/TargetsConceptEvidence"}
       }
     },
+    "CorrectedByChunkEvidence": {
+      "type": "object",
+      "description": "GPT-feedback (12 May 2026) item 4: evidence emitted by rule corrected_by_from_chunk_misconception (Trainforge/rag/inference_rules/corrected_by_from_chunk_misconception.py). Materializes the implicit fact that every chunk's misconceptions[].correction text IS the correction-of-record for that misconception entity. Source endpoint is a misconception ID (mc_[0-9a-f]{16}); target endpoint is the chunk ID that emitted the (misconception, correction) pair.",
+      "required": ["misconception_id", "chunk_id"],
+      "additionalProperties": false,
+      "properties": {
+        "misconception_id": {"type": "string"},
+        "chunk_id": {"type": "string"}
+      }
+    },
+    "CorrectedByChunkProvenance": {
+      "type": "object",
+      "description": "GPT-feedback (12 May 2026) item 4: provenance arm for edges emitted by rule corrected_by_from_chunk_misconception.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "corrected_by_from_chunk_misconception"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/CorrectedByChunkEvidence"}
+      }
+    },
+    "DetectedByQuestionEvidence": {
+      "type": "object",
+      "description": "GPT-feedback (12 May 2026) item 4: evidence emitted by rule detected_by_from_distractor_misconception_id (Trainforge/rag/inference_rules/detected_by_from_distractor_misconception_id.py). Materializes the explicit misconception_id pointer on a generated question / distractor (preference_pair.schema.json::misconception_id, or the assessment-generator distractor surface). Source endpoint is a misconception ID; target endpoint is the question ID (MCQ-/MRQ-/TF-/FIB- prefixes or the deterministic q_<chunk_id>_<lo_ref> form).",
+      "required": ["misconception_id", "question_id"],
+      "additionalProperties": false,
+      "properties": {
+        "misconception_id": {"type": "string"},
+        "question_id": {"type": "string"}
+      }
+    },
+    "DetectedByQuestionProvenance": {
+      "type": "object",
+      "description": "GPT-feedback (12 May 2026) item 4: provenance arm for edges emitted by rule detected_by_from_distractor_misconception_id.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "detected_by_from_distractor_misconception_id"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/DetectedByQuestionEvidence"}
+      }
+    },
+    "InterferesWithOutcomeEvidence": {
+      "type": "object",
+      "description": "GPT-feedback (12 May 2026) item 4: evidence emitted by rule interferes_with_outcome_from_misconception_lo (Trainforge/rag/inference_rules/interferes_with_outcome_from_misconception_lo.py). Materializes the explicit misconception.lo_id pointer from the first-class Misconception entity (schemas/knowledge/misconception.schema.json). Source endpoint is a misconception ID; target endpoint is an LO ID (TO-NN / CO-NN, case follows Trainforge normalisation convention).",
+      "required": ["misconception_id", "lo_id"],
+      "additionalProperties": false,
+      "properties": {
+        "misconception_id": {"type": "string"},
+        "lo_id": {"type": "string"}
+      }
+    },
+    "InterferesWithOutcomeProvenance": {
+      "type": "object",
+      "description": "GPT-feedback (12 May 2026) item 4: provenance arm for edges emitted by rule interferes_with_outcome_from_misconception_lo.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "interferes_with_outcome_from_misconception_lo"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/InterferesWithOutcomeEvidence"}
+      }
+    },
     "FallbackProvenance": {
       "type": "object",
-      "description": "Lenient fallback arm of the provenance oneOf. Matches any edge whose rule is NOT one of the 9 modeled rules (mutually exclusive by the `not:enum` discriminator). Evidence may be absent or any shape — preserving backward-compat with legacy graphs and with future rules not yet modeled as a specific $def. Strip this arm from the oneOf when strict validation is required (see lib/validators/evidence.py::get_schema(strict=True) or TRAINFORGE_STRICT_EVIDENCE=true). The strict-stripped schema then rejects any edge whose rule is unknown OR whose evidence shape drifts from its modeled $def. Wave 66 added the 9th modeled rule: targets_concept_from_lo.",
+      "description": "Lenient fallback arm of the provenance oneOf. Matches any edge whose rule is NOT one of the 12 modeled rules (mutually exclusive by the `not:enum` discriminator). Evidence may be absent or any shape — preserving backward-compat with legacy graphs and with future rules not yet modeled as a specific $def. Strip this arm from the oneOf when strict validation is required (see lib/validators/evidence.py::get_schema(strict=True) or TRAINFORGE_STRICT_EVIDENCE=true). The strict-stripped schema then rejects any edge whose rule is unknown OR whose evidence shape drifts from its modeled $def. Wave 66 added the 9th modeled rule (targets_concept_from_lo); GPT-feedback (12 May 2026) item 4 adds the 10th-12th: corrected_by_from_chunk_misconception, detected_by_from_distractor_misconception_id, interferes_with_outcome_from_misconception_lo.",
       "required": ["rule", "rule_version"],
       "additionalProperties": true,
       "properties": {
@@ -422,7 +485,10 @@
               "misconception_of_from_misconception_ref",
               "derived_from_lo_ref",
               "defined_by_from_first_mention",
-              "targets_concept_from_lo"
+              "targets_concept_from_lo",
+              "corrected_by_from_chunk_misconception",
+              "detected_by_from_distractor_misconception_id",
+              "interferes_with_outcome_from_misconception_lo"
             ]
           }
         },

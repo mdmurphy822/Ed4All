@@ -39,6 +39,9 @@ from .courseforge_validation_report import (  # noqa: F401
 from .coverage_map import (  # noqa: F401
     CoverageMapAggregator,
 )
+from .edge_consensus import (  # noqa: F401
+    EdgeConsensusAggregator,
+)
 from .promotion_chain_report import (  # noqa: F401
     PromotionChainAggregator,
 )
