@@ -85,6 +85,13 @@ SLUG_TO_IRI: Final[Dict[str, str]] = {
     "misconception-of": _ed4all("isMisconceptionOf"),
     "assesses": _ed4all("assessesObjective"),
     "targets-concept": _ed4all("targetsConcept"),
+    # GPT-feedback (12 May 2026) item 4 — misconception-as-first-class.
+    # Three new edge types materialise implicit pointers already in the
+    # corpus (chunk.misconceptions[].correction; question.misconception_id;
+    # misconception.lo_id). Declared in courseforge_v1.vocabulary.ttl.
+    "corrected-by-chunk": _ed4all("correctedByChunk"),
+    "detected-by-question": _ed4all("detectedByQuestion"),
+    "interferes-with-outcome": _ed4all("interferesWithOutcome"),
     # Phase 2.6 — pedagogy_graph_builder.py emits 13 distinct
     # ``relation_type`` slugs. Four overlap with Phase 2.1
     # (``assesses``, ``exemplifies``, plus ``derived_from_objective`` /

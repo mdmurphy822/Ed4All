@@ -467,6 +467,42 @@ ed4all:interferesWith
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
 
 # ---------------------------------------------------------------------------
+# GPT-feedback (12 May 2026) item 4 — misconception-as-first-class
+# ---------------------------------------------------------------------------
+#
+# Three new typed-edge predicates surface implicit pointers already in the
+# corpus (chunk.misconceptions[].correction; question.misconception_id;
+# misconception.lo_id) so retrieval / RDF export / KG-quality reports can
+# answer "which chunk corrects this misconception", "which questions detect
+# it", and "which learning outcomes it threatens" without ad-hoc scans.
+# Each predicate is emitted by a confidence=1.0 materializer rule under
+# Trainforge/rag/inference_rules/.
+
+ed4all:correctedByChunk
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "corrected by chunk" ;
+  rdfs:comment "Slug 'corrected-by-chunk' (Trainforge/rag/inference_rules/corrected_by_from_chunk_misconception.py): materializes the implicit fact that every chunk's misconceptions[].correction text IS the correction-of-record for that misconception. Direction: misconception is corrected by chunk. Confidence 1.0 — the chunk emitting the misconception IS the corrector." ;
+  rdfs:domain ed4all:Misconception ;
+  rdfs:range ed4all:Chunk ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:detectedByQuestion
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "detected by question" ;
+  rdfs:comment "Slug 'detected-by-question' (Trainforge/rag/inference_rules/detected_by_from_distractor_misconception_id.py): materializes the explicit misconception_id pointer on a generated assessment question / distractor (preference_pair.schema.json::misconception_id, or the assessment-generator distractor surface). Direction: misconception is detected by question. Confidence 1.0 — the misconception reference is explicit on the question." ;
+  rdfs:domain ed4all:Misconception ;
+  rdfs:range ed4all:AssessmentQuestion ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:interferesWithOutcome
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "interferes with outcome" ;
+  rdfs:comment "Slug 'interferes-with-outcome' (Trainforge/rag/inference_rules/interferes_with_outcome_from_misconception_lo.py): materializes the explicit misconception.lo_id pointer from the first-class Misconception entity (schemas/knowledge/misconception.schema.json). Direction: misconception threatens an outcome. Confidence 1.0 — the LO reference is explicit. Distinct from cf:interferesWith (Phase 2.6 pedagogy-side Misconception->Concept) by range: interferes_with targets Concept, interferes_with_outcome targets LearningObjective." ;
+  rdfs:domain ed4all:Misconception ;
+  rdfs:range ed4all:LearningObjective ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---------------------------------------------------------------------------
 # Wave 87 — Chunk v4 anchor classes (KeyTerm, SourceReference)
 # ---------------------------------------------------------------------------
 #

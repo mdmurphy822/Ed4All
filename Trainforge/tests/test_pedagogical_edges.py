@@ -283,6 +283,11 @@ def test_edge_enum_includes_new_types():
         # is the inverse-direction slot held open for future emitters.
         "broader-than",
         "narrower-than",
+        # GPT-feedback (12 May 2026) item 4 — three misconception-anchored
+        # edge types making Misconception a first-class learning target.
+        "corrected-by-chunk",
+        "detected-by-question",
+        "interferes-with-outcome",
     }
 
     # Sanity: validate a synthetic artifact containing all 5 new edge types.

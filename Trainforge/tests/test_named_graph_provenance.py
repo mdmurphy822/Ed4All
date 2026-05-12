@@ -72,7 +72,12 @@ from Trainforge.rag.typed_edge_inference import (  # noqa: E402
 FIXED_NOW = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 FIXED_RUN = "test"
 
-# The 9 inference rules we expect named graphs for, regardless of fixture.
+# The 12 inference rules we expect named graphs for, regardless of fixture.
+# Wave 66 added the 9th rule (targets_concept_from_lo). GPT-feedback (12 May
+# 2026) item 4 added rules 10-12 (the three misconception-anchored
+# materializers: corrected_by_from_chunk_misconception,
+# detected_by_from_distractor_misconception_id,
+# interferes_with_outcome_from_misconception_lo).
 EXPECTED_RULES = {
     "is_a_from_key_terms",
     "prerequisite_from_lo_order",
@@ -83,6 +88,9 @@ EXPECTED_RULES = {
     "exemplifies_from_example_chunks",
     "misconception_of_from_misconception_ref",
     "targets_concept_from_lo",
+    "corrected_by_from_chunk_misconception",
+    "detected_by_from_distractor_misconception_id",
+    "interferes_with_outcome_from_misconception_lo",
 }
 
 ED4ALL_NS = named_graph_writer.ED4ALL_NS
