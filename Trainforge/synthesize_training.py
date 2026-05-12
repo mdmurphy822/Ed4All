@@ -37,6 +37,7 @@ import argparse
 import html
 import json
 import logging
+import os
 import random
 import sys
 from collections import defaultdict
@@ -1250,6 +1251,27 @@ def run_synthesis(
     Returns:
         :class:`SynthesisStats` with counts.
     """
+    # Wave1-I1 ToS-unblock: TRAINFORGE_SYNTHESIS_PROVIDER overrides the
+    # caller-supplied ``provider`` kwarg when set. Mirrors the
+    # ``TRAINFORGE_ASSESSMENT_PROVIDER`` / ``COURSEFORGE_PROVIDER`` /
+    # ``COURSEPLANNER_PROVIDER`` env-var precedence pattern. Pairs with
+    # the ``MCP/core/executor.py`` short-circuit that bypasses the
+    # ``training-synthesizer`` subagent dispatch when this env var is
+    # set: the executor falls through to the in-process registry path
+    # (``MCP/tools/pipeline_tools.py::_synthesize_training``), which
+    # invokes this function — and we honor the same env var here so an
+    # operator can pin the synthesis backend (e.g. ``local`` for
+    # license-clean Qwen, ``together`` for hosted OSS) once via the
+    # environment without threading the provider through every caller.
+    # Empty / whitespace values are treated as unset to match the
+    # executor's predicate. See Finding 1 of
+    # ``plans/dispatch-7-execution-inspection-2026-05.md`` and
+    # ``docs/LICENSING.md`` § "Synthesis providers" for the licensing
+    # contract that motivates the override.
+    _env_provider = os.environ.get("TRAINFORGE_SYNTHESIS_PROVIDER", "").strip()
+    if _env_provider:
+        provider = _env_provider
+
     if provider == "claude_session" and dispatcher is None:
         raise RuntimeError(
             "--provider claude_session requires a LocalDispatcher to be "

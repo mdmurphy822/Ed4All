@@ -93,6 +93,7 @@ def _make_executor(
             "generate_course_content": _dummy_tool,
             "get_courseforge_status": _dummy_tool,
             "stage_dart_outputs": _dummy_tool,
+            "synthesize_training": _dummy_tool,
         },
         dispatcher=dispatcher,
         run_id="TEST_RUN",
@@ -285,6 +286,103 @@ async def test_subagent_set_covers_core_reasoning_agents():
     assert leaked == set(), (
         f"Python-tool agents leaked into AGENT_SUBAGENT_SET: {sorted(leaked)}"
     )
+
+
+@pytest.mark.asyncio
+async def test_trainforge_synthesis_provider_set_bypasses_dispatch(
+    monkeypatch, state_runs_isolated,
+):
+    """Wave1-I1 regression: with ``TRAINFORGE_SYNTHESIS_PROVIDER=local``
+    set (and ``ED4ALL_AGENT_DISPATCH=true`` + the dispatcher wired +
+    ``agent_type == "training-synthesizer"`` — i.e. every condition
+    that would normally route to the Claude Code subagent), the
+    executor MUST fall through to the in-process registry tool instead
+    of calling ``dispatcher.dispatch_task``.
+
+    The training-synthesizer surface authors the canonical SLM
+    training-pair corpus (instruction + preference pairs); per
+    ``docs/LICENSING.md`` § "Synthesis providers" Claude must NEVER
+    author this content — only operator-selected license-clean
+    providers may. Pre-Wave1-I1 the only safety was operator-discipline
+    via ``--skip-training``; this short-circuit makes the guard
+    fail-loud at the dispatcher fork.
+
+    Pin the routing invariant so a future refactor can't silently
+    re-enable Claude authorship of training-pair corpus content.
+    """
+    monkeypatch.setenv("ED4ALL_AGENT_DISPATCH", "true")
+    monkeypatch.setenv("TRAINFORGE_SYNTHESIS_PROVIDER", "local")
+    # Clear sibling provider envs so this test's training-synthesizer
+    # short-circuit is the one being exercised, not a stale env.
+    monkeypatch.delenv("COURSEFORGE_PROVIDER", raising=False)
+    monkeypatch.delenv("COURSEPLANNER_PROVIDER", raising=False)
+    monkeypatch.delenv("TRAINFORGE_ASSESSMENT_PROVIDER", raising=False)
+
+    # Pre-condition pin: training-synthesizer must be in the subagent
+    # set or the short-circuit would never matter (the dispatcher
+    # branch wouldn't fire to begin with).
+    assert "training-synthesizer" in AGENT_SUBAGENT_SET
+
+    dispatcher = DummyDispatcher()
+    ex = _make_executor(dispatcher=dispatcher)
+
+    result = await ex._invoke_tool(
+        "synthesize_training",
+        {
+            "agent_type": "training-synthesizer",
+            "params": {
+                "course_code": "PHYS_101",
+                "corpus_dir": "/tmp/fake",
+            },
+        },
+    )
+
+    # Fell through to the in-process tool — dispatcher untouched.
+    assert result["dispatch_mode"] == "in_process"
+    assert dispatcher.calls == [], (
+        "TRAINFORGE_SYNTHESIS_PROVIDER short-circuit regression — "
+        "training-synthesizer must NOT route through "
+        "LocalDispatcher.dispatch_task (Claude subagent path) when "
+        "the env var is set. Wave1-I1."
+    )
+
+
+@pytest.mark.asyncio
+async def test_trainforge_synthesis_provider_unset_preserves_dispatch(
+    monkeypatch, state_runs_isolated,
+):
+    """Wave1-I1 backward-compat regression: with
+    ``TRAINFORGE_SYNTHESIS_PROVIDER`` unset, the dispatcher still
+    fires for training-synthesizer when ``ED4ALL_AGENT_DISPATCH=true``.
+    Pre-Wave1-I1 behavior byte-stable so existing runs aren't
+    perturbed by the short-circuit landing.
+    """
+    monkeypatch.setenv("ED4ALL_AGENT_DISPATCH", "true")
+    monkeypatch.delenv("TRAINFORGE_SYNTHESIS_PROVIDER", raising=False)
+    dispatcher = DummyDispatcher(
+        response={
+            "success": True,
+            "dispatch_mode": "dummy",
+            "outputs": {"pairs_generated": 42},
+            "artifacts": [],
+        },
+    )
+    ex = _make_executor(dispatcher=dispatcher)
+
+    result = await ex._invoke_tool(
+        "synthesize_training",
+        {
+            "agent_type": "training-synthesizer",
+            "params": {
+                "course_code": "PHYS_101",
+                "corpus_dir": "/tmp/fake",
+            },
+        },
+    )
+    # Dispatched as a subagent (legacy Wave-74 path).
+    assert result["dispatch_mode"] == "dummy"
+    assert len(dispatcher.calls) == 1
+    assert dispatcher.calls[0]["agent_type"] == "training-synthesizer"
 
 
 @pytest.mark.asyncio

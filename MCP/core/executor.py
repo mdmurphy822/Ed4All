@@ -946,6 +946,33 @@ class TaskExecutor:
             _trainforge_assessment_provider_set
             and agent_type == "assessment-generator"
         )
+        # Wave1-I1 ToS-unblock: TRAINFORGE_SYNTHESIS_PROVIDER
+        # short-circuits the Wave-74 subagent dispatch for the
+        # training-synthesizer agent only. Mirrors the
+        # TRAINFORGE_ASSESSMENT_PROVIDER semantics above — setting the
+        # env var routes instruction-pair / preference-pair synthesis
+        # through an in-process license-clean provider (local /
+        # together / any registered OpenAI-compatible provider) via
+        # ``Trainforge.synthesize_training.run_synthesis`` rather than
+        # the Claude Code subagent. The training-pair corpus is the
+        # canonical training-data surface (it literally trains the SLM
+        # adapter), so per ``docs/LICENSING.md`` § "Synthesis providers"
+        # Claude must NEVER author these pairs — only operator-selected
+        # license-clean providers may. Closes Finding 1 of
+        # ``plans/dispatch-7-execution-inspection-2026-05.md``: the
+        # sibling agents (content-generator, course-outliner,
+        # assessment-generator) already had provider short-circuits;
+        # training-synthesizer was the sole subagent-classified agent
+        # with no fail-loud guard, leaving ``--skip-training`` as the
+        # only operator-discipline safety. Other Wave-74 agents keep
+        # dispatching unchanged.
+        _trainforge_synthesis_provider_set = bool(
+            os.environ.get("TRAINFORGE_SYNTHESIS_PROVIDER", "").strip()
+        )
+        _force_inprocess_for_trainforge_synthesis = (
+            _trainforge_synthesis_provider_set
+            and agent_type == "training-synthesizer"
+        )
         if (
             _agent_dispatch_enabled()
             and self.dispatcher is not None
@@ -955,6 +982,7 @@ class TaskExecutor:
             and not _force_inprocess_for_courseforge
             and not _force_inprocess_for_courseplanner
             and not _force_inprocess_for_trainforge_assessment
+            and not _force_inprocess_for_trainforge_synthesis
         ):
             # Param-mapping still runs so downstream agent prompts see
             # the same shape the Python tool would have received.
@@ -1000,6 +1028,11 @@ class TaskExecutor:
             logger.info(
                 "TRAINFORGE_ASSESSMENT_PROVIDER set; bypassing "
                 "assessment-generator subagent dispatch."
+            )
+        if _force_inprocess_for_trainforge_synthesis:
+            logger.info(
+                "TRAINFORGE_SYNTHESIS_PROVIDER set; bypassing "
+                "training-synthesizer subagent dispatch."
             )
 
         # Legacy in-process path — unchanged from pre-Wave-74.
