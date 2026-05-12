@@ -19,6 +19,23 @@
       "description": "Map of rule name -> version integer for the rules that fired in this run.",
       "additionalProperties": {"type": "integer", "minimum": 1}
     },
+    "rulepack_version": {
+      "type": "string",
+      "pattern": "^v[0-9a-f]+$",
+      "description": "GPT Feedback v2 (May 12 / item 3): aggregate rulepack version stamped on every emitted graph. Mirrors the chunker_version pattern from course_manifest.json — gives consumers one short string they can pin without enumerating every per-rule version. Derived deterministically from the sorted (RULE_NAME, RULE_VERSION) tuples of every imported rule module in Trainforge.rag.inference_rules: form is 'v' + first 8 hex chars of sha256(canonical_form). Bumps automatically whenever any per-rule RULE_VERSION constant changes. Optional: legacy graphs (pre-May-2026) lack this field and continue to validate."
+    },
+    "graph_build_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "GPT Feedback v2 (May 12 / item 3): deterministic SHA-256 over the canonicalised inputs that produced this graph (course_id, sorted concept-graph node IDs, sorted chunk IDs, rule_versions map, rulepack_version). Lets an auditor byte-compare two graphs across runs to detect drift independently of the `generated_at` timestamp. Two runs against identical upstream inputs hash to the same graph_build_hash; any input change flips it. Optional: legacy graphs (pre-May-2026) lack this field and continue to validate."
+    },
+    "course_package_version": {
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {"type": "null"}
+      ],
+      "description": "GPT Feedback v2 (May 12 / item 3): Courseforge run signature / IMSCC archive version that produced the inputs for this graph. Optional and emitted as null today — the producer threads `course.get('package_version')` and Courseforge does not yet emit one. Schema admits the field unconditionally so a future Courseforge surface change can populate it without a schema migration. Legacy graphs lack the field entirely (still valid); new runs emit it as null until Courseforge wires it in."
+    },
     "nodes": {
       "type": "array",
       "items": {
@@ -78,7 +95,10 @@
               "defined-by",
               "targets-concept",
               "broader-than",
-              "narrower-than"
+              "narrower-than",
+              "corrected-by-chunk",
+              "detected-by-question",
+              "interferes-with-outcome"
             ]
           },
           "confidence": {
@@ -88,6 +108,11 @@
           },
           "weight": {
             "type": "number"
+          },
+          "edge_kind": {
+            "type": "string",
+            "enum": ["asserted", "inferred"],
+            "description": "GPT-feedback (12 May 2026) item 1: discriminates edges that materialize an explicit upstream pointer (asserted — e.g. question->LO, JSON-LD targetedConcepts[], chunk learning_outcome_refs[], misconception->concept_id, concept first-mention chunk) from edges produced by a heuristic / statistical / pattern-match / co-occurrence / LLM rule (inferred — e.g. is_a_from_key_terms regex, related_from_cooccurrence weight, prerequisite_from_lo_order). Stamped at graph-build time from the canonical lib/ontology/edge_kind.py rule registry; orthogonal to confidence. Optional for legacy back-compat — edges emitted before this field landed validate without it. New runs populate edge_kind on every rule-produced edge; legacy / unknown rules omit the field (consumers may treat absence as 'unknown' rather than fail closed)."
           },
           "provenance": {
             "$comment": "REC-PRV-02 (Wave 6, Worker W): per-rule evidence sub-schemas with a oneOf discriminator keyed by the `rule` field. Each specific arm binds rule={rule_name} to evidence={matching $def}. The final FallbackProvenance arm matches any rule that isn't one of the 9 known rules (and allows evidence to be absent or any shape) — preserving backward-compat with legacy graphs and future rules. The arms are mutually exclusive by virtue of the `rule` const, so oneOf validation is unambiguous. Strict validation is opt-in via TRAINFORGE_STRICT_EVIDENCE=true (see lib/validators/evidence.py::get_schema): strip the fallback arm before validating. Each specific evidence $def sets additionalProperties:false to enforce shape when in strict mode; lenient mode passes through the fallback arm if a known-rule edge's evidence shape drifts. Wave 66 adds the 9th known rule: targets_concept_from_lo.",
@@ -101,6 +126,9 @@
               {"$ref": "#/$defs/DerivedFromObjectiveProvenance"},
               {"$ref": "#/$defs/DefinedByProvenance"},
               {"$ref": "#/$defs/TargetsConceptProvenance"},
+              {"$ref": "#/$defs/CorrectedByChunkProvenance"},
+              {"$ref": "#/$defs/DetectedByQuestionProvenance"},
+              {"$ref": "#/$defs/InterferesWithOutcomeProvenance"},
               {"$ref": "#/$defs/FallbackProvenance"}
             ]
           },
@@ -112,6 +140,26 @@
             "type": "string",
             "format": "date-time",
             "description": "ISO 8601 UTC timestamp when the edge was emitted (REC-PRV-01, Worker P Wave 4.1). Equal to the artifact-level generated_at for a given run. Always populated on new runs; legacy edges without this field still validate."
+          },
+          "edge_status": {
+            "type": "string",
+            "enum": ["pending", "confirmed", "contradicted", "retracted"],
+            "description": "GPT-feedback-12-may item 2: cross-rule consensus verdict computed by lib/aggregators/edge_consensus.py::EdgeConsensusAggregator. 'pending' = no other rule confirmed or contradicted this edge over the same (source, target) pair; 'confirmed' = at least one rule in the rule's confirming-rules set fired for the same pair; 'contradicted' = another rule fired the opposite direction (circular-prerequisite, A is-a B AND B is-a A, etc.); 'retracted' = a later NLI extension (TRAINFORGE_EDGE_NLI=true) marked the edge contradicted by source text. Schema-additive: legacy edges without this field still validate (optional)."
+          },
+          "consensus_signals": {
+            "type": "array",
+            "description": "GPT-feedback-12-may item 2: per-edge cross-rule signals computed by EdgeConsensusAggregator. One entry per OTHER rule (or NLI extension) that fired over the same node pair (directed for asymmetric edge types; undirected for related-to / is-a). Empty list = no overlap = 'pending' edge_status. Schema-additive: legacy edges without this field still validate (optional).",
+            "items": {
+              "type": "object",
+              "required": ["other_rule", "signal"],
+              "additionalProperties": true,
+              "properties": {
+                "other_rule": {"type": "string", "minLength": 1},
+                "signal": {"type": "string", "enum": ["agree", "disagree"]},
+                "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "detail": {"type": "string"}
+              }
+            }
           }
         }
       }

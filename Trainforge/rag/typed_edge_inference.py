@@ -31,19 +31,32 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple  # noqa: F401
 
 from Trainforge.rag.inference_rules import assesses_from_question_lo as _assesses_mod
+from Trainforge.rag.inference_rules import (
+    corrected_by_from_chunk_misconception as _corrected_by_chunk_mod,
+)
 from Trainforge.rag.inference_rules import defined_by_from_first_mention as _defined_by_mod
 from Trainforge.rag.inference_rules import derived_from_lo_ref as _derived_lo_mod
+from Trainforge.rag.inference_rules import (
+    detected_by_from_distractor_misconception_id as _detected_by_question_mod,
+)
 from Trainforge.rag.inference_rules import exemplifies_from_example_chunks as _exemplifies_mod
 from Trainforge.rag.inference_rules import (
+    RULEPACK_VERSION,
     infer_assesses,
+    infer_corrected_by_chunk,
     infer_defined_by,
     infer_derived_from_objective,
+    infer_detected_by_question,
     infer_exemplifies,
+    infer_interferes_with_outcome,
     infer_is_a,
     infer_misconception_of,
     infer_prerequisite,
     infer_related,
     infer_targets_concept,
+)
+from Trainforge.rag.inference_rules import (
+    interferes_with_outcome_from_misconception_lo as _interferes_with_outcome_mod,
 )
 from Trainforge.rag.inference_rules import is_a_from_key_terms as _is_a_mod
 from Trainforge.rag.inference_rules import (
@@ -53,6 +66,8 @@ from Trainforge.rag.inference_rules import prerequisite_from_lo_order as _prereq
 from Trainforge.rag.inference_rules import related_from_cooccurrence as _related_mod
 from Trainforge.rag.inference_rules import targets_concept_from_lo as _targets_concept_mod
 from Trainforge.rag import shacl_rule_runner as _shacl_runner
+
+from lib.ontology.edge_kind import edge_kind_for_rule
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +123,16 @@ _PRECEDENCE: Dict[str, int] = {
     "broader-than": 3,
     "narrower-than": 3,
     "assesses": 2,
+    # GPT-feedback (12 May 2026) item 4 — three misconception-anchored
+    # materializers slot at tier 2. Endpoint namespaces (misconception↔chunk,
+    # misconception↔question, misconception↔LO) don't collide with the
+    # concept↔concept taxonomic edges, so tier assignment is defensive.
+    "corrected-by-chunk": 2,
     "defined-by": 2,
     "derived-from-objective": 2,
+    "detected-by-question": 2,
     "exemplifies": 2,
+    "interferes-with-outcome": 2,
     "misconception-of": 2,
     "prerequisite": 2,
     "targets-concept": 2,
@@ -153,6 +175,31 @@ def _stamp_provenance(
         obj["run_id"] = run_id
     obj["created_at"] = created_at
     return obj
+
+
+def _stamp_edge_kind(edge: Dict[str, Any]) -> Dict[str, Any]:
+    """Stamp ``edge_kind`` (asserted | inferred) onto an edge dict in-place.
+
+    GPT-feedback (12 May 2026) item 1. Looks up the edge's
+    ``provenance.rule`` in the canonical
+    :mod:`lib.ontology.edge_kind` registry and writes the classification
+    onto the edge as a top-level ``edge_kind`` field. Unknown rules
+    silently skip the stamp (back-compat: legacy graphs validate
+    without the field, and a future rule landing without a registry
+    update doesn't crash the build — the unit test in
+    ``Trainforge/tests/test_edge_kind_classification.py`` fails-loudly
+    on that drift).
+
+    Schema side: ``edge_kind`` is OPTIONAL per
+    ``concept_graph_semantic.schema.json`` — legacy edges without the
+    field validate untouched.
+    """
+    prov = edge.get("provenance") or {}
+    rule = prov.get("rule") if isinstance(prov, dict) else None
+    kind = edge_kind_for_rule(rule) if isinstance(rule, str) else None
+    if kind is not None:
+        edge["edge_kind"] = kind
+    return edge
 
 
 def _apply_precedence(edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -300,6 +347,11 @@ def _llm_escalate(
         }
         if created_at is not None:
             _stamp_provenance(record, run_id, created_at)
+        # GPT-feedback item 1: LLM-escalated edges are classified as
+        # `inferred` via the canonical registry (rule name forced to
+        # `llm_typed_edge` above), so the stamp is symmetric with the
+        # deterministic rule loop.
+        _stamp_edge_kind(record)
         normalized.append(record)
         if decision_capture is not None:
             try:
@@ -550,6 +602,20 @@ def _build_semantic_graph_internal(
             _targets_concept_mod,
             {"objectives_metadata": objectives_metadata},
         ),
+        # GPT-feedback (12 May 2026) item 4 — three misconception-anchored
+        # materializers. Ordering follows the alphabetical-by-EDGE_TYPE
+        # convention used for the prior Wave 5.2 pedagogical-edge rules.
+        (infer_corrected_by_chunk, _corrected_by_chunk_mod, {}),
+        (
+            infer_detected_by_question,
+            _detected_by_question_mod,
+            {"questions": questions},
+        ),
+        (
+            infer_interferes_with_outcome,
+            _interferes_with_outcome_mod,
+            {"misconceptions": misconceptions},
+        ),
     ):
         try:
             produced = fn(chunks, course, concept_graph, **kwargs) or []
@@ -559,8 +625,13 @@ def _build_semantic_graph_internal(
         # REC-PRV-01: stamp each rule-produced edge with run provenance
         # before precedence resolution. Rule modules stay pure (they don't
         # know about run_id); the orchestrator decorates their output.
+        # GPT-feedback item 1: stamp edge_kind from the canonical
+        # rule-classification registry in lockstep so every emitted edge
+        # carries the asserted/inferred discriminator alongside its
+        # run / created_at provenance.
         for edge in produced:
             _stamp_provenance(edge, effective_run_id, created_at)
+            _stamp_edge_kind(edge)
         rule_edges.extend(produced)
         rule_versions[rule_mod.RULE_NAME] = rule_mod.RULE_VERSION
         # Phase 3: capture the per-rule emit verbatim (even when empty)
