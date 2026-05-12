@@ -93,7 +93,11 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     # =========================================================================
     "stage_dart_outputs": {
         "required": ["run_id", "dart_html_paths", "course_name"],
-        "optional": ["stage_mode"],
+        # "id" is injected by the orchestrator as a top-level task field
+        # (task["id"] == task_id) and picked up by param_mapper.py line 97.
+        # The tool uses **kwargs and ignores it, but advertising it here
+        # silences the WARNING-level passthrough log on every phase-2 dispatch.
+        "optional": ["stage_mode", "id"],
         "defaults": {"stage_mode": None},
         "param_mapping": {
             "html_paths": "dart_html_paths",
@@ -744,6 +748,82 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "Phase 3.5 post-rewrite validation — re-runs the four "
             "Block-input validators against rewrite-tier blocks and "
             "emits blocks_validated_path / blocks_failed_path JSONL."
+        ),
+    },
+
+    # =========================================================================
+    # PIPELINE PHASE-HANDLER SCHEMAS — CHUNKING + CONCEPT EXTRACTION
+    # =========================================================================
+    # These three tools are registered in ``_build_tool_registry()`` (lines
+    # ~7618, ~8040, ~8438 of pipeline_tools.py) but were never added to
+    # TOOL_SCHEMAS, causing ``param_mapper.map_task_to_tool_params`` to raise
+    # ``ParameterMappingError("Unknown tool: <name>")`` on every dispatch —
+    # the same three-location wiring invariant gap documented above for the
+    # four two-pass router phase handlers and for ``synthesize_training``.
+    #
+    # All three functions use **kwargs throughout; parameter names are derived
+    # from their docstrings and ``kwargs.get(...)`` call sites.
+    # =========================================================================
+    "run_concept_extraction": {
+        "required": [],
+        "optional": [
+            "project_id",
+            "course_name",
+            "staging_dir",
+            # Phase 7b ST 14.5: upstream dart_chunks_path consumed when present
+            "dart_chunks_path",
+        ],
+        "defaults": {},
+        "param_mapping": {
+            "course": "course_name",
+            "name": "course_name",
+            "course_code": "course_name",
+        },
+        "description": (
+            "Phase 6 concept-extraction phase handler — builds the "
+            "pedagogy graph over staged DART output or upstream "
+            "dart_chunks_path and emits concept_graph_semantic.json."
+        ),
+    },
+
+    "run_dart_chunking": {
+        "required": [],
+        "optional": [
+            "course_name",
+            "staging_dir",
+        ],
+        "defaults": {},
+        "param_mapping": {
+            "course": "course_name",
+            "name": "course_name",
+            "course_code": "course_name",
+        },
+        "description": (
+            "Phase 3 (chunking) phase handler — runs the canonical "
+            "Trainforge chunker over staged DART HTML and emits "
+            "LibV2/courses/<slug>/dart_chunks/chunks.jsonl."
+        ),
+    },
+
+    "run_imscc_chunking": {
+        "required": [],
+        "optional": [
+            "course_name",
+            # package_path alias accepted by the tool via kwargs.get("imscc_path")
+            # or kwargs.get("package_path")
+            "imscc_path",
+            "package_path",
+        ],
+        "defaults": {},
+        "param_mapping": {
+            "course": "course_name",
+            "name": "course_name",
+            "course_code": "course_name",
+        },
+        "description": (
+            "imscc_chunking phase handler — runs the canonical Trainforge "
+            "chunker over the packaged IMSCC archive and emits "
+            "LibV2/courses/<slug>/imscc_chunks/chunks.jsonl."
         ),
     },
 
