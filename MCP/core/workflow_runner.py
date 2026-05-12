@@ -1977,6 +1977,24 @@ class WorkflowRunner:
         predicate = getattr(phase, "enabled_when_env", None)
         if predicate:
             if not self._eval_enabled_when_env(predicate):
+                # Wave1-I6 (Finding 9): make env-predicate skips
+                # visible in the operator log. Without this, an
+                # ``enabled_when_env`` phase silently no-ops when the
+                # gating env var is unset, which is indistinguishable
+                # from a crashed / mis-routed phase at triage time.
+                if "!=" in predicate:
+                    var_name = predicate.partition("!=")[0].strip()
+                elif "=" in predicate:
+                    var_name = predicate.partition("=")[0].strip()
+                else:
+                    var_name = ""
+                actual_value = os.environ.get(var_name, "") if var_name else ""
+                resolved = actual_value if actual_value else "unset"
+                logger.info(
+                    f"Skipping phase {phase.name}: enabled_when_env "
+                    f"predicate {predicate} unsatisfied "
+                    f"(resolved value: {resolved})"
+                )
                 return True
 
         # Phase 5 Subtask 4: courseforge_stage whitelist gate. Runs
