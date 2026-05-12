@@ -362,7 +362,8 @@ class HTMLContentParser:
             # Preserve legacy fields if present (concept_id, lo_id etc.)
             for k, v in mc.items():
                 if k in ("misconception", "correction", "bloomLevel",
-                         "cognitiveDomain", "bloom_level", "cognitive_domain"):
+                         "cognitiveDomain", "bloom_level", "cognitive_domain",
+                         "cognitiveTaskType", "cognitive_task_type"):
                     continue
                 entry[k] = v
             bloom = mc.get("bloomLevel") or mc.get("bloom_level")
@@ -371,6 +372,13 @@ class HTMLContentParser:
             domain = mc.get("cognitiveDomain") or mc.get("cognitive_domain")
             if isinstance(domain, str) and domain:
                 entry["cognitive_domain"] = domain
+            # GPT Feedback (May 12) item 5: observable cognitive task verb,
+            # axis orthogonal to bloom_level. Mirrors the bloomLevel /
+            # cognitiveDomain camelCase → snake_case normalization. Optional;
+            # silently absent on legacy / pre-Wave-cognitive-task corpora.
+            task_type = mc.get("cognitiveTaskType") or mc.get("cognitive_task_type")
+            if isinstance(task_type, str) and task_type:
+                entry["cognitive_task_type"] = task_type.lower()
             misconceptions.append(entry)
 
         # Wave 81 (Worker C): bridging fallback for HTML-attr-only emit.

@@ -105,6 +105,7 @@
         "chunkset_drift_check",
         "chunkset_manifest_check",
         "claim_support_check",
+        "cognitive_task_type_detection",
         "component_selection",
         "concept_example_similarity_check",
         "concept_graph_check",

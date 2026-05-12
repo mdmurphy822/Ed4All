@@ -1937,6 +1937,33 @@ class CourseProcessor:
                         "so every chunk carries a level for downstream filters."
                     ),
                 )
+
+        # GPT Feedback (May 12) item 5: cognitive task-type axis. Orthogonal
+        # to bloom_level — captures WHAT the learner is asked to do
+        # (classify / compute / debug / critique / ...) rather than the
+        # Bloom cognitive tier. Detector mirrors detect_bloom_level: first
+        # whole-word match of a canonical task verb in the chunk text, or
+        # None when no match. Optional field; skipped on no-match so legacy
+        # chunks don't grow a null cognitive_task_type slot.
+        from lib.ontology.cognitive_task import detect_cognitive_task_type
+        cognitive_task_type = detect_cognitive_task_type(text)
+        if cognitive_task_type:
+            chunk["cognitive_task_type"] = cognitive_task_type
+            capture = getattr(self, "capture", None)
+            if capture is not None:
+                stem_prefix = text[:80].replace("\n", " ").strip()
+                capture.log_decision(
+                    decision_type="cognitive_task_type_detection",
+                    decision=f"Assigned cognitive_task_type={cognitive_task_type}",
+                    rationale=(
+                        f"detect_cognitive_task_type matched the canonical verb "
+                        f"{cognitive_task_type!r} as a whole word in the chunk "
+                        f"text (prefix={stem_prefix!r}, len={len(text)}). Adds "
+                        f"an axis orthogonal to bloom_level={bloom_level!r} so "
+                        "downstream consumers can audit per-task diversity."
+                    ),
+                )
+
         if content_type_label:
             chunk["content_type_label"] = content_type_label
         if key_terms:
