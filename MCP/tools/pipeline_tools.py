@@ -4939,15 +4939,66 @@ def _build_tool_registry() -> dict:
                 json.dumps(config_data, indent=2), encoding="utf-8",
             )
 
-            # Real TO/CO ids for downstream phase_outputs.
-            objective_ids = [str(e["id"]) for e in lo_entries if e.get("id")]
+            # Wave2-I7 (dispatch-7 Finding 8): build ``objective_ids``
+            # as a canonical ``List[str]`` so the
+            # ``trainforge_assessment.inputs_from`` route resolves to a
+            # non-None list when the workflow resumes from this phase's
+            # checkpoint. The runner's ``_route_params`` comma-joins
+            # list values on the wire (workflow_runner.py:1687-1688) so
+            # downstream ``_generate_assessments`` still sees the
+            # comma-string shape it already handles. Canonical order:
+            # terminals first, then chapter LOs (matches the
+            # ``lo_entries`` assembly above and the on-disk
+            # ``learning_outcomes`` array). Defensive: read both the
+            # Courseforge synthesized form (``terminal_objectives`` +
+            # ``chapter_objectives``) AND the LibV2 archive form
+            # (``terminal_outcomes`` + ``component_objectives``) from
+            # the just-written ``synthesized``, since the runner
+            # normalizes to the former but legacy / reuse paths may
+            # have flowed the latter through ``_clone_lo``.
+            def _collect_lo_ids(payload: Dict[str, Any]) -> List[str]:
+                ids: List[str] = []
+                terminals = (
+                    payload.get("terminal_objectives")
+                    or payload.get("terminal_outcomes")
+                    or []
+                )
+                for entry in terminals:
+                    if isinstance(entry, dict) and entry.get("id"):
+                        ids.append(str(entry["id"]))
+                chapters = (
+                    payload.get("chapter_objectives")
+                    or payload.get("component_objectives")
+                    or []
+                )
+                for group in chapters:
+                    if isinstance(group, dict) and isinstance(
+                        group.get("objectives"), list,
+                    ):
+                        # Courseforge synthesized form: group-of-groups.
+                        for entry in group.get("objectives") or []:
+                            if isinstance(entry, dict) and entry.get("id"):
+                                ids.append(str(entry["id"]))
+                    elif isinstance(group, dict) and group.get("id"):
+                        # LibV2 archive form: flat list of CO dicts.
+                        ids.append(str(group["id"]))
+                return ids
+
+            objective_ids: List[str] = _collect_lo_ids(synthesized)
+            # Fallback: if the synthesized payload's id-bearing dicts
+            # were stripped en route, fall back to ``lo_entries`` (same
+            # canonical order: terminal-first).
+            if not objective_ids:
+                objective_ids = [
+                    str(e["id"]) for e in lo_entries if e.get("id")
+                ]
 
             return json.dumps({
                 "success": True,
                 "project_id": project_id,
                 "project_path": str(project_path),
                 "synthesized_objectives_path": str(objectives_out_path),
-                "objective_ids": ",".join(objective_ids),
+                "objective_ids": objective_ids,
                 "terminal_count": len(terminal),
                 "chapter_count": len(chapter),
                 "mint_method": mint_method,

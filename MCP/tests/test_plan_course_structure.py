@@ -157,8 +157,18 @@ def test_populates_project_config_objectives_path(planner_fixture):
     assert cfg.get("objectives_path")
 
 
-def test_objective_ids_are_comma_separated(planner_fixture):
-    """Returned objective_ids is a comma-joined string of real LO IDs."""
+def test_objective_ids_are_list_of_canonical_ids(planner_fixture):
+    """Wave2-I7: ``objective_ids`` is a ``List[str]`` of real LO IDs.
+
+    Replaces the pre-Wave2-I7 comma-joined-string shape. The runner's
+    ``_route_params`` (workflow_runner.py:1687-1688) collapses list
+    values to comma-string on the wire, so downstream
+    ``_generate_assessments`` (which already handles both shapes) is
+    unaffected — but the in-memory phase_output stays a list so the
+    ``trainforge_assessment.inputs_from`` route resolves to a non-None
+    truthy value when the workflow resumes from this phase's
+    checkpoint (dispatch-7 Finding 8).
+    """
     fx = planner_fixture
     _write_dart_html(
         fx["staging_dir"] / "book.html",
@@ -169,8 +179,14 @@ def test_objective_ids_are_comma_separated(planner_fixture):
         staging_dir=str(fx["staging_dir"]),
     ))
     assert result["success"]
-    ids = [x.strip() for x in result["objective_ids"].split(",") if x.strip()]
+    ids = result["objective_ids"]
+    assert isinstance(ids, list), (
+        f"objective_ids must be a List[str]; got {type(ids).__name__}"
+    )
     assert ids, "objective_ids must not be empty when topics are present"
+    assert all(isinstance(x, str) for x in ids), (
+        "every objective_ids entry must be a str"
+    )
     # None of the IDs should be the pre-Wave-24 {COURSE}_OBJ_N phantom shape.
     for _id in ids:
         assert "_OBJ_" not in _id, (
@@ -179,6 +195,77 @@ def test_objective_ids_are_comma_separated(planner_fixture):
         assert _LO_ID_RE.match(_id), (
             f"id {_id!r} is not canonical"
         )
+
+
+def test_objective_ids_canonical_order_terminals_first(planner_fixture):
+    """Wave2-I7: ``objective_ids`` returns terminals before chapter LOs.
+
+    Regression for dispatch-7 Finding 8: the
+    ``trainforge_assessment.inputs_from`` route consumes this list and
+    feeds the assessment generator; the canonical order keeps TO-NN
+    grouping intact (terminal outcomes drive top-level assessment
+    families, chapter outcomes nest under them).
+    """
+    fx = planner_fixture
+    _write_dart_html(
+        fx["staging_dir"] / "book.html",
+        ["Topic Alpha", "Topic Beta", "Topic Gamma", "Topic Delta"],
+    )
+    result = asyncio.run(_call(
+        project_id=fx["project_id"],
+        staging_dir=str(fx["staging_dir"]),
+    ))
+    assert result["success"]
+    ids = result["objective_ids"]
+    assert isinstance(ids, list)
+
+    # Cross-check against the persisted file so we test the canonical
+    # shape rather than the in-memory return shape alone.
+    doc = json.loads(
+        Path(result["synthesized_objectives_path"]).read_text(encoding="utf-8")
+    )
+    expected_terminal = [
+        str(t["id"]) for t in (doc.get("terminal_objectives") or [])
+        if isinstance(t, dict) and t.get("id")
+    ]
+    expected_chapter: list = []
+    for group in doc.get("chapter_objectives") or []:
+        if not isinstance(group, dict):
+            continue
+        for entry in group.get("objectives") or []:
+            if isinstance(entry, dict) and entry.get("id"):
+                expected_chapter.append(str(entry["id"]))
+
+    # Wave 24 mints TO-* before CO-* — assert ordering is preserved.
+    assert ids == expected_terminal + expected_chapter, (
+        "objective_ids must be terminals-first then chapter LOs; "
+        f"got {ids!r}, expected {expected_terminal + expected_chapter!r}"
+    )
+
+    # Sanity: terminals come strictly before any chapter LO in the list.
+    if expected_terminal and expected_chapter:
+        last_terminal_idx = max(ids.index(t) for t in expected_terminal)
+        first_chapter_idx = min(ids.index(c) for c in expected_chapter)
+        assert last_terminal_idx < first_chapter_idx, (
+            "terminals must precede chapter LOs in objective_ids"
+        )
+
+
+def test_objective_ids_empty_when_no_topics(planner_fixture):
+    """Wave2-I7: empty corpus → empty list (NOT None, NOT missing key)."""
+    fx = planner_fixture
+    # No HTML in staging_dir → no topics → no LOs minted.
+    result = asyncio.run(_call(
+        project_id=fx["project_id"],
+        staging_dir=str(fx["staging_dir"]),
+    ))
+    assert result["success"]
+    assert "objective_ids" in result, (
+        "objective_ids key must be present even on empty corpus"
+    )
+    assert result["objective_ids"] == [], (
+        f"expected empty list on empty corpus; got {result['objective_ids']!r}"
+    )
 
 
 def test_honors_supplied_objectives_json(planner_fixture):
