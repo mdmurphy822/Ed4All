@@ -1937,6 +1937,14 @@ class WorkflowRunner:
         if phase.name == "trainforge_assessment":
             return not workflow_params.get("generate_assessments", True)
 
+        # Skip training_synthesis if --skip-training was passed. This is the
+        # canonical A/B audit posture: Qwen generates assessments (phase 14)
+        # but Claude must NOT generate training pairs (phase 16) because that
+        # would route synthesis through a non-license-clean provider. See
+        # plans/algebra-textbook-kg-test-2026-05.md and docs/LICENSING.md.
+        if phase.name == "training_synthesis":
+            return bool(workflow_params.get("skip_training", False))
+
         return False
 
     # Phase 5 Subtask 4: per-stage active-phase whitelist. Source of
