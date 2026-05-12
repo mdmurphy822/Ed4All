@@ -25,7 +25,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Mapping, Optional, Tuple
 
 # Add project path
 _CORE_DIR = Path(__file__).resolve().parent
@@ -288,6 +288,21 @@ AGENT_SUBAGENT_SET = frozenset({
     "assessment-validator",            # alignment + rubric judgments
     "training-synthesizer",            # instruction + preference pair synthesis
 })
+
+
+# Wave1-I8 (Finding 7 of plans/dispatch-7-execution-inspection-2026-05.md):
+# the agent → provider-env-var mapping used by the Wave-D ToS-unblock
+# short-circuits below. Lifted out of the inline ``os.environ.get(...)``
+# checks so (a) ``workflow_runner`` can emit a one-shot provider banner
+# at workflow start without re-stating the literals and (b) future
+# provider plumbing lands as a single map entry instead of a duplicate
+# ``_force_inprocess_for_*`` triple. Byte-equivalent to the prior inline
+# string literals — same env vars resolved, same short-circuits triggered.
+AGENT_PROVIDER_ENV_MAP: Mapping[str, str] = {
+    "content-generator": "COURSEFORGE_PROVIDER",
+    "course-outliner": "COURSEPLANNER_PROVIDER",
+    "assessment-generator": "TRAINFORGE_ASSESSMENT_PROVIDER",
+}
 
 
 # Feature flag enabling the dispatch_task routing fork. Default **off**
@@ -900,12 +915,7 @@ class TaskExecutor:
         # / together / local), not the Claude Code subagent. Other Wave-74
         # agents (course-outliner, oscqr-course-evaluator, etc.) keep
         # dispatching unchanged.
-        _courseforge_provider_set = bool(
-            os.environ.get("COURSEFORGE_PROVIDER", "").strip()
-        )
-        _force_inprocess_for_courseforge = (
-            _courseforge_provider_set and agent_type == "content-generator"
-        )
+        #
         # Wave W-D14 ToS-unblock: COURSEPLANNER_PROVIDER short-circuits
         # the Wave-74 subagent dispatch for the course-outliner agent
         # only. Mirrors the COURSEFORGE_PROVIDER semantics above —
@@ -916,14 +926,8 @@ class TaskExecutor:
         # ``synthesized_objectives.json`` and propagates to every
         # downstream chunk's ``learning_outcome_refs[]``) is produced
         # by an operator-selected license-clean provider rather than
-        # the Claude Code subagent. Other Wave-74 agents keep dispatching
-        # unchanged.
-        _courseplanner_provider_set = bool(
-            os.environ.get("COURSEPLANNER_PROVIDER", "").strip()
-        )
-        _force_inprocess_for_courseplanner = (
-            _courseplanner_provider_set and agent_type == "course-outliner"
-        )
+        # the Claude Code subagent.
+        #
         # Wave W-D15 ToS-unblock: TRAINFORGE_ASSESSMENT_PROVIDER
         # short-circuits the Wave-74 subagent dispatch for the
         # assessment-generator agent only. Mirrors the
@@ -937,14 +941,32 @@ class TaskExecutor:
         # instruction-pair / preference-pair surface — i.e. they ARE
         # training data for the resulting SLM adapter) are produced by
         # an operator-selected license-clean provider rather than the
-        # Claude Code subagent. Other Wave-74 agents keep dispatching
-        # unchanged.
-        _trainforge_assessment_provider_set = bool(
-            os.environ.get("TRAINFORGE_ASSESSMENT_PROVIDER", "").strip()
+        # Claude Code subagent.
+        #
+        # Wave1-I8: the agent → env-var pairs were lifted to
+        # ``AGENT_PROVIDER_ENV_MAP`` so ``workflow_runner`` can emit a
+        # provider banner without restating the literals. Each entry
+        # below resolves the same env var with the same ``.strip()``
+        # guard the inline triple did pre-lift; behaviour is
+        # byte-equivalent.
+        _provider_env = AGENT_PROVIDER_ENV_MAP.get(agent_type or "")
+        _provider_env_set = bool(
+            os.environ.get(_provider_env, "").strip() if _provider_env else ""
+        )
+        _force_inprocess_for_courseforge = (
+            _provider_env_set
+            and agent_type == "content-generator"
+            and _provider_env == "COURSEFORGE_PROVIDER"
+        )
+        _force_inprocess_for_courseplanner = (
+            _provider_env_set
+            and agent_type == "course-outliner"
+            and _provider_env == "COURSEPLANNER_PROVIDER"
         )
         _force_inprocess_for_trainforge_assessment = (
-            _trainforge_assessment_provider_set
+            _provider_env_set
             and agent_type == "assessment-generator"
+            and _provider_env == "TRAINFORGE_ASSESSMENT_PROVIDER"
         )
         if (
             _agent_dispatch_enabled()
