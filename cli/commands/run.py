@@ -171,6 +171,7 @@ def _build_workflow_params(
     force_rerun: bool = False,
     courseforge_stage: Optional[str] = None,
     libv2_root: Optional[str] = None,
+    skip_training: bool = False,
 ) -> Dict[str, Any]:
     """Build the params dict for a workflow from CLI inputs.
 
@@ -254,6 +255,15 @@ def _build_workflow_params(
     # ``MCP/tools/pipeline_tools.py::_resolve_libv2_root``.
     if libv2_root:
         params["libv2_root"] = libv2_root
+
+    # --skip-training: suppress the training_synthesis phase (phase 16).
+    # Required when the operator wants Qwen-generated assessments (phase 14)
+    # but NOT Claude-generated training pairs — the canonical A/B audit
+    # posture per plans/algebra-textbook-kg-test-2026-05.md. Without this
+    # flag, training_synthesis fires as a Claude subagent and violates the
+    # licensing posture documented in docs/LICENSING.md.
+    if skip_training:
+        params["skip_training"] = True
 
     return params
 
@@ -637,6 +647,20 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--skip-training",
+    "skip_training",
+    is_flag=True,
+    default=False,
+    help=(
+        "Suppress the training_synthesis phase (phase 16). Use when "
+        "Trainforge assessment generation (phase 14) should run via a "
+        "license-clean provider (e.g. local Qwen) but training-pair "
+        "synthesis must not fire — the canonical A/B audit posture. "
+        "Without this flag training_synthesis dispatches as a Claude "
+        "subagent and violates the licensing posture in docs/LICENSING.md."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show the planned pipeline without executing",
@@ -670,6 +694,7 @@ def run_command(
     blocks_filter: Optional[str],
     force_rerun: bool,
     libv2_root: Optional[str],
+    skip_training: bool,
     dry_run: bool,
     watch: bool,
     output_json: bool,
@@ -775,6 +800,7 @@ def run_command(
         force_rerun=force_rerun,
         courseforge_stage=courseforge_stage,
         libv2_root=libv2_root,
+        skip_training=skip_training,
     )
 
     # -------- dry-run: plan only, no side effects ------------------------
@@ -864,6 +890,7 @@ def _dry_run_plan(
 
         # Respect --no-assessments by pruning the optional phase
         skip_trainforge = not params.get("generate_assessments", True)
+        skip_training_flag = bool(params.get("skip_training", False))
         skip_dart_flag = bool(params.get("skip_dart", False))
         reuse_objectives_path = params.get("reuse_objectives_path")
         # Phase 5 ST 6: --blocks filter annotation. Only the rewrite-tier
@@ -881,6 +908,8 @@ def _dry_run_plan(
         phases = []
         for idx, phase in enumerate(sorted_phases):
             if skip_trainforge and phase.name == "trainforge_assessment":
+                continue
+            if skip_training_flag and phase.name == "training_synthesis":
                 continue
             phase_entry = {
                 "order": len(phases) + 1,
