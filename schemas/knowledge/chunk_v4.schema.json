@@ -102,6 +102,10 @@
       "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel",
       "description": "Wave 76: secondary (lower) Bloom level when the source declared a compound bloom_level (e.g. 'remember-apply'). Compound values are split with the higher level becoming the canonical bloom_level and the lower stored here, so the taxonomy enum stays canonical without losing source information. Optional; absent when bloom_level was already a single canonical level."
     },
+    "cognitive_task_type": {
+      "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_task_type.schema.json#/$defs/CognitiveTaskType",
+      "description": "GPT Feedback (May 12) item 5: observable cognitive task verb (classify / compute / debug / critique / explain / compare / construct / ...). Axis orthogonal to bloom_level — captures WHAT the learner is asked to do rather than the cognitive tier or the assessment instrument. Inferred at chunk emit time from the chunk's text via lib.ontology.cognitive_task.detect_cognitive_task_type; upstream-supplied values (JSON-LD or data-cf-*) override detection. Optional; absent when no canonical task verb matches (legacy / pre-Wave-cognitive-task corpora)."
+    },
     "content_type_label": {
       "type": "string",
       "description": "Section/content classification label from JSON-LD or data-cf-content-type. Freeform today; future enum reconciliation is Wave 2 scope."
@@ -320,6 +324,10 @@
         "cognitive_domain": {
           "type": "string",
           "description": "Wave 60 / Wave 69: Cognitive domain derived from bloom_level via lib.ontology.bloom.bloom_to_cognitive_domain. Emitted iff bloom_level is populated."
+        },
+        "cognitive_task_type": {
+          "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_task_type.schema.json#/$defs/CognitiveTaskType",
+          "description": "GPT Feedback (May 12) item 5: observable cognitive task verb (classify / compute / debug / critique / ...). Axis orthogonal to bloom_level — captures WHAT the learner is asked to do. Optional; populated when the misconception's correction or statement carries a canonical task verb. Trainforge normalizes JSON-LD camelCase (cognitiveTaskType) to snake_case in html_content_parser."
         }
       }
     }

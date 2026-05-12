@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/cognitive_task_type.schema.json",
+  "title": "Cognitive Task Type",
+  "description": "Observable cognitive task-verb axis, orthogonal to Bloom level. Where bloom_level captures the cognitive process tier (remember/understand/apply/analyze/evaluate/create) and question_type captures the assessment instrument (multiple_choice/short_answer/...), cognitive_task_type captures WHAT the learner is asked to do: classify a thing, compute a value, debug a failure, critique a position. Two apply-tier multiple-choice questions can differ entirely on this axis (compute vs. debug vs. classify); without it that orthogonal signal is lost. Authored 2026-05 in response to GPT feedback (item 5, plans/gptfeedback12may.txt) requesting observable task-type tagging as a separate axis.",
+  "$comment": "15-value enum lifted from the bloom_verbs.json canonical 60-verb list (one pedagogically-distinct task verb per cell, deliberately spread across all 6 Bloom buckets so the axis is genuinely orthogonal to level). `debug` is new — not in bloom_verbs.json — seeded because GPT feedback explicitly called it out as the dominant CS task verb. Per REC-VOC-01.",
+  "$defs": {
+    "CognitiveTaskType": {
+      "type": "string",
+      "enum": [
+        "define",
+        "identify",
+        "explain",
+        "summarize",
+        "classify",
+        "compare",
+        "apply",
+        "compute",
+        "analyze",
+        "debug",
+        "predict",
+        "infer",
+        "critique",
+        "evaluate",
+        "construct"
+      ]
+    }
+  },
+  "$ref": "#/$defs/CognitiveTaskType"
+}
