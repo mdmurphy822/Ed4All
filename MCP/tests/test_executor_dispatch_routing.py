@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from MCP.core.executor import (
+    AGENT_PROVIDER_ENV_MAP,
     AGENT_SUBAGENT_SET,
     TaskExecutor,
     _agent_dispatch_enabled,
@@ -303,3 +304,32 @@ async def test_missing_agent_type_in_task_params_falls_through(monkeypatch, stat
     )
     assert result["dispatch_mode"] == "in_process"
     assert dispatcher.calls == []
+
+
+def test_agent_provider_env_map_pinned_shape():
+    """Wave1-I8 constant-lift: pin the agent → env-var mapping shape.
+
+    The map is the single source of truth consumed by both the
+    executor's short-circuit checks (``_dispatch_task_via_tool``) and
+    the workflow runner's provider banner. Drift between this map
+    and either consumer is a silent regression — drift between this
+    map and the executor's inline checks reverts the lift; drift
+    between this map and the banner produces misleading operator
+    output.
+    """
+    assert AGENT_PROVIDER_ENV_MAP["content-generator"] == "COURSEFORGE_PROVIDER"
+    assert AGENT_PROVIDER_ENV_MAP["course-outliner"] == "COURSEPLANNER_PROVIDER"
+    assert (
+        AGENT_PROVIDER_ENV_MAP["assessment-generator"]
+        == "TRAINFORGE_ASSESSMENT_PROVIDER"
+    )
+    # Every agent with a provider env var MUST also be in
+    # AGENT_SUBAGENT_SET — otherwise the executor's short-circuit
+    # would be unreachable (the inline check sits *before* the
+    # subagent dispatch but only matters when subagent dispatch
+    # would otherwise fire).
+    for agent in AGENT_PROVIDER_ENV_MAP:
+        assert agent in AGENT_SUBAGENT_SET, (
+            f"{agent} is in AGENT_PROVIDER_ENV_MAP but not in "
+            f"AGENT_SUBAGENT_SET — the short-circuit is unreachable."
+        )

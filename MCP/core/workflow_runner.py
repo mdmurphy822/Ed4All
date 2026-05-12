@@ -23,7 +23,12 @@ import yaml
 _LO_ID_RE = re.compile(r"^[a-zA-Z]{2,}-\d{2,}$")
 
 from .config import OrchestratorConfig, WorkflowPhase
-from .executor import _PHASE_TOOL_MAPPING, ExecutionResult, TaskExecutor
+from .executor import (
+    _PHASE_TOOL_MAPPING,
+    AGENT_PROVIDER_ENV_MAP,
+    ExecutionResult,
+    TaskExecutor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1011,6 +1016,14 @@ class WorkflowRunner:
         all_results: Dict[str, Dict] = {}
         final_status = "COMPLETE"
 
+        # Wave1-I8 (Finding 7 of plans/dispatch-7-execution-inspection-2026-05.md):
+        # emit one banner line per agent in ``AGENT_PROVIDER_ENV_MAP`` so
+        # operators can see at workflow start whether each agent will
+        # route to (a) an in-process local provider, (b) the Claude Code
+        # subagent, or (c) the in-process stub fallback. Pure
+        # observability — no behaviour change.
+        self._emit_provider_banner()
+
         for phase_idx, phase in enumerate(sorted_phases):
             phase_name = phase.name
 
@@ -1285,6 +1298,51 @@ class WorkflowRunner:
                 str(promotion_chain_path) if promotion_chain_path else None
             ),
         }
+
+    def _emit_provider_banner(self) -> None:
+        """Wave1-I8: emit one log line per agent in
+        ``AGENT_PROVIDER_ENV_MAP`` summarising how each will dispatch
+        at workflow start.
+
+        Resolution order (matches the executor's
+        ``_dispatch_task_via_tool`` precedence):
+
+        1. If ``AGENT_PROVIDER_ENV_MAP[agent]`` env var is set and non-
+           empty → ``local-provider`` (executor short-circuits subagent
+           dispatch and routes to the in-process Wave-D provider).
+        2. Else if ``ED4ALL_AGENT_DISPATCH=true`` → ``subagent
+           (claude)`` (executor routes through
+           ``dispatcher.dispatch_task`` to the Claude Code subagent).
+        3. Else → ``in-process-stub`` (executor falls through to
+           ``tool_registry[tool_name](**mapped_params)``).
+
+        Pure observability — no behaviour change.
+        """
+        agent_dispatch = (
+            os.environ.get("ED4ALL_AGENT_DISPATCH", "").strip().lower() == "true"
+        )
+        for agent, env_var in AGENT_PROVIDER_ENV_MAP.items():
+            env_value = os.environ.get(env_var, "").strip()
+            if env_value:
+                logger.info(
+                    "[provider-banner] %s: local-provider               "
+                    "%s=%s",
+                    agent,
+                    env_var,
+                    env_value,
+                )
+            elif agent_dispatch:
+                logger.info(
+                    "[provider-banner] %s: subagent (claude)            "
+                    "ED4ALL_AGENT_DISPATCH=true",
+                    agent,
+                )
+            else:
+                logger.info(
+                    "[provider-banner] %s: in-process-stub              "
+                    "ED4ALL_AGENT_DISPATCH=false",
+                    agent,
+                )
 
     def _maybe_write_courseforge_validation_report(
         self,
