@@ -335,6 +335,52 @@ class KGQualityValidator:
                 report.get("dimensions", {}).get(dim, {}).get("score", 0.0)
             )
             scores[dim] = score
+
+        # GPT-feedback-12-may item 2: cross-rule edge consensus. Walk
+        # the just-emitted concept_graph_semantic.json and stamp every
+        # edge with edge_status + consensus_signals[]. Multiply the
+        # consistency axis by (1 - contradiction_rate) BEFORE the
+        # threshold check so contradicted-edge clusters take a
+        # proportional hit on consistency. Best-effort: any aggregator
+        # failure logs and leaves scores unchanged.
+        consensus_rate: Optional[float] = None
+        contradiction_rate: Optional[float] = None
+        try:
+            from lib.aggregators.edge_consensus import EdgeConsensusAggregator
+            aggregator = EdgeConsensusAggregator(
+                semantic_graph_path=Path(semantic_graph_raw),
+                course_slug=str(course_slug),
+                run_id=str(run_id),
+                decision_capture=capture,
+            )
+            consensus_report = aggregator.build()
+            # Emit alongside the existing kg_quality_report.json.
+            try:
+                aggregator.write(
+                    Path(output_dir_raw) / "edge_consensus_report.json"
+                )
+            except Exception as write_exc:  # noqa: BLE001
+                logger.warning(
+                    "EdgeConsensusAggregator.write raised %s; consensus "
+                    "signal still applied to the in-memory score.",
+                    write_exc,
+                )
+            summary = consensus_report.get("summary", {})
+            contradiction_rate = float(summary.get("contradiction_rate", 0.0))
+            consensus_rate = float(summary.get("consensus_rate", 0.0))
+            scores["consistency"] = max(
+                0.0,
+                scores["consistency"] * (1.0 - contradiction_rate),
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "EdgeConsensusAggregator failed (%s); consistency "
+                "axis left at its base value.",
+                exc,
+            )
+
+        for dim in _DIMENSIONS:
+            score = scores[dim]
             min_score = thresholds[dim]
             if min_score > 0.0 and score < min_score:
                 issues.append(GateIssue(
@@ -376,6 +422,13 @@ class KGQualityValidator:
             run_id=str(run_id),
         )
 
+        result_metadata: Dict[str, Any] = {}
+        if consensus_rate is not None:
+            result_metadata["edge_consensus_rate"] = round(consensus_rate, 4)
+        if contradiction_rate is not None:
+            result_metadata["edge_contradiction_rate"] = round(
+                contradiction_rate, 4
+            )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
@@ -383,6 +436,7 @@ class KGQualityValidator:
             passed=True,  # warning-only gate; severity promoted at gate-config level
             score=round(composite, 4),
             issues=issues,
+            metadata=result_metadata or None,
         )
 
 
