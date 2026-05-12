@@ -56,6 +56,48 @@ Every edge carries:
 by generating rule or re-derive an older edge set from the chunks. The
 `evidence` block is free-form per rule but must be JSON-serializable.
 
+## Asserted vs inferred (`edge_kind`)
+
+Every edge carries an optional top-level `edge_kind` field
+(`"asserted" | "inferred"`) discriminating two semantic categories
+that were previously implicit in each rule's docstring:
+
+- **`asserted`** — the rule materializes an explicit upstream pointer
+  (`question.objective_id`, JSON-LD `LO.targetedConcepts[]`, chunk
+  `learning_outcome_refs[]`, `misconception.concept_id`, concept
+  first-mention chunk from `node.occurrences[0]`). The edge is NOT
+  an inference; it promotes a declaration that already lives in the
+  corpus.
+- **`inferred`** — the rule produces the edge from a heuristic
+  (regex pattern over `key_terms[].definition`), a structural flag
+  (`chunk_type == "example"`), a pedagogical-ordering inference
+  (LO-position skew), a co-occurrence statistic, or an LLM proposal.
+
+The classification is orthogonal to `confidence`. The canonical
+rule → kind registry lives in `lib/ontology/edge_kind.py`; the
+orchestrator stamps `edge_kind` at graph-build time. Legacy edges
+emitted before this field landed validate without it.
+
+Current classification:
+
+| Rule | `edge_kind` |
+|---|---|
+| `assesses_from_question_lo` | `asserted` |
+| `derived_from_lo_ref` | `asserted` |
+| `misconception_of_from_misconception_ref` | `asserted` |
+| `targets_concept_from_lo` | `asserted` |
+| `defined_by_from_first_mention` | `asserted` |
+| `is_a_from_key_terms` | `inferred` |
+| `exemplifies_from_example_chunks` | `inferred` |
+| `prerequisite_from_lo_order` | `inferred` |
+| `related_from_cooccurrence` | `inferred` |
+| `llm_typed_edge` | `inferred` |
+
+When adding a new rule: register its classification in
+`lib/ontology/edge_kind.py` AND add a row to the table above. The
+unit test in `Trainforge/tests/test_edge_kind_classification.py` fails
+loudly if a new rule lands without a registry entry.
+
 ## Precedence
 
 Two rules can fire on the same `(source, target)` pair. The orchestrator
