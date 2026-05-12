@@ -183,3 +183,51 @@ def test_banner_empty_or_whitespace_env_var_does_not_count(
     # Should NOT have flipped to local-provider on whitespace.
     assert "local-provider" not in content_gen_lines[0]
     assert "subagent (claude)" in content_gen_lines[0]
+
+
+# ---------------------------------------------------------------------------
+# Wave1-I6 (Finding 9) — env-predicate skip log
+# ---------------------------------------------------------------------------
+
+
+def test_should_skip_phase_logs_env_predicate_skip(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An ``enabled_when_env`` skip must surface in the operator log.
+
+    Finding 9 of plans/dispatch-7-execution-inspection-2026-05.md: a
+    phase with ``enabled_when_env: "SOME_FLAG=true"`` and ``SOME_FLAG``
+    unset silently no-ops, which is indistinguishable from a crashed /
+    mis-routed phase at triage time. This test pins the log line shape
+    so the skip stays visible.
+    """
+    from MCP.core.config import WorkflowPhase
+
+    monkeypatch.delenv("WAVE1_I6_TEST_FLAG", raising=False)
+
+    phase = WorkflowPhase(
+        name="phase_under_test",
+        agents=[],
+        enabled_when_env="WAVE1_I6_TEST_FLAG=true",
+    )
+    runner = _make_runner()
+
+    with caplog.at_level(logging.INFO, logger="MCP.core.workflow_runner"):
+        skipped = runner._should_skip_phase(phase, {})
+
+    assert skipped is True
+    skip_lines = [
+        record.getMessage()
+        for record in caplog.records
+        if "enabled_when_env" in record.getMessage()
+        and "phase_under_test" in record.getMessage()
+    ]
+    assert len(skip_lines) == 1, (
+        f"Expected exactly one env-predicate skip log line, got "
+        f"{skip_lines!r}"
+    )
+    line = skip_lines[0]
+    assert "WAVE1_I6_TEST_FLAG=true" in line
+    assert "unsatisfied" in line
+    assert "unset" in line
