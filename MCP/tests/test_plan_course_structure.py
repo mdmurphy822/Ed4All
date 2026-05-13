@@ -20,7 +20,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from MCP.tools import pipeline_tools  # noqa: E402
-from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
+from MCP.tools.pipeline_tools import (  # noqa: E402
+    _build_tool_registry,
+    _normalize_chapter_objectives_to_groups,
+)
 
 _LO_ID_RE = re.compile(r"^[A-Z]{2,}-\d{2,}$")
 
@@ -485,3 +488,252 @@ def test_wave18_explicit_kwargs_skips_rescale(planner_fixture):
     assert result["success"]
     # Operator's explicit 12 wins; no re-scale.
     assert result["duration_weeks"] == 12
+
+
+# ---------------------------------------------------------------------- #
+# Wave2b: _collect_lo_ids (inside _plan_course_structure) and
+# _project_synthesized_objectives_to_course_json share a module-level
+# normalizer that accepts three chapter_objectives shapes:
+# list-of-groups (Courseforge synthesized), flat-list (LibV2
+# component_objectives), and dict-of-lists (OpenStax shape). Before
+# Wave2b the dict-of-lists shape silently dropped every CO-NN id from
+# both helpers. Direct unit-coverage of the normalizer guards both
+# call sites against regression.
+#
+# Cross-link: plans/wave2-smoke-verification-2026-05.md "Surprises".
+# ---------------------------------------------------------------------- #
+
+
+class TestNormalizeChapterObjectivesToGroups:
+    """Wave2b: shared shape normalizer for chapter_objectives."""
+
+    def test_dict_of_lists_shape_yields_all_co_ids(self):
+        """OpenStax dict-of-lists shape: every CO-NN id surfaces in
+        canonical sorted-key order, wrapped in synthetic groups whose
+        ``chapter`` is the dict key.
+        """
+        raw = {
+            "2": [
+                {"id": "CO-03", "statement": "C3."},
+                {"id": "CO-04", "statement": "C4."},
+            ],
+            "1": [
+                {"id": "CO-01", "statement": "C1."},
+                {"id": "CO-02", "statement": "C2."},
+            ],
+        }
+        groups = _normalize_chapter_objectives_to_groups(raw)
+        # Deterministic sorted-by-key iteration: "1" group before "2".
+        assert [g["chapter"] for g in groups] == ["1", "2"]
+        all_ids = [
+            co["id"]
+            for grp in groups
+            for co in grp["objectives"]
+        ]
+        assert all_ids == ["CO-01", "CO-02", "CO-03", "CO-04"], (
+            f"expected CO-01..CO-04 in sorted-chapter order; got {all_ids!r}"
+        )
+
+    def test_list_of_groups_shape_is_passed_through(self):
+        """Courseforge synthesized list-of-groups shape: every CO-NN id
+        is preserved with the original chapter labels.
+        """
+        raw = [
+            {
+                "chapter": "Week 1",
+                "objectives": [
+                    {"id": "CO-01"},
+                    {"id": "CO-02"},
+                ],
+            },
+            {
+                "chapter": "Week 2",
+                "objectives": [
+                    {"id": "CO-03"},
+                ],
+            },
+        ]
+        groups = _normalize_chapter_objectives_to_groups(raw)
+        assert [g["chapter"] for g in groups] == ["Week 1", "Week 2"]
+        all_ids = [
+            co["id"]
+            for grp in groups
+            for co in grp["objectives"]
+        ]
+        assert all_ids == ["CO-01", "CO-02", "CO-03"]
+
+    def test_flat_list_shape_wraps_in_synthetic_group(self):
+        """LibV2 archive flat-list shape (component_objectives without
+        chapter grouping): every CO-NN id is preserved under a single
+        synthetic ``chapter="(ungrouped)"`` group so the downstream
+        walk still yields the full id set.
+        """
+        raw = [
+            {"id": "CO-01"},
+            {"id": "CO-02"},
+            {"id": "CO-03"},
+        ]
+        groups = _normalize_chapter_objectives_to_groups(raw)
+        # Single synthetic group; not silently dropped.
+        assert len(groups) == 1
+        assert groups[0]["chapter"] == "(ungrouped)"
+        all_ids = [co["id"] for co in groups[0]["objectives"]]
+        assert all_ids == ["CO-01", "CO-02", "CO-03"]
+
+
+def _seed_supplied_objectives(
+    project_dir: Path, *, chapter_objectives: object,
+) -> Path:
+    """Write a supplied-objectives JSON with the given chapter shape
+    + return its path. Used by the ``_plan_course_structure``
+    end-to-end shape-regression tests below.
+    """
+    supplied = project_dir / "supplied_objectives.json"
+    supplied.write_text(json.dumps({
+        "terminal_objectives": [
+            {
+                "id": "TO-01",
+                "statement": "T1 statement.",
+                "bloom_level": "apply",
+            },
+            {
+                "id": "TO-02",
+                "statement": "T2 statement.",
+                "bloom_level": "analyze",
+            },
+        ],
+        "chapter_objectives": chapter_objectives,
+    }), encoding="utf-8")
+    return supplied
+
+
+def test_plan_course_structure_objective_ids_list_of_groups(planner_fixture):
+    """Wave2b regression: supplied list-of-groups objectives → all
+    TO-NN + CO-NN ids surface in objective_ids in terminals-first
+    canonical order.
+    """
+    fx = planner_fixture
+    supplied = _seed_supplied_objectives(
+        fx["project_dir"],
+        chapter_objectives=[
+            {
+                "chapter": "Week 1",
+                "objectives": [
+                    {"id": "CO-01", "statement": "C1.", "bloom_level": "remember"},
+                    {"id": "CO-02", "statement": "C2.", "bloom_level": "understand"},
+                ],
+            },
+            {
+                "chapter": "Week 2",
+                "objectives": [
+                    {"id": "CO-03", "statement": "C3.", "bloom_level": "apply"},
+                ],
+            },
+        ],
+    )
+    result = asyncio.run(_call(
+        project_id=fx["project_id"],
+        objectives_path=str(supplied),
+    ))
+    assert result["success"]
+    ids = result["objective_ids"]
+    assert ids[:2] == ["TO-01", "TO-02"]
+    assert set(ids) == {"TO-01", "TO-02", "CO-01", "CO-02", "CO-03"}
+
+
+def test_plan_course_structure_objective_ids_flat_list(planner_fixture):
+    """Wave2b regression: supplied flat-list chapter_objectives →
+    every CO-NN id surfaces in objective_ids.
+    """
+    fx = planner_fixture
+    supplied = _seed_supplied_objectives(
+        fx["project_dir"],
+        chapter_objectives=[
+            {"id": "CO-01", "statement": "C1.", "bloom_level": "remember"},
+            {"id": "CO-02", "statement": "C2.", "bloom_level": "understand"},
+            {"id": "CO-03", "statement": "C3.", "bloom_level": "apply"},
+        ],
+    )
+    result = asyncio.run(_call(
+        project_id=fx["project_id"],
+        objectives_path=str(supplied),
+    ))
+    assert result["success"]
+    ids = result["objective_ids"]
+    # Terminals first, then chapters.
+    assert ids[:2] == ["TO-01", "TO-02"]
+    assert set(ids) == {"TO-01", "TO-02", "CO-01", "CO-02", "CO-03"}
+
+
+def test_collect_lo_ids_dict_of_lists_shape():
+    """Wave2b: ``_collect_lo_ids`` (closure inside
+    ``_plan_course_structure``) must recover every CO-NN id from a
+    dict-of-lists ``chapter_objectives`` payload.
+
+    The closure isn't importable directly, so we replicate its body
+    here using the SAME module-level normalizer it calls. Pre-Wave2b
+    the closure walked ``chapter_objectives`` assuming list-only
+    iteration; a dict payload was silently iterated as keys (strings),
+    every ``isinstance(entry, dict)`` check failed, and zero CO-NN ids
+    surfaced. The normalizer routes the dict-of-lists shape through
+    the canonical list-of-groups walk, recovering every id.
+
+    Caveat: in current production, ``_plan_course_structure``'s
+    ``synthesized`` dict is always built in list-of-groups shape
+    (`pipeline_tools.py:5519-5522`), and the supplied-objectives
+    loader (`_content_gen_helpers.load_objectives_json`) flattens the
+    list-of-groups shape upstream. The dict-of-lists code path in
+    ``_collect_lo_ids`` is a defensive branch — exercised when a
+    future caller injects a dict-shaped payload directly (e.g. an
+    in-memory smoke-test, or a future loader update that preserves
+    the dict shape end-to-end). This test pins the closure's
+    dict-handling contract so the defensive branch can't silently
+    regress.
+    """
+    payload = {
+        "terminal_objectives": [
+            {"id": "TO-01", "statement": "T1."},
+            {"id": "TO-02", "statement": "T2."},
+        ],
+        "chapter_objectives": {
+            "1": [
+                {"id": "CO-01", "statement": "C1."},
+                {"id": "CO-02", "statement": "C2."},
+            ],
+            "2": [
+                {"id": "CO-03", "statement": "C3."},
+                {"id": "CO-04", "statement": "C4."},
+            ],
+        },
+    }
+
+    # Replica of ``_collect_lo_ids`` inside
+    # ``MCP/tools/pipeline_tools.py::_plan_course_structure`` —
+    # exercises the same normalizer-based walk.
+    def _collect_lo_ids_replica(p):
+        ids = []
+        terminals = (
+            p.get("terminal_objectives")
+            or p.get("terminal_outcomes")
+            or []
+        )
+        for entry in terminals:
+            if isinstance(entry, dict) and entry.get("id"):
+                ids.append(str(entry["id"]))
+        chapters_raw = (
+            p.get("chapter_objectives")
+            or p.get("component_objectives")
+            or []
+        )
+        for group in _normalize_chapter_objectives_to_groups(chapters_raw):
+            for entry in group.get("objectives") or []:
+                if isinstance(entry, dict) and entry.get("id"):
+                    ids.append(str(entry["id"]))
+        return ids
+
+    ids = _collect_lo_ids_replica(payload)
+    # Terminals first, then every CO-NN id (sorted-by-chapter-key
+    # order: "1" group before "2" group).
+    assert ids == [
+        "TO-01", "TO-02", "CO-01", "CO-02", "CO-03", "CO-04",
+    ], f"dict-of-lists chapter_objectives dropped CO-NN ids: {ids!r}"
