@@ -134,6 +134,115 @@ def search_catalog(
     return results
 
 
+def _register_course_in_catalog(
+    course_slug: str,
+    manifest: dict,
+    libv2_root: Path,
+) -> None:
+    """Register or update a course entry in the master catalog (atomic, idempotent).
+
+    Called from ``_archive_to_libv2`` / ``archive_to_libv2`` immediately after
+    the per-course ``manifest.json`` is written so that ``libv2 catalog list``
+    and ``libv2 info <slug>`` see the course without a manual ``index rebuild``.
+
+    Args:
+        course_slug: Canonical slug for the archived course.
+        manifest: The dict that was written to ``manifest.json``.
+        libv2_root: Absolute path to the LibV2 root directory.
+    """
+    import os
+    import tempfile
+
+    catalog_dir = libv2_root / "catalog"
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    catalog_path = catalog_dir / "master_catalog.json"
+
+    # Load existing catalog or create an empty one.
+    if catalog_path.exists():
+        try:
+            with open(catalog_path) as fh:
+                raw = json.load(fh)
+            existing = MasterCatalog.from_dict(raw)
+        except Exception:
+            existing = MasterCatalog(
+                version="1.0.0",
+                generated_at=datetime.now().isoformat(),
+                total_courses=0,
+                courses=[],
+            )
+    else:
+        existing = MasterCatalog(
+            version="1.0.0",
+            generated_at=datetime.now().isoformat(),
+            total_courses=0,
+            courses=[],
+        )
+
+    classification = manifest.get("classification", {})
+    new_entry = CatalogEntry(
+        slug=course_slug,
+        title=manifest.get("title") or course_slug,
+        division=classification.get("division", "STEM"),
+        primary_domain=classification.get("primary_domain", "general"),
+        secondary_domains=classification.get("secondary_domains", []),
+        subdomains=classification.get("subdomains", []),
+        # content_profile fields are not yet present in the pipeline manifest;
+        # leave defaults (0) so a later index rebuild can fill them in.
+    )
+
+    # Idempotent: replace any existing entry with the same slug.
+    courses = [c for c in existing.courses if c.slug != course_slug]
+    courses.append(new_entry)
+
+    updated = MasterCatalog(
+        version=existing.version,
+        generated_at=datetime.now().isoformat(),
+        total_courses=len(courses),
+        courses=courses,
+    )
+
+    # Atomic write via tmpfile + rename so a concurrent reader never sees a
+    # half-written catalog.
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=catalog_dir,
+        suffix=".tmp",
+        delete=False,
+    ) as tmp:
+        json.dump(updated.to_dict(), tmp, indent=2)
+        tmp_path = tmp.name
+
+    os.replace(tmp_path, catalog_path)
+
+    # Also keep course_index.json in sync (slug → quick-lookup dict).
+    index_path = catalog_dir / "course_index.json"
+    if index_path.exists():
+        try:
+            with open(index_path) as fh:
+                index = json.load(fh)
+        except Exception:
+            index = {}
+    else:
+        index = {}
+
+    index[course_slug] = {
+        "path": f"courses/{course_slug}",
+        "title": new_entry.title,
+        "division": new_entry.division,
+    }
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=catalog_dir,
+        suffix=".tmp",
+        delete=False,
+    ) as tmp:
+        json.dump(index, tmp, indent=2)
+        tmp_path = tmp.name
+
+    os.replace(tmp_path, index_path)
+
+
 def get_catalog_statistics(catalog: MasterCatalog) -> dict:
     """Get statistics about the catalog."""
     stats = {
