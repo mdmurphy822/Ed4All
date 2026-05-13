@@ -1,3 +1,9 @@
+---
+name: quality-assurance
+description: Specialized validation and pattern prevention agent for Courseforge course generation; enforces quality gates and pattern-22 prevention narrative.
+model: sonnet
+---
+
 # Quality Assurance Subagent Specification
 
 ## Agent Profile and Specialization

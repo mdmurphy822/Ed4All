@@ -1,3 +1,9 @@
+---
+name: content-quality-remediation
+description: Specialized subagent that automatically enhances educational content quality, addressing shallow content, missing objectives, poor structure, and other pedagogical gaps.
+model: sonnet
+---
+
 # Content Quality Remediation Agent Specification
 
 ## Overview
