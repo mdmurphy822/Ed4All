@@ -93,6 +93,75 @@ Text Dark: #333333         /* Main text color */
 
 ---
 
+## MANDATORY: Heading Hierarchy (Wave4-W27)
+
+> **Enforcement**: `ContentStructureValidator` at `lib/validators/content.py` checks every emitted page for `HEADING_SKIP` violations and **fails closed** (critical gate). Pages that skip heading levels block IMSCC packaging.
+
+Every emitted HTML page MUST follow strict h1 → h2 → h3 → h4 progression:
+
+- Exactly ONE `<h1>` per page (the page title).
+- Each subsequent heading level descends by AT MOST one level (`<h1>` followed by `<h2>` only; `<h2>` followed by `<h3>` only; etc.).
+- **NEVER skip a level** — no `<h1>` → `<h3>`, no `<h2>` → `<h4>`, no `<h2>` → `<h5>`.
+- The `ContentStructureValidator` gate at `lib/validators/content.py` enforces this; emitted pages that skip levels fail closed (`HEADING_SKIP`).
+
+**Wrong:**
+```html
+<h1>Page Title</h1>
+<h3>Section Header</h3>   <!-- SKIP: h1 → h3 violates HEADING_SKIP -->
+<h5>Subsection</h5>       <!-- SKIP: h3 → h5 violates HEADING_SKIP -->
+```
+
+**Correct:**
+```html
+<h1>Page Title</h1>
+<h2>Section Header</h2>
+<h3>Subsection</h3>
+```
+
+---
+
+## MANDATORY: Source-ID Stamping (Wave4-W27 / Wave-9 contract)
+
+> **Enforcement**: `EMPTY_SOURCE_REFS` validator surfaces missing `data-cf-source-ids` attributes. Wave4-I10 will promote this to a fail-closed critical gate after this prompt change lands.
+
+Every content container emitted MUST carry the originating DART source block IDs.
+
+For each `<section>`, `<div>`, or other content wrapper element (`.flip-card`, `.self-check`, `.activity-card`, `.discussion-prompt`), emit:
+
+- **`data-cf-source-ids="<comma-separated source IDs>"`** — the DART block IDs that informed this content. Read these from `source_module_map.json` in the project's `02_source_mapping/` directory.
+
+Rules:
+- If the section synthesizes content from multiple DART blocks, list all source IDs comma-separated.
+- If no source ID applies (e.g. boilerplate intro / navigation), use `data-cf-source-ids=""` (empty string) — **but the attribute MUST be present**.
+- **Per Wave-9 decision P2**: NEVER emit `data-cf-source-ids` on `<p>`, `<li>`, or `<tr>` children — scope stays at the section / component-wrapper level.
+- When `source_chunks` is empty (non-textbook workflows), the attribute may be omitted entirely (backward-compat path; see § Source Material Integration below).
+
+---
+
+## MANDATORY: Objective-ID Stamping (Wave4-W27)
+
+> **Enforcement**: Missing `data-cf-objective-id` attributes cause the chunker's `learning_outcome_refs[]` to fall back to text-scan heuristics (Wave3-Anew3 back-fill), which is less reliable than explicit attribute stamping.
+
+Every content block that addresses a specific Learning Objective MUST carry:
+
+- **`data-cf-objective-id="<TO-NN or CO-NN>"`** — the canonical LO ID from `01_learning_objectives/synthesized_objectives.json`.
+
+Rules:
+- LO IDs follow the pattern `^[A-Z]{2,}-\d{2,}$` (e.g. `TO-01`, `CO-03`).
+- Multiple LOs per block? Use a comma-separated list: `data-cf-objective-id="TO-01,CO-02"`.
+- Emit on the `<li>` element within the learning-objectives list AND on any `<section>`, `.self-check`, or `.activity-card` element that directly addresses that objective.
+- This populates the chunker's `learning_outcome_refs[]` field so RAG retrieval by LO works correctly.
+
+**Example:**
+```html
+<section data-cf-source-ids="dart:phys101#s3_p1" data-cf-objective-id="TO-02,CO-05">
+  <h2>Newton's Second Law</h2>
+  <p>...</p>
+</section>
+```
+
+---
+
 ## Enhanced Template-Optimized Architecture
 
 ### Core Design Philosophy
