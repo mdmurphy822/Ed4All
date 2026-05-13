@@ -2141,6 +2141,18 @@ def register_pipeline_tools(mcp):
             with open(manifest_path, "w") as f:
                 json.dump(manifest, f, indent=2)
 
+            # F6: register the course in the LibV2 master catalog so that
+            # ``libv2 catalog list`` / ``libv2 info <slug>`` see it immediately
+            # without a separate manual ``index rebuild`` step.
+            try:
+                from LibV2.tools.libv2.catalog import _register_course_in_catalog
+                _register_course_in_catalog(slug, manifest, libv2_root)
+            except Exception as _exc:
+                logger.warning(
+                    "archive_to_libv2: catalog registration failed for %s: %s",
+                    slug, _exc,
+                )
+
             return json.dumps({
                 "success": True,
                 "course_slug": slug,
@@ -7473,6 +7485,18 @@ def _build_tool_registry() -> dict:
         manifest_path = course_dir / "manifest.json"
         with open(manifest_path, "w") as f:
             json.dump(manifest, f, indent=2)
+
+        # F6: register the course in the LibV2 master catalog so that
+        # ``libv2 catalog list`` / ``libv2 info <slug>`` see it immediately
+        # without a separate manual ``index rebuild`` step.
+        try:
+            from LibV2.tools.libv2.catalog import _register_course_in_catalog
+            _register_course_in_catalog(slug, manifest, libv2_root)
+        except Exception as _exc:
+            logger.warning(
+                "archive_to_libv2: catalog registration failed for %s: %s",
+                slug, _exc,
+            )
 
         return json.dumps({
             "success": True,
