@@ -1,3 +1,9 @@
+---
+name: content-analyzer
+description: Specialized subagent that analyzes extracted course content for accessibility issues, quality gaps, and remediation needs, driving the automated remediation pipeline.
+model: sonnet
+---
+
 # Content Analyzer Agent Specification
 
 ## Overview

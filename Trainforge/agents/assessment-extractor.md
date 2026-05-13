@@ -1,3 +1,9 @@
+---
+name: assessment-extractor
+description: Extracts learning objectives and content chunks from IMSCC packages for downstream assessment generation.
+model: sonnet
+---
+
 # Assessment Extractor Agent
 
 ## Purpose

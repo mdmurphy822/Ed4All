@@ -1,3 +1,9 @@
+---
+name: assessment-generator
+description: Generates Bloom's taxonomy-aligned assessment questions from analyzed course content using RAG-retrieved context.
+model: sonnet
+---
+
 # Assessment Generator Agent
 
 ## Purpose

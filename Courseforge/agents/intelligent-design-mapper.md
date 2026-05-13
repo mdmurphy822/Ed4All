@@ -1,3 +1,9 @@
+---
+name: intelligent-design-mapper
+description: Specialized AI-driven subagent that analyzes content semantics and automatically applies optimal display components from the Courseforge template library.
+model: sonnet
+---
+
 # Intelligent Design Mapper Agent Specification
 
 ## Overview
