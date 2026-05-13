@@ -133,7 +133,9 @@ class PageSourceRefValidator:
         # means the gate passes silently.
         map_is_empty = self._source_map_is_empty(inputs)
 
-        emitted_ids, emit_errors = self._collect_emitted_ids(inputs)
+        emitted_ids, emit_errors, attr_present, pages_scanned = (
+            self._collect_emitted_ids(inputs)
+        )
         for err in emit_errors:
             issues.append(err)
 
@@ -200,40 +202,60 @@ class PageSourceRefValidator:
         if not emitted_ids:
             # Nothing to check. Backward-compat path.
             #
-            # Wave 27 CRITICAL-2 turn-down: real textbook-to-course runs
-            # should ALWAYS have source-ids now that content-generator
-            # carry-through is wired. A truly empty emitted set on a
-            # real run means Courseforge didn't stamp anything — still a
-            # real problem, but not one this validator should fail
-            # closed on (some workflows like ``course_generation``
-            # legitimately run without DART provenance). Emit a
-            # warning so the gap surfaces in the gate output + captures
-            # without breaking the backward-compat legacy-caller path.
-            if inputs.get("page_paths") or inputs.get("html_contents"):
+            # Wave4-I10 (commit succeeding ffe517d): EMPTY_SOURCE_REFS is
+            # promoted from warning to critical. Wave4-W27 (`ffe517d`)
+            # made stamping `data-cf-source-ids` on every content
+            # wrapper MANDATORY in the content-generator prompt — so
+            # missing attrs on real textbook-to-course pages are now
+            # an upstream contract violation, not an unavoidable
+            # downstream symptom. The complementary Wave-27 contract
+            # allows empty-string `data-cf-source-ids=""` for
+            # boilerplate; that path is gated by ``attr_present``
+            # below so the critical only fires when the attribute is
+            # missing entirely.
+            #
+            # Legacy callers that pass no pages at all (page_paths +
+            # html_contents both empty) continue to short-circuit
+            # silently — preserves the backward-compat path for
+            # workflows like ``course_generation`` that run without
+            # DART provenance.
+            #
+            # ``pages_scanned`` counts only pages whose HTML body was
+            # actually inspected — unreadable file paths drop out so
+            # PAGE_NOT_FOUND alone doesn't trip the critical.
+            if pages_scanned > 0 and not attr_present:
+                # Critical: pages were scanned but ZERO carried any
+                # `data-cf-source-ids` attribute (not even empty). This
+                # is the Wave-27 contract regression case.
                 issues.append(GateIssue(
-                    severity="warning",
+                    severity="critical",
                     code="EMPTY_SOURCE_REFS",
                     message=(
                         "No data-cf-source-ids attributes or JSON-LD "
-                        "sourceReferences emitted on any page. Wave 27 "
-                        "expects content-generator carry-through to "
-                        "stamp source-ids on every DART-derived element; "
-                        "empty emit usually means DART didn't stamp "
-                        "data-dart-block-id or the staging contract broke."
+                        "sourceReferences emitted on any page. Wave4-W27 "
+                        "makes content-generator stamping of "
+                        "`data-cf-source-ids` MANDATORY on every content "
+                        "wrapper (empty-string `data-cf-source-ids=\"\"` "
+                        "is allowed for boilerplate). Total absence of "
+                        "the attribute is an upstream contract violation."
                     ),
                     suggestion=(
-                        "Check DART's ``data-dart-block-id`` coverage on "
-                        "source sections, then re-run the content-"
-                        "generation phase. Legacy callers can ignore "
-                        "this warning."
+                        "Check the content-generator prompt directives "
+                        "are being followed, then re-run the content-"
+                        "generation phase. For legitimate boilerplate "
+                        "without DART provenance, emit "
+                        "`data-cf-source-ids=\"\"` explicitly."
                     ),
                 ))
+                passed = False
+                score = 0.0
+            else:
+                passed = True
+                score = 1.0
             _emit_decision(
                 capture,
-                passed=True,
-                code="EMPTY_SOURCE_REFS" if (
-                    inputs.get("page_paths") or inputs.get("html_contents")
-                ) else None,
+                passed=passed,
+                code="EMPTY_SOURCE_REFS" if (pages_scanned > 0 and not attr_present) else None,
                 source_refs_declared=0,
                 source_refs_resolved=0,
                 unresolved_count=0,
@@ -247,8 +269,8 @@ class PageSourceRefValidator:
                 gate_id=gate_id,
                 validator_name=self.name,
                 validator_version=self.version,
-                passed=True,
-                score=1.0,
+                passed=passed,
+                score=score,
                 issues=issues,
             )
 
@@ -420,14 +442,27 @@ class PageSourceRefValidator:
 
     def _collect_emitted_ids(
         self, inputs: Dict[str, Any]
-    ) -> tuple[Set[tuple[str, str]], List[GateIssue]]:
+    ) -> tuple[Set[tuple[str, str]], List[GateIssue], bool, int]:
         """Scan every page for sourceIds emitted in JSON-LD or data-cf-*.
 
-        Returns a set of (page_location, source_id) pairs plus a list of
-        issues raised during scanning (e.g. malformed JSON-LD).
+        Returns a 4-tuple of:
+
+        - set of ``(page_location, source_id)`` pairs that resolved to a
+          non-empty sourceId,
+        - list of issues raised during scanning (e.g. malformed JSON-LD),
+        - ``attr_present`` bool: True if ANY ``data-cf-source-ids``
+          attribute was seen on any scanned page, even an empty string.
+          Wave4-I10 / Wave4-W27 contract: empty-string
+          ``data-cf-source-ids=""`` counts as legitimate boilerplate
+          marking and must NOT trip the EMPTY_SOURCE_REFS critical.
+        - ``pages_scanned`` int: count of pages whose HTML body we
+          actually inspected. Distinguishes "no readable input" (which
+          should not trip EMPTY_SOURCE_REFS) from "real pages with no
+          stamping" (which should).
         """
         emitted: Set[tuple[str, str]] = set()
         scan_issues: List[GateIssue] = []
+        attr_present: bool = False
 
         records: List[tuple[str, str]] = []  # (location, html)
 
@@ -475,8 +510,13 @@ class PageSourceRefValidator:
                 for sid in _iter_jsonld_source_ids(data):
                     emitted.add((loc, sid))
 
-            # HTML attributes: data-cf-source-ids + data-cf-source-primary
+            # HTML attributes: data-cf-source-ids + data-cf-source-primary.
+            # Wave4-I10: a bare presence of `data-cf-source-ids` (even
+            # with empty value) is enough to satisfy the Wave-27
+            # boilerplate contract — flip ``attr_present`` regardless
+            # of whether the value parses to non-empty sids.
             for attr_match in _DATA_CF_SOURCE_IDS_RE.finditer(html):
+                attr_present = True
                 for raw_sid in attr_match.group(2).split(","):
                     sid = raw_sid.strip()
                     if sid:
@@ -486,7 +526,7 @@ class PageSourceRefValidator:
                 if sid:
                     emitted.add((loc, sid))
 
-        return emitted, scan_issues
+        return emitted, scan_issues, attr_present, len(records)
 
 
 # ---------------------------------------------------------------------- #
