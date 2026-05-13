@@ -341,6 +341,38 @@ _OUTLINE_SYSTEM_PROMPT: str = (
     "Bloom levels across blocks (e.g. one `concept` at `understand` "
     "scaffolding the foundation, one `example` at `apply`, one "
     "`assessment_item` at the full declared level)."
+    # Wave5-W27 propagation (from Wave4-W27 `ffe517d` content-generator.md).
+    # The outline tier emits structured JSON, not HTML — heading hierarchy
+    # (HEADING_SKIP) applies at the rewrite tier, not here. But the two
+    # downstream HTML attributes the rewrite tier stamps
+    # (`data-cf-source-ids`, `data-cf-objective-id`) are derived from the
+    # outline block's `source_refs[]` and `objective_refs[]` — so the
+    # outline tier MUST populate both lists for the rewrite-tier stamping
+    # to fire correctly. The post-rewrite EMPTY_SOURCE_REFS gate
+    # (Wave4-I10 `ccd6374`) is now fail-closed CRITICAL, so an outline
+    # block that ships with no `source_refs[]` propagates a missing
+    # `data-cf-source-ids` attribute and trips the gate downstream.
+    " "
+    "Wave-27 source-grounding contract: `source_refs[]` MUST be "
+    "populated with the source-chunk IDs supplied in the user prompt's "
+    "Source chunks section. Each entry is a "
+    "`{\"sourceId\": \"dart:<slug>#<block_id>\", \"role\": \"<role>\"}` "
+    "object. Empty list (`[]`) is permitted ONLY for boilerplate / "
+    "navigational / template-chrome blocks with no DART source "
+    "grounding (Wave-27 carve-out). The rewrite tier stamps "
+    "`data-cf-source-ids` on the rendered HTML from this list; missing "
+    "entries surface at the post-rewrite EMPTY_SOURCE_REFS gate as a "
+    "fail-closed critical violation."
+    " "
+    "Wave-27 objective-grounding contract: `objective_refs[]` MUST be "
+    "populated with the canonical TO-NN / CO-NN learning-objective IDs "
+    "supplied in the user prompt's Objectives section. The pattern is "
+    "`^[A-Z]{2,}-\\d{2,}$` (e.g. `TO-01`, `CO-03`). NEVER invent or "
+    "abbreviate an LO ID. The rewrite tier stamps `data-cf-objective-id` "
+    "from this list onto the rendered HTML; the chunker's "
+    "`learning_outcome_refs[]` field reads the stamp at extraction "
+    "time, so a missing or invented LO ID silently breaks RAG retrieval "
+    "by learning objective."
 )
 # Per-block-type GBNF grammar strings for llama.cpp / vLLM constrained
 # decoding. Each grammar accepts a JSON object with at least the
@@ -1160,7 +1192,23 @@ class OutlineProvider(_BaseLLMProvider):
             "non-empty subset of the chunk IDs listed in the \"Source "
             "chunks\" section above. A claim that synthesizes "
             "information from N chunks carries N IDs; a single-chunk "
-            "claim carries 1 ID."
+            "claim carries 1 ID. "
+            # Wave5-W27 propagation: pin the source_refs[] + objective_refs[]
+            # contract inline alongside the per-claim citation map so the
+            # outline tier surfaces both lists in every block emit. The
+            # rewrite tier reads source_refs[] for the HTML
+            # `data-cf-source-ids` stamp (Wave4-I10 EMPTY_SOURCE_REFS
+            # critical gate) and objective_refs[] for the HTML
+            # `data-cf-objective-id` stamp.
+            "Wave-27 stamping contract: the top-level source_refs[] "
+            "array MUST be populated with every chunk_id that "
+            "contributed to the block (or [] for boilerplate). The "
+            "top-level objective_refs[] array MUST cite the canonical "
+            "TO-NN / CO-NN learning_outcome_refs IDs from the "
+            "Objectives section above — pattern ^[A-Z]{2,}-\\d{2,}$. "
+            "These lists drive the rewrite tier's HTML "
+            "data-cf-source-ids and data-cf-objective-id attribute "
+            "stamping."
         )
         # Phase 3.5 Subtask 18: append the remediation suffix when
         # supplied. The suffix is the canonical
