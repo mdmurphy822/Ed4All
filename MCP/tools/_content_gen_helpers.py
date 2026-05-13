@@ -1354,18 +1354,24 @@ def load_objectives_json(
         return ([], [])
 
     terminal_raw = data.get("terminal_objectives", []) or []
-    chapter_raw = data.get("chapter_objectives", []) or []
+    chapter_raw = data.get("chapter_objectives") or []
 
-    # chapter_objectives may either be a flat list of objective dicts OR
-    # a list of {"chapter": str, "objectives": [...]} groups. Flatten both.
+    # chapter_objectives accepts three shapes (list-of-groups, flat list,
+    # or dict-of-lists — Wave2b/Wave2c). Delegate to the shared normalizer
+    # so this loader and _project_synthesized_objectives_to_course_json stay
+    # byte-identical in their handling of all three shapes.
+    # Lazy import avoids a circular dependency: pipeline_tools imports
+    # _content_gen_helpers (lazily, inside _run_content_generation_outline),
+    # so a module-level import here would form a cycle.
+    from MCP.tools.pipeline_tools import (  # noqa: PLC0415
+        _normalize_chapter_objectives_to_groups,
+    )
+    chapter_groups = _normalize_chapter_objectives_to_groups(chapter_raw)
     chapter_flat: List[Dict[str, Any]] = []
-    for entry in chapter_raw:
-        if not isinstance(entry, dict):
-            continue
-        if "objectives" in entry and isinstance(entry["objectives"], list):
-            chapter_flat.extend(entry["objectives"])
-        else:
-            chapter_flat.append(entry)
+    for group in chapter_groups:
+        for obj in group.get("objectives") or []:
+            if isinstance(obj, dict):
+                chapter_flat.append(obj)
 
     terminal = [
         e for e in (_normalize_objective_entry(o) for o in terminal_raw)
