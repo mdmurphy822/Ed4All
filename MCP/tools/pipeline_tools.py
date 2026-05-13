@@ -441,6 +441,184 @@ def _resolve_chunker_version() -> str:
     return CHUNKER_SCHEMA_VERSION
 
 
+# ---------------------------------------------------------------------------
+# Wave3-Anew2 (Finding F2): bloom_level + difficulty resolution helpers for
+# the DART / IMSCC chunking-phase ``_create_chunk`` callbacks.
+#
+# Schema contract (``schemas/knowledge/chunk_v4.schema.json``) requires
+# ``bloom_level`` on every chunk and constrains ``difficulty`` to the
+# canonical 3-value enum {foundational, intermediate, advanced}. The
+# pre-Wave3-Anew2 callbacks omitted ``bloom_level`` entirely (100% schema
+# failure rate against the F2 OpenStax corpus) and hardcoded
+# ``difficulty="intermediate"`` (lost all per-chunk pedagogical signal).
+#
+# These helpers replicate the bloom + difficulty cascade documented in
+# ``Trainforge/process_course.py::_create_chunk`` (the canonical reference)
+# and ``Trainforge/process_course.py::_determine_difficulty``: JSON-LD
+# blocks/sections > parsed LOs > text verb heuristic (via
+# ``lib.ontology.bloom.detect_bloom_level``) > ``"understand"`` default.
+# Difficulty maps through ``BLOOM_TO_DIFFICULTY`` first, then falls back to
+# a keyword-heuristic over the chunk text. The helpers live module-scoped
+# (rather than nested inside ``_build_tool_registry``) so they can be
+# unit-tested in isolation by ``Trainforge/tests/test_chunker_bloom_difficulty.py``.
+# ---------------------------------------------------------------------------
+
+# Bloom level -> chunk_v4 difficulty enum. Mirrors
+# ``Trainforge/process_course.py::BLOOM_TO_DIFFICULTY``; duplicated here to
+# avoid pulling the entire CourseProcessor module into the chunking-phase
+# tool registry (which is imported on every MCP server boot).
+_BLOOM_TO_DIFFICULTY: Dict[str, str] = {
+    "remember": "foundational",
+    "understand": "foundational",
+    "apply": "intermediate",
+    "analyze": "intermediate",
+    "evaluate": "advanced",
+    "create": "advanced",
+}
+
+# Resource types that cap difficulty at "foundational" (overviews / summaries
+# never sit at advanced). Mirrors
+# ``Trainforge/process_course.py::INTRODUCTORY_RESOURCE_TYPES``.
+_INTRODUCTORY_RESOURCE_TYPES = {"overview", "summary"}
+
+
+def _resolve_chunk_bloom_level(
+    item: Dict[str, Any],
+    text: str,
+) -> Tuple[str, str]:
+    """Resolve ``bloom_level`` for a chunk via the canonical cascade.
+
+    Returns a ``(bloom_level, bloom_source)`` tuple. ``bloom_source`` is one
+    of ``page_jsonld`` / ``lo_inherited`` / ``verbs`` / ``default`` (mirroring
+    the values in ``schemas/knowledge/chunk_v4.schema.json::bloom_level_source``).
+    The two highest-fidelity sources from the schema cascade
+    (``section_jsonld`` and the per-section JSON-LD ``blocks[]`` match) are
+    not reachable from this stripped-down callback — the chunking phase's
+    parsed_item dict carries page-level ``courseforge_metadata`` but no
+    section-keyed metadata index — so this helper picks up the cascade at
+    ``page_jsonld`` and below. Callers that need section-level granularity
+    should still go through ``CourseProcessor._create_chunk``.
+
+    Cascade:
+      1. ``item["courseforge_metadata"]["learningObjectives"][*]["bloomLevel"]``
+         (page-level JSON-LD; first non-empty wins).
+      2. ``item["learning_objectives"][*].bloom_level`` (parsed LO objects;
+         falls through ``LearningObjective.bloom_level``).
+      3. Text-verb heuristic via ``lib.ontology.bloom.detect_bloom_level``.
+      4. Hardcoded ``"understand"`` default (per the schema's documented
+         resolution cascade).
+    """
+    # 1. Page-level JSON-LD learningObjectives[].bloomLevel.
+    cf_meta = item.get("courseforge_metadata")
+    if cf_meta:
+        for lo in (cf_meta.get("learningObjectives") or []):
+            bl = (lo or {}).get("bloomLevel")
+            if isinstance(bl, str) and bl.strip():
+                return (bl.strip().lower(), "page_jsonld")
+
+    # 2. Parsed LearningObjective dataclass list. Each entry exposes
+    #    ``.bloom_level`` (the parser normalizes JSON-LD camelCase /
+    #    data-cf-bloom-level / regex matches to this snake_case field).
+    for lo in (item.get("learning_objectives") or []):
+        bl = getattr(lo, "bloom_level", None)
+        if bl is None and isinstance(lo, dict):
+            bl = lo.get("bloom_level")
+        if isinstance(bl, str) and bl.strip():
+            return (bl.strip().lower(), "lo_inherited")
+
+    # 3. Verb heuristic via the canonical detector.
+    try:
+        from lib.ontology.bloom import detect_bloom_level
+    except Exception:  # noqa: BLE001 — import guard mirrors other lazy imports
+        detect_bloom_level = None  # type: ignore[assignment]
+    if detect_bloom_level is not None:
+        level, _verb = detect_bloom_level(text or "")
+        if level:
+            return (level, "verbs")
+
+    # 4. Default per the schema cascade.
+    return ("understand", "default")
+
+
+def _resolve_chunk_difficulty(
+    item: Dict[str, Any],
+    text: str,
+    bloom_level: Optional[str] = None,
+) -> str:
+    """Resolve ``difficulty`` for a chunk via the canonical cascade.
+
+    Mirrors ``Trainforge/process_course.py::_determine_difficulty``. Returns
+    one of the chunk_v4 enum values: ``foundational`` / ``intermediate`` /
+    ``advanced``.
+
+    Cascade:
+      1. JSON-LD ``learningObjectives[].bloomLevel`` via ``_BLOOM_TO_DIFFICULTY``
+         (first hit wins).
+      2. Parsed ``LearningObjective.bloom_level`` via ``_BLOOM_TO_DIFFICULTY``.
+      3. Already-resolved ``bloom_level`` argument via ``_BLOOM_TO_DIFFICULTY``
+         (the chunk's own bloom_level — closes the loop for chunks where
+         the bloom signal came from the verb heuristic).
+      4. Keyword heuristic over chunk text (introductory verbs ->
+         foundational, advanced verbs -> advanced, else intermediate).
+
+    Introductory resource types (``overview`` / ``summary``) cap at
+    ``foundational`` regardless of cascade.
+    """
+    difficulty: Optional[str] = None
+
+    # 1. Page-level JSON-LD learningObjectives.
+    cf_meta = item.get("courseforge_metadata")
+    if cf_meta:
+        for lo in (cf_meta.get("learningObjectives") or []):
+            bl = (lo or {}).get("bloomLevel")
+            if isinstance(bl, str) and bl.strip().lower() in _BLOOM_TO_DIFFICULTY:
+                difficulty = _BLOOM_TO_DIFFICULTY[bl.strip().lower()]
+                break
+
+    # 2. Parsed LearningObjective list.
+    if difficulty is None:
+        for lo in (item.get("learning_objectives") or []):
+            bl = getattr(lo, "bloom_level", None)
+            if bl is None and isinstance(lo, dict):
+                bl = lo.get("bloom_level")
+            if isinstance(bl, str) and bl.strip().lower() in _BLOOM_TO_DIFFICULTY:
+                difficulty = _BLOOM_TO_DIFFICULTY[bl.strip().lower()]
+                break
+
+    # 3. Resolved bloom_level (closes the loop for verb-heuristic chunks).
+    if (
+        difficulty is None
+        and isinstance(bloom_level, str)
+        and bloom_level.strip().lower() in _BLOOM_TO_DIFFICULTY
+    ):
+        difficulty = _BLOOM_TO_DIFFICULTY[bloom_level.strip().lower()]
+
+    # 4. Keyword heuristic over chunk text.
+    if difficulty is None:
+        text_lower = (text or "").lower()
+        if any(
+            kw in text_lower
+            for kw in ("basic", "introduction", "overview", "what is", "define")
+        ):
+            difficulty = "foundational"
+        elif any(
+            kw in text_lower
+            for kw in ("evaluate", "create", "design", "critique", "justify")
+        ):
+            difficulty = "advanced"
+        else:
+            difficulty = "intermediate"
+
+    # Cap introductory resource types.
+    if item.get("resource_type") in _INTRODUCTORY_RESOURCE_TYPES:
+        if difficulty == "advanced":
+            difficulty = "intermediate"
+        elif difficulty == "intermediate":
+            difficulty = "foundational"
+
+    return difficulty
+
+
 def _detect_source_provenance(course_dir: Path) -> bool:
     """Wave 10: scan archived chunks.jsonl for chunks with source_references[].
 
@@ -7702,9 +7880,12 @@ def _build_tool_registry() -> dict:
         # parameters (chunk_id, text, html, item, section_heading,
         # chunk_type, follows_chunk_id, position_in_module, html_xpath,
         # char_span, section_source_ids, merged_headings) are all that
-        # we have to thread through. Concept-tag / objective-ref /
-        # bloom-level enrichment is the synthesis surface's
-        # responsibility downstream.
+        # we have to thread through. Concept-tag / objective-ref
+        # enrichment is the synthesis surface's responsibility
+        # downstream; ``bloom_level`` + ``difficulty`` are resolved here
+        # via the canonical cascade in ``_resolve_chunk_bloom_level`` /
+        # ``_resolve_chunk_difficulty`` to satisfy the chunk_v4 schema's
+        # bloom_level-required contract (Wave3-Anew2, F2).
         def _create_chunk(
             *,
             chunk_id: str,
@@ -7739,7 +7920,9 @@ def _build_tool_registry() -> dict:
                 source["char_span"] = list(char_span)
             if item.get("item_path"):
                 source["item_path"] = item["item_path"]
-            return {
+            bloom_level, bloom_source = _resolve_chunk_bloom_level(item, text)
+            difficulty = _resolve_chunk_difficulty(item, text, bloom_level)
+            chunk: Dict[str, Any] = {
                 "id": chunk_id,
                 "schema_version": "v4",
                 "chunk_type": chunk_type,
@@ -7749,10 +7932,19 @@ def _build_tool_registry() -> dict:
                 "source": source,
                 "concept_tags": [],
                 "learning_outcome_refs": [],
-                "difficulty": "intermediate",
+                "difficulty": difficulty,
                 "tokens_estimate": tokens_estimate,
                 "word_count": word_count,
+                "bloom_level": bloom_level,
             }
+            # Per the schema's bloom_level_source contract: only emit the
+            # provenance tag on low-confidence sources (verbs / default).
+            # Authoritative sources (page_jsonld / lo_inherited) leave the
+            # field elided so legacy / pre-Wave3-Anew2 chunks stay
+            # byte-identical when their bloom signal was authoritative.
+            if bloom_source in ("verbs", "default"):
+                chunk["bloom_level_source"] = bloom_source
+            return chunk
 
         # W3.H sub-task H1: count blocks_seen + per-reason drops BEFORE
         # dispatching to the chunker so we can emit the canonical
@@ -8123,7 +8315,9 @@ def _build_tool_registry() -> dict:
         # Minimal create_chunk callback — emits a v4-shaped chunk dict
         # without CourseProcessor's deep instance state. Mirrors
         # ``_run_dart_chunking``'s callback exactly so DART + IMSCC
-        # chunks share a single chunk shape (the same v4 contract).
+        # chunks share a single chunk shape (the same v4 contract,
+        # including the Wave3-Anew2 bloom_level + difficulty cascade
+        # via ``_resolve_chunk_bloom_level`` / ``_resolve_chunk_difficulty``).
         def _create_chunk(
             *,
             chunk_id: str,
@@ -8158,7 +8352,9 @@ def _build_tool_registry() -> dict:
                 source["char_span"] = list(char_span)
             if item.get("item_path"):
                 source["item_path"] = item["item_path"]
-            return {
+            bloom_level, bloom_source = _resolve_chunk_bloom_level(item, text)
+            difficulty = _resolve_chunk_difficulty(item, text, bloom_level)
+            chunk: Dict[str, Any] = {
                 "id": chunk_id,
                 "schema_version": "v4",
                 "chunk_type": chunk_type,
@@ -8168,10 +8364,14 @@ def _build_tool_registry() -> dict:
                 "source": source,
                 "concept_tags": [],
                 "learning_outcome_refs": [],
-                "difficulty": "intermediate",
+                "difficulty": difficulty,
                 "tokens_estimate": tokens_estimate,
                 "word_count": word_count,
+                "bloom_level": bloom_level,
             }
+            if bloom_source in ("verbs", "default"):
+                chunk["bloom_level_source"] = bloom_source
+            return chunk
 
         # Dispatch to the canonical chunker. ``chunk_content`` is
         # fail-soft on empty input.
