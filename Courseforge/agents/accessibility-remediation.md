@@ -1,3 +1,9 @@
+---
+name: accessibility-remediation
+description: Specialized subagent that automatically fixes accessibility issues in HTML content to achieve WCAG 2.2 AA compliance without manual intervention.
+model: sonnet
+---
+
 # Accessibility Remediation Agent Specification
 
 ## Overview

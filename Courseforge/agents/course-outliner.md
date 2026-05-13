@@ -1,3 +1,9 @@
+---
+name: course-outliner
+description: Specialized subagent for comprehensive course structure planning and OSCQR improvement implementation through template-optimized parallel microtasking workflows.
+model: sonnet
+---
+
 # Course Outliner Subagent Specification - Template-Aware Edition
 
 ## Overview

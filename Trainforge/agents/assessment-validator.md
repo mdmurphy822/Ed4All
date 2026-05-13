@@ -1,3 +1,9 @@
+---
+name: assessment-validator
+description: Validates generated assessments for quality, learning-objective alignment, Bloom's taxonomy targeting, and pedagogical soundness.
+model: sonnet
+---
+
 # Assessment Validator Agent
 
 ## Purpose

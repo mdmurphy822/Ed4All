@@ -64,6 +64,41 @@ AGENT_SPEC_DIRS = (
 )
 
 
+def _strip_yaml_frontmatter(text: str) -> str:
+    """Strip a leading YAML frontmatter block from ``text``.
+
+    Claude Code agent ``.md`` files conventionally start with a YAML
+    frontmatter block bounded by ``---`` markers carrying registration
+    metadata (``name``, ``description``, ``model``, ``tools``). The Agent
+    tool itself reads frontmatter when resolving ``subagent_type``; the
+    orchestrator's prompt-embedded spec doesn't need it (and embedding it
+    is noisy because it re-states the agent's own registration). This
+    helper returns the body below the closing ``---`` (or the original
+    text if no frontmatter block is present).
+
+    Recognised shape: file begins with ``---\\n``, contains a closing
+    ``---\\n`` on its own line, and the body follows. Anything else is
+    treated as having no frontmatter and returned verbatim.
+    """
+    if not text.startswith("---\n"):
+        return text
+    # Find the closing fence: a ``---`` on its own line after the opener.
+    rest = text[4:]
+    end_idx = rest.find("\n---\n")
+    if end_idx == -1:
+        # Malformed (no closing fence); return original to avoid silent
+        # data loss.
+        return text
+    # Skip the closing fence + trailing newline.
+    body_start = end_idx + len("\n---\n")
+    body = rest[body_start:]
+    # Trim a single leading blank line that conventionally separates
+    # frontmatter from body — keep further blank lines intact.
+    if body.startswith("\n"):
+        body = body[1:]
+    return body
+
+
 class LocalDispatcher:
     """Dispatches phase workers as Claude Code subagents (local mode)."""
 
@@ -743,12 +778,28 @@ class LocalDispatcher:
         return f"{header}\n{spec_block}\n{params_block}\n"
 
     def _load_agent_spec(self, agent_type: str) -> str:
-        """Locate and read the agent spec markdown file."""
+        """Locate and read the agent spec markdown file.
+
+        Strips any YAML frontmatter block (``---\\n...\\n---\\n`` at the top
+        of the file) before returning the body. Frontmatter carries Claude
+        Code agent registration fields (``name``, ``description``,
+        ``model``, ``tools``) that drive the Agent tool's dispatch
+        behavior — including model selection. The Agent tool reads
+        frontmatter itself when resolving ``subagent_type``; we strip it
+        from the prompt-embedded spec so the body that the subagent reads
+        is just the operational instructions, not a re-statement of its
+        own registration metadata. (Wave4b-runtime-model: the 12
+        ``AGENT_SUBAGENT_SET`` agents now carry ``model: sonnet`` so
+        runtime-dispatched subagents don't inherit the operator session's
+        model.)
+        """
         for base in AGENT_SPEC_DIRS:
             candidate = self.project_root / base / f"{agent_type}.md"
             if candidate.exists():
                 try:
-                    return candidate.read_text(encoding="utf-8")
+                    return _strip_yaml_frontmatter(
+                        candidate.read_text(encoding="utf-8")
+                    )
                 except OSError as exc:  # pragma: no cover
                     logger.warning("Could not read agent spec %s: %s", candidate, exc)
                     continue
