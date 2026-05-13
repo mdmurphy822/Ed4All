@@ -205,7 +205,17 @@ blocks:
 
   # objective: canonical TO-NN / CO-NN learning objective. Source
   # grounding + CURIE anchoring drive the audit trail.
+  #
+  # Wave 7: skip outline tier — Qwen 7B (small tier) consistently fails
+  # the objective block's structured schema (block_id/block_type/
+  # content_type/bloom_level/objective_refs/curies/key_claims), collapsing
+  # the response to the inner key_claims array. On the 2026-05-13 dispatch
+  # run, 28/28 objective blocks exhausted the regen budget at outline
+  # tier; inter-tier validation correctly blocked rewrite. escalate_
+  # immediately skips outline and lets rewrite (claude_session / Sonnet
+  # per Wave 6) author the block from scratch — mirrors prereq_set above.
   objective:
+    escalate_immediately: true
     validators:
       required:
         - curie_anchoring
