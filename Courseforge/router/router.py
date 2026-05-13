@@ -576,6 +576,23 @@ class CourseforgeRouter:
         if policy_spec is not None:
             resolved = policy_spec
 
+        # Wave 7b: consult the policy's escalate_immediately_by_block_type
+        # fast-lookup map. The loader populates this from per-block-type
+        # `escalate_immediately: true` entries in block_routing.yaml; the
+        # field is independent of the provider/model spec lookup above and
+        # was not being read here — so `prereq_set` (and Wave 7's
+        # `objective`) were silently failing to short-circuit at outline
+        # tier despite the YAML being authoritative. Only applies when
+        # tier == "outline" since the marker is outline-tier-only per
+        # router.py:758 and router.py:1166 short-circuits.
+        if (
+            tier == "outline"
+            and self._policy is not None
+            and getattr(self._policy, "escalate_immediately_by_block_type", {})
+            .get(block.block_type)
+        ):
+            resolved = dataclasses.replace(resolved, escalate_immediately=True)
+
         # 1. Per-call overrides (highest priority).
         if overrides:
             resolved = self._apply_overrides(resolved, overrides)
