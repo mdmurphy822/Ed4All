@@ -369,8 +369,55 @@ class DecisionCapture:
         """Infer operation from decision type for ML labeling."""
         return OPERATION_MAP.get(decision_type, f"decide_{decision_type}")
 
+    # Wave4-I5: boilerplate-rationale detector thresholds.
+    # Any decision_type with >= _BOILERPLATE_MIN_COUNT entries is scanned.
+    # If > _BOILERPLATE_RATE_THRESHOLD of those entries share the same
+    # first-_BOILERPLATE_PREFIX_LEN-char prefix, a structured WARNING is
+    # emitted (not a decision_event — that would recurse). Finding 6 of
+    # plans/dispatch-7-execution-inspection-2026-05.md: 62/63 source_selection
+    # decisions in the OpenStax run shared a byte-identical 165-char string.
+    _BOILERPLATE_MIN_COUNT: int = 5
+    _BOILERPLATE_RATE_THRESHOLD: float = 0.60
+    _BOILERPLATE_PREFIX_LEN: int = 80
+
+    def _scan_boilerplate_rationales(self) -> None:
+        """Scan in-memory decisions for duplicate boilerplate rationales.
+
+        Groups by decision_type; for each group with >= _BOILERPLATE_MIN_COUNT
+        entries, computes the modal 80-char prefix and its share. Emits a
+        structured WARNING when share > _BOILERPLATE_RATE_THRESHOLD.
+
+        Runs once at close() time against the already-accumulated self.decisions
+        list so there is zero per-decision overhead at call-site hot paths.
+        """
+        from collections import Counter
+
+        # Group rationale prefixes by decision_type
+        by_type: Dict[str, List[str]] = {}
+        for rec in self.decisions:
+            dt = rec.get("decision_type", "")
+            rationale = rec.get("rationale") or ""
+            by_type.setdefault(dt, []).append(rationale[: self._BOILERPLATE_PREFIX_LEN])
+
+        for dt, prefixes in by_type.items():
+            n = len(prefixes)
+            if n < self._BOILERPLATE_MIN_COUNT:
+                continue
+            most_common_prefix, most_common_count = Counter(prefixes).most_common(1)[0]
+            share = most_common_count / n
+            if share > self._BOILERPLATE_RATE_THRESHOLD:
+                logger.warning(
+                    "DUPLICATE_BOILERPLATE_RATIONALE: phase=%s decision_type=%s "
+                    "count=%d shared_prefix='%s...'",
+                    self.phase,
+                    dt,
+                    n,
+                    most_common_prefix[:60],
+                )
+
     def close(self):
         """Explicitly close all stream file handles."""
+        self._scan_boilerplate_rationales()
         for attr in ('_stream_file', '_legacy_stream_file', '_run_stream_file'):
             fh = getattr(self, attr, None)
             if fh and not fh.closed:
