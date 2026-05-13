@@ -757,6 +757,161 @@ def _resolve_chunk_difficulty(
 
     return difficulty
 
+def _backfill_dart_chunk_lo_refs(
+    *,
+    course_slug: str,
+    objective_ids: List[str],
+    libv2_root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Wave3-Anew3 — back-fill ``learning_outcome_refs`` on DART chunks.
+
+    Closes auditor Finding F3 of
+    ``plans/dispatch-7-final-product-audit-2026-05.md``: the DART
+    ``_run_dart_chunking`` phase emits chunks BEFORE
+    ``_plan_course_structure`` synthesizes the TO-NN / CO-NN ID set, so
+    every chunk's ``learning_outcome_refs[]`` is empty on initial emit.
+    This helper runs after course planning publishes ``objective_ids``
+    (Wave2-I7 plumbing), re-opens the on-disk chunks JSONL, text-scans
+    each chunk's ``text`` + ``html`` for canonical LO IDs via
+    :func:`lib.ontology.learning_objectives.scan_lo_refs`, and writes
+    matches back into ``learning_outcome_refs`` — but only IDs that
+    appear in ``objective_ids`` (the false-positive guard the brief
+    mandates).
+
+    Args:
+        course_slug: Course slug used to locate
+            ``<libv2>/courses/<slug>/dart_chunks/chunks.jsonl``.
+        objective_ids: Allowlist of canonical TO-NN / CO-NN IDs minted
+            by course planning. Empty list → no-op (cannot back-fill
+            without an allowlist; preserves false-positive guard).
+        libv2_root: Optional override for the LibV2 root; resolution
+            chain follows :func:`_resolve_libv2_root`.
+
+    Returns:
+        Summary dict with ``chunks_path``, ``chunks_scanned``,
+        ``chunks_updated``, ``new_refs_total``, and (when the chunks
+        file is missing) ``skipped`` + ``reason``.
+
+    Best-effort: missing chunks file / unreadable JSONL line / write
+    error each emit a logger.warning and continue rather than crash the
+    workflow. Existing non-empty ``learning_outcome_refs`` are preserved
+    (additive union semantics — never destructive).
+    """
+    from lib.ontology.learning_objectives import scan_lo_refs
+
+    if not objective_ids:
+        return {
+            "chunks_path": None,
+            "chunks_scanned": 0,
+            "chunks_updated": 0,
+            "new_refs_total": 0,
+            "skipped": True,
+            "reason": "empty_objective_ids_allowlist",
+        }
+
+    chunks_path = (
+        _resolve_libv2_root(libv2_root)
+        / "courses"
+        / course_slug
+        / "dart_chunks"
+        / "chunks.jsonl"
+    )
+    if not chunks_path.exists() or not chunks_path.is_file():
+        return {
+            "chunks_path": str(chunks_path),
+            "chunks_scanned": 0,
+            "chunks_updated": 0,
+            "new_refs_total": 0,
+            "skipped": True,
+            "reason": "chunks_jsonl_missing",
+        }
+
+    allow = list(objective_ids)
+    chunks_scanned = 0
+    chunks_updated = 0
+    new_refs_total = 0
+    updated_lines: List[str] = []
+
+    try:
+        raw_lines = chunks_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        logger.warning(
+            "Wave3-Anew3: failed to read %s (%s); skipping LO back-fill.",
+            chunks_path, exc,
+        )
+        return {
+            "chunks_path": str(chunks_path),
+            "chunks_scanned": 0,
+            "chunks_updated": 0,
+            "new_refs_total": 0,
+            "skipped": True,
+            "reason": f"read_error:{exc}",
+        }
+
+    for line in raw_lines:
+        if not line.strip():
+            updated_lines.append(line)
+            continue
+        try:
+            chunk = json.loads(line)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                "Wave3-Anew3: malformed chunk JSONL line in %s (%s); "
+                "preserving verbatim.",
+                chunks_path, exc,
+            )
+            updated_lines.append(line)
+            continue
+
+        chunks_scanned += 1
+        existing = chunk.get("learning_outcome_refs") or []
+        existing_set = {str(r).upper() for r in existing if r}
+        scanned = scan_lo_refs(
+            text=chunk.get("text") or "",
+            html=chunk.get("html") or "",
+            allowed_ids=allow,
+        )
+        # Union semantics — preserve any pre-existing refs.
+        merged = sorted(existing_set | set(scanned))
+        added = len(merged) - len(existing_set)
+        if added > 0:
+            chunks_updated += 1
+            new_refs_total += added
+            chunk["learning_outcome_refs"] = merged
+            updated_lines.append(json.dumps(chunk, ensure_ascii=False))
+        else:
+            # No new refs — keep original bytes / order intact.
+            updated_lines.append(line)
+
+    if chunks_updated > 0:
+        try:
+            chunks_path.write_text(
+                "\n".join(updated_lines) + ("\n" if updated_lines else ""),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning(
+                "Wave3-Anew3: failed to write back-filled chunks to %s "
+                "(%s); leaving original on disk.",
+                chunks_path, exc,
+            )
+            return {
+                "chunks_path": str(chunks_path),
+                "chunks_scanned": chunks_scanned,
+                "chunks_updated": 0,
+                "new_refs_total": 0,
+                "skipped": True,
+                "reason": f"write_error:{exc}",
+            }
+
+    return {
+        "chunks_path": str(chunks_path),
+        "chunks_scanned": chunks_scanned,
+        "chunks_updated": chunks_updated,
+        "new_refs_total": new_refs_total,
+        "skipped": False,
+    }
+
 
 def _detect_source_provenance(course_dir: Path) -> bool:
     """Wave 10: scan archived chunks.jsonl for chunks with source_references[].
@@ -5352,6 +5507,39 @@ def _build_tool_registry() -> dict:
                     str(e["id"]) for e in lo_entries if e.get("id")
                 ]
 
+            # Wave3-Anew3 (Finding F3): back-fill the DART chunkset's
+            # ``learning_outcome_refs`` against the just-minted objective_ids.
+            # ``_run_dart_chunking`` ran BEFORE this phase, so its chunks
+            # carry empty LO refs by construction. Text-scan + allowlist
+            # filter populates the field deterministically; existing
+            # non-empty refs (legacy corpora) are preserved via union
+            # semantics. Best-effort — failure logs a warning, does not
+            # block the phase output.
+            course_slug = (course_name or "").lower().replace("_", "-").replace(" ", "-")
+            backfill_summary: Dict[str, Any] = {}
+            if course_slug and objective_ids:
+                try:
+                    backfill_summary = _backfill_dart_chunk_lo_refs(
+                        course_slug=course_slug,
+                        objective_ids=objective_ids,
+                        libv2_root=kwargs.get("libv2_root"),
+                    )
+                    if backfill_summary.get("chunks_updated"):
+                        logger.info(
+                            "Wave3-Anew3: back-filled learning_outcome_refs on "
+                            "%d/%d DART chunks (+%d refs total) at %s",
+                            backfill_summary["chunks_updated"],
+                            backfill_summary["chunks_scanned"],
+                            backfill_summary["new_refs_total"],
+                            backfill_summary["chunks_path"],
+                        )
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    logger.warning(
+                        "Wave3-Anew3: DART chunk LO-ref back-fill failed "
+                        "(%s); proceeding with empty refs.",
+                        exc,
+                    )
+
             return json.dumps({
                 "success": True,
                 "project_id": project_id,
@@ -5362,6 +5550,7 @@ def _build_tool_registry() -> dict:
                 "chapter_count": len(chapter),
                 "mint_method": mint_method,
                 "duration_weeks": duration_weeks,
+                "dart_chunk_lo_backfill": backfill_summary,
             })
 
         registry["plan_course_structure"] = _plan_course_structure

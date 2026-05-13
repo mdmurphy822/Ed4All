@@ -29,7 +29,7 @@ import json
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Literal, Mapping, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Literal, Mapping, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Canonical regex + constants
@@ -38,6 +38,12 @@ from typing import Any, Dict, FrozenSet, List, Literal, Mapping, Tuple
 #: The LO ID pattern enforced by ``courseforge_jsonld_v1.schema.json``.
 #: Must stay byte-identical with the schema pattern.
 LO_ID_PATTERN = re.compile(r"^[A-Z]{2,}-\d{2,}$")
+
+#: Whole-word variant of :data:`LO_ID_PATTERN` for scanning chunk text /
+#: HTML bodies. Word boundaries prevent false hits inside larger tokens
+#: (``TOPIC-04`` is not an LO ID; ``ALGEBRA-12`` is not either unless it
+#: appears in the operator-supplied allowlist).
+LO_ID_SCAN_PATTERN = re.compile(r"\b[A-Z]{2,}-\d{2,}\b")
 
 #: Path to the externalized prefix-to-hierarchy taxonomy (Wave 133b).
 _LO_HIERARCHY_TAXONOMY_PATH = (
@@ -394,14 +400,75 @@ def compose_abcd_prose(abcd: Mapping[str, Any]) -> str:
     return "".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Wave3-Anew3: text-scan LO refs for chunk back-fill (Finding F3)
+# ---------------------------------------------------------------------------
+
+
+def scan_lo_refs(
+    *,
+    text: str = "",
+    html: str = "",
+    allowed_ids: Optional[Iterable[str]] = None,
+) -> List[str]:
+    """Whole-word scan ``text`` + ``html`` for canonical LO IDs.
+
+    Wave3-Anew3 (auditor finding F3): the DART chunker emits chunks
+    BEFORE :func:`_plan_course_structure` mints TO-NN / CO-NN IDs, so the
+    chunker's per-chunk ``learning_outcome_refs[]`` field is always empty
+    on initial emit. After course planning publishes the canonical LO ID
+    list, a back-fill step re-scans the on-disk chunks and populates
+    ``learning_outcome_refs`` against the synthesized list.
+
+    Args:
+        text: Plain-text chunk body. May be empty.
+        html: Raw-HTML chunk body. May be empty. Both are scanned (and
+              de-duplicated) so refs embedded in ``data-cf-*`` attributes
+              or visible-text mentions both surface.
+        allowed_ids: Operator-supplied allowlist. When non-empty, only
+              regex hits whose normalized form (uppercase) appears in the
+              allowlist are returned — this is the false-positive guard
+              the brief mandates ("ALGEBRA-12" in chunk prose must not
+              become a LO ref when the synthesized LO set is just
+              ``{TO-01..TO-09, CO-01..CO-28}``). When ``None`` or empty,
+              every regex hit is returned (the legacy permissive mode,
+              useful only for unit tests).
+
+    Returns:
+        Sorted deterministic list of LO ID matches. Empty when no
+        regex hits exist or when every hit is filtered out by the
+        allowlist.
+
+    Pattern: :data:`LO_ID_SCAN_PATTERN` (whole-word ``[A-Z]{2,}-\\d{2,}``)
+    mirrors the canonical :data:`LO_ID_PATTERN` from
+    ``schemas/knowledge/courseforge_jsonld_v1.schema.json::learningObjectives[].id``.
+    """
+    allow: Optional[FrozenSet[str]] = None
+    if allowed_ids:
+        allow = frozenset(str(x).upper() for x in allowed_ids if x)
+
+    hits: set = set()
+    for body in (text or "", html or ""):
+        if not body:
+            continue
+        for m in LO_ID_SCAN_PATTERN.findall(body):
+            mu = m.upper()
+            if allow is not None and mu not in allow:
+                continue
+            hits.add(mu)
+    return sorted(hits)
+
+
 __all__ = [
     "BLOOMS_VERBS",
     "LO_ID_PATTERN",
+    "LO_ID_SCAN_PATTERN",
     "Hierarchy",
     "assign_lo_ids",
     "compose_abcd_prose",
     "hierarchy_from_id",
     "mint_lo_id",
+    "scan_lo_refs",
     "split_terminal_chapter",
     "validate_lo_id",
 ]
