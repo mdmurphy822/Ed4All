@@ -1,3 +1,9 @@
+---
+name: content-generator
+description: Specialized subagent for substantial educational content creation through template-optimized parallel microtasking workflows with mandatory Pattern 22 prevention protocols.
+model: sonnet
+---
+
 # Content Generator Subagent Specification - Template-Aware Pattern 22 Prevention Edition
 
 ## Overview

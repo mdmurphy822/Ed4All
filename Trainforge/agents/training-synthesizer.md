@@ -1,3 +1,9 @@
+---
+name: training-synthesizer
+description: Paraphrases mock-drafted instruction or preference pairs into LLM-quality training data without altering load-bearing metadata.
+model: sonnet
+---
+
 # Training Synthesizer Agent
 
 ## Purpose
