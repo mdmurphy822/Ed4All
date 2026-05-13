@@ -1046,7 +1046,12 @@ workflows:
             behavior:
               on_fail: block
               on_error: fail_closed
-            description: Verify every emitted sourceId resolves against the DART staging manifest (Wave 9)
+            # Wave4-I10 (follows Wave4-W27 / ffe517d): EMPTY_SOURCE_REFS
+            # GateIssue is now critical-severity in the validator itself,
+            # so a page that emits ZERO `data-cf-source-ids` attrs fails
+            # this gate. Empty-string `data-cf-source-ids=""` remains
+            # allowed per the Wave-27 boilerplate contract.
+            description: Verify every emitted sourceId resolves against the DART staging manifest, and that every scanned page carries at least one data-cf-source-ids attribute (empty-string allowed) per Wave-27 (Wave 9 + Wave4-I10)
 
           # Wave 31 — ContentGroundingValidator. Catches the "empty
           # generated course" failure mode the ``SIM_RUN_01`` sim
