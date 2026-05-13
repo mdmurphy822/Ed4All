@@ -497,9 +497,13 @@ def _project_synthesized_objectives_to_course_json(
         )
         return None
 
-    # Defensive: accept both the Courseforge synthesized form
-    # (terminal_objectives + chapter_objectives) and the LibV2 archive
-    # form (terminal_outcomes + component_objectives).
+    # Defensive: accept three shapes for ``chapter_objectives``:
+    # (1) the Courseforge synthesized list-of-groups form,
+    # (2) the LibV2 archive form (``component_objectives``), and
+    # (3) the OpenStax dict-of-lists form (Wave2b — see
+    # ``_normalize_chapter_objectives_to_groups`` docstring).
+    # ``terminal_objectives`` accepts both the Courseforge name and
+    # the LibV2 ``terminal_outcomes`` alias.
     terminal = (
         synthesized.get("terminal_objectives")
         or synthesized.get("terminal_outcomes")
@@ -510,6 +514,7 @@ def _project_synthesized_objectives_to_course_json(
         or synthesized.get("component_objectives")
         or []
     )
+    chapter_groups = _normalize_chapter_objectives_to_groups(chapter_groups_raw)
     # The pre-emitted ``learning_outcomes`` flat list (Courseforge
     # form) is the canonical Trainforge-shaped roll-up. Reuse when
     # present; reconstruct from terminal + chapter otherwise so the
@@ -523,9 +528,7 @@ def _project_synthesized_objectives_to_course_json(
                 lo = dict(t)
                 lo.setdefault("hierarchy_level", "terminal")
                 learning_outcomes_raw.append(lo)
-        for grp in chapter_groups_raw if isinstance(chapter_groups_raw, list) else []:
-            if not isinstance(grp, dict):
-                continue
+        for grp in chapter_groups:
             for c in grp.get("objectives") or []:
                 if isinstance(c, dict):
                     lo = dict(c)
@@ -545,8 +548,13 @@ def _project_synthesized_objectives_to_course_json(
         # which reads these two keys verbatim.
         "terminal_objectives": list(terminal)
         if isinstance(terminal, list) else [],
-        "chapter_objectives": list(chapter_groups_raw)
-        if isinstance(chapter_groups_raw, list) else [],
+        # Persist the normalized list-of-groups shape so
+        # ``load_canonical_objectives`` (which reads ``chapter`` +
+        # ``objectives`` keys per group) sees a uniform structure
+        # across input shapes — the OpenStax dict-of-lists shape
+        # previously emitted as a dict on disk and dropped every CO
+        # silently at the downstream walk.
+        "chapter_objectives": chapter_groups,
         # LibV2 course.json shape (schemas/knowledge/course.schema.json:32-87):
         # flat learning_outcomes[] with id/statement/hierarchy_level. Carries
         # bloom_level/bloom_verb/key_concepts/cognitive_domain when synthesizer
@@ -603,6 +611,88 @@ def _resolve_chunker_version() -> str:
     pre-migration manifest on disk continues to validate.
     """
     return CHUNKER_SCHEMA_VERSION
+
+
+def _normalize_chapter_objectives_to_groups(raw: Any) -> List[Dict[str, Any]]:
+    """Normalize ``chapter_objectives`` (any shape) to the canonical
+    list-of-groups form: ``[{"chapter": <label>, "objectives": [...]}, ...]``.
+
+    Wave2b (``plans/wave2-smoke-verification-2026-05.md`` "Surprises"):
+    OpenStax-shaped ``synthesized_objectives.json`` carries
+    ``chapter_objectives`` as a dict-of-lists keyed on chapter labels
+    (e.g. ``{"1": [...], "2": [...]}``). Both Wave 2 helpers
+    (``_project_synthesized_objectives_to_course_json`` from Wave2-I3
+    + ``_collect_lo_ids`` inside ``_plan_course_structure`` from
+    Wave2-I7) previously handled only the list-of-groups form and the
+    flat-list form; the dict-of-lists branch silently dropped every
+    CO-NN id from the projection + the ``objective_ids`` rollup.
+    Normalizing once here keeps both call sites byte-stable on the
+    legacy shapes and adds the dict-of-lists branch.
+
+    Accepts three shapes:
+
+    1. **List-of-groups** (Courseforge synthesized form, the canonical
+       on-disk shape emitted by ``_plan_course_structure``):
+       ``[{"chapter": N, "objectives": [{"id": "CO-NN", ...}, ...]}, ...]``.
+       Returned verbatim.
+    2. **Flat list** (LibV2 archive ``component_objectives`` form when
+       not pre-grouped): ``[{"id": "CO-NN", "chapter": <opt>, ...}, ...]``.
+       Wrapped in a single synthetic group keyed
+       ``chapter="(ungrouped)"`` so the downstream walk still yields
+       every CO-NN id.
+    3. **Dict-of-lists** (OpenStax shape):
+       ``{"1": [{"id": "CO-NN", ...}, ...], "2": [...], ...}``.
+       Iterates keys in sorted order so the emitted group ordering is
+       deterministic across runs; each value becomes the
+       ``objectives`` array of a group whose ``chapter`` is the dict
+       key.
+
+    Any other shape returns ``[]`` — caller's responsibility to log
+    + degrade gracefully.
+    """
+    if isinstance(raw, dict):
+        groups: List[Dict[str, Any]] = []
+        for chapter_key in sorted(raw.keys(), key=str):
+            items = raw[chapter_key]
+            if not isinstance(items, list):
+                continue
+            objectives: List[Dict[str, Any]] = []
+            for item in items:
+                if isinstance(item, dict):
+                    objectives.append(dict(item))
+            groups.append({
+                "chapter": str(chapter_key),
+                "objectives": objectives,
+            })
+        return groups
+    if isinstance(raw, list):
+        groups = []
+        flat_buffer: List[Dict[str, Any]] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            if isinstance(entry.get("objectives"), list):
+                # List-of-groups shape — preserve group dict verbatim,
+                # but coerce ``objectives`` entries to plain dicts.
+                inner = [
+                    dict(obj)
+                    for obj in entry.get("objectives") or []
+                    if isinstance(obj, dict)
+                ]
+                groups.append({
+                    "chapter": entry.get("chapter"),
+                    "objectives": inner,
+                })
+            else:
+                # Flat-list shape — collect into a single synthetic group.
+                flat_buffer.append(dict(entry))
+        if flat_buffer:
+            groups.append({
+                "chapter": "(ungrouped)",
+                "objectives": flat_buffer,
+            })
+        return groups
+    return []
 
 
 
@@ -5463,13 +5553,14 @@ def _build_tool_registry() -> dict:
             # comma-string shape it already handles. Canonical order:
             # terminals first, then chapter LOs (matches the
             # ``lo_entries`` assembly above and the on-disk
-            # ``learning_outcomes`` array). Defensive: read both the
-            # Courseforge synthesized form (``terminal_objectives`` +
-            # ``chapter_objectives``) AND the LibV2 archive form
-            # (``terminal_outcomes`` + ``component_objectives``) from
-            # the just-written ``synthesized``, since the runner
-            # normalizes to the former but legacy / reuse paths may
-            # have flowed the latter through ``_clone_lo``.
+            # ``learning_outcomes`` array). Defensive: read all three
+            # supported ``chapter_objectives`` shapes via the
+            # module-level normalizer
+            # ``_normalize_chapter_objectives_to_groups`` (Wave2b —
+            # adds the OpenStax dict-of-lists shape on top of the
+            # legacy list-of-groups + flat-list shapes). Terminals are
+            # read from either ``terminal_objectives`` or the LibV2
+            # ``terminal_outcomes`` alias.
             def _collect_lo_ids(payload: Dict[str, Any]) -> List[str]:
                 ids: List[str] = []
                 terminals = (
@@ -5480,22 +5571,17 @@ def _build_tool_registry() -> dict:
                 for entry in terminals:
                     if isinstance(entry, dict) and entry.get("id"):
                         ids.append(str(entry["id"]))
-                chapters = (
+                chapters_raw = (
                     payload.get("chapter_objectives")
                     or payload.get("component_objectives")
                     or []
                 )
-                for group in chapters:
-                    if isinstance(group, dict) and isinstance(
-                        group.get("objectives"), list,
-                    ):
-                        # Courseforge synthesized form: group-of-groups.
-                        for entry in group.get("objectives") or []:
-                            if isinstance(entry, dict) and entry.get("id"):
-                                ids.append(str(entry["id"]))
-                    elif isinstance(group, dict) and group.get("id"):
-                        # LibV2 archive form: flat list of CO dicts.
-                        ids.append(str(group["id"]))
+                for group in _normalize_chapter_objectives_to_groups(
+                    chapters_raw,
+                ):
+                    for entry in group.get("objectives") or []:
+                        if isinstance(entry, dict) and entry.get("id"):
+                            ids.append(str(entry["id"]))
                 return ids
 
             objective_ids: List[str] = _collect_lo_ids(synthesized)
