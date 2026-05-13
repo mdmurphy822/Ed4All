@@ -146,6 +146,12 @@ _ALLOWED_PROVIDERS: Tuple[str, ...] = (
     "together",
     "local",
     "openai_compatible",
+    # Wave6: in-session Claude Code subagent dispatch for the rewrite
+    # tier. Resolved via ``COURSEFORGE_REWRITE_PROVIDER=claude_session``.
+    # Outline tier rejects this value at provider construction (no
+    # OutlineProvider claude_session branch); the router admits it at
+    # the spec layer for symmetry, the OutlineProvider raises if asked.
+    "claude_session",
 )
 
 # Per-tier env-var names mirroring the OutlineProvider / RewriteProvider
@@ -285,7 +291,13 @@ class BlockProviderSpec:
 
     block_type: str
     tier: Literal["outline", "rewrite"]
-    provider: Literal["anthropic", "together", "local", "openai_compatible"]
+    provider: Literal[
+        "anthropic",
+        "together",
+        "local",
+        "openai_compatible",
+        "claude_session",
+    ]
     model: str
     base_url: Optional[str] = None
     api_key_env: Optional[str] = None
@@ -420,6 +432,12 @@ class CourseforgeRouter:
         statistical_filter: Optional[Any] = None,
         n_candidates: Optional[int] = None,
         regen_budget: Optional[int] = None,
+        # Wave6: LocalDispatcher passthrough for the claude_session
+        # rewrite-tier provider. The workflow runner / MCP tool layer
+        # injects one; standalone CLI invocations leave it None and
+        # ``provider="claude_session"`` fails fast at construction time.
+        dispatcher: Optional[Any] = None,
+        run_id: Optional[str] = None,
     ) -> None:
         # YAML policy (Subtask 34); ``None`` for Wave N — the loader
         # lands in a follow-up subtask. ``_resolve_spec`` skips the
@@ -442,6 +460,11 @@ class CourseforgeRouter:
         # block-type route that resolves a different model than the
         # constructor-default doesn't reuse the wrong provider instance.
         self._provider_cache: Dict[Tuple[str, str, str], Any] = {}
+
+        # Wave6: dispatcher + run_id stashed so ``_get_rewrite_provider``
+        # can thread them into ``RewriteProvider(provider='claude_session', ...)``.
+        self._dispatcher = dispatcher
+        self._run_id = run_id
 
     # ------------------------------------------------------------------
     # Spec resolution
@@ -680,6 +703,13 @@ class CourseforgeRouter:
             capture=self._capture,
             max_tokens=spec.max_tokens,
             temperature=spec.temperature,
+            # Wave6: thread the dispatcher + run_id ONLY when needed.
+            # ``provider="claude_session"`` raises at construction time
+            # without a dispatcher; threading both unconditionally so
+            # the legacy backends (anthropic / together / local) keep
+            # ignoring them.
+            dispatcher=self._dispatcher,
+            run_id=self._run_id,
         )
         self._provider_cache[cache_key] = instance
         return instance
