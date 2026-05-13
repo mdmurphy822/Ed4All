@@ -200,11 +200,29 @@ class ContentStructureValidator:
         )
 
     def _check_headings(self, html: str) -> List[GateIssue]:
-        """Check heading hierarchy for skipped levels."""
-        issues = []
-        headings = re.findall(r"<(h[1-6])\b[^>]*>", html, re.IGNORECASE)
+        """Check heading hierarchy for skipped levels.
 
-        if not headings:
+        Wave3-I4: every detected heading-skip surfaces as its own
+        ``GateIssue`` carrying a 1-based heading index, character
+        offset, and 1-based line number under ``location``. Previously
+        each skip emitted without locator info, which made an HTML
+        page with multiple skips indistinguishable in the gate report
+        — an operator had to re-run the validator after fixing the
+        first occurrence to learn what came next. The dispatch-7
+        OpenStax audit (Finding F4) called this out as a completeness
+        gap: 23/60 pages had skips, but the absence of per-skip
+        locators meant operators could only audit one violation per
+        page per run.
+        """
+        issues: List[GateIssue] = []
+        # ``finditer`` (instead of ``findall``) gives us the character
+        # offset of every heading so we can attach a locator to each
+        # HEADING_SKIP issue.
+        heading_matches = list(
+            re.finditer(r"<(h[1-6])\b[^>]*>", html, re.IGNORECASE)
+        )
+
+        if not heading_matches:
             issues.append(
                 GateIssue(
                     severity="warning",
@@ -216,29 +234,46 @@ class ContentStructureValidator:
             return issues
 
         prev_level = 0
-        for tag in headings:
-            level = int(tag[1])
+        for idx, match in enumerate(heading_matches, start=1):
+            level = int(match.group(1)[1])
             if prev_level > 0 and level > prev_level + 1:
+                offset = match.start()
+                line = html.count("\n", 0, offset) + 1
                 issues.append(
                     GateIssue(
                         severity="error",
                         code="HEADING_SKIP",
-                        message=f"Heading skips from h{prev_level} to h{level}",
+                        message=(
+                            f"Heading skips from h{prev_level} to h{level}"
+                        ),
+                        location=(
+                            f"heading#{idx} line:{line} offset:{offset}"
+                        ),
                         suggestion=f"Use h{prev_level + 1} instead",
                     )
                 )
             prev_level = level
 
-        # Check for empty headings
-        empty = re.findall(
-            r"<h[1-6][^>]*>\s*</h[1-6]>", html, re.IGNORECASE
-        )
-        for _ in empty:
+        # Check for empty headings — emit one issue per occurrence
+        # with a locator so operators can audit completeness without
+        # re-running the validator after each fix (Wave3-I4 parity
+        # with HEADING_SKIP).
+        for idx, empty_match in enumerate(
+            re.finditer(
+                r"<h[1-6][^>]*>\s*</h[1-6]>", html, re.IGNORECASE
+            ),
+            start=1,
+        ):
+            offset = empty_match.start()
+            line = html.count("\n", 0, offset) + 1
             issues.append(
                 GateIssue(
                     severity="error",
                     code="EMPTY_HEADING",
                     message="Empty heading element found",
+                    location=(
+                        f"empty_heading#{idx} line:{line} offset:{offset}"
+                    ),
                     suggestion="Add text or remove empty heading",
                 )
             )
