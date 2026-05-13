@@ -62,10 +62,12 @@ operates on flat instruction / preference dicts).
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import datetime as _dt
 import json
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -128,7 +130,39 @@ DEFAULT_MODEL_LOCAL = "qwen2.5:14b-instruct-q4_K_M"
 _DEFAULT_MAX_TOKENS = 2400
 _DEFAULT_TEMPERATURE = 0.4
 
-SUPPORTED_PROVIDERS = ("anthropic", "together", "local", "openai_compatible")
+SUPPORTED_PROVIDERS = (
+    "anthropic",
+    "together",
+    "local",
+    "openai_compatible",
+    # Wave6: in-session subagent dispatch — the rewrite tier dispatches
+    # through ``MCP/orchestrator/local_dispatcher.py::LocalDispatcher``
+    # to the ``content-generator`` Claude Code subagent (Wave4b frontmatter
+    # pin: ``model: sonnet``) so a Claude Max session can drive the
+    # rewrite tier without an ANTHROPIC_API_KEY. Direct port of the
+    # Trainforge pattern at ``Trainforge/generators/_claude_session_provider.py``.
+    "claude_session",
+)
+
+# Wave6: agent-type reused intentionally. The ``content-generator`` agent
+# file at ``Courseforge/agents/content-generator.md`` already carries:
+#   * Wave4b YAML frontmatter pinning ``model: sonnet``
+#   * Wave4-W27 MANDATORY directives for HEADING_SKIP avoidance, source-
+#     ID stamping, and objective-ID stamping
+# That is exactly the contract the rewrite tier needs — no new agent
+# spec to mint.
+_CLAUDE_SESSION_AGENT_TYPE = "content-generator"
+_CLAUDE_SESSION_TASK_NAME = "rewrite_block"
+
+# Wave6: dispatcher prerequisite message. Standalone scripts that don't
+# run inside the workflow runner can't dispatch to a subagent — the
+# message mirrors ``Trainforge/generators/_claude_session_provider.py::_NO_DISPATCHER_MSG``.
+_NO_DISPATCHER_MSG = (
+    "RewriteProvider(provider='claude_session') requires a LocalDispatcher; "
+    "CourseforgeRouter must run inside the workflow runner or MCP tool "
+    "(both inject one). Standalone CLI invocation has no Claude Code "
+    "session to dispatch to."
+)
 
 # Subtask 26: bounded remediation retries for the CURIE-preservation
 # gate. Direct port of the Trainforge precedent
@@ -1068,6 +1102,14 @@ class RewriteProvider(_BaseLLMProvider):
         # Optional dependency injections for tests.
         client: Optional[Any] = None,
         anthropic_client: Optional[Any] = None,
+        # Wave6: in-session subagent dispatch. The router threads a
+        # LocalDispatcher when the workflow runner injects one; standalone
+        # CLI invocations leave it None. Required when
+        # ``provider == "claude_session"`` — fail-loud per
+        # ``_NO_DISPATCHER_MSG`` mirrors the Trainforge
+        # ``ClaudeSessionProvider`` constructor contract.
+        dispatcher: Optional[Any] = None,
+        run_id: Optional[str] = None,
     ) -> None:
         # Tier-specific model resolution: ``COURSEFORGE_REWRITE_MODEL``
         # wins over the synthesis-pipeline ``ANTHROPIC_SYNTHESIS_MODEL``
@@ -1087,8 +1129,41 @@ class RewriteProvider(_BaseLLMProvider):
         # contract for the synthesis-pipeline fallback. Acceptance test:
         # ``test_phase3a_env_var_overrides_hardcoded_default`` in
         # ``Courseforge/router/tests/test_router.py``.
-        import os
         resolved_model = model or os.environ.get(ENV_MODEL)
+
+        # Wave6: resolve the provider here so we can intercept
+        # ``claude_session`` BEFORE delegating to ``super().__init__``
+        # (the base's supported-providers tuple does not include
+        # ``claude_session`` — that backend's wire shape is a subagent
+        # dispatch, not an HTTP POST, so the base's
+        # OpenAI-compatible / Anthropic-SDK plumbing doesn't apply).
+        resolved_provider = (
+            provider
+            or os.environ.get(ENV_PROVIDER)
+            or DEFAULT_PROVIDER
+        ).lower()
+
+        if resolved_provider == "claude_session":
+            if dispatcher is None:
+                raise RuntimeError(_NO_DISPATCHER_MSG)
+            # Skip the base's HTTP/SDK plumbing entirely; populate the
+            # attribute surface the rest of RewriteProvider expects so
+            # _emit_per_call_decision + the Touch path work unchanged.
+            self._provider = "claude_session"
+            self._model = resolved_model or DEFAULT_MODEL_ANTHROPIC
+            self._capture = capture
+            self._max_tokens = int(max_tokens)
+            self._temperature = float(temperature)
+            self._system_prompt = _REWRITE_SYSTEM_PROMPT
+            self._supported_providers = tuple(SUPPORTED_PROVIDERS)
+            self._env_provider_var = ENV_PROVIDER
+            self._api_key = None
+            self._anthropic_client = None
+            self._oa_client = None
+            self._base_url = None
+            self._dispatcher = dispatcher
+            self._run_id = run_id or "rewrite-standalone"
+            return
 
         # ``openai_compatible`` is reserved for a future plumbing pass
         # (the base currently routes ``local`` / ``together`` through
@@ -1114,6 +1189,107 @@ class RewriteProvider(_BaseLLMProvider):
             supported_providers=("anthropic", "together", "local"),
             system_prompt=_REWRITE_SYSTEM_PROMPT,
         )
+        # Wave6: dispatcher unused in non-claude_session backends; stash
+        # None so attribute access is uniform.
+        self._dispatcher = None
+        self._run_id = run_id or "rewrite-standalone"
+
+    # ------------------------------------------------------------------
+    # Wave6: dispatch override for the claude_session provider
+    # ------------------------------------------------------------------
+
+    def _dispatch_call(
+        self,
+        user_prompt: str,
+        *,
+        extra_payload: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, int]:
+        """Wave6 override — route through LocalDispatcher when provider
+        is ``claude_session``; otherwise defer to the base's
+        HTTP / Anthropic-SDK plumbing.
+
+        Mirrors the Trainforge precedent at
+        ``Trainforge/generators/_claude_session_provider.py::_dispatch``
+        (`:326-394`). The async dispatcher is run synchronously via
+        ``asyncio.run`` so the rewrite tier's parse-retry loop in
+        :meth:`generate_rewrite` stays unchanged across backends —
+        ``_dispatch_call`` always returns ``(text, retry_count)`` regardless
+        of provider, so the base's retry / CURIE-preservation contract
+        applies identically here.
+
+        Reuses ``agent_type="content-generator"`` intentionally: the
+        ``Courseforge/agents/content-generator.md`` spec already carries
+        the Wave4b ``model: sonnet`` frontmatter pin and the Wave4-W27
+        MANDATORY directives (HEADING_SKIP / source-ID / objective-ID
+        stamping) — exactly the contract the rewrite tier needs.
+        """
+        if self._provider != "claude_session":
+            return super()._dispatch_call(
+                user_prompt, extra_payload=extra_payload
+            )
+        # Subagent receives both the rewrite-tier system prompt AND the
+        # per-block user prompt in the prompt body so the Wave-27
+        # directives + per-block-type output contract reach the
+        # subagent verbatim. The dispatcher path doesn't accept a
+        # separate ``system`` field, so the two are concatenated with a
+        # delimiter the subagent can parse on if it wants to.
+        prompt_body = (
+            "[REWRITE-TIER SYSTEM PROMPT]\n"
+            + self._system_prompt
+            + "\n\n[REWRITE-TIER USER PROMPT]\n"
+            + user_prompt
+        )
+        task_params: Dict[str, Any] = {
+            "kind": "rewrite",
+            "system_prompt": self._system_prompt,
+            "user_prompt": user_prompt,
+            "prompt": prompt_body,
+            "model": self._model,
+            "max_tokens": self._max_tokens,
+            "temperature": self._temperature,
+            "expected_keys": ["html"],
+        }
+        result = asyncio.run(
+            self._dispatcher.dispatch_task(
+                task_name=_CLAUDE_SESSION_TASK_NAME,
+                agent_type=_CLAUDE_SESSION_AGENT_TYPE,
+                task_params=task_params,
+                run_id=self._run_id,
+            )
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                "RewriteProvider(provider='claude_session'): dispatcher "
+                f"returned non-dict result: {type(result).__name__}"
+            )
+        if not result.get("success"):
+            raise RuntimeError(
+                "RewriteProvider(provider='claude_session'): "
+                "content-generator dispatch failed: "
+                f"code={result.get('error_code')!r} "
+                f"error={result.get('error')!r}"
+            )
+        outputs = result.get("outputs") or {}
+        # Accept either a structured ``html`` key (preferred shape)
+        # or a bare string under ``content`` / ``text`` (graceful
+        # degradation for subagents that don't enforce the structured
+        # shape). The lenient extraction mirrors the
+        # ``OpenAICompatibleClient._extract_text`` chain.
+        html_response: Optional[str] = None
+        for key in ("html", "content", "text", "rewrite"):
+            value = outputs.get(key)
+            if isinstance(value, str) and value.strip():
+                html_response = value
+                break
+        if html_response is None:
+            raise RuntimeError(
+                "RewriteProvider(provider='claude_session'): dispatcher "
+                f"returned empty/missing html in outputs={sorted(outputs)!r}"
+            )
+        # No transport-level retries inside the dispatcher path — the
+        # subagent either returns or fails. Return 0 retries so the
+        # decision-capture rationale stays honest.
+        return html_response, 0
 
     # ------------------------------------------------------------------
     # Escalated user-prompt rendering (Subtask 25)
