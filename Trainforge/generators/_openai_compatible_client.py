@@ -552,6 +552,15 @@ class OpenAICompatibleClient:
         path entirely. Empty-string content is returned as ``""`` for
         the caller to handle (some classification calls legitimately
         expect short or empty output).
+
+        H1: when the first choice's ``finish_reason`` is ``"length"``
+        the model hit the ``max_tokens`` cap mid-output — for a
+        JSON-mode caller the returned ``content`` is then truncated and
+        any downstream ``json.loads`` fails with a generic, misleading
+        parse error. We surface the truncation distinctly as
+        ``SynthesisProviderError(code="output_truncated")`` so the
+        caller can branch on it (e.g. raise the cap) rather than blame
+        the model's JSON discipline.
         """
         if "choices" not in body:
             raise SynthesisProviderError(
@@ -570,6 +579,14 @@ class OpenAICompatibleClient:
             raise SynthesisProviderError(
                 "response 'choices[0]' was not a JSON object",
                 code="malformed_response",
+            )
+        finish_reason = first.get("finish_reason")
+        if finish_reason == "length":
+            raise SynthesisProviderError(
+                "response finish_reason='length' — model hit the "
+                "max_tokens cap and the output is truncated; raise "
+                "max_tokens for this call",
+                code="output_truncated",
             )
         message = first.get("message") or {}
         content = message.get("content")
