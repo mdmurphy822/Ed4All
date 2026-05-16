@@ -86,6 +86,7 @@ from Trainforge.generators._local_provider import (
     ENV_MODEL as LOCAL_ENV_MODEL,
 )
 from Trainforge.generators._openai_compatible_client import (
+    DEFAULT_TIMEOUT_SECONDS,
     OpenAICompatibleClient,
 )
 from Trainforge.generators._together_provider import (
@@ -138,6 +139,12 @@ class _BaseLLMProvider(ABC):
         capture: Optional[Any] = None,
         max_tokens: int = 4096,
         temperature: float = 0.4,
+        # Per-call HTTP timeout (seconds) for the OpenAI-compatible
+        # backends (together / local). ``None`` lets the
+        # OpenAICompatibleClient apply its own DEFAULT_TIMEOUT_SECONDS.
+        # Long-context tiers (e.g. textbook synthesis) pass a larger
+        # value through their subclass __init__.
+        timeout: Optional[float] = None,
         # Optional dependency injections for tests.
         client: Optional[Any] = None,
         anthropic_client: Optional[Any] = None,
@@ -150,6 +157,12 @@ class _BaseLLMProvider(ABC):
         default_base_url_local: Optional[str] = None,
         supported_providers: Tuple[str, ...] = _DEFAULT_SUPPORTED_PROVIDERS,
         system_prompt: str = "",
+        # 2026-05-14: tier-specific JSON-mode opt-out. Outline tier
+        # needs json_mode=True (canonical JSON output); rewrite tier
+        # needs json_mode=False (raw HTML output, no JSON wrapper).
+        # Default True preserves backward compatibility for callers
+        # that don't pass it.
+        json_mode: bool = True,
     ) -> None:
         resolved_provider = (
             provider
@@ -166,6 +179,9 @@ class _BaseLLMProvider(ABC):
         self._capture = capture
         self._max_tokens = int(max_tokens)
         self._temperature = float(temperature)
+        self._timeout = (
+            float(timeout) if timeout is not None else None
+        )
         self._system_prompt = system_prompt
         self._supported_providers = tuple(supported_providers)
         self._env_provider_var = env_provider_var
@@ -239,7 +255,12 @@ class _BaseLLMProvider(ABC):
                 capture=None,
                 provider_label="together",
                 client=client,
-                json_mode=True,
+                json_mode=json_mode,
+                timeout=(
+                    self._timeout
+                    if self._timeout is not None
+                    else DEFAULT_TIMEOUT_SECONDS
+                ),
             )
             self._anthropic_client = None
 
@@ -272,7 +293,12 @@ class _BaseLLMProvider(ABC):
                 capture=None,
                 provider_label="local",
                 client=client,
-                json_mode=True,
+                json_mode=json_mode,
+                timeout=(
+                    self._timeout
+                    if self._timeout is not None
+                    else DEFAULT_TIMEOUT_SECONDS
+                ),
             )
             self._anthropic_client = None
 
