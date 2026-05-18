@@ -232,6 +232,52 @@ def test_exemplifies_only_for_example_chunks():
     assert targets == {"concept:triples", "concept:iri"}
 
 
+def test_concept_nodes_emitted_without_example_chunks():
+    """Regression: a corpus with NO example chunks still emits Concept
+    nodes for every concept carrying a concept_tag.
+
+    Pre-fix, Concept-node emission walked an example-only accumulator,
+    so an all-``explanation`` corpus (real case: an OpenStax algebra
+    textbook with 0 example chunks) produced zero Concept nodes even
+    though every chunk carried concept_tags. Node emission now walks
+    the all-chunk-types accumulator; the ``exemplifies`` edge stays
+    example-gated and therefore yields zero edges here.
+    """
+    chunks = [
+        {
+            "id": "ck_e1",
+            "chunk_type": "explanation",
+            "concept_tags": ["linear equation", "slope"],
+            "learning_outcome_refs": ["co-01"],
+            "source": {"module_id": "week_01", "item_path": "week_01/a.html"},
+        },
+        {
+            "id": "ck_e2",
+            "chunk_type": "explanation",
+            "concept_tags": ["intercept"],
+            "learning_outcome_refs": ["co-02"],
+            "source": {"module_id": "week_02", "item_path": "week_02/b.html"},
+        },
+        {
+            "id": "ck_e3",
+            "chunk_type": "exercise",
+            "concept_tags": ["slope"],
+            "learning_outcome_refs": ["co-02"],
+            "source": {"module_id": "week_02", "item_path": "week_02/c.html"},
+        },
+    ]
+    g = build_pedagogy_graph(chunks, _objectives(), course_id="T_002")
+
+    concepts = {n["slug"] for n in g["nodes"] if n["class"] == "Concept"}
+    # All three tagged concepts must be emitted despite zero example chunks.
+    assert concepts == {"linear-equation", "slope", "intercept"}
+    assert g["stats"]["nodes_by_class"].get("Concept", 0) == 3
+
+    # No example chunks → no exemplifies edges.
+    exempl = [e for e in g["edges"] if e["relation_type"] == "exemplifies"]
+    assert exempl == []
+
+
 def test_misconception_node_and_interferes_with_edge():
     g = build_pedagogy_graph(_chunks(), _objectives(), course_id="T_001")
     mcs = [n for n in g["nodes"] if n["class"] == "Misconception"]

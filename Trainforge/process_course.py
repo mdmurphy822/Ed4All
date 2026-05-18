@@ -44,6 +44,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.decision_capture import DecisionCapture
+from lib.ontology import concept_tagging as _concept_tagging
 from lib.ontology.slugs import canonical_slug
 from Trainforge.generators import summary_factory
 from Trainforge.parsers.html_content_parser import HTMLContentParser, HTMLTextExtractor
@@ -2703,155 +2704,43 @@ class CourseProcessor:
             return "exercise"
         return "explanation"
 
-    # Common educational concept patterns for text-based extraction
-    CONCEPT_PATTERNS: Dict[str, List[str]] = {
-        "learning-theory": ["learning theory", "learning theories"],
-        "behaviorism": ["behaviorism", "behaviorist"],
-        "cognitivism": ["cognitivism", "cognitivist", "information processing"],
-        "constructivism": ["constructivism", "constructivist"],
-        "connectivism": ["connectivism", "connectivist", "networked learning"],
-        "instructional-design": ["instructional design"],
-        "addie": ["addie model", "addie"],
-        "backward-design": ["backward design", "understanding by design"],
-        "cognitive-load": ["cognitive load", "intrinsic load", "extraneous load", "germane load"],
-        "multimedia-learning": ["multimedia learning", "multimedia principle", "mayer"],
-        "blooms-taxonomy": ["bloom's taxonomy", "blooms taxonomy", "bloom's", "higher-order thinking"],
-        "assessment": ["assessment", "formative assessment", "summative assessment"],
-        "rubric": ["rubric"],
-        "accessibility": ["accessibility", "accessible", "wcag"],
-        "udl": ["universal design for learning", "udl"],
-        "oscqr": ["oscqr", "course quality"],
-        "blended-learning": ["blended learning", "hybrid learning"],
-        "online-learning": ["online learning", "online instruction", "distance learning"],
-        "synchronous": ["synchronous"],
-        "asynchronous": ["asynchronous"],
-        "scaffolding": ["scaffolding", "zone of proximal development"],
-        "engagement": ["student engagement", "learner engagement"],
-        "community-of-inquiry": ["community of inquiry", "coi framework"],
-        "alignment": ["constructive alignment", "learning objectives", "learning outcomes"],
-        "feedback": ["feedback", "timely feedback"],
-    }
-
+    # Concept-tag extraction pipeline constants. The canonical
+    # definitions now live in ``lib/ontology/concept_tagging.py`` so the
+    # instance-free ``extract_concept_tags`` helper and ``CourseProcessor``
+    # share one source of truth (no duplication). These class attributes
+    # are kept as re-bindings because other ``CourseProcessor`` methods
+    # reference ``self.OBJECTIVE_CODE_RE`` / ``self.WEEK_PREFIX_RE`` /
+    # ``self.NON_CONCEPT_TAGS`` (e.g. ``_extract_objective_refs``).
+    # Common educational concept patterns for text-based extraction.
+    CONCEPT_PATTERNS: Dict[str, List[str]] = _concept_tagging.CONCEPT_PATTERNS
     # Pattern for course/terminal/learning objective codes (CO-01, TO-08, LO-003, etc.)
-    OBJECTIVE_CODE_RE = re.compile(r'^[a-z]{2}-\d{2,3}$')
+    OBJECTIVE_CODE_RE = _concept_tagging.OBJECTIVE_CODE_RE
     # Week prefix pattern (w01-, w02-) used by Courseforge JSON-LD but absent in course.json
-    WEEK_PREFIX_RE = re.compile(r'^w\d{2}-', re.IGNORECASE)
-
+    WEEK_PREFIX_RE = _concept_tagging.WEEK_PREFIX_RE
     # Non-concept tags to filter out (generic metadata, not knowledge concepts)
-    NON_CONCEPT_TAGS = {
-        "estimated-time", "time", "minutes", "hours",
-        # Bloom verbs (pedagogical intent, not domain concepts)
-        "define", "list", "recall", "identify", "name", "state",
-        "explain", "describe", "summarize", "interpret", "paraphrase",
-        "apply", "demonstrate", "implement", "solve", "use", "execute",
-        "analyze", "differentiate", "examine", "compare", "contrast", "organize",
-        "evaluate", "assess", "critique", "judge", "justify", "argue",
-        "create", "design", "develop", "construct", "produce", "formulate",
-        # Course logistics
-        "initial-post", "replies", "due", "guidelines",
-        "correct", "incorrect", "submit", "deadline", "grading",
-        "readings", "resources", "learning-objectives",
-    }
+    NON_CONCEPT_TAGS = _concept_tagging.NON_CONCEPT_TAGS
 
     def _extract_concept_tags(self, text: str, item: Dict[str, Any]) -> List[str]:
-        # Wave 76: filter at extraction time. Pipeline shape:
+        # Delegates to the instance-free ``extract_concept_tags`` helper
+        # in ``lib/ontology/concept_tagging.py``. The helper was lifted
+        # out of this method so the canonical DART chunkset path
+        # (``MCP/tools/pipeline_tools.py::_run_dart_chunking``) can emit
+        # real ``concept_tags`` instead of ``[]`` — it has no
+        # ``CourseProcessor`` instance, so the per-course
+        # ``domain_concept_seeds`` is threaded as a parameter rather
+        # than read off ``self``.
+        #
+        # Pipeline shape (Wave 76, unchanged):
         #   normalize_tag (HTML-decoded, slugified)
         #   → strip_lo_ref_suffix (drop -co-NN / -to-NN suffix; Wave 130d)
         #   → canonicalize_alias (rdfxml → rdf-xml, ttl → turtle, …)
-        #   → classify_concept (rule-based class assignment)
-        #   → is_droppable_class (reject pedagogy / assessment-options
-        #     / instructional-artifacts / LO-leak / low-signal)
-        #   → tag list (dedup-aware, singular-preferred)
-        #
-        # Wave 75's classifier was post-hoc — it labeled but didn't
-        # filter, so pollution still entered chunks ``concept_tags``
-        # and the resulting concept_graph. Wave 76 closes the loop.
-        # Wave 130d: ``OBJECTIVE_CODE_RE`` already filters pure LO codes
-        # like ``co-15`` from the candidate stream upstream;
-        # ``strip_lo_ref_suffix`` here handles the *compound* form
-        # ``property-paths-co-15`` that escapes that filter because the
-        # leading concept stem is non-empty. Strip is centralized in
-        # ``_try_add`` so every entry path benefits.
-        from lib.ontology.concept_classifier import (
-            canonicalize_alias,
-            classify_concept,
-            is_droppable_class,
-            singular_form,
+        #   → classify_concept → is_droppable_class → tag list
+        #     (dedup-aware, singular-preferred).
+        return _concept_tagging.extract_concept_tags(
+            text,
+            item,
+            domain_concept_seeds=self.domain_concept_seeds,
         )
-        from lib.ontology.slugs import strip_lo_ref_suffix
-
-        tags: List[str] = []
-
-        def _try_add(tag: str) -> bool:
-            """Filter + dedup + add. Returns True iff appended."""
-            if not tag:
-                return False
-            tag = strip_lo_ref_suffix(tag)
-            if not tag:
-                return False
-            tag = canonicalize_alias(tag)
-            if tag in tags:
-                return False
-            # Wave 76: drop classes the extractor should not emit
-            # (pedagogical scaffolding, assessment options, LO leaks,
-            # instructional artifacts, low-signal stopwords + fragments).
-            klass = classify_concept(tag)
-            if is_droppable_class(klass):
-                return False
-            # Plural-collapse: if the singular form is already
-            # emitted, treat this tag as a duplicate.
-            sing = singular_form(tag)
-            if sing != tag and sing in tags:
-                return False
-            tags.append(tag)
-            return True
-
-        # Key concepts from HTML parser (bold terms, definitions)
-        for concept in item.get("key_concepts", []):
-            tag = normalize_tag(concept)
-            if not tag or len(tag) < 3:
-                continue
-            # Collapse known WCAG SC tag-form drift onto the canonical tag
-            # before any filter or dedupe (§4.5 canonicalization).
-            from Trainforge.rag.wcag_canonical_names import canonicalize_sc_tag
-            tag = canonicalize_sc_tag(tag)
-            # Skip objective codes (co-01, to-01, w01-co-01) and non-concept tags
-            if (self.OBJECTIVE_CODE_RE.match(tag)
-                    or self.WEEK_PREFIX_RE.match(tag)
-                    or tag in self.NON_CONCEPT_TAGS):
-                continue
-            _try_add(tag)
-
-        # Text-based concept detection (pedagogy-only patterns).
-        text_lower = text.lower()
-        for tag, patterns in self.CONCEPT_PATTERNS.items():
-            if any(p in text_lower for p in patterns):
-                _try_add(tag)
-
-        # Per-course domain concept seeds. Pedagogy filter still applies
-        # below since seeds are authored per course; a well-formed seed
-        # list won't collide with NON_CONCEPT_TAGS, but we defend anyway.
-        for canonical, patterns in self.domain_concept_seeds:
-            if (self.OBJECTIVE_CODE_RE.match(canonical)
-                    or self.WEEK_PREFIX_RE.match(canonical)
-                    or canonical in self.NON_CONCEPT_TAGS):
-                continue
-            if any(p.search(text) for p in patterns):
-                _try_add(canonical)
-
-        # Wave 82 (Phase C): W3C tech-anchor seeding. The audit found
-        # rdf-shacl-551-2 missing standalone concept nodes for foundational
-        # tech (RDF, RDFS, OWL, SHACL, SPARQL, Turtle, JSON-LD, N-Triples,
-        # owl:sameAs) — chunks reference them across the corpus but the
-        # canonical concept slugs never enter concept_tags via the
-        # pattern/seed paths above. Behaviour-flagged so legacy corpora
-        # don't shift their tag distributions on a Wave 82 rebuild.
-        if os.getenv("TRAINFORGE_SEED_TECH_CONCEPTS", "").lower() == "true":
-            from lib.ontology.tech_anchors import detect_anchors
-            for slug in detect_anchors(text):
-                _try_add(slug)
-
-        return tags[:20]
 
     def _extract_objective_refs(
         self,
@@ -3515,12 +3404,76 @@ class CourseProcessor:
         ``targets_concept_from_lo`` rule (which previously fired on empty
         input) can materialize the Wave 57 ``targetedConcepts[]`` as
         typed ``targets-concept`` edges.
+
+        Fix-2: upstream-consumption short-circuit. When
+        ``self.concept_graph_path`` points at a ``kind == "concept_semantic"``
+        file (the genuine semantic graph emitted by the
+        ``textbook_to_course::concept_extraction`` workflow phase), load and
+        return it verbatim rather than re-invoking ``build_semantic_graph``.
+        This mirrors the ``_generate_pedagogy_graph`` ST-13 short-circuit
+        and keeps the ``concept_graph_sha256`` chain coherent end-to-end
+        (the bytes the phase wrote equal the bytes the manifest validator
+        re-hashes). Fail-soft: a missing / corrupt / wrong-kind file falls
+        through to the in-process ``build_semantic_graph`` build so legacy
+        corpora — and any stale phase-output handoff — degrade gracefully.
         """
         from Trainforge.rag.typed_edge_inference import (
             build_semantic_graph,
             build_semantic_graph_with_dataset,
         )
         from Trainforge.rag import named_graph_writer
+
+        # Fix-2: short-circuit on an upstream ``kind: "concept_semantic"``
+        # graph. Only the semantic kind is adopted here — a ``kind:
+        # "pedagogy"`` file at the same path falls through (the
+        # disambiguation guard) so the pedagogy artifact is never
+        # mis-served as the semantic graph.
+        upstream_path = getattr(self, "concept_graph_path", None)
+        if upstream_path is not None:
+            upstream_path = Path(upstream_path)
+            if upstream_path.exists() and upstream_path.is_file():
+                try:
+                    upstream_graph = json.loads(
+                        upstream_path.read_text(encoding="utf-8")
+                    )
+                except Exception as exc:  # noqa: BLE001 — fail-soft on parse error
+                    logger.warning(
+                        "Fix-2: failed to load upstream semantic concept "
+                        "graph at %s (%s); falling through to in-process "
+                        "build_semantic_graph.",
+                        upstream_path,
+                        exc,
+                    )
+                else:
+                    if (
+                        isinstance(upstream_graph, dict)
+                        and upstream_graph.get("kind") == "concept_semantic"
+                    ):
+                        logger.info(
+                            "Fix-2: consuming upstream semantic concept "
+                            "graph from %s (nodes=%d, edges=%d); skipping "
+                            "in-process build_semantic_graph rebuild.",
+                            upstream_path,
+                            len(upstream_graph.get("nodes") or []),
+                            len(upstream_graph.get("edges") or []),
+                        )
+                        return upstream_graph
+                    logger.warning(
+                        "Fix-2: upstream graph at %s is not a kind="
+                        "'concept_semantic' dict (kind=%r); falling "
+                        "through to in-process build_semantic_graph.",
+                        upstream_path,
+                        upstream_graph.get("kind")
+                        if isinstance(upstream_graph, dict)
+                        else type(upstream_graph).__name__,
+                    )
+            else:
+                logger.warning(
+                    "Fix-2: concept_graph_path %s does not exist or is "
+                    "not a file; falling through to in-process "
+                    "build_semantic_graph.",
+                    upstream_path,
+                )
 
         llm_callable = None
         if self.typed_edges_llm:
@@ -3738,10 +3691,18 @@ class CourseProcessor:
         corpora), (b) the path doesn't exist, or (c) the file is
         unreadable — so a stale phase-output handoff degrades
         gracefully rather than crashing the run.
+
+        Fix-2 disambiguation: the ``concept_extraction`` phase now emits
+        a genuine ``kind: "concept_semantic"`` graph at that path, NOT a
+        pedagogy graph. The short-circuit therefore adopts the upstream
+        file ONLY when ``kind == "pedagogy"``; a semantic-kind file falls
+        through to the in-process ``build_pedagogy_graph`` so the
+        now-semantic artifact is never mis-adopted into the pedagogy slot.
         """
         from datetime import datetime as _dt
 
         # Phase 6 ST 13: short-circuit on upstream pedagogy graph.
+        # Fix-2: only a ``kind: "pedagogy"`` file is adopted here.
         upstream_path = getattr(self, "concept_graph_path", None)
         if upstream_path is not None:
             upstream_path = Path(upstream_path)
@@ -3759,7 +3720,15 @@ class CourseProcessor:
                         exc,
                     )
                 else:
-                    if isinstance(upstream_graph, dict):
+                    if not isinstance(upstream_graph, dict):
+                        logger.warning(
+                            "Phase 6 ST 13: upstream pedagogy graph at %s "
+                            "is not a dict (%s); falling through to "
+                            "in-process build_pedagogy_graph.",
+                            upstream_path,
+                            type(upstream_graph).__name__,
+                        )
+                    elif upstream_graph.get("kind") == "pedagogy":
                         logger.info(
                             "Phase 6 ST 13: consuming upstream pedagogy "
                             "graph from %s (nodes=%d, edges=%d); skipping "
@@ -3769,13 +3738,14 @@ class CourseProcessor:
                             len(upstream_graph.get("edges") or []),
                         )
                         return upstream_graph
-                    logger.warning(
-                        "Phase 6 ST 13: upstream pedagogy graph at %s "
-                        "is not a dict (%s); falling through to "
-                        "in-process build.",
-                        upstream_path,
-                        type(upstream_graph).__name__,
-                    )
+                    else:
+                        logger.warning(
+                            "Phase 6 ST 13: upstream graph at %s is not a "
+                            "kind='pedagogy' dict (kind=%r); falling "
+                            "through to in-process build_pedagogy_graph.",
+                            upstream_path,
+                            upstream_graph.get("kind"),
+                        )
             else:
                 logger.warning(
                     "Phase 6 ST 13: concept_graph_path %s does not exist "
@@ -3875,163 +3845,33 @@ class CourseProcessor:
         exclude_tags: Optional[Set[str]] = None,
         graph_kind: str = "concept",
     ) -> Dict[str, Any]:
-        # REC-ID-02 (Wave 4, Worker O): opt-in course-scoped concept IDs.
-        # When TRAINFORGE_SCOPE_CONCEPT_IDS=true, node IDs and edge endpoints
-        # are emitted as ``f"{course_id}:{slug}"`` and each node carries a
-        # ``course_id`` field. Default off → legacy flat-slug behaviour.
-        from Trainforge.rag.typed_edge_inference import (
-            SCOPE_CONCEPT_IDS,
-            _make_concept_id,
-        )
+        """Build the co-occurrence concept graph from chunk ``concept_tags``.
 
-        # ``course_code`` may be unset when the graph builder is called on
-        # a bare processor (e.g. unit tests using ``__new__``); fall back
-        # to an empty string → ``_make_concept_id`` treats empty as "no
-        # course_id" and emits flat slugs even under flag-on.
+        Fix-2: this method is now a thin delegating wrapper around
+        ``lib.ontology.cooccurrence_graph.build_cooccurrence_graph`` — the
+        instance-free helper that is the single source of truth for the
+        co-occurrence build. The IMSCC path (this method, via
+        ``_generate_concept_graph``) and the DART
+        ``textbook_to_course::concept_extraction`` phase
+        (``MCP/tools/pipeline_tools.py::_run_concept_extraction``) both call
+        the same helper, so they emit byte-equivalent graphs (modulo the
+        wall-clock ``generated_at``) from identical chunk inputs.
+
+        ``course_code`` may be unset when the graph builder is called on a
+        bare processor (e.g. unit tests using ``__new__``); fall back to an
+        empty string → the helper treats empty as "no course_id" and emits
+        flat slugs even under ``TRAINFORGE_SCOPE_CONCEPT_IDS``.
+        """
+        from lib.ontology.cooccurrence_graph import build_cooccurrence_graph
+
         course_id = getattr(self, "course_code", "") or ""
-        tag_frequency: Dict[str, int] = defaultdict(int)
-        co_occurrence: Dict[Tuple[str, str], int] = defaultdict(int)
-        # REC-LNK-01 (Wave 5.1, Worker S): inverted index from concept node_id
-        # to the set of chunk IDs that reference the concept. Always-on
-        # additive behaviour (no env var). Stable across re-chunks only when
-        # TRAINFORGE_CONTENT_HASH_IDS=true (Worker N's flag); position-based
-        # IDs invalidate entries on re-chunk. Using a set per-node avoids
-        # duplicate chunk IDs when a chunk lists the same tag twice; sorted
-        # to a list at emit time for deterministic output.
-        #
-        # Note: len(occurrences) counts DISTINCT chunks referencing the
-        # concept, which may be less than ``frequency`` (frequency counts
-        # total tag mentions — a chunk that lists a tag twice counts twice).
-        concept_to_chunks: Dict[str, set] = defaultdict(set)
-        # Wave 10: lookup from chunk id → source.source_references[] (if
-        # any). Used to copy the first occurrence's refs onto the emitted
-        # concept node as ``source_refs[]``. Same additive-optional pattern
-        # as occurrences[]: absence = 'unknown' (pre-Wave-9 chunk) → the
-        # node is emitted without ``source_refs``.
-        chunk_source_refs: Dict[str, List[Dict[str, Any]]] = {}
-        for chunk in chunks:
-            cid = chunk.get("id")
-            if not cid:
-                continue
-            src = chunk.get("source") or {}
-            refs = src.get("source_references") if isinstance(src, dict) else None
-            if isinstance(refs, list) and refs:
-                chunk_source_refs[cid] = refs
-
-        def _accept(tag: str) -> bool:
-            if include_tags is not None and tag not in include_tags:
-                return False
-            if exclude_tags is not None and tag in exclude_tags:
-                return False
-            return True
-
-        for chunk in chunks:
-            chunk_id = chunk.get("id")
-            tags = [t for t in chunk.get("concept_tags", []) if _accept(t)]
-            for tag in tags:
-                tag_frequency[tag] += 1
-                if chunk_id:
-                    # Key the inverted index by the SAME node_id the emit
-                    # loop below will produce — using _make_concept_id so
-                    # the occurrences[] keys align with node["id"] under
-                    # either flag state of TRAINFORGE_SCOPE_CONCEPT_IDS.
-                    concept_to_chunks[_make_concept_id(tag, course_id)].add(chunk_id)
-            for i, a in enumerate(tags):
-                for b in tags[i + 1:]:
-                    key = tuple(sorted([a, b]))
-                    co_occurrence[key] += 1
-
-        # Wave 75: every emitted node is stamped with a ``class`` so
-        # retrieval can filter pedagogical scaffolding ("key-takeaway"),
-        # assessment options ("answer-b"), instructional artifacts
-        # ("submission-format"), LO leaks ("to-04"), and stop-word-like
-        # noise ("not", "do-not") out of domain-concept similarity
-        # search without dropping or merging nodes. See
-        # ``lib/ontology/concept_classifier.py`` for the rule precedence.
-        from lib.ontology.concept_classifier import classify_concept
-
-        sorted_tags = sorted(tag_frequency.items(), key=lambda x: -x[1])
-        nodes: List[Dict[str, Any]] = []
-        # Wave 82 (REC-CG-COMPLETENESS): the rdf-shacl-551 audit found
-        # 236 concepts referenced by pedagogy edges that had no entry in
-        # concept_graph.json — they appeared in only 1 chunk and were
-        # filtered out by this threshold. With
-        # TRAINFORGE_CONCEPT_GRAPH_INCLUDE_SINGLE_OCCURRENCE=true the
-        # threshold drops to ``< 1`` (always pass) so single-occurrence
-        # legitimate domain terms like ``alldisjointclasses`` and
-        # ``haskey`` survive. Wave 76's classifier filter still gates
-        # upstream (pedagogical/assessment scaffolding never enters
-        # concept_tags), so flipping this on doesn't reintroduce the
-        # noise that motivated the original 2+ rule.
-        min_freq = (
-            1
-            if os.getenv(
-                "TRAINFORGE_CONCEPT_GRAPH_INCLUDE_SINGLE_OCCURRENCE", ""
-            ).lower() == "true"
-            else 2
+        return build_cooccurrence_graph(
+            chunks,
+            course_id,
+            include_tags=include_tags,
+            exclude_tags=exclude_tags,
+            graph_kind=graph_kind,
         )
-        for tag, freq in sorted_tags:
-            if freq < min_freq:
-                continue
-            node_id = _make_concept_id(tag, course_id)
-            # Label stays human-readable (no course_id prefix) regardless
-            # of scoping mode; only ``id`` is composite when the flag is on.
-            # Wave 82: acronym-aware title-case so ``owl-2-rl`` becomes
-            # ``OWL 2 RL`` rather than ``Owl 2 Rl``.
-            from lib.ontology.labels import slug_to_label
-            label = slug_to_label(tag)
-            node: Dict[str, Any] = {
-                "id": node_id,
-                "label": label,
-                "frequency": freq,
-                # Wave 75: classify against the un-scoped slug so the
-                # rule set behaves identically with / without
-                # TRAINFORGE_SCOPE_CONCEPT_IDS. Classifier is
-                # deterministic + side-effect-free.
-                "class": classify_concept(tag, label=label),
-            }
-            if SCOPE_CONCEPT_IDS and course_id:
-                node["course_id"] = course_id
-            # REC-LNK-01: attach sorted occurrences[] back-reference.
-            # Sort is ASCII-ASC on chunk ID string — deterministic across
-            # runs, cross-platform stable. Only emit when non-empty so
-            # nodes whose tag wasn't present on any chunk with a resolvable
-            # chunk_id stay legacy-shaped.
-            occurrences = concept_to_chunks.get(node_id)
-            if occurrences:
-                sorted_occurrences = sorted(occurrences)
-                node["occurrences"] = sorted_occurrences
-                # Wave 10: populate source_refs[] from occurrences[0] (the
-                # first chunk by sorted-ID ordering). Copy the full
-                # SourceReference dicts verbatim so the node carries the
-                # same authoritative roles as the underlying chunk. Only
-                # emit when non-empty — pre-Wave-9 corpora produce empty
-                # chunk source_references and therefore empty node
-                # source_refs → field omitted.
-                first_chunk_refs = chunk_source_refs.get(sorted_occurrences[0])
-                if first_chunk_refs:
-                    node["source_refs"] = [dict(r) for r in first_chunk_refs]
-            nodes.append(node)
-        node_ids = {n["id"] for n in nodes}
-
-        edges = []
-        for (a, b), weight in co_occurrence.items():
-            scoped_a = _make_concept_id(a, course_id)
-            scoped_b = _make_concept_id(b, course_id)
-            if scoped_a in node_ids and scoped_b in node_ids:
-                edges.append({
-                    "source": scoped_a,
-                    "target": scoped_b,
-                    "weight": weight,
-                    "relation_type": "co-occurs",
-                })
-
-        return {
-            "kind": graph_kind,
-            "nodes": nodes,
-            "edges": edges,
-            "generated_at": datetime.now().isoformat(),
-        }
 
     def _generate_quality_report(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         total = len(chunks) or 1
