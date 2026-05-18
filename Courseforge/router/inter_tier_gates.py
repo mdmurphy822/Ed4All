@@ -364,6 +364,45 @@ def _extract_source_refs_from_block(block: Block) -> List[str]:
 # --------------------------------------------------------------------------- #
 
 
+# Common-word stoplist for the minted-CURIE surface-form anchoring
+# guard (R4). A surface form that is a bare article / preposition /
+# copula / conjunction must NOT be allowed to anchor a minted CURIE —
+# such a "form" matches almost any English prose and vacuously passes
+# the gate. This is a *small* curated set (NOT a length cut): legit
+# short domain terms like "pH" / "DNA" / "RNA" survive because they are
+# not in the list. 1-character surface forms are dropped outright.
+# Kept local rather than reusing concept_tagging.NON_CONCEPT_TAGS —
+# that set is Bloom verbs + course logistics, not function words.
+_CURIE_ANCHOR_STOPWORDS: frozenset = frozenset({
+    "a", "an", "the", "and", "or", "but", "nor", "for", "yet", "so",
+    "of", "to", "in", "on", "at", "by", "as", "is", "are", "was",
+    "were", "be", "been", "being", "am", "it", "its", "this", "that",
+    "these", "those", "with", "from", "into", "than", "then", "if",
+    "no", "not", "we", "you", "he", "she", "they", "i",
+})
+
+
+def _surface_form_can_anchor(surface_form: str) -> bool:
+    """Return True when ``surface_form`` is allowed to anchor a CURIE.
+
+    R4 short/common-token guard: rejects 1-character forms and bare
+    common English function words (``_CURIE_ANCHOR_STOPWORDS``). Applied
+    here in ``_curie_anchored`` — the cleanest spot — rather than in
+    ``build_minted_curie_map``: keeping the filter at match time means
+    ``build_minted_curie_map`` stays a pure data transform whose
+    ``surface_forms`` list other consumers (e.g.
+    ``minted_curie_by_canonical``) still see in full.
+    """
+    if not isinstance(surface_form, str):
+        return False
+    sf = surface_form.strip()
+    if len(sf) < 2:
+        return False
+    if sf.lower() in _CURIE_ANCHOR_STOPWORDS:
+        return False
+    return True
+
+
 def _curie_anchored(
     curie: str,
     surface_curies: "Set[str]",
@@ -375,12 +414,17 @@ def _curie_anchored(
     Two anchoring contracts, dispatched on whether the CURIE is a
     minted (corpus-derived) CURIE or an RDF CURIE:
 
-    * **Minted CURIE** — ``curie`` is a key in ``minted_curie_map``. The
-      minted CURIE token (e.g. ``alg:slope``) is a synthetic identifier
-      that never literally appears in prose. It is "anchored" when ANY
-      of that CURIE's vocabulary ``surface_forms`` (the concept's
-      canonical name + aliases) appears as a case-insensitive substring
-      in the block's ``text_blob``.
+    * **Minted CURIE** — ``curie`` is a key in ``minted_curie_map``. It
+      is "anchored" when EITHER the literal CURIE token appears in
+      ``surface_curies`` (after the R1 force-injection fix the minted
+      token lands in the str-path text, so force-injected blocks pass
+      legitimately) OR any of that CURIE's vocabulary ``surface_forms``
+      (the concept's canonical name + aliases) appears as a
+      **word-boundary** match in the block's ``text_blob`` — the
+      concept is genuinely discussed in prose. Surface forms that are
+      too short or are common English function words are filtered out
+      (see :func:`_surface_form_can_anchor`) so a form like ``"ion"``
+      cannot vacuously match inside "definition".
     * **RDF CURIE** — ``curie`` is NOT in the map. The legacy literal-
       token check is preserved verbatim: the CURIE counts as anchored
       only when the literal token appears in ``surface_curies`` (the
@@ -390,17 +434,26 @@ def _curie_anchored(
     RDF arm — byte-identical to the pre-minting contract.
     """
     if minted_curie_map and curie in minted_curie_map:
+        # Literal-token arm: after the R1 force-injection fix the minted
+        # CURIE token survives into the str-path text, so a literal
+        # match is a legitimate pass for force-injected blocks.
+        if curie in surface_curies:
+            return True
         entry = minted_curie_map.get(curie) or {}
         surface_forms = entry.get("surface_forms") if isinstance(entry, dict) else None
         if not surface_forms:
-            # Minted CURIE with no surface forms — fall through to the
-            # literal check rather than auto-passing.
-            return curie in surface_curies
-        blob_lower = (text_blob or "").lower()
-        return any(
-            isinstance(sf, str) and sf and sf.lower() in blob_lower
-            for sf in surface_forms
-        )
+            # Minted CURIE with no surface forms — literal check only
+            # (already failed above) rather than auto-passing.
+            return False
+        blob = text_blob or ""
+        for sf in surface_forms:
+            if not _surface_form_can_anchor(sf):
+                continue
+            if re.search(
+                r"\b" + re.escape(sf.strip()) + r"\b", blob, re.IGNORECASE
+            ):
+                return True
+        return False
     return curie in surface_curies
 
 

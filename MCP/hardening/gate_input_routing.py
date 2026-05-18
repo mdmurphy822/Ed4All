@@ -36,11 +36,17 @@ path so the caller can log structured skip reasons.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Repo root: this file is ``<repo>/MCP/hardening/gate_input_routing.py``,
+# so ``parents[2]`` is the Ed4All root. Used by the on-disk
+# domain-vocabulary fallback in ``_resolve_minted_curie_map`` (R5).
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 # ---------------------------------------------------------------------- #
@@ -910,48 +916,49 @@ def _resolve_minted_curie_map(
 ) -> Optional[Dict[str, Any]]:
     """Build the minted-CURIE map from the Stage-3 domain vocabulary.
 
-    Resolves ``domain_concept_vocabulary.json`` (preferring the
-    ``phase_outputs.concept_extraction.domain_concept_vocabulary_path``
-    thread, falling back to scanning any phase that surfaced the key),
-    loads it, and returns the
-    ``{minted_curie: {"canonical", "surface_forms"}}`` map built by
-    :func:`lib.ontology.curie_discovery.build_minted_curie_map`.
+    R5 — delegates to the single canonical resolver
+    :func:`lib.ontology.curie_discovery.resolve_minted_curie_map`, which
+    INCLUDES the on-disk fallback. Before R5 this copy lacked that
+    fallback while the ``pipeline_tools`` validation-handler copy had
+    it, so a resumed / stage-subcommand run (no
+    ``phase_outputs.concept_extraction`` thread) gave the same logical
+    gate two different verdicts. Both call sites now resolve identically.
 
     Returns ``None`` when no vocabulary path is threaded / on disk (RDF
     / legacy corpora) or when the file is missing / unparseable — the
     consuming gate then runs its legacy literal-token anchoring.
     """
+    from lib.ontology.curie_discovery import resolve_minted_curie_map
+
     ce = phase_outputs.get("concept_extraction") or {}
     candidate = ce.get("domain_concept_vocabulary_path")
     if not isinstance(candidate, str) or not candidate:
         candidate = _locate(phase_outputs, "domain_concept_vocabulary_path")
-    if not isinstance(candidate, str) or not candidate:
-        return None
-    vocab_path = Path(candidate)
-    if not vocab_path.is_file():
-        return None
-    try:
-        import json as _json
 
-        vocabulary = _json.loads(vocab_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:  # pragma: no cover — defensive
-        logger.warning(
-            "gate-input: failed to load domain_concept_vocabulary.json "
-            "at %s (%s); minted-CURIE anchoring unavailable.",
-            vocab_path, exc,
-        )
-        return None
-    try:
-        from lib.ontology.curie_discovery import build_minted_curie_map
+    course_id = workflow_params.get("course_name") or workflow_params.get(
+        "course_code"
+    )
+    # On-disk fallback inputs: derive the slug (lower + _/space -> -,
+    # mirroring _run_concept_extraction) and resolve the LibV2 root
+    # (per-run param > ED4ALL_LIBV2_ROOT env > in-tree default).
+    course_slug = ""
+    if isinstance(course_id, str) and course_id:
+        course_slug = course_id.lower().replace("_", "-").replace(" ", "-")
+    libv2_root_raw = (
+        workflow_params.get("libv2_root")
+        or os.environ.get("ED4ALL_LIBV2_ROOT", "").strip()
+    )
+    if libv2_root_raw:
+        libv2_root: Optional[Path] = Path(libv2_root_raw)
+    else:
+        libv2_root = _PROJECT_ROOT / "LibV2"
 
-        course_id = workflow_params.get("course_name") or workflow_params.get(
-            "course_code"
-        )
-        minted = build_minted_curie_map(vocabulary, course_id=course_id)
-    except Exception as exc:  # noqa: BLE001 — defensive
-        logger.warning("gate-input: build_minted_curie_map failed: %s", exc)
-        return None
-    return minted or None
+    return resolve_minted_curie_map(
+        threaded_path=candidate if isinstance(candidate, str) else None,
+        course_id=course_id,
+        course_slug=course_slug or None,
+        libv2_root=libv2_root,
+    )
 
 
 def _build_block_curie_anchoring_input(

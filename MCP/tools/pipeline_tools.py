@@ -3694,50 +3694,49 @@ def _load_outline_objectives(
         return []
 
 
-def _locate_domain_concept_vocabulary(
-    course_code: str,
-    kwargs: Dict[str, Any],
-) -> Optional[Path]:
-    """Resolve the ``domain_concept_vocabulary.json`` path for a course.
+def _vocabulary_threaded_path(kwargs: Dict[str, Any]) -> Optional[str]:
+    """Extract the threaded ``domain_concept_vocabulary_path``, if any.
 
-    Resolution order (first hit wins):
-
-      1. ``phase_outputs.concept_extraction.domain_concept_vocabulary_path``
-         — the canonical thread the workflow runner sets when the
-         Stage-3 textbook-synthesis pass ran (``_run_concept_extraction``
-         surfaces this key).
-      2. The conventional on-disk location, a sibling of
-         ``concept_graph_semantic.json`` under
-         ``LibV2/courses/<slug>/concept_graph/``.
-
-    Returns ``None`` when neither resolves — the natural backward-compat
-    gate: an RDF / legacy corpus has no domain-concept vocabulary, so
-    the outline-handler minting step becomes a complete no-op.
+    Reads ``kwargs['phase_outputs'].concept_extraction
+    .domain_concept_vocabulary_path`` — the canonical thread the
+    workflow runner sets when the Stage-3 textbook-synthesis pass ran.
+    Returns ``None`` when absent (resumed / stage-subcommand runs).
     """
     phase_outputs = kwargs.get("phase_outputs") or {}
     if isinstance(phase_outputs, dict):
         ce = phase_outputs.get("concept_extraction") or {}
         candidate = ce.get("domain_concept_vocabulary_path")
         if isinstance(candidate, str) and candidate:
-            p = Path(candidate)
-            if p.is_file():
-                return p
-    # Conventional on-disk fallback. ``course_code`` -> slug mirrors the
-    # transform used by ``_run_concept_extraction`` (lower + _/space -> -).
+            return candidate
+    return None
+
+
+def _locate_domain_concept_vocabulary(
+    course_code: str,
+    kwargs: Dict[str, Any],
+) -> Optional[Path]:
+    """Resolve the ``domain_concept_vocabulary.json`` path for a course.
+
+    R5 — delegates to the single canonical locator
+    :func:`lib.ontology.curie_discovery.locate_domain_concept_vocabulary`
+    so the threaded-path-then-on-disk-fallback resolution is identical
+    across the gate-input router and the validation handlers. The
+    ``course_code`` -> slug transform mirrors ``_run_concept_extraction``
+    (lower + ``_``/space -> ``-``).
+
+    Returns ``None`` when neither resolves — the natural backward-compat
+    gate: an RDF / legacy corpus has no domain-concept vocabulary.
+    """
+    from lib.ontology.curie_discovery import locate_domain_concept_vocabulary
+
     course_slug = (course_code or "").lower().replace("_", "-").replace(
         " ", "-"
     )
-    if course_slug:
-        vocab_path = (
-            _resolve_libv2_root(kwargs.get("libv2_root"))
-            / "courses"
-            / course_slug
-            / "concept_graph"
-            / "domain_concept_vocabulary.json"
-        )
-        if vocab_path.is_file():
-            return vocab_path
-    return None
+    return locate_domain_concept_vocabulary(
+        threaded_path=_vocabulary_threaded_path(kwargs),
+        course_slug=course_slug or None,
+        libv2_root=_resolve_libv2_root(kwargs.get("libv2_root")),
+    )
 
 
 def _resolve_minted_curie_map_for_validation(
@@ -3747,15 +3746,20 @@ def _resolve_minted_curie_map_for_validation(
 ) -> Optional[Dict[str, Any]]:
     """Build the minted-CURIE map for an inter-tier / post-rewrite gate.
 
-    The validation handlers carry a Courseforge ``project_id`` (the
-    export folder name), not a course code. The course code is read
-    from the project's ``project_config.json``; the domain vocabulary
-    is then resolved via :func:`_locate_domain_concept_vocabulary`.
+    R5 — delegates to the single canonical resolver
+    :func:`lib.ontology.curie_discovery.resolve_minted_curie_map`
+    (which INCLUDES the on-disk fallback) so the gate-input router and
+    the validation handlers resolve identically. The validation
+    handlers carry a Courseforge ``project_id`` (the export folder
+    name), not a course code; the course code is read from the
+    project's ``project_config.json``.
 
     Returns ``None`` when no domain vocabulary exists (RDF / legacy
     corpora) or it is unparseable — the gate then runs legacy literal-
     token anchoring, byte-identical to the pre-minting contract.
     """
+    from lib.ontology.curie_discovery import resolve_minted_curie_map
+
     course_code = project_id or ""
     if project_id:
         config_path = (
@@ -3771,28 +3775,15 @@ def _resolve_minted_curie_map_for_validation(
                 course_code = cfg.get("course_name") or course_code
             except (OSError, ValueError):
                 pass
-    vocab_path = _locate_domain_concept_vocabulary(course_code, kwargs)
-    if vocab_path is None:
-        return None
-    try:
-        vocabulary = json.loads(vocab_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        logger.warning(
-            "validation: failed to load domain_concept_vocabulary.json "
-            "at %s (%s); minted-CURIE anchoring unavailable.",
-            vocab_path, exc,
-        )
-        return None
-    try:
-        from lib.ontology.curie_discovery import build_minted_curie_map
-
-        minted = build_minted_curie_map(vocabulary, course_id=course_code)
-    except Exception as exc:  # noqa: BLE001 — defensive
-        logger.warning(
-            "validation: build_minted_curie_map failed: %s", exc,
-        )
-        return None
-    return minted or None
+    course_slug = (course_code or "").lower().replace("_", "-").replace(
+        " ", "-"
+    )
+    return resolve_minted_curie_map(
+        threaded_path=_vocabulary_threaded_path(kwargs),
+        course_id=course_code,
+        course_slug=course_slug or None,
+        libv2_root=_resolve_libv2_root(kwargs.get("libv2_root")),
+    )
 
 
 def _mint_outline_curies(

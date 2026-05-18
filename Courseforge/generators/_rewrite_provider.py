@@ -95,6 +95,12 @@ from Courseforge.router.remediation import (  # noqa: E402
 # inferring it from prose. Drift between the prompt and the gate is the
 # regression class this fixes — sharing the constant prevents it.
 from lib.validators.rewrite_html_shape import REQUIRED_ATTRS  # noqa: E402
+# CURIE extraction — single source of truth (lib.ontology). Used by the
+# force-injection idempotency check so it mirrors the str-path
+# validator's extraction exactly.
+from lib.ontology.curie_extraction import (  # noqa: E402
+    extract_curies as _extract_curies,
+)
 
 # Phase 2 Subtask 35: ``blocks.py`` lives at
 # ``Courseforge/scripts/blocks.py``; mirror the import bridge from
@@ -956,58 +962,76 @@ def _append_curie_remediation(
 # block.
 #
 # To keep minted CURIEs surviving into the emitted HTML, the exhaustion
-# path force-injects any still-missing CURIE as a ``data-cf-curie``
-# attribute on the block's outermost wrapper element (the canonical
-# Courseforge metadata-on-wrapper pattern). The CURIE token then appears
-# verbatim in the HTML string, so the str-path validator's
-# ``extract_curies`` scrape (a plain regex over the string, which
-# matches inside attribute values) recognises it.
+# path appends a hidden ``<span>`` carrying the still-missing CURIE
+# tokens as its TEXT CONTENT to the end of the fragment.
+#
+# CRITICAL — why text content, not an attribute: the rewrite-tier
+# (str-path) CURIE extractor in ``Courseforge/router/inter_tier_gates.py``
+# calls ``_strip_html`` FIRST — its ``_HTML_TAG_RE`` deletes every HTML
+# tag *including all its attributes* — and only THEN runs
+# ``extract_curies`` over the leftover TEXT. A CURIE that lives only
+# inside an attribute value (e.g. ``data-cf-curie="ns:concept"``) is
+# destroyed with the tag and never seen. Only a CURIE present as TEXT
+# CONTENT between tags survives the strip and gets anchored. So the
+# tokens MUST appear between ``>`` and ``</span>``.
+#
+# The wrapper uses the standard HTML ``hidden`` attribute (NOT a CSS
+# class): ``hidden`` needs no stylesheet, removes the element from both
+# the rendering and the accessibility tree, and ``_strip_html`` still
+# keeps the inner text. ``data-cf-curie`` is kept on the span too — it
+# is a documented Courseforge contract attribute and harmless — but the
+# text content is what makes the anchoring work.
 
-# Matches the first opening tag in an HTML fragment — captures the tag
-# name and the full opening tag so the attribute can be spliced in.
-_FIRST_OPEN_TAG_RE = re.compile(r"<([A-Za-z][A-Za-z0-9]*)\b([^>]*)>")
+
+# Mirror of ``Courseforge/router/inter_tier_gates.py`` _HTML_TAG_RE /
+# _strip_html. Kept local (not imported) to avoid a generators ->
+# router import edge; the two must stay byte-equivalent so the
+# idempotency check matches what the str-path validator actually sees.
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _strip_html(html: str) -> str:
+    """Strip HTML tags + collapse whitespace (mirror of the gate helper)."""
+    if not html:
+        return ""
+    text = _HTML_TAG_RE.sub(" ", html)
+    return _WHITESPACE_RE.sub(" ", text).strip()
 
 
 def _force_inject_curies(html: str, missing_curies: Sequence[str]) -> str:
     """Stamp ``missing_curies`` onto the HTML so they survive into the emit.
 
-    The CURIEs are written as a space-separated ``data-cf-curie``
-    attribute on the fragment's outermost wrapper element. When the
-    fragment has no safe wrapper element (no opening tag at all, or a
-    wrapper that already carries ``data-cf-curie``), a visually-hidden
-    ``<span>`` carrying the attribute is appended instead so the CURIE
-    token still lands in the HTML string.
+    Always appends a single hidden ``<span>`` to the end of the HTML
+    fragment carrying the space-joined CURIE tokens as its TEXT CONTENT
+    (between ``>`` and ``</span>``). That is the only placement that
+    survives the str-path validator's ``_strip_html`` + ``extract_curies``
+    pipeline — see the module comment above. The ``data-cf-curie``
+    attribute is mirrored onto the span as a documented contract
+    attribute.
 
-    ``extract_curies`` (the str-path validator's scrape) is a plain
-    regex over the string and matches inside attribute values, so the
-    forced CURIEs anchor the block without needing prose changes.
-
-    Empty ``missing_curies`` returns ``html`` unchanged.
+    Empty ``missing_curies`` returns ``html`` unchanged. Idempotent: a
+    CURIE already present as text content in the fragment is not
+    re-appended.
     """
     missing = [c for c in (missing_curies or []) if c]
     if not missing:
         return html or ""
     html = html or ""
-    attr_value = " ".join(missing)
 
-    match = _FIRST_OPEN_TAG_RE.search(html)
-    if match and "data-cf-curie" not in match.group(2):
-        # Splice the attribute into the outermost wrapper's opening tag.
-        open_tag = match.group(0)
-        injected = (
-            open_tag[:-1]
-            + f' data-cf-curie="{attr_value}"'
-            + open_tag[-1]
-        )
-        return html[: match.start()] + injected + html[match.end():]
+    # Idempotency: don't re-append a CURIE that already survives the
+    # str-path strip (i.e. is present as text content). Mirror the
+    # validator's extraction so the check is exact.
+    already_anchored = _extract_curies(_strip_html(html))
+    to_inject = [c for c in missing if c not in already_anchored]
+    if not to_inject:
+        return html
 
-    # No safe wrapper (or wrapper already carries the attr) — append a
-    # visually-hidden span so the CURIE token still lands in the string.
-    hidden = (
-        f'<span class="visually-hidden" data-cf-curie="{attr_value}">'
-        f"{attr_value}</span>"
+    attr_value = " ".join(to_inject)
+    span = (
+        f'<span hidden data-cf-curie="{attr_value}">{attr_value}</span>'
     )
-    return html + hidden
+    return html + span
 
 
 def _apply_rewrite_touch(
