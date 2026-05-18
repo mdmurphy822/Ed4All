@@ -545,9 +545,9 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 | `intake_remediation` | 2 | 0 | 2 |
 | `batch_dart` | 2 | 0 | 2 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 33 | 38 | 71 |
+| `textbook_to_course` | 33 | 41 | 74 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **58** | **43** | **101** |
+| **Total** | **58** | **46** | **104** |
 
 <!-- Active Gates table moved to docs/validation/gates.md; replaced with summary above. -->
 
@@ -583,7 +583,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 |--------|-------|-----------:|
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 29 |
 | `DART_*` | [`DART/CLAUDE.md § Opt-In Behavior Flags`](DART/CLAUDE.md) | 6 |
-| `COURSEFORGE_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 13 |
+| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 15 |
 | `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 14 |
 
 ### Cross-cutting flags (root-owned)

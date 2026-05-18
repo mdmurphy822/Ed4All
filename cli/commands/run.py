@@ -441,6 +441,9 @@ async def _create_textbook_workflow(
         skip_dart=bool(params.get("skip_dart", False)),
         dart_output_dir=params.get("dart_output_dir"),
         reuse_objectives_path=params.get("reuse_objectives_path"),
+        courseforge_stage=params.get("courseforge_stage"),
+        force_rerun=bool(params.get("force_rerun", False)),
+        skip_training=bool(params.get("skip_training", False)),
     )
     return json.loads(result)
 
@@ -832,7 +835,11 @@ def run_command(
         )
         sys.exit(2)
 
-    if not corpus and workflow in {"textbook_to_course", "batch_dart", "rag_training"}:
+    if (
+        not corpus
+        and workflow in {"textbook_to_course", "batch_dart", "rag_training"}
+        and not courseforge_stage
+    ):
         click.secho(
             f"--corpus is required for workflow '{workflow}'.",
             fg="red",
