@@ -709,7 +709,10 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "workflow_type",
         ],
         "defaults": {},
-        "param_mapping": {},
+        "param_mapping": {
+            "id": "project_id",
+            "project": "project_id",
+        },
         "description": (
             "Phase 3 two-pass router outline tier — emits "
             "blocks_outline_path JSONL of outline-tier Blocks."
@@ -720,7 +723,10 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "required": ["blocks_outline_path", "project_id"],
         "optional": [],
         "defaults": {},
-        "param_mapping": {},
+        "param_mapping": {
+            "id": "project_id",
+            "project": "project_id",
+        },
         "description": (
             "Phase 3 inter-tier validation — runs Block-input "
             "validators on outline-tier blocks and emits "
@@ -732,7 +738,10 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "required": ["project_id"],
         "optional": ["blocks_validated_path"],
         "defaults": {},
-        "param_mapping": {},
+        "param_mapping": {
+            "id": "project_id",
+            "project": "project_id",
+        },
         "description": (
             "Phase 3 two-pass router rewrite tier — emits final "
             "HTML pages plus blocks_final_path JSONL."
@@ -743,7 +752,10 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "required": ["blocks_final_path", "project_id"],
         "optional": [],
         "defaults": {},
-        "param_mapping": {},
+        "param_mapping": {
+            "id": "project_id",
+            "project": "project_id",
+        },
         "description": (
             "Phase 3.5 post-rewrite validation — re-runs the four "
             "Block-input validators against rewrite-tier blocks and "

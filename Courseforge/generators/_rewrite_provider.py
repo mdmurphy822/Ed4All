@@ -243,6 +243,14 @@ _REWRITE_SYSTEM_PROMPT = (
     "Use the supplied `Block id` value verbatim as the "
     "`data-cf-block-id` attribute — do not invent or reformat it."
     "\n\n"
+    "Use the supplied `Objectives:` IDs verbatim as the "
+    "`data-cf-objective-id` attribute value — do not invent, "
+    "reformat, or substitute objective IDs. The valid IDs are "
+    "exactly the leading tokens (e.g. `TO-01`, `CO-03`) of each "
+    "`- {oid}` line in the `Objectives:` block of the user prompt. "
+    "Multiple LOs use a comma-separated list "
+    "(`data-cf-objective-id=\"TO-01,CO-02\"`)."
+    "\n\n"
     # Wave5-W27 propagation (from Wave4-W27 `ffe517d` content-generator.md +
     # Wave4-I10 `ccd6374` EMPTY_SOURCE_REFS critical). The rewrite tier
     # emits the canonical published HTML, so the three Wave-27 MANDATORY
@@ -977,6 +985,34 @@ def _apply_rewrite_touch(
     )
 
 
+def _objectives_for_block(
+    objectives: Optional[Sequence[Any]],
+    block: Block,
+) -> List[Any]:
+    """Restrict the objectives list to the block's declared objective_ids.
+
+    The rewrite tier authors content for ONE block. Handing it every
+    course objective makes the model stuff all IDs into
+    ``data-cf-objective-id`` and collapse the prose into a single
+    run-on sentence covering every objective (observed 2026-05-15 on
+    Qwen-14B: an objective block declaring only ``TO-01`` emitted
+    ``data-cf-objective-id="TO-01,...,TO-09"``). When the block declares
+    ``objective_ids``, render only those; when it declares none (chrome,
+    callout) or none of the declared IDs resolve against the supplied
+    list, fall back to the full list so the prompt is never empty.
+    """
+    supplied = list(objectives or ())
+    wanted = {oid for oid in (block.objective_ids or ()) if oid}
+    if not wanted:
+        return supplied
+    matched = [
+        o for o in supplied
+        if (o.get("id") if isinstance(o, dict) else getattr(o, "id", None))
+        in wanted
+    ]
+    return matched or supplied
+
+
 def _format_objectives(objectives: Sequence[Any]) -> str:
     """Format the objectives list into a readable prompt block.
 
@@ -1188,6 +1224,11 @@ class RewriteProvider(_BaseLLMProvider):
             default_model_local=DEFAULT_MODEL_LOCAL,
             supported_providers=("anthropic", "together", "local"),
             system_prompt=_REWRITE_SYSTEM_PROMPT,
+            # Rewrite tier emits raw HTML body strings — NOT JSON.
+            # Forcing json_mode=True (the base default) makes Qwen/Ollama
+            # wrap HTML in {"block": "<...>"} JSON, breaking the
+            # post-rewrite validator chain which expects a raw HTML string.
+            json_mode=False,
         )
         # Wave6: dispatcher unused in non-claude_session backends; stash
         # None so attribute access is uniform.
@@ -1352,7 +1393,9 @@ class RewriteProvider(_BaseLLMProvider):
         outline_payload = _safe_json_dumps(block.content)
         per_claim_block = _format_per_claim_citations(block.content)
         source_block = _format_source_chunks(source_chunks or [])
-        objectives_block = _format_objectives(objectives or [])
+        objectives_block = _format_objectives(
+            _objectives_for_block(objectives, block)
+        )
         output_contract = _block_type_output_contract(block.block_type)
         required_attrs_line = _required_attrs_directive(
             block.block_type, block.block_id
@@ -1434,7 +1477,9 @@ class RewriteProvider(_BaseLLMProvider):
         outline_payload = _safe_json_dumps(block.content)
         per_claim_block = _format_per_claim_citations(block.content)
         source_block = _format_source_chunks(source_chunks or [])
-        objectives_block = _format_objectives(objectives or [])
+        objectives_block = _format_objectives(
+            _objectives_for_block(objectives, block)
+        )
         output_contract = _block_type_output_contract(block.block_type)
         required_attrs_line = _required_attrs_directive(
             block.block_type, block.block_id
