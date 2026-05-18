@@ -214,6 +214,13 @@ blocks:
   # tier; inter-tier validation correctly blocked rewrite. escalate_
   # immediately skips outline and lets rewrite (claude_session / Sonnet
   # per Wave 6) author the block from scratch — mirrors prereq_set above.
+  #
+  # 2026-05-14: Wave-7 policy reaffirmed. Tested Qwen 14B with both
+  # json_object and json_schema grammar modes; both collapse the
+  # objective block schema to the inner key_claims array (same failure
+  # mode as 7B). Wave-7's escalate_immediately is the correct design —
+  # let rewrite (Qwen 14B medium tier) author the block as HTML from
+  # scratch, where no strict JSON schema applies.
   objective:
     escalate_immediately: true
     validators:

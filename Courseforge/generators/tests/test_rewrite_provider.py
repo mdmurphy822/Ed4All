@@ -48,6 +48,7 @@ from Courseforge.generators._rewrite_provider import (  # noqa: E402
     _REWRITE_SYSTEM_PROMPT,
     _escape_orphan_placeholder_tags,
     _format_objectives,
+    _objectives_for_block,
 )
 from blocks import Block, Touch  # noqa: E402  (Phase 2 intermediate format)
 
@@ -314,6 +315,106 @@ def test_escalated_block_uses_richer_prompt(monkeypatch):
     # Legacy non-escalated header MUST NOT appear when the block is
     # escalated — otherwise the branch silently fell through.
     assert "Outline (structurally correct" not in request_body
+
+
+# ---------------------------------------------------------------------------
+# Per-block objectives filtering (2026-05-15 Qwen prompt-flood regression)
+# ---------------------------------------------------------------------------
+
+
+_COURSE_OBJECTIVES = [
+    {"id": "TO-01", "statement": "Apply place value to whole numbers."},
+    {"id": "TO-02", "statement": "Evaluate algebraic expressions."},
+    {"id": "TO-03", "statement": "Apply rules for integer arithmetic."},
+]
+
+
+def test_objectives_for_block_filters_to_declared_ids():
+    """A block declaring one objective_id keeps only that objective."""
+    block = Block(
+        block_id="page#objective_pv_0",
+        block_type="objective",
+        page_id="page",
+        sequence=0,
+        content="",
+        objective_ids=("TO-01",),
+    )
+    out = _objectives_for_block(_COURSE_OBJECTIVES, block)
+    assert [o["id"] for o in out] == ["TO-01"]
+
+
+def test_objectives_for_block_falls_back_to_full_list_when_none_declared():
+    """A block with no objective_ids (chrome / callout) keeps the full
+    list — filtering to an empty set would render an empty prompt."""
+    block = Block(
+        block_id="page#callout_note_0",
+        block_type="callout",
+        page_id="page",
+        sequence=0,
+        content="",
+    )
+    out = _objectives_for_block(_COURSE_OBJECTIVES, block)
+    assert [o["id"] for o in out] == ["TO-01", "TO-02", "TO-03"]
+
+
+def test_objectives_for_block_falls_back_when_declared_id_unresolvable():
+    """When a declared objective_id matches nothing in the supplied list
+    (upstream data mismatch), fall back to the full list rather than
+    emitting an empty objectives block."""
+    block = Block(
+        block_id="page#objective_x_0",
+        block_type="objective",
+        page_id="page",
+        sequence=0,
+        content="",
+        objective_ids=("TO-99",),
+    )
+    out = _objectives_for_block(_COURSE_OBJECTIVES, block)
+    assert [o["id"] for o in out] == ["TO-01", "TO-02", "TO-03"]
+
+
+def test_escalated_objective_prompt_omits_unrelated_objectives(monkeypatch):
+    """Regression: the escalated rewrite prompt for an objective block
+    declaring only ``TO-01`` must NOT enumerate every course objective.
+
+    Observed 2026-05-15 on Qwen-14B — handing the model all nine course
+    objectives made it emit ``data-cf-objective-id="TO-01,...,TO-09"`` and
+    collapse the prose into one run-on sentence covering every objective.
+    The fix filters the prompt's ``Objectives:`` block to the block's
+    declared ``objective_ids``.
+    """
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        body = (
+            '<li data-cf-block-id="page#objective_pv_0" '
+            'data-cf-objective-id="TO-01" data-cf-bloom-level="apply">'
+            "Apply place value to whole numbers.</li>"
+        )
+        return httpx.Response(200, json=_success_body(body))
+
+    provider = RewriteProvider(provider="local", client=_make_client(handler))
+    block = Block(
+        block_id="page#objective_pv_0",
+        block_type="objective",
+        page_id="page",
+        sequence=0,
+        content="",
+        objective_ids=("TO-01",),
+        escalation_marker="outline_budget_exhausted",
+    )
+    provider.generate_rewrite(block, objectives=_COURSE_OBJECTIVES)
+
+    assert len(seen) == 1
+    request_body = seen[0].read().decode("utf-8")
+    assert "Apply place value to whole numbers." in request_body
+    assert "TO-02" not in request_body
+    assert "TO-03" not in request_body
 
 
 # ---------------------------------------------------------------------------

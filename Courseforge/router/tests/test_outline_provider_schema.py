@@ -35,7 +35,11 @@ from blocks import Block  # noqa: E402
 
 from Courseforge.generators._outline_provider import (  # noqa: E402
     _BLOCK_TYPE_JSON_SCHEMAS,
+    _CONTENT_TYPE_ENUM,
     _OUTLINE_KIND_BOUNDS,
+)
+from lib.validators.content_type import (  # noqa: E402
+    get_valid_chunk_types,
 )
 
 
@@ -74,7 +78,7 @@ def _valid_payload(
     base: Dict[str, Any] = {
         "block_id": f"page_01#{block_type}_x_0",
         "block_type": block_type,
-        "content_type": "definition",
+        "content_type": "explanation",
         "bloom_level": "understand",
         "objective_refs": ["TO-01"],
         "curies": ["sh:NodeShape"],
@@ -280,7 +284,7 @@ def test_legacy_block_hash_round_trip_stable() -> None:
     legacy_content = {
         "curies": ["sh:NodeShape"],
         "key_claims": _LEGACY_CLAIMS_BY_TYPE["concept"],
-        "content_type": "definition",
+        "content_type": "explanation",
     }
     block_a = Block(
         block_id="page_01#concept_intro_0",
@@ -312,6 +316,37 @@ def test_legacy_block_hash_round_trip_stable() -> None:
         f"Block content-hash drifted across round-trip: "
         f"{hash_a!r} != {hash_b!r}"
     )
+
+
+# --------------------------------------------------------------------------- #
+# content_type enum constraint (2026-05-15 Qwen off-vocab regression)
+# --------------------------------------------------------------------------- #
+
+
+def test_content_type_property_is_enum_constrained() -> None:
+    """Every per-block-type outline schema must constrain ``content_type``
+    to the canonical chunk-type enum.
+
+    Observed 2026-05-15 on Qwen-7B: the schema had ``content_type:
+    {"type": "string", "minLength": 1}`` (free-form), and Ollama
+    structured-output decoding let the model drift off-vocabulary
+    ('text', 'definition_and_example', 'place value and rounding') —
+    every one of which fails ``BlockContentTypeValidator`` at the
+    inter-tier seam. Pinning the enum into the schema forces a canonical
+    value at decode time.
+    """
+    canonical = sorted(get_valid_chunk_types())
+    assert _CONTENT_TYPE_ENUM == canonical, (
+        "_CONTENT_TYPE_ENUM drifted from the canonical chunk-type "
+        f"taxonomy: {_CONTENT_TYPE_ENUM!r} != {canonical!r}"
+    )
+    for block_type, schema in _BLOCK_TYPE_JSON_SCHEMAS.items():
+        ct_prop = schema["properties"]["content_type"]
+        assert ct_prop.get("enum") == canonical, (
+            f"{block_type}: content_type schema is not enum-constrained "
+            f"to the canonical taxonomy. Got {ct_prop!r}. A free-form "
+            f"content_type lets the outline model drift off-vocabulary."
+        )
 
 
 # --------------------------------------------------------------------------- #

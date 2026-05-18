@@ -72,6 +72,9 @@ from MCP.hardening.error_classifier import (  # noqa: E402
     ErrorClass,
     classify_error,
 )
+from lib.validators.content_type import (  # noqa: E402
+    get_valid_chunk_types,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -427,6 +430,17 @@ _BLOOM_LEVEL_ENUM: List[str] = [
     "create",
 ]
 
+# content_type enum mirrors the canonical chunk-type taxonomy
+# (schemas/taxonomies/content_type.json::$defs.ChunkType) — the SAME
+# vocabulary ``BlockContentTypeValidator`` enforces at the inter-tier
+# seam. Pinning it into the outline JSON Schema lets Ollama
+# structured-output decoding force a canonical value at sample time.
+# Without the enum the field was free-form ``{"type": "string"}`` and
+# Qwen drifted off-vocabulary (observed 2026-05-15 on Qwen-7B: emitted
+# 'text', 'definition_and_example', 'place value and rounding' — every
+# one of which fails the inter-tier content_type gate).
+_CONTENT_TYPE_ENUM: List[str] = sorted(get_valid_chunk_types())
+
 # CURIE pattern mirrors the canonical SHACL/RDF surface form check
 # used elsewhere in the project (e.g. lib/ontology/* prefix maps).
 _CURIE_PATTERN: str = r"^[a-z][a-z0-9]*:[A-Za-z0-9_-]+$"
@@ -446,7 +460,7 @@ def _build_block_outline_schema(
     properties: Dict[str, Dict[str, Any]] = {
         "block_id": {"type": "string", "minLength": 1},
         "block_type": {"const": block_type},
-        "content_type": {"type": "string", "minLength": 1},
+        "content_type": {"type": "string", "enum": _CONTENT_TYPE_ENUM},
         "bloom_level": {"type": "string", "enum": _BLOOM_LEVEL_ENUM},
         "objective_refs": {
             "type": "array",
@@ -1140,6 +1154,14 @@ class OutlineProvider(_BaseLLMProvider):
         bounds_lines.append(
             "  - bloom_level allowed values: remember | understand | "
             "apply | analyze | evaluate | create"
+        )
+        # Mirror the bloom_level treatment for content_type: the JSON
+        # Schema enum constrains the field at decode time, but the 7B
+        # model's recency bias means a bottom-of-bounds reminder of the
+        # canonical vocabulary noticeably lifts attempt-1 pass rate.
+        bounds_lines.append(
+            "  - content_type allowed values: "
+            + " | ".join(_CONTENT_TYPE_ENUM)
         )
         bounds_block = (
             "\n".join(bounds_lines) if bounds_lines else "  (no per-type bounds)"
