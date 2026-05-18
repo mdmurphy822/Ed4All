@@ -932,3 +932,57 @@ class TestPhase5CourseforgeStageSubcommand:
             "assessment_item",
             "example",
         ]
+
+
+class TestCourseforgeStageParamPropagation:
+    """End-to-end propagation: _create_textbook_workflow ->
+    create_textbook_pipeline -> create_workflow_impl for the three
+    params that were previously dropped (courseforge_stage, force_rerun,
+    skip_training).
+    """
+
+    @pytest.mark.asyncio
+    async def test_courseforge_stage_force_rerun_skip_training_reach_workflow_impl(
+        self, tmp_path, monkeypatch
+    ):
+        from MCP.tools import pipeline_tools
+        from cli.commands import run as run_mod
+
+        # Wire a real PDF stub so path-escape guard passes.
+        pdf = tmp_path / "book.pdf"
+        pdf.write_bytes(b"%PDF-1.4 stub")
+        monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
+
+        # Params as built by _build_workflow_params for `ed4all run courseforge`
+        params = {
+            "course_name": "OPENSTAX_ALG_9",
+            "pdf_paths": str(pdf),
+            "corpus": str(pdf),
+            "courseforge_stage": "courseforge",
+            "force_rerun": True,
+            "skip_training": True,
+            "duration_weeks": 12,
+            "duration_weeks_explicit": True,
+            "generate_assessments": True,
+            "assessment_count": 50,
+            "bloom_levels": "remember,understand,apply,analyze",
+            "priority": "normal",
+        }
+
+        captured: dict = {}
+
+        async def _fake_create_workflow_impl(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"success": True, "workflow_id": "WF-STAGE-TEST"})
+
+        with patch(
+            "MCP.tools.orchestrator_tools.create_workflow_impl",
+            new=_fake_create_workflow_impl,
+        ):
+            result = await run_mod._create_textbook_workflow(params)
+
+        assert result.get("success") is True, result
+        forwarded = json.loads(captured["params"])
+        assert forwarded.get("courseforge_stage") == "courseforge", forwarded
+        assert forwarded.get("force_rerun") is True, forwarded
+        assert forwarded.get("skip_training") is True, forwarded
