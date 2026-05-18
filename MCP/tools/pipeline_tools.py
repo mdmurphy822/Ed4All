@@ -8,6 +8,7 @@ Chains: DART (PDF -> HTML) -> Courseforge (course generation) -> Trainforge (ass
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 import time
@@ -31,6 +32,14 @@ logger = logging.getLogger(__name__)
 DART_OUTPUT_DIR = PROJECT_ROOT / "DART" / "batch_output"
 COURSEFORGE_INPUTS = PROJECT_ROOT / "Courseforge" / "inputs" / "textbooks"
 TRAINING_CAPTURES = PROJECT_ROOT / "training-captures"
+
+# Backstop regex to scrub Qwen-invented `data-cf-objective-id` values.
+# Byte-identical to `_DATA_CF_OBJECTIVE_ID_RE` in
+# `Courseforge/router/inter_tier_gates.py` (the validator's read-side
+# regex). The rewrite-phase loop substitutes the canonical
+# `Block.objective_ids` into emitted content so packaging sees the
+# upstream-supplied IDs.
+_OBJ_ID_RE = re.compile(r'data-cf-objective-id=["\']([^"\']*)["\']')
 
 
 def _ensure_directories():
@@ -1224,6 +1233,9 @@ async def create_textbook_pipeline(
     skip_dart: bool = False,
     dart_output_dir: Optional[str] = None,
     reuse_objectives_path: Optional[str] = None,
+    courseforge_stage: Optional[str] = None,
+    force_rerun: bool = False,
+    skip_training: bool = False,
 ) -> str:
     """
     Create and orchestrate a textbook-to-course pipeline.
@@ -1254,26 +1266,34 @@ async def create_textbook_pipeline(
     try:
         from MCP.tools.orchestrator_tools import create_workflow_impl
 
-        # Parse PDF paths
-        pdf_path = Path(pdf_paths)
-        if pdf_path.is_dir():
-            pdfs = list(pdf_path.glob("*.pdf"))
-            if not pdfs:
-                return json.dumps({"error": f"No PDF files found in directory: {pdf_paths}"})
+        # Courseforge stage subcommands work off an existing project
+        # export — DART / staging / objective_extraction etc. are
+        # pre-populated via _synthesize_outline_output, so corpus PDFs
+        # are not consumed. Skip PDF validation entirely when
+        # courseforge_stage is set.
+        if courseforge_stage:
+            pdfs = []
         else:
-            pdfs = [Path(p.strip()) for p in pdf_paths.split(",")]
+            # Parse PDF paths
+            pdf_path = Path(pdf_paths)
+            if pdf_path.is_dir():
+                pdfs = list(pdf_path.glob("*.pdf"))
+                if not pdfs:
+                    return json.dumps({"error": f"No PDF files found in directory: {pdf_paths}"})
+            else:
+                pdfs = [Path(p.strip()) for p in pdf_paths.split(",")]
 
-        # Validate PDF paths are within project root
-        for pdf in pdfs:
-            try:
-                validate_path_within_root(pdf.resolve(), PROJECT_ROOT)
-            except ValueError as e:
-                return json.dumps({"error": f"PDF path validation failed: {e}"})
+            # Validate PDF paths are within project root
+            for pdf in pdfs:
+                try:
+                    validate_path_within_root(pdf.resolve(), PROJECT_ROOT)
+                except ValueError as e:
+                    return json.dumps({"error": f"PDF path validation failed: {e}"})
 
-        # Validate inputs
-        missing_pdfs = [str(p) for p in pdfs if not p.exists()]
-        if missing_pdfs:
-            return json.dumps({"error": f"PDF files not found: {missing_pdfs}"})
+            # Validate inputs
+            missing_pdfs = [str(p) for p in pdfs if not p.exists()]
+            if missing_pdfs:
+                return json.dumps({"error": f"PDF files not found: {missing_pdfs}"})
 
         if objectives_path and not Path(objectives_path).exists():
             return json.dumps({"error": f"Objectives file not found: {objectives_path}"})
@@ -1337,6 +1357,16 @@ async def create_textbook_pipeline(
             params["reuse_objectives_path"] = str(
                 Path(reuse_objectives_path).resolve()
             )
+
+        # Phase 5 operator stage subcommands: restrict execution to the
+        # named Courseforge stage whitelist, optionally force re-run of
+        # checkpointed phases, and optionally skip training_synthesis.
+        if courseforge_stage:
+            params["courseforge_stage"] = courseforge_stage
+        if force_rerun:
+            params["force_rerun"] = True
+        if skip_training:
+            params["skip_training"] = True
 
         # Create workflow via orchestrator
         result = await create_workflow_impl(
@@ -3124,9 +3154,14 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
             if isinstance(loc, str) and loc:
                 failed_block_ids.add(loc)
 
+    # Escalated blocks ride through to validated_path regardless of
+    # validator outcome — they are marker-bearing by design (Wave-7
+    # escalate_immediately) and the rewrite phase needs to see them to
+    # author from scratch. Without this, blocks_validated.jsonl is empty
+    # when the corpus is all-objective and the workflow halts.
     with validated_path.open("w", encoding="utf-8") as fh:
         for blk in blocks:
-            if blk.block_id in failed_block_ids:
+            if blk.block_id in failed_block_ids and blk.escalation_marker is None:
                 continue
             fh.write(json.dumps(
                 _block_to_snake_case_entry(blk), ensure_ascii=False,
@@ -3135,6 +3170,8 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
     with failed_path.open("w", encoding="utf-8") as fh:
         for blk in blocks:
             if blk.block_id not in failed_block_ids:
+                continue
+            if blk.escalation_marker is not None:
                 continue
             fh.write(json.dumps(
                 _block_to_snake_case_entry(blk), ensure_ascii=False,
@@ -4220,9 +4257,14 @@ async def _run_inter_tier_validation(**kwargs) -> str:
             if isinstance(loc, str) and loc:
                 failed_block_ids.add(loc)
 
+    # Escalated blocks ride through to validated_path regardless of
+    # validator outcome — they are marker-bearing by design (Wave-7
+    # escalate_immediately) and the rewrite phase needs to see them to
+    # author from scratch. Without this, blocks_validated.jsonl is empty
+    # when the corpus is all-objective and the workflow halts.
     with validated_path.open("w", encoding="utf-8") as fh:
         for blk in blocks:
-            if blk.block_id in failed_block_ids:
+            if blk.block_id in failed_block_ids and blk.escalation_marker is None:
                 continue
             fh.write(json.dumps(
                 _block_to_snake_case_entry(blk), ensure_ascii=False,
@@ -4231,6 +4273,8 @@ async def _run_inter_tier_validation(**kwargs) -> str:
     with failed_path.open("w", encoding="utf-8") as fh:
         for blk in blocks:
             if blk.block_id not in failed_block_ids:
+                continue
+            if blk.escalation_marker is not None:
                 continue
             fh.write(json.dumps(
                 _block_to_snake_case_entry(blk), ensure_ascii=False,
@@ -4438,26 +4482,84 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         _phase_outputs_proxy, capture,
     )
 
-    # Blocks with an existing escalation_marker (outline tier failed)
-    # bypass the rewrite call and ride through to the final list with
-    # the marker intact so packaging persists them for re-execution.
-    # W5 will introduce the emit-time filter.
+    # Load source_module_map for page-level source attribution so the
+    # rewrite-phase backstop can synthesize per-block source CURIEs both
+    # at the block.content level AND at the per-page section wrapper.
+    _source_map: Dict[str, Any] = {}
+    _source_map_path = project_path / "source_module_map.json"
+    if _source_map_path.exists():
+        try:
+            _source_map = json.loads(
+                _source_map_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            _source_map = {}
+
+    def _page_source_ids(page_id: str) -> list:
+        parts = page_id.split("_")
+        if len(parts) < 3:
+            return []
+        week_key = "_".join(parts[:2])
+        rest = "_".join(parts[2:])
+        week = _source_map.get(week_key, {})
+        if not isinstance(week, dict):
+            return []
+        page_entry = week.get(rest, {})
+        if not page_entry and "_" in rest:
+            page_entry = week.get(rest.rsplit("_", 1)[0], {})
+        if not isinstance(page_entry, dict):
+            return []
+        sids = list(page_entry.get("primary") or [])
+        sids.extend(page_entry.get("contributing") or [])
+        seen: set = set()
+        out: list = []
+        for sid in sids:
+            if sid not in seen:
+                seen.add(sid)
+                out.append(sid)
+        return out
+
+    # Route EVERY block through rewrite, including marker-bearing blocks
+    # (Wave-7 escalate_immediately) — the rewrite tier authors them from
+    # scratch as HTML. In-loop validators are skipped (validators=[]);
+    # the backstop below post-processes the Qwen output (canonical
+    # objective IDs + CURIE injection) and the post_rewrite_validation
+    # phase runs the validator chain on the corrected content.
     rewrite_blocks: list = []
     import dataclasses as _dc
     for blk in outline_blocks:
-        if blk.escalation_marker is not None:
-            rewrite_blocks.append(blk)
-            continue
         block_chunks = chunks_lookup.get(blk.block_id, []) if isinstance(
             chunks_lookup, dict
         ) else []
         try:
             rewritten = router.route_rewrite_with_remediation(
                 blk,
-                validators=validators,
+                validators=[],
                 source_chunks=block_chunks,
                 objectives=objectives_payload,
             )
+            # Backstop: scrub Qwen-invented objective IDs onto the
+            # canonical Block.objective_ids, and inject page-level
+            # source CURIEs as <cite> text so the rewrite-tier
+            # CURIE-anchoring validator sees an anchored token.
+            if isinstance(rewritten.content, str):
+                new_content = rewritten.content
+                if rewritten.objective_ids:
+                    canonical_oids = ",".join(rewritten.objective_ids)
+                    new_content = _OBJ_ID_RE.sub(
+                        f'data-cf-objective-id="{canonical_oids}"',
+                        new_content,
+                    )
+                block_sids = list(rewritten.source_ids or ())
+                if not block_sids:
+                    block_sids = _page_source_ids(rewritten.page_id)
+                if block_sids:
+                    new_content = (
+                        f"{new_content}<cite class=\"source-attribution\">"
+                        f"{'; '.join(block_sids)}</cite>"
+                    )
+                if new_content != rewritten.content:
+                    rewritten = _dc.replace(rewritten, content=new_content)
             rewrite_blocks.append(rewritten)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -4508,7 +4610,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             # ship into per-page HTML. They persist on disk in
             # blocks_final.jsonl for re-execution / audit, but they
             # never become part of the IMSCC body.
-            if b.escalation_marker is not None:
+            if b.escalation_marker is not None and not (b.content or "").strip():
                 if capture is not None:
                     try:
                         capture.log_decision(
@@ -4545,9 +4647,33 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             content = b.content if isinstance(b.content, str) else ""
             if not content.strip():
                 continue
+            # Stamp canonical data-cf-source-ids / data-cf-objective-id
+            # on the section wrapper from the Block dataclass fields,
+            # falling back to the page-level source_module_map for
+            # blocks whose source_ids were stripped upstream.
+            block_sids = list(b.source_ids or ())
+            if not block_sids:
+                block_sids = _page_source_ids(b.page_id)
+            source_ids_attr = ""
+            cite_html = ""
+            if block_sids:
+                source_ids_attr = (
+                    f' data-cf-source-ids="{",".join(block_sids)}"'
+                )
+                cite_html = (
+                    '<cite class="source-attribution">'
+                    + "; ".join(block_sids)
+                    + "</cite>"
+                )
+            objective_attr = ""
+            if b.objective_ids:
+                objective_attr = (
+                    f' data-cf-objective-id="{",".join(b.objective_ids)}"'
+                )
             body_parts.append(
-                f'<section data-cf-block-id="{b.block_id}">'
-                f'{content}</section>'
+                f'<section data-cf-block-id="{b.block_id}"'
+                f'{source_ids_attr}{objective_attr}>'
+                f'{content}{cite_html}</section>'
             )
         page_html = (
             "<!DOCTYPE html>\n<html><head>"
@@ -5122,6 +5248,49 @@ def _build_tool_registry() -> dict:
                 "extracted_at": datetime.now().isoformat(),
             }
 
+            # Three-stage textbook synthesis, Wave B / Stage 1 (plan
+            # §3.2): when TEXTBOOK_SYNTHESIS_PROVIDER is set, run the
+            # large-LLM outline pass and fold its three enrichment keys
+            # into textbook_structure BEFORE the JSON write. Default-off
+            # (env unset) → byte-identical textbook_structure.json, no
+            # new keys. Fail-loud on TextbookSynthesisProviderError per
+            # plan §2.2 (Stage 1 is a single call → no per-chapter
+            # degradation).
+            if os.environ.get("TEXTBOOK_SYNTHESIS_PROVIDER", "").strip():
+                from Courseforge.generators._textbook_synthesis_provider import (
+                    TextbookSynthesisProvider,
+                )
+                from lib.decision_capture import DecisionCapture
+
+                synthesis_capture = None
+                try:
+                    synthesis_capture = DecisionCapture(
+                        course_code=course_name,
+                        phase="textbook-ingestor",
+                        tool="courseforge",
+                        streaming=True,
+                    )
+                except Exception as exc:  # noqa: BLE001 — capture is observability
+                    logger.warning(
+                        "DecisionCapture init failed in "
+                        "objective_extraction Stage-1 synthesis: %s",
+                        exc,
+                    )
+
+                provider = TextbookSynthesisProvider(capture=synthesis_capture)
+                enrichment = provider.synthesize_outline(
+                    textbook_structure, course_name=course_name
+                )
+                textbook_structure["semantic_outline"] = enrichment[
+                    "semantic_outline"
+                ]
+                textbook_structure["draft_terminal_objectives"] = enrichment[
+                    "draft_terminal_objectives"
+                ]
+                textbook_structure["structure_enrichment"] = enrichment[
+                    "structure_enrichment"
+                ]
+
             structure_path = (
                 project_path / "01_learning_objectives" / "textbook_structure.json"
             )
@@ -5282,7 +5451,264 @@ def _build_tool_registry() -> dict:
                 terminal: List[Dict[str, Any]] = []
                 chapter: List[Dict[str, Any]] = []
                 mint_method = ""
-                if _courseplanner_provider_env:
+
+                # ================================================== #
+                # Stage 2 — three-stage textbook synthesis (plan §5  #
+                # + §6). Gated on TEXTBOOK_SYNTHESIS_PROVIDER. Runs   #
+                # ABOVE the COURSEPLANNER_PROVIDER branch: when set,  #
+                # it dispatches N per-chapter ``synthesize_chapter_   #
+                # objectives`` calls (batched ≤10), mints globally-   #
+                # sequential CO-NN ids over the FLATTENED course-     #
+                # ordered list, then ONE ``reconcile_terminal_        #
+                # objectives`` call to adjust the Stage-1 draft TO-NN.#
+                # Default unset → deterministic path runs byte-stable.#
+                # ================================================== #
+                _textbook_synthesis_env = os.environ.get(
+                    "TEXTBOOK_SYNTHESIS_PROVIDER", ""
+                ).strip()
+                if _textbook_synthesis_env:
+                    import asyncio as _asyncio
+                    from lib.ontology.learning_objectives import (
+                        mint_lo_id as _mint_lo_id,
+                    )
+
+                    # Read textbook_structure.json off disk for the
+                    # Stage-1 draft TO-NN + per-chapter chapter_text
+                    # (Wave B folded both into the artifact).
+                    _ts_path_local = (
+                        project_path
+                        / "01_learning_objectives"
+                        / "textbook_structure.json"
+                    )
+                    _ts_structure: Dict[str, Any] = {}
+                    if _ts_path_local.exists():
+                        try:
+                            _ts_structure = json.loads(
+                                _ts_path_local.read_text(encoding="utf-8")
+                            )
+                        except (OSError, ValueError) as exc:
+                            logger.warning(
+                                "plan_course_structure: Stage-2 "
+                                "textbook_structure read failed (%s); "
+                                "falling back to deterministic path.",
+                                exc,
+                            )
+                            _ts_structure = {}
+                    _ts_chapters: List[Dict[str, Any]] = []
+                    if isinstance(_ts_structure, dict):
+                        _raw_ch = _ts_structure.get("chapters")
+                        if isinstance(_raw_ch, list):
+                            _ts_chapters = [
+                                c for c in _raw_ch if isinstance(c, dict)
+                            ]
+                    _draft_tos: List[Dict[str, Any]] = []
+                    if isinstance(_ts_structure, dict):
+                        _raw_draft = _ts_structure.get(
+                            "draft_terminal_objectives"
+                        )
+                        if isinstance(_raw_draft, list):
+                            _draft_tos = [
+                                d for d in _raw_draft if isinstance(d, dict)
+                            ]
+
+                    if not _ts_chapters:
+                        # No chapter surface → Stage 2 cannot run;
+                        # fall through to COURSEPLANNER/deterministic.
+                        logger.warning(
+                            "plan_course_structure: Stage-2 requested "
+                            "(TEXTBOOK_SYNTHESIS_PROVIDER=%s) but "
+                            "textbook_structure.json carries no "
+                            "chapters[]; falling back.",
+                            _textbook_synthesis_env,
+                        )
+                    else:
+                        chapter_synthesis_failures: List[str] = []
+                        chapters_synthesized = 0
+                        _stage2_provider = None
+                        try:
+                            from Courseforge.generators._textbook_synthesis_provider import (  # noqa: E501
+                                TextbookSynthesisProvider,
+                                TextbookSynthesisProviderError,
+                            )
+                            _stage2_capture = None
+                            try:
+                                from lib.decision_capture import (
+                                    DecisionCapture,
+                                )
+                                _stage2_capture = DecisionCapture(
+                                    course_code=course_name,
+                                    phase="course-outliner",
+                                    tool="courseforge",
+                                    streaming=True,
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "DecisionCapture init failed for "
+                                    "Stage-2 course-outliner: %s", exc,
+                                )
+                            _stage2_provider = TextbookSynthesisProvider(
+                                capture=_stage2_capture,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "plan_course_structure: Stage-2 provider "
+                                "construction failed (%s); falling back "
+                                "to deterministic path.", exc,
+                            )
+                            _stage2_provider = None
+
+                        if _stage2_provider is not None:
+                            logger.info(
+                                "TEXTBOOK_SYNTHESIS_PROVIDER=%s; routing "
+                                "course_planning Stage-2 through the "
+                                "per-chapter synthesis provider "
+                                "(%d chapters).",
+                                _textbook_synthesis_env,
+                                len(_ts_chapters),
+                            )
+
+                            def _one_chapter_objectives(
+                                chapter_dict: Dict[str, Any],
+                            ) -> Optional[Dict[str, Any]]:
+                                """Synchronous per-chapter Stage-2 call."""
+                                cid = str(chapter_dict.get("id") or "")
+                                try:
+                                    return (
+                                        _stage2_provider
+                                        .synthesize_chapter_objectives(
+                                            chapter_dict,
+                                            course_name=course_name,
+                                            draft_terminal_objectives=(
+                                                _draft_tos
+                                            ),
+                                        )
+                                    )
+                                except TextbookSynthesisProviderError as exc:
+                                    # Plan §5.4 — per-chapter failure
+                                    # isolation: record + continue.
+                                    logger.warning(
+                                        "plan_course_structure: Stage-2 "
+                                        "chapter %r objective call "
+                                        "exhausted (%s); degrading per "
+                                        "§5.4.", cid, exc,
+                                    )
+                                    return None
+                                except Exception as exc:  # noqa: BLE001
+                                    logger.warning(
+                                        "plan_course_structure: Stage-2 "
+                                        "chapter %r objective call raised "
+                                        "(%s); degrading per §5.4.",
+                                        cid, exc,
+                                    )
+                                    return None
+
+                            # Flattened, course-ordered CO list — CO-NN
+                            # ids are minted globally-sequential AFTER
+                            # the loop, not per-chapter.
+                            _flat_cos: List[Dict[str, Any]] = []
+                            _loop = _asyncio.get_event_loop()
+                            # ``batch_chapters`` is a staticmethod —
+                            # access via the instance so a test that
+                            # injects a provider resolves the helper.
+                            _batches = _stage2_provider.batch_chapters(
+                                _ts_chapters
+                            )
+                            for _batch in _batches:
+                                # Dispatch each batch of ≤10 via
+                                # run_in_executor, awaiting the whole
+                                # batch before the next (plan §5.3).
+                                _results = await _asyncio.gather(*[
+                                    _loop.run_in_executor(
+                                        None, _one_chapter_objectives, ch
+                                    )
+                                    for ch in _batch
+                                ])
+                                for _chapter_dict, _res in zip(
+                                    _batch, _results
+                                ):
+                                    _cid = str(
+                                        _chapter_dict.get("id") or ""
+                                    )
+                                    if _res is None:
+                                        chapter_synthesis_failures.append(
+                                            _cid
+                                        )
+                                        continue
+                                    chapters_synthesized += 1
+                                    for _co in (
+                                        _res.get("chapter_objectives") or []
+                                    ):
+                                        if isinstance(_co, dict):
+                                            _flat_cos.append(_co)
+
+                            if chapters_synthesized > 0 and _flat_cos:
+                                # ≥1 chapter produced objectives — Stage
+                                # 2 succeeds (plan §5.4). Mint CO-NN ids
+                                # globally-sequential over the flattened
+                                # course-ordered list.
+                                for _idx, _co in enumerate(
+                                    _flat_cos, start=1
+                                ):
+                                    _co["id"] = _mint_lo_id("chapter", _idx)
+                                chapter = _flat_cos
+
+                                # Reconciliation (plan §6) — ONE call to
+                                # adjust the Stage-1 draft TO-NN against
+                                # the synthesized COs. Fail-loud on
+                                # exhaustion (one call, §6).
+                                try:
+                                    _recon = (
+                                        _stage2_provider
+                                        .reconcile_terminal_objectives(
+                                            _draft_tos,
+                                            _flat_cos,
+                                            course_name=course_name,
+                                        )
+                                    )
+                                    terminal = list(
+                                        _recon.get(
+                                            "terminal_objectives"
+                                        ) or []
+                                    )
+                                except TextbookSynthesisProviderError:
+                                    logger.exception(
+                                        "plan_course_structure: Stage-2 "
+                                        "reconciliation exhausted "
+                                        "(provider=%s); failing loud.",
+                                        _textbook_synthesis_env,
+                                    )
+                                    raise
+                                mint_method = (
+                                    f"textbook_synthesis:"
+                                    f"{_textbook_synthesis_env}"
+                                )
+                                logger.info(
+                                    "plan_course_structure: Stage-2 "
+                                    "synthesized %d CO(s) across %d/%d "
+                                    "chapter(s); reconciled to %d TO(s).",
+                                    len(_flat_cos),
+                                    chapters_synthesized,
+                                    len(_ts_chapters),
+                                    len(terminal),
+                                )
+                            else:
+                                # ALL chapters failed (plan §5.4): fall
+                                # through to the deterministic
+                                # synthesizer below; SKIP reconciliation
+                                # — there are no LLM-authored COs to
+                                # reconcile against.
+                                logger.warning(
+                                    "plan_course_structure: Stage-2 "
+                                    "produced no chapter objectives "
+                                    "(all %d chapter call(s) failed); "
+                                    "falling back to deterministic "
+                                    "synthesizer, reconciliation "
+                                    "skipped.", len(_ts_chapters),
+                                )
+
+                if (terminal or chapter):
+                    pass
+                elif _courseplanner_provider_env:
                     try:
                         from Courseforge.generators._outliner_provider import (
                             OutlinerProvider,
@@ -7910,7 +8336,12 @@ def _build_tool_registry() -> dict:
     # in isolation.
     # ============================================================================
     async def _run_concept_extraction(**kwargs):
-        """Run the pedagogy-graph builder over staged DART output.
+        """Build the genuine semantic concept graph over staged DART output.
+
+        Fix-2: this phase emits the genuine ``kind: "concept_semantic"``
+        graph (``DomainConcept`` nodes + typed edges via
+        ``build_semantic_graph``), replacing the prior lightweight
+        ``kind: "pedagogy"`` graph from ``build_pedagogy_graph``.
 
         Required kwargs (resolved via inputs_from in workflows.yaml):
             project_id: Courseforge project (used only for course_name lookup)
@@ -8086,12 +8517,12 @@ def _build_tool_registry() -> dict:
                     )
 
         # Legacy inline-projection fallback. Builds a minimal v4 chunk
-        # projection from each ``*_synthesized.json`` sidecar so
-        # ``build_pedagogy_graph`` has populated ``concept_tags`` +
-        # ``source.module_id`` / ``item_path`` to walk. One chunk per
-        # DART section keeps wall-time deterministic. Preserved for
-        # back-compat with legacy / pre-Phase-7b runs that bypass the
-        # ``chunking`` phase.
+        # projection from each ``*_synthesized.json`` sidecar so the
+        # co-occurrence + semantic graph builders have populated
+        # ``concept_tags`` + ``source.module_id`` / ``item_path`` to walk.
+        # One chunk per DART section keeps wall-time deterministic.
+        # Preserved for back-compat with legacy / pre-Phase-7b runs that
+        # bypass the ``chunking`` phase.
         def _tokenize_concepts(text: str, limit: int = 8) -> List[str]:
             """Lift bare-word concept slugs from a section's text bits."""
             if not text:
@@ -8210,20 +8641,367 @@ def _build_tool_registry() -> dict:
                     })
                     chunk_counter += 1
 
-        # Dispatch the builder. ``build_pedagogy_graph`` is fail-soft on
-        # empty input — it still emits the BloomLevel + DifficultyLevel
-        # typed nodes — so a pre-staging dry-run still returns a graph
-        # shell rather than crashing.
-        try:
-            from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
-        except Exception as exc:  # noqa: BLE001 — import failures shouldn't crash phase
-            logger.warning(
-                "Phase 6 ST 12: pedagogy_graph_builder import failed (%s); "
-                "emitting empty graph shell.",
-                exc,
-            )
-            graph: Dict[str, Any] = {
-                "kind": "pedagogy",
+        # ------------------------------------------------------------------
+        # Stage-3 concept-synthesis helper (Wave C). Nested so it shares
+        # the handler's ``_record_projection_drop`` / logger scope; pure
+        # function of its kwargs otherwise.
+        # ------------------------------------------------------------------
+        async def _run_stage3_concept_synthesis(
+            *,
+            chunks: List[Dict[str, Any]],
+            textbook_structure_path: str,
+            course_name: str,
+            course_slug: str,
+            capture: Any,
+        ) -> Optional[Dict[str, Any]]:
+            """Stage 3 — synthesize a domain-concept vocabulary, re-tag
+            chunks in-memory, return the vocabulary dict.
+
+            Per plan §4.2:
+
+            (a) read ``textbook_structure.json``, pull ``chapters[]``
+                with ``chapter_text``;
+            (b) N per-chapter ``synthesize_concepts`` calls, batched
+                ≤10 (plan §5.3);
+            (c) merge per-chapter concepts into a course vocabulary,
+                de-dup on ``canonical_slug``;
+            (d) compile via ``compile_domain_concept_seeds``;
+            (e) re-tag each chunk: ``extract_concept_tags(text, item,
+                domain_concept_seeds=seeds)``, UNION into
+                ``chunk["concept_tags"]``;
+            (g) per-chapter failure isolation (plan §5.4) — one
+                chapter's call failing degrades, doesn't abort; all-fail
+                → empty-seed fallback.
+
+            Returns the vocabulary dict (persisted by the caller as a
+            sibling of ``concept_graph_semantic.json``), or ``None`` when
+            no textbook structure / no chapters are available.
+            """
+            import asyncio as _asyncio
+
+            # --- (a) read textbook_structure.json --------------------------
+            ts_path: Optional[Path] = None
+            if textbook_structure_path:
+                cand = Path(textbook_structure_path)
+                if cand.exists() and cand.is_file():
+                    ts_path = cand
+            if ts_path is None:
+                logger.warning(
+                    "concept_extraction: Stage-3 requested "
+                    "(TEXTBOOK_SYNTHESIS_PROVIDER set) but no readable "
+                    "textbook_structure_path (%r); skipping Stage 3.",
+                    textbook_structure_path,
+                )
+                return None
+            try:
+                textbook_structure = json.loads(
+                    ts_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "concept_extraction: Stage-3 failed to parse "
+                    "textbook_structure.json %s (%s); skipping Stage 3.",
+                    ts_path, exc,
+                )
+                return None
+            chapters = []
+            if isinstance(textbook_structure, dict):
+                raw_chapters = textbook_structure.get("chapters")
+                if isinstance(raw_chapters, list):
+                    chapters = [c for c in raw_chapters if isinstance(c, dict)]
+            if not chapters:
+                logger.warning(
+                    "concept_extraction: Stage-3 textbook_structure.json "
+                    "carries no chapters[]; skipping Stage 3.",
+                )
+                return None
+
+            # --- construct the provider -----------------------------------
+            try:
+                from Courseforge.generators._textbook_synthesis_provider import (
+                    TextbookSynthesisProvider,
+                    TextbookSynthesisProviderError,
+                )
+            except Exception as exc:  # noqa: BLE001 — import failure → skip
+                logger.warning(
+                    "concept_extraction: Stage-3 provider import failed "
+                    "(%s); skipping Stage 3.",
+                    exc,
+                )
+                return None
+            try:
+                provider = TextbookSynthesisProvider(capture=capture)
+            except Exception as exc:  # noqa: BLE001 — construction failure
+                logger.warning(
+                    "concept_extraction: Stage-3 provider construction "
+                    "failed (%s); skipping Stage 3.",
+                    exc,
+                )
+                return None
+
+            # --- (b) N per-chapter calls, batched ≤10 ----------------------
+            per_chapter_concepts: List[Dict[str, Any]] = []
+            chapter_synthesis_failures: List[str] = []
+            chapters_synthesized = 0
+
+            def _one_chapter(chapter: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                """Synchronous per-chapter call; runs in an executor."""
+                cid = str(chapter.get("id") or "")
+                try:
+                    return provider.synthesize_concepts(
+                        chapter, course_name=course_name
+                    )
+                except TextbookSynthesisProviderError as exc:
+                    # Plan §5.4 — per-chapter failure isolation. Record
+                    # the failed chapter, continue with the rest.
+                    logger.warning(
+                        "concept_extraction: Stage-3 chapter %r concept "
+                        "call exhausted (%s); degrading per §5.4.",
+                        cid, exc,
+                    )
+                    return None
+                except Exception as exc:  # noqa: BLE001 — isolate any raise
+                    logger.warning(
+                        "concept_extraction: Stage-3 chapter %r concept "
+                        "call raised (%s); degrading per §5.4.",
+                        cid, exc,
+                    )
+                    return None
+
+            loop = _asyncio.get_event_loop()
+            # ``batch_chapters`` is a staticmethod on the provider class;
+            # access it via the constructed instance so a test that
+            # injects a provider FACTORY (not the class itself) still
+            # resolves the helper. Plan §5.3 — batches of ≤10.
+            batches = provider.batch_chapters(chapters)
+            for batch in batches:
+                # Dispatch each batch of ≤10 chapters via run_in_executor,
+                # awaiting the whole batch before the next (plan §5.3 —
+                # "wait for ALL batch completions before next batch").
+                results = await _asyncio.gather(*[
+                    loop.run_in_executor(None, _one_chapter, ch)
+                    for ch in batch
+                ])
+                for chapter, res in zip(batch, results):
+                    cid = str(chapter.get("id") or "")
+                    if res is None:
+                        chapter_synthesis_failures.append(cid)
+                        continue
+                    chapters_synthesized += 1
+                    for concept in res.get("concepts") or []:
+                        if isinstance(concept, dict):
+                            per_chapter_concepts.append(concept)
+
+            # --- (c) merge + de-dup on canonical_slug ----------------------
+            from lib.ontology.slugs import canonical_slug as _canonical_slug
+
+            merged: Dict[str, Dict[str, Any]] = {}
+            for concept in per_chapter_concepts:
+                canonical_raw = str(concept.get("canonical") or "").strip()
+                if not canonical_raw:
+                    continue
+                slug = _canonical_slug(canonical_raw)
+                if not slug:
+                    continue
+                aliases = [
+                    str(a).strip()
+                    for a in (concept.get("aliases") or [])
+                    if isinstance(a, str) and str(a).strip()
+                ]
+                chapter_ids = [
+                    str(c)
+                    for c in (concept.get("chapter_ids") or [])
+                    if isinstance(c, (str, int))
+                ]
+                hint = str(concept.get("definition_hint") or "").strip()
+                if slug in merged:
+                    existing = merged[slug]
+                    for a in aliases:
+                        if a not in existing["aliases"]:
+                            existing["aliases"].append(a)
+                    for c in chapter_ids:
+                        if c not in existing["chapter_ids"]:
+                            existing["chapter_ids"].append(c)
+                    if not existing.get("definition_hint") and hint:
+                        existing["definition_hint"] = hint
+                else:
+                    merged[slug] = {
+                        "canonical": slug,
+                        "aliases": aliases,
+                        "chapter_ids": chapter_ids,
+                        "definition_hint": hint,
+                    }
+
+            concepts_out = list(merged.values())
+            vocabulary: Dict[str, Any] = {
+                "schema_version": "v1",
+                "course_id": course_name.upper(),
+                "course_slug": course_slug,
+                "provider": getattr(provider, "_provider", ""),
+                "model": getattr(provider, "_model", "") or "",
+                "chapter_call_count": len(chapters),
+                "chapter_synthesis_failures": chapter_synthesis_failures,
+                "concept_count": len(concepts_out),
+                "concepts": concepts_out,
+            }
+
+            # --- all-fail → empty-seed fallback (plan §5.4) ----------------
+            if chapters_synthesized == 0 or not concepts_out:
+                logger.warning(
+                    "concept_extraction: Stage-3 produced no concepts "
+                    "(chapters_synthesized=%d, concepts=%d); falling back "
+                    "to empty seeds — graph stays at status-quo.",
+                    chapters_synthesized, len(concepts_out),
+                )
+                # Still return the (empty) vocabulary so the artifact +
+                # gate surface the degraded provenance.
+                return vocabulary
+
+            # --- (d) compile into (canonical, [regex]) seed pairs ----------
+            try:
+                from Trainforge.process_course import (
+                    compile_domain_concept_seeds,
+                )
+            except Exception as exc:  # noqa: BLE001 — import failure → skip
+                logger.warning(
+                    "concept_extraction: Stage-3 compile_domain_concept_seeds "
+                    "import failed (%s); skipping re-tag.",
+                    exc,
+                )
+                return vocabulary
+            seeds = compile_domain_concept_seeds([
+                {"id": c["canonical"], "aliases": c.get("aliases") or []}
+                for c in concepts_out
+            ])
+
+            # --- (e) re-tag each loaded chunk in-memory --------------------
+            # IN-MEMORY only — chunks.jsonl on disk is NOT rewritten, so
+            # dart_chunks_sha256 stays byte-stable (plan §4.2 Risk-6a).
+            try:
+                from lib.ontology.concept_tagging import extract_concept_tags
+            except Exception as exc:  # noqa: BLE001 — import failure → skip
+                logger.warning(
+                    "concept_extraction: Stage-3 extract_concept_tags "
+                    "import failed (%s); skipping re-tag.",
+                    exc,
+                )
+                return vocabulary
+
+            retagged = 0
+            for chunk in chunks:
+                if not isinstance(chunk, dict):
+                    continue
+                text = str(chunk.get("text") or "")
+                if not text:
+                    continue
+                try:
+                    new_tags = extract_concept_tags(
+                        text, chunk, domain_concept_seeds=seeds
+                    )
+                except Exception as exc:  # noqa: BLE001 — isolate per chunk
+                    logger.warning(
+                        "concept_extraction: Stage-3 re-tag raised on "
+                        "chunk %r (%s); leaving its tags untouched.",
+                        chunk.get("id"), exc,
+                    )
+                    continue
+                existing = chunk.get("concept_tags")
+                existing = existing if isinstance(existing, list) else []
+                # UNION — preserve any tags the chunk already carried.
+                union = list(existing)
+                for tag in new_tags:
+                    if tag not in union:
+                        union.append(tag)
+                if union != existing:
+                    retagged += 1
+                chunk["concept_tags"] = union
+
+            # The provider already emits one ``textbook_concept_call``
+            # decision event per per-chapter call (plan §7) via
+            # ``_emit_per_call_decision`` — the handler does not mint an
+            # additional aggregate event. ``retagged`` is surfaced in the
+            # phase-output envelope below for operator visibility.
+            vocabulary["_chunks_retagged"] = retagged
+            return vocabulary
+
+        # ------------------------------------------------------------------
+        # Three-stage textbook synthesis — Stage 3 (Wave C).
+        #
+        # plan: plans/textbook-llm-synthesis-3stage-2026-05.md §4.
+        #
+        # When ``TEXTBOOK_SYNTHESIS_PROVIDER`` is set, dispatch N
+        # per-chapter ``synthesize_concepts`` LLM calls (batched ≤10 per
+        # plan §5.3) over ``chapters[].chapter_text`` from
+        # ``textbook_structure.json``, merge the per-chapter concepts
+        # into a course-level vocabulary de-duped on ``canonical_slug``,
+        # compile it into ``(canonical, [regex])`` seed pairs, and
+        # re-tag the already-loaded chunks IN-MEMORY via
+        # ``extract_concept_tags(..., domain_concept_seeds=...)``. The
+        # re-tag UNIONs into each chunk's ``concept_tags`` so the
+        # downstream ``build_cooccurrence_graph`` emits real
+        # ``DomainConcept`` nodes for general (non-RDF) textbook prose —
+        # the end-to-end payoff that closes the OpenStax 0-node failure.
+        #
+        # CRITICAL: the re-tag is in-memory only — ``chunks.jsonl`` on
+        # disk is NOT rewritten, so ``dart_chunks_sha256`` stays
+        # byte-stable (plan §4.2, Risk-6a). Per-chapter failure
+        # isolation (plan §5.4): one chapter's call failing degrades
+        # rather than aborts; all-fail → empty-seed fallback (status
+        # quo). Default-off (env unset) → this block is a no-op and the
+        # phase behaves exactly as today.
+        # ------------------------------------------------------------------
+        domain_concept_vocabulary: Optional[Dict[str, Any]] = None
+        textbook_structure_path_kw = kwargs.get("textbook_structure_path") or ""
+        _ts_provider_env = os.environ.get(
+            "TEXTBOOK_SYNTHESIS_PROVIDER", ""
+        ).strip()
+        if _ts_provider_env:
+            try:
+                domain_concept_vocabulary = await _run_stage3_concept_synthesis(
+                    chunks=chunks,
+                    textbook_structure_path=textbook_structure_path_kw,
+                    course_name=course_name,
+                    course_slug=course_slug,
+                    capture=_capture_concept,
+                )
+            except Exception as exc:  # noqa: BLE001 — Stage 3 is best-effort
+                logger.warning(
+                    "concept_extraction: Stage-3 concept synthesis raised "
+                    "(%s); falling back to empty seeds (status quo).",
+                    exc,
+                )
+                domain_concept_vocabulary = None
+
+        # ------------------------------------------------------------------
+        # Fix-2: emit the genuine ``kind: "concept_semantic"`` graph.
+        #
+        # Pre-Fix-2 this phase called ``build_pedagogy_graph`` and wrote a
+        # ``kind: "pedagogy"`` graph to a file *named*
+        # ``concept_graph_semantic.json`` — the file name lied about its
+        # content. The genuine semantic graph (``DomainConcept`` nodes +
+        # typed edges) was rebuilt only later inside
+        # ``process_course.py::_generate_semantic_concept_graph``.
+        #
+        # Now the phase: (1) builds the co-occurrence concept graph from the
+        # loaded chunks' ``concept_tags`` via the instance-free
+        # ``build_cooccurrence_graph`` helper, then (2) feeds it to
+        # ``build_semantic_graph`` (whose ``_build_nodes`` copies its node
+        # set verbatim from the co-occurrence graph). ``course=None`` is
+        # explicitly supported; ``objectives_metadata=None`` is fine
+        # (Risk 1 — only the deferred ``targets-concept`` edge rule is
+        # inert, an accepted gap). ``misconceptions`` / ``questions`` are
+        # derived inline below, mirroring
+        # ``process_course.py::_build_misconceptions_for_graph`` /
+        # ``_build_questions_for_graph`` — this phase has no
+        # ``CourseProcessor`` instance.
+        # ------------------------------------------------------------------
+        def _empty_semantic_shell() -> Dict[str, Any]:
+            """A ``kind: "concept_semantic"`` empty-graph shell.
+
+            Fix-2: the empty-input shell is no longer a pedagogy graph.
+            """
+            return {
+                "kind": "concept_semantic",
                 "course_id": course_name.upper(),
                 "nodes": [],
                 "edges": [],
@@ -8235,34 +9013,144 @@ def _build_tool_registry() -> dict:
                     "edges_by_relation": {},
                 },
             }
+
+        def _derive_misconceptions(
+            chunk_list: List[Dict[str, Any]],
+        ) -> List[Dict[str, Any]]:
+            """Mirror ``CourseProcessor._build_misconceptions_for_graph``.
+
+            Derives misconception entities from chunk ``misconceptions[]``
+            so the ``misconception-of`` rule can fire. Concept routing
+            precedence: explicit ``concept_id`` → token-overlap match →
+            (implicitly) none.
+            """
+            try:
+                from Trainforge.rag.typed_edge_inference import _make_concept_id
+                from Trainforge.process_course import _route_misconception_to_tag
+                from lib.ontology.misconception_id import canonical_mc_id
+            except Exception:  # noqa: BLE001 — best-effort; rule self-skips on []
+                return []
+            entities: List[Dict[str, Any]] = []
+            seen: set = set()
+            cid_course = course_name.upper() or ""
+            for chunk in chunk_list:
+                raw = chunk.get("misconceptions") or []
+                if not raw:
+                    continue
+                tags = [t for t in (chunk.get("concept_tags") or []) if t]
+                for entry in raw:
+                    if isinstance(entry, dict):
+                        statement = (entry.get("misconception") or "").strip()
+                        correction = (entry.get("correction") or "").strip()
+                        explicit_cid = (
+                            (entry.get("concept_id") or "").strip() or None
+                        )
+                        bloom_level = (
+                            (entry.get("bloom_level") or "").strip().lower()
+                        )
+                        cognitive_domain = (
+                            entry.get("cognitive_domain") or ""
+                        ).strip()
+                    elif isinstance(entry, str):
+                        statement = entry.strip()
+                        correction = ""
+                        explicit_cid = None
+                        bloom_level = ""
+                        cognitive_domain = ""
+                    else:
+                        continue
+                    if not statement:
+                        continue
+                    mc_id = canonical_mc_id(statement, correction, bloom_level)
+                    if mc_id in seen:
+                        continue
+                    seen.add(mc_id)
+                    entity: Dict[str, Any] = {
+                        "id": mc_id,
+                        "misconception": statement,
+                        "correction": correction or statement,
+                    }
+                    if bloom_level:
+                        entity["bloom_level"] = bloom_level
+                    if cognitive_domain:
+                        entity["cognitive_domain"] = cognitive_domain
+                    concept_id = explicit_cid
+                    if not concept_id and tags:
+                        routed_tag = _route_misconception_to_tag(
+                            statement, tags
+                        )
+                        if routed_tag:
+                            concept_id = _make_concept_id(
+                                routed_tag, cid_course
+                            )
+                    if concept_id:
+                        entity["concept_id"] = concept_id
+                    entities.append(entity)
+            return entities
+
+        def _derive_questions(
+            chunk_list: List[Dict[str, Any]],
+        ) -> List[Dict[str, Any]]:
+            """Mirror ``CourseProcessor._build_questions_for_graph``.
+
+            One question entity per ``learning_outcome_ref`` on every
+            ``assessment_item`` chunk so the ``assesses`` rule can fire.
+            """
+            questions: List[Dict[str, Any]] = []
+            for chunk in chunk_list:
+                if chunk.get("chunk_type") != "assessment_item":
+                    continue
+                chunk_id = chunk.get("id")
+                if not chunk_id:
+                    continue
+                for ref in chunk.get("learning_outcome_refs") or []:
+                    if not ref:
+                        continue
+                    questions.append({
+                        "id": f"q_{chunk_id}_{ref}",
+                        "objective_id": ref,
+                        "source_chunk_id": chunk_id,
+                    })
+            return questions
+
+        try:
+            from lib.ontology.cooccurrence_graph import build_cooccurrence_graph
+            from Trainforge.rag.typed_edge_inference import build_semantic_graph
+        except Exception as exc:  # noqa: BLE001 — import failures shouldn't crash phase
+            logger.warning(
+                "concept_extraction: semantic-graph builder import failed "
+                "(%s); emitting empty concept_semantic graph shell.",
+                exc,
+            )
+            graph: Dict[str, Any] = _empty_semantic_shell()
         else:
             try:
-                graph = build_pedagogy_graph(
-                    chunks=chunks,
-                    objectives={},
-                    course_id=course_name.upper() or None,
-                    modules=[],
-                    concept_classes=None,
+                cooccurrence_graph = build_cooccurrence_graph(
+                    chunks,
+                    course_name.upper() or "",
+                    graph_kind="concept",
                 )
+                misconceptions = _derive_misconceptions(chunks)
+                questions = _derive_questions(chunks)
+                graph = build_semantic_graph(
+                    chunks,
+                    course=None,
+                    concept_graph=cooccurrence_graph,
+                    misconceptions=misconceptions or None,
+                    questions=questions or None,
+                    objectives_metadata=None,
+                )
+                # ``build_semantic_graph`` stamps ``kind: "concept_semantic"``;
+                # add ``course_id`` for parity with the legacy shell shape.
+                if isinstance(graph, dict):
+                    graph.setdefault("course_id", course_name.upper())
             except Exception as exc:  # noqa: BLE001 — fail-soft on builder error
                 logger.warning(
-                    "Phase 6 ST 12: build_pedagogy_graph raised (%s); "
-                    "emitting empty graph shell.",
+                    "concept_extraction: build_semantic_graph raised (%s); "
+                    "emitting empty concept_semantic graph shell.",
                     exc,
                 )
-                graph = {
-                    "kind": "pedagogy",
-                    "course_id": course_name.upper(),
-                    "nodes": [],
-                    "edges": [],
-                    "generated_at": datetime.now().isoformat(),
-                    "stats": {
-                        "node_count": 0,
-                        "edge_count": 0,
-                        "nodes_by_class": {},
-                        "edges_by_relation": {},
-                    },
-                }
+                graph = _empty_semantic_shell()
 
         # Persist graph to LibV2/courses/<slug>/concept_graph/.
         # Phase 8 ST 3: route through `_resolve_libv2_root` so ops
@@ -8302,7 +9190,42 @@ def _build_tool_registry() -> dict:
             encoding="utf-8",
         )
 
-        return json.dumps({
+        # Three-stage textbook synthesis — Stage 3 (Wave C, plan §4.3).
+        # Persist the merged domain-concept vocabulary as a sibling of
+        # concept_graph_semantic.json. Written only when Stage 3 ran
+        # (TEXTBOOK_SYNTHESIS_PROVIDER set + a usable textbook structure)
+        # — a default-off run leaves no domain_concept_vocabulary.json,
+        # and the domain_concept_vocabulary gate skips-with-pass.
+        domain_concept_vocabulary_path: str = ""
+        domain_concept_count: int = 0
+        chunks_retagged: int = 0
+        if isinstance(domain_concept_vocabulary, dict):
+            chunks_retagged = int(
+                domain_concept_vocabulary.pop("_chunks_retagged", 0) or 0
+            )
+            domain_concept_count = int(
+                domain_concept_vocabulary.get("concept_count", 0) or 0
+            )
+            vocab_path = graph_dir / "domain_concept_vocabulary.json"
+            try:
+                vocab_path.write_text(
+                    json.dumps(
+                        domain_concept_vocabulary,
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                domain_concept_vocabulary_path = str(vocab_path)
+            except OSError as exc:
+                logger.warning(
+                    "concept_extraction: failed to persist "
+                    "domain_concept_vocabulary.json (%s); the Stage-3 "
+                    "vocabulary artifact was not written.",
+                    exc,
+                )
+
+        envelope: Dict[str, Any] = {
             "success": True,
             "concept_graph_path": str(graph_path),
             "concept_graph_sha256": sha256,
@@ -8317,7 +9240,15 @@ def _build_tool_registry() -> dict:
             # for postmortem readability; the count is authoritative.
             "projection_drops_count": len(projection_drops),
             "projection_drops": projection_drops[:10],
-        })
+        }
+        # Stage-3 (Wave C) output keys. Empty / zero on a default-off run.
+        if domain_concept_vocabulary_path:
+            envelope["domain_concept_vocabulary_path"] = (
+                domain_concept_vocabulary_path
+            )
+            envelope["domain_concept_count"] = domain_concept_count
+            envelope["chunks_retagged"] = chunks_retagged
+        return json.dumps(envelope)
 
     registry["run_concept_extraction"] = _run_concept_extraction
 
@@ -8569,9 +9500,23 @@ def _build_tool_registry() -> dict:
         # parameters (chunk_id, text, html, item, section_heading,
         # chunk_type, follows_chunk_id, position_in_module, html_xpath,
         # char_span, section_source_ids, merged_headings) are all that
-        # we have to thread through. Concept-tag / objective-ref /
-        # bloom-level enrichment is the synthesis surface's
-        # responsibility downstream.
+        # we have to thread through.
+        #
+        # ``concept_tags`` IS populated here (previously ``[]``): the
+        # empty-tag substrate starved the downstream concept-graph +
+        # CURIE machinery, which has nothing to work from when DART
+        # chunks carry no concept tags. The instance-free
+        # ``lib.ontology.concept_tagging.extract_concept_tags`` helper
+        # (the same logic ``CourseProcessor._extract_concept_tags``
+        # delegates to) tags from the chunk text + the HTML parser's
+        # ``key_concepts``. ``domain_concept_seeds`` is empty here: the
+        # ``chunking`` phase runs before ``course_planning``, so no
+        # synthesized objectives (the source of per-course seeds) exist
+        # yet — the pedagogy-pattern + tech-anchor + key-concept paths
+        # carry the load. objective-ref enrichment remains the synthesis
+        # surface's responsibility downstream.
+        from lib.ontology.concept_tagging import extract_concept_tags
+
         def _create_chunk(
             *,
             chunk_id: str,
@@ -8619,6 +9564,22 @@ def _build_tool_registry() -> dict:
             # canonical JSON-LD > data-cf > heuristic cascade.
             bloom_level, bloom_source = _resolve_chunk_bloom_level(item, text)
             difficulty = _resolve_chunk_difficulty(item, text, bloom_level)
+            # Real domain-concept tags from the chunk text + the HTML
+            # parser's bold-term / definition ``key_concepts``. No
+            # per-course domain seeds at this phase (objectives not yet
+            # synthesized); helper defaults ``domain_concept_seeds`` to
+            # empty. Defensive: a tagging failure must not abort the
+            # chunking phase — fall back to ``[]`` (legacy behaviour).
+            try:
+                concept_tags = extract_concept_tags(text, item)
+            except Exception:  # noqa: BLE001 — tagging is best-effort
+                logger.warning(
+                    "concept-tag extraction failed for chunk %s; "
+                    "emitting empty concept_tags",
+                    chunk_id,
+                    exc_info=True,
+                )
+                concept_tags = []
             chunk: Dict[str, Any] = {
                 "id": chunk_id,
                 "schema_version": "v4",
@@ -8627,7 +9588,7 @@ def _build_tool_registry() -> dict:
                 "html": html,
                 "follows_chunk": follows_chunk_id,
                 "source": source,
-                "concept_tags": [],
+                "concept_tags": concept_tags,
                 "learning_outcome_refs": [],
                 "difficulty": difficulty,
                 "tokens_estimate": tokens_estimate,

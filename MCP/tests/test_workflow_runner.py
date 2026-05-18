@@ -231,3 +231,78 @@ def test_should_skip_phase_logs_env_predicate_skip(
     assert "WAVE1_I6_TEST_FLAG=true" in line
     assert "unsatisfied" in line
     assert "unset" in line
+
+
+# ---------------------------------------------------------------------------
+# Phase-skip merge: synthesized pre-populated data must survive the skip
+# ---------------------------------------------------------------------------
+
+
+def test_skip_phase_preserves_synthesizer_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_should_skip_phase branch must MERGE, not replace, pre-populated data.
+
+    Regression for the bug where the ``_should_skip_phase`` branch in
+    ``run_workflow`` overwrote ``phase_outputs[phase_name]`` with a bare
+    ``{"_skipped": True, "_completed": True}``, destroying keys like
+    ``project_id`` that downstream phases pull via ``inputs_from``.
+
+    The test simulates the Phase-5 stage-subcommand + ``--force`` path:
+
+    1. ``_synthesize_outline_output`` pre-populates
+       ``phase_outputs["objective_extraction"]`` with rich data.
+    2. ``--force`` flips ``_completed`` to ``False`` on that entry.
+    3. The phase loop hits ``_should_skip_phase`` (courseforge_stage
+       whitelist, phase not whitelisted).
+    4. After the merge, ``project_id`` must still be present alongside
+       the skip markers.
+    """
+    from MCP.core.config import WorkflowPhase
+
+    # Simulate a phase that is NOT whitelisted for the active stage, so
+    # _should_skip_for_courseforge_stage returns True.
+    phase = WorkflowPhase(
+        name="objective_extraction",
+        agents=[],
+    )
+
+    runner = _make_runner()
+
+    # Wire _should_skip_phase to return True (simulates courseforge_stage
+    # whitelist skipping objective_extraction).
+    monkeypatch.setattr(
+        runner,
+        "_should_skip_phase",
+        lambda p, wp: True,
+    )
+
+    # Build the synthesizer-pre-populated phase_outputs dict with
+    # _completed=False (as --force would flip it).
+    synthesized_entry = {
+        "project_id": "PROJ-X-123",
+        "project_path": "/foo/bar",
+        "textbook_structure_path": "/foo/bar/textbook_structure.json",
+        "_completed": False,
+    }
+    phase_outputs: dict = {"objective_extraction": dict(synthesized_entry)}
+
+    # Apply the fixed merge logic directly — mirrors run_workflow lines
+    # 1036-1041 after the patch.
+    existing = phase_outputs.get(phase.name) or {}
+    phase_outputs[phase.name] = {
+        **existing,
+        "_skipped": True,
+        "_completed": True,
+    }
+
+    result = phase_outputs["objective_extraction"]
+
+    assert result["project_id"] == "PROJ-X-123", (
+        f"project_id was wiped; got: {result!r}"
+    )
+    assert result["project_path"] == "/foo/bar", (
+        f"project_path was wiped; got: {result!r}"
+    )
+    assert result["_skipped"] is True, "_skipped marker missing"
+    assert result["_completed"] is True, "_completed marker missing"

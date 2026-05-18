@@ -1192,6 +1192,79 @@ def _build_concept_graph_inputs(
     return {"concept_graph_path": candidate}, []
 
 
+def _build_domain_concept_vocabulary_inputs(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Stage-3 (Wave C) — input builder for DomainConceptVocabularyValidator.
+
+    The validator's ``validate()`` reads
+    ``inputs["domain_concept_vocabulary_path"]`` (or the in-memory
+    ``domain_concept_vocabulary`` dict) and skips-with-pass when neither
+    is supplied — the ``ABCD_MISSING`` graceful-degrade contract.
+
+    Phase ``concept_extraction`` declares ``domain_concept_vocabulary_path``
+    as an OPTIONAL YAML ``outputs:`` key, written only when
+    ``TEXTBOOK_SYNTHESIS_PROVIDER`` is set. On a default-off run the key
+    is absent — so this builder returns an EMPTY inputs dict with NO
+    missing-key list, letting the validator run its no-op skip-with-pass
+    rather than the executor marking the gate ``GATE_SKIPPED_MISSING_INPUTS``.
+    """
+    ce = phase_outputs.get("concept_extraction") or {}
+    candidate = ce.get("domain_concept_vocabulary_path")
+    if not candidate:
+        candidate = _locate(phase_outputs, "domain_concept_vocabulary_path")
+    if not isinstance(candidate, str) or not candidate:
+        # Default-off run: no vocabulary artifact. Empty inputs + no
+        # missing keys → the validator's graceful-degrade no-op pass.
+        return {}, []
+    return {"domain_concept_vocabulary_path": candidate}, []
+
+
+def _build_chapter_objective_coverage_inputs(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Stage-2 (Wave D) — input builder for ChapterObjectiveCoverageValidator.
+
+    The validator (``lib/validators/chapter_objective_coverage.py``)
+    cross-checks every ``chapters[].id`` with non-empty ``chapter_text``
+    against the synthesized chapter objectives, and asserts the
+    reconciled ``terminal_objectives[]`` is non-empty. It reads:
+
+    * ``inputs["textbook_structure_path"]`` — source of ``chapters[]``
+      (each chapter carries ``id`` + the Stage-2 ``chapter_text``).
+      Pulled from ``phase_outputs.objective_extraction.textbook_structure_path``.
+    * ``inputs["synthesized_objectives_path"]`` — the Stage-2 output
+      (``chapter_objectives`` + reconciled ``terminal_objectives``).
+      Routed through :func:`_resolve_objectives_path`.
+
+    Graceful-degrade contract: on a default-off run
+    (``TEXTBOOK_SYNTHESIS_PROVIDER`` unset) the
+    ``textbook_structure.json`` carries no ``chapter_text``, so the
+    validator's own no-op skip-with-pass fires. We therefore return an
+    EMPTY missing-key list even when an input is unresolvable — the
+    validator handles the absence — so the executor lets the validator
+    run rather than marking the gate ``GATE_SKIPPED_MISSING_INPUTS``.
+    """
+    inputs: Dict[str, Any] = {}
+
+    oe = phase_outputs.get("objective_extraction") or {}
+    ts_path = oe.get("textbook_structure_path")
+    if not (isinstance(ts_path, str) and ts_path):
+        ts_path = _locate(phase_outputs, "textbook_structure_path")
+    if isinstance(ts_path, str) and ts_path:
+        inputs["textbook_structure_path"] = ts_path
+
+    objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
+    if objectives_path:
+        inputs["synthesized_objectives_path"] = objectives_path
+
+    # No missing-key markers: both inputs are optional from the
+    # router's POV — the validator skips-with-pass on absence.
+    return inputs, []
+
+
 def _build_abcd_objective_inputs(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -1644,6 +1717,22 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.abcd_objective.AbcdObjectiveValidator",
         _build_abcd_objective_inputs,
+    )
+    # DomainConceptVocabularyValidator fires at ``concept_extraction``
+    # as ``domain_concept_vocabulary`` (Stage 3, Wave C) and needs the
+    # optional domain_concept_vocabulary.json path.
+    r.register(
+        "lib.validators.domain_concept_vocabulary.DomainConceptVocabularyValidator",
+        _build_domain_concept_vocabulary_inputs,
+    )
+    # ChapterObjectiveCoverageValidator fires at ``course_planning`` as
+    # ``chapter_objective_coverage`` (Stage 2, Wave D) and needs the
+    # textbook_structure (for chapters[].chapter_text) + the
+    # synthesized_objectives (for chapter_objectives + reconciled
+    # terminal_objectives). Skips-with-pass on a default-off run.
+    r.register(
+        "lib.validators.chapter_objective_coverage.ChapterObjectiveCoverageValidator",
+        _build_chapter_objective_coverage_inputs,
     )
 
     return r
