@@ -571,13 +571,13 @@ def build_pedagogy_graph(
         ):
             co_to_parent_to[nid] = parent
 
-    # ``concept_to_chunks`` tracks chunk-membership for concepts that
-    # are *exemplifies*-edge-eligible (i.e., concepts cited from example
-    # chunks). It still drives Concept-node emission for the exemplifies
-    # path. Wave 76 adds ``concept_to_chunks_all`` to track membership
-    # across every chunk type — this is the substrate for the new
-    # co-occurrence-aware ``prerequisite_of`` rule.
-    concept_to_chunks: Dict[str, Set[str]] = defaultdict(set)
+    # ``concept_to_chunks_all`` tracks concept chunk-membership across
+    # every chunk type. It is the substrate for the co-occurrence-aware
+    # ``prerequisite_of`` rule AND (post example-only-emission bugfix)
+    # drives Concept-node emission for the whole graph — every concept
+    # carrying a ``concept_tag`` on any chunk gets a node, not just
+    # concepts cited from ``example`` chunks. The ``exemplifies`` edge
+    # itself stays example-gated below (only example chunks exemplify).
     concept_to_chunks_all: Dict[str, Set[str]] = defaultdict(set)
     concept_to_week: Dict[str, int] = {}
     concept_label: Dict[str, str] = {}
@@ -748,7 +748,6 @@ def build_pedagogy_graph(
                     "target": f"concept:{slug}",
                     "relation_type": "exemplifies",
                 })
-                concept_to_chunks[slug].add(cid)
                 concept_label.setdefault(slug, tag)
 
         # Aggregate concept_tags per-week for prerequisite_of inference.
@@ -769,11 +768,13 @@ def build_pedagogy_graph(
                 concept_to_week.setdefault(slug, week)
 
     # ------------------------------------------------------------------
-    # 8. Concept nodes (only those referenced by exemplifies edges or
-    #    used by misconceptions below). Lightweight — concept graph
-    #    proper is in concept_graph.json. Pedagogy graph carries just
-    #    enough Concept nodes to keep exemplifies / interferes_with /
-    #    prerequisite_of edges referentially complete.
+    # 8. Concept nodes — emitted for every concept carrying a
+    #    ``concept_tag`` on any chunk (any chunk_type), so a corpus with
+    #    zero ``example`` chunks still gets its full concept vocabulary.
+    #    Lightweight — concept graph proper is in concept_graph.json.
+    #    Pedagogy graph carries just enough Concept nodes to keep
+    #    exemplifies / interferes_with / prerequisite_of /
+    #    concept_supports_outcome edges referentially complete.
     # ------------------------------------------------------------------
     concept_nodes_emitted: Set[str] = set()
 
@@ -795,7 +796,7 @@ def build_pedagogy_graph(
         nodes.append(node)
         concept_nodes_emitted.add(slug)
 
-    for slug in concept_to_chunks:
+    for slug in concept_to_chunks_all:
         _emit_concept(slug)
 
     # ------------------------------------------------------------------
