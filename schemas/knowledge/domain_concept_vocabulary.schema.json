@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/schemas/knowledge/domain_concept_vocabulary.schema.json",
+  "title": "Domain Concept Vocabulary",
+  "description": "Pins the domain_concept_vocabulary.json artifact emitted by Stage 3 (large-LLM concept extraction, plans/textbook-llm-synthesis-3stage-2026-05.md §4.3). Written as a sibling of concept_graph_semantic.json at LibV2/courses/<slug>/concept_graph/domain_concept_vocabulary.json. It is the merged, de-duplicated (on canonical_slug) per-chapter concept list; it is compiled into (canonical, [regex]) seed pairs that re-tag DART chunks before the co-occurrence graph build. Also the surface a future CURIE-minting pass reads.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "course_id",
+    "concept_count",
+    "concepts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "v1"
+    },
+    "course_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable course identifier."
+    },
+    "course_slug": {
+      "type": "string",
+      "description": "Slug form of the course identifier (canonical_slug)."
+    },
+    "provider": {
+      "type": "string",
+      "description": "Runtime-resolved provider name. When all per-chapter calls degraded to the empty-seed fallback (§5.4), this records the degraded provenance."
+    },
+    "model": {
+      "type": "string"
+    },
+    "chapter_call_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of per-chapter LLM calls dispatched in this Stage-3 run."
+    },
+    "chapter_synthesis_failures": {
+      "type": "array",
+      "description": "Chapter IDs whose per-chapter concept call exhausted its parse-retry budget (§5.4 failure isolation). Informational — surfaced by DomainConceptVocabularyValidator at warning severity, not a hard fail.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "concept_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Asserted concept count. Must equal len(concepts) — DomainConceptVocabularyValidator emits VOCAB_COUNT_MISMATCH otherwise."
+    },
+    "concepts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Concept"
+      }
+    }
+  },
+  "$defs": {
+    "Concept": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical"],
+      "properties": {
+        "canonical": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical concept name, run through lib/ontology/slugs.py::canonical_slug at emit."
+        },
+        "aliases": {
+          "type": "array",
+          "description": "Surface-form aliases. Maps directly onto compile_domain_concept_seeds's {id, aliases} input.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "chapter_ids": {
+          "type": "array",
+          "description": "IDs of the chapters this concept was extracted from.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "definition_hint": {
+          "type": "string",
+          "description": "Short gloss of the concept for downstream consumers."
+        }
+      }
+    }
+  }
+}

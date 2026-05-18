@@ -98,6 +98,7 @@
         "bloom_level_assignment",
         "bloom_structural_enforcement_check",
         "boilerplate_strip",
+        "chapter_objective_call",
         "chunk_deduplication",
         "chunk_retrieval",
         "chunk_selection",
@@ -217,7 +218,10 @@
         "synthesis_provider_call",
         "synthesis_quota_check",
         "teaching_role_heuristic_extended",
+        "terminal_objective_reconciliation",
+        "textbook_concept_call",
         "textbook_integration",
+        "textbook_outline_call",
         "trainforge_quality_aggregated",
         "training_pair_promotion_check",
         "training_run_planning",
@@ -226,7 +230,7 @@
         "violation_generation",
         "wcag_compliance_check"
       ],
-      "description": "Category of decision from decision taxonomy (alphabetised; Wave 22 adds: assessment_generation, assessment_planning, boilerplate_strip, content_selection, pipeline_run_attribution, question_type_selection; Phase 3 two-pass router adds: block_escalation, block_outline_call, block_rewrite_call, block_validation_action; Phase 4 statistical tier adds: bert_ensemble_disagreement, bert_ensemble_dispersion_high, bert_ensemble_member_loaded, statistical_validation_fail, statistical_validation_pass; Wave W-D14 course-outliner in-process provider adds: course_outline_call — emitted by Courseforge.generators._outliner_provider.OutlinerProvider per synthesize_objectives() invocation; rationale interpolates provider, model, course_name, chapter_count_input, weeks_input, terminal_count_emit, chapter_count_emit, output_chars, retry_count, success, optional last_error; Wave W-D15 assessment-generator in-process provider adds: assessment_generator_call — emitted by Trainforge.generators._assessment_provider.AssessmentGeneratorProvider per generate_assessments() invocation; rationale interpolates provider, model, course_code, chunk_count, target_count, emitted_questions, distinct_question_types, refusal_count, evidence_quote_emit_rate, output_chars, retry_count, success, optional last_error)"
+      "description": "Category of decision from decision taxonomy (alphabetised; Wave 22 adds: assessment_generation, assessment_planning, boilerplate_strip, content_selection, pipeline_run_attribution, question_type_selection; Phase 3 two-pass router adds: block_escalation, block_outline_call, block_rewrite_call, block_validation_action; Phase 4 statistical tier adds: bert_ensemble_disagreement, bert_ensemble_dispersion_high, bert_ensemble_member_loaded, statistical_validation_fail, statistical_validation_pass; Wave W-D14 course-outliner in-process provider adds: course_outline_call — emitted by Courseforge.generators._outliner_provider.OutlinerProvider per synthesize_objectives() invocation; rationale interpolates provider, model, course_name, chapter_count_input, weeks_input, terminal_count_emit, chapter_count_emit, output_chars, retry_count, success, optional last_error; Wave W-D15 assessment-generator in-process provider adds: assessment_generator_call — emitted by Trainforge.generators._assessment_provider.AssessmentGeneratorProvider per generate_assessments() invocation; rationale interpolates provider, model, course_code, chunk_count, target_count, emitted_questions, distinct_question_types, refusal_count, evidence_quote_emit_rate, output_chars, retry_count, success, optional last_error; three-stage textbook synthesis adds: textbook_outline_call — emitted by Courseforge.generators._textbook_synthesis_provider.TextbookSynthesisProvider per Stage-1 outline call (one, or one per chaptered split); rationale interpolates course_name, provider, model, chapter_count_input, call_mode, theme_count_emit, draft_to_count_emit, output_chars, retry_count, success; textbook_concept_call — emitted by the same provider per Stage-3 per-chapter domain-concept call; rationale interpolates course_name, provider, model, chapter_id, chapter_text_chars, concept_count_emit, chapter_text_truncated, retry_count, success; chapter_objective_call — emitted by the same provider per Stage-2 per-chapter CO-NN synthesis call; rationale interpolates course_name, provider, model, chapter_id, chapter_text_chars, co_count_emit, sub_objective_count_emit, retry_count, success; terminal_objective_reconciliation — emitted by the same provider per reconciliation call that adjusts Stage-1 draft TO-NN against Stage-2 chapter CO-NN; rationale interpolates course_name, provider, model, draft_to_count_input, co_count_input, reconciled_to_count_emit, retry_count, success)"
     },
     "decision": {
       "type": "string",

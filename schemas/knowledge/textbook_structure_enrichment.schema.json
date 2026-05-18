@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/schemas/knowledge/textbook_structure_enrichment.schema.json",
+  "title": "Textbook Structure — Stage-1 Enrichment Keys",
+  "description": "Validates ONLY the three optional sub-objects that Stage 1 (large-LLM outline synthesis, plans/textbook-llm-synthesis-3stage-2026-05.md §3.4) folds into textbook_structure.json — `semantic_outline`, `draft_terminal_objectives`, and `structure_enrichment`. It does NOT pin the full textbook_structure.json shape: legacy files emitted by the deterministic SemanticStructureExtractor (which carry none of these three keys) still validate against this schema because all three keys are optional. The enrichment keys are present only when TEXTBOOK_SYNTHESIS_PROVIDER ran. Each new sub-object IS strict (`additionalProperties:false`) so the LLM output shape is locked once it is emitted.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "semantic_outline": {
+      "$ref": "#/$defs/SemanticOutline"
+    },
+    "draft_terminal_objectives": {
+      "type": "array",
+      "description": "Stage-1 DRAFT terminal objectives. Each carries `draft: true` so the reconciliation step (§6) can tell drafts from reconciled TO-NN. IDs minted via mint_lo_id('terminal', idx).",
+      "items": {
+        "$ref": "#/$defs/DraftTerminalObjective"
+      }
+    },
+    "structure_enrichment": {
+      "$ref": "#/$defs/StructureEnrichment"
+    }
+  },
+  "$defs": {
+    "SemanticOutline": {
+      "type": "object",
+      "description": "Course-level synthesized outline: a one-paragraph course summary plus an ordered list of cross-chapter themes.",
+      "additionalProperties": false,
+      "required": ["course_summary", "themes"],
+      "properties": {
+        "course_summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One-paragraph synthesized course description."
+        },
+        "themes": {
+          "type": "array",
+          "description": "Cross-chapter themes. Each theme's chapter_ids[] must resolve against chapters[].id (enforced by TextbookOutlineValidator, not by this schema).",
+          "items": {
+            "$ref": "#/$defs/Theme"
+          }
+        }
+      }
+    },
+    "Theme": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "chapter_ids"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chapter_ids": {
+          "type": "array",
+          "description": "IDs of the chapters this theme spans. Resolved against textbook_structure.chapters[].id by TextbookOutlineValidator.",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "summary": {
+          "type": "string"
+        },
+        "prerequisite_theme_titles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "DraftTerminalObjective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement", "draft"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Terminal-objective ID (TO-NN). Pattern mirrors lib/ontology/learning_objectives.py and courseforge_jsonld_v1.schema.json.",
+          "pattern": "^[A-Z]{2,}-\\d{2,}$"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bloom_level": {
+          "type": "string",
+          "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+        },
+        "bloom_verb": {
+          "type": "string"
+        },
+        "abcd": {
+          "type": "object",
+          "description": "ABCD-framework sub-object passed through verbatim. Audited by the course_planning-phase AbcdObjectiveValidator; shape pinned by $defs.AbcdObjective in courseforge_jsonld_v1.schema.json.",
+          "additionalProperties": true
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "chunk_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "draft": {
+          "type": "boolean",
+          "const": true,
+          "description": "Always true on a Stage-1 draft TO. Dropped by the reconciliation step (§6) when the reconciled terminal_objectives[] are minted into synthesized_objectives.json."
+        }
+      }
+    },
+    "StructureEnrichment": {
+      "type": "object",
+      "description": "Provenance for the Stage-1 enrichment pass: which provider/model ran, the call mode, and the call count.",
+      "additionalProperties": false,
+      "required": ["enriched", "schema_version"],
+      "properties": {
+        "enriched": {
+          "type": "boolean",
+          "const": true
+        },
+        "provider": {
+          "type": "string",
+          "description": "Runtime-resolved provider name (anthropic | together | local | any W-D12 registry provider)."
+        },
+        "model": {
+          "type": "string"
+        },
+        "call_mode": {
+          "type": "string",
+          "enum": ["single", "chaptered"],
+          "description": "single = one whole-textbook call; chaptered = per-chapter-group split when the rendered skeleton exceeds _SKELETON_CHAR_BUDGET."
+        },
+        "calls": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "schema_version": {
+          "type": "string",
+          "const": "v1"
+        }
+      }
+    }
+  }
+}
