@@ -133,6 +133,122 @@ def test_block_curie_anchoring_returns_regenerate_when_missing():
 
 
 # --------------------------------------------------------------------------- #
+# 1b. Minted-CURIE concept-aware anchoring (v0.3.0)
+# --------------------------------------------------------------------------- #
+
+
+def test_minted_curie_anchored_via_surface_form():
+    """A minted CURIE is anchored when one of its vocabulary surface
+    forms appears in the block text — the synthetic CURIE token itself
+    need NOT appear literally."""
+    minted_map = {
+        "openstaxalg9:slope": {
+            "canonical": "slope",
+            "surface_forms": ["slope", "gradient"],
+        },
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_slope_0",
+            curies=("openstaxalg9:slope",),
+            # The minted CURIE token never appears; the surface form
+            # "gradient" does.
+            key_claims=["The gradient of a line measures its steepness."],
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+    })
+    assert result.passed is True
+    assert result.action is None
+
+
+def test_minted_curie_not_anchored_when_no_surface_form_in_text():
+    """A minted CURIE whose surface forms are absent from the block
+    text fails the anchoring gate (action=regenerate)."""
+    minted_map = {
+        "openstaxalg9:slope": {
+            "canonical": "slope",
+            "surface_forms": ["slope", "gradient"],
+        },
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_slope_0",
+            curies=("openstaxalg9:slope",),
+            key_claims=["This sentence mentions nothing about lines."],
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+    })
+    assert result.passed is False
+    assert result.action == "regenerate"
+    codes = [i.code for i in result.issues if i.severity == "critical"]
+    assert "OUTLINE_BLOCK_CURIE_NOT_ANCHORED" in codes
+
+
+def test_rdf_curie_still_uses_literal_check_with_map():
+    """A CURIE NOT in the minted map (an RDF CURIE) keeps the legacy
+    literal-token anchoring even when a minted_curie_map is supplied."""
+    minted_map = {
+        "openstaxalg9:slope": {
+            "canonical": "slope",
+            "surface_forms": ["slope"],
+        },
+    }
+    # The RDF CURIE token must appear literally in the text to anchor.
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_a_0",
+            curies=("sh:NodeShape",),
+            key_claims=["The sh:NodeShape constrains the focus node."],
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+    })
+    assert result.passed is True
+
+    # And an RDF CURIE absent from the text fails — surface forms of
+    # an unrelated minted CURIE do not rescue it.
+    blocks_fail = [
+        _outline_block(
+            block_id="page_01#concept_b_0",
+            curies=("sh:NodeShape",),
+            key_claims=["The slope of a line is its steepness."],
+        ),
+    ]
+    result_fail = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks_fail,
+        "minted_curie_map": minted_map,
+    })
+    assert result_fail.passed is False
+    assert result_fail.action == "regenerate"
+
+
+def test_no_minted_map_byte_identical_to_legacy():
+    """Without a minted_curie_map, anchoring behaviour is byte-identical
+    to the pre-minting contract: a minted-style CURIE that does not
+    appear literally fails (no surface-form rescue)."""
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_slope_0",
+            curies=("openstaxalg9:slope",),
+            key_claims=["The gradient of a line measures its steepness."],
+        ),
+    ]
+    # No minted_curie_map → the legacy literal check applies; "slope"
+    # token absent → fails.
+    result = BlockCurieAnchoringValidator().validate({"blocks": blocks})
+    assert result.passed is False
+    assert result.action == "regenerate"
+
+
+# --------------------------------------------------------------------------- #
 # 2. Content-type taxonomy
 # --------------------------------------------------------------------------- #
 

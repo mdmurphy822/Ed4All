@@ -904,6 +904,77 @@ def _build_block_input_rewrite(
     )
 
 
+def _resolve_minted_curie_map(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Build the minted-CURIE map from the Stage-3 domain vocabulary.
+
+    Resolves ``domain_concept_vocabulary.json`` (preferring the
+    ``phase_outputs.concept_extraction.domain_concept_vocabulary_path``
+    thread, falling back to scanning any phase that surfaced the key),
+    loads it, and returns the
+    ``{minted_curie: {"canonical", "surface_forms"}}`` map built by
+    :func:`lib.ontology.curie_discovery.build_minted_curie_map`.
+
+    Returns ``None`` when no vocabulary path is threaded / on disk (RDF
+    / legacy corpora) or when the file is missing / unparseable — the
+    consuming gate then runs its legacy literal-token anchoring.
+    """
+    ce = phase_outputs.get("concept_extraction") or {}
+    candidate = ce.get("domain_concept_vocabulary_path")
+    if not isinstance(candidate, str) or not candidate:
+        candidate = _locate(phase_outputs, "domain_concept_vocabulary_path")
+    if not isinstance(candidate, str) or not candidate:
+        return None
+    vocab_path = Path(candidate)
+    if not vocab_path.is_file():
+        return None
+    try:
+        import json as _json
+
+        vocabulary = _json.loads(vocab_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "gate-input: failed to load domain_concept_vocabulary.json "
+            "at %s (%s); minted-CURIE anchoring unavailable.",
+            vocab_path, exc,
+        )
+        return None
+    try:
+        from lib.ontology.curie_discovery import build_minted_curie_map
+
+        course_id = workflow_params.get("course_name") or workflow_params.get(
+            "course_code"
+        )
+        minted = build_minted_curie_map(vocabulary, course_id=course_id)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        logger.warning("gate-input: build_minted_curie_map failed: %s", exc)
+        return None
+    return minted or None
+
+
+def _build_block_curie_anchoring_input(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Builder for ``BlockCurieAnchoringValidator`` (outline + rewrite).
+
+    Reuses the Group-A rewrite-tier Block surface, then threads in the
+    optional ``minted_curie_map`` so the validator can anchor a minted
+    (prose-corpus) CURIE via vocabulary surface forms. When no domain
+    vocabulary exists, ``minted_curie_map`` is omitted and the validator
+    runs byte-identical legacy literal-token anchoring.
+    """
+    inputs, missing = _build_block_input_rewrite(phase_outputs, workflow_params)
+    if missing:
+        return inputs, missing
+    minted = _resolve_minted_curie_map(phase_outputs, workflow_params)
+    if minted:
+        inputs["minted_curie_map"] = minted
+    return inputs, []
+
+
 def _build_rewrite_block_input(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -1573,7 +1644,7 @@ def default_router() -> GateInputRouter:
     # the outline_* shim).
     r.register(
         "Courseforge.router.inter_tier_gates.BlockCurieAnchoringValidator",
-        _build_block_input_rewrite,
+        _build_block_curie_anchoring_input,
     )
     r.register(
         "Courseforge.router.inter_tier_gates.BlockContentTypeValidator",
