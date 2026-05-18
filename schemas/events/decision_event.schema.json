@@ -124,6 +124,7 @@
         "courseforge_validation_aggregated",
         "coverage_map_aggregated",
         "curie_anchoring_check",
+        "curie_minting",
         "curriculum_alignment_call",
         "dart_markers_check",
         "deterministic_pair_audit_stamp",
