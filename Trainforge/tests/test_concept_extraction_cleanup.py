@@ -396,3 +396,153 @@ def test_extract_drops_short_or_numeric(candidate):
     """
     klass = classify_concept(candidate)
     assert klass == LOW_SIGNAL, f"{candidate!r} → {klass}"
+
+
+# ---------------------------------------------------------------------------
+# P2: trusted domain_concept_seeds bypass the is_droppable_class drop.
+#
+# ``domain_concept_seeds`` are LLM-authored per-course vocabulary (the
+# Stage-3 textbook-synthesis pass). The Wave-76 droppable-class filter is
+# RDF/SHACL/pedagogy-tuned and silently strips legitimate general-textbook
+# vocabulary — a psychology concept "applications", an economics "plan", a
+# nursing "assessment". Seeds must BYPASS that filter; the three untrusted
+# sources (key_concepts, CONCEPT_PATTERNS, tech-anchors) keep it.
+# ---------------------------------------------------------------------------
+
+import re  # noqa: E402
+
+from lib.ontology.concept_tagging import extract_concept_tags  # noqa: E402
+from lib.ontology.concept_classifier import (  # noqa: E402
+    classify_concept as _classify_concept_p2,
+    is_droppable_class as _is_droppable_p2,
+)
+
+
+def _seed(canonical, *aliases):
+    """Build one compiled ``(canonical, [word-boundary regex])`` seed."""
+    pats = [re.compile(rf"\b{re.escape(a)}\b", re.IGNORECASE)
+            for a in (aliases or (canonical,))]
+    return (canonical, pats)
+
+
+def test_seed_collides_with_pedagogical_marker_is_emitted():
+    """A seed whose canonical collides with a PEDAGOGICAL_MARKERS word
+    (``applications`` / ``plan``) IS emitted when it matches the text.
+
+    Without the trusted bypass, ``classify_concept('applications')`` =
+    PedagogicalMarker → ``is_droppable_class`` → dropped. The Stage-3 LLM
+    deliberately extracted these as domain concepts, so they must survive.
+    """
+    # Sanity: these WOULD be dropped if run through the untrusted filter.
+    assert _is_droppable_p2(_classify_concept_p2("applications"))
+    assert _is_droppable_p2(_classify_concept_p2("plan"))
+
+    text = (
+        "This chapter surveys real-world applications of behavioural "
+        "psychology and the treatment plan a clinician constructs."
+    )
+    seeds = [_seed("applications"), _seed("plan")]
+    out = extract_concept_tags(text, {}, domain_concept_seeds=seeds)
+    assert "applications" in out, out
+    assert "plan" in out, out
+
+
+def test_seed_collides_with_logistics_prefix_is_emitted():
+    """A seed slug matching ``_LOGISTICS_PREFIX_RE`` (``section-1``,
+    ``unit-4``) survives via the trusted bypass — a real concept titled
+    "Section 1 …" / "Unit 4 …" is no longer silently dropped.
+    """
+    assert _is_droppable_p2(_classify_concept_p2("section-1"))
+    text = "The section-1 framework and the unit-4 doctrine are examined."
+    seeds = [_seed("section-1", "section-1"), _seed("unit-4", "unit-4")]
+    out = extract_concept_tags(text, {}, domain_concept_seeds=seeds)
+    assert "section-1" in out, out
+    assert "unit-4" in out, out
+
+
+def test_seed_collides_with_fragment_prefix_is_emitted():
+    """A seed slug matching ``_FRAGMENT_PREFIXES`` (``on-liberty``)
+    survives — the LowSignal fragment-prefix rule must not strip a real
+    concept like "On Liberty".
+    """
+    assert _is_droppable_p2(_classify_concept_p2("on-liberty"))
+    text = "Mill's essay on-liberty is the canonical liberal text."
+    seeds = [_seed("on-liberty", "on-liberty")]
+    out = extract_concept_tags(text, {}, domain_concept_seeds=seeds)
+    assert "on-liberty" in out, out
+
+
+def test_key_concepts_source_of_same_word_is_still_dropped():
+    """A ``key_concepts`` (untrusted) tag of a PEDAGOGICAL_MARKERS word is
+    STILL dropped — the trusted bypass is scoped to the seed loop only.
+    """
+    proc = _make_processor()
+    out = _extract(proc, [
+        "Applications",          # → applications → PedagogicalMarker → DROP
+        "Plan",                  # → plan → PedagogicalMarker → DROP
+        "RDF Graph",             # → rdf-graph → DomainConcept (KEEP)
+    ])
+    assert out == ["rdf-graph"], out
+
+
+def test_concept_patterns_source_of_droppable_word_is_still_dropped():
+    """A ``CONCEPT_PATTERNS`` text match (untrusted) of a droppable word
+    is STILL dropped. ``CONCEPT_PATTERNS`` carries the ``assessment``
+    entry; ``classify_concept('assessment')`` = PedagogicalMarker, so the
+    text-pattern loop's emit is rejected by ``is_droppable_class``.
+    """
+    # No seeds → only the untrusted CONCEPT_PATTERNS path runs.
+    out = extract_concept_tags(
+        "Formative assessment gives learners feedback.", {},
+    )
+    # ``assessment`` and ``feedback`` are CONCEPT_PATTERNS keys but both
+    # classify droppable (PedagogicalMarker) — the untrusted path drops them.
+    assert "assessment" not in out, out
+    assert "feedback" not in out, out
+
+
+def test_seed_loop_guards_still_reject_objective_codes():
+    """The seed-loop pre-``_try_add`` guards (OBJECTIVE_CODE_RE /
+    WEEK_PREFIX_RE / NON_CONCEPT_TAGS) STILL reject objective codes, week
+    prefixes, and known non-concepts even when supplied as seeds — the
+    trusted bypass only skips ``is_droppable_class``, not these guards.
+    """
+    text = "The to-04 outcome, the w01-intro week, and the readings list."
+    seeds = [
+        _seed("to-04", "to-04"),          # OBJECTIVE_CODE_RE
+        _seed("w01-intro", "w01-intro"),  # WEEK_PREFIX_RE
+        _seed("readings", "readings"),    # NON_CONCEPT_TAGS
+    ]
+    out = extract_concept_tags(text, {}, domain_concept_seeds=seeds)
+    assert "to-04" not in out, out
+    assert "w01-intro" not in out, out
+    assert "readings" not in out, out
+
+
+def test_seed_still_canonicalized_and_lo_suffix_stripped():
+    """Trusted seeds keep ``strip_lo_ref_suffix`` + ``canonicalize_alias``
+    + dedup + plural-collapse — only ``is_droppable_class`` is skipped.
+    """
+    text = "An rdfxml serialization and a triples store, plus triple form."
+    seeds = [
+        _seed("rdfxml", "rdfxml"),    # alias → rdf-xml
+        _seed("triple", "triple"),
+        _seed("triples", "triples"),  # plural-collapses onto triple
+    ]
+    out = extract_concept_tags(text, {}, domain_concept_seeds=seeds)
+    assert "rdf-xml" in out, out          # canonicalize_alias applied
+    assert "rdfxml" not in out, out
+    assert "triple" in out, out
+    assert "triples" not in out, out      # plural-collapsed
+
+
+def test_empty_seeds_path_unchanged():
+    """The empty-seeds default ``()`` is completely unaffected: extraction
+    over key_concepts + text behaves exactly as the untrusted-only path.
+    """
+    proc = _make_processor()
+    baseline = _extract(proc, ["RDF Graph", "Key Takeaway", "Rubric"])
+    via_helper = extract_concept_tags(
+        "", {"key_concepts": ["RDF Graph", "Key Takeaway", "Rubric"]},
+    )
+    assert baseline == via_helper == ["rdf-graph"], (baseline, via_helper)

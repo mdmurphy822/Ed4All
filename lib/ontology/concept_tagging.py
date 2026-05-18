@@ -147,8 +147,27 @@ def extract_concept_tags(
 
     tags: List[str] = []
 
-    def _try_add(tag: str) -> bool:
-        """Filter + dedup + add. Returns True iff appended."""
+    def _try_add(tag: str, trusted: bool = False) -> bool:
+        """Filter + dedup + add. Returns True iff appended.
+
+        ``trusted`` marks the tag as coming from an LLM-authored
+        per-course ``domain_concept_seeds`` entry. Trusted tags BYPASS
+        the Wave-76 ``is_droppable_class`` rejection — those filters are
+        RDF/SHACL/pedagogy-tuned and silently drop legitimate general-
+        textbook vocabulary (a concept titled "Section 1 …", a
+        psychology concept "applications", a law concept "review", a
+        concept "On Liberty"). Seeds were deliberately extracted AS
+        domain concepts by the Stage-3 textbook-synthesis LLM, so they
+        should not be re-filtered as if they were untrusted heuristic
+        extraction. Everything else ``_try_add`` does — ``strip_lo_ref_
+        suffix``, ``canonicalize_alias``, dedup, plural-collapse — still
+        applies to trusted tags.
+
+        Untrusted tags (``trusted=False``, the default — HTML-parser
+        ``key_concepts``, ``CONCEPT_PATTERNS`` text matches, and the
+        ``TRAINFORGE_SEED_TECH_CONCEPTS`` tech-anchor path) keep the
+        full Wave-76 droppable-class filter.
+        """
         if not tag:
             return False
         tag = strip_lo_ref_suffix(tag)
@@ -160,9 +179,11 @@ def extract_concept_tags(
         # Wave 76: drop classes the extractor should not emit
         # (pedagogical scaffolding, assessment options, LO leaks,
         # instructional artifacts, low-signal stopwords + fragments).
-        klass = classify_concept(tag)
-        if is_droppable_class(klass):
-            return False
+        # Skipped for trusted (LLM-authored seed) tags — see docstring.
+        if not trusted:
+            klass = classify_concept(tag)
+            if is_droppable_class(klass):
+                return False
         # Plural-collapse: if the singular form is already emitted,
         # treat this tag as a duplicate.
         sing = singular_form(tag)
@@ -194,16 +215,23 @@ def extract_concept_tags(
         if any(p in text_lower for p in patterns):
             _try_add(tag)
 
-    # Per-course domain concept seeds. Pedagogy filter still applies
-    # below since seeds are authored per course; a well-formed seed
-    # list won't collide with NON_CONCEPT_TAGS, but we defend anyway.
+    # Per-course domain concept seeds. These are LLM-authored per-course
+    # vocabulary — they were deliberately extracted AS domain concepts
+    # by the Stage-3 textbook-synthesis pass, so they are TRUSTED and
+    # bypass the ``is_droppable_class`` drop in ``_try_add`` (those
+    # filters are RDF/SHACL/pedagogy-tuned and silently strip legitimate
+    # general-textbook vocabulary). The pre-``_try_add`` guards below
+    # (``OBJECTIVE_CODE_RE`` / ``WEEK_PREFIX_RE`` / ``NON_CONCEPT_TAGS``)
+    # are KEPT: an objective code, week prefix, or known non-concept is
+    # rejected even from a seed list, since those are never real domain
+    # vocabulary regardless of authorship.
     for canonical, patterns in domain_concept_seeds:
         if (OBJECTIVE_CODE_RE.match(canonical)
                 or WEEK_PREFIX_RE.match(canonical)
                 or canonical in NON_CONCEPT_TAGS):
             continue
         if any(p.search(text or "") for p in patterns):
-            _try_add(canonical)
+            _try_add(canonical, trusted=True)
 
     # Wave 82 (Phase C): W3C tech-anchor seeding. Behaviour-flagged so
     # legacy corpora don't shift their tag distributions on rebuild.
