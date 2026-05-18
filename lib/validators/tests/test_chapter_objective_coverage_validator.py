@@ -185,6 +185,70 @@ def test_path_loaded_from_disk(tmp_path: Path) -> None:
     assert result.issues == []
 
 
+def test_chapter_synthesis_failures_read_from_objectives_file(
+    tmp_path: Path,
+) -> None:
+    """R7: when ``chapter_synthesis_failures`` is NOT passed via inputs
+    but IS persisted as a top-level key inside synthesized_objectives.
+    json, the validator's file-fallback (objectives.get(...)) must
+    resolve it — so a §5.4-expected chapter failure is reported as
+    CHAPTER_OBJ_PARTIAL_COVERAGE (informational, passing), not the
+    unexpected-gap CHAPTER_OBJ_MISSING.
+
+    This is the production wiring: gate_input_routing routes only the
+    ``synthesized_objectives_path``, never a dedicated failures input.
+    """
+    objectives = _objectives(ch2_cos=0)
+    # The §5.4 list is persisted INSIDE the objectives file (the R7 fix
+    # to _plan_course_structure's ``synthesized`` dict assembly).
+    objectives["chapter_synthesis_failures"] = ["ch2"]
+
+    sp = tmp_path / "textbook_structure.json"
+    op = tmp_path / "synthesized_objectives.json"
+    sp.write_text(json.dumps(_structure()), encoding="utf-8")
+    op.write_text(json.dumps(objectives), encoding="utf-8")
+
+    result = ChapterObjectiveCoverageValidator().validate(
+        {
+            "textbook_structure_path": str(sp),
+            "synthesized_objectives_path": str(op),
+        }
+    )
+    codes = _codes(result)
+    assert "CHAPTER_OBJ_PARTIAL_COVERAGE" in codes, (
+        "ch2 is listed in the file's chapter_synthesis_failures — the "
+        "file-fallback must resolve it as an expected §5.4 failure"
+    )
+    assert "CHAPTER_OBJ_MISSING" not in codes, (
+        "ch2 must NOT be reported as an unexpected gap once the "
+        "persisted failures list is read from the objectives file"
+    )
+    assert result.passed is True
+
+
+def test_empty_chapter_synthesis_failures_file_key_is_inert(
+    tmp_path: Path,
+) -> None:
+    """R7: an empty ``chapter_synthesis_failures: []`` persisted on the
+    deterministic / non-Stage-2 path must not change validator output —
+    a genuine zero-CO gap still surfaces as CHAPTER_OBJ_MISSING."""
+    objectives = _objectives(ch2_cos=0)
+    objectives["chapter_synthesis_failures"] = []
+
+    sp = tmp_path / "textbook_structure.json"
+    op = tmp_path / "synthesized_objectives.json"
+    sp.write_text(json.dumps(_structure()), encoding="utf-8")
+    op.write_text(json.dumps(objectives), encoding="utf-8")
+
+    result = ChapterObjectiveCoverageValidator().validate(
+        {
+            "textbook_structure_path": str(sp),
+            "synthesized_objectives_path": str(op),
+        }
+    )
+    assert "CHAPTER_OBJ_MISSING" in _codes(result)
+
+
 def test_missing_path_fails_closed(tmp_path: Path) -> None:
     result = ChapterObjectiveCoverageValidator().validate(
         {

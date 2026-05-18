@@ -5717,6 +5717,14 @@ def _build_tool_registry() -> dict:
                 _cgh.load_objectives_json(supplied_objectives)
             )
 
+            # R7 §5.4 — per-chapter Stage-2 failure isolation list.
+            # Declared at function scope so it is always defined when
+            # the ``synthesized`` dict is assembled below, and is a
+            # truthful ``[]`` on the deterministic / user-supplied /
+            # COURSEPLANNER paths where Stage-2 never runs (no stale
+            # value leaks into synthesized_objectives.json).
+            chapter_synthesis_failures: List[str] = []
+
             if supplied_terminal or supplied_chapter:
                 terminal = list(supplied_terminal)
                 chapter = list(supplied_chapter)
@@ -5806,7 +5814,10 @@ def _build_tool_registry() -> dict:
                             _textbook_synthesis_env,
                         )
                     else:
-                        chapter_synthesis_failures: List[str] = []
+                        # R7: append into the function-scope
+                        # ``chapter_synthesis_failures`` declared above
+                        # (no local re-declaration — the list must be
+                        # visible at the ``synthesized`` dict assembly).
                         chapters_synthesized = 0
                         _stage2_provider = None
                         try:
@@ -6242,6 +6253,15 @@ def _build_tool_registry() -> dict:
                     "chapter": f"Week {idx}",
                     "objectives": [dict(c)],
                 } for idx, c in enumerate(chapter, start=1)],
+                # R7 §5.4 — per-chapter Stage-2 failure isolation.
+                # Persisted so ChapterObjectiveCoverageValidator's
+                # file-fallback (objectives.get("chapter_synthesis_
+                # failures")) resolves and the expected-failure
+                # cross-check is no longer dead code. Empty [] on the
+                # deterministic / user-supplied / COURSEPLANNER paths.
+                "chapter_synthesis_failures": list(
+                    chapter_synthesis_failures
+                ),
                 "synthesized_at": datetime.now().isoformat(),
             }
             objectives_out_path = (
