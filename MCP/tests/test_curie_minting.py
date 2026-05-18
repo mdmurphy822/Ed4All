@@ -31,7 +31,13 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from blocks import Block  # noqa: E402
 
-from MCP.tools.pipeline_tools import _mint_outline_curies  # noqa: E402
+from MCP.tools.pipeline_tools import (  # noqa: E402
+    _mint_outline_curies,
+    _resolve_minted_curie_map_for_validation,
+)
+from MCP.hardening.gate_input_routing import (  # noqa: E402
+    _resolve_minted_curie_map,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -166,3 +172,63 @@ def test_existing_curies_not_overwritten(tmp_path):
     # Untouched — real CURIEs win.
     assert blocks[0] is before
     assert blocks[0].content["curies"] == ["sh:NodeShape"]
+
+
+# ---------------------------------------------------------------------------
+# 4. R5 — resolver parity. Both the gate-input router and the validation
+#    handlers must resolve the SAME minted-CURIE map for a vocabulary
+#    that exists ONLY on disk (no phase_outputs.concept_extraction
+#    thread — the resumed / stage-subcommand scenario). Before R5 the
+#    gate-routing copy had no on-disk fallback and returned None while
+#    the handler copy found the vocabulary.
+# ---------------------------------------------------------------------------
+
+
+def test_resolver_parity_disk_only_vocabulary(tmp_path):
+    """Vocabulary present only on disk, no phase_outputs thread: the
+    gate-input router and the validation handler resolve an identical,
+    non-empty minted-CURIE map."""
+    _vocab_file(tmp_path)  # writes courses/openstax-alg-9/concept_graph/...
+
+    # The gate-input router: workflow_params carries the LibV2 root and
+    # the course name; phase_outputs is EMPTY (the resumed-run shape).
+    gate_map = _resolve_minted_curie_map(
+        phase_outputs={},
+        workflow_params={
+            "course_name": "OPENSTAX_ALG_9",
+            "libv2_root": str(tmp_path),
+        },
+    )
+
+    # The validation handler: project_id with no project_config.json on
+    # disk falls back to project_id-as-course-code. Using the slug form
+    # directly yields the same course slug ("openstax-alg-9").
+    handler_map = _resolve_minted_curie_map_for_validation(
+        project_id="openstax-alg-9",
+        kwargs={"libv2_root": str(tmp_path), "phase_outputs": {}},
+    )
+
+    assert gate_map is not None, "gate-router resolver returned None"
+    assert handler_map is not None, "validation-handler resolver returned None"
+    # Same verdict — identical maps. (Both mint the same prefix from the
+    # vocabulary's own course_id field, so the maps are byte-equal.)
+    assert gate_map == handler_map
+    assert "openstaxalg9:slope" in gate_map
+
+
+def test_resolver_parity_no_vocabulary_both_none(tmp_path):
+    """No vocabulary anywhere: both resolvers return None (legacy
+    literal-token anchoring), so the gate verdict still converges."""
+    gate_map = _resolve_minted_curie_map(
+        phase_outputs={},
+        workflow_params={
+            "course_name": "OPENSTAX_ALG_9",
+            "libv2_root": str(tmp_path),
+        },
+    )
+    handler_map = _resolve_minted_curie_map_for_validation(
+        project_id="openstax-alg-9",
+        kwargs={"libv2_root": str(tmp_path), "phase_outputs": {}},
+    )
+    assert gate_map is None
+    assert handler_map is None

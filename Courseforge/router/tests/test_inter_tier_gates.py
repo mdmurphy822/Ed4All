@@ -249,6 +249,121 @@ def test_no_minted_map_byte_identical_to_legacy():
 
 
 # --------------------------------------------------------------------------- #
+# 1c. R4 — vacuous-anchoring guard (word-boundary + short/common-token)
+# --------------------------------------------------------------------------- #
+
+
+def test_short_surface_form_does_not_substring_anchor():
+    """R4.1: a surface form ``"ion"`` must NOT anchor a block whose text
+    only says "definition" — the pre-R4 unbounded substring match
+    false-passed here."""
+    minted_map = {
+        "bio:ion": {"canonical": "ion", "surface_forms": ["ion"]},
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_ion_0",
+            curies=("bio:ion",),
+            key_claims=["The definition of a charged particle is given."],
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+    })
+    assert result.passed is False
+    assert result.action == "regenerate"
+
+
+def test_surface_form_word_boundary_match_anchors():
+    """R4.1: the same ``"ion"`` surface form DOES anchor when it appears
+    as a whole word."""
+    minted_map = {
+        "bio:ion": {"canonical": "ion", "surface_forms": ["ion"]},
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_ion_0",
+            curies=("bio:ion",),
+            key_claims=["An ion carries a net electric charge."],
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+    })
+    assert result.passed is True
+
+
+def test_stopword_surface_form_does_not_anchor():
+    """R4.2: a stopword surface form (``"is"``) must not anchor
+    arbitrary prose — it is filtered by the short/common-token guard."""
+    minted_map = {
+        "x:is": {"canonical": "is", "surface_forms": ["is"]},
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_is_0",
+            curies=("x:is",),
+            key_claims=["This sentence is entirely unrelated prose."],
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+    })
+    assert result.passed is False
+    assert result.action == "regenerate"
+
+
+def test_minted_literal_token_arm_anchors():
+    """R4: the minted arm anchors on literal-token OR surface-form. A
+    block carrying the minted CURIE token literally in its text (e.g.
+    the R1 force-injection) passes via the literal arm even when no
+    surface form is present."""
+    minted_map = {
+        "openstaxalg9:slope": {
+            "canonical": "slope",
+            "surface_forms": ["gradient"],
+        },
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_slope_0",
+            curies=("openstaxalg9:slope",),
+            # Neither "slope" nor "gradient" in prose, but the minted
+            # CURIE token itself is present (force-injected shape).
+            key_claims=["A discussion referencing openstaxalg9:slope here."],
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+    })
+    assert result.passed is True
+
+
+def test_short_domain_term_still_anchors():
+    """R4.2: the guard is a stoplist, not a blunt length cut — a legit
+    short domain term like ``"pH"`` still anchors via word boundary."""
+    minted_map = {
+        "chem:ph": {"canonical": "pH", "surface_forms": ["pH"]},
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_ph_0",
+            curies=("chem:ph",),
+            key_claims=["Measure the pH of the solution carefully."],
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+    })
+    assert result.passed is True
+
+
+# --------------------------------------------------------------------------- #
 # 2. Content-type taxonomy
 # --------------------------------------------------------------------------- #
 

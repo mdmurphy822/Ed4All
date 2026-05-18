@@ -389,6 +389,109 @@ def build_minted_curie_map(
     return minted
 
 
+def locate_domain_concept_vocabulary(
+    *,
+    threaded_path: Optional[str] = None,
+    course_slug: Optional[str] = None,
+    libv2_root: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resolve the ``domain_concept_vocabulary.json`` path for a course.
+
+    R5 — single canonical locator. Before this helper two resolvers
+    diverged: ``MCP/hardening/gate_input_routing.py`` had NO on-disk
+    fallback while ``MCP/tools/pipeline_tools.py`` did, so a resumed /
+    stage-subcommand run (where ``phase_outputs.concept_extraction``
+    isn't threaded) gave the same logical gate two different verdicts.
+    Both call sites now delegate here.
+
+    Resolution order (first hit wins):
+
+      1. ``threaded_path`` — the canonical
+         ``phase_outputs.concept_extraction.domain_concept_vocabulary_path``
+         thread (caller extracts it from whatever shape it has).
+      2. The conventional on-disk location, a sibling of
+         ``concept_graph_semantic.json`` under
+         ``<libv2_root>/courses/<course_slug>/concept_graph/``.
+
+    Returns ``None`` when neither resolves — the natural backward-compat
+    gate: an RDF / legacy corpus has no domain-concept vocabulary, so
+    the consuming minting / anchoring step becomes a complete no-op.
+
+    Args:
+        threaded_path: Vocabulary path threaded through phase outputs;
+            ``None`` / empty falls through to the on-disk fallback.
+        course_slug: Course slug for the on-disk fallback path. The
+            caller is responsible for the ``course_code -> slug``
+            transform (lower + ``_``/space -> ``-``).
+        libv2_root: LibV2 root directory; required for the on-disk
+            fallback. ``None`` skips the fallback.
+    """
+    if isinstance(threaded_path, str) and threaded_path:
+        p = Path(threaded_path)
+        if p.is_file():
+            return p
+    if course_slug and libv2_root is not None:
+        vocab_path = (
+            Path(libv2_root)
+            / "courses"
+            / course_slug
+            / "concept_graph"
+            / "domain_concept_vocabulary.json"
+        )
+        if vocab_path.is_file():
+            return vocab_path
+    return None
+
+
+def resolve_minted_curie_map(
+    *,
+    threaded_path: Optional[str] = None,
+    course_id: Optional[str] = None,
+    course_slug: Optional[str] = None,
+    libv2_root: Optional[Path] = None,
+) -> Optional[Dict[str, Dict[str, object]]]:
+    """Build the minted-CURIE map from the per-course domain vocabulary.
+
+    R5 — the single canonical resolver both the gate-input router
+    (``MCP/hardening/gate_input_routing.py``) and the validation
+    handlers (``MCP/tools/pipeline_tools.py``) call. Locates
+    ``domain_concept_vocabulary.json`` via
+    :func:`locate_domain_concept_vocabulary` (INCLUDING the on-disk
+    fallback), loads it, and returns the
+    ``{minted_curie: {"canonical", "surface_forms"}}`` map.
+
+    Returns ``None`` when no vocabulary path resolves (RDF / legacy
+    corpora) or the file is missing / unparseable — the consuming gate
+    then runs its legacy literal-token anchoring.
+    """
+    vocab_path = locate_domain_concept_vocabulary(
+        threaded_path=threaded_path,
+        course_slug=course_slug,
+        libv2_root=libv2_root,
+    )
+    if vocab_path is None:
+        return None
+    try:
+        vocabulary = json.loads(vocab_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "resolve_minted_curie_map: failed to load "
+            "domain_concept_vocabulary.json at %s (%s); minted-CURIE "
+            "anchoring unavailable.",
+            vocab_path, exc,
+        )
+        return None
+    try:
+        minted = build_minted_curie_map(vocabulary, course_id=course_id)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        logger.warning(
+            "resolve_minted_curie_map: build_minted_curie_map failed: %s",
+            exc,
+        )
+        return None
+    return minted or None
+
+
 def minted_curie_by_canonical(
     minted_curie_map: Dict[str, Dict[str, object]],
 ) -> Dict[str, str]:
@@ -422,5 +525,7 @@ __all__ = [
     "mint_curie_prefix",
     "curie_for_concept",
     "build_minted_curie_map",
+    "locate_domain_concept_vocabulary",
+    "resolve_minted_curie_map",
     "minted_curie_by_canonical",
 ]

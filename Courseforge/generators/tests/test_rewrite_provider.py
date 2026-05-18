@@ -235,15 +235,33 @@ def test_curie_preservation_gate_fires_remediation_on_drop(monkeypatch):
     assert "sh:NodeShape" in out.content
 
 
+def _curie_survives_validator_path(html: str, curie: str) -> bool:
+    """Run the EXACT str-path the rewrite-tier gate runs and report
+    whether ``curie`` is recovered.
+
+    The gate (``Courseforge/router/inter_tier_gates.py``) calls
+    ``_strip_html`` FIRST — deleting every tag *and its attributes* —
+    and only THEN ``extract_curies`` over the leftover text. A CURIE
+    that lives only in an attribute value is destroyed; only a CURIE
+    in TEXT CONTENT survives. This helper asserts the real contract,
+    not the weaker "appears in the HTML string" check the pre-R1 test
+    used (which an attribute satisfied even though the gate failed).
+    """
+    from Courseforge.router.inter_tier_gates import _strip_html
+    from lib.ontology.curie_extraction import extract_curies
+
+    return curie in extract_curies(_strip_html(html))
+
+
 def test_curie_preservation_exhaustion_force_injects_curie(
     monkeypatch,
 ):
     """Every retry drops the CURIE → after ``MAX_PARSE_RETRIES + 1``
     dispatches the rewrite tier FORCE-INJECTS the still-missing CURIE
-    as a ``data-cf-curie`` attribute on the outermost wrapper rather
-    than raising (v0.3.0 minted-CURIE propagation contract). The CURIE
-    token survives into the emitted HTML so the post-rewrite anchoring
-    gate sees it."""
+    as a hidden ``<span>`` whose TEXT CONTENT carries the CURIE token,
+    rather than raising (v0.3.0 minted-CURIE propagation contract). The
+    CURIE token survives the post-rewrite gate's ``_strip_html`` +
+    ``extract_curies`` pipeline."""
     monkeypatch.delenv(ENV_PROVIDER, raising=False)
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
@@ -264,19 +282,46 @@ def test_curie_preservation_exhaustion_force_injects_curie(
     out = p.generate_rewrite(block)
     # Initial dispatch + MAX_PARSE_RETRIES (=2) more retries = 3 total.
     assert len(seen) == 3
-    # The dropped CURIE was force-injected — it appears verbatim in the
-    # emitted HTML (as a data-cf-curie attribute on the wrapper).
-    assert "sh:NodeShape" in out.content
+    # The dropped CURIE was force-injected — and SURVIVES the actual
+    # validator path (strip-html-then-extract). This is the assertion
+    # the pre-R1 test got wrong: it checked the HTML string only, which
+    # an attribute satisfied even though the gate's strip destroyed it.
+    assert _curie_survives_validator_path(out.content, "sh:NodeShape")
+    # data-cf-curie contract attribute is mirrored onto the span.
     assert 'data-cf-curie="sh:NodeShape"' in out.content
-    # extract_curies (the str-path validator scrape) recovers it.
-    from lib.ontology.curie_extraction import extract_curies
-    assert "sh:NodeShape" in extract_curies(out.content)
+
+
+def test_force_injected_curie_passes_block_curie_anchoring_validator(
+    monkeypatch,
+):
+    """Run ``BlockCurieAnchoringValidator``'s str-path over a Block
+    carrying force-injected HTML and assert the gate PASSES — the
+    end-to-end contract the R1 fix exists to satisfy."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = "<section><p>The node shape constrains.</p></section>"
+        return httpx.Response(200, json=_success_body(body))
+
+    p = RewriteProvider(provider="local", client=_make_client(handler))
+    block = _outline_block(curies=["sh:NodeShape"])
+    out = p.generate_rewrite(block)
+
+    from Courseforge.router.inter_tier_gates import BlockCurieAnchoringValidator
+
+    result = BlockCurieAnchoringValidator().validate({"blocks": [out]})
+    assert result.passed, (
+        f"force-injected CURIE failed the str-path anchoring gate: "
+        f"{[i.code for i in result.issues]}"
+    )
 
 
 def test_minted_curies_from_source_block_survive_into_html(monkeypatch):
     """A source block whose ``curies`` carry minted (prose-corpus)
     CURIEs that the rewrite LLM declines to echo are force-injected so
-    every source CURIE appears in the emitted HTML string."""
+    every minted CURIE survives the validator's strip+extract path."""
     monkeypatch.delenv(ENV_PROVIDER, raising=False)
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
@@ -298,8 +343,8 @@ def test_minted_curies_from_source_block_survive_into_html(monkeypatch):
     )
     out = p.generate_rewrite(block)
     for curie in ("openstaxalg9:slope", "openstaxalg9:y_intercept"):
-        assert curie in out.content, (
-            f"minted CURIE {curie!r} did not survive into the HTML"
+        assert _curie_survives_validator_path(out.content, curie), (
+            f"minted CURIE {curie!r} did not survive the validator path"
         )
 
 
