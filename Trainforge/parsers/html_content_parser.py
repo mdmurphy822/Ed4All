@@ -171,6 +171,20 @@ class HTMLTextExtractor(HTMLParser):
         contain boilerplate that every page duplicates. The n-gram boilerplate
         detector in ``Trainforge/rag/boilerplate_detector.py`` stays as
         belt-and-suspenders for non-Courseforge IMSCC.
+      - Any subtree rooted at an element carrying a ``data-cf-curie``
+        attribute. The Courseforge rewrite tier's
+        ``RewriteProvider._force_inject_curies`` appends a hidden span —
+        ``<span hidden data-cf-curie="ns:concept">ns:concept</span>`` — to
+        rewrite HTML when the LLM drops a block's CURIEs. That span is a
+        rewrite-tier validator anchor ONLY (so the post-rewrite
+        ``rewrite_curie_anchoring`` gate can regex-scrape the tokens); it
+        carries synthetic minted CURIE identifiers that exist in no real
+        textbook. Skipping its subtree keeps those tokens out of chunk
+        ``text`` so the training-synthesis paraphrase pass can't learn to
+        emit them. ``data-cf-curie`` is emitted ONLY by force-injection, so
+        skipping exactly those elements is precise — legacy / RDF corpora
+        and existing fixtures carry no such attribute and extract
+        byte-identically.
     """
 
     def __init__(self):
@@ -182,10 +196,19 @@ class HTMLTextExtractor(HTMLParser):
         # Worker Q: count of currently-open template-chrome ancestors. When
         # nonzero, text data is discarded.
         self._template_chrome_depth = 0
+        # Count of currently-open ``data-cf-curie`` ancestors. When nonzero,
+        # text data is discarded — mirrors ``_template_chrome_depth``.
+        self._curie_anchor_depth = 0
 
     def _is_template_chrome(self, attrs) -> bool:
         for name, value in attrs:
             if name == "data-cf-role" and value == "template-chrome":
+                return True
+        return False
+
+    def _is_curie_anchor(self, attrs) -> bool:
+        for name, _value in attrs:
+            if name == "data-cf-curie":
                 return True
         return False
 
@@ -197,6 +220,8 @@ class HTMLTextExtractor(HTMLParser):
             self.in_style = True
         if self._is_template_chrome(attrs):
             self._template_chrome_depth += 1
+        if self._is_curie_anchor(attrs):
+            self._curie_anchor_depth += 1
 
     def handle_endtag(self, tag):
         if tag == 'script':
@@ -212,6 +237,13 @@ class HTMLTextExtractor(HTMLParser):
         # corresponds to a currently-open chrome region.
         if self._template_chrome_depth > 0 and tag in _CHROME_TAGS:
             self._template_chrome_depth -= 1
+        # Close data-cf-curie scope when we see the matching end tag for a
+        # curie-anchored element. Same html.parser limitation (no attrs on
+        # endtag): force-injection emits the attribute on a ``<span>`` only
+        # (see RewriteProvider._force_inject_curies), so the counter
+        # decrements on that tag name while inside a curie-anchor region.
+        if self._curie_anchor_depth > 0 and tag in _CURIE_ANCHOR_TAGS:
+            self._curie_anchor_depth -= 1
         self.current_tag = None
 
     def handle_startendtag(self, tag, attrs):
@@ -223,12 +255,15 @@ class HTMLTextExtractor(HTMLParser):
         elif tag == 'style':
             self.in_style = True
             self.in_style = False
-        # Chrome self-closers are transient — no effect on depth.
+        # Chrome / curie-anchor self-closers are transient — a self-closing
+        # element has no subtree, so the counters are unaffected.
 
     def handle_data(self, data):
         if self.in_script or self.in_style:
             return
         if self._template_chrome_depth > 0:
+            return
+        if self._curie_anchor_depth > 0:
             return
         text = data.strip()
         if text:
@@ -242,6 +277,12 @@ class HTMLTextExtractor(HTMLParser):
 # ``data-cf-role="template-chrome"``. Keeping this narrow avoids
 # under-counting end tags in complex nested chrome.
 _CHROME_TAGS = {"header", "footer", "a", "div", "nav", "aside"}
+
+# Tags that the Courseforge rewrite tier emits with a ``data-cf-curie``
+# attribute. ``RewriteProvider._force_inject_curies`` only ever stamps the
+# attribute on a ``<span>``, so the end-tag counter only needs to match
+# that tag name.
+_CURIE_ANCHOR_TAGS = {"span"}
 
 
 class HTMLContentParser:
