@@ -3099,6 +3099,7 @@ class WorkflowRunner:
               "passed": <int>,
               "failed": <int>,
               "escalated": <int>,
+              "curie_force_injected": <int>,
               "per_block": [
                 {
                   "block_id": "<id>",
@@ -3107,11 +3108,23 @@ class WorkflowRunner:
                   "week": <int|null>,
                   "status": "passed|failed|escalated",
                   "gate_results": [...],
-                  "escalation_marker": "<marker|null>"
+                  "escalation_marker": "<marker|null>",
+                  "curie_force_injected": true   # present only when set
                 },
                 ...
               ]
             }
+
+        R6 — ``curie_force_injected``: the top-level count + the
+        per-block boolean flag mark blocks that PASSED the
+        ``rewrite_curie_anchoring`` gate only because
+        ``RewriteProvider`` force-injected their CURIE anchoring after
+        the rewrite LLM exhausted its remediation budget. ``status``
+        stays ``passed`` (the appended hidden span legitimately anchors
+        them); the flag exists so operators can quantify the
+        silent-degradation class instead of treating those blocks as
+        clean rewrites. The per-block flag is emitted only when ``True``
+        so clean-rewrite entries stay byte-stable.
         """
         validated_path_raw = (phase_output or {}).get(
             "blocks_validated_path"
@@ -3206,6 +3219,23 @@ class WorkflowRunner:
         passed_count = 0
         failed_count = 0
         escalated_count = 0
+        # R6 silent-degradation fix: count blocks whose CURIE anchoring
+        # was force-injected by ``RewriteProvider`` after the rewrite
+        # LLM exhausted the remediation budget. Such blocks legitimately
+        # PASS the ``rewrite_curie_anchoring`` gate (the appended hidden
+        # span anchors them), so they would otherwise be invisible in
+        # the report — identical to a clean rewrite. The signal is the
+        # ``data-cf-curie-forced`` boolean attribute the force-injected
+        # span carries inside ``block.content`` (the one Block field
+        # that survives every JSONL round trip).
+        curie_force_injected_count = 0
+        try:
+            from Courseforge.generators._rewrite_provider import (
+                html_has_forced_curie_marker as _has_forced_curie,
+            )
+        except Exception:  # noqa: BLE001 — best-effort; absence -> no marker
+            def _has_forced_curie(_html: Any) -> bool:  # type: ignore[misc]
+                return False
 
         # gate_results_list is the executor's emit; we attach the
         # full chain to every block's ``gate_results`` in the report so
@@ -3226,6 +3256,7 @@ class WorkflowRunner:
 
         def _record_block(entry: Dict[str, Any], status: str) -> None:
             nonlocal passed_count, failed_count, escalated_count
+            nonlocal curie_force_injected_count
             esc = entry.get("escalation_marker")
             if status == "failed" and esc:
                 status = "escalated"
@@ -3235,7 +3266,15 @@ class WorkflowRunner:
                 escalated_count += 1
             else:
                 failed_count += 1
-            per_block.append({
+            # R6: a force-injected block keeps its (legitimate) verdict —
+            # do NOT flip status — but is flagged so it is countable /
+            # greppable in the report. The rewrite LLM provably could not
+            # author this block cleanly across the full remediation
+            # budget; the appended hidden span is what makes it pass.
+            forced = bool(_has_forced_curie(entry.get("content")))
+            if forced:
+                curie_force_injected_count += 1
+            block_record: Dict[str, Any] = {
                 "block_id": entry.get("block_id"),
                 "block_type": entry.get("block_type"),
                 "page": entry.get("page_id"),
@@ -3243,7 +3282,10 @@ class WorkflowRunner:
                 "status": status,
                 "gate_results": gate_chain_summary,
                 "escalation_marker": esc,
-            })
+            }
+            if forced:
+                block_record["curie_force_injected"] = True
+            per_block.append(block_record)
 
         for entry in validated_blocks:
             _record_block(entry, "passed")
@@ -3313,6 +3355,13 @@ class WorkflowRunner:
             "passed": passed_count,
             "failed": failed_count,
             "escalated": escalated_count,
+            # R6: blocks that PASSED only because RewriteProvider
+            # force-injected their CURIE anchoring after the rewrite LLM
+            # exhausted the remediation budget. A subset of ``passed`` —
+            # NOT a separate status — surfaced so operators can quantify
+            # the silent-degradation class. Per-block flag:
+            # ``per_block[*].curie_force_injected``.
+            "curie_force_injected": curie_force_injected_count,
             "per_block": per_block,
             "source_coverage": source_coverage_block,
         }

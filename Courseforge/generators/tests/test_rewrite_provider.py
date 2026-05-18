@@ -348,6 +348,75 @@ def test_minted_curies_from_source_block_survive_into_html(monkeypatch):
         )
 
 
+def test_force_injected_block_carries_durable_signals(monkeypatch):
+    """R6 — force-injection stamps two durable, distinguishable signals
+    so a force-injected block is NOT indistinguishable from a clean
+    rewrite downstream:
+
+    * the appended span carries ``data-cf-curie-forced="true"`` inside
+      ``block.content`` (the report-reachable carrier — content is the
+      one Block field that survives every JSONL round trip), detected
+      by ``html_has_forced_curie_marker``;
+    * the rewrite Touch carries ``purpose="curie_force_injected"``
+      (the in-memory / JSON-LD audit-chain carrier) instead of the
+      clean-path ``pedagogical_depth``.
+    """
+    from Courseforge.generators._rewrite_provider import (
+        html_has_forced_curie_marker,
+        _TOUCH_PURPOSE_CURIE_FORCED,
+    )
+
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Always drop the CURIE -> exhaust the budget -> force-inject.
+        body = "<section><p>The node shape constrains.</p></section>"
+        return httpx.Response(200, json=_success_body(body))
+
+    p = RewriteProvider(provider="local", client=_make_client(handler))
+    block = _outline_block(curies=["sh:NodeShape"])
+    out = p.generate_rewrite(block)
+
+    # Content-borne marker (the report-reachable signal).
+    assert html_has_forced_curie_marker(out.content) is True
+    assert 'data-cf-curie-forced="true"' in out.content
+
+    # Touch-chain audit signal — the rewrite tier's last Touch.
+    rewrite_touches = [t for t in out.touched_by if t.tier == "rewrite"]
+    assert rewrite_touches, "rewrite tier appended no Touch"
+    assert rewrite_touches[-1].purpose == _TOUCH_PURPOSE_CURIE_FORCED
+
+
+def test_clean_rewrite_carries_no_force_injected_signals(monkeypatch):
+    """R6 negative — a clean rewrite (no CURIE drop, so no
+    force-injection) carries neither the ``data-cf-curie-forced``
+    marker nor the ``curie_force_injected`` Touch purpose; the rewrite
+    Touch keeps the clean-path ``pedagogical_depth`` purpose."""
+    from Courseforge.generators._rewrite_provider import (
+        html_has_forced_curie_marker,
+    )
+
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = "<section><p>The concept is anchored.</p></section>"
+        return httpx.Response(200, json=_success_body(body))
+
+    p = RewriteProvider(provider="local", client=_make_client(handler))
+    # No CURIEs declared -> the preservation gate never fires, so the
+    # rewrite returns via the clean ``_apply_rewrite_touch`` path.
+    block = _outline_block(curies=[])
+    out = p.generate_rewrite(block)
+
+    assert html_has_forced_curie_marker(out.content) is False
+    rewrite_touches = [t for t in out.touched_by if t.tier == "rewrite"]
+    assert rewrite_touches[-1].purpose == "pedagogical_depth"
+
+
 # ---------------------------------------------------------------------------
 # Escalation
 # ---------------------------------------------------------------------------
