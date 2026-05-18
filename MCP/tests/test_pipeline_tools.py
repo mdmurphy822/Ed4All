@@ -179,20 +179,27 @@ class TestRunConceptExtractionEmitsGraph:
         assert manifest["source_chunks"] == payload["chunk_count"]
 
     def test_graph_has_expected_typed_nodes(self, concept_extraction_fixture):
-        """build_pedagogy_graph always emits BloomLevel + DifficultyLevel
-        typed nodes regardless of input — verify the dispatch landed."""
+        """Fix-2: the phase emits the genuine ``kind: "concept_semantic"``
+        graph (``DomainConcept`` nodes via ``build_semantic_graph``)
+        instead of the prior ``kind: "pedagogy"`` graph — verify the
+        new dispatch landed."""
         fx = concept_extraction_fixture
         payload = _invoke(fx["course_name"], fx["staging_dir"])
 
         graph = json.loads(
             Path(payload["concept_graph_path"]).read_text(encoding="utf-8")
         )
-        node_classes = {n.get("class") for n in graph.get("nodes", [])}
-        assert "BloomLevel" in node_classes, (
-            "build_pedagogy_graph should emit BloomLevel typed nodes."
+        assert graph.get("kind") == "concept_semantic", (
+            "concept_extraction must emit the genuine semantic graph; "
+            f"got kind={graph.get('kind')!r}."
         )
-        assert "DifficultyLevel" in node_classes, (
-            "build_pedagogy_graph should emit DifficultyLevel typed nodes."
+        node_classes = {n.get("class") for n in graph.get("nodes", [])}
+        concept_classes = {
+            "Concept", "DomainConcept", "concept", "domain_concept"
+        }
+        assert node_classes & concept_classes, (
+            "build_semantic_graph should emit DomainConcept-class nodes; "
+            f"node classes seen: {sorted(node_classes)}."
         )
 
     def test_chunks_derived_from_staging(self, concept_extraction_fixture):
@@ -205,7 +212,13 @@ class TestRunConceptExtractionEmitsGraph:
 
     def test_empty_staging_emits_shell_graph(self, tmp_path, monkeypatch):
         """When no sidecars exist, helper still emits a graph shell so
-        downstream gates have something to validate against."""
+        downstream gates have something to validate against.
+
+        Fix-2: the shell is now a ``kind: "concept_semantic"`` empty
+        graph (0 nodes) — ``build_semantic_graph`` copies its node set
+        verbatim from the co-occurrence graph, and empty ``concept_tags``
+        yield zero nodes (the Risk-2 contract). The shell is no longer a
+        pedagogy graph with BloomLevel/DifficultyLevel scaffolding."""
         fake_root = tmp_path / "root"
         fake_root.mkdir()
         monkeypatch.setattr(pipeline_tools, "_PROJECT_ROOT", fake_root)
@@ -231,8 +244,12 @@ class TestRunConceptExtractionEmitsGraph:
         payload = json.loads(result)
         assert payload["success"] is True
         assert payload["chunk_count"] == 0
-        # BloomLevel + DifficultyLevel typed nodes always emit.
-        assert payload["node_count"] >= 6
+        graph = json.loads(
+            Path(payload["concept_graph_path"]).read_text(encoding="utf-8")
+        )
+        assert graph.get("kind") == "concept_semantic", (
+            "Empty-input shell must still be kind='concept_semantic'."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -267,9 +284,15 @@ def _legacy_projected_chunks(course_code_lower: str) -> list[dict]:
         {
             "id": f"{course_code_lower}_chunk_00001",
             "text": "overview Introduction to Pedagogical Concepts paragraphs Pedagogical concepts include alignment, assessment, scaffolding, learning outcomes, and curriculum design.",
+            # Fix-2: concept_tags must mirror EXACTLY what the inline
+            # projection's _tokenize_concepts helper emits for this
+            # section (title + section_type + data keys/values, in that
+            # order) — build_semantic_graph copies its node set from the
+            # concept_tags-driven co-occurrence graph, so a mismatch here
+            # breaks the path-supplied vs path-absent byte-stability test.
             "concept_tags": [
-                "introduction", "pedagogical", "concepts", "paragraphs",
-                "include", "alignment", "assessment", "scaffolding",
+                "introduction", "pedagogical", "concepts", "overview",
+                "paragraphs", "include", "alignment", "assessment",
             ],
             "learning_outcome_refs": [],
             "chunk_type": "content",
@@ -284,7 +307,7 @@ def _legacy_projected_chunks(course_code_lower: str) -> list[dict]:
             "id": f"{course_code_lower}_chunk_00002",
             "text": "content Scaffolding Strategies paragraphs Scaffolding strategies provide structured support during initial learning, gradually fading as competence develops.",
             "concept_tags": [
-                "content", "scaffolding", "strategies", "paragraphs",
+                "scaffolding", "strategies", "content", "paragraphs",
                 "provide", "structured", "support", "during",
             ],
             "learning_outcome_refs": [],
@@ -300,8 +323,8 @@ def _legacy_projected_chunks(course_code_lower: str) -> list[dict]:
             "id": f"{course_code_lower}_chunk_00003",
             "text": "self_check Assessment Check paragraphs Formative assessment validates learner understanding before summative evaluation.",
             "concept_tags": [
-                "self", "check", "assessment", "paragraphs", "formative",
-                "validates", "learner", "understanding",
+                "assessment", "check", "paragraphs", "formative",
+                "validates", "learner", "understanding", "before",
             ],
             "learning_outcome_refs": [],
             "chunk_type": "assessment_item",
@@ -473,12 +496,29 @@ class TestRunConceptExtractionConsumesUpstreamChunks:
             payload_supplied["concept_graph_path"]
         ).read_bytes()
 
-        # The only field that legitimately differs is `generated_at`
-        # (timestamp). Strip it from both before comparing.
-        absent_obj = json.loads(graph_absent)
-        supplied_obj = json.loads(graph_supplied)
-        absent_obj.pop("generated_at", None)
-        supplied_obj.pop("generated_at", None)
+        # The only fields that legitimately differ are wall-clock
+        # timestamps. Fix-2's ``build_semantic_graph`` stamps a
+        # per-node / per-edge ``created_at`` (and the top-level
+        # ``generated_at``) from wall-clock; two runs at slightly
+        # different times produce different timestamps. Strip every
+        # timestamp field recursively before comparing the structural
+        # graph content — the Phase 7b ST 14.5 invariant is structural
+        # equality, not byte equality of the timestamp fields.
+        _TS_KEYS = {"generated_at", "created_at"}
+
+        def _strip_timestamps(obj):
+            if isinstance(obj, dict):
+                return {
+                    k: _strip_timestamps(v)
+                    for k, v in obj.items()
+                    if k not in _TS_KEYS
+                }
+            if isinstance(obj, list):
+                return [_strip_timestamps(v) for v in obj]
+            return obj
+
+        absent_obj = _strip_timestamps(json.loads(graph_absent))
+        supplied_obj = _strip_timestamps(json.loads(graph_supplied))
 
         assert absent_obj == supplied_obj, (
             "Refactor regression: path-supplied vs path-absent code paths "

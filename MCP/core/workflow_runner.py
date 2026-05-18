@@ -106,6 +106,16 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "dart_chunks_path": (
             "phase_outputs", "chunking", "dart_chunks_path",
         ),
+        # Three-stage textbook synthesis — Stage 3 (Wave C). Routes the
+        # objective_extraction phase's textbook_structure.json so
+        # _run_concept_extraction can read chapters[].chapter_text for
+        # the per-chapter concept-synthesis calls when
+        # TEXTBOOK_SYNTHESIS_PROVIDER is set. Mirrors the YAML routing at
+        # config/workflows.yaml::concept_extraction; consulted as a
+        # fallback when YAML lookup misses.
+        "textbook_structure_path": (
+            "phase_outputs", "objective_extraction", "textbook_structure_path",
+        ),
         "libv2_root": ("workflow_params", "libv2_root"),
     },
     "course_planning": {
@@ -1035,7 +1045,16 @@ class WorkflowRunner:
             # Check if this optional phase should be skipped
             if self._should_skip_phase(phase, workflow_params):
                 logger.info(f"Skipping optional phase: {phase_name}")
-                phase_outputs[phase_name] = {"_skipped": True, "_completed": True}
+                # Preserve pre-populated data (from _synthesize_outline_output) if present;
+                # merge the skip markers in rather than overwriting. Downstream phases
+                # pull keys like ``project_id`` via ``inputs_from``, so wiping the dict
+                # breaks Phase-5 stage subcommands with --force.
+                existing = phase_outputs.get(phase_name) or {}
+                phase_outputs[phase_name] = {
+                    **existing,
+                    "_skipped": True,
+                    "_completed": True,
+                }
                 workflow_state["phase_outputs"] = phase_outputs
                 self._save_workflow_state(workflow_path, workflow_state)
                 continue
