@@ -177,6 +177,31 @@ def test_paraphrase_used_deterministic_draft_in_enum():
 
 
 @pytest.mark.unit
+def test_enum_covers_three_stage_textbook_synthesis_values():
+    """The three-stage textbook-synthesis architecture adds four
+    decision_type values for the TextbookSynthesisProvider call sites
+    (plan ``plans/textbook-llm-synthesis-3stage-2026-05.md`` §7).
+
+    Without these in the canonical enum, a synthesis run under
+    ``DECISION_VALIDATION_STRICT=true`` fail-closes the first time the
+    provider emits a per-call decision event.
+    """
+    allowed = _load_enum()
+    required = {
+        "textbook_outline_call",
+        "textbook_concept_call",
+        "chapter_objective_call",
+        "terminal_objective_reconciliation",
+    }
+    missing = sorted(required - allowed)
+    assert not missing, (
+        f"decision_event.schema.json is missing three-stage "
+        f"textbook-synthesis enum values: {missing}. Add to "
+        f"properties.decision_type.enum (alphabetised)."
+    )
+
+
+@pytest.mark.unit
 def test_enum_is_alphabetised_and_unique():
     """Enum values must be alphabetised and unique (maintenance guard)."""
     with open(SCHEMA_PATH, encoding="utf-8") as f:
