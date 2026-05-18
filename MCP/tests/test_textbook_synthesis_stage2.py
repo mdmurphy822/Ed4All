@@ -493,6 +493,79 @@ def test_per_chapter_failure_isolation_phase_succeeds(
     assert co_ids == ["CO-01", "CO-02", "CO-03", "CO-04"]
 
 
+def test_per_chapter_failure_persisted_to_synthesized_objectives(
+    tmp_path, monkeypatch
+):
+    """R7: a §5.4 per-chapter failure must be persisted as the top-level
+    ``chapter_synthesis_failures`` key inside synthesized_objectives.json
+    so ChapterObjectiveCoverageValidator's file-fallback resolves it and
+    the expected-failure cross-check is no longer dead code."""
+    fake_root = tmp_path / "root"
+    (fake_root / "Courseforge" / "exports").mkdir(parents=True)
+    project = _make_project(
+        fake_root, course_name="PHYS_101", chapters=_chapters(3),
+        draft_terminal_objectives=_draft_tos(),
+    )
+
+    def _factory(**kwargs):
+        return _StubProvider(fail_chapter_ids=["ch2"], **kwargs)
+
+    payload = _run_plan(
+        fake_root, project, course_name="PHYS_101",
+        provider_factory=_factory, provider_env="anthropic",
+        monkeypatch=monkeypatch,
+    )
+    assert payload["success"] is True
+    synth = payload["_synthesized"]
+    assert "chapter_synthesis_failures" in synth, (
+        "synthesized_objectives.json must carry the §5.4 failures key"
+    )
+    assert synth["chapter_synthesis_failures"] == ["ch2"], (
+        "the failed chapter id must be persisted verbatim"
+    )
+
+    # End-to-end: the persisted list flows into the validator's
+    # file-fallback and the failed chapter is treated as expected.
+    from lib.validators.chapter_objective_coverage import (
+        ChapterObjectiveCoverageValidator,
+    )
+    sp = project / "01_learning_objectives" / "textbook_structure.json"
+    op = project / "01_learning_objectives" / (
+        "synthesized_objectives.json"
+    )
+    result = ChapterObjectiveCoverageValidator().validate(
+        {
+            "textbook_structure_path": str(sp),
+            "synthesized_objectives_path": str(op),
+        }
+    )
+    codes = [i.code for i in result.issues]
+    assert "CHAPTER_OBJ_PARTIAL_COVERAGE" in codes
+    assert "CHAPTER_OBJ_MISSING" not in codes
+
+
+def test_deterministic_path_persists_empty_failures_list(
+    tmp_path, monkeypatch
+):
+    """R7: the deterministic / non-Stage-2 path must persist a truthful
+    empty ``chapter_synthesis_failures: []`` — no stale value leaks."""
+    fake_root = tmp_path / "root"
+    (fake_root / "Courseforge" / "exports").mkdir(parents=True)
+    project = _make_project(
+        fake_root, course_name="BIO_201", chapters=_chapters(3),
+    )
+    payload = _run_plan(
+        fake_root, project, course_name="BIO_201",
+        provider_factory=None, provider_env=None, monkeypatch=monkeypatch,
+    )
+    assert payload["success"] is True
+    synth = payload["_synthesized"]
+    assert synth.get("chapter_synthesis_failures") == [], (
+        "the deterministic path must emit an empty failures list, "
+        "never a stale/garbage value"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test 4 — all chapters fail → deterministic fallback, reconciliation skip
 # ---------------------------------------------------------------------------
