@@ -991,6 +991,55 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
+# R6 — silent-degradation fix: a force-injected block legitimately
+# PASSES the post-rewrite ``rewrite_curie_anchoring`` gate (the appended
+# hidden span anchors it), so it lands in ``blocks_validated.jsonl`` and
+# the operator-facing ``02_validation_report/report.json`` records it as
+# a plain ``status="passed"`` — indistinguishable from a block the
+# rewrite LLM authored cleanly. That hides the fact that the LLM
+# provably could NOT preserve the CURIEs across the full remediation
+# budget.
+#
+# The durable, report-reachable signal is a dedicated boolean marker
+# attribute stamped on the force-injected span. ``block.content`` (the
+# rewrite-tier HTML string) is the ONE field that survives every
+# ``_block_to_snake_case_entry`` JSONL round trip unchanged — the
+# ``Touch`` audit chain is dropped at that boundary — so the marker has
+# to ride inside the HTML. ``data-cf-curie-forced`` is distinct from the
+# generic ``data-cf-curie`` contract attribute (which the span also
+# carries) so the downstream report writer can grep for it without
+# false positives from any future legitimate ``data-cf-curie`` use.
+#
+# ``Touch.purpose`` ALSO carries the signal (``curie_force_injected``)
+# for the in-memory / JSON-LD audit chain — mirroring how the router's
+# ``escalate_immediately`` short-circuit disambiguates via
+# ``Touch.purpose="escalate_immediately"`` — but the Touch chain does
+# not reach the JSONL report writer, so the attribute is the
+# load-bearing carrier.
+_CURIE_FORCED_ATTR = "data-cf-curie-forced"
+_TOUCH_PURPOSE_CURIE_FORCED = "curie_force_injected"
+_CURIE_FORCED_MARKER_RE = re.compile(
+    r"data-cf-curie-forced\s*=\s*[\"']?true", re.IGNORECASE
+)
+
+
+def html_has_forced_curie_marker(html: Optional[str]) -> bool:
+    """Return True when ``html`` carries a force-injected CURIE span.
+
+    The single source of truth for "was this block's CURIE anchoring
+    force-injected by :func:`_force_inject_curies`". Consumed by the
+    workflow runner's ``02_validation_report/report.json`` writer to
+    distinguish force-injected blocks from clean rewrites without
+    re-running the rewrite tier. Matches the ``data-cf-curie-forced``
+    boolean attribute the injected ``<span>`` carries; tolerant of
+    quote style + whitespace so a downstream re-serialisation that
+    normalises attribute quoting still detects the marker.
+    """
+    if not html or not isinstance(html, str):
+        return False
+    return bool(_CURIE_FORCED_MARKER_RE.search(html))
+
+
 def _strip_html(html: str) -> str:
     """Strip HTML tags + collapse whitespace (mirror of the gate helper)."""
     if not html:
@@ -1008,7 +1057,10 @@ def _force_inject_curies(html: str, missing_curies: Sequence[str]) -> str:
     survives the str-path validator's ``_strip_html`` + ``extract_curies``
     pipeline — see the module comment above. The ``data-cf-curie``
     attribute is mirrored onto the span as a documented contract
-    attribute.
+    attribute, and a dedicated boolean ``data-cf-curie-forced="true"``
+    attribute marks the span as force-injected so the operator-facing
+    ``02_validation_report/report.json`` writer can tell a
+    force-injected block apart from a clean rewrite (R6).
 
     Empty ``missing_curies`` returns ``html`` unchanged. Idempotent: a
     CURIE already present as text content in the fragment is not
@@ -1029,7 +1081,8 @@ def _force_inject_curies(html: str, missing_curies: Sequence[str]) -> str:
 
     attr_value = " ".join(to_inject)
     span = (
-        f'<span hidden data-cf-curie="{attr_value}">{attr_value}</span>'
+        f'<span hidden data-cf-curie="{attr_value}" '
+        f'{_CURIE_FORCED_ATTR}="true">{attr_value}</span>'
     )
     return html + span
 
@@ -1041,13 +1094,20 @@ def _apply_rewrite_touch(
     provider: str,
     model: str,
     decision_capture_id: str,
+    purpose: str = "pedagogical_depth",
 ) -> Block:
     """Return a new Block with the rewrite output and a new Touch entry.
 
     The rewrite tier's Touch carries:
 
     - ``tier="rewrite"``
-    - ``purpose="pedagogical_depth"``
+    - ``purpose`` — defaults to ``pedagogical_depth`` (the clean-rewrite
+      path). The CURIE-force-injection exhaustion path passes
+      ``purpose="curie_force_injected"`` instead, so the in-memory /
+      JSON-LD audit chain records that the rewrite LLM could not
+      preserve the CURIEs cleanly — mirroring how the router's
+      ``escalate_immediately`` short-circuit disambiguates via a
+      dedicated ``Touch.purpose``.
     - ``provider`` / ``model`` from the constructor
     - ``timestamp`` = current UTC ISO-8601 with 'Z' suffix (matches the
       Wave 112 capture format)
@@ -1067,7 +1127,7 @@ def _apply_rewrite_touch(
         tier="rewrite",
         timestamp=timestamp,
         decision_capture_id=decision_capture_id,
-        purpose="pedagogical_depth",
+        purpose=purpose,
     )
     return dataclasses.replace(
         block,
@@ -1804,6 +1864,7 @@ class RewriteProvider(_BaseLLMProvider):
             provider=self._provider,
             model=self._model,
             decision_capture_id=self._last_capture_id(),
+            purpose=_TOUCH_PURPOSE_CURIE_FORCED,
         )
 
     # ------------------------------------------------------------------
@@ -1890,5 +1951,8 @@ __all__ = [
     "RewriteProvider",
     "RewriteProviderError",
     "SUPPORTED_PROVIDERS",
+    "_CURIE_FORCED_ATTR",
     "_REWRITE_SYSTEM_PROMPT",
+    "_TOUCH_PURPOSE_CURIE_FORCED",
+    "html_has_forced_curie_marker",
 ]
