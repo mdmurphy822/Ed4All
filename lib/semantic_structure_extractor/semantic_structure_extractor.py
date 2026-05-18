@@ -99,10 +99,17 @@ class SectionStructure:
     heading_id: Optional[str]
     content_blocks: List[ContentBlock]
     subsections: List['SectionStructure'] = field(default_factory=list)
+    # Three-stage textbook synthesis (plan §1): the FULL inter-heading
+    # prose for this section, captured between the section's own heading
+    # boundary and the next sibling/parent heading. Distinct from the
+    # sparse ``content_blocks`` — that stays a structural classification
+    # surface; ``section_text`` is the verbatim prose the LLM synthesis
+    # stages read. Empty string when no prose was captured.
+    section_text: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        result = {
             "id": self.id,
             "headingLevel": self.heading_level,
             "headingText": self.heading_text,
@@ -110,6 +117,11 @@ class SectionStructure:
             "contentBlocks": [b.to_dict() for b in self.content_blocks],
             "subsections": [s.to_dict() for s in self.subsections]
         }
+        # Additive: only emit ``section_text`` when prose was captured so
+        # legacy fixtures without it stay byte-stable when prose is absent.
+        if self.section_text:
+            result["section_text"] = self.section_text
+        return result
 
 
 @dataclass
@@ -122,10 +134,18 @@ class ChapterStructure:
     explicit_objectives: List[Dict[str, str]]
     content_blocks: List[ContentBlock]
     sections: List[SectionStructure]
+    # Three-stage textbook synthesis (plan §1): the FULL inter-heading
+    # prose for this chapter — every paragraph / list / table-text
+    # between this chapter's heading boundary and the next chapter
+    # heading, including the prose nested under its sections. This is
+    # the chapter-text source Stages 1/2/3 read from
+    # ``textbook_structure.json::chapters[].chapter_text``. ``content_blocks``
+    # semantics are LEFT UNCHANGED — ``chapter_text`` is purely additive.
+    chapter_text: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
-        return {
+        result = {
             "id": self.id,
             "headingLevel": self.heading_level,
             "headingText": self.heading_text,
@@ -134,6 +154,12 @@ class ChapterStructure:
             "contentBlocks": [b.to_dict() for b in self.content_blocks],
             "sections": [s.to_dict() for s in self.sections]
         }
+        # Additive: only emit ``chapter_text`` when prose was captured so
+        # a legacy fixture comparing the structural surface stays
+        # byte-stable when no prose is present.
+        if self.chapter_text:
+            result["chapter_text"] = self.chapter_text
+        return result
 
 
 class SemanticStructureExtractor:
@@ -581,9 +607,186 @@ class SemanticStructureExtractor:
                     len(fallback),
                     source_path or "<inline>",
                 )
+                self._populate_chapter_text(soup, fallback)
                 return fallback
 
+        self._populate_chapter_text(soup, primary_chapters)
         return primary_chapters
+
+    # ------------------------------------------------------------------
+    # Three-stage textbook synthesis — inter-heading prose capture
+    # ------------------------------------------------------------------
+
+    def _populate_chapter_text(
+        self,
+        soup: BeautifulSoup,
+        chapters: List[ChapterStructure],
+    ) -> None:
+        """Capture full inter-heading prose into ``chapter_text`` /
+        ``section_text`` on every chapter / section dict.
+
+        Plan §1 / §9: the three-stage LLM synthesis architecture needs
+        the FULL chapter prose, not the sparse structural
+        ``content_blocks`` (which carry ~1.9 KB total per chapter on the
+        OpenStax algebra corpus — a sliver of the real 10-30 pages of
+        prose). This method walks the document's headings in order and,
+        for each chapter / section, accumulates the verbatim text of
+        every element appearing AFTER that heading and BEFORE the next
+        heading at the same-or-shallower level.
+
+        Strategy — purely deterministic, provider-independent:
+
+        1. Collect every ``h1``..``h6`` in document order.
+        2. For each heading, the span of "owned" content runs from the
+           heading to the next heading of an equal-or-shallower level.
+        3. A chapter's ``chapter_text`` is the concatenation of the
+           prose owned directly by its heading PLUS the prose owned by
+           every descendant section/subsection heading — i.e. the whole
+           chapter scope. A section's ``section_text`` covers just its
+           own scope.
+
+        ``content_blocks`` is untouched — this only sets the additive
+        ``chapter_text`` / ``section_text`` fields.
+        """
+        if not chapters:
+            return
+
+        container = soup.find('main') or soup.find('body') or soup
+        if container is None:
+            return
+
+        headings: List[Tag] = [
+            t for t in container.find_all(
+                ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
+            )
+            if t.get_text(strip=True)
+        ]
+        if not headings:
+            return
+
+        # heading element identity -> its directly-owned prose (between
+        # this heading and the next equal-or-shallower heading).
+        owned_prose: Dict[int, str] = {}
+        # heading element identity -> (level, document index).
+        heading_meta: Dict[int, tuple] = {}
+        for idx, tag in enumerate(headings):
+            try:
+                level = int(tag.name.lstrip('h'))
+            except (ValueError, AttributeError):
+                level = 6
+            heading_meta[id(tag)] = (level, idx)
+            owned_prose[id(tag)] = self._collect_heading_prose(
+                tag, headings, idx
+            )
+
+        # Resolve which heading each chapter/section maps to. The
+        # heading-hierarchy walk consumes headings in the same document
+        # order chapters/sections are built, so a stable two-pointer
+        # match on (heading_text, level) is reliable. Track a consumed
+        # set so duplicate heading texts resolve to distinct elements.
+        consumed: set = set()
+
+        def _match_heading(
+            heading_text: str,
+            heading_id: Optional[str],
+        ) -> Optional[Tag]:
+            # Prefer an exact id match — unambiguous.
+            if heading_id:
+                for tag in headings:
+                    if id(tag) in consumed:
+                        continue
+                    if tag.get('id') == heading_id:
+                        consumed.add(id(tag))
+                        return tag
+            target = (heading_text or "").strip()
+            for tag in headings:
+                if id(tag) in consumed:
+                    continue
+                if tag.get_text(strip=True) == target:
+                    consumed.add(id(tag))
+                    return tag
+            return None
+
+        def _scope_text(start_tag: Tag) -> str:
+            """All prose owned by ``start_tag`` and its deeper-level
+            descendant headings, up to the next equal-or-shallower
+            heading."""
+            start_level, start_idx = heading_meta[id(start_tag)]
+            parts: List[str] = []
+            owned = owned_prose.get(id(start_tag), "")
+            if owned:
+                parts.append(owned)
+            for tag in headings[start_idx + 1:]:
+                lvl, _ = heading_meta[id(tag)]
+                if lvl <= start_level:
+                    break
+                deeper = owned_prose.get(id(tag), "")
+                if deeper:
+                    parts.append(deeper)
+            return "\n\n".join(parts).strip()
+
+        def _walk_sections(sections: List[SectionStructure]) -> None:
+            for section in sections:
+                tag = _match_heading(
+                    section.heading_text, section.heading_id
+                )
+                if tag is not None:
+                    section.section_text = _scope_text(tag)
+                _walk_sections(section.subsections)
+
+        for chapter in chapters:
+            tag = _match_heading(chapter.heading_text, chapter.heading_id)
+            if tag is not None:
+                chapter.chapter_text = _scope_text(tag)
+            _walk_sections(chapter.sections)
+
+    @staticmethod
+    def _collect_heading_prose(
+        heading: Tag,
+        headings: List[Tag],
+        heading_idx: int,
+    ) -> str:
+        """Return the verbatim prose owned directly by one heading.
+
+        "Owned" = every text-bearing element appearing after ``heading``
+        in document order and before the next heading (of ANY level).
+        The walk uses ``next_element`` traversal and stops at the next
+        heading element so nested-section prose is attributed to that
+        section's own heading rather than double-counted here.
+        """
+        next_heading = (
+            headings[heading_idx + 1]
+            if heading_idx + 1 < len(headings)
+            else None
+        )
+        next_heading_ids = {id(h) for h in headings}
+        collected: List[str] = []
+        node = heading.next_element
+        while node is not None:
+            if node is next_heading:
+                break
+            if isinstance(node, Tag) and id(node) in next_heading_ids:
+                # Reached some other heading — stop (defensive; the
+                # next_heading short-circuit normally fires first).
+                break
+            if isinstance(node, Tag) and node.name in (
+                'p', 'li', 'dd', 'dt', 'blockquote', 'pre',
+                'caption', 'figcaption', 'th', 'td',
+            ):
+                text = node.get_text(" ", strip=True)
+                if text:
+                    collected.append(text)
+            node = node.next_element
+        # De-dup consecutive repeats (a <li> inside a <ul> is visited
+        # only once via next_element, but nested inline tags can echo).
+        seen: set = set()
+        deduped: List[str] = []
+        for chunk in collected:
+            if chunk in seen:
+                continue
+            seen.add(chunk)
+            deduped.append(chunk)
+        return "\n".join(deduped).strip()
 
     # ------------------------------------------------------------------
     # Wave 74 Session 3: heading-hierarchy fallback
