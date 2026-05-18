@@ -364,6 +364,46 @@ def _extract_source_refs_from_block(block: Block) -> List[str]:
 # --------------------------------------------------------------------------- #
 
 
+def _curie_anchored(
+    curie: str,
+    surface_curies: "Set[str]",
+    text_blob: str,
+    minted_curie_map: Optional[Dict[str, Any]],
+) -> bool:
+    """Return True when ``curie`` is anchored in the block's surface.
+
+    Two anchoring contracts, dispatched on whether the CURIE is a
+    minted (corpus-derived) CURIE or an RDF CURIE:
+
+    * **Minted CURIE** — ``curie`` is a key in ``minted_curie_map``. The
+      minted CURIE token (e.g. ``alg:slope``) is a synthetic identifier
+      that never literally appears in prose. It is "anchored" when ANY
+      of that CURIE's vocabulary ``surface_forms`` (the concept's
+      canonical name + aliases) appears as a case-insensitive substring
+      in the block's ``text_blob``.
+    * **RDF CURIE** — ``curie`` is NOT in the map. The legacy literal-
+      token check is preserved verbatim: the CURIE counts as anchored
+      only when the literal token appears in ``surface_curies`` (the
+      CURIEs ``extract_curies`` scraped from the surface text).
+
+    When ``minted_curie_map`` is ``None`` / empty, every CURIE takes the
+    RDF arm — byte-identical to the pre-minting contract.
+    """
+    if minted_curie_map and curie in minted_curie_map:
+        entry = minted_curie_map.get(curie) or {}
+        surface_forms = entry.get("surface_forms") if isinstance(entry, dict) else None
+        if not surface_forms:
+            # Minted CURIE with no surface forms — fall through to the
+            # literal check rather than auto-passing.
+            return curie in surface_curies
+        blob_lower = (text_blob or "").lower()
+        return any(
+            isinstance(sf, str) and sf and sf.lower() in blob_lower
+            for sf in surface_forms
+        )
+    return curie in surface_curies
+
+
 class BlockCurieAnchoringValidator:
     """Outline-tier CURIE-anchoring gate.
 
@@ -374,14 +414,27 @@ class BlockCurieAnchoringValidator:
     block's textual surface (``content["key_claims"]``). A miss is
     a content-side semantic problem the rewrite tier could fix on a
     re-roll, so the gate emits ``action="regenerate"``.
+
+    Concept-aware anchoring (v0.3.0): when ``inputs["minted_curie_map"]``
+    is supplied — a ``{minted_curie: {"canonical", "surface_forms"}}``
+    dict built from the per-course domain-concept vocabulary — a CURIE
+    that is a key in that map is "anchored" when any of its
+    ``surface_forms`` appears (case-insensitive substring) in the block
+    text blob, instead of requiring the synthetic CURIE token literally.
+    RDF CURIEs (not in the map) keep the legacy literal-token check.
+    When no ``minted_curie_map`` is supplied, behaviour is byte-identical
+    to the pre-minting contract.
     """
 
     name = "outline_curie_anchoring"
-    version = "1.1.0"
+    version = "1.2.0"
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
         capture = _resolve_capture(inputs)
+        minted_curie_map = inputs.get("minted_curie_map") or None
+        if not isinstance(minted_curie_map, dict):
+            minted_curie_map = None
         blocks, err = _coerce_blocks(inputs)
         if err is not None:
             return GateResult(
@@ -435,15 +488,37 @@ class BlockCurieAnchoringValidator:
                 # ``if not curies`` branch below. Anchoring is
                 # tautologically satisfied when curies is non-empty.
                 surface_curies = set(curies)
+                # Stripped-HTML surface for minted-CURIE surface-form
+                # anchoring. The rewrite tier carries the minted CURIE
+                # token verbatim (force-injected — see
+                # ``_rewrite_provider``), so the literal check already
+                # passes; the prose surface is still threaded so a
+                # surface-form fallback is available when supplied.
+                text_blob = _strip_html(content)
             else:
                 # Non-dict / non-str content — nothing to audit. No
                 # capture emit either; the "block" wasn't actually a
                 # member of the validator's input universe.
                 continue
 
-            anchored_count = sum(1 for c in curies if c in surface_curies)
+            anchored_count = sum(
+                1
+                for c in curies
+                if _curie_anchored(
+                    c, surface_curies, text_blob, minted_curie_map
+                )
+            )
             anchoring_rate = (
                 (anchored_count / len(curies)) if curies else 0.0
+            )
+            # Signal whether this block carried any minted (corpus-
+            # derived) CURIE — lets a postmortem distinguish a prose
+            # corpus's surface-form anchoring from an RDF corpus's
+            # literal-token anchoring.
+            minted_curie_count = (
+                sum(1 for c in curies if c in minted_curie_map)
+                if minted_curie_map
+                else 0
             )
 
             if not curies:
@@ -478,6 +553,8 @@ class BlockCurieAnchoringValidator:
                         "anchoring_rate": 0.0,
                         "min_rate_threshold": 1.0,
                         "surface_curies_count": len(surface_curies),
+                        "minted_curie_count": 0,
+                        "minted_anchoring_used": minted_curie_map is not None,
                     },
                 )
                 continue
@@ -496,6 +573,8 @@ class BlockCurieAnchoringValidator:
                         "anchoring_rate": round(anchoring_rate, 4),
                         "min_rate_threshold": 1.0,
                         "surface_curies_count": len(surface_curies),
+                        "minted_curie_count": minted_curie_count,
+                        "minted_anchoring_used": minted_curie_map is not None,
                     },
                 )
             else:
@@ -524,6 +603,8 @@ class BlockCurieAnchoringValidator:
                         "anchoring_rate": 0.0,
                         "min_rate_threshold": 1.0,
                         "surface_curies_count": len(surface_curies),
+                        "minted_curie_count": minted_curie_count,
+                        "minted_anchoring_used": minted_curie_map is not None,
                     },
                 )
 

@@ -3060,6 +3060,15 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
     if objectives_path is not None:
         inputs["objectives_path"] = str(objectives_path)
 
+    # v0.3.0 dynamic CURIE minting: thread the minted-CURIE map into the
+    # rewrite-tier gate inputs too so surface-form anchoring is available
+    # at the post-rewrite seam. No-op for RDF / legacy corpora.
+    minted_curie_map = _resolve_minted_curie_map_for_validation(
+        project_id=project_id, kwargs=kwargs,
+    )
+    if minted_curie_map:
+        inputs["minted_curie_map"] = minted_curie_map
+
     gate_results: list = []
     failing_gate_ids: set = set()
     for gate_id, validator in validators:
@@ -3685,6 +3694,254 @@ def _load_outline_objectives(
         return []
 
 
+def _locate_domain_concept_vocabulary(
+    course_code: str,
+    kwargs: Dict[str, Any],
+) -> Optional[Path]:
+    """Resolve the ``domain_concept_vocabulary.json`` path for a course.
+
+    Resolution order (first hit wins):
+
+      1. ``phase_outputs.concept_extraction.domain_concept_vocabulary_path``
+         — the canonical thread the workflow runner sets when the
+         Stage-3 textbook-synthesis pass ran (``_run_concept_extraction``
+         surfaces this key).
+      2. The conventional on-disk location, a sibling of
+         ``concept_graph_semantic.json`` under
+         ``LibV2/courses/<slug>/concept_graph/``.
+
+    Returns ``None`` when neither resolves — the natural backward-compat
+    gate: an RDF / legacy corpus has no domain-concept vocabulary, so
+    the outline-handler minting step becomes a complete no-op.
+    """
+    phase_outputs = kwargs.get("phase_outputs") or {}
+    if isinstance(phase_outputs, dict):
+        ce = phase_outputs.get("concept_extraction") or {}
+        candidate = ce.get("domain_concept_vocabulary_path")
+        if isinstance(candidate, str) and candidate:
+            p = Path(candidate)
+            if p.is_file():
+                return p
+    # Conventional on-disk fallback. ``course_code`` -> slug mirrors the
+    # transform used by ``_run_concept_extraction`` (lower + _/space -> -).
+    course_slug = (course_code or "").lower().replace("_", "-").replace(
+        " ", "-"
+    )
+    if course_slug:
+        vocab_path = (
+            _resolve_libv2_root(kwargs.get("libv2_root"))
+            / "courses"
+            / course_slug
+            / "concept_graph"
+            / "domain_concept_vocabulary.json"
+        )
+        if vocab_path.is_file():
+            return vocab_path
+    return None
+
+
+def _resolve_minted_curie_map_for_validation(
+    *,
+    project_id: str,
+    kwargs: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Build the minted-CURIE map for an inter-tier / post-rewrite gate.
+
+    The validation handlers carry a Courseforge ``project_id`` (the
+    export folder name), not a course code. The course code is read
+    from the project's ``project_config.json``; the domain vocabulary
+    is then resolved via :func:`_locate_domain_concept_vocabulary`.
+
+    Returns ``None`` when no domain vocabulary exists (RDF / legacy
+    corpora) or it is unparseable — the gate then runs legacy literal-
+    token anchoring, byte-identical to the pre-minting contract.
+    """
+    course_code = project_id or ""
+    if project_id:
+        config_path = (
+            PROJECT_ROOT
+            / "Courseforge"
+            / "exports"
+            / project_id
+            / "project_config.json"
+        )
+        if config_path.exists():
+            try:
+                cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                course_code = cfg.get("course_name") or course_code
+            except (OSError, ValueError):
+                pass
+    vocab_path = _locate_domain_concept_vocabulary(course_code, kwargs)
+    if vocab_path is None:
+        return None
+    try:
+        vocabulary = json.loads(vocab_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "validation: failed to load domain_concept_vocabulary.json "
+            "at %s (%s); minted-CURIE anchoring unavailable.",
+            vocab_path, exc,
+        )
+        return None
+    try:
+        from lib.ontology.curie_discovery import build_minted_curie_map
+
+        minted = build_minted_curie_map(vocabulary, course_id=course_code)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        logger.warning(
+            "validation: build_minted_curie_map failed: %s", exc,
+        )
+        return None
+    return minted or None
+
+
+def _mint_outline_curies(
+    *,
+    outline_blocks: List[Any],
+    course_code: str,
+    kwargs: Dict[str, Any],
+    capture: Any,
+) -> None:
+    """Mint per-course CURIEs onto curie-less outline blocks (v0.3.0).
+
+    Locates the Stage-3 ``domain_concept_vocabulary.json``; when absent
+    this is a complete no-op (RDF / legacy corpora unaffected — the key
+    backward-compat contract). When present, builds the minted-CURIE
+    map, compiles the vocabulary into ``domain_concept_seeds``, and for
+    every outline block whose ``content`` is a dict with an EMPTY
+    ``content["curies"]`` runs concept-tag extraction over the block's
+    ``key_claims`` text surface and stamps the matching minted CURIEs in.
+
+    Mutation is in-place via ``dataclasses.replace`` on each Block (the
+    Block dataclass is frozen). Only EMPTY ``curies`` lists are touched
+    — a block that already carries real CURIEs is never overwritten.
+    """
+    vocab_path = _locate_domain_concept_vocabulary(course_code, kwargs)
+    if vocab_path is None:
+        # No domain vocabulary — RDF / legacy corpus. No-op.
+        return
+    try:
+        vocabulary = json.loads(vocab_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "outline phase: failed to load domain_concept_vocabulary.json "
+            "at %s (%s); skipping CURIE minting.",
+            vocab_path, exc,
+        )
+        return
+
+    from lib.ontology.curie_discovery import (
+        build_minted_curie_map,
+        minted_curie_by_canonical,
+    )
+    from lib.ontology.concept_tagging import extract_concept_tags
+    from Trainforge.process_course import compile_domain_concept_seeds
+
+    minted_map = build_minted_curie_map(vocabulary, course_id=course_code)
+    if not minted_map:
+        return
+    by_canonical = minted_curie_by_canonical(minted_map)
+
+    # Compile the vocabulary concepts into (canonical, [regex]) seed
+    # pairs. ``compile_domain_concept_seeds`` expects ``[{id, aliases}]``;
+    # the vocabulary's per-concept ``canonical`` field is the seed id.
+    seed_input = [
+        {
+            "id": c.get("canonical"),
+            "aliases": c.get("aliases") or [],
+        }
+        for c in (vocabulary.get("concepts") or [])
+        if isinstance(c, dict) and c.get("canonical")
+    ]
+    domain_concept_seeds = compile_domain_concept_seeds(seed_input)
+
+    import dataclasses as _dc
+
+    minted_block_count = 0
+    minted_curie_total = 0
+    for idx, block in enumerate(outline_blocks):
+        content = getattr(block, "content", None)
+        if not isinstance(content, dict):
+            continue
+        existing = content.get("curies")
+        # Only mint when the curies list is currently empty — never
+        # overwrite real (RDF or already-minted) CURIEs.
+        if existing:
+            continue
+
+        # Gather the block's text surface from ``key_claims``, handling
+        # both the legacy ``List[str]`` shape and the structured
+        # ``List[{claim, source_chunk_ids}]`` shape (mirrors
+        # ``BlockCurieAnchoringValidator``'s text_blob assembly).
+        claims_raw = content.get("key_claims") or []
+        text_parts: List[str] = []
+        for c in claims_raw:
+            if isinstance(c, str):
+                text_parts.append(c)
+            elif isinstance(c, dict):
+                claim_text = c.get("claim", "")
+                if isinstance(claim_text, str):
+                    text_parts.append(claim_text)
+        text = "\n".join(text_parts)
+        if not text.strip():
+            continue
+
+        # ``extract_concept_tags`` matches the block text against the
+        # compiled domain-concept seeds; returns the canonical slugs of
+        # the concepts the block discusses.
+        matched_canonicals = extract_concept_tags(
+            text, {}, domain_concept_seeds
+        )
+        minted_curies: List[str] = []
+        for canonical in matched_canonicals:
+            curie = by_canonical.get(canonical)
+            if curie and curie not in minted_curies:
+                minted_curies.append(curie)
+        if not minted_curies:
+            continue
+
+        new_content = dict(content)
+        new_content["curies"] = minted_curies
+        outline_blocks[idx] = _dc.replace(block, content=new_content)
+        minted_block_count += 1
+        minted_curie_total += len(minted_curies)
+
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="curie_minting",
+                    decision=(
+                        f"minted {len(minted_curies)} CURIE(s) onto "
+                        f"block {block.block_id}"
+                    ),
+                    rationale=(
+                        f"Block {block.block_id} (type={block.block_type}) "
+                        f"carried empty content['curies']; its key_claims "
+                        f"text matched {len(matched_canonicals)} of the "
+                        f"{len(minted_map)} domain-concept-vocabulary "
+                        f"concepts, minting {minted_curies} from the "
+                        f"per-course CURIE map so the anchoring gate has a "
+                        f"prose-corpus-valid CURIE to anchor against."
+                    ),
+                    ml_features={
+                        "block_id": block.block_id,
+                        "minted_curie_count": len(minted_curies),
+                        "vocabulary_concept_count": len(minted_map),
+                        "matched_concept_count": len(matched_canonicals),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    if minted_block_count:
+        logger.info(
+            "outline phase: minted CURIEs onto %d block(s) "
+            "(%d CURIE(s) total) from %d-concept domain vocabulary at %s",
+            minted_block_count, minted_curie_total, len(minted_map),
+            vocab_path,
+        )
+
+
 async def _run_content_generation_outline(**kwargs) -> str:
     """Run the outline tier of the Phase 3 two-pass content pipeline.
 
@@ -3939,6 +4196,30 @@ async def _run_content_generation_outline(**kwargs) -> str:
             except (TypeError, ValueError):
                 continue
 
+    # ------------------------------------------------------------------ #
+    # Dynamic CURIE minting (v0.3.0 corpus-generalization initiative).
+    # ------------------------------------------------------------------ #
+    # A prose corpus (e.g. an OpenStax textbook) has zero RDF/SHACL
+    # CURIEs in its text, so every outline block lands with an EMPTY
+    # ``content["curies"]`` and ``BlockCurieAnchoringValidator`` 100%-
+    # fails the ``OUTLINE_BLOCK_MISSING_CURIES`` gate. When the Stage-3
+    # textbook-synthesis pass produced a ``domain_concept_vocabulary.json``
+    # for this course, mint a per-course CURIE for every vocabulary
+    # concept and stamp the matching minted CURIEs onto each outline
+    # block whose ``curies`` is currently empty.
+    #
+    # Backward-compat contract: when NO vocabulary file exists (every
+    # RDF / legacy corpus, every existing test fixture), this block is a
+    # complete no-op — outline blocks are byte-identical to the
+    # pre-minting emit. The absence of the vocabulary file is the
+    # natural gate; no behavior flag is needed.
+    _mint_outline_curies(
+        outline_blocks=outline_blocks,
+        course_code=course_code,
+        kwargs=kwargs,
+        capture=capture,
+    )
+
     # Persist outline blocks to JSONL (one entry per Block via
     # to_jsonld_entry — same shape post_rewrite_validation consumes).
     blocks_outline_path = out_dir / "blocks_outline.jsonl"
@@ -4168,6 +4449,18 @@ async def _run_inter_tier_validation(**kwargs) -> str:
     inputs: dict = {"blocks": blocks}
     if objectives_path is not None:
         inputs["objectives_path"] = str(objectives_path)
+
+    # v0.3.0 dynamic CURIE minting: thread the per-course minted-CURIE
+    # map into the gate inputs so BlockCurieAnchoringValidator can
+    # anchor a minted (prose-corpus) CURIE via its vocabulary surface
+    # forms. No-op when no domain_concept_vocabulary.json exists (RDF /
+    # legacy corpora) — _resolve_minted_curie_map_for_validation returns
+    # None and the validator runs legacy literal-token anchoring.
+    minted_curie_map = _resolve_minted_curie_map_for_validation(
+        project_id=project_id, kwargs=kwargs,
+    )
+    if minted_curie_map:
+        inputs["minted_curie_map"] = minted_curie_map
 
     gate_results: list = []
     failing_gate_ids: set = set()

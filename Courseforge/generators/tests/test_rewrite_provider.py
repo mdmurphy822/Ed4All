@@ -235,12 +235,15 @@ def test_curie_preservation_gate_fires_remediation_on_drop(monkeypatch):
     assert "sh:NodeShape" in out.content
 
 
-def test_curie_preservation_exhaustion_raises_rewrite_curie_drop(
+def test_curie_preservation_exhaustion_force_injects_curie(
     monkeypatch,
 ):
-    """Every retry drops the CURIE → gate raises after ``MAX_PARSE_RETRIES + 1``
-    dispatches with ``code="rewrite_curie_drop"`` and the missing tokens
-    listed in ``missing_curies``."""
+    """Every retry drops the CURIE → after ``MAX_PARSE_RETRIES + 1``
+    dispatches the rewrite tier FORCE-INJECTS the still-missing CURIE
+    as a ``data-cf-curie`` attribute on the outermost wrapper rather
+    than raising (v0.3.0 minted-CURIE propagation contract). The CURIE
+    token survives into the emitted HTML so the post-rewrite anchoring
+    gate sees it."""
     monkeypatch.delenv(ENV_PROVIDER, raising=False)
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
@@ -258,12 +261,46 @@ def test_curie_preservation_exhaustion_raises_rewrite_curie_drop(
         client=_make_client(handler),
     )
     block = _outline_block(curies=["sh:NodeShape"])
-    with pytest.raises(RewriteProviderError) as excinfo:
-        p.generate_rewrite(block)
-    assert excinfo.value.code == "rewrite_curie_drop"
-    assert "sh:NodeShape" in excinfo.value.missing_curies
+    out = p.generate_rewrite(block)
     # Initial dispatch + MAX_PARSE_RETRIES (=2) more retries = 3 total.
     assert len(seen) == 3
+    # The dropped CURIE was force-injected — it appears verbatim in the
+    # emitted HTML (as a data-cf-curie attribute on the wrapper).
+    assert "sh:NodeShape" in out.content
+    assert 'data-cf-curie="sh:NodeShape"' in out.content
+    # extract_curies (the str-path validator scrape) recovers it.
+    from lib.ontology.curie_extraction import extract_curies
+    assert "sh:NodeShape" in extract_curies(out.content)
+
+
+def test_minted_curies_from_source_block_survive_into_html(monkeypatch):
+    """A source block whose ``curies`` carry minted (prose-corpus)
+    CURIEs that the rewrite LLM declines to echo are force-injected so
+    every source CURIE appears in the emitted HTML string."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Natural prose — none of the minted CURIE tokens echoed.
+        body = (
+            "<section><p>Slope measures the steepness of a line.</p>"
+            "</section>"
+        )
+        return httpx.Response(200, json=_success_body(body))
+
+    p = RewriteProvider(
+        provider="local",
+        client=_make_client(handler),
+    )
+    block = _outline_block(
+        curies=["samplecoursea:slope", "samplecoursea:y_intercept"],
+    )
+    out = p.generate_rewrite(block)
+    for curie in ("samplecoursea:slope", "samplecoursea:y_intercept"):
+        assert curie in out.content, (
+            f"minted CURIE {curie!r} did not survive into the HTML"
+        )
 
 
 # ---------------------------------------------------------------------------
