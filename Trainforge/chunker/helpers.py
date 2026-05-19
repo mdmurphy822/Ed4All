@@ -31,6 +31,7 @@ from Trainforge.parsers.html_content_parser import HTMLTextExtractor
 
 __all__ = [
     "extract_plain_text",
+    "extract_plain_text_with_curies",
     "extract_section_html",
     "strip_assessment_feedback",
     "strip_feedback_from_text",
@@ -77,6 +78,42 @@ def extract_plain_text(html: str) -> str:
     extractor = HTMLTextExtractor()
     extractor.feed(html)
     return extractor.get_text()
+
+
+def extract_plain_text_with_curies(
+    html: str,
+) -> Tuple[str, List[str], List[str]]:
+    """Return the plain-text projection of ``html`` plus harvested CURIEs.
+
+    Sibling of :func:`extract_plain_text` that additionally surfaces the
+    ``data-cf-curie`` tokens harvested by
+    :class:`Trainforge.parsers.html_content_parser.HTMLTextExtractor`.
+    The 376b64f contract still holds — force-injected curie-anchor
+    subtrees are skipped, so the returned ``text`` is byte-identical to
+    :func:`extract_plain_text`'s output — but the CURIE values are no
+    longer discarded: the downstream ``curie_anchoring`` gate consumes
+    them.
+
+    Returns ``(text, curies, forced_curies)``:
+      - ``text``    — the plain-text projection (same as
+        :func:`extract_plain_text`).
+      - ``curies``  — ordered append log of every ``data-cf-curie``
+        token across the document.
+      - ``forced_curies`` — sorted CURIE tokens whose anchoring element
+        also carried ``data-cf-curie-forced="true"``.
+
+    :func:`extract_plain_text`'s signature is intentionally left
+    untouched — it has many callers and a tuple-return break is too
+    wide a blast radius.
+    """
+
+    extractor = HTMLTextExtractor()
+    extractor.feed(html)
+    return (
+        extractor.get_text(),
+        extractor.get_curies(),
+        extractor.get_forced_curies(),
+    )
 
 
 # ---------------------------------------------------------------------------

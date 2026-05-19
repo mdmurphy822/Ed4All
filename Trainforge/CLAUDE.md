@@ -59,9 +59,20 @@ The contract:
   explicit `paraphrase_used_deterministic_draft` decision-capture
   event so operators see the degraded coverage.
 - The corpus-level gate is `curie_anchoring`. It's a regression-detection
-  sentinel: binary per-pair anchoring rate ≥ 0.95. Healthy
-  injection holds it at ~1.00 by construction; an injector
-  regression drops it to natural paraphrase rate (~0.10) loudly.
+  sentinel: binary per-pair anchoring rate ≥ 0.95. The source-CURIE
+  set is read from the structured `chunk.curies` field — the chunker
+  harvests `data-cf-curie` span attribute values into `chunk.curies`
+  (and the `forced_curies` subset) BEFORE 376b64f strips those
+  force-injected spans from `chunk.text`; legacy chunks missing the
+  field fall back to a text regex. This keeps force-injected chunks
+  eligible, so the gate fails closed when their pairs don't anchor
+  (an injector regression drops the rate to natural paraphrase rate,
+  ~0.10, loudly). `forced_curies` additionally drives an advisory
+  rewrite-tier preservation-failure sub-signal — warning-severity
+  `FORCED_CURIE_BLOCKS_PRESENT`, gated by the validator's
+  `max_forced_curie_block_rate` knob (default 1.0 = advisory) — so
+  force-injection masking is surfaced even when the anchoring rate
+  passes.
 
 Operator action: backfill the 34 `degraded_placeholder` FORM_DATA
 entries with anchored content over time (per the standing operating
@@ -803,7 +814,7 @@ Three validators gate the `training_synthesis` phase under `textbook_to_course`.
 | `synthesis_quota` | `lib.validators.synthesis_quota.SynthesisQuotaValidator` | Estimated dispatches ≤ ceiling (default 1500) | warning |
 | `property_coverage` | `lib.validators.property_coverage.PropertyCoverageValidator` | Each declared property ≥ `min_pairs` (manifest-defined) | critical, no-ops without manifest |
 | `synthesis_leakage` | `lib.validators.synthesis_leakage.SynthesisLeakageValidator` | ≤5% verbatim-span leak rate; 0% assessment-scaffold rate | critical |
-| `curie_anchoring` | `lib.validators.curie_anchoring.CurieAnchoringValidator` | Binary per-pair anchoring rate ≥ `min_pair_anchoring_rate` (default 0.95). Force-injection guarantees CURIE presence by construction; this gate fires only when the injector regresses. | critical (replaces `curie_preservation`) |
+| `curie_anchoring` | `lib.validators.curie_anchoring.CurieAnchoringValidator` | Binary per-pair anchoring rate ≥ `min_pair_anchoring_rate` (default 0.95). Reads source CURIEs from the structured `chunk.curies` field (chunker harvests force-injected `data-cf-curie` spans before 376b64f strips them from `text`; text-regex fallback for legacy chunks); fires when a force-injected pair fails to anchor. `forced_curies` drives the advisory `FORCED_CURIE_BLOCKS_PRESENT` sub-signal (`max_forced_curie_block_rate` knob). | critical (replaces `curie_preservation`) |
 | `min_edge_count` | `lib.validators.min_edge_count.MinEdgeCountValidator` | ≥100 edges, ≥4 distinct edge types, ≥50 concept nodes | critical |
 | `synthesis_diversity` | `lib.validators.synthesis_diversity.SynthesisDiversityValidator` | top-3 templates ≤60%, single template ≤35%, ≥8 distinct templates | critical |
 | `kg_quality_report` | `lib.validators.kg_quality.KGQualityValidator` | completeness 0.95 / consistency 0.95 / accuracy 0.95 / coverage 0.5 | critical |

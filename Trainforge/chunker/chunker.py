@@ -91,7 +91,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from Trainforge.chunker.boilerplate import strip_boilerplate
 from Trainforge.chunker.helpers import (
-    extract_plain_text,
+    extract_plain_text_with_curies,
     extract_section_html,
     strip_assessment_feedback,
     strip_feedback_from_text,
@@ -551,6 +551,8 @@ def chunk_text_block(
     merged_headings: Optional[List[str]] = None,
     merged_key_claims: Optional[List[Dict[str, Any]]] = None,
     merged_objective_alignment: Optional[List[Dict[str, Any]]] = None,
+    curie_anchors: Optional[List[str]] = None,
+    forced_curie_anchors: Optional[List[str]] = None,
     max_chunk_size: int = MAX_CHUNK_SIZE,
     target_chunk_size: int = TARGET_CHUNK_SIZE,
 ) -> List[Dict[str, Any]]:
@@ -582,6 +584,20 @@ def chunk_text_block(
     per-sentence. Downstream consumers that want per-sentence
     attribution use the existing per-claim NLI fan-out path
     (W4.A / W5.D).
+
+    CURIE-anchor threading: accepts ``curie_anchors`` /
+    ``forced_curie_anchors`` — the ``data-cf-curie`` tokens harvested
+    by :func:`Trainforge.chunker.helpers.extract_plain_text_with_curies`
+    from the section / item HTML. They are forwarded to the
+    ``ctx.create_chunk`` callback as the optional ``curie_anchors`` /
+    ``forced_curie_anchors`` kwargs (additive, ``TypeError``-fallback —
+    same contract as the W5.F merged-audit kwargs). The callback
+    (``_create_chunk``) folds them with regex-extracted prose CURIEs
+    into the chunk's ``curies`` / ``forced_curies`` fields so the
+    ``curie_anchoring`` gate has an authoritative source-CURIE set.
+    When a chunk is sentence-split, every sub-chunk receives the same
+    section-level anchor lists (force-injection is per-section, not
+    per-sentence).
     """
 
     word_count = len(text.split())
@@ -632,6 +648,10 @@ def chunk_text_block(
         extra_kwargs["merged_key_claims"] = merged_key_claims
     if merged_objective_alignment:
         extra_kwargs["merged_objective_alignment"] = merged_objective_alignment
+    if curie_anchors:
+        extra_kwargs["curie_anchors"] = curie_anchors
+    if forced_curie_anchors:
+        extra_kwargs["forced_curie_anchors"] = forced_curie_anchors
 
     def _dispatch_create_chunk(**call_kwargs: Any) -> Dict[str, Any]:
         """Invoke the create_chunk callback with W5.F extras when accepted.
@@ -843,7 +863,12 @@ def chunk_content(
             raw_html, _ = strip_boilerplate(raw_html, boilerplate)
 
         if not item["sections"]:
-            text = extract_plain_text(raw_html)
+            # Harvest data-cf-curie tokens alongside the plain-text
+            # projection so force-injected CURIE anchors survive into
+            # the emitted chunk's ``curies`` / ``forced_curies`` fields.
+            text, item_curies, item_forced_curies = (
+                extract_plain_text_with_curies(raw_html)
+            )
             if item["resource_type"] == "quiz":
                 text = strip_feedback_from_text(text)
             if text.strip():
@@ -857,6 +882,8 @@ def chunk_content(
                     start_id=chunk_counter,
                     follows_chunk_id=prev_chunk_id,
                     position_in_module=position_in_module,
+                    curie_anchors=item_curies,
+                    forced_curie_anchors=item_forced_curies,
                     ctx=ctx,
                     max_chunk_size=max_chunk_size,
                     target_chunk_size=target_chunk_size,
@@ -894,6 +921,27 @@ def chunk_content(
             if not text.strip():
                 continue
             html_block = extract_section_html(raw_html, heading)
+            # Harvest data-cf-curie tokens from this section's HTML.
+            # When merge_small_sections collapsed several sections into
+            # this chunk, each merged heading's section HTML is its own
+            # extracted block — union the harvested anchor lists across
+            # all of them so the chunk's curies set is complete.
+            _, sec_curies, sec_forced_curies = (
+                extract_plain_text_with_curies(html_block)
+            )
+            section_curies: List[str] = list(sec_curies)
+            section_forced_curies: List[str] = list(sec_forced_curies)
+            for extra_heading in merged_headings or []:
+                if extra_heading == heading:
+                    continue
+                extra_html = extract_section_html(raw_html, extra_heading)
+                if not extra_html:
+                    continue
+                _, extra_curies, extra_forced = (
+                    extract_plain_text_with_curies(extra_html)
+                )
+                section_curies.extend(extra_curies)
+                section_forced_curies.extend(extra_forced)
             item_chunks = chunk_text_block(
                 text=text,
                 html=html_block,
@@ -908,6 +956,8 @@ def chunk_content(
                 merged_headings=merged_headings,
                 merged_key_claims=merged_key_claims,
                 merged_objective_alignment=merged_objective_alignment,
+                curie_anchors=section_curies,
+                forced_curie_anchors=section_forced_curies,
                 ctx=ctx,
                 max_chunk_size=max_chunk_size,
                 target_chunk_size=target_chunk_size,

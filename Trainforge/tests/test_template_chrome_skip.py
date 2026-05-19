@@ -12,7 +12,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.chunker.helpers import extract_plain_text
+from Trainforge.chunker.helpers import (
+    extract_plain_text,
+    extract_plain_text_with_curies,
+)
 from Trainforge.parsers.html_content_parser import HTMLTextExtractor
 
 
@@ -204,3 +207,100 @@ class TestCurieAnchorSkip:
         text = extract_plain_text(html)
         assert "property shape constrains the values" in text
         assert "ns:concept" not in text
+
+
+class TestCurieAnchorHarvest:
+    """U2: the HTMLTextExtractor still SKIPS the force-injected
+    ``data-cf-curie`` subtree (376b64f invariant — synthetic tokens stay
+    out of chunk text), but it now HARVESTS the CURIE attribute values so
+    the downstream ``curie_anchoring`` gate can still see the anchors.
+    The ``data-cf-curie-forced="true"`` marker partitions the harvest
+    into the forced subset.
+    """
+
+    def test_force_injected_curie_harvested_not_in_text(self):
+        """A force-injected span (hidden + data-cf-curie +
+        data-cf-curie-forced): the token is harvested into get_curies()
+        AND get_forced_curies(), but the 376b64f skip invariant holds —
+        it does not appear in extracted text."""
+        html = (
+            "<html><body>"
+            "<p>Cardinality constraints bound how many values a property "
+            "may carry.</p>"
+            '<span hidden data-cf-curie="ns:concept" '
+            'data-cf-curie-forced="true">ns:concept</span>'
+            "</body></html>"
+        )
+        x = HTMLTextExtractor()
+        x.feed(html)
+        # 376b64f invariant: synthetic token stays out of text.
+        assert "Cardinality constraints bound how many values" in x.get_text()
+        assert "ns:concept" not in x.get_text()
+        assert "ns:concept" not in extract_plain_text(html)
+        # U2: the token is harvested and flagged as force-injected.
+        assert "ns:concept" in x.get_curies()
+        assert "ns:concept" in x.get_forced_curies()
+
+    def test_multi_token_curie_harvested_without_forced_marker(self):
+        """A data-cf-curie span WITHOUT the forced marker: both
+        space-split tokens land in get_curies(); get_forced_curies()
+        stays empty."""
+        html = (
+            "<html><body>"
+            "<p>Real prose body.</p>"
+            '<span hidden data-cf-curie="a:b c:d">a:b c:d</span>'
+            "</body></html>"
+        )
+        x = HTMLTextExtractor()
+        x.feed(html)
+        assert "Real prose body." in x.get_text()
+        assert "a:b" not in x.get_text()
+        assert "c:d" not in x.get_text()
+        assert "a:b" in x.get_curies()
+        assert "c:d" in x.get_curies()
+        # No forced marker → forced harvest stays empty.
+        assert x.get_forced_curies() == []
+
+    def test_no_curie_attr_empty_harvest(self):
+        """Control: HTML with no data-cf-curie span yields empty curie
+        + forced-curie harvests and unchanged text."""
+        html = (
+            "<html><body>"
+            "<p>First paragraph.</p>"
+            "<span hidden>genuinely hidden reveal content</span>"
+            "<p>Second paragraph.</p>"
+            "</body></html>"
+        )
+        x = HTMLTextExtractor()
+        x.feed(html)
+        assert "First paragraph." in x.get_text()
+        assert "Second paragraph." in x.get_text()
+        assert "genuinely hidden reveal content" in x.get_text()
+        assert x.get_curies() == []
+        assert x.get_forced_curies() == []
+
+    def test_extract_plain_text_with_curies_tuple_shape(self):
+        """The chunker helper ``extract_plain_text_with_curies`` returns
+        ``(text, curies, forced_curies)`` on the force-injected case."""
+        html = (
+            "<section><h2>Property Shapes</h2>"
+            "<p>A property shape constrains the values a node may carry "
+            "for a given predicate.</p>"
+            '<span hidden data-cf-curie="ns:concept" '
+            'data-cf-curie-forced="true">ns:concept</span>'
+            "</section>"
+        )
+        result = extract_plain_text_with_curies(html)
+        assert isinstance(result, tuple)
+        assert len(result) == 3
+        text, curies, forced_curies = result
+        assert isinstance(text, str)
+        assert isinstance(curies, list)
+        assert isinstance(forced_curies, list)
+        # Text contract: byte-identical to extract_plain_text.
+        assert text == extract_plain_text(html)
+        assert "property shape constrains the values" in text
+        assert "ns:concept" not in text
+        # Harvest contract.
+        assert "ns:concept" in curies
+        assert "ns:concept" in forced_curies

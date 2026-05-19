@@ -15,6 +15,20 @@ Cases:
   deterministic pairs (unanchored, but skipped) → rate=1.0, passes.
 * **Threshold override:** override config to 0.5 → corpus at 0.6 passes
   (would fail at the default 0.95).
+
+U4 (post-376b64f) — structured ``chunk["curies"]`` consumption:
+
+* **Force-injected-then-stripped regression:** a chunk whose CURIEs
+  were stripped from ``text`` by 376b64f but harvested into
+  ``chunk["curies"]`` is now ELIGIBLE; unanchored pairs fail the gate
+  instead of vanishing into ``skipped_no_curies``.
+* **Forced metrics surfaced:** ``forced_source_chunks`` /
+  ``forced_curie_block_rate`` appear on ``result.metadata``.
+* **Genuinely CURIE-free chunk:** still counted in
+  ``skipped_no_curies`` — semantics preserved.
+* **Legacy chunk:** no ``curies`` field → text-regex fallback.
+* **Advisory knob:** ``max_forced_curie_block_rate`` defaults to 1.0
+  (never blocks); a lowered knob emits a warning, not a failure.
 """
 from __future__ import annotations
 
@@ -367,6 +381,259 @@ def test_passes_when_no_auditable_pairs(tmp_path: Path) -> None:
     assert result.passed is True
     info_codes = [i.code for i in result.issues if i.severity == "info"]
     assert "NO_AUDITABLE_PAIRS" in info_codes
+
+
+# --------------------------------------------------------------- #
+# U4 — structured chunk["curies"] consumption (post-376b64f)
+# --------------------------------------------------------------- #
+
+
+def test_force_injected_stripped_chunk_now_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """REGRESSION TEST for the U4 bug.
+
+    Commit 376b64f makes the chunker strip force-injected
+    ``data-cf-curie`` spans out of ``chunk["text"]``. A sibling unit
+    has the chunker harvest those CURIEs into the structured
+    ``chunk["curies"]`` / ``chunk["forced_curies"]`` fields BEFORE the
+    strip.
+
+    Here a chunk carries ``curies: ["ns:concept"]`` (forced) but its
+    ``text`` does NOT contain ``ns:concept`` (stripped), and the
+    instruction pairs' bodies also do NOT contain it (a real
+    rewrite-tier preservation failure).
+
+    Pre-fix the validator built its source-CURIE map from
+    ``chunk["text"]`` only → the chunk had zero source CURIEs → every
+    pair hit ``skipped_no_curies`` and was excluded from the
+    denominator → the gate passed at rate 1.0 over a non-
+    representative sample.
+
+    Post-fix the validator reads ``chunk["curies"]`` as the
+    authoritative source-CURIE set → the pairs are now ELIGIBLE,
+    anchor nothing → the gate FAILS closed.
+    """
+    course = tmp_path / "course"
+    # text deliberately omits ns:concept — 376b64f stripped the span.
+    chunks = [{
+        "id": "c1",
+        "text": "Background prose with the canonical token removed.",
+        "curies": ["ns:concept"],
+        "forced_curies": ["ns:concept"],
+    }]
+    # Pair bodies also omit ns:concept — genuine anchoring failure.
+    pairs = [{
+        "chunk_id": "c1",
+        "template_id": "paraphrase.def_0",
+        "prompt": "Explain the constraint.",
+        "completion": (
+            "It declares validation behaviour without naming the "
+            "canonical predicate."
+        ),
+    }]
+    _write_corpus(course, chunks)
+    _write_pairs(course, pairs)
+
+    result = CurieAnchoringValidator().validate(
+        {"course_dir": str(course)}
+    )
+
+    assert result.passed is False
+    assert result.score == pytest.approx(0.0)
+    critical_codes = [
+        i.code for i in result.issues if i.severity == "critical"
+    ]
+    assert "PAIR_ANCHORING_BELOW_THRESHOLD" in critical_codes
+    report = next(
+        i for i in result.issues if i.code == "PAIR_ANCHORING_REPORT"
+    )
+    payload = json.loads(report.message)
+    # Pre-fix: total_eligible_pairs==0 (all skipped_no_curies), pass.
+    assert payload["total_eligible_pairs"] == 1
+    assert payload["skipped_no_curies"] == 0
+    assert payload["anchored_count"] == 0
+
+
+def test_declared_curies_anchor_and_expose_forced_metrics(
+    tmp_path: Path,
+) -> None:
+    """A chunk with a structured ``curies`` field whose pairs DO
+    contain the CURIE → gate passes; forced_source_chunks /
+    forced_curie_block_rate surface in result.metadata."""
+    course = tmp_path / "course"
+    chunks = [{
+        "id": "c1",
+        # text omits the CURIE; the structured field is authoritative.
+        "text": "Prose without the canonical token.",
+        "curies": ["ns:concept"],
+        "forced_curies": ["ns:concept"],
+    }]
+    pairs = [{
+        "chunk_id": "c1",
+        "template_id": "paraphrase.def_0",
+        "prompt": "Define the constraint.",
+        "completion": (
+            "The ns:concept predicate types the node for the "
+            "validator."
+        ),
+    }]
+    _write_corpus(course, chunks)
+    _write_pairs(course, pairs)
+
+    result = CurieAnchoringValidator().validate(
+        {"course_dir": str(course)}
+    )
+
+    assert result.passed is True
+    assert result.score == pytest.approx(1.0)
+    assert result.metadata is not None
+    assert result.metadata["forced_source_chunks"] == 1
+    assert result.metadata["distinct_eligible_chunks"] == 1
+    assert result.metadata["forced_curie_block_rate"] == pytest.approx(1.0)
+    # The structured report also carries the forced sub-signal.
+    report = next(
+        i for i in result.issues if i.code == "PAIR_ANCHORING_REPORT"
+    )
+    payload = json.loads(report.message)
+    assert payload["forced_source_chunks"] == 1
+    assert payload["forced_curie_block_rate"] == pytest.approx(1.0)
+
+
+def test_genuinely_curie_free_chunk_still_skipped(
+    tmp_path: Path,
+) -> None:
+    """A chunk with NO ``curies`` field and no CURIE in ``text`` is
+    genuinely CURIE-free → its pairs still increment
+    skipped_no_curies and are excluded; gate passes. The
+    skipped_no_curies semantics are preserved — only force-injected
+    chunks change from skipped → eligible."""
+    course = tmp_path / "course"
+    chunks = [{
+        "id": "c1",
+        "text": "Plain prose without any ontology-prefixed terms.",
+    }]
+    pairs = [{
+        "chunk_id": "c1",
+        "template_id": "paraphrase.def_0",
+        "prompt": "Summarize the chunk.",
+        "completion": "It contains plain prose with no predicates.",
+    }]
+    _write_corpus(course, chunks)
+    _write_pairs(course, pairs)
+
+    result = CurieAnchoringValidator().validate(
+        {"course_dir": str(course)}
+    )
+
+    assert result.passed is True
+    info_codes = [i.code for i in result.issues if i.severity == "info"]
+    assert "NO_AUDITABLE_PAIRS" in info_codes
+
+
+def test_legacy_chunk_without_curies_field_uses_text_fallback(
+    tmp_path: Path,
+) -> None:
+    """A legacy chunk with NO ``curies`` field but a real CURIE woven
+    into ``text`` → the text-regex fallback still resolves the source
+    CURIE; pair anchoring is evaluated as before."""
+    course = tmp_path / "course"
+    # No `curies` key — predates the structured field.
+    chunks = [{
+        "id": "c1",
+        "text": _chunk_text_with_curies(["sh:NodeShape"]),
+    }]
+    # Anchored pair (body contains the legacy text CURIE).
+    anchored_pair = {
+        "chunk_id": "c1",
+        "template_id": "paraphrase.def_0",
+        "prompt": "Define the shape.",
+        "completion": (
+            "In SHACL the sh:NodeShape predicate types the node."
+        ),
+    }
+    # Unanchored pair (body drops the CURIE).
+    unanchored_pair = {
+        "chunk_id": "c1",
+        "template_id": "paraphrase.def_1",
+        "prompt": "Summarize the validation behaviour.",
+        "completion": (
+            "It refines validation without naming the predicate."
+        ),
+    }
+    _write_corpus(course, chunks)
+    _write_pairs(course, [anchored_pair, unanchored_pair])
+
+    result = CurieAnchoringValidator().validate(
+        {"course_dir": str(course)}
+    )
+
+    # 1/2 anchored → 0.5 < default 0.95 → fails (fallback resolved
+    # the source CURIE, so the pairs WERE eligible).
+    assert result.passed is False
+    assert result.score == pytest.approx(0.5)
+    report = next(
+        i for i in result.issues if i.code == "PAIR_ANCHORING_REPORT"
+    )
+    payload = json.loads(report.message)
+    assert payload["total_eligible_pairs"] == 2
+    assert payload["anchored_count"] == 1
+    # No structured forced field on a legacy chunk → zero forced.
+    assert payload["forced_source_chunks"] == 0
+
+
+def test_max_forced_curie_block_rate_is_advisory_by_default(
+    tmp_path: Path,
+) -> None:
+    """A corpus of force-injected chunks whose pairs all anchor →
+    gate PASSES under the default max_forced_curie_block_rate (1.0,
+    advisory). Lowering the knob below the actual rate surfaces a
+    FORCED_CURIE_BLOCKS_PRESENT warning issue without flipping the
+    verdict to fail (warning severity, never blocks)."""
+    course = tmp_path / "course"
+    chunks: List[dict] = []
+    pairs: List[dict] = []
+    for i in range(4):
+        curie = f"ns:concept{i}"
+        chunks.append({
+            "id": f"c{i}",
+            "text": "Prose without the canonical token.",
+            "curies": [curie],
+            "forced_curies": [curie],
+        })
+        pairs.append({
+            "chunk_id": f"c{i}",
+            "template_id": "paraphrase.def_0",
+            "prompt": "Define the constraint.",
+            "completion": (
+                f"The {curie} predicate types the node for the "
+                f"validator."
+            ),
+        })
+    _write_corpus(course, chunks)
+    _write_pairs(course, pairs)
+
+    # Default knob (1.0): advisory — gate passes, no warning issue.
+    default_result = CurieAnchoringValidator().validate(
+        {"course_dir": str(course)}
+    )
+    assert default_result.passed is True
+    assert default_result.score == pytest.approx(1.0)
+    default_codes = [i.code for i in default_result.issues]
+    assert "FORCED_CURIE_BLOCKS_PRESENT" not in default_codes
+
+    # Explicitly-lowered knob: rate 1.0 exceeds 0.5 → warning issue
+    # is present, but the verdict still PASSES (warning severity).
+    lowered_result = CurieAnchoringValidator().validate({
+        "course_dir": str(course),
+        "thresholds": {"max_forced_curie_block_rate": 0.5},
+    })
+    assert lowered_result.passed is True
+    warning_codes = [
+        i.code for i in lowered_result.issues
+        if i.severity == "warning"
+    ]
+    assert "FORCED_CURIE_BLOCKS_PRESENT" in warning_codes
 
 
 # --------------------------------------------------------------- #

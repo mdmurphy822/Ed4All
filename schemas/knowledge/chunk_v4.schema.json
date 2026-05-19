@@ -114,6 +114,16 @@
       "type": "array",
       "items": { "$ref": "#/$defs/KeyTerm" }
     },
+    "curies": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "CURIE tokens associated with this chunk's source block, harvested from data-cf-curie spans by the chunker BEFORE the synthetic-token text is dropped (376b64f), unioned with CURIEs already present in `text`. Authoritative source-CURIE set for the curie_anchoring gate. Absent on legacy / pre-this-wave corpora and on chunks whose source HTML carried no data-cf-curie span; consumers fall back to text-regex extraction."
+    },
+    "forced_curies": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Subset of `curies` whose source span carried data-cf-curie-forced=\"true\" — i.e. the rewrite LLM dropped them and RewriteProvider._force_inject_curies stamped them back. A non-empty value is a rewrite-tier CURIE-preservation failure signal the curie_anchoring gate treats as a fail sub-signal. Subset-of-`curies` invariant (enforced by the validator, not the schema)."
+    },
     "misconceptions": {
       "type": "array",
       "items": {

@@ -199,6 +199,17 @@ class HTMLTextExtractor(HTMLParser):
         # Count of currently-open ``data-cf-curie`` ancestors. When nonzero,
         # text data is discarded — mirrors ``_template_chrome_depth``.
         self._curie_anchor_depth = 0
+        # Harvested ``data-cf-curie`` tokens. The subtree text is discarded
+        # (376b64f contract) but the CURIE values are kept so the downstream
+        # ``curie_anchoring`` gate can still see the force-injected anchors.
+        # ``curie_anchors`` is the ordered append log of every space-split
+        # token across every ``data-cf-curie`` element seen.
+        self.curie_anchors: list[str] = []
+        # CURIE tokens whose anchoring element also carried
+        # ``data-cf-curie-forced="true"`` (the force-injection marker stamped
+        # by ``RewriteProvider._force_inject_curies``). A set — order is not
+        # meaningful, and a token may appear on multiple forced spans.
+        self.forced_curie_anchors: set[str] = set()
 
     def _is_template_chrome(self, attrs) -> bool:
         for name, value in attrs:
@@ -221,6 +232,22 @@ class HTMLTextExtractor(HTMLParser):
         if self._is_template_chrome(attrs):
             self._template_chrome_depth += 1
         if self._is_curie_anchor(attrs):
+            # Harvest the CURIE tokens BEFORE the subtree-skip swallows the
+            # element's text in handle_data. Space-split the attribute value;
+            # append each non-empty token to the ordered anchor log. When the
+            # element also carries data-cf-curie-forced="true" (the
+            # force-injection marker), the same tokens land in the forced set.
+            curie_value = ""
+            forced_value = ""
+            for name, value in attrs:
+                if name == "data-cf-curie":
+                    curie_value = value or ""
+                elif name == "data-cf-curie-forced":
+                    forced_value = value or ""
+            tokens = [tok for tok in curie_value.split() if tok]
+            self.curie_anchors.extend(tokens)
+            if forced_value.strip().lower() == "true":
+                self.forced_curie_anchors.update(tokens)
             self._curie_anchor_depth += 1
 
     def handle_endtag(self, tag):
@@ -271,6 +298,25 @@ class HTMLTextExtractor(HTMLParser):
 
     def get_text(self) -> str:
         return ' '.join(self.text_parts)
+
+    def get_curies(self) -> list[str]:
+        """Return every ``data-cf-curie`` token harvested during parsing.
+
+        Ordered append log across all curie-anchored elements. The tokens
+        do NOT appear in :meth:`get_text` — the subtree is skipped per the
+        376b64f contract — but the downstream ``curie_anchoring`` gate
+        consumes this list to verify the force-injected anchors survived.
+        """
+        return self.curie_anchors
+
+    def get_forced_curies(self) -> list[str]:
+        """Return the sorted CURIE tokens carried by force-injected spans.
+
+        A force-injected span is one whose ``data-cf-curie`` element also
+        carried ``data-cf-curie-forced="true"``. Sorted for deterministic
+        downstream diffs (the backing store is a set).
+        """
+        return sorted(self.forced_curie_anchors)
 
 
 # Tags that Courseforge's generate_course.py emits with
