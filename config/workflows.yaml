@@ -2343,13 +2343,23 @@ workflows:
           # the Wave 130b curie_preservation mean-retention metric as the
           # critical-severity gate (the predecessor gate was removed in
           # Wave 135d after one wave of warning-severity transition).
-          # Force-injection (Wave 135b) guarantees CURIE presence in
-          # paraphrase pairs by construction; this gate fires only when
-          # injection BROKE, i.e., the per-pair anchoring rate drops to
-          # whatever the natural paraphrase rate is (~0.10 per the
-          # 2026-05-01 audit). Default threshold pair_anchoring_rate=0.95
-          # catches injector regressions loudly without false-positive on
-          # natural per-pair variance. Skips deterministic generators
+          # Source-CURIE set is read from the structured chunk.curies
+          # field, which the chunker harvests from data-cf-curie span
+          # attributes BEFORE 376b64f strips those force-injected spans
+          # from chunk.text (text-regex fallback covers legacy chunks
+          # missing the field). This keeps force-injected chunks
+          # eligible: the gate fires when a force-injected pair fails to
+          # anchor, dropping the per-pair anchoring rate toward the
+          # natural paraphrase rate (~0.10 per the 2026-05-01 audit).
+          # Default threshold min_pair_anchoring_rate=0.95 catches
+          # injector regressions loudly without false-positive on
+          # natural per-pair variance. The chunk.curies "forced_curies"
+          # subset additionally drives an advisory rewrite-tier
+          # preservation-failure sub-signal (warning-severity
+          # FORCED_CURIE_BLOCKS_PRESENT, gated by the validator's
+          # max_forced_curie_block_rate knob, default 1.0 = advisory)
+          # so force-injection masking is surfaced even when the
+          # anchoring rate passes. Skips deterministic generators
           # (kg_metadata.* / violation_detection.* / abstention.* /
           # schema_translation.*) since those are oracle-grounded by
           # manifest input.
@@ -2361,7 +2371,7 @@ workflows:
             behavior:
               on_fail: block
               on_error: fail_closed
-            description: Wave 135c — binary per-pair CURIE anchoring sentinel. Force-injection guarantees CURIE presence; this gate fails closed on injector regression.
+            description: Wave 135c — binary per-pair CURIE anchoring sentinel. Reads source CURIEs from the structured chunk.curies field (chunker harvests force-injected data-cf-curie spans before 376b64f strips them from text); fails closed on injector regression. forced_curies drives the advisory FORCED_CURIE_BLOCKS_PRESENT sub-signal.
 
           # Worker W2.E (GPT Feedback v2 P0c Fix 7b): post-hoc audit that
           # every emitted training pair on disk carries promotion_status.

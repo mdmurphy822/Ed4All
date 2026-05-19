@@ -2,15 +2,32 @@
 
 Replaces curie_preservation's mean-retention metric. Under the Wave
 135 contract, the LLM provides natural-language variation and the
-force-injection path provides canonical CURIE anchoring. The
-preservation metric is no longer meaningful (force-injection
-guarantees CURIE presence regardless of LLM behavior).
+force-injection path provides canonical CURIE anchoring.
+
+Source-CURIE set contract (post-376b64f)
+-----------------------------------------
+
+Commit 376b64f makes the chunker strip force-injected
+``data-cf-curie`` spans out of ``chunk["text"]``. To stop those
+CURIEs from vanishing, a sibling unit has the chunker harvest the
+``data-cf-curie`` attributes into a structured ``chunk["curies"]``
+list (with the force-injected subset mirrored on
+``chunk["forced_curies"]``) BEFORE the span text is stripped.
+
+This gate therefore reads ``chunk["curies"]`` as the authoritative
+source-CURIE set for a chunk. When ``curies`` is absent (legacy
+corpora produced before that unit landed) it falls back to a
+text-regex extraction over ``chunk["text"]``. ``forced_curies`` is
+treated as an advisory rewrite-tier preservation-failure sub-signal:
+a chunk whose CURIEs were force-injected is a chunk where the LLM
+itself did not surface the canonical token, so a high
+``forced_curie_block_rate`` flags creeping rewrite-tier drift even
+while per-pair anchoring still passes.
 
 This gate is the regression-detection sentinel: if the injector
 path breaks, the per-pair anchoring rate drops to whatever the
 natural paraphrase rate is (~0.10 per the 2026-05-01 audit). A
-0.95 floor catches that loudly. Healthy injection keeps the rate
-at ~1.00 by construction.
+0.95 floor catches that loudly.
 
 Skips deterministic generator pairs (template_id matching
 kg_metadata.* / violation_detection.* / abstention.* /
@@ -24,9 +41,10 @@ Binary per-pair anchoring rate:
     pair_anchoring_rate = anchored_count / total_eligible_pairs
 
 For each eligible (paraphrase) pair sourced from a chunk that carries
-≥1 CURIE, the pair is considered ``anchored`` iff its body
-(``prompt + completion`` / ``prompt + chosen``) contains at least one
-of the source-chunk CURIEs.
+≥1 CURIE (declared via ``chunk["curies"]`` or, for legacy chunks,
+extracted from ``chunk["text"]``), the pair is considered
+``anchored`` iff its body (``prompt + completion`` / ``prompt +
+chosen``) contains at least one of the source-chunk CURIEs.
 
 Failure semantics
 -----------------
@@ -35,6 +53,12 @@ Default threshold ``min_pair_anchoring_rate=0.95``. Failures emit a
 critical ``PAIR_ANCHORING_BELOW_THRESHOLD`` issue and a structured
 ``PAIR_ANCHORING_REPORT`` info issue carrying aggregate counts plus
 the worst offenders for triage.
+
+The advisory ``max_forced_curie_block_rate`` knob (default ``1.0`` —
+never blocks by default) emits a warning-severity
+``FORCED_CURIE_BLOCKS_PRESENT`` issue when the share of eligible
+chunks whose CURIEs were force-injected exceeds the configured rate.
+A future calibration wave may lower the default.
 """
 from __future__ import annotations
 
@@ -51,6 +75,9 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_MIN_PAIR_ANCHORING_RATE = 0.95
+# Advisory by default: forced-CURIE blocks never fail the gate at
+# this rate. A future calibration wave may lower it.
+DEFAULT_MAX_FORCED_CURIE_BLOCK_RATE = 1.0
 UNANCHORED_TOP_N = 20
 
 
@@ -65,6 +92,8 @@ def _emit_decision(
     min_pair_anchoring_rate: float,
     skipped_deterministic: int = 0,
     skipped_no_curies: int = 0,
+    forced_source_chunks: int = 0,
+    forced_curie_block_rate: float = 0.0,
     mode: str = "pairs",
 ) -> None:
     """Emit one ``curie_anchoring_check`` decision per validate() call.
@@ -82,8 +111,10 @@ def _emit_decision(
         f"actual_pair_anchoring_rate={actual_pair_anchoring_rate:.4f}, "
         f"min_pair_anchoring_rate={min_pair_anchoring_rate:.4f}, "
         f"skipped_deterministic={skipped_deterministic}, "
-        f"skipped_no_curies={skipped_no_curies}; failure_code="
-        f"{code or 'none'}."
+        f"skipped_no_curies={skipped_no_curies}, "
+        f"forced_source_chunks={forced_source_chunks}, "
+        f"forced_curie_block_rate={forced_curie_block_rate:.4f}; "
+        f"failure_code={code or 'none'}."
     )
     metrics: Dict[str, Any] = {
         "mode": mode,
@@ -93,6 +124,8 @@ def _emit_decision(
         "min_pair_anchoring_rate": float(min_pair_anchoring_rate),
         "skipped_deterministic": int(skipped_deterministic),
         "skipped_no_curies": int(skipped_no_curies),
+        "forced_source_chunks": int(forced_source_chunks),
+        "forced_curie_block_rate": float(forced_curie_block_rate),
         "passed": bool(passed),
         "failure_code": code,
     }
@@ -315,9 +348,20 @@ class CurieAnchoringValidator:
                 "min_pair_anchoring_rate", DEFAULT_MIN_PAIR_ANCHORING_RATE
             )
         )
+        max_forced_curie_block_rate = float(
+            thresholds.get(
+                "max_forced_curie_block_rate",
+                DEFAULT_MAX_FORCED_CURIE_BLOCK_RATE,
+            )
+        )
 
-        # Build chunk_id → CURIE set map.
+        # Build chunk_id → CURIE set map. Post-376b64f the chunker
+        # harvests force-injected ``data-cf-curie`` spans into a
+        # structured ``curies`` list before stripping the span text;
+        # prefer that authoritative set and fall back to a text-regex
+        # extraction only for legacy chunks that predate the field.
         chunk_curies: Dict[str, Set[str]] = {}
+        chunk_forced: Dict[str, Set[str]] = {}
         with chunks_path.open("r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
@@ -330,15 +374,35 @@ class CurieAnchoringValidator:
                 cid = chunk.get("id") or chunk.get("chunk_id") or ""
                 if not cid:
                     continue
-                chunk_curies[cid] = _extract_curies(
-                    str(chunk.get("text") or "")
-                )
+                declared = chunk.get("curies")
+                if isinstance(declared, list) and declared:
+                    src = {
+                        c for c in declared
+                        if isinstance(c, str) and c
+                    }
+                else:
+                    # Legacy fallback: chunk predates the structured
+                    # ``curies`` field — regex the text surface.
+                    src = _extract_curies(str(chunk.get("text") or ""))
+                chunk_curies[cid] = src
+                forced_raw = chunk.get("forced_curies")
+                if isinstance(forced_raw, list) and forced_raw:
+                    chunk_forced[cid] = {
+                        c for c in forced_raw
+                        if isinstance(c, str) and c
+                    }
+                else:
+                    chunk_forced[cid] = set()
 
         anchored_count = 0
         total_eligible = 0
         unanchored_pairs: List[Dict[str, Any]] = []
         skipped_deterministic = 0
         skipped_no_curies = 0
+        # Distinct chunk ids that contribute ≥1 eligible pair, and the
+        # subset of those whose CURIE set was force-injected.
+        eligible_chunk_ids: Set[str] = set()
+        forced_chunk_ids: Set[str] = set()
 
         with inst_path.open("r", encoding="utf-8") as fh:
             for line in fh:
@@ -364,6 +428,9 @@ class CurieAnchoringValidator:
                 pair_curies = _extract_curies(_pair_body_text(row))
                 is_anchored = bool(source_curies & pair_curies)
                 total_eligible += 1
+                eligible_chunk_ids.add(cid)
+                if chunk_forced.get(cid):
+                    forced_chunk_ids.add(cid)
                 if is_anchored:
                     anchored_count += 1
                 else:
@@ -408,6 +475,17 @@ class CurieAnchoringValidator:
         # Cap unanchored examples in the report.
         unanchored_pairs = unanchored_pairs[:UNANCHORED_TOP_N]
 
+        # Forced-CURIE sub-signal (advisory): distinct eligible chunks
+        # whose source-CURIE set was force-injected. A high rate flags
+        # rewrite-tier preservation drift even while anchoring passes.
+        forced_source_chunks = len(forced_chunk_ids)
+        distinct_eligible_chunks = len(eligible_chunk_ids)
+        forced_curie_block_rate = (
+            forced_source_chunks / distinct_eligible_chunks
+            if distinct_eligible_chunks
+            else 0.0
+        )
+
         issues: List[GateIssue] = []
         passed = pair_anchoring_rate >= min_pair_anchoring_rate
         if not passed:
@@ -440,6 +518,33 @@ class CurieAnchoringValidator:
                 ),
             ))
 
+        # Advisory forced-CURIE sub-signal. Default
+        # max_forced_curie_block_rate=1.0 → never fires by default;
+        # a future calibration wave may lower the knob.
+        if forced_curie_block_rate > max_forced_curie_block_rate:
+            issues.append(GateIssue(
+                severity="warning",
+                code="FORCED_CURIE_BLOCKS_PRESENT",
+                message=(
+                    f"{forced_source_chunks} of {distinct_eligible_chunks} "
+                    f"eligible source chunks carry force-injected CURIEs "
+                    f"(forced_curie_block_rate "
+                    f"{forced_curie_block_rate:.3f} exceeds the configured "
+                    f"max_forced_curie_block_rate "
+                    f"{max_forced_curie_block_rate:.3f}). Force-injected "
+                    f"CURIEs indicate the rewrite-tier LLM did not surface "
+                    f"the canonical token on its own; investigate "
+                    f"rewrite-tier CURIE preservation."
+                ),
+                location=str(inst_path),
+                suggestion=(
+                    "Inspect the rewrite-tier output for the forced "
+                    "chunks; confirm the rewrite pass preserves "
+                    "data-cf-curie spans rather than relying on the "
+                    "force-injection fallback."
+                ),
+            ))
+
         result = GateResult(
             gate_id=gate_id,
             validator_name=self.name,
@@ -447,13 +552,26 @@ class CurieAnchoringValidator:
             passed=passed,
             score=round(pair_anchoring_rate, 4),
             issues=issues,
+            metadata={
+                "anchored_count": anchored_count,
+                "total_eligible_pairs": total_eligible,
+                "pair_anchoring_rate": round(pair_anchoring_rate, 4),
+                "skipped_deterministic": skipped_deterministic,
+                "skipped_no_curies": skipped_no_curies,
+                "forced_source_chunks": forced_source_chunks,
+                "distinct_eligible_chunks": distinct_eligible_chunks,
+                "forced_curie_block_rate": round(
+                    forced_curie_block_rate, 4
+                ),
+            },
         )
 
         # Always emit the structured report when there are unanchored
-        # pairs (regardless of pass/fail) so operators can spot
-        # creeping injector drift before it crosses the threshold.
+        # pairs or any force-injected source chunks (regardless of
+        # pass/fail) so operators can spot creeping injector drift
+        # before it crosses the threshold.
         unanchored_total = total_eligible - anchored_count
-        if not passed or unanchored_total > 0:
+        if not passed or unanchored_total > 0 or forced_source_chunks > 0:
             details_msg = json.dumps({
                 "pair_anchoring_rate": round(pair_anchoring_rate, 4),
                 "anchored_count": anchored_count,
@@ -462,6 +580,11 @@ class CurieAnchoringValidator:
                 "unanchored_pairs": unanchored_pairs,
                 "skipped_deterministic": skipped_deterministic,
                 "skipped_no_curies": skipped_no_curies,
+                "forced_source_chunks": forced_source_chunks,
+                "distinct_eligible_chunks": distinct_eligible_chunks,
+                "forced_curie_block_rate": round(
+                    forced_curie_block_rate, 4
+                ),
             }, sort_keys=True)
             result.issues.append(GateIssue(
                 severity="info",
@@ -482,6 +605,8 @@ class CurieAnchoringValidator:
             min_pair_anchoring_rate=min_pair_anchoring_rate,
             skipped_deterministic=skipped_deterministic,
             skipped_no_curies=skipped_no_curies,
+            forced_source_chunks=forced_source_chunks,
+            forced_curie_block_rate=forced_curie_block_rate,
         )
         return result
 

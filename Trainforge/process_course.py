@@ -1734,6 +1734,8 @@ class CourseProcessor:
         merged_headings: Optional[List[str]] = None,
         merged_key_claims: Optional[List[Dict[str, Any]]] = None,
         merged_objective_alignment: Optional[List[Dict[str, Any]]] = None,
+        curie_anchors: Optional[List[str]] = None,
+        forced_curie_anchors: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         words = text.split()
         word_count = len(words)
@@ -2182,6 +2184,29 @@ class CourseProcessor:
             if run_id:
                 chunk["run_id"] = run_id
         chunk["created_at"] = datetime.now(timezone.utc).isoformat()
+
+        # CURIE anchoring (U3): fold the data-cf-curie tokens harvested
+        # from the source HTML (force-injected CURIE anchor spans, per
+        # commit 376b64f / b026445) together with any CURIEs that appear
+        # verbatim in the chunk prose (RDF/SHACL corpora) into the
+        # chunk's ``curies`` / ``forced_curies`` fields. The downstream
+        # ``curie_anchoring`` gate consumes ``curies`` as the
+        # authoritative source-CURIE set for a chunk.
+        #
+        # Conditional stamping (mirrors source_document_sha256 /
+        # key_terms): a chunk whose source HTML had no data-cf-curie
+        # span AND no CURIE in prose emits neither key, so legacy / RDF
+        # corpora stay byte-identical except where real CURIEs exist.
+        # ``forced_curies`` is intersected with ``curies`` to enforce
+        # the chunk_v4 subset invariant.
+        from lib.ontology.curie_extraction import extract_curies as _extract_curies
+        _prose_curies = _extract_curies(text)
+        _all_curies = sorted(_prose_curies | set(curie_anchors or []))
+        if _all_curies:
+            chunk["curies"] = _all_curies
+            _forced = sorted(set(forced_curie_anchors or []) & set(_all_curies))
+            if _forced:
+                chunk["forced_curies"] = _forced
 
         self.stats["total_words"] += word_count
         self.stats["total_tokens_estimate"] += tokens_estimate
