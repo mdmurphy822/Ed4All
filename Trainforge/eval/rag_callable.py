@@ -10,8 +10,14 @@ For every prompt the callable shells out to::
     python -m LibV2.tools.libv2.cli ask "<query>" \
         --course <slug> --method <method> --limit <N> -o json --force
 
-The cached JSON record carries a ``retrieved_chunks`` array of
-``{rank, chunk_id, text|excerpt|section_heading, ...}``. Those chunks are
+The cached JSON record carries a ``retrieved_chunks`` array. The real
+``ask --output json`` CLI emits each chunk as a
+``compact_retrieval_result(...).to_dict()`` payload whose retrieved body
+lives under ``snippet`` (a ~400-char clip) alongside ``section_heading``;
+it carries no ``text``/``excerpt`` key. We accept any of
+``{rank, chunk_id, text|excerpt|snippet|section_heading, ...}`` for
+back-compat with callers that emit ``text``/``excerpt`` directly. Those
+chunks are
 formatted into a numbered context block prepended to the original prompt
 along with a citation instruction. The augmented prompt then hits the
 wrapped callable.
@@ -75,6 +81,12 @@ class RAGCallable:
             headline ablation table.
         limit: Max chunks per retrieval. Default 5; cap is 50 by LibV2
             policy but the eval harness keeps the prelude tight.
+        snippet_chars: Chars of chunk body requested from ``libv2 ask``
+            (threaded through as ``--snippet-chars``). Default 1200 —
+            sized to fit ~5 chunks in a 2048-token window (the
+            interactive ``ask`` default stays 400). When an
+            ``eval_config`` carries a ``snippet_chars`` key it overrides
+            this constructor arg (the config is the lockfile).
         prompt_template: Optional override for the prelude format. Must
             consume ``{n}`` (chunk count), ``{context}`` (numbered
             passages), and ``{prompt}`` (original probe). Default mirrors
@@ -93,17 +105,20 @@ class RAGCallable:
         course_slug: str,
         method: str = "bm25",
         limit: int = 5,
+        snippet_chars: int = 1200,
         prompt_template: Optional[str] = None,
         *,
         cli_runner: Optional[Callable[[List[str]], Dict[str, Any]]] = None,
         eval_config: Optional[Any] = None,
     ) -> None:
         # Wave 103: when an eval_config (LoadedEvalConfig) is supplied,
-        # its top_k and prompt_template override constructor args. The
-        # config is the lockfile - the constructor args are advisory.
+        # its top_k, snippet_chars, and prompt_template override
+        # constructor args. The config is the lockfile - the
+        # constructor args are advisory.
         if eval_config is not None:
             cfg = eval_config.config or {}
             limit = int(cfg.get("top_k", limit))
+            snippet_chars = int(cfg.get("snippet_chars", snippet_chars))
             prompt_template = eval_config.prompt_template
 
         if method not in _VALID_METHODS:
@@ -115,10 +130,15 @@ class RAGCallable:
             raise ValueError(
                 f"RAGCallable: limit must be in [1, 50]; got {limit}"
             )
+        if snippet_chars < 1:
+            raise ValueError(
+                f"RAGCallable: snippet_chars must be >= 1; got {snippet_chars}"
+            )
         self.base_callable = base_callable
         self.course_slug = course_slug
         self.method = method
         self.limit = int(limit)
+        self.snippet_chars = int(snippet_chars)
         self.prompt_template = prompt_template or _DEFAULT_PROMPT_TEMPLATE
         self._cli_runner = cli_runner or _default_cli_runner
         self._last_latency_ms: Optional[float] = None
@@ -169,6 +189,7 @@ class RAGCallable:
             "--course", self.course_slug,
             "--method", self.method,
             "--limit", str(self.limit),
+            "--snippet-chars", str(self.snippet_chars),
             "-o", "json",
             "--force",
         ]
@@ -403,10 +424,12 @@ def _summarize_chunks_for_trace(
 
     Each entry in the trace gets ``{"chunk_id", "score", "snippet"}``.
     The snippet is the first ~200 characters of ``text`` (or
-    ``excerpt`` / ``section_heading`` fallback) with newlines
-    flattened so the JSONL row stays single-line. Score is whatever
-    the LibV2 retriever ranked the chunk at; tolerates float, int, or
-    a missing score.
+    ``excerpt`` / ``snippet`` / ``section_heading`` fallback) with
+    newlines flattened so the JSONL row stays single-line. The real
+    ``ask`` CLI emits the retrieved body under ``snippet``, so it is
+    preferred over ``section_heading`` (which would otherwise leak only
+    the heading into the trace). Score is whatever the LibV2 retriever
+    ranked the chunk at; tolerates float, int, or a missing score.
     """
     out: List[Dict[str, Any]] = []
     for chunk in chunks or []:
@@ -416,6 +439,7 @@ def _summarize_chunks_for_trace(
         body = (
             chunk.get("text")
             or chunk.get("excerpt")
+            or chunk.get("snippet")
             or chunk.get("section_heading")
             or ""
         )
@@ -444,13 +468,15 @@ def _format_chunks(chunks: List[Dict[str, Any]]) -> str:
 
     The LibV2 ``ask`` command emits a compacted shape per chunk. We
     prefer ``text`` (full body), fall back to ``excerpt`` (truncated),
-    and finally degrade to the section heading. Each entry is labeled
-    with its ``chunk_id`` so the citation instruction can be obeyed.
+    then ``snippet`` (the ~400-char clip the real ``ask --output json``
+    CLI actually emits as the retrieved body), and finally degrade to
+    the section heading. Each entry is labeled with its ``chunk_id`` so
+    the citation instruction can be obeyed.
     """
     lines: List[str] = []
     for i, chunk in enumerate(chunks, 1):
         cid = chunk.get("chunk_id", f"chunk_{i}")
-        body = chunk.get("text") or chunk.get("excerpt") or chunk.get("section_heading") or ""
+        body = chunk.get("text") or chunk.get("excerpt") or chunk.get("snippet") or chunk.get("section_heading") or ""
         body_str = str(body).strip().replace("\n", " ")
         lines.append(f"[{cid}] ({i}) {body_str}")
     return "\n".join(lines)
