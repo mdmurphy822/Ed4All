@@ -1524,10 +1524,14 @@ def retrieval_compare(
               help="Pre-supply Claude's answer to record in the same step")
 @click.option("--force", is_flag=True,
               help="Bypass cache; force fresh retrieval and a new record")
+@click.option("--snippet-chars", type=int, default=400,
+              help="Chars of chunk body to include per retrieved chunk "
+                   "(eval passes a larger value for fuller context).")
 @click.option("--output", "-o", type=click.Choice(["text", "json"]), default="text")
 @click.pass_context
 def ask(ctx, query: str, course: Optional[str], method: str, limit: int,
-        one_shot_answer: Optional[str], force: bool, output: str):
+        one_shot_answer: Optional[str], force: bool, snippet_chars: int,
+        output: str):
     """Ask the LibV2 corpus a question; persist Q&A alongside the source.
 
     Cache-first by default: if an answered record exists for the same
@@ -1608,7 +1612,7 @@ def ask(ctx, query: str, course: Optional[str], method: str, limit: int,
         print_error(str(e))
         sys.exit(1)
 
-    compact = [compact_retrieval_result(r, i + 1).to_dict() for i, r in enumerate(results)]
+    compact = [compact_retrieval_result(r, i + 1, snippet_chars=snippet_chars).to_dict() for i, r in enumerate(results)]
     record_path = write_query_record(
         repo_root=repo_root,
         course_slug=course,

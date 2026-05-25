@@ -66,6 +66,50 @@ def test_rag_callable_formats_prelude_with_numbered_chunks():
     assert "What is SHACL?" in augmented
 
 
+def test_rag_callable_uses_snippet_body_from_real_ask_shape():
+    """Regression: the real ``libv2 ask --output json`` CLI emits each
+    chunk via ``compact_retrieval_result(...).to_dict()``, which carries
+    the retrieved body under ``snippet`` (plus ``section_heading``) and
+    NO ``text``/``excerpt`` key. The model context — and the trace — must
+    contain the passage body, not just the section heading."""
+    from Trainforge.eval.rag_callable import RAGCallable
+
+    seen_prompts: List[str] = []
+
+    def base(prompt: str) -> str:
+        seen_prompts.append(prompt)
+        return "stub answer"
+
+    chunks = [
+        {
+            "rank": 1,
+            "chunk_id": "chunk_real",
+            "section_heading": "Node Shapes",
+            "snippet": "A NodeShape declares constraints that apply to focus nodes.",
+            "score": 5.0,
+        },
+    ]
+    rag = RAGCallable(
+        base_callable=base,
+        course_slug="rdf-shacl-551-2",
+        method="bm25",
+        limit=5,
+        cli_runner=_build_cli_runner(chunks),
+    )
+    out = rag("What is a NodeShape?")
+
+    assert out == "stub answer"
+    assert len(seen_prompts) == 1
+    augmented = seen_prompts[0]
+    # The passage body — not just the heading — reaches the model context.
+    assert "declares constraints that apply to focus nodes" in augmented
+    assert "[chunk_real]" in augmented
+    # The trace path also carries the body text.
+    last = rag.last_retrieved_chunks
+    assert len(last) == 1
+    assert "declares constraints that apply to focus nodes" in last[0]["snippet"]
+
+
 def test_rag_callable_records_latency_per_call_and_mean():
     from Trainforge.eval.rag_callable import RAGCallable
 
@@ -169,6 +213,109 @@ def test_rag_callable_passes_method_and_limit_to_cli():
     assert args[args.index("-o") + 1] == "json"
     # ask --force keeps the call deterministic w.r.t. cache state.
     assert "--force" in args
+
+
+# ---------------------------------------------------------------------------
+# snippet_chars: fuller RAG-ablation passages (configurable + eval default)
+# ---------------------------------------------------------------------------
+
+
+class _FakeEvalConfig:
+    """Mimic the LoadedEvalConfig surface RAGCallable reads: a ``.config``
+    dict plus a ``.prompt_template`` string."""
+
+    def __init__(self, config, prompt_template="{context} {prompt}"):
+        self.config = dict(config)
+        self.prompt_template = prompt_template
+
+
+def test_rag_callable_passes_default_snippet_chars_to_cli():
+    """The eval default (1200) reaches libv2 ask via --snippet-chars."""
+    from Trainforge.eval.rag_callable import RAGCallable
+
+    captured_args: List[List[str]] = []
+
+    def runner(args):
+        captured_args.append(list(args))
+        return {"retrieved_chunks": []}
+
+    rag = RAGCallable(
+        base_callable=lambda p: "x",
+        course_slug="my-slug",
+        method="bm25",
+        limit=5,
+        cli_runner=runner,
+    )
+    rag("hello")
+    args = captured_args[0]
+    assert "--snippet-chars" in args
+    assert args[args.index("--snippet-chars") + 1] == "1200"
+
+
+def test_rag_callable_eval_config_overrides_snippet_chars():
+    """eval_config.snippet_chars overrides the constructor default and is
+    threaded into the CLI invocation."""
+    from Trainforge.eval.rag_callable import RAGCallable
+
+    captured_args: List[List[str]] = []
+
+    def runner(args):
+        captured_args.append(list(args))
+        return {"retrieved_chunks": []}
+
+    rag = RAGCallable(
+        base_callable=lambda p: "x",
+        course_slug="my-slug",
+        method="bm25",
+        cli_runner=runner,
+        eval_config=_FakeEvalConfig({"top_k": 5, "snippet_chars": 800}),
+    )
+    rag("hello")
+    args = captured_args[0]
+    assert "--snippet-chars" in args
+    assert args[args.index("--snippet-chars") + 1] == "800"
+
+
+def test_rag_callable_eval_config_absent_snippet_chars_keeps_default():
+    """An eval_config that lacks snippet_chars leaves the constructor
+    default in place (back-compat with existing per-course configs)."""
+    from Trainforge.eval.rag_callable import RAGCallable
+
+    captured_args: List[List[str]] = []
+
+    def runner(args):
+        captured_args.append(list(args))
+        return {"retrieved_chunks": []}
+
+    rag = RAGCallable(
+        base_callable=lambda p: "x",
+        course_slug="my-slug",
+        method="bm25",
+        cli_runner=runner,
+        eval_config=_FakeEvalConfig({"top_k": 5}),
+    )
+    rag("hello")
+    args = captured_args[0]
+    assert args[args.index("--snippet-chars") + 1] == "1200"
+
+
+def test_rag_callable_invalid_snippet_chars_raises():
+    from Trainforge.eval.rag_callable import RAGCallable
+
+    with pytest.raises(ValueError):
+        RAGCallable(
+            base_callable=lambda p: "x",
+            course_slug="slug",
+            method="bm25",
+            snippet_chars=0,
+        )
+    with pytest.raises(ValueError):
+        RAGCallable(
+            base_callable=lambda p: "x",
+            course_slug="slug",
+            method="bm25",
+            snippet_chars=-5,
+        )
 
 
 # ---------------------------------------------------------------------------

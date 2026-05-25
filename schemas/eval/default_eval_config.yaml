@@ -5,6 +5,7 @@
 benchmark: ED4ALL-Bench
 benchmark_version: "1.0"
 top_k: 5
+snippet_chars: 1200   # chars of chunk body per retrieved chunk in RAG ablation context
 temperature: 0.0
 top_p: 1.0
 max_new_tokens: 256

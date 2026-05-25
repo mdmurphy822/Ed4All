@@ -126,6 +126,20 @@ class TestCompactRetrievalResult:
         # 400 chars body + 3 ellipsis = 403
         assert len(d["snippet"]) <= 403
 
+    def test_larger_snippet_chars_returns_longer_snippet(self):
+        # Eval passes a larger snippet_chars (1200) so the model sees
+        # fuller passages than the 400-char interactive default.
+        r = _fake_result(text="x" * 2000)
+        default = compact_retrieval_result(r, rank=1).to_dict()["snippet"]
+        large = compact_retrieval_result(
+            r, rank=1, snippet_chars=1200
+        ).to_dict()["snippet"]
+        # 400-char body + ellipsis vs 1200-char body + ellipsis.
+        assert len(large) > len(default)
+        assert len(default) <= 403
+        assert len(large) <= 1203
+        assert large.endswith("...")
+
     def test_short_text_no_ellipsis(self):
         r = _fake_result(text="short body")
         c = compact_retrieval_result(r, rank=1)
