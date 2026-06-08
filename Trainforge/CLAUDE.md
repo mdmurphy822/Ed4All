@@ -314,7 +314,7 @@ contract documented in root `CLAUDE.md`:
   `assessment_generation` fires per assembled assessment.
 - Strict-mode opt-in: set `DECISION_VALIDATION_STRICT=true` to
   fail-closed on unknown `decision_type` values. The canonical enum
-  lives at `schemas/events/decision_event.schema.json` (52 values as
+  lives at `schemas/events/decision_event.schema.json` (169 values as
   of the current tree). Default remains lenient (unknown values pass
   with a warning).
 - Convenience helper: `lib.trainforge_capture.create_trainforge_capture`
@@ -322,7 +322,7 @@ contract documented in root `CLAUDE.md`:
   the `course_code` + `imscc_source` fields and exposes
   `set_learning_objective_context()` / `log_question_generation()` /
   `log_distractor_rationale()` shortcuts. See
-  `Trainforge/lib/trainforge_capture.py` for the full surface.
+  `lib/trainforge_capture.py` (repo root) for the full surface.
 
 ---
 
@@ -333,28 +333,47 @@ Trainforge/
 ├── __init__.py
 ├── CLAUDE.md                    # This file
 ├── README.md
-├── process_course.py            # IMSCC → RAG corpus pipeline
-├── align_chunks.py              # Chunk alignment with pedagogical metadata
+├── process_course.py            # IMSCC → RAG corpus pipeline (CourseProcessor)
+├── align_chunks.py              # Chunk teaching-role alignment
+├── synthesize_training.py       # Chunk → instruction/preference pair synthesis
+├── train_course.py              # SLM adapter training entry point
+├── pedagogy_graph_builder.py    # Typed pedagogy/concept graph builder
+├── chunker/                     # Canonical chunker (shared by DART + IMSCC)
+│   ├── chunker.py               # chunk_content, ChunkerContext, helpers
+│   ├── helpers.py
+│   └── boilerplate.py
 ├── parsers/
 │   ├── imscc_parser.py          # IMSCC package extraction
 │   ├── qti_parser.py            # QTI 1.2 assessment parsing
-│   └── html_content_parser.py   # HTML content + metadata extraction
+│   ├── html_content_parser.py   # HTML content + metadata extraction
+│   └── xpath_walker.py          # Source-provenance xpath/char-span walker
 ├── rag/
-│   └── libv2_bridge.py          # LibV2 RAG integration (retrieval, cross-course)
+│   ├── libv2_bridge.py          # LibV2 RAG integration (retrieval, cross-course)
+│   ├── typed_edge_inference.py  # Pedagogical/taxonomic edge inference
+│   ├── shacl_rule_runner.py     # SHACL advanced-rule inference (opt-in)
+│   └── ...                      # kg_quality_report, named_graph_writer, etc.
 ├── generators/
-│   ├── assessment_generator.py  # Main generation orchestrator
+│   ├── assessment_generator.py  # Main assessment generation orchestrator
 │   ├── content_extractor.py     # Extract key terms, statements, relationships
-│   └── question_factory.py      # Question type factory
-├── decision_capture/
-│   └── decision_logger.py       # Central capture (wraps lib.trainforge_capture)
+│   ├── question_factory.py      # Question type factory
+│   ├── _anthropic_provider.py   # Synthesis providers (anthropic/together/local/
+│   ├── _together_provider.py    #   claude_session) + shared OpenAI-compatible
+│   ├── _local_provider.py       #   client; see § Provider configuration
+│   ├── kg_metadata_generator.py # Deterministic KG-metadata pairs
+│   ├── violation_generator.py   # pyshacl-verified violation-detection pairs
+│   ├── abstention_generator.py  # Abstention probe pairs
+│   └── schema_translation_generator.py  # CURIE → plain-English pairs
+├── eval/                        # 5-layer × 3-tier eval harness (slm_eval_harness.py)
+├── training/                    # base_models.py, peft_trainer.py, runner.py, configs/
+├── scripts/                     # backfill_form_data, smoke_generators, audit_pairs, …
 ├── agents/
 │   ├── CLAUDE.md                # Agent coordination protocols
-│   ├── content-analyzer.md      # Content analysis agent
 │   ├── assessment-extractor.md  # Content extraction agent
 │   ├── assessment-generator.md  # Question generation agent
 │   ├── assessment-validator.md  # Quality validation agent
 │   ├── rag-indexer.md           # RAG indexing agent
-│   └── validator.md             # General validation agent
+│   ├── pedagogy-graph-builder.md  # Pedagogy-graph agent spec
+│   └── training-synthesizer.md  # Training-pair synthesis agent
 ├── examples/
 │   └── sample_assessment.json   # Example assessment output
 ├── output/                      # Generated output directory
@@ -364,6 +383,9 @@ Trainforge/
     ├── test_content_grounded_generation.py  # Content grounding tests
     └── test_retrieval_improvements.py   # BM25 retrieval tests
 ```
+
+Decision capture is provided by the repo-root `lib/trainforge_capture.py` helper
+(see § Decision Capture Protocol); Trainforge has no `decision_capture/` package.
 
 ---
 
@@ -406,7 +428,7 @@ The canonical chunker lives at `Trainforge/chunker/` and exposes `chunk_content`
 
 ## Concept-graph consumption
 
-`Trainforge/process_course.py::CourseProcessor._generate_pedagogy_graph` (`:3307`) consumes an upstream `concept_graph_path` when the orchestrator threads one in, rather than unconditionally rebuilding the graph from chunks at every `libv2_archival` invocation. The motivation is the `concept_extraction` workflow phase (`config/workflows.yaml::textbook_to_course`, between `source_mapping` and `course_planning`), which dispatches `MCP/tools/pipeline_tools.py::_run_concept_extraction` to invoke `Trainforge.pedagogy_graph_builder.build_pedagogy_graph` once at phase boundary; the synthesizer then reads the emitted `concept_graph_semantic.json` to populate `LearningObjective.keyConcepts[]` via `lib/ontology/concept_objective_linker.py::link_concepts_to_objectives`. Skipping the rebuild at `libv2_archival` means the graph the synthesizer saw is the SAME graph that ships in the LibV2 archive — no drift between course-planning input and archive output.
+`Trainforge/process_course.py::CourseProcessor._generate_pedagogy_graph` (`:3653`) consumes an upstream `concept_graph_path` when the orchestrator threads one in, rather than unconditionally rebuilding the graph from chunks at every `libv2_archival` invocation. The motivation is the `concept_extraction` workflow phase (`config/workflows.yaml::textbook_to_course`, between `source_mapping` and `course_planning`), which dispatches `MCP/tools/pipeline_tools.py::_run_concept_extraction` to invoke `Trainforge.pedagogy_graph_builder.build_pedagogy_graph` once at phase boundary; the synthesizer then reads the emitted `concept_graph_semantic.json` to populate `LearningObjective.keyConcepts[]` via `lib/ontology/concept_objective_linker.py::link_concepts_to_objectives`. Skipping the rebuild at `libv2_archival` means the graph the synthesizer saw is the SAME graph that ships in the LibV2 archive — no drift between course-planning input and archive output.
 
 The fallback path is preserved for legacy corpora: when `self.concept_graph_path` is `None` (the upstream phase was skipped), `_generate_pedagogy_graph` falls through to the in-process `build_pedagogy_graph(chunks=..., course_id=...)` call exactly as before. A failure to load a supplied `concept_graph_path` (corruption, missing file, schema-incompatible JSON) logs a warning and falls back to the in-process rebuild — the upstream-consumption path is best-effort, not fail-closed.
 
@@ -418,7 +440,7 @@ A `concept_graph_sha256` field is threaded through `_archive_to_libv2` into the 
 
 ## Chunking-phase consumption
 
-The chunker invocation runs as a standalone `chunking` workflow phase wired between `staging` and `objective_extraction` in the `textbook_to_course` pipeline. The phase dispatches `MCP/tools/pipeline_tools.py::_run_dart_chunking` (`:6361-6627`) to invoke the canonical `Trainforge.chunker.chunk_content` over staged DART HTML and persist the result to `LibV2/courses/<slug>/dart_chunks/chunks.jsonl` with a sibling `manifest.json` carrying `chunks_sha256`, `chunker_version`, and `source_dart_html_sha256`. The manifest conforms to `schemas/library/chunkset_manifest.schema.json`, which is **symmetric across DART and IMSCC chunksets** via a `chunkset_kind` enum discriminator — both sidecars share a single contract, and the conditional source-SHA branch (requires `source_dart_html_sha256` for `"dart"`, `source_imscc_sha256` for `"imscc"`) anchors each chunkset to its upstream source artifact. The gate `lib/validators/chunkset_manifest.py::ChunksetManifestValidator` fires at the `chunking` phase boundary.
+The chunker invocation runs as a standalone `chunking` workflow phase wired between `staging` and `objective_extraction` in the `textbook_to_course` pipeline. The phase dispatches `MCP/tools/pipeline_tools.py::_run_dart_chunking` (`:9598`) to invoke the canonical `Trainforge.chunker.chunk_content` over staged DART HTML and persist the result to `LibV2/courses/<slug>/dart_chunks/chunks.jsonl` with a sibling `manifest.json` carrying `chunks_sha256`, `chunker_version`, and `source_dart_html_sha256`. The manifest conforms to `schemas/library/chunkset_manifest.schema.json`, which is **symmetric across DART and IMSCC chunksets** via a `chunkset_kind` enum discriminator — both sidecars share a single contract, and the conditional source-SHA branch (requires `source_dart_html_sha256` for `"dart"`, `source_imscc_sha256` for `"imscc"`) anchors each chunkset to its upstream source artifact. The gate `lib/validators/chunkset_manifest.py::ChunksetManifestValidator` fires at the `chunking` phase boundary.
 
 Trainforge-side, the consumption pattern mirrors the concept-graph decoupling: when the orchestrator threads an upstream `dart_chunks_path` from the `chunking` phase into a downstream consumer, the consumer reads the canonical chunkset rather than re-running the chunker in-process. This enables the reconciliation refactor of `MCP/tools/pipeline_tools.py::_run_concept_extraction` — the `concept_extraction.depends_on: [source_mapping, chunking]` widening lets the helper consume the upstream chunkset directly and retire its inline v4-chunk projection block. The fallback contract is preserved: best-effort upstream consumption with a warning-severity log on missing / corrupted upstream chunks, falling back to the in-process build path so legacy corpora keep working through the migration. Cross-link: `Courseforge/CLAUDE.md` § "Phase 7b: DART chunkset" carries the full architecture overview, including the IMSCC chunkset rename + `LibV2ManifestValidator` extension to require both `dart_chunks_sha256` and `imscc_chunks_sha256` alongside `concept_graph_sha256`.
 
@@ -428,7 +450,7 @@ Trainforge-side, the consumption pattern mirrors the concept-graph decoupling: w
 
 Trainforge extracts structured metadata from Courseforge HTML output using a priority chain:
 
-0. **JSON-LD `blocks[]`** (highest fidelity when `COURSEFORGE_EMIT_BLOCKS=true`): canonical projection of the `Block` dataclass (`Courseforge/scripts/blocks.py:223-265`); `block_type` carries content-type, `bloom_level`, `key_terms`, `template_type` directly per block. Surfaced into `Trainforge/parsers/html_content_parser.py::_extract_blocks_from_jsonld` (`:505`) and consumed in `Trainforge/process_course.py::_extract_section_metadata` (`:2333-2341`).
+0. **JSON-LD `blocks[]`** (highest fidelity when `COURSEFORGE_EMIT_BLOCKS=true`): canonical projection of the `Block` dataclass (`Courseforge/scripts/blocks.py::Block`, `:271`); `block_type` carries content-type, `bloom_level`, `key_terms`, `template_type` directly per block. Surfaced into `Trainforge/parsers/html_content_parser.py::_extract_blocks_from_jsonld` (`:619`) and consumed in `Trainforge/process_course.py::_extract_section_metadata` (`:2312`).
 1. **JSON-LD** (highest fidelity): `<script type="application/ld+json">` blocks with objectives, sections, misconceptions
 2. **`data-cf-*` attributes**: Inline metadata on HTML elements (objective IDs, Bloom's levels, content types)
 3. **Regex heuristics** (fallback): Pattern matching for non-Courseforge IMSCC packages
@@ -438,7 +460,7 @@ Trainforge extracts structured metadata from Courseforge HTML output using a pri
 | Field | Source | Description |
 |-------|--------|-------------|
 | `bloom_level` | JSON-LD `blocks[]` / JSON-LD sections / data-cf-* / verb inference | Cognitive taxonomy level |
-| `content_type_label` | JSON-LD `blocks[]` `block_type` / JSON-LD contentType / data-cf-content-type | Section classification (explanation, example, procedure, etc.). `process_course._extract_section_metadata` (`:2333-2341`) prefers the per-block projection when `blocks[]` is present. |
+| `content_type_label` | JSON-LD `blocks[]` `block_type` / JSON-LD contentType / data-cf-content-type | Section classification (explanation, example, procedure, etc.). `process_course._extract_section_metadata` (`:2312`) prefers the per-block projection when `blocks[]` is present. |
 | `key_terms` | JSON-LD `blocks[]` `key_terms` / JSON-LD keyTerms | Structured term/definition pairs |
 | `misconceptions` | JSON-LD misconceptions | Common errors with corrections |
 | `run_id` | Active `DecisionCapture` | Provenance — emitted unconditionally on all chunks |
@@ -579,7 +601,7 @@ Trainforge-owned env-var toggles (default off unless noted). All gate opt-in str
 | `TOGETHER_API_KEY` | Required when `--provider together`. Routes synthesis through Together AI's OpenAI-compatible chat-completions endpoint. Together's ToS permits using the output as training data for another model — unlike Anthropic's ToS, which is the motivation for offering this provider for SLM training-data generation. Missing key with `--provider together` raises `RuntimeError` (no silent mock fallback). (License: see `docs/LICENSING.md` for the ToS + per-model layer.) |
 | `TOGETHER_SYNTHESIS_MODEL` | Overrides the default `meta-llama/Llama-3.3-70B-Instruct-Turbo` used by `Trainforge/generators/_together_provider.py`. Common alternatives: `Qwen/Qwen2.5-72B-Instruct-Turbo`, `deepseek-ai/DeepSeek-V3`. Captured per call in the `synthesis_provider_call` decision event so the audit trail records which OSS teacher produced each pair. (License: model-specific — Llama 3.3 Community / Qwen / DeepSeek; see `docs/LICENSING.md`.) |
 | `LOCAL_SYNTHESIS_BASE_URL` | Base URL of a local OpenAI-compatible model server used by `Trainforge/generators/_local_provider.py` when `--provider local` is selected. Defaults to the Ollama default `http://localhost:11434/v1`; common alternatives are vLLM `http://localhost:8000/v1`, llama.cpp server `http://localhost:8080/v1`, and LM Studio `http://localhost:1234/v1`. Captured per call in the `synthesis_provider_call` decision event so the audit trail can tell which local server produced each pair. |
-| `LOCAL_SYNTHESIS_MODEL` | Model identifier the local server expects (e.g. `qwen2.5:14b-instruct-q4_K_M` for Ollama, `Qwen/Qwen2.5-32B-Instruct` for vLLM). Defaults to the smaller `qwen2.5:14b-instruct-q4_K_M` so an out-of-box Ollama install on an 8 GB GPU works without further tuning. Default `qwen2.5:7b-instruct-q4_K_M` is reliable for paraphrase tasks WHEN `json_mode=True` (default in `_local_provider.py` — sends both Ollama's `format: "json"` and OpenAI's `response_format: {"type": "json_object"}` plus a strict-JSON prompt directive plus lenient response extraction). For free-form structured-output tasks beyond paraphrase, prefer 14B+ models. (License: model-specific — Qwen2.5-7B/14B/32B are Apache 2.0 and training-permitted; see `docs/LICENSING.md` for the full per-model table.) |
+| `LOCAL_SYNTHESIS_MODEL` | Model identifier the local server expects (e.g. `qwen2.5:14b-instruct-q4_K_M` for Ollama, `Qwen/Qwen2.5-32B-Instruct` for vLLM). Defaults to `qwen2.5:14b-instruct-q4_K_M` (the code default in `_local_provider.py`) so an out-of-box Ollama install works for paraphrase without further tuning. Smaller 7B quants (`qwen2.5:7b-instruct-q4_K_M`) can work for paraphrase WHEN `json_mode=True` (default in `_local_provider.py` — sends both Ollama's `format: "json"` and OpenAI's `response_format: {"type": "json_object"}` plus a strict-JSON prompt directive plus lenient response extraction), but are unreliable on compressed sources; for free-form structured-output tasks beyond paraphrase, prefer 14B+ models. (License: model-specific — Qwen2.5-7B/14B/32B are Apache 2.0 and training-permitted; see `docs/LICENSING.md` for the full per-model table.) |
 | `LOCAL_SYNTHESIS_API_KEY` | Optional auth key for the local server. Most local servers ignore the auth header, so the provider does NOT raise when this is unset (unlike `TOGETHER_API_KEY` / `ANTHROPIC_API_KEY`); the constructor sends a placeholder `"local"` string in the Authorization header so reverse-proxy servers that DO check auth see a stable value. Set this only when the local server proxies to a remote provider that requires auth. |
 | `CURRICULUM_ALIGNMENT_PROVIDER` | Selects the LLM backend for `Trainforge/align_chunks.py` teaching-role classification (`Trainforge/generators/_curriculum_provider.py::CurriculumAlignmentProvider`). Values: `anthropic` (legacy class default — ToS-restricted for training-data), `together` (ToS-clean cloud OSS via the shared `OpenAICompatibleClient`), `local` (8GB-VRAM-friendly with 14B 4-bit via the shared `OpenAICompatibleClient`). **Recommended setting for ToS-clean training corpora is `local`.** Reuses the same `TOGETHER_*` / `LOCAL_*` env vars as the synthesis pipeline so one local server serves both task surfaces. The env var is read inside `Trainforge/align_chunks.py::main()` and inside the provider class constructor, so setting it in the workflow environment is sufficient — `Trainforge/process_course.py` invokes `align_chunks.main()` and the env-var resolution fires there with no code changes required at the call site. The CLI flag `--curriculum-provider` overrides the env var when both are set; when neither is set, no provider is instantiated and the legacy / mock path runs (preserves backward compatibility). The Python class default `DEFAULT_PROVIDER='anthropic'` is intentionally unchanged — direct callers of `CurriculumAlignmentProvider()` still see the legacy default. Captured per call in the `curriculum_alignment_call` decision event. (License: see `docs/LICENSING.md`.) |
 | `TRAINFORGE_ASSESSMENT_PROVIDER` | Selects the LLM backend for the Trainforge assessment-generator surface (`Trainforge/generators/_assessment_provider.py::AssessmentGeneratorProvider`, instantiated by `MCP/tools/trainforge_tools.py::generate_assessments`). Values: `anthropic` (class default — ToS-restricted for training-data), `together`, `local`, **plus any provider registered in the W-D12 `_OPENAI_COMPATIBLE_PROVIDERS` registry at `MCP/orchestrator/llm_backend.py`** (`groq`, `fireworks`, `deepseek`, …). Adding a new OpenAI-compatible provider is a registry-entry change — **NOT** a new subclass — per the W-D12 dynamic-references contract. The class consults the registry at construction time, so a new entry flows through without a code edit here. **Recommended setting for ToS-clean assessment generation is `local`** (Apache 2.0 Qwen) since the authored questions land in `assessments.json` and feed into the downstream `training_synthesis` instruction-pair / preference-pair surface — i.e. they ARE training data for the resulting SLM adapter. Reuses the same `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` env vars as `COURSEFORGE_PROVIDER` / `COURSEPLANNER_PROVIDER` so one local server serves all task surfaces. Override the model via `TRAINFORGE_ASSESSMENT_MODEL`. Default unset → the legacy Claude Code subagent dispatch fires (when `ED4ALL_AGENT_DISPATCH=true`) or the deterministic `AssessmentGenerator` template path runs, preserving backward compatibility on every existing run. **Short-circuit semantics:** setting `TRAINFORGE_ASSESSMENT_PROVIDER` to any non-empty value overrides `ED4ALL_AGENT_DISPATCH=true` for the `assessment-generator` agent only — the executor falls through to `generate_assessments`, which constructs an `AssessmentGeneratorProvider` and uses it in lieu of the deterministic AssessmentGenerator path. Other Wave-74 agents (assessment-validator, training-synthesizer, etc.) keep dispatching unchanged. Captured per call in the `assessment_generator_call` decision event whose rationale interpolates the runtime provider name (NOT a static label) per the W-D12 dynamic-rationale contract. The provider's user-prompt instructs the LLM to emit an `evidence_quote` field per question per the W-D11 T11.3 grounding contract. (License: see `docs/LICENSING.md` for the per-provider ToS + per-model layer.) |

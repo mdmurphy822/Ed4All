@@ -9,22 +9,29 @@
 Trainforge agents work in a sequential pipeline:
 
 ```
-content-analyzer → assessment-generator → validator
+assessment-extractor → rag-indexer → assessment-generator → assessment-validator
 ```
+
+The `training-synthesizer` agent runs as a separate (optional) phase that
+synthesizes instruction + preference training pairs from the generated chunks +
+assessments. A `pedagogy-graph-builder` agent spec also ships under this
+directory for the pedagogy/concept-graph build phase.
 
 ### Execution Rules
 
 1. **ONE course = ONE pipeline run**
 2. **All decisions logged** to training-captures
-3. **Validator feedback loops** back to generator (max 3 iterations)
+3. **Assessment-validator feedback loops** back to assessment-generator (max 3 iterations)
 
 ## Available Agents
 
 | Agent | Input | Output |
 |-------|-------|--------|
-| `content-analyzer` | IMSCC manifest, LibV2 corpus | Content analysis JSON |
-| `assessment-generator` | Analysis + RAG chunks | Questions with rationale |
-| `validator` | Generated assessment | Validation scores + feedback |
+| `assessment-extractor` | IMSCC package | Learning objectives + content chunks |
+| `rag-indexer` | Content chunks | Embeddings + retrieval index |
+| `assessment-generator` | Chunks + RAG context | Questions with rationale |
+| `assessment-validator` | Generated assessment | Validation scores + feedback |
+| `training-synthesizer` | Chunks + assessments | Instruction + preference training pairs |
 
 ## Agent-to-Orchestrator Protocol
 
@@ -38,14 +45,14 @@ content-analyzer → assessment-generator → validator
 
 | Gate | Agent | Threshold |
 |------|-------|-----------|
-| Coverage | content-analyzer | 90% LO coverage required |
+| Coverage | assessment-extractor | 90% LO coverage required |
 | Bloom Alignment | assessment-generator | 100% questions aligned |
-| Question Quality | validator | 0.75+ quality score |
-| Overall | validator | 0.90+ overall score |
+| Question Quality | assessment-validator | 0.75+ quality score |
+| Overall | assessment-validator | 0.90+ overall score |
 
 ## Handoff Protocol
 
-**Content Analyzer → Assessment Generator**:
+**Assessment Extractor → Assessment Generator**:
 ```json
 {
   "learning_objectives": [...],
@@ -55,7 +62,7 @@ content-analyzer → assessment-generator → validator
 }
 ```
 
-**Assessment Generator → Validator**:
+**Assessment Generator → Assessment Validator**:
 ```json
 {
   "questions": [...],
@@ -64,7 +71,7 @@ content-analyzer → assessment-generator → validator
 }
 ```
 
-**Validator → Orchestrator**:
+**Assessment Validator → Orchestrator**:
 ```json
 {
   "passed": true,

@@ -2,7 +2,7 @@
 """
 PDF Accessibility Converter CLI
 
-Command-line interface for converting PDF documents to WCAG 2.1 AA compliant HTML.
+Command-line interface for converting PDF documents to WCAG 2.2 AA compliant HTML.
 
 Usage:
     python -m pdf_converter input.pdf [options]
@@ -56,7 +56,7 @@ def parse_args(args: list = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         prog='pdf-to-html',
-        description='Convert PDF documents to WCAG 2.1 AA compliant accessible HTML',
+        description='Convert PDF documents to WCAG 2.2 AA compliant accessible HTML',
         epilog='Example: pdf-to-html document.pdf -o ./output/'
     )
 

@@ -12,7 +12,7 @@ The Remediation Validator performs final quality assurance checks on course cont
 - **OSCQR standards adherence** - Educational quality metrics
 - **Brightspace compatibility testing** - LMS-specific validation
 - **Content integrity verification** - Broken link detection
-- **Pattern prevention validation** - Checks all 22 failure patterns
+- **WCAG 2.2-specific checks** - Focus appearance/obscured, target size, dragging movements, consistent help, accessible authentication
 
 ## Installation
 
@@ -32,14 +32,9 @@ python remediation_validator.py --course-dir /path/to/course/
 python remediation_validator.py --course-dir /path/to/course/ --json --output report.json
 ```
 
-### Strict Mode (Fail on Warnings)
+### Before/After Comparison
 ```bash
-python remediation_validator.py --course-dir /path/to/course/ --strict
-```
-
-### Validate Specific Files
-```bash
-python remediation_validator.py --files file1.html file2.html --output-dir /reports/
+python remediation_validator.py --course-dir /path/to/course/ --before original/ --after remediated/ --compare
 ```
 
 ## Validation Checks
@@ -69,13 +64,13 @@ python remediation_validator.py --files file1.html file2.html --output-dir /repo
 - Resource reference validation
 - Manifest completeness
 
-### Pattern Prevention (22 Patterns)
-1. Placeholder content detection
-2. Template variable resolution
-3. Missing alt text
-4. Broken internal links
-5. Incomplete assessments
-... and 17 more patterns
+### WCAG 2.2-Specific Checks
+- Focus not obscured (2.4.11)
+- Focus appearance (2.4.13)
+- Target size minimum (2.5.8)
+- Dragging movements alternative (2.5.7)
+- Consistent help (3.2.6)
+- Accessible authentication (3.3.8)
 
 ## Severity Levels
 
@@ -129,11 +124,14 @@ Part of the remediation pipeline:
 
 ## Exit Codes
 
+Exit status is keyed off the report's overall score:
+
 | Code | Meaning |
 |------|---------|
-| 0 | Validation passed |
-| 1 | Validation failed (critical issues) |
-| 2 | Validation passed with warnings |
+| 0 | Passed (overall score >= 95) |
+| 1 | Passed with warnings (overall score >= 80) |
+| 2 | Failed (overall score < 80) |
+| 3 | Error (validation raised an exception) |
 
 ## Dependencies
 

@@ -8,9 +8,9 @@ DART (Digital Accessibility Remediation Tool) takes a PDF and produces HTML that
 
 ```bash
 # From the repo root, with Ed4All installed (pip install -e ".[full]")
-python -m DART.pdf_converter path/to/document.pdf -o ./accessible_output/
-# OR (with the package installed):
 pdf-to-html path/to/document.pdf -o ./accessible_output/
+# OR (without the console script on PATH):
+python -m DART.pdf_converter.cli path/to/document.pdf -o ./accessible_output/
 ```
 
 DART is also wired into the Ed4All pipeline. Running `ed4all run textbook-to-course` invokes it automatically as the first stage, so most users never call it directly.

@@ -9,7 +9,6 @@ This directory contains XML Schema Definition (XSD) files for validating IMSCC p
 | `cc_extresource_assignmentv1p0.xsd` | `http://www.imsglobal.org/xsd/imscc_extensions/assignment` | Assignment XML validation |
 | `ccv1p3_imsdt_v1p3.xsd` | `http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3` | Discussion topic XML validation |
 | `ccv1p3_qtiasiv1p2p1.xsd` | `http://www.imsglobal.org/xsd/ims_qtiasiv1p2` | QTI 1.2 assessment validation |
-| `ccv1p3_imscp_v1p2.xsd` | `http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1` | Manifest validation |
 
 ## Usage
 
@@ -35,7 +34,8 @@ These schemas are based on official IMS Global specifications:
 - Assignment: http://www.imsglobal.org/profile/cc/cc_extensions/cc_extresource_assignmentv1p0_v1p0.xsd
 - Discussion: http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_imsdt_v1p3.xsd
 - QTI: http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_qtiasiv1p2p1_v1p0.xsd
-- Manifest: http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_imscp_v1p2_v1p0.xsd
+
+The manifest (`imscp`) XSD is not bundled here; manifest structure is validated programmatically by `scripts/package_multifile_imscc.py` (IMS CC v1.3 `imscp_v1p1` namespace).
 
 ## Resource Types in Manifest
 

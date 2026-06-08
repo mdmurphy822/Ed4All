@@ -18,7 +18,7 @@ DART (Document Accessibility Remediation Tool) converts PDFs to WCAG 2.2 AA comp
 
 DART has two entry points serving different purposes:
 
-- **`python -m DART.pdf_converter`** — CLI for PDF to WCAG HTML conversion. Single entry point with argparse, env-var resolution (`DART_CLAUDE_MODEL`), and WCAG validator wiring. Console-script alias `pdf-to-html` registered in `DART/pyproject.toml::[project.scripts]`.
+- **`pdf-to-html`** (console-script) / **`python -m DART.pdf_converter.cli`** — CLI for PDF to WCAG HTML conversion. Single entry point (`DART/pdf_converter/cli.py::main`) with argparse, env-var resolution (`DART_CLAUDE_MODEL`), and WCAG validator wiring. The `pdf-to-html` console script is registered in `DART/pyproject.toml::[project.scripts]` (→ `pdf_converter.cli:main`). Note: there is no `DART/pdf_converter/__main__.py`, so `python -m DART.pdf_converter` (the package, not the `.cli` module) does not run — invoke the `.cli` module or the console script.
 - **`multi_source_interpreter.py`** — Multi-source synthesis engine for combined JSON inputs (pdftotext + pdfplumber + OCR). This is the preferred path when pre-extracted source data is available.
 
 ```python
@@ -299,8 +299,9 @@ failure (`EMPTY_DATA_DART_SOURCE`, `EMPTY_DATA_DART_BLOCK_ID`).
 
 ### Known gaps
 
-- **Real per-block page tracking** — `clean_text` strips form feeds at
-  L116; keeping form feeds is a separate refactor. Section-level
+- **Real per-block page tracking** — `clean_text`
+  (`DART/multi_source_interpreter.py`) collapses form feeds to blank
+  lines; keeping form feeds is a separate refactor. Section-level
   `page_range` ships from fixture estimates; per-block `pages` stays
   empty when genuinely unknown.
 - **OCR-quality sub-signal** — OCR-only blocks score `0.2` regardless of
@@ -380,7 +381,7 @@ when PyMuPDF is unavailable (import fails or the document won't open).
    `RawBlock` instances on blank-line / form-feed boundaries; compute
    stable `block_id` hashes + neighbor context.
 2. **Classify** (`heuristic_classifier.py` or `llm_classifier.py`) —
-   assign exactly one `BlockRole` from the 35-value enum in
+   assign exactly one `BlockRole` from the 38-value enum in
    `block_roles.py`. Heuristic classifier is the offline default; LLM
    classifier routes through the configured LLM backend via `MCP/orchestrator/llm_backend.py`
    for ambiguous blocks.
@@ -899,7 +900,8 @@ what fires where.
 
 ### Course-code normalisation
 
-`MCP/tools/dart_tools.py::normalize_course_code` coerces any PDF
+`lib/decision_capture.py::normalize_course_code` (re-exported from
+`MCP/tools/dart_tools.py` for backward compat) coerces any PDF
 filename into the canonical `^[A-Z]{2,8}_[0-9]{3}$` pattern so
 every DART capture's `course_id` field passes schema validation.
 Strategy: uppercase + underscore-normalise, pick the first

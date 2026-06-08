@@ -8,17 +8,15 @@ This documentation serves as a complete reference for creating, validating, and 
 
 ## Directory Structure
 
-### `/schemas/`
-XML schema definitions and namespace specifications for IMSCC versions 1.1, 1.2, and 1.3
-
-### `/examples/`
-Working examples of IMSCC manifest files and resource structures
-
-### `/brightspace-specific/`
+### `brightspace-specific/`
 Brightspace D2L-specific extensions, schemas, and implementation details
+(packager agent guide, validation protocols, D2L XML schema reference).
 
-### `/validation/`
-Tools and scripts for validating IMSCC package compliance
+### `imscc-variables-reference.md`
+Reference catalog of IMSCC manifest/resource variables and namespaces.
+
+IMSCC XSD files (assignment, discussion, QTI) live under the sibling
+`../schemas/imscc/` directory.
 
 ## Key IMSCC Specifications
 
@@ -391,11 +389,11 @@ grep -r "imsccv1p3" *.xml  # Should find all IMSCC references
 
 ## Related Documentation
 
-- `/schemas/imscc/`: Complete XML schema definitions
-- `/schemas/assessment/`: QTI and D2L assessment schemas
-- `/docs/PATTERN_PREVENTION_GUIDE.md`: Error pattern prevention guidance
-- `/CLAUDE.md`: Course generation guidelines
+- `../schemas/imscc/`: IMSCC XSD definitions (assignment, discussion, QTI)
+- `brightspace-specific/`: Brightspace D2L extensions and protocols
+- `../docs/troubleshooting.md`: Error pattern prevention guidance
+- `../CLAUDE.md`: Course generation guidelines
 
 ---
 
-*This documentation provides comprehensive guidance for IMSCC standards implementation. For specific implementation examples, see the `/examples/` directory.*
+*This documentation provides comprehensive guidance for IMSCC standards implementation.*

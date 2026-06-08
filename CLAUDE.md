@@ -66,6 +66,26 @@ cd MCP
 python server.py
 ```
 
+### Control-Plane GUI
+
+A no-stubs web control plane for the whole pipeline (upload→run, env/API keys,
+per-task model routing incl. VLM/Ollama, course topics/objectives, retrieval +
+adapter inference, Claude↔GUI activity bridge). Ships as the opt-in `gui` extra
+(no heavy deps in the default install).
+
+```bash
+# One-click: build venv, install, serve, open browser (see gui/LAUNCH.md)
+./run-gui.sh            # macOS / Linux   (run-gui.bat on Windows)
+
+# Manual: install the extra, then launch
+pip install -e '.[gui]'
+ed4all gui              # serves http://127.0.0.1:8077
+```
+
+Full reference (six tabs, REST API, settings/secret persistence, model routing,
+Claude integration): `gui/README.md`. Launcher flags + troubleshooting:
+`gui/LAUNCH.md`.
+
 ### Available Workflows
 | Workflow | Description | Max Concurrent |
 |----------|-------------|----------------|
@@ -246,6 +266,24 @@ for i in range(50):
 | `acquire_batch_lock` | Lock resource for batch |
 | `release_batch_lock` | Release batch lock |
 
+### GUI Tools
+
+The Claude-interaction surface for the Control-Plane GUI. All nine operate on
+the shared `state/gui/` store (`MCP/tools/gui_tools.py`), so a Claude session
+and the GUI stay in sync. Full detail: `gui/README.md § Claude Code integration`.
+
+| Tool | Description |
+|------|-------------|
+| `gui_get_settings` | Return the masked GUI settings doc |
+| `gui_set_setting` | Deep-patch one setting at a dotted path (e.g. `model_routing.global.provider`) |
+| `gui_list_runs` | List the GUI run registry (newest first) |
+| `gui_get_run` | Return one run record |
+| `gui_enqueue_run` | Write a run request (`status="requested"`) for the GUI to pick up |
+| `gui_list_courses` | List Courseforge-export + LibV2 courses |
+| `gui_get_objectives` | Return a course's synthesized objectives doc |
+| `gui_post_event` | Append a `claude`-sourced event (shows in the Activity tab) |
+| `gui_read_events` | Read activity events with `seq >= since` (sees human messages) |
+
 **Trainforge tools** — see `Trainforge/CLAUDE.md § MCP Tools`.
 
 ### Pipeline Tools
@@ -295,8 +333,9 @@ Use `StatusTracker` for multi-terminal coordination:
 ```python
 from MCP.ipc.status_tracker import StatusTracker
 
-tracker = StatusTracker("state/status")
-tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")
+tracker = StatusTracker()  # defaults to state/status/
+tracker.update_status("content_generator", "IN_PROGRESS",
+                      worker_id="W001", details={"file": "Module_3.html"})
 ```
 
 ---
@@ -545,12 +584,9 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 | `intake_remediation` | 2 | 0 | 2 |
 | `batch_dart` | 2 | 0 | 2 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 33 | 41 | 74 |
+| `textbook_to_course` | 25 | 49 | 74 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **58** | **46** | **104** |
-
-<!-- Active Gates table moved to docs/validation/gates.md; replaced with summary above. -->
-
+| **Total** | **50** | **54** | **104** |
 
 ---
 
@@ -666,7 +702,7 @@ SLM training is a post-import LibV2 stage, not a step in `Trainforge/process_cou
 
 ## Training Data Export
 
-Formats: `alpaca`, `openai`, `dpo`, `raw`. CLI: `ed4all export-training <run_id> --format <fmt>`. Full reference: `Trainforge/CLAUDE.md § Training Data Export`.
+Formats: `jsonl` (default), `alpaca`, `openai`, `dpo`. CLI: `ed4all export-training <run_id> --format <fmt> --output <path>`. Full reference: `Trainforge/CLAUDE.md § Training Data Export`.
 
 ---
 
