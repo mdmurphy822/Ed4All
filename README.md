@@ -14,7 +14,7 @@ Point Ed4All at a textbook PDF (or a directory of PDFs) and a course name, and i
 - **Accessible HTML** — semantic structure, proper heading hierarchy, alt text for images, ARIA landmarks, keyboard navigation, dark mode, and full WCAG 2.2 AA coverage.
 - **An LMS-ready IMSCC package** — weekly modules with pages, activities, self-checks, summaries, and discussions, importable into Brightspace, Canvas, Blackboard, or Moodle.
 - **Bloom's-aligned learning objectives** — per module and per page, each tagged with a cognitive domain and linked back to the source content.
-- **A knowledge graph** — chunked content with key terms, misconceptions, learning-outcome references, and an 8-relation concept graph covering taxonomic and pedagogical structure.
+- **A knowledge graph** — chunked content with key terms, misconceptions, learning-outcome references, and a typed concept graph covering taxonomic and pedagogical structure.
 - **A reusable archive** — the course is indexed into a local knowledge repository you can query with BM25 retrieval, filter by concept or objective, and reuse across courses.
 
 Every chunk carries its Bloom's level, content type, key terms, misconceptions, and the original PDF region it came from, so downstream LLMs can ground their answers in cited source material.
@@ -39,11 +39,27 @@ pip install -e ".[full]"
 ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101
 ```
 
-The canonical chunker lives in-tree at [`Trainforge/chunker/`](Trainforge/chunker/) and is shared across the DART, IMSCC, and Trainforge synthesis paths.
-
 By default Ed4All runs in **local mode** — no API key required. To route through the Anthropic API instead, set `ANTHROPIC_API_KEY` and add `--mode api`.
 
 That single command runs the full pipeline — accessibility conversion, objective synthesis, course planning, module generation, IMSCC packaging, knowledge-graph building, and archival. The IMSCC file lands in `Courseforge/exports/`, and the searchable archive lands in `LibV2/courses/`.
+
+### Prefer a GUI?
+
+Ed4All ships a browser-based control panel for the whole pipeline — upload PDFs, manage API keys and environment, choose which model runs each task (including local **Ollama** and **vision/VLM** models), edit course topics and learning objectives, launch a full run or a single stage with live logs, and query the knowledge base — no command line required.
+
+```bash
+# One click: builds a virtualenv, installs, starts the server, opens your browser
+./run-gui.sh           # macOS / Linux
+run-gui.bat            # Windows (double-click)
+```
+
+If you already ran `pip install -e ".[full]"` above (it includes the GUI), just launch it directly:
+
+```bash
+ed4all gui             # serves http://127.0.0.1:8077
+```
+
+Full GUI guide — the six panels, settings and secret handling, model routing, retrieval, and how Claude Code sessions can drive it: [`gui/README.md`](gui/README.md).
 
 Other useful commands:
 

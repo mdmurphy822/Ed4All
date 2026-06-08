@@ -40,10 +40,10 @@ LibV2 contains potentially millions of tokens. Full extraction will kill usage l
 
 ```bash
 # The ONLY acceptable way to access LibV2 content:
-python -m tools.libv2.cli retrieve "your query" --limit 10
+python -m LibV2.tools.libv2.cli retrieve "your query" --limit 10
 
 # With filters:
-python -m tools.libv2.cli retrieve "query" \
+python -m LibV2.tools.libv2.cli retrieve "query" \
   --domain physics \
   --chunk-type explanation \
   --limit 10
@@ -73,16 +73,16 @@ For complex queries that span multiple concepts, use `multi-retrieve`:
 
 ```bash
 # Query decomposition with RRF fusion
-python -m tools.libv2.cli multi-retrieve "compare UDL and differentiated instruction"
+python -m LibV2.tools.libv2.cli multi-retrieve "compare UDL and differentiated instruction"
 
 # Show decomposition explanation
-python -m tools.libv2.cli multi-retrieve "how does accessibility improve learning" --explain
+python -m LibV2.tools.libv2.cli multi-retrieve "how does accessibility improve learning" --explain
 
 # Disable decomposition for simple queries
-python -m tools.libv2.cli multi-retrieve "define cognitive load" --no-decompose
+python -m LibV2.tools.libv2.cli multi-retrieve "define cognitive load" --no-decompose
 
 # With filters
-python -m tools.libv2.cli multi-retrieve "assessment strategies for stem" \
+python -m LibV2.tools.libv2.cli multi-retrieve "assessment strategies for stem" \
   --domain pedagogy --limit 15 -o json
 ```
 
@@ -147,9 +147,9 @@ gaps in coverage.
 
 Use catalog commands instead of retrieval:
 ```bash
-python -m tools.libv2.cli catalog stats        # Overview statistics
-python -m tools.libv2.cli catalog list         # Course listing
-python -m tools.libv2.cli info [slug]          # Course details
+python -m LibV2.tools.libv2.cli catalog stats        # Overview statistics
+python -m LibV2.tools.libv2.cli catalog list         # Course listing
+python -m LibV2.tools.libv2.cli info [slug]          # Course details
 ```
 
 ### If 10-20 Results Seem Insufficient
@@ -192,7 +192,7 @@ Division (STEM/ARTS)
 
 Each course directory (`courses/[slug]/`) contains:
 - `dart_chunks/` — DART-derived chunkset. `chunks.jsonl` (one canonical v4 chunk per line, JSONL) + sibling `manifest.json` (chunkset sidecar). Anchored to the textbook PDF via `manifest.source_dart_html_sha256` (aggregate Merkle of the staged DART HTML inputs). Emit path: the `chunking` workflow phase between `staging` and `objective_extraction` (see `_run_dart_chunking` below). Hash recorded at the course-manifest scope as `manifest.json::dart_chunks_sha256` — **required**.
-- `imscc_chunks/` — IMSCC-derived chunkset. Symmetric sibling to `dart_chunks/`: same JSONL + manifest pair, but anchored to the packaged `.imscc` archive via `manifest.source_imscc_sha256`. Emit path: the `imscc_chunking` workflow phase between `packaging` and `training_synthesis` (see `_run_imscc_chunking` below). Hash recorded at the course-manifest scope as `manifest.json::imscc_chunks_sha256` — **required**. Read shim: `lib/libv2_storage.py::resolve_imscc_chunks_path` (aliased `resolve_imscc_chunks_dir`) accepts the legacy `corpus/` directory name with a deprecation warning so pre-rename archives still resolve at consumer call sites.
+- `imscc_chunks/` — IMSCC-derived chunkset. Symmetric sibling to `dart_chunks/`: same JSONL + manifest pair, but anchored to the packaged `.imscc` archive via `manifest.source_imscc_sha256`. Emit path: the `imscc_chunking` workflow phase between `packaging` and `training_synthesis` (see `_run_imscc_chunking` below). Hash recorded at the course-manifest scope as `manifest.json::imscc_chunks_sha256` — **required**. Read shim: `lib/libv2_storage.py::resolve_imscc_chunks_dir` (with the `resolve_imscc_chunks_path` filename-joining wrapper) accepts the legacy `corpus/` directory name with a deprecation warning so pre-rename archives still resolve at consumer call sites.
 - `concept_graph/` — Pedagogy concept graph. `concept_graph_semantic.json` produced by the `concept_extraction` workflow phase. Hash recorded at `manifest.json::concept_graph_sha256` — **required + critical**. The three-hash triangle pins DART chunks ↔ IMSCC chunks ↔ concept graph to the same course manifest revision.
 - `course.json` — Course-level learning outcomes and metadata.
 - `graph/` — Concept co-occurrence graph (legacy / advisory; distinct from `concept_graph/`).

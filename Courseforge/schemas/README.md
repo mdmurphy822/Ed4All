@@ -33,7 +33,7 @@ schemas/
 ├── layouts/                            # Layout-specific schemas
 │   └── course_card_schema.json
 ├── assessment/                         # Assessment integration schemas (placeholder)
-└── imscc/                              # IMSCC-specific schema references (placeholder)
+└── imscc/                              # IMSCC XSD files (assignment, discussion, QTI) + README
 ```
 
 ### 1. Educational Template Integration Schema
@@ -175,8 +175,8 @@ When implementing these schemas, validate:
 
 For implementation support:
 - See `/templates/` directory for working examples
-- Check `/docs/PATTERN_PREVENTION_GUIDE.md` for error prevention
-- Reference `/imscc-standards/brightspace-specific/` for LMS specifications
+- Check `docs/troubleshooting.md` for error patterns and prevention
+- Reference `imscc-standards/brightspace-specific/` for LMS specifications
 - Reference `/schemas/README.md` (project root) for the unified schema index
 
 These schemas provide a Courseforge-local foundation for UI components, layouts, and template patterns. Cross-project schemas (academic metadata, learning objectives, textbook structure, WCAG compliance) now live under the project-root `/schemas/` tree.

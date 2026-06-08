@@ -19,7 +19,8 @@ schemas/
 │   └── textbook_structure.schema.json       DART-processed HTML structure
 │
 ├── aggregators/                             post-loop aggregator output shapes
-│   └── coverage_map.schema.json             objective→chunk→question→pair map (Wave 3 G1)
+│   ├── coverage_map.schema.json             objective→chunk→question→pair map (Wave 3 G1)
+│   └── trainforge_assessment_quality_report.schema.json   assessment-quality rollup
 │
 ├── compliance/                              accessibility standards
 │   └── wcag22_compliance.schema.json        WCAG 2.2 AA requirement matrix
@@ -32,7 +33,8 @@ schemas/
 │   ├── courseforge_v1.shacl-closed.ttl      sh:closed overlay (gated)
 │   ├── courseforge_v1.shacl-rules.ttl       SHACL inference rules (gated)
 │   ├── courseforge_v1.shacl.ttl             canonical SHACL shapes
-│   └── courseforge_v1.vocabulary.ttl        cf: vocabulary
+│   ├── courseforge_v1.vocabulary.ttl        cf: vocabulary
+│   └── training_pair.shacl.ttl              SHACL shapes for training pairs
 │
 ├── courseforge/                             Courseforge-specific config schemas
 │   └── block_routing.schema.json            per-block-type routing policy
@@ -60,12 +62,15 @@ schemas/
 │   ├── course.schema.json                   Trainforge-emitted course.json
 │   ├── course_metadata.schema.json          Trainforge-emitted course metadata
 │   ├── courseforge_jsonld_v1.schema.json    Courseforge emit JSON-LD shape
+│   ├── domain_concept_vocabulary.schema.json  per-corpus domain-concept vocabulary
 │   ├── instruction_pair.schema.json         SFT pairs (prompt/completion)
 │   ├── instruction_pair.strict.schema.json  opt-in strict SFT variant
 │   ├── misconception.schema.json            first-class misconception entity
 │   ├── objectives_v1.schema.json            synthesized objectives shape
+│   ├── pair_audit_fields.schema.json        shared training-pair audit fields
 │   ├── preference_pair.schema.json          DPO pairs (chosen/rejected)
-│   └── source_reference.schema.json         {sourceId, role, …} canonical shape
+│   ├── source_reference.schema.json         {sourceId, role, …} canonical shape
+│   └── textbook_structure_enrichment.schema.json  LLM enrichment overlay on textbook_structure
 │
 ├── library/                                 LibV2 course repository
 │   ├── catalog_entry.schema.json            course entry in master catalog
@@ -78,10 +83,15 @@ schemas/
 │   ├── model_card.schema.json               adapter model_card.json shape
 │   └── model_pointers.schema.json           promotion-ledger pointer file
 │
+├── quality/                                 OSCQR quality-review items
+│   ├── oscqr_items.json                      OSCQR rubric items (data)
+│   └── oscqr_items.schema.json               schema for OSCQR items
+│
 ├── taxonomies/                              controlled vocabularies
 │   ├── assessment_method.json               formative / summative / diagnostic
 │   ├── bloom_verbs.json                     6-level / 60-verb canonical list
 │   ├── cognitive_domain.json                factual / conceptual / procedural / metacognitive
+│   ├── cognitive_task_type.json             cognitive task-type enum
 │   ├── content_type.json                    section content-type enum
 │   ├── lo_hierarchy.json                    TO/CO/SubCO hierarchy enum
 │   ├── module_type.json                     6-value module-type enum
@@ -92,7 +102,8 @@ schemas/
 │
 ├── tests/                                   per-schema fixture suites
 │   └── fixtures/
-│       └── wave1/                           Wave 1 W1.A fixtures (observed_bloom + promotion_decision)
+│       ├── wave1/                           Wave 1 W1.A fixtures (observed_bloom + promotion_decision + trainable pair)
+│       └── wave_d11/                        Wave D11 fixtures (evidence-quote / per-claim-support)
 │
 └── training/                                Trainforge training-pair fixtures + schemas
     ├── family_map.rdf_shacl.yaml            per-family CURIE clusters fixture
@@ -130,7 +141,7 @@ Adding a new schema is a one-step operation: drop the file under the appropriate
 
 ## What is NOT here
 
-Six tool-local schemas remain under `Courseforge/schemas/` because they describe Courseforge-internal HTML component structures or tool-specific migrations — not artifacts that cross tool boundaries:
+Seven tool-local schemas remain under `Courseforge/schemas/` because they describe Courseforge-internal HTML component structures or tool-specific migrations — not artifacts that cross tool boundaries:
 
 | Path | Scope |
 |---|---|
@@ -158,6 +169,7 @@ IMS CC / QTI XSDs under `Courseforge/schemas/imscc/` are upstream IMS Global spe
 - **`knowledge/`** — concept-graph edges, chunk contract, JSON-LD emit shape, misconception entity, training pair shapes (instruction + preference + strict variant), source-reference canonical shape.
 - **`library/`** — how a course surfaces in LibV2 (catalog entry, course manifest, chunkset manifest + drift report, packaging report).
 - **`models/`** — SLM-training artifacts: adapter `model_card.json` shape (Wave 89 + Wave 92) + promotion-ledger pointer file (Wave 93).
+- **`quality/`** — OSCQR quality-review rubric items (data file + its schema).
 - **`taxonomies/`** — controlled vocabularies referenced by everything above (loaded via `lib/ontology/`).
-- **`tests/`** — per-schema fixture suites (Wave 1 fixtures live under `tests/fixtures/wave1/`).
+- **`tests/`** — per-schema fixture suites (fixtures live under `tests/fixtures/wave1/` and `tests/fixtures/wave_d11/`).
 - **`training/`** — Trainforge per-corpus fixtures + their schemas (family map, property manifest, schema translation catalog, semantic profiles, synthesis summary).
