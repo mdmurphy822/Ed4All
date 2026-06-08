@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ed4All Control Plane</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <nav id="sidebar">
+      <div class="brand">
+        <span class="brand-mark">Ed4All</span>
+        <span class="brand-sub">control plane</span>
+      </div>
+      <ul id="navlist">
+        <li><a href="#/upload" data-tab="upload"><span>Upload &amp; Run</span></a></li>
+        <li><a href="#/settings" data-tab="settings"><span>Settings / API Keys</span></a></li>
+        <li><a href="#/routing" data-tab="routing"><span>Model Routing</span></a></li>
+        <li><a href="#/courses" data-tab="courses"><span>Courses &amp; Topics</span></a></li>
+        <li><a href="#/retrieval" data-tab="retrieval"><span>Retrieval</span></a></li>
+        <li><a href="#/activity" data-tab="activity"><span>Activity (Claude &harr; GUI)</span></a></li>
+      </ul>
+      <div class="nav-foot">
+        <span id="conn-status" class="conn-dot" title="API reachability"></span>
+        <span id="conn-label">checking…</span>
+      </div>
+    </nav>
+    <main id="view" aria-live="polite"></main>
+  </div>
+  <div id="toasts" aria-live="assertive"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

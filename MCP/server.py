@@ -580,6 +580,15 @@ except ImportError as e:
     logger.warning(f"Could not register Pipeline tools: {e}")
     _failed_modules.append("Pipeline")
 
+try:
+    from tools.gui_tools import register_gui_tools
+    register_gui_tools(mcp)
+    logger.info("GUI tools registered")
+    _loaded_modules.append("GUI")
+except ImportError as e:
+    logger.warning(f"Could not register GUI tools: {e}")
+    _failed_modules.append("GUI")
+
 logger.info(f"MCP tool modules loaded: {', '.join(_loaded_modules) or 'none'}")
 if _failed_modules:
     logger.warning(f"MCP tool modules failed: {', '.join(_failed_modules)}")

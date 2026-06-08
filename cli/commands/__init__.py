@@ -14,11 +14,12 @@ natural-language query).
 # Importing libv2_generate_quiz attaches the ``generate-quiz``
 # subcommand to the shared ``libv2_group`` Click group at import time.
 from . import libv2_generate_quiz  # noqa: F401
+from .gui_cmd import register_gui_command
 from .libv2_ask import register_libv2_ask_command
 from .libv2_generate_study_pack import register_generate_study_pack_command
 from .libv2_query import register_libv2_query_command
-from .libv2_validate_packet import register_libv2_command as _register_libv2_validate_packet
 from .libv2_validate_packet import libv2_group as _libv2_group
+from .libv2_validate_packet import register_libv2_command as _register_libv2_validate_packet
 from .mailbox_watch import register_mailbox_command
 from .run import register_run_command
 from .state_prune import register_state_command
@@ -49,4 +50,5 @@ __all__ = [
     "register_libv2_ask_command",
     "register_generate_study_pack_command",
     "register_tutor_command",
+    "register_gui_command",
 ]
