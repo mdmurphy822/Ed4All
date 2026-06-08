@@ -115,6 +115,21 @@ except ImportError as _tutor_import_err:  # pragma: no cover
     )
 
 
+# Register 'ed4all gui' command — launches the control-plane GUI web server
+# (FastAPI + uvicorn). Lazy try/except so the CLI loads even without the
+# ``gui`` extra installed; the command itself surfaces an actionable error.
+try:
+    from cli.commands import register_gui_command
+
+    register_gui_command(cli)
+except ImportError as _gui_import_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.gui_cmd unavailable: %s",
+        _gui_import_err,
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================

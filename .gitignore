@@ -15,6 +15,7 @@ dist/
 # Virtual environments
 venv/
 .venv/
+.venv-gui/
 env/
 ENV/
 
@@ -100,6 +101,8 @@ state/workflows/*
 !state/workflows/.gitkeep
 state/runs/*
 !state/runs/.gitkeep
+state/gui/*
+!state/gui/.gitkeep
 
 runtime/
 

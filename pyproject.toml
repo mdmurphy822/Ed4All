@@ -137,17 +137,27 @@ embedding = [
     "transformers>=4.49,<4.50",
     "torch>=2.0.0",
 ]
-full = ["ed4all[dart,server,dev]"]
+# Control-plane GUI (opt-in). FastAPI + uvicorn serve the vanilla-JS SPA and
+# the /api + /ws routers. Kept out of the default install so the MCP server
+# (which imports gui.shared_state / gui.settings_store with NO web deps) and
+# CPU-only dev boxes don't pull web-server wheels. ``ed4all gui`` needs this.
+gui = [
+    "fastapi>=0.110,<1.0",
+    "uvicorn[standard]>=0.27,<1.0",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.0,<2.0",
+]
+full = ["ed4all[dart,server,dev,gui]"]
 
 [project.scripts]
 ed4all = "cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["lib*", "MCP*", "cli*"]
+include = ["lib*", "MCP*", "cli*", "gui*"]
 
 [tool.coverage.run]
-source = ["lib", "MCP", "cli"]
+source = ["lib", "MCP", "cli", "gui"]
 branch = true
 omit = ["*/tests/*", "*/__pycache__/*"]
 
