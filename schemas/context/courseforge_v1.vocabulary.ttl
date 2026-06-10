@@ -384,8 +384,8 @@ ed4all:assessesObjective
 # real rdfs:domain / rdfs:range, instead of round-tripping via JSON-LD's
 # ``@vocab`` fallback at edge-type#<slug>.
 #
-# Domain/range targets were verified against the rdf-shacl-551-2 fixture
-# (see plans/rdf-shacl-enrichment-2026-04-26.md § Phase 2.6). The
+# Domain/range targets were verified against the RDF/SHACL calibration
+# corpus fixture (Phase 2.6 enrichment). The
 # pedagogy JSON-LD context maps both Outcome (TO-NN) and ComponentObjective
 # (CO-NN) onto cf:LearningObjective, so predicates that point at either
 # subtype declare rdfs:range cf:LearningObjective.

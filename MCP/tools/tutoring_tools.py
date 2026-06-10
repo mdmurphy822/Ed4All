@@ -157,7 +157,7 @@ def _course_dir(slug: str) -> Path:
 
     Tries the slug directly first, then ``{slug}-{slug}`` (the doubled
     form that ``Trainforge/process_course.py`` emits when course_id ==
-    course_slug, e.g. ``rdf-shacl-550-rdf-shacl-550``).
+    course_slug, e.g. ``<slug>-<slug>``).
 
     Preference rule: a candidate is "good" only if it actually carries
     a populated archive (``corpus/chunks.jsonl`` exists). The repo

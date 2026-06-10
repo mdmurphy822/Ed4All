@@ -1,6 +1,6 @@
 """Wave 82 tests for the single-occurrence backfill flag.
 
-The rdf-shacl-551 audit found that ``concept_graph.json`` carried 424
+The RDF/SHACL calibration corpus audit found that ``concept_graph.json`` carried 424
 nodes while the pedagogy graph named 660 Concept-class nodes — 236
 concepts (``alldisjointclasses``, ``aggregate-projection``,
 ``annotation-properties``, etc.) appeared in exactly 1 chunk each and

@@ -20,7 +20,7 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -126,7 +126,7 @@ async def launch_phase_run(req: LaunchPhaseRequest) -> Any:
 
 
 @router.get("/runs")
-async def list_runs(limit: Optional[int] = None) -> Dict[str, Any]:
+async def list_runs(limit: Optional[int] = Query(default=None, ge=0)) -> Dict[str, Any]:
     """Return GUI run records, newest-first.
 
     Optional ``?limit=`` caps the number of records returned; omitted (default)
@@ -222,7 +222,9 @@ async def ws_run_logs(websocket: WebSocket, run_id: str) -> None:
 
 
 @router.get("/activity/events")
-async def activity_events(since: int = 0, limit: Optional[int] = None) -> Dict[str, Any]:
+async def activity_events(
+    since: int = 0, limit: Optional[int] = Query(default=None, ge=0)
+) -> Dict[str, Any]:
     """Return events with ``seq >= since`` from the Claude<->GUI bridge.
 
     Optional ``?limit=`` caps how many events are returned (most recent first by

@@ -264,6 +264,37 @@ def _patch_router_with_provider(monkeypatch, provider: Any) -> None:
     )
 
 
+def _patch_empty_escalation_policy(monkeypatch) -> None:
+    """Strip the Wave-7 ``escalate_immediately`` flags from the policy.
+
+    Wave-7/7b (commits ``101d1e5`` + ``8dc44e1``) flipped ``objective``
+    (and ``prereq_set``) to ``escalate_immediately: true`` in
+    ``Courseforge/config/block_routing.yaml``, and the outline handler
+    stamps every stub ``block_type="objective"`` — so under the real
+    policy ``CourseforgeRouter`` short-circuits every block at the outline
+    seam: the provider is never invoked and the self-consistency regen
+    loop is skipped (validation_attempts stays 0). This e2e test was
+    written to drive the outline_curie_anchoring gate through the runner
+    via the regen loop, so we override the deferred-imported
+    ``Courseforge.router.policy.load_block_routing_policy`` to return a
+    policy with an EMPTY ``escalate_immediately_by_block_type`` set,
+    re-routing the objective stubs through the outline tier.
+    """
+    import dataclasses as _dc
+
+    from Courseforge.router import policy as _policy_mod
+
+    real_loader = _policy_mod.load_block_routing_policy
+
+    def _empty_escalation_loader(*args: Any, **kwargs: Any):
+        loaded = real_loader(*args, **kwargs)
+        return _dc.replace(loaded, escalate_immediately_by_block_type={})
+
+    monkeypatch.setattr(
+        _policy_mod, "load_block_routing_policy", _empty_escalation_loader,
+    )
+
+
 # --------------------------------------------------------------------- #
 # Test 1 — outline curie gate fires through the runner
 # --------------------------------------------------------------------- #
@@ -335,20 +366,17 @@ def test_outline_curie_gate_fires_through_workflow_runner(
     provider = _CurieMissingProvider()
     _patch_router_with_provider(monkeypatch, provider)
 
-    # Follow-up #36 (closes #34's discovery, ref commit ``61fd80c``):
-    # the per-block-type validator matrix at
-    # ``Courseforge/config/block_routing.yaml`` declares ``"objective"``
-    # blocks require ``curie_anchoring`` + ``source_ref``. Production
-    # validators expose seam-tagged ``name`` attributes
-    # (``outline_curie_anchoring`` / ``outline_source_refs``); the
-    # matrix-filter path now normalizes those names to the YAML
-    # vocabulary via
-    # :meth:`CourseforgeRouter._normalize_gate_id_for_matrix` so the
-    # outline_curie_anchoring validator engages on ``"objective"``
-    # blocks WITHOUT the test-time policy strip the inert-matrix bug
-    # used to require. Removing the monkeypatch here is the load-
-    # bearing assertion that the normalization fix actually closes
-    # the bug end-to-end through ``WorkflowRunner.run_workflow``.
+    # Wave-7/7b production pivot: ``objective`` blocks carry
+    # ``escalate_immediately: true`` in block_routing.yaml, and the
+    # outline handler stamps every stub ``block_type="objective"`` — so
+    # under the real policy the router short-circuits every block at the
+    # outline seam: the provider is never invoked and validation_attempts
+    # stays 0. This test drives the outline_curie_anchoring gate through
+    # the runner's regen loop, so we strip the escalate flags to re-route
+    # the objective stubs through the outline tier. (The Wave-7 default —
+    # provider not called, escalation_marker stamped — is pinned in
+    # test_pipeline_tools_outline_self_consistency.py.)
+    _patch_empty_escalation_policy(monkeypatch)
 
     # Minimal regen + candidate budget so the test runs fast. With
     # regen_budget=1 and n_candidates=1 the loop runs exactly once,

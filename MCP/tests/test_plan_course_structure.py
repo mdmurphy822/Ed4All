@@ -141,6 +141,70 @@ def test_synthesizes_from_headings(planner_fixture):
         assert lo["hierarchy_level"] in ("terminal", "chapter")
 
 
+def test_concept_graph_path_kwarg_is_inert(planner_fixture):
+    """Phase-ordering fix (Option A1): the concept-objective linker pass
+    moved out of _plan_course_structure into _run_concept_extraction. A
+    ``concept_graph_path`` kwarg passed to the planner is now inert — it
+    does NOT trigger a linker call and the synthesized output is identical
+    to a run without the kwarg (no key_concepts injected here).
+    """
+    fx = planner_fixture
+    _write_dart_html(
+        fx["staging_dir"] / "book.html",
+        ["Vector Spaces", "Eigenvalues", "Linear Maps", "Inner Products"],
+    )
+
+    # Build a concept graph file that, under the OLD behavior, the planner
+    # linker would have consumed to inject key_concepts.
+    graph_path = fx["project_dir"] / "concept_graph_semantic.json"
+    graph_path.write_text(
+        json.dumps({
+            "kind": "concept_semantic",
+            "nodes": [
+                {"id": "vector-space", "class": "Concept",
+                 "label": "Vector Space"},
+                {"id": "eigenvalue", "class": "Concept",
+                 "label": "Eigenvalue"},
+            ],
+            "edges": [],
+        }),
+        encoding="utf-8",
+    )
+
+    baseline = asyncio.run(_call(
+        project_id=fx["project_id"],
+        staging_dir=str(fx["staging_dir"]),
+    ))
+    with_graph = asyncio.run(_call(
+        project_id=fx["project_id"],
+        staging_dir=str(fx["staging_dir"]),
+        concept_graph_path=str(graph_path),
+    ))
+    assert baseline["success"] and with_graph["success"]
+
+    base_doc = json.loads(
+        Path(baseline["synthesized_objectives_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    graph_doc = json.loads(
+        Path(with_graph["synthesized_objectives_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    # No LO carries key_concepts injected by an in-planner linker pass.
+    for lo in graph_doc.get("learning_outcomes") or []:
+        assert not lo.get("key_concepts"), (
+            "concept_graph_path kwarg must be inert in _plan_course_structure "
+            "(linker moved to concept_extraction); got injected key_concepts "
+            f"on LO {lo.get('id')!r}."
+        )
+    # The learning_outcomes are identical with or without the kwarg.
+    assert [lo.get("id") for lo in base_doc.get("learning_outcomes") or []] == [
+        lo.get("id") for lo in graph_doc.get("learning_outcomes") or []
+    ]
+
+
 def test_populates_project_config_objectives_path(planner_fixture):
     """After planning, project_config.json carries synthesized_objectives_path."""
     fx = planner_fixture

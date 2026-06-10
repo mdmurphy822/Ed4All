@@ -22,8 +22,8 @@ directory. It must not touch any other file.
 ### Five generic layers
 
 1. **Faithfulness** — held-out (Q,A) probes drawn from withheld graph
-   edges. The misconception-rejection harness (rdf-shacl-551-2) must
-   reject all 34 misconceptions.
+   edges. The misconception-rejection harness (RDF/SHACL calibration
+   corpus) must reject all 34 misconceptions.
 2. **Behavioral invariants** — prerequisite-order respect (4,160
    `prerequisite_of` edges), Bloom-level consistency, domain-refusal
    probes.
@@ -173,7 +173,7 @@ Return a structured markdown eval report:
 
 ## Layer 1 — Faithfulness
 - held-out probe accuracy: <n>/<total>
-- misconception rejection: <accepted>/34 (rdf-shacl-551-2)
+- misconception rejection: <accepted>/34 (RDF/SHACL calibration corpus)
 
 ## Layer 2 — Behavioral invariants
 - prereq-order respect: <%>

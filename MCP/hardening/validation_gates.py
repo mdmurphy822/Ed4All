@@ -278,6 +278,24 @@ class ValidationGateManager:
                     merged_inputs.setdefault(k, v)
                 merged_inputs["_gate_config"] = dict(gate_config.config)
                 inputs = merged_inputs
+            # Forward the gate's declared ``threshold:`` dial into the
+            # validator inputs. ``_apply_thresholds`` (below) only knows the
+            # result-level keys (``max_critical_issues`` / ``max_issues`` /
+            # ``min_score`` / ``required_score``); validators that read
+            # per-dimension floors from their inputs (e.g. KGQualityValidator's
+            # ``min_completeness`` / ``min_consistency`` / ``min_accuracy`` /
+            # ``min_coverage``; MinEdgeCountValidator's ``min_edges`` etc.;
+            # CurieAnchoringValidator's ``min_pair_anchoring_rate``) otherwise
+            # never see the YAML-configured floor and silently fall back to
+            # their built-in default (0.0 for kg_quality, which disables the
+            # floor entirely). ``setdefault`` so a per-builder / per-call
+            # override still wins; result-level keys consumed only by
+            # ``_apply_thresholds`` are harmless extra inputs validators ignore.
+            if gate_config.threshold:
+                merged_thresholds: Dict[str, Any] = dict(inputs or {})
+                for k, v in gate_config.threshold.items():
+                    merged_thresholds.setdefault(k, v)
+                inputs = merged_thresholds
             # H3 Worker S0.5: mirror the executor-side capture injection
             # so direct callers (test harness / future MCP-exposed
             # validate tools that build inputs by hand) also see a live

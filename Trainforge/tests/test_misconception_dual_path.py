@@ -10,7 +10,7 @@ Background: Wave 79 content-generator subagents emit the
 ``data-cf-misconception="true"`` HTML attribute but do NOT always
 populate the JSON-LD ``misconceptions[]`` array. Trainforge has
 historically harvested JSON-LD only, so those misconceptions silently
-dropped during Path B regen (rdf-shacl-551-2: 67 -> 45). Wave 81
+dropped during Path B regen (the RDF/SHACL calibration corpus: 67 -> 45). Wave 81
 Worker C's bridging fix lets the parser fall back to the HTML attr
 when JSON-LD is absent. The forward-looking spec (see
 ``Courseforge/templates/chunk_templates.md`` Template 3) now mandates

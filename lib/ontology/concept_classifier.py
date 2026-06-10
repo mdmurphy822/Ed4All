@@ -6,7 +6,7 @@ options ("answer-b"), and stop-word-like artifacts ("not", "do-not")
 out of domain-concept similarity search.
 
 The Wave 75 review surfaced that the existing
-``concept_graph.json`` for the rdf-shacl-550 archive carried 459
+``concept_graph.json`` for the RDF/SHACL calibration corpus carried 459
 nodes including pedagogical/assessment scaffolding that polluted
 similarity search. This classifier is the deterministic, side-effect-free
 labeler that lets retrieval gate by class without dropping or merging
@@ -67,7 +67,7 @@ _LO_ID_RE = re.compile(r"^(?:to|co)-\d{2,}$", re.IGNORECASE)
 # Rule 2: assessment-option choices (multiple-choice answer slots).
 # Wave 76 expands beyond a-d single-letter options to cover
 # answer-true / answer-false / option-true variants observed in the
-# rdf-shacl-550 review.
+# RDF/SHACL calibration corpus review.
 _ANSWER_OPTION_RE = re.compile(
     r"^(?:answer|option)-(?:[a-d]|true|false|yes|no)$",
     re.IGNORECASE,
@@ -139,7 +139,7 @@ _PEDAGOGY_PATTERN_RE = re.compile(
 # and the trailing tokens are heading-fragment text.
 #
 # Wave 82 (Phase D2): adds ``step-N`` to the logistics filter — the
-# rdf-shacl-551 audit found ``step-1`` and ``step-2`` showing up as
+# RDF/SHACL calibration corpus audit found ``step-1`` and ``step-2`` showing up as
 # top-frequency concepts because procedural-instruction headings of
 # the shape "Step 1: ..." were slugified verbatim and entered the
 # concept stream.
@@ -152,7 +152,7 @@ _LOGISTICS_PREFIX_RE = re.compile(
 # Wave 76: trailing stopword detection. A slug whose LAST hyphen-
 # delimited token is a stopword is a sentence fragment that the
 # 4-token slugifier truncation produced. Examples flagged in the
-# rdf-shacl-550 review: ``content-1-aggregation-and``,
+# RDF/SHACL calibration corpus review: ``content-1-aggregation-and``,
 # ``competency-questions-are-the``, ``bring-a-shacl-sparql`` (where
 # the last token is itself a tail of an unfinished phrase).
 _TAIL_STOPWORDS: Set[str] = frozenset({
@@ -191,8 +191,8 @@ PEDAGOGICAL_MARKERS: Set[str] = frozenset({
     "takeaway",
     "rubric",
     "rubrics",
-    # ChatGPT review flagged these top-3 polluters in the rdf-shacl-550
-    # concept graph; they're the meta-vocabulary that scaffolds
+    # ChatGPT review flagged these top-3 polluters in the RDF/SHACL
+    # calibration corpus concept graph; they're the meta-vocabulary that scaffolds
     # assessments rather than the domain content the assessments cover.
     "assessment",
     "assessments",
@@ -240,7 +240,7 @@ PEDAGOGICAL_MARKERS: Set[str] = frozenset({
     "example",
     "examples",
     "feedback",
-    # Wave 76 additions surfaced by the rdf-shacl-550 review: compound
+    # Wave 76 additions surfaced by the RDF/SHACL calibration corpus review: compound
     # pedagogy artifacts that masqueraded as DomainConcept under the
     # Wave 75 stoplist.
     "application-activity",
@@ -250,8 +250,8 @@ PEDAGOGICAL_MARKERS: Set[str] = frozenset({
     "checkpoint",
     "milestone",
     "self-checks",
-    # Wave 82 (Phase D2): procedural-instruction verbs the rdf-shacl-551
-    # audit caught masquerading as top-frequency domain concepts. "Plan"
+    # Wave 82 (Phase D2): procedural-instruction verbs the RDF/SHACL
+    # calibration corpus audit caught masquerading as top-frequency domain concepts. "Plan"
     # and "Verify" are common imperative-mood headings ("Plan your
     # approach", "Verify the validation report") — pedagogical
     # scaffolding, not domain vocabulary.
@@ -333,6 +333,157 @@ LOW_SIGNAL_TOKENS: Set[str] = frozenset({
     "etc",
 })
 
+# Change B: domain-agnostic scaffolding-noise tokens. These are
+# pedagogical / procedural / comparative scaffolding words that slug-
+# extraction pulls out of headings and body copy ("Pros", "Cons",
+# "Creating a graph", "Mutating state", "Advanced") and which fall
+# through ``classify_concept`` to ``DomainConcept`` despite carrying no
+# subject-matter signal. Unlike :data:`LOW_SIGNAL_TOKENS` (stopwords),
+# these are content-adjacent words, so they are only pruned behind the
+# default-OFF ``TRAINFORGE_PRUNE_SCAFFOLDING_CONCEPTS`` flag — read at
+# the call sites in ``cooccurrence_graph`` / ``concept_tagging``, never
+# inside ``classify_concept`` (which must stay pure).
+SCAFFOLDING_NOISE_TOKENS: Set[str] = frozenset({
+    "pros",
+    "cons",
+    "creating",
+    "mutating",
+    "consuming",
+    "branch",
+    "harder",
+    "chain",
+    "pipe",
+    "task",
+    "advanced",
+    "basic",
+    "intermediate",
+    "beginner",
+    "expert",
+    "simpler",
+    "easier",
+    "faster",
+    "slower",
+    "better",
+    "worse",
+    "recap",
+    "recall",
+    "deleting",
+    "updating",
+    "reading",
+    "writing",
+    # RAG-course audit (W-audit): single-token generic abstractions /
+    # logistics words that survived as DomainConcept and injected ~30% of
+    # related-to noise. Domain-agnostic; never real RAG concepts.
+    "optional",
+    "objective",
+    "problem",
+    "insight",
+    "assumption",
+    "recommendation",
+    "question",
+    "purpose",
+    "method",
+    "reason",
+    "menu",
+    "repeat",
+    "seem",
+    "gathered",
+    "primer",
+    "exercice",
+    "finished",
+})
+
+# RAG-course audit (W-audit): MULTI-TOKEN course-logistics /
+# instructional scaffolding phrases (hyphen-joined slugs) that survived
+# as DomainConcept. Curated + conservative: only exact-match slugs that
+# are domain-agnostic logistics phrasing. Real multi-word concepts
+# (``vector-store``, ``knowledge-base``, ``semantic-guardrailing``,
+# ``running-state``, ``prompt-engineering``) MUST stay out of this set.
+_SCAFFOLDING_NOISE_PHRASES: Set[str] = frozenset({
+    "assess-task",
+    "once-finished",
+    "final-exercice",
+    "primer-for-next-notebook",
+    "plan-of-action",
+    "honest-take",
+    "stand-alone",
+    "prompt-passing",
+    "key-modifications",
+    "typical-use-inspection",
+    "edge-case-inspection",
+})
+
+# Change B (N2): action-verb stems for the ``-ing`` gerund-noise rule.
+# A single-token slug ending ``-ing`` whose de-gerund stem is in this
+# set is procedural scaffolding ("creating", "branching", "piping").
+_SCAFFOLDING_ACTION_STEMS: Set[str] = frozenset({
+    "create",
+    "mutate",
+    "consume",
+    "read",
+    "write",
+    "update",
+    "delete",
+    "build",
+    "run",
+    "branch",
+    "chain",
+    "pipe",
+    "recall",
+})
+
+
+def is_scaffolding_noise(norm: str) -> bool:
+    """Return True iff ``norm`` is domain-agnostic scaffolding noise.
+
+    Pure / side-effect-free. The default-OFF
+    ``TRAINFORGE_PRUNE_SCAFFOLDING_CONCEPTS`` flag is read at the call
+    sites (``cooccurrence_graph`` / ``concept_tagging``), NOT here.
+
+    Rules (any match → True):
+      * **N1** — ``norm`` ∈ :data:`SCAFFOLDING_NOISE_TOKENS`.
+      * **N2** — single-token slug ending ``-ing`` whose de-gerund stem
+        (strip ``ing``; restore a trailing ``e`` if the bare stem isn't
+        a recognised stem) is in :data:`_SCAFFOLDING_ACTION_STEMS`.
+      * **N3** — single-token slug ending ``-er`` / ``-est``, no hyphen,
+        length ≤ 8 (catches ``harder`` / ``simpler`` / ``faster``).
+      * **N4** — multi-token slug in :data:`_SCAFFOLDING_NOISE_PHRASES`
+        (curated course-logistics / instructional phrases).
+    """
+    if not norm:
+        return False
+    norm = norm.strip().lower()
+    if not norm:
+        return False
+
+    # N1: explicit single-token stoplist.
+    if norm in SCAFFOLDING_NOISE_TOKENS:
+        return True
+
+    # N4: curated multi-token course-logistics phrases.
+    if norm in _SCAFFOLDING_NOISE_PHRASES:
+        return True
+
+    single_token = "-" not in norm
+
+    # N2: -ing gerund of an action verb (single token only).
+    if single_token and norm.endswith("ing") and len(norm) > 3:
+        stem = norm[:-3]
+        if stem in _SCAFFOLDING_ACTION_STEMS:
+            return True
+        # Restore a dropped trailing ``e`` (creating -> creat -> create).
+        if (stem + "e") in _SCAFFOLDING_ACTION_STEMS:
+            return True
+
+    # N3: short comparative / superlative single tokens.
+    if single_token and len(norm) <= 8 and (
+        norm.endswith("er") or norm.endswith("est")
+    ):
+        return True
+
+    return False
+
+
 # Rule 5 stoplist: instructional artifacts (course logistics + meta).
 INSTRUCTIONAL_ARTIFACTS: Set[str] = frozenset({
     "submission-format",
@@ -362,8 +513,8 @@ INSTRUCTIONAL_ARTIFACTS: Set[str] = frozenset({
     "resources",
     "schedule",
     "calendar",
-    # Wave 76: additional logistics terms surfaced in the rdf-shacl-550
-    # cleanup pass.
+    # Wave 76: additional logistics terms surfaced in the RDF/SHACL
+    # calibration corpus cleanup pass.
     "module-overview",
     "week-overview",
     "course-introduction",
@@ -695,10 +846,12 @@ __all__ = [
     "DROPPABLE_CLASSES",
     "PEDAGOGICAL_MARKERS",
     "LOW_SIGNAL_TOKENS",
+    "SCAFFOLDING_NOISE_TOKENS",
     "INSTRUCTIONAL_ARTIFACTS",
     "KNOWN_EQUIVALENT_ALIASES",
     "classify_concept",
     "is_droppable_class",
+    "is_scaffolding_noise",
     "canonicalize_alias",
     "singular_form",
 ]

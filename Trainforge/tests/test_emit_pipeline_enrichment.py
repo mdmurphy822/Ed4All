@@ -21,7 +21,7 @@ end-to-end:
   carry the appropriate CO + parent TO refs after emit.
 
 A companion regression test (``test_emit_pipeline_full_archive.py``)
-exercises the rdf-shacl-551-2 IMSCC end-to-end behind an env gate so
+exercises the RDF/SHACL calibration corpus IMSCC end-to-end behind an env gate so
 the fast suite stays fast.
 """
 

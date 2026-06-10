@@ -326,7 +326,7 @@ A `+rag` row whose retrieved-chunks are empty for >50% of probes is stamped `set
 
 The `eval/chunk_labels.py::ChunkLabelResolver` was added after an audit found that `faithfulness.py`, `holdout_builder.py`, and `invariants.py` interpolated raw chunk-IDs (`shacl_551_chunk_NNNNN`) into probe text. Adapters echoed the literal ID back instead of reasoning about content -- 1441 chunk-id token matches in the cc07cc76 eval report; 0/22 correct on adapter+RAG faithfulness. The resolver maps each chunk ID to its `summary` (or first ~80 chars of `text`) so probes substitute a semantically reasonable label, and the adapter is tested on the question the eval was meant to ask.
 
-The companion `eval/chunk_ids.py` (Wave 106) provides `is_chunk_id` / `normalize_chunk_id` / `chunk_ids_match` so short (`chunk_00270`) and full (`rdf_shacl_551_chunk_00270`) IDs compare equal across the harness, `source_match.py`, and `ablation_runner.py`.
+The companion `eval/chunk_ids.py` (Wave 106) provides `is_chunk_id` / `normalize_chunk_id` / `chunk_ids_match` so short (`chunk_00270`) and full (`<course_code>_chunk_00270`) IDs compare equal across the harness, `source_match.py`, and `ablation_runner.py`.
 
 ### Holdout Builder + Negative Probes
 
@@ -402,13 +402,13 @@ python -m Trainforge.process_course \
 ```bash
 # Default license-clean local provider (Ollama running qwen2.5:14b):
 python -m Trainforge.synthesize_training \
-  --course-dir LibV2/courses/rdf-shacl-551-2 \
+  --course-dir LibV2/courses/<course-slug> \
   --provider local \
   --max-dispatches 2000
 
 # Cloud OSS teacher (Together):
 TOGETHER_API_KEY=… python -m Trainforge.synthesize_training \
-  --course-dir LibV2/courses/rdf-shacl-551-2 \
+  --course-dir LibV2/courses/<course-slug> \
   --provider together
 
 # Smoke modes (Wave 120):
@@ -420,17 +420,17 @@ python -m Trainforge.synthesize_training --smoke-paraphrase …    # ~10min, con
 
 ```bash
 # Unified CLI:
-ed4all run trainforge_train --course-code rdf-shacl-551-2 --base-model qwen2.5-1.5b
+ed4all run trainforge_train --course-code <course-slug> --base-model qwen2.5-1.5b
 
 # Direct module invocation -- dry-run is CPU-only and produces a runner plan:
 python -m Trainforge.train_course \
-  --course-code rdf-shacl-551-2 \
+  --course-code <course-slug> \
   --base-model qwen2.5-1.5b \
   --dry-run
 
 # Real run (requires pip install ed4all[training] + CUDA + HF_TOKEN for gated bases):
 python -m Trainforge.train_course \
-  --course-code rdf-shacl-551-2 \
+  --course-code <course-slug> \
   --base-model qwen2.5-1.5b \
   --backend local
 ```
@@ -438,10 +438,10 @@ python -m Trainforge.train_course \
 ### Promotion + introspection
 
 ```bash
-libv2 import-model runtime/training/<run_id>/ --course rdf-shacl-551-2 [--promote]
-libv2 models promote rdf-shacl-551-2 <model_id>
-libv2 models list rdf-shacl-551-2          # stars current
-libv2 models eval rdf-shacl-551-2 <model_id>
+libv2 import-model runtime/training/<run_id>/ --course <course-slug> [--promote]
+libv2 models promote <course-slug> <model_id>
+libv2 models list <course-slug>          # stars current
+libv2 models eval <course-slug> <model_id>
 ```
 
 ---

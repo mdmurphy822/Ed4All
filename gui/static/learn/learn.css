@@ -1,0 +1,215 @@
+/* Learner answer surface — WCAG 2.2 AA from the first build.
+ *
+ * Deliberately NOT copying the operator styles.css ln 112
+ * `outline:none` + box-shadow pattern: a real outline is kept here for
+ * Windows High-Contrast-Mode compatibility (forced-colors strips box-shadow
+ * but honours outline). No color-only state signalling: busy/error always
+ * carry text. All interactive targets are >= 24x24px (WCAG 2.2 2.5.8).
+ */
+
+:root {
+  /* Tokens picked for >= 4.5:1 text contrast on white (verify in manual pass). */
+  --fg: #111418;            /* near-black body text on white -> ~17:1 */
+  --bg: #ffffff;
+  --muted: #4a5560;         /* ~7:1 on white */
+  --accent: #0b5cad;        /* link/focus blue -> ~6.4:1 on white */
+  --accent-fg: #ffffff;
+  --advisory-bg: #fff4e5;
+  --advisory-fg: #6b4500;   /* >= 4.5:1 on the advisory bg */
+  --error-fg: #8a1c1c;      /* >= 4.5:1 on white */
+  --border: #5a6470;
+  --focus: #0b5cad;
+}
+
+* { box-sizing: border-box; }
+
+html { font-size: 100%; }
+
+body {
+  margin: 0;
+  color: var(--fg);
+  background: var(--bg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  line-height: 1.55;
+}
+
+/* Skip link: visible on focus (never display:none). */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  padding: 0.6rem 1rem;
+  background: var(--accent);
+  color: var(--accent-fg);
+  z-index: 100;
+}
+.skip-link:focus {
+  left: 0;
+}
+
+header {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.brand {
+  margin: 0;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 4rem;
+}
+
+h1 {
+  font-size: 1.6rem;
+  margin: 0 0 1.25rem;
+}
+
+/* Form layout */
+.field {
+  margin-bottom: 1rem;
+}
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+select,
+textarea {
+  width: 100%;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 2px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem;
+  min-height: 2.75rem;     /* >= 24px target; comfortable */
+}
+textarea { resize: vertical; }
+
+button {
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 2px solid var(--accent);
+  border-radius: 6px;
+  padding: 0.6rem 1.5rem;
+  min-height: 2.75rem;     /* >= 24x24px target (2.5.8) */
+  min-width: 3rem;
+  cursor: pointer;
+}
+button[disabled] {
+  /* Not color-only: text changes to "Asking…" when disabled (learn.js). */
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* Visible focus everywhere — never outline:none without replacement. */
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+/* Fallback for engines without :focus-visible. */
+a:focus,
+button:focus,
+select:focus,
+textarea:focus,
+[tabindex]:focus {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Status live region + visual counter */
+.status {
+  margin: 1rem 0 0;
+  font-weight: 600;
+  min-height: 1.5rem;
+}
+.elapsed {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-height: 1.25rem;
+}
+
+/* Answer region */
+#answer-region {
+  margin-top: 1.5rem;
+}
+.answer {
+  border-top: 2px solid var(--border);
+  padding-top: 1rem;
+}
+.answer h2 {
+  font-size: 1.3rem;
+  margin: 0 0 0.75rem;
+}
+.answer h3 {
+  font-size: 1.1rem;
+  margin: 1.25rem 0 0.5rem;
+}
+.answer p { margin: 0 0 0.75rem; }
+
+/* Advisory note (answered_with_warnings) — text + icon-style border, no color-only. */
+.advisory {
+  background: var(--advisory-bg);
+  color: var(--advisory-fg);
+  border-left: 4px solid var(--advisory-fg);
+  padding: 0.6rem 0.8rem;
+  margin: 0 0 1rem;
+}
+
+/* Sources list */
+ol.sources {
+  padding-left: 1.4rem;
+  margin: 0.5rem 0 0;
+}
+ol.sources li {
+  margin-bottom: 0.9rem;
+}
+ol.sources a {
+  color: var(--accent);
+  font-weight: 600;
+  /* underline = not color-only; the link is also semantically a link. */
+  text-decoration: underline;
+  display: inline-block;
+  min-height: 1.6rem;
+  padding: 0.15rem 0;
+}
+ol.sources a:hover { text-decoration: none; }
+
+.src-module,
+.src-approx {
+  display: inline-block;
+  margin-left: 0.5rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+.src-approx::before {
+  /* text marker, not color */
+  content: "\2248\00a0"; /* ≈ */
+}
+
+blockquote.src-quote {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.9rem;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Error copy carries text + a left border, never color alone. */
+.answer[data-status^="error"] h2,
+.answer[data-status^="refused"] h2,
+.answer[data-status^="blocked"] h2 {
+  color: var(--fg);
+}
+
+/* Respect reduced-motion (no animated busy state used, but guard anyway). */
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}

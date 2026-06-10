@@ -1,4 +1,4 @@
-"""Phase 3 of plans/rdf-shacl-enrichment-2026-04-26.md — named-graph
+"""Phase 3 — named-graph
 provenance tests for the typed-edge inference orchestrator.
 
 Asserts:
@@ -25,8 +25,6 @@ Asserts:
   no fork).
 * TriG serialization is lossless under round-trip parse.
 
-Sub-plan: ``plans/phase-3-named-graph-provenance.md``.
-
 Citations: Q3 (q_20260426_205702_83cd5b5d), Q49
 (q_20260426_205724_4b21cb83), Q5 (q_20260426_205702_6d4302e5),
 fresh-retrieve q_20260426_230212_b9be9116.
@@ -36,6 +34,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,14 +49,28 @@ if str(PROJECT_ROOT) not in sys.path:
 FIXTURE_DIR = (
     PROJECT_ROOT / "Trainforge" / "tests" / "fixtures" / "mini_course_typed_graph"
 )
-RDF_SHACL_FIXTURE = (
-    PROJECT_ROOT
-    / "LibV2"
-    / "courses"
-    / "rdf-shacl-551-2"
-    / "graph"
-    / "concept_graph_semantic.json"
-)
+
+
+def _libv2_courses_root() -> Path:
+    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
+    root = os.environ.get("ED4ALL_LIBV2_ROOT")
+    base = Path(root) if root else PROJECT_ROOT / "LibV2"
+    return base / "courses"
+
+
+def _discover_corpus_graph():
+    """First ``<course>/graph/concept_graph_semantic.json`` under LibV2."""
+    courses_root = _libv2_courses_root()
+    if not courses_root.is_dir():
+        return None
+    for course_dir in sorted(courses_root.iterdir()):
+        candidate = course_dir / "graph" / "concept_graph_semantic.json"
+        if candidate.exists():
+            return candidate
+    return None
+
+
+CORPUS_GRAPH_FIXTURE = _discover_corpus_graph()
 
 # Optional dep: rdflib. Skip the whole module if unavailable so the
 # legacy default-off path is still exercised by adjacent suites.
@@ -483,25 +496,28 @@ def test_mint_rule_graph_iri_is_deterministic():
 
 
 # ---------------------------------------------------------------------------
-# 8. RDF-SHACL-551-2 corpus smoke (skipped if fixture missing).
+# 8. Real-corpus smoke (skipped if no LibV2 corpus graph present).
 # ---------------------------------------------------------------------------
 
-def test_flag_on_rdf_shacl_551_2_corpus_smoke(monkeypatch):
-    """When the rdf-shacl-551-2 graph fixture is present, derive a
+def test_flag_on_real_corpus_smoke(monkeypatch):
+    """When a real LibV2 corpus concept graph is present, derive a
     minimal chunks/concept_graph stand-in from its node set and verify
     the dataset still composes with 9 named graphs.
 
-    Acts as the parent-plan-mandated metric on the production fixture.
+    Acts as the parent-mandated metric on a production fixture.
     The rule emits will largely be zero on this synthetic-input form
     (we don't replay the full chunks pipeline) — but the named-graph
     structural contract still holds.
     """
-    if not RDF_SHACL_FIXTURE.exists():
-        pytest.skip(f"rdf-shacl-551-2 fixture not present at {RDF_SHACL_FIXTURE}")
+    if CORPUS_GRAPH_FIXTURE is None or not CORPUS_GRAPH_FIXTURE.exists():
+        pytest.skip(
+            "no LibV2 course with graph/concept_graph_semantic.json present "
+            "under ED4ALL_LIBV2_ROOT / LibV2/courses/"
+        )
 
     monkeypatch.setattr(named_graph_writer, "EMIT_TRIG", True)
 
-    with RDF_SHACL_FIXTURE.open() as f:
+    with CORPUS_GRAPH_FIXTURE.open() as f:
         artifact = json.load(f)
     # Re-shape the artifact's nodes into a minimal co-occurrence graph
     # suitable for re-running the rule pipeline. Edges are dropped —
@@ -520,7 +536,7 @@ def test_flag_on_rdf_shacl_551_2_corpus_smoke(monkeypatch):
     course = {"learning_outcomes": []}
 
     _, dataset = build_semantic_graph_with_dataset(
-        chunks, course, concept_graph, now=FIXED_NOW, run_id="rdf-shacl-551-2"
+        chunks, course, concept_graph, now=FIXED_NOW, run_id="demo-course-1"
     )
     assert dataset is not None
 
@@ -530,7 +546,7 @@ def test_flag_on_rdf_shacl_551_2_corpus_smoke(monkeypatch):
         if str(ctx.identifier).startswith(named_graph_writer.RULE_GRAPH_BASE)
     ]
     assert len(rule_iris) == len(EXPECTED_RULES), (
-        f"On rdf-shacl-551-2 fixture, expected {len(EXPECTED_RULES)} "
+        f"On real-corpus fixture, expected {len(EXPECTED_RULES)} "
         f"named graphs; got {len(rule_iris)}"
     )
 

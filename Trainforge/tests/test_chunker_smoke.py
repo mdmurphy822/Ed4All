@@ -68,7 +68,7 @@ from Trainforge.chunker import (
     strip_feedback_from_text,
     type_from_resource,
 )
-from Trainforge.chunker.chunker import _generate_chunk_id
+from Trainforge.chunker.chunker import _generate_chunk_id, type_from_heading
 
 
 # ---------------------------------------------------------------------------
@@ -561,3 +561,105 @@ def test_package_reexports_all_declared_names() -> None:
 # with the post-Phase-8 chunker re-merge. The chunker now imports
 # Trainforge parsers directly at module top — sibling-package
 # isolation no longer applies by design.
+
+
+# ---------------------------------------------------------------------------
+# Test 16: TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE — content-aware heading
+# classifier (audited ~7% chunk-type misclassification fix)
+# ---------------------------------------------------------------------------
+
+
+# Legacy-substring vs content-aware divergence cases. Each tuple is
+# (heading, legacy_type, content_aware_type).
+_HEADING_CASES = [
+    # Substring hit on a class name — legacy trips ``summary`` on the
+    # "Summary" inside "DocumentSummaryBase"; content-aware demotes to
+    # the neutral default.
+    ("The DocumentSummaryBase Model", "summary", "explanation"),
+    # Bare course-title page heading — legacy has no keyword and already
+    # returns explanation, but this pins the demotion contract.
+    ("NVIDIA Course 07: Vector Stores", "explanation", "explanation"),
+    # "Guardrails" contains no whole-word keyword; legacy also misses it
+    # here (no substring), but the audit named it — pin explanation.
+    ("Course 03: Guardrails", "explanation", "explanation"),
+    # Worked-example pages titled "Course Solutions NN" — legacy trips
+    # nothing on substring here; content-aware keeps explanation.
+    ("Course Solutions 05: Building a Chain", "explanation", "explanation"),
+    # Precedence: both "[Exercise]" and "Example" present — legacy
+    # returns ``example`` (example branch is first); content-aware
+    # prefers ``exercise``.
+    ("[Exercise] Build a Realistic Example", "example", "exercise"),
+]
+
+
+@pytest.mark.parametrize("heading,legacy,content_aware", _HEADING_CASES)
+def test_type_from_heading_flag_off_is_legacy(
+    monkeypatch: pytest.MonkeyPatch,
+    heading: str,
+    legacy: str,
+    content_aware: str,
+) -> None:
+    """Flag OFF (default) preserves byte-identical legacy classification."""
+
+    monkeypatch.delenv("TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE", raising=False)
+    assert type_from_heading(heading) == legacy
+
+
+@pytest.mark.parametrize("heading,legacy,content_aware", _HEADING_CASES)
+def test_type_from_heading_flag_on_is_content_aware(
+    monkeypatch: pytest.MonkeyPatch,
+    heading: str,
+    legacy: str,
+    content_aware: str,
+) -> None:
+    """Flag ON applies the whole-word / course-title-aware classifier."""
+
+    monkeypatch.setenv("TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE", "true")
+    assert type_from_heading(heading) == content_aware
+
+
+def test_type_from_heading_content_aware_preserves_real_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Genuine pedagogical headings still classify correctly when ON."""
+
+    monkeypatch.setenv("TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE", "true")
+    # A genuine standalone Summary heading still types ``summary``.
+    assert type_from_heading("Summary") == "summary"
+    assert type_from_heading("Chapter Summary") == "summary"
+    # A real Overview still types ``overview``.
+    assert type_from_heading("Overview") == "overview"
+    assert type_from_heading("Course Overview") == "overview"
+    # A real Exercise / Example still classify.
+    assert type_from_heading("Exercise 1") == "exercise"
+    assert type_from_heading("Worked Example") == "example"
+    # A course title that DOES carry a real keyword keeps it.
+    assert type_from_heading("Course 03: Summary") == "summary"
+    # Plain content falls through to the default.
+    assert type_from_heading("Introduction to Vectors") == "overview"
+    assert type_from_heading("Building a RAG Pipeline") == "explanation"
+
+
+def test_type_from_heading_content_aware_legacy_parity_on_real_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """For headings the audit did NOT flag, ON and OFF agree."""
+
+    parity_headings = [
+        "Summary",
+        "Overview",
+        "Exercise 1",
+        "Worked Example",
+        "Knowledge Check",
+        "Discussion Prompt",
+        "Building a RAG Pipeline",
+    ]
+    for heading in parity_headings:
+        monkeypatch.delenv("TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE", raising=False)
+        off = type_from_heading(heading)
+        monkeypatch.setenv("TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE", "true")
+        on = type_from_heading(heading)
+        assert off == on, (
+            f"{heading!r}: flag-on ({on}) diverged from legacy ({off}) on a "
+            "heading the audit did not flag"
+        )

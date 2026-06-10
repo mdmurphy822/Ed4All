@@ -306,7 +306,7 @@ def test_run_all_emits_content_type_role_alignment_when_chunks_present(tmp_path)
         "subdomains": ["semantic web"],
     })
     # Add 6 real_world_scenario chunks all wrongly labeled elaborate
-    # (the rdf-shacl-551-2 audit signal we want to detect).
+    # (the RDF/SHACL calibration corpus audit signal we want to detect).
     _augment_chunks_with_teaching_roles(course, [
         {"id": f"rws_{i}", "content_type_label": "real_world_scenario",
          "teaching_role": "elaborate"}

@@ -77,6 +77,46 @@ STATE_LOCKS = STATE_PATH / "locks"
 TRAINING_DIR = PROJECT_ROOT / "training-captures"
 TRAINING_DIR_LEGACY = TRAINING_DIR
 
+
+def libv2_path() -> Path:
+    """Resolve the LibV2 root directory, honoring ``ED4ALL_LIBV2_ROOT``.
+
+    Priority:
+    1. ``ED4ALL_LIBV2_ROOT`` env var (documented in root CLAUDE.md;
+       honored by the MCP / GUI / CLI layers and — as of this change —
+       by ``lib/libv2_storage.py`` and ``lib/decision_capture.py`` so a
+       test that threads ``libv2_root=tmp`` no longer leaks skeleton
+       dirs into the real ``LibV2/`` tree).
+    2. ``LIBV2_PATH`` (``PROJECT_ROOT / "LibV2"``) — the canonical
+       in-tree default. Default behavior is byte-identical when the env
+       var is unset.
+
+    Read at call time (not import time) so tests can monkeypatch the env
+    var without re-importing modules.
+    """
+    env = os.environ.get("ED4ALL_LIBV2_ROOT", "").strip()
+    return Path(env) if env else LIBV2_PATH
+
+
+def get_training_captures_dir() -> Path:
+    """Resolve the ``training-captures/`` root, env-overridable.
+
+    Priority:
+    1. ``ED4ALL_TRAINING_CAPTURES_DIR`` env var. NOTE: ``ED4ALL_LIBV2_ROOT``
+       intentionally does NOT govern ``training-captures/`` — the legacy
+       decision-capture mirror lives at the project root, not under LibV2,
+       so it needs its own override. Used by the repo-root ``conftest.py``
+       autouse isolation fixture to redirect the legacy mirror into
+       ``tmp_path`` and stop pytest runs from growing ``training-captures/``
+       by thousands of files.
+    2. ``TRAINING_DIR`` (``PROJECT_ROOT / "training-captures"``) — the
+       canonical in-tree default. Default behavior unchanged when unset.
+
+    Read at call time so tests can monkeypatch without re-importing.
+    """
+    env = os.environ.get("ED4ALL_TRAINING_CAPTURES_DIR", "").strip()
+    return Path(env) if env else TRAINING_DIR
+
 # ============================================================================
 # RUNS PATH
 # ============================================================================
@@ -387,6 +427,10 @@ __all__ = [
     # Training captures
     "TRAINING_DIR",
     "TRAINING_DIR_LEGACY",
+    "get_training_captures_dir",
+
+    # LibV2 root resolver
+    "libv2_path",
 
     # Path validation
     "validate_paths",

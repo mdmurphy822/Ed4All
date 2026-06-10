@@ -1,6 +1,6 @@
 """Wave 84 regression test for the JSON-LD section heading-mismatch bug.
 
-The audit on rdf-shacl-551-2 (2026-04-26) found 109/295 chunks (37%)
+The audit on the RDF/SHACL calibration corpus (2026-04-26) found 109/295 chunks (37%)
 silently lost ``content_type_label`` and ``key_terms`` because the
 chunk's anchor heading (the FIRST section in a merged buffer) did not
 match the heading any JSON-LD section was keyed under. The merger

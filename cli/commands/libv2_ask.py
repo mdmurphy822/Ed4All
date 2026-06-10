@@ -10,14 +10,14 @@ similarity search.
 Examples
 --------
 
-    ed4all libv2 ask --slug rdf-shacl-550-rdf-shacl-550 \\
+    ed4all libv2 ask --slug demo-course-1 \\
         --query "Which chunks assess to-04?"
 
-    ed4all libv2 ask --slug rdf-shacl-550-rdf-shacl-550 \\
+    ed4all libv2 ask --slug demo-course-1 \\
         --query "What is a prerequisite for SHACL validation?" \\
         --show-routing
 
-    ed4all libv2 ask --slug rdf-shacl-550-rdf-shacl-550 \\
+    ed4all libv2 ask --slug demo-course-1 \\
         --query "How does sh:minCount work?" --top-k 10 --format json
 
 The ``--show-routing`` flag prints the intent classification + entity
@@ -181,7 +181,7 @@ def _format_json(envelope: Dict[str, Any], show_routing: bool) -> str:
 @click.option(
     "--slug",
     required=True,
-    help="LibV2 course slug (e.g. rdf-shacl-550-rdf-shacl-550).",
+    help="LibV2 course slug (e.g. demo-course-1).",
 )
 @click.option(
     "--query",

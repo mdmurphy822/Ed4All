@@ -102,3 +102,26 @@ def test_list_courses_includes_export(courseforge_export):
     assert phys["terminal_count"] == 1
     assert phys["chapter_count"] == 2
     assert phys["duration_weeks"] == 10
+
+
+# The GUI guesses a LibV2 archive dir from a course_name via
+# ``course_service._slugify``. It MUST resolve the same directory the importer
+# created, so it now delegates to the canonical helper. These pin parity with
+# ``LibV2/tools/libv2/importer.py::slugify`` so the two never drift again.
+@pytest.mark.parametrize(
+    "course_name",
+    [
+        "PHYS_101",
+        "The Great Course",
+        "BIO 201: Cell Biology",
+        "an apple",
+        "Course (Advanced)!",
+        "Introduction to Quantum Mechanics for Undergraduate Physics Majors",
+    ],
+)
+def test_gui_slugify_equals_importer(course_name):
+    from LibV2.tools.libv2.importer import slugify
+
+    assert course_service._slugify(course_name) == slugify(course_name), (
+        f"gui _slugify diverged from the importer on {course_name!r}"
+    )

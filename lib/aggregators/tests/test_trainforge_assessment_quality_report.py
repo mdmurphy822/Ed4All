@@ -125,7 +125,7 @@ def _write_assessment_quality_report(
 def _write_eval_report(
     libv2_course: Path,
     *,
-    model_id: str = "rdf-shacl-551-2-qwen2.5-1.5b-abc1234",
+    model_id: str = "demo-course-1-qwen2.5-1.5b-abc1234",
     faithfulness: float = 0.65,
     yes_rate: float = 0.55,
     negative_grounding_accuracy: float = 0.62,
@@ -544,7 +544,7 @@ class TestGracefulDegradation:
 
     def test_missing_eval_report_sets_eval_summary_null(self, tmp_path):
         # libv2_archival ran but no model adapter — eval_summary is null.
-        course_dir = tmp_path / "rdf-shacl-551-2"
+        course_dir = tmp_path / "demo-course-1"
         course_dir.mkdir()
         # No models/ dir created.
 
@@ -566,7 +566,7 @@ class TestGracefulDegradation:
         assert report["eval_summary"] is None
 
     def test_eval_report_loaded_when_present(self, tmp_path):
-        course_dir = tmp_path / "rdf-shacl-551-2"
+        course_dir = tmp_path / "demo-course-1"
         course_dir.mkdir()
         _write_eval_report(course_dir, faithfulness=0.65, yes_rate=0.50)
         phase_outputs = {
@@ -591,7 +591,7 @@ class TestGracefulDegradation:
     def test_smoke_mode_eval_does_not_block_promotion(self, tmp_path):
         # smoke_mode eval_report MUST NOT trigger ``failed`` even when
         # its faithfulness is below the gating floor.
-        course_dir = tmp_path / "rdf-shacl-551-2"
+        course_dir = tmp_path / "demo-course-1"
         course_dir.mkdir()
         _write_eval_report(
             course_dir,
@@ -798,7 +798,7 @@ class TestWorkflowRunnerWiring:
         # static helper; we don't construct a full runner here.
         from MCP.core.workflow_runner import WorkflowRunner
 
-        course_dir = tmp_path / "rdf-shacl-551-2"
+        course_dir = tmp_path / "demo-course-1"
         course_dir.mkdir()
 
         phase_outputs = {
@@ -1214,7 +1214,7 @@ class TestSchemaConformance:
         )
 
         # LibV2 course dir with eval_report.json.
-        course_dir = tmp_path / "rdf-shacl-551-2"
+        course_dir = tmp_path / "demo-course-1"
         course_dir.mkdir()
         _write_eval_report(
             course_dir, faithfulness=0.85, yes_rate=0.55,
@@ -1271,7 +1271,7 @@ class TestSchemaConformance:
 
         agg = TrainforgeAssessmentQualityReport(
             phase_outputs=phase_outputs,
-            course_code="rdf-shacl-551-2",
+            course_code="demo-course-1",
             run_id="WF-FULL-SCHEMA",
             trainforge_dir=tdir,
             libv2_course_path=course_dir,

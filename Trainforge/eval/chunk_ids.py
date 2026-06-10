@@ -1,7 +1,7 @@
 """Helpers for comparing corpus chunk identifiers in eval code.
 
-RDF/SHACL course archives use full chunk IDs such as
-``rdf_shacl_551_chunk_00270`` while older fixtures use short IDs such as
+Course archives use full chunk IDs such as
+``<course-slug>_chunk_00270`` while older fixtures use short IDs such as
 ``chunk_00270``. Eval code should treat both forms as the same source
 anchor when the suffix after the rightmost ``chunk_`` matches.
 """

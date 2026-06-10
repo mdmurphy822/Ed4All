@@ -68,6 +68,7 @@ from Trainforge.chunker.chunker import (
     type_from_heading,
 )
 from Trainforge.chunker.helpers import (
+    extract_learning_outcome_refs,
     extract_plain_text,
     extract_section_html,
     strip_assessment_feedback,
@@ -92,6 +93,7 @@ __all__ = [
     "chunk_text_block",
     "contamination_rate",
     "detect_repeated_ngrams",
+    "extract_learning_outcome_refs",
     "extract_plain_text",
     "extract_section_html",
     "merge_section_source_ids",

@@ -29,7 +29,7 @@ Wave 76 (Worker D) refines the ``prerequisite_of`` and
   ``DomainConcept`` per the supplied ``concept_classes`` map (when
   provided). The previous rule emitted a hard-capped (50/source)
   cartesian within adjacent weeks and over-saturated the graph
-  (84% of edges in the rdf-shacl-550 archive).
+  (84% of edges in the RDF/SHACL calibration corpus archive).
 * ``interferes_with(M, C)`` only emits when ``C`` is classified as
   ``DomainConcept``. PedagogicalMarker / AssessmentOption / LowSignal
   / InstructionalArtifact targets are dropped.
@@ -266,7 +266,7 @@ def _mc_id(statement: str, correction: str = "", bloom_level: str = "") -> str:
 
     Pre-Wave-99 the builder hashed text-only (statement, lowercased, with no
     correction or bloom_level seed). That drift caused 34 pedagogy-graph
-    ``mc_*`` nodes in ``rdf-shacl-551-2`` to disagree with chunk-level +
+    ``mc_*`` nodes in the RDF/SHACL calibration corpus to disagree with chunk-level +
     DPO-pair IDs; Wave 97 rebuilt the on-disk file as a one-shot, Wave 99
     fixes the underlying builder so the drift can't recur.
 
@@ -281,14 +281,14 @@ def _mc_id(statement: str, correction: str = "", bloom_level: str = "") -> str:
 # the ``{course_code_lower}_chunk_NNNNN`` shape. The trailing
 # ``_chunk_NNNNN`` is anchored; everything before is the lowercased course
 # code. Used by ``build_pedagogy_graph`` to recover ``course_id`` when the
-# caller omits it (closes the rdf-shacl-551 audit's "course_id=''" gap).
+# caller omits it (closes the RDF/SHACL calibration corpus audit's "course_id=''" gap).
 _CHUNK_ID_COURSE_PREFIX_RE = re.compile(r"^(?P<code>[a-z0-9_]+)_chunk_\d+$")
 
 
 def _derive_course_id_from_chunks(chunks: List[Dict[str, Any]]) -> str:
     """Best-effort extraction of course_id from the first matching chunk ID.
 
-    Returns the uppercased course-code prefix (e.g. ``RDF_SHACL_551``) when
+    Returns the uppercased course-code prefix (e.g. ``DEMO_COURSE_1``) when
     a chunk's ``id`` matches the canonical
     ``{course_code_lower}_chunk_NNNNN`` shape. Returns ``""`` when chunks
     is empty or no chunk ID matches.
@@ -359,7 +359,7 @@ def build_pedagogy_graph(
     the new co-occurrence + strict-later-week filter still applies.
 
     Wave 82: ``course_id`` falls back to a chunk-ID-derived value when
-    the caller passes None/empty. The rdf-shacl-551-2 audit found a
+    the caller passes None/empty. The RDF/SHACL calibration corpus audit found a
     shipped pedagogy_graph.json with ``course_id=""`` that joined cleanly
     against the manifest's nested ``sourceforge_manifest.course_id`` —
     proof that the value WAS reconstructible from upstream artifacts the

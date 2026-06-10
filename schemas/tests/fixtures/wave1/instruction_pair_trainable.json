@@ -1,12 +1,12 @@
 {
   "prompt": "Explain how rdfs:domain and rdfs:range constrain RDF property usage in a small ontology example.",
   "completion": "rdfs:domain declares the class of subjects a property may be applied to, while rdfs:range declares the class of values it may take. Together they let downstream reasoners infer subject and object types from any triple using the property.",
-  "chunk_id": "rdf_shacl_551_chunk_00054",
+  "chunk_id": "demo_course_chunk_00054",
   "lo_refs": ["co-07", "to-02"],
   "bloom_level": "apply",
   "content_type": "explanation",
   "seed": 70,
   "decision_capture_id": "EVT_wave1_test_pair_trainable",
   "promotion_status": "trainable",
-  "source_chunk_id": "rdf_shacl_551_chunk_00054"
+  "source_chunk_id": "demo_course_chunk_00054"
 }

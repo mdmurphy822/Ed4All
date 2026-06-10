@@ -8,7 +8,7 @@ char_span enforcement against `per_claim_support[].evidence_quote` /
 Day-1 contract: warning-only — `passed` MUST stay True for evidence-
 quote findings; only the existing structural-key-presence audit
 (`MISSING_PER_CLAIM_SUPPORT` / `MISSING_CLAIM_SUPPORT_RATE`) flips
-`passed` to False. Calibration plan: rebuild rdf-shacl-551-2 with
+`passed` to False. Calibration plan: rebuild the RDF/SHACL calibration corpus with
 synthesis-provider quote emit → tune corpus baseline → flip warning
 → critical in a micro-wave (mirrors W1.7.C / W4.A / W4.C precedent).
 

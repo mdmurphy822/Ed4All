@@ -1,6 +1,6 @@
 """Wave 82 Phase D3 tests for HTML balance metric reconciliation.
 
-The rdf-shacl-551 audit found ``quality_report.json`` claiming 205/295
+The RDF/SHACL calibration corpus audit found ``quality_report.json`` claiming 205/295
 chunks failed HTML balance, while an independent HTMLParser recount
 found only 116/295. The 89-chunk discrepancy traced to
 ``_html_is_well_formed`` returning ``False`` for empty/whitespace-only
@@ -87,7 +87,7 @@ class TestQualityReportHtmlBalanceReconciliation:
         assert violation_ids == {"c4"}
 
     def test_pre_wave82_inflated_count_no_longer_reproduces(self):
-        """Mirrors rdf-shacl-551's "89 inflated empties" subpattern."""
+        """Mirrors the RDF/SHACL calibration corpus's "89 inflated empties" subpattern."""
         proc = _bare_processor()
         # 5 well-formed, 3 empty, 2 unbalanced. Pre-Wave-82 metric: 5
         # violations (3 empties + 2 unbalanced). Post-Wave-82: 2.

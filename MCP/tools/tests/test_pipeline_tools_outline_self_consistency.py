@@ -123,6 +123,45 @@ def _patch_router_with_provider(monkeypatch, fake: Any) -> None:
     )
 
 
+def _patch_empty_escalation_policy(monkeypatch) -> None:
+    """Strip the Wave-7 ``escalate_immediately`` flags from the loaded policy.
+
+    Wave-7/7b (commits ``101d1e5`` + ``8dc44e1``) flipped the
+    ``objective`` (and ``prereq_set``) block-types in
+    ``Courseforge/config/block_routing.yaml`` to
+    ``escalate_immediately: true``. The outline handler stamps every stub
+    block ``block_type="objective"`` (``pipeline_tools.py`` ~4346-4361),
+    so under the real policy the router short-circuits EVERY block at the
+    ``escalate_immediately`` gate (``router.py`` ~774-824) — the outline
+    provider is never invoked and no self-consistency regen loop runs.
+
+    These self-consistency tests were written to prove the
+    ``route_with_self_consistency`` wiring (provider dispatch + regen
+    budget + validator chain). To re-exercise that wiring we override
+    ``Courseforge.router.policy.load_block_routing_policy`` (the deferred
+    import bound inside ``_run_content_generation_outline`` at call time)
+    to return a policy whose ``escalate_immediately_by_block_type`` set is
+    EMPTY, so the ``objective`` stubs fall through to the outline tier and
+    the regen loop actually fires.
+
+    The Wave-7 production default itself is pinned separately by
+    :func:`test_outline_objective_blocks_escalate_immediately_under_real_policy`.
+    """
+    import dataclasses as _dc
+
+    from Courseforge.router import policy as _policy_mod
+
+    real_loader = _policy_mod.load_block_routing_policy
+
+    def _empty_escalation_loader(*args: Any, **kwargs: Any):
+        loaded = real_loader(*args, **kwargs)
+        return _dc.replace(loaded, escalate_immediately_by_block_type={})
+
+    monkeypatch.setattr(
+        _policy_mod, "load_block_routing_policy", _empty_escalation_loader,
+    )
+
+
 # ---------------------------------------------------------------------- #
 # Worker W2: route_with_self_consistency wiring
 # ---------------------------------------------------------------------- #
@@ -140,19 +179,16 @@ def test_outline_phase_drives_self_consistency(tmp_path, monkeypatch):
     fake = _CurieMissingProvider()
     _patch_router_with_provider(monkeypatch, fake)
 
-    # Follow-up #36 (closes #34's discovery, ref commit ``61fd80c``):
-    # the per-block-type validator matrix at
-    # ``Courseforge/config/block_routing.yaml`` declares ``"objective"``
-    # blocks require ``curie_anchoring`` + ``source_ref``; production
-    # validators expose seam-tagged ``name`` attributes (e.g.
-    # ``outline_curie_anchoring``). The matrix-filter path now
-    # normalizes seam-tagged validator names to the YAML vocabulary
-    # via :meth:`CourseforgeRouter._normalize_gate_id_for_matrix` so
-    # the curie validator engages on ``"objective"`` blocks WITHOUT
-    # the test-time policy strip the inert-matrix bug used to require.
-    # Removing the monkeypatch here exercises the canonical path end-
-    # to-end and confirms the regen loop fires on the production
-    # matrix entry.
+    # Wave-7/7b production pivot: ``objective`` blocks carry
+    # ``escalate_immediately: true`` in block_routing.yaml, and the
+    # outline handler stamps every stub ``block_type="objective"`` —
+    # so under the real policy the router short-circuits every block at
+    # the outline seam and the provider is never invoked. Strip the
+    # escalate flags so the self-consistency wiring this test was
+    # written to prove (provider dispatch + regen budget + validator
+    # chain) actually runs. The Wave-7 default is pinned separately by
+    # test_outline_objective_blocks_escalate_immediately_under_real_policy.
+    _patch_empty_escalation_policy(monkeypatch)
 
     # Cap the regen budget at a small value so the test is fast — the
     # provider always emits CURIE-less content, so every candidate will
@@ -229,6 +265,72 @@ def test_resolve_inter_tier_validators_returns_empty_on_unknown_workflow(
     assert _pt._resolve_inter_tier_validators("") == []
     # Unknown workflow_type -> [] (with a warning, but no exception)
     assert _pt._resolve_inter_tier_validators("nonexistent_workflow") == []
+
+
+def test_outline_objective_blocks_escalate_immediately_under_real_policy(
+    tmp_path, monkeypatch,
+):
+    """Wave-7/7b production-default pin (commits ``101d1e5`` + ``8dc44e1``).
+
+    With the REAL ``block_routing.yaml`` policy (no escalate-flag strip),
+    the outline tier short-circuits every block: the handler stamps every
+    stub ``block_type="objective"``, and ``objective`` is flagged
+    ``escalate_immediately: true``, so ``CourseforgeRouter`` fires the
+    outline-tier escalate short-circuit. Consequences this test pins:
+
+    * the outline provider is NEVER invoked (no LLM dispatch — the regen
+      loop is skipped entirely);
+    * every emitted block carries
+      ``escalation_marker="outline_budget_exhausted"`` (the canonical
+      marker the escalate-immediately path reuses, provenance carried via
+      ``Touch.purpose="escalate_immediately"``).
+
+    This is the inverse of
+    :func:`test_outline_phase_drives_self_consistency`, which strips the
+    escalate flags to re-exercise the self-consistency wiring.
+    """
+    project_id = "TEST_WAVE7_ESCALATE_DEFAULT"
+    _seed_project(tmp_path, project_id)
+    _patch_project_root(monkeypatch, tmp_path)
+    fake = _CurieMissingProvider()
+    _patch_router_with_provider(monkeypatch, fake)
+    # NOTE: deliberately NO _patch_empty_escalation_policy — we want the
+    # real Wave-7 policy in force.
+
+    result = asyncio.run(_pt._run_content_generation_outline(
+        project_id=project_id,
+        workflow_type="textbook_to_course",
+    ))
+    payload = json.loads(result)
+    assert payload["success"] is True, payload
+
+    # The outline provider was NOT invoked — the escalate-immediately
+    # short-circuit skips the outline tier (and therefore the regen loop)
+    # entirely.
+    assert fake.outline_calls == [], (
+        "Wave-7 default: objective blocks carry escalate_immediately=true, "
+        "so the outline tier MUST short-circuit and never dispatch the "
+        f"provider; got {len(fake.outline_calls)} outline calls"
+    )
+
+    blocks_path = Path(payload["blocks_outline_path"])
+    parsed = [
+        json.loads(ln) for ln in
+        blocks_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(parsed) >= 1, parsed
+    # Every block rides through carrying the budget-exhausted marker the
+    # escalate-immediately path stamps.
+    assert all(
+        entry.get("escalation_marker") == "outline_budget_exhausted"
+        for entry in parsed
+    ), (
+        "Wave-7 default: every objective block must carry "
+        "escalation_marker='outline_budget_exhausted' from the "
+        "escalate_immediately short-circuit; got: "
+        + json.dumps([e.get("escalation_marker") for e in parsed])
+    )
 
 
 def test_resolve_inter_tier_validators_imports_yaml_declared_chain():

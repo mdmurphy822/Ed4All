@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple  # noqa: F401
 
@@ -294,6 +295,201 @@ def _build_nodes(
             _stamp_provenance(node, run_id, created_at)
         nodes.append(node)
     return nodes
+
+
+# --------------------------------------------------------------------------- #
+# Endpoint-node materialization (typed-endpoint contract — packet_integrity).
+# --------------------------------------------------------------------------- #
+#
+# The pedagogical rules (``derived_from_lo_ref``, ``assesses_from_question_lo``,
+# the misconception-anchored materializers, etc.) emit edges whose endpoints are
+# NOT concept-graph nodes: chunk IDs, synthetic question IDs (``q_<chunk>_<lo>``),
+# learning-objective IDs (``to-NN`` / ``co-NN``), and misconception IDs
+# (``mc_<hex>``). Each rule documents this as "federation-by-convention:
+# consumers resolve the endpoints by ID-namespace prefix; no new node types are
+# added to the concept graph."
+#
+# That convention left ``concept_graph_semantic.json`` carrying typed edges with
+# zero materialized nodes for those endpoints whenever the upstream co-occurrence
+# ``concept_graph`` was degenerate (empty ``concept_tags`` → no DomainConcept
+# nodes). The LibV2 ``packet_integrity`` gate's ``edge_endpoint_typing`` rule
+# then could not classify the endpoints (``node_class`` lookup → ``None``) and
+# failed the ``assesses`` contract (source must be ``Chunk``, target must be
+# ``Outcome``/``ComponentObjective``) — the ``EDGE_ENDPOINT_TYPE_MISMATCH``
+# archival blocker.
+#
+# Fix: after edge resolution, synthesize a typed node for every edge endpoint
+# that isn't already a node, classifying it by its ID namespace using the SAME
+# class names ``pedagogy_graph_builder`` uses (``Chunk`` / ``Outcome`` /
+# ``ComponentObjective`` / ``Misconception``) and that
+# ``EDGE_TYPING_CONTRACT`` allows. This is additive + backward-compatible:
+# graphs whose endpoints already resolve to concept nodes are untouched, and a
+# graph with no pedagogical edges materializes no extra nodes.
+#
+# A second materialization arm covers ``targets-concept`` edges (Wave 66):
+# their ``target`` is an LO-authored concept slug (objectives ``key_concepts``
+# vocabulary), NOT a chunk-derived concept-tag slug. When such a target has no
+# co-occurrence DomainConcept node (the LO named a concept the chunks never
+# tagged) it is materialized as a provenance-flagged DomainConcept node
+# (``node_provenance="lo_key_concept"``, ``frequency=0``). Without this the
+# downstream ``merge_duplicate_concept_nodes`` pass — and the flagless-build
+# orphan gate — drop the edge because its endpoint is a phantom, silently
+# losing the LO's targetedConcepts. Namespace classification keeps precedence
+# (a key_concept that slugifies to ``to-01`` still classifies as ``Outcome``),
+# so only genuinely concept-shaped targets take the DomainConcept arm. Both
+# arms are unconditional (not flag-gated) — precedent: the pedagogical-endpoint
+# materializer landed unconditionally.
+
+# Compiled once: a corpus chunk ID carries a ``chunk_`` token (matches
+# ``Trainforge.eval.chunk_ids.is_chunk_id``). A synthetic question ID is
+# ``q_<chunk_id>_<lo_id>`` — it ALSO carries a ``chunk_`` token, so the chunk
+# check below covers it (a question authored from an assessment_item chunk is a
+# ``Chunk`` endpoint for the ``assesses`` contract). A misconception ID is
+# ``mc_<16 hex>``.
+_MISCONCEPTION_ID_RE = re.compile(r"^mc_[0-9a-f]{16}$")
+
+# Whole-string LO-ID matcher, case-insensitive, mirroring the canonical
+# ``lib.ontology.learning_objectives.LO_ID_PATTERN`` (``^[A-Z]{2,}-\d{2,}$``)
+# but tolerant of the lowercased form the rules see.
+_LO_ENDPOINT_RE = re.compile(r"^[a-z]{2,}-\d{2,}$")
+
+# Edge types whose target endpoint is an LO-authored concept slug (the
+# objectives ``key_concepts`` vocabulary, canonical_slug-normalized) rather
+# than a chunk-derived concept-tag slug. When such a target does not resolve
+# to a co-occurrence DomainConcept node (the LO author named a concept the
+# corpus chunks never tagged), it is materialized as a provenance-flagged
+# DomainConcept node instead of being left dangling — otherwise the merge pass
+# / orphan gate drops the edge and the LO's targetedConcepts silently vanish.
+_LO_CONCEPT_TARGET_EDGE_TYPES = frozenset({"targets-concept"})
+
+
+def _classify_endpoint_id(node_id: str) -> Optional[str]:
+    """Classify an edge-endpoint ID into a canonical node class by namespace.
+
+    Returns the canonical class name (one allowed by
+    ``EDGE_TYPING_CONTRACT`` / ``EDGE_CLASS_SYNONYMS``) or ``None`` when the
+    ID doesn't match a known pedagogical namespace (e.g. a concept slug — which
+    is already carried as a node by ``_build_nodes`` and must not be
+    re-materialized with a guessed class).
+
+    Resolution order (most specific first):
+
+    * ``mc_<hex>``              -> ``Misconception``
+    * contains a ``chunk_`` token (raw chunk IDs AND synthetic
+      ``q_<chunk>_<lo>`` question IDs) -> ``Chunk``
+    * LO ID (``to-NN`` / ``co-NN`` / any ``[A-Z]{2,}-\\d{2,}`` form,
+      case-insensitive) -> ``Outcome`` for terminal prefixes, else
+      ``ComponentObjective``
+    """
+    if not isinstance(node_id, str) or not node_id:
+        return None
+
+    if _MISCONCEPTION_ID_RE.match(node_id):
+        return "Misconception"
+
+    # Chunk IDs and synthetic question IDs both carry a ``chunk_`` token.
+    # ``q_<chunk_id>_<lo_id>`` is the assessment-question endpoint for the
+    # ``assesses`` contract whose source must be a ``Chunk``.
+    if "chunk_" in node_id:
+        return "Chunk"
+
+    # Learning-objective IDs. process_course lowercases LO IDs before they
+    # reach the rules (``to-01``), so classify case-insensitively. Terminal
+    # objectives (``to-``) map to ``Outcome``; chapter/component objectives
+    # (``co-``) and any other LO prefix map to ``ComponentObjective``.
+    lowered = node_id.strip().lower()
+    if _LO_ENDPOINT_RE.match(lowered):
+        return "Outcome" if lowered.startswith("to-") else "ComponentObjective"
+
+    return None
+
+
+def _materialize_endpoint_nodes(
+    existing_nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    run_id: Optional[str],
+    created_at: str,
+) -> List[Dict[str, Any]]:
+    """Return ``existing_nodes`` plus a synthesized typed node per unresolved
+    edge endpoint.
+
+    For every ``source`` / ``target`` referenced by ``edges`` that is not
+    already a node ID, classify it via :func:`_classify_endpoint_id` and emit a
+    minimal typed node ``{id, label, class}`` (+ run/created_at provenance).
+
+    Two materialization arms run, in precedence order:
+
+    1. **Pedagogical-namespace endpoints** — chunk / question / objective /
+       misconception IDs that :func:`_classify_endpoint_id` resolves to a
+       canonical class. Namespace classification keeps precedence: a
+       ``key_concept`` that happens to slugify to ``to-01`` still classifies
+       as ``Outcome`` here, NOT as an LO-concept DomainConcept.
+    2. **LO-authored concept targets** — the unresolved ``target`` of a
+       ``targets-concept`` edge (see ``_LO_CONCEPT_TARGET_EDGE_TYPES``). These
+       are objectives ``key_concepts`` slugs the corpus chunks never tagged,
+       so they have no co-occurrence node. They are materialized as
+       provenance-flagged ``DomainConcept`` nodes (``node_provenance =
+       "lo_key_concept"``, ``frequency = 0``) so the merge pass / orphan gate
+       can fold or segment them instead of dropping the edge.
+
+    Endpoints that match neither arm (genuinely unknown slugs, non-
+    targets-concept dangling targets) are left alone so the
+    ``graph_edges_resolve`` rule still surfaces a genuine dangling edge rather
+    than this step papering over it.
+
+    Deterministic: new nodes are appended in sorted ID order so the artifact is
+    byte-stable across runs for fixed inputs.
+    """
+    existing_ids = {
+        n.get("id") for n in existing_nodes if isinstance(n, dict) and n.get("id")
+    }
+
+    # LO-authored concept targets: the target endpoint of a ``targets-concept``
+    # edge that isn't already a node. These come from objectives key_concepts.
+    lo_concept_targets = {
+        e["target"]
+        for e in edges
+        if isinstance(e, dict)
+        and e.get("type") in _LO_CONCEPT_TARGET_EDGE_TYPES
+        and isinstance(e.get("target"), str)
+        and e["target"]
+        and e["target"] not in existing_ids
+    }
+
+    new_ids: set = set()
+    for edge in edges:
+        for side in ("source", "target"):
+            endpoint = edge.get(side)
+            if (
+                isinstance(endpoint, str)
+                and endpoint
+                and endpoint not in existing_ids
+            ):
+                new_ids.add(endpoint)
+
+    synthesized: List[Dict[str, Any]] = []
+    for endpoint in sorted(new_ids):
+        klass = _classify_endpoint_id(endpoint)
+        if klass is not None:
+            node = {"id": endpoint, "label": endpoint, "class": klass}
+        elif endpoint in lo_concept_targets:
+            # Unresolved targets-concept target → LO-authored DomainConcept.
+            node = {
+                "id": endpoint,
+                "label": endpoint,
+                "class": "DomainConcept",
+                "frequency": 0,
+                "node_provenance": "lo_key_concept",
+            }
+        else:
+            continue
+        if created_at is not None:
+            _stamp_provenance(node, run_id, created_at)
+        synthesized.append(node)
+
+    if not synthesized:
+        return existing_nodes
+    return existing_nodes + synthesized
 
 
 def _llm_escalate(
@@ -728,6 +924,18 @@ def _build_semantic_graph_internal(
             resolved = rule_resolved
     else:
         resolved = rule_resolved
+
+    # Materialize a typed node for every resolved-edge endpoint that the
+    # co-occurrence node set didn't cover (chunk / question / objective /
+    # misconception IDs emitted by the pedagogical rules). This satisfies the
+    # LibV2 ``packet_integrity`` ``edge_endpoint_typing`` contract — the
+    # ``assesses`` source resolves to ``Chunk`` and its target to
+    # ``Outcome``/``ComponentObjective`` — instead of leaving the endpoints
+    # unclassified. Additive: when every endpoint already resolves (the rich
+    # concept-graph case) no nodes are added.
+    nodes = _materialize_endpoint_nodes(
+        nodes, resolved, effective_run_id, created_at
+    )
 
     generated_at = effective_now.isoformat()
 

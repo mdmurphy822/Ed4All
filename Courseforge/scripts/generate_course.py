@@ -612,33 +612,141 @@ def _co_to_generator_format(co: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _normalize_chapter_objective_groups(
+    chapter_objectives_raw: Any,
+) -> List[Dict[str, Any]]:
+    """Normalize the ``chapter_objectives`` field to the canonical
+    list-of-groups form: ``[{"chapter": <label>, "objectives": [...]}, ...]``.
+
+    ``synthesized_objectives.json`` carries ``chapter_objectives`` in any of
+    three shapes (mirroring
+    ``MCP/tools/pipeline_tools.py::_normalize_chapter_objectives_to_groups``,
+    the canonical normalizer the content-generator side uses):
+
+    1. **List-of-groups** (the historical Courseforge ``--objectives`` input,
+       chapter labels like ``"Week 3-4: Visual Design"``): returned verbatim.
+    2. **Dict-of-lists** (the shape the ``plan_course_structure`` phase emits,
+       keyed on chapter number — ``{"1": [...], "2": [...]}``): keys iterated
+       in sorted order so the group ordering is deterministic across runs.
+    3. **Flat list** of CO dicts (LibV2 ``component_objectives`` archive form):
+       wrapped in a single synthetic group.
+
+    Kept local (rather than importing the MCP-side normalizer) so the
+    standalone ``generate_course.py`` CLI and the ``validate_page_objectives``
+    validator have zero dependency on the MCP package.
+    """
+    if isinstance(chapter_objectives_raw, dict):
+        groups: List[Dict[str, Any]] = []
+        for chapter_key in sorted(chapter_objectives_raw.keys(), key=str):
+            items = chapter_objectives_raw[chapter_key]
+            if not isinstance(items, list):
+                continue
+            objectives = [o for o in items if isinstance(o, dict)]
+            groups.append({"chapter": str(chapter_key), "objectives": objectives})
+        return groups
+    if isinstance(chapter_objectives_raw, list):
+        groups = []
+        flat_buffer: List[Dict[str, Any]] = []
+        for entry in chapter_objectives_raw:
+            if not isinstance(entry, dict):
+                continue
+            if isinstance(entry.get("objectives"), list):
+                inner = [o for o in entry["objectives"] if isinstance(o, dict)]
+                groups.append({"chapter": entry.get("chapter"), "objectives": inner})
+            else:
+                # Flat-list CO dict (no nested ``objectives`` key).
+                flat_buffer.append(entry)
+        if flat_buffer:
+            groups.append({"chapter": "(ungrouped)", "objectives": flat_buffer})
+        return groups
+    return []
+
+
+def _slice_chapter_objectives_by_week(
+    chapter_cos: List[Dict[str, Any]],
+    duration_weeks: int,
+) -> Dict[int, List[Dict[str, Any]]]:
+    """Replicate the content generator's positional round-robin assignment of
+    a *flat* chapter-objective list across ``duration_weeks``.
+
+    This mirrors ``MCP/tools/pipeline_tools.py::_generate_course_content``
+    verbatim (the per-week ``week_chapter_cos`` slice): with ``C`` chapter
+    objectives over ``D`` weeks, ``step = max(1, C // D)`` and week ``w``
+    (1-based) claims ``chapter_cos[(w-1)*step : (w-1)*step + step + 1][:2]``,
+    falling back to the round-robin element ``chapter_cos[(w-1) % C]`` when the
+    slice is empty. The two sides MUST stay byte-identical so the validator's
+    "allowed for week N" set is exactly the set the emitter assigns to week N.
+    """
+    week_to_cos: Dict[int, List[Dict[str, Any]]] = {}
+    if not chapter_cos or duration_weeks < 1:
+        return week_to_cos
+    count = len(chapter_cos)
+    step = max(1, count // max(1, duration_weeks))
+    for week_num in range(1, duration_weeks + 1):
+        start = (week_num - 1) * step
+        week_cos = chapter_cos[start : start + step + 1][:2] or [
+            chapter_cos[(week_num - 1) % count]
+        ]
+        week_to_cos[week_num] = list(week_cos)
+    return week_to_cos
+
+
 def load_canonical_objectives(objectives_path: Path) -> Dict[str, Any]:
-    """Load the canonical objectives JSON (e.g. ``SAMPLE_101_objectives.json``)
+    """Load the canonical objectives JSON (e.g. ``synthesized_objectives.json``)
     and return a structure keyed for per-week LO resolution.
 
     Returns a dict with keys:
         ``terminal_objectives``: list of TO dicts in generator format.
         ``week_to_chapter_objectives``: ``{int week_num: [CO dicts]}``.
 
-    Chapter mapping uses the same regex Trainforge uses in
-    ``Trainforge.process_course.load_objectives`` so the two stay in sync.
+    Two chapter→week mapping schemes are supported, selected per the chapter
+    group's label shape:
+
+    * **Week-range labels** (``"Week 3-4: Visual Design"``): the historical
+      Courseforge ``--objectives`` input. Each group's COs apply to every week
+      its ``[Ww]eek N(-M)?`` range covers. Trainforge's
+      ``process_course.load_objectives`` uses the same regex so the two stay
+      in sync.
+    * **No week-range labels** (chapter-number keys ``"1"`` / ``"2"`` …, the
+      shape ``plan_course_structure`` emits): fall back to the content
+      generator's positional round-robin slicing across ``duration_weeks``
+      (see :func:`_slice_chapter_objectives_by_week`). This is the fix for the
+      LO-conformance defect where the validator's per-week allowed set held
+      only the terminal objectives — chapter objectives keyed by number carry
+      no ``"Week N"`` substring, so the regex matched nothing and every
+      legitimately-assigned ``CO-NN`` page reference was rejected.
     """
     with open(objectives_path) as f:
         data = json.load(f)
 
     terminal = [_co_to_generator_format(o) for o in data.get("terminal_objectives", [])]
 
+    groups = _normalize_chapter_objective_groups(data.get("chapter_objectives", []))
+
     week_to_cos: Dict[int, List[Dict[str, Any]]] = {}
-    for chapter in data.get("chapter_objectives", []):
-        chapter_name = chapter.get("chapter", "")
-        m = _WEEK_RANGE_RE.search(chapter_name)
+    flat_cos: List[Dict[str, Any]] = []
+    any_week_range = False
+    for chapter in groups:
+        chapter_name = chapter.get("chapter") or ""
+        cos = [_co_to_generator_format(o) for o in chapter.get("objectives", [])]
+        flat_cos.extend(cos)
+        m = _WEEK_RANGE_RE.search(str(chapter_name))
         if not m:
             continue
+        any_week_range = True
         start = int(m.group(1))
         end = int(m.group(2)) if m.group(2) else start
-        cos = [_co_to_generator_format(o) for o in chapter.get("objectives", [])]
         for w in range(start, end + 1):
             week_to_cos.setdefault(w, []).extend(cos)
+
+    if not any_week_range and flat_cos:
+        # Number-keyed / unlabeled chapters: no week-range info to map on.
+        # Fall back to the emitter's positional round-robin slicing so the
+        # allowed set matches exactly what content_generation assigned.
+        duration_weeks = data.get("duration_weeks")
+        if not isinstance(duration_weeks, int) or duration_weeks < 1:
+            duration_weeks = max(8, len(groups) or 1)
+        week_to_cos = _slice_chapter_objectives_by_week(flat_cos, duration_weeks)
 
     return {
         "terminal_objectives": terminal,

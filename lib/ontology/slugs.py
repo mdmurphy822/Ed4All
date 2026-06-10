@@ -35,7 +35,12 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["canonical_slug", "strip_lo_ref_suffix", "deslugify_concept"]
+__all__ = [
+    "canonical_slug",
+    "strip_lo_ref_suffix",
+    "deslugify_concept",
+    "libv2_course_slug",
+]
 
 
 # Pre-compiled character classes.
@@ -45,6 +50,61 @@ _SLUG_STRIP_DISALLOWED = re.compile(r"[^a-z0-9\s-]")
 
 # Whitespace runs → single hyphen.
 _SLUG_WS_COLLAPSE = re.compile(r"\s+")
+
+# LibV2 course-slug helper. The single source of truth for converting a
+# course name / title to the hyphen slug that ``LibV2/tools/libv2/importer.py``
+# uses to name an archive directory. Previously ``importer.slugify``,
+# ``gui/services/course_service.py::_slugify``, and
+# ``Trainforge/train_course.py::_slugify`` each reimplemented this
+# independently and drifted (the GUI kept leading articles + skipped
+# truncation; the trainer only swapped ``_``→``-`` and left spaces /
+# punctuation intact). Consolidated here so all three resolve the same
+# archive directory the importer created. ``importer.slugify`` now delegates
+# to this function (it stays the contract — byte-identical outputs for its
+# existing inputs).
+_LIBV2_LEADING_ARTICLE_RE = re.compile(r"^(a|an|the)\s+")
+_LIBV2_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def libv2_course_slug(title: str, max_length: int = 50) -> str:
+    """Convert a course name / title to its LibV2 archive-directory slug.
+
+    Byte-for-byte equivalent to the historical
+    ``LibV2.tools.libv2.importer.slugify`` (which now delegates here):
+
+        1. Lowercase the input.
+        2. Strip a single leading article (``a`` / ``an`` / ``the``).
+        3. Replace any run of non-``[a-z0-9]`` characters with a single
+           hyphen.
+        4. Strip leading/trailing hyphens.
+        5. Truncate to ``max_length`` (default 50), then rstrip trailing
+           hyphens introduced by the truncation.
+
+        >>> libv2_course_slug("PHYS_101")
+        'phys-101'
+        >>> libv2_course_slug("The Great Course")
+        'great-course'
+        >>> libv2_course_slug("BIO 201: Cell Biology")
+        'bio-201-cell-biology'
+        >>> libv2_course_slug("an apple")
+        'apple'
+
+    Args:
+        title: Course name / title to slugify.
+        max_length: Maximum slug length (default 50).
+
+    Returns:
+        A lowercase hyphen slug. May be empty if ``title`` had no
+        alphanumeric content.
+    """
+    slug = title.lower()
+    slug = _LIBV2_LEADING_ARTICLE_RE.sub("", slug)
+    slug = _LIBV2_NON_ALNUM_RE.sub("-", slug)
+    slug = slug.strip("-")
+    if len(slug) > max_length:
+        slug = slug[:max_length].rstrip("-")
+    return slug
+
 
 # Wave 130d: trailing learning-objective-ref suffix on concept-tag slugs.
 # Concept tags built from ``CO-NN`` / ``TO-NN`` LO refs land in chunks

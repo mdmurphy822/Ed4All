@@ -1,4 +1,4 @@
-"""Phase 1.3 of plans/rdf-shacl-enrichment-2026-04-26.md.
+"""Phase 1.3 — concept-graph JSON-LD round-trip bridge.
 
 Verifies that ``schemas/context/concept_graph_semantic_v1.jsonld`` is a
 faithful round-trip bridge between the JSON-shaped ``concept_graph_semantic.json``
@@ -14,13 +14,14 @@ existing artifact, parses via ``pyld`` + ``rdflib``, and asserts:
 
 Phase 1 does not modify ``Trainforge/process_course.py`` or
 ``Trainforge/rag/typed_edge_inference.py``; the bridge is exercised
-out-of-band from the existing artifact under
-``LibV2/courses/rdf-shacl-551-2/graph/concept_graph_semantic.json``.
+out-of-band from whichever LibV2 course (under ``ED4ALL_LIBV2_ROOT`` /
+``LibV2/courses/``) ships a ``graph/concept_graph_semantic.json``.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -33,23 +34,36 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+
+def _libv2_courses_root() -> Path:
+    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
+    root = os.environ.get("ED4ALL_LIBV2_ROOT")
+    base = Path(root) if root else PROJECT_ROOT / "LibV2"
+    return base / "courses"
+
+
+def _discover_artifact() -> Path | None:
+    """First ``<course>/graph/concept_graph_semantic.json`` under LibV2."""
+    courses_root = _libv2_courses_root()
+    if not courses_root.is_dir():
+        return None
+    for course_dir in sorted(courses_root.iterdir()):
+        candidate = course_dir / "graph" / "concept_graph_semantic.json"
+        if candidate.exists():
+            return candidate
+    return None
+
+
 CONTEXT_PATH = (
     PROJECT_ROOT / "schemas" / "context" / "concept_graph_semantic_v1.jsonld"
 )
-ARTIFACT_PATH = (
-    PROJECT_ROOT
-    / "LibV2"
-    / "courses"
-    / "rdf-shacl-551-2"
-    / "graph"
-    / "concept_graph_semantic.json"
-)
+ARTIFACT_PATH = _discover_artifact()
 
 ED4ALL_VOCAB = "https://ed4all.io/vocab/"
 ED4ALL_EDGE_TYPE_PRED = ED4ALL_VOCAB + "edgeType"
 ED4ALL_HAS_CONCEPT_PRED = ED4ALL_VOCAB + "hasConcept"
 ED4ALL_CONCEPT_BASE = "https://ed4all.io/concept/"
-DOC_IRI = "https://ed4all.io/concept-graph/rdf-shacl-551-2"
+DOC_IRI = "https://ed4all.io/concept-graph/demo-course"
 
 
 pyld = pytest.importorskip("pyld")
@@ -75,10 +89,11 @@ def context_doc() -> dict:
 @pytest.fixture(scope="module")
 def graph_artifact() -> dict:
     """Load the JSON artifact that we are bridging to RDF."""
-    if not ARTIFACT_PATH.exists():
+    if ARTIFACT_PATH is None or not ARTIFACT_PATH.exists():
         pytest.skip(
-            f"Reference artifact missing: {ARTIFACT_PATH} — Phase 1 round-trip "
-            "test depends on the rdf-shacl-551-2 corpus being present."
+            "No LibV2 course with graph/concept_graph_semantic.json present "
+            "— Phase 1 round-trip test depends on a real corpus under "
+            "ED4ALL_LIBV2_ROOT / LibV2/courses/."
         )
     with ARTIFACT_PATH.open() as f:
         return json.load(f)
@@ -114,7 +129,7 @@ def test_triple_count_floor(rdf_graph) -> None:
     """Sanity floor: layered context must produce >> 500 triples for the
     corpus's ~672 nodes / ~6.3k edges / per-edge provenance shape.
 
-    Empirically the rdf-shacl-551-2 artifact yields ~101k triples; we assert
+    Empirically the RDF/SHACL calibration corpus artifact yields ~101k triples; we assert
     the floor at 500 to keep the test resilient to corpus shape changes
     (smaller fixtures, schema additions) without losing the smoke-test value.
     """

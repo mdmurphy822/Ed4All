@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 #: Per-question entropy floor below which a question is flagged as
 #: low-entropy (distractors collapsed). Calibrated against the
-#: rdf-shacl-551-2 corpus: well-spread distractors hit ~1.0+, near-
+#: RDF/SHACL calibration corpus: well-spread distractors hit ~1.0+, near-
 #: degenerate ones drop below 0.5.
 _LOW_ENTROPY_THRESHOLD: float = 0.5
 

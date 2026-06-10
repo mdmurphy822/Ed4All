@@ -4,7 +4,7 @@ The Wave 91 template-id checks live in
 ``Trainforge/tests/test_synthesis_diversity_validator.py``. This file
 holds the Wave 105 tests for the second-layer prefix-bigram check that
 catches template-collapse at the COMPLETION text level (the gap that
-masked the rdf-shacl-551-2 corpus's 80% "the treatment ..." dominance).
+masked the RDF/SHACL calibration corpus's 80% "the treatment ..." dominance).
 """
 
 from __future__ import annotations

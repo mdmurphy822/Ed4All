@@ -1,4 +1,4 @@
-"""Wave 81: full-CO coverage smoke-test against the rdf-shacl-550 archive.
+"""Wave 81: full-CO coverage smoke-test against the RDF/SHACL calibration corpus.
 
 Wave 76 C only authored vocabularies for 3 COs (co-18, co-19, co-22).
 The v2 strict packet validator surfaced co-09 + co-10 as having no
@@ -6,18 +6,25 @@ teaching/assessment chunks because their CO statements weren't in the
 curated table. Wave 81 adds the deterministic auto-extractor so every
 CO in the loaded objectives.json gets a vocabulary entry.
 
-This test pins:
+This test pins (against the calibration corpus, when present):
 
 * Auto-extract returns >= 3 candidates for every CO in the
-  rdf-shacl-550 (29-CO) corpus.
+  29-CO calibration corpus.
 * Curated overrides for co-09 + co-10 are picked up by
   ``merged_vocabularies``.
 * Total merged map covers every CO id in the objectives payload.
+
+The calibration corpus is discovered dynamically: the test walks the
+LibV2 courses root (honoring ``ED4ALL_LIBV2_ROOT``) and selects the
+course whose ``objectives.json`` carries the curated co-09 marker that
+``RETAG_VOCABULARIES`` backstops. Skips cleanly when no such corpus is
+checked out (e.g. shallow CI clones).
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -31,15 +38,58 @@ from Trainforge.retag_outcomes import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-RDF_SHACL_551_2 = (
-    PROJECT_ROOT / "LibV2" / "courses" / "rdf-shacl-551-2" / "objectives.json"
+
+
+def _libv2_courses_root() -> Path:
+    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
+    root = os.environ.get("ED4ALL_LIBV2_ROOT")
+    base = Path(root) if root else PROJECT_ROOT / "LibV2"
+    return base / "courses"
+
+
+def _discover_calibration_course() -> Path | None:
+    """Course dir whose ``objectives.json`` carries the curated co-09 CO.
+
+    This is the calibration corpus the curated ``RETAG_VOCABULARIES``
+    co-09 / co-10 overrides were authored against; the assertions below
+    are calibration-specific, so a generic course would not satisfy
+    them. Returns ``None`` when no matching corpus is present.
+    """
+    courses_root = _libv2_courses_root()
+    if not courses_root.is_dir():
+        return None
+    for course_dir in sorted(courses_root.iterdir()):
+        objectives = course_dir / "objectives.json"
+        if not objectives.exists():
+            continue
+        try:
+            payload = json.loads(objectives.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            continue
+        ids = {
+            (e.get("id") or "").lower()
+            for e in (payload.get("component_objectives") or [])
+        }
+        if "co-09" in ids and "co-10" in ids:
+            return course_dir
+    return None
+
+
+_CALIBRATION_COURSE = _discover_calibration_course()
+CALIBRATION_OBJECTIVES = (
+    _CALIBRATION_COURSE / "objectives.json"
+    if _CALIBRATION_COURSE is not None
+    else None
 )
 
 
 def _load_objectives():
-    if not RDF_SHACL_551_2.exists():
-        pytest.skip(f"objectives.json not present at {RDF_SHACL_551_2}")
-    return json.loads(RDF_SHACL_551_2.read_text(encoding="utf-8"))
+    if CALIBRATION_OBJECTIVES is None or not CALIBRATION_OBJECTIVES.exists():
+        pytest.skip(
+            "no calibration corpus (objectives.json with curated co-09/co-10) "
+            "present under ED4ALL_LIBV2_ROOT / LibV2/courses/"
+        )
+    return json.loads(CALIBRATION_OBJECTIVES.read_text(encoding="utf-8"))
 
 
 def test_every_rdf_shacl_co_has_at_least_one_vocab_candidate():
@@ -86,7 +136,7 @@ def test_full_29_co_coverage_in_merged_map():
         if isinstance(e.get("id"), str)
     }
     assert len(component_ids) == 29, (
-        f"expected 29 COs in rdf-shacl-551-2 objectives, got "
+        f"expected 29 COs in the calibration corpus objectives, got "
         f"{len(component_ids)}"
     )
     merged = merged_vocabularies(obj)
@@ -112,19 +162,19 @@ def test_curated_overrides_present_for_co09_co10():
 
 def test_packet_validator_no_objective_coverage_issues_after_retag():
     """Regression: after the Wave 81 auto-extract retag closes co-09 +
-    co-10 on rdf-shacl-551-2, the strict packet integrity validator
+    co-10 on the calibration corpus, the strict packet integrity validator
     must report zero ``OBJECTIVE_NO_TEACHING_CHUNK`` and zero
     ``OBJECTIVE_NO_ASSESSMENT`` issues. The test runs the validator
     against the on-disk archive (which the Wave 81 retroactive
     ``scripts/wave76_retag_chunks.py`` run produces). Skips when the
     archive isn't present (e.g., shallow CI clones)."""
     from collections import Counter
-    archive = PROJECT_ROOT / "LibV2" / "courses" / "rdf-shacl-551-2"
-    if not archive.exists():
-        pytest.skip("rdf-shacl-551-2 archive not present")
+    if _CALIBRATION_COURSE is None:
+        pytest.skip("calibration corpus archive not present")
+    archive = _CALIBRATION_COURSE
     chunks = archive / "corpus" / "chunks.jsonl"
     if not chunks.exists():
-        pytest.skip("rdf-shacl-551-2 chunks.jsonl not present")
+        pytest.skip("calibration corpus chunks.jsonl not present")
     try:
         from lib.validators.libv2_packet_integrity import (
             PacketIntegrityValidator,
@@ -148,16 +198,11 @@ def test_co09_chunks_match_under_curated_vocabulary():
     obj = _load_objectives()
     merged = merged_vocabularies(obj)
     co09_terms = merged["co-09"]
-    chunks_path = (
-        PROJECT_ROOT
-        / "LibV2"
-        / "courses"
-        / "rdf-shacl-551-2"
-        / "corpus"
-        / "chunks.jsonl"
-    )
+    if _CALIBRATION_COURSE is None:
+        pytest.skip("calibration corpus archive not present")
+    chunks_path = _CALIBRATION_COURSE / "corpus" / "chunks.jsonl"
     if not chunks_path.exists():
-        pytest.skip("rdf-shacl-551-2 chunks.jsonl not present")
+        pytest.skip("calibration corpus chunks.jsonl not present")
     matched = 0
     with chunks_path.open("r", encoding="utf-8") as fh:
         for line in fh:
@@ -178,16 +223,11 @@ def test_co10_chunks_match_under_curated_vocabulary():
     obj = _load_objectives()
     merged = merged_vocabularies(obj)
     co10_terms = merged["co-10"]
-    chunks_path = (
-        PROJECT_ROOT
-        / "LibV2"
-        / "courses"
-        / "rdf-shacl-551-2"
-        / "corpus"
-        / "chunks.jsonl"
-    )
+    if _CALIBRATION_COURSE is None:
+        pytest.skip("calibration corpus archive not present")
+    chunks_path = _CALIBRATION_COURSE / "corpus" / "chunks.jsonl"
     if not chunks_path.exists():
-        pytest.skip("rdf-shacl-551-2 chunks.jsonl not present")
+        pytest.skip("calibration corpus chunks.jsonl not present")
     matched = 0
     with chunks_path.open("r", encoding="utf-8") as fh:
         for line in fh:

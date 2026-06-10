@@ -1,6 +1,6 @@
 """Wave 82 Phase D2 tests for the procedural-noise stoplist additions.
 
-Audit reproducer (rdf-shacl-551 Section F): top concepts included
+Audit reproducer (RDF/SHACL calibration corpus, Section F): top concepts included
 ``Plan`` (frequency 10), ``Verify`` (14), and ``Step 1``/``Step 2``
 (6 each) — pedagogical scaffolding misclassified as domain vocabulary.
 

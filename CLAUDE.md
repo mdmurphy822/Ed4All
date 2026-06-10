@@ -31,8 +31,8 @@ ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
 # Phase 5: stage-by-stage Courseforge two-pass subcommands. Re-run a
 # single tier of the Courseforge two-pass pipeline against an existing
 # project export. Pre-Courseforge phases (DART -> staging -> chunking
-# -> objective_extraction -> source_mapping -> concept_extraction ->
-# course_planning) pre-populate from disk via the synthesizer; non-
+# -> objective_extraction -> source_mapping -> course_planning ->
+# concept_extraction) pre-populate from disk via the synthesizer; non-
 # whitelisted two-pass + post-Courseforge phases skip. See
 # Courseforge/CLAUDE.md "Operator stage subcommands" for details.
 export COURSEFORGE_TWO_PASS=true
@@ -454,7 +454,7 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 | Agent | Purpose |
 |-------|---------|
 | `assessment-extractor` | Parse IMSCC & extract content |
-| `rag-indexer` | Build vector embeddings & index |
+| `rag-indexer` | Build vector embeddings & index (routes to `run_vector_indexing`; fails closed without an embedding backend) |
 | `assessment-generator` | Generate questions & distractors |
 | `assessment-validator` | Validate quality & Bloom's alignment |
 | `training-synthesizer` | Synthesize instruction + preference training pairs from chunks + assessments (routes to `synthesize_training`). |
@@ -580,13 +580,13 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 15 | 2 | 17 |
+| `course_generation` | 16 | 2 | 18 |
 | `intake_remediation` | 2 | 0 | 2 |
 | `batch_dart` | 2 | 0 | 2 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 25 | 49 | 74 |
+| `textbook_to_course` | 27 | 49 | 76 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **50** | **54** | **104** |
+| **Total** | **53** | **54** | **107** |
 
 ---
 
@@ -617,10 +617,10 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 
 | Prefix | Owner | Flag count |
 |--------|-------|-----------:|
-| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 29 |
+| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 45 |
 | `DART_*` | [`DART/CLAUDE.md § Opt-In Behavior Flags`](DART/CLAUDE.md) | 6 |
-| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 15 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 14 |
+| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 17 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 25 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -631,8 +631,18 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | `LOCAL_DISPATCHER_ALLOW_STUB` | unset | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` when no `agent_tool` is wired. Tests / dry-run only. |
 | `ED4ALL_AGENT_DISPATCH` | unset | Routes subagent-classified agents through `dispatcher.dispatch_task` instead of in-process tool registry. |
 | `ED4ALL_AGENT_TIMEOUT_SECONDS` | `1800` | Per-task subagent dispatch mailbox timeout. |
+| `ED4ALL_ANSWER_PROVIDER` | `local` | Selects the grounded-answer backend (runtime Q&A inference) from the W-D12 `_OPENAI_COMPATIBLE_PROVIDERS` registry. **Loopback-only:** a resolved non-loopback `base_url` raises `AnswerProviderNotLocal` (Phase IA: no cloud arm on the answer path, ever). No escape-hatch env. Licensing row in `docs/LICENSING.md` § "Grounded-answer provider". |
+| `ED4ALL_ANSWER_MODEL` | per-provider | Model ID override for the answer backend. Resolution chain: explicit arg > `ED4ALL_ANSWER_MODEL` > registry `model_env` (`local` → `LOCAL_SYNTHESIS_MODEL`) > registry default (`qwen2.5:14b-instruct-q4_K_M`). |
+| `ED4ALL_ANSWER_TIMEOUT_SECONDS` | `120` | Answer-client HTTP timeout (long passages, slow local GPU). Garbage values fall back to the default. |
+| `ED4ALL_EMBEDDING_PROVIDER` | `st` | Selects the retrieval-index embedding backend from `lib/embedding/providers.py::_EMBEDDING_PROVIDERS` (`st` in-process sentence-transformers / `local-openai` local `/v1/embeddings` server / `fake` deterministic test vectors). Registry entries, NOT subclasses. Not training-data synthesis; licensing row in `docs/LICENSING.md` § "Embedding providers". |
+| `ED4ALL_EMBEDDING_MODEL` | per-provider | Model ID override for the embedding provider (e.g. `BAAI/bge-large-en-v1.5`). Resolution chain: explicit arg > env var > registry default. |
+| `ED4ALL_EMBEDDING_BASE_URL` | `http://localhost:11434/v1` | Base URL of the local OpenAI-compatible `/v1/embeddings` server (`local-openai` provider only; Ollama / vLLM / llama.cpp). |
+| `ED4ALL_EMBEDDING_API_KEY` | `local` | Optional bearer token for the local embedding server (`local-openai` only; most local servers ignore it). |
+| `ED4ALL_EMBEDDING_DEVICE` | `cpu` | Torch device for the in-process `st` provider. Default `cpu` for determinism; `cuda` allowed for speed (recorded in the index manifest so mixed-provenance comparisons are detectable). |
+| `ED4ALL_EMBEDDING_BATCH_SIZE` | `16` | Encode batch size for the embedding client (replay parameter, recorded in the index manifest). |
+| `ED4ALL_EMBEDDING_ALLOW_FAKE` | unset | **Anti-poisoning gate.** Permits a vector index built with the `fake` provider to be loaded in a production read path. Default off → a `fake`-provider index is refused at query time (mirrors `LOCAL_DISPATCHER_ALLOW_STUB`). |
 | `ED4ALL_GATE_ADVISORY` | unset | **Safety-critical.** Flips post-training eval gates from blocking to advisory. Materially changes promotion semantics. |
-| `ED4ALL_LIBV2_ROOT` | `<repo>/LibV2/` | Absolute path to the LibV2 root directory. |
+| `ED4ALL_LIBV2_ROOT` | `<repo>/LibV2/` | Absolute path to the LibV2 root directory. Also honored by `lib/libv2_storage.py` (previously not consulted there). |
 | `ED4ALL_MAILBOX_BASE_DIR` | `<repo>/state/mailbox/` | Orchestrator task-mailbox base directory. |
 | `ED4ALL_PRODUCTION` | `0` | When `1`, enables production-mode FastMCP server settings. |
 | `ED4ALL_ROOT` | auto-detect | Absolute path to the Ed4All project root. |
@@ -640,8 +650,11 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | `ED4ALL_SKIP_ABLATION` | unset | When set, skips the post-training ablation pass. |
 | `ED4ALL_STAGE_MODE` | `symlink` | How `stage_dart_outputs` materialises DART HTML (`copy` / `symlink` / `hardlink`). |
 | `ED4ALL_STATE_RUNS_DIR` | `<repo>/state/runs/` | State-runs directory. |
+| `ED4ALL_TRAINING_CAPTURES_DIR` | `<repo>/training-captures/` | Overrides the legacy decision-capture mirror root; honored by `lib/paths.py::get_training_captures_dir`, `lib/decision_capture.py`, `lib/streaming_capture.py`. NOT governed by `ED4ALL_LIBV2_ROOT`. |
 
 The `LLM_*` env vars (`LLM_MODE`, `LLM_PROVIDER`, `LLM_MODEL`) are CLI runtime knobs documented in § Quick Start above.
+
+**Other `ED4ALL_*` vars not in the table above (kept out to avoid table noise):** the GUI server vars `ED4ALL_GUI_HOST` / `ED4ALL_GUI_PORT` / `ED4ALL_GUI_LEARNER` are documented in `gui/README.md` (read in `gui/server.py` / `gui/app.py` / `cli/commands/gui_cmd.py`). The remaining `ED4ALL_*` knobs are test-only discovery / gating overrides documented inline at their read sites, not production code paths: `ED4ALL_RUN_FULL_ARCHIVE_TEST` (gates `Trainforge/tests/test_emit_pipeline_full_archive.py`), `ED4ALL_A11Y_SMOKE_OLLAMA` (gates the live-backend smoke in `gui/tests/test_learner_a11y_gate.py`), and the per-suite fixture-slug overrides `ED4ALL_ARCHIVE_FIXTURE_SLUG`, `ED4ALL_RDF_EXPORT_FIXTURE_SLUG`, `ED4ALL_INTENT_ROUTER_FIXTURE_SLUG`, `ED4ALL_TUTORING_FIXTURE_SLUG`, `ED4ALL_STUDY_PACK_FIXTURE_SLUG` (let a tier-2 test discover a specific course slug instead of auto-discovering one).
 
 ---
 
@@ -674,7 +687,7 @@ Single-source-of-truth loaders (`lib/ontology/`):
 
 Validators (`lib/validators/`) — wiring in `docs/validation/gates.md`. Load-bearing thresholds:
 
-- `kg_quality.py` — KG-quality report; thresholds **0.95 / 0.95 / 0.95 / 0.5** (completeness / consistency / accuracy / coverage).
+- `kg_quality.py` — KG-quality report; thresholds **0.95 / 0.95 / 0.95 / 0.5** (completeness / consistency / accuracy / coverage). (As of the coverage-semantics redesign, the `coverage` floor thresholds chunk-anchored DomainConcept concept-node grounding — the share of concept nodes touched by ≥1 chunk-evidenced edge — NOT the old asserted/(asserted+derived) edge share; the legacy ratio survives unthresholded as `asserted_edge_share`.)
 - `curie_anchoring` (binary per-pair anchoring sentinel) — default **`min_pair_anchoring_rate=0.95`**; supersedes deprecated `curie_preservation` shim (Wave 135c→135d migration).
 - Statistical-tier embedding validators (`objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`, `bloom_classifier_disagreement`) graceful-degrade contract: missing `[embedding]` pyproject extras emit warning-severity `EMBEDDING_DEPS_MISSING` GateIssue with `passed=True` unless `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips to fail-closed.
 
@@ -690,7 +703,6 @@ Validators (`lib/validators/`) — wiring in `docs/validation/gates.md`. Load-be
 - **LibV2**: `LibV2/CLAUDE.md`
 - **Chunker**: `Trainforge/chunker/` — canonical chunker shared by DART, IMSCC, and Trainforge synthesis paths. See `Trainforge/CLAUDE.md` § "Chunking" for the surface contract.
 - **Ontology map + v0.2.0 changes**: `schemas/ONTOLOGY.md`
-- **KG-quality review (source of v0.2.0 work)**: `plans/kg-quality-review-2026-04/review.md`
 
 ---
 

@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "embedding_provider": "st",
+  "embedding_kind": "st",
+  "embedding_model_id": "BAAI/bge-m3",
+  "embedding_model_revision": null,
+  "embedding_dim": 1024,
+  "normalized": true,
+  "index_type": "exact-numpy",
+  "chunker_version": "v4",
+  "chunkset_kind": "imscc",
+  "source_chunks_sha256": "NOT-A-VALID-SHA",
+  "embeddings_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "id_map_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "chunks_count": 295,
+  "text_field_policy": "text+heading",
+  "batch_size": 16,
+  "device": "cpu"
+}

@@ -10,7 +10,7 @@ used across Trainforge:
 Wave 99 unifies the three previously-redundant inline implementations behind
 this helper to prevent the drift class that motivated Wave 95
 (``preference_factory`` rebuild) and Wave 97 (``pedagogy_graph.json``
-one-shot rebuild for ``rdf-shacl-551-2``).
+one-shot rebuild for the RDF/SHACL calibration corpus).
 
 Algorithm (Wave 69 / 72 lineage)::
 

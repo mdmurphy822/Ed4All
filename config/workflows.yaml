@@ -60,6 +60,19 @@ workflows:
               on_fail: block
               on_error: fail_closed
 
+          # Anti-silent-template guard (see textbook_to_course for rationale):
+          # blocks the deterministic generate_week template emitter from
+          # passing as LLM-authored content when LLM authoring was intended.
+          - gate_id: content_authorship
+            validator: lib.validators.content_authorship.ContentAuthorshipValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Block the deterministic template emitter from passing as LLM-authored content in a real run
+
       # Phase 3 Subtask 4: two-pass router phases mirrored from
       # textbook_to_course. Engaged when ``COURSEFORGE_TWO_PASS=true``.
       - name: content_generation_outline
@@ -841,20 +854,148 @@ workflows:
           - source_module_map_path
           - source_chunk_ids
 
-      # Phase 6 ST 11: concept_extraction phase — runs the
-      # pedagogy-graph-builder over staged DART output before objectives
-      # are synthesized. The emitted concept graph is later consumed by
-      # the concept_objective_linker (Phase 6 ST 15/16) to populate
-      # ``LearningObjective.keyConcepts[]`` during course_planning.
-      # Inserted between ``source_mapping`` and ``course_planning``.
-      # Phase 7b ST 10 widens depends_on to [source_mapping, chunking]
-      # so the upstream DART chunkset is consumable here once the
-      # ST 14.5 reconciliation refactor lands.
+      - name: course_planning
+        agents: [course-outliner]
+        parallel: false
+        max_concurrent: 1
+        # Phase-ordering fix (Option A1): course_planning now runs BEFORE
+        # concept_extraction so fresh runs have synthesized objectives (and
+        # LO-backfilled chunks) available at graph-build time. Depends on
+        # source_mapping (source_module_map.json) and chunking directly —
+        # the LO-refs backfill at the planner tail reads
+        # LibV2/courses/<slug>/dart_chunks/chunks.jsonl (previously this was
+        # transitive via concept_extraction's dependence on chunking).
+        depends_on: [source_mapping, chunking]
+        timeout_minutes: 60
+        description: Synthesize real TO/CO objectives + persist synthesized_objectives.json (Wave 24)
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          - param: objectives_path
+            source: workflow_params
+            key: objectives_path
+          - param: duration_weeks
+            source: workflow_params
+            key: duration_weeks
+          # Wave 40: route ``duration_weeks_explicit`` so the planner
+          # honors the extractor's auto-scaled value in
+          # ``project_config.json`` when ``--weeks`` was unset. Without
+          # this, ``_plan_course_structure``'s precedence check sees
+          # the default ``True`` and clobbers the auto-scaled 8 with the
+          # stale routed ``duration_weeks=12`` from workflow_params.
+          - param: duration_weeks_explicit
+            source: workflow_params
+            key: duration_weeks_explicit
+          - param: source_module_map_path
+            source: phase_outputs
+            phase: source_mapping
+            output: source_module_map_path
+
+        outputs:
+          - project_id
+          - synthesized_objectives_path
+          - objective_ids
+          - terminal_count
+          - chapter_count
+
+        # Phase 6 ST 4.5: gate the synthesized LO set on ABCD verb-Bloom
+        # alignment. Phase 6 lands as warning so legacy corpora without
+        # ABCD don't fail closed; Phase 7+ promotes to critical once
+        # corpus calibration confirms safe.
+        validation_gates:
+          - gate_id: abcd_verb_alignment
+            validator: lib.validators.abcd_objective.AbcdObjectiveValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+          # Wave 1.6 W1.6.C: per-objective source-attribution
+          # consistency walk. Resolves each LO's source_refs against
+          # the dual universe of (textbook_structure chapter / section
+          # IDs) ∪ (DART chunkset chunk-id universe). Wave 1.6 ships
+          # warning-severity day-1 to preserve back-compat with the
+          # RDF/SHACL calibration corpus's existing emit;
+          # promotion to CRITICAL waits for future-wave calibration
+          # data per plan §6.3 risk note. Day-1 default
+          # ``require_to_attribution=false`` keeps TOs from firing
+          # OBJECTIVE_MISSING_SOURCE_REFS so legacy archives where TOs
+          # have no source_refs continue to validate.
+          # Inputs are resolved by the gate-input router builder
+          # registered against this validator path in
+          # MCP/hardening/gate_input_routing.py — the meta-schema
+          # forbids gate-level inputs blocks.
+          - gate_id: objective_source_refs
+            validator: lib.validators.objective_source_refs.ObjectiveSourceRefValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            config:
+              require_to_attribution: false
+          # Three-stage textbook synthesis (plan §8 row 3): gate the
+          # Stage-2 per-chapter CO synthesis + reconciliation output.
+          # Skips-with-pass when TEXTBOOK_SYNTHESIS_PROVIDER is unset
+          # (the deterministic synthesizer ran; no chapter_text-bearing
+          # chapters[] to audit). Warning-severity day-1 — promotes to
+          # critical after a clean-corpus calibration run.
+          - gate_id: chapter_objective_coverage
+            validator: lib.validators.chapter_objective_coverage.ChapterObjectiveCoverageValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+          # Fail-fast terminal-coverage gate. Catches orphan terminal
+          # objectives (no chapter objective rolling up / chapter not in
+          # textbook_structure) at planning time, so the critical
+          # UNCOVERED_TERMINAL_OUTCOME failure at libv2_archival can never
+          # reoccur silently. Critical / block: a terminal that downstream
+          # content generation cannot cover is a hard inconsistency.
+          # Graceful-degrades to pass when objectives are empty or the
+          # textbook_structure needed to adjudicate a CO-less course is
+          # absent (preserving reuse/legacy runs).
+          - gate_id: terminal_objective_coverage
+            validator: lib.validators.terminal_objective_coverage.TerminalObjectiveCoverageValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+      # concept_extraction phase — builds the pedagogy/concept graph from
+      # the staged DART output + DART chunkset. Phase-ordering fix
+      # (Option A1): this phase now runs AFTER course_planning so the
+      # LO-driven typed-edge rules (prerequisite_from_lo_order,
+      # targets_concept_from_lo) and the LO-backfilled chunkset are
+      # available on FRESH runs — course_planning has minted
+      # synthesized_objectives.json and backfilled chunk
+      # learning_outcome_refs by the time the graph is built, which fixes
+      # the degraded "related_to"-dominated graph on runs without
+      # --reuse-objectives. Reuse runs still pin objectives via the
+      # reuse_objectives_path route (candidate #1) ahead of the
+      # course_planning-emitted synthesized_objectives_path.
+      # Declared position matters: it sits between course_planning and
+      # content_generation so Kahn's tie-break (declaration order) keeps
+      # concept_extraction before content_generation. libv2_archival
+      # routes concept_graph_sha256 from this phase (later in declaration
+      # order, so the inputs_from reference still resolves).
       - name: concept_extraction
         agents: [pedagogy-graph-builder]
         parallel: false
         max_concurrent: 1
-        depends_on: [source_mapping, chunking]
+        depends_on: [course_planning, chunking]
         timeout_minutes: 30
         description: Build pedagogy/concept graph from staged DART output (Phase 6 ST 11/12)
 
@@ -897,6 +1038,22 @@ workflows:
           - param: libv2_root
             source: workflow_params
             key: libv2_root
+          # Objectives resolution candidate #1: the --reuse-objectives JSON
+          # (when supplied) so a reuse run pins the LO-dependent typed-edge
+          # rules to the operator's verbatim objectives doc.
+          - param: objectives_path
+            source: workflow_params
+            key: reuse_objectives_path
+          # Objectives resolution candidate #2 (fresh-run path): the
+          # synthesized_objectives.json emitted by course_planning. Because
+          # this phase now runs AFTER course_planning, fresh runs without
+          # --reuse-objectives get a real course/learning_outcomes ordering
+          # here, so the LO-dependent typed-edge rules fire and the
+          # concept_objective_linker can populate keyConcepts[].
+          - param: synthesized_objectives_path
+            source: phase_outputs
+            phase: course_planning
+            output: synthesized_objectives_path
 
         outputs:
           - concept_graph_path
@@ -929,110 +1086,6 @@ workflows:
           # (default-off run, TEXTBOOK_SYNTHESIS_PROVIDER unset).
           - gate_id: domain_concept_vocabulary
             validator: lib.validators.domain_concept_vocabulary.DomainConceptVocabularyValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-
-      - name: course_planning
-        agents: [course-outliner]
-        parallel: false
-        max_concurrent: 1
-        depends_on: [concept_extraction]
-        timeout_minutes: 60
-        description: Synthesize real TO/CO objectives + persist synthesized_objectives.json (Wave 24)
-
-        inputs_from:
-          - param: project_id
-            source: phase_outputs
-            phase: objective_extraction
-            output: project_id
-          - param: course_name
-            source: workflow_params
-            key: course_name
-          - param: objectives_path
-            source: workflow_params
-            key: objectives_path
-          - param: duration_weeks
-            source: workflow_params
-            key: duration_weeks
-          # Wave 40: route ``duration_weeks_explicit`` so the planner
-          # honors the extractor's auto-scaled value in
-          # ``project_config.json`` when ``--weeks`` was unset. Without
-          # this, ``_plan_course_structure``'s precedence check sees
-          # the default ``True`` and clobbers the auto-scaled 8 with the
-          # stale routed ``duration_weeks=12`` from workflow_params.
-          - param: duration_weeks_explicit
-            source: workflow_params
-            key: duration_weeks_explicit
-          - param: source_module_map_path
-            source: phase_outputs
-            phase: source_mapping
-            output: source_module_map_path
-          # Phase 6 ST 16: route the concept-graph path emitted by the
-          # concept_extraction phase so the planner's two-stage linker
-          # populates LearningObjective.keyConcepts[] from
-          # concept_graph_semantic.json before persistence.
-          - param: concept_graph_path
-            source: phase_outputs
-            phase: concept_extraction
-            output: concept_graph_path
-
-        outputs:
-          - project_id
-          - synthesized_objectives_path
-          - objective_ids
-          - terminal_count
-          - chapter_count
-
-        # Phase 6 ST 4.5: gate the synthesized LO set on ABCD verb-Bloom
-        # alignment. Phase 6 lands as warning so legacy corpora without
-        # ABCD don't fail closed; Phase 7+ promotes to critical once
-        # corpus calibration confirms safe.
-        validation_gates:
-          - gate_id: abcd_verb_alignment
-            validator: lib.validators.abcd_objective.AbcdObjectiveValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-          # Wave 1.6 W1.6.C: per-objective source-attribution
-          # consistency walk. Resolves each LO's source_refs against
-          # the dual universe of (textbook_structure chapter / section
-          # IDs) ∪ (DART chunkset chunk-id universe). Wave 1.6 ships
-          # warning-severity day-1 to preserve back-compat with the
-          # rdf-shacl-551-2 calibration corpus's existing emit;
-          # promotion to CRITICAL waits for future-wave calibration
-          # data per plan §6.3 risk note. Day-1 default
-          # ``require_to_attribution=false`` keeps TOs from firing
-          # OBJECTIVE_MISSING_SOURCE_REFS so legacy archives where TOs
-          # have no source_refs continue to validate.
-          # Inputs are resolved by the gate-input router builder
-          # registered against this validator path in
-          # MCP/hardening/gate_input_routing.py — the meta-schema
-          # forbids gate-level inputs blocks.
-          - gate_id: objective_source_refs
-            validator: lib.validators.objective_source_refs.ObjectiveSourceRefValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            config:
-              require_to_attribution: false
-          # Three-stage textbook synthesis (plan §8 row 3): gate the
-          # Stage-2 per-chapter CO synthesis + reconciliation output.
-          # Skips-with-pass when TEXTBOOK_SYNTHESIS_PROVIDER is unset
-          # (the deterministic synthesizer ran; no chapter_text-bearing
-          # chapters[] to audit). Warning-severity day-1 — promotes to
-          # critical after a clean-corpus calibration run.
-          - gate_id: chapter_objective_coverage
-            validator: lib.validators.chapter_objective_coverage.ChapterObjectiveCoverageValidator
             severity: warning
             threshold:
               max_critical_issues: 0
@@ -1088,6 +1141,10 @@ workflows:
           - page_paths
           - content_dir
           - weeks_prepared
+          # Anti-silent-template guard provenance (ContentAuthorshipValidator).
+          - generator_mode
+          - template_fallback_fired
+          - content_generation_provenance_path
 
         validation_gates:
           - gate_id: content_structure
@@ -1128,6 +1185,22 @@ workflows:
               on_fail: block
               on_error: fail_closed
             description: Verify every non-trivial paragraph in generated HTML is grounded in DART source (Wave 31)
+
+          # Anti-silent-template guard. The deterministic generate_week
+          # template emitter must never silently stand in for real LLM
+          # content authoring in a real run. Blocks when the template path
+          # fired AND LLM authoring was intended (COURSEFORGE_PROVIDER /
+          # COURSEFORGE_TWO_PASS / ED4ALL_AGENT_DISPATCH); warns otherwise.
+          # Opt out with COURSEFORGE_ALLOW_TEMPLATE_EMITTER=1.
+          - gate_id: content_authorship
+            validator: lib.validators.content_authorship.ContentAuthorshipValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Block the deterministic template emitter from passing as LLM-authored content in a real run
 
       # Phase 3 Subtask 3: two-pass router phases. Engaged when
       # ``COURSEFORGE_TWO_PASS=true`` is set in the environment;
@@ -2553,7 +2626,7 @@ workflows:
             description: Wave 78 — fail-closed packet integrity (coverage + typing)
 
           # Wave 82: silent-zero detection on the typed concept graph.
-          # Closes the rdf-shacl-551 audit's load-bearing finding: 5 of 7
+          # Closes the RDF/SHACL calibration corpus audit's load-bearing finding: 5 of 7
           # inference rules emitted zero edges with byte-identical
           # rule_versions while the pipeline reported success. Off by
           # default (TRAINFORGE_VALIDATE_RULE_OUTPUTS=true to enable);
@@ -2574,14 +2647,22 @@ workflows:
           # dimensions (completeness, consistency, accuracy, coverage)
           # and emits kg_quality_report.json.
           #
-          # Wave 91 Action D promoted thresholds off 0.0 and severity
-          # from warning to critical. Baseline run on rdf-shacl-551-2
-          # (empty SHACL validation report) yielded
-          # completeness=1.0, consistency=1.0, accuracy=1.0,
-          # coverage=0.5248. Thresholds picked at max(spec_default,
-          # baseline - 0.05) so the fixture corpus passes with a small
-          # margin and any genuine regression blocks the pipeline.
-          # See lib/validators/kg_quality.py for full calibration notes.
+          # Thresholds: completeness/consistency/accuracy floor at 0.95
+          # (RDF/SHACL calibration corpus baseline 1.0 - 0.05); min_coverage stays at
+          # 0.50. Coverage SEMANTICS were redesigned (observability-only):
+          # the 0.50 floor now thresholds chunk-anchored DomainConcept
+          # node-grounding (share of concept nodes incident to ≥1
+          # chunk-evidenced edge), NOT the old asserted/(asserted+derived)
+          # edge share. The old edge metric grew a quadratic
+          # LO-order-derived denominator and anti-correlated with quality
+          # (the RDF/SHACL calibration corpus fell to 0.047 under it; reads 1.0 under the new
+          # metric, a RAG course ~0.69). The 0.50 floor is retained as-is,
+          # re-derived against the node-grounding metric (both calibration
+          # corpora clear it). NB: this gate is currently structurally
+          # skipped on real runs (no builder registered; min_coverage not a
+          # recognized threshold key) — wiring it is a separate queued
+          # decision. See lib/validators/kg_quality.py for full calibration
+          # notes + Trainforge/rag/kg_quality_report.py for the metric.
           - gate_id: kg_quality_report
             validator: lib.validators.kg_quality.KGQualityValidator
             severity: critical

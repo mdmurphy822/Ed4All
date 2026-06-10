@@ -2,7 +2,8 @@
 
 > **Scope.** Diagnostic catalog of every place a learning objective
 > (LO) lives across Ed4All. Field shapes below were read directly
-> from the live `rdf-shacl-550` archive. **No code changes.**
+> from a live archive built from the RDF/SHACL calibration corpus.
+> **No code changes.**
 
 ## TL;DR
 
@@ -17,11 +18,12 @@
 
 ## Storage surfaces
 
-Live-archive paths for the audit subject:
+Live-archive path globs for the audit subject (concrete slugs are
+gitignored user data; resolve via the export / `LibV2/courses/` dirs):
 
 ```
-Courseforge: Courseforge/exports/PROJ-RDF_SHACL_550-20260424135037/
-LibV2:       LibV2/courses/rdf-shacl-550-rdf-shacl-550/
+Courseforge: Courseforge/exports/PROJ-<COURSE>-<timestamp>/
+LibV2:       LibV2/courses/<course-slug>/
 Wave 79:     /tmp/wave79_smoke/instruction_pairs.jsonl
 ```
 
@@ -170,7 +172,7 @@ Wave 79:     /tmp/wave79_smoke/instruction_pairs.jsonl
 - **LO storage:** `lo_refs[]` per pair (NOT `objective_ids[]` as
   speculated in the task brief — drift point F).
 - **Sample:** `{bloom_level: "remember", chunk_id:
-  "rdf_shacl_550_chunk_00012", completion, content_type:
+  "demo_course_chunk_00012", completion, content_type:
   "assessment_item", decision_capture_id, lo_refs:
   ["co-01","co-02","co-03","to-01"], prompt, provider, schema_version:
   "v1", seed, template_id}`.
@@ -273,5 +275,6 @@ lowercase under Wave 81.
 
 ---
 
-*Audit subject: `rdf-shacl-550-rdf-shacl-550` (built 2026-04-24).
-Every field example was verified against an actual file on disk.*
+*Audit subject: an archive built from the RDF/SHACL calibration corpus
+(built 2026-04-24). Every field example was verified against an actual
+file on disk.*

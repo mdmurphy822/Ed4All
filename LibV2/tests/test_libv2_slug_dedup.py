@@ -2,14 +2,14 @@
 
 Bug observed (2026-04-24): ``python -m Trainforge.process_course
 --import-to-libv2`` derived a slug from ``course_code`` and
-``course_title`` and produced ``rdf-shacl-550-rdf-shacl-550`` because:
+``course_title`` and produced a doubled ``<code>-<code>`` slug because:
 
     Courseforge's IMSCC packager writes the manifest title as
     ``f"{course_code}: {course_title}"`` (Courseforge/scripts/
     package_multifile_imscc.py:145), and Trainforge's IMSCC parser
     falls back to ``course_code`` when the manifest carries no other
     usable title (Trainforge/process_course.py:974). So the title round-
-    tripped as ``"RDF_SHACL_550: RDF_SHACL_550"`` and the LibV2 importer's
+    tripped as ``"DEMO_PREP_101: DEMO_PREP_101"`` and the LibV2 importer's
     ``slugify(title)`` doubled the code into the slug.
 
 These tests pin ``derive_course_slug`` so we never regress.
@@ -34,32 +34,32 @@ class TestSlugDedup:
     def test_libv2_slug_strips_course_code_prefix(self):
         """Title carrying a ``{code}: `` prefix collapses to ``{code} {rest}``."""
         slug = derive_course_slug(
-            course_code="RDF_SHACL_550",
-            course_title="RDF_SHACL_550: RDF Course",
+            course_code="DEMO_PREP_101",
+            course_title="DEMO_PREP_101: Demo Course",
         )
         # The code stays as the leading slug segment; the title remainder
-        # contributes the rest. No doubled ``rdf-shacl-550-rdf-shacl-550``.
-        assert slug == "rdf-shacl-550-rdf-course", slug
+        # contributes the rest. No doubled ``demo-prep-101-demo-prep-101``.
+        assert slug == "demo-prep-101-demo-course", slug
 
     def test_libv2_slug_no_doubling(self):
         """Title equals course_code → use just slugify(course_code)."""
         slug = derive_course_slug(
-            course_code="RDF_SHACL_550",
-            course_title="RDF_SHACL_550",
+            course_code="DEMO_PREP_101",
+            course_title="DEMO_PREP_101",
         )
-        assert slug == "rdf-shacl-550", slug
+        assert slug == "demo-prep-101", slug
 
     def test_libv2_slug_no_doubling_with_code_colon_code(self):
         """Title is ``{code}: {code}`` — the exact today-bug shape."""
         slug = derive_course_slug(
-            course_code="RDF_SHACL_550",
-            course_title="RDF_SHACL_550: RDF_SHACL_550",
+            course_code="DEMO_PREP_101",
+            course_title="DEMO_PREP_101: DEMO_PREP_101",
         )
         # Both code-prefixes strip out, title remainder is empty, slug
         # is just slugify(course_code).
-        assert slug == "rdf-shacl-550", slug
+        assert slug == "demo-prep-101", slug
         # Critical: the bug-shape we are guarding against MUST NOT happen.
-        assert slug != "rdf-shacl-550-rdf-shacl-550"
+        assert slug != "demo-prep-101-demo-prep-101"
 
     def test_libv2_slug_unchanged_when_distinct(self):
         """Distinct title → slug includes both code + title."""
@@ -126,4 +126,4 @@ def test_slugify_alone_is_unchanged():
     # The bug-shape input: when slugify is called in isolation on a
     # ``code: code`` title, doubling is the expected (legacy) behaviour.
     # ``derive_course_slug`` is what guards against it.
-    assert slugify("RDF_SHACL_550: RDF_SHACL_550") == "rdf-shacl-550-rdf-shacl-550"
+    assert slugify("DEMO_PREP_101: DEMO_PREP_101") == "demo-prep-101-demo-prep-101"

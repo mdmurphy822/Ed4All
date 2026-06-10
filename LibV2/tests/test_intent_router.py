@@ -7,8 +7,10 @@ retrieval backend. Tests cover:
 * The canonical 6-query routing matrix from the design contract,
   asserting both the intent classification *and* the entity
   extraction (so we'd catch silent regressions in either layer).
-* Live-archive dispatch against ``rdf-shacl-550-rdf-shacl-550``
-  (skipped if the fixture isn't present in-repo).
+* Live-archive dispatch against an opt-in course archive
+  (set ``ED4ALL_INTENT_ROUTER_FIXTURE_SLUG`` to a slug under
+  ``$ED4ALL_LIBV2_ROOT/courses/``; skipped when unset or the
+  fixture isn't present in-repo).
 * Edge cases: empty query, unknown slug, ambiguous query.
 
 The live-archive assertions are loose lower-bounds (``>= 1``) rather
@@ -20,6 +22,7 @@ not the router.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import List
 
@@ -34,8 +37,10 @@ from LibV2.tools.intent_router import (
 from lib.paths import LIBV2_PATH
 
 
-LIVE_SLUG = "rdf-shacl-550-rdf-shacl-550"
-LIVE_ARCHIVE = LIBV2_PATH / "courses" / LIVE_SLUG
+LIVE_SLUG = os.environ.get("ED4ALL_INTENT_ROUTER_FIXTURE_SLUG")
+LIVE_ARCHIVE = (
+    LIBV2_PATH / "courses" / LIVE_SLUG if LIVE_SLUG else None
+)
 
 
 # ---------------------------------------------------------------------- #
@@ -95,7 +100,10 @@ def _make_synthetic_archive(courses_root: Path, slug: str) -> Path:
 
 @pytest.fixture(scope="module")
 def live_archive_present() -> bool:
-    return (LIVE_ARCHIVE / "corpus" / "chunks.jsonl").is_file()
+    return (
+        LIVE_ARCHIVE is not None
+        and (LIVE_ARCHIVE / "corpus" / "chunks.jsonl").is_file()
+    )
 
 
 # ---------------------------------------------------------------------- #
@@ -293,7 +301,7 @@ def test_dispatch_empty_query_returns_concept_class():
 
 def test_live_objective_lookup_returns_results(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     out = dispatch("Which chunks assess to-04?", LIVE_SLUG, top_k=5)
     assert out["intent_class"] == "objective_lookup"
     assert out["entities"]["objective_ids"] == ["to-04"]
@@ -307,7 +315,7 @@ def test_live_objective_lookup_returns_results(live_archive_present):
 
 def test_live_prerequisite_query_returns_concepts(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     out = dispatch(
         "What is a prerequisite for SHACL validation?",
         LIVE_SLUG,
@@ -325,7 +333,7 @@ def test_live_prerequisite_query_returns_concepts(live_archive_present):
 
 def test_live_misconception_query_returns_corrections(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     out = dispatch(
         "What misconceptions exist about RDF triples?",
         LIVE_SLUG,
@@ -340,7 +348,7 @@ def test_live_misconception_query_returns_corrections(live_archive_present):
 
 def test_live_faceted_query_extracts_facets(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     out = dispatch(
         "Show me apply-level exercises for week 7",
         LIVE_SLUG,
@@ -358,7 +366,7 @@ def test_live_faceted_query_extracts_facets(live_archive_present):
 
 def test_live_concept_query_returns_bm25_chunks(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     out = dispatch("How does sh:minCount work?", LIVE_SLUG, top_k=10)
     assert out["intent_class"] == "concept_query"
     assert len(out["results"]) >= 1
@@ -374,7 +382,7 @@ def test_live_concept_query_returns_bm25_chunks(live_archive_present):
 
 def test_live_faceted_examples_chunk_type(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     out = dispatch(
         "Show me 5 worked examples of SHACL constraints",
         LIVE_SLUG,

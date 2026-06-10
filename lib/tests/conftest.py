@@ -14,6 +14,21 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def pytest_configure(config):
+    """Register the ``real_models`` opt-in marker.
+
+    ``pytest.ini`` runs with ``--strict-markers``; tests that intentionally
+    load a real model (e.g. the WS3 DeBERTa groundedness smoke) opt in via
+    ``@pytest.mark.real_models`` and need the marker registered here so the
+    lib/ test dir doesn't error on an unknown marker. No autouse behavior.
+    """
+    config.addinivalue_line(
+        "markers",
+        "real_models: the test intentionally loads a real model "
+        "(skipped/opt-in; not run in default CI sweeps).",
+    )
+
+
 # =============================================================================
 # PATH AND FILESYSTEM FIXTURES
 # =============================================================================

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lib.ontology.labels import (
     KNOWN_ACRONYMS,
     slug_to_label,
@@ -129,6 +131,163 @@ class TestEdgeCases:
 # ---------------------------------------------------------------------------
 # Acronym set integrity
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Concept-label artifact fixes (rdf-shacl audit Section F follow-up)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def normalize_labels_on(monkeypatch):
+    """Enable the opt-in run-together-compound resplit path."""
+    monkeypatch.setenv("TRAINFORGE_NORMALIZE_LABELS", "true")
+
+
+class TestRunTogetherResplit:
+    """Curated re-splitting of camelCase-collapsed compounds (flag-gated)."""
+
+    def test_runnableassign_resplit(self, normalize_labels_on):
+        assert slug_to_label("runnableassign") == "Runnable Assign"
+
+    def test_checkpointresume_resplit(self, normalize_labels_on):
+        assert slug_to_label("checkpointresume") == "Checkpoint Resume"
+
+    def test_ragas_evaluator_chain_resplit_with_acronym(self, normalize_labels_on):
+        assert slug_to_label("ragasevaluatorchain") == "RAGAS Evaluator Chain"
+
+    def test_retrieval_augmentation_resplit(self, normalize_labels_on):
+        # "retrievalaugmentation evaluation" → "Retrieval Augmentation Evaluation"
+        assert (
+            slug_to_label("retrievalaugmentation-evaluation")
+            == "Retrieval Augmentation Evaluation"
+        )
+
+    def test_resplit_default_off_leaves_compound(self, monkeypatch):
+        # Default off: compound stays one token (byte-stable). Title-cased.
+        monkeypatch.delenv("TRAINFORGE_NORMALIZE_LABELS", raising=False)
+        assert slug_to_label("runnableassign") == "Runnableassign"
+
+
+class TestBrandResplit:
+    """Curated proper-noun brand splits (RAG-course audit, flag-gated)."""
+
+    def test_langgraph(self, normalize_labels_on):
+        assert slug_to_label("langgraph") == "LangGraph"
+
+    def test_langserve(self, normalize_labels_on):
+        assert slug_to_label("langserve") == "LangServe"
+
+    def test_llamaindex(self, normalize_labels_on):
+        assert slug_to_label("llamaindex") == "LlamaIndex"
+
+    def test_stroutputparser(self, normalize_labels_on):
+        assert slug_to_label("stroutputparser") == "StrOutputParser"
+
+    def test_retrievertool(self, normalize_labels_on):
+        assert slug_to_label("retrievertool") == "RetrieverTool"
+
+    def test_smolagents(self, normalize_labels_on):
+        assert slug_to_label("smolagents") == "SmolAgents"
+
+    def test_centralorchestrator_agent(self, normalize_labels_on):
+        # Multi-word brand split feeds through acronym-aware title-casing.
+        assert slug_to_label("centralorchestrator-agent") == "Central Orchestrator Agent"
+
+    def test_dockerrouter(self, normalize_labels_on):
+        assert slug_to_label("dockerrouter") == "Docker Router"
+
+    def test_brand_resplit_default_off_byte_stable(self, monkeypatch):
+        # Flag off: run-together brands stay one title-cased token.
+        monkeypatch.delenv("TRAINFORGE_NORMALIZE_LABELS", raising=False)
+        assert slug_to_label("langgraph") == "Langgraph"
+        assert slug_to_label("stroutputparser") == "Stroutputparser"
+        assert slug_to_label("dockerrouter") == "Dockerrouter"
+
+
+class TestNvidiaEmbedAndAcronyms:
+    """NV-Embed slug override + new PCA/VQ/NV acronyms (unconditional)."""
+
+    def test_nvidia_nv_embed_vq_full_slug(self):
+        # Slug override pins the canonical NVIDIA model name; the trailing
+        # "-vq" quantization qualifier is folded into the curated label.
+        assert slug_to_label("nvidia-nv-embed-vq") == "NVIDIA NV-Embed"
+
+    def test_nv_embed_hyphen_segment_uppercase(self):
+        # NV is now a known acronym, so a hyphen-preserving render of
+        # "nv-embed" uppercases the NV segment and keeps the hyphen.
+        # (slug_to_label strips hyphens to spaces, so the hyphen-kept
+        # form is exercised via titlecase_with_acronyms, the same path
+        # that backs the nvidia-nv-embed-vq slug override.)
+        assert titlecase_with_acronyms("nv-embed") == "NV-Embed"
+
+    def test_pca_acronym(self):
+        assert "pca" in KNOWN_ACRONYMS
+        assert slug_to_label("principal-component-analysis-pca") == (
+            "Principal Component Analysis PCA"
+        )
+
+    def test_vq_acronym(self):
+        assert "vq" in KNOWN_ACRONYMS
+        assert slug_to_label("vector-quantization-vq") == "Vector Quantization VQ"
+
+
+class TestAcronymAndBrandCasing:
+    """Acronym + mixed-case brand casing applies unconditionally."""
+
+    def test_ragas_acronym(self):
+        assert slug_to_label("ragas") == "RAGAS"
+
+    def test_faiss_vector_store(self):
+        assert slug_to_label("faiss-vector-store") == "FAISS Vector Store"
+
+    def test_ragas_short_for_rag(self):
+        assert slug_to_label("ragas-short-for-rag") == "RAGAS Short For RAG"
+
+    def test_nvidia_nim_gpu(self):
+        assert slug_to_label("nvidia-nim") == "NVIDIA NIM"
+        assert slug_to_label("gpu-inference") == "GPU Inference"
+
+    def test_openai_brand_casing(self):
+        assert slug_to_label("openai") == "OpenAI"
+
+    def test_chatgpt_brand_casing(self):
+        assert slug_to_label("chatgpt") == "ChatGPT"
+
+
+class TestPossessiveMangling:
+    """Possessive 's on a known acronym/brand renders correctly."""
+
+    def test_openais_chatgpt(self):
+        # "openais chatgpt" → "OpenAI's ChatGPT" (slug drops apostrophe).
+        assert slug_to_label("openais-chatgpt") == "OpenAI's ChatGPT"
+
+    def test_ordinary_plural_unaffected(self):
+        # "graphs" is not a known acronym stem — stays a normal plural.
+        assert slug_to_label("knowledge-graphs") == "Knowledge Graphs"
+
+
+class TestMisspellingFix:
+    """exercice → Exercise correction applies unconditionally."""
+
+    def test_final_exercice(self):
+        assert slug_to_label("final-exercice") == "Final Exercise"
+
+    def test_bare_exercice(self):
+        assert slug_to_label("exercice") == "Exercise"
+
+
+class TestUnchangedNormalSlugs:
+    """Regression guard: ordinary slugs render exactly as before."""
+
+    def test_knowledge_base_unchanged(self):
+        assert slug_to_label("knowledge-base") == "Knowledge Base"
+
+    def test_knowledge_base_unchanged_with_flag(self, normalize_labels_on):
+        assert slug_to_label("knowledge-base") == "Knowledge Base"
+
+    def test_blank_node_unchanged(self):
+        assert slug_to_label("blank-node") == "Blank Node"
 
 
 class TestAcronymSet:

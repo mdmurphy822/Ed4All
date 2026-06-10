@@ -1,13 +1,13 @@
 # Wave 79 Chunk Template Catalog
 
 > **Forward-looking** — applies to FUTURE Courseforge content-generator
-> runs. Existing exports (e.g. `Courseforge/exports/PROJ-RDF_SHACL_550-…`)
+> runs. Existing exports (e.g. `Courseforge/exports/PROJ-<course>-…`)
 > are unchanged; this catalog is ADDITIVE guidance.
 
 ## Why this catalog exists
 
 Wave 78's content-generator subagents produced grounded but
-**explanation-heavy** chunks. Across the rdf-shacl-550 archive,
+**explanation-heavy** chunks. Across the RDF/SHACL calibration corpus,
 chunk-type distribution skewed:
 
 | content_type_label | count | share |
@@ -368,7 +368,7 @@ procedure.
 
 ## Per-week chunk mix targets (Wave 79)
 
-| Chunk type | Wave 78 actual (rdf-shacl-550) | Wave 79 target (per week) |
+| Chunk type | Wave 78 actual (RDF/SHACL calibration corpus) | Wave 79 target (per week) |
 |------------|-------------------------------:|--------------------------:|
 | `explanation`              | ~13/wk | **4-5/wk** |
 | `example`                  | ~2/wk  | **2-3/wk** |

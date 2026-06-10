@@ -473,7 +473,7 @@ def test_run_synthesis_emits_zero_validation_issues(tmp_path: Path) -> None:
     list. Three drift points were closing on prior runs:
 
       * ``phase="synthesize-training"`` was missing from the schema enum.
-      * ``course_id="RDF-SHACL-551-2"`` failed the underscore-only pattern.
+      * ``course_id="DEMO-COURSE-1"`` failed the underscore-only pattern.
       * ``alternatives_considered`` items were strings, schema expects objects.
 
     All three are now schema-clean. This test asserts the contract.
@@ -484,14 +484,14 @@ def test_run_synthesis_emits_zero_validation_issues(tmp_path: Path) -> None:
 
     course_dir = _make_working_copy(tmp_path)
     capture = DecisionCapture(
-        course_code="rdf-shacl-551-2",
+        course_code="demo-course-1",
         phase="synthesize-training",
         tool="trainforge",
     )
 
     stats = run_synthesis(
         corpus_dir=course_dir,
-        course_code="rdf-shacl-551-2",
+        course_code="demo-course-1",
         provider="mock",
         seed=11,
         capture=capture,
@@ -583,14 +583,14 @@ def test_property_bearing_chunk_falls_back_to_deterministic_when_paraphrase_stri
 
     from lib.decision_capture import DecisionCapture
     capture = DecisionCapture(
-        course_code="rdf-shacl-551-2",
+        course_code="demo-course-1",
         phase="synthesize-training",
         tool="trainforge",
     )
 
     stats = run_synthesis(
         corpus_dir=course_dir,
-        course_code="rdf-shacl-551-2",
+        course_code="demo-course-1",
         provider="local",
         seed=11,
         capture=capture,
@@ -654,7 +654,7 @@ def test_paraphrase_invalid_after_retry_falls_back_to_deterministic_draft(
 
     from lib.decision_capture import DecisionCapture
     capture = DecisionCapture(
-        course_code="rdf-shacl-551-2",
+        course_code="demo-course-1",
         phase="synthesize-training",
         tool="trainforge",
     )
@@ -662,7 +662,7 @@ def test_paraphrase_invalid_after_retry_falls_back_to_deterministic_draft(
     # Run should complete without raising, emitting deterministic fallback pairs.
     stats = run_synthesis(
         corpus_dir=course_dir,
-        course_code="rdf-shacl-551-2",
+        course_code="demo-course-1",
         provider="local",
         seed=11,
         capture=capture,
@@ -709,7 +709,7 @@ def test_local_provider_definition_chunk_directive_is_injected() -> None:
         "template_id": "remember._default",
     }
     rendered = LocalSynthesisProvider._render_instruction_user(
-        definition_draft, "rdf_shacl_551_chunk_00003",
+        definition_draft, "demo_course_1_chunk_00003",
     )
     assert "definition / recall chunk" in rendered
     assert "EXPLANATION-asking question of at least 40 characters" in rendered
@@ -723,7 +723,7 @@ def test_local_provider_definition_chunk_directive_is_injected() -> None:
         "template_id": "analyze._default",
     }
     rendered_narrative = LocalSynthesisProvider._render_instruction_user(
-        narrative_draft, "rdf_shacl_551_chunk_00100",
+        narrative_draft, "demo_course_1_chunk_00100",
     )
     assert "definition / recall chunk" not in rendered_narrative
 
@@ -754,7 +754,7 @@ def test_smoke_deterministic_writes_sidecar_report_and_does_not_overwrite_pilot_
 
     stats = run_synthesis(
         corpus_dir=course_dir,
-        course_code="rdf-shacl-551-2",
+        course_code="demo-course-1",
         provider="local",  # gets coerced to mock under deterministic smoke
         seed=11,
         pilot_report_every=0,
@@ -808,7 +808,7 @@ def test_smoke_paraphrase_uses_provider_path_with_floor_2(
 
     stats = run_synthesis(
         corpus_dir=course_dir,
-        course_code="rdf-shacl-551-2",
+        course_code="demo-course-1",
         provider="local",
         seed=11,
         pilot_report_every=0,
@@ -1180,8 +1180,8 @@ def test_run_synthesis_dedupes_duplicate_instruction_prompts(
 ) -> None:
     """Closes the audit's zero-tolerance ``duplicates`` gate: when the
     paraphrase provider returns the same prompt for multiple chunks
-    (semantic-collision case observed on rdf-shacl-551-2's 14B
-    uncapped run), the second occurrence is rejected before append
+    (semantic-collision case observed on the RDF/SHACL calibration
+    corpus's 14B uncapped run), the second occurrence is rejected before append
     and counted under ``rejected_reasons[instruction:duplicate_prompt]``.
     """
     course_dir = _make_working_copy(tmp_path)
@@ -1209,7 +1209,7 @@ def test_run_synthesis_dedupes_duplicate_instruction_prompts(
 
     stats = run_synthesis(
         corpus_dir=course_dir,
-        course_code="rdf-shacl-551-2",
+        course_code="demo-course-1",
         provider="local",
         seed=11,
         pilot_report_every=0,
@@ -1260,7 +1260,7 @@ def test_run_synthesis_dedupes_duplicate_preference_prompts(
 
     stats = run_synthesis(
         corpus_dir=course_dir,
-        course_code="rdf-shacl-551-2",
+        course_code="demo-course-1",
         provider="local",
         seed=11,
         pilot_report_every=0,
@@ -1398,7 +1398,7 @@ def test_with_schema_translation_flag_appends_pairs(
 
     stats = run_synthesis(
         corpus_dir=course_dir,
-        course_code="rdf-shacl-551-2",
+        course_code="demo-course-1",
         provider="mock",
         seed=11,
         pilot_report_every=0,

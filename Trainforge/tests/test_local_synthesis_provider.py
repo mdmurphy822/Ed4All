@@ -642,7 +642,7 @@ def test_decision_capture_fires_on_preference_call(monkeypatch):
 def test_local_provider_default_prompt_floor_matches_schema(monkeypatch):
     """Wave 122 follow-up: ``DEFAULT_LOCAL_KIND_BOUNDS["prompt"]`` is
     realigned to the schema floor (``PROMPT_MIN`` = 40) after the
-    14B-Q4 uncapped run on rdf-shacl-551-2 emitted 5/263 schema-invalid
+    14B-Q4 uncapped run on the RDF/SHACL calibration corpus emitted 5/263 schema-invalid
     short prompts the previous 25-char floor admitted. 7B-Q4 callers
     that need a lower floor can still pass ``kind_bounds={"prompt":
     (25, PROMPT_MAX), ...}`` to the constructor."""

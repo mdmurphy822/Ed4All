@@ -24,7 +24,7 @@ back-compat ``oneOf`` in
    chunk-id universe). Miss emits warning-severity GateIssue
    ``OBJECTIVE_SOURCE_REF_UNRESOLVED`` and routes
    ``action="regenerate"``. Wave 1.6 ships warning-only to preserve
-   back-compat with the rdf-shacl-551-2 archive's existing emit.
+   back-compat with the RDF/SHACL calibration corpus archive's existing emit.
 2. **Structured ``{ref, chunk_ids[]}`` source_refs.**
    * ``ref`` not in ``textbook_structure.chapters[*].id`` ∪
      ``chapters[*].sections[*].id`` → warning-severity
@@ -242,7 +242,7 @@ def _load_dart_chunks_universe(
     BOTH:
 
     * Each chunk's top-level ``"id"`` field (the per-chunk ID, e.g.
-      ``"rdf_shacl_551_chunk_00001"``).
+      ``"demo_course_chunk_00001"``).
     * The union of every chunk's ``source.source_references[*].sourceId``
       (the ``dart:{slug}#{block_id}`` shape that the synthesizer's
       ``_topic_objective_source_ref`` emits into structured
@@ -432,7 +432,7 @@ class ObjectiveSourceRefValidator:
     Emits regenerate-action GateIssues on structural source-ref misses
     (LO references a chapter / section / chunk that doesn't exist
     upstream). Wave 1.6 ships at WARNING severity day-1 to preserve
-    back-compat with the rdf-shacl-551-2 calibration corpus's existing
+    back-compat with the RDF/SHACL calibration corpus's existing
     emit; promotion to CRITICAL waits for future-wave calibration data
     (see plan §6.3 risk note).
 

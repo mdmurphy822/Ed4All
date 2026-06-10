@@ -130,14 +130,43 @@ def test_h1_manifest_with_source_coverage_validates() -> None:
     _validate_against_schema(manifest)
 
 
+# Minimal DART HTML fixture: two content sections with non-trivial
+# paragraphs so the HTML parser yields real ContentSections and the
+# chunker emits at least one chunk. Wave1-I2 made ``_run_dart_chunking``
+# fail-closed on an empty staging dir (RuntimeError — it refuses to write
+# an empty-bytes shell over a possibly-real prior artifact), so the
+# end-to-end source_coverage emit MUST run against non-empty input. The
+# companion test-inversion commit (c8ea9a2) flipped the other empty-input
+# tests but missed this one; seeding a real HTML file is the fix that
+# keeps the W3.H schema-shape coverage alive against live chunker output.
+_DART_HTML_FIXTURE = """<!DOCTYPE html>
+<html><head><title>Intro to RDF</title></head><body>
+<h1>Introduction to RDF</h1>
+<section><h2>What is a Triple</h2>
+<p>An RDF triple is composed of a subject, a predicate, and an object.
+The subject denotes the resource being described, while the predicate
+denotes a trait or aspect of the resource and expresses a relationship
+between the subject and the object. This paragraph is long enough to
+clear any non-trivial word minimum the chunker enforces.</p>
+</section>
+<section><h2>Serialization Formats</h2>
+<p>RDF data can be serialized in several formats including Turtle,
+N-Triples, JSON-LD, and RDF/XML. Each format has tradeoffs in human
+readability and machine parsing efficiency, and choosing among them
+depends on the downstream tooling and intended audience.</p>
+</section>
+</body></html>"""
+
+
 @pytest.mark.unit
 def test_h1_run_dart_chunking_emits_source_coverage(tmp_path: Path) -> None:
     """End-to-end: the helper writes a manifest carrying ``source_coverage``.
 
-    Drives the helper against an empty staging dir so we exercise the
-    fail-soft empty-input shell without needing a real DART HTML
-    fixture. The coverage block must still emit (consumed_count=0,
-    coverage_pct=0.0).
+    Seeds ONE minimal DART HTML file into the staging dir so the helper
+    runs against non-empty input (Wave1-I2 fail-closes on an empty
+    staging dir). The W3.H ``source_coverage`` block must emit with the
+    canonical 5 fields, the dropped-count invariant holding against live
+    chunker output, and ``coverage_pct == emitted/consumed``.
     """
     pytest.importorskip("Trainforge.parsers.html_content_parser")
     from MCP.tools.pipeline_tools import _build_tool_registry
@@ -148,6 +177,9 @@ def test_h1_run_dart_chunking_emits_source_coverage(tmp_path: Path) -> None:
 
     staging = tmp_path / "staging"
     staging.mkdir()
+    (staging / "intro_rdf.html").write_text(
+        _DART_HTML_FIXTURE, encoding="utf-8",
+    )
     libv2_root = tmp_path / "libv2"
     libv2_root.mkdir()
 
@@ -159,7 +191,7 @@ def test_h1_run_dart_chunking_emits_source_coverage(tmp_path: Path) -> None:
         libv2_root=str(libv2_root),
     ))
     payload = json.loads(envelope)
-    assert payload.get("success") is True
+    assert payload.get("success") is True, payload
     manifest_path = Path(payload["manifest_path"])
     assert manifest_path.exists()
     manifest = json.loads(manifest_path.read_text())
@@ -172,7 +204,15 @@ def test_h1_run_dart_chunking_emits_source_coverage(tmp_path: Path) -> None:
         "drop_reasons",
         "coverage_pct",
     }
-    # Empty-input shell — zero blocks consumed, zero emitted.
-    assert block["consumed_count"] == 0
-    assert block["emitted_count"] == 0
-    assert block["coverage_pct"] == 0.0
+    # Non-empty input — at least one block consumed and at least one
+    # chunk emitted from the seeded HTML.
+    assert block["consumed_count"] >= 1, block
+    assert block["emitted_count"] >= 1, block
+    # Canonical invariant: dropped_count == sum(drop_reasons.values()).
+    assert block["dropped_count"] == sum(block["drop_reasons"].values()), block
+    # coverage_pct is emitted/consumed (rounded), within (0, 1].
+    expected_pct = round(
+        block["emitted_count"] / block["consumed_count"], 6
+    )
+    assert block["coverage_pct"] == pytest.approx(expected_pct, rel=1e-3), block
+    assert 0.0 < block["coverage_pct"] <= 1.0, block

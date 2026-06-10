@@ -14,7 +14,7 @@ any failure.
 Usage::
 
     python -m Trainforge.scripts.smoke_generators \
-      --course-code rdf-shacl-551-2 \
+      --course-code <course-slug> \
       --max-pairs-per-generator 5
 
 Exit code 0 means: all four generators emitted >= 1 schema-valid pair.
@@ -162,8 +162,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--course-code",
-        default="rdf-shacl-551-2",
-        help="LibV2 course slug (default: rdf-shacl-551-2).",
+        required=True,
+        help="LibV2 course slug (e.g. <course-slug>).",
     )
     parser.add_argument(
         "--max-pairs-per-generator",

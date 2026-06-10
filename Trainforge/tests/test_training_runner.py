@@ -432,7 +432,7 @@ SHA256_EMPTY = hashlib.sha256(b"").hexdigest()
 def _build_libv2_course_no_vocab(tmp_path: Path, slug: str = "tst-101-novocab") -> Path:
     """Same fixture as ``_build_libv2_course`` but without graph/*.vocabulary.ttl.
 
-    Mirrors production LibV2 courses (e.g. rdf-shacl-551-2) where no
+    Mirrors production LibV2 courses (e.g. a real course slug) where no
     course-local vocab file is materialized — the canonical TTL lives at
     project-root ``schemas/context/courseforge_v1.vocabulary.ttl`` and
     Wave 96 wires it as a fallback so the model card pins a non-empty

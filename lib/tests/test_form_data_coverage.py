@@ -156,7 +156,7 @@ def test_compute_coverage_metrics_no_family_map_returns_empty_map():
 
 
 def test_eval_gating_emits_checkpoint_row_on_pass(tmp_path: Path) -> None:
-    course_root = tmp_path / "rdf-shacl-551-2"
+    course_root = tmp_path / "demo-course-1"
     model_dir = course_root / "models" / "test-v1"
     model_dir.mkdir(parents=True)
     _write_eval_report(model_dir)
@@ -192,7 +192,7 @@ def test_eval_gating_emits_checkpoint_row_on_pass(tmp_path: Path) -> None:
     assert row["promotion_decision"] == "passed"
     assert row["promotion_block_reasons"] == []
     assert row["model_id"] == "test-v1"
-    assert row["course_slug"] == "rdf-shacl-551-2"
+    assert row["course_slug"] == "demo-course-1"
     assert row["family"] == "synthetic"
     assert row["manifest_coverage_pct"] == 0.50
 
@@ -203,7 +203,7 @@ def test_eval_gating_emits_checkpoint_row_on_pass(tmp_path: Path) -> None:
 
 
 def test_eval_gating_emits_checkpoint_row_on_block(tmp_path: Path) -> None:
-    course_root = tmp_path / "rdf-shacl-551-2"
+    course_root = tmp_path / "demo-course-1"
     model_dir = course_root / "models" / "test-v2"
     model_dir.mkdir(parents=True)
     # Faithfulness below threshold => critical block.
@@ -247,7 +247,7 @@ def test_eval_gating_checkpoint_failure_does_not_break_gate(
     """A raise inside _emit_coverage_checkpoint must NOT propagate —
     the gate result is canonical regardless of checkpoint write
     failures."""
-    course_root = tmp_path / "rdf-shacl-551-2"
+    course_root = tmp_path / "demo-course-1"
     model_dir = course_root / "models" / "test-v3"
     model_dir.mkdir(parents=True)
     _write_eval_report(model_dir)
@@ -271,7 +271,7 @@ def test_eval_gating_checkpoint_failure_does_not_break_gate(
 
 
 def test_checkpoint_jsonl_is_append_only(tmp_path: Path) -> None:
-    course_root = tmp_path / "rdf-shacl-551-2"
+    course_root = tmp_path / "demo-course-1"
     model_dir = course_root / "models" / "test-v4"
     model_dir.mkdir(parents=True)
     _write_eval_report(model_dir)
@@ -300,7 +300,7 @@ def test_checkpoint_jsonl_is_append_only(tmp_path: Path) -> None:
     assert len(rows) == 2
     # Both rows should carry the same model_id / course_slug.
     assert rows[0]["model_id"] == rows[1]["model_id"] == "test-v4"
-    assert rows[0]["course_slug"] == rows[1]["course_slug"] == "rdf-shacl-551-2"
+    assert rows[0]["course_slug"] == rows[1]["course_slug"] == "demo-course-1"
 
 
 # ----------------------------------------------------------------------
@@ -309,7 +309,7 @@ def test_checkpoint_jsonl_is_append_only(tmp_path: Path) -> None:
 
 
 def test_checkpoint_row_schema(tmp_path: Path) -> None:
-    course_root = tmp_path / "rdf-shacl-551-2"
+    course_root = tmp_path / "demo-course-1"
     model_dir = course_root / "models" / "test-v5"
     model_dir.mkdir(parents=True)
     _write_eval_report(model_dir)

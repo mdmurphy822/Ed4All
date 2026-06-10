@@ -1,6 +1,6 @@
 """SemanticGraphRuleOutputValidator — Wave 82 silent-zero regression gate.
 
-The rdf-shacl-551-2 audit found that 5 of 7 inference rules in a shipped
+The RDF/SHACL calibration corpus audit found that 5 of 7 inference rules in a shipped
 ``concept_graph_semantic.json`` silently emitted zero edges, while the
 ``rule_versions`` block was byte-identical to a baseline that produced
 2,004 edges across all 7 rules. The pipeline reported success while
@@ -381,8 +381,8 @@ class SemanticGraphRuleOutputValidator:
                 message=(
                     f"Rule '{rule_name}' produced 0 edges in current run but "
                     f"{baseline_n} edges in baseline (rule_version unchanged: "
-                    f"{cur_v!r}). This is the failure mode the rdf-shacl-551 "
-                    f"audit flagged — pipeline shipped a degraded semantic "
+                    f"{cur_v!r}). This is the failure mode the RDF/SHACL "
+                    f"calibration corpus audit flagged — pipeline shipped a degraded semantic "
                     f"graph while reporting success."
                 ),
                 location=f"{current_path}#provenance.rule={rule_name}",

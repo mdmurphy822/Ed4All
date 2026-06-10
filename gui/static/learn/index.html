@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ask the Course</title>
+  <link rel="stylesheet" href="/learn/learn.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+  <header>
+    <p class="brand">Ask the Course</p>
+  </header>
+  <main id="main">
+    <h1>Ask the course a question</h1>
+
+    <form id="ask-form" novalidate>
+      <div class="field">
+        <label for="course-sel">Course</label>
+        <select id="course-sel" name="course" required>
+          <option value="">Loading courses&hellip;</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="q-in">Your question</label>
+        <textarea id="q-in" name="query" rows="3" required
+                  placeholder="e.g. What is a vector store?"></textarea>
+      </div>
+
+      <button type="submit" id="ask-btn">Ask</button>
+    </form>
+
+    <!-- The ONE polite live region. Status + arrival messages only. -->
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+    <!-- Visual-only elapsed counter (SR users get no per-second chatter). -->
+    <p id="elapsed" class="elapsed" aria-hidden="true"></p>
+
+    <!-- Server-rendered answer fragment lands here. -->
+    <div id="answer-region" aria-busy="false"></div>
+  </main>
+
+  <script src="/learn/learn.js"></script>
+</body>
+</html>

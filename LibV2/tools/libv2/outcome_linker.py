@@ -206,20 +206,78 @@ def load_courseforge_objectives(objectives_path: Path) -> List[LearningOutcome]:
     return outcomes
 
 
+# Defaults for the precision-controlled linker. Kept as module constants so
+# callers / tests can reference the canonical values.
+DEFAULT_MAX_OUTCOMES_PER_CHUNK = 3
+DEFAULT_SIMILARITY_THRESHOLD = 0.20
+# An outcome linked to more than this fraction of all chunks is treated as
+# "too broad" and pruned down to the chunks where it is a top-ranked match.
+BROAD_OUTCOME_FREQUENCY = 0.40
+# When an outcome is pruned for being too broad, keep it only on chunks where
+# it ranks at or above this position (1 = top-1 only, 2 = top-2).
+BROAD_OUTCOME_KEEP_RANK = 2
+# Extra margin above the threshold below which a zero-concept-overlap link is
+# considered marginal and dropped.
+MARGINAL_MARGIN = 0.05
+
+
+def _concept_overlap(outcome: LearningOutcome, chunk: Dict[str, Any]) -> bool:
+    """Return True if the outcome's key_concepts share ≥1 token with the
+    chunk's concept_tags (token-level, case-insensitive)."""
+    chunk_tags = chunk.get("concept_tags") or []
+    if not outcome.key_concepts or not chunk_tags:
+        return False
+
+    def _tokens(values: List[str]) -> set:
+        toks: set = set()
+        for v in values:
+            toks.update(tokenize(str(v)))
+        return toks
+
+    outcome_tokens = _tokens(outcome.key_concepts)
+    tag_tokens = _tokens(chunk_tags)
+    return bool(outcome_tokens & tag_tokens)
+
+
 def link_chunks_to_outcomes(
     chunks: List[Dict[str, Any]],
     outcomes: List[LearningOutcome],
-    similarity_threshold: float = 0.15,
-    max_outcomes_per_chunk: int = 3,
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    max_outcomes_per_chunk: int = DEFAULT_MAX_OUTCOMES_PER_CHUNK,
+    broad_outcome_frequency: float = BROAD_OUTCOME_FREQUENCY,
+    broad_outcome_keep_rank: int = BROAD_OUTCOME_KEEP_RANK,
+    use_concept_gate: bool = True,
 ) -> List[Dict[str, Any]]:
     """
-    Link each chunk to relevant learning outcomes using TF-IDF similarity.
+    Link each chunk to relevant learning outcomes using TF-IDF similarity,
+    with precision controls to prevent broad objectives from over-linking.
+
+    Precision controls (all default-valued, signature stays backward
+    compatible):
+
+    1. Per-chunk top-K cap — keep only the ``max_outcomes_per_chunk`` highest-
+       scoring outcomes per chunk, ranked by score descending.
+    2. Raised floor — ``similarity_threshold`` defaults to 0.20 (overridable).
+    3. Global-frequency anti-signal — after scoring all chunks, any outcome
+       linked to more than ``broad_outcome_frequency`` of chunks is too broad;
+       it is kept only on chunks where it ranks within
+       ``broad_outcome_keep_rank`` (its top-1/top-2 match), and dropped from
+       the marginal attachments.
+    4. Key-concept overlap gate — when ``use_concept_gate`` and an outcome's
+       ``key_concepts`` share ≥1 token with the chunk's ``concept_tags``, the
+       link is kept even at a lower score; with zero overlap AND a marginal
+       score (< threshold + 0.05), the link is dropped.
 
     Args:
         chunks: List of chunk dictionaries
         outcomes: List of LearningOutcome objects
         similarity_threshold: Minimum similarity score to link
         max_outcomes_per_chunk: Maximum outcomes to link per chunk
+        broad_outcome_frequency: Fraction-of-chunks ceiling above which an
+            outcome is pruned to its top-ranked chunks
+        broad_outcome_keep_rank: Rank cutoff retained when pruning a broad
+            outcome (1 = top-1 only, 2 = top-2)
+        use_concept_gate: Enable the key-concept overlap boost/gate
 
     Returns:
         Updated chunks with learning_outcome_refs populated
@@ -237,23 +295,89 @@ def link_chunks_to_outcomes(
     # Build TF-IDF index on outcomes
     index = SimpleTFIDF(outcome_texts)
 
-    linked_count = 0
-    for chunk in chunks:
+    # Pass 1: score every chunk against every outcome and build the per-chunk
+    # ranked candidate list (post top-K cap + concept gate). We also track, for
+    # each outcome, the rank at which it appears in each chunk so the global-
+    # frequency pruner can decide which attachments to keep.
+    #
+    # candidates[chunk_pos] = list of (outcome_idx, score, rank) kept for chunk
+    # outcome_chunk_rank[outcome_idx] = {chunk_pos: rank}
+    candidates: Dict[int, List[Tuple[int, float, int]]] = {}
+    outcome_chunk_rank: Dict[int, Dict[int, int]] = {}
+
+    for chunk_pos, chunk in enumerate(chunks):
         chunk_text = chunk.get("text", "")
         if not chunk_text:
+            chunk["learning_outcome_refs"] = []
             continue
 
-        # Search for matching outcomes
-        matches = index.search(chunk_text, limit=max_outcomes_per_chunk * 2)
+        # Rank ALL outcomes for this chunk so we know true top-1/top-2 even for
+        # links that the per-chunk cap or threshold later drops.
+        ranked = index.search(chunk_text, limit=len(outcomes))
 
-        # Filter by threshold and limit
-        outcome_refs = []
-        for outcome_idx, score in matches:
-            if score >= similarity_threshold:
-                outcome_refs.append(outcomes[outcome_idx].objective_id)
-                if len(outcome_refs) >= max_outcomes_per_chunk:
-                    break
+        kept: List[Tuple[int, float, int]] = []
+        for rank, (outcome_idx, score) in enumerate(ranked, start=1):
+            outcome = outcomes[outcome_idx]
+            overlap = _concept_overlap(outcome, chunk) if use_concept_gate else False
 
+            # Concept-overlap boost: a shared concept token between the
+            # outcome's key_concepts and the chunk's concept_tags is strong
+            # topical evidence, so keep the link even well below the floor
+            # (down to any positive TF-IDF similarity). The per-chunk top-K cap
+            # and the global-frequency pruner still bound how many such links
+            # survive.
+            if overlap:
+                if score <= 0.0:
+                    continue
+            else:
+                if score < similarity_threshold:
+                    continue
+                # Zero overlap + marginal score -> drop (concept gate).
+                if use_concept_gate and score < similarity_threshold + MARGINAL_MARGIN:
+                    continue
+
+            kept.append((outcome_idx, score, rank))
+            outcome_chunk_rank.setdefault(outcome_idx, {})[chunk_pos] = rank
+            if len(kept) >= max_outcomes_per_chunk:
+                break
+
+        candidates[chunk_pos] = kept
+
+    # Pass 2: global-frequency anti-signal. Identify outcomes attached to more
+    # than `broad_outcome_frequency` of all chunks; for those, keep only the
+    # attachments where the outcome ranks within `broad_outcome_keep_rank`.
+    total_chunks = len(chunks) if chunks else 1
+    broad_threshold_count = broad_outcome_frequency * total_chunks
+
+    drop_for_outcome: Dict[int, set] = {}
+    for outcome_idx, chunk_ranks in outcome_chunk_rank.items():
+        if len(chunk_ranks) > broad_threshold_count:
+            drop = {
+                cpos
+                for cpos, rank in chunk_ranks.items()
+                if rank > broad_outcome_keep_rank
+            }
+            if drop:
+                drop_for_outcome[outcome_idx] = drop
+                logger.info(
+                    "Outcome %s over-linked (%d/%d chunks); pruning %d marginal "
+                    "attachments below rank %d",
+                    outcomes[outcome_idx].objective_id,
+                    len(chunk_ranks),
+                    total_chunks,
+                    len(drop),
+                    broad_outcome_keep_rank,
+                )
+
+    # Pass 3: materialize refs onto chunks, applying the broad-outcome drops.
+    linked_count = 0
+    for chunk_pos, chunk in enumerate(chunks):
+        kept = candidates.get(chunk_pos, [])
+        outcome_refs = [
+            outcomes[outcome_idx].objective_id
+            for (outcome_idx, _score, _rank) in kept
+            if chunk_pos not in drop_for_outcome.get(outcome_idx, ())
+        ]
         chunk["learning_outcome_refs"] = outcome_refs
         if outcome_refs:
             linked_count += 1
@@ -302,7 +426,7 @@ def populate_course_outcomes(
 def link_course_outcomes(
     course_dir: Path,
     objectives_path: Path,
-    similarity_threshold: float = 0.15,
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
 ) -> Dict[str, int]:
     """
     Full outcome linking for a course.

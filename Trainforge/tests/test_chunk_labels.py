@@ -72,7 +72,7 @@ def test_resolver_returns_fallback_for_unknown_chunk(tmp_path: Path) -> None:
     # Chunk-ID forms — should match
     ("chunk_00001", True),
     ("chunk_99999", True),
-    ("rdf_shacl_551_chunk_00270", True),       # corpus-prefixed (production form)
+    ("demo_course_1_chunk_00270", True),       # corpus-prefixed (production form)
     ("test_corpus_chunk_42", True),             # arbitrary-prefix form
     # Non-chunk forms — should NOT match
     ("CO-18", False),                           # course objective
@@ -113,7 +113,7 @@ def test_scrub_passes_through_non_chunk_strings(tmp_path: Path, value) -> None:
     misconception IDs, generic graph nodes) must flow through ``scrub``
     unchanged. Only chunk-ID literals get replaced with their label."""
     p = _write_chunks(tmp_path, [
-        {"id": "rdf_shacl_551_chunk_00270", "summary": "Validating SHACL shapes"},
+        {"id": "demo_course_1_chunk_00270", "summary": "Validating SHACL shapes"},
     ])
     resolver = ChunkLabelResolver.from_jsonl(p)
     assert resolver.scrub(value) == value
@@ -122,11 +122,11 @@ def test_scrub_passes_through_non_chunk_strings(tmp_path: Path, value) -> None:
 def test_scrub_replaces_chunk_id_with_label(tmp_path: Path) -> None:
     """The positive path: a chunk-ID literal IS swapped for its label."""
     p = _write_chunks(tmp_path, [
-        {"id": "rdf_shacl_551_chunk_00270", "summary": "Validating SHACL shapes"},
+        {"id": "demo_course_1_chunk_00270", "summary": "Validating SHACL shapes"},
         {"id": "chunk_00001", "summary": "First chunk"},
     ])
     resolver = ChunkLabelResolver.from_jsonl(p)
-    assert resolver.scrub("rdf_shacl_551_chunk_00270") == "Validating SHACL shapes"
+    assert resolver.scrub("demo_course_1_chunk_00270") == "Validating SHACL shapes"
     assert resolver.scrub("chunk_00001") == "First chunk"
 
 

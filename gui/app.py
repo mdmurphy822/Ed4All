@@ -16,6 +16,7 @@ module-level ``router = APIRouter()``; the intended final state wires all five.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -32,6 +33,15 @@ _ROUTER_MOUNTS = [
     ("runs", "/api"),  # runs.py owns /api/workflows + /api/runs/* + /ws/runs/*
     ("courses", "/api/courses"),
     ("retrieval", "/api/retrieval"),
+    ("learn", "/api/learn"),  # learner answer surface (ask, courses, source)
+]
+
+# The learner-only serve mode (``ed4all gui --learner`` / ``ED4ALL_GUI_LEARNER=1``)
+# mounts ONLY this router — the operator routers (settings/uploads/runs/courses/
+# retrieval, which expose env / API keys / run-launching) are NOT mounted, so a
+# learner on a shared appliance never reaches the operator surface.
+_LEARNER_ROUTER_MOUNTS = [
+    ("learn", "/api/learn"),
 ]
 
 
@@ -42,8 +52,20 @@ def _static_dir() -> Path:
     return static
 
 
-def _include_routers(app: FastAPI) -> None:
-    """Import + mount each router; tolerate a router still mid-build.
+def _learn_static_dir() -> Path:
+    """Return ``gui/static/learn/`` (the learner page subtree).
+
+    Built by a sibling executor; created lazily here so the mount never errors
+    even before the page assets land (the dir is tolerated absent — an empty
+    dir simply serves nothing until ``index.html`` ships).
+    """
+    learn = _static_dir() / "learn"
+    learn.mkdir(parents=True, exist_ok=True)
+    return learn
+
+
+def _include_routers(app: FastAPI, mounts: list) -> None:
+    """Import + mount each router in ``mounts``; tolerate a router mid-build.
 
     Routers carry their own ``@router.<method>`` paths; ``prefix`` here only
     namespaces them. ``runs`` mounts at the bare ``/api`` prefix because it owns
@@ -52,7 +74,7 @@ def _include_routers(app: FastAPI) -> None:
     """
     import importlib  # noqa: PLC0415
 
-    for name, prefix in _ROUTER_MOUNTS:
+    for name, prefix in mounts:
         module_path = f"gui.routers.{name}"
         try:
             module = importlib.import_module(module_path)
@@ -69,8 +91,28 @@ def _include_routers(app: FastAPI) -> None:
         logger.info("mounted gui router %s at %s", module_path, prefix)
 
 
-def create_app() -> FastAPI:
-    """Build and return the configured FastAPI app."""
+def create_app(learner_only: bool = False) -> FastAPI:
+    """Build and return the configured FastAPI app.
+
+    ``learner_only=True`` mounts ONLY the learner answer surface — the learn
+    router (``/api/learn/*``) plus the ``gui/static/learn/`` page subtree served
+    at ``/`` (so ``/`` IS the learner page in learner mode) — and NONE of the
+    operator routers or the operator SPA. The liveness probe (``/api/health``)
+    stays. This is the access-control posture for moderated pilot sessions on a
+    shared appliance (the operator surface that exposes env / API keys / run
+    launching is not even mounted).
+
+    ``ED4ALL_GUI_LEARNER`` (truthy: 1/true/yes/on) also forces learner-only
+    mode. uvicorn's import-string factory paths (``ed4all gui`` and
+    ``--reload``) call ``create_app()`` with no arguments, so the env var is
+    the only channel through which those entry points can request the learner
+    surface — without this check they would silently serve the full operator
+    surface to a learner session.
+    """
+    if not learner_only:
+        learner_only = os.environ.get(
+            "ED4ALL_GUI_LEARNER", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
     app = FastAPI(
         title="Ed4All Control-Plane GUI",
         description="Human management surface for the Ed4All pipeline.",
@@ -109,10 +151,23 @@ def create_app() -> FastAPI:
         except Exception:  # noqa: BLE001 — startup reconciliation is best-effort
             logger.exception("orphan reconciliation failed on startup")
 
-    _include_routers(app)
+    if learner_only:
+        _include_routers(app, _LEARNER_ROUTER_MOUNTS)
+        # Serve the learner page subtree at ``/`` — ``/`` IS the learner page in
+        # learner mode (no operator SPA mounted).
+        app.mount(
+            "/",
+            StaticFiles(directory=str(_learn_static_dir()), html=True),
+            name="learn-static",
+        )
+        return app
+
+    _include_routers(app, _ROUTER_MOUNTS)
 
     # SPA mount LAST so it doesn't shadow the /api routes. html=True serves
-    # index.html for the SPA root.
+    # index.html for the SPA root. The existing ``html=True`` mount at ``/``
+    # auto-serves any ``gui/static/learn/index.html`` at ``/learn/`` with no
+    # extra mount (the learner page rides the operator app in the full mode).
     app.mount("/", StaticFiles(directory=str(_static_dir()), html=True), name="static")
 
     return app

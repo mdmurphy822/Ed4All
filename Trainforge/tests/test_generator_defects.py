@@ -287,7 +287,7 @@ class TestQualityReportHonesty:
         # is "well-formed by vacuity" — there's nothing to be unbalanced.
         # Pre-Wave-82 returned False, conflating "no HTML" with "unclosed
         # tags" and inflating html_balance_violations counts. The
-        # rdf-shacl-551 audit caught this (205/295 reported vs 116/295
+        # RDF/SHACL calibration corpus audit caught this (205/295 reported vs 116/295
         # on independent recount).
         assert CourseProcessor._html_is_well_formed("") is True
         assert CourseProcessor._html_is_well_formed("   \n\t  ") is True

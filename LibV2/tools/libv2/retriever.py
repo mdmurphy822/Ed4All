@@ -805,6 +805,9 @@ def retrieve_chunks(
     limit: int = 10,
     sample_per_course: Optional[int] = None,
     min_relevance: Optional[float] = None,
+    # WS2 — additive engine axis (orthogonal to ``method`` boost presets).
+    # Default "lexical" => byte-identical to every pre-WS2 caller.
+    engine: str = "lexical",
 ) -> list[RetrievalResult]:
     """Retrieve chunks matching query and filters.
 
@@ -813,7 +816,80 @@ def retrieve_chunks(
     pre-Worker-J shape — production callers (Trainforge/rag/libv2_bridge.py)
     are unaffected.  Opt into the rationale payload and metadata-aware
     scoring explicitly.
+
+    ``engine`` (WS2, additive — default ``"lexical"``) selects the retrieval
+    engine, orthogonal to the ``method`` boost presets:
+
+    * ``"lexical"`` — the BM25 + boost path below; byte-identical to every
+      pre-WS2 caller (the back-compat contract above).
+    * ``"semantic"`` — real nearest-neighbor over the on-device vector index
+      (``semantic_retriever.semantic_retrieve_chunks``). Requires
+      ``course_slug``; ``method=`` is rejected (boosts are N/A). Fail-closed
+      on a missing / stale / fake index or unavailable backend — NEVER a
+      BM25 fallback.
+    * ``"hybrid-rrf"`` — RRF fusion of the lexical + semantic rankings
+      (rank-domain). Also fail-closed on semantic-arm absence.
     """
+    # Coerce repo_root to Path — the signature is typed Path, but CLI/direct
+    # API callers may pass a str; downstream uses ``repo_root / ...`` throughout.
+    repo_root = Path(repo_root)
+
+    # WS2 engine dispatch (additive). The "lexical" path falls through to the
+    # unchanged BM25 body below so existing callers see no behavior change.
+    if engine != "lexical":
+        if engine not in ("semantic", "hybrid-rrf"):
+            raise ValueError(
+                f"unknown retrieval engine: {engine!r}; expected one of "
+                f"'lexical', 'semantic', 'hybrid-rrf'."
+            )
+        if not course_slug:
+            raise ValueError(
+                f"engine={engine!r} requires a course_slug (single-course "
+                f"semantic scope)."
+            )
+        if method is not None:
+            # Boost presets are lexical-only; fail loudly on nonsensical combos.
+            raise ValueError(
+                f"engine={engine!r} does not accept method={method!r} "
+                f"(boost presets apply to the lexical engine only)."
+            )
+        chunk_filter = ChunkFilter(
+            chunk_type=chunk_type,
+            difficulty=difficulty,
+            concept_tags=concept_tags,
+            learning_outcome_refs=learning_outcome_refs,
+            bloom_level=bloom_level,
+            teaching_role=teaching_role,
+            content_type_label=content_type_label,
+            module_id=module_id,
+            week_num=week_num,
+            cognitive_domain=cognitive_domain,
+            hierarchy_level=hierarchy_level,
+        )
+        # Local import keeps the (heavier) embedding/vector-index import off
+        # the hot lexical path and avoids import-time coupling.
+        from .semantic_retriever import (
+            hybrid_rrf_retrieve,
+            semantic_retrieve_chunks,
+        )
+
+        if engine == "semantic":
+            return semantic_retrieve_chunks(
+                repo_root,
+                query,
+                course_slug=course_slug,
+                limit=limit,
+                chunk_filter=chunk_filter,
+                include_rationale=include_rationale,
+            )
+        return hybrid_rrf_retrieve(
+            repo_root,
+            query,
+            course_slug=course_slug,
+            limit=limit,
+            chunk_filter=chunk_filter,
+            include_rationale=include_rationale,
+        )
     # Wave 84: ``method`` preset overrides individual boost flags so
     # callers can A/B retrieval configurations without juggling 6 booleans.
     # Unknown method names raise ValueError (fail loudly on typos).
@@ -879,8 +955,9 @@ def retrieve_chunks(
     # scored only that subset. For any course with > 100 chunks, gold
     # chunks past the first 100 (later weeks/modules) were invisible
     # to retrieval — a candidate-collection bug, not a tokenization
-    # issue. The audit's rdf-shacl-551-2 probe revealed it as a
-    # 60% Hit@10 ceiling (6/15 queries' gold chunks lived past chunk_00100).
+    # issue. The audit's RDF/SHACL calibration corpus probe revealed it
+    # as a 60% Hit@10 ceiling (6/15 queries' gold chunks lived past
+    # chunk_00100).
     #
     # Fix: for single-course queries (``course_slug`` set) the budget
     # is effectively the whole course (10K hard cap, well above any

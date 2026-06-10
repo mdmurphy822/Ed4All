@@ -393,7 +393,7 @@ _OUTLINE_SYSTEM_PROMPT: str = (
 # ``"block_type": "objective"`` as a string literal in-grammar) is
 # deferred to Phase 4 — at the 7B-class default model, the JSON-only
 # constraint plus a strong system prompt already keeps drift below
-# the parse-retry budget on the rdf-shacl-551-2 calibration corpus.
+# the parse-retry budget on the RDF/SHACL calibration corpus.
 _GENERIC_JSON_GBNF: str = r"""root   ::= object
 value  ::= object | array | string | number | ("true" | "false" | "null") ws
 object ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}" ws

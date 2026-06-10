@@ -524,7 +524,7 @@ class LibV2ModelValidator:
 
         Mock-provider corpora are template-factory output and produce
         template-recognizer adapters (Wave 107 root cause for the
-        rdf-shacl-551-2 regression). No production training run may
+        RDF/SHACL calibration corpus regression). No production training run may
         consume them. When ``course_dir`` is unresolvable or the
         instruction-pairs file is absent, this check no-ops — the rest
         of the validator already covers those conditions.

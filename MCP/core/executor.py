@@ -188,7 +188,17 @@ AGENT_TOOL_MAPPING = {
     # TRAINFORGE AGENTS
     # -------------------------------------------------------------------------
     "assessment-extractor": "analyze_imscc_content",
-    "rag-indexer": "analyze_imscc_content",
+    # rag-indexer builds the per-course on-device vector index (real
+    # embeddings + numpy exact-search index) via ``run_vector_indexing``.
+    # It was previously mis-mapped to ``analyze_imscc_content`` (an
+    # HTML/word-count scan that never produced an index) — the
+    # ``rag_training`` ``indexing`` phase could "succeed" without building
+    # any index. The mapping now points at the real indexing tool, which
+    # FAILS CLOSED when the embedding backend is unavailable (no
+    # file-counting masquerade). ``analyze_imscc_content`` stays wired for
+    # the agents that legitimately use it (assessment-extractor,
+    # content-analyzer).
+    "rag-indexer": "run_vector_indexing",
     "assessment-generator": "generate_assessments",
     "assessment-validator": "validate_assessment",
     # Wave 30 Gap 3: wire the previously-unused synthesize_training CLI

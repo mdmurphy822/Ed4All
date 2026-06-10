@@ -141,6 +141,12 @@ _CIP29_TO_BLOOM: Dict[str, str] = {
 _STRICT_MODE_ENV_VAR = "TRAINFORGE_REQUIRE_BERT_ENSEMBLE"
 _TRUTHY_VALUES = frozenset({"true", "1", "yes", "on"})
 
+#: Module-level latch so the "per-member dispatch unimplemented" warning
+#: fires exactly once per process regardless of how many ensembles are
+#: constructed (the synthesis call-path constructs one per validator,
+#: and a per-instance log would flood the operator console).
+_UNIMPLEMENTED_DISPATCH_WARNED = False
+
 
 #: Default on-disk cache for downloaded model weights. Mirrors the
 #: ``~/.cache/ed4all/`` convention used elsewhere; ``transformers``
@@ -316,6 +322,8 @@ class BloomBertEnsemble:
         if self._loaded is not None:
             return self._loaded
 
+        global _UNIMPLEMENTED_DISPATCH_WARNED
+
         loaded: List[BertClassifier] = []
         try:
             # Probe-import only — actual model construction happens
@@ -336,14 +344,48 @@ class BloomBertEnsemble:
             self._loaded = loaded
             return loaded
 
-        for member in self.members:
-            classifier = self._load_one_member(member)
-            if classifier is not None:
-                loaded.append(classifier)
-                self._emit_member_loaded(member, success=True)
-            else:
-                self._emit_member_loaded(member, success=False)
-
+        # Subtask-25 latent-bug fix: ``_classify_with_member`` is an
+        # unfinished placeholder that ALWAYS returns ("remember", 0.5)
+        # (see its docstring). Loading the three SHA-pinned BERT models
+        # here and then discarding their outputs fabricates a
+        # per_member=[(remember,0.5)x3] vote → winner_score 1.0 →
+        # promotion.py criterion 6 (`low_bloom_alignment`) rejects EVERY
+        # pair whose declared bloom != "remember" (observed != declared
+        # AND winner_score > the disagreement floor). That silently
+        # collapsed training synthesis to zero non-remember pairs.
+        #
+        # Until the real per-member dispatch lands, degrade HONESTLY:
+        # return [] so ``classify()`` yields the winner_level="unknown"
+        # sentinel → ``_classify_bloom`` returns (None, None) → criterion
+        # 6 skips. We must NOT load the 3 models just to throw their
+        # outputs away (also a ~10min/test-suite cost). Strict mode is
+        # preserved: it raised above when transformers is absent; when
+        # transformers IS present but dispatch is unimplemented we also
+        # raise so an operator who explicitly demanded the ensemble is
+        # not silently handed an always-unknown classifier.
+        #
+        # TODO(Subtask-25 follow-up wave): implement real per-member
+        # dispatch in ``_classify_with_member`` — cip29 argmax via
+        # ``_CIP29_TO_BLOOM``, SST-2 mapping via ``_SST2_TO_BLOOM``, and
+        # DeBERTa zero-shot NLI entailment over the six Bloom labels.
+        # That wave requires observe-only calibration (see the
+        # ``_ScriptedEnsemble`` aggregation tests in
+        # ``lib/classifiers/tests/test_bloom_bert_ensemble.py`` for the
+        # post-dispatch ``_aggregate`` contract). Once dispatch is real,
+        # restore the per-member load loop below.
+        if is_strict_mode():
+            raise BertEnsembleDepsMissing(
+                "BloomBertEnsemble per-member dispatch is unimplemented "
+                f"(see Subtask-25), but {_STRICT_MODE_ENV_VAR} is set: "
+                "refusing to fabricate votes. Implement "
+                "_classify_with_member or unset the strict flag."
+            )
+        if not _UNIMPLEMENTED_DISPATCH_WARNED:
+            logger.warning(
+                "bloom ensemble per-member dispatch unimplemented; "
+                "ensemble degrading to unknown — see Subtask-25"
+            )
+            _UNIMPLEMENTED_DISPATCH_WARNED = True
         self._loaded = loaded
         return loaded
 
@@ -409,13 +451,21 @@ class BloomBertEnsemble:
 
         Subtask 25 hands off the real per-member dispatch (cip29
         argmax + ``_CIP29_TO_BLOOM`` translation / SST-2 mapping /
-        zero-shot NLI entailment) to a followup commit; the current
-        default returns ``("remember", 0.5)`` so unit tests that mock
-        loaded members can still exercise the full classify ->
-        _aggregate path. Real classification is exercised by
-        integration smoke tests when ``transformers`` is installed
-        AND the caller subclasses ``BloomBertEnsemble`` to wire
-        model-specific scoring.
+        zero-shot NLI entailment) to a followup commit. Because that
+        dispatch is unimplemented, the production loader
+        (:meth:`_load_members`) now degrades to ``[]`` BEFORE any member
+        reaches this method, so the default-constructed ensemble never
+        invokes it — this body is reached only by test subclasses (e.g.
+        ``_ScriptedEnsemble``) that override ``_load_members`` to inject
+        scripted votes, or by a future subclass that wires real
+        model-specific scoring. The placeholder return is retained ONLY
+        to keep those scripted-vote tests exercising the full
+        ``classify -> _aggregate`` path; it MUST NOT be relied on as a
+        real classification (it fabricates a remember/0.5 vote).
+
+        TODO(Subtask-25 follow-up wave): implement the three real
+        dispatch branches here, then restore the per-member load loop in
+        :meth:`_load_members`.
         """
         return ("remember", 0.5)
 

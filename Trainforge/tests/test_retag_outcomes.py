@@ -29,11 +29,11 @@ from Trainforge.retag_outcomes import (
 
 # ---- Fixtures -------------------------------------------------------
 
-# Mirror the rdf-shacl-550-rdf-shacl-550 objectives.json shape so the
+# Mirror the RDF/SHACL calibration corpus objectives.json shape so the
 # parent-rollup contract is tested against the real mapping.
 OBJECTIVES = {
     "schema_version": "v1",
-    "course_code": "RDF_SHACL_550",
+    "course_code": "DEMO_COURSE_1",
     "terminal_outcomes": [
         {"id": "to-04", "statement": "..."},
         {"id": "to-05", "statement": "..."},

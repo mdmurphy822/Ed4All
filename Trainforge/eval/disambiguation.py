@@ -5,8 +5,9 @@ For each ``interferes_with`` edge in the pedagogy graph
 verify the model's response surfaces the corpus-stored distinction.
 
 Schema correction: misconceptions are first-class graph nodes
-(class=Misconception, 34 of them in rdf-shacl-551-2). The
-``interferes_with`` edge type — 365 edges in rdf-shacl-551-2 — is the
+(class=Misconception, 34 of them in the RDF/SHACL calibration
+corpus). The ``interferes_with`` edge type — 365 edges in the RDF/SHACL
+calibration corpus — is the
 canonical anchor for misconception-to-concept linkage. There is **no
 ``misconception-of`` edge type** in the pedagogy graph; that slug
 exists on the ``concept_graph_semantic`` artifact (a different

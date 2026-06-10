@@ -721,7 +721,7 @@ class PairClaimSupportValidator:
                 no per-pair reject). A future calibration wave may
                 introduce ``"critical"`` once the DART-side
                 contradiction floor is calibrated against the
-                rdf-shacl-551-2 corpus per §3 of the dual-source
+                RDF/SHACL calibration corpus per §3 of the dual-source
                 investigation plan.
 
         Returns:

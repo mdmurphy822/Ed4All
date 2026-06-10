@@ -2,7 +2,7 @@
 
 A model card whose underlying ``training_specs/instruction_pairs.jsonl``
 first row carries ``provider: "mock"`` is the regression class behind
-the rdf-shacl-551-2 template-recognizer adapter. The validator must
+the RDF/SHACL calibration corpus template-recognizer adapter. The validator must
 fail closed so an accidental mock corpus cannot promote.
 """
 from __future__ import annotations

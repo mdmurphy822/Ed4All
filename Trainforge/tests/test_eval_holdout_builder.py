@@ -278,7 +278,7 @@ def test_holdout_property_probes_empty_without_manifest(tmp_path):
 
 @pytest.mark.parametrize("chunk_id_template", [
     "chunk_{i:05d}",                  # canonical form
-    "rdf_shacl_551_chunk_{i:05d}",    # corpus-prefixed form (production)
+    "demo_course_1_chunk_{i:05d}",    # corpus-prefixed form (production)
     "test_corpus_chunk_{i}",           # arbitrary-prefix form
 ])
 def test_probes_do_not_leak_chunk_id_literals(tmp_path, chunk_id_template):
@@ -289,8 +289,8 @@ def test_probes_do_not_leak_chunk_id_literals(tmp_path, chunk_id_template):
 
     Parametrized over BOTH chunk-ID forms in production use:
       * canonical ``chunk_NNNNN`` (test fixtures, legacy corpora)
-      * corpus-prefixed ``<corpus>_chunk_NNNNN`` (the rdf-shacl-551-2
-        production corpus, where the bug was actually observed)
+      * corpus-prefixed ``<corpus>_chunk_NNNNN`` (the RDF/SHACL calibration
+        corpus, where the bug was actually observed)
       * arbitrary-prefix form (defensive — covers any prefix shape).
     """
     import re as _re

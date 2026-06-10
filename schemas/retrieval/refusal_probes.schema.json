@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/retrieval/v1/refusal_probes.schema.json",
+  "title": "Retrieval Refusal Probe Set",
+  "description": "Phase IA WS3 (D4.1) — canonical contract for a per-course refusal-probe set, archived at LibV2/courses/<slug>/retrieval_eval/refusal_probes.json. A refusal-probe set is a curated list of UNANSWERABLE questions for one course — questions a correct grounded-answer pipeline must REFUSE (status refused_*), not hallucinate. Probes are the negative half of the refusal-calibration corpus (the gold set supplies the answerable positives); the calibration step sweeps the answerable-vs-unanswerable retrieval-score distributions and proposes thresholds, honestly falling back to v0-uncalibrated permissive defaults when the distributions overlap. Each probe is VERIFIED, NOT ASSUMED: the required dry_run block records an actual read-only retrieval pass against the live course corpus (top score, result count, and a human confirmation that the top retrieved passage does NOT answer the question) so the 'unanswerable' claim is evidence-backed and re-auditable. This is a SEPARATE schema from gold_set.schema.json (which is WS1-frozen and pinned by WS2 consumers); it is NOT a gold-set bump. Validated by lib/tests/test_refusal_policy.py + schemas/tests/test_refusal_probes_schema.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "course_slug", "authored_at", "probes"],
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "description": "Refusal-probe schema version. Const-pinned in v1; a future shape change bumps this and ships a new schema file rather than mutating v1 in place."
+    },
+    "course_slug": {
+      "type": "string",
+      "minLength": 1,
+      "description": "LibV2 course slug these probes are authored for (e.g. 'nvidiarag-101'). Matches the directory under LibV2/courses/."
+    },
+    "authored_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp recording when the probe set was authored."
+    },
+    "engine": {
+      "type": "string",
+      "enum": ["lexical", "semantic", "hybrid-rrf"],
+      "description": "Optional: the retrieval engine the dry-run evidence was recorded against. 'lexical' is the only engine available pre-WS2-E3; semantic dry-runs are re-recorded once the index is built. Defaults to lexical when omitted."
+    },
+    "_operator_note": {
+      "type": "string",
+      "description": "Optional free-text note to the operator (e.g. scale-up / re-verify-after-rechunk hand-off). Permitted so seed files can carry out-of-executor-scope flags inline."
+    },
+    "probes": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The unanswerable probe questions. Each carries its category, a human rationale for why the corpus cannot answer it, and a verified retrieval dry-run.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["probe_id", "question_text", "category", "why_unanswerable", "dry_run"],
+        "properties": {
+          "probe_id": {
+            "type": "string",
+            "pattern": "^rp-[a-z0-9-]+-\\d{4}$",
+            "description": "Refusal-probe id. Pattern rp-<course_slug>-NNNN (4-digit zero-padded ordinal). Mirrors the gold-set gq- convention. Loader enforces uniqueness within the set."
+          },
+          "question_text": {
+            "type": "string",
+            "minLength": 10,
+            "description": "The unanswerable question a correct pipeline must refuse. Min 10 chars."
+          },
+          "category": {
+            "type": "string",
+            "enum": ["off_topic", "adjacent_domain", "out_of_scope_detail"],
+            "description": "Probe taxonomy (D4.1). off_topic: a question from a wholly different discipline the corpus does not touch. adjacent_domain: a plausible neighbour topic the corpus demonstrably lacks (the hardest negatives — they share vocabulary, so the dry-run is the proof of absence). out_of_scope_detail: a question about the course's own topic at a depth/specificity the corpus does not cover (e.g. version-history minutiae)."
+          },
+          "why_unanswerable": {
+            "type": "string",
+            "minLength": 20,
+            "description": "Human rationale (>= 20 chars) for why this corpus cannot answer the probe — the design intent behind the negative. Distinct from the dry_run evidence, which is the empirical confirmation."
+          },
+          "derived_from_gold_question_id": {
+            "type": "string",
+            "pattern": "^gq-[a-z0-9-]+-\\d{4}$",
+            "description": "Optional: gold-question id this probe is the out-of-scope twin of (out_of_scope_detail probes often perturb a real gold question to a depth the corpus lacks). Audit aid, not scored."
+          },
+          "dry_run": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["verified", "engine", "limit", "n_results", "top_score", "top_passage_answers"],
+            "description": "Verified-not-assumed evidence: an actual read-only retrieval pass against the live course corpus at authoring time. The 'unanswerable' claim stands on top_passage_answers=false (a human confirmed the top retrieved passage does not answer the question) PLUS the recorded score signal — never on score alone (lexical BM25 scores are corpus-dependent and stopword overlap inflates off-topic scores, so a low score is supporting, not sufficient, evidence).",
+            "properties": {
+              "verified": {
+                "type": "boolean",
+                "const": true,
+                "description": "Must be true: a seed probe with verified=false is not a verified-unanswerable probe and is rejected. The dry-run was actually run."
+              },
+              "engine": {
+                "type": "string",
+                "enum": ["lexical", "semantic", "hybrid-rrf"],
+                "description": "Retrieval engine the dry-run used. lexical pre-WS2-E3."
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "top-k limit the dry-run retrieval used."
+              },
+              "n_results": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of passages retrieved (0 when the corpus shares no tokens with the probe — the cleanest unanswerable signal)."
+              },
+              "top_score": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Score of the rank-1 retrieved passage (0.0 when n_results==0). Recorded for the calibration distribution; not a pass/fail by itself."
+              },
+              "top_passage_answers": {
+                "type": "boolean",
+                "const": false,
+                "description": "Must be false: a human confirmed the top retrieved passage does NOT answer the probe. If a passage actually answers it, the probe is mis-labelled (the question IS answerable) and must be removed or re-categorised — verified=true with top_passage_answers=true is a contradiction the schema forbids."
+              },
+              "top_chunk_id": {
+                "type": "string",
+                "description": "Optional: chunk id of the rank-1 passage (empty/absent when n_results==0). Lets an auditor re-read exactly the passage the verifier judged non-answering."
+              },
+              "metadata_scoring": {
+                "type": "boolean",
+                "description": "Optional: whether the dry-run included the lexical metadata boosts (concept-graph / LO). Recorded because boosts inflate scores; the calibration run pins the scoring mode it used."
+              },
+              "verified_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Optional: ISO 8601 UTC timestamp of the dry-run."
+              }
+            }
+          },
+          "authoring": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["method", "author", "reviewed_by", "status"],
+            "description": "Provenance of this probe. Seed probes are method:manual, status:seed, reviewed_by:PENDING_REVIEW until operator review backfills the reviewer.",
+            "properties": {
+              "method": {
+                "type": "string",
+                "enum": ["manual", "llm_assisted"],
+                "description": "How the probe was authored. manual: hand-authored by the executor; the unanswerability is confirmed by the recorded dry-run."
+              },
+              "author": {
+                "type": "string",
+                "minLength": 1,
+                "description": "@handle or tool id of the author."
+              },
+              "reviewed_by": {
+                "type": "string",
+                "minLength": 1,
+                "description": "@handle of the reviewer, or PENDING_REVIEW for un-reviewed seed probes."
+              },
+              "status": {
+                "type": "string",
+                "enum": ["seed", "draft", "reviewed"],
+                "description": "Authoring lifecycle. seed: deterministic executor-authored starter (verified by dry-run); draft: in-progress; reviewed: operator-approved."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

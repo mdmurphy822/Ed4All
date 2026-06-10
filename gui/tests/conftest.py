@@ -16,6 +16,52 @@ from typing import Any, Dict
 import pytest
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Register the ``real_models`` opt-in marker (``--strict-markers``).
+
+    ``pytest.ini`` runs with ``--strict-markers``; the WS4 a11y gate's opt-in
+    end-to-end smokes (``@pytest.mark.real_models``) — the fastapi
+    ``TestClient``-served learner page + the live-Ollama ask round-trip — need
+    the marker registered here, mirroring ``lib/tests/conftest.py`` and
+    ``LibV2/tools/libv2/tests/conftest.py``.
+    """
+    config.addinivalue_line(
+        "markers",
+        "real_models: the test intentionally serves the app / loads a real "
+        "model end-to-end; opt-in, skipped on a default CI install.",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_gui_learner_env() -> Any:
+    """Snapshot + restore ``ED4ALL_GUI_LEARNER`` around every gui test.
+
+    ``gui.app.create_app()`` honors ``ED4ALL_GUI_LEARNER`` (truthy → learner-only
+    surface). The reload-mode serve path (``gui.server.main(["--learner",
+    "--reload"])``) sets ``os.environ["ED4ALL_GUI_LEARNER"] = "1"`` **directly in
+    production code** so the reloaded uvicorn workers pick it up — exactly the
+    pattern that ``monkeypatch.setenv`` cannot clean up (monkeypatch only
+    restores values IT set, not ones mutated by production code mid-test). Left
+    leaking, a single serve-mode test poisons every later ``create_app()`` (the
+    full operator app degrades to learner-only and its routes 404/405).
+
+    Mirrors the root-conftest ``ED4ALL_RUN_ID`` snapshot/restore precedent
+    (same "production code mutates os.environ, monkeypatch can't undo it" class
+    of leak). Autouse + function-scoped so it bounds every gui test, including
+    the serve-mode ones whose production-code env writes are the leak source.
+    """
+    import os
+
+    original = os.environ.get("ED4ALL_GUI_LEARNER")
+    try:
+        yield
+    finally:
+        if original is None:
+            os.environ.pop("ED4ALL_GUI_LEARNER", None)
+        else:
+            os.environ["ED4ALL_GUI_LEARNER"] = original
+
+
 @pytest.fixture
 def state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Redirect ``state/`` into ``tmp_path`` via ``ED4ALL_STATE_RUNS_DIR``.

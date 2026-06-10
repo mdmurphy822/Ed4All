@@ -42,8 +42,9 @@ def _flat_synthesized_objectives() -> dict:
     """Realistic flat-list shape — matches Wave-24 plan_course_structure emit.
 
     This is the shape that broke pre-Wave-75 ``_build_course_json``
-    (which expected nested ``[{chapter, objectives}]``). RDF_SHACL_550's
-    synthesized_objectives.json carries this shape for all 29 COs.
+    (which expected nested ``[{chapter, objectives}]``). The RDF/SHACL
+    calibration corpus's synthesized_objectives.json carries this shape
+    for all 29 COs.
     """
     return {
         "course_name": "WAVE75_FLAT",
@@ -294,8 +295,9 @@ def test_normalize_outcome_refs_accepts_single_string():
 @pytest.mark.unit
 def test_normalized_chunk_refs_resolve_against_objectives(tmp_path):
     """A chunk with the bug-shape ref ``co-01,co-02,co-03`` resolves
-    against objectives.json after normalization. Real RDF_SHACL_550
-    chunk pattern (chunk_00001 carried this exact ref string)."""
+    against objectives.json after normalization. Real RDF/SHACL
+    calibration corpus chunk pattern (chunk_00001 carried this exact
+    ref string)."""
     proc = _processor_with_objectives(tmp_path, _flat_synthesized_objectives())
     objectives = proc._build_objectives_json()
 
@@ -303,7 +305,7 @@ def test_normalized_chunk_refs_resolve_against_objectives(tmp_path):
     valid_ids = {to["id"] for to in objectives["terminal_outcomes"]}
     valid_ids |= {co["id"] for co in objectives["component_objectives"]}
 
-    # Real bug-shape chunk refs from rdf_shacl_550_chunk_00001.
+    # Real bug-shape chunk refs from the calibration corpus chunk_00001.
     raw_refs = ["co-01", "co-02", "co-03", "co-01,co-02,co-03"]
     normed = normalize_outcome_refs(raw_refs)
 

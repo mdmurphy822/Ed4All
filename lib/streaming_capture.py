@@ -38,7 +38,8 @@ from .decision_capture import (
     _coerce_record_field_list,
 )
 from .libv2_storage import LibV2Storage
-from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR
+from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR  # noqa: F401  back-compat seam
+from .paths import get_training_captures_dir
 from .quality import assess_decision_quality
 
 logger = logging.getLogger(__name__)
@@ -179,8 +180,13 @@ class StreamingDecisionCapture:
 
         # Legacy training-captures directory (secondary location per CLAUDE.md spec)
         # Path: training-captures/{tool}/{course_code}/phase_{phase}/
+        # Resolved at construction time so ``ED4ALL_TRAINING_CAPTURES_DIR``
+        # (e.g. the repo-root autouse test-isolation fixture) redirects the
+        # mirror into tmp instead of growing the real training-captures/ tree.
         normalized_phase = phase.replace("_", "-")
-        self.legacy_output_dir = LEGACY_TRAINING_DIR / tool / course_code / f"phase_{normalized_phase}"
+        self.legacy_output_dir = (
+            get_training_captures_dir() / tool / course_code / f"phase_{normalized_phase}"
+        )
         self.legacy_output_dir.mkdir(parents=True, exist_ok=True)
 
         # Streaming file path (JSONL format) - primary

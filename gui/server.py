@@ -14,6 +14,20 @@ from gui import DEFAULT_HOST, DEFAULT_PORT
 from gui.app import create_app
 
 
+def _env_learner_default() -> bool:
+    """Resolve the ``ED4ALL_GUI_LEARNER`` env fallback for ``--learner``.
+
+    Truthy values (``1``/``true``/``yes``/``on``, case-insensitive) default the
+    serve mode to learner-only when ``--learner`` is not passed on the CLI.
+    """
+    return os.environ.get("ED4ALL_GUI_LEARNER", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Parse args and run the uvicorn server. Returns a process exit code."""
     parser = argparse.ArgumentParser(
@@ -41,6 +55,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="info",
         help="Uvicorn log level (default info).",
     )
+    parser.add_argument(
+        "--learner",
+        action="store_true",
+        default=_env_learner_default(),
+        help=(
+            "Serve ONLY the learner answer surface (/learn/ + /api/learn/*); the "
+            "operator settings/uploads/runs/courses/retrieval APIs and SPA are not "
+            "mounted. Env fallback: ED4ALL_GUI_LEARNER=1. Use for moderated pilot "
+            "sessions; the GUI has no authentication, so keep the default loopback "
+            "bind (never expose the operator surface where a learner can browse)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     # Import uvicorn lazily so importing this module (e.g. to grab create_app)
@@ -48,7 +74,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     import uvicorn  # noqa: PLC0415
 
     if args.reload:
-        # Reload mode needs an import string, not an app instance.
+        # Reload mode needs an import string, not an app instance — uvicorn
+        # re-imports + calls the factory in each worker with no args, so the
+        # learner-only choice rides the environment (the factory honors
+        # ED4ALL_GUI_LEARNER). Propagate the CLI flag through the env so a
+        # reloaded worker keeps the same surface.
+        if args.learner:
+            os.environ["ED4ALL_GUI_LEARNER"] = "1"
         uvicorn.run(
             "gui.app:create_app",
             factory=True,
@@ -59,7 +91,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
     else:
         uvicorn.run(
-            create_app(),
+            create_app(learner_only=args.learner),
             host=args.host,
             port=args.port,
             log_level=args.log_level,

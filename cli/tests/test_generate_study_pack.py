@@ -2,14 +2,18 @@
 
 Exercises both the renderer engine and the Click CLI shim. Most tests
 build a synthetic archive in ``tmp_path`` so they remain hermetic; one
-integration test reaches into the real
-``LibV2/courses/rdf-shacl-550-rdf-shacl-550/`` archive to verify the
-canonical week-7 ordering against production data.
+group of integration tests reaches into a real on-disk archive to verify
+the canonical week-7 ordering against production data. The integration
+archive is opt-in: point ``ED4ALL_STUDY_PACK_FIXTURE_SLUG`` at a course
+slug under ``$ED4ALL_LIBV2_ROOT/courses/`` (defaulting to the in-tree
+``LibV2/courses/``); the tests skip when the env var is unset or the
+archive is missing, so no real course slug is hardcoded in the suite.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -48,16 +52,25 @@ from LibV2.tools.study_pack_renderer import (
 # Real archive fixture                                                   #
 # ---------------------------------------------------------------------- #
 
-REAL_ARCHIVE = (
-    Path(__file__).resolve().parents[2]
-    / "LibV2"
-    / "courses"
-    / "rdf-shacl-550-rdf-shacl-550"
-)
+def _libv2_courses_root() -> Path:
+    env_root = os.environ.get("ED4ALL_LIBV2_ROOT")
+    if env_root:
+        return Path(env_root) / "courses"
+    return Path(__file__).resolve().parents[2] / "LibV2" / "courses"
+
+
+def _real_archive_path() -> Optional[Path]:
+    slug = os.environ.get("ED4ALL_STUDY_PACK_FIXTURE_SLUG")
+    if not slug:
+        return None
+    return _libv2_courses_root() / slug
+
+
+REAL_ARCHIVE = _real_archive_path()
 
 
 def _real_archive_available() -> bool:
-    return (REAL_ARCHIVE / "corpus" / "chunks.json").exists()
+    return REAL_ARCHIVE is not None and (REAL_ARCHIVE / "corpus" / "chunks.json").exists()
 
 
 # ---------------------------------------------------------------------- #
@@ -736,7 +749,7 @@ def test_cli_include_exercises_adds_chunks(tmp_path):
 
 @pytest.mark.skipif(
     not _real_archive_available(),
-    reason="rdf-shacl-550 archive not available",
+    reason="study-pack integration archive not configured (set ED4ALL_STUDY_PACK_FIXTURE_SLUG)",
 )
 def test_real_archive_week_7_emits_18_chunks_in_canonical_order():
     pack = render_study_pack(
@@ -767,7 +780,7 @@ def test_real_archive_week_7_emits_18_chunks_in_canonical_order():
 
 @pytest.mark.skipif(
     not _real_archive_available(),
-    reason="rdf-shacl-550 archive not available",
+    reason="study-pack integration archive not configured (set ED4ALL_STUDY_PACK_FIXTURE_SLUG)",
 )
 def test_real_archive_week_7_lesson_plan_has_timings_and_objective_table():
     pack = render_study_pack(
@@ -794,7 +807,7 @@ def test_real_archive_week_7_lesson_plan_has_timings_and_objective_table():
 
 @pytest.mark.skipif(
     not _real_archive_available(),
-    reason="rdf-shacl-550 archive not available",
+    reason="study-pack integration archive not configured (set ED4ALL_STUDY_PACK_FIXTURE_SLUG)",
 )
 def test_real_archive_week_7_md_format_contains_expected_landmarks():
     pack = render_study_pack(
@@ -804,7 +817,7 @@ def test_real_archive_week_7_md_format_contains_expected_landmarks():
         include_self_check=True,
     )
     md = render_markdown(pack)
-    assert md.startswith("# RDF_SHACL_550: Week 7 Study Pack")
+    assert md.startswith(f"# {pack.course_code}: Week 7 Study Pack")
     assert "## Overview" in md
     assert "## Core Content" in md
     assert "## Application" in md
@@ -814,7 +827,7 @@ def test_real_archive_week_7_md_format_contains_expected_landmarks():
 
 @pytest.mark.skipif(
     not _real_archive_available(),
-    reason="rdf-shacl-550 archive not available",
+    reason="study-pack integration archive not configured (set ED4ALL_STUDY_PACK_FIXTURE_SLUG)",
 )
 def test_real_archive_week_7_html_format_parses_cleanly():
     pack = render_study_pack(
@@ -836,7 +849,7 @@ def test_real_archive_week_7_html_format_parses_cleanly():
 
 @pytest.mark.skipif(
     not _real_archive_available(),
-    reason="rdf-shacl-550 archive not available",
+    reason="study-pack integration archive not configured (set ED4ALL_STUDY_PACK_FIXTURE_SLUG)",
 )
 def test_real_archive_week_99_no_chunks_clear_error():
     with pytest.raises(StudyPackError) as excinfo:

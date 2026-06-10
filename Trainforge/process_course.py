@@ -898,7 +898,7 @@ def extract_misconceptions_from_text(text: str) -> List[Dict[str, str]]:
 
 
 # Wave 82: token-overlap match for misconception → concept_tag routing.
-# Closes the rdf-shacl-551 audit's "interferes_with edges land on the
+# Closes the RDF/SHACL calibration corpus audit's "interferes_with edges land on the
 # alphabetically-first concept_tag instead of the actually-relevant one"
 # gap. Pure function; deterministic; ties broken by tag-list position.
 _ROUTING_TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -3287,7 +3287,7 @@ class CourseProcessor:
              Ties break by tag-list order.
           3. First concept tag (legacy fallback).
 
-        The token-overlap path was added after the rdf-shacl-551 audit
+        The token-overlap path was added after the RDF/SHACL calibration corpus audit
         showed 0% of authored misconceptions carry an explicit
         ``concept_id``, so the legacy first-tag heuristic was the only
         signal — and it routed misconceptions about "triple" to
@@ -4236,7 +4236,7 @@ class CourseProcessor:
         Pre-Wave-82 the legacy False return conflated "no HTML to check"
         with "balance violation", inflating the
         ``html_balance_violations`` count in ``quality_report.json``.
-        The rdf-shacl-551 audit caught this: 205/295 reported vs 116/295
+        The RDF/SHACL calibration corpus audit caught this: 205/295 reported vs 116/295
         on independent HTMLParser recount. Empty-html (text-only chunks
         where the renderer dropped HTML) deserves its own metric, not
         miscategorization as unbalanced.
@@ -4552,7 +4552,7 @@ class CourseProcessor:
         Wave 82 (REC-PEDAGOGY-CHAIN): when ``pedagogy_graph`` is
         supplied, ``prerequisite_chain`` is populated from the graph's
         ``prerequisite_of`` edges instead of (the often-empty)
-        chunk ``prereq_concepts`` field. The rdf-shacl-551 audit found
+        chunk ``prereq_concepts`` field. The RDF/SHACL calibration corpus audit found
         the model emitting ``prerequisite_chain: []`` while the graph
         carried 404 prereq edges — same data, two computation paths
         with no link between them. The graph-based path is more
@@ -4730,8 +4730,9 @@ class CourseProcessor:
             # The Wave-24 plan_course_structure subagent emits the flat
             # form; pre-Wave-24 Trainforge fixtures use nested. Pre-Wave-75
             # course.json build only handled the nested form, which is why
-            # the 29 COs from RDF_SHACL_550's synthesized_objectives.json
-            # never propagated into the LibV2 archive's course.json.
+            # the 29 COs from the RDF/SHACL calibration corpus's
+            # synthesized_objectives.json never propagated into the LibV2
+            # archive's course.json.
             for ch in self.objectives.get("chapter_objectives", []):
                 if isinstance(ch, dict) and "objectives" in ch:
                     inner = ch.get("objectives") or []
@@ -5018,7 +5019,7 @@ class CourseProcessor:
         # Pedagogy model (full: module sequence, bloom progression, prereq chain).
         # Wave 82: thread pedagogy_graph so prerequisite_chain populates from
         # the graph's prerequisite_of edges instead of the empty-by-default
-        # chunk.prereq_concepts field. Closes the rdf-shacl-551 audit's
+        # chunk.prereq_concepts field. Closes the RDF/SHACL calibration corpus audit's
         # "404 prereq edges, prerequisite_chain=[]" gap.
         pedagogy = self._build_pedagogy_summary(
             chunks=chunks, pedagogy_graph=pedagogy_graph

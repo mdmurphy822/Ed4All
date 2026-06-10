@@ -30,11 +30,24 @@ __all__ = [
 
 
 #: Default cosine-similarity floor between answer text and cited chunk.
-DEFAULT_MIN_ANSWER_SUPPORT_SCORE: float = 0.40
+#: Recalibrated 2026-06-09 from 0.40 → 0.10 against the RDF/SHACL
+#: calibration corpus (n=417 instruction pairs): measured real
+#: p1=0.104, so a 0.40 floor rejected
+#: the overwhelming majority of genuinely on-topic answers. Re-measure
+#: after the next real rebuild via
+#: ``Trainforge/scripts/calibrate_pair_validation`` before tightening.
+DEFAULT_MIN_ANSWER_SUPPORT_SCORE: float = 0.10
 
 #: Default cosine semantic-distinctness floor between ``chosen`` and
 #: ``rejected`` for preference pairs.
-DEFAULT_DPO_MIN_DISTRACTOR_DISTINCTNESS: float = 0.40
+#: Recalibrated 2026-06-09 from 0.40 → 0.05 against the RDF/SHACL
+#: calibration corpus (n=262 preference pairs): measured real p5=0.051,
+#: p1≈0.02. Good distractors are deliberately plausible / semantically
+#: close per the project's own distractor standard, so a 0.40 floor
+#: rejected ~96.7% of real preference pairs. Re-measure after the next
+#: real rebuild via ``Trainforge/scripts/calibrate_pair_validation``
+#: before tightening.
+DEFAULT_DPO_MIN_DISTRACTOR_DISTINCTNESS: float = 0.05
 
 #: Jaccard-fallback floor for answer-support when the [embedding]
 #: extras are absent.
@@ -47,7 +60,16 @@ _FALLBACK_DPO_MIN_DISTRACTOR_DISTINCTNESS: float = 0.40
 _FALLBACK_MIN_PROMPT_CHUNK_JACCARD: float = -1.0
 
 #: Default Jaccard floor between the prompt and the cited source chunk.
-DEFAULT_MIN_PROMPT_CHUNK_JACCARD: float = 0.05
+#: Recalibrated 2026-06-09 from 0.05 → 0.0 against the RDF/SHACL
+#: calibration corpus (n=417 instruction pairs): measured non-separating —
+#: paraphrase prompts are INSTRUCTED to use different wording from the
+#: source, so 13/417 real on-topic prompts score exactly 0 and cosine
+#: doesn't separate either. At 0.0 the strict ``<`` comparison in
+#: criterion 4 can never fire, retiring the reject arm while
+#: ``prompt_chunk_jaccard`` keeps being stamped on every pair for audit.
+#: Re-measure after the next real rebuild via
+#: ``Trainforge/scripts/calibrate_pair_validation`` before tightening.
+DEFAULT_MIN_PROMPT_CHUNK_JACCARD: float = 0.0
 
 #: Default heuristic-richness floor on the rationale string.
 DEFAULT_MIN_RATIONALE_RICHNESS_SCORE: float = 0.30

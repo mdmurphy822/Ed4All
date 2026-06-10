@@ -7,15 +7,15 @@ accuracy, coverage).
 
 Improvement #4 from the post-Wave 85 corpus-grounded gap analysis.
 
-Wave 91 calibration baseline (run on
-``LibV2/courses/rdf-shacl-551-2/`` against an empty SHACL validation
+Wave 91 calibration baseline (run on the RDF/SHACL calibration
+corpus against an empty SHACL validation
 report — i.e. zero violations, the steady-state expected at
 libv2_archival):
 
     completeness: 1.0
     consistency:  1.0
     accuracy:     1.0
-    coverage:     0.5248
+    coverage:     0.5248   (under the OLD edge-share coverage metric)
     composite:    0.8812 (unweighted mean)
 
 Promoted thresholds (max(spec_default, baseline - 0.05)):
@@ -28,6 +28,25 @@ Promoted thresholds (max(spec_default, baseline - 0.05)):
 Severity flipped from ``warning`` to ``critical`` and ``on_fail`` from
 ``warn`` to ``block``. The fixture corpus passes at the chosen
 thresholds (smallest margin: coverage at 0.5248 vs floor 0.50, +0.025).
+
+Coverage-semantics redesign (observability-only; NO logic change here).
+The ``min_coverage: 0.50`` floor now thresholds *chunk-anchored
+DomainConcept node-grounding* — the share of DomainConcept-or-classless
+concept nodes incident to ≥1 chunk-evidenced edge — NOT the old
+asserted/(asserted+derived) edge share. The old edge metric grew a
+quadratic LO-order-derived denominator with LO count (the rdf-shacl
+calibration corpus fell to 0.047 under it) and anti-correlated with
+quality (every quality-improving graph flag lowered it). The new
+node-grounding metric reads on the RDF/SHACL calibration corpus graph at 1.0 and on a
+RAG-course graph (76 frequency-0 lo_key_concept nodes) at ~0.69.
+Recalibration basis: the 0.50 floor is RETAINED as-is (re-derived against
+the node-grounding metric, both calibration corpora clear it). The
+coverage figure surfaces ``grounded_node_count`` / ``concept_node_count``
+plus the legacy ratio as an informational ``asserted_edge_share`` (see
+``Trainforge/rag/kg_quality_report.py``). NB: this gate is now wired
+end-to-end — an input builder is registered and ``run_gate`` forwards
+``threshold:`` keys (``min_completeness`` etc.) into validator inputs,
+so metric-floor breaches fail closed instead of passing with warnings.
 
 Silent-degradation finding C3 (post-Wave 91 audit) — fail-closed
 inversions:
@@ -379,12 +398,14 @@ class KGQualityValidator:
                 exc,
             )
 
+        breached = False
         for dim in _DIMENSIONS:
             score = scores[dim]
             min_score = thresholds[dim]
             if min_score > 0.0 and score < min_score:
+                breached = True
                 issues.append(GateIssue(
-                    severity="warning",
+                    severity="critical",
                     code=f"KG_QUALITY_{dim.upper()}_BELOW_THRESHOLD",
                     message=(
                         f"KG quality dimension '{dim}' scored {score:.4f} "
@@ -400,21 +421,23 @@ class KGQualityValidator:
         # Unweighted mean across the four dimensions.
         composite = sum(scores.values()) / len(_DIMENSIONS)
 
-        # Audit C3: line 202 left as-is per the spec — the existing
-        # threshold-breach logic emits warning-severity GateIssues but
-        # the overall ``passed`` verdict stays True. The workflow YAML
-        # configures critical-severity at the *gate* level
-        # (textbook_to_course::libv2_archival), and the gate framework
-        # consumes the warning issues via its own threshold mapping.
-        # Inverting passed=False here would break the existing
-        # threshold-warning contract; the missing-graph + reporter-
-        # exception inversions above close the silent-degradation
-        # vectors C3 actually flagged.
+        # A breached per-dimension floor fails the gate closed. The
+        # configured floors (``min_completeness`` / ``min_consistency`` /
+        # ``min_accuracy`` / ``min_coverage``) reach this validator via the
+        # gate manager's ``threshold:`` -> inputs forward; a dimension below
+        # its floor emits a critical GateIssue and inverts ``passed`` so the
+        # critical/block gate (textbook_to_course::libv2_archival) actually
+        # refuses to ship a degraded knowledge graph to LibV2. When no floor
+        # is configured (all default to 0.0) or every dimension clears its
+        # floor, the gate passes as before. The missing-graph + reporter-
+        # exception arms above remain the other two fail-closed vectors.
 
         _emit_decision(
             capture,
-            passed=True,
-            code=None,
+            passed=not breached,
+            code=(
+                "KG_QUALITY_DIMENSION_BELOW_THRESHOLD" if breached else None
+            ),
             scores=scores,
             thresholds=thresholds,
             composite=composite,
@@ -433,9 +456,10 @@ class KGQualityValidator:
             gate_id=gate_id,
             validator_name=self.name,
             validator_version=self.version,
-            passed=True,  # warning-only gate; severity promoted at gate-config level
+            passed=not breached,  # a breached floor fails the critical gate
             score=round(composite, 4),
             issues=issues,
+            action=("block" if breached else None),
             metadata=result_metadata or None,
         )
 

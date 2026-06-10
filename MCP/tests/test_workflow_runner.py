@@ -306,3 +306,171 @@ def test_skip_phase_preserves_synthesizer_data(
     )
     assert result["_skipped"] is True, "_skipped marker missing"
     assert result["_completed"] is True, "_completed marker missing"
+
+
+# =============================================================================
+# Resume-state restoration regression tests
+# =============================================================================
+#
+# Bug: on ``--resume``, ``phase_outputs`` is reloaded from the persisted
+# workflow-state JSON, but a phase can be persisted as ``_completed=True``
+# with an EMPTY extracted-output dict (observed in real states, e.g.
+# content_generation/packaging carrying ``keys=[]``). The loop's
+# ``_completed`` guard then skips that phase without re-deriving its outputs,
+# so downstream phases (content gates; ``imscc_chunking`` reading
+# ``packaging.package_path``) see empty inputs and fail. The fix
+# (``_restore_resume_phase_outputs``) reconstructs missing canonical keys
+# from on-disk artifacts before the loop runs.
+
+
+def _build_project_export(tmp_path, course_name: str = "PHYS_101"):
+    """Materialize a minimal Courseforge project export on disk.
+
+    Returns ``(project_path, expected_package_path)``.
+    """
+    import json as _json
+
+    project_path = tmp_path / "exports" / f"PROJ-{course_name}-20260101"
+    project_path.mkdir(parents=True)
+    (project_path / "project_config.json").write_text(
+        _json.dumps({
+            "project_id": project_path.name,
+            "course_name": course_name,
+        }),
+        encoding="utf-8",
+    )
+    # source_module_map.json
+    (project_path / "source_module_map.json").write_text(
+        _json.dumps({"modules": []}), encoding="utf-8"
+    )
+    # 01_learning_objectives/
+    lo_dir = project_path / "01_learning_objectives"
+    lo_dir.mkdir()
+    (lo_dir / "textbook_structure.json").write_text(
+        _json.dumps({"chapters": []}), encoding="utf-8"
+    )
+    (lo_dir / "synthesized_objectives.json").write_text(
+        _json.dumps({
+            "terminal_objectives": [{"id": "TO-01"}],
+            "chapter_objectives": [
+                {"chapter": "Week 1", "objectives": [{"id": "CO-01"}]}
+            ],
+        }),
+        encoding="utf-8",
+    )
+    # 03_content_development/week_01/*.html
+    content_dir = project_path / "03_content_development" / "week_01"
+    content_dir.mkdir(parents=True)
+    (content_dir / "week_01_overview.html").write_text(
+        "<html></html>", encoding="utf-8"
+    )
+    # 05_final_package/<course>.imscc
+    final_dir = project_path / "05_final_package"
+    final_dir.mkdir()
+    pkg = final_dir / f"{course_name}.imscc"
+    pkg.write_bytes(b"PK\x03\x04dummy")
+
+    return project_path, pkg
+
+
+def test_resume_restore_backfills_empty_completed_phases(tmp_path) -> None:
+    """Resume restoration backfills missing output keys from disk.
+
+    Simulates a resumed workflow whose ``packaging`` + ``content_generation``
+    phases were persisted ``_completed=True`` with EMPTY output dicts. After
+    restoration, ``packaging.package_path`` (consumed by ``imscc_chunking``)
+    and ``content_generation.content_dir`` (consumed by content gates) must
+    be present so downstream phases resolve their inputs.
+    """
+    project_path, expected_pkg = _build_project_export(tmp_path)
+
+    runner = _make_runner()
+
+    # Resumed phase_outputs: objective_extraction carries project_path
+    # (so the export root resolves); packaging + content_generation are
+    # completed-but-empty (the bug condition).
+    phase_outputs = {
+        "objective_extraction": {
+            "project_id": project_path.name,
+            "project_path": str(project_path),
+            "_completed": True,
+            "_gates_passed": True,
+        },
+        "content_generation": {"_completed": True, "_gates_passed": True},
+        "packaging": {"_completed": True, "_gates_passed": True},
+    }
+
+    runner._restore_resume_phase_outputs(phase_outputs)
+
+    pkg_out = phase_outputs["packaging"]
+    assert pkg_out["package_path"] == str(expected_pkg), (
+        f"packaging.package_path not restored; got: {pkg_out!r}"
+    )
+    assert pkg_out["imscc_path"] == str(expected_pkg)
+    assert pkg_out["_resume_restored"] is True
+    # Skip markers preserved (not clobbered).
+    assert pkg_out["_completed"] is True
+    assert pkg_out["_gates_passed"] is True
+
+    cg_out = phase_outputs["content_generation"]
+    assert cg_out["content_dir"].endswith("03_content_development"), (
+        f"content_generation.content_dir not restored; got: {cg_out!r}"
+    )
+    assert cg_out["content_paths"], "content_paths empty after restore"
+
+
+def test_resume_restore_noop_on_fresh_run() -> None:
+    """Fresh (non-resume) run: empty phase_outputs => strict no-op."""
+    runner = _make_runner()
+    phase_outputs: dict = {}
+    runner._restore_resume_phase_outputs(phase_outputs)
+    assert phase_outputs == {}, "fresh-run restoration must be a no-op"
+
+
+def test_resume_restore_does_not_overwrite_present_keys(tmp_path) -> None:
+    """Restoration must never clobber an already-recorded output value."""
+    project_path, expected_pkg = _build_project_export(tmp_path)
+    runner = _make_runner()
+
+    phase_outputs = {
+        "objective_extraction": {
+            "project_id": project_path.name,
+            "project_path": str(project_path),
+            "_completed": True,
+        },
+        # packaging already carries a real package_path — must be left
+        # untouched (no restore triggered since required key present).
+        "packaging": {
+            "package_path": "/already/recorded/COURSE.imscc",
+            "_completed": True,
+        },
+    }
+
+    runner._restore_resume_phase_outputs(phase_outputs)
+
+    assert phase_outputs["packaging"]["package_path"] == (
+        "/already/recorded/COURSE.imscc"
+    ), "restoration overwrote a recorded package_path"
+    assert "_resume_restored" not in phase_outputs["packaging"], (
+        "restoration touched a phase that already had its required key"
+    )
+
+
+def test_resume_restore_tolerates_missing_artifacts(tmp_path) -> None:
+    """Missing on-disk artifacts: leave the empty phase as-is, no raise."""
+    # Project export root that does NOT exist on disk.
+    runner = _make_runner()
+    phase_outputs = {
+        "objective_extraction": {
+            "project_id": "PROJ-MISSING-1",
+            "project_path": str(tmp_path / "does_not_exist"),
+            "_completed": True,
+        },
+        "packaging": {"_completed": True},
+    }
+
+    # Must not raise; packaging stays empty (downstream dep check surfaces it).
+    runner._restore_resume_phase_outputs(phase_outputs)
+
+    assert "package_path" not in phase_outputs["packaging"]
+    assert "_resume_restored" not in phase_outputs["packaging"]

@@ -123,6 +123,22 @@ async function api(path, opts = {}) {
     body = txt ? { error: 'non_json_response', detail: txt.slice(0, 500) } : null;
   }
   if (!res.ok) {
+    // FastAPI request-validation errors return body.detail as an ARRAY of
+    // {type, loc, msg, ...}. typeof [] === 'object', so the nested-shape branch
+    // below would silently drop these; detect the array first and flatten each
+    // entry to "field.path: message" (dropping the leading "body" segment of
+    // loc) so the toast surfaces the useful field-level messages.
+    if (body && Array.isArray(body.detail)) {
+      const detail = body.detail
+        .map((e) => {
+          const loc = Array.isArray(e?.loc) ? e.loc.slice(1).join('.') : '';
+          const msg = e?.msg ?? e?.type ?? 'invalid';
+          return loc ? `${loc}: ${msg}` : String(msg);
+        })
+        .filter(Boolean)
+        .join('; ') || res.statusText;
+      throw new ApiError(res.status, 'validation_error', detail);
+    }
     // Tolerate both error-body shapes: the nested {detail:{error,detail}}
     // (legacy routers) and the flattened {error,detail} (migrated routers).
     const nested = body && typeof body.detail === 'object' && body.detail !== null ? body.detail : null;
@@ -238,7 +254,7 @@ async function pingConnection() {
  * GET  /api/workflows
  * GET/POST/DELETE /api/uploads
  * POST /api/runs   |  POST /api/runs/phase
- * WS   /ws/runs/{run_id}
+ * WS   /api/ws/runs/{run_id}
  * ===================================================================== */
 async function renderUpload(view) {
   const [workflows, uploads] = await Promise.all([
@@ -513,7 +529,7 @@ async function renderUpload(view) {
     currentRunId = runId;
     cancelBtn.disabled = false;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${proto}//${location.host}/ws/runs/${encodeURIComponent(runId)}`;
+    const url = `${proto}//${location.host}/api/ws/runs/${encodeURIComponent(runId)}`;
     logLine(`[gui] connecting ${url}`, 'sys');
     try {
       ws = new WebSocket(url);

@@ -59,7 +59,7 @@ COMPLETION_MIN, COMPLETION_MAX = 50, 600
 # Wave 133e: tailored cells now cover 10 content_type axes × 6 Bloom levels.
 # The 5 Wave 132b axes (``explanation``, ``example``, ``procedure``,
 # ``comparison``, plus a ``_default`` row) are joined by 5 high-frequency
-# axes surfaced in the rdf-shacl-551-2 chunk distribution: ``definition``,
+# axes surfaced in the RDF/SHACL calibration corpus chunk distribution: ``definition``,
 # ``summary``, ``overview``, ``real_world_scenario``, ``common_pitfall``.
 #
 # **Deliberate ``_default`` fallback set** (the chunk_v4 ChunkType enum

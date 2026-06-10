@@ -42,8 +42,7 @@ chunk dict from text + html + item-state) is deeply coupled to the
 ``self._all_concept_tags``, ``self.course_code``. Lifting that body
 into the package would require lifting the whole ontology / metadata
 / provenance surface of Trainforge — outside the scope of Phase 7a
-(see ``plans/phase7_chunker_dual_chunkset.md`` Subtask 4 estimate of
-~450 LOC).
+(Subtask 4 estimate of ~450 LOC).
 
 Pragmatic resolution: this module owns the orchestration flow
 (looping, merging, splitting, boilerplate, feedback, xpath/char-span
@@ -211,7 +210,23 @@ def type_from_heading(heading: str) -> str:
     Mirrors ``CourseProcessor._type_from_heading`` at
     ``process_course.py:2591`` — keyword-based classifier with
     ``"explanation"`` as the default. Pure / static; no class state.
+
+    Default behaviour is the legacy pure-substring matcher. Setting
+    ``TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE=true`` swaps in the
+    whole-word / course-title-aware classifier
+    (:func:`_type_from_heading_content_aware`) which fixes the ~7%
+    chunk-type misclassification audited on the NVIDIA corpus
+    (substring hits on class names like "DocumentSummaryBase",
+    bare "NVIDIA Course NN:" page titles mis-typed off an incidental
+    word, and "[Exercise] ... Example" headings losing to ``example``).
+    Default off so the RDF/SHACL calibration corpus stays
+    byte-identical on rebuild.
     """
+
+    import os
+
+    if os.getenv("TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE", "").lower() == "true":
+        return _type_from_heading_content_aware(heading)
 
     h = heading.lower()
     if any(kw in h for kw in ("example", "case study", "scenario")):
@@ -228,6 +243,127 @@ def type_from_heading(heading: str) -> str:
         return "assessment_item"
     if any(kw in h for kw in ("discussion", "reflection")):
         return "exercise"
+    return "explanation"
+
+
+#: A bare course/notebook page-title heading carries no pedagogical
+#: signal — its chunk type should fall through to the neutral default
+#: rather than key off an incidental word. Matches forms like
+#: ``"NVIDIA Course 07: Vector Stores"``, ``"Course 03: Guardrails"``,
+#: and ``"Course Solutions 05: ..."``.
+_COURSE_TITLE_RE = re.compile(
+    r"^(?:nvidia\s+)?course\s+(?:solutions\s+)?\d+\s*:",
+    re.IGNORECASE,
+)
+
+
+def _whole_word(keyword: str, text: str) -> bool:
+    """Whole-word containment — ``\\bkeyword\\b`` on word boundaries.
+
+    Prevents substring false-positives such as "DocumentSummaryBase"
+    triggering ``summary`` or "classifier" triggering a keyword match.
+    ``keyword`` is matched case-insensitively against ``text``.
+    """
+
+    return re.search(rf"\b{re.escape(keyword)}\b", text, re.IGNORECASE) is not None
+
+
+#: Whole-word pedagogical keywords that, if present, keep a
+#: course-title heading from being demoted to the neutral default.
+_PEDAGOGICAL_WORDS = (
+    "exercise", "activity", "practice", "example", "scenario",
+    "summary", "recap", "conclusion", "overview", "introduction",
+    "welcome", "quiz", "discussion", "reflection",
+)
+#: Multi-word pedagogical phrases (matched as plain substrings).
+_PEDAGOGICAL_PHRASES = (
+    "case study", "key takeaway", "self-check", "self check",
+    "knowledge check", "check your",
+)
+
+
+def _has_pedagogical_keyword(text: str) -> bool:
+    """True when ``text`` carries any pedagogical keyword / phrase.
+
+    Used to decide whether a course-title heading's post-colon
+    remainder still warrants a non-default classification.
+    """
+
+    if any(_whole_word(kw, text) for kw in _PEDAGOGICAL_WORDS):
+        return True
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in _PEDAGOGICAL_PHRASES)
+
+
+def _type_from_heading_content_aware(heading: str) -> str:
+    """Whole-word / course-title-aware heading classifier.
+
+    Behavioural deltas vs the legacy substring matcher:
+
+    1. **Whole-word matching.** ``summary`` / ``exercise`` / ``example``
+       / ``overview`` (and the other keywords) match only on
+       ``\\bword\\b`` boundaries, so "DocumentSummaryBase" no longer
+       trips ``summary`` and "Guardrails" no longer trips ``exercise``.
+    2. **Bare course-title demotion.** A heading matching
+       ``^(NVIDIA )?Course (Solutions )?NN:`` (or otherwise carrying no
+       pedagogical keyword) returns the neutral ``"explanation"``
+       default instead of a type keyed off an incidental word.
+    3. **Precedence.** ``exercise`` BEFORE ``example`` BEFORE
+       ``summary`` — an "[Exercise] ... Realistic Example" heading
+       classifies as ``exercise``, not ``example``.
+
+    Worked-example pages titled "Course Solutions NN" carry no
+    ``exercise``/``example``/``summary`` whole word, so the
+    course-title demotion routes them to ``explanation`` rather than
+    the legacy substring-driven ``exercise``.
+    """
+
+    h = heading.lower()
+
+    # A bare course/notebook page title ("NVIDIA Course 07: Vector
+    # Stores", "Course Solutions 05: ...") is demoted to the neutral
+    # default UNLESS it carries a genuine pedagogical keyword after the
+    # colon (e.g. "Course 03: Summary"). Strip the title prefix and
+    # only keep classifying the post-colon remainder.
+    title_match = _COURSE_TITLE_RE.match(heading)
+    if title_match:
+        remainder = heading[title_match.end():]
+        if not _has_pedagogical_keyword(remainder):
+            return "explanation"
+
+    # Precedence: exercise before example before summary. A heading
+    # carrying both "[Exercise]" and "Example" is an exercise.
+    if (
+        any(_whole_word(kw, h) for kw in ("exercise", "activity", "practice"))
+        or _whole_word("application", h)
+    ):
+        return "exercise"
+    if (
+        any(_whole_word(kw, h) for kw in ("example", "scenario"))
+        or "case study" in h
+    ):
+        return "example"
+    if (
+        any(_whole_word(kw, h) for kw in ("summary", "recap", "conclusion"))
+        or "key takeaway" in h
+    ):
+        return "summary"
+    if any(_whole_word(kw, h) for kw in ("overview", "introduction", "welcome")):
+        return "overview"
+    if (
+        any(_whole_word(kw, h) for kw in ("quiz",))
+        or "self-check" in h
+        or "self check" in h
+        or "knowledge check" in h
+        or "check your" in h
+    ):
+        return "assessment_item"
+    if any(_whole_word(kw, h) for kw in ("discussion", "reflection")):
+        return "exercise"
+
+    # No pedagogical keyword survived whole-word matching — a bare
+    # course/notebook page title (matched or not) falls through to the
+    # neutral default rather than keying off an incidental word.
     return "explanation"
 
 
@@ -426,7 +562,7 @@ def merge_small_sections(
 
     Without the W5.F merge-path carry, ~30-50% of chunks (every chunk
     built from a merge boundary on small-section corpora like
-    rdf-shacl-551-2) would silently drop the W1.5 / W1.7 audit signals
+    the RDF/SHACL calibration corpus) would silently drop the W1.5 / W1.7 audit signals
     that the W5.A parser-side carry just landed on the section objects.
     """
 

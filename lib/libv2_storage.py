@@ -25,6 +25,7 @@ from .paths import (
     LIBV2_ONTOLOGY,
     LIBV2_PATH,
     LIBV2_SCHEMA,
+    libv2_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,29 +51,64 @@ class LibV2StorageError(Exception):
 # once ``backfill_dart_chunks.py`` (Worker W18) has migrated all archives.
 
 IMSCC_CHUNKS_DIRNAME = "imscc_chunks"
+DART_CHUNKS_DIRNAME = "dart_chunks"
 LEGACY_CORPUS_DIRNAME = "corpus"
 
 
-def resolve_imscc_chunks_dir(course_dir: Union[str, Path]) -> Path:
-    """Return the IMSCC chunkset directory for a LibV2 course.
+def resolve_imscc_chunks_dir(
+    course_dir: Union[str, Path],
+    filename: Optional[str] = None,
+) -> Path:
+    """Return the chunkset directory for a LibV2 course.
 
-    Returns ``<course_dir>/imscc_chunks`` when present; falls back to
-    ``<course_dir>/corpus`` (legacy) with a deprecation warning. When
-    neither path exists, returns the canonical (new) path so callers
-    receive a clean ``FileNotFoundError`` on subsequent reads.
+    Resolution order (precedence):
 
-    Use this for any read operation that targets the IMSCC-chunkset
-    directory itself (e.g. ``chunks.jsonl``, ``chunks.json``,
-    ``corpus_stats.json``, ``.teaching_role_checkpoint.jsonl``).
+    1. ``<course_dir>/imscc_chunks`` — canonical IMSCC-derived chunkset.
+    2. ``<course_dir>/dart_chunks`` — DART-staged pipeline chunkset. A
+       first-class location for courses produced by the DART → chunking
+       path that never ran IMSCC packaging (resolving here does NOT warn).
+    3. ``<course_dir>/corpus`` — legacy pre-Phase-7c name; resolving here
+       emits a DeprecationWarning naming the migration script.
 
-    Phase 7c shim — drop in Phase 8.
+    When ``filename`` is provided, prefer the first candidate directory
+    that actually CONTAINS that file. This is what makes retrieval work
+    for archives where a scaffold ``imscc_chunks/`` directory exists
+    (created at provisioning time) but holds no ``chunks.jsonl`` — the
+    real chunks live in ``dart_chunks/`` or legacy ``corpus/``. The
+    plain directory-existence resolution (``filename=None``) is preserved
+    for callers that only need the directory itself.
+
+    When no candidate matches, returns the canonical ``imscc_chunks/``
+    path so callers receive a clean ``FileNotFoundError`` on subsequent
+    reads.
+
+    Use this for any read operation that targets the chunkset directory
+    itself (e.g. ``chunks.jsonl``, ``chunks.json``, ``corpus_stats.json``,
+    ``.teaching_role_checkpoint.jsonl``).
+
+    Legacy ``corpus/`` fallback (retained): kept until every archive has
+    migrated off the legacy ``corpus/`` layout. Production call sites and
+    on-disk courses still depend on it (tier-2 test discovery routes
+    through this resolver), so it is load-bearing — do not remove it on a
+    phase schedule.
     """
     course_dir = Path(course_dir)
-    new_path = course_dir / IMSCC_CHUNKS_DIRNAME
-    if new_path.exists():
-        return new_path
-    legacy_path = course_dir / LEGACY_CORPUS_DIRNAME
-    if legacy_path.exists():
+    canonical = course_dir / IMSCC_CHUNKS_DIRNAME
+    dart = course_dir / DART_CHUNKS_DIRNAME
+    legacy = course_dir / LEGACY_CORPUS_DIRNAME
+
+    def _present(candidate: Path) -> bool:
+        # File-aware mode: a directory only "counts" when it holds the
+        # requested file. Directory mode: bare directory existence.
+        if filename is not None:
+            return (candidate / filename).exists()
+        return candidate.exists()
+
+    if _present(canonical):
+        return canonical
+    if _present(dart):
+        return dart
+    if _present(legacy):
         warnings.warn(
             f"Phase 7c deprecation: {course_dir.name} still uses "
             f"{LEGACY_CORPUS_DIRNAME}/; run "
@@ -80,22 +116,30 @@ def resolve_imscc_chunks_dir(course_dir: Union[str, Path]) -> Path:
             DeprecationWarning,
             stacklevel=2,
         )
-        return legacy_path
-    return new_path
+        return legacy
+    return canonical
 
 
 def resolve_imscc_chunks_path(
     course_dir: Union[str, Path],
     filename: str = "chunks.jsonl",
 ) -> Path:
-    """Return the canonical path to a file inside the IMSCC chunkset dir.
+    """Return the path to a file inside the resolved chunkset dir.
 
     Convenience wrapper over :func:`resolve_imscc_chunks_dir` for the
-    common case of reading ``chunks.jsonl`` (or ``chunks.json``).
+    common case of reading ``chunks.jsonl`` (or ``chunks.json``). The
+    filename is threaded into the resolver so the chosen directory is the
+    one that actually contains the requested file — canonical
+    ``imscc_chunks/`` first, then ``dart_chunks/``, then legacy
+    ``corpus/`` (deprecation-warned).
 
-    Phase 7c shim — drop in Phase 8.
+    Legacy ``corpus/`` fallback (retained): kept until every archive has
+    migrated off the legacy ``corpus/`` layout. Production call sites and
+    on-disk courses still depend on it (tier-2 test discovery routes
+    through this resolver), so it is load-bearing — do not remove it on a
+    phase schedule.
     """
-    return resolve_imscc_chunks_dir(course_dir) / filename
+    return resolve_imscc_chunks_dir(course_dir, filename=filename) / filename
 
 
 class LibV2Storage:
@@ -120,7 +164,8 @@ class LibV2Storage:
         self,
         course_id: str,
         course_slug: Optional[str] = None,
-        auto_create: bool = False
+        auto_create: bool = False,
+        libv2_root: Optional[Union[str, Path]] = None,
     ):
         """
         Initialize LibV2 storage for a course.
@@ -129,6 +174,12 @@ class LibV2Storage:
             course_id: Course identifier (e.g., "INT_101")
             course_slug: URL-friendly slug (defaults to lowercase course_id with hyphens)
             auto_create: If True, create directories immediately
+            libv2_root: Explicit LibV2 root override. Precedence (high → low):
+                explicit ``libv2_root`` kwarg > ``ED4ALL_LIBV2_ROOT`` env var
+                > ``PROJECT_ROOT / "LibV2"`` default. Resolved at construction
+                time (not import time) via :func:`lib.paths.libv2_path` so a
+                test that threads a tmp root — or sets the env var — never
+                creates skeleton dirs in the real in-tree ``LibV2/``.
         """
         if not course_id:
             raise LibV2StorageError("course_id is required")
@@ -136,8 +187,17 @@ class LibV2Storage:
         self.course_id = course_id
         self.course_slug = course_slug or self._generate_slug(course_id)
 
+        # Resolve the LibV2 root with the documented precedence:
+        # explicit kwarg > ED4ALL_LIBV2_ROOT > PROJECT_ROOT/LibV2 default.
+        if libv2_root:
+            self.libv2_root = Path(libv2_root)
+        else:
+            self.libv2_root = libv2_path()
+        catalog_root = self.libv2_root / "catalog"
+        courses_root = self.libv2_root / "courses"
+
         # Catalog paths (per-course metadata, packages, training captures)
-        self.catalog_path = LIBV2_CATALOG / course_id
+        self.catalog_path = catalog_root / course_id
         self.packages_path = self.catalog_path / "packages"
         self.training_path = self.catalog_path / "training"
         self.assessments_path = self.catalog_path / "assessments"
@@ -148,7 +208,7 @@ class LibV2Storage:
         # ``imscc_chunks_path``. Reads via the ``corpus_path`` legacy
         # attribute resolve dynamically (see the property below) so a
         # legacy archive with only ``corpus/`` still resolves correctly.
-        self.course_path = LIBV2_COURSES / self.course_slug
+        self.course_path = courses_root / self.course_slug
         self.imscc_chunks_path = self.course_path / IMSCC_CHUNKS_DIRNAME
         self.sources_path = self.course_path / "sources"
         self.concept_graph_path = self.course_path / "concept_graph"
@@ -500,10 +560,11 @@ def list_all_courses() -> List[Dict[str, Any]]:
     """List all courses in LibV2 catalog."""
     courses = []
 
-    if not LIBV2_CATALOG.exists():
+    catalog_root = libv2_path() / "catalog"
+    if not catalog_root.exists():
         return courses
 
-    for course_dir in LIBV2_CATALOG.iterdir():
+    for course_dir in catalog_root.iterdir():
         if course_dir.is_dir() and not course_dir.name.startswith("."):
             storage = LibV2Storage(course_dir.name)
             courses.append({
@@ -517,11 +578,16 @@ def list_all_courses() -> List[Dict[str, Any]]:
 
 
 def validate_libv2_structure() -> Dict[str, bool]:
-    """Validate that LibV2 directory structure exists."""
+    """Validate that LibV2 directory structure exists.
+
+    Resolves the LibV2 root via :func:`lib.paths.libv2_path` so an
+    ``ED4ALL_LIBV2_ROOT`` override is honored at call time.
+    """
+    root = libv2_path()
     return {
-        "LIBV2_ROOT": LIBV2_ROOT.exists(),
-        "LIBV2_CATALOG": LIBV2_CATALOG.exists(),
-        "LIBV2_COURSES": LIBV2_COURSES.exists(),
+        "LIBV2_ROOT": root.exists(),
+        "LIBV2_CATALOG": (root / "catalog").exists(),
+        "LIBV2_COURSES": (root / "courses").exists(),
         "LIBV2_ONTOLOGY": LIBV2_ONTOLOGY.exists(),
         "LIBV2_SCHEMA": LIBV2_SCHEMA.exists(),
     }

@@ -79,7 +79,23 @@ _ERROR_STATUS = {
     "model_card_unreadable": 422,
     "adapter_incomplete": 422,
     "inference_failed": 502,  # upstream generation failed after a successful load
+    "course_not_found": 404,
 }
+
+
+def _course_exists(slug: str) -> bool:
+    """True when ``slug`` appears in the known-course listing.
+
+    Existence is keyed on the SAME source ``GET /api/retrieval/courses`` uses
+    (``retrieval_service.list_courses``), NOT on whether chunks were found — a
+    valid course with an unresolved chunk path must still resolve (zero results,
+    HTTP 200), only a slug that names no course at all 404s.
+    """
+    try:
+        courses = retrieval_service.list_courses()
+    except Exception:  # noqa: BLE001 — treat a listing failure as "can't confirm absence"
+        return True
+    return any(str(c.get("slug")) == slug for c in courses)
 
 
 # ----------------------------------------------------------------------- endpoints
@@ -107,6 +123,12 @@ async def query(req: QueryRequest) -> Any:
     mode = (req.mode or "bm25").lower()
     if not req.query or not req.query.strip():
         return _error(422, "invalid_query", "query must be non-empty")
+    if not _course_exists(req.slug):
+        return _error(
+            _ERROR_STATUS["course_not_found"],
+            "course_not_found",
+            f"no course resolves to slug {req.slug!r}",
+        )
 
     try:
         if mode == "bm25":

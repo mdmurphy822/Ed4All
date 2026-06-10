@@ -89,8 +89,8 @@ def _structured_refs() -> List[Dict[str, Any]]:
 def test_legacy_list_str_source_refs_validates_on_terminal_outcome():
     """Legacy ``List[str]`` source_refs validates against TerminalOutcome.
 
-    Back-compat with every existing LibV2 archive on disk (rdf-shacl-551-2
-    plus 60+ siblings) where COs carry ``source_refs: ["dart:foo#s1", ...]``
+    Back-compat with every existing LibV2 archive on disk (the RDF/SHACL
+    calibration corpus plus 60+ siblings) where COs carry ``source_refs: ["dart:foo#s1", ...]``
     and TOs carry no ``source_refs`` at all. The bump ADDs ``source_refs``
     to TO; this test asserts the legacy shape is admitted there too.
     """
@@ -326,7 +326,7 @@ def test_build_objectives_json_round_trips_structured_shape(tmp_path):
 def test_build_objectives_json_round_trips_legacy_shape(tmp_path):
     """Legacy ``List[str]`` source_refs round-trips through emit cleanly.
 
-    Back-compat invariant: the rdf-shacl-551-2 archive's 29 COs all
+    Back-compat invariant: the RDF/SHACL calibration corpus archive's 29 COs all
     carry ``source_refs: List[str]``. The patched emit handles this
     arm of the oneOf identically to the pre-Wave-1.6 behavior.
     """

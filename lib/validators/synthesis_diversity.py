@@ -111,7 +111,7 @@ DEFAULT_MIN_TOTAL_PAIRS = 100
 
 # Wave 105: prefix-bigram diversity defaults. Catches template-collapse
 # at the answer level even when ``template_id`` is well distributed.
-# Example: rdf-shacl-551-2 had 11 distinct template_ids but 80% of
+# Example: the RDF/SHACL calibration corpus had 11 distinct template_ids but 80% of
 # completions started with "the treatment" — the trained model
 # memorised that phrase, not 11 templates.
 DEFAULT_MAX_PREFIX_TOP1_SHARE = 0.15
@@ -342,7 +342,7 @@ class SynthesisDiversityValidator:
             # the same first 2 words show up in a large fraction of
             # responses, the trained adapter will memorise that phrase
             # instead of the underlying behaviour. The Wave 104 eval
-            # of rdf-shacl-551-2 had 11 distinct template_ids (passing
+            # of the RDF/SHACL calibration corpus had 11 distinct template_ids (passing
             # the older check) but 80% of completions started with
             # "the treatment" — exactly the failure mode this catches.
             self._check_response_prefix_diversity(

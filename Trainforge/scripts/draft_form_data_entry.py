@@ -23,7 +23,7 @@ Usage::
 
     python -m Trainforge.scripts.draft_form_data_entry \\
         --curie sh:minCount \\
-        --course-code rdf-shacl-551-2 \\
+        --course-code <course-slug> \\
         --provider local
 
 Exit codes:

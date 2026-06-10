@@ -705,7 +705,7 @@ class AssessmentQualityValidator:
         with type-suffixed issue codes. Calibration-deferred per
         plan §5; severity flip to critical happens in a follow-up
         micro-wave once per-type warning-fire rates stabilize on the
-        rdf-shacl-551-2 rebuild.
+        RDF/SHACL calibration corpus rebuild.
 
         ``type_suffix`` is the upper-cased question_type for the issue
         code suffix (``MULTIPLE_CHOICE`` / ``TRUE_FALSE`` / etc.).

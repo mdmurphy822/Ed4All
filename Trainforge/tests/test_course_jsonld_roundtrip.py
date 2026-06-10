@@ -1,4 +1,4 @@
-"""Phase 1.2 of plans/rdf-shacl-enrichment-2026-04-26.md.
+"""Phase 1.2 — course JSON-LD round-trip bridge.
 
 Verifies that ``schemas/context/course_v1.jsonld`` is a faithful round-trip
 bridge between the JSON-shaped ``course.json`` and an RDF graph.  The
@@ -18,14 +18,15 @@ parses via ``pyld`` + ``rdflib``, and asserts:
 * Turtle round-trip is loss-free (graph-isomorphic delta of zero triples)
 
 Phase 1 does not modify ``Trainforge/process_course.py`` or any LO emission
-code; the bridge is exercised out-of-band from the existing artifact under
-``LibV2/courses/rdf-shacl-551-2/course.json``.
+code; the bridge is exercised out-of-band from whichever LibV2 course (under
+``ED4ALL_LIBV2_ROOT`` / ``LibV2/courses/``) ships a ``course.json``.
 """
 
 from __future__ import annotations
 
 import copy
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -39,10 +40,28 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+
+def _libv2_courses_root() -> Path:
+    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
+    root = os.environ.get("ED4ALL_LIBV2_ROOT")
+    base = Path(root) if root else PROJECT_ROOT / "LibV2"
+    return base / "courses"
+
+
+def _discover_artifact() -> Path | None:
+    """First ``<course>/course.json`` under the LibV2 courses root."""
+    courses_root = _libv2_courses_root()
+    if not courses_root.is_dir():
+        return None
+    for course_dir in sorted(courses_root.iterdir()):
+        candidate = course_dir / "course.json"
+        if candidate.exists():
+            return candidate
+    return None
+
+
 CONTEXT_PATH = PROJECT_ROOT / "schemas" / "context" / "course_v1.jsonld"
-ARTIFACT_PATH = (
-    PROJECT_ROOT / "LibV2" / "courses" / "rdf-shacl-551-2" / "course.json"
-)
+ARTIFACT_PATH = _discover_artifact()
 
 # Canonical IRI shape pinned by the @context.  The course context follows
 # Worker A's https://ed4all.io/vocab/ namespace (NOT the Wave 65
@@ -58,7 +77,7 @@ ED4ALL_BLOOM_LEVEL_PRED = ED4ALL_VOCAB + "bloomLevel"
 ED4ALL_HIERARCHY_LEVEL_PRED = ED4ALL_VOCAB + "hierarchyLevel"
 RDF_TYPE_PRED = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
 
-DOC_IRI = "https://ed4all.io/course/rdf-shacl-551-2"
+DOC_IRI = "https://ed4all.io/course/demo-course"
 
 
 pyld = pytest.importorskip("pyld")
@@ -84,11 +103,11 @@ def context_doc() -> dict:
 @pytest.fixture(scope="module")
 def course_artifact() -> dict:
     """Load the JSON artifact that we are bridging to RDF."""
-    if not ARTIFACT_PATH.exists():
+    if ARTIFACT_PATH is None or not ARTIFACT_PATH.exists():
         pytest.skip(
-            f"Reference artifact missing: {ARTIFACT_PATH} — Phase 1.2 "
-            "round-trip test depends on the rdf-shacl-551-2 corpus being "
-            "present."
+            "No LibV2 course with course.json present — Phase 1.2 round-trip "
+            "test depends on a real corpus under ED4ALL_LIBV2_ROOT / "
+            "LibV2/courses/."
         )
     with ARTIFACT_PATH.open() as f:
         return json.load(f)
@@ -135,19 +154,27 @@ def rdf_graph(context_doc, course_artifact) -> "rdflib.Graph":
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_triple_count_floor(rdf_graph) -> None:
-    """Sanity floor: layered context must produce > 100 triples for the
-    reference corpus's 36 LOs * ~5 properties each plus course-level fields.
+def test_triple_count_floor(rdf_graph, course_artifact) -> None:
+    """Sanity floor: the layered context must materialize several triples
+    per learning objective plus course-level fields.
 
-    Empirically the rdf-shacl-551-2 course.json yields ~150+ triples; we
-    assert the floor at 100 so the test stays useful as a smoke test
-    without being brittle to schema additions or fixture-trim PRs.
+    Empirically the RDF/SHACL calibration corpus course.json yields ~150+
+    triples for ~36 LOs (~4+ triples/LO). To stay corpus-agnostic (the
+    discovered course may be smaller), the floor scales with the LO count
+    rather than pinning an absolute 100, so the smoke test still catches a
+    context-term mapping that regressed to null (which collapses the graph
+    to ~1 triple/LO) without being brittle to corpus size.
     """
+    lo_count = len(course_artifact.get("learning_outcomes") or [])
+    # >= 3 triples per LO proves each LO materializes id + type + at least
+    # one property; a stub/regressed bridge yields ~1/LO. Absolute floor of
+    # 20 guards against a degenerate single-LO course.
+    floor = max(20, lo_count * 3)
     n = len(rdf_graph)
-    assert n > 100, (
-        f"Expected the JSON-LD bridge to materialize >100 triples for the "
-        f"reference course; got {n}.  Likely cause: a context-term mapping "
-        f"regressed to null or the LO array lost its @set container."
+    assert n > floor, (
+        f"Expected the JSON-LD bridge to materialize >{floor} triples for a "
+        f"course with {lo_count} LOs; got {n}.  Likely cause: a context-term "
+        f"mapping regressed to null or the LO array lost its @set container."
     )
 
 

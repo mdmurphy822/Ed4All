@@ -23,7 +23,7 @@ evaluators:
   disambiguation: true
   # Wave 105: source-match was wired into SLMEvalHarness in Wave 102
   # but never enabled in this profile, so the metric stayed at None
-  # for every probe in the rdf-shacl-551-2 ablation. Enabling it here
+  # for every probe in the RDF/SHACL calibration corpus ablation. Enabling it here
   # closes the gap so the precision-of-citation column lights up
   # alongside faithfulness in eval_report.json.
   source_match: true

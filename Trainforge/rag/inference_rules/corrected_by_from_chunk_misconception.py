@@ -21,7 +21,7 @@ explicit in the upstream artifact.
 **Signal availability.** Unlike the
 ``misconception_of_from_misconception_ref`` rule (which depends on
 ``misconception.concept_id`` being populated upstream — currently 0%
-in the rdf-shacl-551 corpus per Wave 82's audit), this rule fires
+in the RDF/SHACL calibration corpus per Wave 82's audit), this rule fires
 on every chunk that carries ``misconceptions[]``. Production
 corpora today emit those reliably, so this rule starts producing
 edges immediately on the next graph rebuild.

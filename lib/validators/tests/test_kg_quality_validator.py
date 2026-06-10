@@ -90,8 +90,14 @@ def test_passes_with_perfect_scores(tmp_path: Path):
     assert result.issues == []
 
 
-def test_emits_warning_when_below_threshold(tmp_path: Path):
-    """Score below configured min -> one warning issue per breach."""
+def test_fails_closed_when_below_threshold(tmp_path: Path):
+    """Score below a configured floor -> critical issue + failed gate.
+
+    Regression: the configured ``min_*`` floors must actually block. A
+    breached floor now emits a critical GateIssue and inverts ``passed``
+    so the critical/block libv2_archival gate refuses to ship a degraded
+    KG. (Pre-fix this returned ``passed=True`` with a warning issue.)
+    """
     validator = KGQualityValidator(reporter_factory=_factory({
         "completeness": 0.5, "consistency": 0.95,
         "accuracy": 0.99, "coverage": 1.0,
@@ -100,12 +106,30 @@ def test_emits_warning_when_below_threshold(tmp_path: Path):
     inputs["min_completeness"] = 0.8
     inputs["min_consistency"] = 0.9
     result = validator.validate(inputs)
-    # Always advisory — passed True even with breaches.
-    assert result.passed is True
+    # A breached floor fails the gate closed.
+    assert result.passed is False
+    assert result.action == "block"
     codes = sorted(i.code for i in result.issues)
     # Only completeness breach (consistency 0.95 > 0.9 cleared).
     assert codes == ["KG_QUALITY_COMPLETENESS_BELOW_THRESHOLD"]
-    assert all(i.severity == "warning" for i in result.issues)
+    assert all(i.severity == "critical" for i in result.issues)
+
+
+def test_passes_when_all_floors_cleared(tmp_path: Path):
+    """At/above every configured floor -> passes with no issues."""
+    validator = KGQualityValidator(reporter_factory=_factory({
+        "completeness": 0.95, "consistency": 0.96,
+        "accuracy": 0.97, "coverage": 0.5,
+    }))
+    inputs = _base_inputs(tmp_path)
+    inputs["min_completeness"] = 0.95
+    inputs["min_consistency"] = 0.95
+    inputs["min_accuracy"] = 0.95
+    inputs["min_coverage"] = 0.5
+    result = validator.validate(inputs)
+    assert result.passed is True
+    assert result.action is None
+    assert result.issues == []
 
 
 def test_zero_threshold_never_breaches(tmp_path: Path):
@@ -402,6 +426,8 @@ def test_all_four_dimensions_can_breach(tmp_path: Path):
     inputs["min_accuracy"] = 0.5
     inputs["min_coverage"] = 0.5
     result = validator.validate(inputs)
+    assert result.passed is False
+    assert result.action == "block"
     codes = sorted(i.code for i in result.issues)
     assert codes == [
         "KG_QUALITY_ACCURACY_BELOW_THRESHOLD",

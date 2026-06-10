@@ -519,7 +519,7 @@ def test_schema_translation_loader_falls_back_for_rdf_shacl(
     per-family YAML catalog exists on disk for ``family == "rdf_shacl"``,
     ``_load_form_data`` must return the in-Python
     ``_RDF_SHACL_FALLBACK_FORM_DATA`` dict content unchanged so the
-    rdf-shacl-551-2 rebuild keeps emitting the same pairs byte-
+    RDF/SHACL calibration corpus rebuild keeps emitting the same pairs byte-
     identically (no eval-score drift). Wave 136a replaced the Wave
     133d whole-family-swap with a per-CURIE overlay merge — under the
     new contract the returned dict is a fresh merged copy whose
@@ -594,7 +594,7 @@ def test_existing_rdf_shacl_pairs_byte_identical() -> None:
     ``_FORM_DATA -> _RDF_SHACL_FALLBACK_FORM_DATA`` plus the
     ``_load_form_data`` dispatch MUST NOT change the pair list shape
     or content for the rdf_shacl family. This is the regression net
-    that lets the in-flight rdf-shacl-551-2 rebuild proceed without
+    that lets the in-flight RDF/SHACL calibration corpus rebuild proceed without
     re-validating eval scores."""
     capture_a = _FakeCapture()
     capture_b = _FakeCapture()
@@ -652,7 +652,7 @@ def _load_rdf_shacl_manifest_curies() -> List[str]:
     """Load the rdf-shacl manifest from disk; return its CURIE list."""
     from lib.ontology.property_manifest import load_property_manifest
 
-    manifest = load_property_manifest("rdf-shacl-551-2")
+    manifest = load_property_manifest("rdf-shacl-demo")
     return [p.curie for p in manifest.properties]
 
 

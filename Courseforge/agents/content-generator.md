@@ -206,7 +206,7 @@ Rules:
 ## Wave 79 Template Catalog
 
 **Forward-looking** — applies to FUTURE Courseforge runs. Existing
-exports (rdf-shacl-550 archive) are unchanged.
+exports (the RDF/SHACL calibration corpus archive) are unchanged.
 
 ### Why
 

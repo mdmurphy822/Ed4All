@@ -1,6 +1,6 @@
 """Wave 82 tests for pedagogy_model.prerequisite_chain population.
 
-Audit reproducer: rdf-shacl-551-2 shipped pedagogy_model.json with
+Audit reproducer: the RDF/SHACL calibration corpus shipped pedagogy_model.json with
 ``prerequisite_chain: []`` and ``prerequisite_violations: []`` despite
 the pedagogy graph carrying 404 ``prerequisite_of`` edges. The
 chunk-based legacy path consults ``chunk.prereq_concepts``, which the

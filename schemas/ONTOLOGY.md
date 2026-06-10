@@ -1598,7 +1598,7 @@ Edges in `concept_graph_semantic_v1.jsonld` materialize as typed `ed4all:TypedEd
 
 ### Cross-artifact join
 
-All four contexts share `@base: https://ed4all.io/concept/`, so `concept:foo` (pedagogy_graph) and the bare `foo` slug (concept_graph) both expand to the same IRI `https://ed4all.io/concept/foo`. Wave 2 evidence: 672/672 pedagogy concept IRIs join cleanly to the 1,100-IRI concept_graph universe on the `rdf-shacl-551-2` fixture. This is what makes pedagogy ↔ concept_graph SPARQL queries trivial — no ID translation layer is needed.
+All four contexts share `@base: https://ed4all.io/concept/`, so `concept:foo` (pedagogy_graph) and the bare `foo` slug (concept_graph) both expand to the same IRI `https://ed4all.io/concept/foo`. Wave 2 evidence: 672/672 pedagogy concept IRIs join cleanly to the 1,100-IRI concept_graph universe on the RDF/SHACL calibration corpus fixture. This is what makes pedagogy ↔ concept_graph SPARQL queries trivial — no ID translation layer is needed.
 
 ### Round-trip tests
 

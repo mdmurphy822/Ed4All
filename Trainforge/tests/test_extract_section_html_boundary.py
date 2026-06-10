@@ -3,13 +3,13 @@
 The pre-Wave-83 ``_extract_section_html`` used a flat regex slice from
 ``<hN>{heading}`` to the next ``<h[1-6]`` — clipping ``<section>`` open
 or close tags whenever adjacent headings lived in different sections.
-That was the load-bearing cause of the rdf-shacl-551 audit's 203/295
+That was the load-bearing cause of the RDF/SHACL calibration corpus audit's 203/295
 unbalanced-section chunks.
 
 Wave 83 Phase B walks ``<section>``/``</section>`` events relative to
 the heading's position to determine enclosure, then slices the input
 string accordingly. This test file pins the four required behaviors
-listed in plans/wave-83-html-balance-2026-04/plan.md:
+of the Wave 83 HTML-balance fix:
 
   1. Heading inside a ``<section>`` → returned HTML carries open + close.
   2. Heading outside any ``<section>`` (page-title h1) → heading element
@@ -43,7 +43,7 @@ class TestHeadingInsideSection:
         assert "<p>RDF triples are statements.</p>" in result
 
     def test_audit_layout_two_adjacent_sections(self):
-        # The exact rdf-shacl-551 layout: two `<section>` blocks back-to-back.
+        # The exact RDF/SHACL calibration corpus layout: two `<section>` blocks back-to-back.
         # Pre-Wave-83 regex slice would clip the closing </section> from
         # section A and the opening <section> from section B.
         html = (
@@ -146,7 +146,7 @@ class TestTwoHeadingsSameSection:
 
 class TestAllOutputsBalanced:
     def test_audit_failure_repro_now_balanced(self):
-        # The exact rdf-shacl-551 layout per the investigator's findings:
+        # The exact RDF/SHACL calibration corpus layout per the investigator's findings:
         # h1 with no body, then 5 sections. Pre-Wave-83 every chunk's
         # HTML had unbalanced section tags. Post-Wave-83 every output
         # must pass the balance check.

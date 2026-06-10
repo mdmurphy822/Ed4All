@@ -52,13 +52,13 @@ def _assert_dual_grammar_valid(curie: str) -> None:
 
 class TestMintCuriePrefix:
     def test_deterministic(self):
-        assert mint_curie_prefix("OPENSTAX_ALG_9") == mint_curie_prefix(
-            "OPENSTAX_ALG_9"
+        assert mint_curie_prefix("DEMO_ALG_9") == mint_curie_prefix(
+            "DEMO_ALG_9"
         )
 
     def test_lowercases_and_strips_punctuation(self):
         # Underscores / hyphens / dots all fuse out.
-        assert mint_curie_prefix("OPENSTAX_ALG_9") == "openstaxalg9"
+        assert mint_curie_prefix("DEMO_ALG_9") == "demoalg9"
         assert mint_curie_prefix("phys-101.intro") == "phys101intro"
 
     def test_digit_led_gets_letter_prepended(self):
@@ -75,7 +75,7 @@ class TestMintCuriePrefix:
         assert mint_curie_prefix("!!!") == "course"
 
     def test_prefix_matches_grammar(self):
-        for course_id in ("OPENSTAX_ALG_9", "9to5", "Bio 201", "x"):
+        for course_id in ("DEMO_ALG_9", "9to5", "Bio 201", "x"):
             prefix = mint_curie_prefix(course_id)
             assert re.match(r"^[a-z][a-z0-9]*$", prefix), prefix
 
@@ -113,7 +113,7 @@ class TestCurieForConcept:
             ("slope", "alg"),
             ("Slope-Intercept Form", "alg"),
             ("2D vectors", "phys"),
-            ("the quadratic formula", "openstaxalg9"),
+            ("the quadratic formula", "demoalg9"),
             ("RDF/SHACL validation rules", "rdf"),
             ("a-b-c-d-e", "x"),
         ]
@@ -127,7 +127,7 @@ class TestCurieForConcept:
 # --------------------------------------------------------------------------- #
 
 
-def _vocab(concepts, course_id="OPENSTAX_ALG_9"):
+def _vocab(concepts, course_id="DEMO_ALG_9"):
     return {
         "schema_version": "v1",
         "course_id": course_id,
@@ -150,7 +150,7 @@ class TestBuildMintedCurieMap:
             assert "canonical" in entry
             assert "surface_forms" in entry
         # surface_forms carries canonical first, then aliases.
-        slope_curie = "openstaxalg9:slope"
+        slope_curie = "demoalg9:slope"
         assert slope_curie in result
         assert result[slope_curie]["surface_forms"][0] == "slope"
         assert "gradient" in result[slope_curie]["surface_forms"]
@@ -185,7 +185,7 @@ class TestBuildMintedCurieMap:
         ])
         result = build_minted_curie_map(vocab)
         assert len(result) == 1
-        entry = result["openstaxalg9:slope"]
+        entry = result["demoalg9:slope"]
         assert "gradient" in entry["surface_forms"]
         assert "steepness" in entry["surface_forms"]
 
@@ -213,8 +213,8 @@ class TestMintedCurieByCanonical:
         ])
         minted = build_minted_curie_map(vocab)
         inverse = minted_curie_by_canonical(minted)
-        assert inverse["slope"] == "openstaxalg9:slope"
-        assert inverse["y-intercept"] == "openstaxalg9:y_intercept"
+        assert inverse["slope"] == "demoalg9:slope"
+        assert inverse["y-intercept"] == "demoalg9:y_intercept"
 
     def test_empty_input(self):
         assert minted_curie_by_canonical({}) == {}

@@ -111,7 +111,7 @@ DEFAULT_MIN_PRESERVE_RATE = 0.0
 # Wave 122 follow-up (post-uncapped audit): the canonical
 # ``schemas/knowledge/instruction_pair.schema.json`` enforces
 # ``prompt.minLength: 40``. The 25-floor admitted 5/263 paraphrases on
-# rdf-shacl-551-2's 14B run that the schema then rejected at audit time
+# the RDF/SHACL calibration corpus's 14B run that the schema then rejected at audit time
 # (e.g. "Define what an IRI is in RDF." at 29 chars). Realigning the
 # default floor to 40 closes the schema/provider misalignment; 7B-Q4
 # users who legitimately need a lower floor can still pass

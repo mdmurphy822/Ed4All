@@ -10,8 +10,8 @@ Covered contracts:
   * ``--prereq-windowed`` prepends a "Prerequisites recap" block to each
     pair's prompt with depth-1 predecessor first sentences.
   * Pairs whose chunks reference no graph concepts go to the end.
-  * Real archive smoke (rdf-shacl-550): SPARQL aggregation pairs follow
-    basic-SPARQL pairs in the emit order.
+  * Real archive smoke: SPARQL aggregation pairs follow
+    basic-SPARQL pairs in the emit order (on a corpus that carries both).
 """
 
 from __future__ import annotations
@@ -40,19 +40,37 @@ from Trainforge.synthesize_training import (  # noqa: E402
 )
 
 
-RDF_SHACL_SLUG_CANDIDATES = (
-    "rdf-shacl-550-rdf-shacl-550",
-    "rdf-shacl-550",
-)
+def _real_archive() -> Path:
+    """Discover the first LibV2 course archive that carries the corpus +
+    graph artifacts the curriculum-ordering smoke needs.
+
+    No course slug is hardcoded: the archive lives under the gitignored
+    ``LibV2/courses/`` tree (honors ``ED4ALL_LIBV2_ROOT``). Skips
+    cleanly when none is present (the default on a clean checkout).
+    """
+    import os
+
+    root = os.environ.get("ED4ALL_LIBV2_ROOT")
+    libv2_root = (Path(root) if root else PROJECT_ROOT / "LibV2") / "courses"
+    if libv2_root.is_dir():
+        for candidate in sorted(libv2_root.iterdir()):
+            if (
+                candidate.is_dir()
+                and (candidate / "corpus" / "chunks.jsonl").exists()
+                and (candidate / "graph").is_dir()
+            ):
+                return candidate
+    pytest.skip(
+        "no LibV2 course archive with corpus/chunks.jsonl + graph/ present "
+        "under ED4ALL_LIBV2_ROOT / LibV2/courses/; integration test skipped"
+    )
 
 
-def _rdf_shacl_archive() -> Path:
-    libv2_root = PROJECT_ROOT / "LibV2" / "courses"
-    for slug in RDF_SHACL_SLUG_CANDIDATES:
-        candidate = libv2_root / slug
-        if candidate.exists():
-            return candidate
-    pytest.skip("rdf-shacl-550 archive not present; integration test skipped")
+def _course_code_for(archive: Path) -> str:
+    """Upper-snake course_code from the first two slug hyphen-tokens."""
+    tokens = [t for t in archive.name.split("-") if t]
+    head = tokens[:2] if len(tokens) >= 2 else tokens
+    return "_".join(head).upper() if head else archive.name.upper()
 
 
 def _load_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -443,13 +461,13 @@ def test_curriculum_requires_pedagogy_graph(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Real-archive smoke (rdf-shacl-550)
+# Real-archive smoke
 # ---------------------------------------------------------------------------
 
 
-def test_rdf_shacl_550_curriculum_anchors_basic_before_aggregation(tmp_path: Path):
+def test_real_archive_curriculum_anchors_basic_before_aggregation(tmp_path: Path):
     """Sample test: SPARQL aggregation pairs must follow basic-SPARQL pairs
-    in the curriculum-ordered output for the rdf-shacl-550 corpus.
+    in the curriculum-ordered output for a corpus that carries both.
 
     We resolve "aggregation" pairs as those whose chunks tag concepts whose
     label/slug mentions 'aggreg', and "basic" pairs as those tagging
@@ -457,11 +475,11 @@ def test_rdf_shacl_550_curriculum_anchors_basic_before_aggregation(tmp_path: Pat
     that no aggregation pair appears earlier in the emit order than every
     basic-SPARQL pair (guards against accidental input-order leakage).
     """
-    archive = _rdf_shacl_archive()
+    archive = _real_archive()
     out_dir = tmp_path / "out"
     stats = run_synthesis_from_libv2(
         slug=archive.name,
-        course_code="RDF_SHACL_550",
+        course_code=_course_code_for(archive),
         provider="mock",
         seed=42,
         max_pairs=400,
@@ -508,7 +526,7 @@ def test_rdf_shacl_550_curriculum_anchors_basic_before_aggregation(tmp_path: Pat
 
     if first_aggregation_idx is None or last_basic_idx is None:
         pytest.skip(
-            "rdf-shacl-550 sample doesn't contain both aggregation and "
+            "corpus sample doesn't contain both aggregation and "
             "basic-SPARQL pairs in this run; skipping ordering assertion"
         )
     # Allow a small overlap window: aggregation may appear AFTER at least
@@ -521,14 +539,14 @@ def test_rdf_shacl_550_curriculum_anchors_basic_before_aggregation(tmp_path: Pat
     )
 
 
-def test_rdf_shacl_550_manifest_contains_topo_order(tmp_path: Path):
-    """The manifest from a real-archive run must list ~599 concepts (the
-    rdf-shacl-550 concept count) and report topo_method=kahn."""
-    archive = _rdf_shacl_archive()
+def test_real_archive_manifest_contains_topo_order(tmp_path: Path):
+    """The manifest from a real-archive run must list the corpus concept
+    count and report topo_method=kahn."""
+    archive = _real_archive()
     out_dir = tmp_path / "out"
     run_synthesis_from_libv2(
         slug=archive.name,
-        course_code="RDF_SHACL_550",
+        course_code=_course_code_for(archive),
         provider="mock",
         seed=42,
         max_pairs=20,

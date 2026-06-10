@@ -54,7 +54,102 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # ---------------------------------------------------------------------- #
 
 
-def _find_content_dir(phase_outputs: Dict[str, Any]) -> Optional[Path]:
+# Canonical Courseforge content layouts, in priority order. The
+# textbook_to_course pipeline emits generated weekly pages under
+# ``<project_export>/03_content_development/week_NN/*.html`` (the
+# Courseforge two-pass packager's layout). Legacy / packaged courses
+# place flattened HTML directly under ``<project_export>/content/``.
+# The disk-glob fallback in ``_find_content_dir`` / ``_all_html_paths``
+# tries each subdir against an export root resolved from phase outputs.
+_CONTENT_EXPORT_SUBDIRS = ("03_content_development", "content")
+
+
+def _find_project_export_dir(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Optional[Dict[str, Any]] = None,
+) -> Optional[Path]:
+    """Resolve the Courseforge project-export root from available signals.
+
+    Used by the disk-glob fallback in :func:`_find_content_dir` /
+    :func:`_all_html_paths` when no ``content_dir`` / ``content_paths``
+    surfaced. The export root is the directory that contains the
+    canonical ``NN_<stage>/`` subdirs (``01_learning_objectives/``,
+    ``03_content_development/``, ...).
+
+    Resolution chain (high → low); first extant directory wins:
+
+    * ``objective_extraction.project_path`` (the canonical export root
+      threaded by the staging / extraction phases).
+    * any ``project_path`` / ``project_export`` / ``export_dir`` /
+      ``project_dir`` / ``project_export_dir`` key surfaced by ANY
+      phase output (``_locate``).
+    * the same keys from ``workflow_params``.
+    """
+    candidates: List[str] = []
+
+    oe = phase_outputs.get("objective_extraction") or {}
+    pp = oe.get("project_path")
+    if isinstance(pp, str) and pp:
+        candidates.append(pp)
+
+    located = _locate(
+        phase_outputs,
+        "project_path",
+        "project_export",
+        "export_dir",
+        "project_dir",
+        "project_export_dir",
+    )
+    if located:
+        candidates.append(located)
+
+    if workflow_params:
+        for key in (
+            "project_path",
+            "project_export",
+            "export_dir",
+            "project_dir",
+            "project_export_dir",
+        ):
+            val = workflow_params.get(key)
+            if isinstance(val, str) and val:
+                candidates.append(val)
+
+    for cand in candidates:
+        try:
+            p = Path(cand)
+        except (TypeError, ValueError):
+            continue
+        if p.exists() and p.is_dir():
+            return p
+
+    return None
+
+
+def _glob_content_dir_from_export(export_dir: Path) -> Optional[Path]:
+    """Return the first canonical content subdir under ``export_dir``.
+
+    Tries each entry in :data:`_CONTENT_EXPORT_SUBDIRS`; a subdir wins
+    when it exists AND contains at least one ``*.html`` file at any
+    depth (handles both the flat ``content/*.html`` layout and the
+    nested ``03_content_development/week_NN/*.html`` layout).
+    """
+    if not export_dir or not export_dir.is_dir():
+        return None
+    for sub in _CONTENT_EXPORT_SUBDIRS:
+        cand = export_dir / sub
+        try:
+            if cand.is_dir() and next(cand.rglob("*.html"), None) is not None:
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def _find_content_dir(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Optional[Dict[str, Any]] = None,
+) -> Optional[Path]:
     """Locate a content_dir candidate from accumulated phase outputs.
 
     Courseforge's content-generation phase emits ``content_paths`` as a
@@ -63,6 +158,17 @@ def _find_content_dir(phase_outputs: Dict[str, Any]) -> Optional[Path]:
     parent. When the phase exposes a ``project_path`` (pre-Wave-8
     shape) we prefer ``project_path / "content"`` to match the
     packager's layout.
+
+    Disk-glob fallback (additive, backward-compatible): when none of
+    the existing resolution arms match — which happens for
+    ``textbook_to_course`` runs whose generated pages live at
+    ``<export>/03_content_development/week_NN/*.html`` and whose
+    content-generation phase output carries no ``content_paths`` (e.g.
+    when the phase is dispatched to subagents) — derive the project
+    export root from phase outputs / ``workflow_params`` and glob the
+    canonical content subdirs (``03_content_development/`` then legacy
+    ``content/``). The fallback fires ONLY when the legacy arms return
+    ``None``, so existing runs are byte-identical.
     """
     # Preferred: explicit content_dir key wherever it appears.
     for phase_data in phase_outputs.values():
@@ -98,6 +204,17 @@ def _find_content_dir(phase_outputs: Dict[str, Any]) -> Optional[Path]:
         if content_dir.exists():
             return content_dir
 
+    # Disk-glob FALLBACK — reached only when every arm above missed.
+    # Resolve the project export root and probe the canonical content
+    # subdirs. Handles the textbook_to_course
+    # ``<export>/03_content_development/week_NN/*.html`` layout that the
+    # legacy arms can't see when content_paths isn't surfaced.
+    export_dir = _find_project_export_dir(phase_outputs, workflow_params)
+    if export_dir is not None:
+        globbed = _glob_content_dir_from_export(export_dir)
+        if globbed is not None:
+            return globbed
+
     return None
 
 
@@ -108,12 +225,17 @@ def _walk_html_paths(content_dir: Path) -> List[Path]:
     return sorted(content_dir.rglob("*.html"))
 
 
-def _first_html_path(phase_outputs: Dict[str, Any]) -> Optional[Path]:
+def _first_html_path(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Optional[Dict[str, Any]] = None,
+) -> Optional[Path]:
     """Locate a single html_path candidate for validators that need one.
 
     DART output paths surface as ``output_path`` (single) or
     ``output_paths`` (comma-joined). Falls back to walking the
     discovered content_dir when no DART outputs are present.
+    ``workflow_params`` (optional) is threaded into ``_find_content_dir``
+    so the disk-glob export-root fallback can fire.
     """
     dc = phase_outputs.get("dart_conversion") or {}
     op = dc.get("output_path")
@@ -125,13 +247,43 @@ def _first_html_path(phase_outputs: Dict[str, Any]) -> Optional[Path]:
         if first:
             return Path(first)
 
-    cd = _find_content_dir(phase_outputs)
+    cd = _find_content_dir(phase_outputs, workflow_params)
     htmls = _walk_html_paths(cd) if cd else []
     return htmls[0] if htmls else None
 
 
-def _all_html_paths(phase_outputs: Dict[str, Any]) -> List[str]:
-    """Return a list of HTML page paths derivable from phase outputs."""
+def _all_html_paths(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Return a list of HTML page paths derivable from phase outputs.
+
+    ``workflow_params`` (optional) is threaded into ``_find_content_dir``
+    so the disk-glob export-root fallback fires when neither DART
+    outputs nor ``content_generation.content_paths`` surfaced — e.g. a
+    ``textbook_to_course`` run whose generated pages live under
+    ``<export>/03_content_development/week_NN/*.html`` and whose
+    content-generation phase output carries no content paths.
+    """
+    # Prefer generated COURSE CONTENT pages when they exist. This must come
+    # BEFORE the DART-source arm: content-phase gates (source_refs,
+    # content_grounding) need the content-generator pages (which carry
+    # ``data-cf-source-ids``), NOT the DART staged HTML (``data-dart-*``).
+    # At the dart_conversion phase no content dir resolves yet, so the DART
+    # arm below still serves the dart_markers gate — order is safe.
+    cg = phase_outputs.get("content_generation") or {}
+    cps = cg.get("content_paths")
+    if isinstance(cps, str) and cps:
+        return [p.strip() for p in cps.split(",") if p.strip()]
+
+    cd = _find_content_dir(phase_outputs, workflow_params)
+    if cd:
+        walked = [str(p) for p in _walk_html_paths(cd)]
+        if walked:
+            return walked
+
+    # Fallback: DART conversion outputs (serves the DART-phase dart_markers
+    # gate, and content-less workflows).
     dc = phase_outputs.get("dart_conversion") or {}
     ops = dc.get("output_paths")
     if isinstance(ops, str) and ops:
@@ -139,14 +291,7 @@ def _all_html_paths(phase_outputs: Dict[str, Any]) -> List[str]:
     op = dc.get("output_path")
     if isinstance(op, str) and op:
         return [op]
-
-    cg = phase_outputs.get("content_generation") or {}
-    cps = cg.get("content_paths")
-    if isinstance(cps, str) and cps:
-        return [p.strip() for p in cps.split(",") if p.strip()]
-
-    cd = _find_content_dir(phase_outputs)
-    return [str(p) for p in _walk_html_paths(cd)] if cd else []
+    return []
 
 
 def _locate(phase_outputs: Dict[str, Any], *keys: str) -> Optional[str]:
@@ -173,7 +318,7 @@ def _build_content_structure(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    html = _first_html_path(phase_outputs)
+    html = _first_html_path(phase_outputs, workflow_params)
     if html and html.exists():
         return {"html_path": str(html)}, []
     # No HTML available — must be skipped, not passed.
@@ -184,7 +329,7 @@ def _build_page_objectives(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    content_dir = _find_content_dir(phase_outputs)
+    content_dir = _find_content_dir(phase_outputs, workflow_params)
     if content_dir is None:
         return {}, ["content_dir"]
     inputs: Dict[str, Any] = {"content_dir": str(content_dir)}
@@ -201,7 +346,7 @@ def _build_source_refs(
 ) -> BuilderResult:
     staging = _locate(phase_outputs, "staging_dir")
     smm = _locate(phase_outputs, "source_module_map_path")
-    pages = _all_html_paths(phase_outputs)
+    pages = _all_html_paths(phase_outputs, workflow_params)
     inputs: Dict[str, Any] = {"page_paths": pages}
     if staging:
         inputs["staging_dir"] = staging
@@ -235,7 +380,7 @@ def _build_wcag(
     # WCAGValidator.validate(html: str, file_path: str=...) is a positional
     # signature, but the gate manager passes kwargs. We deliberately expose
     # html_path so a shim (see executor.py) can call .validate_file for us.
-    html = _first_html_path(phase_outputs)
+    html = _first_html_path(phase_outputs, workflow_params)
     if html and html.exists():
         return {"html_path": str(html)}, []
     return {}, ["html_path"]
@@ -254,7 +399,7 @@ def _build_oscqr(
     inputs: Dict[str, Any] = {}
     # Prefer content_dir from content_generation; fall back to course_dir
     # from packaging/archival.
-    content_dir = _find_content_dir(phase_outputs)
+    content_dir = _find_content_dir(phase_outputs, workflow_params)
     if content_dir is not None:
         inputs["content_dir"] = str(content_dir)
     course_path = _locate(phase_outputs, "course_dir", "project_path")
@@ -294,12 +439,12 @@ def _build_dart_markers(
     (``staging.html_paths``) and batch emits
     (``dart_conversion.output_paths``) both surface.
     """
-    all_paths = _all_html_paths(phase_outputs)
+    all_paths = _all_html_paths(phase_outputs, workflow_params)
     existing = [Path(p) for p in all_paths if Path(p).exists()]
     if not existing:
         # One last fallback: try the single html_path helper (walks
         # content_dir when DART outputs are absent).
-        single = _first_html_path(phase_outputs)
+        single = _first_html_path(phase_outputs, workflow_params)
         if single and single.exists():
             existing = [single]
     if not existing:
@@ -1270,6 +1415,187 @@ def _build_concept_graph_inputs(
     return {"concept_graph_path": candidate}, []
 
 
+def _build_kg_quality_inputs(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Activate-the-dormant-gate builder for KGQualityValidator.
+
+    The ``kg_quality_report`` gate fires at the
+    ``textbook_to_course::libv2_archival`` phase, declared
+    ``severity: critical`` / ``on_fail: block`` / ``on_error:
+    fail_closed`` in ``config/workflows.yaml``. Pre-activation NO builder
+    was registered, so ``GateInputRouter.build`` returned
+    ``({}, ["__no_builder_registered__"])`` and the executor stamped the
+    gate ``GATE_SKIPPED_MISSING_INPUTS`` with ``passed=True`` — the gate
+    NEVER ran. This builder routes the inputs the validator's
+    ``validate()`` consumes so the gate fires and fails closed when its
+    graph inputs are missing.
+
+    The validator (``lib/validators/kg_quality.py``) requires five
+    non-empty inputs (``course_slug`` / ``run_id`` / ``output_dir`` /
+    ``concept_graph_path`` / ``semantic_graph_path``) and treats any
+    missing one as a critical fail-closed
+    (``KG_QUALITY_PEDAGOGY_GRAPH_MISSING``) — that is the whole point of
+    activation: a libv2_archival run with no concept / semantic graph
+    must NOT ship an empty KG to LibV2.
+
+    Resolution chain (graph is the load-bearing input):
+
+    * ``semantic_graph_path`` — the SEMANTIC graph
+      (``concept_graph_semantic.json``). The ``concept_extraction``
+      phase emits ``concept_graph_path`` pointing AT the semantic graph
+      (``<course_dir>/concept_graph/concept_graph_semantic.json`` — see
+      ``MCP/tools/pipeline_tools.py::_run_concept_extraction`` :10412 /
+      :10536), so we route that value to ``semantic_graph_path``. When
+      the phase output isn't surfaced (resumed / stage-subcommand run)
+      we derive it from the libv2_archival ``course_dir`` against the
+      same canonical locations the archival code probes
+      (``concept_graph/`` then legacy ``graph/`` /
+      ``imscc_chunks/`` / ``corpus/``).
+    * ``concept_graph_path`` — the ASSERTED graph
+      (``concept_graph.json``). Many corpora ship
+      only the semantic graph; the reporter degrades a missing asserted
+      graph to ``{}`` internally (``_load_json(...) or {}``), so we
+      surface a best-effort sibling path (``<graph_dir>/concept_graph.json``)
+      rather than leaving it empty — the validator's missing-input check
+      requires a non-empty STRING, and the reporter tolerates the file's
+      absence.
+    * ``course_slug`` — ``libv2_archival.course_slug`` >
+      ``concept_extraction.course_slug`` > any phase's ``course_slug`` >
+      ``workflow_params.course_name``.
+    * ``run_id`` — ``workflow_params.run_id`` > env ``ED4ALL_RUN_ID``.
+    * ``output_dir`` — the LibV2 course ``quality/`` directory (the
+      canonical home of ``kg_quality_report.json``), derived from
+      ``course_dir``.
+
+    Threshold floors ARE enforced. The YAML ``threshold:`` block
+    (``min_completeness`` / ``min_consistency`` / ``min_accuracy`` /
+    ``min_coverage``) is forwarded into the validator's inputs by
+    ``ValidationGateManager.run_gate`` (it merges ``gate.threshold`` into
+    the inputs dict alongside ``gate.config``, via ``setdefault``). The
+    validator reads each floor from its inputs; ``_apply_thresholds``
+    still handles only the result-level keys
+    (``max_critical_issues`` / ``max_issues`` / ``min_score`` /
+    ``required_score``). A metric breach emits a critical
+    ``KG_QUALITY_<DIM>_BELOW_THRESHOLD`` GateIssue and inverts
+    ``passed`` so the critical/block gate refuses to ship a degraded KG;
+    a missing/malformed graph or reporter exception likewise fails the
+    gate closed. See the ``docs/validation/gates.md`` note.
+
+    Double-consensus guard: the validator re-runs
+    ``EdgeConsensusAggregator`` to attenuate the consistency axis by
+    ``(1 - contradiction_rate)``. ``build()`` is deterministic over the
+    same semantic graph, so the re-run is idempotent — it reproduces the
+    canonical ``concept_graph/edge_consensus_report.json`` content
+    byte-for-byte (non-divergent). We do NOT overwrite that canonical
+    sibling: the validator writes its consensus copy under ``output_dir``
+    (``quality/``), leaving the authoring-time sibling untouched.
+    """
+    # --- course_slug
+    course_slug = (
+        _locate(phase_outputs, "course_slug")
+        or workflow_params.get("course_name")
+        or workflow_params.get("course_code")
+    )
+
+    # --- course_dir (anchors output_dir + the on-disk graph fallback)
+    course_dir_raw = _locate(phase_outputs, "course_dir") or workflow_params.get(
+        "course_dir"
+    )
+    course_dir = Path(course_dir_raw) if course_dir_raw else None
+
+    # --- run_id
+    run_id = workflow_params.get("run_id") or os.environ.get(
+        "ED4ALL_RUN_ID", ""
+    ).strip()
+
+    # --- semantic_graph_path: concept_extraction emits concept_graph_path
+    #     pointing AT the semantic graph.
+    ce = phase_outputs.get("concept_extraction") or {}
+    semantic_graph_path: Optional[str] = None
+    candidate = ce.get("concept_graph_path")
+    if isinstance(candidate, str) and candidate:
+        semantic_graph_path = candidate
+    if not semantic_graph_path:
+        located = _locate(phase_outputs, "semantic_graph_path")
+        if located:
+            semantic_graph_path = located
+    if not semantic_graph_path:
+        located = _locate(phase_outputs, "concept_graph_path")
+        if located:
+            semantic_graph_path = located
+    if not semantic_graph_path and course_dir is not None:
+        # Disk-derive fallback (resumed / stage-subcommand run with no
+        # concept_extraction phase output). Probe the same canonical
+        # locations the archival code uses; surface ONLY an EXTANT file.
+        # A genuinely-absent graph must leave semantic_graph_path empty so
+        # the validator's KG_QUALITY_PEDAGOGY_GRAPH_MISSING arm fires
+        # (critical/block) — that is the fail-closed point of activation.
+        for sub in ("concept_graph", "graph", "imscc_chunks", "corpus"):
+            cand = course_dir / sub / "concept_graph_semantic.json"
+            if cand.exists():
+                semantic_graph_path = str(cand)
+                break
+
+    # --- concept_graph_path: the asserted concept_graph.json (sibling of
+    #     the semantic graph). Best-effort — the reporter degrades a
+    #     missing asserted graph to {} internally, so we never block on
+    #     its absence, but we surface a non-empty STRING so the
+    #     validator's missing-input check passes.
+    concept_graph_path: Optional[str] = None
+    located_asserted = _locate(phase_outputs, "asserted_concept_graph_path")
+    if located_asserted:
+        concept_graph_path = located_asserted
+    if not concept_graph_path and semantic_graph_path:
+        try:
+            sib = Path(semantic_graph_path).parent / "concept_graph.json"
+            concept_graph_path = str(sib)
+        except (TypeError, ValueError):
+            concept_graph_path = None
+
+    # --- output_dir: canonical quality/ home of kg_quality_report.json.
+    output_dir: Optional[str] = None
+    if course_dir is not None:
+        output_dir = str(course_dir / "quality")
+
+    inputs: Dict[str, Any] = {}
+    missing: List[str] = []
+    if course_slug:
+        inputs["course_slug"] = str(course_slug)
+    else:
+        missing.append("course_slug")
+    if run_id:
+        inputs["run_id"] = str(run_id)
+    else:
+        missing.append("run_id")
+    if output_dir:
+        inputs["output_dir"] = output_dir
+    else:
+        missing.append("output_dir")
+    if concept_graph_path:
+        inputs["concept_graph_path"] = concept_graph_path
+    else:
+        missing.append("concept_graph_path")
+    if semantic_graph_path:
+        inputs["semantic_graph_path"] = semantic_graph_path
+    else:
+        missing.append("semantic_graph_path")
+
+    # IMPORTANT: do NOT short-circuit to a structured router-skip when
+    # graph inputs are unresolvable. The whole point of activation is to
+    # let the validator's own KG_QUALITY_PEDAGOGY_GRAPH_MISSING
+    # fail-closed arm fire on a missing graph (critical/block). Returning
+    # a non-empty missing-list here would route to
+    # GATE_SKIPPED_MISSING_INPUTS (passed=True) and re-dormant the gate.
+    # We therefore pass whatever resolved and let the validator
+    # adjudicate — surfacing required-input markers ONLY for the
+    # non-graph context keys (course_slug / run_id / output_dir) would
+    # also skip the gate, so we surface NO missing keys and rely on the
+    # validator's fail-closed contract.
+    return inputs, []
+
+
 def _build_domain_concept_vocabulary_inputs(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -1639,6 +1965,17 @@ def default_router() -> GateInputRouter:
         # Keep router functional even when the validator import fails.
         logger.warning("content_grounding validator import failed")
 
+    # Anti-silent-template guard: blocks the deterministic generate_week
+    # template emitter from passing as real LLM content authoring.
+    try:
+        from lib.validators.content_authorship import _build_content_authorship
+        r.register(
+            "lib.validators.content_authorship.ContentAuthorshipValidator",
+            _build_content_authorship,
+        )
+    except ImportError:  # pragma: no cover
+        logger.warning("content_authorship validator import failed")
+
     # ------------------------------------------------------------------ #
     # W1 — Phase 3 / 3.5 / 4 Courseforge two-pass validator wiring.
     # Closes the no-builder fallthrough that stamped these gates
@@ -1811,6 +2148,36 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.chapter_objective_coverage.ChapterObjectiveCoverageValidator",
         _build_chapter_objective_coverage_inputs,
+    )
+    # TerminalObjectiveCoverageValidator fires at ``course_planning`` as
+    # the fail-fast ``terminal_objective_coverage`` gate. It consumes the
+    # SAME two inputs as ChapterObjectiveCoverageValidator — the
+    # synthesized_objectives (for terminal_objectives + chapter_objectives
+    # roll-up) + the textbook_structure (to adjudicate CO-less courses) —
+    # so it reuses that builder verbatim. The validator graceful-degrades
+    # when either is absent.
+    r.register(
+        "lib.validators.terminal_objective_coverage.TerminalObjectiveCoverageValidator",
+        _build_chapter_objective_coverage_inputs,
+    )
+
+    # Activate-the-dormant-gate: KGQualityValidator fires at
+    # ``textbook_to_course::libv2_archival`` as the critical / block /
+    # fail_closed ``kg_quality_report`` gate. Pre-activation NO builder
+    # was registered, so the router returned
+    # ``__no_builder_registered__`` and the executor stamped the gate
+    # GATE_SKIPPED_MISSING_INPUTS (passed=True) — it NEVER ran. The
+    # builder routes course_slug / run_id / output_dir (LibV2 quality/) +
+    # the semantic graph (concept_extraction.concept_graph_path points at
+    # concept_graph_semantic.json) + a best-effort asserted-graph sibling.
+    # A genuinely-missing graph leaves semantic_graph_path empty so the
+    # validator's KG_QUALITY_PEDAGOGY_GRAPH_MISSING arm fails closed.
+    # Threshold semantics unchanged (metric breach → warning, passed=True;
+    # only missing/malformed graph or reporter exception blocks). See
+    # docs/validation/gates.md.
+    r.register(
+        "lib.validators.kg_quality.KGQualityValidator",
+        _build_kg_quality_inputs,
     )
 
     return r

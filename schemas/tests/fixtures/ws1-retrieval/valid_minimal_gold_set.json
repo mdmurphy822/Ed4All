@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "course_slug": "demo-course-101",
+  "chunkset": {
+    "kind": "dart",
+    "chunks_path": "dart_chunks/chunks.jsonl",
+    "chunks_sha256": "fc8a1c651e2cdf7eb6d5aecb57ddc7244f71eebf805d34a88684210685b03a0f"
+  },
+  "authored_at": "2026-06-09T00:00:00Z",
+  "frozen": false,
+  "_operator_note": "Schema-fixture: minimal valid gold set with one factual_recall question.",
+  "questions": [
+    {
+      "question_id": "gq-demo-course-101-0001",
+      "question_text": "What does a vector store index?",
+      "question_type": "factual_recall",
+      "relevant_passages": [
+        {
+          "chunk_id": "demo_chunk_001",
+          "relevance": "primary",
+          "anchor": {
+            "item_path": "alpha.html",
+            "section_heading": "Vector Stores",
+            "text_quote": "A vector store is a database that indexes high-dimensional embedding vectors."
+          }
+        }
+      ],
+      "answer_note": "It indexes high-dimensional embedding vectors.",
+      "authoring": {
+        "method": "manual",
+        "author": "@executor-b",
+        "reviewed_by": "PENDING_REVIEW",
+        "status": "seed"
+      }
+    }
+  ]
+}

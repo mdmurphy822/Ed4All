@@ -376,3 +376,68 @@ class TestRouterDispatch:
         assert any(
             "Rewritten paragraph" in p for p in succ_paragraphs
         ), succ_paragraphs
+
+
+class TestAuthorshipStats:
+    """G1 anti-silent-template guard: build_week_data must tally per-page
+    LLM-authored vs template-fallback so a provider/router that degrades at
+    runtime is caught (not just the construct-time generator_mode)."""
+
+    def test_router_authors_all_pages(self) -> None:
+        topics = [_mk_topic("Introduction"), _mk_topic("Stages")]
+        objectives = [
+            _mk_obj("TO-01", "Describe introductory concepts."),
+            _mk_obj("TO-02", "Explain the stages."),
+        ]
+        stats: Dict[str, int] = {"llm_authored": 0, "template_fallback": 0}
+        _cgh.build_week_data(
+            week_num=1, duration_weeks=1, week_topics=topics,
+            week_objectives=objectives, all_objectives=objectives,
+            course_code="BIO_101", content_router=_StubRouter(),
+            authorship_stats=stats,
+        )
+        assert stats == {"llm_authored": 2, "template_fallback": 0}
+
+    def test_router_partial_escalation_tallies_fallback(self) -> None:
+        topics = [_mk_topic("Introduction"), _mk_topic("Stages")]
+        objectives = [
+            _mk_obj("TO-01", "Describe introductory concepts."),
+            _mk_obj("TO-02", "Explain the stages."),
+        ]
+        stats: Dict[str, int] = {"llm_authored": 0, "template_fallback": 0}
+        _cgh.build_week_data(
+            week_num=1, duration_weeks=1, week_topics=topics,
+            week_objectives=objectives, all_objectives=objectives,
+            course_code="BIO_101",
+            content_router=_StubRouter(escalate_indices=[1]),
+            authorship_stats=stats,
+        )
+        # idx 0 authored, idx 1 escalated -> deterministic floor.
+        assert stats == {"llm_authored": 1, "template_fallback": 1}
+
+    def test_legacy_provider_authors_all_pages(self) -> None:
+        topics = [_mk_topic("Introduction"), _mk_topic("Stages")]
+        objectives = [
+            _mk_obj("TO-01", "Describe introductory concepts."),
+            _mk_obj("TO-02", "Explain the stages."),
+        ]
+        stats: Dict[str, int] = {"llm_authored": 0, "template_fallback": 0}
+        _cgh.build_week_data(
+            week_num=1, duration_weeks=1, week_topics=topics,
+            week_objectives=objectives, all_objectives=objectives,
+            course_code="BIO_101", content_provider=_StubLegacyProvider(),
+            authorship_stats=stats,
+        )
+        assert stats == {"llm_authored": 2, "template_fallback": 0}
+
+    def test_pure_template_mode_does_not_tally(self) -> None:
+        topics = [_mk_topic("Introduction")]
+        objectives = [_mk_obj("TO-01", "Describe introductory concepts.")]
+        stats: Dict[str, int] = {"llm_authored": 0, "template_fallback": 0}
+        _cgh.build_week_data(
+            week_num=1, duration_weeks=1, week_topics=topics,
+            week_objectives=objectives, all_objectives=objectives,
+            course_code="BIO_101", authorship_stats=stats,
+        )
+        # No provider/router => not an LLM run => no tally.
+        assert stats == {"llm_authored": 0, "template_fallback": 0}

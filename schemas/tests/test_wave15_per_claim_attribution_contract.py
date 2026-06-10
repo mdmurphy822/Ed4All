@@ -1,7 +1,7 @@
 """GPT Feedback v2 — Wave 1.5 end-of-wave per-claim-attribution gate.
 
 Authored 2026-05-06 against the closing 6-test gate enumerated in
-``plans/gpt-feedback-2-wave1.5-per-claim-attribution-2026-05.md`` § 4.
+the Wave 1.5 per-claim-attribution gate spec § 4.
 Predecessors: W1.5.A (d317327, schema oneOf bump), W1.5.B (58db527,
 outline prompt directives), W1.5.C (5de2326, per-claim consistency
 walk + ``per_claim_attribution_unfixable`` escalation marker), W1.5.D
@@ -129,7 +129,12 @@ def _outline_payload(
     base: Dict[str, Any] = {
         "block_id": f"page_01#{block_type}_x_0",
         "block_type": block_type,
-        "content_type": "definition",
+        # ``explanation`` is the canonical ChunkType enum value matching
+        # the definitional/conceptual SHACL prose these claims carry;
+        # ``definition`` is NOT in the per-block-type schema's 10-value
+        # content_type enum (schemas/taxonomies/content_type.json
+        # ::$defs.ChunkType) so it fails the bumped ``oneOf`` schema.
+        "content_type": "explanation",
         "bloom_level": "understand",
         "objective_refs": ["TO-01"],
         "curies": ["sh:NodeShape"],
@@ -496,7 +501,7 @@ def test_3_anti_silent_degradation_legacy_corpora_validate() -> None:
 
     Catches the regression class where a future schema author tightens
     the ``oneOf`` ``List[str]`` arm and silently breaks every existing
-    fixture and every existing rebuild on the rdf-shacl-551-2
+    fixture and every existing rebuild on the RDF/SHACL
     calibration corpus.
     """
     jsonschema = _require_jsonschema()

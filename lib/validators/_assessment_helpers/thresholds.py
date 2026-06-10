@@ -30,7 +30,7 @@ DISTRACTOR_TEMPLATE_MAX_RATIO = 0.30
 
 
 #: Per-question-type quality thresholds (Wave 6 W6.A calibration).
-#: Day-1 starting points; calibrate against the rdf-shacl-551-2 corpus
+#: Day-1 starting points; calibrate against the RDF/SHACL calibration corpus
 #: rebuild before promoting severity from warning to critical.
 #:
 #: Mirrors :data:`lib.validators.block_objective_delivery._PER_BLOCK_TYPE_ENTAILMENT_FLOOR`

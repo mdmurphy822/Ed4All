@@ -179,6 +179,76 @@ def test_clears_validator_node_floor(tmp_path: Path) -> None:
     assert payload["node_count"] == len(nodes)
 
 
+# Canonical node-class vocabulary — single source of truth is
+# lib/validators/libv2/_packet_integrity_severity.py::EDGE_CLASS_SYNONYMS
+# (structural / pedagogical targets) + lib/ontology/concept_classifier.py
+# (concept sub-classes). Mirrored by the additive ``class`` enum in
+# schemas/knowledge/concept_graph_semantic.schema.json.
+_VALID_NODE_CLASSES = {
+    "DomainConcept",
+    "AssessmentOption",
+    "InstructionalArtifact",
+    "LowSignal",
+    "Chunk",
+    "Outcome",
+    "ComponentObjective",
+    "Misconception",
+    "Module",
+    "BloomLevel",
+}
+
+
+def test_every_node_carries_valid_class(tmp_path: Path) -> None:
+    """Every emitted semantic-graph node carries a non-empty ``class``
+    drawn from the canonical vocabulary.
+
+    Closes the KG-quality "classless node" gap: the coverage denominator
+    (``lib/validators/kg_quality.py``), completeness, and
+    ``packet_integrity``'s node-class checks all read ``node['class']``.
+    Concept nodes are stamped by ``lib/ontology/cooccurrence_graph.py``
+    via ``classify_concept``; chunk / LO / misconception endpoint nodes
+    are stamped by ``Trainforge/rag/typed_edge_inference.py::
+    _materialize_endpoint_nodes`` at authoring time.
+    """
+    payload = _run(tmp_path, _tagged_chunkset())
+    nodes = payload["_graph"].get("nodes") or []
+    assert nodes, "Expected ≥1 node from a tagged chunkset."
+    classless = [n.get("id") for n in nodes if not n.get("class")]
+    assert not classless, (
+        "Every emitted node must carry a non-empty 'class' at authoring "
+        f"time; classless node ids: {classless}."
+    )
+    bad = {
+        n.get("id"): n.get("class")
+        for n in nodes
+        if n.get("class") not in _VALID_NODE_CLASSES
+    }
+    assert not bad, (
+        "Every node 'class' must be in the canonical vocabulary "
+        f"{sorted(_VALID_NODE_CLASSES)}; out-of-vocab: {bad}."
+    )
+
+
+def test_endpoint_nodes_carry_structural_class(tmp_path: Path) -> None:
+    """Chunk-endpoint nodes materialized from chunk-anchored edges carry
+    ``class == 'Chunk'`` (NOT a concept class), so the kg_quality
+    coverage denominator excludes them and ``packet_integrity``'s
+    edge-endpoint typing contract sees a real class.
+    """
+    payload = _run(tmp_path, _tagged_chunkset())
+    nodes = payload["_graph"].get("nodes") or []
+    chunk_nodes = [n for n in nodes if "chunk_" in (n.get("id") or "")]
+    assert chunk_nodes, (
+        "Expected ≥1 materialized chunk-endpoint node (chunk-anchored "
+        "edges reference chunk IDs)."
+    )
+    for n in chunk_nodes:
+        assert n.get("class") == "Chunk", (
+            f"Chunk-endpoint node {n.get('id')!r} must carry "
+            f"class='Chunk', got {n.get('class')!r}."
+        )
+
+
 def test_typed_edges_carry_type(tmp_path: Path) -> None:
     """Semantic-graph edges expose a ``type`` field (the typed-edge
     discriminator the ``ConceptGraphValidator`` reads).

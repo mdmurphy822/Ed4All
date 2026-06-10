@@ -2,7 +2,7 @@
 
 Audit 2026-04-30 found that eval probes in `faithfulness.py`,
 `holdout_builder.py`, and `invariants.py` interpolated raw chunk-IDs
-(`shacl_551_chunk_NNNNN`) into question text. The model can't
+(`<course-slug>_chunk_NNNNN`) into question text. The model can't
 semantically reason about an opaque ID, so it echoes the literal back
 into its answer (1441 chunk-id token matches in the cc07cc76 eval
 report). The faithfulness classifier then scores those echoes as
@@ -17,7 +17,7 @@ answerable.
 Usage:
 
     resolver = ChunkLabelResolver.from_course(course_path)
-    label = resolver.label_for("rdf_shacl_551_chunk_00270")
+    label = resolver.label_for("<course-slug>_chunk_00270")
     # → "Validating SHACL property shapes against RDF data"
 """
 from __future__ import annotations

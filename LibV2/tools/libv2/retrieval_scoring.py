@@ -33,13 +33,15 @@ DEFAULT_BOOST_WEIGHTS: Dict[str, float] = {
     # Wave 84: separately-fused IDF-weighted concept-tag overlap. Distinct
     # from concept_graph_overlap_boost (which is a graph-node Jaccard) —
     # this one rewards chunks with rare query-relevant tags. Conservative
-    # weight: prior empirical work on rdf-shacl-551-2 showed this signal
-    # alone is near-zero net positive, so default weight is small.
+    # weight: prior empirical work on the RDF/SHACL calibration corpus
+    # showed this signal alone is near-zero net positive, so default
+    # weight is small.
     "tag_idf_overlap": 0.15,
     # Wave 84: query-intent → chunk_type prior. Detect verbs like
     # "define", "explain", "example", "procedure", "assess" in the query
-    # and reward chunks whose chunk_type matches. Audit on rdf-shacl-551-2
-    # showed this alone gave +16% MRR over BM25 — material lift.
+    # and reward chunks whose chunk_type matches. Audit on the RDF/SHACL
+    # calibration corpus showed this alone gave +16% MRR over BM25 —
+    # material lift.
     "chunk_type_intent": 0.25,
 }
 
@@ -582,7 +584,8 @@ RETRIEVAL_METHOD_PRESETS: Dict[str, Dict[str, Any]] = {
     },
     "bm25+intent": {
         # BM25 + chunk-type intent prior only. The audit's empirical
-        # winner on rdf-shacl-551-2 (Hit@1 7/13, MRR 0.603, +16% over bm25).
+        # winner on the RDF/SHACL calibration corpus (Hit@1 7/13, MRR
+        # 0.603, +16% over bm25).
         "metadata_scoring": True,
         "use_concept_graph_boost": False,
         "use_lo_match_boost": False,
@@ -593,7 +596,7 @@ RETRIEVAL_METHOD_PRESETS: Dict[str, Dict[str, Any]] = {
     "bm25+tag": {
         # BM25 + IDF-weighted tag overlap only. Probably weak in
         # practice (the audit's parameter sweep zeroed this out for
-        # rdf-shacl-551-2) but kept as an A/B point.
+        # the RDF/SHACL calibration corpus) but kept as an A/B point.
         "metadata_scoring": True,
         "use_concept_graph_boost": False,
         "use_lo_match_boost": False,

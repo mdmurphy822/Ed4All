@@ -6,13 +6,17 @@ applies the matching ``schemas/context/*_v1.jsonld`` @context, and
 asserts that Turtle (and other) serializations land on disk with
 non-zero triple counts.
 
-The export is read-only against archived courses — we use the
-rdf-shacl-551-2 corpus as the realistic fixture and a temp output
-directory so we don't pollute the repo state.
+The export is read-only against archived courses. The realistic fixture
+is opt-in: point ``ED4ALL_RDF_EXPORT_FIXTURE_SLUG`` at a course slug under
+``$ED4ALL_LIBV2_ROOT/courses/`` (defaulting to the in-tree ``LibV2/``
+root); the tests skip when the env var is unset or the corpus is missing,
+so no real course slug is hardcoded here. A temp output directory keeps
+the repo state clean.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -27,15 +31,21 @@ from LibV2.tools.libv2.rdf_export import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
-LIBV2_ROOT = PROJECT_ROOT / "LibV2"
-FIXTURE_SLUG = "rdf-shacl-551-2"
-FIXTURE_DIR = LIBV2_ROOT / "courses" / FIXTURE_SLUG
+LIBV2_ROOT = Path(os.environ["ED4ALL_LIBV2_ROOT"]) if os.environ.get("ED4ALL_LIBV2_ROOT") else PROJECT_ROOT / "LibV2"
+FIXTURE_SLUG = os.environ.get("ED4ALL_RDF_EXPORT_FIXTURE_SLUG")
+FIXTURE_DIR = (LIBV2_ROOT / "courses" / FIXTURE_SLUG) if FIXTURE_SLUG else None
 
 
 def _require_fixture():
-    if not FIXTURE_DIR.is_dir():
+    if FIXTURE_SLUG is None:
         pytest.skip(
-            f"rdf-shacl-551-2 fixture missing at {FIXTURE_DIR}; "
+            "rdf-export integration corpus not configured "
+            "(set ED4ALL_RDF_EXPORT_FIXTURE_SLUG); Phase 1.5 tests need a "
+            "real archived corpus."
+        )
+    if FIXTURE_DIR is None or not FIXTURE_DIR.is_dir():
+        pytest.skip(
+            f"rdf-export fixture missing at {FIXTURE_DIR}; "
             "Phase 1.5 tests need the canonical corpus."
         )
 
@@ -49,7 +59,7 @@ class TestExportCourseTurtle:
     def test_emits_one_file_per_present_artifact(self, tmp_path: Path):
         _require_fixture()
         results = export_course(LIBV2_ROOT, FIXTURE_SLUG, tmp_path)
-        # rdf-shacl-551-2 has all three known artifacts present.
+        # The configured fixture corpus has all three known artifacts present.
         assert len(results) == 3
         assert all(isinstance(r, ExportResult) for r in results)
         for r in results:
@@ -70,7 +80,8 @@ class TestExportCourseTurtle:
     def test_concept_graph_export_has_substantial_triple_count(self, tmp_path: Path):
         _require_fixture()
         results = export_course(LIBV2_ROOT, FIXTURE_SLUG, tmp_path)
-        # concept_graph_semantic empirically yields ~101k triples on rdf-shacl-551-2.
+        # concept_graph_semantic empirically yields ~101k triples on the
+        # RDF/SHACL calibration corpus.
         cg = next(r for r in results if "concept_graph_semantic" in r.artifact_relpath)
         assert cg.triple_count > 1000, (
             f"concept_graph_semantic should yield >>1000 triples; got {cg.triple_count}"

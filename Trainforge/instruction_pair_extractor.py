@@ -30,7 +30,7 @@ CLI:
 .. code-block:: bash
 
     python -m Trainforge.instruction_pair_extractor \\
-        --slug rdf-shacl-550 \\
+        --slug <course-slug> \\
         --methods assessment_item,exercise,example_reasoning,\\
 explanation_template,misconception_distinguish,misconception_contrast \\
         --min-quality 0.7 \\
@@ -136,7 +136,7 @@ _QUALITY_BY_METHOD: Dict[str, float] = {
 
 # Inline ``Show answer`` is the canonical Courseforge marker dropped between
 # stems and explanations in formative quizzes. Wave 77 gamma observed it
-# verbatim in the rdf-shacl-550 archive.
+# verbatim in the RDF/SHACL calibration corpus archive.
 _SHOW_ANSWER_RE = re.compile(r"\bShow\s+answer\b", re.IGNORECASE)
 # Generic answer markers used across exercise / assessment chunks.
 _ANSWER_MARKERS = (
@@ -1206,8 +1206,8 @@ def _slug_to_course_code(slug: str) -> str:
     """Best-effort coerce a course slug to the ``[A-Z]{2,8}_[0-9]{3}`` shape
     that ``DecisionCapture`` validates.
 
-    ``rdf-shacl-550`` -> ``RDFSHACL_550``. Falls back to ``COURSE_000`` if
-    the slug has no trailing ``-NNN`` segment.
+    ``algebra-101`` -> ``ALGEBRA_101``. Falls back to ``COURSE_000``
+    if the slug has no trailing ``-NNN`` segment.
     """
     parts = slug.split("-")
     if not parts:

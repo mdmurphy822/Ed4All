@@ -1,12 +1,13 @@
-"""Phase 1.2 / Phase 1.3 of plans/rdf-shacl-enrichment-2026-04-26.md.
+"""Phase 1.2 / Phase 1.3 — chunk_v4 JSON-LD round-trip bridge.
 
 Verifies that ``schemas/context/chunk_v4_v1.jsonld`` is a faithful
 round-trip bridge between Trainforge's JSON-shaped chunk records
 (``schemas/knowledge/chunk_v4.schema.json``, materialized one-per-line in
 ``corpus/chunks.jsonl``) and an RDF graph.  The Trainforge emit
 pipeline does not yet inject the ``@context`` (Phase 1 is consumer-side
-only); this test layers it on top of a sample of real chunks from the
-``rdf-shacl-551-2`` reference corpus, parses via ``pyld`` + ``rdflib``,
+only); this test layers it on top of a sample of real chunks from
+whichever LibV2 course (under ``ED4ALL_LIBV2_ROOT`` / ``LibV2/courses/``)
+ships a ``corpus/chunks.jsonl``, parses via ``pyld`` + ``rdflib``,
 and asserts:
 
 * every wrapped chunk produces >= 5 triples (id, type, body text, at
@@ -26,6 +27,7 @@ runs purely out-of-band against existing corpus artifacts.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -38,15 +40,71 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+
+from lib.libv2_storage import resolve_imscc_chunks_path  # noqa: E402
+
+
+def _libv2_courses_root() -> Path:
+    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
+    root = os.environ.get("ED4ALL_LIBV2_ROOT")
+    base = Path(root) if root else PROJECT_ROOT / "LibV2"
+    return base / "courses"
+
+
+SAMPLE_SIZE = 5  # First N chunks of the reference corpus.
+
+
+def _first_chunks_carry_source_refs(chunks_path: Path) -> bool:
+    """True when the first SAMPLE_SIZE chunks each carry source_references[].
+
+    The round-trip test asserts every sampled chunk emits >=1
+    ``ed4all:sourceId`` triple, which requires the corpus to carry
+    ``source.source_references[]`` on its chunks. Newer general-textbook
+    corpora omit that sub-shape, so discovery must select a corpus that
+    satisfies the precondition (and skip cleanly when none does) rather
+    than hard-fail on the first sorted course.
+    """
+    seen = 0
+    try:
+        with chunks_path.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                if not chunk.get("source", {}).get("source_references"):
+                    return False
+                seen += 1
+                if seen >= SAMPLE_SIZE:
+                    break
+    except (OSError, json.JSONDecodeError):
+        return False
+    return seen >= 1
+
+
+def _discover_chunks_jsonl() -> Path | None:
+    """First resolvable ``<course>/.../chunks.jsonl`` carrying source refs.
+
+    Resolves each course's chunks via ``resolve_imscc_chunks_path`` so the
+    ``imscc_chunks/`` → ``dart_chunks/`` → legacy ``corpus/`` layouts are
+    all found, then selects the first course whose sampled chunks carry
+    ``source.source_references[]`` (the test's precondition). Returns
+    ``None`` when none qualifies → the round-trip tests skip cleanly.
+    """
+    courses_root = _libv2_courses_root()
+    if not courses_root.is_dir():
+        return None
+    for course_dir in sorted(courses_root.iterdir()):
+        if not course_dir.is_dir():
+            continue
+        candidate = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
+        if candidate.exists() and _first_chunks_carry_source_refs(candidate):
+            return candidate
+    return None
+
+
 CONTEXT_PATH = PROJECT_ROOT / "schemas" / "context" / "chunk_v4_v1.jsonld"
-CHUNKS_JSONL_PATH = (
-    PROJECT_ROOT
-    / "LibV2"
-    / "courses"
-    / "rdf-shacl-551-2"
-    / "corpus"
-    / "chunks.jsonl"
-)
+CHUNKS_JSONL_PATH = _discover_chunks_jsonl()
 
 ED4ALL_VOCAB = "https://ed4all.io/vocab/"
 SCHEMA_TEXT_PRED = "http://schema.org/text"
@@ -82,10 +140,11 @@ def context_doc() -> dict:
 @pytest.fixture(scope="module")
 def sample_chunks() -> list[dict]:
     """Load the first SAMPLE_SIZE chunks from the reference corpus."""
-    if not CHUNKS_JSONL_PATH.exists():
+    if CHUNKS_JSONL_PATH is None or not CHUNKS_JSONL_PATH.exists():
         pytest.skip(
-            f"Reference corpus missing: {CHUNKS_JSONL_PATH} — Phase 1 chunk "
-            "round-trip test depends on the rdf-shacl-551-2 corpus."
+            "No LibV2 course with corpus/chunks.jsonl present — Phase 1 "
+            "chunk round-trip test depends on a real corpus under "
+            "ED4ALL_LIBV2_ROOT / LibV2/courses/."
         )
     chunks: list[dict] = []
     with CHUNKS_JSONL_PATH.open() as f:

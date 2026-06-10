@@ -3,7 +3,7 @@
 Operator workflow::
 
     python -m Trainforge.scripts.show_form_data_coverage \\
-        --course-code rdf-shacl-551-2
+        --course-code <course-slug>
 
 Default: prints the latest checkpoint row as a column-aligned table.
 ``--all`` walks the full history. ``--format json`` emits a
@@ -144,7 +144,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--course-code",
         required=True,
-        help="LibV2 course slug (e.g., rdf-shacl-551-2).",
+        help="LibV2 course slug (e.g., <course-slug>).",
     )
     parser.add_argument(
         "--all",

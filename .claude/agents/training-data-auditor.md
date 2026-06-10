@@ -157,9 +157,9 @@ token count). Flag:
 jq -c '{len: ((.prompt|length)+(.completion|length))}' instruction_pairs.jsonl | jq -s 'sort_by(.len) | {p50: .[length/2|floor].len, p99: .[length*99/100|floor].len, max: .[-1].len, min: .[0].len}'
 ```
 
-### 9. Misconception coverage (FAIL when corpus is rdf-shacl-551-2)
+### 9. Misconception coverage (FAIL when the corpus authors misconceptions)
 
-The `rdf-shacl-551-2` corpus has **34** authored misconceptions. Each MUST
+The RDF/SHACL calibration corpus has **34** authored misconceptions. Each MUST
 be referenced by **≥1 pair** so the misconception-rejection eval (Tier 2)
 has training signal.
 

@@ -1,16 +1,16 @@
-"""Wave 81 regression — fresh emit on rdf-shacl-551-2 matches retroactive output.
+"""Wave 81 regression — fresh emit matches retroactive output.
 
 The Wave 81 worker brief calls out v2 Path B regen as the precipitating
-incident: a fresh Trainforge run on the rdf-shacl-551 IMSCC produced
+incident: a fresh Trainforge run on a real IMSCC produced
 a 1-node / 0-edge stub pedagogy graph, then needed the 4 Wave 75/76/78
 retroactive scripts to be run by hand before the archive validated
 under the Wave 78 packet validator.
 
 This test exercises that exact loop end-to-end:
 
-1. Run ``CourseProcessor.process()`` on
-   ``LibV2/courses/rdf-shacl-551-2/source/imscc/RDF_SHACL_551.imscc``
-   into a tempdir.
+1. Run ``CourseProcessor.process()`` on the first IMSCC discovered under
+   any ``LibV2/courses/<slug>/source/imscc/*.imscc`` (honoring
+   ``ED4ALL_LIBV2_ROOT``) into a tempdir.
 2. Stamp the archive with the same scaffold the LibV2 importer
    produces (objectives.json + course.json — the IMSCC carries
    neither).
@@ -29,7 +29,7 @@ because:
 
 * Running ``CourseProcessor.process()`` on the full IMSCC takes
   ~30 s of wall clock — too slow for the default suite.
-* The fixture path depends on the rdf-shacl-551-2 archive being
+* The fixture path depends on a real LibV2 archive being
   present locally; CI runners that don't pull the full LibV2
   shouldn't fail spuriously.
 
@@ -52,11 +52,36 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 # Path to the IMSCC source — used as both the fixture probe and the
-# pytest skip condition.
-ARCHIVE_SLUG = "rdf-shacl-551-2"
-ARCHIVE_ROOT = PROJECT_ROOT / "LibV2" / "courses" / ARCHIVE_SLUG
-IMSCC_PATH = ARCHIVE_ROOT / "source" / "imscc" / "RDF_SHACL_551.imscc"
-SOURCE_OBJECTIVES = ARCHIVE_ROOT / "objectives.json"
+# pytest skip condition.  Discovered dynamically from whichever LibV2
+# course (under ED4ALL_LIBV2_ROOT / LibV2/courses/) ships an IMSCC.
+def _libv2_courses_root() -> Path:
+    root = os.environ.get("ED4ALL_LIBV2_ROOT")
+    base = Path(root) if root else PROJECT_ROOT / "LibV2"
+    return base / "courses"
+
+
+def _discover_imscc():
+    """First ``<course>/source/imscc/*.imscc`` under the LibV2 root.
+
+    Returns ``(archive_root, imscc_path)`` or ``(None, None)``.
+    """
+    courses_root = _libv2_courses_root()
+    if not courses_root.is_dir():
+        return None, None
+    for course_dir in sorted(courses_root.iterdir()):
+        imscc_dir = course_dir / "source" / "imscc"
+        if not imscc_dir.is_dir():
+            continue
+        imsccs = sorted(imscc_dir.glob("*.imscc"))
+        if imsccs:
+            return course_dir, imsccs[0]
+    return None, None
+
+
+ARCHIVE_ROOT, IMSCC_PATH = _discover_imscc()
+SOURCE_OBJECTIVES = (
+    ARCHIVE_ROOT / "objectives.json" if ARCHIVE_ROOT is not None else None
+)
 
 
 def _gated() -> bool:
@@ -80,8 +105,11 @@ pytestmark = [
         ),
     ),
     pytest.mark.skipif(
-        not IMSCC_PATH.exists(),
-        reason=f"fixture archive not present: {IMSCC_PATH}",
+        IMSCC_PATH is None or not IMSCC_PATH.exists(),
+        reason=(
+            "no LibV2 course with source/imscc/*.imscc present under "
+            "ED4ALL_LIBV2_ROOT / LibV2/courses/"
+        ),
     ),
 ]
 
@@ -106,10 +134,14 @@ def test_fresh_emit_validates_against_packet_validator(tmp_path):
     # design — Trainforge consumes a pre-synthesized one.)
     objectives_path = SOURCE_OBJECTIVES if SOURCE_OBJECTIVES.exists() else None
 
+    # Derive the course code from the discovered IMSCC filename so the
+    # test isn't pinned to any one course slug.
+    course_code = IMSCC_PATH.stem
+
     proc = CourseProcessor(
         imscc_path=str(IMSCC_PATH),
         output_dir=str(out),
-        course_code="RDF_SHACL_551",
+        course_code=course_code,
         domain="knowledge_graphs",
         objectives_path=str(objectives_path) if objectives_path else None,
     )

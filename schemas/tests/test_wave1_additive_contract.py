@@ -1,8 +1,6 @@
 """GPT Feedback v2 — Wave 1 end-of-wave additive-contract gate.
 
-This is Tests 2 + 3 of the Wave 1 validation gate (see
-``plans/gpt-feedback-2-wave1-schemas-2026-05.md`` § "End-of-Wave-1 validation
-gate"). The single test file pins:
+This is Tests 2 + 3 of the Wave 1 validation gate. The single test file pins:
 
   * Test 2 (``test_no_required_field_added_without_intent``) — every Wave-1
     touched schema's root ``required[]`` array (and key sub-shape ``required[]``
@@ -13,10 +11,10 @@ gate"). The single test file pins:
     ``len(enum)`` per touched schema is at least the audited post-Wave-1
     count. Uses ``>=`` (not ``==``) so subsequent waves that ADD more fields
     don't break this gate; catches REMOVAL.
-  * ``test_legacy_fixtures_validate`` — first 10 records of
-    ``LibV2/courses/rdf-shacl-551-2/training_specs/instruction_pairs.jsonl``
+  * ``test_legacy_fixtures_validate`` — first 10 records of the first
+    discovered LibV2 course's ``training_specs/instruction_pairs.jsonl``
     + ``preference_pairs.jsonl`` + ``corpus/chunks.jsonl`` validate against
-    the post-Wave-1 schemas. Skips when the corpus isn't present.
+    the post-Wave-1 schemas. Skips when no such corpus is present.
   * ``test_new_fixtures_validate`` — three new fixtures under
     ``schemas/tests/fixtures/wave1/`` validate against their target schemas.
 """
@@ -44,7 +42,31 @@ COURSE_STATUS_PATH = SCHEMAS_DIR / "governance" / "course_status.schema.json"
 PHASE_OUTPUT_PATH = SCHEMAS_DIR / "governance" / "phase_output.schema.json"
 DECISION_EVENT_PATH = SCHEMAS_DIR / "events" / "decision_event.schema.json"
 
-LEGACY_CORPUS_DIR = PROJECT_ROOT / "LibV2" / "courses" / "rdf-shacl-551-2"
+def _discover_legacy_corpus_dir() -> "Path | None":
+    """First LibV2 course carrying both training-pair JSONL files.
+
+    Resolves the LibV2 root via the ``ED4ALL_LIBV2_ROOT`` convention
+    (``lib.paths.libv2_path``) so the round-trip binds to whatever
+    archived corpus is on disk rather than a pinned course slug.
+    """
+    try:
+        from lib.paths import libv2_path
+
+        courses_root = libv2_path() / "courses"
+    except Exception:
+        courses_root = PROJECT_ROOT / "LibV2" / "courses"
+    if not courses_root.is_dir():
+        return None
+    for course in sorted(p for p in courses_root.iterdir() if p.is_dir()):
+        specs = course / "training_specs"
+        if (specs / "instruction_pairs.jsonl").exists() and (
+            specs / "preference_pairs.jsonl"
+        ).exists():
+            return course
+    return None
+
+
+LEGACY_CORPUS_DIR = _discover_legacy_corpus_dir()
 
 
 # --------------------------------------------------------------------------- #
@@ -317,11 +339,7 @@ def test_property_count_deltas():
 
 
 def _legacy_corpus_present() -> bool:
-    return (
-        LEGACY_CORPUS_DIR.exists()
-        and (LEGACY_CORPUS_DIR / "training_specs" / "instruction_pairs.jsonl").exists()
-        and (LEGACY_CORPUS_DIR / "training_specs" / "preference_pairs.jsonl").exists()
-    )
+    return LEGACY_CORPUS_DIR is not None
 
 
 def _read_jsonl_first_n(path: Path, n: int) -> List[Dict[str, Any]]:
@@ -370,7 +388,7 @@ def test_legacy_fixtures_validate():
             f"{[(list(e.absolute_path), e.message) for e in errors]}"
         )
 
-    # Chunks.  rdf-shacl-551-2 keeps the canonical chunks at corpus/chunks.jsonl
+    # Chunks.  Archived corpora keep the canonical chunks at corpus/chunks.jsonl
     # (Phase-7c rename target); fall back to imscc_chunks/chunks.jsonl when
     # only the post-rename layout is present.
     chunks_path_candidates = [

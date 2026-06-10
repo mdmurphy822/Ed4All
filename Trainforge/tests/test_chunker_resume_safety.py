@@ -38,6 +38,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from MCP.tools import pipeline_tools  # noqa: E402
 from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 
@@ -183,7 +184,9 @@ def test_imscc_chunking_preserves_existing_on_missing_input(tmp_path: Path) -> N
 # ---------------------------------------------------------------------------
 
 
-def test_dart_chunking_preserves_existing_on_missing_input(tmp_path: Path) -> None:
+def test_dart_chunking_preserves_existing_on_missing_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``_run_dart_chunking`` MUST byte-preserve an existing chunks.jsonl
     when no staging_dir resolves OR when staging_dir has zero HTML files.
 
@@ -197,12 +200,28 @@ def test_dart_chunking_preserves_existing_on_missing_input(tmp_path: Path) -> No
     original_bytes = _write_fixture_chunks(chunks_path)
     original_sha = hashlib.sha256(original_bytes).hexdigest()
 
+    # Hermeticity: redirect the module-global COURSEFORGE_INPUTS fallback
+    # to a nonexistent tmp path BEFORE building the registry. The
+    # `_run_dart_chunking` closure reads the module global at call time,
+    # so this setattr reroutes the staging-resolution fall-through away
+    # from the real (gitignored) Courseforge/inputs/textbooks/ dir. That
+    # real dir can hold staged HTML symlinks from operator runs — without
+    # this redirect the test would walk that cross-course aggregate
+    # instead of hitting the resume guard, so the test result depended on
+    # operator staging history. Pointing the fallback at a path that does
+    # not exist makes the staging-walk produce zero HTML files
+    # deterministically, which is the "missing input" condition under test.
+    monkeypatch.setattr(
+        pipeline_tools,
+        "COURSEFORGE_INPUTS",
+        tmp_path / "no_such_courseforge_inputs",
+    )
+
     registry = _build_tool_registry()
     tool = registry["run_dart_chunking"]
     # Point staging_dir at a path that does NOT exist so the resolution
-    # chain falls through to COURSEFORGE_INPUTS, which (per the helper's
-    # default) may or may not exist on the test box. Either way the
-    # staging-walk produces zero HTML files, which is the same
+    # chain falls through to the (now-redirected) COURSEFORGE_INPUTS,
+    # which is a nonexistent tmp dir — zero HTML files, the same
     # "missing input" condition we want to test.
     result_json = asyncio.run(
         tool(
@@ -261,4 +280,74 @@ def test_imscc_chunking_fails_closed_no_existing_no_input(tmp_path: Path) -> Non
     assert not expected_chunks_path.exists(), (
         f"Empty chunks.jsonl created at {expected_chunks_path} after "
         "fail-closed path — the data-loss vector this fix closes."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — production hazard: foreign-course COURSEFORGE_INPUTS fallback
+# ---------------------------------------------------------------------------
+
+
+def test_dart_chunking_ignores_foreign_courseforge_inputs_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_run_dart_chunking`` MUST NOT silently chunk a FOREIGN course's
+    HTML via the COURSEFORGE_INPUTS global fallback on a resume call.
+
+    Production hazard (now closed): when the threaded ``staging_dir`` did
+    not resolve (a resume that dropped the path from carried-forward
+    phase context), the resolution chain fell through to the module-global
+    ``COURSEFORGE_INPUTS`` dir. That dir is shared / gitignored and on an
+    operator box can hold another course's staged HTML — so the helper
+    chunked a cross-course aggregate and OVERWROTE this course's valid
+    ``chunks.jsonl`` with foreign content, the exact data-loss class the
+    resume guard exists to close.
+
+    Part 2 removed the COURSEFORGE_INPUTS fallback branch from
+    ``_run_dart_chunking``: an unresolvable ``staging_dir`` now routes
+    straight to the Wave1-I2 preserve-or-fail-closed guard. The foreign
+    fallback dir is treated as "no input for THIS course" so the existing
+    chunks.jsonl is byte-preserved (``preserved_existing=True``), NOT
+    chunked over. This test pins that behaviour as a normal regression —
+    even with COURSEFORGE_INPUTS pointed at a non-empty foreign-course dir,
+    the helper must NOT walk it.
+    """
+    libv2_root = tmp_path / "LibV2"
+    chunks_path = (
+        libv2_root / "courses" / "test-resume" / "dart_chunks" / "chunks.jsonl"
+    )
+    original_bytes = _write_fixture_chunks(chunks_path)
+
+    # A foreign-course staging dir containing one HTML file, wired in as
+    # the COURSEFORGE_INPUTS fallback the resolution chain falls through
+    # to when staging_dir does not resolve.
+    foreign_inputs = tmp_path / "foreign_courseforge_inputs"
+    foreign_inputs.mkdir(parents=True, exist_ok=True)
+    (foreign_inputs / "foreign_course_page.html").write_text(
+        "<html><body><h1>Foreign Course</h1>"
+        "<p>This belongs to a different course entirely and must never "
+        "overwrite TEST_RESUME's chunks.jsonl.</p></body></html>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(pipeline_tools, "COURSEFORGE_INPUTS", foreign_inputs)
+
+    registry = _build_tool_registry()
+    tool = registry["run_dart_chunking"]
+    result_json = asyncio.run(
+        tool(
+            course_name="TEST_RESUME",
+            staging_dir="",
+            libv2_root=str(libv2_root),
+        )
+    )
+    payload = json.loads(result_json)
+
+    assert payload["success"] is True
+    assert payload.get("preserved_existing") is True, (
+        "Foreign COURSEFORGE_INPUTS fallback must be treated as 'no input "
+        f"for this course'; got payload={payload!r}"
+    )
+    assert chunks_path.read_bytes() == original_bytes, (
+        "Existing chunks.jsonl must be byte-preserved, not overwritten "
+        "with foreign-course chunks."
     )

@@ -66,10 +66,20 @@ def build_cooccurrence_graph(
         SCOPE_CONCEPT_IDS,
         _make_concept_id,
     )
-    from lib.ontology.concept_classifier import classify_concept
+    from lib.ontology.concept_classifier import (
+        classify_concept,
+        is_scaffolding_noise,
+    )
     from lib.ontology.labels import slug_to_label
 
     course_id = course_id or ""
+    # Change B: default-OFF scaffolding-noise prune. When ON, tags that
+    # ``is_scaffolding_noise`` flags (pros/cons/creating/advanced/...) are
+    # dropped before they become nodes or enter co-occurrence pairs.
+    prune_scaffolding = (
+        os.getenv("TRAINFORGE_PRUNE_SCAFFOLDING_CONCEPTS", "").lower()
+        == "true"
+    )
     tag_frequency: Dict[str, int] = defaultdict(int)
     co_occurrence: Dict[Tuple[str, str], int] = defaultdict(int)
     # REC-LNK-01: inverted index node_id -> {chunk_id, ...}.
@@ -89,6 +99,8 @@ def build_cooccurrence_graph(
         if include_tags is not None and tag not in include_tags:
             return False
         if exclude_tags is not None and tag in exclude_tags:
+            return False
+        if prune_scaffolding and is_scaffolding_noise(tag):
             return False
         return True
 

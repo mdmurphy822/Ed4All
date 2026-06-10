@@ -153,15 +153,15 @@ def test_format_probe_scrubs_chunk_id_via_label_resolver() -> None:
     from Trainforge.eval.faithfulness import _format_probe
 
     resolver = ChunkLabelResolver(labels={
-        "rdf_shacl_551_chunk_00270": "Validating SHACL property shapes",
+        "demo_course_1_chunk_00270": "Validating SHACL property shapes",
     })
     edge = {
-        "source": "rdf_shacl_551_chunk_00270",
+        "source": "demo_course_1_chunk_00270",
         "target": "CO-18",
         "relation_type": "assesses",
     }
     probe = _format_probe(edge, resolver)
-    assert "rdf_shacl_551_chunk_00270" not in probe
+    assert "demo_course_1_chunk_00270" not in probe
     assert "Validating SHACL property shapes" in probe
 
 
@@ -181,16 +181,16 @@ def test_relation_template_path_scrubs_chunk_id_with_resolver_label() -> None:
     )
 
     resolver = ChunkLabelResolver(labels={
-        "rdf_shacl_551_chunk_00270": "the chunk teaching SHACL property paths",
+        "demo_course_1_chunk_00270": "the chunk teaching SHACL property paths",
     })
     edge = {
-        "source": "rdf_shacl_551_chunk_00270",
+        "source": "demo_course_1_chunk_00270",
         "target": "concept:property_path",
         "relation_type": "teaches",
     }
     probe = _format_probe(edge, resolver)
     assert "the chunk teaching SHACL property paths" in probe
-    assert "rdf_shacl_551_chunk_00270" not in probe
+    assert "demo_course_1_chunk_00270" not in probe
     # Sanity: the relation-template wording is preserved.
     assert "teach" in probe
 

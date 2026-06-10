@@ -150,12 +150,12 @@ def _build_minimal_course(course_root: Path, n_pairs: int = 50) -> None:
 
 def test_calibrate_emits_proposal_markdown(tmp_path: Path) -> None:
     """End-to-end smoke: run script, assert markdown sections present."""
-    course_root = tmp_path / "rdf-shacl-551-2"
+    course_root = tmp_path / "demo-course-1"
     _build_minimal_course(course_root)
 
     out_path = tmp_path / "proposal.md"
     rc = calibrate_main([
-        "--course-code", "rdf-shacl-551-2",
+        "--course-code", "demo-course-1",
         "--course-root", str(course_root),
         "--out", str(out_path),
     ])
@@ -300,12 +300,12 @@ def test_calibrate_does_not_modify_source_files(tmp_path: Path) -> None:
     before = {p: p.stat().st_mtime_ns for p in targets if p.exists()}
     assert before, "fixture sanity: at least one validator module must exist"
 
-    course_root = tmp_path / "rdf-shacl-551-2"
+    course_root = tmp_path / "demo-course-1"
     _build_minimal_course(course_root)
 
     out_path = tmp_path / "proposal.md"
     rc = calibrate_main([
-        "--course-code", "rdf-shacl-551-2",
+        "--course-code", "demo-course-1",
         "--course-root", str(course_root),
         "--out", str(out_path),
     ])

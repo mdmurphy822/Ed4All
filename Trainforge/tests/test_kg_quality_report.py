@@ -381,3 +381,185 @@ def test_pedagogy_graph_path_recorded(graphs, reporter: KGQualityReporter,
         pedagogy_graph=pedagogy,
     )
     assert report["pedagogy_graph_path"] == str(pedagogy)
+
+
+# ---------------------------------------------------------------------- #
+# compute_metrics_only coverage — chunk-anchored node grounding
+# ---------------------------------------------------------------------- #
+#
+# These exercise the authoring-time entry point directly (previously
+# untested). Coverage is now DomainConcept node-grounding: the share of
+# DomainConcept-or-classless nodes incident to ≥1 chunk-anchored edge.
+
+
+def _semantic_graph_dict(*, nodes, edges):
+    """Build an in-memory concept_graph_semantic.json dict."""
+    return {
+        "kind": "concept_semantic",
+        "rule_versions": {},
+        "nodes": list(nodes),
+        "edges": list(edges),
+    }
+
+
+def _node(node_id, *, klass="DomainConcept", node_provenance=None,
+          frequency=1):
+    n = {"id": node_id, "label": f"Label {node_id}", "class": klass,
+         "frequency": frequency}
+    if node_provenance is not None:
+        n["node_provenance"] = node_provenance
+    return n
+
+
+def _edge(source, target, rule):
+    return {
+        "source": source, "target": target, "type": "related-to",
+        "provenance": {"rule": rule, "rule_version": 1},
+    }
+
+
+def test_metrics_only_coverage_grounded_and_ungrounded(
+    reporter: KGQualityReporter,
+):
+    """Two grounded chunk-anchored concepts + one ungrounded frequency-0
+    lo_key_concept (touched only by an LO-order-derived edge) → 2/3.
+    """
+    nodes = [
+        _node("c-a"),
+        _node("c-b"),
+        # LO-asserted concept the chunks never grounded; only an
+        # LO-order-derived edge touches it.
+        _node("c-lo", node_provenance="lo_key_concept", frequency=0),
+    ]
+    edges = [
+        # chunk-anchored — grounds c-a and c-b
+        _edge("c-a", "c-b", "related_from_cooccurrence"),
+        _edge("c-a", "c-b", "defined_by_from_first_mention"),
+        # NOT chunk-anchored (LO-order derived) — does NOT ground c-lo
+        _edge("c-a", "c-lo", "prerequisite_from_lo_order"),
+        _edge("c-b", "c-lo", "derived_from_lo_ref"),
+    ]
+    graph = _semantic_graph_dict(nodes=nodes, edges=edges)
+    report = reporter.compute_metrics_only(graph)
+    coverage = report["dimensions"]["coverage"]
+    assert coverage["concept_node_count"] == 3
+    assert coverage["grounded_node_count"] == 2
+    assert coverage["score"] == round(2 / 3, 4)
+
+
+def test_metrics_only_coverage_empty_nodes_is_one(
+    reporter: KGQualityReporter,
+):
+    """Empty node set → coverage 1.0 (vacuously covered)."""
+    graph = _semantic_graph_dict(nodes=[], edges=[])
+    report = reporter.compute_metrics_only(graph)
+    assert report["dimensions"]["coverage"]["score"] == 1.0
+    assert report["dimensions"]["coverage"]["concept_node_count"] == 0
+
+
+def test_metrics_only_coverage_all_grounded_is_one(
+    reporter: KGQualityReporter,
+):
+    """Every DomainConcept node touched by a chunk-anchored edge → 1.0."""
+    nodes = [_node(f"c-{i}") for i in range(4)]
+    edges = [
+        _edge("c-0", "c-1", "related_from_cooccurrence"),
+        _edge("c-1", "c-2", "exemplifies_from_example_chunks"),
+        _edge("c-2", "c-3", "is_a_from_key_terms"),
+        _edge("c-3", "c-0", "intra_chunk_link"),
+    ]
+    graph = _semantic_graph_dict(nodes=nodes, edges=edges)
+    report = reporter.compute_metrics_only(graph)
+    coverage = report["dimensions"]["coverage"]
+    assert coverage["score"] == 1.0
+    assert coverage["grounded_node_count"] == 4
+    assert coverage["concept_node_count"] == 4
+
+
+def test_metrics_only_asserted_edge_share_preserved(
+    reporter: KGQualityReporter,
+):
+    """``asserted_edge_share`` still emitted and equals the old formula:
+    chunk-anchored (asserted) edges / total edges. Non-concept-node
+    edges still count toward the edge share even though structural
+    classes are excluded from the node-grounding denominator.
+    """
+    nodes = [_node("c-a"), _node("c-b")]
+    edges = [
+        # 3 chunk-anchored (asserted)
+        _edge("c-a", "c-b", "related_from_cooccurrence"),
+        _edge("c-a", "c-b", "defined_by_from_first_mention"),
+        _edge("c-a", "c-b", "assesses_from_question_lo"),
+        # 2 LO-order-derived (derived)
+        _edge("c-a", "c-b", "prerequisite_from_lo_order"),
+        _edge("c-a", "c-b", "targets_concept_from_lo"),
+    ]
+    graph = _semantic_graph_dict(nodes=nodes, edges=edges)
+    report = reporter.compute_metrics_only(graph)
+    coverage = report["dimensions"]["coverage"]
+    assert coverage["asserted_count"] == 3
+    assert coverage["derived_count"] == 2
+    assert coverage["asserted_edge_share"] == round(3 / 5, 4)
+    # coverage score is now node-grounding, NOT the edge share
+    assert coverage["score"] == 1.0
+
+
+def test_metrics_only_excludes_non_concept_node_classes(
+    reporter: KGQualityReporter,
+):
+    """Structural / pedagogical classes (Chunk, Outcome, ...) are NOT in
+    the coverage denominator; only DomainConcept-or-classless nodes are.
+    """
+    nodes = [
+        _node("c-a"),
+        _node("chunk-1", klass="Chunk"),
+        _node("out-1", klass="Outcome"),
+        _node("legacy", klass=None),  # classless → counts
+    ]
+    edges = [
+        _edge("c-a", "legacy", "related_from_cooccurrence"),
+    ]
+    graph = _semantic_graph_dict(nodes=nodes, edges=edges)
+    report = reporter.compute_metrics_only(graph)
+    coverage = report["dimensions"]["coverage"]
+    # Only c-a + legacy are concept nodes; both grounded by the edge.
+    assert coverage["concept_node_count"] == 2
+    assert coverage["grounded_node_count"] == 2
+    assert coverage["score"] == 1.0
+
+
+def test_metrics_only_denominator_prefers_explicit_class(
+    reporter: KGQualityReporter,
+):
+    """The DomainConcept denominator is counted FROM the explicit
+    ``class`` field, preferred over the classless heuristic.
+
+    Every node in this graph carries an explicit ``class``; the classless
+    fallback never fires. The denominator therefore equals the count of
+    nodes explicitly typed ``DomainConcept`` (3), NOT the total node count
+    (5) — proving the explicit ``class`` drives the denominator. The two
+    explicitly non-concept structural nodes (Chunk, Misconception) are
+    excluded even though they are graph endpoints.
+    """
+    nodes = [
+        _node("dc-1", klass="DomainConcept"),
+        _node("dc-2", klass="DomainConcept"),
+        _node("dc-3", klass="DomainConcept"),
+        _node("chunk_00001", klass="Chunk"),
+        _node("mc_deadbeefdeadbeef", klass="Misconception"),
+    ]
+    edges = [
+        # Grounds dc-1 and dc-2 (chunk-anchored).
+        _edge("dc-1", "dc-2", "defined_by_from_first_mention"),
+        # Endpoint to a Chunk node — Chunk excluded from denominator,
+        # but dc-3 IS grounded by this chunk-anchored edge.
+        _edge("dc-3", "chunk_00001", "exemplifies_from_example_chunks"),
+    ]
+    graph = _semantic_graph_dict(nodes=nodes, edges=edges)
+    report = reporter.compute_metrics_only(graph)
+    coverage = report["dimensions"]["coverage"]
+    # Denominator = the 3 explicitly-DomainConcept nodes only.
+    assert coverage["concept_node_count"] == 3
+    # All three are grounded by chunk-anchored edges.
+    assert coverage["grounded_node_count"] == 3
+    assert coverage["score"] == 1.0

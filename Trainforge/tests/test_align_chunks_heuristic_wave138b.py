@@ -2,7 +2,7 @@
 
 The Wave 138a TeachingRoleAlignmentEvaluator surfaced a systematic
 underlabeling of ``content_type_label="real_world_scenario"`` /
-``"scenario"`` chunks: 0/8 transfer rate on rdf-shacl-551-2 vs an
+``"scenario"`` chunks: 0/8 transfer rate on the RDF/SHACL calibration corpus vs an
 expected ≥70% share. The 4-role LLM curriculum-alignment enum
 (``introduce`` / ``elaborate`` / ``reinforce`` / ``synthesize``) cannot
 emit ``transfer`` or ``assess`` by design — those are heuristic-only.
@@ -84,7 +84,7 @@ def test_heuristic_classifies_real_world_scenario_as_transfer() -> None:
 
 def test_heuristic_classifies_scenario_content_type_as_transfer() -> None:
     """``content_type_label="scenario"`` → ``transfer`` (the
-    rdf-shacl-551-2 chunker emits ``"scenario"`` not the longer
+    RDF/SHACL calibration corpus chunker emits ``"scenario"`` not the longer
     ``"real_world_scenario"`` form for these chunks)."""
     chunk = _chunk(
         "chunk_scen_001",

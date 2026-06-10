@@ -11,7 +11,7 @@ output formats targeted at the typical operator workflows:
     skeleton wired with sensible defaults. Operator hand-reviews labels
     + surface_forms before committing. Frequency-tier-aware: high-freq
     (>50) gets min_pairs=5, mid-freq (10-50) gets 3, low-freq (2-10)
-    gets 2 — mirrors the rdf-shacl-551-2 manifest's calibrated tiers.
+    gets 2 — mirrors the RDF/SHACL calibration corpus manifest's calibrated tiers.
 
 Use cases:
 
@@ -81,7 +81,7 @@ def _resolve_chunks_jsonl(course_code: str) -> Optional[Path]:
 def _tier_min_pairs(count: int) -> int:
     """Map a chunk-count to the manifest's tier-calibrated min_pairs.
 
-    Mirrors the rdf-shacl-551-2 manifest's authored tier system so a
+    Mirrors the RDF/SHACL calibration corpus manifest's authored tier system so a
     discovery-emitted skeleton arrives wire-compatible with the
     structural validator's assumptions.
     """
@@ -154,7 +154,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--course-code",
         required=True,
-        help="LibV2 course slug (e.g. 'rdf-shacl-551-2').",
+        help="LibV2 course slug (e.g. '<course-slug>').",
     )
     parser.add_argument(
         "--min-frequency",

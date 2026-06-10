@@ -170,8 +170,12 @@ def patch_classification(
 
     Only the supplied fields are updated; the merged block is schema-validated
     (best-effort) before write. Schema violation → 422; no manifest → 404.
+
+    Uses ``exclude_unset`` (not ``exclude_none``) so an OMITTED field is left
+    untouched while a field EXPLICITLY set to ``null`` is forwarded to
+    ``save_classification`` to clear the stored value.
     """
-    patch = body.model_dump(exclude_none=True)
+    patch = body.model_dump(exclude_unset=True)
     try:
         return course_service.save_classification(course_id, patch)
     except ValueError as exc:

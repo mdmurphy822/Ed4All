@@ -18,6 +18,22 @@ except ImportError:
     RICH_AVAILABLE = False
 
 
+# WS2 — typed semantic-retrieval failures the CLI converts into a non-zero
+# exit with operator guidance (NEVER a silent BM25 fallback). Imported at
+# module load; ValueError covers engine-misuse (unknown engine, semantic
+# without --course, method+engine combos).
+try:  # pragma: no cover — import shape, not behavior
+    from .vector_index import SemanticIndexError
+
+    try:
+        from lib.embedding.providers import EmbeddingBackendUnavailable
+        _SEMANTIC_ERRORS = (SemanticIndexError, EmbeddingBackendUnavailable, ValueError)
+    except Exception:
+        _SEMANTIC_ERRORS = (SemanticIndexError, ValueError)
+except Exception:
+    _SEMANTIC_ERRORS = (ValueError,)
+
+
 def get_repo_root() -> Path:
     """Find the repository root (contains courses/ and catalog/)."""
     # Start from current directory and search upwards
@@ -380,6 +396,14 @@ def catalog_stats(ctx):
 @click.option("--cognitive-domain", help="Filter by cognitive_domain (factual, conceptual, procedural, metacognitive)")
 @click.option("--hierarchy-level", type=click.Choice(["terminal", "chapter"]),
               help="Filter by LO hierarchy_level (resolved via learning_outcome_refs against course.json outcomes)")
+# WS2 — retrieval engine axis (orthogonal to boost presets).
+@click.option("--engine", type=click.Choice(["lexical", "semantic", "hybrid-rrf"]),
+              default="lexical",
+              help="Retrieval engine: lexical BM25 (default), real semantic "
+                   "nearest-neighbor over the vector index, or RRF hybrid. "
+                   "semantic/hybrid-rrf require --course and a built index "
+                   "(libv2 vector-index build); they fail closed (no BM25 "
+                   "fallback) when the index is missing/stale.")
 @click.pass_context
 def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
              subdomain: Optional[str], course: Optional[str], chunk_type: Optional[str],
@@ -391,7 +415,8 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
              week_num: Optional[int], teaching_role: Optional[str],
              content_type_label: Optional[str],
              cognitive_domain: Optional[str],
-             hierarchy_level: Optional[str]):
+             hierarchy_level: Optional[str],
+             engine: str):
     """Search chunks by keyword with metadata filters.
 
     Streams chunks without loading entire corpus. Uses TF-IDF ranking.
@@ -403,36 +428,45 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
         libv2 retrieve "accessibility" --course accessibility-in-digital-design
 
         libv2 retrieve "CSS grid" --chunk-type example --limit 5
+
+        libv2 retrieve "define a SHACL NodeShape" --course demo-course-1 --engine semantic
     """
     from .retriever import retrieve_chunks
 
     repo_root = ctx.obj["repo_root"]
     concept_tags = list(concept) if concept else None
 
-    results = retrieve_chunks(
-        repo_root=repo_root,
-        query=query,
-        domain=domain,
-        division=division,
-        subdomain=subdomain,
-        course_slug=course,
-        chunk_type=chunk_type,
-        difficulty=difficulty,
-        concept_tags=concept_tags,
-        teaching_role=teaching_role,
-        content_type_label=content_type_label,
-        week_num=week_num,
-        cognitive_domain=cognitive_domain,
-        hierarchy_level=hierarchy_level,
-        limit=limit,
-        sample_per_course=sample_per_course,
-        include_rationale=include_rationale,
-        metadata_scoring=not no_metadata_scoring,
-        use_concept_graph_boost=not no_concept_graph_boost,
-        use_lo_match_boost=not no_lo_boost,
-        prefer_self_contained=prefer_self_contained,
-        lo_filter=list(lo_filter) if lo_filter else None,
-    )
+    try:
+        results = retrieve_chunks(
+            repo_root=repo_root,
+            query=query,
+            domain=domain,
+            division=division,
+            subdomain=subdomain,
+            course_slug=course,
+            chunk_type=chunk_type,
+            difficulty=difficulty,
+            concept_tags=concept_tags,
+            teaching_role=teaching_role,
+            content_type_label=content_type_label,
+            week_num=week_num,
+            cognitive_domain=cognitive_domain,
+            hierarchy_level=hierarchy_level,
+            limit=limit,
+            sample_per_course=sample_per_course,
+            include_rationale=include_rationale,
+            metadata_scoring=not no_metadata_scoring,
+            use_concept_graph_boost=not no_concept_graph_boost,
+            use_lo_match_boost=not no_lo_boost,
+            prefer_self_contained=prefer_self_contained,
+            lo_filter=list(lo_filter) if lo_filter else None,
+            engine=engine,
+        )
+    except _SEMANTIC_ERRORS as exc:
+        # Fail closed with the operator-facing guidance the typed error
+        # carries; NEVER silently fall back to BM25 output.
+        print_error(f"{type(exc).__name__}: {exc}")
+        sys.exit(1)
 
     if not results:
         print("No results found.")
@@ -460,11 +494,21 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
             print(f"Text: {preview}")
             if include_rationale and result.rationale:
                 r = result.rationale
-                print(f"  bm25={r['bm25_score']:.3f} ngram={r['ngram_score']:.3f} boost={r['metadata_boost']:+.3f}")
-                if r["matched_concept_tags"]:
-                    print(f"  concept-tags: {', '.join(r['matched_concept_tags'][:6])}")
-                if r["matched_lo_refs"]:
-                    print(f"  matched LOs: {', '.join(r['matched_lo_refs'])}")
+                eng = r.get("engine", "lexical")
+                if eng == "semantic":
+                    print(f"  engine=semantic cosine={r['cosine']:.4f} model={r['model_id']}")
+                elif eng == "hybrid-rrf":
+                    print(
+                        f"  engine=hybrid-rrf rrf={r['rrf_score']:.4f} "
+                        f"(lex_rank={r['lexical_rank']} sem_rank={r['semantic_rank']})"
+                    )
+                else:
+                    # Lexical rationale (BM25 + boosts).
+                    print(f"  bm25={r['bm25_score']:.3f} ngram={r['ngram_score']:.3f} boost={r['metadata_boost']:+.3f}")
+                    if r.get("matched_concept_tags"):
+                        print(f"  concept-tags: {', '.join(r['matched_concept_tags'][:6])}")
+                    if r.get("matched_lo_refs"):
+                        print(f"  matched LOs: {', '.join(r['matched_lo_refs'])}")
 
         print(f"\n{len(results)} result(s) found.")
 
@@ -483,12 +527,21 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
 @click.option("--cognitive-domain", help="Filter by cognitive_domain (factual, conceptual, procedural, metacognitive)")
 @click.option("--hierarchy-level", type=click.Choice(["terminal", "chapter"]),
               help="Filter by LO hierarchy_level (resolved via learning_outcome_refs against course.json outcomes)")
+@click.option("--course", "-c", help="Course slug scope (required for non-lexical engines)")
+@click.option("--engine", type=click.Choice(["lexical", "semantic", "hybrid-rrf"]),
+              default="lexical",
+              help="Retrieval engine for every sub-query: lexical BM25 "
+                   "(default), semantic, or hybrid-rrf. Non-lexical engines "
+                   "require --course and a built vector index; the index is "
+                   "pre-flighted before sub-query dispatch so a missing/stale "
+                   "index fails closed (never swallowed, never BM25).")
 @click.pass_context
 def multi_retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
                    chunk_type: Optional[str], difficulty: Optional[str], limit: int,
                    decompose: bool, explain: bool, output: str,
                    cognitive_domain: Optional[str],
-                   hierarchy_level: Optional[str]):
+                   hierarchy_level: Optional[str],
+                   course: Optional[str], engine: str):
     """Multi-query retrieval with query decomposition and RRF fusion.
 
     Decomposes complex queries into sub-queries, executes them in parallel,
@@ -506,7 +559,7 @@ def multi_retrieve(ctx, query: str, domain: Optional[str], division: Optional[st
 
     repo_root = ctx.obj["repo_root"]
 
-    retriever = MultiQueryRetriever(repo_root=repo_root)
+    retriever = MultiQueryRetriever(repo_root=repo_root, course_slug=course)
 
     # Show decomposition explanation if requested
     if explain:
@@ -526,17 +579,23 @@ def multi_retrieve(ctx, query: str, domain: Optional[str], division: Optional[st
             print()
 
     # Execute retrieval
-    results = retriever.retrieve(
-        query=query,
-        limit=limit,
-        domain=domain,
-        division=division,
-        decompose=decompose,
-        chunk_type=chunk_type,
-        difficulty=difficulty,
-        cognitive_domain=cognitive_domain,
-        hierarchy_level=hierarchy_level,
-    )
+    try:
+        results = retriever.retrieve(
+            query=query,
+            limit=limit,
+            domain=domain,
+            division=division,
+            decompose=decompose,
+            chunk_type=chunk_type,
+            difficulty=difficulty,
+            cognitive_domain=cognitive_domain,
+            hierarchy_level=hierarchy_level,
+            course_slug=course,
+            engine=engine,
+        )
+    except _SEMANTIC_ERRORS as exc:
+        print_error(f"{type(exc).__name__}: {exc}")
+        sys.exit(1)
 
     if not results.results:
         print("No results found.")
@@ -665,8 +724,8 @@ def course_info(ctx, slug: str):
 @click.argument("slug")
 @click.option("--objectives", "-o", type=click.Path(exists=True), required=True,
               help="Path to Courseforge learning_objectives.json")
-@click.option("--threshold", "-t", type=float, default=0.15,
-              help="Minimum similarity threshold for linking (default: 0.15)")
+@click.option("--threshold", "-t", type=float, default=0.20,
+              help="Minimum similarity threshold for linking (default: 0.20)")
 @click.pass_context
 def link_outcomes(ctx, slug: str, objectives: str, threshold: float):
     """Link learning outcomes from Courseforge to course chunks.
@@ -972,7 +1031,7 @@ def eval_run(ctx, slug: str, model_id: Optional[str], judge: str,
     \b
         libv2 eval run accessibility-design
         libv2 eval run my-course -v -o report.json
-        libv2 eval run rdf-shacl-551-2 my-model-id --judge anthropic
+        libv2 eval run demo-course-1 my-model-id --judge anthropic
     """
     repo_root = ctx.obj["repo_root"]
     course_dir = repo_root / "courses" / slug
@@ -1078,7 +1137,7 @@ def eval_init(ctx, slug: str):
 
     \b
     Example:
-        libv2 eval init rdf-shacl-551-2
+        libv2 eval init demo-course-1
     """
     repo_root: Path = ctx.obj["repo_root"]
     course_dir = repo_root / "courses" / slug
@@ -1134,7 +1193,7 @@ def eval_validate(ctx, slug: str):
 
     \b
     Example:
-        libv2 eval validate rdf-shacl-551-2
+        libv2 eval validate demo-course-1
     """
     repo_root: Path = ctx.obj["repo_root"]
     course_dir = repo_root / "courses" / slug
@@ -1406,7 +1465,7 @@ def retrieval_compare(
 
     \b
     Example:
-        libv2 retrieval-compare --course rdf-shacl-551-2 \\
+        libv2 retrieval-compare --course demo-course-1 \\
             --methods bm25,bm25+intent,hybrid
 
     Probe JSON shape — same as eval-set ``EvalQuery`` (query_id, query_text,
@@ -1546,9 +1605,9 @@ def ask(ctx, query: str, course: Optional[str], method: str, limit: int,
 
     \b
     Examples:
-        libv2 ask "How do I model SHACL property paths?" --course rdf-shacl-551-2
+        libv2 ask "How do I model SHACL property paths?" --course demo-course-1
         libv2 ask "compare UDL vs differentiated instruction" --method hybrid
-        libv2 ask "How does owl:sameAs entail?" --course rdf-shacl-551-2 --force
+        libv2 ask "How does owl:sameAs entail?" --course demo-course-1 --force
     """
     from .retriever import retrieve_chunks
     from .query_log import (
@@ -1775,8 +1834,8 @@ def export_rdf(ctx, slug: str, output_dir: Optional[str], output_format: str):
 
     \b
     Example:
-        libv2 export-rdf rdf-shacl-551-2
-        libv2 export-rdf rdf-shacl-551-2 --format trig -o /tmp/rdf-out/
+        libv2 export-rdf demo-course-1
+        libv2 export-rdf demo-course-1 --format trig -o /tmp/rdf-out/
     """
     from .rdf_export import export_course
 
@@ -1832,7 +1891,7 @@ def models_list(ctx, slug: str, output: str):
 
     \b
     Example:
-        libv2 models list rdf-shacl-551-2
+        libv2 models list demo-course-1
     """
     from .importer import list_course_models
 
@@ -1895,7 +1954,7 @@ def models_promote(ctx, slug: str, model_id: str, promoted_by: Optional[str]):
 
     \b
     Example:
-        libv2 models promote rdf-shacl-551-2 qwen2-5-1-5b-rdf-shacl-551-2-3a4f8c92
+        libv2 models promote demo-course-1 qwen2-5-1-5b-demo-course-1-3a4f8c92
     """
     from .importer import promote_model
 
@@ -1929,7 +1988,7 @@ def models_eval_cmd(ctx, slug: str, model_id: str, output: str):
 
     \b
     Example:
-        libv2 models eval rdf-shacl-551-2 qwen2-5-1-5b-rdf-shacl-551-2-3a4f8c92
+        libv2 models eval demo-course-1 qwen2-5-1-5b-demo-course-1-3a4f8c92
     """
     from .importer import get_model_eval_report
 
@@ -1983,7 +2042,7 @@ def import_model_cmd(ctx, run_dir: str, course: str, promote: bool,
 
     \b
     Example:
-        libv2 import-model /path/to/run-dir --course rdf-shacl-551-2 --promote
+        libv2 import-model /path/to/run-dir --course demo-course-1 --promote
     """
     from .importer import import_model
     from .validator import ValidationError
@@ -2012,6 +2071,847 @@ def import_model_cmd(ctx, run_dir: str, course: str, promote: bool,
         print(f"  Promoted as current model for course {course!r}.")
     else:
         print("  Run with --promote to set as current.")
+
+
+# ==========================================================================
+# WS2 — retrieval-benchmark command (BM25 vs semantic vs hybrid-rrf).
+# Wraps eval_harness.benchmark_retrieval_engines: the harness runs whatever
+# index already exists (build it first with `libv2 vector-index build`, or
+# pass --build-index to build the canonical index inline). Fail-closed:
+# a missing/stale index, an unavailable backend, or a drifted gold set all
+# exit non-zero with operator guidance — never a silent BM25-only result.
+# ==========================================================================
+
+
+@main.command("retrieval-benchmark")
+@click.option("--course", "-c", required=True, help="Course slug to benchmark")
+@click.option(
+    "--engines",
+    default="bm25,semantic,hybrid-rrf",
+    help="Comma-separated engines (default: bm25,semantic,hybrid-rrf). "
+    "Allowed: bm25, semantic, hybrid-rrf.",
+)
+@click.option(
+    "--gold-set",
+    "gold_set_path",
+    type=click.Path(exists=True, dir_okay=False),
+    help="Override gold set path (retrieval_eval/gold_set.json shape, or a "
+    ".jsonl legacy gold-queries file). Default resolves WS1 gold set then "
+    "legacy retrieval/gold_queries.jsonl.",
+)
+@click.option(
+    "--k",
+    "k_values",
+    default="1,3,5,10",
+    help="Comma-separated Recall@k cutoffs (default: 1,3,5,10).",
+)
+@click.option(
+    "--limit", type=int, default=10, help="Retrieval depth per query (default 10)."
+)
+@click.option(
+    "--out",
+    "output_path",
+    type=click.Path(dir_okay=False),
+    help="Report output path (default: courses/<slug>/retrieval_eval/"
+    "benchmark_<ts>.json).",
+)
+@click.option(
+    "--build-index",
+    is_flag=True,
+    help="Build (or rebuild) the canonical vector index before benchmarking "
+    "the semantic/hybrid arms. Without this flag the harness runs whatever "
+    "index already exists and fails closed if none is present.",
+)
+@click.option("--provider", help="Embedding provider for --build-index (default env/'st').")
+@click.option("--model", "model_id", help="Embedding model id for --build-index.")
+@click.option(
+    "--models",
+    "models_csv",
+    help="Comma-separated embedding model ids to sweep (e.g. "
+    "'BAAI/bge-base-en-v1.5,BAAI/bge-large-en-v1.5'). For each model the "
+    "command builds a temp index (vector_index.bench-<key>/ alongside the "
+    "canonical dir), runs the semantic/hybrid benchmark against it, and writes "
+    "one report per model. The canonical vector_index/ is preserved across "
+    "the sweep. Mutually exclusive with --model. Temp dirs are removed unless "
+    "--keep is passed.",
+)
+@click.option(
+    "--keep",
+    is_flag=True,
+    help="With --models, leave each per-model temp index dir "
+    "(vector_index.bench-<key>/) on disk instead of cleaning it up.",
+)
+@click.pass_context
+def retrieval_benchmark(
+    ctx,
+    course,
+    engines,
+    gold_set_path,
+    k_values,
+    limit,
+    output_path,
+    build_index,
+    provider,
+    model_id,
+    models_csv,
+    keep,
+):
+    """Benchmark BM25 vs semantic vs hybrid-rrf retrieval over a course gold set.
+
+    Emits Recall@{1,3,5,10} (primary + any-relevant), MRR, and latency for
+    each engine plus per-engine deltas vs the BM25 baseline, writes the JSON
+    report under courses/<slug>/retrieval_eval/, and prints a human-readable
+    comparison table. The semantic/hybrid arms require a pre-built vector
+    index (`libv2 vector-index build --course <slug>` or `--build-index`);
+    they fail closed — never BM25 output — when the index is missing/stale or
+    the embedding backend is unavailable.
+
+    Example:
+
+        libv2 retrieval-benchmark --course demo-course-1 \\
+            --engines bm25,semantic,hybrid-rrf
+    """
+    from .eval_harness import benchmark_retrieval_engines
+
+    repo_root = ctx.obj["repo_root"]
+    course_dir = Path(repo_root) / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    engine_list = [e.strip() for e in engines.split(",") if e.strip()]
+    try:
+        ks = tuple(int(k.strip()) for k in k_values.split(",") if k.strip())
+    except ValueError:
+        print_error(f"--k must be comma-separated integers; got {k_values!r}")
+        sys.exit(1)
+    if not ks:
+        print_error("--k resolved to an empty cutoff list")
+        sys.exit(1)
+
+    # Multi-model sweep (wave-C CLI orchestration). For each model: build a
+    # temp index alongside the canonical dir, swap it into place for the
+    # benchmark run, restore the canonical index, write one tagged report.
+    if models_csv:
+        if model_id:
+            print_error("--models and --model are mutually exclusive")
+            sys.exit(1)
+        model_list = [m.strip() for m in models_csv.split(",") if m.strip()]
+        if not model_list:
+            print_error("--models resolved to an empty model list")
+            sys.exit(1)
+        _run_model_sweep(
+            ctx,
+            course=course,
+            course_dir=course_dir,
+            repo_root=repo_root,
+            engine_list=engine_list,
+            gold_set_path=gold_set_path,
+            ks=ks,
+            limit=limit,
+            output_path=output_path,
+            provider=provider,
+            model_list=model_list,
+            keep=keep,
+        )
+        return
+
+    # Optional inline build of the canonical index (D9: the harness reads
+    # whatever vector_index/ exists; --build-index provisions it first).
+    if build_index:
+        from lib.embedding.providers import (
+            EmbeddingBackendUnavailable,
+            build_embedding_client,
+        )
+
+        from .vector_index import build_vector_index
+
+        try:
+            client = build_embedding_client(
+                provider_name=provider, model_id=model_id, offline=False,
+            )
+            manifest = build_vector_index(course_dir, client=client, force=True)
+        except EmbeddingBackendUnavailable as exc:
+            print_error(f"EmbeddingBackendUnavailable: {exc}")
+            sys.exit(1)
+        except Exception as exc:  # noqa: BLE001 — surface build failure honestly
+            print_error(f"{type(exc).__name__}: {exc}")
+            sys.exit(1)
+        print_success(
+            f"Built vector index for {course}: {manifest.chunks_count} chunks, "
+            f"dim={manifest.embedding_dim}, model={manifest.embedding_model_id}"
+        )
+
+    try:
+        report = benchmark_retrieval_engines(
+            repo_root,
+            course,
+            gold_set_path=Path(gold_set_path) if gold_set_path else None,
+            engines=tuple(engine_list),
+            k_values=ks,
+            retrieval_limit=limit,
+            output_path=Path(output_path) if output_path else None,
+        )
+    except (FileNotFoundError, NotImplementedError) as exc:
+        # Missing gold set / semantic-axis-not-wired: fail closed with the
+        # error's own guidance (never a degraded benchmark).
+        print_error(f"{type(exc).__name__}: {exc}")
+        sys.exit(1)
+    except _SEMANTIC_ERRORS as exc:
+        # Unknown engine, drifted gold set, missing/stale index, or an
+        # unavailable embedding backend — fail closed, no BM25-only fallback.
+        print_error(f"{type(exc).__name__}: {exc}")
+        sys.exit(1)
+
+    _print_benchmark_table(report)
+    print(f"\nReport: {report['output_path']}")
+
+
+def _model_tag(model_id: str) -> str:
+    """Filesystem-safe short tag for a model id (last path segment, lowered,
+    non-alnum -> '-'). 'BAAI/bge-large-en-v1.5' -> 'bge-large-en-v1-5'."""
+    leaf = model_id.rsplit("/", 1)[-1].lower()
+    out = []
+    for ch in leaf:
+        out.append(ch if (ch.isalnum()) else "-")
+    tag = "".join(out).strip("-")
+    while "--" in tag:
+        tag = tag.replace("--", "-")
+    return tag or "model"
+
+
+def _run_model_sweep(
+    ctx,
+    *,
+    course,
+    course_dir,
+    repo_root,
+    engine_list,
+    gold_set_path,
+    ks,
+    limit,
+    output_path,
+    provider,
+    model_list,
+    keep,
+):
+    """Orchestrate a per-model benchmark sweep (the wave-C CLI scope the
+    harness docstring punts on).
+
+    For each model id: build a temp index into
+    ``vector_index.bench-<tag>/`` alongside the canonical ``vector_index/``,
+    swap it into the canonical location for the duration of the benchmark
+    (the semantic retrieval path reads only ``vector_index/``), run the
+    benchmark, then restore the original canonical index. One report is
+    written per model (``benchmark_<tag>.json`` under ``retrieval_eval/``,
+    or, when ``--out`` is given, ``<out-stem>_<tag><out-suffix>``). The model
+    list is recorded in every report's ``config.models``. Temp dirs are
+    removed unless ``--keep``.
+
+    Fail-closed: a build/backend failure or a benchmark error on any model
+    aborts the sweep non-zero AFTER restoring the canonical index — the
+    canonical ``vector_index/`` is never left swapped out.
+    """
+    import shutil
+
+    from lib.embedding.providers import (
+        EmbeddingBackendUnavailable,
+        build_embedding_client,
+    )
+
+    from .eval_harness import benchmark_retrieval_engines
+    from .vector_index import VECTOR_INDEX_DIRNAME, build_vector_index
+
+    canonical_dir = course_dir / VECTOR_INDEX_DIRNAME
+    eval_dir = course_dir / "retrieval_eval"
+    out_path = Path(output_path) if output_path else None
+
+    reports: list = []
+    for model in model_list:
+        tag = _model_tag(model)
+        bench_dir = course_dir / f"{VECTOR_INDEX_DIRNAME}.bench-{tag}"
+        if bench_dir.exists():
+            shutil.rmtree(bench_dir)
+
+        # Build the per-model index into a temp dir by building into the
+        # canonical name inside an isolated build, then relocating. We build
+        # directly into bench_dir by temporarily redirecting the canonical
+        # dir: build writes to <course>/vector_index, so swap-then-build.
+        stashed = None
+        if canonical_dir.exists():
+            stashed = course_dir / f"{VECTOR_INDEX_DIRNAME}.canonical-stash"
+            if stashed.exists():
+                shutil.rmtree(stashed)
+            canonical_dir.rename(stashed)
+        try:
+            try:
+                client = build_embedding_client(
+                    provider_name=provider, model_id=model, offline=False,
+                )
+                manifest = build_vector_index(
+                    course_dir, client=client, force=True
+                )
+            except EmbeddingBackendUnavailable as exc:
+                print_error(f"EmbeddingBackendUnavailable ({model}): {exc}")
+                _restore_canonical(canonical_dir, stashed)
+                sys.exit(1)
+            except Exception as exc:  # noqa: BLE001
+                print_error(f"{type(exc).__name__} building {model}: {exc}")
+                _restore_canonical(canonical_dir, stashed)
+                sys.exit(1)
+
+            print_success(
+                f"[{tag}] built index: {manifest.chunks_count} chunks, "
+                f"dim={manifest.embedding_dim}, model={manifest.embedding_model_id}"
+            )
+
+            # The freshly built canonical dir IS this model's index; benchmark
+            # it in place, then move it to its bench-<tag> home.
+            if out_path is not None:
+                report_path = out_path.with_name(
+                    f"{out_path.stem}_{tag}{out_path.suffix}"
+                )
+            else:
+                report_path = eval_dir / f"benchmark_{tag}.json"
+
+            try:
+                report = benchmark_retrieval_engines(
+                    repo_root,
+                    course,
+                    gold_set_path=Path(gold_set_path) if gold_set_path else None,
+                    engines=tuple(engine_list),
+                    models=model_list,
+                    k_values=ks,
+                    retrieval_limit=limit,
+                    output_path=report_path,
+                )
+            except (FileNotFoundError, NotImplementedError) as exc:
+                print_error(f"{type(exc).__name__} ({model}): {exc}")
+                _move_to_bench(canonical_dir, bench_dir, keep)
+                _restore_canonical(canonical_dir, stashed)
+                sys.exit(1)
+            except _SEMANTIC_ERRORS as exc:
+                print_error(f"{type(exc).__name__} ({model}): {exc}")
+                _move_to_bench(canonical_dir, bench_dir, keep)
+                _restore_canonical(canonical_dir, stashed)
+                sys.exit(1)
+
+            reports.append((model, tag, report))
+            _print_benchmark_table(report)
+            print(f"\n[{tag}] Report: {report['output_path']}")
+        finally:
+            # Move this model's built index out of the canonical slot into its
+            # bench-<tag> home (or drop it), then restore the original.
+            _move_to_bench(canonical_dir, bench_dir, keep)
+            _restore_canonical(canonical_dir, stashed)
+
+    print(
+        f"\nSwept {len(reports)} model(s): "
+        + ", ".join(t for _m, t, _r in reports)
+        + (
+            f". Temp indexes kept under {course_dir}/vector_index.bench-*/"
+            if keep
+            else ". Temp indexes cleaned; canonical vector_index/ preserved."
+        )
+    )
+
+
+def _move_to_bench(canonical_dir, bench_dir, keep):
+    """Move the just-built canonical index into its bench-<tag> dir (when
+    ``keep``) or remove it. No-op when the canonical dir is absent."""
+    import shutil
+
+    if not canonical_dir.exists():
+        return
+    if keep:
+        if bench_dir.exists():
+            shutil.rmtree(bench_dir)
+        canonical_dir.rename(bench_dir)
+    else:
+        shutil.rmtree(canonical_dir)
+
+
+def _restore_canonical(canonical_dir, stashed):
+    """Restore the stashed canonical index back into ``vector_index/``."""
+    if stashed is not None and stashed.exists() and not canonical_dir.exists():
+        stashed.rename(canonical_dir)
+
+
+def _print_benchmark_table(report: dict) -> None:
+    """Print a human-readable per-engine comparison table to stdout."""
+    cfg = report.get("config", {})
+    ks = cfg.get("k_values", [])
+    per_engine = report.get("per_engine", {})
+    winner = report.get("winner", {})
+
+    header = (
+        f"Retrieval benchmark — {report.get('course_slug')} "
+        f"({cfg.get('total_questions')} questions, gold: "
+        f"{report.get('gold_source')})"
+    )
+    print("\n" + header)
+    print("=" * len(header))
+
+    # Column layout: engine | Recall@k (primary) ... | MRR | avg latency
+    k_cols = " ".join(f"R@{k}".rjust(7) for k in ks)
+    print(f"{'engine':<14}{k_cols} {'MRR':>7} {'avg_ms':>8}")
+    print("-" * (14 + len(k_cols) + 1 + 7 + 1 + 8))
+    for engine in cfg.get("engines", []):
+        stats = per_engine.get(engine, {})
+        rp = stats.get("recall_at_k_primary", {})
+        cells = " ".join(f"{rp.get(str(k), 0.0):7.3f}" for k in ks)
+        print(
+            f"{engine:<14}{cells} "
+            f"{stats.get('mrr', 0.0):7.3f} "
+            f"{stats.get('avg_latency_ms', 0.0):8.2f}"
+        )
+
+    if winner:
+        print("\nvs BM25 baseline (delta Recall@k primary / delta MRR):")
+        for engine, w in winner.items():
+            deltas = w.get("delta_recall_at_k_primary", {})
+            cells = " ".join(f"{deltas.get(str(k), 0.0):+7.3f}" for k in ks)
+            print(f"  {engine:<12}{cells}  dMRR={w.get('delta_mrr', 0.0):+.3f}")
+
+
+# WS2 — vector-index command group (build / status / verify).
+# Wires build_vector_index / load_vector_index + the manifest validator.
+# Fail-closed: status/verify surface the typed staleness errors verbatim.
+# ==========================================================================
+
+
+@main.group("vector-index")
+def vector_index():
+    """Manage the per-course on-device semantic vector index.
+
+    The index backs `libv2 retrieve --engine semantic` (and hybrid-rrf).
+    Builds are deterministic (same machine + venv + provider + model +
+    device=cpu + batch_size => byte-identical embeddings.npy / id_map.json);
+    the query path is fail-closed (a missing / stale index errors rather
+    than silently degrading to BM25).
+    """
+
+
+@vector_index.command("build")
+@click.option("--course", "-c", required=True, help="Course slug to index")
+@click.option("--provider", help="Embedding provider (default: env ED4ALL_EMBEDDING_PROVIDER or 'st')")
+@click.option("--model", "model_id", help="Embedding model id override")
+@click.option("--chunkset", type=click.Choice(["imscc", "dart", "corpus-legacy"]),
+              help="Pin a chunkset (default: imscc_chunks -> dart_chunks -> legacy corpus)")
+@click.option("--device", type=click.Choice(["cpu", "cuda"]), help="ST device override (default cpu)")
+@click.option("--batch-size", type=int, help="Embedding batch size override")
+@click.option("--offline", is_flag=True, help="Refuse network downloads (default for build is online)")
+@click.option("--force", is_flag=True, help="Rebuild over a fresh index (source sha unchanged)")
+@click.pass_context
+def vector_index_build(ctx, course, provider, model_id, chunkset, device,
+                       batch_size, offline, force):
+    """Build (or rebuild) the vector index for a course.
+
+    Downloads happen here (provision-time) unless --offline is passed; the
+    query path is always offline. A fail-closed backend (weights/server
+    absent) errors out — no partial index is written.
+
+    Example:
+
+        libv2 vector-index build --course demo-course-1 --provider st
+    """
+    import os
+
+    from lib.embedding.providers import (
+        EmbeddingBackendUnavailable,
+        build_embedding_client,
+    )
+
+    from .vector_index import build_vector_index
+
+    repo_root = ctx.obj["repo_root"]
+    course_dir = Path(repo_root) / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    # Per-call device/batch overrides flow through the provider env chain.
+    if device:
+        os.environ["ED4ALL_EMBEDDING_DEVICE"] = device
+    if batch_size:
+        os.environ["ED4ALL_EMBEDDING_BATCH_SIZE"] = str(batch_size)
+
+    try:
+        client = build_embedding_client(
+            provider_name=provider, model_id=model_id, offline=offline,
+        )
+        manifest = build_vector_index(
+            course_dir, client=client, chunkset=chunkset, force=force,
+        )
+    except FileExistsError as exc:
+        print_error(str(exc))
+        sys.exit(1)
+    except EmbeddingBackendUnavailable as exc:
+        print_error(f"EmbeddingBackendUnavailable: {exc}")
+        sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 — surface any build failure honestly
+        print_error(f"{type(exc).__name__}: {exc}")
+        sys.exit(1)
+
+    print_success(
+        f"Built vector index for {course}: {manifest.chunks_count} chunks, "
+        f"dim={manifest.embedding_dim}, provider={manifest.embedding_provider}, "
+        f"model={manifest.embedding_model_id}"
+    )
+    print(f"  chunkset: {manifest.chunkset_kind}")
+    print(f"  index dir: {course_dir / 'vector_index'}")
+
+
+@vector_index.command("status")
+@click.option("--course", "-c", required=True, help="Course slug")
+@click.option("--output", "-o", type=click.Choice(["text", "json"]), default="text")
+@click.pass_context
+def vector_index_status(ctx, course, output):
+    """Show the vector-index manifest summary + staleness check.
+
+    Reports manifest provenance and whether the index is fresh vs the live
+    chunkset. Exit 0 regardless of staleness (this is a report, not a gate);
+    `verify` is the exit-on-drift command.
+    """
+    from .vector_index import (
+        MANIFEST_FILENAME,
+        VECTOR_INDEX_DIRNAME,
+        VectorIndexManifest,
+        load_vector_index,
+    )
+
+    repo_root = ctx.obj["repo_root"]
+    course_dir = Path(repo_root) / "courses" / course
+    manifest_path = course_dir / VECTOR_INDEX_DIRNAME / MANIFEST_FILENAME
+    if not manifest_path.exists():
+        print_error(
+            f"no vector index for {course}; run "
+            f"`libv2 vector-index build --course {course}`."
+        )
+        sys.exit(1)
+
+    manifest = VectorIndexManifest.from_file(manifest_path)
+    fresh = True
+    stale_reason = None
+    try:
+        # allow_fake so a fake-built index can still report status.
+        load_vector_index(course_dir, allow_fake=True)
+    except Exception as exc:  # noqa: BLE001 — capture staleness for the report
+        fresh = False
+        stale_reason = f"{type(exc).__name__}: {exc}"
+
+    if output == "json":
+        doc = manifest.to_dict()
+        doc["fresh"] = fresh
+        if stale_reason:
+            doc["stale_reason"] = stale_reason
+        print(json.dumps(doc, indent=2))
+        return
+
+    print(f"\n=== Vector index: {course} ===")
+    print(f"provider: {manifest.embedding_provider} ({manifest.embedding_kind})")
+    print(f"model: {manifest.embedding_model_id} (rev {manifest.embedding_model_revision})")
+    print(f"dim: {manifest.embedding_dim} | chunks: {manifest.chunks_count}")
+    print(f"chunkset: {manifest.chunkset_kind} | index_type: {manifest.index_type}")
+    print(f"text policy: {manifest.text_field_policy} | device: {manifest.device}")
+    print(f"chunker_version: {manifest.chunker_version}")
+    if fresh:
+        print_success("fresh: index matches the live chunkset.")
+    else:
+        print_warning(f"STALE: {stale_reason}")
+
+
+@vector_index.command("verify")
+@click.option("--course", "-c", required=True, help="Course slug")
+@click.pass_context
+def vector_index_verify(ctx, course):
+    """Full sha re-verification of the vector index (exit 1 on drift).
+
+    Runs the VectorIndexManifestValidator (on-disk sha + count + schema +
+    live-chunkset checks). Exits non-zero on any critical issue so it can
+    gate a pre-query check in scripts/CI.
+    """
+    from lib.validators.vector_index_manifest import VectorIndexManifestValidator
+
+    from .vector_index import MANIFEST_FILENAME, VECTOR_INDEX_DIRNAME
+
+    repo_root = ctx.obj["repo_root"]
+    course_dir = Path(repo_root) / "courses" / course
+    manifest_path = course_dir / VECTOR_INDEX_DIRNAME / MANIFEST_FILENAME
+    if not manifest_path.exists():
+        print_error(
+            f"no vector index for {course}; run "
+            f"`libv2 vector-index build --course {course}`."
+        )
+        sys.exit(1)
+
+    result = VectorIndexManifestValidator().validate(
+        {"vector_index_manifest_path": str(manifest_path)}
+    )
+    if result.passed:
+        print_success(f"vector index for {course} verified clean.")
+        return
+    print_error(f"vector index for {course} FAILED verification:")
+    for issue in result.issues:
+        if issue.severity == "critical":
+            print_error(f"  [{issue.code}] {issue.message}")
+        else:
+            print_warning(f"  [{issue.code}] {issue.message}")
+    sys.exit(1)
+
+
+# WS3 Wave C — grounded-answer surface.
+# `answer-grounded` invokes the single entry point lib.retrieval.grounded_answer
+# .answer_course_question (it owns refusal + the WS1 citation gate; bypassing it
+# is the hallucination-by-construction path). The companion `answer-eval` and
+# `refusal-calibrate` commands are thin delegations to the `python -m` entry
+# points so the operator surface is one CLI even though the logic lives in lib/.
+# Exit codes follow the established _SEMANTIC_ERRORS fail-closed pattern:
+#   0  answered / answered_with_warnings
+#   2  refused (low-confidence or model-side not_in_course) — an honest "no"
+#   3  blocked by the citation gate or an invalid-citation contradiction
+#   1  typed backend/index/compose failure (operator-actionable guidance)
+# ==========================================================================
+
+
+# Status -> exit-code map for `answer-grounded`. A refusal is not a failure
+# (exit 2, distinct from 0 so scripts can branch); a citation-gate block is a
+# safety stop (exit 3); typed errors map to 1 in the except arms below.
+_ANSWER_STATUS_EXIT = {
+    "answered": 0,
+    "answered_with_warnings": 0,
+    "refused_low_confidence": 2,
+    "refused_not_in_course": 2,
+    "blocked_invalid_citation": 3,
+    "blocked_citation_gate": 3,
+}
+
+
+def _render_grounded_answer_text(result) -> None:
+    """Accessible plain-text rendering of a GroundedAnswer (no rich markup
+    in the body so screen readers / pipes get clean text)."""
+    status = result.status
+    print(f"status: {status}")
+    if result.model_id:
+        print(f"model: {result.model_id} (prompt {result.prompt_version})")
+    print(f"engine: {result.engine}  course: {result.course_slug}")
+
+    if status.startswith("refused"):
+        refusal = result.refusal or {}
+        reason = refusal.get("reason_code", "unknown")
+        print(f"\nRefused ({reason}).")
+        signals = refusal.get("signals") or result.confidence.get("signals") or {}
+        if signals:
+            sig = ", ".join(f"{k}={v}" for k, v in signals.items())
+            print(f"  confidence signals: {sig}")
+        print("  (No answer is emitted; this question is out of scope or low-confidence.)")
+        return
+
+    if status.startswith("blocked"):
+        print(f"\nBlocked: answer withheld ({status}).")
+        # The cited chunks that failed the gate are surfaced for the operator.
+        if result.citations:
+            print("  citations that reached the gate:")
+            for c in result.citations:
+                print(f"    [{c.chunk_id}] anchor_status={c.anchor_status}")
+        print("  (The answer text is withheld because a citation failed the WS1 anchor gate.)")
+        return
+
+    # answered / answered_with_warnings
+    if result.warnings:
+        print(f"warnings: {', '.join(result.warnings)}")
+    print("\nAnswer:")
+    print(result.answer_text or "(empty)")
+    if result.citations:
+        print("\nCitations:")
+        for c in result.citations:
+            line = f"  [{c.chunk_id}] {c.page_label} (anchor: {c.anchor_status})"
+            print(line)
+            if c.text_quote:
+                print(f"      “{c.text_quote}”")
+    if result.groundedness is not None:
+        rate = result.groundedness.get("groundedness_rate")
+        avail = result.groundedness.get("available")
+        if avail:
+            print(f"\ngroundedness_rate: {rate}")
+        else:
+            print("\ngroundedness: unavailable (NLI deps absent)")
+
+
+@main.command("answer-grounded")
+@click.argument("query")
+@click.option("--course", "-c", required=True, help="Course slug to answer over (single-course scope)")
+@click.option("--engine", type=click.Choice(["auto", "lexical", "semantic", "hybrid-rrf"]),
+              default="lexical",
+              help="Retrieval engine. 'auto' resolves to 'semantic' when a vector "
+                   "index exists for the course, else 'lexical' (BM25). "
+                   "semantic/hybrid-rrf fail closed against a pre-index tree — "
+                   "never a silent downgrade.")
+@click.option("--limit", "-n", type=int, default=8, help="Max passages to retrieve / pass to the composer")
+@click.option("--with-groundedness", is_flag=True,
+              help="Score the composed answer per-claim via the NLI harness "
+                   "(loads DeBERTa; eval-time cost, advisory only — never blocks).")
+@click.option("--json", "as_json", is_flag=True, help="Emit the full GroundedAnswer.to_dict() as JSON")
+@click.option("--log/--no-log", "do_log", default=False,
+              help="Persist the Q&A under the course's queries/ log "
+                   "(answered_by=grounded:<model_id>); default off.")
+@click.pass_context
+def answer_grounded(ctx, query: str, course: str, engine: str, limit: int,
+                    with_groundedness: bool, as_json: bool, do_log: bool):
+    """Answer a single-course question, grounded + citation-gated.
+
+    Invokes the fully-automated grounded-answer pipeline (retrieve -> calibrated
+    refusal -> local-model compose -> WS1 citation gate). No cloud calls, ever;
+    a citation that fails the anchor gate withholds the answer rather than
+    emitting an ungrounded claim. The citation gate is NOT bypassable from the
+    CLI by design.
+
+    Exit codes: 0 answered, 2 refused (out of scope / low confidence), 3 blocked
+    by the citation gate, 1 typed backend/index/compose failure.
+
+    \b
+    Examples:
+        libv2 answer-grounded "What is a SHACL NodeShape?" --course demo-course-1
+        libv2 answer-grounded "Explain RRF fusion" -c demo-course-2 --engine semantic
+        libv2 answer-grounded "Define a derivative" -c demo-course-3 --json --with-groundedness
+    """
+    from lib.decision_capture import DecisionCapture
+    from lib.retrieval.answer_backend import (
+        AnswerBackendUnavailable,
+        AnswerProviderNotLocal,
+    )
+    from lib.retrieval.answer_composer import AnswerComposeError
+    from lib.retrieval.grounded_answer import answer_course_question
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    # 'auto' resolves at the CLI seam: semantic when a vector index exists,
+    # else lexical. The pipeline never silently downgrades a *requested*
+    # semantic engine; 'auto' makes the choice explicit and visible.
+    resolved_engine = engine
+    if engine == "auto":
+        from .vector_index import MANIFEST_FILENAME, VECTOR_INDEX_DIRNAME
+
+        has_index = (course_dir / VECTOR_INDEX_DIRNAME / MANIFEST_FILENAME).exists()
+        resolved_engine = "semantic" if has_index else "lexical"
+
+    capture = DecisionCapture(course_code=course, phase="libv2-answer", tool="libv2")
+
+    try:
+        result = answer_course_question(
+            repo_root,
+            course,
+            query,
+            engine=resolved_engine,
+            limit=limit,
+            with_groundedness=with_groundedness,
+            capture=capture,
+        )
+    except (AnswerProviderNotLocal, AnswerBackendUnavailable) as exc:
+        print_error(f"{type(exc).__name__}: {exc}")
+        print_error(
+            "The grounded-answer backend is local-only. Start your local model "
+            "server (e.g. ollama) and set ED4ALL_ANSWER_PROVIDER / "
+            "ED4ALL_ANSWER_MODEL / ED4ALL_ANSWER_TIMEOUT_SECONDS as needed."
+        )
+        sys.exit(1)
+    except AnswerComposeError as exc:
+        print_error(f"{type(exc).__name__}: {exc}")
+        sys.exit(1)
+    except _SEMANTIC_ERRORS as exc:
+        # Missing/stale vector index or engine misuse — fail closed with the
+        # typed guidance (build the index), NEVER a silent BM25 result.
+        print_error(f"{type(exc).__name__}: {exc}")
+        sys.exit(1)
+
+    # Optional Q&A-log write — only for emitted answers (a withheld/blocked
+    # answer or a refusal is not an "answer" to persist as content).
+    if do_log and result.status.startswith("answered"):
+        try:
+            from .query_log import attach_answer, compact_retrieval_result, write_query_record
+
+            record_path = write_query_record(
+                repo_root, course, query,
+                method=f"grounded:{resolved_engine}", limit=limit, retrieved=[],
+            )
+            qid = json.loads(record_path.read_text())["query_id"]
+            attach_answer(
+                repo_root, course, qid, result.answer_text or "",
+                answered_by=f"grounded:{result.model_id}",
+            )
+        except Exception as exc:  # noqa: BLE001 — logging is best-effort, never blocks the answer
+            print_warning(f"query-log write skipped: {type(exc).__name__}: {exc}")
+
+    if as_json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        _render_grounded_answer_text(result)
+
+    sys.exit(_ANSWER_STATUS_EXIT.get(result.status, 1))
+
+
+@main.command("answer-eval")
+@click.option("--course", "-c", required=True, help="Course slug to evaluate")
+@click.option("--engine", type=click.Choice(["lexical", "semantic", "hybrid-rrf"]),
+              default="lexical", help="Retrieval engine for the eval pass")
+@click.option("--limit", "-n", type=int, default=8, help="top-k retrieval limit per question")
+@click.option("--no-groundedness", is_flag=True, help="Skip the per-claim NLI groundedness pass")
+@click.pass_context
+def answer_eval(ctx, course: str, engine: str, limit: int, no_groundedness: bool):
+    """Run the grounded-answer eval harness over a course gold set.
+
+    Thin delegation to ``python -m lib.retrieval.grounded_eval`` (same logic, one
+    CLI). Emits a ``grounded_answer_eval_<ts>.json`` report under the course's
+    ``retrieval_eval/``. Requires the real local answer backend — CI uses the
+    module's fake-client tests, not this command. Exit codes pass through the
+    module: 3 pipeline absent, 2 gold refused (critical gold-set issue), 0 ok.
+
+    \b
+    Example:
+        libv2 answer-eval --course demo-course-1 --engine lexical
+    """
+    from lib.retrieval.grounded_eval import main as grounded_eval_main
+
+    repo_root: Path = ctx.obj["repo_root"]
+    argv = ["--course", course, "--engine", engine, "--limit", str(limit),
+            "--repo-root", str(repo_root)]
+    if no_groundedness:
+        argv.append("--no-groundedness")
+    sys.exit(grounded_eval_main(argv))
+
+
+@main.command("refusal-calibrate")
+@click.option("--course", "-c", required=True, help="Course slug to calibrate")
+@click.option("--engine", type=click.Choice(["lexical", "semantic", "hybrid-rrf"]),
+              default="lexical", help="Retrieval engine to calibrate the refusal threshold for")
+@click.option("--limit", "-n", type=int, default=8, help="top-k retrieval limit per probe")
+@click.option("--no-write", is_flag=True, help="Print the calibration JSON without writing the artifact")
+@click.pass_context
+def refusal_calibrate(ctx, course: str, engine: str, limit: int, no_write: bool):
+    """Calibrate the grounded-answer refusal threshold for one (course, engine).
+
+    Thin delegation to ``python -m lib.retrieval.refusal --calibrate``. Measures
+    answerable (gold-set) vs unanswerable (refusal-probe) retrieval-score
+    distributions and emits ``refusal_calibration.json`` under the course's
+    ``retrieval_eval/`` (honest fallback: keeps v0-uncalibrated when the
+    distributions overlap). Touches the live retriever read-only.
+
+    \b
+    Example:
+        libv2 refusal-calibrate --course demo-course-1 --engine semantic
+    """
+    from lib.retrieval.refusal import main as refusal_main
+
+    repo_root: Path = ctx.obj["repo_root"]
+    argv = ["--calibrate", "--course", course, "--engine", engine,
+            "--limit", str(limit), "--repo-root", str(repo_root)]
+    if no_write:
+        argv.append("--no-write")
+    sys.exit(refusal_main(argv))
 
 
 if __name__ == "__main__":

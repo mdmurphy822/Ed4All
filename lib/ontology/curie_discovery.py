@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # Dynamic CURIE minting (v0.3.0 corpus-generalization initiative)
 # --------------------------------------------------------------------------- #
 #
-# A prose corpus (e.g. an OpenStax algebra textbook) has zero RDF/SHACL
+# A prose corpus (e.g. an introductory algebra textbook) has zero RDF/SHACL
 # CURIEs in its text, so ``BlockCurieAnchoringValidator`` 100%-fails the
 # ``OUTLINE_BLOCK_MISSING_CURIES`` gate. The helpers below mint a stable,
 # grammar-valid per-course CURIE for every entry in the Stage-3 domain-
@@ -76,7 +76,7 @@ logger = logging.getLogger(__name__)
 # ``_CURIE_PATTERN`` and ``extract_curies`` to pin this invariant.
 
 # Maximum minted-prefix length. Keeps the prefix terse — a long course id
-# like ``OPENSTAX_INTRODUCTORY_ALGEBRA_2E`` collapses to a readable head.
+# like ``DEMO_INTRODUCTORY_ALGEBRA_2E`` collapses to a readable head.
 _MINTED_PREFIX_MAX_LEN: int = 16
 
 # Disallowed-character strip for prefix derivation (anything not [a-z0-9]).
@@ -232,8 +232,8 @@ def mint_curie_prefix(course_id: str) -> str:
     both CURIE grammars. An empty / all-punctuation ``course_id`` falls
     back to the literal ``"course"``.
 
-        >>> mint_curie_prefix("OPENSTAX_ALG_9")
-        'openstaxalg9'
+        >>> mint_curie_prefix("DEMO_ALG_9")
+        'demoalg9'
         >>> mint_curie_prefix("9to5-physics")
         'c9to5physics'
         >>> mint_curie_prefix("")

@@ -12,7 +12,7 @@ algorithm would:
 3. Result: the h1 section was discarded; downstream chunk anchors
    shifted by one heading.
 
-This was the load-bearing cause of the rdf-shacl-551 audit's 203/295
+This was the load-bearing cause of the RDF/SHACL calibration corpus audit's 203/295
 unbalanced-section chunks — every odd chunk lost its enclosing
 ``<section>`` open or close tag because the merge anchor was wrong.
 
@@ -57,12 +57,12 @@ def _section(
 
 
 # ---------------------------------------------------------------------------
-# rdf-shacl-551 layout reproducer
+# RDF/SHACL calibration corpus layout reproducer
 # ---------------------------------------------------------------------------
 
 
 class TestZeroWordH1Merge:
-    """Pin the exact rdf-shacl-551 layout: h1 page-title with 0 words,
+    """Pin the exact RDF/SHACL calibration corpus layout: h1 page-title with 0 words,
     followed by content h2 sections."""
 
     def test_zero_word_h1_does_not_get_dropped(self):

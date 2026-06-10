@@ -10,7 +10,7 @@ levels it never saw at training time.
 Output (canonicalised JSON written to ``eval/holdout_split.json``):
 
     {
-        "course_slug": "rdf-shacl-551-2",
+        "course_slug": "<course-slug>",
         "seed": 42,
         "holdout_pct": 0.1,
         "edges_total": 8735,
@@ -111,7 +111,7 @@ class HoldoutBuilder:
         # withheld set will sample edges that touch chunks across
         # bloom levels so we don't accidentally drop all edges from
         # the rare "create" tier (which has only 16 chunks in the
-        # rdf-shacl-551-2 corpus).
+        # RDF/SHACL calibration corpus).
         bloom_by_chunk = self._build_bloom_index(edges)
 
         per_relation = defaultdict(list)
@@ -359,7 +359,7 @@ class HoldoutBuilder:
             rel = edge.get("relation_type")
             # Wave 105: a chunk source can be either the canonical
             # ``chunk_NNNN`` form or a corpus-prefixed
-            # ``<corpus>_chunk_NNNN`` form (the rdf-shacl-551-2 graph
+            # ``<corpus>_chunk_NNNN`` form (the RDF/SHACL calibration corpus graph
             # uses the prefixed form). Detect both — substring search
             # for ``chunk_`` is sufficient because no other node class
             # in the pedagogy graph contains that token.

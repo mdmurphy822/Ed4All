@@ -20,16 +20,16 @@ edits to those files are the operator's job after reviewing this proposal.
 Usage::
 
     python -m Trainforge.scripts.calibrate_pair_validation \\
-        --course-code rdf-shacl-551-2
+        --course-code <course-slug>
 
     # Custom output path:
     python -m Trainforge.scripts.calibrate_pair_validation \\
-        --course-code rdf-shacl-551-2 \\
+        --course-code <course-slug> \\
         --out /tmp/proposal.md
 
     # Tighter / looser percentile target (default 5):
     python -m Trainforge.scripts.calibrate_pair_validation \\
-        --course-code rdf-shacl-551-2 \\
+        --course-code <course-slug> \\
         --target-percentile 10
 
 Output (default):
@@ -906,7 +906,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--course-code",
         required=True,
-        help="LibV2 course slug (e.g. rdf-shacl-551-2).",
+        help="LibV2 course slug (e.g. <course-slug>).",
     )
     parser.add_argument(
         "--out",

@@ -1,6 +1,6 @@
 """Wave 84 regression test for the source-router fallback-as-primary bug.
 
-The audit on rdf-shacl-551-2 (2026-04-26) found every Week 1 chunk
+The audit on the RDF/SHACL calibration corpus (2026-04-26) found every Week 1 chunk
 attributed primary=``dart:owl2_primer_accessible#s1`` at confidence
 0.3 — the alphabetically-first DART block. Other entries in the
 same chunk's ``source_references[]`` were the actually-relevant RDF

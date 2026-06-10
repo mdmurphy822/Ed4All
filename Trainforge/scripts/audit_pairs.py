@@ -17,15 +17,15 @@ Usage:
 
     # Audit canonical pairs (post full-corpus run):
     python -m Trainforge.scripts.audit_pairs \\
-        --course LibV2/courses/rdf-shacl-551-2
+        --course LibV2/courses/<course-slug>
 
     # Audit smoke output (pre full-run sanity check):
     python -m Trainforge.scripts.audit_pairs \\
-        --course LibV2/courses/rdf-shacl-551-2 --smoke
+        --course LibV2/courses/<course-slug> --smoke
 
     # JSON output for downstream tooling:
     python -m Trainforge.scripts.audit_pairs \\
-        --course LibV2/courses/rdf-shacl-551-2 --format json
+        --course LibV2/courses/<course-slug> --format json
 
 Exit codes:
     0 — every dimension clean (no critical poisoning vector hit)
@@ -751,7 +751,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     ap.add_argument(
         "--course", required=True,
-        help="Course directory (e.g. LibV2/courses/rdf-shacl-551-2).",
+        help="Course directory (e.g. LibV2/courses/<course-slug>).",
     )
     ap.add_argument(
         "--smoke", action="store_true",

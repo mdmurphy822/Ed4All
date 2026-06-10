@@ -28,6 +28,13 @@ from Trainforge.chunker import CHUNKER_SCHEMA_VERSION  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+# Last-resort Bloom level for LO->targets-concept synthesis. When an LO carries
+# key_concepts but neither an explicit canonical bloom_level nor a detectable
+# verb in its statement, we fall back to this level so the LO's targetedConcepts
+# (and the downstream targets-concept edges) are NOT silently dropped. "apply"
+# is the median/most-common course-objective level and a safe neutral default.
+_FALLBACK_BLOOM_LEVEL = "apply"
+
 # Derived paths
 DART_OUTPUT_DIR = PROJECT_ROOT / "DART" / "batch_output"
 COURSEFORGE_INPUTS = PROJECT_ROOT / "Courseforge" / "inputs" / "textbooks"
@@ -205,14 +212,14 @@ def _course_chunk_id_prefix(course_name: str) -> str:
     ``Trainforge/process_course.py:1106``). We lowercase here too so the
     archival gate matches the on-disk IDs exactly. Spaces / dashes get
     normalised to underscores so values that have already been slugified
-    (e.g. ``"rdf-shacl-550"``) still produce the right prefix
-    (``"rdf_shacl_550_chunk_"``).
+    (e.g. ``"demo-101"``) still produce the right prefix
+    (``"demo_101_chunk_"``).
     """
     code = (course_name or "").strip().lower()
     if not code:
         return ""
     # Trainforge keeps underscores in the prefix; if the caller passed a
-    # slug-shaped name (``rdf-shacl-550``), normalise back to underscores.
+    # slug-shaped name (``demo-101``), normalise back to underscores.
     code = code.replace("-", "_").replace(" ", "_")
     return f"{code}_chunk_"
 
@@ -242,7 +249,7 @@ def _check_chunks_freshness(
       a fallback for callers that don't follow the prefix convention).
     * ``stale`` — file exists, but at least one chunk's ``id`` carries
       a prefix that doesn't match the current course AND the file
-      pre-dates ``run_start_ts``. Caught the rdf-shacl-550 leak.
+      pre-dates ``run_start_ts``. Caught the RDF/SHACL calibration corpus leak.
 
     Args:
         chunks_path: Where chunks.jsonl lives in the LibV2 archive
@@ -703,6 +710,229 @@ def _normalize_chapter_objectives_to_groups(raw: Any) -> List[Dict[str, Any]]:
         return groups
     return []
 
+
+def _normalize_objectives_payload_to_course(
+    payload: Any,
+    course_code: str,
+) -> Tuple[Optional[Dict[str, Any]], Optional[List[Dict[str, Any]]]]:
+    """Normalize an objectives doc to the ``course.json`` graph-input shape.
+
+    NVIDIA-KG item 1: ``build_semantic_graph``'s LO-dependent rules need a
+    ``course`` dict carrying ``learning_outcomes: [{"id": "TO-NN"|"CO-NN",
+    ...}, ...]`` in canonical order (the list POSITION is the LO-ordering
+    signal ``prerequisite_from_lo_order::_lo_order_map`` consumes). This
+    helper accepts any of:
+
+    1. The canonical Trainforge ``course.json`` form — non-empty flat
+       ``learning_outcomes[]`` (``schemas/knowledge/course.schema.json``).
+       Used verbatim (order preserved).
+    2. The Courseforge synthesized form — ``terminal_objectives[]`` +
+       ``chapter_objectives`` (any of the three shapes handled by
+       :func:`_normalize_chapter_objectives_to_groups`). Flattened
+       terminal-first then chapter-groups in document order — the same
+       canonical order :func:`_project_synthesized_objectives_to_course_json`
+       emits.
+    3. The LibV2 archive aliases — ``terminal_outcomes[]`` +
+       ``component_objectives``.
+
+    LO identity is validated via the canonical
+    ``lib.ontology.learning_objectives.validate_lo_id`` helper (no local
+    re-derivation of the ID pattern); entries with missing / non-canonical
+    IDs are dropped. Duplicate IDs keep the first occurrence so the
+    ordering signal stays stable.
+
+    Also derives the ``objectives_metadata`` list consumed by the
+    ``targets_concept_from_lo`` rule: one ``{"id", "targetedConcepts":
+    [{"concept", "bloomLevel"}]}`` entry per LO that carries
+    ``key_concepts`` — mirroring the canonical Courseforge JSON-LD emit
+    (``Courseforge/scripts/blocks.py::Block._objective_jsonld`` slugifies
+    ``key_terms`` and stamps the LO's Bloom level). Bloom level resolution:
+    explicit ``bloom_level`` when canonical, else
+    ``lib.ontology.bloom.detect_bloom_level`` over the statement, else the
+    neutral ``_FALLBACK_BLOOM_LEVEL`` ("apply") with a logged warning — so an
+    LO that carries key_concepts but no resolvable Bloom level still
+    contributes its targetedConcepts instead of being silently dropped. LOs
+    without concepts contribute no entry.
+
+    Returns:
+        ``(course, objectives_metadata)`` — both ``None`` when the payload
+        yields zero canonical LOs. ``objectives_metadata`` may be ``None``
+        while ``course`` is populated (no key_concepts anywhere).
+    """
+    from lib.ontology.bloom import BLOOM_LEVELS, detect_bloom_level
+    from lib.ontology.learning_objectives import validate_lo_id
+    from lib.ontology.slugs import canonical_slug
+
+    if not isinstance(payload, dict):
+        return None, None
+
+    lo_entries_raw: List[Dict[str, Any]] = []
+    flat = payload.get("learning_outcomes")
+    if isinstance(flat, list) and flat:
+        lo_entries_raw = [dict(e) for e in flat if isinstance(e, dict)]
+    else:
+        terminal = (
+            payload.get("terminal_objectives")
+            or payload.get("terminal_outcomes")
+            or []
+        )
+        chapter_raw = (
+            payload.get("chapter_objectives")
+            or payload.get("component_objectives")
+            or []
+        )
+        for t in terminal if isinstance(terminal, list) else []:
+            if isinstance(t, dict):
+                entry = dict(t)
+                entry.setdefault("hierarchy_level", "terminal")
+                lo_entries_raw.append(entry)
+        for group in _normalize_chapter_objectives_to_groups(chapter_raw):
+            for c in group.get("objectives") or []:
+                if isinstance(c, dict):
+                    entry = dict(c)
+                    entry.setdefault("hierarchy_level", "chapter")
+                    lo_entries_raw.append(entry)
+
+    canonical_levels = set(BLOOM_LEVELS)
+    learning_outcomes: List[Dict[str, Any]] = []
+    objectives_metadata: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+    for entry in lo_entries_raw:
+        lo_id = str(entry.get("id") or "").strip().upper()
+        if not validate_lo_id(lo_id) or lo_id in seen_ids:
+            continue
+        seen_ids.add(lo_id)
+        normalized = dict(entry)
+        normalized["id"] = lo_id
+        learning_outcomes.append(normalized)
+
+        # targets-concept metadata (best-effort per LO).
+        statement = str(
+            entry.get("statement") or entry.get("description") or ""
+        )
+        key_concepts = entry.get("key_concepts") or entry.get("keyConcepts")
+        if not isinstance(key_concepts, list) or not key_concepts:
+            continue
+        bloom_level = str(entry.get("bloom_level") or "").strip().lower()
+        if bloom_level not in canonical_levels:
+            bloom_level, _verb = detect_bloom_level(statement)  # type: ignore[assignment]
+        if not bloom_level or bloom_level not in canonical_levels:
+            # Neither an explicit canonical level nor a detectable verb. Rather
+            # than drop the LO's targetedConcepts (and the targets-concept edges
+            # that depend on them), fall back to a neutral default level. Loud
+            # warning so an audit can see which LOs took the fallback.
+            logger.warning(
+                "objectives normalize: LO %s has no resolvable bloom_level "
+                "(statement=%r, key_concepts=%d); falling back to %r so its "
+                "targetedConcepts are not dropped",
+                lo_id,
+                statement[:80],
+                len(key_concepts),
+                _FALLBACK_BLOOM_LEVEL,
+            )
+            bloom_level = _FALLBACK_BLOOM_LEVEL
+        targeted = [
+            {"concept": canonical_slug(str(c)), "bloomLevel": bloom_level}
+            for c in key_concepts
+            if isinstance(c, str) and canonical_slug(c)
+        ]
+        if targeted:
+            objectives_metadata.append(
+                {"id": lo_id, "targetedConcepts": targeted}
+            )
+
+    if not learning_outcomes:
+        return None, None
+    course: Dict[str, Any] = {
+        "course_id": course_code,
+        "course_code": payload.get("course_code") or course_code,
+        "learning_outcomes": learning_outcomes,
+    }
+    return course, (objectives_metadata or None)
+
+
+def _resolve_course_objectives_for_graph(
+    *,
+    objectives_path_kw: str = "",
+    synthesized_objectives_path_kw: str = "",
+    project_path: Optional[Path] = None,
+    libv2_course_dir: Optional[Path] = None,
+    course_code: str = "",
+) -> Tuple[Optional[Dict[str, Any]], Optional[List[Dict[str, Any]]], str]:
+    """Resolve + normalize the course objectives doc for the semantic graph.
+
+    Resolution chain (first parseable candidate that yields >=1 canonical
+    LO wins):
+
+    1. ``objectives_path_kw`` — explicit kwarg, routed from the
+       ``reuse_objectives_path`` workflow param via the
+       ``concept_extraction`` phase's ``inputs_from`` block. A reuse run
+       pins the LO-dependent typed-edge rules to the operator's verbatim
+       objectives doc.
+    2. ``synthesized_objectives_path_kw`` — the
+       ``synthesized_objectives.json`` emitted by ``course_planning``,
+       routed via the ``concept_extraction`` phase's ``inputs_from``
+       block. Phase-ordering fix (Option A1): ``concept_extraction`` now
+       runs AFTER ``course_planning``, so this candidate exists on a
+       FRESH ``textbook_to_course`` run (objectives are minted in the
+       prior phase) — it is the fresh-run objectives source.
+    3. ``<project export>/01_learning_objectives/synthesized_objectives.json``
+       — present on re-runs / Phase-5 stage subcommands (also where
+       candidate #2 normally points; kept as a path-independent fallback).
+    4. ``<project export>/03_content_development/course.json`` — the
+       packaging-shaped projection emitted by
+       :func:`_project_synthesized_objectives_to_course_json`.
+    5. ``LibV2/courses/<slug>/course.json`` — the canonical
+       Trainforge-archived form.
+
+    Fail-soft by contract: unreadable / malformed / LO-less candidates log
+    a warning and fall through; an empty chain returns ``(None, None, "")``
+    so the caller degrades to the legacy ``course=None`` build.
+
+    Returns:
+        ``(course, objectives_metadata, resolved_source_path)``.
+    """
+    candidates: List[Path] = []
+    if objectives_path_kw:
+        candidates.append(Path(objectives_path_kw))
+    if synthesized_objectives_path_kw:
+        candidates.append(Path(synthesized_objectives_path_kw))
+    if project_path is not None:
+        candidates.append(
+            project_path / "01_learning_objectives"
+            / "synthesized_objectives.json"
+        )
+        candidates.append(
+            project_path / "03_content_development" / "course.json"
+        )
+    if libv2_course_dir is not None:
+        candidates.append(libv2_course_dir / "course.json")
+
+    for cand in candidates:
+        if not cand.is_file():
+            continue
+        try:
+            payload = json.loads(cand.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "concept_extraction: objectives candidate %s is unreadable "
+                "or malformed (%s); trying next candidate.",
+                cand, exc,
+            )
+            continue
+        course, objectives_metadata = _normalize_objectives_payload_to_course(
+            payload, course_code,
+        )
+        if course is None:
+            logger.warning(
+                "concept_extraction: objectives candidate %s parsed but "
+                "yielded zero canonical learning outcomes; trying next "
+                "candidate.",
+                cand,
+            )
+            continue
+        return course, objectives_metadata, str(cand)
+    return None, None, ""
 
 
 _BLOOM_TO_DIFFICULTY: Dict[str, str] = {
@@ -4737,22 +4967,15 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             "project_id": project_id,
         })
 
-    # Worker W3 (validation-wiring fix): dispatch each block through
-    # ``router.route_rewrite_with_remediation`` with the resolved
-    # post-rewrite validator chain so the rewrite-tier seam runs INSIDE
-    # the regen budget (instead of catching failures post-hoc in the
-    # standalone post_rewrite_validation phase). The chain is resolved
-    # from the YAML ``post_rewrite_validation`` phase via
-    # ``_resolve_post_rewrite_validators``; absent workflow_type
-    # (legacy direct caller) returns [] and behaves identically to the
-    # prior ``router.route(blk, tier="rewrite", source_chunks=[],
-    # objectives=[])`` single-shot path. ``source_chunks`` +
-    # ``objectives`` are rehydrated from the W2-persisted sidecars
-    # (``outline_chunks.json`` / ``outline_objectives.json`` next to
-    # ``blocks_outline.jsonl``); the workflow_runner threads the
-    # sidecar paths in as kwargs via the YAML ``inputs_from`` block.
-    workflow_type = kwargs.get("workflow_type") or ""
-    validators = _resolve_post_rewrite_validators(workflow_type, capture)
+    # Rewrite-tier routing intentionally passes validators=[] (in-loop
+    # remediation OFF; the standalone post_rewrite_validation phase owns
+    # validation — operator decision 2026-06-09). Each block is dispatched
+    # through ``router.route_rewrite_with_remediation`` for its sidecar-
+    # rehydrated ``source_chunks`` / ``objectives`` grounding (loaded from
+    # the W2-persisted ``outline_chunks.json`` / ``outline_objectives.json``
+    # next to ``blocks_outline.jsonl``; the workflow_runner threads the
+    # sidecar paths in as kwargs via the YAML ``inputs_from`` block), not
+    # for an in-loop validator chain.
     # Reconstruct the phase_outputs sub-shape the loader helpers expect
     # from the resolved path kwargs the workflow_runner threaded in.
     _phase_outputs_proxy: Dict[str, Any] = {
@@ -6122,7 +6345,7 @@ def _build_tool_registry() -> dict:
             # paces at 15 weeks (2 COs/week) instead of 8.
             #
             # ``_COS_PER_WEEK = 2`` is the typical CC course pace
-            # (calibrated against the rdf-shacl-551-2 archive: 30 COs
+            # (calibrated against the RDF/SHACL calibration corpus: 30 COs
             # / 15 weeks). Override via the ``WAVE18_COS_PER_WEEK``
             # env var when calibrating against a different course
             # family. ``not duration_explicit`` preserves operator
@@ -6199,46 +6422,78 @@ def _build_tool_registry() -> dict:
             for co in chapter:
                 lo_entries.append(_clone_lo(co, "chapter"))
 
-            # Phase 6 ST 16: link concept-graph nodes to LOs when the
-            # concept_extraction phase has emitted a graph. Phase 6 ST 11
-            # inserts ``concept_extraction`` between ``source_mapping`` and
-            # ``course_planning`` and emits ``concept_graph_path`` as a
-            # phase output; the linker is the deterministic
-            # post-synthesis pass per roadmap §6.6 two-stage. When the
-            # path is missing (legacy / pre-Phase-6 / dry-run paths
-            # where concept_extraction was skipped), this is a no-op
-            # and ``lo_entries`` is unchanged. Cross-link:
-            # ``lib/ontology/concept_objective_linker.py``.
-            concept_graph_path = (
-                kwargs.get("concept_graph_path")
-                or config_data.get("concept_graph_path")
-            )
-            if concept_graph_path:
-                concept_graph_file = Path(concept_graph_path)
-                if concept_graph_file.exists():
-                    try:
-                        concept_graph_data = json.loads(
-                            concept_graph_file.read_text(encoding="utf-8")
-                        )
-                    except (OSError, ValueError) as exc:
-                        logger.warning(
-                            "plan_course_structure: failed to load "
-                            "concept_graph at %s (%s); skipping linker",
-                            concept_graph_path, exc,
-                        )
-                    else:
-                        from lib.ontology.concept_objective_linker import (
-                            link_concepts_to_objectives,
-                        )
-                        lo_entries = link_concepts_to_objectives(
-                            lo_entries, concept_graph_data,
-                        )
-                else:
-                    logger.warning(
-                        "plan_course_structure: concept_graph_path "
-                        "%s does not exist; skipping concept-objective "
-                        "linker pass", concept_graph_path,
+            # Phase-ordering fix (Option A1): the concept-objective linker
+            # pass (lib/ontology/concept_objective_linker.py) that
+            # populated ``LearningObjective.keyConcepts[]`` from the
+            # concept graph USED to run here, gated on a
+            # ``concept_graph_path`` kwarg. It has been relocated into
+            # ``_run_concept_extraction`` because that phase now runs AFTER
+            # course_planning — the concept graph does not exist yet at
+            # planning time, so a linker pass here would always no-op on a
+            # fresh run. A ``concept_graph_path`` kwarg passed to this
+            # function is now inert (preserved for back-compat callers).
+
+            # Layer A — terminal-coverage guarantee. Prune any terminal
+            # objective with ZERO chapter objectives rolling up to it
+            # (CO-bearing courses only). An orphan terminal is one that
+            # downstream content generation cannot cover, so it trips the
+            # critical UNCOVERED_TERMINAL_OUTCOME archival gate
+            # (lib/validators/libv2/packet_integrity.py). Pruning by
+            # construction here makes the objectives set internally
+            # consistent before it is ever written to disk; the
+            # course_planning ``terminal_objective_coverage`` gate is the
+            # fail-fast backstop. CO-less courses (OpenStax / gui-design)
+            # are returned untouched — their terminals are self-contained
+            # teaching units whose coverage is content-driven, so they are
+            # adjudicated by the gate (with the textbook structure), never
+            # silently pruned here. Cross-link:
+            # lib/ontology/terminal_coverage.py::prune_orphan_terminals.
+            try:
+                from lib.ontology.terminal_coverage import (
+                    flatten_chapter_objectives as _flatten_cos,
+                    prune_orphan_terminals as _prune_orphan_terminals,
+                )
+
+                _chapter_groups_for_prune = [
+                    {"chapter": f"Week {idx}", "objectives": [dict(c)]}
+                    for idx, c in enumerate(chapter, start=1)
+                ]
+                _kept_terminals, _pruned_terminal_ids = (
+                    _prune_orphan_terminals(
+                        terminal, _chapter_groups_for_prune,
                     )
+                )
+                if _pruned_terminal_ids:
+                    logger.warning(
+                        "Layer A: pruning %d orphan terminal(s) with no "
+                        "rolling-up chapter objective from %s: %s",
+                        len(_pruned_terminal_ids),
+                        course_name,
+                        ", ".join(_pruned_terminal_ids),
+                    )
+                    _pruned_set = {str(t) for t in _pruned_terminal_ids}
+                    terminal = [
+                        t for t in terminal
+                        if str((t or {}).get("id")) not in _pruned_set
+                    ]
+                    # Keep lo_entries consistent with the pruned terminal
+                    # set so the on-disk learning_outcomes array does not
+                    # re-introduce the orphan IDs.
+                    lo_entries = [
+                        e for e in lo_entries
+                        if not (
+                            (e.get("hierarchy_level") == "terminal")
+                            and str(e.get("id")) in _pruned_set
+                        )
+                    ]
+            except Exception as exc:  # noqa: BLE001 — best-effort guarantee
+                logger.warning(
+                    "Layer A: terminal-coverage prune failed (%s); "
+                    "proceeding without prune (the course_planning "
+                    "terminal_objective_coverage gate remains the "
+                    "fail-fast backstop).",
+                    exc,
+                )
 
             synthesized = {
                 "course_name": course_name,
@@ -6600,6 +6855,13 @@ def _build_tool_registry() -> dict:
             # ---------------------------------------------------------- #
             generated_files: list = []
             weeks_prepared = 0
+            # Anti-silent-template guard: per-page authorship tally folded
+            # into the provenance below so a provider/router that degrades
+            # to the template floor at runtime is caught (not just the
+            # construct-time generator_mode).
+            _authorship_stats: Dict[str, int] = {
+                "llm_authored": 0, "template_fallback": 0,
+            }
             for week_num in range(1, duration_weeks + 1):
                 week_topics = (
                     topics_by_week[week_num - 1]
@@ -6658,6 +6920,7 @@ def _build_tool_registry() -> dict:
                     course_code=course_code,
                     content_provider=content_provider,
                     content_router=content_router,
+                    authorship_stats=_authorship_stats,
                 )
 
                 try:
@@ -6763,6 +7026,121 @@ def _build_tool_registry() -> dict:
             # ``page_paths`` (the router's canonical key) and also
             # surface ``content_paths`` as a comma-joined str for the
             # legacy parsers (_all_html_paths, _find_content_dir).
+            # -------------------------------------------------------- #
+            # Generation provenance (anti-silent-template guard).      #
+            # The deterministic ``generate_week`` template emitter must #
+            # NEVER silently stand in for real LLM content authoring in #
+            # a production run. Record which path actually ran so the   #
+            # ContentAuthorshipValidator gate can BLOCK a template-only #
+            # result when LLM authoring was the operator's intent — and #
+            # warn loudly here regardless. ``generate_course_content``  #
+            # stamps its own honest provenance, so an operator who runs #
+            # the template tool out-of-band (e.g. to service a mailbox  #
+            # agent_task) cannot launder it as LLM-authored content.    #
+            # -------------------------------------------------------- #
+            if content_router is not None:
+                generator_mode = "two_pass_router"
+            elif content_provider is not None:
+                generator_mode = "llm_provider"
+            else:
+                generator_mode = "template_deterministic"
+
+            # Runtime degradation: a constructed provider/router that fell
+            # back to the deterministic template floor on EVERY page authored
+            # zero real LLM content — treat it as a template run regardless of
+            # construct-time mode. Partial degradation is surfaced as a flag.
+            _llm_authored = _authorship_stats.get("llm_authored", 0)
+            _template_fallback = _authorship_stats.get("template_fallback", 0)
+            llm_authoring_degraded = (
+                generator_mode != "template_deterministic"
+                and _template_fallback > 0
+            )
+            if (
+                generator_mode != "template_deterministic"
+                and _llm_authored == 0
+                and _template_fallback > 0
+            ):
+                # Provider/router was wired but authored nothing — this is a
+                # template run in disguise.
+                generator_mode = "template_deterministic"
+
+            template_fired = generator_mode == "template_deterministic"
+
+            def _envflag(name: str) -> bool:
+                return os.environ.get(name, "").strip().lower() in (
+                    "1", "true", "yes", "on"
+                )
+
+            agent_dispatch_enabled = _envflag("ED4ALL_AGENT_DISPATCH")
+            allow_template = _envflag("COURSEFORGE_ALLOW_TEMPLATE_EMITTER")
+            llm_authoring_intended = bool(
+                _courseforge_provider_env
+                or _courseforge_two_pass_enabled()
+                or agent_dispatch_enabled
+            )
+
+            if template_fired:
+                _msg = (
+                    "TEMPLATE EMITTER FIRED for content_generation "
+                    f"(course={course_code}, weeks={weeks_prepared}): the "
+                    "deterministic generate_week template produced these "
+                    "pages — NOT a real LLM content-generator. This should "
+                    "not happen in a real run. Configure COURSEFORGE_PROVIDER "
+                    "(anthropic/together/local), COURSEFORGE_TWO_PASS=true, or "
+                    "service the content-generator mailbox tasks with real "
+                    f"subagents. (llm_authored_pages={_llm_authored}, "
+                    f"template_fallback_pages={_template_fallback})"
+                )
+                if llm_authoring_intended and not allow_template:
+                    logger.error(
+                        "%s LLM authoring was intended (provider=%r "
+                        "two_pass=%s agent_dispatch=%s); the content_authorship "
+                        "gate will BLOCK this run.",
+                        _msg, _courseforge_provider_env,
+                        _courseforge_two_pass_enabled(), agent_dispatch_enabled,
+                    )
+                else:
+                    logger.warning("%s", _msg)
+            elif llm_authoring_degraded:
+                # Provider/router authored SOME pages but silently fell back
+                # to the template floor on others — flag loudly even though
+                # the gate won't block a partially-authored run.
+                logger.warning(
+                    "content_generation PARTIAL TEMPLATE FALLBACK "
+                    "(course=%s): %d page(s) authored by the LLM "
+                    "provider/router, %d page(s) silently degraded to the "
+                    "deterministic template floor. Inspect provider health "
+                    "(network / budget / parse misses).",
+                    course_code, _llm_authored, _template_fallback,
+                )
+
+            generation_provenance = {
+                "schema_version": "1.1",
+                "generator_mode": generator_mode,
+                "template_fallback_fired": template_fired,
+                "llm_authored_pages": _llm_authored,
+                "template_fallback_pages": _template_fallback,
+                "llm_authoring_degraded": llm_authoring_degraded,
+                "courseforge_provider": _courseforge_provider_env,
+                "two_pass_enabled": _courseforge_two_pass_enabled(),
+                "agent_dispatch_enabled": agent_dispatch_enabled,
+                "llm_authoring_intended": llm_authoring_intended,
+                "allow_template_emitter": allow_template,
+                "weeks_prepared": weeks_prepared,
+                "page_count": len(generated_files),
+                "course_code": course_code,
+            }
+            provenance_path = project_path / "content_generation_provenance.json"
+            try:
+                provenance_path.write_text(
+                    json.dumps(generation_provenance, indent=2), encoding="utf-8"
+                )
+            except OSError as exc:  # noqa: BLE001
+                logger.warning(
+                    "Failed to write content_generation_provenance.json: %s", exc
+                )
+                provenance_path = None
+
             content_paths_str = ",".join(generated_files)
             return json.dumps({
                 "success": True,
@@ -6774,6 +7152,11 @@ def _build_tool_registry() -> dict:
                 "source_sections": len(topics),
                 "content_selection": (
                     "source-grounded" if topics else "synthesized"
+                ),
+                "generator_mode": generator_mode,
+                "template_fallback_fired": template_fired,
+                "content_generation_provenance_path": (
+                    str(provenance_path) if provenance_path else ""
                 ),
             })
 
@@ -7737,7 +8120,8 @@ def _build_tool_registry() -> dict:
         TRAINFORGE_OUTPUT_STALE``. This catches the case where a prior
         run's chunks under the same slug survived into a fresh archive
         (observed today: smoke_hifi_rag_chunk_* IDs leaked into the
-        rdf-shacl-550 archive after trainforge_assessment failed). When
+        RDF/SHACL calibration corpus archive after trainforge_assessment
+        failed). When
         Trainforge was intentionally absent (no chunks file at all), the
         archival proceeds — feature flags fall back to false with a
         warning, matching the pre-Wave-74 behaviour for DART-only runs.
@@ -8466,39 +8850,66 @@ def _build_tool_registry() -> dict:
         topic_pool: list = []
         for ch in structure_chapters:
             if isinstance(ch, dict):
-                ch_title = str(ch.get("title") or "")
-                ch_topics = [ch_title]
+                # SemanticStructureExtractor emits the heading under
+                # ``headingText`` (only legacy callers used ``title``), plus
+                # the full inter-heading prose under ``chapter_text`` /
+                # ``section_text``. Reading the wrong key here silently
+                # collapsed the entire router: every chapter bag tokenized
+                # to ∅, so every page hit the degenerate empty-bag fallback
+                # and was pinned to one alphabetically-first source file.
+                ch_topics = [
+                    str(ch.get("headingText") or ch.get("title") or ""),
+                    str(ch.get("chapter_text") or "")[:2000],
+                ]
                 for sub in ch.get("sections") or []:
                     if isinstance(sub, dict):
-                        ch_topics.append(str(sub.get("title") or ""))
+                        ch_topics.append(
+                            str(sub.get("headingText") or sub.get("title") or "")
+                        )
+                        ch_topics.append(str(sub.get("section_text") or "")[:1000])
+                        for ss in sub.get("subsections") or []:
+                            if isinstance(ss, dict):
+                                ch_topics.append(
+                                    str(ss.get("headingText")
+                                        or ss.get("title") or "")
+                                )
                     elif isinstance(sub, str):
                         ch_topics.append(sub)
                 topic_pool.append(_tokenize(" ".join(ch_topics)))
-        if not topic_pool and objective_statements:
-            for stmt in objective_statements:
-                topic_pool.append(_tokenize(stmt))
-        if not topic_pool and dart_blocks:
-            # Final fallback: let DART block titles drive topic bags, one
-            # per block, so each week gets at least a nominal signal.
-            for blk in dart_blocks:
-                topic_pool.append(blk["keywords"])
+        # Fall through when the structure produced NO usable keyword bags
+        # (every chapter tokenized to nothing). ``not any(...)`` — not
+        # ``not topic_pool`` — so a list of empty sets still degrades to the
+        # objectives / DART-block signal instead of collapsing the router.
+        if not any(topic_pool) and objective_statements:
+            topic_pool = [_tokenize(stmt) for stmt in objective_statements]
+        if not any(topic_pool) and dart_blocks:
+            # Final fallback: let DART block titles/keywords drive topic
+            # bags, one per block, so each week gets a real signal.
+            topic_pool = [blk["keywords"] for blk in dart_blocks]
 
-        # Distribute topic_pool across weeks (round-robin).
+        # Distribute topic_pool across weeks by SLICING, not single-index
+        # round-robin. With many chapters and few weeks, the old
+        # ``topic_pool[(week-1) % len]`` only ever consumed the first
+        # ``duration_weeks`` bags — clustering every week onto the opening
+        # source file. Slicing unions each week's contiguous share of the
+        # material so weeks track the corpus in reading order and every
+        # source file contributes to some week.
+        non_empty_pool = [b for b in topic_pool if b] or topic_pool
+        n = len(non_empty_pool)
+        per_week = (-(-n // max(1, duration_weeks))) if n else 0  # ceil div
         for week_num in range(1, duration_weeks + 1):
-            if not topic_pool:
+            if not non_empty_pool:
                 primary_bag: set = set()
             else:
-                # Pick the topic whose index matches (week_num-1) mod len.
-                primary_bag = topic_pool[(week_num - 1) % len(topic_pool)]
+                start = (week_num - 1) * per_week
+                week_slice = non_empty_pool[start:start + per_week]
+                if not week_slice:
+                    # Past the end of the pool — reuse a wrapped bag so
+                    # trailing weeks still carry a real signal.
+                    week_slice = [non_empty_pool[(week_num - 1) % n]]
+                primary_bag = set().union(*week_slice)
             for page_id in page_roles:
-                # Application / self_check / summary share week bag;
-                # content_0N gets the same bag plus a blend across
-                # neighbor weeks so content doesn't duplicate overview.
-                bag = set(primary_bag)
-                if page_id.startswith("content") and len(topic_pool) > 1:
-                    neighbor = topic_pool[(week_num) % len(topic_pool)]
-                    bag = bag.union(neighbor)
-                _set_week_page(week_num, page_id, bag)
+                _set_week_page(week_num, page_id, set(primary_bag))
 
         # ------------------------------------------------------------- #
         # Score blocks per (week, page) and emit refs.                   #
@@ -8598,6 +9009,49 @@ def _build_tool_registry() -> dict:
             else "stub_empty_map"
         )
 
+        # ------------------------------------------------------------- #
+        # Anti-silent-degradation guard. A "collapsed" routing run is one #
+        # where NO page earned a real ``primary`` ref — every page fell  #
+        # back to a low-confidence round-robin ``contributing`` block,   #
+        # pinning the whole course to one source file. Pre-fix this      #
+        # happened silently (wrong structure key -> empty topic bags).   #
+        # Also flag a thin run where almost every page lacks a primary.  #
+        # ------------------------------------------------------------- #
+        total_pages = sum(len(v) for v in source_module_map.values())
+        pages_with_primary = sum(
+            1
+            for v in source_module_map.values()
+            for e in v.values()
+            if e.get("primary")
+        )
+        distinct_sources = len({
+            sid.split("#", 1)[0]
+            for v in source_module_map.values()
+            for e in v.values()
+            for sid in (list(e.get("primary") or []) + list(e.get("contributing") or []))
+        })
+        primary_rate = (pages_with_primary / total_pages) if total_pages else 0.0
+        routing_collapsed = (
+            bool(dart_blocks) and total_pages > 0 and pages_with_primary == 0
+        )
+        if routing_collapsed:
+            logger.error(
+                "SOURCE ROUTER COLLAPSE (course=%s): 0/%d pages earned a "
+                "primary source ref; every page fell back to a low-confidence "
+                "round-robin block, so the course will be mis-sourced. Likely "
+                "cause: textbook_structure chapters carry no usable heading "
+                "text (check the ``headingText`` key), or staging "
+                "``*_synthesized.json`` sidecars are missing. "
+                "dart_blocks_indexed=%d distinct_sources=%d.",
+                course_name, total_pages, len(dart_blocks), distinct_sources,
+            )
+        elif total_pages and primary_rate < 0.25:
+            logger.warning(
+                "Source router thin coverage (course=%s): only %d/%d pages "
+                "(%.0f%%) earned a primary source ref. Provenance may be weak.",
+                course_name, pages_with_primary, total_pages, primary_rate * 100,
+            )
+
         return json.dumps({
             "source_module_map_path": str(map_path),
             "source_chunk_ids": sorted(chunk_ids),
@@ -8607,6 +9061,11 @@ def _build_tool_registry() -> dict:
             "dart_blocks_indexed": len(dart_blocks),
             "weeks_routed": len(source_module_map),
             "course_name": course_name,
+            "routing_collapsed": routing_collapsed,
+            "routing_primary_rate": round(primary_rate, 3),
+            "pages_with_primary": pages_with_primary,
+            "total_pages": total_pages,
+            "distinct_sources_routed": distinct_sources,
         })
 
     registry["build_source_module_map"] = _build_source_module_map
@@ -8659,6 +9118,25 @@ def _build_tool_registry() -> dict:
                 file and skips the legacy inline-projection. When absent
                 or unreadable, the inline-projection path runs as a
                 back-compat fallback.
+
+        Optional kwargs (objectives resolution for LO-driven typed edges):
+            objectives_path: the ``--reuse-objectives`` JSON (resolution
+                candidate #1; a reuse run pins the typed-edge rules to the
+                operator's verbatim objectives doc).
+            synthesized_objectives_path: the
+                ``synthesized_objectives.json`` emitted by
+                ``course_planning`` (resolution candidate #2, the
+                fresh-run source). Phase-ordering fix (Option A1):
+                ``concept_extraction`` now runs AFTER ``course_planning``,
+                so on a fresh ``textbook_to_course`` run this candidate
+                exists and gives the LO-driven typed-edge rules
+                (prerequisite_from_lo_order, targets_concept_from_lo) a
+                real learning-outcomes ordering. The concept-objective
+                linker (relocated here from ``_plan_course_structure``)
+                then enriches ``LearningObjective.key_concepts[]`` from the
+                concept graph before ``build_semantic_graph`` runs, and the
+                enriched key_concepts are written back to the project-export
+                ``synthesized_objectives.json`` (never to a reuse path).
 
         Outputs (returned + persisted):
             concept_graph_path: ``LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json``
@@ -9277,6 +9755,123 @@ def _build_tool_registry() -> dict:
                 domain_concept_vocabulary = None
 
         # ------------------------------------------------------------------
+        # Lexical concept-seed fallback (TRAINFORGE_LEXICAL_CONCEPT_SEEDS).
+        #
+        # Corpus-generalization fix: on a general (non-RDF/SHACL) textbook
+        # corpus the Stage-3 LLM vocabulary pass (TEXTBOOK_SYNTHESIS_PROVIDER)
+        # frequently does not run, leaving the per-course
+        # ``domain_concept_seeds`` empty. Chunk tagging then matches only the
+        # pedagogy-term CONCEPT_PATTERNS, every chunk lands ~2 tags, and the
+        # co-occurrence + semantic graph collapses to a degenerate ~2-node
+        # graph. This block derives domain-concept seeds from the loaded
+        # chunk text using LEXICAL / statistical signals ONLY (frequency,
+        # acronyms, multi-word noun phrases; no embeddings — SBIR posture),
+        # compiles them, and re-tags the chunks IN-MEMORY (chunks.jsonl on
+        # disk is NOT rewritten, so dart_chunks_sha256 stays byte-stable)
+        # before the graph build below consumes them.
+        #
+        # CRITICAL — fires ONLY when:
+        #   (a) TRAINFORGE_LEXICAL_CONCEPT_SEEDS is truthy, AND
+        #   (b) Stage-3 produced no usable concept vocabulary (the empty-seed
+        #       path that yields the degenerate graph).
+        # When the flag is unset (default) OR Stage-3 seeds already exist,
+        # this block is a no-op and behavior is byte-identical to today — the
+        # RDF/SHACL calibration corpus (which has Stage-3 seeds and does not
+        # set the flag) is unaffected.
+        # ------------------------------------------------------------------
+        lexical_seed_count = 0
+        lexical_chunks_retagged = 0
+        _lexical_flag = os.environ.get(
+            "TRAINFORGE_LEXICAL_CONCEPT_SEEDS", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
+        _stage3_has_seeds = (
+            isinstance(domain_concept_vocabulary, dict)
+            and int(domain_concept_vocabulary.get("concept_count", 0) or 0) > 0
+        )
+        if _lexical_flag and not _stage3_has_seeds:
+            try:
+                from lib.ontology.lexical_concept_seeds import (
+                    derive_lexical_concept_seeds,
+                )
+                from Trainforge.process_course import (
+                    compile_domain_concept_seeds,
+                )
+                from lib.ontology.concept_tagging import extract_concept_tags
+            except Exception as exc:  # noqa: BLE001 — import failure → skip
+                logger.warning(
+                    "concept_extraction: lexical-seed fallback import failed "
+                    "(%s); leaving chunks un-retagged (status quo).",
+                    exc,
+                )
+            else:
+                lexical_seeds = derive_lexical_concept_seeds(chunks)
+                lexical_seed_count = len(lexical_seeds)
+                if lexical_seeds:
+                    compiled = compile_domain_concept_seeds([
+                        {"id": s, "aliases": [s.replace("-", " ")]}
+                        for s in lexical_seeds
+                    ])
+                    for chunk in chunks:
+                        if not isinstance(chunk, dict):
+                            continue
+                        text = str(chunk.get("text") or "")
+                        if not text:
+                            continue
+                        try:
+                            new_tags = extract_concept_tags(
+                                text, chunk, domain_concept_seeds=compiled
+                            )
+                        except Exception as exc:  # noqa: BLE001 — per-chunk
+                            logger.warning(
+                                "concept_extraction: lexical re-tag raised on "
+                                "chunk %r (%s); leaving its tags untouched.",
+                                chunk.get("id"), exc,
+                            )
+                            continue
+                        existing = chunk.get("concept_tags")
+                        existing = existing if isinstance(existing, list) else []
+                        union = list(existing)
+                        for tag in new_tags:
+                            if tag not in union:
+                                union.append(tag)
+                        if union != existing:
+                            lexical_chunks_retagged += 1
+                        chunk["concept_tags"] = union
+                if _capture_concept is not None:
+                    try:
+                        _capture_concept.log_decision(
+                            decision_type="content_selection",
+                            decision=(
+                                f"lexical_concept_seed_fallback "
+                                f"seeds={lexical_seed_count} "
+                                f"retagged={lexical_chunks_retagged}"
+                            ),
+                            rationale=(
+                                f"TRAINFORGE_LEXICAL_CONCEPT_SEEDS is on and "
+                                f"Stage-3 produced no domain_concept_vocabulary "
+                                f"seeds (the empty-seed path that yields a "
+                                f"degenerate concept graph on general corpora). "
+                                f"Derived {lexical_seed_count} domain-concept "
+                                f"seeds from {len(chunks)} chunks via lexical / "
+                                f"statistical signals only (frequency + "
+                                f"acronyms + multi-word noun phrases; no "
+                                f"embeddings per SBIR posture) and re-tagged "
+                                f"{lexical_chunks_retagged} chunks in-memory "
+                                f"before the co-occurrence graph build."
+                            ),
+                            alternatives_considered=[
+                                "leave seeds empty (status-quo degenerate graph)",
+                                "run Stage-3 LLM vocabulary synthesis",
+                            ],
+                        )
+                    except Exception as exc:  # noqa: BLE001 — best-effort
+                        logger.warning(
+                            "concept_extraction: lexical-seed decision-capture "
+                            "log_decision failed (%s).",
+                            exc,
+                        )
+
+        # ------------------------------------------------------------------
         # Fix-2: emit the genuine ``kind: "concept_semantic"`` graph.
         #
         # Pre-Fix-2 this phase called ``build_pedagogy_graph`` and wrote a
@@ -9417,6 +10012,82 @@ def _build_tool_registry() -> dict:
                     })
             return questions
 
+        # ------------------------------------------------------------------
+        # NVIDIA-KG item 1: thread the synthesized course objectives into
+        # the typed-edge build. Pre-fix this phase passed ``course=None``
+        # + ``objectives_metadata=None`` unconditionally, so the
+        # LO-dependent rules (``prerequisite_from_lo_order``,
+        # ``targets_concept_from_lo``) early-returned with zero edges on
+        # every course (one calibration corpus measured 982 edges, zero prerequisite).
+        # Resolution chain: explicit ``objectives_path`` kwarg (routed
+        # from the ``reuse_objectives_path`` workflow param) → project
+        # export ``01_learning_objectives/synthesized_objectives.json``
+        # → project export ``03_content_development/course.json`` →
+        # ``LibV2/courses/<slug>/course.json``. Missing objectives
+        # degrade to the legacy ``course=None`` path with a warning —
+        # never fail the phase. Deterministic (pure file reads, no LLM).
+        # ------------------------------------------------------------------
+        course_for_graph: Optional[Dict[str, Any]] = None
+        objectives_meta_for_graph: Optional[List[Dict[str, Any]]] = None
+        objectives_source = ""
+        # Phase-ordering fix (Option A1): count of LOs the relocated
+        # concept-objective linker enriched with key_concepts[] (0 until
+        # the linker runs below; surfaced in the envelope).
+        key_concepts_linked = 0
+        try:
+            course_for_graph, objectives_meta_for_graph, objectives_source = (
+                _resolve_course_objectives_for_graph(
+                    objectives_path_kw=str(
+                        kwargs.get("objectives_path") or ""
+                    ),
+                    # Phase-ordering fix (Option A1): the fresh-run
+                    # objectives source, routed from course_planning's
+                    # synthesized_objectives_path (this phase now runs
+                    # AFTER course_planning). Candidate #2 — the reuse
+                    # kwarg above still wins when supplied.
+                    synthesized_objectives_path_kw=str(
+                        kwargs.get("synthesized_objectives_path") or ""
+                    ),
+                    project_path=project_path,
+                    libv2_course_dir=(
+                        _resolve_libv2_root(kwargs.get("libv2_root"))
+                        / "courses"
+                        / course_slug
+                    ),
+                    course_code=course_name.upper(),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — resolution is best-effort
+            logger.warning(
+                "concept_extraction: objectives resolution raised (%s); "
+                "degrading to course=None.",
+                exc,
+            )
+        if course_for_graph is None:
+            logger.warning(
+                "concept_extraction: no synthesized objectives resolvable "
+                "for course %s (reuse objectives_path kwarg / "
+                "course_planning synthesized_objectives_path / project "
+                "export / LibV2 course.json all missing); LO-driven "
+                "typed-edge rules (prerequisite_from_lo_order, "
+                "targets_concept_from_lo) will emit zero edges. Phase-"
+                "ordering fix (Option A1) makes course_planning run BEFORE "
+                "this phase, so on a fresh textbook_to_course run this "
+                "indicates course_planning did NOT emit objectives "
+                "(synthesized_objectives.json missing/empty) — investigate "
+                "the upstream phase rather than treating this as expected.",
+                course_name,
+            )
+        else:
+            logger.info(
+                "concept_extraction: resolved %d learning outcomes from %s "
+                "(+%d targets-concept metadata entries) for the typed-edge "
+                "build.",
+                len(course_for_graph.get("learning_outcomes") or []),
+                objectives_source,
+                len(objectives_meta_for_graph or []),
+            )
+
         try:
             from lib.ontology.cooccurrence_graph import build_cooccurrence_graph
             from Trainforge.rag.typed_edge_inference import build_semantic_graph
@@ -9434,20 +10105,131 @@ def _build_tool_registry() -> dict:
                     course_name.upper() or "",
                     graph_kind="concept",
                 )
+
+                # Phase-ordering fix (Option A1): concept-objective linker
+                # pass (relocated here from _plan_course_structure). With
+                # this phase now running AFTER course_planning, the concept
+                # graph (cooccurrence_graph) exists at the SAME time as the
+                # synthesized objectives, so the linker can populate each
+                # LO's key_concepts[] from concept-graph nodes BEFORE
+                # build_semantic_graph runs — which lets the
+                # targets_concept_from_lo typed-edge rule (driven off the
+                # objectives_metadata derived from key_concepts) emit real
+                # edges on a fresh run. We then re-normalize the enriched
+                # LO list so course_for_graph + objectives_meta_for_graph
+                # reflect the linked key_concepts. Fail-soft: a linker
+                # error leaves the un-enriched objectives in place.
+                if course_for_graph is not None:
+                    try:
+                        from lib.ontology.concept_objective_linker import (
+                            link_concepts_to_objectives,
+                        )
+
+                        _enriched_los = link_concepts_to_objectives(
+                            course_for_graph.get("learning_outcomes") or [],
+                            cooccurrence_graph,
+                        )
+                        _relinked_course, _relinked_meta = (
+                            _normalize_objectives_payload_to_course(
+                                {
+                                    "learning_outcomes": _enriched_los,
+                                    "course_code": course_name.upper(),
+                                },
+                                course_name.upper(),
+                            )
+                        )
+                        if _relinked_course is not None:
+                            course_for_graph = _relinked_course
+                            objectives_meta_for_graph = _relinked_meta
+                            key_concepts_linked = sum(
+                                1
+                                for _lo in _enriched_los
+                                if (
+                                    _lo.get("key_concepts")
+                                    or _lo.get("keyConcepts")
+                                )
+                            )
+                            logger.info(
+                                "concept_extraction: concept-objective "
+                                "linker enriched key_concepts on %d/%d "
+                                "learning outcomes from the concept graph.",
+                                key_concepts_linked,
+                                len(_enriched_los),
+                            )
+                    except Exception as exc:  # noqa: BLE001 — fail-soft
+                        logger.warning(
+                            "concept_extraction: concept-objective linker "
+                            "pass failed (%s); proceeding with un-enriched "
+                            "objectives.",
+                            exc,
+                        )
+
                 misconceptions = _derive_misconceptions(chunks)
                 questions = _derive_questions(chunks)
                 graph = build_semantic_graph(
                     chunks,
-                    course=None,
+                    course=course_for_graph,
                     concept_graph=cooccurrence_graph,
                     misconceptions=misconceptions or None,
                     questions=questions or None,
-                    objectives_metadata=None,
+                    objectives_metadata=objectives_meta_for_graph,
                 )
                 # ``build_semantic_graph`` stamps ``kind: "concept_semantic"``;
                 # add ``course_id`` for parity with the legacy shell shape.
                 if isinstance(graph, dict):
                     graph.setdefault("course_id", course_name.upper())
+
+                # KG-quality post-build passes (all default-OFF for byte
+                # stability). Order is load-bearing: scaffolding-node prune
+                # (Change B) already ran upstream at co-occurrence build
+                # time; here we (C) merge duplicate concept nodes, then
+                # (A) cap related-to fan-out on the post-merge edge set.
+                # Each is an independent, fail-soft dict->dict rewrite.
+                if isinstance(graph, dict):
+                    if os.getenv(
+                        "TRAINFORGE_MERGE_DUPLICATE_CONCEPTS", ""
+                    ).lower() == "true":
+                        try:
+                            from lib.ontology.concept_node_merge import (
+                                merge_duplicate_concept_nodes,
+                            )
+                            graph = merge_duplicate_concept_nodes(graph)
+                        except Exception as exc:  # noqa: BLE001 — fail-soft
+                            logger.warning(
+                                "concept_extraction: concept-merge pass "
+                                "failed (%s); leaving graph unmerged.", exc,
+                            )
+                    # Intra-chunk concept linking (after merge, before cap):
+                    # connect concepts co-located in the same chunk with a
+                    # low-confidence related-to, so single-section topics
+                    # (e.g. LangGraph) don't shatter into degree-1 singletons.
+                    if os.getenv(
+                        "TRAINFORGE_INTRA_CHUNK_LINKS", ""
+                    ).lower() == "true":
+                        try:
+                            from lib.ontology.intra_chunk_linker import (
+                                link_intra_chunk_concepts,
+                            )
+                            graph = link_intra_chunk_concepts(graph)
+                        except Exception as exc:  # noqa: BLE001 — fail-soft
+                            logger.warning(
+                                "concept_extraction: intra-chunk linking pass "
+                                "failed (%s); leaving graph unlinked.", exc,
+                            )
+                    _fanout_k = os.getenv(
+                        "TRAINFORGE_RELATED_FANOUT_CAP", ""
+                    ).strip()
+                    if _fanout_k.isdigit() and int(_fanout_k) > 0:
+                        try:
+                            from lib.ontology.related_edge_cap import (
+                                cap_related_fanout,
+                            )
+                            graph = cap_related_fanout(graph, int(_fanout_k))
+                        except Exception as exc:  # noqa: BLE001 — fail-soft
+                            logger.warning(
+                                "concept_extraction: related-to fan-out cap "
+                                "failed (%s); leaving edges uncapped.", exc,
+                            )
             except Exception as exc:  # noqa: BLE001 — fail-soft on builder error
                 logger.warning(
                     "concept_extraction: build_semantic_graph raised (%s); "
@@ -9455,6 +10237,166 @@ def _build_tool_registry() -> dict:
                     exc,
                 )
                 graph = _empty_semantic_shell()
+
+        # Phase-ordering fix (Option A1): write the linker-enriched
+        # key_concepts back to the project-export synthesized_objectives.json
+        # so the persisted LO doc carries the same keyConcepts the
+        # _plan_course_structure linker used to write before the phase move.
+        # Guard rails:
+        #   * Only when the linker actually enriched something
+        #     (key_concepts_linked > 0) and a course was resolved.
+        #   * NEVER mutate the reuse kwarg path (a user-supplied file) — we
+        #     only write back when objectives_source resolved to the project
+        #     export's synthesized_objectives.json (i.e. NOT the
+        #     reuse_objectives_path).
+        # Best-effort: a merge/write error logs a warning and does not fail
+        # the phase.
+        reuse_objectives_kwarg = str(kwargs.get("objectives_path") or "")
+        if (
+            key_concepts_linked > 0
+            and course_for_graph is not None
+            and objectives_source
+            and objectives_source.endswith("synthesized_objectives.json")
+            and objectives_source != reuse_objectives_kwarg
+        ):
+            try:
+                _enriched_by_id = {
+                    str(lo.get("id")): lo
+                    for lo in (course_for_graph.get("learning_outcomes") or [])
+                    if isinstance(lo, dict) and lo.get("id")
+                }
+                _src_path = Path(objectives_source)
+                _doc = json.loads(_src_path.read_text(encoding="utf-8"))
+                _merged = 0
+                for _disk_lo in (_doc.get("learning_outcomes") or []):
+                    if not isinstance(_disk_lo, dict):
+                        continue
+                    _enr = _enriched_by_id.get(str(_disk_lo.get("id")))
+                    if _enr is None:
+                        continue
+                    _kc = _enr.get("key_concepts") or _enr.get("keyConcepts")
+                    if isinstance(_kc, list) and _kc:
+                        # Preserve the disk LO's existing casing if present,
+                        # else default to key_concepts (the runtime form
+                        # _plan_course_structure emits).
+                        _field = (
+                            "keyConcepts"
+                            if "keyConcepts" in _disk_lo
+                            else "key_concepts"
+                        )
+                        _disk_lo[_field] = list(_kc)
+                        _merged += 1
+                if _merged:
+                    _src_path.write_text(
+                        json.dumps(_doc, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    logger.info(
+                        "concept_extraction: merged linker-enriched "
+                        "key_concepts back into %d LO entries of %s.",
+                        _merged, _src_path,
+                    )
+            except Exception as exc:  # noqa: BLE001 — fail-soft
+                logger.warning(
+                    "concept_extraction: key_concepts write-back to "
+                    "synthesized_objectives.json failed (%s); the on-disk "
+                    "objectives doc keeps its prior key_concepts.", exc,
+                )
+
+        # Edge-consensus stamping (GPT-fb-12-may item 2). Runs
+        # UNCONDITIONALLY — not behind a behavior flag — because the
+        # root CLAUDE.md § Aggregators documents EdgeConsensusAggregator
+        # as the source of the per-edge ``edge_status`` +
+        # ``consensus_signals[]`` fields on the SEMANTIC graph. Pre-fix,
+        # this aggregator only ran post-loop in workflow_runner for the
+        # ``graph/`` artifact (process_course path) and was NEVER wired
+        # into the ``concept_extraction`` phase, so every course archived
+        # via the textbook_to_course pipeline shipped a
+        # concept_graph_semantic.json with edge_status=None on all edges
+        # and no sibling edge_consensus_report.json (verified on a
+        # calibration corpus: 982 edges, all edge_status=None, no report).
+        # Stamping here — at the authoring point — closes the silent gap
+        # for every course rather than patching one corpus. Deterministic
+        # (cross-rule matrix only; no LLM, no NLI unless TRAINFORGE_EDGE_NLI),
+        # so the graph stays byte-reproducible for fixed inputs. Fail-soft:
+        # a stamping error leaves the graph un-stamped rather than failing
+        # the phase, matching the best-effort posture of the post-loop
+        # aggregators in workflow_runner.
+        edge_consensus_report_path: str = ""
+        if isinstance(graph, dict) and graph.get("edges"):
+            try:
+                from lib.aggregators.edge_consensus import (
+                    EdgeConsensusAggregator,
+                )
+
+                _run_id = (
+                    kwargs.get("run_id")
+                    or os.getenv("ED4ALL_RUN_ID", "")
+                    or ""
+                )
+                _consensus = EdgeConsensusAggregator(
+                    semantic_graph_path=None,
+                    course_slug=course_slug,
+                    run_id=str(_run_id),
+                )
+                # Stamp edge_status + consensus_signals[] in place on the
+                # freshly-built graph dict before it is serialized.
+                _consensus.apply_to_graph(graph)
+            except Exception as exc:  # noqa: BLE001 — fail-soft
+                logger.warning(
+                    "concept_extraction: edge-consensus stamping failed "
+                    "(%s); graph edges left without edge_status.", exc,
+                )
+
+        # KG-quality stamping (NVIDIA-KG item 2). Runs AFTER edge-consensus
+        # stamping (above) so the consistency axis's
+        # (1 - contradiction_rate) attenuation reads the freshly-stamped
+        # per-edge ``edge_status`` — composing with, not duplicating, the
+        # gate-time attenuation that ``KGQualityValidator.validate`` applies
+        # via the EdgeConsensusAggregator. Pre-fix, every textbook_to_course
+        # corpus shipped a concept_graph_semantic.json with kg_quality=None
+        # (verified on a calibration corpus: 197 nodes / 982 edges, kg_quality
+        # null, no sibling quality/ report) because the KG-quality reporter
+        # only ran as a gate at libv2_archival and never stamped the field
+        # at authoring time. Uses the report-less ``compute_metrics_only``
+        # entry point — no SHACL ValidationReport (none exists at this
+        # phase), no LLM, deterministic. Fail-soft: any error logs a warning
+        # and leaves ``kg_quality`` null, matching the consensus-stamping
+        # posture (never fails the phase). The report dict is captured here
+        # and written to ``quality/kg_quality_report.json`` after the LibV2
+        # course dir is resolved below.
+        kg_quality_report: Optional[Dict[str, Any]] = None
+        if isinstance(graph, dict):
+            try:
+                from Trainforge.rag.kg_quality_report import KGQualityReporter
+
+                _run_id_kgq = (
+                    kwargs.get("run_id")
+                    or os.getenv("ED4ALL_RUN_ID", "")
+                    or ""
+                )
+                _kgq_reporter = KGQualityReporter(
+                    course_slug=course_slug,
+                    run_id=str(_run_id_kgq),
+                    output_dir=Path("."),  # overridden at write time below
+                )
+                kg_quality_report = _kgq_reporter.compute_metrics_only(graph)
+                # Stamp the compact four-dimension score block onto the
+                # graph so the in-graph kg_quality field is no longer null.
+                _kgq_dims = kg_quality_report.get("dimensions") or {}
+                graph["kg_quality"] = {
+                    dim: float(
+                        (_kgq_dims.get(dim) or {}).get("score", 0.0)
+                    )
+                    for dim in (
+                        "completeness", "consistency", "accuracy", "coverage"
+                    )
+                }
+            except Exception as exc:  # noqa: BLE001 — fail-soft
+                logger.warning(
+                    "concept_extraction: kg-quality computation failed "
+                    "(%s); graph kg_quality left null.", exc,
+                )
 
         # Persist graph to LibV2/courses/<slug>/concept_graph/.
         # Phase 8 ST 3: route through `_resolve_libv2_root` so ops
@@ -9493,6 +10435,67 @@ def _build_tool_registry() -> dict:
             json.dumps(manifest, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+
+        # Sibling edge_consensus_report.json (GPT-fb-12-may item 2). Written
+        # next to the just-serialized concept_graph_semantic.json so a LibV2
+        # audit can read the corpus-wide consensus rollup (per-rule
+        # confirmed/contradicted/pending counts + contradiction_rate) without
+        # re-walking the edge list. Reads from the on-disk graph (which now
+        # carries the stamped edge_status) so the report and the graph agree.
+        # Best-effort: a report-write failure does not fail the phase.
+        if isinstance(graph, dict) and graph.get("edges"):
+            try:
+                from lib.aggregators.edge_consensus import (
+                    EdgeConsensusAggregator,
+                )
+
+                _run_id = (
+                    kwargs.get("run_id")
+                    or os.getenv("ED4ALL_RUN_ID", "")
+                    or ""
+                )
+                _report_path = graph_dir / "edge_consensus_report.json"
+                EdgeConsensusAggregator(
+                    semantic_graph_path=graph_path,
+                    course_slug=course_slug,
+                    run_id=str(_run_id),
+                ).write(_report_path)
+                edge_consensus_report_path = str(_report_path)
+            except Exception as exc:  # noqa: BLE001 — fail-soft
+                logger.warning(
+                    "concept_extraction: edge_consensus_report.json write "
+                    "failed (%s); the consensus rollup was not persisted "
+                    "(the graph's per-edge edge_status is unaffected).", exc,
+                )
+
+        # Sibling kg_quality_report.json under the LibV2 course's quality/
+        # dir (NVIDIA-KG item 2). Follows the dir convention documented in
+        # root CLAUDE.md § Aggregators for the assessment aggregator
+        # (``<libv2_course>/quality/trainforge_assessment_quality_report.json``).
+        # The full four-dimension report (computed above via
+        # compute_metrics_only) is persisted here so a LibV2 audit reads the
+        # numerator/denominator + contradiction_rate detail without
+        # re-walking the graph. Best-effort: a write failure does not fail
+        # the phase, and the in-graph kg_quality block is unaffected.
+        kg_quality_report_path: str = ""
+        if kg_quality_report is not None:
+            try:
+                quality_dir = course_dir / "quality"
+                quality_dir.mkdir(parents=True, exist_ok=True)
+                _kgq_path = quality_dir / "kg_quality_report.json"
+                _kgq_path.write_text(
+                    json.dumps(
+                        kg_quality_report, indent=2, ensure_ascii=False
+                    ),
+                    encoding="utf-8",
+                )
+                kg_quality_report_path = str(_kgq_path)
+            except Exception as exc:  # noqa: BLE001 — fail-soft
+                logger.warning(
+                    "concept_extraction: kg_quality_report.json write failed "
+                    "(%s); the KG-quality rollup was not persisted (the "
+                    "graph's kg_quality block is unaffected).", exc,
+                )
 
         # Three-stage textbook synthesis — Stage 3 (Wave C, plan §4.3).
         # Persist the merged domain-concept vocabulary as a sibling of
@@ -9544,7 +10547,41 @@ def _build_tool_registry() -> dict:
             # for postmortem readability; the count is authoritative.
             "projection_drops_count": len(projection_drops),
             "projection_drops": projection_drops[:10],
+            # NVIDIA-KG item 1: surface where the LO ordering came from
+            # (empty string = course=None degraded path) so operators can
+            # tell from the phase output whether the LO-driven typed-edge
+            # rules had a chance to fire.
+            "objectives_source": objectives_source,
+            "learning_outcome_count": len(
+                (course_for_graph or {}).get("learning_outcomes") or []
+            ),
+            # Phase-ordering fix (Option A1): how many LOs the relocated
+            # concept-objective linker enriched with key_concepts[] from
+            # the concept graph this run.
+            "key_concepts_linked": key_concepts_linked,
+            # Merge-vs-LO-edges fix: count of graph nodes materialized by
+            # typed_edge_inference._materialize_endpoint_nodes for an
+            # unresolved targets-concept (LO key_concepts) target. > 0 means
+            # the LO author named concepts the corpus chunks never tagged, now
+            # carried as provenance-flagged DomainConcept nodes instead of
+            # dropped targets-concept edges.
+            "lo_concept_nodes_materialized": sum(
+                1
+                for n in (graph.get("nodes") or [])
+                if isinstance(n, dict)
+                and n.get("node_provenance") == "lo_key_concept"
+            ),
         }
+        # Edge-consensus rollup sibling (GPT-fb-12-may item 2). Present
+        # whenever the graph carried edges and the report wrote cleanly.
+        if edge_consensus_report_path:
+            envelope["edge_consensus_report_path"] = (
+                edge_consensus_report_path
+            )
+        # KG-quality rollup sibling (NVIDIA-KG item 2). Present whenever the
+        # report computed + wrote cleanly.
+        if kg_quality_report_path:
+            envelope["kg_quality_report_path"] = kg_quality_report_path
         # Stage-3 (Wave C) output keys. Empty / zero on a default-off run.
         if domain_concept_vocabulary_path:
             envelope["domain_concept_vocabulary_path"] = (
@@ -9552,6 +10589,11 @@ def _build_tool_registry() -> dict:
             )
             envelope["domain_concept_count"] = domain_concept_count
             envelope["chunks_retagged"] = chunks_retagged
+        # Lexical-seed fallback output keys (TRAINFORGE_LEXICAL_CONCEPT_SEEDS).
+        # Present only when the flag fired (off by default → absent).
+        if lexical_seed_count:
+            envelope["lexical_concept_seed_count"] = lexical_seed_count
+            envelope["lexical_chunks_retagged"] = lexical_chunks_retagged
         return json.dumps(envelope)
 
     registry["run_concept_extraction"] = _run_concept_extraction
@@ -9621,16 +10663,18 @@ def _build_tool_registry() -> dict:
         course_slug = course_name.lower().replace("_", "-").replace(" ", "-")
         course_code = course_name.upper().replace("-", "_")
 
-        # Resolve staging dir. Honor explicit kwarg first; fall back to
-        # COURSEFORGE_INPUTS so a degraded path (legacy fixtures that
-        # bypass the staging phase) still emits a chunkset shell.
+        # Resolve staging dir from the explicit kwarg only. We deliberately
+        # do NOT fall back to the global COURSEFORGE_INPUTS dir: on a
+        # workflow resume that drops the carried-forward staging path, that
+        # fallback resolved to a non-empty cross-course aggregate and made
+        # the Wave1-I2 preserve-or-fail-closed guard unreachable, silently
+        # overwriting this course's chunks.jsonl. An unresolvable/empty
+        # staging input must route to the Wave1-I2 guard below.
         staging_dir: Optional[Path] = None
         if staging_dir_kw:
             cand = Path(staging_dir_kw)
             if cand.exists():
                 staging_dir = cand
-        if staging_dir is None and COURSEFORGE_INPUTS.exists():
-            staging_dir = COURSEFORGE_INPUTS
 
         # Walk staging_dir for DART HTML files. Filter out
         # ``*_synthesized.json`` neighbours (those are sidecars, not the
@@ -9820,6 +10864,118 @@ def _build_tool_registry() -> dict:
         # carry the load. objective-ref enrichment remains the synthesis
         # surface's responsibility downstream.
         from lib.ontology.concept_tagging import extract_concept_tags
+        from Trainforge.chunker import (
+            extract_learning_outcome_refs as _extract_learning_outcome_refs,
+        )
+
+        # FIX #3c: chunk-local concept_tags. Default-OFF behind
+        # ``TRAINFORGE_CHUNK_LOCAL_TAGS``. When OFF, every chunk on a page
+        # tags from the SAME page-level ``item["key_concepts"]`` set, so
+        # all chunks of a page collapse onto a byte-identical tag list
+        # (legacy behaviour, byte-stable). When ON, each chunk's
+        # ``concept_tags`` derive from ITS OWN text: the page-level
+        # ``key_concepts`` are filtered down to those whose surface form
+        # actually appears in THIS chunk's text, and the text-pattern
+        # signals in ``extract_concept_tags`` fire on the chunk's own text.
+        # We re-route through ``extract_concept_tags`` (not around it) so
+        # the ``TRAINFORGE_PRUNE_SCAFFOLDING_CONCEPTS`` droppable-class +
+        # scaffolding-noise filtering still applies to chunk-local tags.
+        chunk_local_tags = (
+            os.getenv("TRAINFORGE_CHUNK_LOCAL_TAGS", "").lower() == "true"
+        )
+        # FIX #3c (extract, not just filter): when the chunk-local flag is
+        # ON, the per-chunk tag set is the UNION of (a) the filtered
+        # page-level key_concepts that survive ``extract_concept_tags`` and
+        # (b) concepts EXTRACTED from THIS chunk's own text via the shared
+        # lexical machinery (``derive_lexical_concept_seeds`` — multi-word
+        # noun phrases + acronyms, frequency/fragment/function-word filtered,
+        # no embeddings). The filter-only path thinned coverage: a content-
+        # rich chunk whose page-level key_concepts didn't surface in its text
+        # ended up with one or zero tags, starving the concept graph. Adding
+        # the chunk-local extraction recovers per-chunk coverage while
+        # staying chunk-LOCAL (the seeds come from the chunk's own text).
+        # Default-OFF preserves byte-identical legacy emit.
+        _CHUNK_LOCAL_TAG_CAP = 12
+        if chunk_local_tags:
+            from lib.ontology.lexical_concept_seeds import (
+                derive_lexical_concept_seeds as _derive_lexical_concept_seeds,
+                is_fragment_phrase as _is_fragment_phrase,
+            )
+            from lib.ontology.concept_classifier import (
+                is_scaffolding_noise as _is_scaffolding_noise,
+            )
+
+            def _chunk_local_extracted_tags(text: str) -> List[str]:
+                """Extract chunk-local concept-tag slugs from ``text`` only.
+
+                Routes the chunk text through the shared lexical seed
+                deriver (``min_doc_freq=1`` so a single-chunk corpus still
+                yields multi-word phrases; the function's built-in
+                function-word / generic / denylist filters still apply),
+                then re-applies the same quality gates the rest of the
+                pipeline uses: ``is_fragment_phrase`` on multi-word slugs
+                (sentence-fragment reject) and ``is_scaffolding_noise``
+                (domain-agnostic scaffolding-noise reject). Deterministic:
+                ``derive_lexical_concept_seeds`` already returns a stable
+                ``(-doc_freq, slug)`` ordering, preserved here.
+                """
+                if not text:
+                    return []
+                try:
+                    seeds = _derive_lexical_concept_seeds(
+                        [{"text": text}], min_doc_freq=1
+                    )
+                except Exception:  # noqa: BLE001 — extraction is best-effort
+                    return []
+                out: List[str] = []
+                for slug in seeds:
+                    if not slug:
+                        continue
+                    # Multi-word slugs get the sentence-fragment gate; the
+                    # deriver's own n-gram filter already drops most junk,
+                    # but is_fragment_phrase is the canonical filter the
+                    # bold-span harvest uses, so apply it for parity.
+                    if "-" in slug and _is_fragment_phrase(
+                        slug.replace("-", " ")
+                    ):
+                        continue
+                    if _is_scaffolding_noise(slug):
+                        continue
+                    out.append(slug)
+                return out
+        # Tokeniser for chunk-local key-concept membership: split a concept
+        # surface form into alphanumeric tokens (keeps internal hyphens /
+        # apostrophes glued) so "Knowledge Base" -> ["knowledge", "base"].
+        _CONCEPT_TOKEN_RE = re.compile(r"[a-z0-9]+(?:[-'][a-z0-9]+)*")
+
+        def _key_concept_in_text(concept: str, text_lower: str) -> bool:
+            """True iff every alphanumeric token of ``concept`` appears in
+            ``text_lower`` (case-insensitive). Tokenises on non-alphanumeric
+            runs so "Knowledge Base" matches "...the knowledge base stores...".
+            A concept with no alphanumeric tokens never matches.
+            """
+            toks = [t for t in _CONCEPT_TOKEN_RE.findall(concept.lower()) if t]
+            if not toks:
+                return False
+            return all(t in text_lower for t in toks)
+
+        def _filter_item_key_concepts(
+            item: Dict[str, Any], text: str
+        ) -> Dict[str, Any]:
+            """Return a shallow-copied ``item`` whose ``key_concepts`` is
+            restricted to concepts whose words appear in ``text``. Other
+            keys are shared by reference (read-only downstream)."""
+            page_concepts = item.get("key_concepts") or []
+            if not page_concepts:
+                return item
+            text_lower = (text or "").lower()
+            local_concepts = [
+                c for c in page_concepts
+                if _key_concept_in_text(str(c), text_lower)
+            ]
+            local_item = dict(item)
+            local_item["key_concepts"] = local_concepts
+            return local_item
 
         def _create_chunk(
             *,
@@ -9875,7 +11031,25 @@ def _build_tool_registry() -> dict:
             # empty. Defensive: a tagging failure must not abort the
             # chunking phase — fall back to ``[]`` (legacy behaviour).
             try:
-                concept_tags = extract_concept_tags(text, item)
+                tag_item = (
+                    _filter_item_key_concepts(item, text)
+                    if chunk_local_tags
+                    else item
+                )
+                concept_tags = extract_concept_tags(text, tag_item)
+                if chunk_local_tags:
+                    # Union (a) filtered page-level tags (above) with (b)
+                    # tags extracted from THIS chunk's own text. First-seen-
+                    # stable ordering (page-level survivors first, then
+                    # chunk-local extractions); deduped; capped so a long
+                    # chunk can't explode the tag list.
+                    seen = set(concept_tags)
+                    merged = list(concept_tags)
+                    for slug in _chunk_local_extracted_tags(text):
+                        if slug not in seen:
+                            seen.add(slug)
+                            merged.append(slug)
+                    concept_tags = merged[:_CHUNK_LOCAL_TAG_CAP]
             except Exception:  # noqa: BLE001 — tagging is best-effort
                 logger.warning(
                     "concept-tag extraction failed for chunk %s; "
@@ -9884,6 +11058,22 @@ def _build_tool_registry() -> dict:
                     exc_info=True,
                 )
                 concept_tags = []
+            # LO-anchoring fix: harvest the LO ids the source page carried
+            # (JSON-LD learningObjectives[].id + section data-cf-objective-id
+            # / -ref) and anchor this chunk to its section's LOs. DART HTML
+            # without LO metadata yields [] (byte-identical to the prior
+            # hardcoded behaviour). Best-effort: a harvest failure must not
+            # abort the chunking phase.
+            try:
+                lo_refs = _extract_learning_outcome_refs(item, section_heading)
+            except Exception:  # noqa: BLE001 — LO harvest is best-effort
+                logger.warning(
+                    "learning_outcome_refs extraction failed for chunk %s; "
+                    "emitting empty learning_outcome_refs",
+                    chunk_id,
+                    exc_info=True,
+                )
+                lo_refs = []
             chunk: Dict[str, Any] = {
                 "id": chunk_id,
                 "schema_version": "v4",
@@ -9893,7 +11083,7 @@ def _build_tool_registry() -> dict:
                 "follows_chunk": follows_chunk_id,
                 "source": source,
                 "concept_tags": concept_tags,
-                "learning_outcome_refs": [],
+                "learning_outcome_refs": lo_refs,
                 "difficulty": difficulty,
                 "tokens_estimate": tokens_estimate,
                 "word_count": word_count,
@@ -10338,6 +11528,111 @@ def _build_tool_registry() -> dict:
                     "source_references": parsed.source_references,
                 })
 
+        # ``concept_tags`` IS populated here (previously hardcoded ``[]``):
+        # the empty-tag substrate starved every downstream concept-graph +
+        # CURIE consumer (the IMSCC chunkset feeds the same machinery the
+        # DART chunkset does). Mirror ``_run_dart_chunking`` exactly: tag
+        # from the chunk text + the HTML parser's bold-term / definition
+        # ``key_concepts`` via the instance-free
+        # ``lib.ontology.concept_tagging.extract_concept_tags`` helper (the
+        # same logic ``CourseProcessor._extract_concept_tags`` delegates
+        # to). ``extract_concept_tags`` honors the
+        # ``TRAINFORGE_SEED_TECH_CONCEPTS`` (tech-anchor seeding) and
+        # ``TRAINFORGE_PRUNE_SCAFFOLDING_CONCEPTS`` (scaffolding prune)
+        # flags internally; the fragment-filter
+        # (``TRAINFORGE_FILTER_FRAGMENT_CONCEPTS``) + content-aware
+        # chunk_type (``TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE``) flags fire in
+        # the parser / chunker the IMSCC path already routes through.
+        # ``domain_concept_seeds`` is empty here (post-packaging IMSCC
+        # chunking carries no per-course seed compiler instance), matching
+        # the DART path's default-empty seeds.
+        from lib.ontology.concept_tagging import extract_concept_tags
+        from Trainforge.chunker import (
+            extract_learning_outcome_refs as _extract_learning_outcome_refs,
+        )
+
+        # FIX #3c (mirrored from ``_run_dart_chunking``): chunk-local
+        # concept_tags behind ``TRAINFORGE_CHUNK_LOCAL_TAGS``. When OFF
+        # (default), every chunk on a page tags from the SAME page-level
+        # ``item["key_concepts"]`` set. When ON, each chunk's tags derive
+        # from ITS OWN text: page-level ``key_concepts`` are filtered to
+        # those whose surface form appears in this chunk, unioned with
+        # concepts extracted from the chunk's own text via the shared
+        # lexical-seed machinery (re-routed through ``extract_concept_tags``
+        # so scaffolding-noise filtering still applies).
+        chunk_local_tags = (
+            os.getenv("TRAINFORGE_CHUNK_LOCAL_TAGS", "").lower() == "true"
+        )
+        _CHUNK_LOCAL_TAG_CAP = 12
+        if chunk_local_tags:
+            from lib.ontology.lexical_concept_seeds import (
+                derive_lexical_concept_seeds as _derive_lexical_concept_seeds,
+                is_fragment_phrase as _is_fragment_phrase,
+            )
+            from lib.ontology.concept_classifier import (
+                is_scaffolding_noise as _is_scaffolding_noise,
+            )
+
+            def _chunk_local_extracted_tags(text: str) -> List[str]:
+                """Extract chunk-local concept-tag slugs from ``text`` only.
+
+                Routes the chunk text through the shared lexical seed
+                deriver (``min_doc_freq=1`` so a single-chunk corpus still
+                yields multi-word phrases), then re-applies the same
+                quality gates the rest of the pipeline uses
+                (``is_fragment_phrase`` + ``is_scaffolding_noise``).
+                """
+                if not text:
+                    return []
+                try:
+                    seeds = _derive_lexical_concept_seeds(
+                        [{"text": text}], min_doc_freq=1
+                    )
+                except Exception:  # noqa: BLE001 — extraction is best-effort
+                    return []
+                out: List[str] = []
+                for slug in seeds:
+                    if not slug:
+                        continue
+                    if "-" in slug and _is_fragment_phrase(
+                        slug.replace("-", " ")
+                    ):
+                        continue
+                    if _is_scaffolding_noise(slug):
+                        continue
+                    out.append(slug)
+                return out
+
+        # Tokeniser for chunk-local key-concept membership (mirrors
+        # ``_run_dart_chunking``): split a concept surface form into
+        # alphanumeric tokens so "Knowledge Base" -> ["knowledge", "base"].
+        _CONCEPT_TOKEN_RE = re.compile(r"[a-z0-9]+(?:[-'][a-z0-9]+)*")
+
+        def _key_concept_in_text(concept: str, text_lower: str) -> bool:
+            """True iff every alphanumeric token of ``concept`` appears in
+            ``text_lower`` (case-insensitive)."""
+            toks = [t for t in _CONCEPT_TOKEN_RE.findall(concept.lower()) if t]
+            if not toks:
+                return False
+            return all(t in text_lower for t in toks)
+
+        def _filter_item_key_concepts(
+            item: Dict[str, Any], text: str
+        ) -> Dict[str, Any]:
+            """Return a shallow-copied ``item`` whose ``key_concepts`` is
+            restricted to concepts whose words appear in ``text``."""
+            page_concepts = item.get("key_concepts") or []
+            if not page_concepts:
+                return item
+            text_lower = (text or "").lower()
+            local_concepts = [
+                c for c in page_concepts
+                if _key_concept_in_text(str(c), text_lower)
+            ]
+            local_item = dict(item)
+            local_item["key_concepts"] = local_concepts
+            return local_item
+
         # Minimal create_chunk callback — emits a v4-shaped chunk dict
         # without CourseProcessor's deep instance state. Mirrors
         # ``_run_dart_chunking``'s callback exactly so DART + IMSCC
@@ -10386,6 +11681,52 @@ def _build_tool_registry() -> dict:
             # canonical JSON-LD > data-cf > heuristic cascade.
             bloom_level, bloom_source = _resolve_chunk_bloom_level(item, text)
             difficulty = _resolve_chunk_difficulty(item, text, bloom_level)
+            # Real domain-concept tags from the chunk text + the HTML
+            # parser's bold-term / definition ``key_concepts`` (previously
+            # hardcoded ``[]``, which starved every downstream concept
+            # consumer). Mirrors ``_run_dart_chunking`` exactly: empty
+            # per-course ``domain_concept_seeds``; honors the chunk-local
+            # flag. Defensive: a tagging failure must not abort the chunking
+            # phase — fall back to ``[]`` (legacy behaviour).
+            try:
+                tag_item = (
+                    _filter_item_key_concepts(item, text)
+                    if chunk_local_tags
+                    else item
+                )
+                concept_tags = extract_concept_tags(text, tag_item)
+                if chunk_local_tags:
+                    seen = set(concept_tags)
+                    merged = list(concept_tags)
+                    for slug in _chunk_local_extracted_tags(text):
+                        if slug not in seen:
+                            seen.add(slug)
+                            merged.append(slug)
+                    concept_tags = merged[:_CHUNK_LOCAL_TAG_CAP]
+            except Exception:  # noqa: BLE001 — tagging is best-effort
+                logger.warning(
+                    "concept-tag extraction failed for chunk %s; "
+                    "emitting empty concept_tags",
+                    chunk_id,
+                    exc_info=True,
+                )
+                concept_tags = []
+            # LO-anchoring fix: harvest the LO ids the source page carried
+            # (JSON-LD learningObjectives[].id + section data-cf-objective-id
+            # / -ref) and anchor this chunk to its section's LOs. Empty for
+            # legacy / non-Courseforge IMSCC pages (byte-identical to the
+            # prior hardcoded []). Best-effort: a harvest failure must not
+            # abort the chunking phase.
+            try:
+                lo_refs = _extract_learning_outcome_refs(item, section_heading)
+            except Exception:  # noqa: BLE001 — LO harvest is best-effort
+                logger.warning(
+                    "learning_outcome_refs extraction failed for chunk %s; "
+                    "emitting empty learning_outcome_refs",
+                    chunk_id,
+                    exc_info=True,
+                )
+                lo_refs = []
             chunk: Dict[str, Any] = {
                 "id": chunk_id,
                 "schema_version": "v4",
@@ -10394,8 +11735,8 @@ def _build_tool_registry() -> dict:
                 "html": html,
                 "follows_chunk": follows_chunk_id,
                 "source": source,
-                "concept_tags": [],
-                "learning_outcome_refs": [],
+                "concept_tags": concept_tags,
+                "learning_outcome_refs": lo_refs,
                 "difficulty": difficulty,
                 "tokens_estimate": tokens_estimate,
                 "word_count": word_count,
@@ -10552,6 +11893,177 @@ def _build_tool_registry() -> dict:
         })
 
     registry["run_imscc_chunking"] = _run_imscc_chunking
+
+    # ============================================================================
+    # WS2 — run_vector_indexing: deterministic on-device vector-index build.
+    #
+    # Backs the ``rag-indexer`` agent (``rag_training`` ``indexing`` phase) via
+    # the AGENT_TOOL_MAPPING flip from ``analyze_imscc_content`` (which only
+    # counted HTML files and never produced an index) to this real tool.
+    #
+    # Deterministic transformation (no LLM dispatch, no DecisionCapture
+    # obligation — precedent: ``_run_dart_chunking``). It resolves the course
+    # dir under the LibV2 root, builds an EmbeddingClient from the env-configured
+    # provider, embeds the resolved chunkset, and persists
+    # ``vector_index/{embeddings.npy,id_map.json,manifest.json}``.
+    #
+    # FAIL-CLOSED CONTRACT (anti-silent-degradation): when the embedding
+    # backend is unavailable (weights not cached, server down, extras missing)
+    # the tool returns ``{"success": false, "error": ...}`` and the phase FAILS.
+    # There is NO file-counting / lexical fallback — the indexing phase can no
+    # longer "succeed" without an actual index.
+    # ============================================================================
+    async def _run_vector_indexing(**kwargs):
+        """Build the per-course vector index. Fail-closed; deterministic.
+
+        Resolved kwargs (workflows.yaml ``inputs_from`` / param mapping):
+            course_name (aliases: course / name / course_code): the course
+                whose chunkset is embedded (resolves the LibV2 course slug).
+            chunkset (optional): ``imscc`` | ``dart`` | ``corpus-legacy`` pin;
+                defaults to the canonical resolver precedence.
+            provider (optional): embedding provider registry key; defaults to
+                ``ED4ALL_EMBEDDING_PROVIDER`` or ``st``.
+            model (optional): embedding model id override.
+            text_field_policy (optional): defaults to ``text+heading``.
+            force (optional): rebuild a still-fresh index.
+            libv2_root (optional): LibV2 root override.
+
+        Envelope (success):
+            {"success": true, "manifest_path", "embeddings_path",
+             "id_map_path", "vector_index_dir", "model_fingerprint",
+             "embedding_model_id", "embedding_provider", "embedding_dim",
+             "chunks_count", "chunkset_kind", "source_chunks_sha256",
+             "course_slug"}
+
+        Envelope (fail-closed): {"success": false, "error", "error_type",
+            "course_slug"} — the phase fails; no partial index, no fallback.
+        """
+        course_name = (
+            kwargs.get("course_name")
+            or kwargs.get("course")
+            or kwargs.get("name")
+            or kwargs.get("course_code")
+            or ""
+        )
+        course_name = course_name or "UNKNOWN"
+        course_slug = course_name.lower().replace("_", "-").replace(" ", "-")
+
+        chunkset = kwargs.get("chunkset") or None
+        provider = kwargs.get("provider") or None
+        model_id = kwargs.get("model") or kwargs.get("model_id") or None
+        text_field_policy = kwargs.get("text_field_policy") or "text+heading"
+        force = bool(kwargs.get("force", False))
+
+        course_dir = (
+            _resolve_libv2_root(kwargs.get("libv2_root"))
+            / "courses"
+            / course_slug
+        )
+
+        # Lazy imports so this module has no import-time coupling to the
+        # embedding / index packages (slim installs stay importable).
+        try:
+            from lib.embedding.providers import (
+                EmbeddingBackendUnavailable,
+                build_embedding_client,
+            )
+            from LibV2.tools.libv2.vector_index import (
+                SemanticIndexMissing,
+                build_vector_index,
+            )
+        except Exception as exc:  # noqa: BLE001 — missing index/embedding deps
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"vector-index dependencies unavailable: {exc}. Install the "
+                    f"[embedding] extra and ensure LibV2 is on the path."
+                ),
+                "error_type": "dependency_missing",
+                "course_slug": course_slug,
+            })
+
+        if not course_dir.exists():
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"course directory not found at {course_dir}; archive the "
+                    f"course to LibV2 (and run the chunking phase) before "
+                    f"indexing."
+                ),
+                "error_type": "course_missing",
+                "course_slug": course_slug,
+            })
+
+        # Build the embedding client from the env-configured provider. The
+        # build path is provision-time, so offline=False (a real provider may
+        # download weights here — never on the query path).
+        try:
+            client = build_embedding_client(
+                provider, model_id, offline=False
+            )
+            manifest = build_vector_index(
+                course_dir,
+                client=client,
+                chunkset=chunkset,
+                text_field_policy=text_field_policy,
+                force=force,
+            )
+        except EmbeddingBackendUnavailable as exc:
+            # Honest fail-closed: NO file-counting fallback.
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"embedding backend unavailable; the indexing phase fails "
+                    f"closed (no lexical/file-count fallback): {exc}"
+                ),
+                "error_type": "embedding_backend_unavailable",
+                "course_slug": course_slug,
+            })
+        except SemanticIndexMissing as exc:
+            return json.dumps({
+                "success": False,
+                "error": str(exc),
+                "error_type": "chunkset_missing",
+                "course_slug": course_slug,
+            })
+        except FileExistsError as exc:
+            return json.dumps({
+                "success": False,
+                "error": str(exc),
+                "error_type": "fresh_index_exists",
+                "course_slug": course_slug,
+            })
+        except Exception as exc:  # noqa: BLE001 — surface, never silently degrade
+            return json.dumps({
+                "success": False,
+                "error": f"vector-index build failed: {exc}",
+                "error_type": "build_error",
+                "course_slug": course_slug,
+            })
+
+        index_dir = course_dir / "vector_index"
+        try:
+            fingerprint = dict(client.model_fingerprint())
+        except Exception:  # noqa: BLE001 — fingerprint is best-effort surface
+            fingerprint = {}
+
+        return json.dumps({
+            "success": True,
+            "vector_index_dir": str(index_dir),
+            "manifest_path": str(index_dir / "manifest.json"),
+            "embeddings_path": str(index_dir / "embeddings.npy"),
+            "id_map_path": str(index_dir / "id_map.json"),
+            "model_fingerprint": fingerprint,
+            "embedding_model_id": manifest.embedding_model_id,
+            "embedding_provider": manifest.embedding_provider,
+            "embedding_dim": manifest.embedding_dim,
+            "chunks_count": manifest.chunks_count,
+            "chunkset_kind": manifest.chunkset_kind,
+            "source_chunks_sha256": manifest.source_chunks_sha256,
+            "course_slug": course_slug,
+        })
+
+    registry["run_vector_indexing"] = _run_vector_indexing
 
     # ================================================================= #
     # Runtime registry stubs for the 7 tools that AGENT_TOOL_MAPPING     #

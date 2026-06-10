@@ -1,7 +1,7 @@
 """GPT Feedback v2 — Wave 1.7 end-of-wave block-against-objective gate.
 
 Authored 2026-05-06 against the closing 6-test gate enumerated in
-``plans/gpt-feedback-2-wave1.7-block-against-objective-2026-05.md`` § 4.
+the Wave 1.7 block-against-objective gate spec § 4.
 
 Predecessors landed:
 
@@ -29,7 +29,7 @@ Drift notes vs plan §4:
 * Plan §4 Test 2 reads "``result.passed is False``", but the W1.7.C
   validator ships every Wave 1.7 GateIssue at ``severity="warning"``
   by construction (Day-1 contract — promotion to critical is a
-  Wave 3 follow-up after rdf-shacl-551-2 calibration). The
+  Wave 3 follow-up after RDF/SHACL calibration corpus calibration). The
   ``passed`` flag stays ``True``; the regeneration signal the
   router actually consumes is ``action="regenerate"`` plus the
   warning-severity GateIssue code. We pin the ``action`` + code +

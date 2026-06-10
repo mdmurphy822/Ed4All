@@ -13,8 +13,8 @@ indexed and ``NodeShape`` did not align with ``node shape`` in prose):
      words) so heading terms contribute to BM25.
 
 Together these lifted Hit@1 from 0.467 to 0.533 (BM25 alone) and 0.600
-(BM25 + chunk-type intent prior) on the 15-query rdf-shacl-551-2 probe
-set; MRR from 0.576 to 0.646 (BM25) and 0.674 (intent).
+(BM25 + chunk-type intent prior) on the 15-query RDF/SHACL calibration
+corpus probe set; MRR from 0.576 to 0.646 (BM25) and 0.674 (intent).
 """
 
 from __future__ import annotations
@@ -182,7 +182,7 @@ class TestNodeShapeRankingRegression:
     def test_definition_chunk_heading_terms_present_in_index(self):
         # Realistic chunk shape mirroring chunk_00147.
         chunk = {
-            "id": "rdf_shacl_551_chunk_00147",
+            "id": "demo_course_1_chunk_00147",
             "text": (
                 "sh:Shape is the SHACL superclass; it has exactly two "
                 "subclasses, sh:NodeShape and sh:PropertyShape. Both "

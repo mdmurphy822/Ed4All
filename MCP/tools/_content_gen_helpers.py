@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import html as _html
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1295,6 +1296,25 @@ def _normalize_objective_entry(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     key_concepts = raw.get("key_concepts") or raw.get("keyConcepts")
     if key_concepts:
         entry["key_concepts"] = list(key_concepts)
+    # Layer-A/B terminal-coverage fix: preserve CO→TO roll-up back-pointers
+    # and chapter attribution when present. Previously stripped here, which
+    # (a) emptied the roll-up set so prune_orphan_terminals deleted every
+    # terminal, and (b) caused ORPHAN_TERMINAL_NO_CHAPTER_REF false
+    # positives in the CO-less Layer-B branch. Downstream consumers that
+    # need these: Trainforge/pedagogy_graph_builder.py (CO→TO edges),
+    # lib/validators/libv2/packet_integrity.py (CO→TO expansion). Pure
+    # pass-through — all other normalization is unchanged.
+    for passthrough_key in (
+        "parent_to",
+        "parent_terminal",
+        "parent_terminal_id",
+        "terminal_id",
+        "chapter",
+        "chapter_id",
+    ):
+        val = raw.get(passthrough_key)
+        if val is not None:
+            entry[passthrough_key] = val
     # Phase 6 ST 7-8: preserve ABCD when supplied verbatim by the user
     # (e.g. via ``--reuse-objectives``). Both ``abcd`` and the canonical
     # JSON-LD ``$defs.AbcdObjective`` shape are tolerated so corpora
@@ -1440,6 +1460,90 @@ def _topic_objective_source_ref(
     return {"ref": ref, "chunk_ids": chunk_ids}
 
 
+# Conversational / imperative / logistics noise markers that betray a
+# scraped fragment as NOT an objective statement. Domain-agnostic: these are
+# course-shell chatter ("submit the coding component of the course!",
+# "Congratulations on finishing!", "Feel free to reach out") rather than
+# learning outcomes. Matched case-insensitively as substrings.
+_LOW_QUALITY_OBJECTIVE_MARKERS: Tuple[str, ...] = (
+    "submit",
+    "congratulations",
+    "feel free",
+    "let's",
+    "lets ",
+    "we now have",
+    "as you go",
+    "the course!",
+)
+
+# Content (Bloom) verbs flattened from the canonical taxonomy, used as the
+# "does this read like an objective" signal. A statement with no Bloom verb
+# AND high function-word density is treated as non-objective noise.
+_BLOOM_VERB_LEMMAS: frozenset = frozenset(
+    verb for verbs in BLOOMS_VERBS.values() for verb in verbs
+)
+
+try:  # pragma: no cover - import guard only
+    from lib.ontology.lexical_concept_seeds import FUNCTION_WORDS as _FUNCTION_WORDS
+except Exception:  # pragma: no cover - defensive fallback
+    _FUNCTION_WORDS = frozenset()
+
+
+def _is_low_quality_objective(statement: str) -> bool:
+    """Return ``True`` when a scraped LO ``statement`` is NOT objective-shaped.
+
+    Conservative + domain-agnostic gate used (only when the
+    ``TRAINFORGE_OBJECTIVE_QUALITY_GATE`` flag is on) to reject junk
+    "Learning Objectives" fragments that ``parse_dart_html_files`` scrapes
+    from course-shell chatter ("submit the coding component of the
+    course!") before they collapse a whole course onto a handful of garbage
+    objectives. Rejects when the statement:
+
+      (a) is too short (<3 words) or too long (>40 words);
+      (b) has high function-word density / carries no Bloom content verb;
+      (c) trips a conversational / imperative / logistics noise marker, or
+          reads as question prose ("?");
+      (d) lacks any alphabetic content word.
+    """
+    if not statement or not statement.strip():
+        return True
+    text = statement.strip()
+    lowered = text.lower()
+
+    # (c) conversational / imperative / logistics noise markers.
+    if "?" in text:
+        return True
+    if any(marker in lowered for marker in _LOW_QUALITY_OBJECTIVE_MARKERS):
+        return True
+
+    # Tokenise to alphabetic word tokens for the structural checks.
+    tokens = re.findall(r"[A-Za-z][A-Za-z'-]*", text)
+    word_count = len(tokens)
+
+    # (a) length bounds.
+    if word_count < 3 or word_count > 40:
+        return True
+
+    lowered_tokens = [t.lower() for t in tokens]
+
+    # (d) at least one alphabetic content word (non-function word).
+    content_tokens = [t for t in lowered_tokens if t not in _FUNCTION_WORDS]
+    if not content_tokens:
+        return True
+
+    # (b) high function-word density / no Bloom content verb. A real
+    # objective either leads with / contains a Bloom verb, or is dominated
+    # by domain content words rather than scaffolding.
+    has_bloom_verb = any(t in _BLOOM_VERB_LEMMAS for t in lowered_tokens)
+    function_word_ratio = (
+        (word_count - len(content_tokens)) / word_count if word_count else 1.0
+    )
+    if not has_bloom_verb and function_word_ratio >= 0.6:
+        return True
+
+    return False
+
+
 def synthesize_objectives_from_topics(
     topics: List[Dict[str, Any]],
     duration_weeks: int,
@@ -1477,6 +1581,26 @@ def synthesize_objectives_from_topics(
         # Empty corpus → empty objective lists. No placeholder synthesis.
         return ([], [])
 
+    # TRAINFORGE_OBJECTIVE_QUALITY_GATE (default OFF): when on, (1) scraped
+    # LO statements are filtered through ``_is_low_quality_objective`` so
+    # junk course-shell fragments can't collapse a course onto a handful of
+    # garbage objectives, (2) Path A no longer early-returns — surviving
+    # extracted LOs are MERGED with Path B's per-week heading rollup so
+    # every week still gets at least a heading-derived objective, and (3)
+    # the terminal ceiling scales with corpus length. Flag OFF reproduces
+    # the historical behaviour byte-for-byte (Path A early-return included).
+    quality_gate_on = (
+        os.getenv("TRAINFORGE_OBJECTIVE_QUALITY_GATE", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+    # Corpus-scaled terminal ceiling (flag ON only): one terminal per ~2
+    # weeks, floored at 2 and capped at 8, so a richer corpus earns more
+    # terminal outcomes. Flag OFF keeps the caller-supplied ``max_terminal``.
+    effective_max_terminal = max_terminal
+    if quality_gate_on:
+        effective_max_terminal = max(2, min(8, round(duration_weeks / 2)))
+
     # Group topics into weeks round-robin — later used for both objective
     # derivation and per-week content binding.
     topics_per_week = _group_topics_by_week(topics, duration_weeks)
@@ -1490,8 +1614,23 @@ def synthesize_objectives_from_topics(
     all_extracted_los: List[Tuple[str, List[str], Dict[str, Any]]] = []
     for topic in topics:
         statements = topic.get("extracted_lo_statements") or []
+        if quality_gate_on:
+            # Drop non-objective-shaped fragments before they reach Path A.
+            statements = [
+                s for s in statements if not _is_low_quality_objective(s)
+            ]
         if statements:
             all_extracted_los.append((topic["heading"], statements, topic))
+
+    # Flag ON: map each topic (by identity) to its week index so Path B can
+    # skip the weeks already covered by a surviving extracted LO. This is
+    # the MERGE bookkeeping — Path A emits real LOs, Path B fills the gaps.
+    topic_week_index: Dict[int, int] = {}
+    covered_week_indices: set = set()
+    if quality_gate_on:
+        for wk_idx, wk_topics in enumerate(topics_per_week):
+            for t in wk_topics:
+                topic_week_index[id(t)] = wk_idx
 
     terminal: List[Dict[str, Any]] = []
     chapter: List[Dict[str, Any]] = []
@@ -1502,6 +1641,10 @@ def synthesize_objectives_from_topics(
     # Path A: real LOs were extracted. Emit those verbatim.
     if all_extracted_los:
         for heading, statements, source_topic in all_extracted_los:
+            if quality_gate_on:
+                wk_idx = topic_week_index.get(id(source_topic))
+                if wk_idx is not None:
+                    covered_week_indices.add(wk_idx)
             primary_term_slug = canonical_slug(heading) or ""
             # Wave 1.6 W1.6.B: every Path A LO from this topic shares the
             # same source attribution — single-element structured
@@ -1536,8 +1679,8 @@ def synthesize_objectives_from_topics(
                 # per topic; multi-entry aggregation happens on the
                 # Path B secondary-heading rollup).
                 entry["source_refs"] = [dict(topic_ref)] if topic_ref else []
-                # First ``max_terminal`` go to terminal; the rest are COs.
-                if to_counter <= max_terminal:
+                # First ``effective_max_terminal`` go to terminal; rest COs.
+                if to_counter <= effective_max_terminal:
                     entry["id"] = mint_lo_id("terminal", to_counter)
                     terminal.append(entry)
                     to_counter += 1
@@ -1545,7 +1688,11 @@ def synthesize_objectives_from_topics(
                     entry["id"] = mint_lo_id("chapter", co_counter)
                     chapter.append(entry)
                     co_counter += 1
-        return (terminal, chapter)
+        if not quality_gate_on:
+            # Legacy byte-stable behaviour: Path A short-circuits Path B.
+            return (terminal, chapter)
+        # Flag ON: fall through to Path B so weeks WITHOUT a surviving
+        # extracted LO still get a heading-derived objective (the MERGE).
 
     # Path B: no real LOs extracted. Use real heading text as the LO
     # statement. Heading text is literal source material — not fabricated
@@ -1554,6 +1701,12 @@ def synthesize_objectives_from_topics(
     # guaranteed non-placeholder.
     for week_num, week_topics in enumerate(topics_per_week, start=1):
         if not week_topics:
+            continue
+        # Flag ON merge: a week already covered by a surviving extracted LO
+        # (emitted above in Path A) is not double-covered by a heading
+        # rollup. ``week_num`` is 1-based; ``covered_week_indices`` is
+        # 0-based to match ``topics_per_week`` enumeration.
+        if quality_gate_on and (week_num - 1) in covered_week_indices:
             continue
         primary = week_topics[0]
         primary_heading = primary["heading"]
@@ -1592,8 +1745,8 @@ def synthesize_objectives_from_topics(
                 continue
             seen_refs.add(key)
             aggregated_terminal_refs.append(dict(sec_topic_ref))
-        # Terminals capped at max_terminal; overflow primaries become COs.
-        if to_counter <= max_terminal:
+        # Terminals capped at effective_max_terminal; overflow → COs.
+        if to_counter <= effective_max_terminal:
             terminal_entry: Dict[str, Any] = {
                 "id": mint_lo_id("terminal", to_counter),
                 "statement": primary_heading,
@@ -1909,9 +2062,16 @@ def build_week_data(
     course_code: str,
     content_provider: Optional[Any] = None,
     content_router: Optional[Any] = None,
+    authorship_stats: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
     """Assemble the ``week_data`` dict that
     :func:`Courseforge.scripts.generate_course.generate_week` consumes.
+
+    ``authorship_stats`` (optional): when supplied, the per-page LLM-vs-
+    template authorship tally is accumulated into it under the
+    ``llm_authored`` / ``template_fallback`` keys, so callers can detect a
+    provider/router that silently degraded to the deterministic template
+    floor at runtime (anti-silent-template guard).
 
     Shape reference: the fixture in
     ``tests/fixtures/pipeline/reference_week_01/``. We produce:
@@ -1981,6 +2141,7 @@ def build_week_data(
         course_code=course_code,
         week_num=week_num,
         content_router=content_router,
+        authorship_stats=authorship_stats,
     )
 
     # Activities — one practice activity tied to first objective. The
@@ -2093,6 +2254,7 @@ def _build_content_modules_dynamic(
     course_code: Optional[str] = None,
     week_num: Optional[int] = None,
     content_router: Optional[Any] = None,
+    authorship_stats: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     """Return ``content_modules`` list — **one module per LO or topic**.
 
@@ -2237,6 +2399,16 @@ def _build_content_modules_dynamic(
 
         module_title = topic["heading"]
 
+        # Anti-silent-template guard (ContentAuthorshipValidator): track
+        # whether THIS page's prose was actually authored by the LLM
+        # provider/router or silently fell back to the deterministic
+        # DART-paragraph floor. ``generator_mode`` alone only reflects that
+        # a provider object was *constructed*; a provider that fails at
+        # runtime (network / budget / parse miss) degrades to template
+        # content per-page without raising, and we must surface that.
+        _llm_mode = content_router is not None or content_provider is not None
+        _page_authored = False
+
         # Sections: built from the topic's paragraphs.
         section_role = "definition" if i == 0 else "explanation"
         sections = [_topic_to_section(topic, section_role=section_role)]
@@ -2265,6 +2437,7 @@ def _build_content_modules_dynamic(
                     block_key_terms = getattr(block, "key_terms", ()) or ()
                     if block_key_terms:
                         sections[0]["key_terms"] = list(block_key_terms)
+                    _page_authored = True
                 else:
                     logger.warning(
                         "content_router.route_all returned a Block with "
@@ -2355,6 +2528,7 @@ def _build_content_modules_dynamic(
                         # provider-authored terms identically to topic
                         # key terms.
                         sections[0]["key_terms"] = list(block_key_terms)
+                    _page_authored = True
                 else:
                     logger.warning(
                         "content_provider.generate_page returned a Block "
@@ -2375,6 +2549,10 @@ def _build_content_modules_dynamic(
 
         # Per-module misconceptions come from the linked topic.
         module_misconceptions = list(topic.get("extracted_misconceptions") or [])
+
+        if _llm_mode and authorship_stats is not None:
+            key = "llm_authored" if _page_authored else "template_fallback"
+            authorship_stats[key] = authorship_stats.get(key, 0) + 1
 
         modules.append({
             "title": module_title,

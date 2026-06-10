@@ -1,7 +1,7 @@
 """GPT Feedback v2 — Wave 1.6 end-of-wave per-objective-attribution gate.
 
 Authored 2026-05-06 against the closing 6-test gate enumerated in
-``plans/gpt-feedback-2-wave1.6-per-objective-attribution-2026-05.md`` § 4.
+the Wave 1.6 per-objective-attribution gate spec § 4.
 
 Predecessors landed:
 
@@ -44,8 +44,8 @@ Tests:
   ``action="regenerate"``; the decision-capture event signals
   ``unresolved_refs_count == 1``.
 * ``test_3_anti_silent_degradation_legacy_corpora_validate`` — pin
-  back-compat against the live archive at
-  ``LibV2/courses/rdf-shacl-551-2/objectives.json`` (``pytest.skip()``
+  back-compat against the first discovered LibV2 course's
+  ``objectives.json`` (``pytest.skip()``
   on a clean checkout): every CO entry validates clean against the
   bumped ``definitions.ComponentObjective``; every TO (no
   ``source_refs`` field) validates clean against bumped
@@ -446,13 +446,33 @@ def test_2_anti_silent_degradation_unresolved_ref_consistency_walk(
 # --------------------------------------------------------------------------- #
 
 
-_LEGACY_ARCHIVE_PATH = (
-    PROJECT_ROOT / "LibV2" / "courses" / "rdf-shacl-551-2" / "objectives.json"
-)
+def _discover_legacy_archive_path() -> "Path | None":
+    """First LibV2 course carrying an ``objectives.json``.
+
+    Resolves the LibV2 root via the ``ED4ALL_LIBV2_ROOT`` convention
+    (``lib.paths.libv2_path``) so the back-compat gate binds to whatever
+    archived corpus is on disk rather than a pinned course slug.
+    """
+    try:
+        from lib.paths import libv2_path
+
+        courses_root = libv2_path() / "courses"
+    except Exception:
+        courses_root = PROJECT_ROOT / "LibV2" / "courses"
+    if not courses_root.is_dir():
+        return None
+    for course in sorted(p for p in courses_root.iterdir() if p.is_dir()):
+        objectives = course / "objectives.json"
+        if objectives.exists():
+            return objectives
+    return None
+
+
+_LEGACY_ARCHIVE_PATH = _discover_legacy_archive_path()
 
 
 def test_3_anti_silent_degradation_legacy_corpora_validate() -> None:
-    """Plan §4 Test 3 — the live rdf-shacl-551-2 archive validates clean
+    """Test 3 — the live LibV2 archive validates clean
     against the W1.6.A bumped schema.
 
     Self-contained: reads the archive file directly, no fixture
@@ -461,12 +481,12 @@ def test_3_anti_silent_degradation_legacy_corpora_validate() -> None:
 
     Catches the regression class where a future schema author tightens
     the ``oneOf`` ``List[str]`` arm and silently breaks every existing
-    archive on the rdf-shacl-551-2 calibration corpus.
+    archive on the RDF/SHACL calibration corpus.
     """
-    if not _LEGACY_ARCHIVE_PATH.exists():
+    if _LEGACY_ARCHIVE_PATH is None or not _LEGACY_ARCHIVE_PATH.exists():
         pytest.skip(
-            f"legacy archive not present at {_LEGACY_ARCHIVE_PATH}; "
-            f"skipping back-compat gate (clean-checkout path)."
+            "no LibV2 course objectives.json present; "
+            "skipping back-compat gate (clean-checkout path)."
         )
     jsonschema = _require_jsonschema()
 
