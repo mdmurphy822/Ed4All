@@ -8,10 +8,12 @@ by Worker W3 in ``MCP/tools/pipeline_tools.py``:
   pre-W3 single-shot ``router.route(blk, tier="rewrite",
   source_chunks=[], objectives=[])`` short-circuit that broke the
   inter-tier seam).
-* The validator chain is resolved from the workflow YAML's
-  ``post_rewrite_validation`` phase via
-  ``_resolve_post_rewrite_validators``; absent workflow_type yields
-  ``[]`` (preserves pre-W3 semantics).
+* The rewrite loop passes ``validators=[]`` to
+  ``route_rewrite_with_remediation`` — in-loop remediation is OFF and
+  the standalone ``post_rewrite_validation`` phase owns validation
+  (operator decision 2026-06-09). The ``_resolve_post_rewrite_validators``
+  helper is retained for the unit tests below (absent workflow_type
+  yields ``[]``) but has no production caller.
 * ``source_chunks`` and ``objectives`` are rehydrated from the
   W2-persisted ``outline_chunks.json`` + ``outline_objectives.json``
   sidecars when the workflow_runner threads ``outline_chunks_path`` /
@@ -261,13 +263,29 @@ def test_rewrite_phase_threads_source_chunks_and_validators(
     ]
     # Objectives rehydrated from the sidecar (not the pre-W3 [] default).
     assert call["objectives"] == objectives_payload
-    # Validator chain resolved from the YAML post_rewrite_validation
-    # phase. The textbook_to_course workflow declares >= 1 validator
-    # (rewrite_curie_anchoring + content_type + page_objectives +
-    # source_refs + html_shape + source_grounding).
-    assert len(call["validators"]) >= 1, (
-        "Expected the textbook_to_course workflow's "
-        "post_rewrite_validation phase to declare at least one validator"
+    # 65b02cd production pivot: ``_run_content_generation_rewrite`` calls
+    # ``route_rewrite_with_remediation`` with hard-coded ``validators=[]``
+    # (pipeline_tools.py ~5049-5054). The in-loop validator chain is
+    # DELIBERATELY skipped — the rewrite tier authors every block from
+    # scratch as HTML, a backstop post-processes the Qwen output
+    # (canonical objective IDs + CURIE injection), and the separate
+    # ``post_rewrite_validation`` phase runs the YAML-declared validator
+    # chain on the corrected content afterwards. The sidecar-rehydration
+    # of source_chunks/objectives (asserted above) is the load-bearing
+    # wiring this test still proves.
+    #
+    # PRODUCT DECISION (operator, 2026-06-09): the dead in-loop call to
+    # ``_resolve_post_rewrite_validators`` (and its result variable) has
+    # been REMOVED from ``_run_content_generation_rewrite`` — in-loop
+    # remediation stays OFF and ``validators=[]`` is the contract; the
+    # standalone ``post_rewrite_validation`` phase owns validation. The
+    # helper ``_resolve_post_rewrite_validators`` (pipeline_tools.py
+    # ~3646) is RETAINED because it remains directly exercised by the unit
+    # tests below; it has no remaining production caller.
+    assert call["validators"] == [], (
+        "65b02cd: the rewrite loop passes validators=[] (in-loop "
+        "remediation skipped; post_rewrite_validation runs the chain "
+        f"instead). Got {call['validators']!r}"
     )
 
 
@@ -426,14 +444,29 @@ def test_rewrite_phase_consensus_fail_stamps_marker(tmp_path, monkeypatch):
     ), parsed
 
 
-def test_rewrite_phase_preserves_outline_escalation_marker(
+def test_rewrite_phase_routes_pre_escalated_block_and_preserves_marker(
     tmp_path, monkeypatch,
 ):
-    """Pre-existing escalation_marker on a block (set at the outline
-    tier) short-circuits through the rewrite loop unchanged — the
-    block rides through to the final list with the marker intact so
-    packaging persists it for re-execution."""
-    project_id = "TEST_W3_PRE_SKIP"
+    """65b02cd production pivot: a pre-escalated outline block is ROUTED
+    through the rewrite loop (NOT short-circuited) — the rewrite tier
+    authors it from scratch as HTML. The escalation_marker rides through
+    unchanged on disk so the audit trail records the outline-tier
+    escalation provenance, while the freshly-authored content lets the
+    block survive the W5 packaging filter.
+
+    Pinned behavior (verified by running the live handler):
+      * ``route_rewrite_with_remediation`` IS invoked for the pre-marked
+        block (the rewrite loop at pipeline_tools.py ~5044 iterates EVERY
+        outline block, marker-bearing or not).
+      * the rewritten block keeps ``escalation_marker=
+        "outline_budget_exhausted"`` (the remediation entry point does
+        not clear it; only content changes).
+      * because the rewrite produced non-empty content, the W5 filter
+        (pipeline_tools.py ~5127, ``escalation_marker is not None AND
+        empty content``) does NOT drop it — so the block_id lands in the
+        per-page HTML.
+    """
+    project_id = "TEST_W3_PRE_ROUTED"
     project_path = _seed_project(tmp_path, project_id)
     _patch_project_root(monkeypatch, tmp_path)
 
@@ -444,7 +477,7 @@ def test_rewrite_phase_preserves_outline_escalation_marker(
     )
     blocks_path = _seed_outline_blocks(project_path, [blk])
     sidecar_paths = _seed_outline_sidecars(
-        project_path, {}, [],
+        project_path, {blk.block_id: []}, [],
     )
 
     invoked: List[str] = []
@@ -452,7 +485,11 @@ def test_rewrite_phase_preserves_outline_escalation_marker(
 
     def fake_remediation(self, block, **kw):
         invoked.append(block.block_id)
-        return dataclasses.replace(block, content="<p>SHOULD NOT RUN</p>")
+        # Rewrite tier authors the escalated block from scratch as HTML
+        # (non-empty content), preserving the marker.
+        return dataclasses.replace(
+            block, content="<p>rewritten from scratch</p>",
+        )
 
     monkeypatch.setattr(
         _router_mod.CourseforgeRouter,
@@ -470,13 +507,15 @@ def test_rewrite_phase_preserves_outline_escalation_marker(
     payload = json.loads(result)
     assert payload["success"] is True, payload
 
-    # Router was NOT invoked for the pre-marked block.
-    assert invoked == [], (
-        f"Expected pre-marked outline block to short-circuit through "
-        f"the rewrite loop, but route_rewrite_with_remediation was "
-        f"invoked for {invoked}"
+    # Router WAS invoked for the pre-marked block — the rewrite loop
+    # authors every block, including escalated ones.
+    assert invoked == [blk.block_id], (
+        f"Expected the pre-escalated block to be routed through "
+        f"route_rewrite_with_remediation (65b02cd authors-from-scratch "
+        f"contract); got invoked={invoked!r}"
     )
-    # The marker is preserved on disk.
+
+    # The marker is preserved on disk on the rewritten block.
     blocks_final = Path(payload["blocks_final_path"])
     parsed = [
         json.loads(ln)
@@ -484,27 +523,50 @@ def test_rewrite_phase_preserves_outline_escalation_marker(
         if ln.strip()
     ]
     assert any(
-        entry.get("escalation_marker") == "outline_budget_exhausted"
+        entry.get("block_id") == blk.block_id
+        and entry.get("escalation_marker") == "outline_budget_exhausted"
         for entry in parsed
     ), parsed
 
+    # Because the rewrite produced non-empty content, the block survives
+    # the W5 packaging filter and lands in the per-page HTML.
+    page_paths = payload.get("page_paths") or []
+    assert page_paths, payload
+    assert any(
+        blk.block_id in Path(pp).read_text(encoding="utf-8")
+        for pp in page_paths
+    ), (
+        f"Rewritten escalated block_id={blk.block_id!r} (non-empty "
+        f"content) should be packaged into per-page HTML under the "
+        f"65b02cd contract, but it was not found in any page emit"
+    )
 
-def test_escalated_blocks_dropped_from_imscc(tmp_path, monkeypatch):
-    """W5: an escalated block (escalation_marker != None) is filtered
-    out of the per-page HTML emit and a ``block_packaging_skipped``
-    decision capture fires for the skip. The non-escalated sibling on
-    the same page rides through normally so the page itself is still
-    emitted."""
+
+def test_escalated_and_empty_blocks_dropped_from_imscc(tmp_path, monkeypatch):
+    """W5 under the 65b02cd contract: a block is dropped from the per-page
+    HTML emit ONLY when it carries an escalation_marker AND the rewrite
+    tier left its content empty (pipeline_tools.py ~5127 — the filter is
+    ``escalation_marker is not None AND not content.strip()``). A
+    ``block_packaging_skipped`` capture fires for that drop. A
+    non-escalated sibling on the same page rides through normally so the
+    page itself is still emitted.
+
+    The 65b02cd pivot means an escalated block whose rewrite DID produce
+    content is NOT dropped (see
+    test_rewrite_phase_routes_pre_escalated_block_and_preserves_marker);
+    this test exercises the escalated-AND-empty branch that is dropped.
+    """
     project_id = "TEST_W5_ESCALATION_FILTER"
     project_path = _seed_project(tmp_path, project_id)
     _patch_project_root(monkeypatch, tmp_path)
 
     # Two blocks on the same page: one carries an escalation_marker
-    # already (outline-tier), the second is fresh and will be rewritten
-    # cleanly.
+    # already (outline-tier) AND its rewrite leaves it empty (dropped),
+    # the second is fresh and will be rewritten cleanly (packaged).
     escalated_blk = dataclasses.replace(
         _make_block("week_01_content_01#objective_to-01_0"),
         escalation_marker="outline_budget_exhausted",
+        content="",
     )
     fresh_blk = _make_block(
         "week_01_content_01#objective_to-02_0",
@@ -524,6 +586,11 @@ def test_escalated_blocks_dropped_from_imscc(tmp_path, monkeypatch):
         self, block, *, validators=None, source_chunks=None,
         objectives=None, **kw,
     ):
+        # The escalated block stays empty after rewrite (consensus could
+        # not author it) → dropped by the W5 filter. The fresh sibling
+        # gets non-empty content → packaged.
+        if block.escalation_marker is not None:
+            return block  # unchanged: still empty content
         return dataclasses.replace(
             block, content="<p>fresh rewrite content</p>",
         )

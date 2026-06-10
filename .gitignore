@@ -103,6 +103,8 @@ state/runs/*
 !state/runs/.gitkeep
 state/gui/*
 !state/gui/.gitkeep
+# Operator working notes dropped at the state/ root (untracked scratch)
+state/nvidia_*
 
 runtime/
 
@@ -121,6 +123,8 @@ training-captures/orchestrator/*
 !training-captures/orchestrator/.gitkeep
 training-captures/libv2/*
 !training-captures/libv2/.gitkeep
+training-captures/decisions/*
+!training-captures/decisions/.gitkeep
 
 # MCP runtime
 MCP/runtime/
@@ -238,3 +242,6 @@ plans/
 # `:Zone.Identifier` alternate-data-stream sidecar that surfaces in the
 # Linux view as a separate file. These are never project content.
 *:Zone.Identifier
+
+# Local-only generated index maintained by the recurring review loop
+docs/MANIFEST.md

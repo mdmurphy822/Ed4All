@@ -6,7 +6,7 @@ Two contracts:
    ``class`` field on every emitted concept node, drawn from
    :func:`lib.ontology.concept_classifier.classify_concept`.
 2. The Wave 75 retroactive script
-   (``scripts/wave75_classify_concept_graph.py``) regenerates ``class``
+   (``scripts/archive/wave75_classify_concept_graph.py``) regenerates ``class``
    on a stub concept graph that lacks it, without dropping or merging
    nodes and without disturbing the edges.
 
@@ -155,7 +155,7 @@ def test_retroactive_regen_adds_class_to_every_node(tmp_path):
 
     # Import lazily so the script's REPO_ROOT side-effect doesn't fire
     # at module-collection time.
-    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "archive"))
     try:
         import wave75_classify_concept_graph as regen  # noqa: WPS433
     finally:
@@ -203,7 +203,7 @@ def test_retroactive_regen_dry_run_does_not_write(tmp_path):
     primary.write_text(json.dumps(payload), encoding="utf-8")
     pre_mtime = primary.stat().st_mtime
 
-    sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
+    sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "archive"))
     try:
         import wave75_classify_concept_graph as regen  # noqa: WPS433
     finally:

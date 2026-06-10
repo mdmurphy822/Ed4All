@@ -20,10 +20,11 @@ Five tests pin the operator-facing contract:
    quotes.
 
 Test fixtures use synthetic ``test:Foo`` CURIEs where structurally
-possible. The success-path test uses the real ``rdf-shacl-551-2``
-manifest and an existing ``sh:datatype`` entry only because the
-manifest must be loadable end-to-end; we ``--force-overwrite`` past
-the complete-skip and inject a synthetic provider response.
+possible. The success-path test uses a slug that resolves to the
+repo's ``rdf_shacl`` property manifest and an existing ``sh:datatype``
+entry only because the manifest must be loadable end-to-end; we
+``--force-overwrite`` past the complete-skip and inject a synthetic
+provider response.
 """
 
 from __future__ import annotations
@@ -161,7 +162,7 @@ def test_cli_rejects_unknown_curie():
                 "--curie",
                 "unknown:not_in_manifest",
                 "--course-code",
-                "rdf-shacl-551-2",
+                "rdf-shacl-demo",
                 "--provider",
                 "local",
             ]
@@ -211,7 +212,7 @@ def test_cli_skips_already_complete_without_force():
                 "--curie",
                 target_curie,
                 "--course-code",
-                "rdf-shacl-551-2",
+                "rdf-shacl-demo",
                 "--provider",
                 "local",
             ]
@@ -260,7 +261,7 @@ def test_cli_invokes_validator_and_exits_nonzero_on_violation():
                 "--curie",
                 target_curie,
                 "--course-code",
-                "rdf-shacl-551-2",
+                "rdf-shacl-demo",
                 "--provider",
                 "local",
                 "--force-overwrite",
@@ -312,7 +313,7 @@ def test_cli_renders_yaml_block_on_success():
                 "--curie",
                 target_curie,
                 "--course-code",
-                "rdf-shacl-551-2",
+                "rdf-shacl-demo",
                 "--provider",
                 "local",
                 "--force-overwrite",
@@ -453,7 +454,7 @@ def test_drafted_entry_carries_pending_review_provenance():
                 "--curie",
                 target_curie,
                 "--course-code",
-                "rdf-shacl-551-2",
+                "rdf-shacl-demo",
                 "--provider",
                 "local",
                 "--model",

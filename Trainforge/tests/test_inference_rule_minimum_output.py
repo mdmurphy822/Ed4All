@@ -1,6 +1,6 @@
 """Wave 82 regression tests for typed-edge inference rule outputs.
 
-Background: the deep audit on rdf-shacl-551-2 found 5 of 7 inference rules
+Background: the deep audit on the RDF/SHACL calibration corpus found 5 of 7 inference rules
 silently emitting zero edges in a shipped `concept_graph_semantic.json`
 while the same rule code, run against the same persisted inputs, produced
 the expected edge counts. The failure mode was orchestration-level
@@ -92,7 +92,7 @@ class TestDefinedByFromFirstMention:
     def test_many_nodes_one_edge_per_node_with_occurrences(self):
         # Regression for the audit's 0/424 failure: with 10 nodes all
         # carrying occurrences, we MUST get 10 edges. Anything less is a
-        # silent-zero regression of the kind that shipped on rdf-shacl-551-2.
+        # silent-zero regression of the kind that shipped on the RDF/SHACL calibration corpus.
         nodes = [
             {
                 "id": f"concept-{i:03d}",
@@ -142,7 +142,7 @@ class TestDerivedFromLoRef:
 
     def test_multiple_refs_per_chunk_produce_multiple_edges(self):
         # Regression for the audit's 0/969 failure: a chunk with N LO refs
-        # must produce N edges. The rdf-shacl-551 corpus averages 20.9 refs
+        # must produce N edges. The RDF/SHACL calibration corpus averages 20.9 refs
         # per chunk, so the "0 produced" outcome is exactly what this test
         # detects.
         chunks = [
@@ -184,7 +184,7 @@ class TestDerivedFromLoRef:
         assert edges[0]["source"] == "chunk_001"
 
     def test_corpus_scale_minimum_output(self):
-        # Pin: 100 chunks × 5 refs each = 500 edges. The rdf-shacl-551
+        # Pin: 100 chunks × 5 refs each = 500 edges. The RDF/SHACL calibration corpus
         # ratio is 295 × 20.9 ≈ 6,166 — anything that emits zero in this
         # shape is the audit's exact failure mode.
         chunks = [

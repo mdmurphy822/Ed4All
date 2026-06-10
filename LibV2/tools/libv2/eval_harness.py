@@ -11,13 +11,16 @@ Usage:
     report = evaluator.run_evaluation(eval_set_path)
 """
 
+import inspect
 import json
 import logging
+import resource
 import time
+import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .retriever import retrieve_chunks
 
@@ -335,7 +338,7 @@ def evaluate_retrieval(
     gold_queries_path: Optional[Path] = None,
     include_rationale: bool = True,
     metadata_scoring: bool = True,
-    k_values: tuple = (1, 5, 10),
+    k_values: tuple = (1, 3, 5, 10),
     retrieval_limit: int = 10,
     output_path: Optional[Path] = None,
 ) -> Dict:
@@ -739,6 +742,502 @@ def compare_retrieval_methods(
         "aggregate": final_aggregate,
         "per_query": per_query,
     }
+
+
+# ---------------------------------------------------------------------------
+# WS2 — BM25-vs-semantic benchmark harness
+# ---------------------------------------------------------------------------
+#
+# ``benchmark_retrieval_engines`` runs each retrieval engine over a course's
+# gold set and emits Recall@{1,3,5,10} + MRR + latency percentiles + memory +
+# per-question detail to ``retrieval_eval/benchmark_<ts>.json``. It is the
+# milestone-gate evidence that semantic retrieval beats the BM25 baseline.
+#
+# Engine invocation flows through the orthogonal ``engine=`` axis on
+# ``retrieve_chunks`` (the semantic retrieval path). That axis lands with a
+# parallel executor; this harness is import-guarded so it *fails honestly*
+# (a clear ``NotImplementedError`` naming the missing dependency) rather than
+# silently returning fake results when the semantic path is not yet wired.
+# The ``bm25`` engine needs no axis — it routes through the existing
+# ``method="bm25"`` boost preset.
+#
+# The GUI ``llm_rerank`` mode is LLM-backed and MUST NOT enter this harness
+# (the benchmark is a deterministic retrieval-vs-retrieval comparison with no
+# LLM-judge step); the engine allow-list below excludes it by construction.
+
+# Engines the benchmark accepts. ``llm_rerank`` is deliberately absent — it is
+# an LLM-backed mode and must not enter a deterministic retrieval benchmark.
+_BENCHMARK_ENGINES = ("bm25", "semantic", "hybrid-rrf")
+_LEXICAL_ENGINES = frozenset({"bm25", "lexical"})
+
+
+def _supports_engine_axis() -> Tuple[bool, str]:
+    """Return ``(available, reason)`` for the semantic ``engine=`` axis.
+
+    Import-guard: the semantic retrieval path (``engine="semantic"`` /
+    ``engine="hybrid-rrf"`` on ``retrieve_chunks``) lands with a parallel
+    executor. We probe two signals:
+
+    1. ``retrieve_chunks`` exposes an ``engine`` parameter, AND
+    2. ``LibV2.tools.libv2.semantic_retriever`` is importable.
+
+    When either is absent the harness raises ``NotImplementedError`` rather
+    than fabricating results (anti-silent-degradation).
+    """
+    try:
+        sig = inspect.signature(retrieve_chunks)
+    except (TypeError, ValueError):  # pragma: no cover — defensive
+        return False, "could not introspect retrieve_chunks signature"
+    if "engine" not in sig.parameters:
+        return (
+            False,
+            "retrieve_chunks does not yet accept an `engine` parameter "
+            "(the semantic retrieval path has not landed)",
+        )
+    try:
+        import importlib
+
+        importlib.import_module("LibV2.tools.libv2.semantic_retriever")
+    except Exception as exc:  # noqa: BLE001 — any import failure means unavailable
+        return (
+            False,
+            f"LibV2.tools.libv2.semantic_retriever is not importable: {exc}",
+        )
+    return True, ""
+
+
+def _retrieve_for_engine(
+    *,
+    repo_root: Path,
+    query: str,
+    course_slug: str,
+    engine: str,
+    limit: int,
+) -> Tuple[List[str], float, Optional[float]]:
+    """Run one query under ``engine``; return ``(chunk_ids, embed_ms, search_ms)``.
+
+    The lexical (``bm25``) arm routes through the long-standing
+    ``method="bm25"`` preset and reports a single wall-clock latency
+    (``embed_ms`` is the total, ``search_ms`` is ``None``). The semantic /
+    hybrid arms route through the ``engine=`` axis; their latency is reported
+    as a single wall-clock figure too (the embed/search split is exposed by
+    the retrieval path's rationale when available, but the harness does not
+    depend on it being present).
+    """
+    if engine in _LEXICAL_ENGINES:
+        t0 = time.perf_counter()
+        results = retrieve_chunks(
+            repo_root=repo_root,
+            query=query,
+            course_slug=course_slug,
+            limit=limit,
+            method="bm25",
+        )
+        wall_ms = (time.perf_counter() - t0) * 1000.0
+        return [r.chunk_id for r in results], wall_ms, None
+
+    # Semantic / hybrid — gated by the import guard.
+    available, reason = _supports_engine_axis()
+    if not available:
+        raise NotImplementedError(
+            f"benchmark engine {engine!r} requires the semantic retrieval "
+            f"`engine=` axis, which is unavailable: {reason}. Build the "
+            f"semantic index and ensure the semantic retrieval path is wired "
+            f"before benchmarking non-lexical engines. (No fake results are "
+            f"emitted.)"
+        )
+    t0 = time.perf_counter()
+    results = retrieve_chunks(
+        repo_root=repo_root,
+        query=query,
+        course_slug=course_slug,
+        limit=limit,
+        engine=engine,
+    )
+    wall_ms = (time.perf_counter() - t0) * 1000.0
+    return [r.chunk_id for r in results], wall_ms, None
+
+
+def _gold_questions_from_ws1(
+    gold_doc: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Project a WS1 gold-set doc into the harness's per-question shape.
+
+    Splits ``relevant_passages[]`` into a primary set (``relevance ==
+    "primary"`` — the headline-metric ground truth) and an any-relevant set
+    (primary + supporting). The chunk_id join is valid because the gold set
+    and the index both pin the same chunkset sha (enforced by the loader's
+    pin check upstream).
+    """
+    out: List[Dict[str, Any]] = []
+    for q in gold_doc.get("questions", []) or []:
+        if not isinstance(q, dict):
+            continue
+        passages = q.get("relevant_passages", []) or []
+        primary = [
+            str(p.get("chunk_id"))
+            for p in passages
+            if isinstance(p, dict) and p.get("relevance") == "primary"
+            and p.get("chunk_id")
+        ]
+        any_rel = [
+            str(p.get("chunk_id"))
+            for p in passages
+            if isinstance(p, dict) and p.get("chunk_id")
+        ]
+        out.append(
+            {
+                "question_id": q.get("question_id") or "",
+                "question_text": q.get("question_text") or "",
+                "question_type": q.get("question_type"),
+                "primary_chunk_ids": primary,
+                "any_relevant_chunk_ids": any_rel,
+            }
+        )
+    return out
+
+
+def _gold_questions_from_legacy(
+    gold_queries_path: Path,
+) -> List[Dict[str, Any]]:
+    """Project the legacy ``retrieval/gold_queries.jsonl`` shape (deprecated).
+
+    Each JSONL record: ``{"id", "query", "relevant_chunk_ids", "kind",
+    "notes"?}``. The legacy format has no primary/supporting distinction, so
+    every relevant chunk is treated as both primary and any-relevant.
+    """
+    out: List[Dict[str, Any]] = []
+    with gold_queries_path.open(encoding="utf-8") as fh:
+        for line_num, line in enumerate(fh, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"{gold_queries_path}:{line_num} — invalid JSON: {exc}"
+                ) from exc
+            relevant = [str(c) for c in (rec.get("relevant_chunk_ids") or [])]
+            out.append(
+                {
+                    "question_id": rec.get("id") or rec.get("query_id") or "",
+                    "question_text": rec.get("query") or rec.get("query_text") or "",
+                    "question_type": rec.get("kind"),
+                    "primary_chunk_ids": relevant,
+                    "any_relevant_chunk_ids": relevant,
+                }
+            )
+    return out
+
+
+def _resolve_gold_questions(
+    repo_root: Path,
+    course_slug: str,
+    gold_set_path: Optional[Path],
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Resolve gold questions, preferring the WS1 gold set, then legacy JSONL.
+
+    Returns ``(questions, source_label)``. Hard-errors on any critical WS1
+    gold-set issue (incl. the chunkset-sha pin mismatch WS2 is contracted to
+    enforce). Falls back to the legacy JSONL path with a deprecation warning
+    only when the WS1 gold set is absent / its loader is unavailable.
+    """
+    course_dir = repo_root / "courses" / course_slug
+
+    # Explicit override path: if the caller passed a JSON gold_set.json-shaped
+    # file, load it directly; if it's a .jsonl, treat as legacy.
+    if gold_set_path is not None:
+        gold_set_path = Path(gold_set_path)
+        if gold_set_path.suffix == ".jsonl":
+            return _gold_questions_from_legacy(gold_set_path), str(gold_set_path)
+
+    # Prefer the WS1 gold set (retrieval_eval/gold_set.json) via the loader.
+    try:
+        from lib.retrieval.gold_set import (  # type: ignore
+            has_critical_issues,
+            load_gold_set,
+        )
+
+        ws1_available = True
+    except Exception:  # noqa: BLE001 — WS1-B not merged yet
+        ws1_available = False
+
+    if ws1_available:
+        gold_doc, issues = load_gold_set(course_dir, verify=True)
+        if gold_doc:
+            if has_critical_issues(issues):
+                crit = [
+                    f"{i.code}: {i.message}"
+                    for i in issues
+                    if i.severity == "critical"
+                ]
+                raise ValueError(
+                    "WS1 gold set has critical issues — refusing to benchmark "
+                    "against a drifted/invalid gold set (the chunkset-sha pin "
+                    "and chunk_id joins must hold). Issues:\n  - "
+                    + "\n  - ".join(crit)
+                )
+            return (
+                _gold_questions_from_ws1(gold_doc),
+                str(course_dir / "retrieval_eval" / "gold_set.json"),
+            )
+        # gold_doc == {} → not found / unparseable; fall through to legacy.
+
+    # Legacy fallback (deprecated).
+    legacy_path = course_dir / "retrieval" / "gold_queries.jsonl"
+    if not legacy_path.exists():
+        raise FileNotFoundError(
+            f"no gold set found for {course_slug}: neither "
+            f"{course_dir / 'retrieval_eval' / 'gold_set.json'} (WS1) nor "
+            f"{legacy_path} (legacy) exists."
+        )
+    warnings.warn(
+        f"falling back to legacy gold queries at {legacy_path}; author a "
+        f"retrieval_eval/gold_set.json (WS1 schema) to use the primary/"
+        f"supporting relevance distinction.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return _gold_questions_from_legacy(legacy_path), str(legacy_path)
+
+
+def _recall_at_k(retrieved: List[str], relevant: Sequence[str], k: int) -> float:
+    """Fraction of ``relevant`` chunk ids appearing in the top-``k`` retrieved."""
+    relevant_set = set(relevant)
+    if not relevant_set:
+        return 0.0
+    top_k = set(retrieved[:k])
+    return len(relevant_set & top_k) / len(relevant_set)
+
+
+def _reciprocal_rank(retrieved: List[str], relevant: Sequence[str]) -> float:
+    relevant_set = set(relevant)
+    for rank, cid in enumerate(retrieved, start=1):
+        if cid in relevant_set:
+            return 1.0 / rank
+    return 0.0
+
+
+def _percentile(sorted_values: List[float], pct: float) -> float:
+    """Nearest-rank percentile (no interpolation — deterministic)."""
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = max(1, int(round((pct / 100.0) * len(sorted_values))))
+    rank = min(rank, len(sorted_values))
+    return sorted_values[rank - 1]
+
+
+def _index_size_bytes(repo_root: Path, course_slug: str) -> int:
+    """Total on-disk bytes of the course's vector_index/ artifacts (0 if absent)."""
+    index_dir = repo_root / "courses" / course_slug / "vector_index"
+    if not index_dir.exists():
+        return 0
+    total = 0
+    for p in index_dir.iterdir():
+        if p.is_file():
+            try:
+                total += p.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def benchmark_retrieval_engines(
+    repo_root: Path,
+    course_slug: str,
+    gold_set_path: Optional[Path] = None,
+    engines: Sequence[str] = ("bm25", "semantic"),
+    models: Optional[Sequence[str]] = None,
+    k_values: Sequence[int] = (1, 3, 5, 10),
+    retrieval_limit: int = 10,
+    output_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Benchmark each retrieval engine over a course's gold set.
+
+    Runs every engine in ``engines`` over the gold questions and emits
+    Recall@k (primary + any_relevant), MRR, latency percentiles, memory delta,
+    index size, and per-question detail. Writes ``retrieval_eval/
+    benchmark_<ts>.json`` (WS2 writes only ``benchmark_*`` siblings there —
+    never ``gold_set.json``).
+
+    Gold input resolution: the WS1 gold set
+    (``retrieval_eval/gold_set.json``) FIRST — via ``lib.retrieval.gold_set.
+    load_gold_set(verify=True)``, hard-erroring on any critical issue
+    (including the chunkset-sha pin mismatch) — then the legacy
+    ``retrieval/gold_queries.jsonl`` with a deprecation warning.
+
+    Engine invocation routes through the ``engine=`` axis (semantic / hybrid)
+    or the ``method="bm25"`` preset (lexical). Non-lexical engines raise
+    ``NotImplementedError`` (naming the missing dependency) when the semantic
+    retrieval path is not yet wired — no fake results are ever produced. The
+    GUI ``llm_rerank`` mode is excluded by construction.
+
+    Args:
+        models: when the semantic arm is benchmarked over multiple models, the
+            caller (CLI) is responsible for pre-building one index per model
+            into a temp suffix dir. The harness records the requested model
+            list in the report config; it does not itself orchestrate the
+            per-model index builds (that is wave-C CLI scope).
+
+    Returns the report dict (also written to ``output_path``).
+    """
+    repo_root = Path(repo_root)
+    k_values = tuple(int(k) for k in k_values)
+
+    bad_engines = [e for e in engines if e not in _BENCHMARK_ENGINES]
+    if bad_engines:
+        raise ValueError(
+            f"unknown benchmark engine(s) {bad_engines}; allowed: "
+            f"{list(_BENCHMARK_ENGINES)}. (The LLM-backed 'llm_rerank' mode is "
+            f"intentionally excluded from the deterministic benchmark.)"
+        )
+
+    questions, gold_source = _resolve_gold_questions(
+        repo_root, course_slug, gold_set_path
+    )
+    if not questions:
+        raise ValueError(
+            f"gold set for {course_slug} ({gold_source}) has no questions."
+        )
+
+    per_engine: Dict[str, Any] = {}
+    per_query_rows: List[Dict[str, Any]] = []
+
+    # Per-query rows accumulate one block per engine; build per-engine
+    # aggregates in a parallel pass.
+    engine_query_metrics: Dict[str, List[Dict[str, Any]]] = {e: [] for e in engines}
+
+    for q in questions:
+        qid = q["question_id"]
+        qtext = q["question_text"]
+        primary = q["primary_chunk_ids"]
+        any_rel = q["any_relevant_chunk_ids"]
+        row: Dict[str, Any] = {
+            "question_id": qid,
+            "question_text": qtext,
+            "question_type": q.get("question_type"),
+            "primary_chunk_ids": primary,
+            "any_relevant_chunk_ids": any_rel,
+            "engines": {},
+        }
+        for engine in engines:
+            retrieved, latency_ms, search_ms = _retrieve_for_engine(
+                repo_root=repo_root,
+                query=qtext,
+                course_slug=course_slug,
+                engine=engine,
+                limit=retrieval_limit,
+            )
+            primary_recall = {
+                k: _recall_at_k(retrieved, primary, k) for k in k_values
+            }
+            any_recall = {
+                k: _recall_at_k(retrieved, any_rel, k) for k in k_values
+            }
+            rr = _reciprocal_rank(retrieved, primary)
+            row["engines"][engine] = {
+                "retrieved_chunk_ids": retrieved,
+                "recall_at_k_primary": {
+                    str(k): round(primary_recall[k], 4) for k in k_values
+                },
+                "recall_at_k_any_relevant": {
+                    str(k): round(any_recall[k], 4) for k in k_values
+                },
+                "reciprocal_rank": round(rr, 4),
+                "latency_ms": round(latency_ms, 3),
+            }
+            engine_query_metrics[engine].append(
+                {
+                    "primary_recall": primary_recall,
+                    "any_recall": any_recall,
+                    "rr": rr,
+                    "latency_ms": latency_ms,
+                    "search_ms": search_ms,
+                }
+            )
+        per_query_rows.append(row)
+
+    n = len(questions)
+    for engine in engines:
+        rows = engine_query_metrics[engine]
+        latencies = sorted(r["latency_ms"] for r in rows)
+        recall_primary = {
+            k: round(sum(r["primary_recall"][k] for r in rows) / n, 4)
+            for k in k_values
+        }
+        recall_any = {
+            k: round(sum(r["any_recall"][k] for r in rows) / n, 4)
+            for k in k_values
+        }
+        mrr = round(sum(r["rr"] for r in rows) / n, 4) if n else 0.0
+        per_engine[engine] = {
+            "recall_at_k_primary": {str(k): recall_primary[k] for k in k_values},
+            "recall_at_k_any_relevant": {str(k): recall_any[k] for k in k_values},
+            "mrr": mrr,
+            "avg_latency_ms": round(sum(latencies) / len(latencies), 3)
+            if latencies
+            else 0.0,
+            "p50_latency_ms": round(_percentile(latencies, 50), 3),
+            "p95_latency_ms": round(_percentile(latencies, 95), 3),
+            "index_size_bytes": _index_size_bytes(repo_root, course_slug)
+            if engine not in _LEXICAL_ENGINES
+            else 0,
+        }
+
+    # Winner block: each semantic/hybrid arm vs the bm25 baseline.
+    winner: Dict[str, Any] = {}
+    if "bm25" in per_engine:
+        baseline = per_engine["bm25"]
+        for engine in engines:
+            if engine == "bm25":
+                continue
+            arm = per_engine[engine]
+            winner[engine] = {
+                "delta_recall_at_k_primary": {
+                    str(k): round(
+                        arm["recall_at_k_primary"][str(k)]
+                        - baseline["recall_at_k_primary"][str(k)],
+                        4,
+                    )
+                    for k in k_values
+                },
+                "delta_mrr": round(arm["mrr"] - baseline["mrr"], 4),
+            }
+
+    peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+    report: Dict[str, Any] = {
+        "course_slug": course_slug,
+        "benchmark_timestamp": datetime.now().isoformat(),
+        "gold_source": gold_source,
+        "config": {
+            "engines": list(engines),
+            "models": list(models) if models else None,
+            "k_values": list(k_values),
+            "retrieval_limit": retrieval_limit,
+            "total_questions": n,
+        },
+        "per_engine": per_engine,
+        "winner": winner,
+        "peak_rss_bytes": int(peak_rss),
+        "per_query": per_query_rows,
+    }
+
+    if output_path is None:
+        results_dir = repo_root / "courses" / course_slug / "retrieval_eval"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = results_dir / f"benchmark_{ts}.json"
+    else:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as fh:
+        json.dump(report, fh, indent=2)
+    report["output_path"] = str(output_path)
+    return report
 
 
 if __name__ == "__main__":

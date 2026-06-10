@@ -17,7 +17,7 @@ Design tenets:
 Examples
 --------
 
-    ed4all libv2 generate-study-pack --slug rdf-shacl-550-rdf-shacl-550 --week 7
+    ed4all libv2 generate-study-pack --slug demo-course-1 --week 7
     ed4all libv2 generate-study-pack --slug X --week 7 --include-exercises
     ed4all libv2 generate-study-pack --slug X --week 7 --lesson-plan
     ed4all libv2 generate-study-pack --slug X --week 7 --format html
@@ -104,7 +104,7 @@ def _parse_difficulties(spec: Optional[str]) -> Optional[List[str]]:
     required=True,
     help=(
         "LibV2 course slug. Resolves to LibV2/courses/<slug>/. "
-        "Example: rdf-shacl-550-rdf-shacl-550."
+        "Example: demo-course-1."
     ),
 )
 @click.option(

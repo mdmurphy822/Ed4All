@@ -12,6 +12,8 @@ crashing at import time.
 
 from __future__ import annotations
 
+import os
+
 import click
 
 from gui import DEFAULT_HOST, DEFAULT_PORT
@@ -27,8 +29,23 @@ from gui import DEFAULT_HOST, DEFAULT_PORT
     show_default=True,
     help="Enable uvicorn autoreload (development only).",
 )
+@click.option(
+    "--learner",
+    "learner",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help=(
+        "Serve ONLY the learner answer surface (/learn/ + /api/learn/*); the "
+        "operator SPA and settings/uploads/runs/courses/retrieval APIs are not "
+        "mounted. Env fallback: ED4ALL_GUI_LEARNER=1. For moderated pilot "
+        "sessions only — the GUI has no auth, so keep the loopback bind."
+    ),
+)
 @click.pass_context
-def gui_command(ctx: click.Context, host: str, port: int, reload: bool) -> None:
+def gui_command(
+    ctx: click.Context, host: str, port: int, reload: bool, learner: bool
+) -> None:
     """Launch the Ed4All control-plane GUI (FastAPI + uvicorn).
 
     Serves the SPA at ``http://<host>:<port>/`` and the REST/WebSocket API under
@@ -66,8 +83,24 @@ def gui_command(ctx: click.Context, host: str, port: int, reload: bool) -> None:
     else:
         chosen = pick_port(host, port)
 
+    # ``ed4all gui`` always launches via the import-string factory
+    # (``gui.app:create_app``, ``factory=True``) so uvicorn can reload it; the
+    # factory takes no args from an import string, so the learner-only choice
+    # rides the environment (the factory honors ``ED4ALL_GUI_LEARNER``). The CLI
+    # flag OR a pre-set truthy env both select learner mode.
+    env_learner = os.environ.get("ED4ALL_GUI_LEARNER", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    learner_mode = learner or env_learner
+    if learner_mode:
+        os.environ["ED4ALL_GUI_LEARNER"] = "1"
+
     url = f"http://{host}:{chosen}/"
-    click.echo(f"Starting Ed4All control-plane GUI on {url}")
+    surface = "learner-only" if learner_mode else "operator + learner"
+    click.echo(f"Starting Ed4All control-plane GUI ({surface}) on {url}")
     uvicorn.run(
         "gui.app:create_app",
         host=host,

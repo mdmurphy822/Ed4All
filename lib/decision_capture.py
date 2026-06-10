@@ -46,7 +46,8 @@ from .constants import (
     VALIDATE_DECISIONS,
 )
 from .libv2_storage import LibV2Storage
-from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR
+from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR  # noqa: F401  back-compat re-export
+from .paths import get_training_captures_dir
 
 
 def _coerce_record_field(value: Any) -> Any:
@@ -320,8 +321,38 @@ class DecisionCapture:
         # ``phase=None`` is permitted by the canonical decision-event schema —
         # route to ``phase_unknown`` so tool-level captures (e.g. orchestrator
         # phase_start emits before a phase has been selected) don't crash.
+        #
+        # The legacy mirror root is resolved at construction time. NOTE:
+        # ``ED4ALL_LIBV2_ROOT`` does NOT govern ``training-captures/`` — the
+        # mirror lives at the project root, not under LibV2, so it needs its
+        # own override. The repo-root conftest autouse isolation fixture sets
+        # ``ED4ALL_TRAINING_CAPTURES_DIR`` to tmp so a pytest run that exercises
+        # any LLM call path no longer grows the real ``training-captures/`` tree
+        # by thousands of files.
+        #
+        # Resolution precedence:
+        #   1. ``ED4ALL_TRAINING_CAPTURES_DIR`` env var (autouse isolation;
+        #      env vars also propagate to subprocess-spawned writers).
+        #   2. ``get_training_captures_dir()`` — reads ``lib.paths.TRAINING_DIR``
+        #      at call time, so a session-level monkeypatch of the default
+        #      constant is honored.
+        #
+        # The module-level ``LEGACY_TRAINING_DIR`` global is retained as a
+        # back-compat re-export only; it is deliberately NOT consulted here.
+        # (A "was-it-patched?" heuristic was tried and reverted: a test that
+        # ``importlib.reload``-s this module INSIDE an active
+        # ``mock.patch('...LEGACY_TRAINING_DIR')`` context — see
+        # ``lib/tests/test_decision_capture_logging.py`` — leaves the global
+        # pointing at the pre-reload REAL path after the patch's restore,
+        # which the heuristic misread as a deliberate redirect to the real
+        # tree.)
+        env_captures = os.environ.get("ED4ALL_TRAINING_CAPTURES_DIR", "").strip()
+        if env_captures:
+            legacy_training_dir = Path(env_captures)
+        else:
+            legacy_training_dir = get_training_captures_dir()
         normalized_phase = phase.replace("_", "-") if phase else "unknown"
-        self.legacy_output_dir = LEGACY_TRAINING_DIR / tool / course_code / f"phase_{normalized_phase}"
+        self.legacy_output_dir = legacy_training_dir / tool / course_code / f"phase_{normalized_phase}"
         self.legacy_output_dir.mkdir(parents=True, exist_ok=True)
 
         # Phase 0 Hardening: Also write to run-specific decisions path

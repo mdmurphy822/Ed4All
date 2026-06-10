@@ -78,8 +78,62 @@ These are the providers that actually produce paraphrased training pairs. Each r
 | `local` (Phi-3.5 mini) | `phi3.5:3.8b-mini-instruct-q4_K_M` | MIT | N/A | **Yes** | Smallest OSS option |
 | `COURSEFORGE_BLOCK_ROUTING_PATH=Courseforge/config/block_routing.license_clean.yaml` | n/a (router-level YAML; large tier defaults to `qwen2.5:32b-instruct-q4_K_M`) | Apache 2.0 (when `large` resolves to local Qwen) | n/a (your hardware) — or Together AI ToS when `large` is swapped to a hosted Apache-2.0 OSS model | **Yes** | **Recommended for ToS-clean Courseforge two-pass** runs. Sibling YAML override that swaps the canonical `large` capability tier (`claude-sonnet-4-6`) for a local 32B Qwen. See `docs/operations/license-clean-run.md` for the 4-env-var deployment recipe and the calibration prerequisite for `assessment_item` distractor quality. |
 
+## Embedding providers (retrieval-index embeddings)
+
+The `ED4ALL_EMBEDDING_*` family (root `CLAUDE.md` § "Cross-cutting flags")
+selects the embedding backend used to build the on-device retrieval vector
+index. **These embeddings are NOT training-data synthesis** — they index
+existing corpus chunks for nearest-neighbor retrieval; no paraphrased
+instruction/preference pairs are produced. The maintenance contract still
+requires a row per provider/model-selecting flag, so they are documented here
+in their own table. All candidates are Apache-2.0 / MIT; no cloud embedding
+provider exists in the registry (Phase IA is local-only — no network call in the
+query path, ever).
+
+| Flag/value | Default model | Model license | ToS layer | Notes |
+|------------|---------------|---------------|-----------|-------|
+| `ED4ALL_EMBEDDING_PROVIDER=st` | `BAAI/bge-large-en-v1.5` | MIT | N/A (local in-process) | retrieval-index embeddings; in-process `sentence-transformers`; not training-data synthesis; default re-pinned from the 2026-06-10 4-model benchmark |
+| `ED4ALL_EMBEDDING_PROVIDER=local-openai` | `nomic-embed-text` (Ollama) | Apache 2.0 | N/A (your hardware) | OpenAI-compatible `/v1/embeddings` against a local server (Ollama / vLLM / llama.cpp) |
+| `ED4ALL_EMBEDDING_PROVIDER=fake` | deterministic hash vectors | N/A | N/A | test-only; production index load refused without `ED4ALL_EMBEDDING_ALLOW_FAKE` |
+| benchmark candidate | `BAAI/bge-large-en-v1.5` | MIT | N/A (local in-process) | strong en-only baseline (D5 benchmark arm) — **selected 2026-06-10** (hybrid-rrf winner; now the `st` default above) |
+| benchmark candidate | `Alibaba-NLP/gte-large-en-v1.5` | Apache 2.0 | N/A (local in-process) | requires `trust_remote_code=True` (executes HF model code) — droppable candidate |
+| benchmark candidate | `nomic-ai/nomic-embed-text-v1.5` | Apache 2.0 | N/A (local in-process) | also Ollama-servable; needs `search_query:` / `search_document:` task prefixes |
+| benchmark candidate | `Qwen/Qwen3-Embedding-0.6B` | Apache 2.0 | N/A (local in-process) | documented stretch candidate |
+| smoke baseline | `sentence-transformers/all-MiniLM-L6-v2` | Apache 2.0 | N/A (local in-process) | already cached; CI real-model smoke + floor baseline only |
+
+The default model pin (`BAAI/bge-large-en-v1.5`, re-pinned 2026-06-10 from the
+4-model benchmark) remains re-pinnable from future benchmark results — a
+one-line registry change in `lib/embedding/providers.py::_EMBEDDING_PROVIDERS`
+plus an update to this table's default row.
+
+## Grounded-answer provider (runtime inference — not training data)
+
+The `ED4ALL_ANSWER_*` family (root `CLAUDE.md` § "Cross-cutting flags") selects
+the local model that composes a passage-constrained answer to a learner's
+question at query time. **These outputs are NOT training data** — they are
+ephemeral learner answers (runtime Q&A inference), never paraphrased into the
+SLM corpus. The maintenance contract still requires a row per provider/model-
+selecting flag, so they are documented here.
+
+The answer path has **no cloud arm by design** (FERPA posture, $0 marginal cost,
+fully offline). Resolution reads the W-D12 `_OPENAI_COMPATIBLE_PROVIDERS`
+registry but enforces that the resolved `base_url` host is loopback; a non-
+loopback resolution raises `AnswerProviderNotLocal`. There is no escape-hatch
+env for cloud answer routing. Any future *additional local* provider entry must
+land with a row here.
+
+| Flag/value | Default model | Model license | ToS layer | Training-data permitted | Recommended use |
+|------------|---------------|---------------|-----------|-------------------------|-----------------|
+| `ED4ALL_ANSWER_PROVIDER=local` | `qwen2.5:14b-instruct-q4_K_M` (via `ED4ALL_ANSWER_MODEL` → `LOCAL_SYNTHESIS_MODEL`) | Apache 2.0 | N/A (your hardware; loopback-enforced) | N/A — runtime Q&A inference; outputs are ephemeral learner answers, never corpus content | **Only permitted value in Phase IA.** Non-loopback resolution raises `AnswerProviderNotLocal`. |
+
 ### Citation links (verbatim)
 
+- BAAI/bge-m3 LICENSE (MIT): https://huggingface.co/BAAI/bge-m3/blob/main/README.md
+- BAAI/bge-large-en-v1.5 LICENSE (MIT): https://huggingface.co/BAAI/bge-large-en-v1.5
+- Alibaba-NLP/gte-large-en-v1.5 LICENSE (Apache 2.0): https://huggingface.co/Alibaba-NLP/gte-large-en-v1.5
+- nomic-ai/nomic-embed-text-v1.5 LICENSE (Apache 2.0): https://huggingface.co/nomic-ai/nomic-embed-text-v1.5
+- Qwen3-Embedding LICENSE (Apache 2.0): https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
+- all-MiniLM-L6-v2 LICENSE (Apache 2.0): https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
 - Anthropic Consumer Terms: https://www.anthropic.com/legal/consumer-terms
 - Anthropic Commercial Terms: https://www.anthropic.com/legal/commercial-terms
 - OpenAI Services Terms: https://openai.com/policies/services-terms/

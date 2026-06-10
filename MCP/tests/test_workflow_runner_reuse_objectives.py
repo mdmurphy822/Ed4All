@@ -165,6 +165,69 @@ class TestSynthesizeReuseOutput:
         assert config["status"] == "planned"
         assert config["course_name"] == "TEST_101"
 
+    def test_backfills_dart_chunk_lo_refs(
+        self, runner_stub, project_dir, courseforge_reuse_file, tmp_path
+    ):
+        """Phase-ordering fix (Option A1) companion: a reuse run must
+        back-fill ``learning_outcome_refs`` onto the on-disk DART chunkset
+        (the live course_planning path does this at its tail; the reuse
+        path short-circuits that, so the synthesizer calls the backfill
+        helper directly). Without it the reused chunks keep empty LO refs
+        and the downstream concept graph degrades.
+        """
+        # The reuse synthesizer derives the slug as
+        # course_name.lower().replace("_","-") -> "test-101".
+        libv2_root = tmp_path / "libv2"
+        chunks_path = (
+            libv2_root / "courses" / "test-101" / "dart_chunks" / "chunks.jsonl"
+        )
+        chunks_path.parent.mkdir(parents=True, exist_ok=True)
+        chunks_path.write_text(
+            json.dumps({
+                "id": "test_chunk_00001",
+                "text": "TO-01 foundations: this chunk references CO-01 too.",
+                "learning_outcome_refs": [],
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        params = {
+            "reuse_objectives_path": str(courseforge_reuse_file),
+            "course_name": "TEST_101",
+            "libv2_root": str(libv2_root),
+        }
+        out = runner_stub._synthesize_course_planning_reuse_output(
+            params, _build_phase_outputs(project_dir),
+        )
+        assert out is not None
+
+        # The chunk's text mentions TO-01 + CO-01 (both in the reuse
+        # objective_ids allowlist) → backfill populates learning_outcome_refs.
+        refreshed = json.loads(chunks_path.read_text(encoding="utf-8").strip())
+        assert set(refreshed.get("learning_outcome_refs") or []) >= {
+            "TO-01", "CO-01"
+        }, (
+            "reuse backfill must populate learning_outcome_refs from the "
+            "chunk text against the reuse objective_ids allowlist; got "
+            f"{refreshed.get('learning_outcome_refs')!r}"
+        )
+
+    def test_backfill_failure_does_not_break_reuse_output(
+        self, runner_stub, project_dir, courseforge_reuse_file
+    ):
+        """The backfill is best-effort: with no LibV2 chunks file present
+        (libv2_root unset → default in-tree, no test course dir), the
+        reuse synthesizer must still return a valid phase output."""
+        params = {
+            "reuse_objectives_path": str(courseforge_reuse_file),
+            "course_name": "TEST_101",
+        }
+        out = runner_stub._synthesize_course_planning_reuse_output(
+            params, _build_phase_outputs(project_dir),
+        )
+        assert out is not None
+        assert out["_completed"] is True
+
     def test_returns_none_when_no_project_path(
         self, runner_stub, courseforge_reuse_file
     ):

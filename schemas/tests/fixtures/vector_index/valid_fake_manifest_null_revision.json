@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "embedding_provider": "fake",
+  "embedding_kind": "fake",
+  "embedding_model_id": "fake-deterministic-v1",
+  "embedding_model_revision": null,
+  "embedding_dim": 32,
+  "normalized": true,
+  "index_type": "exact-numpy",
+  "chunker_version": "v4",
+  "chunkset_kind": "dart",
+  "source_chunks_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "embeddings_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "id_map_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "chunks_count": 5,
+  "text_field_policy": "text+heading",
+  "batch_size": 8,
+  "device": "cpu"
+}

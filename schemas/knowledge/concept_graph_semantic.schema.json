@@ -45,6 +45,22 @@
         "properties": {
           "id": {"type": "string"},
           "label": {"type": "string"},
+          "class": {
+            "type": "string",
+            "enum": [
+              "DomainConcept",
+              "AssessmentOption",
+              "InstructionalArtifact",
+              "LowSignal",
+              "Chunk",
+              "Outcome",
+              "ComponentObjective",
+              "Misconception",
+              "Module",
+              "BloomLevel"
+            ],
+            "description": "Node class stamped at authoring time. The canonical node-typing field consumed by lib/validators/kg_quality.py's coverage denominator (DomainConcept-or-classless = concept vocabulary) and lib/validators/libv2/packet_integrity.py's edge-endpoint typing contract. Concept nodes minted by lib/ontology/cooccurrence_graph.py carry one of the four concept sub-classes via lib/ontology/concept_classifier.py (DomainConcept / AssessmentOption / InstructionalArtifact / LowSignal); endpoint nodes materialized by Trainforge/rag/typed_edge_inference.py::_materialize_endpoint_nodes carry the structural / pedagogical classes (Chunk for chunk + synthetic-question endpoints, Outcome / ComponentObjective for TO-/CO- learning-objective endpoints, Misconception for mc_* endpoints). Enum mirrors lib/validators/libv2/_packet_integrity_severity.py::EDGE_CLASS_SYNONYMS canonical targets + the concept_classifier sub-classes. Optional + additive: legacy graphs whose nodes predate the classifier wiring lack this field and continue to validate (the coverage denominator treats a classless node as concept vocabulary)."
+          },
           "frequency": {"type": "integer", "minimum": 0},
           "run_id": {
             "type": "string",
@@ -68,6 +84,11 @@
             "type": "array",
             "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
             "description": "Wave 10: optional array of DART/Courseforge source references for this concept. Populated at graph-build time by copying source.source_references[] from occurrences[0] (the first chunk by sorted-ID ordering from Wave 5). Absence = 'unknown' (pre-Wave-9 corpora, or a concept whose first occurrence chunk carries no source refs). Lets consumers answer 'what source(s) introduce this concept' without a two-hop chunk dereference."
+          },
+          "node_provenance": {
+            "type": "string",
+            "enum": ["lo_key_concept"],
+            "description": "Marks a node materialized from an external vocabulary rather than minted from chunk concept_tags. 'lo_key_concept': synthesized by typed_edge_inference._materialize_endpoint_nodes for an unresolved targets-concept target (objectives key_concepts slug, canonical_slug-normalized). frequency=0 by construction. Lets kg metrics / retrieval consumers segment LO-authored concepts from chunk-derived ones. Optional — legacy graphs validate without it."
           }
         }
       }
@@ -143,19 +164,19 @@
           },
           "edge_status": {
             "type": "string",
-            "enum": ["pending", "confirmed", "contradicted", "retracted"],
-            "description": "GPT-feedback-12-may item 2: cross-rule consensus verdict computed by lib/aggregators/edge_consensus.py::EdgeConsensusAggregator. 'pending' = no other rule confirmed or contradicted this edge over the same (source, target) pair; 'confirmed' = at least one rule in the rule's confirming-rules set fired for the same pair; 'contradicted' = another rule fired the opposite direction (circular-prerequisite, A is-a B AND B is-a A, etc.); 'retracted' = a later NLI extension (TRAINFORGE_EDGE_NLI=true) marked the edge contradicted by source text. Schema-additive: legacy edges without this field still validate (optional)."
+            "enum": ["pending", "supported", "confirmed", "contradicted", "retracted"],
+            "description": "GPT-feedback-12-may item 2 (v2 cross-stratum triangulation redesign): consensus verdict computed by lib/aggregators/edge_consensus.py::EdgeConsensusAggregator. Graded tiers, strongest verdict wins: 'contradicted' = another rule fired the opposite direction (hard cycle: circular-prerequisite / A is-a B AND B is-a A) OR a soft conflict (T1 LO-order disagrees with first-mention text order); 'retracted' = a later NLI extension (TRAINFORGE_EDGE_NLI=true) marked the edge contradicted by source text, OR the opt-in 'retract' arm of TRAINFORGE_CONTRADICTED_EDGE_POLICY re-statused a contradicted edge (the edge is retained, never deleted — provenance/replay preserved — and still counts toward contradiction_rate); the complementary 'decay' arm leaves edge_status='contradicted' but attenuates the edge's confidence in place (idempotent via the additive consensus_confidence_decayed sentinel); 'confirmed' = a same-pair confirming rule fired OR a cross-stratum triangulation closed (T1 text-order corroboration, T2 chunk-LO assesses/derived triangle, T3 LO-chunk-concept triangle); 'supported' = a soft co-location corroboration (T4: two co-occurring concepts whose first-mention chunks overlap) that strengthens but does not confirm — counted in supported_rate, never in consensus_rate; 'pending' = no signal. Schema-additive: legacy edges without this field still validate (optional)."
           },
           "consensus_signals": {
             "type": "array",
-            "description": "GPT-feedback-12-may item 2: per-edge cross-rule signals computed by EdgeConsensusAggregator. One entry per OTHER rule (or NLI extension) that fired over the same node pair (directed for asymmetric edge types; undirected for related-to / is-a). Empty list = no overlap = 'pending' edge_status. Schema-additive: legacy edges without this field still validate (optional).",
+            "description": "GPT-feedback-12-may item 2 (v2): per-edge cross-rule / cross-stratum signals computed by EdgeConsensusAggregator. One entry per same-pair confirming/contradicting rule, same-rule reverse-direction cycle, cross-stratum triangulation detector (T1 prerequisite x text-order, T2 assesses x derived chunk-LO triangle, T3 LO-chunk-concept triangle, T4 related-to co-location), or NLI extension that fired for this edge. 'support' signals are the soft co-location tier; 'agree'/'disagree' are the confirm/contradict tiers. Empty list = no overlap = 'pending' edge_status. Schema-additive: legacy edges without this field still validate (optional).",
             "items": {
               "type": "object",
               "required": ["other_rule", "signal"],
               "additionalProperties": true,
               "properties": {
                 "other_rule": {"type": "string", "minLength": 1},
-                "signal": {"type": "string", "enum": ["agree", "disagree"]},
+                "signal": {"type": "string", "enum": ["agree", "disagree", "support"]},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 "detail": {"type": "string"}
               }

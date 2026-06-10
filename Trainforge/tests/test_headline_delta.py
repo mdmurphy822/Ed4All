@@ -50,7 +50,7 @@ def test_compute_headline_delta_basic():
     )
     out = compute_headline_delta(
         report,
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         holdout_hash="a" * 64,
         scoring_commit="b" * 40,
     )
@@ -72,13 +72,13 @@ def test_headline_sentence_contains_required_tokens():
     )
     out = compute_headline_delta(
         report,
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         holdout_hash="a" * 64,
         scoring_commit="b" * 40,
     )
     sentence = out["headline_sentence"]
     assert "ED4ALL-Bench v1.0" in sentence
-    assert "ed4all-bench/rdf-shacl-551-2" in sentence
+    assert "ed4all-bench/demo-course-1" in sentence
     assert "a" * 64 in sentence
     assert "b" * 40 in sentence
     # Hallucination reduction shows as 80%

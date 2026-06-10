@@ -1,11 +1,11 @@
 """Wave 74 cleanup — LibV2 archival chunks-freshness gate.
 
-Bug observed (2026-04-24): ``trainforge_assessment`` phase failed
-(parameter mapping bug — separate fix), but ``libv2_archival`` ran
-anyway and stamped a fresh archive at ``LibV2/courses/rdf-shacl-550/``.
-Inside, ``chunks.jsonl`` contained 32 ``smoke_sample_rag_chunk_*`` lines
-from an April 22 prior run. Somehow a stale archive's chunks survived
-into the newly-created archive at this slug.
+Bug observed (2026-04-24) on the RDF/SHACL calibration corpus:
+``trainforge_assessment`` phase failed (parameter mapping bug —
+separate fix), but ``libv2_archival`` ran anyway and stamped a fresh
+archive. Inside, ``chunks.jsonl`` contained 32 ``smoke_sample_rag_chunk_*``
+lines from an April 22 prior run. Somehow a stale archive's chunks
+survived into the newly-created archive at this slug.
 
 The fix in ``MCP/tools/pipeline_tools.py`` does two things:
 
@@ -52,7 +52,7 @@ def test_freshness_absent_when_no_file(tmp_path):
     chunks = tmp_path / "chunks.jsonl"
     result = _check_chunks_freshness(
         chunks_path=chunks,
-        course_name="RDF_SHACL_550",
+        course_name="DEMO_101",
         run_start_ts=time.time(),
         had_prior_chunks=False,
     )
@@ -66,7 +66,7 @@ def test_freshness_fresh_when_mtime_ge_run_start(tmp_path):
     run_start = time.time() - 1.0
     result = _check_chunks_freshness(
         chunks_path=chunks,
-        course_name="RDF_SHACL_550",
+        course_name="DEMO_101",
         run_start_ts=run_start,
         had_prior_chunks=False,
     )
@@ -76,8 +76,8 @@ def test_freshness_fresh_when_mtime_ge_run_start(tmp_path):
 def test_freshness_fresh_when_id_prefix_matches(tmp_path):
     chunks = tmp_path / "chunks.jsonl"
     chunks.write_text(
-        '{"id":"rdf_shacl_550_chunk_00001","text":"x"}\n'
-        '{"id":"rdf_shacl_550_chunk_00002","text":"y"}\n'
+        '{"id":"demo_101_chunk_00001","text":"x"}\n'
+        '{"id":"demo_101_chunk_00002","text":"y"}\n'
     )
     # Push mtime to the past so the prefix check is the deciding signal.
     past = time.time() - 3600
@@ -85,7 +85,7 @@ def test_freshness_fresh_when_id_prefix_matches(tmp_path):
     _os.utime(chunks, (past, past))
     result = _check_chunks_freshness(
         chunks_path=chunks,
-        course_name="RDF_SHACL_550",
+        course_name="DEMO_101",
         run_start_ts=time.time(),
         had_prior_chunks=False,
     )
@@ -106,12 +106,12 @@ def test_freshness_stale_when_prefix_mismatched_and_old(tmp_path):
     _os.utime(chunks, (past, past))
     result = _check_chunks_freshness(
         chunks_path=chunks,
-        course_name="RDF_SHACL_550",
+        course_name="DEMO_101",
         run_start_ts=time.time(),
         had_prior_chunks=True,
     )
     assert result["status"] == "stale", result
-    assert result["expected_prefix"] == "rdf_shacl_550_chunk_"
+    assert result["expected_prefix"] == "demo_101_chunk_"
     assert "smoke_sample_rag" in result["observed_prefixes"]
 
 
@@ -123,7 +123,7 @@ def test_freshness_absent_when_empty_file(tmp_path):
     _os.utime(chunks, (past, past))
     result = _check_chunks_freshness(
         chunks_path=chunks,
-        course_name="RDF_SHACL_550",
+        course_name="DEMO_101",
         run_start_ts=time.time(),
         had_prior_chunks=False,
     )
@@ -133,8 +133,8 @@ def test_freshness_absent_when_empty_file(tmp_path):
 def test_chunk_id_prefix_normalises_dashes(tmp_path):
     """When callers pass a slug-shaped name, the prefix uses underscores
     (matching what Trainforge actually writes)."""
-    assert _course_chunk_id_prefix("RDF_SHACL_550") == "rdf_shacl_550_chunk_"
-    assert _course_chunk_id_prefix("rdf-shacl-550") == "rdf_shacl_550_chunk_"
+    assert _course_chunk_id_prefix("DEMO_101") == "demo_101_chunk_"
+    assert _course_chunk_id_prefix("demo-101") == "demo_101_chunk_"
     assert _course_chunk_id_prefix("MAT 101") == "mat_101_chunk_"
     assert _course_chunk_id_prefix("") == ""
 
@@ -160,11 +160,11 @@ async def test_libv2_archival_fails_when_chunks_stale(isolated_archive):
     must fail with TRAINFORGE_OUTPUT_STALE — and the prior chunks must
     NOT be preserved silently in the new archive."""
     archive, root = isolated_archive
-    course_name = "RDF_SHACL_550"
-    slug = "rdf-shacl-550"
+    course_name = "DEMO_101"
+    slug = "demo-101"
     course_dir = root / "LibV2" / "courses" / slug
 
-    # Prime the LibV2 destination with prior-run chunks (the rdf-shacl-550
+    # Prime the LibV2 destination with prior-run chunks (the demo-101
     # leak shape: smoke_sample_rag_chunk_* IDs from an April 22 run).
     (course_dir / "corpus").mkdir(parents=True)
     prior_chunks = course_dir / "corpus" / "chunks.jsonl"
@@ -208,7 +208,7 @@ async def test_libv2_archival_fails_when_chunks_stale(isolated_archive):
 
     assert result.get("success") is False, result
     assert result.get("error_code") == "TRAINFORGE_OUTPUT_STALE", result
-    assert result.get("expected_prefix") == "rdf_shacl_550_chunk_"
+    assert result.get("expected_prefix") == "demo_101_chunk_"
     # Manifest must NOT have been written — the gate refuses before the
     # manifest dump.
     assert not (course_dir / "manifest.json").exists(), (
@@ -222,8 +222,8 @@ async def test_libv2_archival_succeeds_when_chunks_fresh(isolated_archive):
     """Happy path regression guard: when Trainforge produces chunks
     matching the current course_code, archival writes the manifest."""
     archive, root = isolated_archive
-    course_name = "RDF_SHACL_550"
-    slug = "rdf-shacl-550"
+    course_name = "DEMO_101"
+    slug = "demo-101"
     course_dir = root / "LibV2" / "courses" / slug
 
     # Set up a Trainforge dir with fresh, course-matching chunks.
@@ -232,8 +232,8 @@ async def test_libv2_archival_succeeds_when_chunks_fresh(isolated_archive):
     (tf / "corpus").mkdir(parents=True)
     fresh = tf / "corpus" / "chunks.jsonl"
     fresh.write_text(
-        '{"id":"rdf_shacl_550_chunk_00001","text":"x"}\n'
-        '{"id":"rdf_shacl_550_chunk_00002","text":"y"}\n'
+        '{"id":"demo_101_chunk_00001","text":"x"}\n'
+        '{"id":"demo_101_chunk_00002","text":"y"}\n'
     )
 
     result_raw = await archive(
@@ -254,7 +254,7 @@ async def test_libv2_archival_succeeds_when_chunks_fresh(isolated_archive):
     # Chunk IDs match the current course code, confirming we copied the
     # *fresh* file rather than preserving anything stale.
     head = archived_chunks.read_text().splitlines()[0]
-    assert json.loads(head)["id"].startswith("rdf_shacl_550_chunk_")
+    assert json.loads(head)["id"].startswith("demo_101_chunk_")
 
 
 @pytest.mark.asyncio
@@ -295,8 +295,8 @@ async def test_libv2_archival_drops_prior_chunks_before_copy(isolated_archive):
     before the copy block runs — so a re-run never silently preserves
     last week's chunks under the same slug."""
     archive, root = isolated_archive
-    course_name = "RDF_SHACL_550"
-    slug = "rdf-shacl-550"
+    course_name = "DEMO_101"
+    slug = "demo-101"
     course_dir = root / "LibV2" / "courses" / slug
 
     # Plant a prior-run chunks file at the destination.

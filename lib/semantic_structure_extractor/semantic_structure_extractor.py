@@ -627,8 +627,8 @@ class SemanticStructureExtractor:
 
         Plan §1 / §9: the three-stage LLM synthesis architecture needs
         the FULL chapter prose, not the sparse structural
-        ``content_blocks`` (which carry ~1.9 KB total per chapter on the
-        OpenStax algebra corpus — a sliver of the real 10-30 pages of
+        ``content_blocks`` (which carry ~1.9 KB total per chapter on a
+        real single-file algebra textbook — a sliver of the real 10-30 pages of
         prose). This method walks the document's headings in order and,
         for each chapter / section, accumulates the verbatim text of
         every element appearing AFTER that heading and BEFORE the next

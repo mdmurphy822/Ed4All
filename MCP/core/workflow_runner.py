@@ -117,6 +117,23 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
             "phase_outputs", "objective_extraction", "textbook_structure_path",
         ),
         "libv2_root": ("workflow_params", "libv2_root"),
+        # Objectives resolution candidate #1: the --reuse-objectives JSON
+        # so a reuse run pins the LO-dependent typed-edge rules
+        # (prerequisite_from_lo_order, targets_concept_from_lo) to the
+        # operator's verbatim objectives doc. Mirrors the YAML routing at
+        # config/workflows.yaml::concept_extraction.
+        "objectives_path": ("workflow_params", "reuse_objectives_path"),
+        # Objectives resolution candidate #2 (fresh-run path): the
+        # synthesized_objectives.json emitted by course_planning. The
+        # phase-ordering fix (Option A1) moved concept_extraction to run
+        # AFTER course_planning, so fresh runs without --reuse-objectives
+        # now get a real learning_outcomes ordering here (the
+        # LO-dependent typed-edge rules fire and the
+        # concept_objective_linker can populate keyConcepts[]). Mirrors
+        # the YAML routing at config/workflows.yaml::concept_extraction.
+        "synthesized_objectives_path": (
+            "phase_outputs", "course_planning", "synthesized_objectives_path",
+        ),
     },
     "course_planning": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
@@ -131,16 +148,11 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "source_module_map_path": (
             "phase_outputs", "source_mapping", "source_module_map_path",
         ),
-        # Phase 6 ST 16 / Phase 8 ST 5: route the concept-graph path
-        # emitted by ``concept_extraction`` so the planner's two-stage
-        # linker populates ``LearningObjective.keyConcepts[]`` from
-        # ``concept_graph_semantic.json`` before persistence. Mirrors
-        # the YAML routing at config/workflows.yaml::course_planning;
-        # the legacy dict is consulted as a fallback when YAML lookup
-        # misses (see ``_get_phase_param_routing``).
-        "concept_graph_path": (
-            "phase_outputs", "concept_extraction", "concept_graph_path",
-        ),
+        # Phase-ordering fix (Option A1): the concept_graph_path route was
+        # deleted here. course_planning now runs BEFORE concept_extraction,
+        # so the concept graph does not exist yet at planning time. The
+        # concept_objective_linker pass that populated keyConcepts[] moved
+        # into _run_concept_extraction (which now runs after planning).
     },
     "content_generation": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
@@ -325,6 +337,9 @@ _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "content_generation": [
         "project_id", "content_paths", "page_paths", "content_dir",
         "weeks_prepared",
+        # Anti-silent-template guard provenance (ContentAuthorshipValidator).
+        "generator_mode", "template_fallback_fired",
+        "content_generation_provenance_path",
     ],
     # Phase 3 Subtask 5: two-pass router phase output declarations.
     # The outline tier emits a Block-list JSON sidecar (no HTML body);
@@ -1014,6 +1029,23 @@ class WorkflowRunner:
                     phase_out = {**phase_out, "_completed": False}
                 phase_outputs[phase_name] = phase_out
 
+        # Resume restoration: when this is a --resume run, ``phase_outputs``
+        # was reloaded from the persisted workflow-state JSON above. A
+        # phase can be persisted as ``_completed=True`` while carrying an
+        # EMPTY (or partial) extracted-output dict — e.g. when a prior run
+        # marked the phase complete but ``_extract_phase_outputs`` captured
+        # nothing (no COMPLETE task results, or a crash between checkpoint-
+        # complete and state-save). Those completed phases are skipped by
+        # the loop's ``_completed`` guard below, so their canonical output
+        # keys are never re-derived and downstream phases (content gates,
+        # ``imscc_chunking`` reading ``packaging.package_path``) find empty
+        # inputs and fail. Reconstruct the missing keys from on-disk
+        # artifacts BEFORE the loop runs. Strictly additive: only fills
+        # keys absent from the recorded dict, never overwrites, and is a
+        # no-op on a fresh (non-resume) run where ``phase_outputs`` is
+        # empty.
+        self._restore_resume_phase_outputs(phase_outputs)
+
         # Update workflow status
         workflow_state["status"] = "RUNNING"
         workflow_state["started_at"] = datetime.now().isoformat()
@@ -1156,6 +1188,72 @@ class WorkflowRunner:
 
             # Extract outputs from results
             extracted = self._extract_phase_outputs(phase_name, results)
+
+            # Anti-zombie guard: refuse to stamp ``_completed=True`` on a
+            # non-optional phase that dispatched at least one task, had
+            # ZERO of those tasks return a COMPLETE (success) result, AND
+            # produced no canonical output keys. Pre-guard such phases
+            # were persisted as ``_completed=True, keys=[]`` (the real
+            # motivating run: a ``content_generation`` checkpoint with
+            # ``tasks_completed: []`` + failed tasks). On ``--resume``
+            # those empty-completed phases are skipped, starving every
+            # downstream phase that needs a canonical key (content gates,
+            # ``imscc_chunking`` needing ``packaging.package_path``). We
+            # treat the phase as FAILED so the workflow stops here and a
+            # later resume re-runs it instead of silently advancing.
+            #
+            # Carefully scoped so it does NOT fire on legitimate
+            # no-output phases:
+            #   * Validator-only phases (``agents: []`` → synthesised
+            #     ``phase-handler`` task) that PASS their gates emit a
+            #     COMPLETE result with no canonical keys — keyed on a
+            #     COMPLETE result existing, those still complete.
+            #   * Optional phases (``optional: true``, e.g.
+            #     ``training_synthesis``) are excluded outright; they may
+            #     be skipped/empty by design.
+            #   * Phases that ran zero tasks (pure gate-chain phases) are
+            #     excluded — there is nothing that "failed".
+            #   * Gate failures are handled by the existing fail path
+            #     below; this guard only covers the dispatched-but-all-
+            #     failed-with-no-output case.
+            any_task_succeeded = any(
+                r.status == "COMPLETE" for r in results.values()
+            )
+            has_canonical_output = bool(extracted)
+            if (
+                not getattr(phase, "optional", False)
+                and len(tasks) > 0
+                and not any_task_succeeded
+                and not has_canonical_output
+            ):
+                logger.error(
+                    "phase %s marked failed: zero successful tasks and no "
+                    "outputs (dispatched=%d, complete=0, keys=[]); refusing "
+                    "to stamp _completed to avoid a passed-but-no-artifact "
+                    "zombie that would be skipped on --resume",
+                    phase_name,
+                    len(tasks),
+                )
+                # Persist the phase as explicitly NOT completed so a
+                # later resume re-runs it rather than skipping it.
+                extracted["_completed"] = False
+                extracted["_gates_passed"] = gates_passed
+                extracted["_gate_results"] = list(gate_results or [])
+                phase_outputs[phase_name] = extracted
+                workflow_state["phase_outputs"] = phase_outputs
+                self._save_workflow_state(workflow_path, workflow_state)
+                all_results[phase_name] = {
+                    "task_count": len(tasks),
+                    "completed": 0,
+                    "failed": sum(
+                        1 for r in results.values()
+                        if r.status in ("ERROR", "TIMEOUT", "FAILED")
+                    ),
+                    "gates_passed": gates_passed,
+                }
+                final_status = "FAILED"
+                break
+
             extracted["_completed"] = True
             extracted["_gates_passed"] = gates_passed
             # Worker W5: stash the per-phase gate_results chain so the
@@ -1278,6 +1376,27 @@ class WorkflowRunner:
             phase_outputs=phase_outputs,
         )
 
+        # NVIDIA-KG item 3 (GPT-fb-12-may item 2 mirror): post-loop
+        # edge-consensus aggregator. The ``concept_extraction`` phase
+        # stamps ``edge_status`` + ``consensus_signals[]`` at authoring
+        # time (``_run_concept_extraction``), but semantic graphs that
+        # land via OTHER routes (the process_course / IMSCC path writing
+        # ``<libv2_course>/graph/concept_graph_semantic.json``, or
+        # pre-fix corpora under ``concept_graph/``) reach workflow end
+        # un-stamped. Walk both layouts under the LibV2 course dir,
+        # stamp any un-stamped graph in place, and write the sibling
+        # ``edge_consensus_report.json``. Deterministic (cross-rule
+        # matrix only — no LLM; NLI stays off unless
+        # ``TRAINFORGE_EDGE_NLI``). Already-stamped graphs with an
+        # existing sibling report are skipped untouched (idempotent
+        # safety with the authoring-time wiring). Best-effort —
+        # aggregator failure does NOT alter ``final_status``.
+        edge_consensus_report_paths = self._maybe_write_edge_consensus_reports(
+            workflow_id=workflow_id,
+            workflow_params=workflow_params,
+            phase_outputs=phase_outputs,
+        )
+
         # GPT Feedback v2 Wave 3 (W3.G): post-loop master promotion-chain
         # aggregator (governance G1). Walks all 9 arrows of the
         # DART -> eval-report chain, reads each per-stage report best-
@@ -1312,6 +1431,11 @@ class WorkflowRunner:
             ),
             "coverage_map_path": (
                 str(coverage_map_path) if coverage_map_path else None
+            ),
+            "edge_consensus_report_paths": (
+                [str(p) for p in edge_consensus_report_paths]
+                if edge_consensus_report_paths
+                else None
             ),
             "promotion_chain_report_path": (
                 str(promotion_chain_path) if promotion_chain_path else None
@@ -1722,6 +1846,199 @@ class WorkflowRunner:
                 workflow_id, exc,
             )
             return None
+
+    def _maybe_write_edge_consensus_reports(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> List[Path]:
+        """NVIDIA-KG item 3 helper — stamp edge consensus on landed graphs.
+
+        Mirror of the authoring-time wiring in
+        ``MCP/tools/pipeline_tools.py::_run_concept_extraction`` for
+        semantic graphs that exist on disk at workflow end but were NOT
+        authored by that phase (process_course / IMSCC path, pre-fix
+        corpora). LibV2 courses carry the semantic graph under BOTH
+        layouts — ``graph/concept_graph_semantic.json`` (process_course
+        route, e.g. the RDF/SHACL calibration corpus) and
+        ``concept_graph/concept_graph_semantic.json``
+        (``_run_concept_extraction`` route) — and some courses carry
+        both, so every existing candidate is handled.
+
+        Candidate-graph resolution priority:
+
+        1. ``phase_outputs.libv2_archival.course_dir`` — the canonical
+           LibV2 course root; probe ``graph/`` + ``concept_graph/``
+           subdirs.
+        2. ``phase_outputs.concept_extraction.concept_graph_path`` —
+           direct path emitted by the concept_extraction phase (covers
+           partial runs that stop before ``libv2_archival``).
+
+        Per-graph behaviour (each graph fails soft independently):
+
+        - Un-stamped (any dict edge missing a non-None ``edge_status``)
+          → ``EdgeConsensusAggregator.apply_to_graph`` stamps in place
+          (idempotent + deterministic per its contract; cross-rule
+          matrix only, no LLM, NLI off unless ``TRAINFORGE_EDGE_NLI``),
+          the graph is re-serialized with the pipeline convention
+          (``indent=2, ensure_ascii=False``), and the sibling
+          ``edge_consensus_report.json`` is (re)written so report and
+          graph agree.
+        - Fully stamped + sibling report present → skipped untouched
+          (no byte/mtime churn; the report's ``generated_at`` would
+          otherwise drift on every re-run). This is the idempotency
+          contract with the authoring-time wiring.
+        - Fully stamped but report missing → only the sibling report is
+          written; the graph file is not rewritten.
+
+        Returns the list of sibling-report paths that now exist for the
+        handled graphs (written this run or pre-existing-and-skipped).
+        Best-effort posture matches the other post-loop aggregators:
+        any failure logs a warning and never fails the workflow.
+        """
+        report_paths: List[Path] = []
+        try:
+            # Local import to keep the workflow_runner import-time
+            # dependency surface unchanged (matches the sibling
+            # aggregator helpers above).
+            from lib.aggregators.edge_consensus import EdgeConsensusAggregator
+
+            # ----------------------------------------------------------
+            # Resolve candidate semantic-graph paths (both layouts).
+            # ----------------------------------------------------------
+            candidates: List[Path] = []
+            seen: set = set()
+
+            def _add_candidate(path: Path) -> None:
+                try:
+                    key = path.resolve()
+                except OSError:
+                    key = path
+                if key in seen:
+                    return
+                seen.add(key)
+                if path.is_file():
+                    candidates.append(path)
+
+            archival = phase_outputs.get("libv2_archival") or {}
+            course_dir_str = archival.get("course_dir")
+            if course_dir_str:
+                for subdir in ("graph", "concept_graph"):
+                    _add_candidate(
+                        Path(course_dir_str)
+                        / subdir
+                        / "concept_graph_semantic.json"
+                    )
+
+            ce = phase_outputs.get("concept_extraction") or {}
+            ce_graph_str = ce.get("concept_graph_path")
+            if ce_graph_str:
+                _add_candidate(Path(ce_graph_str))
+
+            if not candidates:
+                logger.debug(
+                    "edge_consensus: no concept_graph_semantic.json "
+                    "resolvable from libv2_archival.course_dir / "
+                    "concept_extraction.concept_graph_path; skipping "
+                    "aggregator (run_id=%s)",
+                    workflow_id,
+                )
+                return report_paths
+
+            course_code = (workflow_params or {}).get("course_name") or ""
+            course_slug = ce.get("course_slug") or course_code
+
+            for graph_path in candidates:
+                # Per-graph fail-soft: one corrupt graph must not stop
+                # the sibling layout from being stamped.
+                try:
+                    try:
+                        graph = json.loads(
+                            graph_path.read_text(encoding="utf-8")
+                        )
+                    except (OSError, json.JSONDecodeError) as exc:
+                        logger.warning(
+                            "edge_consensus: failed to read/parse %s "
+                            "(non-fatal, run_id=%s): %s",
+                            graph_path, workflow_id, exc,
+                        )
+                        continue
+                    if not isinstance(graph, dict):
+                        continue
+                    edges = graph.get("edges")
+                    if not isinstance(edges, list) or not edges:
+                        logger.debug(
+                            "edge_consensus: %s carries no edges; "
+                            "skipping (run_id=%s)",
+                            graph_path, workflow_id,
+                        )
+                        continue
+
+                    dict_edges = [e for e in edges if isinstance(e, dict)]
+                    fully_stamped = bool(dict_edges) and all(
+                        e.get("edge_status") is not None for e in dict_edges
+                    )
+                    report_path = (
+                        graph_path.parent / "edge_consensus_report.json"
+                    )
+
+                    if fully_stamped and report_path.is_file():
+                        # Idempotency contract: already stamped by the
+                        # authoring-time wiring (or a prior run) AND the
+                        # sibling report exists — leave both untouched.
+                        logger.debug(
+                            "edge_consensus: %s already stamped with "
+                            "sibling report; no-op (run_id=%s)",
+                            graph_path, workflow_id,
+                        )
+                        report_paths.append(report_path)
+                        continue
+
+                    aggregator = EdgeConsensusAggregator(
+                        semantic_graph_path=graph_path,
+                        course_slug=course_slug,
+                        run_id=workflow_id,
+                    )
+
+                    if not fully_stamped:
+                        # apply_to_graph is idempotent + deterministic
+                        # (lib/aggregators/edge_consensus.py contract;
+                        # pinned by test #6 in its test suite), so
+                        # re-stamping a partially-stamped graph is safe.
+                        aggregator.apply_to_graph(graph)
+                        graph_path.write_text(
+                            json.dumps(graph, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+
+                    # write() re-reads the (now stamped) on-disk graph so
+                    # the report and the graph agree — same ordering as
+                    # the authoring-time wiring.
+                    written = aggregator.write(report_path)
+                    if written is not None:
+                        report_paths.append(written)
+                        logger.info(
+                            "edge_consensus: %s %s; wrote %s "
+                            "(run_id=%s, course_slug=%s)",
+                            "stamped" if not fully_stamped
+                            else "already stamped",
+                            graph_path, written, workflow_id, course_slug,
+                        )
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    logger.warning(
+                        "edge_consensus aggregator failed for %s "
+                        "(non-fatal, run_id=%s): %s",
+                        graph_path, workflow_id, exc,
+                    )
+            return report_paths
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "edge_consensus aggregator failed (non-fatal, run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return report_paths
 
     def _route_params(
         self,
@@ -2457,6 +2774,44 @@ class WorkflowRunner:
 
         objective_ids = [str(e["id"]) for e in lo_entries if e.get("id")]
         joined_ids = ",".join(objective_ids)
+
+        # Phase-ordering fix (Option A1) companion: back-fill
+        # learning_outcome_refs on the on-disk DART chunkset for reuse
+        # runs too. On a live (non-reuse) course_planning,
+        # _plan_course_structure runs this same backfill at its tail; the
+        # reuse path short-circuits that helper, so without this call the
+        # reused chunks keep empty learning_outcome_refs and the
+        # downstream concept_extraction graph degrades to the
+        # related_to-dominated shape. Best-effort: a failure logs a
+        # warning and does not change the synthesized phase output.
+        try:
+            from MCP.tools.pipeline_tools import (
+                _backfill_dart_chunk_lo_refs as _backfill_lo_refs,
+            )
+
+            # Match the slug derivation used by _plan_course_structure's
+            # live backfill (NOT lib.ontology.slugs.canonical_slug, which
+            # strips hyphens differently) so we re-open the same
+            # <libv2>/courses/<slug>/dart_chunks/chunks.jsonl the chunking
+            # phase wrote.
+            course_slug = (
+                str(course_name or "")
+                .lower()
+                .replace("_", "-")
+                .replace(" ", "-")
+            )
+            if course_slug and objective_ids:
+                _backfill_lo_refs(
+                    course_slug=course_slug,
+                    objective_ids=objective_ids,
+                    libv2_root=workflow_params.get("libv2_root"),
+                )
+        except Exception as e:  # noqa: BLE001 — best-effort, never block reuse
+            logger.warning(
+                "reuse_objectives: DART chunk LO-ref backfill failed "
+                "(non-fatal): %s",
+                e,
+            )
 
         logger.info(
             "reuse_objectives: synthesised course_planning phase_output "
@@ -3386,6 +3741,251 @@ class WorkflowRunner:
             failed_count, escalated_count,
         )
         return report_path
+
+    # Canonical output keys that, when ALL absent from a recorded
+    # ``_completed`` phase output, signal the resume-restoration pass
+    # should attempt to reconstruct that phase's outputs from disk.
+    # Mirrors the load-bearing ``inputs_from`` consumers downstream: a
+    # phase whose declared keys are all missing cannot satisfy any
+    # downstream ``phase_outputs`` reference.
+    _RESUME_RESTORE_REQUIRED_KEYS: Dict[str, List[str]] = {
+        "objective_extraction": ["project_id", "project_path"],
+        "staging": ["staging_dir"],
+        "source_mapping": ["source_module_map_path"],
+        "course_planning": ["synthesized_objectives_path"],
+        "content_generation": ["content_dir"],
+        "content_generation_rewrite": ["content_dir"],
+        "packaging": ["package_path"],
+    }
+
+    def _restore_resume_phase_outputs(
+        self, phase_outputs: Dict[str, Dict],
+    ) -> None:
+        """Backfill missing output keys for resumed ``_completed`` phases.
+
+        Mutates ``phase_outputs`` in place. For each phase already marked
+        ``_completed=True`` whose recorded dict is MISSING all of its
+        canonical required output keys (see
+        ``_RESUME_RESTORE_REQUIRED_KEYS``), reconstruct those keys from
+        on-disk artifacts under the Courseforge project export +
+        the LibV2 course dir and merge them in — filling ONLY keys that
+        are absent (never overwriting a recorded value).
+
+        Backward-compatibility contract:
+
+        * No-op on a fresh (non-resume) run: ``phase_outputs`` is empty,
+          so the loop body never executes.
+        * No-op when every ``_completed`` phase already carries its
+          required keys (the normal happy-resume path): nothing is
+          reconstructed.
+        * Best-effort: a phase whose artifacts are missing / unreadable
+          is left exactly as recorded (warning-logged); the loop's
+          ``_dependencies_met`` check then surfaces the gap as a normal
+          dependency failure rather than a silent inconsistency.
+        """
+        if not phase_outputs:
+            return
+
+        # Identify completed phases whose required keys are all missing.
+        needs_restore = []
+        for phase_name, required in self._RESUME_RESTORE_REQUIRED_KEYS.items():
+            recorded = phase_outputs.get(phase_name)
+            if not isinstance(recorded, dict):
+                continue
+            if not recorded.get("_completed"):
+                continue
+            # Only restore when EVERY required key is absent or empty —
+            # i.e. the recorded dict carries no usable routing signal for
+            # this phase. A partially-populated dict is left untouched to
+            # avoid clobbering a real (if sparse) prior extraction.
+            if all(not recorded.get(k) for k in required):
+                needs_restore.append(phase_name)
+
+        if not needs_restore:
+            return
+
+        # Resolve the project export root from the (possibly partial)
+        # objective_extraction output. Without it we cannot reconstruct
+        # any Courseforge-export-rooted artifact.
+        project_path = self._resolve_courseforge_project_path(phase_outputs)
+        if project_path is None or not project_path.is_dir():
+            logger.warning(
+                "resume restore: %d completed phase(s) missing output "
+                "keys but no resolvable project_path; leaving as-is "
+                "(phases=%s)",
+                len(needs_restore), needs_restore,
+            )
+            return
+
+        logger.info(
+            "resume restore: reconstructing on-disk outputs for "
+            "completed-but-empty phase(s): %s (project=%s)",
+            needs_restore, project_path,
+        )
+
+        reconstructed = self._reconstruct_resume_outputs(
+            project_path, needs_restore,
+        )
+
+        for phase_name in needs_restore:
+            recon = reconstructed.get(phase_name)
+            if not recon:
+                logger.warning(
+                    "resume restore: could not reconstruct outputs for "
+                    "phase '%s' from %s; leaving as-is (downstream "
+                    "dependency check will surface the gap)",
+                    phase_name, project_path,
+                )
+                continue
+            recorded = phase_outputs[phase_name]
+            # Fill only ABSENT keys; never overwrite recorded values or
+            # the existing ``_completed`` / ``_gates_passed`` markers.
+            for key, value in recon.items():
+                if key.startswith("_"):
+                    continue
+                if not recorded.get(key):
+                    recorded[key] = value
+            recorded["_resume_restored"] = True
+            logger.info(
+                "resume restore: backfilled phase '%s' keys=%s",
+                phase_name,
+                sorted(k for k in recon if not k.startswith("_")),
+            )
+
+    def _reconstruct_resume_outputs(
+        self, project_path: Path, phases: List[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Reconstruct per-phase output dicts from the project export.
+
+        Best-effort, read-only. Returns ``{phase_name: {key: value}}``
+        for whichever phases could be reconstructed; absent phases are
+        simply omitted. Never raises (per-phase failures are
+        warning-logged and skipped).
+        """
+        out: Dict[str, Dict[str, Any]] = {}
+
+        config_data: Dict[str, Any] = {}
+        config_path = project_path / "project_config.json"
+        if config_path.exists():
+            try:
+                config_data = json.loads(
+                    config_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as e:
+                logger.warning(
+                    "resume restore: project_config.json unreadable at "
+                    "%s: %s", config_path, e,
+                )
+        course_name = config_data.get("course_name") or ""
+        project_id = config_data.get("project_id") or project_path.name
+
+        # ----- objective_extraction --------------------------------------
+        if "objective_extraction" in phases:
+            entry: Dict[str, Any] = {
+                "project_id": project_id,
+                "project_path": str(project_path),
+            }
+            ts = (
+                project_path / "01_learning_objectives"
+                / "textbook_structure.json"
+            )
+            if ts.exists():
+                entry["textbook_structure_path"] = str(ts)
+            out["objective_extraction"] = entry
+
+        # ----- staging ---------------------------------------------------
+        if "staging" in phases:
+            staging_dir_str = config_data.get("staging_dir")
+            if staging_dir_str and Path(staging_dir_str).is_dir():
+                staging_dir = Path(staging_dir_str)
+                staged = sorted(str(p) for p in staging_dir.glob("*.html"))
+                out["staging"] = {
+                    "staging_dir": str(staging_dir),
+                    "staged_files": staged,
+                    "file_count": len(staged),
+                }
+
+        # ----- source_mapping --------------------------------------------
+        if "source_mapping" in phases:
+            smap = project_path / "source_module_map.json"
+            if smap.exists():
+                out["source_mapping"] = {
+                    "source_module_map_path": str(smap),
+                }
+
+        # ----- course_planning -------------------------------------------
+        if "course_planning" in phases:
+            synth = (
+                project_path / "01_learning_objectives"
+                / "synthesized_objectives.json"
+            )
+            if synth.exists():
+                entry = {
+                    "project_id": project_id,
+                    "synthesized_objectives_path": str(synth),
+                }
+                # Recover objective_ids best-effort so downstream
+                # trainforge_assessment routing resolves.
+                try:
+                    sdata = json.loads(synth.read_text(encoding="utf-8"))
+                    ids: List[str] = []
+                    for grp in ("terminal_objectives", "chapter_objectives"):
+                        for o in sdata.get(grp) or []:
+                            if isinstance(o, dict) and o.get("id"):
+                                ids.append(o["id"])
+                            elif isinstance(o, dict) and isinstance(
+                                o.get("objectives"), list
+                            ):
+                                for sub in o["objectives"]:
+                                    if isinstance(sub, dict) and sub.get("id"):
+                                        ids.append(sub["id"])
+                    if ids:
+                        entry["objective_ids"] = ids
+                except (OSError, ValueError):
+                    pass
+                out["course_planning"] = entry
+
+        # ----- content_generation / content_generation_rewrite -----------
+        content_dir = project_path / "03_content_development"
+        for cg_phase in ("content_generation", "content_generation_rewrite"):
+            if cg_phase in phases and content_dir.is_dir():
+                pages = sorted(str(p) for p in content_dir.glob("**/*.html"))
+                if pages:
+                    out[cg_phase] = {
+                        "project_id": project_id,
+                        "content_dir": str(content_dir),
+                        "content_paths": pages,
+                        "page_paths": pages,
+                    }
+
+        # ----- packaging -------------------------------------------------
+        if "packaging" in phases:
+            final_dir = project_path / "05_final_package"
+            pkg: Optional[Path] = None
+            if final_dir.is_dir():
+                # Prefer the course-named .imscc; fall back to any .imscc.
+                named = final_dir / f"{course_name}.imscc"
+                if named.exists():
+                    pkg = named
+                else:
+                    candidates = sorted(final_dir.glob("*.imscc"))
+                    if candidates:
+                        pkg = candidates[0]
+            if pkg is not None and pkg.exists():
+                out["packaging"] = {
+                    "project_id": project_id,
+                    "package_path": str(pkg),
+                    "libv2_package_path": str(pkg),
+                    "imscc_path": str(pkg),
+                    "content_dir": str(content_dir),
+                }
+            else:
+                logger.warning(
+                    "resume restore: no .imscc found under %s; cannot "
+                    "reconstruct packaging output", final_dir,
+                )
+
+        return out
 
     def _dependencies_met(
         self, phase: WorkflowPhase, phase_outputs: Dict[str, Dict]

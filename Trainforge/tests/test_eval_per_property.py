@@ -37,7 +37,7 @@ def test_perfect_model_scores_all_properties_one(tmp_path: Path) -> None:
     yes_model = lambda _prompt: "Yes."
     result = PerPropertyEvaluator(
         holdout_split=split,
-        course_slug="rdf-shacl-551-2",
+        course_slug="rdf-shacl-demo",
         model_callable=yes_model,
     ).evaluate()
     per_prop = result["per_property_accuracy"]
@@ -51,7 +51,7 @@ def test_no_model_scores_zero_on_property_probes(tmp_path: Path) -> None:
     no_model = lambda _prompt: "No, that statement is false."
     result = PerPropertyEvaluator(
         holdout_split=split,
-        course_slug="rdf-shacl-551-2",
+        course_slug="rdf-shacl-demo",
         model_callable=no_model,
     ).evaluate()
     per_prop = result["per_property_accuracy"]
@@ -65,7 +65,7 @@ def test_property_with_zero_probes_returns_none(tmp_path: Path) -> None:
     yes_model = lambda _prompt: "Yes."
     result = PerPropertyEvaluator(
         holdout_split=split,
-        course_slug="rdf-shacl-551-2",
+        course_slug="rdf-shacl-demo",
         model_callable=yes_model,
     ).evaluate()
     assert result["per_property_accuracy"]["rdfs_subclassof"] is None
@@ -134,7 +134,7 @@ def test_property_probes_array_scores_all_six_properties(tmp_path: Path) -> None
     split = _build_property_probes_split(tmp_path)
     result = PerPropertyEvaluator(
         holdout_split=split,
-        course_slug="rdf-shacl-551-2",
+        course_slug="rdf-shacl-demo",
         model_callable=lambda _p: "Yes.",
     ).evaluate()
     expected = {
@@ -164,7 +164,7 @@ def test_property_probes_path_isolates_each_property(tmp_path: Path) -> None:
 
     result = PerPropertyEvaluator(
         holdout_split=split,
-        course_slug="rdf-shacl-551-2",
+        course_slug="rdf-shacl-demo",
         model_callable=_selective,
     ).evaluate()
     assert result["per_property_accuracy"]["sh_datatype"] == 0.0

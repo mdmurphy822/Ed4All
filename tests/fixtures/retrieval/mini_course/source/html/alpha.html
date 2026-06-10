@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Alpha Page — Retrieval Mini Course</title></head>
+<body>
+  <h1>Vector Stores and Embeddings</h1>
+  <p>A vector store is a database that indexes high-dimensional embedding vectors so that approximate nearest-neighbour search can retrieve semantically similar passages. Each document chunk is embedded once at index time and the resulting vector is stored alongside its identifier.</p>
+  <p>FAISS is a widely used open-source library for efficient similarity search over dense vectors. It supports both exact flat indexes and approximate indexes such as inverted file and product quantization structures that trade a small amount of recall for a large speed-up.</p>
+  <h2>Retrieval Quality</h2>
+  <p>Retrieval quality is commonly measured with recall at k, which counts how often a relevant passage appears in the top k results returned for a query. A high recall at one means the single best result is usually the right one, while recall at ten tolerates the answer appearing anywhere in the first ten hits.</p>
+  <p>Reranking re-scores an initial candidate set with a more expensive cross-encoder model. The first-stage retriever favours recall and the reranker favours precision, so the two stages together produce a short ordered list that is both comprehensive and accurate.</p>
+</body>
+</html>

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Optional
 
 from .query_decomposer import QueryDecomposer
 from .query_decomposition import DecomposedQuery, SubQuery
-from .result_fusion import FusionResult, ResultFuser
+from .result_fusion import FusedResult, FusionResult, ResultFuser
 from .retriever import (
     RetrievalResult,
     retrieve_chunks,
@@ -50,6 +50,7 @@ class MultiQueryRetriever:
         rrf_k: int = 60,
         dedup_threshold: float = 0.85,
         capture: Optional["DecisionCapture"] = None,
+        course_slug: Optional[str] = None,
     ):
         """Initialize the multi-query retriever.
 
@@ -59,12 +60,24 @@ class MultiQueryRetriever:
             rrf_k: RRF constant for score fusion
             dedup_threshold: Jaccard threshold for deduplication
             capture: Optional DecisionCapture for logging retrieval decisions
+            course_slug: Optional default course scope. When set, every
+                sub-query (and the original-query coverage pass) is scoped
+                to this single course via ``retrieve_chunks(course_slug=...)``,
+                which bypasses the master catalog and resolves the chunkset
+                directly through the shared, file-aware
+                ``resolve_imscc_chunks_path`` (``imscc_chunks/`` →
+                ``dart_chunks/`` → legacy ``corpus/``). Without a course
+                scope the retriever falls back to a catalog-filtered search,
+                which silently returns nothing for on-disk courses that the
+                master catalog hasn't indexed. Can be overridden per call in
+                :meth:`retrieve`.
         """
         self.repo_root = repo_root or self._auto_detect_repo_root()
         self.max_workers = max_workers
         self.decomposer = QueryDecomposer()
         self.fuser = ResultFuser(rrf_k=rrf_k, dedup_threshold=dedup_threshold, capture=capture)
         self.capture = capture
+        self.course_slug = course_slug
 
     def _auto_detect_repo_root(self) -> Path:
         """Auto-detect LibV2 repository root."""
@@ -94,6 +107,8 @@ class MultiQueryRetriever:
         # untouched (filters fire per-sub-query in ``_execute_single_query``).
         cognitive_domain: Optional[str] = None,
         hierarchy_level: Optional[str] = None,
+        course_slug: Optional[str] = None,
+        engine: str = "lexical",
     ) -> FusionResult:
         """Retrieve chunks using query decomposition and fusion.
 
@@ -107,10 +122,47 @@ class MultiQueryRetriever:
             chunk_type: Chunk type filter
             difficulty: Difficulty filter
             strategy_weights: Optional weights for sub-queries
+            engine: WS2 retrieval engine ("lexical" | "semantic" |
+                "hybrid-rrf"; default "lexical" => unchanged behavior). For a
+                non-lexical engine the vector index is PRE-FLIGHTED once here
+                (before any ThreadPool dispatch) so a missing / stale / fake
+                index or unavailable backend raises from ``retrieve()``
+                rather than being swallowed by the sub-query ThreadPool's
+                ``print("Sub-query failed: ...")`` arm — that swallow is
+                exactly the silent degradation the plan forbids.
 
         Returns:
             FusionResult with fused, ranked results
         """
+        # Resolve the effective course scope: an explicit per-call argument
+        # wins over the instance default. When set, sub-queries bypass the
+        # master catalog and resolve the chunkset directly (file-aware), so
+        # courses that aren't indexed in master_catalog.json (e.g. DART-only
+        # ``dart_chunks/`` corpora) are still reachable — matching the
+        # behavior of the single-course BM25 path.
+        effective_slug = course_slug if course_slug is not None else self.course_slug
+
+        # WS2: non-lexical engines require a single-course scope AND a
+        # pre-flighted index. Pre-flight load_vector_index ONCE here so the
+        # typed semantic errors (SemanticIndexMissing / SemanticIndexStale /
+        # FakeIndexRefused / EmbeddingBackendUnavailable) surface from this
+        # call instead of being swallowed inside the ThreadPool below. NO
+        # BM25 fallback — the exception propagates verbatim.
+        if engine != "lexical":
+            if engine not in ("semantic", "hybrid-rrf"):
+                raise ValueError(
+                    f"unknown retrieval engine: {engine!r}; expected one of "
+                    f"'lexical', 'semantic', 'hybrid-rrf'."
+                )
+            if not effective_slug:
+                raise ValueError(
+                    f"engine={engine!r} requires a course_slug "
+                    f"(single-course semantic scope)."
+                )
+            from .vector_index import load_vector_index
+
+            load_vector_index(self.repo_root / "courses" / effective_slug)
+
         if not decompose:
             # Single query mode (no decomposition)
             results = self._execute_single_query(
@@ -122,10 +174,22 @@ class MultiQueryRetriever:
                 difficulty=difficulty,
                 cognitive_domain=cognitive_domain,
                 hierarchy_level=hierarchy_level,
+                course_slug=effective_slug,
+                engine=engine,
             )
+            # Return the retrieved results directly (no fusion needed for a
+            # single query). Previously this branch dropped ``results`` and
+            # returned an empty list, so ``decompose=False`` callers always
+            # saw zero results even when retrieval succeeded. Project each
+            # RetrievalResult into a FusedResult so the FusionResult shape
+            # (and to_dict() serialization) matches the decomposed path.
+            fused = [
+                FusedResult.from_retrieval_result(r, "original")
+                for r in results
+            ]
             return FusionResult(
-                results=[],
-                query_coverage={"original": len(results)},
+                results=fused,
+                query_coverage={"original": len(fused)},
                 fusion_method="single",
             )
 
@@ -160,6 +224,8 @@ class MultiQueryRetriever:
             difficulty=difficulty,
             cognitive_domain=cognitive_domain,
             hierarchy_level=hierarchy_level,
+            course_slug=effective_slug,
+            engine=engine,
         )
 
         # Also execute original query for coverage
@@ -172,6 +238,8 @@ class MultiQueryRetriever:
             difficulty=difficulty,
             cognitive_domain=cognitive_domain,
             hierarchy_level=hierarchy_level,
+            course_slug=effective_slug,
+            engine=engine,
         )
         result_sets["original"] = original_results
 
@@ -289,6 +357,8 @@ class MultiQueryRetriever:
         difficulty: Optional[str],
         cognitive_domain: Optional[str] = None,
         hierarchy_level: Optional[str] = None,
+        course_slug: Optional[str] = None,
+        engine: str = "lexical",
     ) -> dict[str, list[RetrievalResult]]:
         """Execute sub-queries in parallel.
 
@@ -325,6 +395,8 @@ class MultiQueryRetriever:
                 difficulty=sq_difficulty,
                 cognitive_domain=cognitive_domain,
                 hierarchy_level=hierarchy_level,
+                course_slug=course_slug,
+                engine=engine,
             )
             return sub_query.text, results
 
@@ -355,6 +427,8 @@ class MultiQueryRetriever:
         difficulty: Optional[str],
         cognitive_domain: Optional[str] = None,
         hierarchy_level: Optional[str] = None,
+        course_slug: Optional[str] = None,
+        engine: str = "lexical",
     ) -> list[RetrievalResult]:
         """Execute a single query using the base retriever.
 
@@ -371,7 +445,13 @@ class MultiQueryRetriever:
         Returns:
             List of RetrievalResult objects
         """
-        # Execute retrieval with individual filter parameters
+        # Execute retrieval with individual filter parameters. When a
+        # ``course_slug`` is in scope, ``retrieve_chunks`` resolves that one
+        # course's chunkset directly (file-aware: imscc_chunks/ →
+        # dart_chunks/ → corpus/) and bypasses the master catalog — the same
+        # path the single-course BM25 retriever uses. Without it, retrieval
+        # falls back to a catalog-filtered search that misses on-disk
+        # courses absent from master_catalog.json.
         results = retrieve_chunks(
             query=query,
             repo_root=self.repo_root,
@@ -382,6 +462,8 @@ class MultiQueryRetriever:
             difficulty=difficulty,
             cognitive_domain=cognitive_domain,
             hierarchy_level=hierarchy_level,
+            course_slug=course_slug,
+            engine=engine,
         )
 
         return results
@@ -423,6 +505,7 @@ def multi_retrieve(
     repo_root: Optional[Path] = None,
     limit: int = 10,
     decompose: bool = True,
+    course_slug: Optional[str] = None,
     **kwargs,
 ) -> FusionResult:
     """Convenience function for multi-query retrieval.
@@ -432,10 +515,11 @@ def multi_retrieve(
         repo_root: LibV2 repository root
         limit: Maximum results
         decompose: Whether to decompose the query
+        course_slug: Optional course scope (see :class:`MultiQueryRetriever`).
         **kwargs: Additional arguments
 
     Returns:
         FusionResult with fused results
     """
-    retriever = MultiQueryRetriever(repo_root=repo_root)
+    retriever = MultiQueryRetriever(repo_root=repo_root, course_slug=course_slug)
     return retriever.retrieve(query=query, limit=limit, decompose=decompose, **kwargs)

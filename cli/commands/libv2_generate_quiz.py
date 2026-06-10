@@ -19,7 +19,7 @@ Examples
 
     # Deterministic 10-question quiz with bloom-balanced sampling
     ed4all libv2 generate-quiz \\
-        --slug rdf-shacl-550-rdf-shacl-550 \\
+        --slug demo-course-1 \\
         --bloom-mix '{"remember":1,"understand":2,"apply":5,"analyze":1,"create":1}' \\
         --seed 42
 

@@ -1,6 +1,6 @@
 """Wave 121: SynthesisLeakageValidator regression tests.
 
-The 2026-04-29 smoke audit on rdf-shacl-551-2 found 11/20 instruction
+The 2026-04-29 smoke audit on the RDF/SHACL calibration corpus found 11/20 instruction
 completions contained ≥50-char verbatim spans from chunk.text. Without
 this gate, training would proceed on memorisation-poisoned pairs.
 These tests pin the gate's fail-closed contract.

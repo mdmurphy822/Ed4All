@@ -839,6 +839,33 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         ),
     },
 
+    "run_vector_indexing": {
+        "required": [],
+        "optional": [
+            "course_name",
+            "chunkset",
+            "provider",
+            "model",
+            "text_field_policy",
+            "force",
+            "libv2_root",
+        ],
+        "defaults": {},
+        "param_mapping": {
+            "course": "course_name",
+            "name": "course_name",
+            "course_code": "course_name",
+            "model_id": "model",
+        },
+        "description": (
+            "rag_training indexing phase handler — builds the per-course "
+            "on-device vector index (real embeddings + numpy exact-search "
+            "index) and emits LibV2/courses/<slug>/vector_index/. Fails "
+            "closed when the embedding backend is unavailable (no "
+            "file-counting fallback)."
+        ),
+    },
+
 }
 
 

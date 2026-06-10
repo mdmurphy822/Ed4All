@@ -16,7 +16,7 @@ this happened ad-hoc: ``Trainforge/curriculum.py`` strips the prefix
 inline at four call sites; other consumers copied the pattern. This
 helper centralizes the rule so callers don't reinvent it.
 
-The audit (rdf-shacl-551-2 deep review, Section D) flagged the format
+The audit (RDF/SHACL calibration corpus deep review, Section D) flagged the format
 mismatch as a should-fix because it adds friction to every cross-graph
 join. Wave 82 picks "keep both forms, document the join" over "rewrite
 one side" — cheaper, no schema migration, no manifest churn.

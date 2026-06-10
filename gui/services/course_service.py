@@ -19,8 +19,8 @@ deps) wraps these functions. Atomic writes reuse
 ``gui.shared_state._atomic_write_json`` (tmpfile + ``os.replace``).
 
 A ``course_id`` accepted by the read/write helpers may be a Courseforge
-``project_id`` (``PROJ-...``), a ``course_name`` (e.g. ``OPENSTAX_ALG_9``), or a
-LibV2 ``slug`` (e.g. ``sample-course-a``); resolution searches both corpora.
+``project_id`` (``PROJ-...``), a ``course_name`` (e.g. ``DEMO_101``), or a
+LibV2 ``slug`` (e.g. ``demo-course-1``); resolution searches both corpora.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from lib.ontology.learning_objectives import validate_lo_id
+from lib.ontology.slugs import libv2_course_slug
 from lib.paths import COURSEFORGE_PATH
 from lib.paths import LIBV2_PATH as _DEFAULT_LIBV2_PATH
 
@@ -336,17 +337,15 @@ def _resolve(course_id: str) -> Dict[str, Any]:
 
 
 def _slugify(name: str) -> str:
-    """Lowercase, hyphenate a course_name for a best-effort LibV2 slug guess."""
-    out = []
-    prev_dash = False
-    for ch in name.strip().lower():
-        if ch.isalnum():
-            out.append(ch)
-            prev_dash = False
-        elif not prev_dash:
-            out.append("-")
-            prev_dash = True
-    return "".join(out).strip("-")
+    """Best-effort LibV2 archive-dir slug guess for a course_name.
+
+    Delegates to the canonical ``lib.ontology.slugs.libv2_course_slug`` so
+    this guess matches the directory ``LibV2/tools/libv2/importer.py`` actually
+    created. The prior local implementation kept leading articles and skipped
+    the importer's 50-char truncation, so it guessed a different archive dir
+    for any name with a leading article or > 50 slug chars.
+    """
+    return libv2_course_slug(name)
 
 
 # --------------------------------------------------------------------------- #
@@ -629,7 +628,13 @@ def save_classification(slug: str, patch: Dict[str, Any]) -> Dict[str, Any]:
         "tags",
     }
     for key, value in patch.items():
-        if key in allowed:
+        if key not in allowed:
+            continue
+        if value is None:
+            # An explicit null clears (removes) the stored field rather than
+            # writing a null that would fail the manifest subschema.
+            classification.pop(key, None)
+        else:
             classification[key] = value
 
     _validate_classification(classification)

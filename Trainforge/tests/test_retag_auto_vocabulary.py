@@ -12,9 +12,9 @@ Locks in the contract that:
 * Auto-extraction is deterministic — same input → same output across
   runs and across calls.
 
-The test fixtures track the rdf-shacl-550 / rdf-shacl-551 CO
+The test fixtures track the RDF/SHACL calibration corpus CO
 statements verbatim, since the validator gap that motivated Wave 81
-was specifically against those archives.
+was specifically against that archive.
 """
 
 from __future__ import annotations

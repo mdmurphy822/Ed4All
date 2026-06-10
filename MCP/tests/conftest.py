@@ -326,3 +326,84 @@ def batch_tasks():
         }
         for i in range(10)
     ]
+
+
+# =============================================================================
+# MODEL-HERMETICITY FIXTURES (Family-A test-cluster fix, Subtask-25 follow-up)
+# =============================================================================
+#
+# Some MCP synthesis-phase tests (e.g. test_synthesis_training_phase.py) drive
+# the real pair-promotion + claim-support validators, which lazy-load ~700MB
+# BERT/DeBERTa models when the optional ``[bert]`` / ``[embedding]`` extras are
+# installed (they ARE in this venv since 2026-05-08). Unit tests must NOT load
+# real weights: it's slow AND real DeBERTa NLI legitimately rejects the toy
+# fixtures these tests feed it. We monkeypatch the two model-loader seams to
+# return None, routing both validators through their designed deps-missing
+# pass arms. Integration tests opt out with ``@pytest.mark.real_models``.
+#
+# This is additive to the existing fixtures above and mirrors the autouse
+# stub in Trainforge/tests/conftest.py.
+
+
+def pytest_configure(config):
+    """Register the ``real_models`` opt-out marker (``--strict-markers``)."""
+    config.addinivalue_line(
+        "markers",
+        "real_models: opt out of the autouse model-loader stub; the test "
+        "intentionally loads the real BERT/DeBERTa models (integration).",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _stub_real_models(request, monkeypatch):
+    """Force the BERT-ensemble + NLI model loaders to return ``None``.
+
+    Routes ``TrainingPairPromotionValidator`` (criterion 6 bloom) and the
+    claim-support NLI path through their designed deps-missing pass arms so
+    unit tests never load real weights. Opt out with
+    ``@pytest.mark.real_models``.
+    """
+    if request.node.get_closest_marker("real_models"):
+        yield
+        return
+
+    try:
+        from lib.validators.pair.promotion import (
+            TrainingPairPromotionValidator,
+        )
+
+        monkeypatch.setattr(
+            TrainingPairPromotionValidator,
+            "_resolve_bloom_classifier",
+            lambda self: None,
+        )
+    except Exception:  # noqa: BLE001 — module may be absent in a slim slice
+        pass
+
+    try:
+        from lib.classifiers.nli_classifier import NliClassifier
+
+        monkeypatch.setattr(
+            NliClassifier,
+            "get_or_load",
+            classmethod(lambda cls: None),
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Seam 3: sentence-embedder resolver on the promotion validator.
+    # Returning (None, False) routes criteria 2/3/4 through the designed
+    # deps-missing fallback arms (answer-support floor -1.0, jaccard
+    # distinctness, prompt-chunk floor deactivated) so unit tests never
+    # load sentence-transformers weights. Mirrors seams 1-2.
+    try:
+        from lib.validators.pair.promotion import TrainingPairPromotionValidator
+        monkeypatch.setattr(
+            TrainingPairPromotionValidator,
+            "_resolve_embedder",
+            lambda self: (None, False),
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    yield

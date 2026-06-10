@@ -94,6 +94,10 @@ def concept_extraction_fixture(tmp_path, monkeypatch):
     # ``LibV2/courses/<slug>/concept_graph/...`` write lands in tmp_path
     # instead of the real repo.
     monkeypatch.setattr(pipeline_tools, "_PROJECT_ROOT", fake_root)
+    # _resolve_libv2_root precedence: kwarg > ED4ALL_LIBV2_ROOT env > _PROJECT_ROOT/LibV2;
+    # the repo conftest's autouse fixture sets the env to an isolation dir, so pin it
+    # at fake_root/LibV2 here to keep the default-resolution writes under fake_root.
+    monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(fake_root / "LibV2"))
     monkeypatch.setattr(
         pipeline_tools,
         "COURSEFORGE_INPUTS",
@@ -561,6 +565,10 @@ def dart_chunking_fixture(tmp_path, monkeypatch):
     fake_root.mkdir()
 
     monkeypatch.setattr(pipeline_tools, "_PROJECT_ROOT", fake_root)
+    # _resolve_libv2_root precedence: kwarg > ED4ALL_LIBV2_ROOT env > _PROJECT_ROOT/LibV2;
+    # the repo conftest's autouse fixture sets the env to an isolation dir, so pin it
+    # at fake_root/LibV2 here to keep the default-resolution writes under fake_root.
+    monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(fake_root / "LibV2"))
     monkeypatch.setattr(
         pipeline_tools,
         "COURSEFORGE_INPUTS",
@@ -786,6 +794,10 @@ def imscc_chunking_fixture(tmp_path, monkeypatch):
     fake_root.mkdir()
 
     monkeypatch.setattr(pipeline_tools, "_PROJECT_ROOT", fake_root)
+    # _resolve_libv2_root precedence: kwarg > ED4ALL_LIBV2_ROOT env > _PROJECT_ROOT/LibV2;
+    # the repo conftest's autouse fixture sets the env to an isolation dir, so pin it
+    # at fake_root/LibV2 here to keep the default-resolution writes under fake_root.
+    monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(fake_root / "LibV2"))
     monkeypatch.setattr(
         pipeline_tools,
         "COURSEFORGE_INPUTS",

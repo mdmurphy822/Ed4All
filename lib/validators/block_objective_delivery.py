@@ -35,7 +35,7 @@ axes:
 All three axes emit warning-severity GateIssues; ``action="regenerate"``
 fires when ANY axis misses. Day-1 the validator does NOT promote to
 critical — calibration of per-block-type entailment thresholds against
-the rdf-shacl-551-2 corpus is a Wave 3 follow-up before promotion.
+the RDF/SHACL calibration corpus is a Wave 3 follow-up before promotion.
 
 Graceful-degrade contract (mirrors
 :mod:`lib.validators.bloom_classifier_disagreement` and
@@ -136,7 +136,7 @@ _DEFAULT_ENTAILMENT_FLOOR: float = 0.40
 
 
 #: Per-block-type entailment thresholds (plan §6.1 calibration).
-#: Day-1 starting points; calibrate against the rdf-shacl-551-2 corpus
+#: Day-1 starting points; calibrate against the RDF/SHACL calibration corpus
 #: rebuild before promoting severity to critical (Wave 3 follow-up).
 #:
 #: Rationale per type:

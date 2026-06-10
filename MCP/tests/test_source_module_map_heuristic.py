@@ -303,3 +303,78 @@ class TestDegradedPath:
         assert payload["routing_mode"] == "stub_empty_map"
         doc = json.loads(Path(payload["source_module_map_path"]).read_text())
         assert doc == {}
+
+
+class TestHeadingTextStructureRouting:
+    """Regression: SemanticStructureExtractor emits chapter/section headings
+    under ``headingText`` (+ ``chapter_text``), not ``title``. The router used
+    to read ``title``, so every topic bag tokenized to empty and the whole
+    map collapsed to one alphabetically-first source at 0.3 confidence."""
+
+    def _write_structure(self, path: Path) -> None:
+        # Chapters keyed by ``headingText`` matching the two fixture
+        # textbooks' distinct topics (Core Concepts / Curriculum / Assessment
+        # vs Online Teaching). NO ``title`` key — exactly what the extractor
+        # emits.
+        doc = {
+            "chapters": [
+                {
+                    "id": "ch1",
+                    "headingText": "Curriculum Reform Strategies and Core Concepts",
+                    "chapter_text": (
+                        "Curriculum reform strategies introduce foundational "
+                        "concepts, terminology, frameworks and methodology."
+                    ),
+                    "sections": [
+                        {"id": "s1a", "headingText": "Assessment Transformation"},
+                    ],
+                    "source_file": "textbook_a.html",
+                },
+                {
+                    "id": "ch2",
+                    "headingText": "Online Teaching Foundations and Learning Design",
+                    "chapter_text": (
+                        "Online teaching foundations cover learning design "
+                        "principles, interaction patterns and feedback cycles."
+                    ),
+                    "sections": [],
+                    "source_file": "textbook_b.html",
+                },
+            ]
+        }
+        path.write_text(json.dumps(doc), encoding="utf-8")
+
+    def test_headingtext_structure_does_not_collapse(self, source_router_fixture):
+        fx = source_router_fixture
+        struct = fx["staging_dir"].parent / "textbook_structure.json"
+        self._write_structure(struct)
+        payload = _invoke_router(
+            fx["project_id"], fx["staging_dir"], textbook_structure_path=str(struct)
+        )
+        # The headline guarantee: NOT collapsed.
+        assert payload["routing_collapsed"] is False
+        assert payload["pages_with_primary"] > 0
+        # Distinct sources must exceed 1 — the collapse pinned everything to
+        # a single alphabetically-first file.
+        assert payload["distinct_sources_routed"] >= 2, payload
+        assert payload["routing_primary_rate"] > 0.0
+
+    def test_collapse_is_detected_and_flagged(self, source_router_fixture):
+        # A structure whose headings tokenize to nothing (empty title key,
+        # no headingText) must NOT silently collapse — but if it does fall
+        # all the way through with no signal the guard reports it. Here we
+        # give chapters with ONLY a legacy empty ``title`` and no sections,
+        # forcing the all-empty topic_pool fall-through to DART blocks
+        # (which still yields primaries — i.e. the fix prevents collapse).
+        fx = source_router_fixture
+        struct = fx["staging_dir"].parent / "empty_structure.json"
+        struct.write_text(json.dumps({"chapters": [
+            {"id": "c1", "title": "", "sections": []},
+            {"id": "c2", "title": "", "sections": []},
+        ]}), encoding="utf-8")
+        payload = _invoke_router(
+            fx["project_id"], fx["staging_dir"], textbook_structure_path=str(struct)
+        )
+        # Fall-through to DART-block keyword bags keeps the router alive.
+        assert payload["routing_collapsed"] is False
+        assert payload["pages_with_primary"] > 0

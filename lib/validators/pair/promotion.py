@@ -19,10 +19,17 @@ in the GPT critique (lines 225-233):
    ``dpo_min_distractor_distinctness=0.40``.
 4. **unanswerable_stem** — content-token Jaccard overlap of the
    ``prompt`` against the cited chunk text below
-   ``min_prompt_chunk_jaccard=0.10``. Reuses the canonical
+   ``min_prompt_chunk_jaccard``. Reuses the canonical
    ``_content_tokens`` + ``_jaccard`` helpers from
    :mod:`lib.validators.assessment_retrieval_grounding` so the two
-   grounding axes share one tokenisation contract.
+   grounding axes share one tokenisation contract. As of the
+   2026-06-09 RDF/SHACL calibration corpus recalibration the default floor is
+   ``0.0``: the strict ``<`` comparison can never fire, so the reject
+   arm is retired and ``prompt_chunk_jaccard`` is now an audit-stamp-
+   only signal (paraphrase prompts are instructed to reword the
+   source, so this axis was measured non-separating on the real
+   corpus). The criterion stays wired so an operator can re-arm it by
+   passing an explicit positive ``min_prompt_chunk_jaccard``.
 5. **source_free_generation** — ``source_chunk_id`` is missing or empty.
    The schema's ``trainable``-conditional already requires the field;
    the validator catches it loudly before the pair is checkpointed.
@@ -623,6 +630,16 @@ class TrainingPairPromotionValidator:
             new_fields["distractor_quality"] = distractor_quality
 
         # ---- Criterion 4: unanswerable stem ---- #
+        # Always stamp prompt_chunk_jaccard for the audit trail. As of
+        # the 2026-06-09 RDF/SHACL calibration corpus recalibration the default
+        # ``min_prompt_chunk_jaccard`` floor is 0.0, so the strict ``<``
+        # comparison in the reject-precedence block below can never fire
+        # against the default — the reject arm is retired and this value
+        # is audit-stamp-only. (Paraphrase prompts are instructed to
+        # reword the source, so the signal was measured non-separating
+        # on real pairs: 13/417 on-topic prompts scored exactly 0.) An
+        # operator can re-arm the reject arm by passing an explicit
+        # positive ``min_prompt_chunk_jaccard`` to the constructor.
         prompt_chunk_jaccard: Optional[float] = None
         if chunk_text and prompt:
             prompt_chunk_jaccard = _jaccard_overlap(prompt, chunk_text)

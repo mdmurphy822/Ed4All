@@ -161,7 +161,7 @@ def _run_phase(executor: TaskExecutor, gate_configs: list) -> None:
     The phase has zero tasks so the executor skips straight to gate
     evaluation against an empty ``results`` dict.
     """
-    asyncio.get_event_loop().run_until_complete(
+    asyncio.run(
         executor.execute_phase(
             workflow_id="WF-S0.5-CAPTURE-TEST",
             phase_name="stub_phase",

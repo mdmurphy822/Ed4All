@@ -1,8 +1,8 @@
 """Wave 82 regression test for pedagogy_graph_builder course_id fallback.
 
-The rdf-shacl-551-2 audit found a shipped pedagogy_graph.json with
+The RDF/SHACL calibration corpus audit found a shipped pedagogy_graph.json with
 ``course_id: ""`` despite chunks carrying the course code in their IDs
-(``rdf_shacl_551_chunk_00001``). The pre-Wave-81
+(``demo_course_1_chunk_00001``). The pre-Wave-81
 ``_generate_pedagogy_graph`` stub didn't pass ``course_id``, and the
 builder silently emitted ``""`` for the top-level field.
 
@@ -27,8 +27,8 @@ from Trainforge.pedagogy_graph_builder import (
 
 class TestDeriveCourseIdFromChunks:
     def test_extracts_course_code_from_canonical_chunk_id(self):
-        chunks = [{"id": "rdf_shacl_551_chunk_00001"}]
-        assert _derive_course_id_from_chunks(chunks) == "RDF_SHACL_551"
+        chunks = [{"id": "demo_course_1_chunk_00001"}]
+        assert _derive_course_id_from_chunks(chunks) == "DEMO_COURSE_1"
 
     def test_uppercases_the_prefix(self):
         chunks = [{"id": "phys_101_chunk_00001"}]
@@ -84,7 +84,7 @@ class TestBuildPedagogyGraphCourseIdFallback:
     def test_explicit_course_id_wins_over_chunk_derivation(self):
         chunks = [
             {
-                "id": "rdf_shacl_551_chunk_00001",
+                "id": "demo_course_1_chunk_00001",
                 "chunk_type": "explanation",
                 "learning_outcome_refs": ["TO-01"],
             }
@@ -99,17 +99,17 @@ class TestBuildPedagogyGraphCourseIdFallback:
         # recover the course code from chunk IDs rather than emitting "".
         chunks = [
             {
-                "id": "rdf_shacl_551_chunk_00001",
+                "id": "demo_course_1_chunk_00001",
                 "chunk_type": "explanation",
                 "learning_outcome_refs": ["TO-01"],
             }
         ]
         graph = build_pedagogy_graph(chunks, _objectives_basic(), course_id=None)
-        assert graph["course_id"] == "RDF_SHACL_551"
+        assert graph["course_id"] == "DEMO_COURSE_1"
 
     def test_empty_string_course_id_derives_from_chunks(self):
-        # Same fallback when caller passes "" (the rdf-shacl-551 actual
-        # broken state).
+        # Same fallback when caller passes "" (the RDF/SHACL calibration
+        # corpus actual broken state).
         chunks = [
             {
                 "id": "phys_101_chunk_00001",

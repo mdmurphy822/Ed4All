@@ -90,3 +90,82 @@ class TestTechAnchorSeedingFlag:
             "OWL 2 DL is decidable.", {"key_concepts": []}
         )
         assert "owl" not in tags
+
+
+class TestTechAnchorPromotionAndDedup:
+    """Tech-anchor under-seeding fix: anchors seeded FIRST + TRUSTED so
+    flagship concepts survive the ``MAX_CONCEPT_TAGS`` cap and the
+    Wave-76 droppable-class filter; fragment-superstring slugs of an
+    admitted anchor are dropped in favour of the clean anchor.
+    """
+
+    def _eighteen_bold_fragments(self) -> List[str]:
+        # 18 untrusted key_concepts that would otherwise saturate the
+        # 20-tag cap and push a later-seeded anchor out.
+        return [f"competing-concept-{i:02d}" for i in range(18)]
+
+    def test_ragas_survives_cap_and_fragment_dropped(self, monkeypatch):
+        # Flag ON: chunk text contains "evaluate with RAGAS" plus a flood
+        # of other bold fragments AND a fragment-superstring slug
+        # 'ragas-short-for-rag'. The clean 'ragas' anchor MUST be present
+        # (seeded first, never capped out); the fragment MUST be absent.
+        monkeypatch.setenv("TRAINFORGE_SEED_TECH_CONCEPTS", "true")
+        proc = _bare_processor()
+        text = (
+            "To evaluate with RAGAS, score faithfulness and relevance. "
+            "RAGAS is short for RAG assessment."
+        )
+        key_concepts = self._eighteen_bold_fragments() + [
+            "ragas-is-short-for-rag",  # fragment-superstring of 'ragas'
+        ]
+        tags = proc._extract_concept_tags(text, {"key_concepts": key_concepts})
+        assert "ragas" in tags, "clean 'ragas' anchor must survive the cap"
+        assert "ragas-is-short-for-rag" not in tags, (
+            "fragment-superstring of an admitted anchor must be dropped"
+        )
+
+    def test_nim_tagged_amid_competing_tags(self, monkeypatch):
+        # Flag ON: "deploy on NVIDIA NIM" → 'nim' tagged even when many
+        # competing untrusted tags vie for the cap.
+        monkeypatch.setenv("TRAINFORGE_SEED_TECH_CONCEPTS", "true")
+        proc = _bare_processor()
+        text = "Deploy the model on NVIDIA NIM for low-latency inference."
+        key_concepts = self._eighteen_bold_fragments()
+        tags = proc._extract_concept_tags(text, {"key_concepts": key_concepts})
+        assert "nim" in tags
+
+    def test_flag_off_byte_identical_no_anchors(self, monkeypatch):
+        # Flag OFF: no anchors added; output identical to the legacy
+        # non-anchor pass over the same input.
+        monkeypatch.delenv("TRAINFORGE_SEED_TECH_CONCEPTS", raising=False)
+        proc = _bare_processor()
+        text = "Deploy on NVIDIA NIM and evaluate with RAGAS using FAISS."
+        item = {"key_concepts": ["vector-store", "knowledge-base"]}
+        tags = proc._extract_concept_tags(text, item)
+        for anchor in ("nim", "ragas", "faiss", "rag"):
+            assert anchor not in tags, f"flag OFF must not seed {anchor!r}"
+        # Legacy untrusted key_concepts still flow through unchanged.
+        assert "vector-store" in tags
+        assert "knowledge-base" in tags
+
+    def test_real_multiword_concepts_survive_dedup(self, monkeypatch):
+        # Flag ON with anchors present: legitimate multi-word concepts
+        # that merely embed an anchor word are NOT dropped by the
+        # fragment-superstring dedup.
+        monkeypatch.setenv("TRAINFORGE_SEED_TECH_CONCEPTS", "true")
+        proc = _bare_processor()
+        text = "Build a RAG pipeline over a FAISS vector store knowledge base."
+        item = {
+            "key_concepts": [
+                "vector-store",
+                "knowledge-base",
+                "faiss-vector-store",  # 3 words, embeds 'faiss' anchor → keep
+            ]
+        }
+        tags = proc._extract_concept_tags(text, item)
+        assert "vector-store" in tags
+        assert "knowledge-base" in tags
+        assert "faiss-vector-store" in tags
+        # Anchors themselves still land.
+        assert "faiss" in tags
+        assert "rag" in tags

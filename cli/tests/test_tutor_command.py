@@ -2,18 +2,19 @@
 
 CliRunner-driven smoke tests of the three subcommands (diagnose,
 inventory, guardrails) in both ``--format text`` and ``--format json``
-modes. Originally pinned to ``rdf-shacl-550`` (a corpus that was never
-checked in); rebound to the in-tree ``rdf-shacl-551-2`` archive with
-count-agnostic assertions.
+modes with count-agnostic assertions. The integration corpus is opt-in:
+point ``ED4ALL_TUTORING_FIXTURE_SLUG`` at a course slug under
+``$ED4ALL_LIBV2_ROOT/courses/`` — no real course slug is hardcoded here.
 
-Module-level ``pytestmark`` skips the file cleanly when the
-misconception index is empty (e.g. ``imscc_chunks/chunks.jsonl``
-hasn't been backfilled).
+Module-level ``pytestmark`` skips the file cleanly when the env var is
+unset or the misconception index is empty (e.g.
+``imscc_chunks/chunks.jsonl`` hasn't been backfilled).
 """
 
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 from click.testing import CliRunner
@@ -22,14 +23,15 @@ from cli.commands.tutor import tutor_group
 from MCP.tools.tutoring_tools import load_misconception_index
 
 
-SLUG = "rdf-shacl-551-2"
+SLUG = os.environ.get("ED4ALL_TUTORING_FIXTURE_SLUG")
 
 
 pytestmark = pytest.mark.skipif(
-    not load_misconception_index(SLUG).items,
+    SLUG is None or not load_misconception_index(SLUG).items,
     reason=(
-        f"LibV2 archive {SLUG!r} has no reachable misconception index "
-        "(check imscc_chunks/chunks.jsonl is populated)."
+        "tutoring integration corpus not configured "
+        "(set ED4ALL_TUTORING_FIXTURE_SLUG to a slug with a reachable, "
+        "populated misconception index)."
     ),
 )
 

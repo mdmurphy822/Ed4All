@@ -1,7 +1,7 @@
 """Wave3-Anew3 — DART chunk LO-ref back-fill (Finding F3).
 
-Auditor finding F3 of ``plans/dispatch-7-final-product-audit-2026-05.md``:
-every chunk in ``LibV2/courses/sample-course-a/dart_chunks/chunks.jsonl``
+Auditor finding F3: every chunk in a real course's
+``dart_chunks/chunks.jsonl``
 shipped with empty ``learning_outcome_refs[]`` because the chunker emits
 chunks BEFORE ``_plan_course_structure`` mints TO-NN / CO-NN IDs. After
 course planning publishes ``objective_ids`` (Wave2-I7 plumbing), a back-

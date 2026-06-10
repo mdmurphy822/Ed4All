@@ -6,8 +6,8 @@ sections collapsed into a single chunk. The W5.A parser-side carry
 landed ``key_claims`` (W1.5 per-claim attribution) and
 ``objective_alignment`` (W1.7 per-objective tri-axis audit) on
 ``ContentSection``, but every merge boundary silently dropped both
-fields — ~30-50% of chunks on small-section corpora (rdf-shacl-551-2
-in particular) lost the audit signal.
+fields — ~30-50% of chunks on small-section corpora (the RDF/SHACL
+calibration corpus in particular) lost the audit signal.
 
 W5.F extends the merger:
 

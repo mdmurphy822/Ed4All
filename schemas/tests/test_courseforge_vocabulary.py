@@ -409,8 +409,8 @@ def test_concept_class_subclass_of_skos_concept(vocab_graph):
 #   (d) The slug -> IRI -> slug round-trip via SLUG_TO_IRI / IRI_TO_SLUG
 #       is exact (registry stays bijective after the 9-entry extension).
 #
-# Domain/range targets were verified against the rdf-shacl-551-2 fixture
-# (LibV2/courses/rdf-shacl-551-2/graph/pedagogy_graph.json) — see Phase
+# Domain/range targets were verified against the RDF/SHACL calibration
+# corpus pedagogy_graph.json fixture — see Phase
 # 2.6 implementation notes.
 # ---------------------------------------------------------------------- #
 
@@ -488,8 +488,8 @@ def test_phase_2_6_predicate_declared_with_domain_and_range(
     """Every Phase 2.6 minted predicate must be declared as
     rdf:Property / owl:ObjectProperty with rdfs:domain + rdfs:range
     pointing at the right ed4all: classes. Domain/range targets were
-    confirmed empirically against the rdf-shacl-551-2 pedagogy_graph.json
-    fixture (see Phase 2.6 implementation notes)."""
+    confirmed empirically against the RDF/SHACL calibration corpus
+    pedagogy_graph.json fixture (see Phase 2.6 implementation notes)."""
     is_rdf_prop = (predicate_iri, RDF.type, RDF.Property) in vocab_graph
     is_owl_obj_prop = (predicate_iri, RDF.type, OWL.ObjectProperty) in vocab_graph
     assert is_rdf_prop or is_owl_obj_prop, (

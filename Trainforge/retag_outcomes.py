@@ -1,6 +1,6 @@
 """Wave 76: vocabulary-driven LO retag + parent-outcome rollup.
 
-External KG-quality review of the rdf-shacl-550 archive surfaced four
+External KG-quality review of the RDF/SHACL calibration corpus archive surfaced four
 real coverage gaps where content exists but is mis-tagged:
 
     co-18 — SHACL Core constraint components
@@ -320,7 +320,7 @@ def auto_extract_vocabulary(co_statement: str) -> List[str]:
     The conservative bigram rule is the Wave 81 design choice that
     keeps auto-extraction useful without flooding curated coverage
     (otherwise auto-vocab inflates co-01 from 8 chunks to 246 in the
-    rdf-shacl-551-2 corpus). For COs whose statement carries no
+    RDF/SHACL calibration corpus). For COs whose statement carries no
     technical tokens — typically generic Bloom verbs only — the
     extractor returns a short list, and curated ``RETAG_VOCABULARIES``
     overrides cover the gaps (see co-09 / co-10).

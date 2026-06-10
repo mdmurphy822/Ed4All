@@ -2,8 +2,8 @@
 
 Builds tiny fixture archives that exercise each rule in the
 ``PacketIntegrityValidator`` catalog independently, then runs the
-validator on the real ``LibV2/courses/rdf-shacl-550-rdf-shacl-550``
-archive as a regression baseline.
+validator on a discovered LibV2 course archive (if one is present in
+the checkout) as a regression baseline.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 
 import pytest
 
+from lib.paths import libv2_path
 from lib.validators.libv2_packet_integrity import (
     PacketIntegrityValidator,
     RULE_SEVERITY,
@@ -496,33 +497,43 @@ def test_rule_severity_catalog_matches_spec():
 
 
 # ---------------------------------------------------------------------- #
-# Sanity baseline on the real archive
+# Sanity baseline on a discovered LibV2 archive
 # ---------------------------------------------------------------------- #
 
-REAL_ARCHIVE = (
-    Path(__file__).resolve().parents[2]
-    / "LibV2"
-    / "courses"
-    / "rdf-shacl-550-rdf-shacl-550"
-)
+
+def _discover_archive() -> Path | None:
+    """Return a LibV2 course archive dir, or ``None`` if none is present.
+
+    Honors ``ED4ALL_LIBV2_ROOT`` via :func:`lib.paths.libv2_path`. Course
+    data under ``LibV2/courses/`` is gitignored user data, so the concrete
+    slug is discovered at runtime rather than hardcoded.
+    """
+    courses = libv2_path() / "courses"
+    if not courses.is_dir():
+        return None
+    for entry in sorted(courses.iterdir()):
+        if entry.is_dir() and (entry / "course_manifest.json").exists():
+            return entry
+    return None
 
 
 @pytest.mark.skipif(
-    not REAL_ARCHIVE.exists(),
-    reason="rdf-shacl-550 archive not present in this checkout",
+    _discover_archive() is None,
+    reason="no LibV2 course archive present in this checkout",
 )
 def test_real_archive_has_zero_critical_after_workers_a_b_c():
     """Regression baseline.
 
     After Workers A (objectives.json), B (concept node typing), and C
-    (pedagogy graph) land, the rdf-shacl-550 archive should have 0
-    critical issues. Warnings are allowed and reported for honesty.
+    (pedagogy graph) land, a fully-built archive should have 0 critical
+    issues. Warnings are allowed and reported for honesty.
     """
-    result = PacketIntegrityValidator().validate(REAL_ARCHIVE)
+    archive = _discover_archive()
+    result = PacketIntegrityValidator().validate(archive)
     assert (
         result.critical_count == 0
     ), (
-        f"Expected 0 critical issues on rdf-shacl-550 baseline, got "
+        f"Expected 0 critical issues on archive baseline ({archive.name}), got "
         f"{result.critical_count}: "
         f"{[i.issue_code for i in result.issues if i.severity == 'critical']}"
     )

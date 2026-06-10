@@ -1,0 +1,125 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://libv2.local/schema/vector_index_manifest.schema.json",
+  "title": "Vector Index Manifest",
+  "description": "Provenance + integrity manifest for the on-device vector index emitted alongside embeddings.npy + id_map.json at LibV2/courses/<slug>/vector_index/manifest.json. Mirrors the conventions of chunkset_manifest.schema.json (lowercase-hex SHA fields, chunker_version alternation, additionalProperties:false). The manifest pins every replay parameter (model id/revision/dim, provider, device, batch_size, text_field_policy) so a vector index built on one machine is auditable on another and an eval run can refuse mixed-provenance comparisons. The content-hashed sections (embeddings_sha256 / id_map_sha256 / source_chunks_sha256) carry no timestamps so a rebuild over identical inputs is byte-stable; the optional generated_at field is deliberately EXCLUDED from the determinism contract. Validated by lib/validators/vector_index_manifest.py::VectorIndexManifestValidator; query-time staleness (source_chunks_sha256 vs the live chunkset) is enforced fail-closed by LibV2/tools/libv2/vector_index.py::load_vector_index.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "embedding_provider",
+    "embedding_kind",
+    "embedding_model_id",
+    "embedding_dim",
+    "normalized",
+    "index_type",
+    "chunker_version",
+    "chunkset_kind",
+    "source_chunks_sha256",
+    "embeddings_sha256",
+    "id_map_sha256",
+    "chunks_count",
+    "text_field_policy",
+    "batch_size",
+    "device"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Manifest schema version. Const '1.0' in this revision; bumped only when the manifest emit shape changes."
+    },
+    "embedding_provider": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Embedding provider registry key (lib.embedding.providers._EMBEDDING_PROVIDERS), e.g. 'st', 'local-openai', 'fake'. The query path refuses a manifest with embedding_provider=='fake' unless ED4ALL_EMBEDDING_ALLOW_FAKE is set (anti-production-poisoning)."
+    },
+    "embedding_kind": {
+      "type": "string",
+      "enum": ["st", "openai-embeddings", "fake"],
+      "description": "Execution kind dispatched internally by EmbeddingClient. Drives how the index was built and how a query is re-embedded."
+    },
+    "embedding_model_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Model identifier the index was built with (ST id, e.g. 'BAAI/bge-m3', or a server-side model name, or the fake-provider sentinel)."
+    },
+    "embedding_model_revision": {
+      "type": ["string", "null"],
+      "description": "HF commit SHA / revision pin of the embedding model when resolvable (in-process ST), else null (server-side models, fake provider). Optional in practice but always present in the dict (null when unknown)."
+    },
+    "embedding_dim": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Embedding dimensionality. Must equal embeddings.npy's column count (validator cross-checks)."
+    },
+    "normalized": {
+      "type": "boolean",
+      "const": true,
+      "description": "Whether the stored row vectors are L2-normalized. Const true in 1.0 (exact cosine == dot product on unit vectors)."
+    },
+    "index_type": {
+      "type": "string",
+      "enum": ["exact-numpy"],
+      "description": "Index engine. Const-style enum 'exact-numpy' in 1.0 (pure-numpy brute-force exact cosine search); the enum reserves room for a future ANN backend without a schema-version bump of the rest of the contract."
+    },
+    "chunker_version": {
+      "type": "string",
+      "pattern": "^(?:v\\d+|\\d+\\.\\d+\\.\\d+(?:[+-][A-Za-z0-9.+-]+)?)$",
+      "description": "Chunker-schema-contract version of the chunks that were embedded (Trainforge.chunker.CHUNKER_SCHEMA_VERSION, e.g. 'v4'). Pattern alternation accepts both the 'v4' contract form and the legacy semver form for back-compat — mirrors chunkset_manifest.schema.json."
+    },
+    "chunkset_kind": {
+      "type": "string",
+      "enum": ["imscc", "dart", "corpus-legacy"],
+      "description": "Which resolved chunkset was embedded. 'imscc' (imscc_chunks/), 'dart' (dart_chunks/), or 'corpus-legacy' (pre-Phase-7c corpus/ dir). Resolved via lib.libv2_storage.resolve_imscc_chunks_dir precedence unless the build was pinned with --chunkset."
+    },
+    "source_chunks_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 (hex, lowercase) of the chunks.jsonl that was embedded. The load-bearing staleness signal: load_vector_index recomputes the live chunkset SHA and raises SemanticIndexStale on mismatch (anti-silent-degradation)."
+    },
+    "embeddings_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 (hex, lowercase) of embeddings.npy bytes. Validator + verify re-hash the on-disk file and fail closed on tamper."
+    },
+    "id_map_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 (hex, lowercase) of id_map.json bytes."
+    },
+    "chunks_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of embedded chunks. Invariant: chunks_count == len(id_map.chunk_ids) == embeddings.shape[0]."
+    },
+    "text_field_policy": {
+      "type": "string",
+      "enum": ["text+heading", "text", "retrieval_text"],
+      "description": "What string was embedded per chunk. 'text+heading' (default, D6: section_heading + newline + text), 'text' (body only), or 'retrieval_text' (BM25-tuned summary; reserved A/B arm). Recorded so a re-pin is unambiguous and an eval run can refuse mixed-policy comparisons."
+    },
+    "batch_size": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Encode batch size used at build time. A replay parameter (determinism contract)."
+    },
+    "device": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Compute device used at build time ('cpu' | 'cuda' | server-side sentinel). cpu is the determinism default; a cuda build is allowed for speed but recorded so a mixed-device eval comparison can be refused."
+    },
+    "document_prefix": {
+      "type": "string",
+      "description": "Asymmetric-retrieval passage prefix prepended to every embedded passage at build time (e.g. nomic's 'search_document: '). Empty string for symmetric models (and for bge, whose instruction prefix is query-side only). Recorded so a rebuild/eval can reproduce the exact passage encoding and refuse mixed-prefix comparisons. Optional for back-compat (pre-prefix manifests omit it; absent == '')."
+    },
+    "query_prefix": {
+      "type": "string",
+      "description": "Asymmetric-retrieval query prefix applied query-side at search time (e.g. nomic's 'search_query: ', bge's 'Represent this sentence for searching relevant passages: '). Recorded alongside document_prefix for full replay provenance of the query/passage asymmetry. Optional for back-compat (absent == '')."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp (UTC) of the build. Optional, and deliberately EXCLUDED from the byte-stable determinism contract (a rebuild over identical inputs differs only in this field)."
+    }
+  },
+  "additionalProperties": false
+}

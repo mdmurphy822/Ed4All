@@ -4,7 +4,7 @@ retrieval-method preset resolution.
 These signals are designed to be A/B'd against BM25 alone via the
 ``method=`` parameter on ``retrieve_chunks`` and the ``libv2
 retrieval-compare`` CLI. The audit's empirical finding was that
-chunk-type intent gives material lift on rdf-shacl-551-2 (+16% MRR over
+chunk-type intent gives material lift on the RDF/SHACL calibration corpus (+16% MRR over
 BM25) while tag-IDF overlap is near-zero net positive — these tests pin
 the *primitives* so future ranker work can build on a stable foundation.
 """

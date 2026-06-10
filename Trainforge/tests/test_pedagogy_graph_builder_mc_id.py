@@ -4,7 +4,7 @@ Pre-Wave-99 the builder hashed misconception text only (lowercased,
 stripped). The two other call sites (``process_course._build_misconceptions
 _for_graph`` and ``preference_factory._misconception_id``) hash the
 3-input seed ``statement|correction|bloom_level``. Drift across the three
-sites caused 34 ``mc_*`` nodes in the ``rdf-shacl-551-2`` pedagogy graph
+sites caused 34 ``mc_*`` nodes in the RDF/SHACL calibration corpus pedagogy graph
 to disagree with chunk-level + DPO-pair IDs (Wave 97 rebuilt the on-disk
 file as a one-shot).
 

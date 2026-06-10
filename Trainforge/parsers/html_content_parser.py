@@ -9,6 +9,7 @@ Falls back to regex heuristics for non-Courseforge IMSCC packages.
 """
 
 import json as json_mod
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -24,6 +25,13 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.ontology.bloom import detect_bloom_level as _canonical_detect_bloom_level  # noqa: E402
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
+from lib.ontology.lexical_concept_seeds import is_fragment_phrase as _is_fragment_phrase  # noqa: E402
+
+
+def _env_flag(name: str) -> bool:
+    """Truthy-env-var helper. ``1`` / ``true`` / ``yes`` / ``on`` (case-
+    insensitive) are truthy; everything else (incl. unset) is falsey."""
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -495,7 +503,15 @@ class HTMLContentParser:
         page_obj_ref_matches = re.findall(
             r'data-cf-objective-ref="([^"]*)"', html_content
         )
-        page_obj_refs = sorted({r for r in page_obj_ref_matches if r})
+        # LO-anchoring fix (mirror of the section-level scan): union in
+        # ``data-cf-objective-id`` so the page-level fallback set used by
+        # the no-sections chunk code path also sees section-root LO ids.
+        page_obj_id_matches = re.findall(
+            r'data-cf-objective-id="([^"]*)"', html_content
+        )
+        page_obj_refs = sorted(
+            {r for r in (page_obj_ref_matches + page_obj_id_matches) if r}
+        )
 
         # Wave 10: page-level source_references aggregated with precedence
         # JSON-LD (full shape) > data-cf-source-ids (sourceId strings
@@ -873,6 +889,13 @@ class HTMLContentParser:
     _TEMPLATE_TYPE_ATTR_RE = re.compile(
         r'data-cf-template-type="([^"]*)"', re.IGNORECASE
     )
+    # LO-anchoring fix: read ``data-cf-objective-id`` off the enclosing
+    # ``<section>`` open tag (resolved via the section-walkback that
+    # ``_TEMPLATE_TYPE_ATTR_RE`` also uses), not a heading→heading body
+    # slice — the body slice crosses into the NEXT section's open tag.
+    _OBJECTIVE_ID_ATTR_RE = re.compile(
+        r'data-cf-objective-id="([^"]*)"', re.IGNORECASE
+    )
 
     def _extract_sections(self, html: str) -> List[ContentSection]:
         """Extract content sections by heading, including data-cf-* attributes."""
@@ -964,7 +987,41 @@ class HTMLContentParser:
             obj_ref_matches = re.findall(
                 r'data-cf-objective-ref="([^"]*)"', section_html
             )
-            distinct_obj_refs = sorted({r for r in obj_ref_matches if r})
+            # LO-anchoring fix: also harvest ``data-cf-objective-id`` — the
+            # attribute the Courseforge content-generator stamps on every
+            # ``<section>`` root (see e.g. generate_course.py + the page
+            # validator ``Courseforge/scripts/validate_page_objectives.py``,
+            # which reads ``TO-NN`` LO ids from this exact attribute). The
+            # earlier code scanned only ``-ref`` (activity / self-check
+            # cards), so content pages whose only LO signal is the section
+            # ``-id`` attribute surfaced an empty ``objective_refs`` and the
+            # chunker emitted unanchored chunks.
+            #
+            # The ``-id`` lives on the enclosing ``<section>`` open tag,
+            # which precedes the heading — so a body slice (heading→next
+            # heading) would cross into the NEXT section's open tag and
+            # mis-attribute the id. Resolve it the same way ``template_type``
+            # is resolved (Wave 81): walk back to the nearest enclosing
+            # ``<section>`` root and read the attribute there. Belt-and-
+            # braces: also accept the attribute directly on the heading.
+            # Validation against the canonical LO pattern happens downstream
+            # in ``extract_learning_outcome_refs`` so free-text values never
+            # reach a chunk's ``learning_outcome_refs``.
+            obj_id_matches: List[str] = []
+            for sec_open in reversed(section_opens):
+                if sec_open.start() < heading_start:
+                    oid_match = self._OBJECTIVE_ID_ATTR_RE.search(
+                        sec_open.group(1)
+                    )
+                    if oid_match and oid_match.group(1).strip():
+                        obj_id_matches.append(oid_match.group(1).strip())
+                    break
+            heading_oid = self._OBJECTIVE_ID_ATTR_RE.search(attrs_str)
+            if heading_oid and heading_oid.group(1).strip():
+                obj_id_matches.append(heading_oid.group(1).strip())
+            distinct_obj_refs = sorted(
+                {r for r in (obj_ref_matches + obj_id_matches) if r}
+            )
 
             # Wave 10: scan section body + heading attrs for
             # ``data-cf-source-ids`` (comma-separated list of DART
@@ -1138,13 +1195,33 @@ class HTMLContentParser:
     }
 
     def _extract_concepts(self, html: str) -> List[str]:
-        """Extract key concepts from HTML."""
+        """Extract key concepts from HTML.
+
+        Bold/strong spans are harvested as candidate concepts. Some source
+        notebooks (e.g. NVIDIA's) bold whole SENTENCES rather than key terms,
+        which leaks sentence-fragment "concepts" ("Your LLM Can Have",
+        "Congratulations We Now Have") into the KG. When
+        ``TRAINFORGE_FILTER_FRAGMENT_CONCEPTS`` is set, harvested bold spans
+        are passed through the domain-agnostic
+        ``lib.ontology.lexical_concept_seeds.is_fragment_phrase`` filter so
+        clause-shaped junk is dropped while real noun-phrase concepts
+        ("Knowledge Base", "Vector Store") survive. Default off →
+        byte-identical legacy bold-harvest, preserving the RDF/SHACL
+        calibration corpus.
+        """
         concepts = []
+
+        filter_fragments = _env_flag("TRAINFORGE_FILTER_FRAGMENT_CONCEPTS")
 
         # Look for bold/strong terms
         bold_terms = re.findall(r'<(?:strong|b)[^>]*>([^<]+)</(?:strong|b)>', html)
-        concepts.extend([t.strip() for t in bold_terms
-                         if len(t.strip()) > 2 and t.strip().lower() not in self.CONCEPT_STOP_WORDS])
+        for raw in bold_terms:
+            term = raw.strip()
+            if len(term) <= 2 or term.lower() in self.CONCEPT_STOP_WORDS:
+                continue
+            if filter_fragments and _is_fragment_phrase(term):
+                continue
+            concepts.append(term)
 
         # Look for definition terms
         dt_terms = re.findall(r'<dt[^>]*>([^<]+)</dt>', html)

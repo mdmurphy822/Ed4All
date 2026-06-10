@@ -295,7 +295,7 @@ def test_checklist_appended_to_drafting_stdout():
          redirect_stdout(out), redirect_stderr(err):
         rc = cli.main([
             "--curie", target_curie,
-            "--course-code", "rdf-shacl-551-2",
+            "--course-code", "rdf-shacl-demo",
             "--provider", "local",
             "--force-overwrite",
         ])

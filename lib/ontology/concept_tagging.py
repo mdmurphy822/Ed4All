@@ -107,6 +107,45 @@ NON_CONCEPT_TAGS: set = {
 MAX_CONCEPT_TAGS = 20
 
 
+def _is_fragment_superstring(tag: str, anchor: str) -> bool:
+    """True when ``tag`` is a clear sentence-fragment SUPERSTRING of ``anchor``.
+
+    Used by the tech-anchor seeding path: once a flagship anchor slug
+    (``ragas``, ``nim``, ``langchain``) is admitted, any later tag that
+    merely *embeds* that anchor's word(s) inside a longer FRAGMENT-shaped
+    slug (``ragas-short-for-rag``, ``nim-stands-for-nvidia-inference``) is
+    a degraded paraphrase of the clean anchor and should be dropped in its
+    favour.
+
+    Conservative + asymmetric. A tag is dropped only when BOTH hold:
+
+    * it contains the anchor as a whole hyphen-delimited word (so
+      ``reranking`` does not match a chunk's unrelated ``ranking`` tag, and
+      ``nim`` does not swallow ``minimum``); AND
+    * it is itself fragment-shaped — MORE than four hyphen words, which is
+      the signature of a sentence fragment harvested as a slug
+      (``ragas-short-for-rag`` = 4 words is borderline; ``ragas-is-short-
+      for-rag`` = 5 words rejects). Real multi-word domain concepts
+      (``langchain-expression-language-lcel`` = 4 words, ``vector-store``,
+      ``knowledge-base``, ``nvidia-nim-microservices`` = 3 words) stay
+      under the ceiling and survive.
+
+    ``is_fragment_phrase`` from ``lexical_concept_seeds`` is deliberately
+    NOT reused here: it rejects on a single function word and a 5-token
+    ceiling, which false-flags legitimate compound concepts that legitimately
+    embed an anchor word. This helper trades that recall for precision so the
+    dedup never drops a real concept.
+    """
+    if not tag or not anchor or tag == anchor:
+        return False
+    words = tag.split("-")
+    if anchor not in words:
+        return False
+    # >4 hyphen-words is the fragment signature; clean compounds
+    # (3-4 words) are kept.
+    return len(words) > 4
+
+
 def extract_concept_tags(
     text: str,
     item: Dict[str, Any],
@@ -139,13 +178,28 @@ def extract_concept_tags(
         canonicalize_alias,
         classify_concept,
         is_droppable_class,
+        is_scaffolding_noise,
         singular_form,
     )
     # ``normalize_tag`` is a module-level function in process_course;
     # imported here to avoid a circular import at module load time.
     from Trainforge.process_course import normalize_tag
 
+    # Change B: default-OFF scaffolding-noise prune. When ON, tags that
+    # ``is_scaffolding_noise`` flags are treated as droppable in
+    # ``_try_add`` (pros/cons/creating/advanced/...).
+    prune_scaffolding = (
+        os.getenv("TRAINFORGE_PRUNE_SCAFFOLDING_CONCEPTS", "").lower()
+        == "true"
+    )
+
     tags: List[str] = []
+    # Slugs admitted via the tech-anchor seeding path (when
+    # ``TRAINFORGE_SEED_TECH_CONCEPTS`` is on). Drives the fragment-
+    # superstring dedup in ``_try_add``: a later untrusted tag that is a
+    # clear fragment superstring of an already-admitted anchor is dropped
+    # in favour of the clean anchor slug.
+    anchor_slugs: List[str] = []
 
     def _try_add(tag: str, trusted: bool = False) -> bool:
         """Filter + dedup + add. Returns True iff appended.
@@ -176,6 +230,15 @@ def extract_concept_tags(
         tag = canonicalize_alias(tag)
         if tag in tags:
             return False
+        # Fragment-superstring dedup: a non-anchor tag that is a clear
+        # sentence-fragment superstring of an already-admitted tech anchor
+        # (``ragas-short-for-rag`` when ``ragas`` is present) is dropped in
+        # favour of the clean anchor slug. Anchors are seeded FIRST, so the
+        # anchor is already in ``anchor_slugs`` by the time the fragment
+        # surfaces from the key-concept / pattern / seed passes.
+        if not trusted:
+            if any(_is_fragment_superstring(tag, a) for a in anchor_slugs):
+                return False
         # Wave 76: drop classes the extractor should not emit
         # (pedagogical scaffolding, assessment options, LO leaks,
         # instructional artifacts, low-signal stopwords + fragments).
@@ -184,6 +247,11 @@ def extract_concept_tags(
             klass = classify_concept(tag)
             if is_droppable_class(klass):
                 return False
+            # Change B: drop domain-agnostic scaffolding noise behind the
+            # default-OFF prune flag (untrusted tags only — trusted seeds
+            # were deliberately LLM-authored as domain vocabulary).
+            if prune_scaffolding and is_scaffolding_noise(tag):
+                return False
         # Plural-collapse: if the singular form is already emitted,
         # treat this tag as a duplicate.
         sing = singular_form(tag)
@@ -191,6 +259,32 @@ def extract_concept_tags(
             return False
         tags.append(tag)
         return True
+
+    # Wave 82 (Phase C) + tech-anchor under-seeding fix: W3C / RAG
+    # flagship tech-anchor seeding. Behaviour-flagged so legacy corpora
+    # don't shift their tag distributions on rebuild (flag OFF → this
+    # block is skipped entirely and the remaining passes run in their
+    # original order, so default-off output is byte-identical legacy).
+    #
+    # Promoted to run FIRST and as TRUSTED tags: flagship anchors
+    # (``langgraph``, ``react``, ``ragas``, ``faiss``, ``nim``,
+    # ``guardrails``, ``reranking``, ``lcel``, ``langchain``, ``rag``,
+    # …) are the headline concepts a chunk teaches. Seeding them before
+    # the key-concept / pattern / domain-seed passes guarantees they're
+    # counted before the ``MAX_CONCEPT_TAGS`` truncation, and marking
+    # them trusted means the Wave-76 ``is_droppable_class`` filter never
+    # silently strips a real standalone anchor. ``detect_anchors`` is a
+    # bounded, word-boundaried, case-sensitive-acronym matcher, so the
+    # surface form really IS in the chunk text when an anchor lands.
+    if os.getenv("TRAINFORGE_SEED_TECH_CONCEPTS", "").lower() == "true":
+        from lib.ontology.tech_anchors import detect_anchors
+        # Sort for deterministic emit order across runs (``detect_anchors``
+        # returns a set).
+        for slug in sorted(detect_anchors(text or "")):
+            if _try_add(slug, trusted=True):
+                # Canonicalised form is what landed in ``tags``; track it
+                # so the fragment-superstring dedup matches the same slug.
+                anchor_slugs.append(canonicalize_alias(strip_lo_ref_suffix(slug)))
 
     # Key concepts from HTML parser (bold terms, definitions).
     for concept in item.get("key_concepts", []):
@@ -232,13 +326,6 @@ def extract_concept_tags(
             continue
         if any(p.search(text or "") for p in patterns):
             _try_add(canonical, trusted=True)
-
-    # Wave 82 (Phase C): W3C tech-anchor seeding. Behaviour-flagged so
-    # legacy corpora don't shift their tag distributions on rebuild.
-    if os.getenv("TRAINFORGE_SEED_TECH_CONCEPTS", "").lower() == "true":
-        from lib.ontology.tech_anchors import detect_anchors
-        for slug in detect_anchors(text or ""):
-            _try_add(slug)
 
     return tags[:MAX_CONCEPT_TAGS]
 

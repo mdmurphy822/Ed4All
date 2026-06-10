@@ -141,7 +141,7 @@ def test_multi_anchor_text():
 
 
 # ---------------------------------------------------------------------------
-# Wave 84 — additional anchors from the rdf-shacl-551-2 weak-chunk audit.
+# Wave 84 — additional anchors from the RDF/SHACL calibration corpus weak-chunk audit.
 # ---------------------------------------------------------------------------
 
 
@@ -246,6 +246,112 @@ class TestWave84TurtlePrefix:
         assert "turtle-prefix" in detect_anchors("PREFIX foaf: <http://...>")
 
 
+# ---------------------------------------------------------------------------
+# RAG / agentic-AI anchors (RAG-agents course audit).
+# ---------------------------------------------------------------------------
+
+
+class TestRagAgentAnchors:
+    """The RAG-agents course KG was missing flagship concepts as nodes:
+    langgraph, react, agentic/self/corrective RAG, reranking, nemo,
+    guardrails, tool-calling, nim, rag. Detect them — without spurious
+    casing/substring false positives."""
+
+    def test_langgraph_detected(self):
+        assert "langgraph" in detect_anchors("Build the agent in LangGraph.")
+
+    def test_langchain_detected(self):
+        assert "langchain" in detect_anchors("Compose the chain with LangChain.")
+
+    def test_lcel_acronym_detected(self):
+        assert "lcel" in detect_anchors("Pipe runnables with LCEL.")
+
+    def test_lcel_full_name_detected(self):
+        assert "lcel" in detect_anchors(
+            "The LangChain Expression Language is declarative."
+        )
+
+    def test_react_agent_pattern_detected(self):
+        assert "react" in detect_anchors("Use the ReAct pattern for the agent.")
+
+    def test_react_reason_act_observe_detected(self):
+        assert "react" in detect_anchors(
+            "The reason-act-observe loop drives tool use."
+        )
+
+    def test_ragas_eval_framework_detected(self):
+        assert "ragas" in detect_anchors("Evaluate retrieval with RAGAS.")
+
+    def test_agentic_rag_detected(self):
+        assert "agentic-rag" in detect_anchors("This is an agentic RAG system.")
+
+    def test_self_rag_detected(self):
+        assert "self-rag" in detect_anchors("Self-RAG critiques its own output.")
+        assert "self-rag" in detect_anchors("A self RAG loop with reflection.")
+
+    def test_corrective_rag_detected(self):
+        assert "corrective-rag" in detect_anchors(
+            "Corrective RAG grades the retrieved docs."
+        )
+
+    def test_crag_acronym_detected(self):
+        assert "corrective-rag" in detect_anchors("CRAG falls back to web search.")
+
+    def test_reranking_detected(self):
+        assert "reranking" in detect_anchors("Apply reranking to the candidates.")
+        assert "reranking" in detect_anchors("A cross-encoder re-ranking stage.")
+        assert "reranking" in detect_anchors("The reranker scores each passage.")
+
+    def test_guardrails_detected(self):
+        assert "guardrails" in detect_anchors("Add a guardrail to the dialog.")
+        assert "guardrails" in detect_anchors("Configure guardrails on output.")
+
+    def test_nemo_detected_case_sensitive(self):
+        assert "nemo" in detect_anchors("Deploy NeMo Guardrails for safety.")
+
+    def test_tool_calling_detected(self):
+        assert "tool-calling" in detect_anchors("The model supports tool calling.")
+        assert "tool-calling" in detect_anchors("Use function calling for actions.")
+
+    def test_faiss_detected(self):
+        assert "faiss" in detect_anchors("Index the vectors in FAISS.")
+
+    def test_nim_detected_case_sensitive(self):
+        assert "nim" in detect_anchors("Deploy on NVIDIA NIM.")
+
+    def test_rag_standalone_acronym_detected(self):
+        assert "rag" in detect_anchors("Build a RAG pipeline.")
+
+    def test_rag_full_name_detected(self):
+        assert "rag" in detect_anchors(
+            "Retrieval-augmented generation grounds the LLM."
+        )
+
+    # --- false-positive guards -------------------------------------------
+
+    def test_react_js_library_does_not_fire(self):
+        # The JS UI library "React" (capital-R, lowercase-act) is NOT the
+        # agent pattern — the case-sensitive ``ReAct`` token must miss it.
+        assert "react" not in detect_anchors("the React.js frontend renders fast")
+        assert "react" not in detect_anchors("chemicals react in the beaker")
+
+    def test_rag_substring_does_not_fire(self):
+        # Case-sensitive word-boundaried ``RAG`` must reject substrings and
+        # lowercase English words.
+        assert "rag" not in detect_anchors("storage foraging")
+        assert "rag" not in detect_anchors("he dragged the rag across the floor")
+
+    # --- realistic multi-anchor chunk ------------------------------------
+
+    def test_multi_anchor_rag_chunk(self):
+        text = (
+            "We build the agent in LangGraph using the ReAct pattern, "
+            "then evaluate with RAGAS"
+        )
+        hits = detect_anchors(text)
+        assert hits == {"langgraph", "react", "ragas"}
+
+
 def test_anchor_slugs_returns_sorted_tuple():
     slugs = anchor_slugs()
     assert slugs == tuple(sorted(slugs))
@@ -253,6 +359,25 @@ def test_anchor_slugs_returns_sorted_tuple():
     # Wave 84 additions: trig, n-quads, rdf-xml, iri, literal, datatype,
     # blank-node, rdf-dataset, node-shape, property-shape, subclassof,
     # subpropertyof, rdf-type, turtle-prefix. Total = 23.
+    # RAG-course additions: langgraph, langchain, lcel, react, ragas,
+    # agentic-rag, self-rag, corrective-rag, reranking, guardrails, nemo,
+    # tool-calling, faiss, nim, rag.
     assert len(slugs) >= 9, f"Lost a Wave 82 anchor: only {len(slugs)} present"
     assert "rdf" in slugs
     assert "same-as" in slugs
+    # RAG-course flagship anchors present.
+    for slug in (
+        "langgraph",
+        "react",
+        "ragas",
+        "agentic-rag",
+        "self-rag",
+        "corrective-rag",
+        "reranking",
+        "guardrails",
+        "nemo",
+        "tool-calling",
+        "nim",
+        "rag",
+    ):
+        assert slug in slugs, f"missing RAG-agent anchor: {slug}"

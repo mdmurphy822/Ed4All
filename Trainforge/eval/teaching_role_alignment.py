@@ -48,7 +48,7 @@ class TeachingRoleAlignmentEvaluator:
     # or via the workflow gate's ``inputs.expected_modes`` block.
     #
     # Wave 138b: ``procedure`` was added per the plan's Decision Point
-    # Q2 (operator-recommended). The rdf-shacl-551-2 corpus shows
+    # Q2 (operator-recommended). The RDF/SHACL calibration corpus shows
     # ``procedure`` chunks split as elaborate=11, introduce=3,
     # reinforce=3, transfer=1 — elaborate is the dominant role at
     # 11/18 (~0.61). The 0.70 floor is intentionally aspirational
@@ -57,7 +57,7 @@ class TeachingRoleAlignmentEvaluator:
     # alignment drift before it becomes structural.
     #
     # ``example`` is intentionally absent. Decision Point Q3:
-    # the rdf-shacl-551-2 distribution is bimodal (elaborate=11,
+    # the RDF/SHACL calibration corpus distribution is bimodal (elaborate=11,
     # reinforce=10) with no confident expected mode. Re-evaluate when
     # a second corpus carries a confident mode.
     DEFAULT_EXPECTED_MODES: Dict[str, Dict[str, Any]] = {
@@ -100,8 +100,7 @@ class TeachingRoleAlignmentEvaluator:
         expected-mode table.
 
         Returns a dict matching the frozen plan shape — see the module
-        docstring + ``plans/eval-driven-teaching-role-alignment/plan.md``
-        for the canonical schema.
+        docstring for the canonical schema.
         """
         # Group teaching_role values per content_type_label. Chunks
         # missing content_type_label are skipped — there's nothing to

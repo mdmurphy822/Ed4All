@@ -36,7 +36,7 @@ authored YAML strings).
 Usage::
 
     python -m Trainforge.scripts.backfill_form_data \\
-        --course-code rdf-shacl-551-2 \\
+        --course-code <course-slug> \\
         --family rdf_shacl \\
         --limit 5 \\
         --by frequency

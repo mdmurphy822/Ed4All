@@ -1,22 +1,23 @@
 """Tests for ``MCP/tools/tutoring_tools.py`` (Wave 77).
 
-Smoke tests against a real LibV2 archive. The original Wave 77 fixture
-(``rdf-shacl-550``) was authored against a corpus that was never checked
-in; the tests have been rebound to ``rdf-shacl-551-2`` (the in-tree
-RDF/SHACL corpus) and the assertions tightened to guard the SHAPE of
-the output rather than the specific member counts (which differ by
-corpus regeneration).
+Smoke tests against a real LibV2 archive. The assertions guard the SHAPE
+of the output rather than specific member counts (which differ by corpus
+regeneration). The integration corpus is opt-in: point
+``ED4ALL_TUTORING_FIXTURE_SLUG`` at a course slug under
+``$ED4ALL_LIBV2_ROOT/courses/`` — no real course slug is hardcoded here.
 
 Some assertions still depend on the misconception index being populated
 (non-empty ``misconceptions[]`` envelopes in the chunkset). The
-module-level ``pytestmark`` skips the whole file cleanly when the index
-is empty — e.g. when ``imscc_chunks/chunks.jsonl`` hasn't been
-backfilled and the legacy ``corpus/chunks.jsonl`` isn't reachable
-through the Phase 7c resolver. Whoever rehydrates the corpus (or wires
-``rdf-shacl-550``) will see the assertions fire automatically.
+module-level ``pytestmark`` skips the whole file cleanly when the env var
+is unset or the index is empty — e.g. when ``imscc_chunks/chunks.jsonl``
+hasn't been backfilled and the legacy ``corpus/chunks.jsonl`` isn't
+reachable through the Phase 7c resolver. Whoever configures the corpus
+will see the assertions fire automatically.
 """
 
 from __future__ import annotations
+
+import os
 
 import pytest
 
@@ -28,14 +29,15 @@ from MCP.tools.tutoring_tools import (
 )
 
 
-SLUG = "rdf-shacl-551-2"
+SLUG = os.environ.get("ED4ALL_TUTORING_FIXTURE_SLUG")
 
 
 pytestmark = pytest.mark.skipif(
-    not load_misconception_index(SLUG).items,
+    SLUG is None or not load_misconception_index(SLUG).items,
     reason=(
-        f"LibV2 archive {SLUG!r} has no reachable misconception index "
-        "(check imscc_chunks/chunks.jsonl is populated)."
+        "tutoring integration corpus not configured "
+        "(set ED4ALL_TUTORING_FIXTURE_SLUG to a slug with a reachable, "
+        "populated misconception index)."
     ),
 )
 

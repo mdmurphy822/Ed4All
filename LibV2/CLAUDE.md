@@ -117,21 +117,21 @@ the prior answer is suspect).
 # Ask a question scoped to one course (record lands at
 # courses/<slug>/queries/<query_id>.json):
 libv2 ask "How does SHACL distinguish NodeShape from PropertyShape?" \
-  --course rdf-shacl-551-2 --limit 10
+  --course demo-course-1 --limit 10
 
 # Cross-course query (record lands at catalog/queries/<query_id>.json):
 libv2 ask "compare UDL vs differentiated instruction" --method hybrid
 
 # Attach the synthesized answer to a previously-asked query:
-libv2 answer q_20260426_204818_7c65277e --course rdf-shacl-551-2 \
+libv2 answer q_20260426_204818_7c65277e --course demo-course-1 \
   "<synthesized answer text>"
 
 # Browse the log:
-libv2 queries list --course rdf-shacl-551-2
-libv2 queries show q_20260426_204818_7c65277e --course rdf-shacl-551-2
+libv2 queries list --course demo-course-1
+libv2 queries show q_20260426_204818_7c65277e --course demo-course-1
 
 # Force fresh retrieval (skip cache):
-libv2 ask "How does owl:sameAs entail?" --course rdf-shacl-551-2 --force
+libv2 ask "How does owl:sameAs entail?" --course demo-course-1 --force
 ```
 
 Default retrieval method is `bm25+intent`; override with `--method
@@ -201,6 +201,86 @@ Each course directory (`courses/[slug]/`) contains:
 - `quality/` — Quality metrics and assessment reports.
 - `source/` — Source artifacts (IMSCC, PDF, HTML).
 - `training_specs/` — Training specification files.
+- `vector_index/` — On-device semantic vector index (built by `libv2 vector-index build`). Three artifacts: `embeddings.npy` (float32 `[N, dim]`, C-order, L2-normalized rows; row `i` ↔ `id_map[i]`), `id_map.json` (load-bearing chunk-id order), and `manifest.json` (provenance manifest per `schemas/library/vector_index_manifest.schema.json` — embedding provider/kind/model/dim, `source_chunks_sha256`, `embeddings_sha256`, `id_map_sha256`, `chunkset_kind`, `text_field_policy`, and the asymmetric-retrieval `document_prefix` / `query_prefix` recorded for replay — passages are embedded with `document_prefix` prepended at build time, queries get `query_prefix` at search time; both empty for symmetric models). Pure-numpy exact cosine search; backs `libv2 retrieve --engine semantic` / `--engine hybrid-rrf`. The query path is fail-closed: a missing index raises `SemanticIndexMissing`, a chunkset-sha drift raises `SemanticIndexStale`, and a `provider="fake"` manifest is refused unless `ED4ALL_EMBEDDING_ALLOW_FAKE=true` — never a silent BM25 fallback. Verified by `lib/validators/vector_index_manifest.py::VectorIndexManifestValidator` (`libv2 vector-index verify`).
+- `retrieval_eval/` — Retrieval gold sets + benchmark reports. `gold_set.json` (WS1-authored; `schemas/retrieval/gold_set.schema.json`) and `benchmark_<ts>.json` siblings emitted by `libv2 retrieval-benchmark` (BM25 vs semantic vs hybrid-rrf Recall@{1,3,5,10} + MRR + latency + per-engine deltas vs the BM25 baseline). Distinct from the SLM-eval `eval/` dir.
+
+#### Semantic retrieval + vector index
+
+The semantic retrieval path is fail-closed end to end (no lexical fallback ever masquerades as semantic). Operator surface:
+
+```bash
+# Build (or rebuild) the per-course on-device vector index. Downloads happen
+# here (provision-time) unless --offline; the query path is always offline.
+libv2 vector-index build --course <slug> [--provider st] [--model <id>] \
+  [--chunkset imscc|dart] [--device cpu|cuda] [--batch-size N] [--offline] [--force]
+libv2 vector-index status --course <slug>     # manifest summary + staleness check
+libv2 vector-index verify --course <slug>     # full sha re-verification (exit 1 on drift)
+
+# Query with the semantic / hybrid-rrf engine (default lexical = BM25):
+libv2 retrieve "<query>" --course <slug> --engine semantic
+libv2 retrieve "<query>" --course <slug> --engine hybrid-rrf
+libv2 multi-retrieve "<query>" --course <slug> --engine semantic
+
+# Benchmark BM25 vs semantic vs hybrid-rrf over a course gold set. Emits a
+# human-readable comparison table + a benchmark_<ts>.json report under
+# retrieval_eval/. --build-index provisions the canonical index inline.
+libv2 retrieval-benchmark --course <slug> [--engines bm25,semantic,hybrid-rrf] \
+  [--gold-set PATH] [--k 1,3,5,10] [--limit N] [--out PATH] \
+  [--build-index] [--provider st] [--model <id>]
+
+# Multi-model sweep: build one temp index per model
+# (vector_index.bench-<tag>/ alongside the canonical dir), benchmark each,
+# and write one report per model (config.models records the requested list).
+# The canonical vector_index/ is preserved across the sweep; temp dirs are
+# cleaned unless --keep is passed. Mutually exclusive with --model.
+libv2 retrieval-benchmark --course <slug> \
+  --models BAAI/bge-base-en-v1.5,BAAI/bge-large-en-v1.5 [--keep]
+```
+
+Embedding providers are registry entries in `lib/embedding/providers.py` (kinds `st` / `openai-embeddings` / `fake`), selected via `ED4ALL_EMBEDDING_PROVIDER` (default `st`). Determinism: same machine + venv + provider + model + `device=cpu` + batch size ⇒ byte-identical `embeddings.npy` / `id_map.json`.
+
+#### Grounded answer + citation-back
+
+`libv2 answer-grounded` runs the fully-automated grounded-answer pipeline
+(retrieve → calibrated refusal → local-model compose → WS1 citation gate),
+distinct from the Claude-in-the-loop `ask`/`answer` log. The single entry
+point owns the refusal policy and the citation gate; the gate is NOT bypassable
+from the CLI by design (emitting an ungrounded claim is the
+hallucination-by-construction path). Local-only: no cloud calls ever — the
+answer backend is loopback-enforced (`ED4ALL_ANSWER_PROVIDER` resolving to a
+non-loopback base_url raises `AnswerProviderNotLocal`).
+
+```bash
+# Answer one course question, grounded + citation-gated:
+libv2 answer-grounded "What is a SHACL NodeShape?" --course demo-course-1
+libv2 answer-grounded "Explain RRF fusion" -c demo-course-2 --engine semantic
+libv2 answer-grounded "Define a derivative" -c demo-course-3 --json --with-groundedness
+
+# --engine auto picks semantic when a vector index exists, else lexical.
+# --log persists the Q&A under courses/<slug>/queries/ (answered_by=grounded:<model_id>).
+
+# Eval harness over a course gold set (BM25/semantic) — emits
+# grounded_answer_eval_<ts>.json under retrieval_eval/:
+libv2 answer-eval --course demo-course-1 --engine lexical
+
+# Calibrate the refusal threshold for one (course, engine) — measures
+# answerable (gold-set) vs unanswerable (refusal-probe) score distributions,
+# emits refusal_calibration.json under retrieval_eval/:
+libv2 refusal-calibrate --course demo-course-1 --engine semantic
+```
+
+`answer-grounded` exit codes: **0** answered (or answered-with-warnings), **2**
+refused (low-confidence or model-side `not_in_course` — an honest "no"), **3**
+blocked by the citation gate / invalid-citation contradiction (answer withheld),
+**1** typed backend/index/compose failure (operator guidance names the
+`ED4ALL_ANSWER_*` env triple). `answer-eval` / `refusal-calibrate` are thin
+delegations to the `python -m lib.retrieval.{grounded_eval,refusal}` entry
+points (same logic, one CLI; `answer-eval` passes through 3 = pipeline absent,
+2 = gold refused, 0 = ok). The grounded backend is local-only (loopback); set
+`ED4ALL_ANSWER_PROVIDER` / `ED4ALL_ANSWER_MODEL` / `ED4ALL_ANSWER_TIMEOUT_SECONDS`
+(default `local` / `LOCAL_SYNTHESIS_MODEL` chain / `120`). `retrieval_eval/`
+artifacts owned by this surface: `refusal_probes.json`, `refusal_calibration.json`,
+`grounded_answer_eval_*.json`, `groundedness_review_sample.json`.
 
 #### Chunkset architecture cross-links
 
@@ -254,6 +334,14 @@ libv2 eval generate <slug>                               # Generate evaluation q
 libv2 eval run <slug>                                    # Run retrieval evaluation
 libv2 eval compare <baseline.json> <comparison.json>     # Compare evaluation results
 libv2 validate indexes                                   # Validate index consistency
+libv2 vector-index build --course <slug>                 # Build on-device semantic vector index
+libv2 vector-index status --course <slug>                # Index manifest summary + staleness
+libv2 vector-index verify --course <slug>                # Full sha re-verification (exit 1 on drift)
+libv2 retrieve "<q>" --course <slug> --engine semantic   # Semantic (vs default lexical/BM25)
+libv2 retrieval-benchmark --course <slug>                # BM25 vs semantic vs hybrid-rrf benchmark
+libv2 answer-grounded "<q>" --course <slug>              # Grounded + citation-gated answer (local-only)
+libv2 answer-eval --course <slug>                        # Grounded-answer eval harness over the gold set
+libv2 refusal-calibrate --course <slug>                  # Calibrate the refusal threshold (measure-then-pin)
 ```
 
 ### ChunkFilter notes

@@ -1,13 +1,11 @@
-"""CURIE extraction helpers (Wave 135b hoist from
-``lib/validators/curie_preservation.py``).
+"""CURIE extraction helpers.
 
-Wave 135b moved these helpers out of the validator module so the
+These helpers were hoisted out of the validator layer (Wave 135b) so the
 synthesis-side force-injection paths in ``Trainforge/generators/`` can
 import them without inverting the layering (generators MUST NOT depend
-on validators). The validator now re-exports the symbols from this
-module, so existing tests that import ``CURIE_REGEX`` /
-``EXCLUDED_PREFIXES`` from ``lib.validators.curie_preservation``
-continue to resolve.
+on validators). This module is the single source of truth for
+``CURIE_REGEX`` / ``EXCLUDED_PREFIXES`` / ``extract_curies``; import them
+from ``lib.ontology.curie_extraction`` directly.
 
 Behavior is unchanged from the Wave 131 implementation:
 

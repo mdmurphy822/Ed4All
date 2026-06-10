@@ -1,4 +1,4 @@
-"""Phase 1.2 of plans/rdf-shacl-enrichment-2026-04-26.md.
+"""Phase 1.2 — pedagogy-graph JSON-LD round-trip bridge.
 
 Verifies that ``schemas/context/pedagogy_graph_v1.jsonld`` is a faithful
 round-trip bridge between the JSON-shaped ``pedagogy_graph.json`` (emitted by
@@ -8,7 +8,8 @@ cross-artifact joins against ``concept_graph.json`` work via the
 
 Phase 1 is consumer-side only: the Trainforge emit pipeline does not yet inject
 the ``@context``.  The test layers it on top of the existing artifact at
-``LibV2/courses/rdf-shacl-551-2/graph/pedagogy_graph.json``, parses via
+``<course>/graph/pedagogy_graph.json`` for whichever LibV2 course (under
+``ED4ALL_LIBV2_ROOT`` / ``LibV2/courses/``) ships one, parses via
 ``pyld`` + ``rdflib``, and asserts:
 
 * triple count is non-trivial (sanity floor of 200)
@@ -32,6 +33,7 @@ which is a different artifact.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -45,19 +47,35 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+
+def _libv2_courses_root() -> Path:
+    """LibV2 courses dir, honoring the ``ED4ALL_LIBV2_ROOT`` override."""
+    root = os.environ.get("ED4ALL_LIBV2_ROOT")
+    base = Path(root) if root else PROJECT_ROOT / "LibV2"
+    return base / "courses"
+
+
+def _discover_graph_dir() -> Path | None:
+    """First ``<course>/graph/`` dir carrying a ``pedagogy_graph.json``."""
+    courses_root = _libv2_courses_root()
+    if not courses_root.is_dir():
+        return None
+    for course_dir in sorted(courses_root.iterdir()):
+        graph_dir = course_dir / "graph"
+        if (graph_dir / "pedagogy_graph.json").exists():
+            return graph_dir
+    return None
+
+
 PED_CONTEXT_PATH = (
     PROJECT_ROOT / "schemas" / "context" / "pedagogy_graph_v1.jsonld"
 )
 CON_CONTEXT_PATH = (
     PROJECT_ROOT / "schemas" / "context" / "concept_graph_semantic_v1.jsonld"
 )
+_GRAPH_DIR = _discover_graph_dir()
 PED_ARTIFACT_PATH = (
-    PROJECT_ROOT
-    / "LibV2"
-    / "courses"
-    / "rdf-shacl-551-2"
-    / "graph"
-    / "pedagogy_graph.json"
+    _GRAPH_DIR / "pedagogy_graph.json" if _GRAPH_DIR is not None else None
 )
 # concept_graph.json (NOT concept_graph_semantic.json) is the bare-slug
 # co-occurrence graph; both artifacts use the same bare-slug Concept IDs that
@@ -66,12 +84,7 @@ PED_ARTIFACT_PATH = (
 # concept_graph.json because it's the simpler artifact and the join-key proof
 # does not need the semantic graph's per-rule provenance.
 CON_ARTIFACT_PATH = (
-    PROJECT_ROOT
-    / "LibV2"
-    / "courses"
-    / "rdf-shacl-551-2"
-    / "graph"
-    / "concept_graph.json"
+    _GRAPH_DIR / "concept_graph.json" if _GRAPH_DIR is not None else None
 )
 
 ED4ALL_VOCAB = "https://ed4all.io/vocab/"
@@ -79,8 +92,8 @@ ED4ALL_EDGE_TYPE_PRED = ED4ALL_VOCAB + "edgeType"
 ED4ALL_EDGE_SOURCE_PRED = ED4ALL_VOCAB + "edgeSource"
 ED4ALL_EDGE_TARGET_PRED = ED4ALL_VOCAB + "edgeTarget"
 ED4ALL_CONCEPT_BASE = "https://ed4all.io/concept/"
-PED_DOC_IRI = "https://ed4all.io/pedagogy/rdf-shacl-551-2"
-CON_DOC_IRI = "https://ed4all.io/concept-graph/rdf-shacl-551-2"
+PED_DOC_IRI = "https://ed4all.io/pedagogy/demo-course"
+CON_DOC_IRI = "https://ed4all.io/concept-graph/demo-course"
 
 pyld = pytest.importorskip("pyld")
 rdflib = pytest.importorskip("rdflib")
@@ -101,11 +114,12 @@ def _load_context(path: Path) -> dict:
     return ctx
 
 
-def _load_artifact(path: Path) -> dict:
-    if not path.exists():
+def _load_artifact(path: Path | None) -> dict:
+    if path is None or not path.exists():
         pytest.skip(
-            f"Reference artifact missing: {path} — Phase 1 round-trip test "
-            f"depends on the rdf-shacl-551-2 corpus being present."
+            "No LibV2 course with graph/pedagogy_graph.json present — Phase 1 "
+            "round-trip test depends on a real corpus under "
+            "ED4ALL_LIBV2_ROOT / LibV2/courses/."
         )
     with path.open() as f:
         return json.load(f)
@@ -165,7 +179,7 @@ def concept_graph(concept_context, concept_artifact) -> "rdflib.Graph":
 
 def test_triple_count_floor(pedagogy_graph) -> None:
     """Sanity floor: layered context must produce >> 200 triples for the
-    rdf-shacl-551-2 corpus's ~1059 nodes / ~8.7k edges shape.
+    RDF/SHACL calibration corpus's ~1059 nodes / ~8.7k edges shape.
 
     Empirically the artifact yields ~47k triples; we assert the floor at 200
     to keep the test resilient to corpus shape changes (smaller fixtures,
@@ -356,7 +370,7 @@ def test_cross_artifact_concept_iri_overlap(
     SPARQL query joining the two artifacts on concept identity would never
     fire.
 
-    Empirically the rdf-shacl-551-2 corpus has 672 concept IRIs in
+    Empirically the RDF/SHACL calibration corpus has 672 concept IRIs in
     common; we assert >= 1 to keep the test resilient to corpus shape
     changes (smaller fixtures) while still gating the join.
     """

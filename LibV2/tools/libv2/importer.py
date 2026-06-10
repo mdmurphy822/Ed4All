@@ -22,6 +22,12 @@ from .models.course import (
 )
 from .validator import ValidationError, validate_course_strict
 
+# Canonical LibV2 course-slug helper (single source of truth). The LibV2
+# package is always invoked from the repo root (``python -m LibV2.tools...``),
+# so ``lib`` is importable; ``lib.ontology.slugs`` pulls only ``re`` so this
+# adds no heavy dependency.
+from lib.ontology.slugs import libv2_course_slug
+
 logger = logging.getLogger(__name__)
 
 # Wave 93 — canonical list of top-level subdirs to mirror from a Trainforge /
@@ -57,24 +63,16 @@ _COPIED_SUBDIRS: list[str] = [
 
 
 def slugify(title: str, max_length: int = 50) -> str:
-    """Convert a title to a URL-safe slug."""
-    # Convert to lowercase
-    slug = title.lower()
+    """Convert a title to a URL-safe slug.
 
-    # Remove articles from the beginning
-    slug = re.sub(r"^(a|an|the)\s+", "", slug)
-
-    # Replace special characters and spaces with hyphens
-    slug = re.sub(r"[^a-z0-9]+", "-", slug)
-
-    # Remove leading/trailing hyphens
-    slug = slug.strip("-")
-
-    # Truncate to max length
-    if len(slug) > max_length:
-        slug = slug[:max_length].rstrip("-")
-
-    return slug
+    Thin delegation to ``lib.ontology.slugs.libv2_course_slug`` — the single
+    source of truth for the LibV2 archive-directory slug. The behaviour here
+    is the contract (``gui/services/course_service.py`` and
+    ``Trainforge/train_course.py`` both resolve archive dirs against it), so
+    the canonical implementation was lifted out verbatim and both call sites
+    now share it. Output is byte-identical to the prior inline implementation.
+    """
+    return libv2_course_slug(title, max_length=max_length)
 
 
 def derive_course_slug(
@@ -86,11 +84,11 @@ def derive_course_slug(
     """Derive a LibV2 course slug from ``course_code`` + ``course_title``.
 
     Bug observed (2026-04-24): ``python -m Trainforge.process_course
-    --import-to-libv2`` produced ``rdf-shacl-550-rdf-shacl-550`` because
+    --import-to-libv2`` produced a doubled ``<code>-<code>`` slug because
     Courseforge writes the IMSCC manifest title as ``f"{course_code}:
     {course_title}"`` and Trainforge's IMSCC parser falls back to
     ``course_code`` when the manifest carries no usable title — so the
-    title round-tripped as ``"RDF_SHACL_550: RDF_SHACL_550"`` and
+    title round-tripped as ``"DEMO_PREP_101: DEMO_PREP_101"`` and
     ``slugify`` doubled the code.
 
     This helper collapses that pattern: when ``course_title`` starts with
@@ -100,7 +98,7 @@ def derive_course_slug(
     distinct title remains, else just ``slugify(course_code)``.
 
     Args:
-        course_code: Stable course identifier (e.g. ``"RDF_SHACL_550"``).
+        course_code: Stable course identifier (e.g. ``"DEMO_PREP_101"``).
         course_title: Human-friendly title from the source manifest.
         fallback: Used when both code + title are empty (e.g. the source
             directory name).
@@ -322,8 +320,8 @@ def import_course(
     sf_manifest_data = read_sourceforge_manifest(source_dir)
 
     # Generate slug. Use the dedupe-aware helper so titles like
-    # ``"RDF_SHACL_550: RDF_SHACL_550"`` (Courseforge IMSCC manifest +
-    # Trainforge fallback) don't collapse into ``rdf-shacl-550-rdf-shacl-550``.
+    # ``"DEMO_PREP_101: DEMO_PREP_101"`` (Courseforge IMSCC manifest +
+    # Trainforge fallback) don't collapse into ``demo-prep-101-demo-prep-101``.
     title = sf_manifest_data.get("course_title", source_dir.name)
     course_code = sf_manifest_data.get("course_id") or ""
     slug = derive_course_slug(

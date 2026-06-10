@@ -59,8 +59,8 @@ def _build_eval_report() -> dict:
 
 def _build_model_card() -> dict:
     return {
-        "model_id": "rdf-shacl-551-2-qwen2-5-1-5b-01e31284",
-        "course_slug": "rdf-shacl-551-2",
+        "model_id": "demo-course-1-qwen2-5-1-5b-01e31284",
+        "course_slug": "demo-course-1",
         "base_model": {
             "name": "qwen2.5-1.5b",
             "revision": "main",
@@ -101,9 +101,9 @@ def test_eval_report_to_model_index_emits_at_least_three_entries():
     report = _build_eval_report()
     results = eval_report_to_model_index(
         eval_report=report,
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
-        model_id="rdf-shacl-551-2-qwen2-5-1-5b-01e31284",
+        model_id="demo-course-1-qwen2-5-1-5b-01e31284",
     )
     assert len(results) >= 3, (
         f"Expected >=3 model-index entries; got {len(results)}: {results}"
@@ -125,14 +125,14 @@ def test_eval_report_to_model_index_dataset_namespace():
     report = _build_eval_report()
     results = eval_report_to_model_index(
         eval_report=report,
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
     )
     for entry in results:
         ds = entry["dataset"]
         # Wave 103: dataset namespace flipped from "ed4all" to "ed4all-bench".
-        assert ds["type"] == "ed4all-bench/rdf-shacl-551-2"
+        assert ds["type"] == "ed4all-bench/demo-course-1"
         assert ds["split"] == "holdout"
 
 
@@ -143,7 +143,7 @@ def test_eval_report_to_model_index_metric_types():
     report = _build_eval_report()
     results = eval_report_to_model_index(
         eval_report=report,
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
     )
@@ -168,9 +168,9 @@ def test_write_hf_readme_renders_yaml_frontmatter(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
-        model_id="rdf-shacl-551-2-qwen2-5-1-5b-01e31284",
+        model_id="demo-course-1-qwen2-5-1-5b-01e31284",
         model_card=_build_model_card(),
         base_model_repo="Qwen/Qwen2.5-1.5B",
     )
@@ -198,9 +198,9 @@ def test_write_hf_readme_round_trip_metric_values(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=report,
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
-        model_id="rdf-shacl-551-2-qwen2-5-1-5b-01e31284",
+        model_id="demo-course-1-qwen2-5-1-5b-01e31284",
         model_card=_build_model_card(),
     )
     text = readme_path.read_text(encoding="utf-8")
@@ -216,7 +216,7 @@ def test_write_hf_readme_round_trip_metric_values(tmp_path):
     assert "model-index" in front
     assert isinstance(front["model-index"], list)
     assert front["model-index"][0]["name"] == (
-        "rdf-shacl-551-2-qwen2-5-1-5b-01e31284"
+        "demo-course-1-qwen2-5-1-5b-01e31284"
     )
 
     # Walk the metrics and round-trip the headline values.
@@ -261,7 +261,7 @@ def test_write_hf_readme_includes_provenance_hashes(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=card,
@@ -287,7 +287,7 @@ def test_write_hf_readme_tags_for_rdf_shacl_slug(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="rdf-shacl-demo",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -363,7 +363,7 @@ def test_readme_includes_thesis_statement(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -384,7 +384,7 @@ def test_readme_renders_headline_4row_table(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -407,7 +407,7 @@ def test_readme_renders_qualitative_column_when_provided(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -424,7 +424,7 @@ def test_readme_renders_retrieval_method_5row_table(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -452,7 +452,7 @@ def test_readme_includes_reproducing_section(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=card,
@@ -470,7 +470,7 @@ def test_readme_includes_limitations_with_synthesis_drift_note(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -490,7 +490,7 @@ def test_readme_opens_with_headline_sentence(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -516,7 +516,7 @@ def test_readme_opens_with_headline_result_callout(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -541,7 +541,7 @@ def test_readme_metric_table_includes_reduction_row(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -560,7 +560,7 @@ def test_headline_result_block_falls_back_when_ablation_missing(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -588,7 +588,7 @@ def test_readme_renders_diagnostic_findings_when_provided(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -607,7 +607,7 @@ def test_readme_omits_diagnostic_section_when_no_findings(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -624,7 +624,7 @@ def test_readme_tags_include_ed4all_bench_branding(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -646,7 +646,7 @@ def test_readme_includes_hallucination_rate_row(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=report,
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),
@@ -723,7 +723,7 @@ def test_hf_tags_fallback_to_substring_sniff_when_manifest_missing(tmp_path):
     readme_path = write_hf_readme(
         run_dir=tmp_path,
         eval_report=_build_eval_report(),
-        course_slug="rdf-shacl-551-2",
+        course_slug="rdf-shacl-demo",
         base_model="qwen2.5-1.5b",
         model_id="m-01",
         model_card=_build_model_card(),

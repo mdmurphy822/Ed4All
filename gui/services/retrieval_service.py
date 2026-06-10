@@ -191,7 +191,10 @@ def _result_to_dict(result: Any) -> Dict[str, Any]:
         to_dict = getattr(result, "to_dict", None)
         src = to_dict() if callable(to_dict) else result.__dict__
     out: Dict[str, Any] = {
-        "score": float(src.get("score", 0.0) or 0.0),
+        # multi-query (FusedResult) emits the RRF score as ``fused_score``;
+        # single-query (RetrievalResult) uses ``score``. Fall back so multi-mode
+        # results don't all render as 0.0 in the UI.
+        "score": float(src.get("score", src.get("fused_score", 0.0)) or 0.0),
         "text": src.get("text", ""),
         "chunk_id": src.get("chunk_id"),
         "course_slug": src.get("course_slug"),
@@ -280,7 +283,9 @@ def multi_retrieve(
     from tools.libv2.multi_retriever import MultiQueryRetriever  # noqa: PLC0415
 
     limit = _clamp_top_k(top_k)
-    retriever = MultiQueryRetriever(repo_root=root)
+    # Scope to the selected course so retrieval bypasses the (often stale)
+    # master catalog and uses the file-aware single-course chunk resolver.
+    retriever = MultiQueryRetriever(repo_root=root, course_slug=slug)
     fusion_result, decomposed = retriever.retrieve_with_decomposition(
         query=query,
         limit=limit,

@@ -133,6 +133,34 @@ def _patch_router_with_fakes(monkeypatch, fake: _FakeProvider) -> None:
     )
 
 
+def _patch_empty_escalation_policy(monkeypatch) -> None:
+    """Strip the Wave-7 ``escalate_immediately`` flags from the policy.
+
+    Wave-7/7b (commits ``101d1e5`` + ``8dc44e1``) flipped ``objective``
+    (and ``prereq_set``) to ``escalate_immediately: true`` in
+    ``Courseforge/config/block_routing.yaml``, and the outline handler
+    stamps every stub ``block_type="objective"``. Under the real policy
+    the router therefore short-circuits every block at the outline seam
+    and the outline provider is never invoked. These handler tests assert
+    the provider IS dispatched, so we override the deferred-imported
+    ``Courseforge.router.policy.load_block_routing_policy`` to return a
+    policy with an EMPTY ``escalate_immediately_by_block_type`` set.
+    """
+    import dataclasses as _dc
+
+    from Courseforge.router import policy as _policy_mod
+
+    real_loader = _policy_mod.load_block_routing_policy
+
+    def _empty_escalation_loader(*args: Any, **kwargs: Any):
+        loaded = real_loader(*args, **kwargs)
+        return _dc.replace(loaded, escalate_immediately_by_block_type={})
+
+    monkeypatch.setattr(
+        _policy_mod, "load_block_routing_policy", _empty_escalation_loader,
+    )
+
+
 # ---------------------------------------------------------------------- #
 # Subtask 28: _run_content_generation_outline
 # ---------------------------------------------------------------------- #
@@ -148,6 +176,11 @@ def test_run_content_generation_outline_emits_blocks_outline_path(
     _patch_project_root(monkeypatch, tmp_path)
     fake = _FakeProvider()
     _patch_router_with_fakes(monkeypatch, fake)
+    # Wave-7/7b: objective blocks carry escalate_immediately=true, so the
+    # outline tier short-circuits and the provider is never called under
+    # the real policy. Strip the escalate flags so the "provider was
+    # invoked" assertion below exercises the outline-dispatch path.
+    _patch_empty_escalation_policy(monkeypatch)
 
     result = asyncio.run(_pt._run_content_generation_outline(
         project_id=project_id,

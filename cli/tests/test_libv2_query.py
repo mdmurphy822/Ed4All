@@ -1,10 +1,11 @@
 """Tests for ``ed4all libv2 query`` (Wave 77 Worker β).
 
-Most assertions are made against the live ``rdf-shacl-550-rdf-shacl-550``
-archive that ships in-repo: it's the canonical KG-quality fixture and
-the counts referenced here were independently verified by ChatGPT's
-Wave 76 review (``--week 7`` → 18; ``--outcome to-04`` → ≥69;
-``--outcome co-18`` → ≥44).
+The live-archive assertions run against an opt-in course archive (set
+``ED4ALL_INTENT_ROUTER_FIXTURE_SLUG`` to a slug under
+``$ED4ALL_LIBV2_ROOT/courses/``). The reference counts encoded here
+were independently verified by ChatGPT's Wave 76 review against the
+RDF/SHACL calibration corpus (``--week 7`` → 18; ``--outcome to-04``
+→ ≥69; ``--outcome co-18`` → ≥44).
 
 A small handful of structural tests use synthetic fixtures so the suite
 isn't tightly coupled to the live archive's exact byte content.
@@ -13,6 +14,7 @@ isn't tightly coupled to the live archive's exact byte content.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import List
 
@@ -23,8 +25,10 @@ from cli.commands.libv2_query import query_command
 from lib.paths import LIBV2_PATH
 
 
-LIVE_SLUG = "rdf-shacl-550-rdf-shacl-550"
-LIVE_ARCHIVE = LIBV2_PATH / "courses" / LIVE_SLUG
+LIVE_SLUG = os.environ.get("ED4ALL_INTENT_ROUTER_FIXTURE_SLUG")
+LIVE_ARCHIVE = (
+    LIBV2_PATH / "courses" / LIVE_SLUG if LIVE_SLUG else None
+)
 
 
 # ---------------------------------------------------------------------- #
@@ -38,8 +42,11 @@ def _run(args: List[str]) -> "click.testing.Result":
 
 @pytest.fixture(scope="module")
 def live_archive_present() -> bool:
-    """Skip live-archive tests if the fixture isn't checked in."""
-    return (LIVE_ARCHIVE / "corpus" / "chunks.jsonl").is_file()
+    """Skip live-archive tests if the fixture isn't configured."""
+    return (
+        LIVE_ARCHIVE is not None
+        and (LIVE_ARCHIVE / "corpus" / "chunks.jsonl").is_file()
+    )
 
 
 # ---------------------------------------------------------------------- #
@@ -164,7 +171,7 @@ def test_query_help_lists_filters():
 
 def test_chunk_type_example_intermediate_returns_min_10(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     result = _run(
         [
             "--slug",
@@ -184,7 +191,7 @@ def test_chunk_type_example_intermediate_returns_min_10(live_archive_present):
 
 def test_week_7_returns_18_chunks(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     result = _run(
         ["--slug", LIVE_SLUG, "--week", "7", "--format", "count"]
     )
@@ -194,7 +201,7 @@ def test_week_7_returns_18_chunks(live_archive_present):
 
 def test_outcome_to_04_rolls_up_to_at_least_69(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     result = _run(
         ["--slug", LIVE_SLUG, "--outcome", "to-04", "--format", "count"]
     )
@@ -205,7 +212,7 @@ def test_outcome_to_04_rolls_up_to_at_least_69(live_archive_present):
 
 def test_outcome_co_18_returns_at_least_44(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     result = _run(
         ["--slug", LIVE_SLUG, "--outcome", "co-18", "--format", "count"]
     )
@@ -216,7 +223,7 @@ def test_outcome_co_18_returns_at_least_44(live_archive_present):
 
 def test_text_filter_finds_sh_mincount(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     result = _run(
         [
             "--slug",
@@ -234,7 +241,7 @@ def test_text_filter_finds_sh_mincount(live_archive_present):
 
 def test_text_filter_includes_match_in_json(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     result = _run(
         [
             "--slug",
@@ -256,7 +263,7 @@ def test_text_filter_includes_match_in_json(live_archive_present):
 
 def test_bloom_apply_analyze_with_exercise_composes(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     # Composition: every returned chunk must satisfy ALL filters.
     result = _run(
         [
@@ -280,7 +287,7 @@ def test_bloom_apply_analyze_with_exercise_composes(live_archive_present):
 
 def test_week_range_with_limit_caps_results(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     result = _run(
         [
             "--slug",
@@ -304,7 +311,7 @@ def test_week_range_with_limit_caps_results(live_archive_present):
 
 def test_format_count_returns_integer(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     result = _run(
         [
             "--slug",
@@ -322,7 +329,7 @@ def test_format_count_returns_integer(live_archive_present):
 
 def test_empty_filter_returns_all_219_chunks(live_archive_present):
     if not live_archive_present:
-        pytest.skip("rdf-shacl-550 archive not present")
+        pytest.skip("intent-router fixture archive not configured")
     result = _run(
         ["--slug", LIVE_SLUG, "--format", "count"]
     )

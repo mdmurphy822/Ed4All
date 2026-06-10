@@ -40,15 +40,15 @@ logger = logging.getLogger(__name__)
 
 
 # Wave 105: the default citation regex now accepts the four
-# citation forms observed in trained-model output. RDF/SHACL corpus
-# uses ``rdf_shacl_551_chunk_NNNNN`` IDs; we accept multiple
+# citation forms observed in trained-model output. A course corpus
+# uses ``<course-slug>_chunk_NNNNN`` IDs; we accept multiple
 # citation formats and normalize back to the canonical ``chunk_NNNNN``
 # form before comparison.
 #
 # Accepted forms (all extracted by the same alternation):
 #   1. ``[chunk_00270]``                  — bracketed (the canonical form)
 #   2. ``'chunk_00270'``                  — single-quoted bare suffix
-#   3. ``'rdf_shacl_551_chunk_00270'``    — single-quoted full ID
+#   3. ``'<course-slug>_chunk_00270'``    — single-quoted full ID
 #   4. ``chunk_00270``                    — bare token (no delimiter)
 #
 # Group 1 carries the matched chunk reference (with optional corpus
@@ -70,11 +70,11 @@ def _is_chunk_id(value: Any) -> bool:
 
 
 def _normalize_citation(raw: str) -> str:
-    """Strip an optional corpus prefix (e.g. ``rdf_shacl_551_``) so
+    """Strip an optional corpus prefix (e.g. ``<course-slug>_``) so
     citations align with the canonical ``chunk_NNNNN`` ID space.
 
     A model can emit either ``chunk_00270`` or
-    ``rdf_shacl_551_chunk_00270``; both should count as a match
+    ``<course-slug>_chunk_00270``; both should count as a match
     against ground_truth ``chunk_00270``. We find the rightmost
     occurrence of ``chunk_`` and keep everything from there.
     """

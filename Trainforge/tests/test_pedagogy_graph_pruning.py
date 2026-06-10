@@ -2,14 +2,14 @@
 
 Asserts the refined rule shape that replaces Wave 75's adjacent-week
 cartesian (which over-saturated at 7032 prerequisite_of edges on the
-rdf-shacl-550 archive — 84% of total). New rule:
+RDF/SHACL calibration corpus archive — 84% of total). New rule:
 
 * ``prerequisite_of(A, B)``: B's first-seen week strictly later than
   A's, at least one chunk contains both A and B as concept_tags, and
   both endpoints classified as DomainConcept (when classes provided).
 * ``interferes_with(M, C)``: C must be DomainConcept-class.
 
-A regression on the real rdf-shacl-550 archive asserts the post-Wave-76
+A regression on a real course archive asserts the post-Wave-76
 envelope:
 
 * ``prerequisite_of`` count in (100, 800] AND >= 85% drop from the
@@ -31,6 +31,10 @@ from typing import Any, Dict, List
 import pytest
 
 from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
+
+from Trainforge.tests._archive_discovery import (
+    discover_real_archive as _discover_real_archive,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -295,39 +299,25 @@ def test_interferes_with_drops_low_signal_and_assessment_option():
 # ---------------------------------------------------------------------------
 
 
-CORPUS_CHUNKS = (
-    ROOT
-    / "LibV2"
-    / "courses"
-    / "rdf-shacl-550-rdf-shacl-550"
-    / "corpus"
-    / "chunks.jsonl"
-)
-SYNTH_OBJECTIVES = (
-    ROOT
-    / "Courseforge"
-    / "exports"
-    / "PROJ-RDF_SHACL_550-20260424135037"
-    / "01_learning_objectives"
-    / "synthesized_objectives.json"
-)
-CONCEPT_GRAPH = (
-    ROOT
-    / "LibV2"
-    / "courses"
-    / "rdf-shacl-550-rdf-shacl-550"
-    / "graph"
-    / "concept_graph.json"
+CORPUS_CHUNKS, SYNTH_OBJECTIVES, CONCEPT_GRAPH, REAL_COURSE_ID = (
+    _discover_real_archive()
 )
 
 
 @pytest.mark.skipif(
     not (
-        CORPUS_CHUNKS.exists()
+        CORPUS_CHUNKS is not None
+        and SYNTH_OBJECTIVES is not None
+        and CONCEPT_GRAPH is not None
+        and CORPUS_CHUNKS.exists()
         and SYNTH_OBJECTIVES.exists()
         and CONCEPT_GRAPH.exists()
     ),
-    reason="rdf-shacl-550 archive missing — regression skipped",
+    reason=(
+        "no LibV2 course archive with corpus/chunks.jsonl + "
+        "synthesized_objectives.json + graph/concept_graph.json present "
+        "under ED4ALL_LIBV2_ROOT / LibV2/courses/ — regression skipped"
+    ),
 )
 def test_real_archive_envelope_after_pruning():
     chunks = []
@@ -347,7 +337,7 @@ def test_real_archive_envelope_after_pruning():
     g = build_pedagogy_graph(
         chunks,
         objectives,
-        course_id="RDF_SHACL_550",
+        course_id=REAL_COURSE_ID,
         concept_classes=classes,
     )
 

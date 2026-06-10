@@ -83,7 +83,7 @@ class KGQualityReporter:
         {
           "run_id": "...",
           "generated_at": "ISO-8601",
-          "course_slug": "rdf-shacl-551-2",
+          "course_slug": "<course-slug>",
           "dimensions": {
             "completeness": {"score": 0.92, "metric": "...",
                              "denominator": 660, "numerator": 607},
@@ -237,6 +237,179 @@ class KGQualityReporter:
 
         return report
 
+    def compute_metrics_only(
+        self,
+        semantic_graph: Dict[str, Any],
+        *,
+        contradiction_rate: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Compute the four KG-quality dimensions from a SINGLE in-memory
+        semantic graph, with no SHACL ValidationReport input.
+
+        Authoring-time entry point. The gate-oriented :meth:`compute`
+        expects two on-disk graphs (asserted ``concept_graph.json`` +
+        derived ``concept_graph_semantic.json``) plus a pyshacl
+        ValidationReport — none of which exist when
+        ``_run_concept_extraction`` first authors the semantic graph.
+        This method derives the same four dimensions from the freshly
+        built ``concept_graph_semantic.json`` dict alone so the graph's
+        ``kg_quality`` field can be populated at authoring time.
+
+        Dimension derivation under the degenerate (report-less) input:
+
+        * **completeness** — identical to :meth:`compute`: ratio of
+          nodes carrying every required predicate (default ``id`` +
+          ``label``). The semantic graph's ``nodes`` list IS the
+          asserted node set at this phase.
+        * **consistency** — no SHACL report exists at authoring time, so
+          there is no violation count; the SHACL-derived base is ``1.0``.
+          It is then attenuated by ``(1 - contradiction_rate)`` so this
+          composes with — does NOT duplicate — the EdgeConsensusAggregator
+          attenuation that ``KGQualityValidator.validate`` applies at the
+          gate. ``contradiction_rate`` is taken from the caller when
+          supplied; otherwise it is derived from the graph's per-edge
+          ``edge_status`` field (``contradicted`` / total edges), which
+          the consensus-stamping pass writes immediately upstream of this
+          call. Floored at 0.0.
+        * **accuracy** — no SHACL warning count exists either, so the
+          base is ``1.0`` (no type/range mismatch evidence at authoring
+          time).
+        * **coverage** — chunk-anchored ``DomainConcept`` node-grounding:
+          the share of concept vocabulary grounded in the corpus text.
+          Numerator: ``DomainConcept``-or-classless nodes incident to ≥1
+          edge whose ``provenance.rule`` is absent OR in
+          :data:`_CHUNK_ANCHORED_RULES` (the seven chunk-evidenced rules
+          — co-occurrence, intra-chunk link, defined-by, exemplifies,
+          is-a, misconception-of, assesses). Denominator: all
+          ``DomainConcept``-or-classless nodes. Empty denominator → 1.0.
+          A frequency-0 ``lo_key_concept`` node (an LO-asserted concept
+          the chunks never grounded) counts in the denominator and is
+          covered only if some chunk-anchored edge touches it. This
+          REPLACES the old asserted/(asserted+derived) edge-share metric,
+          which grew a quadratic LO-order-derived denominator and
+          anti-correlated with quality (the rdf-shacl calibration corpus
+          fell to 0.047 under it). The old edge ratio is preserved
+          unthresholded in the coverage detail dict as
+          ``asserted_edge_share`` (informational).
+
+        Args:
+            semantic_graph: The in-memory ``concept_graph_semantic.json``
+                dict (post edge-consensus stamping).
+            contradiction_rate: Optional pre-computed contradiction rate
+                in ``[0, 1]``. When ``None``, derived from the graph's
+                stamped ``edge_status`` fields.
+
+        Returns:
+            A report dict in the same four-dimension shape :meth:`compute`
+            emits (``dimensions`` + ``per_shape`` + ``rule_outputs``),
+            with an extra ``derivation: "semantic_graph_metrics_only"``
+            marker and the resolved ``contradiction_rate``.
+        """
+        semantic = semantic_graph if isinstance(semantic_graph, dict) else {}
+        nodes = _as_list(semantic.get("nodes"))
+        all_edges = _as_list(semantic.get("edges"))
+
+        # ---- completeness (identical math to compute())
+        denominator = len(nodes)
+        numerator = sum(
+            1 for n in nodes
+            if _node_has_required_predicates(n, self.required_predicates)
+        )
+        completeness_score = numerator / denominator if denominator else 1.0
+
+        # ---- coverage: chunk-anchored DomainConcept node-grounding.
+        # Numerator: DomainConcept-or-classless nodes incident to ≥1
+        # chunk-anchored edge (rule-less OR a rule in
+        # _CHUNK_ANCHORED_RULES). Denominator: all DomainConcept-or-
+        # classless nodes. Reads as "share of concept vocabulary (incl.
+        # LO-asserted concepts) grounded in the corpus text"; empty
+        # denominator → 1.0 (vacuously covered). ``rule_outputs`` keeps
+        # the full per-rule rollup for the report. The legacy asserted/
+        # derived edge ratio is preserved unthresholded as
+        # ``asserted_edge_share`` (informational only).
+        _, rule_outputs = _summarize_rule_outputs(semantic, self.run_id)
+        grounded_count, concept_node_count = _node_grounding_coverage(
+            nodes, all_edges,
+        )
+        coverage_score = (
+            grounded_count / concept_node_count
+            if concept_node_count else 1.0
+        )
+        asserted_count, derived_count = _split_asserted_derived(all_edges)
+        denom_edge_share = asserted_count + derived_count
+        asserted_edge_share = (
+            asserted_count / denom_edge_share if denom_edge_share else 1.0
+        )
+
+        # ---- consistency: no SHACL report at authoring time → base 1.0,
+        # then attenuate by (1 - contradiction_rate) so this composes
+        # with the gate's EdgeConsensusAggregator attenuation rather than
+        # duplicating it. Derive contradiction_rate from stamped
+        # edge_status when the caller didn't supply it.
+        if contradiction_rate is None:
+            contradiction_rate = _contradiction_rate_from_edges(all_edges)
+        contradiction_rate = max(0.0, min(1.0, float(contradiction_rate)))
+        consistency_score = max(0.0, 1.0 * (1.0 - contradiction_rate))
+
+        # ---- accuracy: no SHACL warning evidence at authoring time.
+        accuracy_score = 1.0
+
+        report: Dict[str, Any] = {
+            "run_id": self.run_id,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "course_slug": self.course_slug,
+            "derivation": "semantic_graph_metrics_only",
+            "contradiction_rate": _round(contradiction_rate),
+            "dimensions": {
+                "completeness": {
+                    "score": _round(completeness_score),
+                    "metric": (
+                        "ratio of concept nodes carrying every required "
+                        "predicate (authoring-time, semantic graph only)"
+                    ),
+                    "denominator": denominator,
+                    "numerator": numerator,
+                    "required_predicates": list(self.required_predicates),
+                },
+                "consistency": {
+                    "score": _round(consistency_score),
+                    "metric": (
+                        "1.0 (no SHACL report at authoring time) attenuated "
+                        "by (1 - contradiction_rate) from edge consensus"
+                    ),
+                    "violation_count": 0,
+                    "warning_count": 0,
+                    "total_focus_nodes": denominator,
+                    "contradiction_rate": _round(contradiction_rate),
+                },
+                "accuracy": {
+                    "score": _round(accuracy_score),
+                    "metric": (
+                        "1.0 (no SHACL warning evidence at authoring time)"
+                    ),
+                    "warning_count": 0,
+                    "total_focus_nodes": denominator,
+                },
+                "coverage": {
+                    "score": _round(coverage_score),
+                    "metric": (
+                        "chunk-anchored DomainConcept node-grounding: "
+                        "DomainConcept-or-classless nodes incident to ≥1 "
+                        "chunk-anchored edge / all DomainConcept-or-classless "
+                        "nodes (share of concept vocabulary grounded in text)"
+                    ),
+                    "grounded_node_count": grounded_count,
+                    "concept_node_count": concept_node_count,
+                    "asserted_edge_share": _round(asserted_edge_share),
+                    "asserted_count": asserted_count,
+                    "derived_count": derived_count,
+                },
+            },
+            "per_shape": [],
+            "rule_outputs": rule_outputs,
+        }
+        return report
+
     def write(self, report: Dict[str, Any]) -> Path:
         """Write ``report`` as ``kg_quality_report.json`` under output_dir.
 
@@ -271,6 +444,152 @@ def _load_json(path: Optional[Path]) -> Optional[Dict[str, Any]]:
 
 def _as_list(maybe_list: Any) -> List[Any]:
     return list(maybe_list) if isinstance(maybe_list, list) else []
+
+
+#: Inference rules whose edges are CHUNK-ANCHORED — i.e. each such edge
+#: is evidenced by one or more chunks of the source text, so an incident
+#: concept node is "grounded in the text". These are the seven rules that
+#: carry chunk-level evidence (verified against each rule module's
+#: ``RULE_NAME`` constant in ``Trainforge/rag/inference_rules/`` and the
+#: intra-chunk linker's ``RULE_NAME`` in
+#: ``lib/ontology/intra_chunk_linker.py``):
+#:
+#: * ``related_from_cooccurrence`` — raw chunk co-occurrence.
+#: * ``intra_chunk_link`` — co-located concepts within a single chunk.
+#: * ``defined_by_from_first_mention`` — concept↔chunk definition anchor.
+#: * ``exemplifies_from_example_chunks`` — concept↔example-chunk anchor.
+#: * ``is_a_from_key_terms`` — taxonomic link evidenced by chunk key terms.
+#: * ``misconception_of_from_misconception_ref`` — chunk misconception ref.
+#: * ``assesses_from_question_lo`` — question↔LO assessment anchor.
+#:
+#: Edges carrying any OTHER rule (or a purely LO-order-derived rule such
+#: as ``prerequisite_from_lo_order`` / ``derived_from_lo_ref`` /
+#: ``targets_concept_from_lo``) are NOT chunk-anchored: they connect
+#: concept vocabulary without grounding it in the corpus text, so they do
+#: not count toward a node being "grounded".
+_CHUNK_ANCHORED_RULES: frozenset = frozenset({
+    "related_from_cooccurrence",
+    "intra_chunk_link",
+    "defined_by_from_first_mention",
+    "exemplifies_from_example_chunks",
+    "is_a_from_key_terms",
+    "misconception_of_from_misconception_ref",
+    "assesses_from_question_lo",
+})
+
+
+#: Node classes that count toward the concept-vocabulary coverage
+#: denominator. A node with no ``class`` (legacy / classless) or
+#: ``class == "DomainConcept"`` is concept vocabulary; pedagogical /
+#: structural classes (``Chunk``, ``Outcome``, ``ComponentObjective``,
+#: ``BloomLevel``, …) are NOT.
+_CONCEPT_NODE_CLASSES: frozenset = frozenset({"DomainConcept"})
+
+
+def _edge_is_chunk_anchored(edge: Any) -> bool:
+    """A semantic-graph edge grounds its endpoints in the text iff it
+    carries no ``provenance.rule`` OR a rule in
+    :data:`_CHUNK_ANCHORED_RULES`.
+    """
+    if not isinstance(edge, dict):
+        return False
+    prov = edge.get("provenance") or {}
+    rule = prov.get("rule") if isinstance(prov, dict) else None
+    if not isinstance(rule, str) or not rule:
+        return True
+    return rule in _CHUNK_ANCHORED_RULES
+
+
+def _is_concept_node(node: Any) -> bool:
+    """A node counts toward the coverage denominator iff it is a
+    DomainConcept (or classless / legacy node with no ``class``).
+    """
+    if not isinstance(node, dict):
+        return False
+    klass = node.get("class")
+    if klass is None or klass == "":
+        return True
+    return klass in _CONCEPT_NODE_CLASSES
+
+
+def _node_grounding_coverage(
+    nodes: List[Any], edges: List[Any],
+) -> tuple[int, int]:
+    """Chunk-anchored DomainConcept node-grounding coverage.
+
+    Returns ``(grounded_count, denominator)`` where the denominator is
+    the count of DomainConcept-or-classless nodes and the numerator is
+    the subset of those incident to ≥1 chunk-anchored edge. ``frequency``
+    is irrelevant: a frequency-0 ``lo_key_concept`` node counts in the
+    denominator and is covered only if some chunk-anchored edge touches
+    it — i.e. coverage reads as "share of concept vocabulary (incl.
+    LO-asserted concepts) grounded in the corpus text".
+    """
+    concept_ids = {
+        node.get("id")
+        for node in nodes
+        if _is_concept_node(node) and node.get("id") is not None
+    }
+    grounded: set = set()
+    for edge in edges:
+        if not _edge_is_chunk_anchored(edge):
+            continue
+        for endpoint in (edge.get("source"), edge.get("target")):
+            if endpoint in concept_ids:
+                grounded.add(endpoint)
+    return len(grounded), len(concept_ids)
+
+
+def _split_asserted_derived(edges: List[Any]) -> tuple[int, int]:
+    """Classify semantic-graph edges into (asserted, typed-derived).
+
+    Retained for the informational ``asserted_edge_share`` figure carried
+    in the coverage detail dict. Asserted: edges with no ``provenance.rule``
+    OR a rule in :data:`_CHUNK_ANCHORED_RULES`. Typed-derived: every other
+    rule (LO-order-derived inference — ``prerequisite_from_lo_order``,
+    ``derived_from_lo_ref``, ``targets_concept_from_lo``, …).
+
+    NOTE: this is no longer the coverage metric (which is now node
+    grounding); it is preserved unthresholded so operators can still see
+    the old asserted/derived edge ratio that anti-correlated with quality.
+    """
+    asserted = 0
+    derived = 0
+    for edge in edges:
+        if _edge_is_chunk_anchored(edge):
+            asserted += 1
+        else:
+            derived += 1
+    return asserted, derived
+
+
+def _contradiction_rate_from_edges(edges: List[Any]) -> float:
+    """Derive the contradiction rate from per-edge ``edge_status``.
+
+    The EdgeConsensusAggregator stamps ``edge_status`` on every edge
+    immediately upstream of the authoring-time KG-quality computation.
+    A ``contradicted`` status means a cross-rule (or same-rule reverse)
+    disagreement fired over that edge's node pair. The rate is
+    ``contradicted / total`` over edges that carry a stamped status;
+    edges without a status (legacy / unstamped) don't count toward
+    either numerator or denominator. Returns 0.0 when no edge carries a
+    status (graceful degrade — un-stamped graphs read as no
+    contradictions, leaving consistency at its 1.0 base).
+    """
+    stamped = 0
+    contradicted = 0
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        status = edge.get("edge_status")
+        if not isinstance(status, str) or not status:
+            continue
+        stamped += 1
+        if status == "contradicted":
+            contradicted += 1
+    if stamped == 0:
+        return 0.0
+    return contradicted / stamped
 
 
 def _node_has_required_predicates(

@@ -41,18 +41,23 @@ from Trainforge.training import (  # noqa: E402
     RunPodBackend,
     TrainingRunner,
 )
+from lib.ontology.slugs import libv2_course_slug  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
 
 
 def _slugify(course_code: str) -> str:
-    """Convert ``TST_101`` → ``tst-101`` to match LibV2 slug convention.
+    """Convert ``TST_101`` → ``tst-101`` to match the LibV2 slug convention.
 
-    LibV2 imports lowercase the course code and substitute ``-`` for
-    ``_``. ``train_course.py`` accepts either form for ergonomics.
+    Delegates to the canonical ``lib.ontology.slugs.libv2_course_slug`` so the
+    resolved slug matches the archive directory ``LibV2/tools/libv2/importer.py``
+    created. ``train_course.py`` accepts either the course-code form (``TST_101``)
+    or the slug form (``tst-101``) for ergonomics — both resolve identically.
+    The prior local implementation only swapped ``_``→``-`` and left spaces /
+    punctuation intact, so it diverged from the importer on any non-code input.
     """
-    return course_code.strip().lower().replace("_", "-")
+    return libv2_course_slug(course_code)
 
 
 @click.command("train-course")

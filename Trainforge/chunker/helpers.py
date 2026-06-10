@@ -24,12 +24,15 @@ imports stdlib + bs4 + ``lib.ontology`` only (no
 
 from __future__ import annotations
 
+import os
 import re
-from typing import List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from Trainforge.parsers.html_content_parser import HTMLTextExtractor
+from lib.ontology.learning_objectives import LO_ID_PATTERN
 
 __all__ = [
+    "extract_learning_outcome_refs",
     "extract_plain_text",
     "extract_plain_text_with_curies",
     "extract_section_html",
@@ -37,6 +40,152 @@ __all__ = [
     "strip_feedback_from_text",
     "type_from_resource",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Learning-outcome reference extraction
+# ---------------------------------------------------------------------------
+#
+# Courseforge content pages carry learning-outcome (LO) references in two
+# forms the page-objective validator reads (see
+# ``Courseforge/scripts/validate_page_objectives.py``):
+#
+#   1. JSON-LD ``learningObjectives[].id`` — surfaced by the parser onto
+#      ``ParsedHTMLModule.learning_objectives`` (each
+#      ``LearningObjective.id`` is a canonical ``TO-NN`` / ``CO-NN`` id).
+#      This lands in ``item["learning_objectives"]`` for the chunker.
+#   2. ``data-cf-objective-id`` / ``data-cf-objective-ref`` HTML attributes
+#      on ``<section>`` / activity / self-check elements. Surfaced by the
+#      parser onto ``ContentSection.objective_refs`` (page-level union on
+#      ``ParsedHTMLModule.objective_refs``).
+#
+# The shared chunk-emit callbacks in
+# ``MCP/tools/pipeline_tools.py`` (``_run_dart_chunking`` /
+# ``_run_imscc_chunking``) hardcoded ``learning_outcome_refs: []`` and so
+# never anchored chunks to the LOs the page carried. This helper closes
+# that gap: it harvests both forms, prefers the section-scoped attribute
+# refs (so a multi-LO page anchors each chunk to its own section's LO),
+# and falls back to the page-level structured ids. Every emitted ref is
+# validated against the canonical LO id pattern
+# (``^[A-Z]{2,}-\d{2,}$``) so non-LO noise (week prefixes, free-text
+# activity labels) never reaches a chunk. When the source HTML carries no
+# LO metadata (legacy / DART corpora without JSON-LD or data-cf-* LO
+# attributes) the helper returns ``[]`` — byte-identical to the prior
+# hardcoded behaviour.
+
+
+def _normalize_lo_ref(raw: Any, *, preserve_case: bool) -> List[str]:
+    """Split, strip, week-prefix-fold, and case-normalise one raw ref.
+
+    Mirrors the normalization arms of
+    ``CourseProcessor._extract_objective_refs`` (comma-splitting of
+    subagent-emitted ``"co-01,co-02"`` strings; ``WEEK_PREFIX_RE``
+    stripping; ``TRAINFORGE_PRESERVE_LO_CASE`` case policy) so the
+    chunker path and the in-process wrapper produce identical refs.
+    Only ids matching the canonical LO pattern survive — validation is
+    applied after case-normalisation against the upper-cased candidate
+    so a lowercased ``to-01`` still validates.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, str):
+        raw = str(raw)
+    parts = [p.strip() for p in raw.split(",")] if "," in raw else [raw.strip()]
+    out: List[str] = []
+    for part in parts:
+        if not part:
+            continue
+        # Strip a leading week prefix (w01-, W01-, ...) to align with the
+        # course.json LO id form. Case-insensitive.
+        base = _WEEK_PREFIX_RE.sub("", part)
+        if not base:
+            continue
+        # Validate against the canonical LO pattern (always upper-cased so
+        # a lowercased emit still passes the [A-Z] class check).
+        if not LO_ID_PATTERN.match(base.upper()):
+            continue
+        out.append(base if preserve_case else base.lower())
+    return out
+
+
+#: Week-prefix stripper, mirrors ``CourseProcessor.WEEK_PREFIX_RE``.
+_WEEK_PREFIX_RE = re.compile(r"^w\d{1,2}-", re.IGNORECASE)
+
+
+def extract_learning_outcome_refs(
+    item: Dict[str, Any],
+    section_heading: Optional[str] = None,
+) -> List[str]:
+    """Extract canonical LO ids a chunk should anchor to.
+
+    Resolution order (deterministic, dedup-preserving):
+
+      1. Section-scoped ``ContentSection.objective_refs`` for the section
+         matching ``section_heading`` (harvested by the parser from
+         ``data-cf-objective-id`` / ``data-cf-objective-ref``). Preferred
+         so a multi-LO page anchors each chunk to its own section's LO.
+      2. Structured page-level ``item["learning_objectives"]`` ids
+         (parser-extracted from JSON-LD ``learningObjectives[].id``).
+      3. Page-level ``item["objective_refs"]`` union (data-cf-* fallback
+         for the no-sections / heading-drift code path).
+
+    Returns ``[]`` when the source HTML carried no LO metadata — the
+    additive, backward-compatible contract: legacy / DART corpora emit
+    byte-identically to the prior hardcoded ``[]``.
+    """
+    preserve_case = (
+        os.getenv("TRAINFORGE_PRESERVE_LO_CASE", "").lower() == "true"
+    )
+    refs: List[str] = []
+
+    def _extend(values: List[str]) -> None:
+        for value in values:
+            if value and value not in refs:
+                refs.append(value)
+
+    # (1) Section-scoped attribute refs (data-cf-objective-id / -ref).
+    if section_heading:
+        chunk_heading = re.sub(
+            r"\s*\(part\s+\d+\)\s*$", "", section_heading
+        ).strip().lower()
+        for section in item.get("sections", []) or []:
+            sec_heading = (
+                section.heading
+                if hasattr(section, "heading")
+                else (section.get("heading") if isinstance(section, dict) else None)
+            )
+            if sec_heading is None:
+                continue
+            if sec_heading.strip().lower() != chunk_heading:
+                continue
+            sec_refs = (
+                section.objective_refs
+                if hasattr(section, "objective_refs")
+                else (
+                    section.get("objective_refs")
+                    if isinstance(section, dict)
+                    else None
+                )
+            ) or []
+            for raw in sec_refs:
+                _extend(_normalize_lo_ref(raw, preserve_case=preserve_case))
+            break
+
+    # (2) Structured page-level LO ids from the parsed objectives list.
+    if not refs:
+        for lo in item.get("learning_objectives", []) or []:
+            obj_id = lo.id if hasattr(lo, "id") else (
+                lo.get("id") if isinstance(lo, dict) else None
+            )
+            if obj_id:
+                _extend(_normalize_lo_ref(obj_id, preserve_case=preserve_case))
+
+    # (3) Page-level data-cf-* union fallback (no-sections / heading drift).
+    if not refs:
+        for raw in item.get("objective_refs", []) or []:
+            _extend(_normalize_lo_ref(raw, preserve_case=preserve_case))
+
+    return refs
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +334,8 @@ def extract_section_html(html: str, heading: str) -> str:
     Courseforge layout), the slice would clip a closing ``</section>``
     from one fragment and an opening ``<section>`` from the next —
     leaving every chunk's HTML unbalanced. This was the load-bearing
-    cause of the rdf-shacl-551 audit's 203/295 unbalanced-section
-    chunks.
+    cause of the RDF/SHACL calibration corpus audit's 203/295
+    unbalanced-section chunks.
 
     New behavior:
       - If the heading lives **inside** a ``<section>``, return the

@@ -344,3 +344,550 @@ def test_write_emits_report(tmp_path: Path) -> None:
     body = json.loads(out.read_text(encoding="utf-8"))
     assert body["schema_version"] == SCHEMA_VERSION
     assert body["matrix_version"] == MATRIX_VERSION
+
+
+# ----------------------------------------------------------------------
+# v2 cross-stratum triangulation tests
+# ----------------------------------------------------------------------
+
+
+def _prov_edge(
+    *,
+    source: str,
+    target: str,
+    edge_type: str,
+    rule: str,
+    evidence: Optional[Dict[str, Any]] = None,
+    confidence: float = 0.6,
+) -> Dict[str, Any]:
+    """Edge builder with a populated evidence sub-dict on provenance."""
+    return {
+        "source": source,
+        "target": target,
+        "type": edge_type,
+        "confidence": confidence,
+        "provenance": {
+            "rule": rule,
+            "rule_version": 1,
+            "evidence": evidence or {},
+        },
+    }
+
+
+def _status_map(graph_data: Dict[str, Any]) -> Dict[Any, str]:
+    return {
+        (e["source"], e["target"], e["type"]): e["edge_status"]
+        for e in graph_data["edges"]
+    }
+
+
+def test_defined_by_exemplifies_same_pair_both_confirmed(tmp_path: Path) -> None:
+    """v2 #i — symmetry fix: a surviving defined_by x exemplifies same-pair
+    co-fire (reversed directions, like the real corpus) confirms BOTH edges.
+    """
+    edges = [
+        # defined-by: concept -> chunk
+        _prov_edge(
+            source="concept_z", target="chunk_00001",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+            evidence={"chunk_id": "chunk_00001", "concept_slug": "concept_z"},
+        ),
+        # exemplifies: chunk -> concept (reversed direction, same node pair)
+        _prov_edge(
+            source="chunk_00001", target="concept_z",
+            edge_type="exemplifies",
+            rule="exemplifies_from_example_chunks",
+            evidence={"chunk_id": "chunk_00001", "concept_slug": "concept_z",
+                      "content_type": "chunk_type"},
+        ),
+    ]
+    graph_path = _write_graph(tmp_path, edges)
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+    statuses = _status_map(graph_data)
+    assert statuses[("concept_z", "chunk_00001", "defined-by")] == "confirmed"
+    assert statuses[("chunk_00001", "concept_z", "exemplifies")] == "confirmed"
+
+
+def test_prereq_corroborated_by_text_order(tmp_path: Path) -> None:
+    """v2 #ii — prerequisite B->A where A's first-mention precedes B's →
+    confirmed + agree detail text_order_corroborates_lo_order.
+    """
+    edges = [
+        # prereq: lo_b depends on lo_a (edge source=B target=A, A is prereq)
+        _prov_edge(
+            source="concept_b", target="concept_a",
+            edge_type="prerequisite",
+            rule="prerequisite_from_lo_order",
+        ),
+        # defined-by anchoring first-mention ordinals: A in chunk 1, B in chunk 5
+        _prov_edge(
+            source="concept_a", target="chunk_00001",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+        ),
+        _prov_edge(
+            source="concept_b", target="chunk_00005",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+        ),
+    ]
+    graph_path = _write_graph(tmp_path, edges)
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    report = agg.build()
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+    statuses = _status_map(graph_data)
+    assert statuses[("concept_b", "concept_a", "prerequisite")] == "confirmed"
+    prereq_edge = next(e for e in graph_data["edges"] if e["type"] == "prerequisite")
+    assert any(
+        s["signal"] == "agree"
+        and s["detail"] == "text_order_corroborates_lo_order"
+        for s in prereq_edge["consensus_signals"]
+    )
+    assert report["summary"]["contradicted_count"] == 0
+
+
+def test_prereq_conflicting_text_order(tmp_path: Path) -> None:
+    """v2 #iii — prerequisite B->A where A's first-mention is AFTER B's →
+    contradicted, in report['contradictions'] with the distinct soft-conflict
+    detail; contradiction_rate > 0.
+    """
+    edges = [
+        # prereq: B depends on A; A is the prerequisite (target).
+        _prov_edge(
+            source="concept_b", target="concept_a",
+            edge_type="prerequisite",
+            rule="prerequisite_from_lo_order",
+        ),
+        # text order conflicts: A appears LATER (chunk 9) than B (chunk 2).
+        _prov_edge(
+            source="concept_a", target="chunk_00009",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+        ),
+        _prov_edge(
+            source="concept_b", target="chunk_00002",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+        ),
+    ]
+    graph_path = _write_graph(tmp_path, edges)
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    report = agg.build()
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+    statuses = _status_map(graph_data)
+    assert statuses[("concept_b", "concept_a", "prerequisite")] == "contradicted"
+    details = [c["detail"] for c in report["contradictions"]]
+    assert "lo_order_vs_text_order_conflict" in details
+    # Distinct from a hard cycle — operators must be able to tell them apart.
+    assert "circular_prerequisite" not in details
+    assert report["summary"]["contradiction_rate"] > 0
+
+
+def test_prereq_unparseable_chunk_id_pending(tmp_path: Path) -> None:
+    """v2 #iv — prerequisite whose anchoring chunk IDs have no parseable
+    ordinal → no T1 signal → pending (graceful degrade).
+    """
+    edges = [
+        _prov_edge(
+            source="concept_b", target="concept_a",
+            edge_type="prerequisite",
+            rule="prerequisite_from_lo_order",
+        ),
+        _prov_edge(
+            source="concept_a", target="intro_section_alpha",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+        ),
+        _prov_edge(
+            source="concept_b", target="appendix_section_beta",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+        ),
+    ]
+    graph_path = _write_graph(tmp_path, edges)
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+    statuses = _status_map(graph_data)
+    assert statuses[("concept_b", "concept_a", "prerequisite")] == "pending"
+
+
+def test_related_co_located_is_supported(tmp_path: Path) -> None:
+    """v2 #v — related-to whose concepts share a first-mention chunk →
+    supported, NOT in consensus_rate, counted in supported_rate.
+    """
+    edges = [
+        _prov_edge(
+            source="concept_a", target="concept_b",
+            edge_type="related-to",
+            rule="related_from_cooccurrence",
+        ),
+        # both concepts defined by the SAME chunk → co-location.
+        _prov_edge(
+            source="concept_a", target="chunk_00003",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+        ),
+        _prov_edge(
+            source="concept_b", target="chunk_00003",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+        ),
+    ]
+    graph_path = _write_graph(tmp_path, edges)
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    report = agg.build()
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+    statuses = _status_map(graph_data)
+    assert statuses[("concept_a", "concept_b", "related-to")] == "supported"
+    summary = report["summary"]
+    assert summary["supported_count"] == 1
+    assert summary["supported_rate"] > 0
+    # supported must NOT inflate consensus_rate. The two defined-by edges
+    # share no confirming rule here (no is_a / exemplifies), so they're
+    # pending; only the related-to is supported.
+    assert summary["confirmed_count"] == 0
+    assert summary["consensus_rate"] == 0.0
+    rel_edge = next(e for e in graph_data["edges"] if e["type"] == "related-to")
+    assert any(
+        s["signal"] == "support" and s["detail"] == "co_located_first_mention"
+        for s in rel_edge["consensus_signals"]
+    )
+
+
+def test_intra_chunk_link_co_located_stays_pending(tmp_path: Path) -> None:
+    """v2 #vi — intra_chunk_link edge with co-located anchors stays pending
+    (tautology exclusion — a co-location signal over a co-location edge is
+    circular).
+    """
+    edges = [
+        _prov_edge(
+            source="concept_a", target="concept_b",
+            edge_type="related-to",
+            rule="intra_chunk_link",
+        ),
+        _prov_edge(
+            source="concept_a", target="chunk_00003",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+        ),
+        _prov_edge(
+            source="concept_b", target="chunk_00003",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+        ),
+    ]
+    graph_path = _write_graph(tmp_path, edges)
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+    statuses = _status_map(graph_data)
+    assert statuses[("concept_a", "concept_b", "related-to")] == "pending"
+
+
+def test_assesses_derived_triangle_both_confirmed(tmp_path: Path) -> None:
+    """v2 #vii — assesses (question->LO) x derived (chunk->LO) closes a
+    (chunk, LO) triangle → both confirmed, incl. case-insensitive LO match.
+    """
+    edges = [
+        # assesses: question -> LO 'CO-01', evidence chunk 'chunk_00007'
+        _prov_edge(
+            source="q-001", target="CO-01",
+            edge_type="assesses",
+            rule="assesses_from_question_lo",
+            evidence={"question_id": "q-001", "objective_id": "CO-01",
+                      "source_chunk_id": "chunk_00007"},
+            confidence=1.0,
+        ),
+        # derived: chunk_00007 -> lo 'co-01' (lowercase — case-insensitive)
+        _prov_edge(
+            source="chunk_00007", target="co-01",
+            edge_type="derived-from-objective",
+            rule="derived_from_lo_ref",
+            evidence={"chunk_id": "chunk_00007", "objective_id": "co-01"},
+            confidence=1.0,
+        ),
+    ]
+    graph_path = _write_graph(tmp_path, edges)
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+    statuses = _status_map(graph_data)
+    assert statuses[("q-001", "CO-01", "assesses")] == "confirmed"
+    assert statuses[("chunk_00007", "co-01", "derived-from-objective")] == "confirmed"
+    for e in graph_data["edges"]:
+        assert any(
+            s["detail"] == "chunk_lo_triangle" for s in e["consensus_signals"]
+        )
+
+
+def test_targets_derived_defined_triangle(tmp_path: Path) -> None:
+    """v2 #viii — targets-concept (LO->C) x derived (chunk->LO) x defined-by
+    (C->chunk) closes an LO-chunk-concept triangle → confirmed on both the
+    targets edge and the symmetric derived edge.
+    """
+    edges = [
+        # targets-concept: LO 'co-02' -> concept 'concept_q'
+        _prov_edge(
+            source="co-02", target="concept_q",
+            edge_type="targets-concept",
+            rule="targets_concept_from_lo",
+            evidence={"lo_id": "co-02", "concept_id": "concept_q",
+                      "bloom_level": "understand"},
+            confidence=1.0,
+        ),
+        # derived: chunk_00010 -> lo 'CO-02' (case-insensitive)
+        _prov_edge(
+            source="chunk_00010", target="CO-02",
+            edge_type="derived-from-objective",
+            rule="derived_from_lo_ref",
+            evidence={"chunk_id": "chunk_00010", "objective_id": "CO-02"},
+            confidence=1.0,
+        ),
+        # defined-by: concept_q -> chunk_00010 (concept's chunk == LO's chunk)
+        _prov_edge(
+            source="concept_q", target="chunk_00010",
+            edge_type="defined-by",
+            rule="defined_by_from_first_mention",
+            evidence={"chunk_id": "chunk_00010", "concept_slug": "concept_q"},
+        ),
+    ]
+    graph_path = _write_graph(tmp_path, edges)
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+    statuses = _status_map(graph_data)
+    assert statuses[("co-02", "concept_q", "targets-concept")] == "confirmed"
+    assert statuses[("chunk_00010", "CO-02", "derived-from-objective")] == "confirmed"
+    targets_edge = next(e for e in graph_data["edges"] if e["type"] == "targets-concept")
+    assert any(
+        s["detail"] == "lo_chunk_concept_triangle"
+        for s in targets_edge["consensus_signals"]
+    )
+
+
+def test_apply_to_graph_idempotent_all_signal_kinds(tmp_path: Path) -> None:
+    """v2 #ix — apply_to_graph twice is byte-identical on a fixture
+    exercising every new signal kind (T1 agree, T1 disagree, T2, T3, T4).
+    """
+    edges = [
+        # T1 disagree (soft conflict)
+        _prov_edge(source="c_b", target="c_a", edge_type="prerequisite",
+                   rule="prerequisite_from_lo_order"),
+        _prov_edge(source="c_a", target="chunk_00009", edge_type="defined-by",
+                   rule="defined_by_from_first_mention"),
+        _prov_edge(source="c_b", target="chunk_00002", edge_type="defined-by",
+                   rule="defined_by_from_first_mention"),
+        # T2/T3
+        _prov_edge(source="q-9", target="CO-09", edge_type="assesses",
+                   rule="assesses_from_question_lo",
+                   evidence={"question_id": "q-9", "objective_id": "CO-09",
+                             "source_chunk_id": "chunk_00050"}, confidence=1.0),
+        _prov_edge(source="chunk_00050", target="co-09",
+                   edge_type="derived-from-objective", rule="derived_from_lo_ref",
+                   evidence={"chunk_id": "chunk_00050", "objective_id": "co-09"},
+                   confidence=1.0),
+        _prov_edge(source="co-09", target="concept_w", edge_type="targets-concept",
+                   rule="targets_concept_from_lo",
+                   evidence={"lo_id": "co-09", "concept_id": "concept_w",
+                             "bloom_level": "apply"}, confidence=1.0),
+        _prov_edge(source="concept_w", target="chunk_00050", edge_type="defined-by",
+                   rule="defined_by_from_first_mention",
+                   evidence={"chunk_id": "chunk_00050", "concept_slug": "concept_w"}),
+        # T4 support
+        _prov_edge(source="concept_w", target="concept_x", edge_type="related-to",
+                   rule="related_from_cooccurrence"),
+        _prov_edge(source="concept_x", target="chunk_00050", edge_type="defined-by",
+                   rule="defined_by_from_first_mention",
+                   evidence={"chunk_id": "chunk_00050", "concept_slug": "concept_x"}),
+    ]
+    graph_path = _write_graph(tmp_path, edges)
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+    first = json.dumps(graph_data, sort_keys=True)
+    agg.apply_to_graph(graph_data)
+    second = json.dumps(graph_data, sort_keys=True)
+    assert first == second
+    # Sanity: the fixture really exercised a spread of verdicts.
+    statuses = set(_status_map(graph_data).values())
+    assert {"contradicted", "confirmed", "supported"} <= statuses
+
+
+# ----------------------------------------------------------------------
+# Contradicted-edge policy (TRAINFORGE_CONTRADICTED_EDGE_POLICY)
+# ----------------------------------------------------------------------
+
+
+def _reverse_prereq_pair() -> List[Dict[str, Any]]:
+    """A→B AND B→A prerequisite cycle → both edges land 'contradicted'."""
+    return [
+        _edge(source="lo_a", target="lo_b", edge_type="prerequisite",
+              rule="prerequisite_from_lo_order", confidence=0.6),
+        _edge(source="lo_b", target="lo_a", edge_type="prerequisite",
+              rule="prerequisite_from_lo_order", confidence=0.6),
+    ]
+
+
+def test_policy_unset_byte_identical_stamp_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Policy unset → apply_to_graph output is byte-identical to the
+    pre-flag stamp-only behaviour (no confidence touch, status stays
+    'contradicted', no sentinel field)."""
+    monkeypatch.delenv("TRAINFORGE_CONTRADICTED_EDGE_POLICY", raising=False)
+    graph_path = _write_graph(tmp_path, _reverse_prereq_pair())
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+
+    for e in graph_data["edges"]:
+        assert e["edge_status"] == "contradicted"
+        # Confidence untouched, no decay sentinel stamped.
+        assert e["confidence"] == 0.6
+        assert "consensus_confidence_decayed" not in e
+
+
+def test_policy_decay_multiplies_confidence_status_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """decay → contradicted edge's confidence × 0.5, status stays
+    'contradicted'; idempotent (twice == once)."""
+    monkeypatch.setenv("TRAINFORGE_CONTRADICTED_EDGE_POLICY", "decay")
+    graph_path = _write_graph(tmp_path, _reverse_prereq_pair())
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+    for e in graph_data["edges"]:
+        assert e["edge_status"] == "contradicted"
+        assert e["confidence"] == 0.3  # 0.6 * 0.5
+        assert e["consensus_confidence_decayed"] is True
+
+    # Idempotent: a second pass must NOT halve again (0.3 stays 0.3).
+    first = json.dumps(graph_data, sort_keys=True)
+    agg.apply_to_graph(graph_data)
+    second = json.dumps(graph_data, sort_keys=True)
+    assert first == second
+    for e in graph_data["edges"]:
+        assert e["confidence"] == 0.3
+
+
+def test_policy_retract_restatuses_edge_retained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """retract → contradicted edge re-statused 'retracted', edge retained
+    in graph['edges'] (NOT deleted), confidence untouched."""
+    monkeypatch.setenv("TRAINFORGE_CONTRADICTED_EDGE_POLICY", "retract")
+    graph_path = _write_graph(tmp_path, _reverse_prereq_pair())
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    edge_count_before = len(graph_data["edges"])
+    agg.apply_to_graph(graph_data)
+
+    # Edges physically retained — provenance/replay preserved.
+    assert len(graph_data["edges"]) == edge_count_before
+    for e in graph_data["edges"]:
+        assert e["edge_status"] == "retracted"
+        assert e["confidence"] == 0.6  # confidence untouched by retract
+        assert "consensus_confidence_decayed" not in e
+
+    # Idempotent.
+    first = json.dumps(graph_data, sort_keys=True)
+    agg.apply_to_graph(graph_data)
+    second = json.dumps(graph_data, sort_keys=True)
+    assert first == second
+
+
+def test_policy_only_touches_contradicted_edges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """decay/retract leave non-contradicted (confirmed/pending) edges
+    completely alone."""
+    monkeypatch.setenv("TRAINFORGE_CONTRADICTED_EDGE_POLICY", "retract")
+    edges = [
+        # confirmed same-pair pair
+        _edge(source="c_a", target="c_b", edge_type="is-a",
+              rule="is_a_from_key_terms", confidence=0.7),
+        _edge(source="c_a", target="c_b", edge_type="defined-by",
+              rule="defined_by_from_first_mention", confidence=0.5),
+        # lone pending related-to
+        _edge(source="c_x", target="c_y", edge_type="related-to",
+              rule="related_from_cooccurrence", confidence=0.4),
+    ]
+    graph_path = _write_graph(tmp_path, edges)
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+    agg.apply_to_graph(graph_data)
+    statuses = _status_map(graph_data)
+    assert statuses[("c_a", "c_b", "is-a")] == "confirmed"
+    assert statuses[("c_a", "c_b", "defined-by")] == "confirmed"
+    assert statuses[("c_x", "c_y", "related-to")] == "pending"
+    # None retracted (none were contradicted).
+    assert all(e["edge_status"] != "retracted" for e in graph_data["edges"])
+
+
+def test_policy_invalid_value_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Invalid flag value raises ContradictedEdgePolicyError BEFORE any
+    edge is mutated (no half-written graph)."""
+    from lib.aggregators.edge_consensus import ContradictedEdgePolicyError
+
+    monkeypatch.setenv("TRAINFORGE_CONTRADICTED_EDGE_POLICY", "delete")
+    graph_path = _write_graph(tmp_path, _reverse_prereq_pair())
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
+
+    with pytest.raises(ContradictedEdgePolicyError):
+        agg.apply_to_graph(graph_data)
+
+    # No edge was stamped before the raise (fail-closed up front).
+    for e in graph_data["edges"]:
+        assert "edge_status" not in e
+        assert "consensus_signals" not in e
+
+
+def test_policy_does_not_affect_build_contradiction_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """build()'s contradiction_rate counts the contradicted VERDICT
+    regardless of the policy — coherence with KGQualityValidator's
+    (1 - contradiction_rate) consistency attenuation. A retracted/decayed
+    edge still counts as evidence of contradiction."""
+    monkeypatch.setenv("TRAINFORGE_CONTRADICTED_EDGE_POLICY", "retract")
+    graph_path = _write_graph(tmp_path, _reverse_prereq_pair())
+    agg = EdgeConsensusAggregator(graph_path, course_slug="t", run_id="r")
+    report = agg.build()
+    summary = report["summary"]
+    # build() does not apply the policy; the contradicted verdict survives.
+    assert summary["contradicted_count"] == 2
+    assert summary["contradiction_rate"] == 1.0
+    assert summary["retracted_count"] == 0
+
+
+def test_matrix_keys_cover_registered_rules() -> None:
+    """Drift defence — _RULE_PAIR_MATRIX keys ⊇ registered Trainforge rule
+    names ∪ {'intra_chunk_link'}. Skipped when Trainforge import unavailable.
+    """
+    pytest.importorskip("Trainforge.rag.inference_rules")
+    from lib.aggregators.edge_consensus import _RULE_PAIR_MATRIX
+    import Trainforge.rag.inference_rules as ir
+
+    registered = set()
+    for name in dir(ir):
+        mod = getattr(ir, name)
+        rule_name = getattr(mod, "RULE_NAME", None)
+        if isinstance(rule_name, str) and rule_name:
+            registered.add(rule_name)
+    registered.add("intra_chunk_link")
+    missing = registered - set(_RULE_PAIR_MATRIX.keys())
+    assert not missing, f"matrix missing rule names: {sorted(missing)}"

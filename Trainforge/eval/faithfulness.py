@@ -71,9 +71,9 @@ def _format_probe(
     """Render a probe prompt for one held-out edge.
 
     Audit 2026-04-30: when ``edge["source"]`` is a chunk-ID literal
-    (e.g. ``rdf_shacl_551_chunk_00270``), substituting it raw produces
+    (e.g. ``<course-slug>_chunk_00270``), substituting it raw produces
     semantically incoherent probes ("Does the assessment
-    'rdf_shacl_551_chunk_00270' assess the concept 'CO-18'?") that the
+    '<course-slug>_chunk_00270' assess the concept 'CO-18'?") that the
     model can't answer — it echoes the ID back, the classifier scores
     ambiguous, and faithfulness collapses to 0. The label_resolver
     swaps the ID for the chunk's human-readable summary so the probe

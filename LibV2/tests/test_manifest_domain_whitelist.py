@@ -98,8 +98,9 @@ def test_domain_matches_other_canonical_pairs() -> None:
 
 
 def test_validate_accepts_computer_science_space_form(tmp_path: Path, repo_root: Path) -> None:
-    """The exact failure mode reported on rdf-shacl-550: manifest's
-    ``primary_domain`` is ``"computer science"`` (lowercase + space)."""
+    """The exact failure mode reported on the RDF/SHACL calibration
+    corpus: manifest's ``primary_domain`` is ``"computer science"``
+    (lowercase + space)."""
     archive = _build_archive(tmp_path, "computer science")
     result = validate_taxonomy_compliance(archive, repo_root)
     assert result.valid, f"validation should pass; errors: {result.errors}"

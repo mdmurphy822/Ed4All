@@ -55,7 +55,7 @@ def _make_processor() -> CourseProcessor:
     Only attaches the attributes ``_extract_concept_tags`` reads.
     """
     proc = CourseProcessor.__new__(CourseProcessor)
-    proc.course_code = "RDF_SHACL_550"
+    proc.course_code = "DEMO_COURSE_1"
     proc.domain_concept_seeds = []
     return proc
 

@@ -474,7 +474,7 @@ class SLMEvalHarness:
         # Audit 2026-04-30 fix: load corpus chunks once per eval run
         # so probe templates can substitute human-readable labels for
         # chunk-ID literals. Without this, probes like
-        # "Does the assessment 'rdf_shacl_551_chunk_00270' assess CO-18?"
+        # "Does the assessment '<course-slug>_chunk_00270' assess CO-18?"
         # leak the chunk-ID into the model's context, the model echoes
         # it back, and the classifier scores ambiguous → faithfulness=0.
         label_resolver = ChunkLabelResolver.from_course(self.course_path)

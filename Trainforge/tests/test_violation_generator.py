@@ -284,8 +284,8 @@ def test_chunk_id_anchors_to_property_manifest_chunk_when_available() -> None:
     fixture's surface form, the pair anchors to that chunk."""
     capture = _FakeCapture()
     chunks_by_form = {
-        "sh:datatype": ["rdf_shacl_551_chunk_00100"],
-        "sh:NodeShape": ["rdf_shacl_551_chunk_00200"],
+        "sh:datatype": ["demo_course_1_chunk_00100"],
+        "sh:NodeShape": ["demo_course_1_chunk_00200"],
     }
     pairs, _ = generate_violation_pairs(
         capture=capture,
@@ -293,9 +293,9 @@ def test_chunk_id_anchors_to_property_manifest_chunk_when_available() -> None:
     )
     for pair in pairs:
         if pair["shape_curie"] == "sh:datatype":
-            assert pair["chunk_id"] == "rdf_shacl_551_chunk_00100"
+            assert pair["chunk_id"] == "demo_course_1_chunk_00100"
         elif pair["shape_curie"] == "sh:NodeShape":
-            assert pair["chunk_id"] == "rdf_shacl_551_chunk_00200"
+            assert pair["chunk_id"] == "demo_course_1_chunk_00200"
 
 
 def test_chunk_id_falls_back_to_synthetic_when_no_manifest_match() -> None:

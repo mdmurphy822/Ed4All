@@ -1,6 +1,6 @@
 """W3C foundational-technology anchor concepts (Wave 82, Slice 2).
 
-The Wave 82 retrieval audit on ``LibV2/courses/rdf-shacl-551-2/`` found
+The Wave 82 retrieval audit on the RDF/SHACL calibration corpus found
 that queries about top-level standards (``RDF``, ``RDFS``, ``OWL``,
 ``SHACL``, ``SPARQL``, ``Turtle``) and predicates (``owl:sameAs``)
 failed graph-assisted retrieval because no canonical concept node
@@ -15,7 +15,10 @@ text mentions ``RDF Schema`` (or ``RDFS``), ``rdfs`` is appended to its
 ``concept_tags`` so the existing 2-chunk co-occurrence gate in
 ``_generate_concept_graph`` admits it as a node.
 
-Scope: W3C semantic-web standards + the predicates the audit named.
+Scope: W3C semantic-web standards + the predicates the audit named,
+plus the RAG/agentic-AI flagship vocabulary the RAG-course audit
+named missing (LangGraph, ReAct, agentic/self/corrective RAG,
+reranking, NeMo Guardrails, tool calling, NIM, RAG itself).
 Domain-specific anchors (per-course technical vocab) belong in
 ``CourseProcessor.domain_concept_seeds``, not here.
 """
@@ -169,6 +172,81 @@ _PATTERNS: Dict[str, List[re.Pattern[str]]] = {
     "turtle-prefix": [
         re.compile(r"@prefix\b"),  # Turtle prefix declaration
         re.compile(r"\bPREFIX\s+[a-z]"),  # SPARQL PREFIX
+    ],
+    # ===============================================================
+    # RAG / agentic-AI anchors (RAG-agents course audit).
+    # The retrieval audit on the RAG-agents course found the
+    # flagship course concepts (LangGraph, ReAct, agentic/self/corrective
+    # RAG, reranking, NeMo Guardrails, tool calling, NIM) absent as
+    # concept nodes — the corpus discussed them in chunk prose but no
+    # canonical slug existed to admit them via the co-occurrence gate.
+    #
+    # Acronyms (RAG, NIM, ReAct, RAGAS, CRAG, FAISS, LCEL) are matched
+    # CASE-SENSITIVELY to dodge substring/casing false positives
+    # ("storage"/"foraging" for RAG; the JS library "React" for ReAct).
+    # ===============================================================
+    "langgraph": [
+        re.compile(r"\bLangGraph\b", re.IGNORECASE),
+    ],
+    "langchain": [
+        re.compile(r"\bLangChain\b", re.IGNORECASE),
+    ],
+    "lcel": [
+        re.compile(r"\bLCEL\b"),  # case-sensitive acronym
+        re.compile(r"\bLangChain\s+Expression\s+Language\b", re.IGNORECASE),
+    ],
+    "react": [
+        # The reason-act-observe AGENT pattern — NOT the JS UI library.
+        # Require either the exact ``ReAct`` casing (capital R, capital A)
+        # or the spelled-out "reason-act-observe" loop. Case-sensitive so
+        # "React"/"react"/"REACT" (the frontend lib / English verb) miss.
+        re.compile(r"\bReAct\b"),
+        re.compile(r"\breason[-\s]act[-\s]observe\b", re.IGNORECASE),
+    ],
+    "ragas": [
+        re.compile(r"\bRAGAS\b"),  # case-sensitive acronym (eval framework)
+    ],
+    "agentic-rag": [
+        re.compile(r"\bagentic\s+RAG\b", re.IGNORECASE),
+    ],
+    "self-rag": [
+        re.compile(r"\bself[-\s]RAG\b", re.IGNORECASE),
+    ],
+    "corrective-rag": [
+        re.compile(r"\bcorrective\s+RAG\b", re.IGNORECASE),
+        re.compile(r"\bCRAG\b"),  # case-sensitive acronym
+    ],
+    "reranking": [
+        re.compile(r"\bre[-\s]?ranking\b", re.IGNORECASE),
+        re.compile(r"\bre[-\s]?ranker\b", re.IGNORECASE),
+    ],
+    "guardrails": [
+        # Generic guardrails — distinct from the existing
+        # ``semantic-guardrailing`` slug (kept intact).
+        re.compile(r"\bguardrails?\b", re.IGNORECASE),
+    ],
+    "nemo": [
+        re.compile(r"\bNeMo\b"),  # case-sensitive: NVIDIA NeMo (not "nemo")
+    ],
+    "tool-calling": [
+        re.compile(r"\btool[-\s]calling\b", re.IGNORECASE),
+        re.compile(r"\bfunction[-\s]calling\b", re.IGNORECASE),
+    ],
+    "faiss": [
+        re.compile(r"\bFAISS\b"),  # case-sensitive acronym
+    ],
+    "nim": [
+        # NVIDIA Inference Microservice. Case-sensitive ``NIM`` to avoid
+        # the English word "nim" / proper noun noise.
+        re.compile(r"\bNIM\b"),
+        re.compile(r"\bNVIDIA\s+NIM\b"),
+    ],
+    "rag": [
+        # Retrieval-Augmented Generation. ``RAG`` token matched
+        # case-sensitively + word-boundaried so "storage", "foraging",
+        # "drag" never fire; the spelled-out form is case-insensitive.
+        re.compile(r"\bRAG\b"),
+        re.compile(r"\bretrieval[-\s]augmented\s+generation\b", re.IGNORECASE),
     ],
 }
 

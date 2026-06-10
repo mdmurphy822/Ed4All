@@ -1,12 +1,12 @@
 """Tests for Wave 75 Worker C — real pedagogy graph builder.
 
 Asserts node-class invariants, per-relation edge counts on a small
-synthetic corpus, plus a regression that the rdf-shacl-550 archive
+synthetic corpus, plus a regression that a real course archive
 regenerates within the post-Wave-76 envelope.
 
 Wave 76 Worker D refined the prerequisite_of rule (strict-later-week
 + at-least-one-shared-chunk + DomainConcept filter) which dropped the
-rdf-shacl-550 prereq edge count from 7032 to ~700 in legacy permissive
+RDF/SHACL calibration corpus prereq edge count from 7032 to ~700 in legacy permissive
 mode (no concept_classes). Total edge count is now bounded above by
 ~3000 (depends on chunk LO-ref density) and floor remains >= 800.
 The strict pruning-mode envelope (prereq <= 500 with classes applied)
@@ -21,6 +21,10 @@ from typing import Any, Dict, List
 import pytest
 
 from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
+
+from Trainforge.tests._archive_discovery import (
+    discover_real_archive as _discover_real_archive,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -237,7 +241,7 @@ def test_concept_nodes_emitted_without_example_chunks():
     nodes for every concept carrying a concept_tag.
 
     Pre-fix, Concept-node emission walked an example-only accumulator,
-    so an all-``explanation`` corpus (real case: an OpenStax algebra
+    so an all-``explanation`` corpus (real case: an introductory algebra
     textbook with 0 example chunks) produced zero Concept nodes even
     though every chunk carried concept_tags. Node emission now walks
     the all-chunk-types accumulator; the ``exemplifies`` edge stays
@@ -339,27 +343,23 @@ def test_lo_ref_normalization_handles_compound_refs():
 # ---------------------------------------------------------------------------
 
 
-CORPUS_CHUNKS = (
-    ROOT
-    / "LibV2"
-    / "courses"
-    / "rdf-shacl-550-rdf-shacl-550"
-    / "corpus"
-    / "chunks.jsonl"
-)
-SYNTH_OBJECTIVES = (
-    ROOT
-    / "Courseforge"
-    / "exports"
-    / "PROJ-RDF_SHACL_550-20260424135037"
-    / "01_learning_objectives"
-    / "synthesized_objectives.json"
+CORPUS_CHUNKS, SYNTH_OBJECTIVES, _CONCEPT_GRAPH, REAL_COURSE_ID = (
+    _discover_real_archive()
 )
 
 
 @pytest.mark.skipif(
-    not (CORPUS_CHUNKS.exists() and SYNTH_OBJECTIVES.exists()),
-    reason="rdf-shacl-550 archive missing — regression skipped",
+    not (
+        CORPUS_CHUNKS is not None
+        and SYNTH_OBJECTIVES is not None
+        and CORPUS_CHUNKS.exists()
+        and SYNTH_OBJECTIVES.exists()
+    ),
+    reason=(
+        "no LibV2 course archive with corpus/chunks.jsonl + "
+        "synthesized_objectives.json present under ED4ALL_LIBV2_ROOT / "
+        "LibV2/courses/ — real-archive regression skipped"
+    ),
 )
 def test_real_archive_regen_within_legacy_envelope():
     """Legacy mode (no concept_classes) — verify post-Wave-76 envelope.
@@ -379,13 +379,14 @@ def test_real_archive_regen_within_legacy_envelope():
     with open(SYNTH_OBJECTIVES, encoding="utf-8") as f:
         objectives = json.load(f)
 
-    g = build_pedagogy_graph(chunks, objectives, course_id="RDF_SHACL_550")
+    g = build_pedagogy_graph(chunks, objectives, course_id=REAL_COURSE_ID)
 
     # Wave 78 envelope: bumped ceiling 3000 -> 5000 to absorb the four
     # new relation types (derived_from_objective ~700,
     # concept_supports_outcome ~1000, assessment_validates_outcome
     # ~50, chunk_at_difficulty == chunk_count). Wave 76 ceiling was
-    # 3000; the rdf-shacl-550 archive lands ~4250 post-Wave-78.
+    # 3000; the RDF/SHACL calibration corpus archive lands ~4250
+    # post-Wave-78.
     edge_count = g["stats"]["edge_count"]
     assert 1000 <= edge_count <= 5000, (
         f"expected 1000 <= edges <= 5000, got {edge_count}"

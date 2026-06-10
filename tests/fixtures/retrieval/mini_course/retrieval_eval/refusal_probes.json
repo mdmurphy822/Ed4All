@@ -1,0 +1,78 @@
+{
+  "schema_version": "1.0",
+  "course_slug": "mini-retrieval-101",
+  "authored_at": "2026-06-09T00:00:00Z",
+  "engine": "lexical",
+  "_operator_note": "Fixture seed: 3 refusal probes (one per category) over the mini-retrieval-101 fixture corpus for offline/CI tests; not a real course probe set.",
+  "probes": [
+    {
+      "probe_id": "rp-mini-retrieval-101-0001",
+      "question_text": "How does ATP synthesis occur in the mitochondria?",
+      "category": "off_topic",
+      "why_unanswerable": "The fixture corpus covers vector stores, embeddings, and chunking; cell biology is a wholly different discipline it never covers.",
+      "dry_run": {
+        "verified": true,
+        "engine": "lexical",
+        "limit": 8,
+        "n_results": 0,
+        "top_score": 0.0,
+        "top_passage_answers": false,
+        "top_chunk_id": "",
+        "metadata_scoring": true,
+        "verified_at": "2026-06-09T00:00:00Z"
+      },
+      "authoring": {
+        "method": "manual",
+        "author": "@executor-e6",
+        "reviewed_by": "PENDING_REVIEW",
+        "status": "seed"
+      }
+    },
+    {
+      "probe_id": "rp-mini-retrieval-101-0002",
+      "question_text": "How do you fine-tune the embedding model's weights with a contrastive loss?",
+      "category": "adjacent_domain",
+      "why_unanswerable": "Training/fine-tuning an embedding model is an adjacent ML topic, but the fixture corpus only describes using a vector store and chunking, never a training loop or loss function.",
+      "dry_run": {
+        "verified": true,
+        "engine": "lexical",
+        "limit": 8,
+        "n_results": 3,
+        "top_score": 1.6026,
+        "top_passage_answers": false,
+        "top_chunk_id": "mini_alpha_chunk_004",
+        "metadata_scoring": true,
+        "verified_at": "2026-06-09T00:00:00Z"
+      },
+      "authoring": {
+        "method": "manual",
+        "author": "@executor-e6",
+        "reviewed_by": "PENDING_REVIEW",
+        "status": "seed"
+      }
+    },
+    {
+      "probe_id": "rp-mini-retrieval-101-0003",
+      "question_text": "What exact ef_search parameter does the FAISS HNSW index use at query time?",
+      "category": "out_of_scope_detail",
+      "why_unanswerable": "FAISS is mentioned as a similarity-search library, but the fixture corpus never specifies HNSW query-time hyperparameters; an out-of-scope implementation detail.",
+      "dry_run": {
+        "verified": true,
+        "engine": "lexical",
+        "limit": 8,
+        "n_results": 4,
+        "top_score": 1.7555,
+        "top_passage_answers": false,
+        "top_chunk_id": "mini_alpha_chunk_002",
+        "metadata_scoring": true,
+        "verified_at": "2026-06-09T00:00:00Z"
+      },
+      "authoring": {
+        "method": "manual",
+        "author": "@executor-e6",
+        "reviewed_by": "PENDING_REVIEW",
+        "status": "seed"
+      }
+    }
+  ]
+}

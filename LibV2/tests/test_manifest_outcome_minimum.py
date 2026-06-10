@@ -73,8 +73,9 @@ def test_count_terminals_plus_components_via_course_json(tmp_path: Path) -> None
 def test_count_via_objectives_when_course_json_partial(tmp_path: Path) -> None:
     """course.json missing components — objectives.json fills in.
 
-    Mirrors the rdf-shacl-550 mid-migration state: course.json had only
-    the 7 terminals, but objectives.json carried the full 7 + 29 split.
+    Mirrors the RDF/SHACL calibration corpus mid-migration state:
+    course.json had only the 7 terminals, but objectives.json carried
+    the full 7 + 29 split.
     """
     archive = _write_course_archive(
         tmp_path,
@@ -168,9 +169,9 @@ def test_minimum_legacy_archive_with_only_7_terminals_still_fails(tmp_path: Path
 
 
 def test_minimum_uses_objectives_when_course_json_partial(tmp_path: Path) -> None:
-    """The exact rdf-shacl-550 case: course.json had only 7, but
-    objectives.json had the full 36. The validator must consult both
-    and pass.
+    """The exact RDF/SHACL calibration-corpus case: course.json had
+    only 7, but objectives.json had the full 36. The validator must
+    consult both and pass.
     """
     archive = _write_course_archive(
         tmp_path,

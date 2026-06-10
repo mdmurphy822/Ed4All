@@ -86,7 +86,7 @@ def test_section_without_template_type_falls_back_to_none():
 
 
 def test_pitfall_template_type_propagates_through_subsections():
-    """Mirrors the rdf-shacl-551-2 ``pitfall_01.html`` shape.
+    """Mirrors the RDF/SHACL calibration corpus ``pitfall_01.html`` shape.
 
     The Wave 79 C ``common_pitfall`` template emits exactly one
     ``<section data-cf-template-type="common_pitfall">`` whose body contains

@@ -62,6 +62,12 @@ ed4all gui --reload                     # uvicorn autoreload (dev only)
 You can also run the server module directly: `python -m gui.server [--host ...]
 [--port ...] [--reload]`.
 
+The bind address resolves from two env vars (CLI flags override them when both
+are passed): `ED4ALL_GUI_HOST` (default `127.0.0.1`) and `ED4ALL_GUI_PORT`
+(default `8077`). Set them to relocate the server without passing `--host` /
+`--port` on every launch — e.g. `ED4ALL_GUI_HOST=0.0.0.0 ED4ALL_GUI_PORT=9000
+ed4all gui` to bind all interfaces on port 9000.
+
 **Default URL:** <http://127.0.0.1:8077>. The SPA is served at `/`; the REST API
 lives under `/api`; the run-log WebSocket is `/ws/runs/{run_id}`. A liveness
 probe is `GET /api/health`.
@@ -404,3 +410,100 @@ code paths, so existing `DecisionCapture` wiring stays intact.
 
 The launcher-specific troubleshooting (venv, `python3-venv`, browser open) lives
 in [`gui/LAUNCH.md`](LAUNCH.md).
+
+---
+
+## Learner surface (`/learn/`)
+
+The same FastAPI process also serves a **learner-facing answer UI** — a
+disjoint, accessibility-first surface for the query → grounded-answer → citation
+→ source-page loop. It is rendered to WCAG 2.2 AA from the first build and is
+deliberately separate from the operator SPA: a learner must never see env vars,
+API keys, run launching, or the Claude bridge.
+
+### Routes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/learn/` | The learner page (static shell; auto-served by the existing `StaticFiles` mount). In `--learner` mode it is also served at `/`. |
+| GET | `/api/learn/courses` | List answerable courses (`[{slug, chunk_count}]`). |
+| POST | `/api/learn/ask` | `{slug, query, engine="auto"}` → `{answer, html}`. Returns **200 for all answer outcomes** (answered / answered-with-warnings / both refusal states / both blocked states); typed backend failures map to 503/502/500. The `html` field is the server-rendered answer fragment the page swaps in (single rendering path — no client-side re-render). |
+| GET | `/api/learn/source/{slug}?item_path=…[&fragment=…]` | Serve the archived source page a citation links to, sanitized and wrapped, with a restrictive CSP. Path-traversal attempts are rejected (422) before any filesystem access. |
+
+The answer engine is **synchronous and non-streaming**; the UI shows a polite
+busy state and a visual-only elapsed counter rather than faking token streaming.
+Groundedness/NLI is never loaded on the learner ask path (operator-only,
+advisory).
+
+### Learner-only serve mode
+
+For a moderated pilot session, run the appliance so that **only** the learner
+surface is mounted — the operator routers (settings, uploads, runs, courses,
+retrieval) and the operator SPA are not even registered:
+
+```bash
+ed4all gui --learner                 # learner surface only; /  IS the learner page
+ED4ALL_GUI_LEARNER=1 ed4all gui      # env fallback (same effect)
+python -m gui.server --learner       # direct uvicorn entrypoint
+```
+
+In learner-only mode:
+
+- **Reachable:** `/` and `/learn/` (the learner page), `/api/learn/*`,
+  `/api/health`.
+- **Not mounted (404):** `/api/settings`, `/api/uploads`, `/api/runs`,
+  `/api/courses`, `/api/retrieval`, the `/ws/runs/*` log stream, and the
+  operator SPA.
+
+Without `--learner`, the full app serves both surfaces: the facilitator uses the
+operator SPA while a participant opens `/learn/` — appropriate for dev/demo on a
+trusted machine, not for a shared/exposed deployment.
+
+### Access posture (honest)
+
+The control-plane GUI has **no authentication** of any kind — no login, no
+user accounts, no auth middleware; CORS is `allow_origins=["*"]`. This is true
+of both the operator and learner surfaces. Access control for the Phase IA pilot
+is therefore **operational, not built-in**:
+
+- **Default loopback bind.** The server binds `127.0.0.1:8077` by default
+  (`ED4ALL_GUI_HOST`/`ED4ALL_GUI_PORT`, or `--host`/`--port`). Do **not** bind
+  `0.0.0.0` (or a routable host) while the **full** app is running where a
+  learner can reach it — that would expose the operator settings/API-key surface
+  to anyone on the network.
+- **Learner-only mode is the access boundary.** When the surface must be reached
+  by a participant, run `--learner` so the operator routes are not mounted at
+  all. This — plus the loopback default and a facilitator-moderated,
+  single-machine session — *is* the access control for the pilot.
+- **Moderated sessions.** Pilot sessions are run on a single facilitator-operated
+  machine. There is no multi-user isolation; sessions are supervised.
+- **Full authentication is deferred** (out of scope for this phase) and flagged
+  for a later hardening wave. Treat the current posture as pilot-only.
+
+### Privacy note
+
+Learner queries are logged locally to `training-captures/` (JSONL, via
+`DecisionCapture`) on the **same device** — there is no telemetry or
+network-egress path. Disclose this in the session consent language.
+
+### Accessibility
+
+The learner surface is built to **WCAG 2.2 AA**: semantic landmarks + skip
+link, a single `<h1>` in `<main>`, label-paired form controls, a single
+`aria-live="polite"` status region (announced once on busy + once on arrival,
+no per-second chatter), focus moved to the answer heading on arrival, a real
+`:focus-visible` outline (no `outline:none`-only patterns) for Windows
+High-Contrast compatibility, ≥24×24 px interactive targets, ≥4.5:1 text
+contrast, no color-only state, and a `prefers-reduced-motion` guard.
+
+Conformance is enforced two ways:
+
+- **Automated, every CI run** — a pytest gate runs the bs4-based
+  `WCAGValidator` over every server-rendered page variant (idle, busy, all six
+  answer statuses, error copies, and a wrapped source page) and fails on any
+  Level A/AA finding.
+- **Manual, each cycle** — the screen-reader + keyboard-only walkthrough in
+  [`docs/accessibility/learner-ui-manual-pass.md`](../docs/accessibility/learner-ui-manual-pass.md)
+  (NVDA + Firefox, VoiceOver + Safari, keyboard-only tab order, axe DevTools
+  sweep, 200 % zoom / High-Contrast / target-size spot checks), with a
+  pass/fail sign-off log.

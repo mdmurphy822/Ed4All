@@ -399,7 +399,7 @@ def generate_kg_metadata_pairs(
                     "option": "all triples (no per-relation cap)",
                     "reason_rejected": (
                         "graph-rich relations (prerequisite_of has "
-                        "4160 edges in rdf-shacl-551-2) would crowd out "
+                        "4160 edges in the RDF/SHACL calibration corpus) would crowd out "
                         "low-volume relations like assessment_validates_"
                         "outcome (20 edges)."
                     ),

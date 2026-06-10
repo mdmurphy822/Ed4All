@@ -1,6 +1,6 @@
 """Wave 82 regression tests for misconception → concept_tag routing.
 
-The rdf-shacl-551-2 audit found `interferes_with` edges landing on the
+The RDF/SHACL calibration corpus audit found `interferes_with` edges landing on the
 wrong target concept. Example: a misconception about "blank node vs IRI"
 routed to ``concept:one-line-rule`` because the legacy heuristic always
 picked the chunk's first concept_tag, regardless of the misconception's
@@ -8,7 +8,7 @@ subject.
 
 Pre-Wave-82, ``_build_misconceptions_for_graph`` set
 ``concept_id = explicit_cid or _make_concept_id(first_tag, course_id)``.
-Verified empirically against the rdf-shacl-551-2 chunks: 0% of
+Verified empirically against the RDF/SHACL calibration corpus chunks: 0% of
 authored misconceptions carry an explicit ``concept_id``, so the
 first-tag fallback fired 100% of the time.
 
@@ -32,7 +32,7 @@ from Trainforge.process_course import _route_misconception_to_tag
 
 class TestAuditReproductions:
     def test_triple_misconception_routes_to_triples_not_statement(self):
-        # rdf_shacl_551_chunk_00001 actual concept_tags:
+        # calibration-corpus chunk_00001 actual concept_tags:
         # ['statement', 'triples', 'directional', 'subject', 'predicate'].
         # Pre-Wave-82 picked 'statement' (first tag); the misconception is
         # actually about triples.

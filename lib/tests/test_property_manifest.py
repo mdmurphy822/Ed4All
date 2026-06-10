@@ -17,7 +17,7 @@ def test_load_rdf_shacl_manifest_returns_expanded_properties() -> None:
     manifest-scope gap surfaced in plans/curie-fidelity-audit-2026-05.
     Asserts the 6 Wave 109 anchors remain present and the count matches
     the audit-recommended size."""
-    manifest = load_property_manifest("rdf-shacl-551-2")
+    manifest = load_property_manifest("rdf-shacl-demo")
     assert isinstance(manifest, PropertyManifest)
     assert manifest.family == "rdf_shacl"
     assert len(manifest.properties) == 40
@@ -32,7 +32,7 @@ def test_load_rdf_shacl_manifest_returns_expanded_properties() -> None:
 
 
 def test_property_entry_match_text_against_surface_forms() -> None:
-    manifest = load_property_manifest("rdf-shacl-551-2")
+    manifest = load_property_manifest("rdf-shacl-demo")
     sh_dt = next(p for p in manifest.properties if p.id == "sh_datatype")
     assert sh_dt.matches("ex:Shape sh:datatype xsd:string .") is True
     assert sh_dt.matches("ex:Shape sh:class :Person .") is False
@@ -44,7 +44,7 @@ def test_unknown_course_raises_filenotfound(tmp_path: Path) -> None:
 
 
 def test_manifest_by_id_lookup() -> None:
-    manifest = load_property_manifest("rdf-shacl-551-2")
+    manifest = load_property_manifest("rdf-shacl-demo")
     by_id = manifest.by_id
     assert "sh_datatype" in by_id
     assert by_id["sh_datatype"].curie == "sh:datatype"

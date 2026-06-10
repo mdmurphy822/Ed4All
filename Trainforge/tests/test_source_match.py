@@ -139,7 +139,7 @@ def test_source_match_accepts_single_quoted_short_form(tmp_path):
     """Wave 105: form 2 — single-quoted bare suffix 'chunk_NNNN'.
 
     The trained model emitted this exact form in the Wave 104 eval
-    (e.g. 'rdf_shacl_551_chunk_00270') so source-match must not
+    (e.g. 'demo_course_1_chunk_00270') so source-match must not
     discount it.
     """
     from Trainforge.eval.source_match import SourceMatchEvaluator
@@ -157,7 +157,7 @@ def test_source_match_accepts_single_quoted_short_form(tmp_path):
 
 
 def test_source_match_accepts_single_quoted_full_corpus_id(tmp_path):
-    """Wave 105: form 3 — 'rdf_shacl_551_chunk_NNNN' single-quoted
+    """Wave 105: form 3 — 'demo_course_1_chunk_NNNN' single-quoted
     full corpus ID, normalized to ``chunk_NNNN``."""
     from Trainforge.eval.source_match import SourceMatchEvaluator
 
@@ -168,7 +168,7 @@ def test_source_match_accepts_single_quoted_full_corpus_id(tmp_path):
     _write_holdout_split(holdout, edges)
     result = SourceMatchEvaluator(
         holdout_split=holdout,
-        model_callable=lambda _p: "from 'rdf_shacl_551_chunk_00270' we know",
+        model_callable=lambda _p: "from 'demo_course_1_chunk_00270' we know",
     ).evaluate()
     assert result["matches"] == 1
 
@@ -180,7 +180,7 @@ def test_source_match_scores_full_corpus_source_ids(tmp_path):
     holdout = tmp_path / "h.json"
     edges = [
         {
-            "source": "rdf_shacl_551_chunk_00270",
+            "source": "demo_course_1_chunk_00270",
             "target": "concept",
             "relation_type": "teaches",
         },
@@ -188,7 +188,7 @@ def test_source_match_scores_full_corpus_source_ids(tmp_path):
     _write_holdout_split(holdout, edges)
     result = SourceMatchEvaluator(
         holdout_split=holdout,
-        model_callable=lambda _p: "see [rdf_shacl_551_chunk_00270]",
+        model_callable=lambda _p: "see [demo_course_1_chunk_00270]",
     ).evaluate()
     assert result["scored_total"] == 1
     assert result["matches"] == 1

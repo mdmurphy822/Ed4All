@@ -89,7 +89,7 @@ def _fake_result(
     chunk_id="c1",
     text="body text " * 50,
     score=1.234,
-    course_slug="rdf-shacl-551-2",
+    course_slug="demo-course-1",
     heading="Node Shapes",
     module_id="module_03",
     tags=("node-shape", "shacl", "property-shape"),
@@ -113,7 +113,7 @@ class TestCompactRetrievalResult:
         assert d["rank"] == 1
         assert d["chunk_id"] == "c1"
         assert d["score"] == pytest.approx(1.234)
-        assert d["course_slug"] == "rdf-shacl-551-2"
+        assert d["course_slug"] == "demo-course-1"
         assert d["section_heading"] == "Node Shapes"
         assert d["module_id"] == "module_03"
         assert d["concept_tags"] == ["node-shape", "shacl", "property-shape"]
@@ -170,20 +170,20 @@ class TestWriteAndAttachAnswer:
     def test_per_course_record_lands_under_course(self, tmp_path: Path):
         path = write_query_record(
             repo_root=tmp_path,
-            course_slug="rdf-shacl-551-2",
+            course_slug="demo-course-1",
             query_text="How do property paths work?",
             method="bm25+intent",
             limit=10,
             retrieved=[{"rank": 1, "chunk_id": "c1", "score": 1.0,
-                        "course_slug": "rdf-shacl-551-2",
+                        "course_slug": "demo-course-1",
                         "section_heading": "h", "module_id": "m",
                         "concept_tags": [], "snippet": "..."}],
         )
-        assert path.parent == tmp_path / "courses" / "rdf-shacl-551-2" / "queries"
+        assert path.parent == tmp_path / "courses" / "demo-course-1" / "queries"
         record = json.loads(path.read_text(encoding="utf-8"))
         assert record["status"] == "open"
         assert record["scope"] == "course"
-        assert record["course_slug"] == "rdf-shacl-551-2"
+        assert record["course_slug"] == "demo-course-1"
         assert record["answer"] is None
         assert record["asked_by"] == "claude"
 

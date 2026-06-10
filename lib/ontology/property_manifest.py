@@ -11,7 +11,7 @@ Manifests live at ``schemas/training/property_manifest.<family>.yaml``
 and are validated against
 ``schemas/training/property_manifest.schema.json`` on load. The manifest
 declares its own ``family`` field; the loader resolves it from a course
-slug via ``_family_slug`` (``rdf-shacl-551-2`` -> ``rdf_shacl``).
+slug via ``_family_slug`` (``rdf-shacl-demo`` -> ``rdf_shacl``).
 """
 from __future__ import annotations
 
@@ -105,7 +105,7 @@ class PropertyManifest:
 def _family_slug(course_slug: str) -> str:
     """Pick the corpus family from a course slug.
 
-    ``rdf-shacl-551-2`` -> ``rdf_shacl`` (first two hyphen-separated
+    ``rdf-shacl-demo`` -> ``rdf_shacl`` (first two hyphen-separated
     tokens, joined by underscore). Single-token slugs return the
     slug unchanged.
     """
@@ -125,7 +125,7 @@ def load_property_manifest(
 
     Resolution: looks for
     ``<search_root>/property_manifest.<family>.yaml`` where ``<family>``
-    is derived from the course slug (``rdf-shacl-551-2`` ->
+    is derived from the course slug (``rdf-shacl-demo`` ->
     ``rdf_shacl``). Falls back to the literal slug when the family
     form isn't present.
     """

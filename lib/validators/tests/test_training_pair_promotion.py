@@ -83,6 +83,23 @@ class _StubEmbedder:
         return vec
 
 
+class _FixedVocabEmbedder(_StubEmbedder):
+    """``_StubEmbedder`` with the vocabulary pre-built from a corpus.
+
+    ``_StubEmbedder`` grows its vocab lazily, so two ``encode`` calls
+    return different-length vectors and the validator's cosine path
+    fails over to the (sparser) Jaccard signal. Pre-seeding the vocab
+    makes every vector the same length, so cosine similarity actually
+    computes — required by tests that pin cosine-calibrated floors.
+    """
+
+    def __init__(self, corpus: List[str]) -> None:
+        super().__init__()
+        for text in corpus:
+            for tok in self._tokenise(text):
+                self._ensure_idx(tok)
+
+
 class _StubBloomEnsemble:
     """Toy ensemble that returns a configured (level, score) tuple."""
 
@@ -295,9 +312,21 @@ def test_reject_source_free_generation():
 
 
 def test_reject_unanswerable_stem():
-    """Criterion 4 — prompt has near-zero Jaccard overlap with chunk."""
+    """Criterion 4 — prompt has near-zero Jaccard overlap with chunk.
+
+    The default ``min_prompt_chunk_jaccard`` floor was recalibrated to
+    0.0 on 2026-06-09 (retiring the reject arm), so we construct the
+    validator with an explicit positive floor to keep the *mechanism*
+    pinned independent of the default.
+    """
     capture = _RecordingCapture()
-    v = _validator()
+    v = TrainingPairPromotionValidator(
+        embedder=_StubEmbedder(),
+        bloom_classifier=_StubBloomEnsemble(),
+        min_prompt_chunk_jaccard=0.05,
+        min_answer_support_score=0.40,
+        dpo_min_distractor_distinctness=0.40,
+    )
     # Prompt about a topic alien to the RDF chunk.
     pair = _instruction_pair(
         prompt="zzz qqq xxx yyy unrelated foreign vocabulary tokens here.",
@@ -319,7 +348,15 @@ def test_reject_unsupported_answer():
     overlap with the chunk so unanswerable_stem doesn't trip first.
     """
     capture = _RecordingCapture()
-    v = _validator()
+    # Explicit floors pin the mechanism independent of the 2026-06-09
+    # default recalibration (min_answer_support_score 0.40 → 0.10).
+    v = TrainingPairPromotionValidator(
+        embedder=_StubEmbedder(),
+        bloom_classifier=_StubBloomEnsemble(),
+        min_prompt_chunk_jaccard=0.05,
+        min_answer_support_score=0.40,
+        dpo_min_distractor_distinctness=0.40,
+    )
     pair = _instruction_pair(
         prompt="Describe RDF triple subject predicate object.",
         completion=(
@@ -337,9 +374,20 @@ def test_reject_unsupported_answer():
 
 
 def test_reject_weak_distractor():
-    """Criterion 3 — chosen / rejected too close (preference only)."""
+    """Criterion 3 — chosen / rejected too close (preference only).
+
+    Explicit floor (0.40) pins the mechanism independent of the
+    2026-06-09 default recalibration (0.40 → 0.05).
+    """
     capture = _RecordingCapture()
-    v = _validator(bloom_level="understand")
+    _explicit_floor = 0.40
+    v = TrainingPairPromotionValidator(
+        embedder=_StubEmbedder(),
+        bloom_classifier=_StubBloomEnsemble(level="understand", score=0.85),
+        min_prompt_chunk_jaccard=0.05,
+        min_answer_support_score=0.40,
+        dpo_min_distractor_distinctness=_explicit_floor,
+    )
     # Chosen and rejected are paraphrases — same tokens, same intent.
     pair = _preference_pair(
         chosen=(
@@ -359,7 +407,7 @@ def test_reject_weak_distractor():
     assert reason == "weak_distractor"
     assert (
         new_fields["distractor_quality"]["semantic_distinctness"]
-        < DEFAULT_DPO_MIN_DISTRACTOR_DISTINCTNESS
+        < _explicit_floor
     )
     assert len(capture.events) == 1
 
@@ -489,7 +537,15 @@ def test_every_return_path_emits_exactly_one_decision(scenario: str):
             decision_capture=capture,
         )
     elif scenario == "unanswerable_stem":
-        v = _validator()
+        # Explicit positive floor keeps the reject arm armed despite the
+        # 2026-06-09 default recalibration to 0.0.
+        v = TrainingPairPromotionValidator(
+            embedder=_StubEmbedder(),
+            bloom_classifier=_StubBloomEnsemble(),
+            min_prompt_chunk_jaccard=0.05,
+            min_answer_support_score=0.40,
+            dpo_min_distractor_distinctness=0.40,
+        )
         v.validate_pair(
             _instruction_pair(prompt="zzz qqq xxx yyy alien tokens."),
             kind="instruction", chunk=_chunk(),
@@ -709,3 +765,83 @@ def test_constructor_default_thresholds():
     assert v._min_rationale_richness_score == (
         DEFAULT_MIN_RATIONALE_RICHNESS_SCORE
     )
+
+
+# --------------------------------------------------------------------- #
+# Real-corpus recalibration regression (2026-06-09, RDF/SHACL calibration corpus)
+# --------------------------------------------------------------------- #
+
+
+def test_real_shaped_pair_passes_under_recalibrated_defaults():
+    """A real-shaped preference pair PASSES under the 2026-06-09
+    recalibrated defaults but would have been rejected under the old
+    (0.05 / 0.40 / 0.40) floors.
+
+    Real corpus signal (measured on the RDF/SHACL calibration corpus
+    training_specs, n=417 instruction + 262 preference pairs):
+
+    - prompt is an on-topic paraphrase deliberately reworded away from
+      the source → ``prompt_chunk_jaccard`` ≈ 0.0 (old 0.05 floor
+      rejected it as ``unanswerable_stem``; new 0.0 floor retires the
+      reject arm so this is audit-stamp-only).
+    - the answer is grounded but reworded → ``answer_support_score`` ≈
+      0.16 cosine (old 0.40 floor → ``unsupported_answer``; new 0.10
+      floor accepts).
+    - the rejected distractor is deliberately plausible /
+      semantically close → ``distractor_distinctness`` ≈ 0.07 (old 0.40
+      floor → ``weak_distractor``; new 0.05 floor accepts).
+
+    With a fixed-vocab stub embedder injected (no [embedding] extras
+    needed), the cosine path actually computes (the lazily-growing
+    ``_StubEmbedder`` would fail over to Jaccard and judge the sparser
+    signal against the cosine floor) and the pair clears all three
+    recalibrated criteria: support cosine ≈ 0.16, distinctness
+    ``1 - cos(chosen, rejected)`` ≈ 0.07.
+    """
+    capture = _RecordingCapture()
+    prompt = (
+        "Could you explain how the smallest standalone statement "
+        "unit is assembled?"
+    )
+    chosen = (
+        "Each standalone statement links one entity to another "
+        "through a labelled relationship, asserting a single fact "
+        "within a declarative graph structure."
+    )
+    rejected = (
+        "Each standalone statement links one entity to another via "
+        "a labelled relationship, asserting a single fact inside a "
+        "declarative graph structure."
+    )
+    v = TrainingPairPromotionValidator(
+        embedder=_FixedVocabEmbedder(
+            [prompt, chosen, rejected, _CHUNK_TEXT]
+        ),
+        bloom_classifier=_StubBloomEnsemble(level="understand", score=0.85),
+    )
+    pair = _preference_pair(
+        prompt=prompt,
+        chosen=chosen,
+        rejected=rejected,
+        bloom_level="understand",
+    )
+    chunk = _chunk()
+    status, reason, new_fields = v.validate_pair(
+        pair, kind="preference", chunk=chunk, decision_capture=capture,
+    )
+    assert status == "validated", (
+        f"expected pass under recalibrated defaults, got "
+        f"rejected:{reason}; new_fields={new_fields}"
+    )
+    assert reason is None
+    # The three recalibrated signals land in the band [old_floor, new_floor):
+    # each is below the pre-2026-06-09 floor yet at/above the new one.
+    assert new_fields["answer_support_score"] < 0.40
+    assert new_fields["answer_support_score"] >= 0.10
+    distinctness = new_fields["distractor_quality"]["semantic_distinctness"]
+    assert distinctness < 0.40
+    assert distinctness >= 0.05
+    assert len(capture.events) == 1
+    metrics = capture.events[0].get("metrics") or {}
+    # Audit stamp survives even though criterion 4's reject arm is retired.
+    assert metrics.get("prompt_chunk_jaccard") is not None

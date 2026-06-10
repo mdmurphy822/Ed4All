@@ -356,7 +356,7 @@ def query_chunks(
     Parameters
     ----------
     slug:
-        LibV2 course slug (e.g. ``rdf-shacl-550-rdf-shacl-550``).
+        LibV2 course slug (e.g. ``<course-slug>``).
     query:
         Composed filter spec.
     courses_root:

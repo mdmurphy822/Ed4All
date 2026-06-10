@@ -47,7 +47,7 @@ def test_rag_callable_formats_prelude_with_numbered_chunks():
     ]
     rag = RAGCallable(
         base_callable=base,
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         method="bm25",
         limit=5,
         cli_runner=_build_cli_runner(chunks),
@@ -91,7 +91,7 @@ def test_rag_callable_uses_snippet_body_from_real_ask_shape():
     ]
     rag = RAGCallable(
         base_callable=base,
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         method="bm25",
         limit=5,
         cli_runner=_build_cli_runner(chunks),
@@ -336,7 +336,7 @@ def test_rag_callable_records_last_retrieved_chunks_on_each_call():
     ]
     rag = RAGCallable(
         base_callable=lambda p: "ok",
-        course_slug="rdf-shacl-551-2",
+        course_slug="demo-course-1",
         method="bm25",
         limit=5,
         cli_runner=_build_cli_runner(chunks),

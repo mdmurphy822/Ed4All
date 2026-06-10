@@ -33,13 +33,18 @@ import pytest
 # them up via -m "slow" alongside the bert_ensemble_integration suite.
 pytestmark = pytest.mark.slow
 
+import sys
+import types
+
 from lib.classifiers.bloom_bert_ensemble import (
     _BLOOM_LEVELS,
     _CIP29_TO_BLOOM,
     _DEFAULT_ENSEMBLE_MEMBERS,
     BertClassifier,
+    BertEnsembleDepsMissing,
     BloomBertEnsemble,
 )
+import lib.classifiers.bloom_bert_ensemble as _bbe
 
 
 # ---------------------------------------------------------------------------
@@ -457,3 +462,132 @@ def test_cip29_to_bloom_keys_are_label_n_form() -> None:
         f"_CIP29_TO_BLOOM must have exactly 6 entries (one per "
         f"canonical Bloom level); got {len(_CIP29_TO_BLOOM)}."
     )
+
+
+# ---------------------------------------------------------------------------
+# Subtask-25 latent-bug regression — honest degradation when per-member
+# dispatch is unimplemented.
+#
+# Root cause this guards: ``_classify_with_member`` is an unfinished
+# placeholder that ALWAYS returns ("remember", 0.5). The PRE-FIX
+# ``_load_members`` loaded the three SHA-pinned BERT models then
+# discarded their outputs, so a default-constructed ensemble (with
+# transformers + cached weights present) produced
+# per_member=[(remember,0.5)x3] → winner ("remember", 1.0). That fed
+# promotion.py criterion 6 and rejected EVERY non-remember pair,
+# silently collapsing training synthesis to zero non-remember pairs.
+#
+# The fix: when transformers imports but dispatch is unimplemented,
+# ``_load_members`` returns [] (honest "unknown" degrade), and strict
+# mode raises instead of fabricating votes.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _transformers_importable(monkeypatch):
+    """Force the ``import transformers`` probe in ``_load_members`` to
+    succeed deterministically (independent of whether the test venv
+    actually ships transformers) by injecting a stub module into
+    ``sys.modules``.
+    """
+    if "transformers" not in sys.modules:
+        monkeypatch.setitem(
+            sys.modules, "transformers", types.ModuleType("transformers")
+        )
+    # Reset the one-time warning latch so the warning-fires assertion is
+    # deterministic regardless of test ordering.
+    monkeypatch.setattr(_bbe, "_UNIMPLEMENTED_DISPATCH_WARNED", False)
+    yield
+
+
+def test_default_ensemble_does_not_fabricate_remember_vote(
+    _transformers_importable, monkeypatch, caplog
+) -> None:
+    """With transformers importable, a default-constructed ensemble must
+    NOT load the 3 models and fabricate a remember/1.0 vote — it degrades
+    to the unknown sentinel.
+
+    Fail-without-fix: the pre-fix ``_load_members`` returned three loaded
+    members, ``classify`` returned winner_level="remember",
+    winner_score≈1.0, len(per_member)==3. This asserts the post-fix
+    contract (winner_level="unknown", empty per_member).
+    """
+    import logging
+
+    monkeypatch.delenv("TRAINFORGE_REQUIRE_BERT_ENSEMBLE", raising=False)
+
+    # Guard: if the production loader ever tries to actually construct a
+    # member, fail loudly — the fix must short-circuit BEFORE per-member
+    # load (we must not pay the ~700MB / 3-model load cost).
+    def _boom(self, member):  # noqa: ANN001
+        raise AssertionError(
+            "_load_one_member must NOT be called — the unimplemented-"
+            "dispatch degrade should return [] before any member loads."
+        )
+
+    monkeypatch.setattr(BloomBertEnsemble, "_load_one_member", _boom)
+
+    ensemble = BloomBertEnsemble()
+    with caplog.at_level(logging.WARNING):
+        result = ensemble.classify("Evaluate the merits of the two arguments.")
+
+    assert result["winner_level"] == "unknown", (
+        "Default ensemble fabricated a winner instead of degrading to "
+        f"unknown: {result!r}"
+    )
+    assert result["winner_score"] == 0.0
+    assert result["per_member"] == []
+    # The one-time warning fired with the Subtask-25 marker.
+    assert any(
+        "per-member dispatch unimplemented" in rec.message
+        for rec in caplog.records
+    ), "Expected the one-time Subtask-25 degrade warning"
+
+
+def test_unimplemented_dispatch_warning_fires_once(
+    _transformers_importable, monkeypatch, caplog
+) -> None:
+    """The degrade warning is emitted at most once per process."""
+    import logging
+
+    monkeypatch.delenv("TRAINFORGE_REQUIRE_BERT_ENSEMBLE", raising=False)
+
+    with caplog.at_level(logging.WARNING):
+        BloomBertEnsemble().classify("a")
+        BloomBertEnsemble().classify("b")
+
+    warns = [
+        rec
+        for rec in caplog.records
+        if "per-member dispatch unimplemented" in rec.message
+    ]
+    assert len(warns) == 1, (
+        f"Subtask-25 degrade warning should fire exactly once; got "
+        f"{len(warns)}"
+    )
+
+
+def test_strict_mode_raises_when_dispatch_unimplemented(
+    _transformers_importable, monkeypatch
+) -> None:
+    """With transformers importable AND strict mode on, the ensemble
+    refuses to fabricate votes — it raises ``BertEnsembleDepsMissing``
+    rather than silently handing back an always-unknown classifier."""
+    monkeypatch.setenv("TRAINFORGE_REQUIRE_BERT_ENSEMBLE", "true")
+
+    ensemble = BloomBertEnsemble()
+    with pytest.raises(BertEnsembleDepsMissing):
+        ensemble.classify("Some text.")
+
+
+def test_strict_mode_raises_when_transformers_absent(monkeypatch) -> None:
+    """Strict mode + transformers genuinely absent still raises (the
+    pre-existing graceful-degrade contract is preserved)."""
+    monkeypatch.setenv("TRAINFORGE_REQUIRE_BERT_ENSEMBLE", "true")
+    # Force the import probe to fail even though the venv ships
+    # transformers, by hiding it from the import machinery.
+    monkeypatch.setitem(sys.modules, "transformers", None)
+
+    ensemble = BloomBertEnsemble()
+    with pytest.raises(BertEnsembleDepsMissing):
+        ensemble.classify("Some text.")

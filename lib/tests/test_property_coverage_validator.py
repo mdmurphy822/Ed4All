@@ -37,23 +37,23 @@ def _rows_for_all_manifest_properties(slug: str, count_offset: int = 0) -> List[
 
 
 def test_passing_when_every_property_meets_floor(tmp_path: Path) -> None:
-    course = tmp_path / "courses" / "rdf-shacl-551-2"
+    course = tmp_path / "courses" / "rdf-shacl-demo"
     # +2 over the floor so every property comfortably passes.
-    rows = _rows_for_all_manifest_properties("rdf-shacl-551-2", count_offset=2)
+    rows = _rows_for_all_manifest_properties("rdf-shacl-demo", count_offset=2)
     _write_pairs(course, rows)
     result = PropertyCoverageValidator().validate({
         "course_dir": str(course),
-        "course_slug": "rdf-shacl-551-2",
+        "course_slug": "rdf-shacl-demo",
     })
     assert result.passed is True
     assert not [i for i in result.issues if i.severity == "critical"]
 
 
 def test_fails_critical_when_property_missing(tmp_path: Path) -> None:
-    course = tmp_path / "courses" / "rdf-shacl-551-2"
+    course = tmp_path / "courses" / "rdf-shacl-demo"
     # Cover every manifest property except `owl:sameAs` to assert the
     # validator names the single missing one.
-    manifest = load_property_manifest("rdf-shacl-551-2")
+    manifest = load_property_manifest("rdf-shacl-demo")
     rows: List[dict] = []
     for prop in manifest.properties:
         if prop.id == "owl_sameas":
@@ -66,7 +66,7 @@ def test_fails_critical_when_property_missing(tmp_path: Path) -> None:
     _write_pairs(course, rows)
     result = PropertyCoverageValidator().validate({
         "course_dir": str(course),
-        "course_slug": "rdf-shacl-551-2",
+        "course_slug": "rdf-shacl-demo",
     })
     assert result.passed is False
     codes = [i.code for i in result.issues if i.severity == "critical"]
@@ -76,9 +76,9 @@ def test_fails_critical_when_property_missing(tmp_path: Path) -> None:
 
 
 def test_fails_critical_when_property_under_floor(tmp_path: Path) -> None:
-    course = tmp_path / "courses" / "rdf-shacl-551-2"
+    course = tmp_path / "courses" / "rdf-shacl-demo"
     # Each property gets only 1 pair, well below any min_pairs floor.
-    manifest = load_property_manifest("rdf-shacl-551-2")
+    manifest = load_property_manifest("rdf-shacl-demo")
     rows = [
         {
             "prompt": f"Prompt {i} about {prop.curie}",
@@ -90,7 +90,7 @@ def test_fails_critical_when_property_under_floor(tmp_path: Path) -> None:
     _write_pairs(course, rows)
     result = PropertyCoverageValidator().validate({
         "course_dir": str(course),
-        "course_slug": "rdf-shacl-551-2",
+        "course_slug": "rdf-shacl-demo",
     })
     assert result.passed is False
     codes = [i.code for i in result.issues if i.severity == "critical"]
@@ -98,11 +98,11 @@ def test_fails_critical_when_property_under_floor(tmp_path: Path) -> None:
 
 
 def test_missing_instruction_pairs_fails_critical(tmp_path: Path) -> None:
-    course = tmp_path / "courses" / "rdf-shacl-551-2"
+    course = tmp_path / "courses" / "rdf-shacl-demo"
     course.mkdir(parents=True)
     result = PropertyCoverageValidator().validate({
         "course_dir": str(course),
-        "course_slug": "rdf-shacl-551-2",
+        "course_slug": "rdf-shacl-demo",
     })
     assert result.passed is False
     codes = [i.code for i in result.issues if i.severity == "critical"]

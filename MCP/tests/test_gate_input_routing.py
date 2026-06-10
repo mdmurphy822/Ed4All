@@ -61,6 +61,8 @@ def test_default_router_registers_every_shipping_validator():
         "lib.validators.content_facts.ContentFactValidator",
         "lib.validators.question_quality.QuestionQualityValidator",
         "lib.validators.libv2_manifest.LibV2ManifestValidator",
+        # Activated dormant gate — must have a builder so it actually runs.
+        "lib.validators.kg_quality.KGQualityValidator",
     }
     assert expected.issubset(set(r.builders.keys())), (
         f"Missing registrations: {expected - set(r.builders.keys())}"
@@ -1020,3 +1022,455 @@ def test_wave2_i9_router_dispatches_to_correct_builder(tmp_path: Path):
     assert "synthesized_objectives_path" in abcd_in
     assert "concept_graph_path" not in abcd_in
     assert "chunkset_manifest_path" not in abcd_in
+
+
+# ---------------------------------------------------------------------- #
+# Disk-glob content-dir fallback (textbook_to_course robustness fix)
+#
+# For textbook_to_course, generated pages live at
+# ``<project_export>/03_content_development/week_NN/*.html`` but the
+# content-generation phase output may carry no content_paths (subagent
+# dispatch). The legacy resolution arms in ``_find_content_dir`` miss
+# this layout, so source_refs / page_objectives / content_structure all
+# scanned the wrong (empty) directory. The disk-glob fallback derives
+# the export root from a project_path signal and globs the canonical
+# content subdirs. These tests lock in: (a) the new layout resolves,
+# (b) the legacy ``content/`` layout still resolves, (c) the explicit
+# content_paths path is byte-identical (fallback never fires).
+# ---------------------------------------------------------------------- #
+
+
+def _make_textbook_export(tmp_path: Path, *, n_pages: int = 3) -> Path:
+    """Build a textbook_to_course project export with weekly pages.
+
+    Layout: ``<export>/03_content_development/week_NN/page.html`` with
+    a ``data-cf-source-ids`` attr so the pages mimic the real emit.
+    Returns the export root.
+    """
+    export = tmp_path / "PROJ-PHYS_101-abc12345"
+    for i in range(1, n_pages + 1):
+        wk = export / "03_content_development" / f"week_{i:02d}"
+        wk.mkdir(parents=True)
+        (wk / "overview.html").write_text(
+            f'<html><body data-cf-source-ids="src-{i}">'
+            f"<h1>Week {i}</h1></body></html>",
+            encoding="utf-8",
+        )
+    # A sibling stage dir that should NOT be picked up as content.
+    (export / "01_learning_objectives").mkdir(parents=True)
+    return export
+
+
+def test_all_html_paths_globs_textbook_03_content_development(tmp_path: Path):
+    """Scenario (a): no content_paths/content_dir, but the
+    03_content_development/week_NN/*.html layout exists on disk and is
+    reachable via objective_extraction.project_path."""
+    from MCP.hardening.gate_input_routing import (
+        _all_html_paths,
+        _find_content_dir,
+    )
+
+    export = _make_textbook_export(tmp_path, n_pages=3)
+    phase_outputs = _make_phase_outputs(
+        objective_extraction={"project_path": str(export)},
+        # content_generation deliberately carries NO content_paths
+        # (subagent-dispatched emit) — this is the failing case.
+        content_generation={"_completed": True},
+    )
+
+    cd = _find_content_dir(phase_outputs, {})
+    assert cd is not None
+    assert cd == export / "03_content_development"
+
+    pages = _all_html_paths(phase_outputs, {})
+    assert len(pages) == 3
+    assert all(p.endswith("overview.html") for p in pages)
+    assert all("03_content_development" in p for p in pages)
+
+
+def test_source_refs_builder_resolves_via_disk_glob_fallback(tmp_path: Path):
+    """The source_refs gate (PageSourceRefValidator) finds the generated
+    pages via the disk-glob fallback when content_paths is absent."""
+    export = _make_textbook_export(tmp_path, n_pages=2)
+    phase_outputs = _make_phase_outputs(
+        objective_extraction={"project_path": str(export)},
+        content_generation={"_completed": True},
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.source_refs.PageSourceRefValidator",
+        phase_outputs,
+        {},
+    )
+    assert missing == [], "source_refs must not skip — pages exist on disk"
+    assert len(inputs["page_paths"]) == 2
+
+
+def test_disk_glob_fallback_resolves_export_from_workflow_params(
+    tmp_path: Path,
+):
+    """The export root can also be resolved from workflow_params when no
+    phase output surfaces a project_path."""
+    from MCP.hardening.gate_input_routing import _all_html_paths
+
+    export = _make_textbook_export(tmp_path, n_pages=2)
+    phase_outputs = _make_phase_outputs(
+        content_generation={"_completed": True},
+    )
+    pages = _all_html_paths(phase_outputs, {"project_path": str(export)})
+    assert len(pages) == 2
+
+
+def test_disk_glob_fallback_resolves_legacy_content_layout(tmp_path: Path):
+    """Scenario (b): the legacy ``<export>/content/*.html`` flat layout
+    still resolves via the disk-glob fallback."""
+    from MCP.hardening.gate_input_routing import (
+        _all_html_paths,
+        _find_content_dir,
+    )
+
+    export = tmp_path / "PROJ-BIO_201-legacy"
+    content = export / "content"
+    content.mkdir(parents=True)
+    (content / "module_1.html").write_text("<html></html>", encoding="utf-8")
+    (content / "module_2.html").write_text("<html></html>", encoding="utf-8")
+
+    phase_outputs = _make_phase_outputs(
+        objective_extraction={"project_path": str(export)},
+        content_generation={"_completed": True},
+    )
+    # The existing project_path/"content" arm already handles this, but
+    # assert it stays green so the fallback ordering doesn't regress it.
+    cd = _find_content_dir(phase_outputs, {})
+    assert cd == content
+    pages = _all_html_paths(phase_outputs, {})
+    assert len(pages) == 2
+
+
+def test_disk_glob_prefers_03_content_development_within_fallback(
+    tmp_path: Path,
+):
+    """Within the disk-glob fallback proper, 03_content_development is
+    tried before legacy content/. (When the legacy project_path/"content"
+    arm fires first — i.e. a content/ dir exists — that arm wins for
+    back-compat; this test isolates the fallback's own subdir priority by
+    routing the export via workflow_params, which only the fallback
+    consults.)"""
+    from MCP.hardening.gate_input_routing import (
+        _find_content_dir,
+        _glob_content_dir_from_export,
+    )
+
+    export = _make_textbook_export(tmp_path, n_pages=1)
+    legacy = export / "content"
+    legacy.mkdir(parents=True)
+    (legacy / "stale.html").write_text("<html></html>", encoding="utf-8")
+
+    # Direct fallback helper: 03_content_development wins over content/.
+    assert (
+        _glob_content_dir_from_export(export)
+        == export / "03_content_development"
+    )
+
+    # End-to-end via workflow_params only (no project_path phase output),
+    # so the legacy project_path/"content" arm is never reached and the
+    # fallback's subdir priority is what's exercised.
+    phase_outputs = _make_phase_outputs(
+        content_generation={"_completed": True},
+    )
+    cd = _find_content_dir(phase_outputs, {"project_path": str(export)})
+    assert cd == export / "03_content_development"
+
+
+def test_content_paths_present_is_unchanged_no_fallback(tmp_path: Path):
+    """Scenario (c): when content_paths IS present, behaviour is
+    byte-identical — the fallback never fires even if an export root is
+    also discoverable on disk."""
+    from MCP.hardening.gate_input_routing import (
+        _all_html_paths,
+        _find_content_dir,
+    )
+
+    # An on-disk export that WOULD be globbed if the fallback fired.
+    export = _make_textbook_export(tmp_path, n_pages=5)
+
+    # But content_generation carries explicit content_paths pointing at a
+    # totally separate content/ dir.
+    real_content = tmp_path / "explicit" / "content"
+    real_content.mkdir(parents=True)
+    page = real_content / "index.html"
+    page.write_text("<html></html>", encoding="utf-8")
+
+    phase_outputs = _make_phase_outputs(
+        objective_extraction={"project_path": str(export)},
+        content_generation={"content_paths": str(page)},
+    )
+
+    cd = _find_content_dir(phase_outputs, {})
+    assert cd == real_content, "explicit content_paths must win, not the glob"
+
+    pages = _all_html_paths(phase_outputs, {})
+    assert pages == [str(page)]
+    assert not any("03_content_development" in p for p in pages)
+
+
+def test_explicit_content_dir_key_still_wins(tmp_path: Path):
+    """An explicit content_dir key short-circuits everything, including
+    the new fallback (byte-identical legacy behaviour)."""
+    from MCP.hardening.gate_input_routing import _find_content_dir
+
+    export = _make_textbook_export(tmp_path, n_pages=2)
+    explicit = tmp_path / "explicit_dir"
+    explicit.mkdir()
+
+    phase_outputs = _make_phase_outputs(
+        objective_extraction={"project_path": str(export)},
+        packaging={"content_dir": str(explicit)},
+    )
+    cd = _find_content_dir(phase_outputs, {})
+    assert cd == explicit
+
+
+def test_disk_glob_fallback_returns_none_when_export_has_no_html(
+    tmp_path: Path,
+):
+    """No HTML anywhere under the export → fallback resolves nothing
+    (gate skips with structured reason, not a false pass)."""
+    from MCP.hardening.gate_input_routing import (
+        _all_html_paths,
+        _find_content_dir,
+    )
+
+    export = tmp_path / "empty_export"
+    (export / "03_content_development").mkdir(parents=True)  # no .html
+    phase_outputs = _make_phase_outputs(
+        objective_extraction={"project_path": str(export)},
+        content_generation={"_completed": True},
+    )
+    assert _find_content_dir(phase_outputs, {}) is None
+    assert _all_html_paths(phase_outputs, {}) == []
+
+
+def test_find_content_dir_optional_workflow_params_default(tmp_path: Path):
+    """Back-compat: _find_content_dir is still callable with a single
+    positional arg (workflow_params defaults to None)."""
+    from MCP.hardening.gate_input_routing import _find_content_dir
+
+    content = tmp_path / "content"
+    content.mkdir()
+    (content / "i.html").write_text("<html></html>", encoding="utf-8")
+    phase_outputs = _make_phase_outputs(
+        packaging={"content_dir": str(content)},
+    )
+    # Single-arg call must still resolve (no workflow_params).
+    assert _find_content_dir(phase_outputs) == content
+
+
+# ---------------------------------------------------------------------- #
+# kg_quality gate activation (dormant-gate fail-closed wiring)
+# ---------------------------------------------------------------------- #
+#
+# The kg_quality_report gate (config/workflows.yaml ::
+# textbook_to_course::libv2_archival; validator
+# lib.validators.kg_quality.KGQualityValidator; critical / block /
+# fail_closed) had NO registered builder, so default_router().build()
+# returned ({}, ["__no_builder_registered__"]) and the executor stamped
+# GATE_SKIPPED_MISSING_INPUTS (passed=True) — the gate never ran. These
+# tests lock in the builder + the fail-closed-on-missing-graph contract.
+
+_KG_VALIDATOR = "lib.validators.kg_quality.KGQualityValidator"
+
+
+def _write_minimal_semantic_graph(path: Path) -> None:
+    """Write a tiny but valid concept_graph_semantic.json the reporter +
+    EdgeConsensusAggregator can both consume without raising."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    graph = {
+        "nodes": [
+            {"id": "concept-a", "label": "Concept A", "type": "DomainConcept"},
+            {"id": "concept-b", "label": "Concept B", "type": "DomainConcept"},
+        ],
+        "edges": [
+            {
+                "source": "concept-a",
+                "target": "concept-b",
+                "type": "related-to",
+                "confidence": 0.9,
+                "provenance": {"rule": "cooccurrence", "rule_version": 1},
+            }
+        ],
+        "rule_versions": {"cooccurrence": 1},
+    }
+    path.write_text(json.dumps(graph, indent=2), encoding="utf-8")
+
+
+def test_kg_quality_builder_is_registered():
+    """default_router() must register the kg_quality builder so the gate
+    actually runs (not __no_builder_registered__)."""
+    r = default_router()
+    assert _KG_VALIDATOR in r.builders
+
+
+def test_kg_quality_builder_routes_concept_extraction_semantic_graph(
+    tmp_path: Path,
+):
+    """concept_extraction.concept_graph_path (the SEMANTIC graph) routes to
+    semantic_graph_path; course_slug / run_id / output_dir resolve from the
+    libv2_archival course_dir + workflow params."""
+    course_dir = tmp_path / "course"
+    semantic = course_dir / "concept_graph" / "concept_graph_semantic.json"
+    _write_minimal_semantic_graph(semantic)
+
+    phase_outputs = _make_phase_outputs(
+        concept_extraction={
+            "concept_graph_path": str(semantic),
+            "course_slug": "phys-101",
+            "concept_graph_sha256": "deadbeef",
+        },
+        libv2_archival={
+            "course_slug": "phys-101",
+            "course_dir": str(course_dir),
+        },
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        _KG_VALIDATOR, phase_outputs, {"course_name": "phys-101", "run_id": "R"}
+    )
+    # No router-skip: the builder NEVER short-circuits to a structured
+    # missing-list, so the validator's own fail-closed arm governs.
+    assert missing == []
+    assert inputs["semantic_graph_path"] == str(semantic)
+    assert inputs["course_slug"] == "phys-101"
+    assert inputs["run_id"] == "R"
+    # output_dir is the canonical LibV2 quality/ home of the report.
+    assert inputs["output_dir"] == str(course_dir / "quality")
+    # asserted concept_graph.json is surfaced as the sibling (reporter
+    # tolerates its absence).
+    assert inputs["concept_graph_path"] == str(
+        semantic.parent / "concept_graph.json"
+    )
+
+
+def test_kg_quality_gate_runs_and_passes_on_real_graph(tmp_path: Path):
+    """Given a phase_outputs dict with a real semantic graph, the validator
+    runs end-to-end and passes (no missing-graph fail-closed)."""
+    from lib.validators.kg_quality import KGQualityValidator
+
+    course_dir = tmp_path / "course"
+    semantic = course_dir / "concept_graph" / "concept_graph_semantic.json"
+    _write_minimal_semantic_graph(semantic)
+
+    phase_outputs = _make_phase_outputs(
+        concept_extraction={"concept_graph_path": str(semantic)},
+        libv2_archival={
+            "course_slug": "phys-101",
+            "course_dir": str(course_dir),
+        },
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        _KG_VALIDATOR, phase_outputs, {"course_name": "phys-101", "run_id": "R"}
+    )
+    assert missing == []
+
+    result = KGQualityValidator().validate(dict(inputs, gate_id="kg_quality_report"))
+    # Graph present → gate runs; warning-only validator returns passed=True.
+    assert result.passed is True
+    assert result.score is not None
+    # The report landed under the routed output_dir.
+    assert (course_dir / "quality" / "kg_quality_report.json").exists()
+
+
+def test_kg_quality_gate_fails_closed_when_graph_missing(tmp_path: Path):
+    """A libv2_archival run with NO concept / semantic graph must FAIL
+    CLOSED (critical block), not skip with passed=True. This is the point
+    of activation: refuse to ship an empty KG to LibV2."""
+    from lib.validators.kg_quality import KGQualityValidator
+
+    course_dir = tmp_path / "course"
+    # course_dir exists but carries NO concept_graph_semantic.json.
+    (course_dir / "concept_graph").mkdir(parents=True)
+
+    phase_outputs = _make_phase_outputs(
+        libv2_archival={
+            "course_slug": "phys-101",
+            "course_dir": str(course_dir),
+        },
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        _KG_VALIDATOR, phase_outputs, {"course_name": "phys-101", "run_id": "R"}
+    )
+    # Builder NEVER routes a fabricated path for a truly-absent graph, so
+    # semantic_graph_path is absent. It returns an EMPTY missing-list so
+    # the gate is NOT marked GATE_SKIPPED_MISSING_INPUTS — the validator
+    # adjudicates the fail-closed verdict itself.
+    assert missing == []
+    assert "semantic_graph_path" not in inputs
+
+    result = KGQualityValidator().validate(dict(inputs, gate_id="kg_quality_report"))
+    assert result.passed is False
+    assert result.action == "block"
+    assert any(
+        i.code == "KG_QUALITY_PEDAGOGY_GRAPH_MISSING" and i.severity == "critical"
+        for i in result.issues
+    )
+
+
+def test_kg_quality_builder_skips_when_no_course_dir():
+    """No course_dir + no graph anywhere → output_dir / graph paths can't
+    resolve. The validator then fails closed on the missing context (this
+    is NOT a router-skip; the builder still returns an empty missing-list
+    and lets the validator block)."""
+    from lib.validators.kg_quality import KGQualityValidator
+
+    r = default_router()
+    inputs, missing = r.build(
+        _KG_VALIDATOR, {}, {"course_name": "phys-101", "run_id": "R"}
+    )
+    assert missing == []
+    assert "semantic_graph_path" not in inputs
+    assert "output_dir" not in inputs
+
+    result = KGQualityValidator().validate(dict(inputs, gate_id="kg_quality_report"))
+    assert result.passed is False
+    assert result.action == "block"
+
+
+def test_kg_quality_does_not_overwrite_canonical_consensus_sibling(
+    tmp_path: Path,
+):
+    """The validator re-runs EdgeConsensusAggregator to attenuate the
+    consistency axis. EdgeConsensusAggregator.build() is deterministic, so
+    the re-run is idempotent and must NOT clobber the authoring-time
+    canonical sibling (concept_graph/edge_consensus_report.json). The
+    validator writes its own copy under output_dir (quality/); the
+    canonical sibling stays byte-stable."""
+    from lib.validators.kg_quality import KGQualityValidator
+
+    course_dir = tmp_path / "course"
+    semantic = course_dir / "concept_graph" / "concept_graph_semantic.json"
+    _write_minimal_semantic_graph(semantic)
+
+    # Pre-existing canonical consensus sibling authored at
+    # concept_extraction time (sentinel content we assert stays put).
+    canonical_sibling = semantic.parent / "edge_consensus_report.json"
+    sentinel = {"summary": {"contradiction_rate": 0.0}, "_sentinel": "do-not-touch"}
+    canonical_sibling.write_text(json.dumps(sentinel), encoding="utf-8")
+    sentinel_bytes = canonical_sibling.read_bytes()
+
+    phase_outputs = _make_phase_outputs(
+        concept_extraction={"concept_graph_path": str(semantic)},
+        libv2_archival={
+            "course_slug": "phys-101",
+            "course_dir": str(course_dir),
+        },
+    )
+    r = default_router()
+    inputs, _ = r.build(
+        _KG_VALIDATOR, phase_outputs, {"course_name": "phys-101", "run_id": "R"}
+    )
+    KGQualityValidator().validate(dict(inputs, gate_id="kg_quality_report"))
+
+    # The canonical sibling is untouched — no second DIVERGENT report.
+    assert canonical_sibling.read_bytes() == sentinel_bytes

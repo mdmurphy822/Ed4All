@@ -294,8 +294,8 @@ _STRATIFY_DIMENSIONS = {"bloom", "chunk_type", "outcome", "difficulty"}
 def _resolve_libv2_corpus_dir(slug: str, libv2_root: Optional[Path] = None) -> Path:
     """Return the directory under ``LibV2/courses/`` matching ``slug``.
 
-    Accepts both the canonical slug (``rdf-shacl-550``) and the doubled-up
-    form some archival runs produce (``rdf-shacl-550-rdf-shacl-550``). The
+    Accepts both the canonical slug (``<course-slug>``) and the doubled-up
+    form some archival runs produce (``<course-slug>-<course-slug>``). The
     archived layout is ``LibV2/courses/<slug>/{corpus,objectives.json,...}``;
     this function locates that root so callers can read ``corpus/chunks.jsonl``
     and ``objectives.json`` directly without re-running the Trainforge pipeline.
@@ -3317,7 +3317,7 @@ def run_synthesis_from_libv2(
     misconception-DPO emission.
 
     Args:
-        slug: LibV2 course slug, e.g. ``"rdf-shacl-550"``.
+        slug: LibV2 course slug, e.g. ``"<course-slug>"``.
         course_code: Course code for decision capture. Defaults to the
             ``course_code`` field on objectives.json, or the slug uppercased
             with hyphens replaced by underscores.

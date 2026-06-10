@@ -1,7 +1,7 @@
 """Wave 82 tests for SemanticGraphRuleOutputValidator.
 
-Pins the silent-zero detection contract that closes the rdf-shacl-551
-audit's load-bearing finding.
+Pins the silent-zero detection contract that closes the RDF/SHACL
+calibration corpus audit's load-bearing finding.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ class TestSilentZeroDetection:
             "assesses_from_question_lo": 53,
             "misconception_of_from_misconception_ref": 23,
         })
-        # Current: the rdf-shacl-551 broken state — 5 rules dropped to 0,
+        # Current: the RDF/SHACL calibration corpus broken state — 5 rules dropped to 0,
         # rule_versions unchanged.
         current = _make_graph(
             {

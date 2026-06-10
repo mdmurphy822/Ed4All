@@ -17,7 +17,7 @@ preserves the Wave 75 warning-only behavior for the new rules.
 Examples
 --------
 
-    ed4all libv2 validate-packet --slug rdf-shacl-550-rdf-shacl-550
+    ed4all libv2 validate-packet --slug demo-course-1
     ed4all libv2 validate-packet --slug X --format json
     ed4all libv2 validate-packet --slug X --strict
     ed4all libv2 validate-packet --slug X --strict-coverage --format json
@@ -136,7 +136,7 @@ def libv2_group() -> None:
     required=True,
     help=(
         "LibV2 course slug. Resolves to LibV2/courses/<slug>/. "
-        "Example: rdf-shacl-550-rdf-shacl-550."
+        "Example: demo-course-1."
     ),
 )
 @click.option(

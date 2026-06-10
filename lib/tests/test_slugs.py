@@ -547,6 +547,85 @@ def test_deslugify_concept_false_positive_guards():
     assert deslugify_concept("attach-to-the-focus") == "attach to the focus"
 
 
+# ---------------------------------------------------------------------------
+# libv2_course_slug — single source of truth for the LibV2 archive-dir slug.
+#
+# Consolidates the previously-independent ``gui/services/course_service.py::
+# _slugify`` and ``Trainforge/train_course.py::_slugify`` guesses, both of
+# which drifted from ``LibV2/tools/libv2/importer.py::slugify`` (the contract).
+# ---------------------------------------------------------------------------
+
+
+# Representative course names: codes, mixed case, spaces, punctuation, leading
+# articles, and a >50-char name that exercises the truncation rule.
+_LIBV2_SLUG_INPUTS = [
+    "PHYS_101",
+    "TST_101",
+    "tst-101",
+    "CS_101_Intro",
+    "MAT_101",
+    "College Algebra",
+    "The Great Course",
+    "an apple",
+    "A History of Art",
+    "BIO 201: Cell Biology",
+    "Intro  to   Physics",
+    "Course (Advanced)!",
+    "Introduction to Quantum Mechanics for Undergraduate Physics Majors",
+    "",
+    "!!!",
+]
+
+
+def _legacy_importer_slugify(title: str, max_length: int = 50) -> str:
+    """Pre-consolidation ``importer.slugify`` body, pinned for byte-parity."""
+    slug = title.lower()
+    slug = re.sub(r"^(a|an|the)\s+", "", slug)
+    slug = re.sub(r"[^a-z0-9]+", "-", slug)
+    slug = slug.strip("-")
+    if len(slug) > max_length:
+        slug = slug[:max_length].rstrip("-")
+    return slug
+
+
+@pytest.mark.parametrize("text", _LIBV2_SLUG_INPUTS)
+def test_libv2_course_slug_matches_legacy_importer(text):
+    from lib.ontology.slugs import libv2_course_slug
+
+    assert libv2_course_slug(text) == _legacy_importer_slugify(text), (
+        f"libv2_course_slug diverged from the importer contract on {text!r}"
+    )
+
+
+@pytest.mark.parametrize("text", _LIBV2_SLUG_INPUTS)
+def test_importer_slugify_delegates_to_canonical(text):
+    """``importer.slugify`` IS ``libv2_course_slug`` (byte-identical output)."""
+    from lib.ontology.slugs import libv2_course_slug
+    from LibV2.tools.libv2.importer import slugify
+
+    assert slugify(text) == libv2_course_slug(text)
+
+
+@pytest.mark.parametrize("text", _LIBV2_SLUG_INPUTS)
+def test_train_course_slug_equals_importer(text):
+    """``Trainforge/train_course.py::_slugify`` resolves the importer's slug."""
+    from LibV2.tools.libv2.importer import slugify
+    from Trainforge.train_course import _slugify as train_slugify
+
+    assert train_slugify(text) == slugify(text), (
+        f"train_course._slugify diverged from the importer on {text!r}"
+    )
+
+
+def test_libv2_course_slug_truncates_at_50():
+    from lib.ontology.slugs import libv2_course_slug
+
+    long_name = "a " + "word " * 40  # >50 slug chars, leading article stripped
+    slug = libv2_course_slug(long_name)
+    assert len(slug) <= 50
+    assert not slug.endswith("-")
+
+
 def test_canonical_slug_is_single_source_of_truth():
     """Verify the three call sites actually import from lib.ontology.slugs.
 

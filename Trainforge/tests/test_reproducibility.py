@@ -44,8 +44,8 @@ def _build_card(**eval_overrides):
     }
     eval_scores.update(eval_overrides)
     return {
-        "model_id": "rdf-shacl-551-2-qwen2-5-1-5b-deadbeef",
-        "course_slug": "rdf-shacl-551-2",
+        "model_id": "demo-course-1-qwen2-5-1-5b-deadbeef",
+        "course_slug": "demo-course-1",
         "base_model": {
             "name": "qwen2.5-1.5b",
             "revision": "main",
@@ -99,8 +99,8 @@ def test_write_reproduce_script_pins_commit_and_model(tmp_path):
     assert text.startswith("#!/usr/bin/env bash")
     # All four pinned values land in the body.
     assert ("f" * 40) in text
-    assert "rdf-shacl-551-2-qwen2-5-1-5b-deadbeef" in text
-    assert "rdf-shacl-551-2" in text
+    assert "demo-course-1-qwen2-5-1-5b-deadbeef" in text
+    assert "demo-course-1" in text
     assert "verify_eval" in text
 
 

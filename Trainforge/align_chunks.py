@@ -464,7 +464,7 @@ def _heuristic_role(
     Wave 138b extension: ``content_type_label``-aware branches catch
     the systematic underlabeling of ``real_world_scenario`` /
     ``scenario`` chunks the Wave 138a TeachingRoleAlignmentEvaluator
-    surfaced (0/8 transfer rate on rdf-shacl-551-2 vs expected ≥70%).
+    surfaced (0/8 transfer rate on the RDF/SHACL calibration corpus vs expected ≥70%).
     The 4-role LLM curriculum-alignment enum
     (introduce / elaborate / reinforce / synthesize) cannot return
     ``transfer`` or ``assess`` by design — those are heuristic-only.
@@ -499,7 +499,7 @@ def _heuristic_role(
     # Wave 138b: content_type_label-aware rules. The Wave 138a
     # TeachingRoleAlignmentEvaluator surfaced systematic
     # underlabeling of real_world_scenario / scenario chunks (0/8
-    # transfer on rdf-shacl-551-2 vs expected ≥70%). The 4-role LLM
+    # transfer on the RDF/SHACL calibration corpus vs expected ≥70%). The 4-role LLM
     # enum (introduce / elaborate / reinforce / synthesize) cannot
     # return ``transfer`` or ``assess`` — those are heuristic-only by
     # design. Without this branch, scenario chunks fall through to

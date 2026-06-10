@@ -20,6 +20,7 @@ from fastapi import APIRouter, Query, UploadFile
 from fastapi.responses import JSONResponse
 
 from gui import shared_state
+from lib.secure_paths import PathTraversalError
 
 logger = logging.getLogger("gui.routers.uploads")
 
@@ -109,7 +110,7 @@ async def create_upload(files: List[UploadFile]) -> Any:
             target = dest_dir / name
             try:
                 _validate_within_uploads(target, shared_state.uploads_dir())
-            except ValueError as exc:
+            except (ValueError, PathTraversalError) as exc:
                 raise _UploadError(422, "path_traversal", str(exc)) from exc
 
             with target.open("wb") as fh:
@@ -168,14 +169,16 @@ async def list_uploads(limit: int = Query(default=200, ge=0)) -> Dict[str, Any]:
 @router.delete("/{upload_id}")
 async def delete_upload(upload_id: str) -> Any:
     """Delete an upload directory and its files."""
+    # Reject path-separator / traversal ids up front so a crafted segment never
+    # reaches the resolver (a single-segment ``..`` resolves cleanly but escapes).
+    if ".." in upload_id or "/" in upload_id or "\\" in upload_id:
+        return _error(422, "bad_upload_id", "id may not contain path separators")
     try:
         # Reuse shared_state's id guard against path-separator escapes.
         target = shared_state.uploads_dir() / upload_id
         _validate_within_uploads(target, shared_state.uploads_dir())
-    except ValueError as exc:
+    except (ValueError, PathTraversalError) as exc:
         return _error(422, "bad_upload_id", str(exc))
-    if ".." in upload_id or "/" in upload_id or "\\" in upload_id:
-        return _error(422, "bad_upload_id", "id may not contain path separators")
     if not target.is_dir():
         return _error(404, "unknown_upload", upload_id)
     shutil.rmtree(target, ignore_errors=True)

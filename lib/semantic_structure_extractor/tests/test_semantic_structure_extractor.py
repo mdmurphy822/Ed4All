@@ -29,7 +29,7 @@ from lib.semantic_structure_extractor import SemanticStructureExtractor  # noqa:
 
 
 # ---------------------------------------------------------------------------
-# Fixtures — multi-chapter, single HTML file (the OpenStax algebra shape:
+# Fixtures — multi-chapter, single HTML file (the single-file-textbook shape:
 # one DART HTML file carrying every chapter).
 # ---------------------------------------------------------------------------
 

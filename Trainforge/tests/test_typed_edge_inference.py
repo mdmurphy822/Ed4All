@@ -182,6 +182,157 @@ def test_prerequisite_no_edge_when_same_lo_position():
 
 
 # ---------------------------------------------------------------------------
+# 4b. TRAINFORGE_PREREQ_LO_ADJACENT_ONLY — quadratic-closure mitigation
+# ---------------------------------------------------------------------------
+
+def _linear_chain_inputs():
+    """3 concepts on a linear LO chain, all co-occurring in one chunk.
+
+    a@co-01 (pos0), b@co-02 (pos1), c@co-03 (pos2). All three share a chunk,
+    so legacy emits the full closure (b<-a, c<-a, c<-b). The reduced path
+    keeps only the adjacent links (b<-a, c<-b) — c<-a is the skip edge.
+    """
+    course = {
+        "learning_outcomes": [
+            {"id": "co-01", "statement": "A"},
+            {"id": "co-02", "statement": "B"},
+            {"id": "co-03", "statement": "C"},
+        ]
+    }
+    graph = _minimal_graph(["a", "b", "c"])
+    chunks = [
+        # First-occurrence LO positions: a@co-01 (pos0), b@co-02 (pos1),
+        # c@co-03 (pos2). Each concept's EARLIEST LO must be distinct, so
+        # the introducing chunks come first and are single-tag.
+        {"id": "c-a", "concept_tags": ["a"], "learning_outcome_refs": ["co-01"]},
+        {"id": "c-b", "concept_tags": ["b"], "learning_outcome_refs": ["co-02"]},
+        {"id": "c-c", "concept_tags": ["c"], "learning_outcome_refs": ["co-03"]},
+        # All three co-occur in a later chunk (gives the co-occurrence +
+        # intermediate signal without disturbing the earliest-LO positions).
+        {"id": "c-all", "concept_tags": ["a", "b", "c"], "learning_outcome_refs": ["co-03"]},
+    ]
+    return chunks, course, graph
+
+
+def test_prerequisite_legacy_emits_transitive_closure():
+    """Flag OFF (default): linear chain emits the full O(n^2) closure."""
+    chunks, course, graph = _linear_chain_inputs()
+    edges = infer_prerequisite(chunks, course, graph)
+    pairs = {(e["source"], e["target"]) for e in edges}
+    # later-depends-on-earlier: b<-a, c<-a (skip), c<-b
+    assert pairs == {("b", "a"), ("c", "a"), ("c", "b")}, pairs
+
+
+def test_prerequisite_adjacent_only_drops_skip_edge(monkeypatch):
+    """Flag ON: transitive reduction drops the c<-a skip edge."""
+    monkeypatch.setenv("TRAINFORGE_PREREQ_LO_ADJACENT_ONLY", "true")
+    chunks, course, graph = _linear_chain_inputs()
+    edges = infer_prerequisite(chunks, course, graph)
+    pairs = {(e["source"], e["target"]) for e in edges}
+    # Only the adjacent chain links survive; the closure skip edge is gone.
+    assert pairs == {("b", "a"), ("c", "b")}, pairs
+    assert ("c", "a") not in pairs
+    # Reachability preserved: c -> b -> a is intact.
+
+
+def test_prerequisite_adjacent_only_no_intermediate_keeps_edge(monkeypatch):
+    """Flag ON but no co-occurring concept between the pair → edge kept.
+
+    Reduction only suppresses an edge when a genuine intermediate exists; a
+    bare two-concept span must still emit its edge.
+    """
+    monkeypatch.setenv("TRAINFORGE_PREREQ_LO_ADJACENT_ONLY", "true")
+    course = {
+        "learning_outcomes": [
+            {"id": "co-01", "statement": "A"},
+            {"id": "co-03", "statement": "C"},
+        ]
+    }
+    graph = _minimal_graph(["a", "c"])
+    chunks = [
+        {"id": "c-a", "concept_tags": ["a"], "learning_outcome_refs": ["co-01"]},
+        {"id": "c-c", "concept_tags": ["c"], "learning_outcome_refs": ["co-03"]},
+        {"id": "c-all", "concept_tags": ["a", "c"], "learning_outcome_refs": ["co-03"]},
+    ]
+    edges = infer_prerequisite(chunks, course, graph)
+    pairs = {(e["source"], e["target"]) for e in edges}
+    assert pairs == {("c", "a")}, pairs
+
+
+def test_prerequisite_adjacent_only_demotes_text_order_conflict(monkeypatch):
+    """Flag ON: LO order disagreeing with text order → confidence demoted."""
+    monkeypatch.setenv("TRAINFORGE_PREREQ_LO_ADJACENT_ONLY", "true")
+    course = {
+        "learning_outcomes": [
+            {"id": "co-01", "statement": "A"},
+            {"id": "co-05", "statement": "B"},
+        ]
+    }
+    graph = _minimal_graph(["a", "b"])
+    # Text order (chunk list order): "b" is introduced FIRST (index 0),
+    # "a" later (index 1) — but LO order says "a" (co-01) precedes
+    # "b" (co-05). The orderings disagree → demotion + annotation.
+    chunks = [
+        {"id": "c-b", "concept_tags": ["b"], "learning_outcome_refs": ["co-05"]},
+        {"id": "c-a", "concept_tags": ["a"], "learning_outcome_refs": ["co-01"]},
+        {"id": "c-both", "concept_tags": ["a", "b"], "learning_outcome_refs": ["co-05"]},
+    ]
+    edges = infer_prerequisite(chunks, course, graph)
+    assert len(edges) == 1, edges
+    edge = edges[0]
+    # b depends on a (a is the earlier-LO prerequisite).
+    assert edge["source"] == "b" and edge["target"] == "a"
+    assert edge["confidence"] == 0.3
+    ev = edge["provenance"]["evidence"]
+    assert ev.get("lo_order_vs_text_order_conflict") is True
+
+
+def test_prerequisite_adjacent_only_no_demotion_when_orders_agree(monkeypatch):
+    """Flag ON: LO order and text order agree → base confidence, no flag."""
+    monkeypatch.setenv("TRAINFORGE_PREREQ_LO_ADJACENT_ONLY", "true")
+    course = {
+        "learning_outcomes": [
+            {"id": "co-01", "statement": "A"},
+            {"id": "co-05", "statement": "B"},
+        ]
+    }
+    graph = _minimal_graph(["a", "b"])
+    # "a" introduced first in text (index 0) AND earlier by LO (co-01) —
+    # orderings agree, so no demotion.
+    chunks = [
+        {"id": "c-a", "concept_tags": ["a"], "learning_outcome_refs": ["co-01"]},
+        {"id": "c-b", "concept_tags": ["b"], "learning_outcome_refs": ["co-05"]},
+        {"id": "c-both", "concept_tags": ["a", "b"], "learning_outcome_refs": ["co-05"]},
+    ]
+    edges = infer_prerequisite(chunks, course, graph)
+    assert len(edges) == 1, edges
+    edge = edges[0]
+    assert edge["source"] == "b" and edge["target"] == "a"
+    assert edge["confidence"] == 0.6
+    assert "lo_order_vs_text_order_conflict" not in edge["provenance"]["evidence"]
+
+
+def test_prerequisite_flag_off_byte_identical_to_legacy(monkeypatch):
+    """Flag OFF path is byte-identical to the pre-mitigation output.
+
+    Pins the backward-compat contract: with the flag unset, the reduced
+    code path must produce the exact closure + 0.6 confidence + no
+    conflict annotation that legacy corpora regenerate.
+    """
+    monkeypatch.delenv("TRAINFORGE_PREREQ_LO_ADJACENT_ONLY", raising=False)
+    chunks, course, graph = _linear_chain_inputs()
+    edges = infer_prerequisite(chunks, course, graph)
+    # Full closure, all base confidence, no conflict annotation anywhere.
+    assert {(e["source"], e["target"]) for e in edges} == {
+        ("b", "a"), ("c", "a"), ("c", "b"),
+    }
+    for e in edges:
+        assert e["confidence"] == 0.6
+        assert "lo_order_vs_text_order_conflict" not in e["provenance"]["evidence"]
+        assert "target_first_text_index" not in e["provenance"]["evidence"]
+
+
+# ---------------------------------------------------------------------------
 # 5. related-to threshold
 # ---------------------------------------------------------------------------
 

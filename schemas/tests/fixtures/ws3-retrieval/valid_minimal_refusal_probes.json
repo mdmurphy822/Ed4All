@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "course_slug": "demo-course-101",
+  "authored_at": "2026-06-09T00:00:00Z",
+  "engine": "lexical",
+  "_operator_note": "Schema-fixture: minimal valid refusal-probe set with one verified-unanswerable off_topic probe.",
+  "probes": [
+    {
+      "probe_id": "rp-demo-course-101-0001",
+      "question_text": "How does chlorophyll capture light during photosynthesis?",
+      "category": "off_topic",
+      "why_unanswerable": "This RAG-engineering course never covers plant biochemistry; photosynthesis is a wholly different discipline.",
+      "derived_from_gold_question_id": "gq-demo-course-101-0001",
+      "dry_run": {
+        "verified": true,
+        "engine": "lexical",
+        "limit": 8,
+        "n_results": 0,
+        "top_score": 0.0,
+        "top_passage_answers": false,
+        "top_chunk_id": "",
+        "metadata_scoring": true,
+        "verified_at": "2026-06-09T00:00:00Z"
+      },
+      "authoring": {
+        "method": "manual",
+        "author": "@executor-e6",
+        "reviewed_by": "PENDING_REVIEW",
+        "status": "seed"
+      }
+    }
+  ]
+}

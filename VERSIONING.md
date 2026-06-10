@@ -17,7 +17,7 @@ End-to-end pipeline: **DART → Courseforge → Trainforge → LibV2**.
 - **Knowledge-domain language graphs** — chunked corpus with per-chunk concept tags, Bloom's level, content-type labels, key terms, misconceptions, and outcome references. A co-occurrence concept graph derived from those tags.
 - **Basic quality metrics** — `quality_report.json` reports per-chunk compliance (size, tags, HTML presence, Bloom coverage, outcome coverage).
 
-This is enough to pitch the pipeline. It is *not* enough to ship AI-ready training data that an NSF reviewer or an agency CTO could evaluate on its own metrics without additional scrutiny.
+This is enough to demonstrate the pipeline. It is *not* enough to ship AI-ready training data that a downstream consumer could evaluate on its own metrics without additional scrutiny.
 
 ---
 
@@ -64,7 +64,7 @@ The gates `outcome_ref_integrity` and `content_fact_check` ship in `config/workf
 >
 > 2. **Real-domain floor.** A clean v1.0 regeneration of the v0.1.0 baseline corpus (or another real domain corpus, see §6(b)) produces a `quality_report.json` with the same three integrity invariants holding. The `archive/v0.1.0-baseline/` snapshot exists so this regeneration has a comparator.
 
-The synthetic floor proves the code paths work; the real-domain floor proves the architecture handles the messiness fixtures can't simulate. Either alone is a weaker bar than the NSF narrative implies — both must hold. The follow-up PR cannot cite "CI green" alone as justification for the flip.
+The synthetic floor proves the code paths work; the real-domain floor proves the architecture handles the messiness fixtures can't simulate. Either alone is a weaker bar than a self-trust claim implies — both must hold. The follow-up PR cannot cite "CI green" alone as justification for the flip.
 
 ---
 
@@ -169,33 +169,19 @@ v1.0 is not a marketing milestone. It is a concrete set of conditions all of whi
 
 ---
 
-## §7 Grant-narrative framing (NSF TechAccess "AI-Ready America")
+## §7 v0.1.0 baseline archive (regression comparator)
 
-Ed4All is the strongest portfolio piece under the NSF TechAccess framing. DART is one stage of it; the other three stages (Courseforge, Trainforge, LibV2) are the differentiator. The v0.1.0 real-domain corpus (an accessibility-mission course, held locally, not shipped in this repo) is a genuine demonstration of the pipeline working end-to-end on a domain that sits directly inside Ed4All's mission.
+The v0.1.0 → v1.0 work is verified by a before/after comparison against the original v0.1.0 real-domain corpus (an accessibility-domain course, held locally, not shipped in this repo). The comparison demonstrates the *method* the pipeline is built around — measure, characterise, remediate, re-measure — and gives the severity-flip "real-domain floor" (§3) a concrete comparator.
 
-For a proposal, the claim structure is:
-
-- **Here is v0.1.0 output** (the real-domain package and its defects).
-- **Here is the defect analysis** (the nine signals documented in §2).
-- **Here is the v0.1.0 → v1.0 roadmap** (this document).
-- **Here is v1.0 output on the same domain** (the regenerated package once v1.0 is shipped).
-- **Here are the measured deltas** (footer contamination, outcome ref integrity, graph fragmentation, quality-report trustworthiness).
-
-That structure is stronger than any "here's a pipeline we built" narrative because it demonstrates a *method*: measure, characterise, remediate, re-measure. Funded proposals reward method.
-
-### Paired before/after artifacts — archive scaffold shipped, population owed
-
-This branch ships an empty `archive/v0.1.0-baseline/` scaffold with an `ARCHIVE_README.md` that names what must go there. The scaffold exists in the tree so the obligation is structural, not a todo on someone's list. The artifact itself was not present in the environment this branch was developed in, so the scaffold is empty pending action by the repo owner (`mdmurphy822`).
-
-Before the pipeline moves past v0.1.x, the maintainer must populate the scaffold with:
+No `archive/v0.1.0-baseline/` snapshot currently exists in the tree. Before the pipeline moves past v0.1.x, the maintainer must capture:
 
 1. The v0.1.0 real-domain artifact as shipped (full Trainforge output dir tree — manifest.json, course.json, corpus/, graph/, pedagogy/, quality/, training_specs/).
 2. The original v0.1.0 `quality_report.json` exactly as it was emitted (the dishonest scores).
 3. Optional: a `quality_report_rescored_v2.json` produced by re-running the v0.1.x self-trust metrics against the same unchanged chunks. Same input, two metric generations, side-by-side comparator.
 
-The v1.0 regeneration and delta table follow once v1.0 ships and are tracked on that branch.
+The v1.0 regeneration and delta table (footer contamination, outcome-ref integrity, graph fragmentation, quality-report trustworthiness) follow once v1.0 ships and are tracked on that branch.
 
-The reason this can't be deferred to "the v1.0 branch will produce both": once the chunker, the metrics, the canonicalisation, the orphan rule, and the pedagogy graph split are all on `main` (which they are after this PR merges), regenerating the v0.1.0 artifact byte-for-byte becomes structurally impossible. Either the maintainer holds a copy outside this checkout and commits it, or the `archive/v0.1.0-baseline/ARCHIVE_README.md` fallback (rebuild from commit `18c6613`) is invoked, with the divergence documented.
+The reason this can't be deferred to "the v1.0 branch will produce both": once the chunker, the metrics, the canonicalisation, the orphan rule, and the pedagogy graph split are all on `main`, regenerating the v0.1.0 artifact byte-for-byte becomes structurally impossible. Either the maintainer holds a copy outside this checkout and commits it, or the baseline is rebuilt from commit `18c6613`, with the divergence documented.
 
 ---
 

@@ -65,7 +65,7 @@ def test_paraphrase_instruction_returns_rewritten_pair_with_metadata_preserved()
     draft = {
         "prompt": "Original prompt",
         "completion": "Original completion",
-        "chunk_id": "rdf_shacl_551_chunk_00054",
+        "chunk_id": "demo_course_1_chunk_00054",
         "lo_refs": ["TO-01"],
         "bloom_level": "understand",
         "content_type": "explanation",
@@ -74,7 +74,7 @@ def test_paraphrase_instruction_returns_rewritten_pair_with_metadata_preserved()
         "schema_version": "chunk_v4",
         "provider": "mock",
     }
-    chunk = {"id": "rdf_shacl_551_chunk_00054", "text": "RDFS allows..."}
+    chunk = {"id": "demo_course_1_chunk_00054", "text": "RDFS allows..."}
 
     out = provider.paraphrase_instruction(draft, chunk)
 
@@ -82,7 +82,7 @@ def test_paraphrase_instruction_returns_rewritten_pair_with_metadata_preserved()
     assert out["completion"] == paraphrased_completion
     assert out["provider"] == "claude_session"
     # Metadata preserved verbatim:
-    assert out["chunk_id"] == "rdf_shacl_551_chunk_00054"
+    assert out["chunk_id"] == "demo_course_1_chunk_00054"
     assert out["lo_refs"] == ["TO-01"]
     assert out["bloom_level"] == "understand"
     assert out["content_type"] == "explanation"
@@ -94,7 +94,7 @@ def test_paraphrase_instruction_returns_rewritten_pair_with_metadata_preserved()
     agent_type, params = dispatcher.calls[0]
     assert agent_type == "training-synthesizer"
     assert params["kind"] == "instruction"
-    assert params["chunk_id"] == "rdf_shacl_551_chunk_00054"
+    assert params["chunk_id"] == "demo_course_1_chunk_00054"
     assert params["chunk_text"] == "RDFS allows..."
     assert params["expected_keys"] == ["prompt", "completion"]
 
@@ -128,13 +128,13 @@ def test_paraphrase_preference_rewrites_chosen_and_rejected() -> None:
         "prompt": "Original Q",
         "chosen": "Original chosen",
         "rejected": "Original rejected",
-        "chunk_id": "rdf_shacl_551_chunk_00054",
+        "chunk_id": "demo_course_1_chunk_00054",
         "misconception_id": "mc_abcd1234efgh5678",
         "seed": 7,
         "provider": "mock",
         "rejected_source": "rule_synthesized",
     }
-    chunk = {"id": "rdf_shacl_551_chunk_00054", "text": "RDFS allows..."}
+    chunk = {"id": "demo_course_1_chunk_00054", "text": "RDFS allows..."}
 
     out = provider.paraphrase_preference(draft, chunk)
 
@@ -207,7 +207,7 @@ def test_paraphrase_instruction_emits_synthesis_provider_call_capture() -> None:
 
     provider.paraphrase_instruction(
         draft={"prompt": "p1", "completion": "c1", "template_id": "understand._default"},
-        chunk={"id": "rdf_shacl_551_chunk_00054", "text": "..."},
+        chunk={"id": "demo_course_1_chunk_00054", "text": "..."},
     )
 
     assert len(capture.events) == 1
@@ -217,7 +217,7 @@ def test_paraphrase_instruction_emits_synthesis_provider_call_capture() -> None:
     rationale = event["rationale"]
     assert len(rationale) >= 20
     # Rationale must reference dynamic signals per CLAUDE.md mandate:
-    assert "rdf_shacl_551_chunk_00054" in rationale
+    assert "demo_course_1_chunk_00054" in rationale
     assert "understand._default" in rationale
 
 
@@ -246,9 +246,9 @@ def test_cache_hit_skips_dispatcher_and_returns_cached_output(tmp_path: Path) ->
 
     draft = {
         "prompt": "P", "completion": "C", "template_id": "apply._default",
-        "chunk_id": "rdf_shacl_551_chunk_00054",
+        "chunk_id": "demo_course_1_chunk_00054",
     }
-    chunk = {"id": "rdf_shacl_551_chunk_00054", "text": "..."}
+    chunk = {"id": "demo_course_1_chunk_00054", "text": "..."}
 
     first = provider.paraphrase_instruction(draft, chunk)
     second = provider.paraphrase_instruction(draft, chunk)
@@ -260,7 +260,7 @@ def test_cache_hit_skips_dispatcher_and_returns_cached_output(tmp_path: Path) ->
     lines = [json.loads(l) for l in cache_path.read_text().splitlines() if l.strip()]
     assert len(lines) == 1
     assert lines[0]["kind"] == "instruction"
-    assert lines[0]["chunk_id"] == "rdf_shacl_551_chunk_00054"
+    assert lines[0]["chunk_id"] == "demo_course_1_chunk_00054"
     assert lines[0]["provider_version"] == "v1"
     assert lines[0]["outputs"]["prompt"] == _ok_prompt("p1")
 

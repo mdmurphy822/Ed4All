@@ -4,8 +4,9 @@ Pre-Wave-76 ``CourseProcessor._build_valid_outcome_ids`` only read
 ``terminal_objectives`` / ``chapter_objectives`` from the loaded
 objectives dict. Wave 75 Worker A's emit uses ``terminal_outcomes`` /
 ``component_objectives``, so the resulting set was empty and EVERY chunk
-ref was flagged as broken (rdf-shacl-550 reported 312 broken_refs where
-311 were valid IDs and 1 was a genuinely malformed comma-joined string).
+ref was flagged as broken (the RDF/SHACL calibration corpus reported 312
+broken_refs where 311 were valid IDs and 1 was a genuinely malformed
+comma-joined string).
 
 This test locks in:
   - Both objective-file schemas resolve.
@@ -88,7 +89,7 @@ def test_comma_joined_ref_flagged_as_single_broken_entry() -> None:
 
 
 def test_total_count_matches_external_review_scenario() -> None:
-    """Mirror the scenario from the rdf-shacl-550 external review:
+    """Mirror the scenario from the RDF/SHACL calibration corpus review:
     chunk has 3 refs, 2 resolve, 1 unknown → broken=1, not 3.
     """
     valid: Set[str] = {"co-01", "to-02"}

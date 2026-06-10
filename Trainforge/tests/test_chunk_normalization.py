@@ -12,7 +12,7 @@ Exercises the three small data-hygiene fixes added to
   * ``_assert_chunk_files_parity`` — the round-trip check that
     chunks.json contains the exact same chunk list as chunks.jsonl.
 
-The rdf-shacl-550 corpus surfaced concrete examples of each gap;
+The RDF/SHACL calibration corpus surfaced concrete examples of each gap;
 these tests guard against regressions.
 """
 

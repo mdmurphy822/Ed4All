@@ -606,6 +606,145 @@ def _build_catalog() -> List[Dict[str, Any]]:
             "help": "Objective-driven pacing target used to re-scale duration_weeks.",
             "applies_to": "courseplanner",
         },
+        # --------------------------------------------------------- embedding
+        # Retrieval-index embedding backend. SEPARATE registry from the LLM
+        # ``PROVIDERS`` list (embeddings index corpus chunks; they are not
+        # LLM chat/synthesis providers), so the enum is a literal triple, NOT
+        # ``provider_names()``. Mirrors
+        # ``lib/embedding/providers.py::_EMBEDDING_PROVIDERS``.
+        {
+            "key": "ED4ALL_EMBEDDING_PROVIDER",
+            "label": "Embedding Provider",
+            "category": "embedding",
+            "type": "enum",
+            "default": "st",
+            "enum": ["st", "local-openai", "fake"],
+            "help": (
+                "Retrieval-index embedding backend: st (in-process "
+                "sentence-transformers), local-openai (local /v1/embeddings "
+                "server), or fake (deterministic test vectors). Separate from "
+                "the LLM provider registry."
+            ),
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_EMBEDDING_MODEL",
+            "label": "Embedding Model",
+            "category": "embedding",
+            "type": "string",
+            "default": None,
+            "help": (
+                "Embedding model ID override (per-provider default when "
+                "unset; e.g. BAAI/bge-large-en-v1.5 for st, nomic-embed-text for "
+                "local-openai)."
+            ),
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_EMBEDDING_BASE_URL",
+            "label": "Embedding Server Base URL",
+            "category": "embedding",
+            "type": "string",
+            "default": "http://localhost:11434/v1",
+            "help": (
+                "Base URL of the local OpenAI-compatible /v1/embeddings "
+                "server (local-openai provider only)."
+            ),
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_EMBEDDING_API_KEY",
+            "label": "Embedding Server API Key",
+            "category": "embedding",
+            "type": "secret",
+            "default": None,
+            "help": (
+                "Optional bearer token for the local embedding server "
+                "(local-openai only; most local servers ignore it)."
+            ),
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_EMBEDDING_DEVICE",
+            "label": "Embedding Device",
+            "category": "embedding",
+            "type": "enum",
+            "default": "cpu",
+            "enum": ["cpu", "cuda"],
+            "help": (
+                "Torch device for the in-process st embedder. Default cpu "
+                "for determinism; cuda for speed (recorded in the index "
+                "manifest)."
+            ),
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_EMBEDDING_BATCH_SIZE",
+            "label": "Embedding Batch Size",
+            "category": "embedding",
+            "type": "number",
+            "default": 16,
+            "help": "Encode batch size for the embedding client.",
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_EMBEDDING_ALLOW_FAKE",
+            "label": "Allow Fake Embedding Index",
+            "category": "embedding",
+            "type": "bool",
+            "default": False,
+            "help": (
+                "Permit loading a vector index built with the fake provider "
+                "in a production read path. Default off → fake-provider "
+                "indexes are refused at query time."
+            ),
+            "applies_to": "retrieval",
+        },
+        # --------------------------------------------------------- answer
+        # Grounded-answer backend (runtime Q&A inference over retrieved
+        # passages). Resolves the W-D12 ``_OPENAI_COMPATIBLE_PROVIDERS``
+        # registry but is LOOPBACK-ENFORCED: a non-loopback resolved
+        # base_url raises AnswerProviderNotLocal. Phase IA has no cloud arm
+        # on the answer path. See lib/retrieval/answer_backend.py.
+        {
+            "key": "ED4ALL_ANSWER_PROVIDER",
+            "label": "Answer Provider",
+            "category": "answer",
+            "type": "string",
+            "default": "local",
+            "help": (
+                "Grounded-answer backend (runtime Q&A inference). "
+                "Loopback-only: a non-loopback resolved base_url raises "
+                "AnswerProviderNotLocal (Phase IA: no cloud answer arm). "
+                "Only 'local' is permitted today."
+            ),
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_ANSWER_MODEL",
+            "label": "Answer Model",
+            "category": "answer",
+            "type": "string",
+            "default": None,
+            "help": (
+                "Answer model ID override. Resolution chain: explicit arg "
+                "> ED4ALL_ANSWER_MODEL > LOCAL_SYNTHESIS_MODEL > registry "
+                "default (qwen2.5:14b-instruct-q4_K_M)."
+            ),
+            "applies_to": "retrieval",
+        },
+        {
+            "key": "ED4ALL_ANSWER_TIMEOUT_SECONDS",
+            "label": "Answer Timeout (seconds)",
+            "category": "answer",
+            "type": "number",
+            "default": 120,
+            "help": (
+                "Answer-client HTTP timeout (long passages, slow local GPU). "
+                "Garbage values fall back to the default."
+            ),
+            "applies_to": "retrieval",
+        },
     ]
 
 
@@ -681,6 +820,10 @@ ROUTING_ENV_MAP: Dict[str, Dict[str, str]] = {
     "trainforge_assessment": {
         "provider": "TRAINFORGE_ASSESSMENT_PROVIDER",
         "model": "TRAINFORGE_ASSESSMENT_MODEL",
+    },
+    "answer": {
+        "provider": "ED4ALL_ANSWER_PROVIDER",
+        "model": "ED4ALL_ANSWER_MODEL",
     },
 }
 

@@ -59,14 +59,14 @@ Usage::
 
     # Backfill a single course.
     python -m LibV2.tools.libv2.scripts.backfill_dart_chunks \\
-        --course-slug rdf-shacl-551-2
+        --course-slug demo-course-1
 
     # Dry-run: log what would be done without writing anything.
     python -m LibV2.tools.libv2.scripts.backfill_dart_chunks --dry-run
 
     # Force re-chunk even if dart_chunks/ already exists.
     python -m LibV2.tools.libv2.scripts.backfill_dart_chunks \\
-        --course-slug rdf-shacl-551-2 --force
+        --course-slug demo-course-1 --force
 
 Exit codes:
     0  success (or all targets skipped/dry-run).
@@ -589,7 +589,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help=(
-            "Backfill exactly this slug (e.g. rdf-shacl-551-2). When "
+            "Backfill exactly this slug (e.g. demo-course-1). When "
             "omitted, scan every directory under --libv2-root."
         ),
     )

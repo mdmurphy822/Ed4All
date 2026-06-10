@@ -1,0 +1,9 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Beta Page — Retrieval Mini Course</title></head>
+<body>
+  <h1>Chunking Strategies</h1>
+  <p>Chunking splits a long source document into smaller passages before embedding so that retrieval returns focused evidence rather than whole pages. A target chunk size balances two failure modes: chunks that are too small lose surrounding context, while chunks that are too large dilute the embedding with unrelated material.</p>
+  <p>Sentence overlap prepends the final sentences of the previous chunk to the next one so that a fact stated near a boundary is not split across two passages. Overlap raises recall at the cost of some redundancy in the index.</p>
+</body>
+</html>

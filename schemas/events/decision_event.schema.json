@@ -23,7 +23,7 @@
     "course_id": {
       "type": ["string", "null"],
       "pattern": "^[A-Z][A-Z0-9_-]{1,}$",
-      "description": "Normalized course code. Admits both legacy underscore form (e.g., MTH_101) and post-Wave-93 hyphenated multi-segment slugs (e.g., RDF-SHACL-551-2)."
+      "description": "Normalized course code. Admits both legacy underscore form (e.g., MTH_101) and post-Wave-93 hyphenated multi-segment slugs (e.g., DEMO-ALG-201-2)."
     },
     "module_id": {
       "type": ["string", "null"],
@@ -50,7 +50,7 @@
     },
     "phase": {
       "type": ["string", "null"],
-      "enum": ["input-research", "exam-research", "course-outliner", "content-generator", "brightspace-packager", "dart-conversion", "dart-validation", "trainforge-assessment", "trainforge-training", "synthesize-training", "validation", "content-analysis", "question-generation", "assessment-assembly", "courseforge-input-research", "courseforge-exam-research", "courseforge-course-outliner", "courseforge-content-generator", "courseforge-content-generator-outline", "courseforge-content-generator-rewrite", "courseforge-brightspace-packager", "courseforge-statistical-validation", "courseforge-bert-ensemble", "trainforge-content-analysis", "trainforge-question-generation", "trainforge-assessment-assembly", "trainforge-validation", "curriculum-alignment", "libv2-retrieval", "libv2-indexing", "libv2-fusion", null],
+      "enum": ["input-research", "exam-research", "course-outliner", "content-generator", "brightspace-packager", "dart-conversion", "dart-validation", "trainforge-assessment", "trainforge-training", "synthesize-training", "validation", "content-analysis", "question-generation", "assessment-assembly", "courseforge-input-research", "courseforge-exam-research", "courseforge-course-outliner", "courseforge-content-generator", "courseforge-content-generator-outline", "courseforge-content-generator-rewrite", "courseforge-brightspace-packager", "courseforge-statistical-validation", "courseforge-bert-ensemble", "trainforge-content-analysis", "trainforge-question-generation", "trainforge-assessment-assembly", "trainforge-validation", "curriculum-alignment", "libv2-retrieval", "libv2-indexing", "libv2-fusion", "libv2-answer", null],
       "description": "Processing phase within the tool pipeline"
     },
     "tool": {
@@ -145,6 +145,9 @@
         "form_data_backfill_session",
         "form_data_degraded_placeholder_skipped",
         "format_decision",
+        "grounded_answer_citation_gate",
+        "grounded_answer_composition",
+        "grounded_answer_refusal",
         "heading_assignment",
         "hyperparameter_selection",
         "imscc_extraction",
