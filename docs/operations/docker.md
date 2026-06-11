@@ -35,22 +35,29 @@ non-loopback answer-provider base URL by design** (Phase IA: no cloud answer
 path, ever). The GUI process must therefore reach Ollama at a genuine loopback
 address (`localhost` / `127.0.0.0/8` / `[::1]`).
 
-### Linux / WSL2 (default)
+### Shared network namespace (default, all platforms)
 
-Both services run with `network_mode: host`, sharing the host's network
-namespace. The GUI reaches Ollama at `http://localhost:11434` — a real loopback
-address from the GUI process's perspective. The policy holds with **zero**
-weakening. This is the shipped default.
+The `gui` service joins the `ollama` service's network namespace
+(`network_mode: "service:ollama"` — the pod-style sidecar pattern). The two
+containers share one `localhost`, so the GUI reaches Ollama at
+`http://localhost:11434` — a real loopback address from the GUI process's
+perspective. The policy holds with **zero** weakening. Studio's `:8077` is
+published as a normal bridged port on the namespace-owning `ollama` service,
+so ingress works identically on native Linux, Docker Desktop (Windows/WSL2),
+and macOS.
 
-### Docker Desktop / macOS
+### Why not `network_mode: host`?
 
-Host networking does not share `localhost` the same way (the engine runs inside
-a VM). A bridged sidecar reachable at `http://ollama:11434` is **not** loopback,
-so the answer backend refuses it. Making a bridged sidecar work would require
-relaxing the loopback policy — that is a separate product decision and is **not**
-made here. On these platforms, run Ollama natively on the host (so the GUI
-container talks to a loopback-checked URL) or run the whole stack inside a Linux
-VM where host networking behaves as above.
+An earlier draft used host networking for both services. That only behaves as
+intended on native-Linux Docker. On Docker Desktop, "host" means the Desktop
+VM's namespace: the in-stack loopback hop still works, but there is **no
+ingress path at all** — a host-network service is unreachable from Windows
+`localhost` *and* from the WSL distro (verified empirically on Docker Desktop
+29.x with host networking enabled). The shared-netns sidecar keeps the
+loopback hop and restores normal published-port ingress everywhere. A bridged
+sidecar reachable at `http://ollama:11434` would **not** be loopback and the
+answer backend would refuse it — that is exactly what the shared namespace
+avoids without relaxing the policy.
 
 ## Operator auth (`ED4ALL_GUI_TOKEN`)
 
@@ -99,10 +106,14 @@ CPU inference works without any of this (just slower).
 ## Troubleshooting
 
 - **`AnswerProviderNotLocal` / answer requests fail** — the GUI resolved a
-  non-loopback Ollama URL. Confirm both services use `network_mode: host` and
-  that the model-routing base URL is `http://localhost:11434/v1` (or
-  `http://127.0.0.1:11434`). See the loopback section above; on Docker
-  Desktop/macOS run Ollama on the host.
+  non-loopback Ollama URL. Confirm the `gui` service still has
+  `network_mode: "service:ollama"` and that the model-routing base URL is
+  `http://localhost:11434/v1` (or `http://127.0.0.1:11434`). See the loopback
+  section above.
+- **Studio unreachable on :8077** — confirm the `8077:8077` mapping lives on
+  the `ollama` service (the namespace owner), not on `gui`; Docker silently
+  ignores/rejects port mappings on a container that joined another service's
+  namespace.
 - **Healthcheck never goes healthy** — check `docker compose logs gui`. The
   probe hits `GET /api/health`; a `503`/connection-refused means uvicorn hasn't
   bound yet (give it the 40s `start_period`) or crashed on import.

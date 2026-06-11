@@ -5,19 +5,24 @@
 # because lib/retrieval/answer_backend.py refuses any non-loopback answer-
 # provider base_url by design (Phase IA: no cloud answer path, ever).
 #
-# DEFAULT (Linux / WSL2): host networking. Both processes share the host's
-# network namespace, so the GUI reaches Ollama at http://localhost:11434 — a
-# genuine loopback address from the GUI process's perspective. The answer-path
-# loopback policy holds with zero weakening.
+# NETWORK SHAPE (pod-style shared namespace): the gui service joins the ollama
+# service's network namespace (`network_mode: "service:ollama"`), so the GUI
+# reaches Ollama at http://localhost:11434 — a genuine loopback address from
+# the GUI process's perspective. The answer-path loopback policy holds with
+# zero weakening, and Studio's :8077 is published as a normal bridged port on
+# the namespace-owning service.
 #
-# Docker Desktop / macOS: host networking does NOT share localhost the same way
-# (the engine runs in a VM). A bridged sidecar reachable at http://ollama:11434
-# is NOT loopback, so the answer backend would refuse it. Making it work would
-# require relaxing the loopback policy — a separate product decision, NOT made
-# here. The documented alternative for that platform is to run Ollama natively
-# on the host (so the GUI container reaches it via host.docker.internal mapped
-# to a loopback-checked URL only if policy permits) or to run the whole stack in
-# a Linux VM. See docs/operations/docker.md § "Docker Desktop / macOS".
+# This shape was chosen over `network_mode: host` deliberately: it behaves
+# identically on native Linux, Docker Desktop (Windows/WSL2), and macOS.
+# Docker Desktop's host networking gives containers the Desktop VM's
+# namespace, which has NO ingress path from the host at all (verified
+# empirically: a host-network service is unreachable from both Windows
+# localhost and the WSL distro), so the previous host-network default served
+# Studio nowhere user-visible on Desktop platforms. The shared-netns sidecar
+# keeps the loopback hop AND normal published-port ingress everywhere.
+#
+# Note: published ports live on the `ollama` service because it owns the
+# shared namespace — Docker requires port mappings on the namespace owner.
 
 services:
   gui:
@@ -25,8 +30,9 @@ services:
       context: .
       dockerfile: Dockerfile.gui
     image: ed4all-gui:latest
-    # Host networking keeps the GUI<->Ollama hop on loopback (see header).
-    network_mode: host
+    # Join the ollama service's network namespace (see header). localhost is
+    # shared between the two containers; nothing else changes.
+    network_mode: "service:ollama"
     environment:
       # Redundant with the image ENV, but explicit here so an operator editing
       # compose sees the data root + serve mode without reading the Dockerfile.
@@ -58,8 +64,14 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    # Host networking so the GUI process sees Ollama on localhost:11434.
-    network_mode: host
+    # Owns the network namespace the gui service joins; port mappings for the
+    # whole pod therefore live here.
+    ports:
+      # Studio (served by the gui process inside the shared namespace).
+      - "8077:8077"
+      # Ollama's API is intentionally NOT published — only the GUI needs it,
+      # over the in-namespace loopback. Pull models with:
+      #   docker compose exec ollama ollama pull <model>
     volumes:
       # Persist pulled models so a restart doesn't re-download multi-GB weights.
       - ollama-models:/root/.ollama
