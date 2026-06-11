@@ -49,6 +49,7 @@ __all__ = [
     "RefusalVerdict",
     "DEFAULT_POLICIES",
     "PINNED_POLICIES",
+    "RRF_K",
     "POLICY_VERSION_UNCALIBRATED",
     "POLICY_VERSION_PINNED",
     "REASON_LOW_CONFIDENCE",
@@ -200,13 +201,29 @@ DEFAULT_POLICIES: Dict[str, RefusalPolicy] = {
         embedding_model_id=None,
     ),
 }
-# hybrid-rrf rides the lexical floor until WS2 lands fused-score calibration —
-# RRF scores share neither the cosine nor the BM25 scale, so the permissive
-# lexical-shaped policy is the honest pre-calibration default.
+# hybrid-rrf scores live on the RECIPROCAL-RANK-FUSION scale, not the cosine or
+# BM25 scale, so a permissive default MUST be expressed on the RRF scale. A fused
+# score is sum over arms of 1/(RRF_K + rank): with two fused lists the maximum
+# achievable top score is 2/(RRF_K + 1) ≈ 0.0328 (a doc ranked 1 in BOTH arms),
+# and any passage ranked 1 in a single arm scores 1/(RRF_K + 1) ≈ 0.0164. The
+# earlier default borrowed the lexical floors (min_top_score=1.0,
+# score_floor=0.5); those are mathematically unreachable on the RRF scale, so the
+# policy refused 100% of hybrid-rrf queries — and since the GUI's auto engine
+# resolves to hybrid-rrf whenever a vector index exists, the whole learner Ask
+# surface refused everything. The permissive RRF-scale floors below clear on any
+# real retrieval (top passage rank-1 in at least one arm; any passage ranked
+# within RRF_K) while still failing on an empty pool. Per-model measured pins
+# land later via PINNED_POLICIES keyed (hybrid-rrf, <embedding_model_id>).
+#
+# Mirrors ``DEFAULT_RRF_K`` on LibV2/tools/libv2/semantic_retriever.py (itself
+# pinned to ``result_fusion.ResultFuser.RRF_K``). Defined module-local rather
+# than imported to avoid a lib/ -> LibV2/ layering dependency on the hot policy
+# path; the regression test cross-checks the two constants agree.
+RRF_K = 60
 DEFAULT_POLICIES["hybrid-rrf"] = RefusalPolicy(
     engine="hybrid-rrf",
-    min_top_score=DEFAULT_POLICIES["lexical"].min_top_score,
-    score_floor=DEFAULT_POLICIES["lexical"].score_floor,
+    min_top_score=1.0 / (RRF_K + 1),
+    score_floor=1.0 / (2 * RRF_K),
     min_passages_above_floor=1,
     policy_version=POLICY_VERSION_UNCALIBRATED,
     embedding_model_id=None,
