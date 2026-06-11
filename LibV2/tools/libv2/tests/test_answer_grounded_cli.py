@@ -273,6 +273,7 @@ class TestTypedErrorExits:
         assert "AnswerProviderNotLocal" in res.output
 
     def test_semantic_index_missing_exit_one(self, monkeypatch, tmp_path):
+        pytest.importorskip("numpy")  # imports vector_index.SemanticIndexMissing (needs [embedding])
         _make_course(tmp_path)
         from LibV2.tools.libv2.vector_index import SemanticIndexMissing
 
@@ -292,6 +293,7 @@ class TestTypedErrorExits:
 
 class TestEngineAutoAndValidation:
     def test_auto_resolves_semantic_when_index_present(self, monkeypatch, tmp_path):
+        pytest.importorskip("numpy")  # _make_course(with_index) imports vector_index (needs [embedding])
         _make_course(tmp_path, with_index=True)
         seen = {}
         _patch(monkeypatch, lambda *a, **k: (seen.update(k), _answered())[1])

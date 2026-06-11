@@ -83,6 +83,7 @@ def _invoke(repo_root: Path, *args: str):
 
 class TestHappyPath:
     def test_build_index_then_benchmark_all_engines(self, tmp_path):
+        pytest.importorskip("numpy")  # --build-index builds a vector index (needs [embedding])
         cdir = _materialize(tmp_path)
         res = _invoke(
             tmp_path,
@@ -177,6 +178,7 @@ class TestHappyPath:
 
 class TestDeterminism:
     def test_json_deterministic_across_runs(self, tmp_path):
+        pytest.importorskip("numpy")  # --build-index builds a vector index (needs [embedding])
         cdir = _materialize(tmp_path)
         out1 = tmp_path / "r1.json"
         out2 = tmp_path / "r2.json"
@@ -218,6 +220,12 @@ class TestFailClosed:
     def test_semantic_without_index_fails_closed(self, tmp_path):
         """semantic engine + no index + no --build-index => non-zero exit with
         the build guidance, never a BM25-only result."""
+        # Without numpy the semantic path can't even reach the typed
+        # SemanticIndexMissing guidance (the [embedding] extra is the
+        # precondition for a meaningful fail-closed assertion); the CLI's
+        # ImportError handler still exits 1, but this test asserts the
+        # *typed* build-guidance, which requires the extra.
+        pytest.importorskip("numpy")  # needs [embedding] to exercise the typed guidance
         _materialize(tmp_path)
         res = _invoke(tmp_path, "--course", _SLUG, "--engines", "semantic")
         assert res.exit_code == 1

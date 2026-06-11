@@ -66,6 +66,14 @@ DIRNAME_TO_CHUNKSET_KIND = {
 }
 CHUNKSET_KIND_TO_DIRNAME = {v: k for k, v in DIRNAME_TO_CHUNKSET_KIND.items()}
 
+# Vector-index directory + manifest filename. Plain string constants live here
+# (the numpy-free lower layer) so the pure-lexical / engine="auto" code paths
+# can test for index presence without importing the numpy-laden
+# ``vector_index`` module. ``vector_index.py`` re-exports these as its public
+# ``VECTOR_INDEX_DIRNAME`` / ``MANIFEST_FILENAME`` (single source of truth).
+VECTOR_INDEX_DIRNAME = "vector_index"
+VECTOR_INDEX_MANIFEST_FILENAME = "manifest.json"
+
 
 def resolve_imscc_chunks_dir(
     course_dir: Union[str, Path],
@@ -714,4 +722,6 @@ __all__ = [
     'resolve_chunks_path_for_query',
     'DIRNAME_TO_CHUNKSET_KIND',
     'CHUNKSET_KIND_TO_DIRNAME',
+    'VECTOR_INDEX_DIRNAME',
+    'VECTOR_INDEX_MANIFEST_FILENAME',
 ]

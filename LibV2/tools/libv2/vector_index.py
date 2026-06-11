@@ -55,6 +55,8 @@ import numpy as np
 
 from lib.libv2_storage import (
     DIRNAME_TO_CHUNKSET_KIND as _DIRNAME_TO_KIND,
+    VECTOR_INDEX_DIRNAME,
+    VECTOR_INDEX_MANIFEST_FILENAME as MANIFEST_FILENAME,
     resolve_imscc_chunks_dir,
 )
 from lib.utils.hashing import sha256_file, sha256_text
@@ -83,10 +85,11 @@ __all__ = [
 ]
 
 
-VECTOR_INDEX_DIRNAME = "vector_index"
+# VECTOR_INDEX_DIRNAME / MANIFEST_FILENAME are imported above from
+# lib.libv2_storage (numpy-free single source of truth) so the pure-lexical /
+# engine="auto" code paths can probe index presence without importing numpy.
 EMBEDDINGS_FILENAME = "embeddings.npy"
 ID_MAP_FILENAME = "id_map.json"
-MANIFEST_FILENAME = "manifest.json"
 
 _ID_MAP_SCHEMA_VERSION = "1.0"
 _MANIFEST_SCHEMA_VERSION = "1.0"

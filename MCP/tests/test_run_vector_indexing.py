@@ -99,6 +99,10 @@ class TestMappingFlip:
 
 class TestRunVectorIndexingHappyPath:
     def test_builds_index_and_returns_envelope(self, registry, tmp_path):
+        # The vector-index path imports lib.embedding.providers, which pulls
+        # numpy from the optional [embedding] extra. Absent on a slim CI
+        # install → skip rather than fail with dependency_missing.
+        pytest.importorskip("numpy")
         slug = "mini-retrieval-101"
         _materialize_course(tmp_path, slug)
         tool = registry["run_vector_indexing"]
@@ -139,6 +143,10 @@ class TestRunVectorIndexingHappyPath:
 
 class TestRunVectorIndexingFailClosed:
     def test_missing_course_fails_closed(self, registry, tmp_path):
+        # Tool imports lib.embedding.providers (numpy) before the
+        # course-exists check, so a numpy-less env returns dependency_missing
+        # rather than course_missing — skip when the extra is absent.
+        pytest.importorskip("numpy")
         tool = registry["run_vector_indexing"]
         raw = asyncio.run(
             tool(course_name="no-such-course", libv2_root=str(tmp_path))
@@ -152,6 +160,10 @@ class TestRunVectorIndexingFailClosed:
     ):
         """When the embedding backend is unavailable the phase FAILS — there
         is NO file-counting / lexical fallback (anti-silent-degradation)."""
+        # Needs numpy to reach the backend-unavailable arm (the lazy
+        # lib.embedding.providers import otherwise short-circuits to
+        # dependency_missing on a numpy-less install).
+        pytest.importorskip("numpy")
         slug = "mini-retrieval-101"
         _materialize_course(tmp_path, slug)
 

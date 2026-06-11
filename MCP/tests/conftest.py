@@ -12,6 +12,10 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# NOTE: the "absent local synthesis backend → skip" hookwrapper lives in the
+# repo-root conftest.py so it covers MCP synthesis-phase tests too. Not
+# duplicated here.
+
 
 # =============================================================================
 # MCP CLIENT FIXTURES

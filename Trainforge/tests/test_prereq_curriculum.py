@@ -54,15 +54,25 @@ def _real_archive() -> Path:
     libv2_root = (Path(root) if root else PROJECT_ROOT / "LibV2") / "courses"
     if libv2_root.is_dir():
         for candidate in sorted(libv2_root.iterdir()):
+            # The graph-required curriculum default reads pedagogy_graph.json
+            # (under graph/ or pedagogy/); a bare graph/ DIR without that file
+            # makes run_synthesis_from_libv2 fail closed rather than skip, so
+            # require the file itself — not just the directory.
+            has_pedagogy_graph = (
+                candidate / "graph" / "pedagogy_graph.json"
+            ).exists() or (
+                candidate / "pedagogy" / "pedagogy_graph.json"
+            ).exists()
             if (
                 candidate.is_dir()
                 and (candidate / "corpus" / "chunks.jsonl").exists()
-                and (candidate / "graph").is_dir()
+                and has_pedagogy_graph
             ):
                 return candidate
     pytest.skip(
-        "no LibV2 course archive with corpus/chunks.jsonl + graph/ present "
-        "under ED4ALL_LIBV2_ROOT / LibV2/courses/; integration test skipped"
+        "no LibV2 course archive with corpus/chunks.jsonl + "
+        "graph|pedagogy/pedagogy_graph.json present under "
+        "ED4ALL_LIBV2_ROOT / LibV2/courses/; integration test skipped"
     )
 
 

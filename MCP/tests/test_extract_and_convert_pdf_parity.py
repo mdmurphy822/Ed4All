@@ -53,6 +53,16 @@ def fixture_pdf_copy(tmp_path, monkeypatch):
     """
     if not FIXTURE_PDF.exists():
         pytest.skip(f"fixture PDF not available at {FIXTURE_PDF}")
+    # The DART converter shells out to the ``pdftotext`` binary (poppler-utils).
+    # Absent on a slim CI runner → the tool returns a fail-closed
+    # {"error": "pdftotext unavailable ..."} envelope and these parity tests
+    # assert on success markers. Skip cleanly when the binary isn't installed;
+    # the tests run unchanged wherever poppler IS present.
+    if shutil.which("pdftotext") is None:
+        pytest.skip(
+            "pdftotext (poppler-utils) not installed — DART PDF conversion "
+            "is unavailable; install poppler-utils to run the parity tests"
+        )
     dst = tmp_path / "parity_fixture.pdf"
     shutil.copy2(FIXTURE_PDF, dst)
 

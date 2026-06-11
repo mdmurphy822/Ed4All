@@ -6,6 +6,21 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from lib.testing.reachability import make_local_synthesis_skip_hook  # noqa: E402
+
+# Repo-wide skip hook: a ``*_SYNTHESIS_PROVIDER=local`` env override (the
+# marketable-v1 license-clean default present on some CI runners) re-routes a
+# nominally ``provider="mock"`` synthesis test to a live OpenAI-compatible
+# server on ``localhost:11434``. When no such server is listening the run fails
+# with a connection-refused error (raised, or surfaced inside a phase
+# result-dict ``error`` field the test asserts on). This hook converts EXACTLY
+# that environment-shaped failure into a skip, repo-wide so every synthesis
+# test family is covered from one place. Strict no-op when the backend is up or
+# the failure isn't a refused connect to it — when a local server IS up, every
+# test runs against the live backend exactly as before. See
+# lib/testing/reachability.py for the precision contract.
+pytest_runtest_call = make_local_synthesis_skip_hook()
+
 
 def pytest_configure(config):
     """Register the ``real_libv2_archive`` opt-out marker.

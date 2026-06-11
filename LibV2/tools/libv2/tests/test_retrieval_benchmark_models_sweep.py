@@ -76,6 +76,7 @@ _MODELS = "fakeorg/alpha-embed,fakeorg/beta-embed"
 
 class TestModelSweep:
     def test_sweep_writes_one_report_per_model(self, tmp_path):
+        pytest.importorskip("numpy")  # sweep builds vector indexes (needs [embedding])
         cdir = _materialize(tmp_path)
         res = _invoke(
             tmp_path,
@@ -113,6 +114,7 @@ class TestModelSweep:
         assert (eval_dir / "gold_set.json").exists()
 
     def test_temp_dirs_cleaned_by_default(self, tmp_path):
+        pytest.importorskip("numpy")  # sweep builds vector indexes (needs [embedding])
         cdir = _materialize(tmp_path)
         res = _invoke(
             tmp_path, "--course", _SLUG, "--engines", "bm25,semantic", "--models", _MODELS
@@ -124,6 +126,7 @@ class TestModelSweep:
         assert not (cdir / "vector_index.canonical-stash").exists()
 
     def test_keep_leaves_temp_dirs(self, tmp_path):
+        pytest.importorskip("numpy")  # sweep builds vector indexes (needs [embedding])
         cdir = _materialize(tmp_path)
         res = _invoke(
             tmp_path,
@@ -147,6 +150,7 @@ class TestModelSweep:
     def test_canonical_index_preserved_across_sweep(self, tmp_path):
         """A pre-existing canonical vector_index/ is restored byte-identically
         after the sweep (the sweep never clobbers the production index)."""
+        pytest.importorskip("numpy")  # sweep builds vector indexes (needs [embedding])
         cdir = _materialize(tmp_path)
         # Build a canonical index first.
         res0 = _invoke(

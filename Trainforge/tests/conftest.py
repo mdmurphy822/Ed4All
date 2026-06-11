@@ -45,6 +45,12 @@ def pytest_configure(config):
     )
 
 
+
+# NOTE: the "absent local synthesis backend → skip" hookwrapper lives in the
+# repo-root conftest.py (lib.testing.reachability.make_local_synthesis_skip_hook)
+# so it covers every synthesis test family from one place. Not duplicated here.
+
+
 @pytest.fixture(autouse=True)
 def _stub_real_models(request, monkeypatch):
     """Force the BERT-ensemble + NLI model loaders to return ``None``.
