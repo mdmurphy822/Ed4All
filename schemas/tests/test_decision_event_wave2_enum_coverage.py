@@ -44,6 +44,21 @@ WAVE2_DECISION_TYPES: tuple[tuple[str, str], ...] = (
 )
 
 
+# The orchestrator task/workflow lifecycle decision_types emitted by
+# ``MCP.core.executor.TaskExecutor`` on every dispatch. They were always
+# written to JSONL but were never enumerated, so a run with
+# ``DECISION_VALIDATION_STRICT=true`` fails closed on the very first phase
+# (the executor's own ``task_execution`` capture raises ValueError, which
+# marks the task — and thus the phase — failed). Regression guard for that
+# class of failure.
+ORCHESTRATOR_LIFECYCLE_DECISION_TYPES: tuple[tuple[str, str], ...] = (
+    ("task_execution", "TaskExecutor.execute_task (executor.py)"),
+    ("task_completion", "TaskExecutor.execute_task (executor.py)"),
+    ("task_retry", "TaskExecutor._execute_with_retries (executor.py)"),
+    ("workflow_execution", "TaskExecutor.run_workflow (executor.py)"),
+)
+
+
 @pytest.fixture(scope="module")
 def decision_type_enum() -> list[str]:
     """Load the decision_type enum from the canonical decision-event schema."""
@@ -67,6 +82,25 @@ def test_wave2_decision_type_present(
         "schemas/events/decision_event.schema.json::decision_type.enum. "
         f"Fired by {emitter}. Add the string (alphabetically sorted) per "
         "Worker W1.E in plans/gpt-feedback-2-wave1-schemas-2026-05.md."
+    )
+
+
+@pytest.mark.parametrize("decision_type,emitter", ORCHESTRATOR_LIFECYCLE_DECISION_TYPES)
+def test_orchestrator_lifecycle_decision_type_present(
+    decision_type: str, emitter: str, decision_type_enum: list[str]
+) -> None:
+    """Every orchestrator task/workflow lifecycle decision_type MUST be a
+    member of the enum.
+
+    These are emitted by the executor on every dispatch regardless of
+    workflow. Missing membership means a ``DECISION_VALIDATION_STRICT=true``
+    run fails closed at the first phase when ``%(emitter)s`` fires.
+    """
+    assert decision_type in decision_type_enum, (
+        f"Orchestrator lifecycle decision_type {decision_type!r} is missing "
+        "from schemas/events/decision_event.schema.json::decision_type.enum. "
+        f"Fired by {emitter}. A DECISION_VALIDATION_STRICT=true run will fail "
+        "closed on the executor's own task-lifecycle capture."
     )
 
 
