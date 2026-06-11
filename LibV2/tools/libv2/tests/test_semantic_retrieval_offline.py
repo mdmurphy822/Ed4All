@@ -33,6 +33,10 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip(
+    "numpy", reason="[embedding] extras absent — semantic-retrieval tests need numpy"
+)
+
 from lib.embedding.providers import build_embedding_client
 from lib.testing.no_network import NetworkBlockedError, no_network
 

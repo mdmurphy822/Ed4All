@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import os
 
-import numpy as np
+np = __import__("pytest").importorskip(
+    "numpy", reason="[embedding] extras absent — vector-index tests need numpy"
+)
 import pytest
 
 from lib.embedding.providers import (

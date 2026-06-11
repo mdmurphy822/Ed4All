@@ -22,6 +22,10 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip(
+    "numpy", reason="[embedding] extras absent — semantic-retrieval tests need numpy"
+)
+
 from lib.libv2_storage import (
     CHUNKSET_KIND_TO_DIRNAME,
     resolve_chunks_path_for_query,
