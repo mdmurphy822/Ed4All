@@ -14,6 +14,7 @@ import pytest
 
 from lib.retrieval._prompts import (
     ANSWER_PROMPT_VERSION,
+    ANSWER_SYSTEM_PROMPT,
     MAX_CONTEXT_CHARS,
     PASSAGE_CHAR_CAP,
     render_answer_user_prompt,
@@ -103,7 +104,25 @@ def _passages(n=2):
 # ===========================================================================
 
 def test_prompt_version_pinned():
-    assert ANSWER_PROMPT_VERSION == "ws3.v1"
+    assert ANSWER_PROMPT_VERSION == "ws3.v2"
+
+
+def test_system_prompt_requires_multipart_completeness():
+    # ws3.v2: a multi-part question must have every supported part addressed,
+    # and any uncovered part flagged explicitly (not silently omitted) — while
+    # the wholly-uncovered case still routes to not_in_course.
+    assert "multiple parts" in ANSWER_SYSTEM_PROMPT
+    assert "does not cover" in ANSWER_SYSTEM_PROMPT
+    assert "never invent material" in ANSWER_SYSTEM_PROMPT
+    assert "If NO part of the question is covered" in ANSWER_SYSTEM_PROMPT
+    assert '"not_in_course" to true' in ANSWER_SYSTEM_PROMPT
+    # The instruction must reach the assembled system message verbatim.
+    client = FakeAnswerClient([_envelope("X is a thing.", ["chunk_00000"])])
+    compose_answer("What is X?", _passages(2), client=client)
+    system_msg = client.calls[0]["messages"][0]
+    assert system_msg["role"] == "system"
+    assert "multiple parts" in system_msg["content"]
+    assert "does not cover" in system_msg["content"]
 
 
 def test_user_prompt_numbers_blocks_and_appends_question():
@@ -179,7 +198,7 @@ def test_compose_well_formed_envelope_roundtrip():
     assert result.cited_chunk_ids == ["chunk_00000"]
     assert result.not_in_course is False
     assert result.attempts == 1
-    assert result.prompt_version == "ws3.v1"
+    assert result.prompt_version == "ws3.v2"
     assert result.model_id == "qwen2.5:14b-instruct-q4_K_M"
 
 
@@ -578,14 +597,25 @@ def test_tripwire_noops_when_usage_absent():
     assert result.answer_text == "ans"
 
 
-def test_tripwire_noops_on_small_prompt_below_floor(monkeypatch):
-    # A tiny prompt (estimate < floor) can't be truncated by a 4096 window;
-    # even a zero-ish reported count must not trip the wire.
-    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "4096")
-    passages = _passages(1)  # short
+def test_tripwire_noops_on_small_prompt_below_floor():
+    # A tiny estimate (< the absolute floor) can't be truncated by a 4096
+    # window, so even a zero-ish reported count must NOT trip the wire. The
+    # ws3.v2 system prompt alone now clears the floor, so the floor branch is
+    # exercised by calling the guard directly with a sub-floor estimate.
+    from lib.retrieval.answer_composer import (
+        _TRUNCATION_MIN_ESTIMATE_TOKENS,
+        _check_prompt_not_truncated,
+    )
+
     client = _UsageFakeClient(
         [_envelope("ans", ["chunk_00000"])],
         reported_prompt_tokens=5,
     )
-    result = compose_answer("q", passages, client=client)
-    assert result.answer_text == "ans"
+    client.last_usage = {"prompt_tokens": 5}
+    # estimate below the floor -> guard no-ops (returns, no raise).
+    _check_prompt_not_truncated(
+        client,
+        _TRUNCATION_MIN_ESTIMATE_TOKENS - 1,
+        model_id="qwen2.5:7b-instruct-q4_K_M",
+        num_ctx=4096,
+    )
