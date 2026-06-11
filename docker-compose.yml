@@ -46,6 +46,11 @@ services:
       HF_HOME: /data/hf-cache
       # Answer + embedding backends point at the loopback Ollama service.
       ED4ALL_ANSWER_PROVIDER: local
+      # 7B Q4 (~4.7GB) fits common 8GB consumer GPUs fully resident — and is
+      # tolerable on CPU-only boxes. The code-registry default (qwen2.5:14b)
+      # needs ~10GB and splits CPU/GPU on 8GB cards; opt up by editing this
+      # line and pulling the model into the sidecar.
+      ED4ALL_ANSWER_MODEL: qwen2.5:7b-instruct-q4_K_M
       ED4ALL_EMBEDDING_PROVIDER: st
     volumes:
       # Mutable state/training/upload data lives on a named volume mounted at

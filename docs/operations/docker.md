@@ -14,7 +14,8 @@ plane on `http://localhost:8077` on a clean machine. CPU-only by default.
 docker compose up -d
 
 # 2. Pull the answer model into Ollama (one-shot; persists on the named volume).
-docker compose exec ollama ollama pull qwen2.5:14b-instruct-q4_K_M
+#    7B Q4 is the compose default (fits an 8GB GPU fully; OK-ish on CPU).
+docker compose exec ollama ollama pull qwen2.5:7b-instruct-q4_K_M
 
 # 3. Open Studio.
 open http://localhost:8077        # or just browse to it
@@ -119,7 +120,7 @@ CPU inference works without any of this (just slower).
   probe hits `GET /api/health`; a `503`/connection-refused means uvicorn hasn't
   bound yet (give it the 40s `start_period`) or crashed on import.
 - **Model pull is slow / interrupted** — `docker compose exec ollama ollama pull
-  qwen2.5:14b-instruct-q4_K_M` is resumable; re-run it. Pulled weights persist
+  qwen2.5:7b-instruct-q4_K_M` is resumable; re-run it. Pulled weights persist
   on `ollama-models`.
 - **Embedding model re-downloads every restart** — confirm `HF_HOME` resolves
   under `/data` and the `ed4all-data` volume is mounted (not an anonymous
