@@ -57,9 +57,16 @@ def print_success(msg: str) -> None:
         print(f"SUCCESS: {msg}")
 
 
-def print_error(msg: str) -> None:
+def print_error(msg: str, *, markup: bool = True) -> None:
     if RICH_AVAILABLE:
-        console.print(f"[red]{msg}[/red]")
+        # ``markup=False`` preserves literal square brackets (e.g. the
+        # "[embedding]" extra name) that rich would otherwise interpret as
+        # console markup and swallow. The colour is applied via style= so the
+        # red rendering survives even with markup disabled.
+        if markup:
+            console.print(f"[red]{msg}[/red]")
+        else:
+            console.print(msg, style="red", markup=False)
     else:
         print(f"ERROR: {msg}", file=sys.stderr)
 
@@ -69,6 +76,30 @@ def print_warning(msg: str) -> None:
         console.print(f"[yellow]{msg}[/yellow]")
     else:
         print(f"WARNING: {msg}")
+
+
+def _fail_semantic_deps_missing(exc: ImportError) -> None:
+    """Translate a missing-``[embedding]``-extra ImportError on the semantic
+    code path into the SAME typed fail-closed guidance an operator gets for a
+    missing index, then exit 1.
+
+    The semantic/hybrid retrieval modules (``vector_index`` /
+    ``semantic_retriever``) ``import numpy`` (and sentence-transformers) at
+    module top; those live ONLY in the ``[embedding]`` pyproject extra. On a
+    deps-slim box the bare ``ModuleNotFoundError`` would otherwise crash with an
+    opaque stack trace instead of the actionable, fail-closed message the
+    operator deserves. NEVER a silent BM25 fallback.
+    """
+    print_error(f"{type(exc).__name__}: {exc}", markup=False)
+    print_error(
+        "The semantic / hybrid-rrf retrieval engines require the [embedding] "
+        "extra (numpy + sentence-transformers). Install it "
+        "(pip install -e '.[embedding]') and run `libv2 vector-index build "
+        "--course <slug>` before requesting a semantic engine. "
+        "(Lexical / BM25 retrieval needs no extra.)",
+        markup=False,
+    )
+    sys.exit(1)
 
 
 @click.group()
@@ -466,6 +497,9 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
             lo_filter=list(lo_filter) if lo_filter else None,
             engine=engine,
         )
+    except ImportError as exc:
+        # Missing [embedding] extra on the semantic path → typed guidance.
+        _fail_semantic_deps_missing(exc)
     except _SEMANTIC_ERRORS as exc:
         # Fail closed with the operator-facing guidance the typed error
         # carries; NEVER silently fall back to BM25 output.
@@ -597,6 +631,8 @@ def multi_retrieve(ctx, query: str, domain: Optional[str], division: Optional[st
             course_slug=course,
             engine=engine,
         )
+    except ImportError as exc:
+        _fail_semantic_deps_missing(exc)
     except _SEMANTIC_ERRORS as exc:
         print_error(f"{type(exc).__name__}: {exc}")
         sys.exit(1)
@@ -2338,6 +2374,8 @@ def retrieval_benchmark(
         # error's own guidance (never a degraded benchmark).
         print_error(f"{type(exc).__name__}: {exc}")
         sys.exit(1)
+    except ImportError as exc:
+        _fail_semantic_deps_missing(exc)
     except _SEMANTIC_ERRORS as exc:
         # Unknown engine, drifted gold set, missing/stale index, or an
         # unavailable embedding backend — fail closed, no BM25-only fallback.
@@ -2878,7 +2916,13 @@ def answer_grounded(ctx, query: str, course: str, engine: str, limit: int,
     # semantic engine; 'auto' makes the choice explicit and visible.
     resolved_engine = engine
     if engine == "auto":
-        from .vector_index import MANIFEST_FILENAME, VECTOR_INDEX_DIRNAME
+        # Source the two string constants from the numpy-free lower layer so
+        # probing for index presence (the lexical/auto path) does not import
+        # the numpy-laden vector_index module on a deps-slim operator box.
+        from lib.libv2_storage import (
+            VECTOR_INDEX_DIRNAME,
+            VECTOR_INDEX_MANIFEST_FILENAME as MANIFEST_FILENAME,
+        )
 
         has_index = (course_dir / VECTOR_INDEX_DIRNAME / MANIFEST_FILENAME).exists()
         resolved_engine = "semantic" if has_index else "lexical"
@@ -2906,6 +2950,8 @@ def answer_grounded(ctx, query: str, course: str, engine: str, limit: int,
     except AnswerComposeError as exc:
         print_error(f"{type(exc).__name__}: {exc}")
         sys.exit(1)
+    except ImportError as exc:
+        _fail_semantic_deps_missing(exc)
     except _SEMANTIC_ERRORS as exc:
         # Missing/stale vector index or engine misuse — fail closed with the
         # typed guidance (build the index), NEVER a silent BM25 result.
@@ -3155,6 +3201,210 @@ def gold_repin(ctx, course: str, kind: str, chunks_path: Optional[str],
         print_warning("  dry-run: no files written.")
     elif written:
         print_success(f"  wrote re-pinned gold set: {written}")
+    sys.exit(0)
+
+
+# ==========================================================================
+# Retrieval gold/probe candidate authoring (retrieval-answer-eval-set P2).
+# `gold-candidates` samples + drafts (local provider only) + pre-screens;
+# `probe-candidates` builds the three probe categories + per-engine dry-runs;
+# `gold-promote` merges operator-accepted candidates into gold_set.json. All
+# drafting routes through the license-clean LOCAL provider (loopback-enforced
+# via answer_backend); NEVER an Anthropic surface.
+# ==========================================================================
+
+
+@main.command("gold-candidates")
+@click.option("--course", "-c", required=True, help="Course slug to draft gold candidates for")
+@click.option("--n", type=int, default=None,
+              help="Number of candidates to draft (default 100 = 2x the 50-question target).")
+@click.option("--seed", type=int, default=0, help="Deterministic sampler seed.")
+@click.option("--no-write", is_flag=True, help="Build the doc without writing the artifact.")
+@click.pass_context
+def gold_candidates(ctx, course: str, n: Optional[int], seed: int, no_write: bool):
+    """Draft gold-question candidates via the license-clean local provider.
+
+    Stratified-samples the course's pinned union chunkset, drafts one candidate
+    per slot (question + 2-4 key points + a verbatim >=40-char quote) via the
+    LOCAL provider only, pre-screens deterministically (quote containment +
+    ambiguity + length + near-dup -- rejections RECORDED, not dropped), and
+    writes retrieval_eval/gold_candidates.json. Operator edits that file
+    (status:draft -> reviewed) then runs `gold-promote`.
+
+    \b
+    Example:
+        libv2 gold-candidates --course demo-course-1 --n 100
+    """
+    from lib.decision_capture import DecisionCapture
+    from lib.retrieval.answer_backend import (
+        AnswerBackendUnavailable,
+        AnswerProviderNotLocal,
+        build_answer_client,
+    )
+    from lib.retrieval.gold_authoring import generate_gold_candidates
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    capture = DecisionCapture(course_code=course, phase="libv2-answer", tool="libv2")
+    try:
+        client = build_answer_client(capture=capture)
+    except AnswerProviderNotLocal as exc:
+        print_error(f"drafting requires a loopback-local provider: {exc}")
+        sys.exit(1)
+    except AnswerBackendUnavailable as exc:
+        print_error(f"local provider unavailable: {exc}")
+        sys.exit(1)
+
+    try:
+        doc, out_path = generate_gold_candidates(
+            course_dir, client=client, n=n, seed=seed,
+            capture=capture, write=not no_write,
+        )
+    except FileNotFoundError as exc:
+        print_error(str(exc))
+        sys.exit(1)
+
+    run = doc.get("authoring_run", {})
+    print(f"gold-candidates {course}: drafted {run.get('n_drafted')} "
+          f"(requested {run.get('n_requested')}), "
+          f"pre-screen passed {run.get('n_prescreen_passed')}.")
+    if out_path:
+        print_success(f"  wrote {out_path}")
+    else:
+        print_warning("  no-write: artifact not written.")
+    sys.exit(0)
+
+
+@main.command("probe-candidates")
+@click.option("--course", "-c", required=True, help="Course slug to draft refusal-probe candidates for")
+@click.option("--limit", type=int, default=8, help="top-k limit for the per-engine dry-runs.")
+@click.option("--no-write", is_flag=True, help="Build the doc without writing the artifact.")
+@click.pass_context
+def probe_candidates(ctx, course: str, limit: int, no_write: bool):
+    """Build refusal-probe candidates + per-engine read-only dry-runs.
+
+    off_topic from a fixed cross-domain bank (no LLM); adjacent_domain drafted
+    by the LOCAL provider over the course concept_tags vocabulary;
+    out_of_scope_detail perturbed from gold questions. Every candidate gets a
+    lexical/semantic/hybrid-rrf dry-run; top_passage_answers is left null for
+    operator review. Writes retrieval_eval/refusal_probe_candidates.json.
+
+    \b
+    Example:
+        libv2 probe-candidates --course demo-course-1
+    """
+    from lib.decision_capture import DecisionCapture
+    from lib.retrieval.answer_backend import (
+        AnswerBackendUnavailable,
+        AnswerProviderNotLocal,
+        build_answer_client,
+    )
+    from lib.retrieval.probe_authoring import generate_probe_candidates
+    from LibV2.tools.libv2.retriever import retrieve_chunks
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    capture = DecisionCapture(course_code=course, phase="libv2-answer", tool="libv2")
+    try:
+        client = build_answer_client(capture=capture)
+    except AnswerProviderNotLocal as exc:
+        print_error(f"adjacent-domain drafting requires a loopback-local provider: {exc}")
+        sys.exit(1)
+    except AnswerBackendUnavailable as exc:
+        print_error(f"local provider unavailable: {exc}")
+        sys.exit(1)
+
+    doc, out_path = generate_probe_candidates(
+        course_dir, client=client, retrieve_fn=retrieve_chunks,
+        libv2_root=repo_root, limit=limit, capture=capture, write=not no_write,
+    )
+    run = doc.get("authoring_run", {})
+    print(f"probe-candidates {course}: {run.get('n_probes')} probe(s) "
+          f"by_category={run.get('by_category')}.")
+    if out_path:
+        print_success(f"  wrote {out_path}")
+        print_warning("  operator: confirm top_passage_answers per dry-run before "
+                      "promoting into refusal_probes.json.")
+    sys.exit(0)
+
+
+@main.command("gold-promote")
+@click.option("--course", "-c", required=True, help="Course slug whose accepted candidates to promote")
+@click.option("--freeze", is_flag=True,
+              help="Set frozen:true + pin the live chunkset sha after promotion.")
+@click.option("--dry-run", is_flag=True, help="Build the promote report without writing.")
+@click.pass_context
+def gold_promote(ctx, course: str, freeze: bool, dry_run: bool):
+    """Merge operator-accepted gold candidates into gold_set.json.
+
+    ACCEPT CONVENTION: a candidate is promoted when its authoring.status is
+    "reviewed" AND reviewed_by is a non-PENDING handle AND it passes the
+    deterministic pre-screen. Renumbers gq-<slug>-NNNN continuing from the
+    existing set, backfills provenance, re-validates fail-closed (refusing the
+    whole promotion on any critical issue), and re-runs the coverage matrix so
+    gaps are visible before --freeze.
+
+    \b
+    Example:
+        libv2 gold-promote --course demo-course-1 --freeze
+    """
+    from lib.retrieval.gold_authoring import GoldPromoteError, promote_candidates
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    try:
+        report, written = promote_candidates(
+            course_dir, freeze=freeze, dry_run=dry_run
+        )
+    except GoldPromoteError as exc:
+        print_error(f"{exc.code}: {exc.detail}")
+        sys.exit(1)
+
+    print(f"gold-promote {course}: promoted {len(report.promoted_ids)} "
+          f"candidate(s); skipped {len(report.skipped)}, refused {len(report.refused)}.")
+    if report.promoted_ids:
+        print(f"  new ids: {', '.join(report.promoted_ids[:10])}"
+              + (" ..." if len(report.promoted_ids) > 10 else ""))
+    for r in report.refused:
+        print_warning(f"  refused {r.get('candidate')}: {r.get('reason')} "
+                      f"{r.get('details', '')}")
+    if dry_run:
+        print_warning("  dry-run: gold set not written.")
+    elif written:
+        print_success(f"  wrote {written}")
+        try:
+            from lib.retrieval.gold_coverage import write_coverage_report
+            from lib.retrieval.gold_set import load_gold_set
+
+            gold, _ = load_gold_set(course_dir, verify=False)
+            kind = (gold.get("chunkset") or {}).get("kind")
+            cov, cov_path = write_coverage_report(
+                course_dir, gold, is_union=(kind == "corpus")
+            )
+            print("\nCoverage matrix (post-promote):")
+            print(f"  by_type:       {cov.by_type}")
+            print(f"  by_week:       {cov.by_week}")
+            print(f"  by_population: {cov.by_population}")
+            print(f"  by_difficulty: {cov.by_difficulty}")
+            for w in cov.warnings:
+                print_warning(f"  [{w.code}] {w.message}")
+            print_success(f"  wrote {cov_path}")
+        except Exception as exc:  # noqa: BLE001 -- coverage is advisory
+            print_warning(f"  coverage report skipped: {exc}")
+    if report.frozen:
+        print_success("  gold set FROZEN.")
     sys.exit(0)
 
 
