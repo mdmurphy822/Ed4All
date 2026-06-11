@@ -18,6 +18,7 @@ import pytest
 from lib.retrieval.answer_backend import AnswerBackendUnavailable
 from lib.retrieval.grounded_answer import (
     STATUS_ANSWERED,
+    STATUS_ANSWERED_WITH_WARNINGS,
     STATUS_BLOCKED_CITATION_GATE,
     STATUS_BLOCKED_INVALID_CITATION,
     STATUS_REFUSED_LOW_CONFIDENCE,
@@ -471,9 +472,12 @@ def test_prune_drops_claimless_cited_citation(mini_libv2: Path):
     assert ev[0]["decision"] == "citation_prune:pruned"
 
 
-def test_prune_all_claimless_is_noop(mini_libv2: Path):
-    """When EVERY cited citation is claim-less, prune is a no-op (verdict + all
-    citations preserved) with the skipped-all warning."""
+def test_prune_all_claimless_empties_sources_with_advisory(mini_libv2: Path):
+    """USER POLICY (2026-06-11): "no sources rather than a misleading one."
+    When EVERY cited citation is claim-less and no uncited supporter rescues
+    the answer, ALL citations are pruned; the answer ships with zero sources
+    and flips to answered_with_warnings (the unverified-support advisory).
+    The answered-family verdict never becomes a refusal/block."""
     spy = SpyCapture()
     # An answer with no lexical overlap to either cited chunk → both claim-less.
     client = FakeAnswerClient([
@@ -485,12 +489,29 @@ def test_prune_all_claimless_is_noop(mini_libv2: Path):
         client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
         prune_mode="on",
     )
+    assert result.status == STATUS_ANSWERED_WITH_WARNINGS
+    assert result.citations == []
+    assert any("pruned_all_claimless_citations" in w for w in result.warnings)
+    assert _prune_events(spy)[0]["decision"] == "citation_prune:pruned_all_claimless"
+
+
+def test_prune_all_claimless_shadow_mode_mutates_nothing(mini_libv2: Path):
+    """Shadow mode computes + captures but never mutates: the all-claimless
+    case keeps every citation and the answered status."""
+    spy = SpyCapture()
+    client = FakeAnswerClient([
+        _envelope("Photosynthesis stores chemical energy in glucose molecules.",
+                  ["mini_alpha_chunk_001", "mini_alpha_chunk_002"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "vector store faiss similarity search",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        prune_mode="shadow",
+    )
     assert result.status == STATUS_ANSWERED
-    kept_ids = {c.chunk_id for c in result.citations}
-    assert kept_ids == {"mini_alpha_chunk_001", "mini_alpha_chunk_002"}
-    assert any("claimless_prune_skipped_all_below_threshold" in w
-               for w in result.warnings)
-    assert _prune_events(spy)[0]["decision"] == "citation_prune:skipped_all_claimless"
+    assert {c.chunk_id for c in result.citations} == {
+        "mini_alpha_chunk_001", "mini_alpha_chunk_002"
+    }
 
 
 def test_add_credits_uncited_supporter(mini_libv2: Path):
@@ -885,6 +906,7 @@ def test_semantic_engine_chunkset_kind_from_index_manifest(
     -> source_page_missing -> blocked_citation_gate, despite the answer +
     citation being correct against the imscc-built index.
     """
+    pytest.importorskip("numpy")  # builds a real vector index (needs [embedding])
     monkeypatch.setenv("ED4ALL_EMBEDDING_ALLOW_FAKE", "true")
     monkeypatch.setenv("ED4ALL_EMBEDDING_PROVIDER", "fake")
     imscc_chunk_id = _build_imscc_index_and_chunks(mini_libv2)
@@ -910,6 +932,7 @@ def test_semantic_engine_directory_heuristic_would_misroute(
     """Pin the misalignment: the directory heuristic returns 'dart' (so an
     explicit chunkset_kind='dart' BLOCKS), proving the index-manifest read in
     the previous test is what unblocks the correct answer."""
+    pytest.importorskip("numpy")  # builds a real vector index (needs [embedding])
     from lib.retrieval.grounded_answer import _infer_chunkset_kind
 
     monkeypatch.setenv("ED4ALL_EMBEDDING_ALLOW_FAKE", "true")

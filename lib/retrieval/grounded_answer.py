@@ -111,7 +111,7 @@ DECISION_PHASE = "libv2-answer"
 # Citation-prune/add outcomes (the capture `decision` suffix, plan §2.5).
 _PRUNE_OUTCOME_PRUNED = "pruned"
 _PRUNE_OUTCOME_NOOP = "noop"
-_PRUNE_OUTCOME_SKIPPED_ALL = "skipped_all_claimless"
+_PRUNE_OUTCOME_PRUNED_ALL = "pruned_all_claimless"
 _PRUNE_OUTCOME_NO_CLAIMS = "no_scorable_claims"
 _PRUNE_OUTCOME_DISABLED = "disabled"
 
@@ -956,16 +956,22 @@ def _apply_citation_attribution(
     prunable = [cid for cid in claimless if cid not in inline_vetoed]
 
     n_cited = len(cited_ids)
-    # All cited citations would prune → no-op (plan §2.3): the gate already
-    # verified anchorability; lexical attribution has a known paraphrase false-
-    # negative arm; converting answered→blocked on a heuristic is forbidden.
-    would_prune_all = prunable and len(prunable) >= n_cited
+    # All cited citations claim-less: USER POLICY (2026-06-11) — "no sources
+    # rather than a misleading one". The original plan no-op'd here to avoid
+    # emitting zero citations; the operator chose display honesty instead:
+    # claim-less citations are pruned even when that empties the cited set
+    # (additions below may still repopulate from uncited supporters). The
+    # caller flips answered → answered_with_warnings when the final set is
+    # empty, so the learner sees the unverified-support advisory, never a
+    # citation that backs nothing. Verdict (answered-family) still never
+    # changes to a refusal/block.
+    would_prune_all = bool(prunable) and len(prunable) >= n_cited
 
     # --- Additions (run over UNCITED gate-eligible passages) ---------------- #
     by_id = {p.chunk_id: p for p in gate_eligible_passages}
     # The "kept" set the additions must out-support: cited minus prunable
     # (unless all-prune no-op, in which case all cited stay).
-    pruned_ids = [] if would_prune_all else list(prunable)
+    pruned_ids = list(prunable)
     kept_after_prune = [c for c in enriched if c.chunk_id not in pruned_ids]
     added_citations, added_ids = _select_additions(
         report,
@@ -979,9 +985,9 @@ def _apply_citation_attribution(
     )
 
     # --- Outcome + warnings ------------------------------------------------- #
-    if would_prune_all:
-        warnings.append("claimless_prune_skipped_all_below_threshold")
-        outcome = _PRUNE_OUTCOME_SKIPPED_ALL
+    if would_prune_all and not (kept_after_prune or added_ids):
+        warnings.append("pruned_all_claimless_citations")
+        outcome = _PRUNE_OUTCOME_PRUNED_ALL
     elif pruned_ids or added_ids:
         outcome = _PRUNE_OUTCOME_PRUNED
     else:
@@ -1287,6 +1293,12 @@ def answer_course_question(
         warnings.extend(gw)
         if "contradicted_claim" in gw:
             status = STATUS_ANSWERED_WITH_WARNINGS
+
+    # USER POLICY: an answered response whose every citation was pruned as
+    # claim-less ships with NO sources + the unverified-support advisory
+    # (answered_with_warnings) rather than a misleading citation.
+    if not citations and "pruned_all_claimless_citations" in warnings:
+        status = STATUS_ANSWERED_WITH_WARNINGS
 
     return _answered(
         query=query,
