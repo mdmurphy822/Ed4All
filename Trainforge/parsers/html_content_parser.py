@@ -896,10 +896,36 @@ class HTMLContentParser:
     _OBJECTIVE_ID_ATTR_RE = re.compile(
         r'data-cf-objective-id="([^"]*)"', re.IGNORECASE
     )
+    # ``<script>`` / ``<style>`` subtree matcher. Mirrors the canonical
+    # stdlib fallback in ``lib/retrieval/citation_anchor.py`` (``re.S | re.I``)
+    # so the heading regex below can't see ``<hN>``-shaped fragments inside a
+    # JavaScript string literal (e.g. a self-check grading script that builds
+    # ``resultEl.innerHTML = '<h3>Your Results</h3>' + feedback``). Such phantom
+    # headings would otherwise create fake section boundaries whose body slice
+    # is orphaned JS — the slice begins mid-script (no opening ``<script>`` tag),
+    # so ``HTMLTextExtractor`` never enters script-skip mode and emits the JS as
+    # section ``content``. That JS then can't be located in the script-stripped
+    # ``container_text`` at chunk time, so the chunk's ``char_span`` is
+    # fabricated (citation anchoring classifies it ``SPAN_FABRICATED`` and the
+    # fail-closed citation gate blocks any answer citing it).
+    _SCRIPT_STYLE_RE = re.compile(
+        r'<(script|style)\b[^>]*>.*?</\1\s*>', re.DOTALL | re.IGNORECASE
+    )
 
     def _extract_sections(self, html: str) -> List[ContentSection]:
         """Extract content sections by heading, including data-cf-* attributes."""
         sections = []
+
+        # Strip ``<script>`` / ``<style>`` subtrees BEFORE the heading regex so
+        # ``<hN>``-shaped fragments inside inline JS/CSS string literals can't be
+        # mistaken for real section headings (see ``_SCRIPT_STYLE_RE`` above).
+        # This method never reads JSON-LD (``_extract_json_ld`` consumes the
+        # original ``html_content`` directly), so dropping the
+        # ``application/ld+json`` script here is harmless; the data-cf-* /
+        # source-id / template-type scans below only read real DOM attributes,
+        # which never live inside a script body. Pages without inline script are
+        # byte-identical (the regex no-ops).
+        html = self._SCRIPT_STYLE_RE.sub(" ", html)
 
         # Find all headings (capture the full opening tag to read attributes)
         heading_pattern = r'<h([1-6])([^>]*)>([^<]+)</h\1>'
