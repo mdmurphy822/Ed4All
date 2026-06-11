@@ -157,7 +157,10 @@ export function createAskDrawer({ slug, loadCitation }) {
       'aria-label': 'Question and answer history',
     });
     historyWrap.appendChild(historyList);
-    history.forEach((entry, idx) => {
+    // Newest first: storage stays append-order (polling holds entry object
+    // references), only the render order is inverted so a fresh answer
+    // appears at the top of the drawer instead of below the scroll.
+    [...history].reverse().forEach((entry) => {
       const li = el('li', { class: 'ask-entry' });
       li.appendChild(el('p', { class: 'ask-q' }, [
         el('span', { class: 'ask-q-label', text: 'Q: ' }),
@@ -171,14 +174,14 @@ export function createAskDrawer({ slug, loadCitation }) {
         ansWrap.innerHTML = entry.html || '';
       } else {
         // pending/running — show busy chip + elapsed timer.
-        ansWrap.appendChild(busyChip(entry, idx));
+        ansWrap.appendChild(busyChip(entry));
       }
       li.appendChild(ansWrap);
       historyList.appendChild(li);
     });
   }
 
-  function busyChip(entry, idx) {
+  function busyChip(entry) {
     const chip = el('span', { class: 'ask-busy', 'aria-hidden': 'false' });
     const queued = typeof entry.queue_position === 'number' && entry.queue_position > 0;
     const label = queued
