@@ -39,11 +39,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from dataclasses import replace as _dc_replace
+
 from lib.retrieval._text import normalize_ws
 from lib.retrieval.answer_composer import (
     ComposedAnswer,
     RetrievedPassage,
     compose_answer,
+)
+from lib.retrieval.citation_attribution import (
+    ADD_MIN_SHINGLE,
+    ATTRIBUTION_SHINGLE_SIZE,
+    MAX_ADDED_CITATIONS,
+    MODE_OFF,
+    MODE_ON,
+    MODE_SHADOW,
+    AttributionReport,
+    attribute_citations,
+    resolve_min_overlap,
+    resolve_prune_mode,
 )
 from lib.retrieval.citation_anchor import (
     AnchorStatus,
@@ -65,6 +79,7 @@ __all__ = [
     "GroundedAnswer",
     "answer_course_question",
     "page_label_for_source",
+    "DECISION_TYPE_CITATION_PRUNE",
     # Status constants (WS4 + CLI map these to display copy / exit codes).
     "STATUS_ANSWERED",
     "STATUS_ANSWERED_WITH_WARNINGS",
@@ -90,7 +105,15 @@ _ANSWERED_STATUSES = frozenset({STATUS_ANSWERED, STATUS_ANSWERED_WITH_WARNINGS})
 
 DECISION_TYPE_REFUSAL = "grounded_answer_refusal"
 DECISION_TYPE_CITATION_GATE = "grounded_answer_citation_gate"
+DECISION_TYPE_CITATION_PRUNE = "grounded_answer_citation_prune"
 DECISION_PHASE = "libv2-answer"
+
+# Citation-prune/add outcomes (the capture `decision` suffix, plan §2.5).
+_PRUNE_OUTCOME_PRUNED = "pruned"
+_PRUNE_OUTCOME_NOOP = "noop"
+_PRUNE_OUTCOME_SKIPPED_ALL = "skipped_all_claimless"
+_PRUNE_OUTCOME_NO_CLAIMS = "no_scorable_claims"
+_PRUNE_OUTCOME_DISABLED = "disabled"
 
 
 # --------------------------------------------------------------------------- #
@@ -130,6 +153,15 @@ class Citation:
     # ``module_id`` is a filename stem ("content_01") that repeats across
     # weeks, so renderers prefer this for display when present.
     module_title: Optional[str] = None
+    # Claim-attribution surfacing (additive, optional). ``supporting_excerpt``
+    # is the chunk sentence with maximal support for this citation's best-
+    # attributed answer claim (``normalize_ws``'d, never fabricated — ``None``
+    # when attribution found no supporting sentence or ran disabled).
+    # ``supported_claim_count`` is how many answer claims this citation supports.
+    # Both populated for KEPT and ADDED citations; the renderer prefers
+    # ``supporting_excerpt`` over the legacy whole-answer ``text_quote``.
+    supporting_excerpt: Optional[str] = None
+    supported_claim_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -145,6 +177,8 @@ class Citation:
             "source_block": self.source_block,
             "pdf_pages": list(self.pdf_pages),
             "module_title": self.module_title,
+            "supporting_excerpt": self.supporting_excerpt,
+            "supported_claim_count": self.supported_claim_count,
         }
 
 
@@ -649,6 +683,64 @@ def _emit_citation_gate(
     )
 
 
+def _emit_citation_prune(
+    capture: Optional[Any],
+    *,
+    course_slug: str,
+    query_sha: str,
+    engine: str,
+    mode: str,
+    outcome: str,
+    report: AttributionReport,
+    kept_ids: Sequence[str],
+    pruned_ids: Sequence[str],
+    added_ids: Sequence[str],
+    inline_vetoed_ids: Sequence[str],
+) -> None:
+    """One capture covering the whole prune+add decision (plan §2.5).
+
+    Rationale interpolates dynamic, replayable signals: query sha, course,
+    engine, claim count, per-citation best-support ``[chunk_id@shingle/coverage
+    *N]`` over the gate-eligible set, the thresholds + mode, and the kept /
+    pruned / added / inline-vetoed id sets.
+    """
+    if capture is None:
+        return
+
+    def _support_str(cid: str) -> str:
+        s = report.supports.get(cid)
+        if s is None:
+            return f"{cid}@?/?"
+        flag = "cited" if s.cited else "uncited"
+        return (
+            f"{cid}@{s.best_shingle}/{s.best_coverage}"
+            f"*{s.supported_claim_count}({flag})"
+        )
+
+    per_support = ", ".join(_support_str(cid) for cid in report.supports)
+    kept_str = ", ".join(kept_ids) if kept_ids else "none"
+    pruned_str = ", ".join(pruned_ids) if pruned_ids else "none"
+    added_str = ", ".join(added_ids) if added_ids else "none"
+    veto_str = ", ".join(inline_vetoed_ids) if inline_vetoed_ids else "none"
+    rationale = (
+        f"citation prune+add {outcome} for query {query_sha} "
+        f"(course={course_slug or '?'}, engine={engine}, mode={mode}); "
+        f"n_claims={report.n_claims} "
+        f"min_overlap={report.min_overlap} shingle_size={ATTRIBUTION_SHINGLE_SIZE} "
+        f"add_min_shingle={ADD_MIN_SHINGLE}; "
+        f"per_citation=[{per_support}] "
+        f"kept=[{kept_str}] pruned=[{pruned_str}] added=[{added_str}] "
+        f"inline_vetoed=[{veto_str}]"
+    )
+    _safe_log(
+        capture,
+        decision_type=DECISION_TYPE_CITATION_PRUNE,
+        decision=f"citation_prune:{outcome}",
+        rationale=rationale,
+        context=f"mode={mode} pruned={len(pruned_ids)} added={len(added_ids)}",
+    )
+
+
 def _safe_log(capture: Any, **kwargs: Any) -> None:
     try:
         capture.log_decision(**kwargs)
@@ -658,6 +750,263 @@ def _safe_log(capture: Any, **kwargs: Any) -> None:
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# --------------------------------------------------------------------------- #
+# Attribution-driven prune + add (post-citation-gate; never changes verdict)
+# --------------------------------------------------------------------------- #
+
+
+def _apply_attribution_excerpts(
+    citations: List[Citation], report: AttributionReport
+) -> List[Citation]:
+    """Stamp ``supporting_excerpt`` + ``supported_claim_count`` (+ ``text_quote``
+    when attribution found a supporting sentence) onto each kept citation.
+
+    The attribution excerpt supersedes the legacy whole-answer
+    ``_first_supporting_quote`` heuristic for ``text_quote`` only when present;
+    a citation with no attributed sentence keeps its legacy quote. Pure: returns
+    a NEW list of new Citation objects (the dataclass is frozen).
+    """
+    out: List[Citation] = []
+    for cit in citations:
+        support = report.supports.get(cit.chunk_id)
+        if support is None:
+            out.append(cit)
+            continue
+        excerpt = support.supporting_excerpt
+        out.append(
+            _dc_replace(
+                cit,
+                supporting_excerpt=excerpt,
+                supported_claim_count=support.supported_claim_count,
+                text_quote=excerpt if excerpt else cit.text_quote,
+            )
+        )
+    return out
+
+
+def _select_additions(
+    report: AttributionReport,
+    gate_eligible_by_id: Dict[str, RetrievedPassage],
+    add_candidate_passages: Sequence[RetrievedPassage],
+    kept_citations: Sequence[Citation],
+    *,
+    answer_text: Optional[str],
+    course_dir: Path,
+    chunkset_kind: str,
+    containment_threshold: float,
+) -> Tuple[List[Citation], List[str]]:
+    """Build high-precision added citations from UNCITED gate-eligible passages.
+
+    An uncited passage qualifies as an addition for some claim iff it (a) clears
+    the high ``ADD_MIN_SHINGLE`` floor on that claim AND (b) out-supports (strict
+    >) the strongest KEPT citation's shingle on that same claim — additions are
+    relative + precision-first. A qualifying passage must ALSO resolve through
+    the SAME citation-anchor machinery the model-cited set passed (any resolved
+    status); an unresolvable add candidate is dropped (never blocks). Capped at
+    :data:`MAX_ADDED_CITATIONS`, ordered by support strength.
+
+    Returns ``(added_citations, added_ids)``.
+    """
+    if not add_candidate_passages:
+        return [], []
+
+    # Per-claim best shingle among the KEPT citations (the bar to beat).
+    kept_ids = {c.chunk_id for c in kept_citations}
+    kept_best_shingle_per_claim: Dict[int, float] = {}
+    for cid in kept_ids:
+        s = report.supports.get(cid)
+        if s is None:
+            continue
+        for ci in s.supported_claim_indexes:
+            # Approx: use the passage's overall best shingle as its per-claim
+            # ceiling (the report keeps best_shingle, not per-claim shingles).
+            prev = kept_best_shingle_per_claim.get(ci, 0.0)
+            if s.best_shingle > prev:
+                kept_best_shingle_per_claim[ci] = s.best_shingle
+
+    # Rank uncited candidates by (claims supported desc, best_shingle desc,
+    # rank asc). Only those that clear the ADD floor AND out-support the kept
+    # set on at least one claim are eligible.
+    candidates: List[Tuple[int, float, int, str]] = []
+    for passage in add_candidate_passages:
+        cid = passage.chunk_id
+        s = report.supports.get(cid)
+        if s is None or s.cited or s.is_claimless:
+            continue
+        if s.best_shingle < ADD_MIN_SHINGLE:
+            continue
+        # Out-support the kept set on at least one of this passage's claims.
+        beats_kept = any(
+            s.best_shingle > kept_best_shingle_per_claim.get(ci, 0.0)
+            for ci in s.supported_claim_indexes
+        )
+        if not beats_kept:
+            continue
+        candidates.append(
+            (-s.supported_claim_count, -s.best_shingle, s.rank, cid)
+        )
+
+    candidates.sort()
+
+    added: List[Citation] = []
+    added_ids: List[str] = []
+    for _, _, _, cid in candidates:
+        if len(added) >= MAX_ADDED_CITATIONS:
+            break
+        passage = gate_eligible_by_id.get(cid)
+        if passage is None:
+            continue
+        # The addition must pass the SAME anchor machinery the cited set passed.
+        anchor = resolve_citation_anchor(
+            _passage_chunk_record(passage),
+            course_dir,
+            chunkset_kind=chunkset_kind,
+            containment_threshold=containment_threshold,
+        )
+        if anchor.status not in _RESOLVED_STATUSES:
+            # Unresolvable add candidate: drop it (an addition never blocks the
+            # answer and never surfaces an unanchored citation).
+            continue
+        cit = _build_citation(passage, anchor, answer_text)
+        support = report.supports.get(cid)
+        excerpt = support.supporting_excerpt if support else None
+        cit = _dc_replace(
+            cit,
+            supporting_excerpt=excerpt,
+            supported_claim_count=support.supported_claim_count if support else 0,
+            text_quote=excerpt if excerpt else cit.text_quote,
+        )
+        added.append(cit)
+        added_ids.append(cid)
+    return added, added_ids
+
+
+def _order_citations(citations: List[Citation]) -> List[Citation]:
+    """Sort by (supported_claim_count desc, retrieval-stable order).
+
+    Strongest supporter leads (fixes the case-1 "weak citation listed first"
+    pattern). The input order is the citation-gate order (model-cited order,
+    then appended additions), which preserves retrieval-rank monotonicity well
+    enough for the secondary key, so a stable sort on the negated support count
+    is sufficient and deterministic.
+    """
+    return sorted(
+        citations, key=lambda c: -int(c.supported_claim_count or 0)
+    )
+
+
+def _apply_citation_attribution(
+    *,
+    citations: List[Citation],
+    cited_passages: Sequence[RetrievedPassage],
+    gate_eligible_passages: Sequence[RetrievedPassage],
+    answer_text: Optional[str],
+    course_dir: Path,
+    chunkset_kind: str,
+    containment_threshold: float,
+    mode: str,
+    min_overlap: float,
+    capture: Optional[Any],
+    course_slug: str,
+    query_sha: str,
+    engine: str,
+) -> Tuple[List[Citation], List[str]]:
+    """Run attribution over the gate-eligible set; prune + add per policy.
+
+    Returns ``(final_citations, warnings)``. NEVER changes the answer verdict:
+    pruning keeps >= 1 citation (all-prune is a no-op); additions only ever add
+    anchor-resolved uncited passages. In ``shadow`` mode the report + capture +
+    excerpts are produced but citations are NOT mutated (excerpts/counts still
+    stamp — they are display refinement, not a verdict change).
+    """
+    warnings: List[str] = []
+    if mode == MODE_OFF:
+        return citations, warnings
+
+    cited_ids = [p.chunk_id for p in cited_passages]
+    report = attribute_citations(
+        answer_text,
+        gate_eligible_passages,
+        cited_ids,
+        min_overlap=min_overlap,
+    )
+
+    # Always stamp excerpts/counts onto the model-cited citations (display
+    # refinement; happens in every non-off mode incl. shadow).
+    enriched = _apply_attribution_excerpts(citations, report)
+
+    # Zero scorable claims → skip prune/add entirely (no signal).
+    if report.n_claims == 0:
+        warnings.append("claimless_prune_no_scorable_claims")
+        _emit_citation_prune(
+            capture, course_slug=course_slug, query_sha=query_sha, engine=engine,
+            mode=mode, outcome=_PRUNE_OUTCOME_NO_CLAIMS, report=report,
+            kept_ids=[c.chunk_id for c in enriched], pruned_ids=[], added_ids=[],
+            inline_vetoed_ids=[],
+        )
+        return enriched, warnings
+
+    # Inline-marker defense (plan §2.4): a cited chunk_id appearing verbatim in
+    # the answer text is referenced inline — never prune it.
+    answer_norm = (answer_text or "")
+    claimless = report.cited_claimless_ids()
+    inline_vetoed = [cid for cid in claimless if cid and cid in answer_norm]
+    prunable = [cid for cid in claimless if cid not in inline_vetoed]
+
+    n_cited = len(cited_ids)
+    # All cited citations would prune → no-op (plan §2.3): the gate already
+    # verified anchorability; lexical attribution has a known paraphrase false-
+    # negative arm; converting answered→blocked on a heuristic is forbidden.
+    would_prune_all = prunable and len(prunable) >= n_cited
+
+    # --- Additions (run over UNCITED gate-eligible passages) ---------------- #
+    by_id = {p.chunk_id: p for p in gate_eligible_passages}
+    # The "kept" set the additions must out-support: cited minus prunable
+    # (unless all-prune no-op, in which case all cited stay).
+    pruned_ids = [] if would_prune_all else list(prunable)
+    kept_after_prune = [c for c in enriched if c.chunk_id not in pruned_ids]
+    added_citations, added_ids = _select_additions(
+        report,
+        by_id,
+        gate_eligible_passages,
+        kept_after_prune,
+        answer_text=answer_text,
+        course_dir=course_dir,
+        chunkset_kind=chunkset_kind,
+        containment_threshold=containment_threshold,
+    )
+
+    # --- Outcome + warnings ------------------------------------------------- #
+    if would_prune_all:
+        warnings.append("claimless_prune_skipped_all_below_threshold")
+        outcome = _PRUNE_OUTCOME_SKIPPED_ALL
+    elif pruned_ids or added_ids:
+        outcome = _PRUNE_OUTCOME_PRUNED
+    else:
+        outcome = _PRUNE_OUTCOME_NOOP
+    for cid in pruned_ids:
+        warnings.append(f"pruned_claimless_citation:{cid}")
+    for cid in added_ids:
+        warnings.append(f"added_supporting_citation:{cid}")
+
+    final_kept_ids = [c.chunk_id for c in kept_after_prune] + added_ids
+    _emit_citation_prune(
+        capture, course_slug=course_slug, query_sha=query_sha, engine=engine,
+        mode=mode, outcome=outcome, report=report,
+        kept_ids=final_kept_ids, pruned_ids=pruned_ids, added_ids=added_ids,
+        inline_vetoed_ids=inline_vetoed,
+    )
+
+    # Shadow mode: capture + warnings + excerpts produced, citations NOT
+    # mutated (no prune, no add). Excerpts/counts already stamped on `enriched`.
+    if mode == MODE_SHADOW:
+        return _order_citations(enriched), warnings
+
+    # On mode: apply prune + add, then order (strongest supporter first).
+    final = kept_after_prune + added_citations
+    return _order_citations(final), warnings
 
 
 # --------------------------------------------------------------------------- #
@@ -680,6 +1029,8 @@ def answer_course_question(
     chunkset_kind: Optional[str] = None,
     containment_threshold: float = 0.85,
     max_passages: int = 8,
+    prune_mode: Optional[str] = None,
+    prune_min_overlap: Optional[float] = None,
 ) -> GroundedAnswer:
     """Answer a single-course question, grounded + citation-gated.
 
@@ -893,13 +1244,45 @@ def answer_course_question(
             start=start,
         )
 
-    # 6) Optional groundedness (advisory; never blocks — D6).
-    groundedness_payload: Optional[Dict[str, Any]] = None
+    # 6) Attribution-driven prune + add (post-gate; never changes the verdict).
+    #    Runs over ALL gate-eligible passages — the renderer-INCLUDED set the
+    #    model could have cited (composed.allowed_chunk_ids), in retrieval-rank
+    #    order — so an uncited definitional supporter the model under-cited can
+    #    be credited, and a model-cited chunk supporting zero claims dropped.
     warnings: List[str] = []
+    mode = resolve_prune_mode(prune_mode)
+    min_overlap = resolve_min_overlap(prune_min_overlap)
+    allowed = composed.allowed_chunk_ids or composed.cited_chunk_ids
+    gate_eligible_passages = [by_id[cid] for cid in allowed if cid in by_id]
+    citations, prune_warnings = _apply_citation_attribution(
+        citations=citations,
+        cited_passages=cited_passages,
+        gate_eligible_passages=gate_eligible_passages,
+        answer_text=composed.answer_text,
+        course_dir=course_dir,
+        chunkset_kind=chunkset_kind,
+        containment_threshold=containment_threshold,
+        mode=mode,
+        min_overlap=min_overlap,
+        capture=capture,
+        course_slug=course_slug,
+        query_sha=query_sha,
+        engine=engine,
+    )
+    warnings.extend(prune_warnings)
+
+    # 7) Optional groundedness (advisory; never blocks — D6). Scored against the
+    #    FINAL kept+added citation set so the displayed support story is the
+    #    measured one (honesty over flattery, plan §2.2).
+    groundedness_payload: Optional[Dict[str, Any]] = None
     status = STATUS_ANSWERED
     if with_groundedness:
+        final_cited_ids = {c.chunk_id for c in citations}
+        groundedness_passages = [
+            p for p in gate_eligible_passages if p.chunk_id in final_cited_ids
+        ] or cited_passages
         groundedness_payload, gw = _score_groundedness(
-            composed.answer_text, cited_passages
+            composed.answer_text, groundedness_passages
         )
         warnings.extend(gw)
         if "contradicted_claim" in gw:

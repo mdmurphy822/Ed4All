@@ -416,6 +416,222 @@ def test_validate_citations_false_bypasses_gate(mini_libv2: Path):
 
 
 # --------------------------------------------------------------------------- #
+# Attribution-driven citation prune + add (2026-06 extension)
+# --------------------------------------------------------------------------- #
+#
+# The pipeline runs claim-attribution over ALL gate-eligible passages strictly
+# post-citation-gate. Default code mode is `shadow` (compute + capture + excerpt,
+# mutate nothing); these tests drive `prune_mode="on"` explicitly. Verdicts never
+# change: pruning keeps >= 1 citation, additions only add anchor-resolved
+# uncited passages.
+
+# A definitional answer near-verbatim from mini_alpha_chunk_001.
+_DEF_ANSWER = (
+    "A vector store is a database that indexes high-dimensional embedding "
+    "vectors so that approximate nearest-neighbour search can retrieve "
+    "semantically similar passages."
+)
+
+
+def _prune_events(spy):
+    return [e for e in spy.events
+            if e["decision_type"] == "grounded_answer_citation_prune"]
+
+
+def test_prune_drops_claimless_cited_citation(mini_libv2: Path):
+    """Two cited chunks; one backs the answer, one (recall@k) backs nothing →
+    on-mode prunes the claim-less one, keeps the supporter, fires the capture."""
+    spy = SpyCapture()
+    client = FakeAnswerClient([
+        _envelope(_DEF_ANSWER,
+                  ["mini_alpha_chunk_001", "mini_alpha_chunk_003"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG,
+        "vector store recall at k embedding nearest neighbour passages",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        prune_mode="on",
+    )
+    assert result.status == STATUS_ANSWERED
+    kept_ids = [c.chunk_id for c in result.citations]
+    assert "mini_alpha_chunk_001" in kept_ids
+    assert "mini_alpha_chunk_003" not in kept_ids  # claim-less → pruned
+    assert any("pruned_claimless_citation:mini_alpha_chunk_003" in w
+               for w in result.warnings)
+    # The kept supporter carries its attribution surfacing.
+    kept = next(c for c in result.citations if c.chunk_id == "mini_alpha_chunk_001")
+    assert kept.supported_claim_count >= 1
+    assert kept.supporting_excerpt
+    # Capture fired with dynamic rationale.
+    ev = _prune_events(spy)
+    assert len(ev) == 1
+    rat = ev[0]["rationale"]
+    assert "mini_alpha_chunk_003" in rat and "min_overlap" in rat
+    assert ev[0]["decision_type"] in _enum_members()
+    assert ev[0]["decision"] == "citation_prune:pruned"
+
+
+def test_prune_all_claimless_is_noop(mini_libv2: Path):
+    """When EVERY cited citation is claim-less, prune is a no-op (verdict + all
+    citations preserved) with the skipped-all warning."""
+    spy = SpyCapture()
+    # An answer with no lexical overlap to either cited chunk → both claim-less.
+    client = FakeAnswerClient([
+        _envelope("Photosynthesis stores chemical energy in glucose molecules.",
+                  ["mini_alpha_chunk_001", "mini_alpha_chunk_002"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "vector store faiss similarity search",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        prune_mode="on",
+    )
+    assert result.status == STATUS_ANSWERED
+    kept_ids = {c.chunk_id for c in result.citations}
+    assert kept_ids == {"mini_alpha_chunk_001", "mini_alpha_chunk_002"}
+    assert any("claimless_prune_skipped_all_below_threshold" in w
+               for w in result.warnings)
+    assert _prune_events(spy)[0]["decision"] == "citation_prune:skipped_all_claimless"
+
+
+def test_add_credits_uncited_supporter(mini_libv2: Path):
+    """The model cites topical-mention chunks but NOT the definitional supporter
+    that backs the answer; on-mode ADDS the uncited supporter (it out-supports
+    the cited set and anchor-resolves)."""
+    spy = SpyCapture()
+    # Cite only FAISS + recall@k (topical), answer is the vector-store definition
+    # (mini_alpha_chunk_001 — uncited but retrieved + anchorable).
+    client = FakeAnswerClient([
+        _envelope(_DEF_ANSWER,
+                  ["mini_alpha_chunk_002", "mini_alpha_chunk_003"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG,
+        "vector store database indexes embedding vectors faiss recall at k",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        prune_mode="on",
+    )
+    assert result.status == STATUS_ANSWERED
+    kept_ids = [c.chunk_id for c in result.citations]
+    assert "mini_alpha_chunk_001" in kept_ids  # the uncited supporter, ADDED
+    added = next(c for c in result.citations if c.chunk_id == "mini_alpha_chunk_001")
+    assert added.anchor_status.startswith("resolved")  # passed the anchor gate
+    assert added.supported_claim_count >= 1
+    assert any("added_supporting_citation:mini_alpha_chunk_001" in w
+               for w in result.warnings)
+    ev = _prune_events(spy)
+    assert "added=[mini_alpha_chunk_001]" in ev[0]["rationale"]
+
+
+def test_added_citation_leads_when_strongest(mini_libv2: Path):
+    """Final citations sort strongest-supporter-first: the added definitional
+    supporter (backs the answer) leads the weaker cited mentions."""
+    client = FakeAnswerClient([
+        _envelope(_DEF_ANSWER,
+                  ["mini_alpha_chunk_002", "mini_alpha_chunk_003"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG,
+        "vector store database indexes embedding vectors faiss recall at k",
+        client=client, refusal_policy=_PERMISSIVE_LEXICAL, prune_mode="on",
+    )
+    # Strongest supporter (by supported_claim_count) is first.
+    counts = [c.supported_claim_count for c in result.citations]
+    assert counts == sorted(counts, reverse=True)
+    assert result.citations[0].chunk_id == "mini_alpha_chunk_001"
+
+
+def test_addition_never_changes_verdict_blocked_stays_blocked(mini_libv2: Path):
+    """An unresolvable CITED citation still blocks — attribution add/prune runs
+    only AFTER the gate passes and never rescues a blocked answer."""
+    _append_chunk(mini_libv2, {
+        "id": "mini_ghost_chunk_999",
+        "schema_version": "v4", "chunk_type": "explanation",
+        "concept_tags": ["chunking"],
+        "text": ("Chunking strategies split documents into overlapping "
+                 "passages before embedding for retrieval."),
+        "learning_outcome_refs": [],
+        "source": {"item_path": "ghost.html", "html_xpath": "/html[1]/body[1]",
+                   "char_span": [0, 10], "section_heading": "Ghost"},
+    })
+    client = FakeAnswerClient([
+        _envelope("Chunking splits documents into overlapping passages.",
+                  ["mini_ghost_chunk_999"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "chunking strategies overlapping passages",
+        client=client, prune_mode="on",
+    )
+    assert result.status == STATUS_BLOCKED_CITATION_GATE
+    assert result.citations == []
+
+
+def test_shadow_mode_captures_and_excerpts_but_does_not_mutate(mini_libv2: Path):
+    """Shadow mode: the claim-less citation is NOT removed, but the capture +
+    warnings + supporting_excerpt are still produced (the audit/UX surfaces)."""
+    spy = SpyCapture()
+    client = FakeAnswerClient([
+        _envelope(_DEF_ANSWER,
+                  ["mini_alpha_chunk_001", "mini_alpha_chunk_003"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG,
+        "vector store recall at k embedding nearest neighbour passages",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        prune_mode="shadow",
+    )
+    assert result.status == STATUS_ANSWERED
+    kept_ids = {c.chunk_id for c in result.citations}
+    # Shadow: BOTH cited chunks remain (no prune, no add mutation).
+    assert kept_ids == {"mini_alpha_chunk_001", "mini_alpha_chunk_003"}
+    # But the excerpt + count still stamp on the supporter.
+    supporter = next(c for c in result.citations
+                     if c.chunk_id == "mini_alpha_chunk_001")
+    assert supporter.supporting_excerpt
+    assert supporter.supported_claim_count >= 1
+    # And the capture fired (the claim-less id surfaces in the rationale).
+    ev = _prune_events(spy)
+    assert len(ev) == 1
+    assert "mini_alpha_chunk_003" in ev[0]["rationale"]
+    assert "mode=shadow" in ev[0]["rationale"]
+
+
+def test_off_mode_skips_attribution_entirely(mini_libv2: Path):
+    """off mode: no prune, no add, no capture, no attribution warnings."""
+    spy = SpyCapture()
+    client = FakeAnswerClient([
+        _envelope(_DEF_ANSWER,
+                  ["mini_alpha_chunk_001", "mini_alpha_chunk_003"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG,
+        "vector store recall at k embedding nearest neighbour passages",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        prune_mode="off",
+    )
+    assert result.status == STATUS_ANSWERED
+    assert {c.chunk_id for c in result.citations} == {
+        "mini_alpha_chunk_001", "mini_alpha_chunk_003"}
+    assert _prune_events(spy) == []
+    assert not any("claimless" in w or "added_supporting" in w
+                   for w in result.warnings)
+
+
+def test_to_dict_carries_attribution_keys(mini_libv2: Path):
+    client = FakeAnswerClient([
+        _envelope(_DEF_ANSWER, ["mini_alpha_chunk_001"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG,
+        "vector store database indexes embedding vectors",
+        client=client, refusal_policy=_PERMISSIVE_LEXICAL, prune_mode="on",
+    )
+    cit = result.to_dict()["citations"][0]
+    assert "supporting_excerpt" in cit and "supported_claim_count" in cit
+    assert cit["supported_claim_count"] >= 1
+    json.dumps(result.to_dict())
+
+
+# --------------------------------------------------------------------------- #
 # Typed-error propagation
 # --------------------------------------------------------------------------- #
 
@@ -539,6 +755,8 @@ def test_grounded_answer_to_dict_keys_frozen(mini_libv2: Path):
         # Display title (additive, optional): renderers prefer it over the
         # filename-stem module_id, which repeats across weeks.
         "module_title",
+        # Claim-attribution surfacing (additive, optional).
+        "supporting_excerpt", "supported_claim_count",
     }
     # Legacy fixture chunk carries no source_references → provenance absent.
     assert cit["source_block"] is None
