@@ -1669,6 +1669,52 @@ def _build_chapter_objective_coverage_inputs(
     return inputs, []
 
 
+def _build_textbook_outline_inputs(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Three-stage textbook synthesis (Wave A/B) — input builder for
+    TextbookOutlineValidator.
+
+    The validator (``lib/validators/textbook_structure.py``) audits the
+    Stage-1 enrichment keys (``semantic_outline`` /
+    ``draft_terminal_objectives``) that ``_extract_textbook_structure``
+    folds into ``textbook_structure.json`` when
+    ``TEXTBOOK_SYNTHESIS_PROVIDER`` is set. Its ``_coerce_structure``
+    resolution chain reads (in priority order)
+    ``inputs["textbook_structure"]`` (an in-memory dict) >
+    ``inputs["textbook_structure_path"]`` (an on-disk JSON the validator
+    loads). Phase ``objective_extraction`` declares
+    ``textbook_structure_path`` as a YAML ``outputs:`` key
+    (``config/workflows.yaml``), so it surfaces directly in
+    ``phase_outputs["objective_extraction"]`` — mirroring the resolution
+    in :func:`_build_chapter_objective_coverage_inputs`.
+
+    Graceful-degrade contract: on a default-off run
+    (``TEXTBOOK_SYNTHESIS_PROVIDER`` unset) the ``textbook_structure.json``
+    carries neither enrichment key, so the validator's own no-op
+    skip-with-pass fires. We therefore return an EMPTY missing-key list
+    even when the path is unresolvable — the validator handles the
+    absence (``_coerce_structure`` returns ``(None, None)`` → skip-with-
+    pass) — so the executor lets the validator RUN rather than stamping
+    the gate ``GATE_SKIPPED_MISSING_INPUTS``. The gate is wired
+    ``severity: critical`` / ``on_fail: block`` at
+    ``textbook_to_course::objective_extraction::
+    textbook_outline_enrichment``; pre-registration NO builder existed,
+    so the router returned ``__no_builder_registered__`` and the gate
+    skipped with a warning on every run (gate_input_routing.py:1836-1842).
+    """
+    oe = phase_outputs.get("objective_extraction") or {}
+    ts_path = oe.get("textbook_structure_path")
+    if not (isinstance(ts_path, str) and ts_path):
+        ts_path = _locate(phase_outputs, "textbook_structure_path")
+    if isinstance(ts_path, str) and ts_path:
+        return {"textbook_structure_path": ts_path}, []
+    # Path unresolvable: the validator skips-with-pass on absence, so
+    # let it run (no missing-key marker) rather than skip the gate.
+    return {}, []
+
+
 def _build_abcd_objective_inputs(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -2159,6 +2205,19 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.terminal_objective_coverage.TerminalObjectiveCoverageValidator",
         _build_chapter_objective_coverage_inputs,
+    )
+    # Three-stage textbook synthesis (Wave A/B): TextbookOutlineValidator
+    # fires at ``textbook_to_course::objective_extraction`` as the
+    # critical / block ``textbook_outline_enrichment`` gate. Pre-
+    # registration NO builder was wired, so the router returned
+    # ``__no_builder_registered__`` and the gate skipped with a warning on
+    # every run. The builder routes textbook_structure_path from the
+    # objective_extraction phase output (a declared YAML output); the
+    # validator skips-with-pass when the Stage-1 enrichment keys are
+    # absent (default-off runs).
+    r.register(
+        "lib.validators.textbook_structure.TextbookOutlineValidator",
+        _build_textbook_outline_inputs,
     )
 
     # Activate-the-dormant-gate: KGQualityValidator fires at

@@ -233,7 +233,7 @@ def test_occurrences_survive_rechunk_under_content_hash(monkeypatch):
         chunks = []
         for idx, (source, text, tags) in enumerate(payload):
             chunk_id = _generate_chunk_id(
-                prefix="testcourse_chunk_",
+                prefix="synthcourse_chunk_",
                 start_id=idx,
                 text=text,
                 source_locator=source,
