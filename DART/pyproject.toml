@@ -7,14 +7,14 @@ name = "dart"
 version = "1.0.0"
 description = "Convert PDF documents to WCAG 2.1 AA compliant accessible HTML"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 requires-python = ">=3.9"
 keywords = ["pdf", "accessibility", "wcag", "html", "a11y", "converter"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Education",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",

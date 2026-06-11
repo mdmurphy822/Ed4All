@@ -1,6 +1,6 @@
 # Ed4All
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 **Turn a textbook PDF into an accessible, course-ready package — semantic HTML, weekly modules, learning objectives, assessments, and a knowledge graph — in a single command.**
@@ -118,4 +118,4 @@ Supporting directories: **MCP** hosts the orchestrator and tool server, **cli** 
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
