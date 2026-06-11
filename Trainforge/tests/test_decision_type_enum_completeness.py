@@ -202,6 +202,68 @@ def test_enum_covers_three_stage_textbook_synthesis_values():
 
 
 @pytest.mark.unit
+def test_phase_enum_covers_textbook_ingestor():
+    """The three-stage textbook-synthesis Stage-1 outline capture (emitted
+    in ``MCP/tools/pipeline_tools.py`` during ``objective_extraction``) uses
+    ``phase="textbook-ingestor"`` — the canonical agent name for that phase
+    (see the agent registry + ``objective_extraction: ["textbook-ingestor"]``
+    routing). Without it in the canonical ``phase`` enum, a synthesis run
+    under ``DECISION_VALIDATION_STRICT=true`` fail-closes the first time the
+    Stage-1 capture is opened, aborting the extractor before it writes
+    ``textbook_structure.json`` (regression seen in the e2e pipeline run).
+    """
+    with open(SCHEMA_PATH, encoding="utf-8") as f:
+        schema = json.load(f)
+    phase_enum = {
+        v for v in schema["properties"]["phase"]["enum"] if isinstance(v, str)
+    }
+    assert "textbook-ingestor" in phase_enum, (
+        "decision_event.schema.json phase enum is missing 'textbook-ingestor' "
+        "(three-stage textbook-synthesis Stage-1 capture phase). Add it to "
+        "properties.phase.enum."
+    )
+
+
+# Regex matches ``phase="..."`` / ``phase='...'`` literals.
+_PHASE_RE = re.compile(r"phase\s*=\s*[\"']([A-Za-z0-9_-]+)[\"']")
+
+
+def _scrape_phases(source: Path) -> set:
+    """Return every literal string bound to ``phase=`` in ``source``."""
+    if not source.exists():
+        return set()
+    text = source.read_text(encoding="utf-8", errors="replace")
+    return set(_PHASE_RE.findall(text))
+
+
+@pytest.mark.unit
+def test_pipeline_tool_capture_phases_are_in_schema_enum():
+    """Every ``phase="..."`` literal bound to a DecisionCapture in the
+    pipeline-tool boundary must be in the canonical ``phase`` enum.
+
+    This guards the whole class of bug the e2e pipeline hit: a capture
+    opened under a phase value absent from the enum fail-closes the owning
+    phase task under ``DECISION_VALIDATION_STRICT=true``. Scraping the
+    literals means a new capture site under an unenumerated phase fires an
+    isolated failure here so the schema can be updated in the same PR.
+    Mirrors the per-site ``decision_type`` scraping pattern above.
+    """
+    with open(SCHEMA_PATH, encoding="utf-8") as f:
+        schema = json.load(f)
+    phase_enum = {
+        v for v in schema["properties"]["phase"]["enum"] if isinstance(v, str)
+    }
+    source = PROJECT_ROOT / "MCP" / "tools" / "pipeline_tools.py"
+    found = _scrape_phases(source)
+    missing = sorted(found - phase_enum)
+    assert not missing, (
+        f"{source.name} opens DecisionCapture(s) under phase values not in "
+        f"the canonical enum at {SCHEMA_PATH.relative_to(PROJECT_ROOT)}: "
+        f"{missing}. Add these to properties.phase.enum."
+    )
+
+
+@pytest.mark.unit
 def test_enum_is_alphabetised_and_unique():
     """Enum values must be alphabetised and unique (maintenance guard)."""
     with open(SCHEMA_PATH, encoding="utf-8") as f:

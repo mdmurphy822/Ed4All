@@ -139,6 +139,22 @@ _TEXTBOOK_SYNTHESIS_PROVIDER_ENV = "TEXTBOOK_SYNTHESIS_PROVIDER"
 # training-pair corpus through a ToS-unclean provider by default.
 _TRAINFORGE_SYNTHESIS_PROVIDER_ENV = "TRAINFORGE_SYNTHESIS_PROVIDER"
 
+# Master opt-out for the A5 corpus-generalization defaults-on path. When
+# truthy, ``_apply_corpus_generalization_defaults`` returns early and sets
+# NOTHING — neither the measured graph-shaping flags nor the
+# licensing-sensitive synthesis-provider envs. This exists for deterministic
+# fixture-contract runs (e.g. ``tests/integration/test_pipeline_end_to_end.py``)
+# that take the ``LOCAL_DISPATCHER_ALLOW_STUB`` stub authoring route: the
+# three-stage textbook synthesis the A5 set turns ON dispatches REAL local-LLM
+# (Ollama) calls during ``objective_extraction`` / ``course_planning`` /
+# ``concept_extraction``, which are nondeterministic and CI-infeasible. There
+# is no "off" value for ``TEXTBOOK_SYNTHESIS_PROVIDER`` (any non-empty value
+# fires the synthesis guard), so a single master switch is the clean knob.
+# This does NOT change the product default (unset → full A5 auto-on); it is a
+# test/deterministic-run companion to the stub opt-in, mirroring
+# ``LOCAL_DISPATCHER_ALLOW_STUB`` semantics.
+_DISABLE_CORPUS_GENERALIZATION_ENV = "ED4ALL_DISABLE_CORPUS_GENERALIZATION"
+
 # Workflows that get the corpus-generalization auto-on treatment: the full
 # textbook pipeline and its Courseforge stage aliases (which run through the
 # same ``textbook_to_course`` config) plus ``course_generation``.
@@ -1732,6 +1748,18 @@ class WorkflowRunner:
           operator already pinned every flag.
         """
         if workflow_type not in _CORPUS_GENERALIZATION_WORKFLOWS:
+            return {}
+
+        # Master opt-out (deterministic fixture-contract runs): skip the whole
+        # A5 set, including the licensing-sensitive synthesis-provider envs, so
+        # the run stays fully deterministic with no live-LLM dispatch.
+        if self._env_truthy(_DISABLE_CORPUS_GENERALIZATION_ENV):
+            logger.info(
+                "A5 corpus-generalization defaults-on SKIPPED for %s "
+                "(%s is set).",
+                workflow_type,
+                _DISABLE_CORPUS_GENERALIZATION_ENV,
+            )
             return {}
 
         applied: Dict[str, str] = {}

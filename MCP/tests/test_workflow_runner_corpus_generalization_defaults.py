@@ -20,6 +20,7 @@ import pytest
 
 from MCP.core.workflow_runner import (
     _CORPUS_GENERALIZATION_ENV_DEFAULTS,
+    _DISABLE_CORPUS_GENERALIZATION_ENV,
     _TEXTBOOK_SYNTHESIS_PROVIDER_ENV,
     _TRAINFORGE_SYNTHESIS_PROVIDER_ENV,
     WorkflowRunner,
@@ -41,6 +42,31 @@ def _clear_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     for env_var in _ALL_A5_ENVS:
         monkeypatch.delenv(env_var, raising=False)
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv(_DISABLE_CORPUS_GENERALIZATION_ENV, raising=False)
+
+
+# --------------------------------------------------------------------------
+# Master opt-out: a deterministic fixture-contract run skips the whole set.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("truthy", ["1", "true", "yes", "on"])
+def test_disable_env_skips_entire_a5_set(monkeypatch, truthy):
+    """The master opt-out suppresses every A5 env — the measured graph-shaping
+    flags AND the licensing-sensitive synthesis-provider envs — so a
+    deterministic fixture-contract run (the e2e pipeline test) never dispatches
+    live-LLM textbook synthesis mid-pipeline."""
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv(_DISABLE_CORPUS_GENERALIZATION_ENV, truthy)
+    runner = _make_runner()
+
+    applied = runner._apply_corpus_generalization_defaults("textbook_to_course")
+
+    import os
+
+    assert applied == {}
+    for env_var in _ALL_A5_ENVS:
+        assert os.environ.get(env_var) is None
 
 
 # --------------------------------------------------------------------------

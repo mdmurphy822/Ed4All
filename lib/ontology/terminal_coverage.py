@@ -286,6 +286,90 @@ def find_orphan_terminals(
     return orphans
 
 
+def _structure_chapter_ids_ordered(
+    textbook_structure: Optional[Mapping[str, Any]],
+) -> List[str]:
+    """Return the chapter IDs in a textbook_structure, in document order.
+
+    Unlike :func:`_chapter_ids_in_structure` (which returns a *normalised*
+    set for membership tests), this preserves the raw chapter ID strings in
+    their original order so a back-pointer assignment can write a value that
+    round-trips through :func:`terminal_chapter_ref` +
+    :func:`_normalise_chapter_key` and resolves against the structure.
+    """
+    out: List[str] = []
+    if not isinstance(textbook_structure, Mapping):
+        return out
+    chapters = textbook_structure.get("chapters")
+    if not isinstance(chapters, list):
+        return out
+    for ch in chapters:
+        if not isinstance(ch, Mapping):
+            continue
+        cid = ch.get("id")
+        if isinstance(cid, str) and cid.strip():
+            out.append(cid.strip())
+    return out
+
+
+def attach_terminal_chapter_refs(
+    terminal_objectives: Sequence[Mapping[str, Any]],
+    chapter_objectives: Any,
+    *,
+    textbook_structure: Optional[Mapping[str, Any]] = None,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Stamp a resolvable ``chapter`` back-pointer on CO-less terminals.
+
+    Layer-A coverage guarantee for the **CO-less** branch (the companion to
+    :func:`prune_orphan_terminals`, which only handles the CO-bearing case).
+    A CO-less course (empty ``chapter_objectives``) is reachable iff every
+    terminal carries a ``chapter`` back-pointer that resolves to a real
+    chapter in ``textbook_structure`` (see :func:`find_orphan_terminals`,
+    ``reason="no_chapter_ref"`` / ``"chapter_not_in_structure"``).
+
+    The deterministic synthesizer mints terminals with no chapter
+    back-pointer (the topic-side parser and the structure-side parser are
+    independent, so a terminal's originating topic often has
+    ``chapter_id=None`` even though the structure synthesized real
+    chapters). Rather than let that internal inconsistency flow to the
+    fail-fast ``course_planning`` gate, this helper makes the objectives set
+    consistent BEFORE it is written to disk:
+
+    * No-op for a CO-bearing course (the roll-up model owns coverage there).
+    * No-op when ``textbook_structure`` has no resolvable chapter IDs (the
+      gate's graceful-degrade ``TERMINAL_COVERAGE_UNVERIFIED`` path owns
+      that case — we have nothing to anchor to).
+    * Otherwise, for each terminal whose existing ``chapter`` back-pointer
+      does NOT resolve against the structure (or is absent), assign one of
+      the structure's real chapter IDs round-robin (in document order) so
+      terminals spread across the available chapters deterministically.
+
+    Returns ``(terminals, assigned_terminal_ids)`` — a fresh terminal list
+    (input never mutated) plus the IDs that received a new/repaired
+    back-pointer (for logging).
+    """
+    terminals = [dict(t) for t in terminal_objectives if isinstance(t, Mapping)]
+    if is_co_bearing(chapter_objectives):
+        return terminals, []
+    ordered_ids = _structure_chapter_ids_ordered(textbook_structure)
+    if not ordered_ids:
+        return terminals, []
+    resolvable = {_normalise_chapter_key(cid) for cid in ordered_ids}
+    resolvable.discard(None)
+
+    assigned: List[str] = []
+    rr = 0
+    for to in terminals:
+        existing = terminal_chapter_ref(to)
+        if existing is not None and _normalise_chapter_key(existing) in resolvable:
+            continue  # already resolvable — leave verbatim
+        to["chapter"] = ordered_ids[rr % len(ordered_ids)]
+        rr += 1
+        tid = to.get("id")
+        assigned.append(str(tid) if tid is not None else "?")
+    return terminals, assigned
+
+
 def prune_orphan_terminals(
     terminal_objectives: Sequence[Mapping[str, Any]],
     chapter_objectives: Any,
@@ -335,5 +419,6 @@ __all__ = [
     "rolled_up_terminal_ids",
     "is_co_bearing",
     "find_orphan_terminals",
+    "attach_terminal_chapter_refs",
     "prune_orphan_terminals",
 ]
