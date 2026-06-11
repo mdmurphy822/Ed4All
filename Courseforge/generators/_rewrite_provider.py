@@ -1738,6 +1738,8 @@ class RewriteProvider(_BaseLLMProvider):
 
         last_text = ""
         last_missing: List[str] = []
+        last_dispatch_error: Optional[Exception] = None
+        dispatched_ok = False
         total_retries = 0
         # Worker W6: transient retries (Ollama 503 / connection reset /
         # read timeout) are counted separately from MAX_PARSE_RETRIES so
@@ -1789,8 +1791,10 @@ class RewriteProvider(_BaseLLMProvider):
                     attempt,
                     exc,
                 )
+                last_dispatch_error = exc
                 attempt += 1
                 continue
+            dispatched_ok = True
             # Post-emit sanitizer: escape orphan-opener placeholder tags
             # before any downstream gate or consumer sees the response.
             # Conservative — only ``<word>`` openers with no attributes
@@ -1834,6 +1838,14 @@ class RewriteProvider(_BaseLLMProvider):
                     user_prompt, missing,
                 )
             attempt += 1
+
+        if not dispatched_ok:
+            raise RewriteProviderError(
+                f"RewriteProvider: rewrite tier exhausted parse-retry "
+                f"budget for block {block.block_id!r} without a successful "
+                f"dispatch (last_error={last_dispatch_error!r})",
+                code="rewrite_dispatch_exhausted",
+            ) from last_dispatch_error
 
         # Exhausted retry budget. Rather than fail the block outright,
         # force-inject the still-missing CURIEs as a ``data-cf-curie``
