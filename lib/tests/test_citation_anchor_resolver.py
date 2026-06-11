@@ -180,6 +180,45 @@ def test_imscc_member_resolution(tmp_path):
     }
 
 
+def test_corpus_kind_resolves_both_dart_and_imscc_chunks(tmp_path):
+    """The union ``corpus`` chunkset carries BOTH imscc-member chunks AND
+    DART-page chunks. A regression: ``corpus`` formerly resolved every chunk as
+    an imscc member, stranding the DART-page chunks as ``source_page_missing``.
+    Both axes must resolve per-chunk by item_path."""
+    course_dir = tmp_path / "course"
+    # DART page on disk under source/html/.
+    html_dir = course_dir / "source" / "html"
+    html_dir.mkdir(parents=True)
+    (html_dir / "chapter.html").write_text(PAGE_HTML, encoding="utf-8")
+    # imscc member inside a cartridge under source/imscc/.
+    imscc_dir = course_dir / "source" / "imscc"
+    imscc_dir.mkdir(parents=True)
+    with zipfile.ZipFile(imscc_dir / "pkg.imscc", "w") as zf:
+        zf.writestr("imsmanifest.xml", "<manifest/>")
+        zf.writestr("week_01/intro.html", PAGE_HTML)
+
+    span = _correct_span()
+    dart_chunk = _base_chunk("chapter.html", EXACT_ANCHOR, span)
+    imscc_chunk = _base_chunk("week_01/intro.html", EXACT_ANCHOR, span)
+
+    # DART-page chunk resolves under corpus kind (the bug: it didn't).
+    dart_resolved = resolve_source_page(dart_chunk, course_dir, chunkset_kind="corpus")
+    assert dart_resolved is not None, "DART chunk stranded as source_page_missing"
+    assert Path(dart_resolved[0]).name == "chapter.html"
+
+    # imscc-member chunk still resolves under corpus kind.
+    imscc_resolved = resolve_source_page(imscc_chunk, course_dir, chunkset_kind="corpus")
+    assert imscc_resolved is not None
+    assert "intro.html" in str(imscc_resolved[0])
+
+    for chunk in (dart_chunk, imscc_chunk):
+        anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="corpus")
+        assert anchor.status in {
+            AnchorStatus.RESOLVED_EXACT,
+            AnchorStatus.RESOLVED_NORMALIZED,
+        }
+
+
 def test_containment_threshold_boundary(tmp_path):
     """A chunk whose middle was boilerplate-stripped: ~90% of its shingles
     are present on the page. RESOLVED_CONTAINMENT at threshold 0.85,

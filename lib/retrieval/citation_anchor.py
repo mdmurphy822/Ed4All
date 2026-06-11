@@ -281,8 +281,18 @@ def resolve_source_page(
 
     if chunkset_kind == "dart":
         return _resolve_dart_page(course_dir, item_path, _DART_ROOTS)
-    if chunkset_kind in ("imscc", "corpus"):
+    if chunkset_kind == "imscc":
         return _resolve_imscc_member(course_dir, item_path, _IMSCC_ROOTS)
+    # ``corpus`` is the UNION chunkset: imscc-derived chunks AND DART-derived
+    # chunks coexist, each carrying its own ``item_path`` (a ``.imscc`` member
+    # path vs a ``source/html/*.html`` DART page). Resolving every chunk as an
+    # imscc member stranded the DART chunks as ``source_page_missing`` (the
+    # all-DART tail of a mixed corpus). Try BOTH axes per-chunk so each chunk
+    # resolves against whichever archived artifact actually produced it.
+    if chunkset_kind == "corpus":
+        return _resolve_imscc_member(course_dir, item_path, _IMSCC_ROOTS) or _resolve_dart_page(
+            course_dir, item_path, _DART_ROOTS
+        )
     # Unknown kind: try both axes (dart pages then imscc members).
     return _resolve_dart_page(course_dir, item_path, _DART_ROOTS) or _resolve_imscc_member(
         course_dir, item_path, _IMSCC_ROOTS

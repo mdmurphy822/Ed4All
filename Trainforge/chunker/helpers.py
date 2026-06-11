@@ -32,12 +32,14 @@ from Trainforge.parsers.html_content_parser import HTMLTextExtractor
 from lib.ontology.learning_objectives import LO_ID_PATTERN
 
 __all__ = [
+    "build_dart_block_offset_index",
     "extract_learning_outcome_refs",
     "extract_plain_text",
     "extract_plain_text_with_curies",
     "extract_section_html",
     "harvest_dart_source_refs",
     "parse_dart_pages_attr",
+    "resolve_dart_refs_for_chunk",
     "strip_assessment_feedback",
     "strip_feedback_from_text",
     "type_from_resource",
@@ -176,6 +178,183 @@ def harvest_dart_source_refs(html: str) -> List[Dict[str, Any]]:
         )
         refs.append({"block_id": block_id, "pages": pages})
     return refs
+
+
+# ---------------------------------------------------------------------------
+# Char-span-scoped DART block resolution (per-chunk provenance)
+# ---------------------------------------------------------------------------
+#
+# The historical chunker scoped DART provenance per-section, then fell back
+# to the WHOLE-DOCUMENT block list when a heading-derived HTML slice carried
+# no ``data-dart-block-id`` (the common case: DART stamps the attribute on the
+# block wrapper, and ``extract_section_html`` returns only the heading element
+# for headings outside a ``<section>``). That fallback gave most chunks of a
+# document every block in the file, so the first ref — and the user-visible
+# "View original source" deep link + cited page — was identical across chunks.
+#
+# These helpers replace that fallback with char-span-scoped containment: each
+# DART block's plain-text is located in the chunk's *container text* (the same
+# text the chunk's ``char_span`` is measured against), and only blocks whose
+# located offset falls inside the chunk's char span are attributed to the
+# chunk — in document order, with per-block pages preserved. No precise match
+# falls back to AT MOST ONE enclosing-section reference, never the whole
+# document.
+
+#: How many leading plain-text words of a block to use as its locate-probe.
+#: Short enough to survive minor whitespace / entity normalisation between the
+#: raw HTML and the extracted container text, long enough to disambiguate
+#: near-duplicate block openings.
+_BLOCK_PROBE_WORDS = 8
+
+
+def _block_element_spans(html: str) -> List[Tuple[int, int, Dict[str, Any]]]:
+    """Return ``(html_start, html_next_start, ref)`` for each DART block.
+
+    ``html_start`` is the byte offset of the block's opening tag in ``html``;
+    ``html_next_start`` is the start of the *next* block's opening tag (or
+    ``len(html)``) so ``html[html_start:html_next_start]`` brackets the block's
+    own content (DART blocks are emitted as flat document-order siblings).
+    ``ref`` is the ``{"block_id", "pages"}`` dict (same shape as
+    :func:`harvest_dart_source_refs`). Document order preserved; duplicate
+    block-ids are kept here (offset disambiguation happens in
+    :func:`resolve_dart_refs_for_chunk`) but the canonical dedupe still applies
+    downstream.
+    """
+    spans: List[Tuple[int, int, Dict[str, Any]]] = []
+    if not html or "data-dart-block-id" not in html:
+        return spans
+    matches = list(_DART_BLOCK_TAG_RE.finditer(html))
+    for i, m in enumerate(matches):
+        tag = m.group(0)
+        bid_match = _DATA_DART_BLOCK_ID_RE.search(tag)
+        if not bid_match:
+            continue
+        block_id = bid_match.group(2).strip()
+        if not block_id:
+            continue
+        pages_match = _DATA_DART_PAGES_RE.search(tag)
+        pages = (
+            parse_dart_pages_attr(pages_match.group(2)) if pages_match else []
+        )
+        next_start = matches[i + 1].start() if i + 1 < len(matches) else len(html)
+        spans.append((m.start(), next_start, {"block_id": block_id, "pages": pages}))
+    return spans
+
+
+def build_dart_block_offset_index(
+    html: str, container_text: str = ""
+) -> List[Tuple[int, Dict[str, Any], str]]:
+    """Build an ordered per-block probe index for char-span / text resolution.
+
+    For every ``data-dart-block-id`` element in ``html`` we extract the block's
+    own plain text and take its first :data:`_BLOCK_PROBE_WORDS` words as a
+    locate-probe. Returns an ordered list of ``(doc_order, ref, probe)`` tuples
+    in document order, where ``doc_order`` is the block's monotonic position in
+    the document (0, 1, 2, ...). The probe is the short text signature used by
+    :func:`resolve_dart_refs_for_chunk` to test whether the block's content
+    appears inside a chunk's own text. ``container_text`` is accepted for
+    backward signature compatibility but is no longer used for offset
+    computation — resolution is now done against the chunk text directly, which
+    is robust to per-section vs whole-body container scoping (the historical
+    offset approach mis-scoped when the chunk text spanned multiple sections
+    while ``container_text`` was a single section).
+
+    Returns ``[]`` when ``html`` carries no DART blocks — the caller then emits
+    no per-chunk refs (additive legacy contract).
+    """
+    spans = _block_element_spans(html)
+    if not spans:
+        return []
+    index: List[Tuple[int, Dict[str, Any], str]] = []
+    for doc_order, (html_start, html_next, ref) in enumerate(spans):
+        block_html = html[html_start:html_next]
+        block_text = " ".join(extract_plain_text(block_html).split())
+        index.append((doc_order, ref, block_text))
+    return index
+
+
+def _block_probes(block_text_collapsed: str) -> List[str]:
+    """Return the literal leading-words locate-probe for a block's text.
+
+    The probe is simply the block's first :data:`_BLOCK_PROBE_WORDS`
+    whitespace-collapsed words — no chrome-skipping, no content-run
+    detection (an earlier draft skipped leading page-number/heading chrome;
+    see the empirical note below for why the literal leading words win).
+
+    A single leading probe (rather than a sliding window across the
+    whole block) is deliberate: long early blocks — a table of contents, a
+    preface listing every section title — contain interior windows that recur
+    verbatim in many later chunks, so a multi-window match re-inflates the ref
+    count toward the all-document shape this fix kills. The single
+    content-anchored opening probe is specific to one block.
+
+    Returns a one-element list (parity with the caller's ``any(...)`` loop) or
+    ``[]`` for an empty block.
+
+    Empirically (openstax-alg-9, 275 blocks / 72 chunks) the literal leading
+    probe maximises primary-block diversity: a content-run-anchored probe that
+    skips leading chrome collapses many chunks onto a few TOC/preface blocks
+    whose first *content* run recurs, while the literal leading words are
+    specific to each block. Chunks whose leading probe doesn't match (the chunk
+    text starts mid-block) fall through to the caller's bounded enclosing-
+    section ≤1-ref fallback — never the whole-document list.
+    """
+    words = block_text_collapsed.split()
+    if not words:
+        return []
+    probe = " ".join(words[:_BLOCK_PROBE_WORDS])
+    return [probe] if probe else []
+
+
+def resolve_dart_refs_for_chunk(
+    block_probe_index: List[Tuple[int, Dict[str, Any], str]],
+    chunk_text: str,
+) -> List[Dict[str, Any]]:
+    """Select the DART blocks whose content overlaps ``chunk_text``.
+
+    ``block_probe_index`` is the output of
+    :func:`build_dart_block_offset_index` — ``(doc_order, ref, block_text)``
+    tuples in document order, where ``block_text`` is the block's
+    whitespace-collapsed plain text. A block is attributed to the chunk when
+    the block's leading-words probe (:func:`_block_probes` — its first
+    :data:`_BLOCK_PROBE_WORDS` words) appears verbatim in the chunk's text.
+    Matching is done against whitespace-collapsed projections so raw-HTML
+    spacing and extracted spacing agree.
+
+    The direction is deliberately one-way (a block window must appear in the
+    chunk, NOT a chunk window in the block): an 8-word window of a short chunk
+    recurs across many unrelated blocks (boilerplate phrasing, shared
+    instructional language), so the chunk-in-block direction over-matches and
+    re-inflates the ref count toward the all-document shape this fix kills.
+
+    Returns the matching ``{"block_id", "pages"}`` dicts in document order,
+    deduped by ``block_id`` (first occurrence wins). Returns ``[]`` when nothing
+    overlaps (the caller then emits at most one enclosing-section reference
+    rather than the whole-document list) or when the index / chunk text is
+    empty.
+    """
+    if not block_probe_index or not chunk_text:
+        return []
+    chunk_collapsed = " ".join(chunk_text.split())
+    if not chunk_collapsed:
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for _doc_order, ref, block_text in block_probe_index:
+        if not block_text:
+            continue
+        matched = any(
+            probe and probe in chunk_collapsed
+            for probe in _block_probes(block_text)
+        )
+        if not matched:
+            continue
+        block_id = ref.get("block_id")
+        if not block_id or block_id in seen:
+            continue
+        seen.add(block_id)
+        out.append({"block_id": block_id, "pages": list(ref.get("pages") or [])})
+    return out
 
 
 # ---------------------------------------------------------------------------
