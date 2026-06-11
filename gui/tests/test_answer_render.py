@@ -126,11 +126,14 @@ def test_non_heading_fragment_has_no_url_fragment():
     assert "#" not in href  # xpath / None → top-of-page
 
 
-def test_approximate_marker_when_not_resolved_exact():
+def test_no_approximate_marker_rendered():
+    """The hedge text is gone by user directive: the Source link is the
+    direct hop to the chunk's holder, regardless of anchor exactness."""
     payload = _answered_payload()
     payload["citations"][0]["anchor_status"] = "resolved_heading"
     html = ar.render_answer_fragment(payload)
-    assert '<span class="src-approx">(approximate location)</span>' in html
+    assert "approximate location" not in html
+    assert "src-approx" not in html
 
 
 def test_answered_with_warnings_advisory_first():

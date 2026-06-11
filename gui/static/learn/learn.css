@@ -182,16 +182,11 @@ ol.sources a {
 }
 ol.sources a:hover { text-decoration: none; }
 
-.src-module,
-.src-approx {
+.src-module {
   display: inline-block;
   margin-left: 0.5rem;
   color: var(--muted);
   font-size: 0.95rem;
-}
-.src-approx::before {
-  /* text marker, not color */
-  content: "\2248\00a0"; /* ≈ */
 }
 
 blockquote.src-quote {
