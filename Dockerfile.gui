@@ -23,14 +23,21 @@ WORKDIR /app
 # Install dependencies first (layer-cached on pyproject changes only). The
 # project is editable-installed so the second COPY of the source tree is picked
 # up without a reinstall. ``[gui]`` ships fastapi/uvicorn/python-multipart;
-# ``[server]`` ships the MCP tools the GUI imports for run dispatch.
+# ``[server]`` ships the MCP tools the GUI imports for run dispatch;
+# ``[embedding]`` ships numpy/sentence-transformers/torch — the compose file
+# pins ``ED4ALL_EMBEDDING_PROVIDER=st``, so without it the vector-index query
+# path (and with it the whole "Ask about this course" surface) dies on import.
+# torch is pre-installed from the CPU wheel index so the ``[embedding]`` extra
+# resolves against it instead of pulling multi-GB CUDA wheels (the GPU, if
+# any, belongs to the Ollama sidecar — the GUI only encodes queries).
 COPY pyproject.toml README.md ./
-RUN pip install --no-cache-dir -e ".[gui,server]"
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -e ".[gui,server,embedding]"
 
 # Copy the source tree and re-run the editable install so entry points
 # (``ed4all`` console script) and package metadata resolve.
 COPY . .
-RUN pip install --no-cache-dir -e ".[gui,server]"
+RUN pip install --no-cache-dir -e ".[gui,server,embedding]"
 
 # ED4ALL_HOME relocates ALL mutable data under the mounted /data volume.
 # ED4ALL_GUI_MODE=studio serves the end-user Library + IMSCC course viewer.
