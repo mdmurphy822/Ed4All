@@ -1,0 +1,52 @@
+# Ed4All Control-Plane GUI (Studio) — deployable image.
+#
+# Serves the FastAPI/uvicorn control plane on :8077. The companion MCP-server
+# image is the repo-root ``Dockerfile``; this one is GUI-only and is what
+# ``docker-compose.yml`` builds.
+#
+# Data story: every mutable data dir resolves under ``ED4ALL_HOME`` (lib/paths.py),
+# so a single ``/data`` volume holds state, libv2, exports, training-captures and
+# dart-output. No code lives under /data — the image ships the code, the volume
+# ships the data.
+FROM python:3.11-slim
+
+# DART PDF processing (uploaded textbooks) + curl for the HEALTHCHECK probe.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        poppler-utils \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install dependencies first (layer-cached on pyproject changes only). The
+# project is editable-installed so the second COPY of the source tree is picked
+# up without a reinstall. ``[gui]`` ships fastapi/uvicorn/python-multipart;
+# ``[server]`` ships the MCP tools the GUI imports for run dispatch.
+COPY pyproject.toml README.md ./
+RUN pip install --no-cache-dir -e ".[gui,server]"
+
+# Copy the source tree and re-run the editable install so entry points
+# (``ed4all`` console script) and package metadata resolve.
+COPY . .
+RUN pip install --no-cache-dir -e ".[gui,server]"
+
+# ED4ALL_HOME relocates ALL mutable data under the mounted /data volume.
+# ED4ALL_GUI_MODE=studio serves the end-user Library + IMSCC course viewer.
+# HF_HOME parks the sentence-transformers / bge-large embedding cache under the
+# same volume so a first-build model download survives container restarts.
+ENV ED4ALL_HOME=/data \
+    ED4ALL_GUI_MODE=studio \
+    HF_HOME=/data/hf-cache \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8077
+
+# Liveness probe hits the unauthenticated /api/health route (gui/app.py).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:8077/api/health || exit 1
+
+# Bind 0.0.0.0 so the port is reachable from the host publish (or, under host
+# networking, directly). The serve mode rides ED4ALL_GUI_MODE (studio).
+CMD ["ed4all", "gui", "--host", "0.0.0.0", "--port", "8077"]

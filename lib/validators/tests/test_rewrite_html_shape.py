@@ -264,3 +264,73 @@ def test_decision_capture_emits_per_block() -> None:
     for _, _, rationale in capture.calls:
         assert len(rationale) >= 20
         assert "block_id=" in rationale
+
+
+# ---------------------------------------------------------------------- #
+# Escalation-skip predicate (A4 gate-calibration review MAJOR fix)
+# ---------------------------------------------------------------------- #
+#
+# _is_unshipped_escalation_tombstone mirrors the packager ship-exclusion
+# filter at MCP/tools/pipeline_tools.py:5226 — skip ONLY a marker + empty
+# tombstone (filtered out of the IMSCC); a marker + non-empty *salvaged*
+# block DOES ship and MUST be audited.
+
+from lib.validators.rewrite_html_shape import (  # noqa: E402
+    _is_unshipped_escalation_tombstone,
+)
+
+_MARKER = "outline_budget_exhausted"
+
+# A deliberately-bad rewrite emit: plain text, not an HTML fragment →
+# REWRITE_NOT_HTML_BODY_FRAGMENT when audited.
+_BAD_REWRITE = "Plain text, no tags, definitely not an HTML body fragment."
+
+
+def _marked(content, *, marker=_MARKER, block_type="concept"):
+    return Block(
+        block_id=f"page_01#{block_type}_demo_0",
+        block_type=block_type,
+        page_id="page_01",
+        sequence=0,
+        content=content,
+        escalation_marker=marker,
+    )
+
+
+def test_predicate_tombstone_skipped() -> None:
+    assert _is_unshipped_escalation_tombstone(_marked("   ")) is True
+
+
+def test_predicate_salvaged_with_content_not_skipped() -> None:
+    assert _is_unshipped_escalation_tombstone(_marked(_BAD_REWRITE)) is False
+
+
+def test_predicate_no_marker_not_skipped() -> None:
+    blk = _make_block(_BAD_REWRITE, block_type="concept")
+    assert _is_unshipped_escalation_tombstone(blk) is False
+
+
+def test_tombstone_marker_plus_empty_is_skipped() -> None:
+    """(a) tombstone (marker + empty) → not audited, no issue from it."""
+    result = _validate([_marked("")])
+    assert result.passed is True
+    assert result.action is None
+    assert result.issues == []
+
+
+def test_salvaged_marker_plus_content_is_audited_and_fails() -> None:
+    """(b) salvaged (marker + content) → audited; a bad emit produces its
+    issue (REWRITE_NOT_HTML_BODY_FRAGMENT)."""
+    result = _validate([_marked(_BAD_REWRITE)])
+    assert result.passed is False
+    codes = [i.code for i in result.issues if i.severity == "critical"]
+    assert "REWRITE_NOT_HTML_BODY_FRAGMENT" in codes
+
+
+def test_no_marker_audited_as_always() -> None:
+    """(c) no marker → audited; a bad emit fails (control)."""
+    block = _make_block(_BAD_REWRITE, block_type="concept")
+    result = _validate([block])
+    assert result.passed is False
+    codes = [i.code for i in result.issues if i.severity == "critical"]
+    assert "REWRITE_NOT_HTML_BODY_FRAGMENT" in codes

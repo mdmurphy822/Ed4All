@@ -394,6 +394,44 @@ def test_seed_probes_drive_an_end_to_end_overlap_calibration():
 # --------------------------------------------------------------------------- #
 
 _MINILM = "sentence-transformers/all-MiniLM-L6-v2"
+_BGE_LARGE = "BAAI/bge-large-en-v1.5"
+
+
+def test_pinned_policy_selected_for_bge_large_semantic_pair():
+    """The current production embedding default (bge-large) resolves to its own
+    measured pin, distinct from the MiniLM pin (cosine scales differ per model)."""
+    policy = resolve_policy("semantic", _BGE_LARGE)
+    assert policy is PINNED_POLICIES[("semantic", _BGE_LARGE)]
+    assert policy.policy_version == POLICY_VERSION_PINNED
+    assert policy.embedding_model_id == _BGE_LARGE
+    # Floor + count signal inherited from the measured semantic default.
+    assert policy.score_floor == DEFAULT_POLICIES["semantic"].score_floor
+    assert (
+        policy.min_passages_above_floor
+        == DEFAULT_POLICIES["semantic"].min_passages_above_floor
+    )
+    # The two semantic pins are genuinely different objects with different
+    # thresholds — a model swap is NOT a silent reuse of the other's cosine.
+    assert policy is not PINNED_POLICIES[("semantic", _MINILM)]
+    assert policy.min_top_score != PINNED_POLICIES[("semantic", _MINILM)].min_top_score
+
+
+def test_hybrid_rrf_is_embedder_keyed_and_unpinned():
+    """hybrid-rrf is keyed by embedding model (its fused score depends on the
+    semantic arm) but ships UNPINNED — the calibration distributions overlapped
+    on every local archive, so it falls through to the v0-uncalibrated default
+    for BOTH a known and an unknown embedder until a clean threshold exists."""
+    # No hybrid-rrf pin exists yet for any embedder.
+    assert not any(eng == "hybrid-rrf" for (eng, _model) in PINNED_POLICIES)
+    # The current production embedder resolves to the default (not a stale pin).
+    p_known = resolve_policy("hybrid-rrf", _BGE_LARGE)
+    assert p_known is DEFAULT_POLICIES["hybrid-rrf"]
+    assert p_known.policy_version == POLICY_VERSION_UNCALIBRATED
+    # An unknown embedder is equally unpinned.
+    p_unknown = resolve_policy("hybrid-rrf", "some-other/embedder-v9")
+    assert p_unknown is DEFAULT_POLICIES["hybrid-rrf"]
+    # And a hybrid-rrf request with no embedder also falls back (never a pin).
+    assert resolve_policy("hybrid-rrf", None) is DEFAULT_POLICIES["hybrid-rrf"]
 
 
 def test_pinned_policy_selected_for_matching_semantic_pair():
@@ -455,7 +493,10 @@ def _discover_pinned_calibrations():
     embedding_model_id) provenance matches a PINNED_POLICIES key.
 
     Keyed off artifact fields (no hardcoded slug). Returns
-    ``[(slug, key), ...]`` for each discovered artifact that maps to a pin.
+    ``[(slug, key), ...]`` for each discovered artifact that maps to a pin AND
+    carries a clean (non-null) recommendation. Several courses may map to the
+    SAME key (a single pin calibrated across a corpus) — each is returned so the
+    pin is checked safe on every one.
     """
     out = []
     for slug in _discover_calibration_courses():
@@ -466,12 +507,29 @@ def _discover_pinned_calibrations():
         except Exception:  # pragma: no cover - skip malformed
             continue
         key = (doc.get("engine"), doc.get("embedding_model_id"))
-        if key in PINNED_POLICIES:
+        if key in PINNED_POLICIES and doc.get("recommended") is not None:
             out.append((slug, key))
     return out
 
 
 _PINNED_CALIBRATIONS = _discover_pinned_calibrations()
+
+
+def _effective_sweep_row(doc: dict, threshold: float) -> dict:
+    """The sweep row the policy actually applies at ``threshold`` on this course.
+
+    The verdict is ``top_score >= threshold`` (monotone in the threshold), so a
+    threshold falling between two observed scores behaves like the largest
+    observed score that is ``<= threshold``. A cross-course pin (the corpus-wide
+    minimum of the per-course recommendations) is an exact sweep threshold only
+    on the course it was drawn from; on the others it lands between observed
+    scores, so we read the effective row rather than requiring an exact match.
+    """
+    candidates = [
+        r for r in doc["sweep"] if r["threshold"] <= threshold + 1e-9
+    ]
+    assert candidates, "sweep always includes threshold 0.0"
+    return max(candidates, key=lambda r: r["threshold"])
 
 
 @pytest.mark.skipif(
@@ -483,42 +541,71 @@ _PINNED_CALIBRATIONS = _discover_pinned_calibrations()
     _PINNED_CALIBRATIONS,
     ids=[f"{s}:{k[0]}" for s, k in _PINNED_CALIBRATIONS],
 )
-def test_pinned_threshold_reproduces_committed_calibration_verdict(slug, key):
-    """Tier-2: read the committed refusal_calibration.json and assert the pinned
-    min_top_score equals the artifact's clean recommendation AND reproduces its
-    answer_recall / refusal_precision / refusal_recall verdict (the sweep row at
-    the pinned threshold).
+def test_pinned_threshold_is_corpus_safe_on_committed_calibration(slug, key):
+    """Tier-2: every committed refusal_calibration.json mapping to a pin must
+    confirm the pinned min_top_score is SAFE on that course — the effective
+    sweep row at the pin still clears the pin rule (refusal_precision >= 0.90
+    AND answer_recall >= 0.95) with zero false refusals on answerable queries.
+
+    A pin shipped in the binary is corpus-wide, not per-course: a single pin can
+    map to several committed artifacts. The cross-course derivation (the MINIMUM
+    of the per-course recommendations) guarantees answer_recall is preserved on
+    every calibrated course — this test enforces that guarantee against the
+    on-disk artifacts rather than trusting the derivation comment.
 
     Course data dirs are gitignored user data; the (slug, key) pairs are
-    discovered dynamically — each discovered artifact is matched to its pin by
-    the artifact's own (engine, embedding_model_id) provenance, never by a
-    hardcoded slug."""
+    discovered dynamically by the artifact's own (engine, embedding_model_id)
+    provenance, never by a hardcoded slug."""
     path = _calibration_path(slug)
     if not path.exists():
         pytest.skip(f"gitignored calibration absent for {slug}: {path}")
     doc = json.loads(path.read_text(encoding="utf-8"))
-    rec = doc["recommended"]
-    assert rec is not None, f"{slug} calibration has no clean recommendation"
+    assert doc["recommended"] is not None, (
+        f"{slug} calibration has no clean recommendation"
+    )
 
     pin = PINNED_POLICIES[key]
-    # 1) The pin equals the artifact's recommended threshold (no drift).
-    assert pin.min_top_score == pytest.approx(rec["min_top_score"], abs=1e-6)
-    # 2) The engine + embedder match the artifact provenance.
+    # Engine + embedder match the artifact provenance.
     assert doc["engine"] == pin.engine
     assert doc["embedding_model_id"] == pin.embedding_model_id
 
-    # 3) The pinned threshold reproduces the recorded verdict: the sweep row at
-    #    the pinned threshold carries the same precision/recall the pin claims.
-    row = next(
-        r
-        for r in doc["sweep"]
-        if r["threshold"] == pytest.approx(pin.min_top_score, abs=1e-6)
-    )
-    assert row["answer_recall"] == pytest.approx(rec["answer_recall"], abs=1e-6)
-    assert row["refusal_recall"] == pytest.approx(rec["refusal_recall"], abs=1e-6)
-    assert row["refusal_precision"] == pytest.approx(
-        rec["refusal_precision"], abs=1e-6
-    )
-    # The committed recommendation must itself clear the pin rule.
+    # The pin must never EXCEED a course's own clean recommendation — exceeding
+    # it would refuse answerable queries the course's own sweep deemed answerable
+    # (the corpus-wide pin is the MIN across courses, so this always holds).
+    assert pin.min_top_score <= doc["recommended"]["min_top_score"] + 1e-6
+
+    # The effective sweep row at the pin clears the rule on this course.
+    row = _effective_sweep_row(doc, pin.min_top_score)
     assert row["refusal_precision"] >= 0.90
     assert row["answer_recall"] >= 0.95
+    assert row["false_refusals_on_positives"] == 0
+
+
+@pytest.mark.skipif(
+    not _PINNED_CALIBRATIONS,
+    reason="no committed refusal_calibration.json mapping to a pinned policy",
+)
+def test_pin_value_anchored_to_a_committed_recommendation():
+    """Tier-2: each pinned key's numeric min_top_score must equal at least one
+    committed artifact's clean recommendation (no drift / invented number).
+
+    The corpus-wide pin is the MINIMUM of the per-course recommendations, so it
+    coincides exactly with one course's committed recommendation; the others it
+    only has to be SAFE on (the per-course test above). This anchors every
+    shipped pin value to an on-disk artifact without requiring a 1:1 mapping."""
+    recs_by_key: dict = {}
+    for slug, key in _PINNED_CALIBRATIONS:
+        doc = json.loads(_calibration_path(slug).read_text(encoding="utf-8"))
+        recs_by_key.setdefault(key, []).append(
+            doc["recommended"]["min_top_score"]
+        )
+    for key, recs in recs_by_key.items():
+        pin = PINNED_POLICIES[key]
+        assert any(
+            pin.min_top_score == pytest.approx(r, abs=1e-6) for r in recs
+        ), (
+            f"pin {key} min_top_score={pin.min_top_score} matches no committed "
+            f"recommendation in {recs}"
+        )
+        # Corpus-wide pin is the minimum across courses.
+        assert pin.min_top_score == pytest.approx(min(recs), abs=1e-6)

@@ -144,6 +144,26 @@ async def get_run(run_id: str) -> Any:
     return record
 
 
+@router.get("/runs/{run_id}/validation-report")
+async def get_validation_report(run_id: str) -> Any:
+    """Return the failure / validation report for a run (Marketable-v1 A6).
+
+    Locates the run's ``courseforge_validation_report.json`` (resolved from the
+    run record's project export) and returns it plus a digestible failed-gate
+    list ``[{phase, gate_id, severity, message, issues_count}]`` derived from the
+    persisted ``gate_results``. The report body is ``None`` (with an explanatory
+    ``note``) when no aggregator file exists; the failed-gate digest is still
+    returned. 404 when the run is unknown.
+    """
+    try:
+        return run_service.validation_report(run_id)
+    except KeyError:
+        return _error(404, "unknown_run", run_id)
+    except Exception as exc:  # noqa: BLE001 — surface the real error
+        logger.exception("validation_report failed for %s", run_id)
+        return _error(500, "validation_report_failed", str(exc))
+
+
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: str) -> Any:
     """Request cancellation of a run."""

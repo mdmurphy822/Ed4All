@@ -39,6 +39,22 @@ pip install -e ".[full]"
 ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101
 ```
 
+`[full]` installs the CPU-light surface: DART PDF processing, the MCP server,
+the dev/test toolchain, and the GUI. It deliberately leaves out the two heavy
+ML extras so a default install never pulls multi-GB GPU wheels:
+
+| Extra | Adds | When you need it |
+|-------|------|------------------|
+| `embedding` | `sentence-transformers` + `torch` | Semantic retrieval and the statistical-tier content validators. Without it those validators degrade to warnings and retrieval falls back to BM25. |
+| `training` | `torch` + `transformers` + `trl` + `peft` + `bitsandbytes` | Fine-tuning a course-pinned SLM adapter (`ed4all run trainforge_train`). Requires a GPU. |
+
+Install them alongside `[full]` only when needed:
+
+```bash
+pip install -e '.[full,embedding]'   # + semantic retrieval / statistical validators
+pip install -e '.[full,training]'    # + SLM fine-tuning (GPU)
+```
+
 By default Ed4All runs in **local mode** — no API key required. To route through the Anthropic API instead, set `ANTHROPIC_API_KEY` and add `--mode api`.
 
 That single command runs the full pipeline — accessibility conversion, objective synthesis, course planning, module generation, IMSCC packaging, knowledge-graph building, and archival. The IMSCC file lands in `Courseforge/exports/`, and the searchable archive lands in `LibV2/courses/`.
@@ -58,6 +74,8 @@ If you already ran `pip install -e ".[full]"` above (it includes the GUI), just 
 ```bash
 ed4all gui             # serves http://127.0.0.1:8077
 ```
+
+Prefer containers? `docker compose up` serves the GUI on `http://localhost:8077` with a local model backend — see [`docs/operations/docker.md`](docs/operations/docker.md).
 
 Full GUI guide — the six panels, settings and secret handling, model routing, retrieval, and how Claude Code sessions can drive it: [`gui/README.md`](gui/README.md).
 

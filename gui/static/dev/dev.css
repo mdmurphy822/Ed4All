@@ -1,0 +1,132 @@
+/* Ed4All Developer Console (C4) — pane-shell + power-user chrome.
+ *
+ * Layers on top of /styles.css (the classic operator stylesheet). Only the
+ * dev-specific structures (nav rail, pane main, ApiError drawer, inspector,
+ * env/api/events panes) live here, plus the a11y primitives the classic sheet
+ * lacks (visually-hidden, skip-link, an explicit :focus-visible outline).
+ */
+
+/* --- a11y primitives (the classic sheet doesn't ship these) --- */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  clip: rect(0 0 0 0); clip-path: inset(50%);
+  overflow: hidden; white-space: nowrap;
+}
+
+.skip-link {
+  position: absolute; left: -9999px; top: 0; z-index: 1000;
+  background: #1d2330; color: #e8edf6;
+  padding: 10px 14px; border-radius: 0 0 6px 0;
+}
+.skip-link:focus { left: 0; }
+
+/* An explicit, non-suppressed focus indicator for keyboard users. The classic
+ * sheet only rings form inputs; the dev console adds links/buttons/treeitems. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #4493f8;
+  outline-offset: 2px;
+}
+
+/* --- shell layout --- */
+#dev-shell { display: flex; min-height: 100vh; }
+
+#dev-rail {
+  flex: 0 0 220px;
+  background: #11151d;
+  border-right: 1px solid #232a36;
+  padding: 14px 10px;
+  display: flex; flex-direction: column;
+}
+.dev-brand { margin: 0 0 14px; font-weight: 600; }
+.dev-brand a { color: #e8edf6; text-decoration: none; }
+.dev-brand-sub { display: block; font-size: 11px; color: #8b97aa; font-weight: 400; }
+
+#dev-navlist { list-style: none; margin: 0; padding: 0; flex: 1; }
+#dev-navlist li { margin: 2px 0; }
+#dev-navlist a {
+  display: block;
+  padding: 9px 12px;
+  min-height: 24px;
+  color: #c5cedd; text-decoration: none;
+  border-radius: 6px; font-size: 13px;
+}
+#dev-navlist a:hover { background: #1a2029; }
+#dev-navlist a.active { background: #233148; color: #fff; }
+
+.dev-rail-foot {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: #8b97aa;
+  padding: 8px 12px; border-top: 1px solid #232a36;
+}
+
+#dev-main {
+  flex: 1;
+  padding: 22px 26px 80px;
+  max-width: 1200px;
+}
+#dev-main h1 { margin-top: 0; }
+
+/* --- Run Inspector --- */
+.dev-inspector { display: grid; grid-template-columns: minmax(280px, 1fr) 2fr; gap: 16px; align-items: start; }
+.dev-run-list table { width: 100%; }
+.dev-run-list tr.clickable { cursor: pointer; }
+.dev-run-list tr.clickable:hover { background: #1a2029; }
+.dev-run-list tr.clickable.active { background: #233148; }
+.dev-detail-head { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.dev-chip-holder { display: inline-flex; }
+.dev-gate-wrap, .dev-report-wrap { margin-top: 14px; }
+.dev-failbox { border-left: 3px solid #e2575b; padding: 6px 12px; margin: 10px 0; background: #1b1518; }
+.dev-report-json pre.json, pre.json {
+  font-family: var(--mono, monospace);
+  font-size: 12px; white-space: pre-wrap; word-break: break-word;
+  background: #0e1219; padding: 10px; border-radius: 6px; overflow: auto; max-height: 360px;
+}
+
+/* --- Events feed --- */
+.dev-events { max-height: 520px; overflow: auto; }
+.dev-event { padding: 6px 8px; border-bottom: 1px solid #1c222c; }
+.dev-event-meta { display: block; font-size: 11px; color: #8b97aa; }
+.dev-event-text { white-space: pre-wrap; word-break: break-word; font-size: 13px; }
+.dev-event.src-claude { border-left: 3px solid #6aa9ff; }
+.dev-event.src-gui, .dev-event.src-human { border-left: 3px solid #7ad17a; }
+
+/* --- API Explorer --- */
+.dev-api-form textarea { width: 100%; }
+.dev-api-resp { margin-top: 14px; }
+.dev-hist-list { list-style: none; margin: 0; padding: 0; }
+.dev-hist-list li { margin: 3px 0; display: flex; align-items: center; gap: 6px; }
+
+/* --- console-wide ApiError drawer --- */
+.dev-drawer {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 800;
+  background: #161b24; border-top: 1px solid #2a323f;
+  box-shadow: 0 -4px 14px rgba(0,0,0,.35);
+}
+.dev-drawer-bar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; min-height: 36px; }
+.dev-drawer-count {
+  display: inline-block; min-width: 20px; text-align: center;
+  background: #3a2226; color: #ffb3b6; border-radius: 10px; padding: 1px 7px; font-size: 11px; margin-left: 6px;
+}
+.dev-drawer-body { max-height: 240px; overflow: auto; padding: 0 12px 10px; }
+.dev-err-table { width: 100%; font-size: 12px; }
+.dev-err-status { color: #ffb3b6; }
+.dev-err-detail { color: #c5cedd; }
+.dev-drawer.collapsed .dev-drawer-body { display: none; }
+
+/* Ensure interactive controls meet the 24px minimum target size. */
+#dev-shell button, #dev-shell .btn, #dev-shell input, #dev-shell select {
+  min-height: 28px;
+}
+
+@media (max-width: 860px) {
+  .dev-inspector { grid-template-columns: 1fr; }
+  #dev-shell { flex-direction: column; }
+  #dev-rail { flex-basis: auto; }
+}

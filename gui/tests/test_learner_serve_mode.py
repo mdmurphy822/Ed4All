@@ -65,7 +65,9 @@ def test_learner_flag_passes_learner_only_true(monkeypatch: pytest.MonkeyPatch) 
     rc = main(["--learner"])
 
     assert rc == 0
-    assert captured["create_app_kwargs"] == {"learner_only": True}
+    # ``--mode`` rides through as ``mode=None`` (unset); ``--learner`` still
+    # selects the learner surface via ``learner_only=True``.
+    assert captured["create_app_kwargs"] == {"learner_only": True, "mode": None}
 
 
 def test_no_learner_flag_defaults_to_full_app(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -77,7 +79,7 @@ def test_no_learner_flag_defaults_to_full_app(monkeypatch: pytest.MonkeyPatch) -
     rc = main([])
 
     assert rc == 0
-    assert captured["create_app_kwargs"] == {"learner_only": False}
+    assert captured["create_app_kwargs"] == {"learner_only": False, "mode": None}
 
 
 def test_env_learner_default_selects_learner_only(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -89,7 +91,7 @@ def test_env_learner_default_selects_learner_only(monkeypatch: pytest.MonkeyPatc
     rc = main([])
 
     assert rc == 0
-    assert captured["create_app_kwargs"] == {"learner_only": True}
+    assert captured["create_app_kwargs"] == {"learner_only": True, "mode": None}
 
 
 @pytest.mark.parametrize(

@@ -44,9 +44,10 @@ router = APIRouter()
 class AskRequest(BaseModel):
     """Body for ``POST "/ask"``.
 
-    ``engine ∈ {auto, lexical, semantic, hybrid}`` (default ``"auto"``, resolved
-    honestly in the service). Mirrors the operator ``QueryRequest`` permissive
-    ``extra="allow"`` posture.
+    ``engine ∈ {auto, lexical, semantic, hybrid-rrf}`` (default ``"auto"``,
+    resolved honestly in the service: ``auto`` → ``hybrid-rrf`` when a vector
+    index exists, else ``lexical``). Mirrors the operator ``QueryRequest``
+    permissive ``extra="allow"`` posture.
     """
 
     slug: str
@@ -162,6 +163,109 @@ async def ask(req: AskRequest) -> Any:
         return _error_with_fragment(500, "ask_failed", "error_generic", str(exc))
 
     return {"answer": answer, "html": answer_render.render_answer_fragment(answer)}
+
+
+# --------------------------------------------------------------- async ask jobs
+
+
+@router.get("/ask-ready/{slug}")
+async def ask_ready(slug: str) -> Any:
+    """Cheap server check: is ``slug`` a known course (the Ask drawer gate)?
+
+    Returns ``{slug, exists, has_vector_index}`` — the drawer gates its ask box
+    on ``exists`` (the course is reachable at all) and surfaces ``has_vector_index``
+    so the "no index → explain how to fix it" copy keys off a server fact, not
+    only the library card. ``has_vector_index`` is a single ``stat`` (no model
+    load); ``False`` does NOT block asking (the engine honestly downgrades to
+    lexical), it only drives the explanatory copy.
+    """
+    if not _course_exists(slug):
+        return _error(404, "course_not_found", f"unknown course: {slug!r}")
+    from gui.services.answer_service import _has_vector_index, _libv2_root  # noqa: PLC0415
+
+    try:
+        has_index = _has_vector_index(_libv2_root(), slug)
+    except Exception:  # noqa: BLE001 — a stat failure → treat as no index (honest downgrade)
+        has_index = False
+    return {"slug": slug, "exists": True, "has_vector_index": has_index}
+
+
+@router.post("/ask-jobs")
+async def submit_ask_job(req: AskRequest) -> Any:
+    """Enqueue a durable async ask job; return ``{ask_id, status, queue_position}``.
+
+    The async sibling of ``POST /ask`` for the in-context drawer: the answer is
+    computed off-request by a single-lane background worker and persisted to disk
+    (survives a tab refresh / uvicorn restart). Same 422/404 input gates as the
+    sync path; the poll endpoint surfaces the result.
+    """
+    if not req.query or not req.query.strip():
+        return _error(422, "invalid_query", "query must be non-empty")
+    if not _course_exists(req.slug):
+        return _error(404, "course_not_found", f"unknown course: {req.slug!r}")
+
+    from gui.services import ask_jobs  # noqa: PLC0415
+
+    record = ask_jobs.submit(req.slug, req.query, req.engine)
+    return {
+        "ask_id": record["ask_id"],
+        "status": record["status"],
+        "queue_position": record.get("queue_position", -1),
+    }
+
+
+@router.get("/ask-jobs/{ask_id}")
+async def poll_ask_job(ask_id: str) -> Any:
+    """Poll one ask job → ``{status, ...}``.
+
+    * ``pending`` / ``running`` → ``{ask_id, status, queue_position}``.
+    * ``done`` → ``{ask_id, status, answer, html}`` (the answer rendered through
+      the SAME ``answer_render`` path as the sync endpoint — one rendering path,
+      no JS-vs-server drift).
+    * ``error`` → ``{ask_id, status, error, detail, html}`` mapping the captured
+      typed-error class name to a learner-safe fragment via ``_TYPED_ERROR_MAP``.
+
+    Always HTTP 200 for a known job (the job *state* is data); an unknown id is
+    404. Mirrors the sync ``/ask`` contract: refusals/blocks are ``done`` jobs
+    carrying a refusal/block answer payload, never an HTTP error.
+    """
+    from gui.services import ask_jobs  # noqa: PLC0415
+
+    record = ask_jobs.status(ask_id)
+    if record is None:
+        return _error(404, "ask_job_not_found", f"unknown ask job: {ask_id!r}")
+
+    status_value = record.get("status")
+    if status_value == ask_jobs.STATUS_DONE:
+        answer = record.get("answer") or {}
+        return {
+            "ask_id": ask_id,
+            "status": status_value,
+            "answer": answer,
+            "html": answer_render.render_answer_fragment(answer),
+        }
+    if status_value == ask_jobs.STATUS_ERROR:
+        name = str(record.get("error") or "")
+        detail = str(record.get("detail") or "")
+        if name in _TYPED_ERROR_MAP:
+            _, error_code, copy_key = _TYPED_ERROR_MAP[name]
+        elif name == "RuntimeError":
+            error_code, copy_key = "engine_unavailable", "error_index"
+        else:
+            error_code, copy_key = "ask_failed", "error_generic"
+        return {
+            "ask_id": ask_id,
+            "status": status_value,
+            "error": error_code,
+            "detail": detail,
+            "html": answer_render.render_error_fragment(copy_key),
+        }
+    # pending / running
+    return {
+        "ask_id": ask_id,
+        "status": status_value,
+        "queue_position": record.get("queue_position", -1),
+    }
 
 
 @router.get("/source/{slug}")

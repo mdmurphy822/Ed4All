@@ -23,6 +23,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.paths import PROJECT_ROOT  # noqa: E402
+from lib.paths import courseforge_exports_dir as _lib_courseforge_exports_dir  # noqa: E402
 from lib.secure_paths import validate_path_within_root  # noqa: E402
 from Trainforge.chunker import CHUNKER_SCHEMA_VERSION  # noqa: E402
 
@@ -39,6 +40,38 @@ _FALLBACK_BLOOM_LEVEL = "apply"
 DART_OUTPUT_DIR = PROJECT_ROOT / "DART" / "batch_output"
 COURSEFORGE_INPUTS = PROJECT_ROOT / "Courseforge" / "inputs" / "textbooks"
 TRAINING_CAPTURES = PROJECT_ROOT / "training-captures"
+
+
+# Snapshot of the project root at import time so ``courseforge_exports_dir`` can
+# detect which test seam (``PROJECT_ROOT`` / ``_PROJECT_ROOT``) was monkeypatched.
+_IMPORT_PROJECT_ROOT = PROJECT_ROOT
+
+
+def courseforge_exports_dir() -> Path:
+    """Resolve the Courseforge exports dir for this module.
+
+    Honors the ED4ALL_HOME relocatable data root via ``lib.paths`` when set;
+    otherwise resolves against this module's project root. ``PROJECT_ROOT`` and
+    ``_PROJECT_ROOT`` are identical at import time but are two distinct
+    long-standing test seams — different phase-handler tests monkeypatch one or
+    the other to redirect project exports into a ``tmp_path``. To honor both, we
+    use whichever has been patched away from the import-time default
+    (``_IMPORT_PROJECT_ROOT``); when neither is patched they're equal so the
+    choice is moot. Byte-stable to ``<root> / "Courseforge" / "exports"`` when
+    ED4ALL_HOME is unset.
+    """
+    from lib.paths import ed4all_home  # noqa: PLC0415
+
+    if ed4all_home() is not None:
+        return _lib_courseforge_exports_dir()
+    # Prefer whichever seam a test redirected; default to PROJECT_ROOT.
+    if PROJECT_ROOT != _IMPORT_PROJECT_ROOT:
+        root = PROJECT_ROOT
+    elif _PROJECT_ROOT != _IMPORT_PROJECT_ROOT:
+        root = _PROJECT_ROOT
+    else:
+        root = PROJECT_ROOT
+    return root / "Courseforge" / "exports"
 
 # Backstop regex to scrub Qwen-invented `data-cf-objective-id` values.
 # Byte-identical to `_DATA_CF_OBJECTIVE_ID_RE` in
@@ -1085,6 +1118,85 @@ def _resolve_chunk_difficulty(
             difficulty = "foundational"
 
     return difficulty
+
+
+# Canonical sourceId shape: dart:{slug}#{block_id} (lowercase slug + block;
+# mirrors schemas/knowledge/source_reference.schema.json). The validator owns
+# the canonical pattern + the slug-derivation rule; we import both rather than
+# re-spell them so the emitter and the source_refs validator can never drift
+# (MCP/tools depending on lib/validators is the allowed layering direction).
+# Used to drop any harvested block whose minted id wouldn't validate so a
+# malformed DART attribute can't poison a chunk's source_references[].
+from lib.validators.source_refs import (
+    SOURCE_ID_RE as _DART_SOURCE_ID_RE,
+    dart_slug_from_filename as _dart_slug_from_filename,
+)
+
+
+def _dart_block_source_references(
+    dart_source_refs: Optional[List[Dict[str, Any]]],
+    slug: str,
+) -> List[Dict[str, Any]]:
+    """Mint canonical SourceReference dicts from harvested DART block refs.
+
+    ``dart_source_refs`` is the chunker's harvest output — an ordered list
+    of ``{"block_id": str, "pages": List[int]}`` pairs read off
+    ``data-dart-block-id`` / ``data-dart-pages`` attributes (see
+    ``Trainforge.chunker.helpers.harvest_dart_source_refs``). ``slug`` is the
+    staged-HTML file stem (passed as ``item["item_id"]`` by
+    ``_run_dart_chunking``). We re-run the canonical
+    ``dart_slug_from_filename`` rule over it here — DART's multi-source
+    strategy emits ``{stem}_synthesized.html``, so ``item_id`` can carry a
+    trailing ``_synthesized`` that the source_refs validator + source-router
+    strip when they key ``dart:{slug}#...``. Stripping only at mint time
+    keeps the sourceId join key resolvable WITHOUT mutating ``item_id``
+    itself (it also flows into the chunk's ``module_id`` / ``lesson_id``,
+    which must stay the literal file stem).
+
+    Returns SourceReference dicts in the shape
+    ``schemas/knowledge/source_reference.schema.json`` requires:
+    ``{"sourceId": "dart:{slug}#{block_id}", "role": "primary",
+    "extractor": "synthesized", "pages": [N, ...]}``. ``role`` is
+    ``primary`` — a chunk built from a DART block IS that source. ``pages``
+    is omitted when empty (schema requires ``pages`` items ``minimum: 1``).
+    Any minted sourceId that fails the canonical pattern is dropped so a
+    malformed attribute never produces an unresolvable ref.
+
+    Returns ``[]`` when ``dart_source_refs`` or ``slug`` is empty — the
+    additive contract: chunks from HTML without ``data-dart-*`` attributes
+    keep ``source.source_references`` unset (legacy corpora byte-stable).
+    """
+    if not dart_source_refs or not slug:
+        return []
+    # Canonicalize the slug (strip ``_synthesized``, lowercase, spaces→hyphens)
+    # so minted sourceIds match the validator's / source-router's join keys on
+    # real multi-source corpora; ``item_id`` itself is left untouched upstream.
+    slug = _dart_slug_from_filename(slug)
+    if not slug:
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for ref in dart_source_refs:
+        if not isinstance(ref, dict):
+            continue
+        block_id = str(ref.get("block_id") or "").strip()
+        if not block_id:
+            continue
+        source_id = f"dart:{slug}#{block_id}"
+        if source_id in seen or not _DART_SOURCE_ID_RE.match(source_id):
+            continue
+        seen.add(source_id)
+        entry: Dict[str, Any] = {
+            "sourceId": source_id,
+            "role": "primary",
+            "extractor": "synthesized",
+        }
+        pages = [int(p) for p in (ref.get("pages") or []) if int(p) > 0]
+        if pages:
+            entry["pages"] = sorted(set(pages))
+        out.append(entry)
+    return out
+
 
 def _backfill_dart_chunk_lo_refs(
     *,
@@ -3265,9 +3377,7 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
     objectives_path: Optional[_Path] = None
     if project_id:
         candidate = (
-            PROJECT_ROOT
-            / "Courseforge"
-            / "exports"
+            courseforge_exports_dir()
             / project_id
             / "01_learning_objectives"
             / "synthesized_objectives.json"
@@ -3993,9 +4103,7 @@ def _resolve_minted_curie_map_for_validation(
     course_code = project_id or ""
     if project_id:
         config_path = (
-            PROJECT_ROOT
-            / "Courseforge"
-            / "exports"
+            courseforge_exports_dir()
             / project_id
             / "project_config.json"
         )
@@ -4203,7 +4311,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
             "error": "_run_content_generation_outline requires project_id",
         })
 
-    project_path = PROJECT_ROOT / "Courseforge" / "exports" / project_id
+    project_path = courseforge_exports_dir() / project_id
     out_dir = project_path / "01_outline"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -4650,9 +4758,7 @@ async def _run_inter_tier_validation(**kwargs) -> str:
     objectives_path: Optional[_Path] = None
     if project_id:
         candidate = (
-            PROJECT_ROOT
-            / "Courseforge"
-            / "exports"
+            courseforge_exports_dir()
             / project_id
             / "01_learning_objectives"
             / "synthesized_objectives.json"
@@ -4854,7 +4960,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             "error": f"blocks_validated_path does not exist: {blocks_path}",
         })
 
-    project_path = PROJECT_ROOT / "Courseforge" / "exports" / project_id
+    project_path = courseforge_exports_dir() / project_id
     out_dir = project_path / "04_rewrite"
     out_dir.mkdir(parents=True, exist_ok=True)
     content_dir = project_path / "03_content_development"
@@ -5547,7 +5653,7 @@ def _build_tool_registry() -> dict:
 
             # Use the project creation logic directly
             project_id = f"PROJ-{course_name}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            project_path = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
+            project_path = courseforge_exports_dir() / project_id
 
             project_path.mkdir(parents=True, exist_ok=True)
             for subdir in ["00_template_analysis", "01_learning_objectives",
@@ -5641,7 +5747,7 @@ def _build_tool_registry() -> dict:
             # create_course_project layout so downstream phases (which
             # accept project_id as an input) find the same structure.
             project_id = f"PROJ-{course_name}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            project_path = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
+            project_path = courseforge_exports_dir() / project_id
             project_path.mkdir(parents=True, exist_ok=True)
             for subdir in ("00_template_analysis", "01_learning_objectives",
                            "02_course_planning", "03_content_development",
@@ -5879,11 +5985,11 @@ def _build_tool_registry() -> dict:
             # the most recent export matching course_name.
             project_path: Optional[Path] = None
             if project_id:
-                cand = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
+                cand = courseforge_exports_dir() / project_id
                 if cand.exists():
                     project_path = cand
             if project_path is None and course_name:
-                exports_dir = _PROJECT_ROOT / "Courseforge" / "exports"
+                exports_dir = courseforge_exports_dir()
                 if exports_dir.exists():
                     matches = sorted(
                         (p for p in exports_dir.iterdir()
@@ -6667,7 +6773,7 @@ def _build_tool_registry() -> dict:
             if not project_id:
                 return json.dumps({"error": "generate_course_content requires project_id"})
 
-            project_path = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
+            project_path = courseforge_exports_dir() / project_id
             content_dir = project_path / "03_content_development"
             content_dir.mkdir(parents=True, exist_ok=True)
 
@@ -7217,7 +7323,7 @@ def _build_tool_registry() -> dict:
             from pathlib import Path as _Path
 
             project_id = kwargs.get("project_id", "")
-            project_path = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
+            project_path = courseforge_exports_dir() / project_id
             content_dir = project_path / "03_content_development"
             final_dir = project_path / "05_final_package"
             final_dir.mkdir(parents=True, exist_ok=True)
@@ -7549,7 +7655,7 @@ def _build_tool_registry() -> dict:
             project_dir: Optional[Path] = None
             imscc_path = Path(imscc_path_str) if imscc_path_str else None
             if project_id_kw:
-                candidate = _PROJECT_ROOT / "Courseforge" / "exports" / project_id_kw
+                candidate = courseforge_exports_dir() / project_id_kw
                 if candidate.exists():
                     project_dir = candidate
             if project_dir is None and imscc_path and imscc_path.exists():
@@ -7558,7 +7664,7 @@ def _build_tool_registry() -> dict:
                     project_dir = candidate
             if project_dir is None:
                 # Last-resort fallback: most recent export dir matching course_id.
-                exports_dir = _PROJECT_ROOT / "Courseforge" / "exports"
+                exports_dir = courseforge_exports_dir()
                 if exports_dir.exists():
                     matches = sorted(
                         (p for p in exports_dir.iterdir()
@@ -8248,7 +8354,7 @@ def _build_tool_registry() -> dict:
 
         if trainforge_dir is None and project_id_kw:
             candidate = (
-                PROJECT_ROOT / "Courseforge" / "exports" / project_id_kw / "trainforge"
+                courseforge_exports_dir() / project_id_kw / "trainforge"
             )
             if candidate.exists() and candidate.is_dir():
                 trainforge_dir = candidate
@@ -8274,7 +8380,7 @@ def _build_tool_registry() -> dict:
         # Phase 7c: imscc_chunks/ is canonical; corpus/ retained for back-compat.
         if trainforge_dir is None:
             candidates: list[Path] = []
-            exports_root = PROJECT_ROOT / "Courseforge" / "exports"
+            exports_root = courseforge_exports_dir()
             if exports_root.exists():
                 for project_dir in exports_root.iterdir():
                     if not project_dir.is_dir():
@@ -8676,7 +8782,7 @@ def _build_tool_registry() -> dict:
         if not project_id:
             return json.dumps({"error": "source-router requires project_id"})
 
-        project_path = PROJECT_ROOT / "Courseforge" / "exports" / project_id
+        project_path = courseforge_exports_dir() / project_id
         project_path.mkdir(parents=True, exist_ok=True)
         map_path = project_path / "source_module_map.json"
 
@@ -9153,7 +9259,7 @@ def _build_tool_registry() -> dict:
         config_data: Dict[str, Any] = {}
         project_path: Optional[Path] = None
         if project_id:
-            cand = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
+            cand = courseforge_exports_dir() / project_id
             if cand.exists():
                 project_path = cand
                 cfg_path = cand / "project_config.json"
@@ -9590,6 +9696,12 @@ def _build_tool_registry() -> dict:
                     for a in (concept.get("aliases") or [])
                     if isinstance(a, str) and str(a).strip()
                 ]
+                # Fix-1 (merge half): preserve the LLM's raw canonical surface
+                # form as an alias before it's overwritten by the slug below,
+                # so the compiled seed can also match the natural-language form
+                # the model emitted (e.g. "Visual Hierarchy") in prose.
+                if canonical_raw and canonical_raw not in aliases:
+                    aliases.append(canonical_raw)
                 chapter_ids = [
                     str(c)
                     for c in (concept.get("chapter_ids") or [])
@@ -9651,10 +9763,26 @@ def _build_tool_registry() -> dict:
                     exc,
                 )
                 return vocabulary
-            seeds = compile_domain_concept_seeds([
-                {"id": c["canonical"], "aliases": c.get("aliases") or []}
-                for c in concepts_out
-            ])
+            # Fix-1: de-slug the canonical id into a surface-form alias.
+            # The merge step above overwrote ``canonical`` with the
+            # ``canonical_slug`` (``visual-hierarchy``), which
+            # ``compile_domain_concept_seeds`` regex-escapes into a literal
+            # ``\bvisual\-hierarchy\b`` pattern that never matches the spaced
+            # prose form "visual hierarchy". Append the hyphen-replaced
+            # surface form as an alias (mirroring the lexical path below) so
+            # the compiled pattern actually fires on the textbook text. Dedupe
+            # against existing aliases; skip the alias when it collapses back
+            # to the id (single-word slugs like ``accessibility`` where
+            # ``replace("-", " ")`` is a no-op).
+            _stage3_seed_specs: List[Dict[str, Any]] = []
+            for c in concepts_out:
+                _cid = c["canonical"]
+                _aliases = list(c.get("aliases") or [])
+                _deslug = _cid.replace("-", " ")
+                if _deslug != _cid and _deslug not in _aliases:
+                    _aliases.append(_deslug)
+                _stage3_seed_specs.append({"id": _cid, "aliases": _aliases})
+            seeds = compile_domain_concept_seeds(_stage3_seed_specs)
 
             # --- (e) re-tag each loaded chunk in-memory --------------------
             # IN-MEMORY only — chunks.jsonl on disk is NOT rewritten, so
@@ -10087,6 +10215,121 @@ def _build_tool_registry() -> dict:
                 objectives_source,
                 len(objectives_meta_for_graph or []),
             )
+
+        # ------------------------------------------------------------------
+        # Fix-2: seed the resolved objectives' key_concepts into the chunk
+        # retag BEFORE the co-occurrence graph build.
+        #
+        # The synthesized objectives carry per-LO ``key_concepts`` as slugs
+        # (``design-system``, ``visual-hierarchy``, ...). Those slugs drive
+        # the ``targets_concept_from_lo`` typed-edge rule, whose target
+        # endpoint is the SAME slug. When that slug isn't already a real
+        # co-occurrence node, ``_materialize_endpoint_nodes`` mints a
+        # ``frequency=0, node_provenance="lo_key_concept"`` orphan — a node
+        # with NO chunk anchoring, which drags down the chunk-anchored
+        # coverage floor. By compiling each key_concept slug (with its
+        # de-slugged surface-form alias, mirroring the Stage-3 / lexical
+        # paths) into a domain-concept seed and union-retagging the in-memory
+        # chunks here, a key_concept that actually appears in prose lands in
+        # ≥2 chunks → mints a real co-occurrence node → the targets-concept
+        # edge resolves to a grounded node instead of a frequency=0 orphan.
+        # A key_concept ABSENT from the prose still falls through to the
+        # legacy lo_key_concept materialization (behavior preserved).
+        #
+        # IN-MEMORY only — chunks.jsonl on disk is NOT rewritten (same
+        # contract as the Stage-3 / lexical retag blocks above), so
+        # dart_chunks_sha256 stays byte-stable.
+        # ------------------------------------------------------------------
+        lo_key_concept_seed_count = 0
+        lo_key_concept_chunks_retagged = 0
+        if course_for_graph is not None:
+            try:
+                from Trainforge.process_course import (
+                    compile_domain_concept_seeds as _compile_lo_seeds,
+                )
+                from lib.ontology.concept_tagging import (
+                    extract_concept_tags as _extract_lo_tags,
+                )
+                from lib.ontology.slugs import canonical_slug as _kc_slug
+            except Exception as exc:  # noqa: BLE001 — import failure → skip
+                logger.warning(
+                    "concept_extraction: LO key_concept seed import failed "
+                    "(%s); skipping LO-concept retag.",
+                    exc,
+                )
+            else:
+                _kc_slugs: List[str] = []
+                _seen_kc: set = set()
+                for _lo in course_for_graph.get("learning_outcomes") or []:
+                    if not isinstance(_lo, dict):
+                        continue
+                    _kcs = _lo.get("key_concepts") or _lo.get("keyConcepts")
+                    if not isinstance(_kcs, list):
+                        continue
+                    for _kc in _kcs:
+                        if not isinstance(_kc, str):
+                            continue
+                        _slug = _kc_slug(_kc)
+                        if _slug and _slug not in _seen_kc:
+                            _seen_kc.add(_slug)
+                            _kc_slugs.append(_slug)
+                if _kc_slugs:
+                    _lo_seed_specs: List[Dict[str, Any]] = []
+                    for _slug in _kc_slugs:
+                        _aliases = []
+                        _deslug = _slug.replace("-", " ")
+                        if _deslug != _slug:
+                            _aliases.append(_deslug)
+                        _lo_seed_specs.append(
+                            {"id": _slug, "aliases": _aliases}
+                        )
+                    try:
+                        _lo_seeds = _compile_lo_seeds(_lo_seed_specs)
+                    except Exception as exc:  # noqa: BLE001 — compile failure
+                        logger.warning(
+                            "concept_extraction: LO key_concept seed compile "
+                            "failed (%s); skipping LO-concept retag.",
+                            exc,
+                        )
+                        _lo_seeds = []
+                    lo_key_concept_seed_count = len(_lo_seeds)
+                    for _chunk in chunks:
+                        if not isinstance(_chunk, dict):
+                            continue
+                        _text = str(_chunk.get("text") or "")
+                        if not _text or not _lo_seeds:
+                            continue
+                        try:
+                            _new_tags = _extract_lo_tags(
+                                _text, _chunk, domain_concept_seeds=_lo_seeds
+                            )
+                        except Exception as exc:  # noqa: BLE001 — per-chunk
+                            logger.warning(
+                                "concept_extraction: LO key_concept retag "
+                                "raised on chunk %r (%s); leaving its tags "
+                                "untouched.",
+                                _chunk.get("id"), exc,
+                            )
+                            continue
+                        _existing = _chunk.get("concept_tags")
+                        _existing = (
+                            _existing if isinstance(_existing, list) else []
+                        )
+                        _union = list(_existing)
+                        for _tag in _new_tags:
+                            if _tag not in _union:
+                                _union.append(_tag)
+                        if _union != _existing:
+                            lo_key_concept_chunks_retagged += 1
+                        _chunk["concept_tags"] = _union
+                    if lo_key_concept_seed_count:
+                        logger.info(
+                            "concept_extraction: LO key_concept retag seeded "
+                            "%d key_concepts and re-tagged %d chunks in-memory "
+                            "before the co-occurrence graph build.",
+                            lo_key_concept_seed_count,
+                            lo_key_concept_chunks_retagged,
+                        )
 
         try:
             from lib.ontology.cooccurrence_graph import build_cooccurrence_graph
@@ -10594,6 +10837,13 @@ def _build_tool_registry() -> dict:
         if lexical_seed_count:
             envelope["lexical_concept_seed_count"] = lexical_seed_count
             envelope["lexical_chunks_retagged"] = lexical_chunks_retagged
+        # Fix-2 LO key_concept retag output keys. Present only when the
+        # resolved objectives carried key_concepts to seed (absent otherwise).
+        if lo_key_concept_seed_count:
+            envelope["lo_key_concept_seed_count"] = lo_key_concept_seed_count
+            envelope["lo_key_concept_chunks_retagged"] = (
+                lo_key_concept_chunks_retagged
+            )
         return json.dumps(envelope)
 
     registry["run_concept_extraction"] = _run_concept_extraction
@@ -10991,6 +11241,7 @@ def _build_tool_registry() -> dict:
             char_span: Optional[List[int]] = None,
             section_source_ids: Optional[List[str]] = None,
             merged_headings: Optional[List[str]] = None,
+            dart_source_refs: Optional[List[Dict[str, Any]]] = None,
         ) -> Dict[str, Any]:
             words = text.split()
             word_count = len(words)
@@ -11020,6 +11271,21 @@ def _build_tool_registry() -> dict:
             # $defs.Source.source_document_sha256.
             if source_dart_html_sha256:
                 source["source_document_sha256"] = source_dart_html_sha256
+            # B1+B2: mint canonical source_references[] from the
+            # ``{block_id, pages}`` pairs the chunker harvested off
+            # ``data-dart-block-id`` / ``data-dart-pages`` on the source
+            # HTML. sourceId = ``dart:{slug}#{block_id}`` where the slug is
+            # the staged-HTML file stem (``item["item_id"]``, already in the
+            # ``path.stem.lower().replace(" ", "-")`` form the source_refs
+            # validator + source-router key on). Role auto-assigns to
+            # ``primary`` (a DART block IS the source for a chunk built from
+            # it). Empty/absent on HTML without ``data-dart-*`` attributes
+            # (legacy corpora keep ``source_references`` unset, byte-stable).
+            dart_refs = _dart_block_source_references(
+                dart_source_refs, item.get("item_id") or ""
+            )
+            if dart_refs:
+                source["source_references"] = dart_refs
             # Wave3-Anew2: bloom_level + difficulty resolution via the
             # canonical JSON-LD > data-cf > heuristic cascade.
             bloom_level, bloom_source = _resolve_chunk_bloom_level(item, text)
@@ -11651,6 +11917,7 @@ def _build_tool_registry() -> dict:
             char_span: Optional[List[int]] = None,
             section_source_ids: Optional[List[str]] = None,
             merged_headings: Optional[List[str]] = None,
+            dart_source_refs: Optional[List[Dict[str, Any]]] = None,
         ) -> Dict[str, Any]:
             words = text.split()
             word_count = len(words)
@@ -11677,6 +11944,15 @@ def _build_tool_registry() -> dict:
             # $defs.Source.source_document_sha256.
             if source_imscc_sha256:
                 source["source_document_sha256"] = source_imscc_sha256
+            # B1+B2 parity with the DART path: when an imscc-chunked page
+            # happens to carry DART provenance attributes, mint the same
+            # canonical source_references[]. No-op for ordinary IMSCC /
+            # Courseforge HTML (no ``data-dart-*`` attrs → harvest is empty).
+            dart_refs = _dart_block_source_references(
+                dart_source_refs, item.get("item_id") or ""
+            )
+            if dart_refs:
+                source["source_references"] = dart_refs
             # Wave3-Anew2: bloom_level + difficulty resolution via the
             # canonical JSON-LD > data-cf > heuristic cascade.
             bloom_level, bloom_source = _resolve_chunk_bloom_level(item, text)

@@ -22,15 +22,6 @@ dependencies = [
     "rdflib>=7.0.0,<8.0.0",
     "pyld>=2.0.0,<4.0.0",
     "pyshacl>=0.25.0,<1.0.0",
-    # Phase 8 Subtask 8: pytest-asyncio is a default dependency (not a
-    # [dev] extra) because the project's CI exercises async-test paths
-    # even on default installs (sample: MCP/tests/test_executor_dispatch_routing.py
-    # is collected by pytest.ini::testpaths = MCP/tests). Leaving the
-    # dep in [dev] silently routed @pytest.mark.asyncio decorations
-    # through pytest's missing-plugin path on a bare ``pip install -e .``
-    # install. Pair with pytest.ini::asyncio_mode = auto so decoration
-    # triggers without per-test fixture wiring.
-    "pytest-asyncio>=0.21.0,<1.0.0",
 ]
 # Note: the canonical chunker lives at ``Trainforge/chunker/`` (post-
 # Phase-8 re-merge). It used to be a sibling workspace package
@@ -54,9 +45,14 @@ server = [
 dev = [
     "pytest>=7.0.0,<9.0.0",
     "pytest-cov>=4.0.0,<6.0.0",
-    # Phase 8 Subtask 8: ``pytest-asyncio`` was promoted to a default
-    # ``[project].dependencies`` entry above; the [dev] mention here is
-    # intentionally removed to avoid a duplicate-pin conflict.
+    # pytest-asyncio is a test-only dependency. No default-install import
+    # path imports pytest_asyncio (verified by grep); async tests are
+    # driven purely by @pytest.mark.asyncio + pytest.ini::asyncio_mode =
+    # auto, which only matter when running the test suite. Keeping it in
+    # [dev] (the extra CI installs) avoids forcing a test plugin onto a
+    # bare ``pip install -e .`` runtime install. Pairs with
+    # pytest.ini::asyncio_mode = auto.
+    "pytest-asyncio>=0.21.0,<1.0.0",
     "black>=23.0.0,<25.0.0",
     "ruff>=0.1.0,<1.0.0",
     "pyld>=2.0.0,<4.0.0",
@@ -147,6 +143,15 @@ gui = [
     "python-multipart>=0.0.9",
     "python-dotenv>=1.0,<2.0",
 ]
+# ``[full]`` is the "everything CPU-light" install: DART PDF processing, the
+# MCP server, the dev/test toolchain, and the control-plane GUI. It does NOT
+# include the heavy ML extras ``[training]`` (QLoRA: torch + transformers + trl
+# + peft + bitsandbytes, 5+GB of CUDA wheels) or ``[embedding]`` (sentence-
+# transformers + torch for the statistical-tier validators). Those stay opt-in
+# so a default ``[full]`` install on a CPU-only box doesn't pull multi-GB GPU
+# wheels. Install them explicitly when you need them:
+#   pip install -e '.[full,embedding]'   # + retrieval / statistical validators
+#   pip install -e '.[full,training]'    # + SLM fine-tuning (GPU)
 full = ["ed4all[dart,server,dev,gui]"]
 
 [project.scripts]

@@ -1,0 +1,185 @@
+"""Studio library + IMSCC course-viewer REST router (``/api/...``).
+
+Mounted at the bare ``/api`` prefix by ``gui.app`` so the absolute paths declared
+here (``/api/library``, ``/api/courses/{course_id}/...``) are authoritative. The
+whole archived-course-serving surface lives in ``gui.services.imscc_service``
+(lazy heavy imports); this router is a thin typed-error adapter over its frozen
+contract, mirroring ``gui.routers.learn``'s relationship to ``source_page``.
+
+Endpoint contract (Studio learner-facing, read-only):
+
+* ``GET "/library"`` → ``[{slug, title, page_count, has_vector_index}]`` — course
+  cards for every archived course carrying an IMSCC cartridge.
+* ``GET "/courses/{course_id}/manifest"`` → ``{slug, title, items: [...]}`` — the
+  course organization tree (recursive module/unit/page nodes).
+* ``GET "/courses/{course_id}/page?item=<id>"`` → sanitised page HTML + CSP.
+* ``GET "/courses/{course_id}/asset?path=<rel>"`` → whitelisted static asset
+  (path-traversal-safe; serves user-uploaded archive bytes, sanitised posture).
+
+Errors surface as a typed ``{error, detail}`` body with the mapped status —
+never a fabricated page / tree.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse, Response
+
+router = APIRouter()
+
+
+def _error(status_code: int, error: str, detail: str) -> JSONResponse:
+    """Typed ``{error, detail}`` JSON error with ``status_code``."""
+    return JSONResponse(status_code=status_code, content={"error": error, "detail": detail})
+
+
+@router.get("/library")
+async def get_library() -> Any:
+    """List archived courses that carry a viewable IMSCC cartridge."""
+    try:
+        from gui.services import imscc_service  # noqa: PLC0415
+
+        return imscc_service.list_library()
+    except Exception as exc:  # noqa: BLE001 — unexpected fs/parse failure
+        return _error(500, "library_failed", str(exc))
+
+
+@router.delete("/library/{course_id}")
+async def delete_course(course_id: str, confirm: str = "") -> Any:
+    """Permanently delete an archived course (Marketable-v1 D5).
+
+    DESTRUCTIVE + confirmation-gated: requires a ``confirm=<slug>`` query param
+    echoing ``course_id`` exactly (a 400 ``confirm_required`` otherwise) so a
+    stray DELETE can never wipe a course without the caller re-stating the
+    target. Delegates to the shared ``LibV2.tools.libv2.remove.remove_course``
+    service (same logic the ``libv2 remove`` CLI runs) — containment-checked,
+    scoped strictly to the resolved course dir.
+
+    When an operator token is configured, the ``OperatorTokenMiddleware``
+    classifies this DELETE as operator-gated (GET ``/api/library`` stays open);
+    see ``gui.auth``.
+    """
+    if confirm != course_id:
+        return _error(
+            400,
+            "confirm_required",
+            "destructive delete requires ?confirm=<slug> echoing the course id",
+        )
+    try:
+        from LibV2.tools.libv2 import remove as _remove  # noqa: PLC0415
+        from gui.services.imscc_service import _libv2_root  # noqa: PLC0415
+    except ImportError as exc:
+        return _error(503, "remove_unavailable", str(exc))
+
+    try:
+        result = _remove.remove_course(_libv2_root(), course_id)
+    except _remove.CourseRemovalError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001 — unexpected fs failure
+        return _error(500, "remove_failed", str(exc))
+
+    # Drop the deleted course's cached disk size so a fresh /api/library load
+    # doesn't keep reporting it (it's gone from the listing anyway, but be tidy).
+    try:
+        from gui.services.imscc_service import _invalidate_disk_cache  # noqa: PLC0415
+
+        _invalidate_disk_cache(result.course_dir)
+    except Exception:  # noqa: BLE001 — cache hygiene is best-effort
+        pass
+
+    return {"removed": True, **result.to_dict()}
+
+
+@router.get("/courses/{course_id}/manifest")
+async def get_manifest(course_id: str) -> Any:
+    """Return the course organization tree (manifest) as JSON."""
+    try:
+        from gui.services import imscc_service  # noqa: PLC0415
+    except ImportError as exc:
+        return _error(503, "viewer_unavailable", str(exc))
+
+    try:
+        return imscc_service.get_manifest(course_id)
+    except imscc_service.IMSCCServiceError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001 — unexpected resolution/parse failure
+        return _error(500, "manifest_failed", str(exc))
+
+
+@router.get("/courses/{course_id}/page")
+async def get_page(course_id: str, item: str = "") -> Any:
+    """Serve one sanitised cartridge page resolved via its manifest resource id."""
+    try:
+        from gui.services import imscc_service  # noqa: PLC0415
+    except ImportError as exc:
+        return _error(503, "viewer_unavailable", str(exc))
+
+    try:
+        result = imscc_service.get_page(course_id, item)
+    except imscc_service.IMSCCServiceError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001 — unexpected render failure
+        return _error(500, "page_failed", str(exc))
+
+    return Response(
+        content=result.body,
+        media_type=result.media_type,
+        headers=dict(result.headers),
+    )
+
+
+@router.get("/courses/{course_id}/source-pdf")
+async def get_source_pdf(course_id: str, file: str = "", page: int = 1) -> Any:
+    """Serve one archived source-PDF page (B4 provenance chain final hop).
+
+    Locates the raw PDF archived under ``courses/<id>/source/pdf/`` (resolving a
+    sourceId-derived ``file`` hint via the archived DART sidecars, whitelisted
+    against the dir listing), and returns the SINGLE requested page as
+    ``application/pdf`` when a PDF lib is available — otherwise the whole PDF
+    (the browser deep-links to ``#page=N``). 404s with an explanation when no
+    source PDFs are archived or the mapping is unresolvable.
+    """
+    try:
+        from gui.services import source_pdf as _svc  # noqa: PLC0415
+    except ImportError as exc:
+        return _error(503, "source_pdf_unavailable", str(exc))
+
+    try:
+        result = _svc.serve_source_pdf_page(course_id, file, page)
+    except _svc.SourcePdfError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001 — unexpected resolution/read failure
+        return _error(500, "source_pdf_failed", str(exc))
+
+    return Response(
+        content=result.body,
+        media_type=result.media_type,
+        headers=dict(result.headers),
+    )
+
+
+@router.get("/courses/{course_id}/asset")
+async def get_asset(course_id: str, path: str = "") -> Any:
+    """Serve a whitelisted static asset (image/css/font) from the cartridge."""
+    try:
+        from gui.services import imscc_service  # noqa: PLC0415
+    except ImportError as exc:
+        return _error(503, "viewer_unavailable", str(exc))
+
+    try:
+        result = imscc_service.get_asset(course_id, path)
+    except imscc_service.IMSCCServiceError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001 — unexpected read failure
+        return _error(500, "asset_failed", str(exc))
+
+    return Response(
+        content=result.body,
+        media_type=result.media_type,
+        headers=dict(result.headers),
+    )
+
+
+__all__ = ["router"]

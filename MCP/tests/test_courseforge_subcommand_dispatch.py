@@ -113,6 +113,9 @@ def runner_with_stub_executor(monkeypatch, tmp_path):
     state writes land inside tmp_path.
     """
     monkeypatch.setenv("COURSEFORGE_TWO_PASS", "true")
+    # Stub executor (no real dispatch) -> opt into the templated-stub path
+    # the Marketable-v1 A3 authoring-route guardrail honors for tests.
+    monkeypatch.setenv("LOCAL_DISPATCHER_ALLOW_STUB", "1")
     monkeypatch.setattr(
         "MCP.core.workflow_runner.PROJECT_ROOT", tmp_path,
     )

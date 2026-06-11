@@ -819,13 +819,21 @@ workflows:
         # abcd_verb_alignment); promote to critical after a
         # clean-corpus calibration run.
         validation_gates:
+          # 2026-06-10 PROMOTED critical (was: warning-severity day-1
+          # per the calibration-debt pattern, "promote to critical after
+          # a clean-corpus calibration run"). Condition met: passes on 5
+          # recent clean-corpus real runs (GUI_DESIGN_101 x3,
+          # GUI_DESIGN_201, NVIDIARAG_101). Skips-with-pass when
+          # TEXTBOOK_SYNTHESIS_PROVIDER is unset (default-off runs emit
+          # textbook_structure.json byte-identical and are unaffected),
+          # so promotion adds no risk to legacy / synthesis-off runs.
           - gate_id: textbook_outline_enrichment
             validator: lib.validators.textbook_structure.TextbookOutlineValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
+              on_fail: block
               on_error: warn
 
       - name: source_mapping
@@ -905,17 +913,25 @@ workflows:
           - chapter_count
 
         # Phase 6 ST 4.5: gate the synthesized LO set on ABCD verb-Bloom
-        # alignment. Phase 6 lands as warning so legacy corpora without
+        # alignment. Phase 6 landed as warning so legacy corpora without
         # ABCD don't fail closed; Phase 7+ promotes to critical once
         # corpus calibration confirms safe.
+        # 2026-06-10 PROMOTED critical (condition "once corpus calibration
+        # confirms safe" met): passes on every recent real run where it
+        # ran (GUI_DESIGN_101 x2, GUI_DESIGN_201, NVIDIARAG_101,
+        # OPENSTAX_ALG_9). The validator graceful-degrades to a warning-
+        # severity ABCD_MISSING issue (passed=True) for legacy LOs without
+        # an `abcd` block, so promoting severity does NOT fail-close legacy
+        # corpora — only a real verb/Bloom MISMATCH on an ABCD-authored LO
+        # now blocks.
         validation_gates:
           - gate_id: abcd_verb_alignment
             validator: lib.validators.abcd_objective.AbcdObjectiveValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
+              on_fail: block
               on_error: warn
           # Wave 1.6 W1.6.C: per-objective source-attribution
           # consistency walk. Resolves each LO's source_refs against
@@ -946,15 +962,20 @@ workflows:
           # Stage-2 per-chapter CO synthesis + reconciliation output.
           # Skips-with-pass when TEXTBOOK_SYNTHESIS_PROVIDER is unset
           # (the deterministic synthesizer ran; no chapter_text-bearing
-          # chapters[] to audit). Warning-severity day-1 — promotes to
-          # critical after a clean-corpus calibration run.
+          # chapters[] to audit).
+          # 2026-06-10 PROMOTED critical (was: warning-severity day-1,
+          # "promotes to critical after a clean-corpus calibration run").
+          # Condition met: passes on 4 recent clean-corpus real runs
+          # (GUI_DESIGN_101 x2, GUI_DESIGN_201, NVIDIARAG_101). Skip-with-
+          # pass on default-off runs keeps legacy / synthesis-off runs
+          # unaffected.
           - gate_id: chapter_objective_coverage
             validator: lib.validators.chapter_objective_coverage.ChapterObjectiveCoverageValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
+              on_fail: block
               on_error: warn
           # Fail-fast terminal-coverage gate. Catches orphan terminal
           # objectives (no chapter objective rolling up / chapter not in
@@ -1081,16 +1102,20 @@ workflows:
               on_error: warn
           # Three-stage textbook synthesis — Stage 3 (Wave C), plan §8
           # row 2. Audits the Stage-3 domain_concept_vocabulary.json
-          # artifact. warning severity day-1 (standing calibration-debt
-          # pattern); skips-with-pass when no vocabulary artifact exists
+          # artifact. Skips-with-pass when no vocabulary artifact exists
           # (default-off run, TEXTBOOK_SYNTHESIS_PROVIDER unset).
+          # 2026-06-10 PROMOTED critical (was: warning-severity day-1 per
+          # the calibration-debt pattern). Condition met: passes on 5
+          # recent clean-corpus real runs (GUI_DESIGN_101 x3,
+          # GUI_DESIGN_201, NVIDIARAG_101). Skip-with-pass on default-off
+          # runs keeps legacy / synthesis-off runs unaffected.
           - gate_id: domain_concept_vocabulary
             validator: lib.validators.domain_concept_vocabulary.DomainConceptVocabularyValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
+              on_fail: block
               on_error: warn
 
       - name: content_generation
@@ -1292,41 +1317,51 @@ workflows:
         # synthesis-side instruction_pairs.jsonl + page-HTML inputs,
         # which the outline tier doesn't produce yet).
         validation_gates:
-          # 2026-05-14 TEMP: critical → warning for all 3 outline-tier
-          # block validators that fail against escalated-only block sets
-          # (Wave-7 objective short-circuit). Revert when validators
-          # learn to honor block.escalation_marker.
+          # 2026-06-10 REVERTED critical (was: 2026-05-14 TEMP critical →
+          # warning for the outline-tier block validators that failed
+          # against escalated-only block sets / Wave-7 objective short-
+          # circuit). Revert condition satisfied: the Block*Validator
+          # adapters now honor block.escalation_marker the way the
+          # packager does — skip ONLY a marker + EMPTY tombstone (the
+          # ship-exclusion predicate at pipeline_tools.py:5226) via
+          # inter_tier_gates._is_unshipped_escalation_tombstone, while a
+          # marker + content *salvaged* block stays on the audit path —
+          # so an escalated-tombstone corpus no longer trips these gates.
           - gate_id: outline_curie_anchoring
             validator: Courseforge.router.inter_tier_gates.BlockCurieAnchoringValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
+              on_fail: block
               on_error: warn
-            description: Phase 3 inter-tier — verify outline-tier Blocks anchor on a CURIE per §3 (warn-only initially)
+            description: Phase 3 inter-tier — verify outline-tier Blocks anchor on a CURIE per §3
 
           - gate_id: outline_content_type
             validator: Courseforge.router.inter_tier_gates.BlockContentTypeValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
+              on_fail: block
               on_error: warn
             description: Phase 3 inter-tier — verify outline-tier Block content_type stays in the canonical 8-value enum
 
           - gate_id: outline_page_objectives
-            # 2026-05-14 TEMP: flipped critical → warning to allow workflow
-            # to continue past escalated objective blocks. Wave-7's
-            # escalate_immediately policy correctly skips outline for
-            # objective blocks, but this validator still fires action=block
-            # against the empty escalated content, halting the workflow.
-            # Revert after the test or after the validator learns to honor
-            # block.escalation_marker.
+            # 2026-06-10 REVERTED critical (was: 2026-05-14 TEMP critical
+            # → warning to allow the workflow to continue past escalated
+            # objective blocks). Revert condition satisfied:
+            # BlockPageObjectivesValidator now skips ONLY marker + EMPTY
+            # tombstones via inter_tier_gates._is_unshipped_escalation_tombstone
+            # (the packager ship-exclusion predicate), so it no longer
+            # fires action=block against escalated EMPTY content; a
+            # marker + content salvaged block is still audited.
             validator: Courseforge.router.inter_tier_gates.BlockPageObjectivesValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
+              on_fail: block
               on_error: warn
             description: Phase 3 inter-tier — verify outline-tier Blocks reference the page's declared objectives
 
@@ -1624,8 +1659,17 @@ workflows:
           # corpus of pure-objective blocks (each authored as a short
           # `<li>` item < NON_TRIVIAL_WORD_FLOOR=30 words) doesn't
           # fail the gate's AGGREGATE_EMPTY_PAGES check, which expects
-          # paragraph-shaped content. Revert when the corpus carries
-          # concept/example/explanation blocks with substantive prose.
+          # paragraph-shaped content.
+          # 2026-06-10 STILL WARNING (revert deferred): unlike the
+          # sibling Block*Validator flips, this gate's revert condition
+          # is NOT "honor escalation_marker" — ContentGroundingValidator
+          # consumes rendered HTML page_paths, not the Block list, so the
+          # escalation-marker hook does not reach it. The original corpus
+          # condition stands: revert to critical only when the calibration
+          # corpus carries concept/example/explanation blocks with
+          # substantive (>= NON_TRIVIAL_WORD_FLOOR) prose so the
+          # AGGREGATE_EMPTY_PAGES check is no longer tripped by a
+          # legitimately objective-only corpus.
           - gate_id: content_grounding
             validator: lib.validators.content_grounding.ContentGroundingValidator
             severity: warning
@@ -1669,42 +1713,47 @@ workflows:
           - blocks_failed_path
 
         validation_gates:
-          # 2026-05-15 TEMP: critical -> warning for the 3 post-rewrite
-          # content-quality gates that fire on a degenerate all-objective
-          # corpus (short <li> blocks, no CURIEs) — the post-rewrite
-          # analogue of the 2026-05-14 outline-tier TEMP flips. Revert
-          # when the corpus carries concept/example blocks with CURIE-
-          # anchored prose, or when the validators honor escalation_marker.
+          # 2026-06-10 REVERTED critical (was: 2026-05-15 TEMP critical ->
+          # warning for the post-rewrite content-quality gates that fired
+          # on a degenerate all-objective corpus — the post-rewrite
+          # analogue of the 2026-05-14 outline-tier flips). The TEMP
+          # comment carried an OR revert condition ("...or when the
+          # validators honor escalation_marker"); the escalation_marker
+          # arm is now satisfied — the Block*Validator adapters skip ONLY
+          # marker + EMPTY tombstones via
+          # inter_tier_gates._is_unshipped_escalation_tombstone (the
+          # packager ship-exclusion predicate); marker + content salvaged
+          # blocks stay on the audit path.
           - gate_id: rewrite_curie_anchoring
             validator: Courseforge.router.inter_tier_gates.BlockCurieAnchoringValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
+              on_fail: block
               on_error: warn
-            description: Phase 3.5 post-rewrite — verify rewrite-tier Blocks anchor on a CURIE per §3 (warn-only initially)
+            description: Phase 3.5 post-rewrite — verify rewrite-tier Blocks anchor on a CURIE per §3
 
           - gate_id: rewrite_content_type
             validator: Courseforge.router.inter_tier_gates.BlockContentTypeValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
+              on_fail: block
               on_error: warn
             description: Phase 3.5 post-rewrite — verify rewrite-tier Block content_type stays in the canonical 8-value enum
 
-          # 2026-05-15 TEMP: critical -> warning (post-rewrite analogue
-          # of the already-flipped outline_page_objectives). Revert with
-          # the other 2026-05-15 TEMP flips.
+          # 2026-06-10 REVERTED critical (was: 2026-05-15 TEMP critical ->
+          # warning, post-rewrite analogue of outline_page_objectives).
+          # Revert condition satisfied: validators honor escalation_marker.
           - gate_id: rewrite_page_objectives
             validator: Courseforge.router.inter_tier_gates.BlockPageObjectivesValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
+              on_fail: block
               on_error: warn
             description: Phase 3.5 post-rewrite — verify rewrite-tier Blocks reference the page's declared objectives
 
@@ -1739,17 +1788,22 @@ workflows:
           # remediation loop via the router exhausting
           # COURSEFORGE_REWRITE_REGEN_BUDGET (defaults to 10) before
           # the gate result reaches the executor.
-          # 2026-05-15 TEMP: critical -> warning. The all-objective
-          # corpus emits bare <li> objective blocks which trip the
-          # per-block-type required-attr / body-fragment checks. Revert
-          # with the other 2026-05-15 TEMP flips above.
+          # 2026-06-10 REVERTED critical (was: 2026-05-15 TEMP critical ->
+          # warning; the all-objective corpus emitted bare <li> objective
+          # blocks that tripped the per-block-type required-attr / body-
+          # fragment checks). Revert condition satisfied:
+          # RewriteHtmlShapeValidator now skips ONLY marker + EMPTY
+          # tombstones via rewrite_html_shape._is_unshipped_escalation_tombstone
+          # (the packager ship-exclusion predicate), so escalated EMPTY
+          # blocks no longer trip the shape sentinel; a marker + content
+          # salvaged bare-<li> block is still audited.
           - gate_id: rewrite_html_shape
             validator: lib.validators.rewrite_html_shape.RewriteHtmlShapeValidator
-            severity: warning
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
+              on_fail: block
               on_error: warn
             description: Followup §3.2 — verify rewrite-tier emit is a bare HTML body fragment (not JSON-wrapped, markdown-fenced, or unbalanced) with all required data-cf-* attributes per block_type.
 
@@ -2697,11 +2751,60 @@ workflows:
               on_error: warn
             description: Wave 3 W3.D — drift detector across DART vs. IMSCC chunksets
 
+      # Marketable-v1 A2: build the per-course on-device vector index so a
+      # freshly-built course is askable (retrieval-ready) the moment the run
+      # completes. Runs AFTER libv2_archival (the handler resolves the chunkset
+      # from the LibV2-archived course dir) and BEFORE finalization. Routes via
+      # the ``rag-indexer`` agent (executor _AGENT_TOOL_MAPPING ->
+      # run_vector_indexing) — the same handler the rag_training ``indexing``
+      # phase uses; no _PHASE_TOOL_MAPPING entry needed.
+      #
+      # Optionality: marked ``optional: true`` so it runs by default but does
+      # not block the workflow's final_status when it fails. _should_skip_phase
+      # skips it cleanly (with a logged reason) when the [embedding] extras are
+      # absent UNLESS ``TRAINFORGE_REQUIRE_EMBEDDINGS`` is truthy — mirroring the
+      # embedding-stack graceful-degrade convention
+      # (lib/embedding/sentence_embedder.py::is_strict_mode). When the env
+      # requires embeddings, the phase runs and run_vector_indexing FAILS CLOSED
+      # on a broken/unavailable backend (no file-count masquerade).
+      - name: vector_indexing
+        agents: [rag-indexer]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [libv2_archival]
+        timeout_minutes: 60
+        optional: true
+        description: Build the per-course on-device vector index (retrieval-ready)
+
+        inputs_from:
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          - param: libv2_root
+            source: workflow_params
+            key: libv2_root
+          # Supplementary: the archived course slug/dir. The handler resolves
+          # the LibV2 course dir from course_name itself, but threading the
+          # archival outputs keeps the dependency on a successful archive
+          # explicit and makes the resolved location auditable.
+          - param: course_slug
+            source: phase_outputs
+            phase: libv2_archival
+            output: course_slug
+
+        outputs:
+          - vector_index_dir
+          - manifest_path
+          - embedding_model_id
+          - embedding_provider
+          - chunks_count
+          - course_slug
+
       - name: finalization
         agents: [brightspace-packager]
         parallel: false
         max_concurrent: 1
-        depends_on: [libv2_archival]
+        depends_on: [vector_indexing]
         timeout_minutes: 30
         description: Final validation and training data export
 

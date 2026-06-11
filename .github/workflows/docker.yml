@@ -1,0 +1,53 @@
+name: Docker
+
+# Continuously validates the D1 deployable artifact (Dockerfile.gui).
+#
+# - On main pushes: always build, so a regression that breaks the image is
+#   caught the moment it lands.
+# - On PRs: build only when a PR touches the Docker build inputs (the
+#   Dockerfile, docker-compose, pyproject, or the source the image installs).
+#   The path filter keeps unrelated PRs from paying the build cost.
+#
+# Build ONLY — no registry push. No registry secrets exist in this repo, so the
+# image is built and discarded (the GHA layer cache persists across runs). To
+# publish later: add a registry login step (e.g. docker/login-action with a
+# GHCR PAT or GITHUB_TOKEN + packages:write) and flip `push: true` with a
+# tagged image reference. The tagged-release workflow (release.yml) is the
+# intended home for that push.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile.gui'
+      - 'docker-compose.yml'
+      - 'pyproject.toml'
+      - 'gui/**'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile.gui'
+      - 'docker-compose.yml'
+      - 'pyproject.toml'
+      - 'gui/**'
+      - '.github/workflows/docker.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build GUI image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.gui
+          push: false
+          tags: ed4all-gui:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

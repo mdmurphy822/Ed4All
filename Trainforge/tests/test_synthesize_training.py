@@ -46,6 +46,16 @@ FIXTURE_ROOT = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _ack_anthropic_synthesis(monkeypatch):
+    """Marketable-v1 D4: the claude_session checkpoint/budget test in this file
+    exercises provider plumbing, not the licensing gate. Acknowledge the
+    Anthropic-family posture so the D4 fail-closed gate lets it through
+    (mock-provider tests here are unaffected; gate behavior is covered by
+    test_synthesis_licensing_gate.py)."""
+    monkeypatch.setenv("TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS", "true")
+
+
 def _make_working_copy(tmp_path: Path) -> Path:
     """Copy the read-only fixture into tmp so run_synthesis can write."""
     dst = tmp_path / "mini_course_training"

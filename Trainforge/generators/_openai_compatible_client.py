@@ -179,6 +179,10 @@ class OpenAICompatibleClient:
         self._sleep_fn = sleep_fn or time.sleep
         self._json_mode = bool(json_mode)
         self._vision_capable = bool(vision_capable)
+        # Server-reported token usage of the most recent chat_completion
+        # call (``{}`` until the first call). Read by the grounded-answer
+        # truncation tripwire; harmless for every other caller.
+        self.last_usage: Dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -338,6 +342,12 @@ class OpenAICompatibleClient:
         body, retry_count = self._post_with_retry(payload)
         text = self._extract_text(body)
         usage = self._extract_usage(body)
+        # Expose the server-reported token usage of the LAST call so a
+        # caller can run a post-call check (e.g. the grounded-answer
+        # truncation tripwire compares reported prompt_tokens against a
+        # local estimate to detect silent head-truncation). Set
+        # unconditionally — an empty dict means the server omitted usage.
+        self.last_usage = dict(usage)
 
         self._emit_decision(
             text=text,

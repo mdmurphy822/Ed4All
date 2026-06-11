@@ -212,3 +212,46 @@ The chunk object carries a `schema_version` string; `manifest.json` carries a ma
 - Workers never share branches except the `chunk-schema-v4` rebase point for B/D/E.
 - Shared test fixtures under `Trainforge/tests/fixtures/` follow the `mini_course_<purpose-slug>` naming lock. Every new fixture ships a `README.md`.
 - Full protocol: see ADR-001 Contracts 4 and 5.
+
+---
+
+## §9 Release process
+
+Versions follow semantic versioning (`vMAJOR.MINOR.PATCH`, e.g. `v0.2.0`). Work
+lands on a `dev-vX.Y.Z` development branch, then merges to `main` when the
+milestone is ready. The version string lives in `pyproject.toml::project.version`
+and is the single source of truth; bump it in the same change that prepares the
+release.
+
+A release is cut by pushing an annotated git tag matching `v*` to `main`:
+
+```bash
+git checkout main && git pull
+# pyproject.toml version already bumped and merged
+git tag -a v0.3.0 -m "v0.3.0"
+git push origin v0.3.0
+```
+
+The tag push triggers `.github/workflows/release.yml`, which:
+
+1. **Tests** — installs `.[gui,dev]` and runs the full suite (core + the GUI
+   extras suite) plus the `ci/integrity_check.py` integrity gate. A red suite
+   blocks the release.
+2. **Docker** — builds `Dockerfile.gui` (the deployable Studio image) to prove
+   the D1 artifact still builds at the tagged commit. Build only — the image is
+   not pushed to any registry (no registry secrets exist in this repo).
+3. **Release** — creates a GitHub release with auto-generated notes (commit and
+   PR history since the previous tag). A tag containing a hyphen (e.g.
+   `v0.3.0-rc1`) is marked as a pre-release.
+
+**Publishing the container image (deferred).** The release workflow validates
+the image but does not push it. To publish on release later, add a registry
+login step to the `docker` job in `release.yml` (GHCR via the built-in
+`GITHUB_TOKEN` + `permissions: packages: write`, or Docker Hub via repo
+secrets), then flip `push: true` and tag the image with `${{ github.ref_name }}`.
+The same note lives in the workflow header and in `docker.yml`.
+
+Continuous validation between releases: every push/PR to `main` runs the core
+test matrix, the GUI-extras suite (`gui-tests` job), and the integrity checks
+(`.github/workflows/ci.yml`); Docker-build inputs are revalidated by
+`.github/workflows/docker.yml` whenever a PR touches them.

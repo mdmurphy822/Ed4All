@@ -22,7 +22,7 @@ _PROJECT_ROOT = _MCP_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import DART_PATH  # noqa: E402
+from lib.paths import DART_PATH, dart_output_dir  # noqa: E402
 from lib.secure_paths import PathTraversalError, validate_path_within_root  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -485,7 +485,7 @@ def register_dart_tools(mcp):
                 return json.dumps({"error": f"Not a PDF file: {pdf_path}"})
 
             # Set up output directory
-            out_dir = Path(output_dir) if output_dir else DART_PATH / "output"
+            out_dir = Path(output_dir) if output_dir else dart_output_dir()
             out_dir.mkdir(parents=True, exist_ok=True)
 
             # Validate figures_dir path if provided

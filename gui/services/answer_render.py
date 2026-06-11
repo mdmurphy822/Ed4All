@@ -22,6 +22,7 @@ constructs URLs.
 
 from __future__ import annotations
 
+import re
 from html import escape
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -230,12 +231,86 @@ def _answer_paragraphs(answer_text: Optional[str]) -> str:
     return "".join("<p>{}</p>".format(escape(p)) for p in paras)
 
 
+def _pdf_pages_label(pages: List[int]) -> str:
+    """Compact human label for a sorted PDF-page list: "page 12" / "pages 3, 7"."""
+    if len(pages) == 1:
+        return "page {}".format(pages[0])
+    return "pages {}".format(", ".join(str(p) for p in pages))
+
+
+def source_pdf_page_url(citation: Dict[str, Any], slug: str, page: int) -> str:
+    """Build the deep link to one archived-PDF page (B4 final hop).
+
+    ``/api/courses/{slug}/source-pdf?file=<basename>&page=N``. The file name is
+    the basename of the citation's ``source_path`` (the archived course-page
+    HTML path) when present, else derived from the sourceId slug; the endpoint
+    re-resolves the actual PDF via the archived sidecars and whitelists the
+    filename against the source dir, so an unresolvable name 404s rather than
+    serving the wrong bytes.
+    """
+    source_id = str(citation.get("source_block") or "")
+    # sourceId shape: dart:{slug}#{block_id}. The slug half names the document.
+    file_hint = ""
+    if source_id.startswith("dart:") and "#" in source_id:
+        file_hint = source_id[len("dart:") :].split("#", 1)[0]
+    return "/api/courses/{slug}/source-pdf?file={file}&page={page}".format(
+        slug=quote(str(slug), safe=""),
+        file=quote(file_hint, safe=""),
+        page=int(page),
+    )
+
+
+def _citation_provenance(citation: Dict[str, Any], slug: str) -> str:
+    """Render the expandable provenance detail row for one citation (B4).
+
+    A disclosure: a ``<button class="src-detail-toggle" aria-expanded="false"
+    aria-controls=...>`` over a ``<div class="src-detail" hidden>`` carrying the
+    full chain — the informational source block id and one labelled link per PDF
+    page. Absent fields simply omit their entries (legacy corpora show only what
+    they have, so the toggle is suppressed entirely when there is nothing to
+    expand). The JS (drawer.js) re-wires the page links to ``target=_blank``;
+    the markup is fully server-built so the JS never constructs URLs.
+    """
+    source_block = citation.get("source_block")
+    pdf_pages = [p for p in (citation.get("pdf_pages") or []) if isinstance(p, int)]
+    if not source_block and not pdf_pages:
+        return ""
+
+    chunk_id = str(citation.get("chunk_id") or "")
+    panel_id = "src-detail-{}".format(
+        re.sub(r"[^a-zA-Z0-9_-]+", "-", chunk_id) or "x"
+    )
+
+    rows: List[str] = []
+    if source_block:
+        rows.append(
+            '<li class="src-block">Source block '
+            '<code>{}</code></li>'.format(escape(str(source_block)))
+        )
+    for page in pdf_pages:
+        href = source_pdf_page_url(citation, slug, page)
+        rows.append(
+            '<li class="src-pdf"><a href="{href}" class="src-pdf-link" '
+            'target="_blank" rel="noopener" '
+            'aria-label="Open PDF page {page}, opens in new tab">'
+            'PDF page {page}</a></li>'.format(
+                href=escape(href, quote=True), page=int(page)
+            )
+        )
+    detail = (
+        '<button type="button" class="src-detail-toggle" '
+        'aria-expanded="false" aria-controls="{pid}">Provenance</button>'
+        '<ul id="{pid}" class="src-detail" hidden>{rows}</ul>'
+    ).format(pid=escape(panel_id, quote=True), rows="".join(rows))
+    return detail
+
+
 def _citation_li(citation: Dict[str, Any], slug: str) -> str:
     """Render one citation as a focusable ``<li>`` with a "Source:" link.
 
-    Order: link → (module tag) → (approximate-location tag) → (text quote).
-    Every dynamic field is escaped. ``module_id`` and the approximate marker
-    are text spans (never color-only state).
+    Order: link → (module tag) → (approximate-location tag) → (text quote) →
+    (B4 provenance disclosure). Every dynamic field is escaped. ``module_id``
+    and the approximate marker are text spans (never color-only state).
     """
     page_label = citation.get("page_label") or "Source"
     href = source_url_for(citation, slug)
@@ -262,6 +337,7 @@ def _citation_li(citation: Dict[str, Any], slug: str) -> str:
                 escape(str(text_quote))
             )
         )
+    parts.append(_citation_provenance(citation, slug))
     return "<li>{}</li>".format("".join(parts))
 
 
@@ -334,4 +410,5 @@ __all__ = [
     "render_answer_fragment",
     "render_error_fragment",
     "source_url_for",
+    "source_pdf_page_url",
 ]

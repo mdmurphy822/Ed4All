@@ -102,6 +102,67 @@ def _coerce_blocks(inputs: Dict[str, Any]) -> Tuple[List[Block], Optional[GateIs
     return list(raw), None
 
 
+def _is_unshipped_escalation_tombstone(block: Block) -> bool:
+    """Return True only for a marker-bearing block that never ships.
+
+    The skip predicate is the EXACT ship-exclusion predicate the
+    packager applies at HTML-emit time
+    (``MCP/tools/pipeline_tools.py::_run_content_generation_rewrite``,
+    the per-page emit filter at ``pipeline_tools.py:5226``):
+
+        ``escalation_marker is not None and not (content or "").strip()``
+
+    Two marker-bearing classes exist and the predicate must distinguish
+    them — the original ``_is_escalated`` (which skipped on the marker
+    alone) was wrong on the second:
+
+    * **Marker + empty content** — a *tombstone*. The router stamped the
+      marker (outline budget exhausted, validator consensus failure,
+      structural-unfixable, dispatch error, per-claim attribution
+      unfixable, …) and the block has no surviving content. The packager
+      filters it OUT of the shipped IMSCC at HTML emit. Re-auditing it at
+      the inter-tier / post-rewrite seam is a guaranteed false positive —
+      it never ships, so this predicate returns True and the caller skips
+      it (no audit, not counted toward ``audited``, no issue emitted).
+    * **Marker + non-empty content** — a *salvaged* block. The
+      escalated-rewrite salvage path
+      (``Courseforge/generators/_rewrite_provider.py::_apply_rewrite_touch``
+      via ``dataclasses.replace``, marker preserved) produces a block
+      that carries a marker BUT also real content; per the design comment
+      at ``pipeline_tools.py:5135`` it DOES ship and therefore MUST be
+      audited by post_rewrite_validation. This predicate returns False
+      for it so the caller audits it like any other block.
+
+    Keep this predicate in lockstep with the packaging emit filter at
+    ``pipeline_tools.py:5226`` — if one changes, the other must change
+    with it, or escalated-with-content blocks will ship unaudited (or
+    clean blocks will be skipped).
+
+    The IMSCC-side backstop is ``lib/validators/imscc.py::
+    IMSCCValidator._check_escalated_blocks_absent`` (code
+    ``ESCALATED_BLOCK_IN_IMSCC``), which confirms no tombstone leaked
+    into shipped HTML; in `textbook_to_course` that check is wired at
+    warning severity, and in fully orchestrated runs it is input-starved
+    (it needs ``blocks_final_path`` + the shipped HTML threaded in), so
+    it is NOT a critical backstop — the lockstep skip predicate here is
+    what keeps salvaged-with-content blocks on the audit path.
+    """
+    marker = getattr(block, "escalation_marker", None)
+    if marker is None or marker == "":
+        return False
+    content = getattr(block, "content", None)
+    if isinstance(content, str):
+        body = content
+    elif content is None:
+        body = ""
+    else:
+        # dict-shaped outline content is never "empty" in the
+        # ship-exclusion sense — it's pre-rewrite, so it cannot be a
+        # tombstone (only the str-content rewrite tier ships HTML).
+        return False
+    return not body.strip()
+
+
 def _outline_dict(block: Block) -> Optional[Dict[str, Any]]:
     """Return ``block.content`` if it is the outline-tier dict shape.
 
@@ -504,6 +565,13 @@ class BlockCurieAnchoringValidator:
         passed_count = 0
 
         for block in blocks:
+            # Skip only an UNSHIPPED escalation tombstone (marker +
+            # empty content): the packager filters it out of the IMSCC,
+            # so auditing it is a false positive. A salvaged block
+            # (marker + content) DOES ship and MUST stay on the audit
+            # path. Predicate mirrors pipeline_tools.py:5226.
+            if _is_unshipped_escalation_tombstone(block):
+                continue
             content = block.content
             # Phase 3.5: shape-dispatch. Dict and str paths share the
             # CURIE-anchoring contract (declared CURIEs must appear in
@@ -712,6 +780,10 @@ class BlockContentTypeValidator:
         passed_count = 0
 
         for block in blocks:
+            # Skip unshipped tombstone only; salvaged-with-content stays
+            # on the audit path (predicate mirrors pipeline_tools.py:5226).
+            if _is_unshipped_escalation_tombstone(block):
+                continue
             content = block.content
             # Phase 3.5: shape-dispatch — dict and str paths both
             # extract a single content_type label, then validate it
@@ -903,6 +975,10 @@ class BlockPageObjectivesValidator:
         passed_count = 0
 
         for block in blocks:
+            # Skip unshipped tombstone only; salvaged-with-content stays
+            # on the audit path (predicate mirrors pipeline_tools.py:5226).
+            if _is_unshipped_escalation_tombstone(block):
+                continue
             content = block.content
             # Phase 3.5: shape-dispatch — both paths extract a list of
             # objective_id refs and validate against the canonical set.
@@ -1130,6 +1206,10 @@ class BlockSourceRefValidator:
         empty_manifest = manifest_path is not None and not valid_ids
 
         for block in blocks:
+            # Skip unshipped tombstone only; salvaged-with-content stays
+            # on the audit path (predicate mirrors pipeline_tools.py:5226).
+            if _is_unshipped_escalation_tombstone(block):
+                continue
             content = block.content
             # Phase 3.5: shape-dispatch — both paths extract a list of
             # source_id refs. Dict path harvests from

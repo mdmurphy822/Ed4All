@@ -37,6 +37,16 @@ FIXTURE_ROOT = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _ack_anthropic_synthesis(monkeypatch):
+    """Marketable-v1 D4: the synthesis→eval full-chain test below runs the
+    claude_session provider for plumbing, not to test the licensing gate.
+    Acknowledge the Anthropic-family posture so the D4 fail-closed gate in
+    run_synthesis lets the functional probe through (gate behavior is covered
+    by test_synthesis_licensing_gate.py)."""
+    monkeypatch.setenv("TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS", "true")
+
+
 def _make_working_copy(tmp_path: Path) -> Path:
     dst = tmp_path / "mini_course_training"
     shutil.copytree(FIXTURE_ROOT, dst)

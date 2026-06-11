@@ -55,8 +55,8 @@ from lib.retrieval.refusal import (
     REASON_LOW_CONFIDENCE,
     REASON_NOT_IN_COURSE_MODEL,
     RefusalPolicy,
-    default_policy_for,
     evaluate_confidence,
+    resolve_policy,
     should_refuse,
 )
 
@@ -119,6 +119,13 @@ class Citation:
     source_path: Optional[str]
     text_quote: Optional[str]
     link_target: Dict[str, Any] = field(default_factory=dict)
+    # B4 provenance chain (additive, optional). ``source_block`` is the cited
+    # chunk's primary DART block sourceId ("dart:{slug}#{block_id}");
+    # ``pdf_pages`` are the original PDF page numbers that block came from.
+    # Both are ``None`` / ``[]`` for legacy corpora whose chunks carry no
+    # ``source.source_references`` (the foundation degrades gracefully).
+    source_block: Optional[str] = None
+    pdf_pages: List[int] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -131,6 +138,8 @@ class Citation:
             "source_path": self.source_path,
             "text_quote": self.text_quote,
             "link_target": dict(self.link_target),
+            "source_block": self.source_block,
+            "pdf_pages": list(self.pdf_pages),
         }
 
 
@@ -352,6 +361,40 @@ def _vector_index_chunkset_kind(libv2_root: Path, course_slug: str) -> Optional[
     return str(kind) if kind else None
 
 
+def _vector_index_embedding_model_id(
+    libv2_root: Path, course_slug: str
+) -> Optional[str]:
+    """Read ``embedding_model_id`` from the course's vector-index manifest.
+
+    The refusal policy for a SEMANTIC engine is pinned PER EMBEDDING MODEL
+    (a cosine threshold tuned for one embedder is meaningless for another), so
+    :func:`resolve_policy` needs the model id the live index was built against.
+    The vector-index manifest records it; reading the manifest (NOT the
+    embeddings matrix) keeps this cheap. Returns ``None`` when no index /
+    manifest exists or the field is absent — :func:`resolve_policy` then falls
+    back to the v0-uncalibrated default rather than reusing a stale pin.
+
+    Lexical retrieval carries no embedder; the caller passes ``None`` and never
+    reaches here.
+    """
+    import json
+
+    manifest_path = (
+        libv2_root / "courses" / course_slug / "vector_index" / "manifest.json"
+    )
+    if not manifest_path.is_file():
+        return None
+    try:
+        with manifest_path.open(encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    model = data.get("embedding_model_id") or data.get("model_id")
+    return str(model) if model else None
+
+
 # --------------------------------------------------------------------------- #
 # Citation gate (D5)
 # --------------------------------------------------------------------------- #
@@ -375,6 +418,50 @@ def _passage_chunk_record(passage: RetrievedPassage) -> Dict[str, Any]:
     return {"id": passage.chunk_id, "text": passage.text, "source": source}
 
 
+def _provenance_from_source(
+    source: Dict[str, Any]
+) -> Tuple[Optional[str], List[int]]:
+    """Pull the cited chunk's primary DART block sourceId + PDF pages (B4).
+
+    Reads ``source.source_references`` — the additive Wave-10 provenance the
+    chunker stamps as ``[{sourceId: "dart:{slug}#{block_id}", role, extractor,
+    pages[]}]``. Prefers the ``role == "primary"`` ref (the block a chunk IS
+    synthesized from); falls back to the first ref otherwise. Pages are the
+    union over the SAME chosen ref. Returns ``(None, [])`` when no references
+    are present (legacy corpora) so every downstream hop simply omits the
+    final PDF link — the foundation degrades gracefully.
+    """
+    refs = (source or {}).get("source_references")
+    if not isinstance(refs, list) or not refs:
+        return None, []
+    primary: Optional[Dict[str, Any]] = None
+    first: Optional[Dict[str, Any]] = None
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        if first is None:
+            first = ref
+        if str(ref.get("role") or "") == "primary":
+            primary = ref
+            break
+    chosen = primary or first
+    if chosen is None:
+        return None, []
+    source_id = chosen.get("sourceId")
+    source_block = str(source_id) if source_id else None
+    pages_raw = chosen.get("pages")
+    pages: List[int] = []
+    if isinstance(pages_raw, list):
+        for p in pages_raw:
+            try:
+                ip = int(p)
+            except (TypeError, ValueError):
+                continue
+            if ip > 0 and ip not in pages:
+                pages.append(ip)
+    return source_block, sorted(pages)
+
+
 def _build_citation(
     passage: RetrievedPassage,
     anchor: CitationAnchor,
@@ -386,6 +473,7 @@ def _build_citation(
         source.setdefault("section_heading", passage.section_heading)
     page_label = page_label_for_source(source)
     quote = _first_supporting_quote(answer_text, passage.text)
+    source_block, pdf_pages = _provenance_from_source(passage.source or {})
 
     fragment = _fragment_for(anchor, passage)
     char_span = (
@@ -412,6 +500,8 @@ def _build_citation(
         source_path=source_path,
         text_quote=quote,
         link_target=link_target,
+        source_block=source_block,
+        pdf_pages=pdf_pages,
     )
 
 
@@ -591,10 +681,30 @@ def answer_course_question(
     """
     start = time.monotonic()
     query_sha = _query_sha(query)
-    policy = refusal_policy or default_policy_for(engine)
 
     libv2_root = _libv2_root(repo_root)
     course_dir = libv2_root / "courses" / course_slug
+
+    # Select the refusal policy. The SEMANTIC and HYBRID-RRF engines both pin PER
+    # EMBEDDING MODEL, so we resolve the live index's embedding_model_id from its
+    # manifest and route through resolve_policy((engine, model)). hybrid-rrf's
+    # fused RRF score is NOT a cosine, but its semantic arm — and therefore the
+    # whole fused-score distribution the threshold is measured against — is a
+    # function of the embedder, so a hybrid pin measured on bge-large is no more
+    # valid for MiniLM than a semantic one. Keying both by the index model keeps
+    # the pin honest. A pinned pair returns the measured threshold; an unknown
+    # model falls back to the v0-uncalibrated default (never a stale threshold);
+    # lexical is model-agnostic (model id None). An explicit refusal_policy
+    # override wins verbatim.
+    if refusal_policy is not None:
+        policy = refusal_policy
+    else:
+        embedding_model_id = (
+            _vector_index_embedding_model_id(libv2_root, course_slug)
+            if engine in ("semantic", "hybrid-rrf")
+            else None
+        )
+        policy = resolve_policy(engine, embedding_model_id)
     if chunkset_kind is None:
         # For the semantic / hybrid-rrf engines the vector index's manifest is
         # the authoritative chunkset — read it so retrieval, hydration, and the

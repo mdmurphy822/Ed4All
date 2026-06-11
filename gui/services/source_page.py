@@ -193,22 +193,17 @@ def _assert_contained(resolved: Path, course_dir: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _sanitize_and_wrap(
-    raw_html: str, *, slug: str, page_label: str, fragment: Optional[str]
-) -> str:
-    """Strip active content, inject heading ids, prepend the banner nav.
+def sanitize_soup(soup) -> None:  # noqa: ANN001 — bs4 BeautifulSoup
+    """In-place active-content scrub on a parsed bs4 tree (shared security core).
 
-    bs4-based. Drops ``<script>``/``<iframe>``/``<object>``/``<embed>``/
-    ``<noscript>``/``<base>`` elements, every ``on*`` event-handler attribute,
-    and ``javascript:``/``vbscript:``/``data:`` URLs in URL-bearing attributes.
-    Injects ``id``s on headings (only where missing) using the
-    ``_fragment_for`` slug. Prepends a heading-free ``<nav>`` banner so the
-    archived page's own ``<h1>`` stays the unique document h1.
+    Drops ``<script>``/``<iframe>``/``<object>``/``<embed>``/``<noscript>``/
+    ``<base>`` elements, every ``on*`` event-handler attribute, and
+    ``javascript:``/``vbscript:``/``data:`` URLs in URL-bearing attributes, and
+    decomposes active ``<link rel=preload|prefetch|import|modulepreload>``
+    loaders. This is the exact element/attribute scrub the source-viewer applies;
+    the Studio IMSCC viewer (``gui.services.imscc_service``) reuses it so the two
+    archived-HTML serving paths share one audited sanitiser.
     """
-    from bs4 import BeautifulSoup  # noqa: PLC0415
-
-    soup = BeautifulSoup(raw_html, "html.parser")
-
     # 1) Drop dangerous elements entirely.
     for tag_name in _STRIP_TAGS:
         for el in soup.find_all(tag_name):
@@ -235,6 +230,26 @@ def _sanitize_and_wrap(
                 if rel_val.lower() in ("preload", "prefetch", "import", "modulepreload"):
                     el.decompose()
                     break
+
+
+def _sanitize_and_wrap(
+    raw_html: str, *, slug: str, page_label: str, fragment: Optional[str]
+) -> str:
+    """Strip active content, inject heading ids, prepend the banner nav.
+
+    bs4-based. Drops ``<script>``/``<iframe>``/``<object>``/``<embed>``/
+    ``<noscript>``/``<base>`` elements, every ``on*`` event-handler attribute,
+    and ``javascript:``/``vbscript:``/``data:`` URLs in URL-bearing attributes.
+    Injects ``id``s on headings (only where missing) using the
+    ``_fragment_for`` slug. Prepends a heading-free ``<nav>`` banner so the
+    archived page's own ``<h1>`` stays the unique document h1.
+    """
+    from bs4 import BeautifulSoup  # noqa: PLC0415
+
+    soup = BeautifulSoup(raw_html, "html.parser")
+
+    # 1+2) Drop dangerous elements + scrub active attributes (shared core).
+    sanitize_soup(soup)
 
     # 3) Inject heading ids (only where missing) using the frozen slug.
     for level in ("h1", "h2", "h3", "h4", "h5", "h6"):
@@ -370,4 +385,5 @@ __all__ = [
     "SourcePageError",
     "render_source_page",
     "heading_slug",
+    "sanitize_soup",
 ]

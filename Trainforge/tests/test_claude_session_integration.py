@@ -31,6 +31,16 @@ from Trainforge.tests._synthesis_fakes import (
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_course_training"
 
 
+@pytest.fixture(autouse=True)
+def _ack_anthropic_synthesis(monkeypatch):
+    """Marketable-v1 D4: this claude_session integration test exercises provider
+    plumbing, not the licensing gate. Acknowledge the Anthropic-family posture
+    so the D4 fail-closed gate in run_synthesis lets the functional probe
+    through (the gate's own behavior is covered by
+    test_synthesis_licensing_gate.py)."""
+    monkeypatch.setenv("TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS", "true")
+
+
 class _ListCapture:
     """DecisionCapture stand-in that records every ``log_decision`` call.
 

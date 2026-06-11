@@ -264,6 +264,51 @@ def _coerce_blocks(inputs: Dict[str, Any]) -> Tuple[List[Block], Optional[GateIs
     return list(raw), None
 
 
+def _is_unshipped_escalation_tombstone(block: Block) -> bool:
+    """True only for a marker-bearing block that never ships.
+
+    Mirrors ``Courseforge.router.inter_tier_gates.
+    _is_unshipped_escalation_tombstone``: the skip predicate is the
+    EXACT ship-exclusion predicate the packager applies at HTML emit
+    (``MCP/tools/pipeline_tools.py``'s per-page emit filter at
+    ``pipeline_tools.py:5226``):
+
+        ``escalation_marker is not None and not (content or "").strip()``
+
+    A marker + EMPTY block is a tombstone the packager filters out of the
+    shipped IMSCC, so re-auditing its degenerate HTML at the post-rewrite
+    seam is a false positive → skip (True). A marker + NON-EMPTY block is
+    a *salvaged* block (escalated-rewrite salvage path,
+    ``_rewrite_provider.py::_apply_rewrite_touch`` via
+    ``dataclasses.replace``, marker preserved) that DOES ship and per the
+    design comment at ``pipeline_tools.py:5135`` MUST be audited here →
+    return False so the caller audits it.
+
+    Keep this predicate in lockstep with the packaging emit filter at
+    ``pipeline_tools.py:5226``. The IMSCC-side backstop
+    (``lib/validators/imscc.py::IMSCCValidator._check_escalated_blocks_absent``,
+    code ``ESCALATED_BLOCK_IN_IMSCC``) only confirms no tombstone leaked
+    into shipped HTML; it is warning-severity in `textbook_to_course` and
+    input-starved in orchestrated runs (needs ``blocks_final_path`` +
+    shipped HTML threaded in), so it is NOT a critical backstop — this
+    lockstep predicate is what keeps salvaged blocks on the audit path.
+    """
+    marker = getattr(block, "escalation_marker", None)
+    if marker is None or marker == "":
+        return False
+    content = getattr(block, "content", None)
+    if isinstance(content, str):
+        body = content
+    elif content is None:
+        body = ""
+    else:
+        # Non-str content (outline-tier dict) is skipped by the caller's
+        # isinstance(content, str) guard anyway; never a shipped HTML
+        # tombstone.
+        return False
+    return not body.strip()
+
+
 def _is_json_wrapped(content: str) -> bool:
     """True when ``content`` round-trips through json.loads to a dict / list.
 
@@ -376,6 +421,13 @@ class RewriteHtmlShapeValidator:
         passed_count = 0
 
         for block in blocks:
+            # Skip only an UNSHIPPED escalation tombstone (marker + empty
+            # content): the packager filters it out of the IMSCC, so
+            # auditing it is a false positive. A salvaged block (marker +
+            # content) DOES ship and MUST stay on the audit path.
+            # Predicate mirrors pipeline_tools.py:5226.
+            if _is_unshipped_escalation_tombstone(block):
+                continue
             content = block.content
             # Outline-tier blocks (dict content) skip silently — the
             # post-rewrite seam only audits string content.

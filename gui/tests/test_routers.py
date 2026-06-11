@@ -207,6 +207,70 @@ def test_unknown_run_is_404(client):
     assert resp.status_code == 404
 
 
+def test_validation_report_unknown_run_is_404(client):
+    resp = client.get("/api/runs/GUI-does-not-exist-000000/validation-report")
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "unknown_run"
+
+
+def test_validation_report_endpoint_returns_digest_and_report(
+    state_dir, libv2_root, monkeypatch
+):
+    """The A6 endpoint returns the report body + failed-gate digest for a run."""
+    import json as _json
+
+    import lib.paths as paths
+    from fastapi.testclient import TestClient as _TC
+
+    from gui import shared_state
+    from gui.app import create_app as _create
+
+    cf_root = state_dir / "Courseforge"
+    project_id = "PROJ-BIO_201-20260610-cafef00d"
+    export_dir = cf_root / "exports" / project_id
+    export_dir.mkdir(parents=True, exist_ok=True)
+    (export_dir / "courseforge_validation_report.json").write_text(
+        _json.dumps(
+            {
+                "schema_version": "1.1",
+                "course_code": "BIO_201",
+                "status": "fail",
+                "per_block_results": [
+                    {"block_id": "b1", "block_type": "assessment_item", "status": "failed"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(paths, "COURSEFORGE_PATH", cf_root)
+
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run(
+        {
+            "run_id": run_id,
+            "kind": "pipeline",
+            "workflow": "courseforge",
+            "course_name": "BIO_201",
+            "status": "failed",
+            "params": {"project_id": project_id},
+            "gate_results": [
+                {"gate_id": "curie_anchoring", "severity": "critical", "passed": False,
+                 "issues": ["anchoring 0.7 < 0.95"]},
+            ],
+            "failed_phase": "inter_tier_validation",
+            "failure_reason": "failed validation gate(s): curie_anchoring",
+        }
+    )
+
+    client = _TC(_create())
+    resp = client.get(f"/api/runs/{run_id}/validation-report")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["report"]["course_code"] == "BIO_201"
+    assert body["failed_gates"][0]["gate_id"] == "curie_anchoring"
+    assert body["failed_phase"] == "inter_tier_validation"
+
+
 def test_activity_post_and_get_round_trip(client):
     post = client.post("/api/activity/post", json={"kind": "message", "payload": {"hi": 1}})
     assert post.status_code == 200

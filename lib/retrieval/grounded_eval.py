@@ -104,6 +104,14 @@ _REFUSED_STATUSES = frozenset(
 _BLOCKED_INVALID = "blocked_invalid_citation"
 _BLOCKED_GATE = "blocked_citation_gate"
 
+#: Per-question status recorded when the composer EXHAUSTS its retry budget
+#: (parse exhaustion, post-remediation invalid citations) or fails closed on a
+#: silently-truncated prompt. These are per-question composer failures, NOT a
+#: systemic backend outage (which stays fatal and aborts the whole eval). A
+#: composer_exhausted question counts as not-answered for answer_rate and is
+#: NOT a refusal (it never produced a refusal verdict).
+_COMPOSER_EXHAUSTED = "composer_exhausted"
+
 
 class PipelineUnavailable(NotImplementedError):
     """The grounded-answer pipeline (E6 wave B) has not landed yet.
@@ -113,6 +121,31 @@ class PipelineUnavailable(NotImplementedError):
     so an operator sees the exact missing dependency rather than a fabricated
     eval result.
     """
+
+
+def _composer_exhaustion_errors() -> Tuple[type, ...]:
+    """Lazily resolve the composer error types treated as per-question failures.
+
+    ``AnswerComposeError`` (parse exhaustion), ``InvalidCitationError``
+    (post-remediation unknown citations), and ``PromptTruncatedError`` (silent
+    head-truncation fail-closed) are PER-QUESTION composer failures: the eval
+    records them and moves on. ``AnswerBackendUnavailable`` is deliberately
+    EXCLUDED — a missing/refusing backend is systemic and must abort the run
+    (catching it per-question would silently hollow out every metric).
+
+    Returns an empty tuple when the composer module can't be imported (then the
+    caller catches nothing extra and any error propagates as before).
+    """
+    try:
+        from lib.retrieval.answer_composer import (
+            AnswerComposeError,
+            InvalidCitationError,
+        )
+        from lib.retrieval.answer_backend import PromptTruncatedError
+    except Exception:  # pragma: no cover - composer absent → no extra catch
+        return tuple()
+    # InvalidCitationError subclasses AnswerComposeError; list both for clarity.
+    return (AnswerComposeError, InvalidCitationError, PromptTruncatedError)
 
 
 def _import_answer_pipeline() -> Any:
@@ -383,9 +416,12 @@ def run_grounded_eval(
     answered_count = 0
     blocked_invalid = 0
     blocked_gate = 0
+    composer_exhausted_count = 0
     false_refusals_on_gold = 0
     groundedness_rates: List[float] = []
     unsupported_rates: List[float] = []
+
+    catchable = _composer_exhaustion_errors()
 
     # --- answerable gold questions ---------------------------------------
     for q in questions:
@@ -393,18 +429,49 @@ def run_grounded_eval(
         qtext = str(q.get("question_text", ""))
         all_rel, primary_rel = _relevant_chunk_ids(q)
 
-        answer = pipeline(
-            repo_root,
-            course_slug,
-            qtext,
-            engine=engine,
-            limit=limit,
-            client=client,
-            refusal_policy=refusal_policy,
-            with_groundedness=with_groundedness,
-            capture=capture,
-            chunkset_kind=gold_chunkset_kind,
-        )
+        try:
+            answer = pipeline(
+                repo_root,
+                course_slug,
+                qtext,
+                engine=engine,
+                limit=limit,
+                client=client,
+                refusal_policy=refusal_policy,
+                with_groundedness=with_groundedness,
+                capture=capture,
+                chunkset_kind=gold_chunkset_kind,
+            )
+        except catchable as exc:
+            # Per-question composer failure (parse/citation exhaustion, or a
+            # fail-closed truncation). Record it, count it as NOT-answered for
+            # answer_rate, do NOT count it as a refusal, and keep evaluating
+            # the rest of the gold set. The eval artifact still writes.
+            composer_exhausted_count += 1
+            latencies.append(0.0)
+            per_question_report.append(
+                {
+                    "question_id": qid,
+                    "status": _COMPOSER_EXHAUSTED,
+                    "n_citations": 0,
+                    "citations_resolved": 0,
+                    "citation_relevant_primary": 0,
+                    "groundedness_rate": None,
+                    "latency_ms": 0.0,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+            per_question_detail.append(
+                {
+                    "question_id": qid,
+                    "question_text": qtext,
+                    "status": _COMPOSER_EXHAUSTED,
+                    "answer_text": None,
+                    "review_citations": [],
+                    "per_claim_nli_verdicts": [],
+                }
+            )
+            continue
 
         status = str(_answer_field(answer, "status", "unknown"))
         latency = float(_answer_field(answer, "latency_ms", 0.0))
@@ -499,20 +566,28 @@ def run_grounded_eval(
     n_probes = len(probes)
     probe_refused = 0
     probe_answered = 0
+    probe_composer_exhausted = 0
     for probe in probes:
         ptext = str(probe.get("question_text", ""))
-        answer = pipeline(
-            repo_root,
-            course_slug,
-            ptext,
-            engine=engine,
-            limit=limit,
-            client=client,
-            refusal_policy=refusal_policy,
-            with_groundedness=False,
-            capture=capture,
-            chunkset_kind=gold_chunkset_kind,
-        )
+        try:
+            answer = pipeline(
+                repo_root,
+                course_slug,
+                ptext,
+                engine=engine,
+                limit=limit,
+                client=client,
+                refusal_policy=refusal_policy,
+                with_groundedness=False,
+                capture=capture,
+                chunkset_kind=gold_chunkset_kind,
+            )
+        except catchable:
+            # A composer exhaustion on a probe is neither a clean refusal nor
+            # an answer — it never reached a verdict, so it must NOT inflate
+            # refusal_recall. Counted separately, surfaced in the report.
+            probe_composer_exhausted += 1
+            continue
         status = str(_answer_field(answer, "status", "unknown"))
         if status in _REFUSED_STATUSES:
             probe_refused += 1
@@ -563,6 +638,7 @@ def run_grounded_eval(
             "refusal_recall": refusal_recall,
             "refusal_precision": refusal_precision,
             "false_refusals_on_gold": false_refusals_on_gold,
+            "composer_exhausted": probe_composer_exhausted,
         },
         "latency_ms": {
             "p50": _percentile(latencies, 50.0),
@@ -584,6 +660,13 @@ def run_grounded_eval(
             "invalid_citation": blocked_invalid,
             "citation_gate": blocked_gate,
         },
+        # Per-question composer failures (parse/citation exhaustion or a
+        # fail-closed truncation) — top-level so it is NOT mistaken for a
+        # headline milestone metric. A composer_exhausted gold question is
+        # NOT-answered (in the answer_rate denominator, out of answered_count)
+        # and is NOT a refusal; the probe count is carried under
+        # headline.refusal.composer_exhausted.
+        "composer_exhausted": composer_exhausted_count,
         "generated_at": _utcnow_iso(),
     }
 

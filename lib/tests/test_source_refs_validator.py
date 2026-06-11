@@ -589,3 +589,188 @@ class TestWave4I10WorkflowConfig:
         assert gate["severity"] == "critical"
         assert gate["behavior"]["on_fail"] == "block"
         assert gate["threshold"]["max_critical_issues"] == 0
+
+
+# ---------------------------------------------------------------------- #
+# Marketable-v1 A1: real DART converter sidecar shape regression.
+#
+# The DART converter (DART/converter/sidecars.build_synthesized_sidecar)
+# writes a top-level ``slug`` field derived from the document *title*
+# (e.g. ``01-accessibility-foundations``) and NO ``campus_code`` /
+# ``document_slug`` field. The canonical sourceId slug, however, is
+# derived from the sidecar FILENAME stem
+# (``01_accessibility_foundations_accessible``) -- the rule shared by the
+# source-router, content-grounding validator, and content-generator
+# emitter. The pre-fix harvester read the internal field, so it minted
+# IDs that never matched the emitter and every ``--skip-dart`` /
+# pre-converted-DART run tripped SOURCE_REFS_MANIFEST_MISSING. These
+# tests build a staging dir in the *real converter shape* and assert the
+# gate now resolves cleanly.
+# ---------------------------------------------------------------------- #
+
+
+def _make_converter_shaped_staging(
+    tmp_path: Path,
+    file_stem: str,
+    internal_slug: str,
+    section_ids: list,
+    include_manifest: bool = True,
+) -> Path:
+    """Build a staging dir whose sidecar matches the DART CONVERTER shape.
+
+    Mirrors ``DART.converter.sidecars.build_synthesized_sidecar``:
+    top-level ``slug`` (title-derived, hyphenated), ``title``,
+    ``source_pdf``, ``sections[]`` keyed on ``section_id`` -- and NO
+    ``campus_code`` / ``document_slug`` field.
+    """
+    staging_dir = tmp_path / "staging"
+    staging_dir.mkdir()
+    sidecar_name = f"{file_stem}_synthesized.json"
+    sections = []
+    for sid in section_ids:
+        sections.append({
+            "section_id": sid,
+            "section_title": f"Section {sid}",
+            "section_type": "paragraph-group",
+            "page_range": [1, 3],
+            "provenance": {
+                "sources": ["pdftotext"],
+                "strategy": "heuristic",
+                "confidence": 0.5,
+            },
+            "data": {"text": "body", "head_block_id": f"{sid}_b0"},
+        })
+    (staging_dir / sidecar_name).write_text(json.dumps({
+        "slug": internal_slug,          # title-derived, deliberately != stem
+        "title": internal_slug.replace("-", " ").title(),
+        "source_pdf": f"/corpus/{file_stem}.pdf",
+        "sections": sections,
+        "document_provenance": {"extractors_used": ["pdftotext"]},
+    }))
+    if include_manifest:
+        (staging_dir / "staging_manifest.json").write_text(json.dumps({
+            "run_id": "TEST_RUN",
+            "course_name": "SAMPLE_101",
+            "files": [
+                {"path": f"{file_stem}.html", "role": "content"},
+                {"path": sidecar_name, "role": "provenance_sidecar"},
+            ],
+        }))
+    return staging_dir
+
+
+class TestConverterShapedSidecarHarvest:
+    """A1 regression: filename-derived slug, NOT the internal field."""
+
+    def test_canonical_slug_comes_from_filename_not_internal_field(
+        self, tmp_path
+    ):
+        # file stem -> canonical slug
+        # ``01_accessibility_foundations_accessible``; internal slug is the
+        # title-derived ``01-accessibility-foundations`` which must be
+        # IGNORED for sourceId minting.
+        staging = _make_converter_shaped_staging(
+            tmp_path,
+            file_stem="01_accessibility_foundations_accessible",
+            internal_slug="01-accessibility-foundations",
+            section_ids=["s1", "s2", "s3"],
+        )
+        valid = PageSourceRefValidator()._collect_valid_ids(
+            {"staging_dir": str(staging)}
+        )
+        assert (
+            "dart:01_accessibility_foundations_accessible#s1" in valid
+        )
+        # The title-derived internal slug must NOT appear.
+        assert not any(
+            sid.startswith("dart:01-accessibility-foundations#")
+            for sid in valid
+        )
+
+    def test_gate_passes_for_converter_sidecar_skip_dart_path(
+        self, tmp_path
+    ):
+        """End-to-end: emitter stamps the filename-derived sourceId; the
+        gate must resolve it and pass (the exact case that failed 6/7
+        real --skip-dart runs)."""
+        staging = _make_converter_shaped_staging(
+            tmp_path,
+            file_stem="02_aria_and_component_patterns_accessible",
+            internal_slug="02-aria-and-component-patterns",
+            section_ids=["s1", "s2"],
+        )
+        emitted = "dart:02_aria_and_component_patterns_accessible#s1"
+        html = _html_with_json_ld([emitted])
+        result = PageSourceRefValidator().validate({
+            "staging_dir": str(staging),
+            "html_contents": [{"path": "page.html", "html": html}],
+        })
+        codes = {i.code for i in result.issues}
+        assert "SOURCE_REFS_MANIFEST_MISSING" not in codes
+        assert "UNRESOLVED_SOURCE_ID" not in codes
+        assert result.passed is True
+
+    def test_gate_resolves_via_glob_fallback_without_manifest(
+        self, tmp_path
+    ):
+        """No staging_manifest.json -> harvester discovers sidecars by
+        glob; filename-derived slug still applies."""
+        staging = _make_converter_shaped_staging(
+            tmp_path,
+            file_stem="03_visual_design_principles_accessible",
+            internal_slug="03-visual-design-principles",
+            section_ids=["s1"],
+            include_manifest=False,
+        )
+        emitted = "dart:03_visual_design_principles_accessible#s1"
+        result = PageSourceRefValidator().validate({
+            "staging_dir": str(staging),
+            "html_contents": [
+                {"path": "p.html", "html": _html_with_json_ld([emitted])}
+            ],
+        })
+        codes = {i.code for i in result.issues}
+        assert "SOURCE_REFS_MANIFEST_MISSING" not in codes
+        assert result.passed is True
+
+    def test_empty_dir_still_fails_closed_actionably(self, tmp_path):
+        """The fail-closed contract is preserved: a staging dir with no
+        sidecars + emitted IDs still trips an actionable
+        SOURCE_REFS_MANIFEST_MISSING."""
+        empty = tmp_path / "staging_empty"
+        empty.mkdir()
+        emitted = "dart:some_doc_accessible#s1"
+        result = PageSourceRefValidator().validate({
+            "staging_dir": str(empty),
+            "html_contents": [
+                {"path": "p.html", "html": _html_with_json_ld([emitted])}
+            ],
+        })
+        assert result.passed is False
+        crit = [
+            i for i in result.issues
+            if i.code == "SOURCE_REFS_MANIFEST_MISSING"
+        ]
+        assert crit and crit[0].severity == "critical"
+        # Actionable: names the dir, the manifest, and the upstream phase.
+        msg = crit[0].message
+        assert str(empty) in msg
+        assert "staging_manifest.json" in msg
+        assert "stage_dart_outputs" in msg
+
+    def test_legacy_internal_slug_still_resolves_without_override(self):
+        """Back-compat: a direct ``_iter_sidecar_block_ids`` call WITHOUT
+        a slug override still falls back to the legacy internal
+        campus_code/document_slug resolution (multi_source_interpreter
+        sidecars + existing unit-test callers)."""
+        legacy = {
+            "campus_code": "Science_of_Learning",
+            "sections": [
+                {"section_id": "s1", "data": {
+                    "contacts": [{"block_id": "s1_c0"}]
+                }},
+            ],
+        }
+        ids = set(_iter_sidecar_block_ids(legacy))
+        assert "dart:science_of_learning#s1" in ids
+        assert "dart:science_of_learning#s1_c0" in ids

@@ -25,15 +25,148 @@ _LO_ID_RE = re.compile(r"^[a-zA-Z]{2,}-\d{2,}$")
 from .config import OrchestratorConfig, WorkflowPhase
 from .executor import (
     _PHASE_TOOL_MAPPING,
+    AGENT_AUTHORING_PROVIDER_ENV_MAP,
     AGENT_PROVIDER_ENV_MAP,
+    AGENT_SUBAGENT_SET,
     ExecutionResult,
     TaskExecutor,
+    _agent_dispatch_enabled,
 )
+
+
+class AuthoringProviderRouteError(RuntimeError):
+    """Raised when a run would dispatch an LLM-needing phase to an
+    unserviced mailbox (or a silent templated stub) instead of resolving
+    its generation through the in-process provider lattice.
+
+    Marketable-v1 A3 fail-fast guardrail: a GUI-launched / headless run
+    must never enqueue a mailbox ``agent_task`` that nobody will service
+    (the run would hang forever) and must never silently degrade an
+    LLM-needing agent to a templated in-process stub. When neither a
+    per-agent provider env nor an explicit session/stub opt-in is present,
+    the run fails fast with an actionable message naming the fix.
+    """
 
 logger = logging.getLogger(__name__)
 
-STATE_PATH = Path(__file__).resolve().parent.parent.parent / "state"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# state/ is a relocatable data root: source it from lib.paths so an ED4ALL_HOME
+# deployment lands workflow state under the mounted data root. Byte-stable to
+# ``PROJECT_ROOT / "state"`` when ED4ALL_HOME is unset (lib.paths.STATE_PATH
+# == PROJECT_ROOT/state in that case). Import is local so a bare lib.paths
+# import failure (very unlikely) degrades to the in-tree default.
+try:
+    from lib.paths import STATE_PATH as _LIB_STATE_PATH
+
+    STATE_PATH = _LIB_STATE_PATH
+except Exception:  # noqa: BLE001 — defensive: fall back to in-tree default
+    STATE_PATH = PROJECT_ROOT / "state"
+
+
+# ------------------------------------------------------------------------
+# Marketable-v1 A5 — corpus-generalization defaults-on for pipeline runs.
+#
+# The corpus-generalization features (dynamic CURIE minting, page-level
+# concept tags, the measured-best graph-shaping quartet, three-stage
+# textbook synthesis) are gated behind opt-in env flags that default OFF so
+# *bare library calls* and *rebuilds of legacy calibration corpora* stay
+# byte-identical. But a fresh CLI/GUI textbook run is exactly the case where
+# these features are the product — without them a general textbook quietly
+# misses LO-refs, concept tags, and minted CURIEs. So the WORKFLOW RUNNER
+# turns the blessed set ON per-run (mechanism "auto-on per run"): both the
+# CLI (``create_textbook_pipeline`` → orchestrator → ``run_workflow``) and
+# the GUI (``run_service`` → orchestrator → ``run_workflow``) flow through
+# here, while a direct ``lib.ontology`` / ``Trainforge.chunker`` call that
+# never touches ``run_workflow`` keeps the legacy default-off contract.
+#
+# The MEASURED-BEST graph config wins over the roadmap prose: page-level
+# concept tags (chunk-local tags fragment the graph), plus the
+# prune+fragfilter+merge+cap quartet + tech-seed + content-aware typing +
+# label-normalize + intra-chunk links + lexical-seed fallback + objective
+# quality gate. ``TRAINFORGE_CHUNK_LOCAL_TAGS`` is deliberately ABSENT (it
+# stays default-off → page-level tags are emitted).
+#
+# Each value is applied with setdefault semantics (only when the env is
+# unset/empty) so an operator's explicit legacy value (e.g.
+# ``TRAINFORGE_MERGE_DUPLICATE_CONCEPTS=false``) is honored verbatim. Read
+# sites all consult ``os.environ`` at call time, so a run-scoped set takes
+# effect for every downstream phase handler.
+_CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
+    # Chunking stage (PAGE-level tags — TRAINFORGE_CHUNK_LOCAL_TAGS left unset)
+    "TRAINFORGE_PRUNE_SCAFFOLDING_CONCEPTS": "true",
+    "TRAINFORGE_SEED_TECH_CONCEPTS": "true",
+    "TRAINFORGE_FILTER_FRAGMENT_CONCEPTS": "true",
+    "TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE": "true",
+    # Knowledge-graph stage (measured-best shaping quartet)
+    "TRAINFORGE_MERGE_DUPLICATE_CONCEPTS": "true",
+    "TRAINFORGE_INTRA_CHUNK_LINKS": "true",
+    "TRAINFORGE_RELATED_FANOUT_CAP": "8",
+    "TRAINFORGE_NORMALIZE_LABELS": "true",
+    # Corpus-generalization recovery paths (general / non-RDF textbooks)
+    "TRAINFORGE_LEXICAL_CONCEPT_SEEDS": "true",
+    "TRAINFORGE_OBJECTIVE_QUALITY_GATE": "true",
+}
+
+# The env var that selects the three-stage textbook-synthesis provider. It
+# selects an LLM backend (licensing-sensitive), so its default-on value is
+# resolved like the A3 authoring providers — ``LLM_PROVIDER`` (the run's
+# global routing provider) > ``"local"`` (license-clean default) — rather
+# than a hardcoded literal, and is applied with the same setdefault
+# semantics. Turning synthesis on is what produces the Stage-3
+# ``domain_concept_vocabulary.json`` that the outline/rewrite CURIE
+# anchoring gates use as their ``minted_curie_map`` — i.e. dynamic CURIE
+# minting rides on the synthesis provider being set; there is no separate
+# CURIE behavior flag.
+_TEXTBOOK_SYNTHESIS_PROVIDER_ENV = "TEXTBOOK_SYNTHESIS_PROVIDER"
+
+# The env var that selects the Trainforge TRAINING-PAIR synthesis provider
+# (``Trainforge/synthesize_training.py::run_synthesis`` via the
+# ``training-synthesizer`` agent). Distinct from
+# ``TEXTBOOK_SYNTHESIS_PROVIDER`` above: that selects the authoring-adjacent
+# three-stage textbook-structure synthesis (concept vocabulary + objectives);
+# THIS one selects the provider that paraphrases the chunk corpus into the
+# instruction / preference pairs that LITERALLY become the SLM's training
+# corpus (the trained adapter is a derivative work of these pairs). Per
+# ``docs/LICENSING.md`` § "Synthesis providers" this surface must default to a
+# license-clean provider and Claude must never author the pairs. It is
+# resolved exactly like the A3 authoring providers — ``LLM_PROVIDER`` (the
+# run's global routing provider) > ``"local"`` (license-clean default) — and
+# applied with the same setdefault semantics, so a CLI ``ed4all run`` matches
+# the GUI ``run_service._apply_authoring_route_env`` behavior (which already
+# fills this env). Without this, a CLI run with ``TRAINFORGE_SYNTHESIS_PROVIDER``
+# unset and ``ED4ALL_AGENT_DISPATCH=true`` would dispatch the
+# ``training-synthesizer`` subagent to the Claude Code session — routing the
+# training-pair corpus through a ToS-unclean provider by default.
+_TRAINFORGE_SYNTHESIS_PROVIDER_ENV = "TRAINFORGE_SYNTHESIS_PROVIDER"
+
+# Workflows that get the corpus-generalization auto-on treatment: the full
+# textbook pipeline and its Courseforge stage aliases (which run through the
+# same ``textbook_to_course`` config) plus ``course_generation``.
+_CORPUS_GENERALIZATION_WORKFLOWS: frozenset = frozenset(
+    {"textbook_to_course", "course_generation"}
+)
+
+
+def courseforge_exports_dir() -> Path:
+    """Resolve the Courseforge exports dir for this module.
+
+    Honors the ED4ALL_HOME relocatable data root (via ``lib.paths``) when set;
+    otherwise resolves against this module's ``PROJECT_ROOT`` so a test that
+    monkeypatches ``workflow_runner.PROJECT_ROOT`` (the long-standing seam for
+    redirecting project exports into a ``tmp_path``) still works. Byte-stable to
+    ``PROJECT_ROOT / "Courseforge" / "exports"`` when ED4ALL_HOME is unset.
+    """
+    try:
+        from lib.paths import courseforge_exports_dir as _lib_resolver
+        from lib.paths import ed4all_home
+
+        if ed4all_home() is not None:
+            return _lib_resolver()
+    except Exception:  # noqa: BLE001 — defensive: fall back to in-tree default
+        pass
+    return PROJECT_ROOT / "Courseforge" / "exports"
+
+
 WORKFLOWS_YAML_PATH = PROJECT_ROOT / "config" / "workflows.yaml"
 WORKFLOWS_META_SCHEMA_PATH = PROJECT_ROOT / "schemas" / "config" / "workflows_meta.schema.json"
 
@@ -408,6 +541,45 @@ _WORKFLOWS_CONFIG_CACHE: Optional[Dict[str, Any]] = None
 # Track phases we've already warn-logged for fall-through to legacy defaults,
 # to avoid log spam when the same phase fires repeatedly across a workflow.
 _FALLBACK_LOGGED: set = set()
+
+
+def _summarize_gate_failure(gate_results: Any) -> str:
+    """Build a one-line human reason from a phase's failed validation gates.
+
+    ``gate_results`` is the list of per-gate results (``GateResult`` dataclasses
+    or already-dictified) the executor returns for a phase. We pick the failed
+    gates (``passed`` is falsy), prefer ``critical`` over ``warning``, and render
+    ``<gate_id> (<first issue>)`` joined for up to two gates so the GUI failure
+    panel has a readable summary without re-walking the structured gate list.
+    Returns a generic message when no structured detail is available.
+    """
+    failed: List[Tuple[str, str, str]] = []  # (severity, gate_id, first_issue)
+    for gr in gate_results or []:
+        if hasattr(gr, "gate_id"):
+            passed = getattr(gr, "passed", True)
+            gate_id = getattr(gr, "gate_id", "") or ""
+            severity = getattr(gr, "severity", "warning") or "warning"
+            issues = getattr(gr, "issues", None) or []
+        elif isinstance(gr, dict):
+            passed = gr.get("passed", True)
+            gate_id = gr.get("gate_id", "") or ""
+            severity = gr.get("severity", "warning") or "warning"
+            issues = gr.get("issues") or []
+        else:
+            continue
+        if passed:
+            continue
+        first_issue = str(issues[0]) if issues else ""
+        failed.append((severity, gate_id, first_issue))
+    if not failed:
+        return "failed validation gates"
+    # critical first, then warning; stable within severity.
+    failed.sort(key=lambda t: 0 if t[0] == "critical" else 1)
+    parts = []
+    for _sev, gate_id, issue in failed[:2]:
+        parts.append(f"{gate_id} ({issue})" if issue else gate_id)
+    suffix = f" (+{len(failed) - 2} more)" if len(failed) > 2 else ""
+    return "failed validation gate(s): " + ", ".join(parts) + suffix
 
 
 def _reset_workflows_cache() -> None:
@@ -978,6 +1150,15 @@ class WorkflowRunner:
         if not wf_config:
             return {"error": f"Unknown workflow type: {workflow_type}"}
 
+        # Marketable-v1 A5: turn the corpus-generalization feature set ON for
+        # this run (textbook_to_course / course_generation) so a fresh
+        # general-textbook run gets LO-refs + page-level concept tags +
+        # dynamic CURIEs + three-stage synthesis by default — the features
+        # the product is sold on. setdefault semantics keep an operator's
+        # explicit legacy env value intact. Bare library calls that never
+        # reach run_workflow keep the default-off legacy contract.
+        self._apply_corpus_generalization_defaults(workflow_type)
+
         # Initialize phase outputs (may already exist from partial run)
         phase_outputs: Dict[str, Dict] = workflow_state.get("phase_outputs", {})
 
@@ -1057,6 +1238,13 @@ class WorkflowRunner:
         # Execute each phase
         all_results: Dict[str, Dict] = {}
         final_status = "COMPLETE"
+        # Marketable-v1 A6 operator-failure-UX: when the loop breaks on a phase
+        # failure, record WHICH phase failed and a short human reason so the GUI
+        # can render an actionable failure panel instead of inferring the failing
+        # phase from "last running" heuristics. Surfaced in both the persisted
+        # workflow state and the returned payload. ``None`` on a clean run.
+        failed_phase: Optional[str] = None
+        failure_reason: Optional[str] = None
 
         # Wave1-I8 (Finding 7 of plans/dispatch-7-execution-inspection-2026-05.md):
         # emit one banner line per agent in ``AGENT_PROVIDER_ENV_MAP`` so
@@ -1065,6 +1253,15 @@ class WorkflowRunner:
         # subagent, or (c) the in-process stub fallback. Pure
         # observability — no behaviour change.
         self._emit_provider_banner()
+
+        # Marketable-v1 A3 fail-fast guardrail: before running any phase,
+        # verify every LLM-needing agent in the phases that will actually
+        # run resolves its generation through the in-process provider
+        # lattice (or has an explicit session / stub opt-in). Otherwise a
+        # GUI-launched / headless run would enqueue a mailbox agent_task
+        # nobody services (hang) or silently degrade to a templated stub.
+        # Raises AuthoringProviderRouteError with an actionable message.
+        self._enforce_authoring_provider_route(sorted_phases, workflow_params)
 
         for phase_idx, phase in enumerate(sorted_phases):
             phase_name = phase.name
@@ -1097,6 +1294,10 @@ class WorkflowRunner:
                     f"Phase {phase_name} dependencies not met: {phase.depends_on}"
                 )
                 final_status = "FAILED"
+                failed_phase = phase_name
+                failure_reason = (
+                    f"dependencies not met: {', '.join(phase.depends_on or [])}"
+                )
                 break
 
             # Wave 80 Worker A: honour --reuse-objectives by synthesising
@@ -1143,6 +1344,11 @@ class WorkflowRunner:
                         "failed; aborting workflow"
                     )
                     final_status = "FAILED"
+                    failed_phase = phase_name
+                    failure_reason = (
+                        "--reuse-objectives synthesis failed "
+                        "(project dir not created or objectives file unreadable)"
+                    )
                     break
 
             logger.info(f"Starting phase {phase_idx + 1}/{len(sorted_phases)}: {phase_name}")
@@ -1252,6 +1458,11 @@ class WorkflowRunner:
                     "gates_passed": gates_passed,
                 }
                 final_status = "FAILED"
+                failed_phase = phase_name
+                failure_reason = (
+                    f"zero successful tasks and no outputs "
+                    f"(dispatched={len(tasks)}, complete=0)"
+                )
                 break
 
             extracted["_completed"] = True
@@ -1321,16 +1532,32 @@ class WorkflowRunner:
             if phase_failed and not getattr(phase, "optional", False):
                 logger.error(f"Phase {phase_name} failed, stopping workflow")
                 final_status = "FAILED"
+                failed_phase = phase_name
+                failed_tasks = sum(
+                    1 for r in results.values()
+                    if r.status in ("ERROR", "TIMEOUT", "FAILED")
+                )
+                failure_reason = (
+                    f"{failed_tasks} of {len(tasks)} task(s) failed"
+                )
                 break
 
             if not gates_passed and not getattr(phase, "optional", False):
                 logger.error(f"Phase {phase_name} failed validation gates, stopping workflow")
                 final_status = "FAILED"
+                failed_phase = phase_name
+                failure_reason = _summarize_gate_failure(gate_results)
                 break
 
         # Finalize workflow state
         workflow_state["status"] = final_status
         workflow_state["completed_at"] = datetime.now().isoformat()
+        # Marketable-v1 A6: persist the structured failure surface so the GUI
+        # (and any resume / audit) can read which phase failed + why directly
+        # from the workflow state file rather than inferring it.
+        if failed_phase is not None:
+            workflow_state["failed_phase"] = failed_phase
+            workflow_state["failure_reason"] = failure_reason
         self._save_workflow_state(workflow_path, workflow_state)
 
         # Worker W5 (GPT-feedback follow-up): post-loop aggregator that
@@ -1416,6 +1643,8 @@ class WorkflowRunner:
         return {
             "workflow_id": workflow_id,
             "status": final_status,
+            "failed_phase": failed_phase,
+            "failure_reason": failure_reason,
             "phase_results": all_results,
             "phase_outputs": {
                 k: {pk: pv for pk, pv in v.items() if not pk.startswith("_")}
@@ -1441,6 +1670,193 @@ class WorkflowRunner:
                 str(promotion_chain_path) if promotion_chain_path else None
             ),
         }
+
+    # Env opt-ins that authorize the non-lattice dispatch paths. A run
+    # that hits one of these has deliberately accepted the
+    # mailbox-subagent (Claude session) or templated-stub path, so the
+    # guardrail steps aside.
+    _SESSION_SERVICED_ENVS = (
+        # Operator is running inside a Claude Code session (or an
+        # external servicer, e.g. scripts/mailbox_servicer.py) that will
+        # drain the mailbox. Set this when a servicer is attached.
+        "ED4ALL_MAILBOX_SERVICED",
+    )
+    _STUB_OPT_IN_ENV = "LOCAL_DISPATCHER_ALLOW_STUB"
+
+    @staticmethod
+    def _env_truthy(name: str) -> bool:
+        return os.environ.get(name, "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+
+    def _llm_agents_in_phases(
+        self, phases: List[WorkflowPhase], workflow_params: Dict[str, Any]
+    ) -> List[Tuple[str, str]]:
+        """Return ``(phase_name, agent_type)`` for every subagent-classified
+        (LLM-needing) agent in the phases that will actually run.
+
+        Skips optional / env-gated / stage-whitelisted phases via the same
+        ``_should_skip_phase`` predicate the run loop uses, so a guardrail
+        decision never trips on a phase the workflow won't execute (e.g.
+        ``trainforge_assessment`` under ``--no-assessments``).
+        """
+        out: List[Tuple[str, str]] = []
+        for phase in phases:
+            if self._should_skip_phase(phase, workflow_params):
+                continue
+            for agent in phase.agents or []:
+                if agent in AGENT_SUBAGENT_SET:
+                    out.append((phase.name, agent))
+        return out
+
+    def _apply_corpus_generalization_defaults(self, workflow_type: str) -> Dict[str, str]:
+        """Turn the corpus-generalization feature set ON for a pipeline run.
+
+        Marketable-v1 A5 (mechanism "auto-on per run"). For
+        ``textbook_to_course`` / ``course_generation`` runs only, fill every
+        corpus-generalization env flag that is currently unset/empty with its
+        measured-best value, so a fresh CLI/GUI run gets page-level concept
+        tags, the measured graph-shaping quartet (prune + fragment-filter +
+        merge + fan-out cap), dynamic CURIEs, and three-stage textbook
+        synthesis by default.
+
+        * setdefault semantics — an operator's explicit value (legacy or
+          otherwise) is honored verbatim; only an unset/empty env is filled.
+        * MEASURED-best wins over the roadmap prose: PAGE-level tags are the
+          default, so ``TRAINFORGE_CHUNK_LOCAL_TAGS`` is intentionally NOT in
+          the default map (chunk-local tags fragment the graph).
+        * The synthesis provider is licensing-sensitive, so it resolves like
+          the A3 authoring providers: ``LLM_PROVIDER`` > ``"local"``.
+        * Returns the env vars this call actually set (for logging / tests).
+          A no-op for every non-pipeline workflow and for a run where the
+          operator already pinned every flag.
+        """
+        if workflow_type not in _CORPUS_GENERALIZATION_WORKFLOWS:
+            return {}
+
+        applied: Dict[str, str] = {}
+        for env_var, value in _CORPUS_GENERALIZATION_ENV_DEFAULTS.items():
+            if os.environ.get(env_var, "").strip():
+                continue
+            os.environ[env_var] = value
+            applied[env_var] = value
+
+        # Both synthesis-provider envs are licensing-sensitive (they select an
+        # LLM backend whose ToS decides whether the corpus is trainable), so
+        # they resolve like the A3 authoring providers — LLM_PROVIDER > "local"
+        # (license-clean default) — rather than a hardcoded literal.
+        #   * TEXTBOOK_SYNTHESIS_PROVIDER — authoring-adjacent (concept
+        #     vocabulary / objectives); A5.
+        #   * TRAINFORGE_SYNTHESIS_PROVIDER — the training-PAIR corpus (the SLM
+        #     is a derivative work of these pairs). Defaulting it here is the
+        #     CLI-side mirror of the GUI run_service authoring-route fill, so a
+        #     CLI run no longer routes training-pair synthesis through the
+        #     Claude Code session by default. (Marketable-v1 D4.)
+        for _provider_env in (
+            _TEXTBOOK_SYNTHESIS_PROVIDER_ENV,
+            _TRAINFORGE_SYNTHESIS_PROVIDER_ENV,
+        ):
+            if os.environ.get(_provider_env, "").strip():
+                continue
+            resolved_provider = os.environ.get("LLM_PROVIDER", "").strip() or "local"
+            os.environ[_provider_env] = resolved_provider
+            applied[_provider_env] = resolved_provider
+
+        if applied:
+            logger.info(
+                "A5 corpus-generalization defaults-on for %s: set %s",
+                workflow_type,
+                ", ".join(f"{k}={v}" for k, v in sorted(applied.items())),
+            )
+        return applied
+
+    def _enforce_authoring_provider_route(
+        self,
+        phases: List[WorkflowPhase],
+        workflow_params: Dict[str, Any],
+    ) -> None:
+        """Fail fast unless every LLM-needing phase resolves generation via
+        the in-process provider lattice (the blessed authoring route).
+
+        Marketable-v1 A3. For each subagent-classified agent in the phases
+        that will run, the dispatch path resolves (mirroring
+        ``TaskExecutor._invoke_tool``) to one of:
+
+        * **lattice** — the agent's ``<AGENT>_PROVIDER`` env
+          (``AGENT_AUTHORING_PROVIDER_ENV_MAP``) is set, so the executor
+          short-circuits subagent dispatch and runs the in-process tool,
+          which routes through the OpenAI-compatible provider registry. OK.
+        * **session subagent** — no provider env, but
+          ``ED4ALL_AGENT_DISPATCH=true`` AND a servicer opt-in
+          (``ED4ALL_MAILBOX_SERVICED``) signals an attached Claude session /
+          external servicer that will drain the mailbox. OK (operator's
+          responsibility).
+        * **stub** — ``LOCAL_DISPATCHER_ALLOW_STUB`` accepts the templated
+          in-process stub (tests / dry runs). OK.
+        * **hang / silent-degrade** — none of the above. A run here would
+          enqueue an unserviced mailbox task (hang) or fall to a templated
+          stub for an LLM-needing agent (silent degradation). FAIL FAST.
+
+        The error names the fix: set the agent's provider env, or run inside
+        a Claude session with ``ED4ALL_AGENT_DISPATCH=true`` +
+        ``ED4ALL_MAILBOX_SERVICED=1``.
+        """
+        offenders: List[Dict[str, Any]] = []
+        seen: set = set()
+        agent_dispatch = _agent_dispatch_enabled()
+        serviced = any(self._env_truthy(e) for e in self._SESSION_SERVICED_ENVS)
+        stub_ok = self._env_truthy(self._STUB_OPT_IN_ENV)
+
+        for phase_name, agent in self._llm_agents_in_phases(phases, workflow_params):
+            if agent in seen:
+                continue
+            seen.add(agent)
+
+            provider_env = AGENT_AUTHORING_PROVIDER_ENV_MAP.get(agent)
+            if provider_env and os.environ.get(provider_env, "").strip():
+                continue  # lattice route — blessed
+            if stub_ok:
+                continue  # explicit templated-stub opt-in
+            if agent_dispatch and serviced:
+                continue  # session subagent route, servicer attached
+
+            offenders.append(
+                {
+                    "phase": phase_name,
+                    "agent": agent,
+                    "provider_env": provider_env,
+                }
+            )
+
+        if not offenders:
+            return
+
+        lines: List[str] = []
+        for o in offenders:
+            if o["provider_env"]:
+                lines.append(
+                    f"  - phase '{o['phase']}' agent '{o['agent']}': set "
+                    f"{o['provider_env']}=local (or together / another "
+                    f"registered provider) to route via the in-process lattice"
+                )
+            else:
+                lines.append(
+                    f"  - phase '{o['phase']}' agent '{o['agent']}': "
+                    f"session-only agent — run inside a Claude session with "
+                    f"ED4ALL_AGENT_DISPATCH=true and ED4ALL_MAILBOX_SERVICED=1"
+                )
+
+        raise AuthoringProviderRouteError(
+            "Run would dispatch an LLM-needing phase to an unserviced "
+            "mailbox (hang) or a templated stub (silent degradation). The "
+            "supported turnkey authoring route resolves LLM generation "
+            "through the in-process provider lattice. Fix one of:\n"
+            + "\n".join(lines)
+            + "\n\nOr, to run inside a Claude Code session that services the "
+            "mailbox, set ED4ALL_AGENT_DISPATCH=true and "
+            "ED4ALL_MAILBOX_SERVICED=1. For tests / dry runs only, set "
+            "LOCAL_DISPATCHER_ALLOW_STUB=1 to accept templated stubs."
+        )
 
     def _emit_provider_banner(self) -> None:
         """Wave1-I8: emit one log line per agent in
@@ -1563,7 +1979,7 @@ class WorkflowRunner:
             return Path(explicit)
         project_id = oe.get("project_id")
         if project_id:
-            return PROJECT_ROOT / "Courseforge" / "exports" / project_id
+            return courseforge_exports_dir() / project_id
         return None
 
     def _maybe_write_trainforge_assessment_quality_report(
@@ -2357,6 +2773,54 @@ class WorkflowRunner:
         if phase.name == "training_synthesis":
             return bool(workflow_params.get("skip_training", False))
 
+        # Marketable-v1 A2: vector_indexing runs by default but skips cleanly
+        # (with a logged reason) when the embedding stack is unavailable UNLESS
+        # the operator opts into strict mode via TRAINFORGE_REQUIRE_EMBEDDINGS.
+        # This mirrors the embedding-stack graceful-degrade convention used by
+        # the statistical-tier validators (lib/embedding/sentence_embedder.py::
+        # is_strict_mode + the EMBEDDING_DEPS_MISSING warning contract): a slim
+        # install without the [embedding] extra should not fail an otherwise
+        # green textbook_to_course run. In strict mode the phase is NOT skipped
+        # and run_vector_indexing fails closed if the backend is broken.
+        if phase.name == "vector_indexing":
+            return self._should_skip_vector_indexing()
+
+        return False
+
+    @staticmethod
+    def _should_skip_vector_indexing() -> bool:
+        """Skip vector_indexing when the embedding stack is unavailable.
+
+        Returns True (skip) only when BOTH (a) strict mode is OFF
+        (``TRAINFORGE_REQUIRE_EMBEDDINGS`` unset/falsey) and (b) the embedding /
+        vector-index dependencies are not importable. In strict mode we never
+        skip — the phase runs and ``run_vector_indexing`` fails closed on a
+        broken backend (anti-silent-degradation contract).
+        """
+        try:
+            from lib.embedding.sentence_embedder import is_strict_mode
+        except Exception:  # noqa: BLE001 — embedding pkg itself unimportable
+            is_strict_mode = lambda: False  # noqa: E731
+
+        if is_strict_mode():
+            return False
+
+        # Cheap import-spec probe — never imports the heavy ML stack. The
+        # provider/vector-index modules import-guard their heavy deps lazily, so
+        # presence of the spec is the slim/full-install signal.
+        import importlib.util
+
+        for mod in ("lib.embedding.providers", "LibV2.tools.libv2.vector_index"):
+            if importlib.util.find_spec(mod) is None:
+                logger.info(
+                    "Skipping optional phase vector_indexing: embedding "
+                    "dependencies unavailable (%s not importable) and "
+                    "TRAINFORGE_REQUIRE_EMBEDDINGS is not set. Install the "
+                    "[embedding] extra or set TRAINFORGE_REQUIRE_EMBEDDINGS=true "
+                    "to make indexing mandatory.",
+                    mod,
+                )
+                return True
         return False
 
     # Phase 5 Subtask 4: per-stage active-phase whitelist. Source of
@@ -2497,10 +2961,15 @@ class WorkflowRunner:
         """
         from pathlib import Path as _Path
 
-        dart_dir_str = workflow_params.get("dart_output_dir") or "DART/output"
-        dart_dir = _Path(dart_dir_str)
-        if not dart_dir.is_absolute():
-            dart_dir = (PROJECT_ROOT / dart_dir_str).resolve()
+        dart_dir_str = workflow_params.get("dart_output_dir")
+        if dart_dir_str:
+            dart_dir = _Path(dart_dir_str)
+            if not dart_dir.is_absolute():
+                dart_dir = (PROJECT_ROOT / dart_dir_str).resolve()
+        else:
+            # No explicit override: use the (ED4ALL_HOME-aware) default DART
+            # output dir so a relocated deployment finds its staged HTML.
+            dart_dir = dart_output_dir()
         if not dart_dir.is_dir():
             logger.error(
                 "skip_dart set but dart_output_dir is not a directory: %s",
@@ -2674,7 +3143,7 @@ class WorkflowRunner:
         project_path_str = objective_extraction_out.get("project_path")
         if not project_path_str and project_id:
             project_path_str = str(
-                PROJECT_ROOT / "Courseforge" / "exports" / project_id
+                courseforge_exports_dir() / project_id
             )
         if not project_path_str:
             logger.error(
@@ -2873,7 +3342,7 @@ class WorkflowRunner:
                 stage,
             )
             return None
-        exports_root = PROJECT_ROOT / "Courseforge" / "exports"
+        exports_root = courseforge_exports_dir()
         if not exports_root.is_dir():
             logger.warning(
                 "outline reuse: %s not a directory; no project to "

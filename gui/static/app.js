@@ -105,12 +105,61 @@ class ApiError extends Error {
   }
 }
 
+/* =====================================================================
+ * Operator token (Marketable-v1 D2)
+ *
+ * When the server gates the operator surface with ED4ALL_GUI_TOKEN, every
+ * operator fetch must carry `Authorization: Bearer <token>`. The token is held
+ * in sessionStorage (cleared on tab close), attached by api() below, and a 401
+ * triggers a minimal token-entry overlay. When no token is configured the
+ * server never 401s, so this stays dormant (no overlay, no header rejected).
+ * ===================================================================== */
+const TOKEN_KEY = 'ed4all_gui_token';
+function getToken() { try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch (_) { return ''; } }
+function setToken(t) { try { if (t) sessionStorage.setItem(TOKEN_KEY, t); else sessionStorage.removeItem(TOKEN_KEY); } catch (_) {} }
+
+/* Minimal token-entry overlay. Shown on a 401; resolves once the user submits a
+ * token (stored in sessionStorage). Singleton — concurrent 401s share one
+ * prompt so a burst of failed fetches doesn't stack overlays. */
+let _tokenPromptInFlight = null;
+function promptForToken() {
+  if (_tokenPromptInFlight) return _tokenPromptInFlight;
+  _tokenPromptInFlight = new Promise((resolve) => {
+    const input = el('input', { type: 'password', placeholder: 'Operator token', 'aria-label': 'Operator token', autocomplete: 'off' });
+    const submit = el('button', { class: 'primary', text: 'Unlock' });
+    const form = el('form', { class: 'token-form' }, [
+      el('h2', { text: 'Operator token required' }),
+      el('p', { class: 'help', text: 'This control plane is protected. Enter the operator token (ED4ALL_GUI_TOKEN) to continue.' }),
+      field('Token', input),
+      submit,
+    ]);
+    const overlay = el('div', { class: 'token-overlay', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Operator token required' }, [form]);
+    function close(t) { setToken(t); overlay.remove(); _tokenPromptInFlight = null; resolve(t); }
+    form.addEventListener('submit', (e) => { e.preventDefault(); const t = input.value.trim(); if (t) close(t); });
+    document.body.appendChild(overlay);
+    input.focus();
+  });
+  return _tokenPromptInFlight;
+}
+
 async function api(path, opts = {}) {
+  // Attach the operator bearer token (if held) to every request. Harmless when
+  // the server runs open — an unexpected header is ignored.
+  const token = getToken();
+  if (token) {
+    opts = Object.assign({}, opts, { headers: Object.assign({}, opts.headers, { Authorization: `Bearer ${token}` }) });
+  }
   let res;
   try {
     res = await fetch(path, opts);
   } catch (networkErr) {
     throw new ApiError(0, 'network_error', String(networkErr && networkErr.message || networkErr));
+  }
+  // 401 → operator token missing/wrong. Prompt for one and retry once with it.
+  if (res.status === 401 && !opts._tokenRetry) {
+    setToken('');
+    const t = await promptForToken();
+    if (t) return api(path, Object.assign({}, opts, { _tokenRetry: true }));
   }
   // 204 / empty body
   if (res.status === 204) return null;
@@ -529,8 +578,13 @@ async function renderUpload(view) {
     currentRunId = runId;
     cancelBtn.disabled = false;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${proto}//${location.host}/api/ws/runs/${encodeURIComponent(runId)}`;
-    logLine(`[gui] connecting ${url}`, 'sys');
+    // Operator WS is token-gated in full mode; browser JS can't set WS request
+    // headers, so the token rides the ?token= query param (server constant-time
+    // compares it). Omitted when no token is held (open deploys).
+    const token = getToken();
+    const q = token ? `?token=${encodeURIComponent(token)}` : '';
+    const url = `${proto}//${location.host}/api/ws/runs/${encodeURIComponent(runId)}${q}`;
+    logLine(`[gui] connecting ${url.replace(/\?token=[^&]*/, '?token=***')}`, 'sys');
     try {
       ws = new WebSocket(url);
     } catch (e) {

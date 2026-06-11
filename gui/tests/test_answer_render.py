@@ -266,3 +266,63 @@ def test_no_metadata_leak_in_fragment():
     assert "1234" not in html
     assert "qwen2.5" not in html
     assert "prompt_version" not in html
+
+
+# --------------------------------------------------- B4 provenance disclosure
+
+
+def test_legacy_citation_omits_provenance_disclosure():
+    # No source_block / pdf_pages → no disclosure toggle at all.
+    html = ar.render_answer_fragment(_answered_payload())
+    assert "src-detail-toggle" not in html
+    assert "PDF page" not in html
+
+
+def test_provenance_disclosure_renders_block_and_pdf_links():
+    payload = _answered_payload()
+    payload["citations"][0]["source_block"] = "dart:mini_alpha#s3_c0"
+    payload["citations"][0]["pdf_pages"] = [7, 12]
+    html = ar.render_answer_fragment(payload)
+    # Disclosure pattern: a toggle button controlling a hidden detail panel.
+    assert '<button type="button" class="src-detail-toggle" aria-expanded="false"' in html
+    assert 'aria-controls="src-detail-chunk_0001"' in html
+    assert 'id="src-detail-chunk_0001" class="src-detail" hidden' in html
+    # Informational source block id.
+    assert "<code>dart:mini_alpha#s3_c0</code>" in html
+    # One labelled, new-tab PDF link per page.
+    assert html.count('class="src-pdf-link"') == 2
+    assert 'target="_blank" rel="noopener"' in html
+    assert 'aria-label="Open PDF page 7, opens in new tab"' in html
+    assert "source-pdf?file=mini_alpha&amp;page=12" in html
+    assert ">PDF page 12</a>" in html
+
+
+def test_provenance_block_only_when_no_pages():
+    payload = _answered_payload()
+    payload["citations"][0]["source_block"] = "dart:mini_alpha#s3_c0"
+    payload["citations"][0]["pdf_pages"] = []
+    html = ar.render_answer_fragment(payload)
+    assert "src-detail-toggle" in html
+    assert "<code>dart:mini_alpha#s3_c0</code>" in html
+    # No PDF links when no pages are known.
+    assert "src-pdf-link" not in html
+
+
+def test_provenance_pages_only_when_no_block():
+    payload = _answered_payload()
+    payload["citations"][0]["source_block"] = None
+    payload["citations"][0]["pdf_pages"] = [3]
+    html = ar.render_answer_fragment(payload)
+    assert "src-detail-toggle" in html
+    assert "src-pdf-link" in html
+    assert ">PDF page 3</a>" in html
+    assert "src-block" not in html
+
+
+def test_provenance_source_block_is_escaped():
+    payload = _answered_payload()
+    payload["citations"][0]["source_block"] = 'dart:x#"><script>alert(1)</script>'
+    payload["citations"][0]["pdf_pages"] = []
+    html = ar.render_answer_fragment(payload)
+    assert "<script>alert(1)" not in html
+    assert "&lt;script&gt;" in html

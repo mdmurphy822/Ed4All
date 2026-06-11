@@ -36,7 +36,40 @@ Status ladder (best to worst, first-match wins):
 
 HTML-entity quirk: headings in chunk ``source`` carry double-escaped entities
 (``Week 1: Application &amp;amp; Activities``). The resolver compares *text*,
-not headings, so no unescaping pass is needed for v1.
+not headings, so no unescaping pass is needed for that case.
+
+Two resolver-side normalization fixes (Marketable-v1) keep matching robust
+against page-vs-chunk drift WITHOUT re-chunking (the byte-stability contract):
+
+  1. Body-chrome-safe page extraction. Courseforge stamps
+     ``data-cf-role="template-chrome"`` on the page ``<body>`` (and other
+     structural-root tags). ``HTMLTextExtractor`` opens a chrome-skip scope on
+     that attribute but can only *close* the scope on a fixed end-tag set
+     (``header``/``footer``/``a``/``div``/``nav``/``aside`` — see
+     ``_CHROME_TAGS``). A chrome scope opened on ``<body>`` therefore never
+     closes, so the extractor silently swallows the ENTIRE page body and the
+     re-extracted page text collapses to a few ``<head>`` tokens. Every chunk
+     of such a page then fails to anchor (``span_fabricated`` at ~0.0
+     containment) even though the chunk text was authored from that very page.
+     The chunker can't be touched (it would shift legacy chunk text on
+     rebuild), so the resolver neutralizes the chrome mark on structural-root
+     tags BEFORE re-extracting the page. Real chrome (header/footer/nav) keeps
+     its mark and is still skipped; only the un-closeable root mark is dropped.
+
+  2. Symmetric HTML-entity normalization. Chunk text retains raw entities
+     (``Acme Corp&rsquo;s``, ``&ldquo;``/``&mdash;``) while ``HTMLParser``
+     decodes them in the page (``Acme Corp's``), so every 8-token shingle that
+     straddles an entity mismatches and a genuinely-contained chunk scores just
+     below the 0.85 floor. The resolver ``html.unescape``s BOTH sides before
+     shingling / substring, making the comparison entity-agnostic.
+
+Together these two fixes are normalization-only — they make matching robust
+against page/chunk drift, NOT content rewriting. The resolver stays strictly
+fail-closed: a chunk whose text is genuinely absent from the page still scores
+low and reports ``SPAN_FABRICATED``. (Measured on the rdf-shacl calibration
+corpus: corpus anchoring rate 0.56 -> 1.00, and the 5 citation-gate-blocked
+gold answers all recover.) No ``resolved_fuzzy`` display-degradation policy was
+needed — the blocks were a normalization bug, not synthesized content.
 
 No network, no LLM, no decision capture (deterministic workstream).
 
@@ -47,7 +80,9 @@ Run as a module for the WS1.2 calibration measure pass::
 
 from __future__ import annotations
 
+import html as _html
 import json
+import re
 import zipfile
 from dataclasses import dataclass
 from enum import Enum
@@ -102,17 +137,56 @@ _DART_ROOTS = ("sources/textbooks", "source/html", "source/dart")
 _IMSCC_ROOTS = ("source/imscc",)
 
 
-def _plain_text(html: str) -> str:
-    """Plain-text projection consistent with what the chunker emitted."""
-    if extract_plain_text is not None:
-        return extract_plain_text(html)
-    # Minimal stdlib fallback (only used if the chunker import is unavailable):
-    import re
+# ``data-cf-role="template-chrome"`` stamped on a structural-root tag opens a
+# chrome-skip scope in ``HTMLTextExtractor`` that its fixed end-tag set can
+# never close (see module docstring fix #1). These roots carry the page's whole
+# content, so dropping the mark on them — and ONLY them — recovers the body
+# while leaving genuine header/footer/nav chrome marks intact and still skipped.
+_CHROME_ROOT_TAGS = ("body", "html", "main", "section", "article")
+_BODY_CHROME_RE = re.compile(
+    r"(<(?:" + "|".join(_CHROME_ROOT_TAGS) + r")\b[^>]*?)"
+    r"\s+data-cf-role\s*=\s*(['\"])template-chrome\2",
+    re.IGNORECASE,
+)
 
-    text = re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=re.S | re.I)
+
+def _strip_root_template_chrome(html: str) -> str:
+    """Drop ``data-cf-role="template-chrome"`` from structural-root tags only.
+
+    Leaves the mark on every non-root element (``header``/``footer``/``nav``/…)
+    so real page chrome is still skipped by :class:`HTMLTextExtractor`; only the
+    un-closeable root mark is neutralized so the page body survives extraction.
+    """
+    return _BODY_CHROME_RE.sub(r"\1", html)
+
+
+def _plain_text(html: str) -> str:
+    """Plain-text projection consistent with what the chunker emitted.
+
+    Applies the body-chrome-safe pre-pass (module docstring fix #1) so a page
+    whose ``<body>`` carries the un-closeable ``template-chrome`` mark still
+    yields its full body text. The pre-pass is a no-op for pages without a
+    root-level chrome mark, so legacy / non-Courseforge pages are unaffected.
+    """
+    safe_html = _strip_root_template_chrome(html)
+    if extract_plain_text is not None:
+        return extract_plain_text(safe_html)
+    # Minimal stdlib fallback (only used if the chunker import is unavailable):
+    text = re.sub(r"<script[^>]*>.*?</script>", " ", safe_html, flags=re.S | re.I)
     text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", text)
     return normalize_ws(text)
+
+
+def _normalize_for_match(text: str) -> str:
+    """Entity-symmetric, whitespace-collapsed projection for fuzzy matching.
+
+    ``html.unescape`` decodes named + numeric entities (``&rsquo;`` -> ``'``,
+    ``&mdash;`` -> ``—``) so a chunk that retained raw entities compares equal
+    to the page whose entities ``HTMLParser`` already decoded (module docstring
+    fix #2). Idempotent — text with no entities passes through unchanged.
+    """
+    return normalize_ws(_html.unescape(text or ""))
 
 
 def _iter_html_roots(course_dir: Path, roots: Tuple[str, ...]):
@@ -280,10 +354,16 @@ def resolve_citation_anchor(
     chunk_text = chunk.get("text", "") or ""
     page_text = _plain_text(html)
 
+    # Entity-symmetric projections (module docstring fix #2): unescape both
+    # sides so a chunk that kept raw ``&rsquo;``/``&mdash;`` entities matches a
+    # page whose entities HTMLParser already decoded. ``shingle_containment``
+    # lowercases internally, so passing the normalized strings is sufficient.
+    chunk_match = _normalize_for_match(chunk_text)
+    page_match = _normalize_for_match(page_text)
     containment = shingle_containment(
-        chunk_text, page_text, shingle_size=shingle_size
+        chunk_match, page_match, shingle_size=shingle_size
     )
-    normalized_substr = normalize_ws(chunk_text) in normalize_ws(page_text)
+    normalized_substr = chunk_match in page_match
 
     # 1) exact span verification (never repaired).
     if _exact_span_match(html, html_xpath, char_span, chunk_text):

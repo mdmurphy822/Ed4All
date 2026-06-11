@@ -44,6 +44,59 @@ _LEARNER_ROUTER_MOUNTS = [
     ("learn", "/api/learn"),
 ]
 
+# The end-user "Studio" serve mode (``ED4ALL_GUI_MODE=studio``) mounts the
+# read-only Library + IMSCC course-viewer API (``/api/library`` +
+# ``/api/courses/{id}/...``) PLUS the learner answer surface (the C2 ask drawer
+# rides ``/api/learn/*``). The Studio page subtree (``gui/static/studio/``) is
+# served at ``/`` so ``/`` IS the Studio shell.
+#
+# Marketable-v1 C3 adds the Create wizard + Studio settings page to the Studio
+# surface, so a non-developer can upload a textbook, configure minimally, and
+# launch a course build from Studio itself. That needs the upload + run + a
+# scoped settings surface, so studio mode now ALSO mounts ``uploads`` (PDF
+# intake), ``runs`` (launch + run registry + the ``/ws/runs/*`` progress
+# stream), and ``settings`` (the credentials/answer/global subset the Studio
+# settings page edits). The full env catalog is still rendered by the settings
+# router, but the Studio settings UI only surfaces the Studio-relevant subset;
+# learner mode remains the locked-down answer-only surface (it mounts none of
+# these). The Courseforge stage / training routers stay operator-only.
+_STUDIO_ROUTER_MOUNTS = [
+    ("library", "/api"),  # /api/library + /api/courses/{id}/manifest|page|asset
+    ("learn", "/api/learn"),  # learner answer surface (C2 ask drawer hooks here)
+    ("uploads", "/api/uploads"),  # C3 Create wizard step 1 (PDF intake)
+    ("runs", "/api"),  # C3 launch + run registry + /ws/runs/* progress stream
+    ("settings", "/api/settings"),  # C3 Studio settings page (scoped subset)
+]
+
+
+def _resolve_mode(mode: str | None, learner_only: bool) -> str:
+    """Resolve the canonical serve mode (``full`` | ``studio`` | ``learner``).
+
+    Precedence (high → low):
+
+    1. An explicit ``mode`` kwarg (``create_app(mode="studio")``).
+    2. ``learner_only=True`` (the frozen back-compat kwarg) → ``"learner"``.
+    3. ``ED4ALL_GUI_MODE`` env (``studio`` | ``learner`` | ``full``).
+    4. ``ED4ALL_GUI_LEARNER`` truthy (the LEGACY env) → ``"learner"``.
+    5. Default ``"full"`` (operator + learner surface).
+
+    The legacy ``ED4ALL_GUI_LEARNER`` is honoured for backward compatibility but
+    ``ED4ALL_GUI_MODE`` wins when both are set (a deliberate ``studio`` request
+    must not be silently downgraded to learner by a stale learner env). Unknown
+    ``ED4ALL_GUI_MODE`` values fall through to the learner-env check then default.
+    """
+    valid = {"full", "studio", "learner"}
+    if mode and mode.strip().lower() in valid:
+        return mode.strip().lower()
+    if learner_only:
+        return "learner"
+    env_mode = os.environ.get("ED4ALL_GUI_MODE", "").strip().lower()
+    if env_mode in valid:
+        return env_mode
+    if os.environ.get("ED4ALL_GUI_LEARNER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return "learner"
+    return "full"
+
 
 def _static_dir() -> Path:
     """Return ``gui/static/`` (created lazily so the mount never errors)."""
@@ -62,6 +115,41 @@ def _learn_static_dir() -> Path:
     learn = _static_dir() / "learn"
     learn.mkdir(parents=True, exist_ok=True)
     return learn
+
+
+def _studio_static_dir() -> Path:
+    """Return ``gui/static/studio/`` (the end-user Studio page subtree).
+
+    Created lazily so the mount never errors even before the page assets land.
+    """
+    studio = _static_dir() / "studio"
+    studio.mkdir(parents=True, exist_ok=True)
+    return studio
+
+
+def _dev_static_dir() -> Path:
+    """Return ``gui/static/dev/`` (the developer-console pane shell, C4).
+
+    Served at ``/dev/`` in FULL mode only (operator-classified, so the D2 token
+    gates it). Created lazily so the mount never errors even before the page
+    assets land.
+    """
+    dev = _static_dir() / "dev"
+    dev.mkdir(parents=True, exist_ok=True)
+    return dev
+
+
+def _shared_static_dir() -> Path:
+    """Return ``gui/static/shared/`` (the reusable ES-module toolkit).
+
+    Served at ``/shared/`` so every surface's ``import ... from '/shared/...'``
+    resolves regardless of which subtree owns ``/``. In full mode the SPA's ``/``
+    mount already serves ``gui/static/shared/`` at ``/shared/``; in studio mode
+    the ``/`` root is the studio subtree, so ``/shared`` needs its own mount.
+    """
+    shared = _static_dir() / "shared"
+    shared.mkdir(parents=True, exist_ok=True)
+    return shared
 
 
 def _include_routers(app: FastAPI, mounts: list) -> None:
@@ -91,28 +179,31 @@ def _include_routers(app: FastAPI, mounts: list) -> None:
         logger.info("mounted gui router %s at %s", module_path, prefix)
 
 
-def create_app(learner_only: bool = False) -> FastAPI:
+def create_app(learner_only: bool = False, mode: str | None = None) -> FastAPI:
     """Build and return the configured FastAPI app.
 
-    ``learner_only=True`` mounts ONLY the learner answer surface — the learn
-    router (``/api/learn/*``) plus the ``gui/static/learn/`` page subtree served
-    at ``/`` (so ``/`` IS the learner page in learner mode) — and NONE of the
-    operator routers or the operator SPA. The liveness probe (``/api/health``)
-    stays. This is the access-control posture for moderated pilot sessions on a
-    shared appliance (the operator surface that exposes env / API keys / run
-    launching is not even mounted).
+    Three serve modes (resolved by ``_resolve_mode``):
 
-    ``ED4ALL_GUI_LEARNER`` (truthy: 1/true/yes/on) also forces learner-only
-    mode. uvicorn's import-string factory paths (``ed4all gui`` and
-    ``--reload``) call ``create_app()`` with no arguments, so the env var is
-    the only channel through which those entry points can request the learner
-    surface — without this check they would silently serve the full operator
-    surface to a learner session.
+    * ``full`` (default) — operator routers + SPA + the learner/Studio surfaces
+      riding the operator app (``/learn/`` and ``/studio/`` served by the SPA's
+      ``html=True`` static mount).
+    * ``studio`` — the end-user Studio surface ONLY: the Library + IMSCC
+      course-viewer API (``/api/library`` + ``/api/courses/{id}/...``) plus the
+      learner answer API (``/api/learn/*`` — the C2 ask drawer), with the
+      ``gui/static/studio/`` page subtree served at ``/``. The operator routers
+      (env / API keys / run launching) are NOT mounted.
+    * ``learner`` — the learner answer surface ONLY (``/api/learn/*`` +
+      ``gui/static/learn/`` at ``/``); the original moderated-pilot posture.
+
+    ``learner_only=True`` is the frozen back-compat kwarg → ``mode="learner"``.
+    ``mode=`` lets a caller request any mode directly. uvicorn's import-string
+    factory paths (``ed4all gui`` / ``--reload``) call ``create_app()`` with no
+    arguments, so the env vars (``ED4ALL_GUI_MODE`` canonical, ``ED4ALL_GUI_LEARNER``
+    legacy) are the only channel those entry points use to request a non-full
+    surface — without the env resolution here they would silently serve the full
+    operator surface. ``ED4ALL_GUI_MODE`` wins over the legacy ``ED4ALL_GUI_LEARNER``.
     """
-    if not learner_only:
-        learner_only = os.environ.get(
-            "ED4ALL_GUI_LEARNER", ""
-        ).strip().lower() in {"1", "true", "yes", "on"}
+    resolved_mode = _resolve_mode(mode, learner_only)
     app = FastAPI(
         title="Ed4All Control-Plane GUI",
         description="Human management surface for the Ed4All pipeline.",
@@ -151,7 +242,7 @@ def create_app(learner_only: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001 — startup reconciliation is best-effort
             logger.exception("orphan reconciliation failed on startup")
 
-    if learner_only:
+    if resolved_mode == "learner":
         _include_routers(app, _LEARNER_ROUTER_MOUNTS)
         # Serve the learner page subtree at ``/`` — ``/`` IS the learner page in
         # learner mode (no operator SPA mounted).
@@ -162,7 +253,66 @@ def create_app(learner_only: bool = False) -> FastAPI:
         )
         return app
 
+    if resolved_mode == "studio":
+        _include_routers(app, _STUDIO_ROUTER_MOUNTS)
+
+        # The Studio shell's index.html references its assets via ``/studio/...``
+        # and the shared toolkit via ``/shared/...``; serve those subtrees at
+        # their own prefixes, and redirect the bare ``/`` to the Studio shell.
+        # No operator SPA is mounted. The learn page subtree (C2 ask drawer)
+        # rides ``/learn/``.
+        from fastapi.responses import RedirectResponse  # noqa: PLC0415
+
+        @app.get("/", include_in_schema=False)
+        async def _studio_root() -> RedirectResponse:  # noqa: D401
+            return RedirectResponse(url="/studio/")
+
+        app.mount(
+            "/learn",
+            StaticFiles(directory=str(_learn_static_dir()), html=True),
+            name="learn-static",
+        )
+        app.mount(
+            "/shared",
+            StaticFiles(directory=str(_shared_static_dir())),
+            name="shared-static",
+        )
+        app.mount(
+            "/studio",
+            StaticFiles(directory=str(_studio_static_dir()), html=True),
+            name="studio-static",
+        )
+        return app
+
+    # Full mode is the only surface that mounts the operator routers + SPA, so
+    # it's the only mode that installs the operator token gate (Marketable-v1 D2).
+    # When no token is configured the middleware is a transparent pass-through
+    # (current open LAN/loopback default); when ED4ALL_GUI_TOKEN (or the settings
+    # store's secrets.gui_token) is set, operator-classified paths require a
+    # bearer token. Studio/learner modes don't mount the operator surface, so
+    # they need no gate. Added last among middleware so it wraps the whole app.
+    from gui.auth import OperatorTokenMiddleware  # noqa: PLC0415
+
+    app.add_middleware(OperatorTokenMiddleware)
+
     _include_routers(app, _ROUTER_MOUNTS)
+    # Studio Library + viewer API rides the full operator app too, so an operator
+    # can preview the end-user Studio at ``/studio/`` without a separate process.
+    _include_routers(app, [("library", "/api")])
+
+    # The developer console (Marketable-v1 C4) — a pane-based power-user surface
+    # mounted in FULL mode only. Operator-classified in ``gui.auth`` so the D2
+    # token gates it. Mounted at its own ``/dev`` prefix BEFORE the catch-all
+    # ``/`` SPA mount so the dev shell + its dev.js/dev.css assets are served
+    # from ``gui/static/dev/`` (the ``/`` mount would otherwise shadow them with
+    # a 404 for the missing top-level files). The shell imports the shared ES
+    # toolkit via ``/shared/...`` + studio precedents via ``/studio/...``, both
+    # served by the catch-all ``/`` mount below.
+    app.mount(
+        "/dev",
+        StaticFiles(directory=str(_dev_static_dir()), html=True),
+        name="dev-static",
+    )
 
     # SPA mount LAST so it doesn't shadow the /api routes. html=True serves
     # index.html for the SPA root. The existing ``html=True`` mount at ``/``
