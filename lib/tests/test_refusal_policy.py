@@ -26,6 +26,7 @@ from lib.retrieval import refusal
 from lib.retrieval.refusal import (
     DEFAULT_POLICIES,
     PINNED_POLICIES,
+    RRF_K,
     POLICY_VERSION_PINNED,
     POLICY_VERSION_UNCALIBRATED,
     REASON_LOW_CONFIDENCE,
@@ -181,6 +182,36 @@ def test_lexical_default_is_permissive_passes_a_typical_hit():
 def test_semantic_default_refuses_low_cosine():
     v = evaluate_confidence(_passages(0.20, 0.18), DEFAULT_POLICIES["semantic"])
     assert v.confident is False  # 0.20 < min_top_score 0.30
+
+
+def test_hybrid_rrf_default_does_not_refuse_a_perfect_dual_list_retrieval():
+    # A real RRF fusion: the top doc is rank-1 in BOTH arms (top_score
+    # 2/(RRF_K+1)), and the next passages are single-arm rank-r hits scoring
+    # 1/(RRF_K+r). The old lexical-borrowed floors (min_top_score=1.0) made this
+    # mathematically unreachable and refused 100% of hybrid-rrf queries.
+    top = 2.0 / (RRF_K + 1)
+    rest = [1.0 / (RRF_K + r) for r in (1, 2, 3, 4)]
+    verdict = should_refuse(_passages(top, *rest), DEFAULT_POLICIES["hybrid-rrf"])
+    assert verdict.refuse is False
+    assert verdict.signals["top_score"] >= DEFAULT_POLICIES["hybrid-rrf"].min_top_score
+
+
+def test_hybrid_rrf_default_min_top_score_is_satisfiable_by_max_achievable_score():
+    # Structural guard: the floor must be reachable by the engine's MAXIMUM
+    # achievable fused score (a doc ranked 1 in both arms = 2/(RRF_K+1)).
+    # An unsatisfiable floor refuses every query unconditionally.
+    max_achievable = 2.0 / (RRF_K + 1)
+    assert DEFAULT_POLICIES["hybrid-rrf"].min_top_score <= max_achievable
+
+
+def test_refusal_rrf_k_matches_semantic_retriever_constant():
+    # Cross-check the module-local RRF_K mirrors the retriever's DEFAULT_RRF_K.
+    # Skip cleanly if importing the retriever needs optional deps it can't load.
+    try:
+        from LibV2.tools.libv2.semantic_retriever import DEFAULT_RRF_K
+    except Exception as exc:  # pragma: no cover - optional-dep guard
+        pytest.skip(f"semantic_retriever not importable here: {exc}")
+    assert RRF_K == DEFAULT_RRF_K
 
 
 # --------------------------------------------------------------------------- #

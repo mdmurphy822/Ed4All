@@ -845,7 +845,9 @@ def test_answer_path_hybrid_rrf_reads_embedder_but_falls_back_uncalibrated(
     monkeypatch.setattr(
         ga, "_vector_index_chunkset_kind", lambda root, slug: "dart"
     )
-    _stub_low_score_retrieval(monkeypatch, 0.10)
+    # Below the v0-uncalibrated hybrid-rrf min_top_score (1/(RRF_K+1) on the
+    # RRF scale) → pre-LLM refusal, so the resolved policy surfaces.
+    _stub_low_score_retrieval(monkeypatch, 0.005)
     client = FakeAnswerClient([_envelope("never used", ["x"])])
 
     result = answer_course_question(
