@@ -279,8 +279,12 @@ def test_real_seed_gold_set_zero_critical(slug):
     gold, issues = load_gold_set(course_dir, verify=True)
     crit = critical_issues(issues)
     assert not crit, [f"{i.code}: {i.message}" for i in crit]
-    # sanity: 10 seed questions, and the chunkset declares a kind.
-    assert len(gold["questions"]) == 10
+    # sanity: a non-empty question set, and the chunkset declares a kind. The
+    # question count is no longer pinned to the 10-question seed — `gold-repin`
+    # (retrieval-answer-eval-set P1) can drop unresolvable orphans, and the
+    # authoring sprint scales the set up, so the count is variable by design.
+    assert len(gold["questions"]) >= 1
+    assert gold.get("schema_version") in {"1.0", "1.1"}
     assert gold["chunkset"]["kind"] in {"imscc", "dart", "corpus"}
 
 
@@ -321,19 +325,19 @@ def test_real_seed_quotes_resolve_via_text_helpers(slug):
                 f"{slug} {q['question_id']} quote not in {cid}: {quote!r}"
             )
             n_quotes += 1
-    assert n_quotes >= 10  # >= one primary per question
+    # >= one primary per question; count is variable post-repin/scale-up.
+    assert n_quotes >= len(gold["questions"])
 
 
 def test_all_seed_questions_present():
-    """Roll-up: each discovered seed gold set carries exactly 10 questions, so
-    the total is 10 per discovered corpus. No hardcoded slug list or fixed
-    grand total — keyed off whatever corpora are present (skip when none)."""
+    """Roll-up: each discovered seed gold set carries at least one question. No
+    hardcoded slug list or fixed grand total — keyed off whatever corpora are
+    present (skip when none). The per-set count is no longer pinned to 10: the
+    P1 `gold-repin` ladder can drop unresolvable orphans and the authoring
+    sprint scales sets up, so counts vary by design."""
     if not _SEED_COURSES:
         pytest.skip("no seed corpora present")
-    total = 0
     for slug in _SEED_COURSES:
         gp = _LIBV2_COURSES / slug / "retrieval_eval" / "gold_set.json"
         n = len(json.loads(gp.read_text(encoding="utf-8"))["questions"])
-        assert n == 10, f"{slug} seed gold set has {n} questions, expected 10"
-        total += n
-    assert total == 10 * len(_SEED_COURSES)
+        assert n >= 1, f"{slug} seed gold set has {n} questions, expected >= 1"

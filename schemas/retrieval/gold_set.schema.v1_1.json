@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/retrieval/v1_1/gold_set.schema.json",
+  "title": "Retrieval Eval Gold Set (v1.1)",
+  "description": "Retrieval-answer-eval-set §1.1/§1.4 — the v1.1 evolution of schemas/retrieval/gold_set.schema.json. v1.0 stays const-pinned + frozen; this file ships the additive shape change so the loader (lib/retrieval/gold_set.py) can validate either version against the schema matching the doc's schema_version. NEW vs v1.0: two question_type values (procedural — an ordered procedure in 1-2 chunks; multi_part — >= 2 enumerable parts, parts may be deliberately partially covered); optional per-question fields expected_key_points (operator-reviewed claim-level completeness points), parts[] (required iff multi_part — each part covered/uncovered, uncovered parts carry an absence_note for the ws3.v2 completeness probes), expected_citation_population (source/course/both/any — for union corpora that mix original-document chunks with generated course-page chunks), objective_refs (TO-NN/CO-NN authored cross-check), difficulty (easy/medium/hard), synthesis_scope (within_week/across_weeks for conceptual_synthesis + multi_part); and an optional anchor.content_sha256 (normalized chunk-text hash at authoring) — the O(1) re-resolution key the gold-repin ladder (lib/retrieval/gold_repin.py) uses to survive a pure chunk-id renumber (e.g. a union-corpus rebuild). text_quote + item_path remain the fallback anchors. Validated by lib/retrieval/gold_set.py::validate_gold_set + schemas/tests/test_gold_set_schema_v1_1.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "course_slug", "chunkset", "authored_at", "frozen", "questions"],
+  "properties": {
+    "schema_version": {
+      "const": "1.1",
+      "description": "Gold-set schema version. Const-pinned to 1.1 in this file; the loader selects the schema whose const matches the doc's schema_version."
+    },
+    "course_slug": {
+      "type": "string",
+      "minLength": 1,
+      "description": "LibV2 course slug this gold set is authored for (e.g. 'intro-bio-101'). Matches the directory under LibV2/courses/."
+    },
+    "chunkset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "chunks_path", "chunks_sha256"],
+      "description": "Pins WHICH chunkset the question chunk_ids reference. The kind selects the on-disk chunkset directory; chunks_path is course-dir-relative; chunks_sha256 is the freeze pin the loader recomputes and the eval harness hard-errors on.",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["dart", "imscc", "corpus"],
+          "description": "Chunkset kind. 'dart' -> dart_chunks/chunks.jsonl; 'imscc' -> imscc_chunks/chunks.jsonl; 'corpus' -> the union corpus/chunks.jsonl (generated course pages + original-textbook chunks)."
+        },
+        "chunks_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to the pinned chunks.jsonl, relative to the course dir (e.g. 'corpus/chunks.jsonl')."
+        },
+        "chunks_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 (hex, lowercase) of the pinned chunks.jsonl at authoring time. The loader recomputes the on-disk SHA and emits GOLD_SET_CHUNKSET_SHA_MISMATCH (critical) on disagreement — eval refuses to run against a corpus that has drifted from the bytes the gold set was authored against. Re-pin with `libv2 gold-repin`."
+        }
+      }
+    },
+    "authored_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp recording when the gold set was authored."
+    },
+    "frozen": {
+      "type": "boolean",
+      "description": "v1-freeze flag. False for seed/draft gold sets; flips true once the gold set is operator-reviewed and frozen. The loader refuses mutation-mode operations (incl. gold-repin) on a frozen set without --unfreeze-for-repin."
+    },
+    "_operator_note": {
+      "type": "string",
+      "description": "Optional free-text note to the operator (e.g. the scale-up-to-50/freeze hand-off, or a single-corpus provenance caveat)."
+    },
+    "questions": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The gold-set questions. Each binds question text + type to >= 1 relevant passage, with at least one passage marked relevance:primary.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question_id", "question_text", "question_type", "relevant_passages"],
+        "allOf": [
+          {
+            "description": "parts[] is required iff question_type is multi_part.",
+            "if": {"properties": {"question_type": {"const": "multi_part"}}},
+            "then": {"required": ["parts"]}
+          }
+        ],
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "pattern": "^gq-[a-z0-9-]+-\\d{4}$",
+            "description": "Gold-question id. Pattern gq-<course_slug>-NNNN (4-digit zero-padded ordinal). Loader enforces uniqueness within the set (GOLD_SET_DUPLICATE_QUESTION_ID)."
+          },
+          "question_text": {
+            "type": "string",
+            "minLength": 10,
+            "description": "The question a retriever must answer. Min 10 chars."
+          },
+          "question_type": {
+            "type": "string",
+            "enum": ["factual_recall", "procedural", "conceptual_synthesis", "multi_part", "where_covered"],
+            "description": "Question taxonomy (v1.1). factual_recall: a verbatim fact in one chunk. procedural: an ordered procedure in 1-2 chunks (key points are the steps). conceptual_synthesis: answer spans >= 2 chunks. multi_part: >= 2 enumerable parts (the parts[] block is required; parts may be deliberately partially covered). where_covered: 'where does the course cover X'."
+          },
+          "synthesis_scope": {
+            "type": "string",
+            "enum": ["within_week", "across_weeks"],
+            "description": "Optional (conceptual_synthesis + multi_part): whether the relevant passages live in one content week or span multiple. Cross-checked by the coverage report against the relevant passages' item_path weeks."
+          },
+          "difficulty": {
+            "type": "string",
+            "enum": ["easy", "medium", "hard"],
+            "description": "Optional authored difficulty. easy = verbatim in one chunk; medium = paraphrase or 2-chunk join; hard = >= 3 chunks, across-weeks, or a partially-covered multi_part. Cross-checked by the coverage report (~40/40/20 target)."
+          },
+          "objective_refs": {
+            "type": "array",
+            "description": "Optional authored learning-objective ids (TO-NN / CO-NN) this question exercises. Cross-checked by the coverage report against the course objectives map.",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z]{2,}-\\d{2,}$"
+            }
+          },
+          "expected_citation_population": {
+            "type": "string",
+            "enum": ["source", "course", "both", "any"],
+            "description": "Optional (default 'any'): which corpus population the answer's citations should be drawn from on a union corpus. 'source' = the original document (textbook chunks, block + PDF-page provenance); 'course' = the generated course pages; 'both' = a synthesis that must cite each; 'any' = no constraint."
+          },
+          "expected_key_points": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 6,
+            "description": "Optional 2-6 operator-reviewed key points for claim-level completeness scoring (shingle/coverage and/or NLI at eval time). Supersedes the unscored answer_note for new questions.",
+            "items": {"type": "string", "minLength": 1}
+          },
+          "parts": {
+            "type": "array",
+            "minItems": 2,
+            "description": "Required iff question_type is multi_part: the enumerable parts. covered:false parts carry an absence_note documenting the deliberately-uncovered part (the ws3.v2 completeness probes — the pipeline must correctly flag the absent part, not invent it).",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["part_id", "part_text", "covered"],
+              "allOf": [
+                {
+                  "description": "absence_note is required iff covered is false.",
+                  "if": {"properties": {"covered": {"const": false}}},
+                  "then": {"required": ["absence_note"]}
+                }
+              ],
+              "properties": {
+                "part_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Stable id of the part within the question (e.g. 'a', 'b', 'p1')."
+                },
+                "part_text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "The part's prompt / sub-question text."
+                },
+                "covered": {
+                  "type": "boolean",
+                  "description": "True when the corpus answers this part (relevant_passage_refs anchor it). False for a deliberately-uncovered completeness probe."
+                },
+                "relevant_passage_refs": {
+                  "type": "array",
+                  "description": "Optional chunk_ids (subset of the question's relevant_passages) that answer this part. Present for covered parts.",
+                  "items": {"type": "string", "minLength": 1}
+                },
+                "absence_note": {
+                  "type": "string",
+                  "minLength": 20,
+                  "description": "Required iff covered:false — the human rationale (>= 20 chars) for why the corpus does not cover this part, plus a note that the dry-run confirmed the absence."
+                }
+              }
+            }
+          },
+          "relevant_passages": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Chunks that answer the question. At least one MUST have relevance:primary (enforced via `contains`).",
+            "contains": {
+              "type": "object",
+              "properties": {
+                "relevance": {"const": "primary"}
+              },
+              "required": ["relevance"]
+            },
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["chunk_id", "relevance", "anchor"],
+              "properties": {
+                "chunk_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Chunk id in the pinned chunkset. Loader verifies it exists (GOLD_SET_UNKNOWN_CHUNK_ID)."
+                },
+                "relevance": {
+                  "type": "string",
+                  "enum": ["primary", "supporting"],
+                  "description": "primary: directly answers the question. supporting: contributes context (synthesis / where_covered / multi_part companion passages)."
+                },
+                "anchor": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["item_path", "text_quote"],
+                  "description": "Chunkset-independent re-resolution anchor. text_quote keeps the gold answer matchable after any future re-chunk; content_sha256 (v1.1) is the O(1) exact key when present.",
+                  "properties": {
+                    "item_path": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Copied from chunk.source.item_path — the source page the chunk derives from."
+                    },
+                    "section_heading": {
+                      "type": "string",
+                      "description": "Optional human-readable section locator copied from chunk.source.section_heading."
+                    },
+                    "text_quote": {
+                      "type": "string",
+                      "minLength": 40,
+                      "description": "Verbatim substring of chunk.text carrying the answer, >= 40 chars. The loader verifies normalized containment in the cited chunk (GOLD_SET_QUOTE_NOT_IN_CHUNK)."
+                    },
+                    "content_sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$",
+                      "description": "Optional (v1.1): SHA-256 of the cited chunk's normalized text (lib/retrieval/gold_set.py::chunk_content_sha256 = sha256 of normalize_ws(text).lower()) at authoring. The gold-repin ladder resolves by this exact hash FIRST (survives a pure renumber / union rebuild), falling back to text_quote then item_path. Backfilled by `libv2 gold-repin` on every resolved passage."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "answer_note": {
+            "type": "string",
+            "description": "Optional free-text gist of the expected answer (eval aid; superseded by expected_key_points for new questions)."
+          },
+          "authoring": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["method", "author", "reviewed_by", "status"],
+            "description": "Provenance of this question. Seed/draft questions are reviewed_by:PENDING_REVIEW until operator review backfills the reviewer and the set freezes.",
+            "properties": {
+              "method": {
+                "type": "string",
+                "enum": ["manual", "llm_assisted"],
+                "description": "How the question was authored. manual: hand-authored / seeded from a live query. llm_assisted: drafted with the license-clean local provider (still operator-reviewed before freeze)."
+              },
+              "author": {
+                "type": "string",
+                "minLength": 1,
+                "description": "@handle or tool id (model+prompt-version) of the author."
+              },
+              "reviewed_by": {
+                "type": "string",
+                "minLength": 1,
+                "description": "@handle of the reviewer, or PENDING_REVIEW for un-reviewed seed/draft questions."
+              },
+              "status": {
+                "type": "string",
+                "enum": ["seed", "draft", "reviewed"],
+                "description": "Authoring lifecycle. seed: deterministic executor-authored starter. draft: in-progress (incl. a gold-repin-parked unresolved question). reviewed: operator-approved (freeze prerequisite)."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

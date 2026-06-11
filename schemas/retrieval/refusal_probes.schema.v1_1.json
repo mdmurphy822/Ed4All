@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/retrieval/v1_1/refusal_probes.schema.json",
+  "title": "Retrieval Refusal Probe Set (v1.1)",
+  "description": "Retrieval-answer-eval-set §1.4 — the v1.1 evolution of schemas/retrieval/refusal_probes.schema.json. v1.0 stays const-pinned + frozen; this file ships the additive shape change so the loader can validate either version. NEW vs v1.0: an optional plural `dry_runs: []` block — one verified read-only retrieval dry-run PER ENGINE (lexical / semantic / hybrid-rrf), each carrying the same evidence shape as the legacy single `dry_run` (which stays required for back-compat). When a course's index is rebuilt or its chunkset re-pinned, the per-engine dry-runs are re-recorded against the live index so the 'unanswerable' claim is engine-aware evidence, not a single-engine assumption. Validated by lib/tests/test_refusal_policy.py + schemas/tests/test_refusal_probes_schema_v1_1.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "course_slug", "authored_at", "probes"],
+  "$defs": {
+    "dry_run_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verified", "engine", "limit", "n_results", "top_score", "top_passage_answers"],
+      "description": "Verified-not-assumed evidence: an actual read-only retrieval pass against the live course corpus. The 'unanswerable' claim stands on top_passage_answers=false PLUS the recorded score signal — never on score alone.",
+      "properties": {
+        "verified": {
+          "type": "boolean",
+          "const": true,
+          "description": "Must be true: a probe with verified=false is not a verified-unanswerable probe and is rejected."
+        },
+        "engine": {
+          "type": "string",
+          "enum": ["lexical", "semantic", "hybrid-rrf"],
+          "description": "Retrieval engine the dry-run used."
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "top-k limit the dry-run retrieval used."
+        },
+        "n_results": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of passages retrieved (0 when the corpus shares no tokens with the probe)."
+        },
+        "top_score": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Score of the rank-1 retrieved passage (0.0 when n_results==0). Recorded for the calibration distribution; not a pass/fail by itself."
+        },
+        "top_passage_answers": {
+          "type": "boolean",
+          "const": false,
+          "description": "Must be false: a human confirmed the top retrieved passage does NOT answer the probe. verified=true with top_passage_answers=true is a contradiction the schema forbids."
+        },
+        "top_chunk_id": {
+          "type": "string",
+          "description": "Optional: chunk id of the rank-1 passage (empty/absent when n_results==0)."
+        },
+        "metadata_scoring": {
+          "type": "boolean",
+          "description": "Optional: whether the dry-run included the lexical metadata boosts (concept-graph / LO)."
+        },
+        "verified_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Optional: ISO 8601 UTC timestamp of the dry-run."
+        }
+      }
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "1.1",
+      "description": "Refusal-probe schema version. Const-pinned to 1.1 in this file; the loader selects the schema whose const matches the doc's schema_version."
+    },
+    "course_slug": {
+      "type": "string",
+      "minLength": 1,
+      "description": "LibV2 course slug these probes are authored for. Matches the directory under LibV2/courses/."
+    },
+    "authored_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp recording when the probe set was authored."
+    },
+    "engine": {
+      "type": "string",
+      "enum": ["lexical", "semantic", "hybrid-rrf"],
+      "description": "Optional: the retrieval engine the legacy single dry_run evidence was recorded against. Defaults to lexical when omitted. Per-engine evidence now lives in each probe's dry_runs[]."
+    },
+    "_operator_note": {
+      "type": "string",
+      "description": "Optional free-text note to the operator (e.g. re-verify-after-rechunk hand-off, or a re-pinned-chunkset provenance caveat)."
+    },
+    "probes": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The unanswerable probe questions. Each carries its category, a human rationale, the legacy single verified dry-run, and optionally a per-engine dry_runs[] block.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["probe_id", "question_text", "category", "why_unanswerable", "dry_run"],
+        "properties": {
+          "probe_id": {
+            "type": "string",
+            "pattern": "^rp-[a-z0-9-]+-\\d{4}$",
+            "description": "Refusal-probe id. Pattern rp-<course_slug>-NNNN (4-digit zero-padded ordinal). Loader enforces uniqueness within the set."
+          },
+          "question_text": {
+            "type": "string",
+            "minLength": 10,
+            "description": "The unanswerable question a correct pipeline must refuse. Min 10 chars."
+          },
+          "category": {
+            "type": "string",
+            "enum": ["off_topic", "adjacent_domain", "out_of_scope_detail"],
+            "description": "Probe taxonomy. off_topic: a wholly different discipline. adjacent_domain: a plausible neighbour topic the corpus demonstrably lacks (the hardest negatives — they share vocabulary). out_of_scope_detail: the course's own topic at a depth/specificity the corpus does not cover."
+          },
+          "why_unanswerable": {
+            "type": "string",
+            "minLength": 20,
+            "description": "Human rationale (>= 20 chars) for why this corpus cannot answer the probe — the design intent behind the negative. Distinct from the dry_run evidence, which is the empirical confirmation."
+          },
+          "derived_from_gold_question_id": {
+            "type": "string",
+            "pattern": "^gq-[a-z0-9-]+-\\d{4}$",
+            "description": "Optional: gold-question id this probe is the out-of-scope twin of. Audit aid, not scored."
+          },
+          "dry_run": {
+            "$ref": "#/$defs/dry_run_evidence",
+            "description": "Required legacy single dry-run (back-compat). Kept even when dry_runs[] is present; conventionally the lexical engine."
+          },
+          "dry_runs": {
+            "type": "array",
+            "minItems": 1,
+            "description": "Optional (v1.1): one verified dry-run PER ENGINE (lexical / semantic / hybrid-rrf) against the live index. Each entry is the same evidence shape as `dry_run`. Re-recorded when the chunkset is re-pinned or the index rebuilt.",
+            "items": {"$ref": "#/$defs/dry_run_evidence"}
+          },
+          "authoring": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["method", "author", "reviewed_by", "status"],
+            "description": "Provenance of this probe. Seed probes are reviewed_by:PENDING_REVIEW until operator review backfills the reviewer.",
+            "properties": {
+              "method": {
+                "type": "string",
+                "enum": ["manual", "llm_assisted"],
+                "description": "How the probe was authored. manual: hand-authored; the unanswerability is confirmed by the recorded dry-run. llm_assisted: drafted by the license-clean local provider against the course concept vocabulary."
+              },
+              "author": {
+                "type": "string",
+                "minLength": 1,
+                "description": "@handle or tool id of the author."
+              },
+              "reviewed_by": {
+                "type": "string",
+                "minLength": 1,
+                "description": "@handle of the reviewer, or PENDING_REVIEW for un-reviewed seed probes."
+              },
+              "status": {
+                "type": "string",
+                "enum": ["seed", "draft", "reviewed"],
+                "description": "Authoring lifecycle. seed: deterministic executor-authored starter (verified by dry-run); draft: in-progress; reviewed: operator-approved."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

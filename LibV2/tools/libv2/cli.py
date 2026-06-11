@@ -2998,5 +2998,165 @@ def refusal_calibrate(ctx, course: str, engine: str, limit: int, no_write: bool)
     sys.exit(refusal_main(argv))
 
 
+# ==========================================================================
+# Retrieval gold-set authoring surface (retrieval-answer-eval-set P0/P1).
+# `gold-validate` loads the gold set fail-closed + (optionally) prints the
+# §1.3 coverage matrix; `gold-repin` re-anchors a gold set to a new chunkset
+# via the §3 resolution ladder. Both are thin delegations mirroring the
+# answer-eval pattern (logic lives in lib/retrieval/).
+# ==========================================================================
+
+
+@main.command("gold-validate")
+@click.option("--course", "-c", required=True, help="Course slug whose gold set to validate")
+@click.option("--coverage", is_flag=True,
+              help="Also build + print the §1.3 coverage matrix and write "
+                   "gold_coverage_<ts>.json under retrieval_eval/.")
+@click.option("--no-coverage-write", is_flag=True,
+              help="With --coverage: print the matrix but do not write the artifact.")
+@click.pass_context
+def gold_validate(ctx, course: str, coverage: bool, no_coverage_write: bool):
+    """Load a course gold set fail-closed and print its issues.
+
+    Validates against the schema matching the doc's schema_version (dual-version:
+    v1.0 + v1.1), verifies the chunkset sha pin, chunk-id existence, quote +
+    content-hash containment, and id uniqueness. Exit 1 on any critical issue.
+    With --coverage, additionally builds the per-type/week/TO-CO/population/
+    difficulty matrix (warnings, never failures).
+
+    \b
+    Example:
+        libv2 gold-validate --course demo-course-1 --coverage
+    """
+    from lib.retrieval.gold_set import (
+        critical_issues,
+        doc_schema_version,
+        load_gold_set,
+    )
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    gold, issues = load_gold_set(course_dir, verify=True)
+    crit = critical_issues(issues)
+    warns = [i for i in issues if i not in crit]
+
+    if gold:
+        print(f"gold set: {course} (schema_version {doc_schema_version(gold)}, "
+              f"{len(gold.get('questions', []))} questions, "
+              f"frozen={gold.get('frozen')})")
+    for i in crit:
+        print_error(f"[{i.code}] {i.message}"
+                    + (f" (q={i.question_id})" if i.question_id else ""))
+    for i in warns:
+        print_warning(f"[{i.code}] {i.message}"
+                      + (f" (q={i.question_id})" if i.question_id else ""))
+
+    if not crit:
+        print_success(f"gold set valid ({len(warns)} warning(s)).")
+
+    if coverage and gold:
+        from lib.retrieval.gold_coverage import build_coverage_report, write_coverage_report
+        from lib.retrieval.gold_set import _load_chunks_by_id
+
+        kind = (gold.get("chunkset") or {}).get("kind")
+        is_union = kind == "corpus"
+        try:
+            if no_coverage_write:
+                chunks_rel = (gold.get("chunkset") or {}).get("chunks_path") or ""
+                chunks_by_id = _load_chunks_by_id(course_dir / chunks_rel)
+                report = build_coverage_report(gold, chunks_by_id, is_union=is_union)
+                out_path = None
+            else:
+                report, out_path = write_coverage_report(
+                    course_dir, gold, is_union=is_union
+                )
+        except FileNotFoundError as exc:
+            print_error(str(exc))
+            sys.exit(1)
+
+        print("\nCoverage matrix:")
+        print(f"  by_type:       {report.by_type}")
+        print(f"  by_week:       {report.by_week}")
+        print(f"  by_population: {report.by_population}")
+        print(f"  by_difficulty: {report.by_difficulty}")
+        print(f"  objectives covered: {len(report.by_objective)}; "
+              f"uncoverable: {len(report.uncoverable_objectives)}")
+        for w in report.warnings:
+            print_warning(f"  [{w.code}] {w.message}")
+        if out_path:
+            print_success(f"  wrote {out_path}")
+
+    sys.exit(1 if crit else 0)
+
+
+@main.command("gold-repin")
+@click.option("--course", "-c", required=True, help="Course slug whose gold set to re-pin")
+@click.option("--kind", type=click.Choice(["dart", "imscc", "corpus"]), required=True,
+              help="Target chunkset kind to re-anchor the gold set to.")
+@click.option("--chunks-path", help="Override the kind's default course-dir-relative chunks.jsonl path.")
+@click.option("--unfreeze-for-repin", is_flag=True,
+              help="Required to re-pin a frozen:true gold set (fail-closed otherwise).")
+@click.option("--drop-orphans", is_flag=True,
+              help="Remove unresolvable (parked) questions so the re-pinned set "
+                   "loads clean / eval-ready; orphans stay recorded in the report.")
+@click.option("--dry-run", is_flag=True, help="Build the repin report without writing the gold set.")
+@click.pass_context
+def gold_repin(ctx, course: str, kind: str, chunks_path: Optional[str],
+               unfreeze_for_repin: bool, drop_orphans: bool, dry_run: bool):
+    """Re-anchor a course gold set to a new chunkset (§3 resolution ladder).
+
+    Resolves every passage by content_sha256 exact match -> unique text_quote
+    containment -> quote scoped to item_path/heading -> unresolved (question
+    parked status:draft). Rewrites chunk_ids + the chunkset pin, backfills
+    content_sha256, and writes a repin report under retrieval_eval/. Fail-closed
+    on a frozen set without --unfreeze-for-repin.
+
+    \b
+    Example:
+        libv2 gold-repin --course demo-course-1 --kind corpus
+    """
+    from lib.retrieval.gold_repin import GoldRepinError, repin_gold_set
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    try:
+        report, written = repin_gold_set(
+            course_dir,
+            kind=kind,
+            chunks_path=chunks_path,
+            unfreeze_for_repin=unfreeze_for_repin,
+            drop_orphans=drop_orphans,
+            dry_run=dry_run,
+        )
+    except GoldRepinError as exc:
+        print_error(f"{exc.code}: {exc.detail}")
+        sys.exit(1)
+
+    counts = report.counts
+    print(f"re-pin {course} -> kind={report.kind} ({report.chunks_path})")
+    print(f"  new sha: {report.new_sha256[:16]}... (was "
+          f"{(report.old_sha256 or '')[:16]}...)")
+    print(f"  resolved by content_sha256: {counts['content_sha256']}, "
+          f"text_quote: {counts['text_quote']}, "
+          f"text_quote_scoped: {counts['text_quote_scoped']}, "
+          f"unresolved: {counts['unresolved']}")
+    if report.parked_question_ids:
+        print_warning(f"  parked (status:draft) questions: "
+                      f"{', '.join(report.parked_question_ids)}")
+    if dry_run:
+        print_warning("  dry-run: no files written.")
+    elif written:
+        print_success(f"  wrote re-pinned gold set: {written}")
+    sys.exit(0)
+
+
 if __name__ == "__main__":
     main()

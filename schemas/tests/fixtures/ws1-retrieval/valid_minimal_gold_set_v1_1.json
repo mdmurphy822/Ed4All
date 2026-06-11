@@ -1,0 +1,88 @@
+{
+  "schema_version": "1.1",
+  "course_slug": "demo-course-101",
+  "chunkset": {
+    "kind": "corpus",
+    "chunks_path": "corpus/chunks.jsonl",
+    "chunks_sha256": "fc8a1c651e2cdf7eb6d5aecb57ddc7244f71eebf805d34a88684210685b03a0f"
+  },
+  "authored_at": "2026-06-11T00:00:00Z",
+  "frozen": false,
+  "_operator_note": "Schema-fixture: minimal valid v1.1 gold set exercising procedural + multi_part + the new optional fields.",
+  "questions": [
+    {
+      "question_id": "gq-demo-course-101-0001",
+      "question_type": "procedural",
+      "question_text": "What are the ordered steps to build a vector index?",
+      "difficulty": "medium",
+      "objective_refs": ["TO-01", "CO-03"],
+      "expected_citation_population": "course",
+      "expected_key_points": [
+        "Embed every chunk with the configured model.",
+        "L2-normalize each embedding row.",
+        "Persist embeddings.npy + id_map.json + manifest.json."
+      ],
+      "relevant_passages": [
+        {
+          "chunk_id": "demo_chunk_001",
+          "relevance": "primary",
+          "anchor": {
+            "item_path": "week_01/build.html",
+            "section_heading": "Building the index",
+            "text_quote": "To build the index, embed each chunk, normalize the vectors, then persist them.",
+            "content_sha256": "aa11bb22cc33dd44ee55ff6677889900aabbccddeeff00112233445566778899"
+          }
+        }
+      ],
+      "authoring": {
+        "method": "llm_assisted",
+        "author": "local:qwen2.5-14b/prompt-v1",
+        "reviewed_by": "PENDING_REVIEW",
+        "status": "draft"
+      }
+    },
+    {
+      "question_id": "gq-demo-course-101-0002",
+      "question_type": "multi_part",
+      "question_text": "List the three retrieval engines and note which one is unpinned.",
+      "synthesis_scope": "across_weeks",
+      "difficulty": "hard",
+      "parts": [
+        {
+          "part_id": "a",
+          "part_text": "Name the lexical engine.",
+          "covered": true,
+          "relevant_passage_refs": ["demo_chunk_002"]
+        },
+        {
+          "part_id": "b",
+          "part_text": "Name the semantic engine.",
+          "covered": true,
+          "relevant_passage_refs": ["demo_chunk_002"]
+        },
+        {
+          "part_id": "c",
+          "part_text": "State the exact hybrid-rrf pinned threshold value.",
+          "covered": false,
+          "absence_note": "The corpus never pins a hybrid-rrf threshold; the dry-run confirmed no passage states one."
+        }
+      ],
+      "relevant_passages": [
+        {
+          "chunk_id": "demo_chunk_002",
+          "relevance": "primary",
+          "anchor": {
+            "item_path": "week_03/engines.html",
+            "text_quote": "The three retrieval engines are lexical BM25, semantic nearest-neighbor, and hybrid RRF."
+          }
+        }
+      ],
+      "authoring": {
+        "method": "manual",
+        "author": "@executor-b",
+        "reviewed_by": "PENDING_REVIEW",
+        "status": "seed"
+      }
+    }
+  ]
+}

@@ -43,6 +43,7 @@ chunk-sweep scorer all measure containment identically.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -59,8 +60,31 @@ from lib.utils import sha256_file
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
 GOLD_SET_FILENAME = "gold_set.json"
 
-# Question-type taxonomy (mirrors the schema enum).
-_QUESTION_TYPES = ("factual_recall", "conceptual_synthesis", "where_covered")
+# Supported gold-set schema versions. The loader validates a doc against the
+# schema whose ``const`` schema_version matches the doc's declared version
+# (dual-version acceptance — v1.0 const-pinned/frozen, v1.1 additive).
+_SUPPORTED_SCHEMA_VERSIONS = ("1.0", "1.1")
+_DEFAULT_SCHEMA_VERSION = "1.0"
+
+# Schema filename per version (relative to schemas/retrieval/).
+_SCHEMA_FILENAME_BY_VERSION = {
+    "1.0": "gold_set.schema.json",
+    "1.1": "gold_set.schema.v1_1.json",
+}
+
+# Question-type taxonomy. v1.0 = the first three; v1.1 adds procedural +
+# multi_part. The structural fallback accepts the union so a v1.1 doc isn't
+# spuriously rejected when jsonschema is absent (the per-version schema files
+# are the authoritative enum when jsonschema is importable).
+_QUESTION_TYPES_V1_0 = ("factual_recall", "conceptual_synthesis", "where_covered")
+_QUESTION_TYPES_V1_1 = (
+    "factual_recall",
+    "procedural",
+    "conceptual_synthesis",
+    "multi_part",
+    "where_covered",
+)
+_QUESTION_TYPES = _QUESTION_TYPES_V1_1  # union — used by the type-imbalance + fallback
 
 # Warning thresholds.
 _TYPE_IMBALANCE_MIN_QUESTIONS = 30   # only flag imbalance at scale
@@ -102,6 +126,7 @@ GOLD_SET_ISSUE_CODES = frozenset(
         "GOLD_SET_CHUNKSET_NOT_FOUND",
         "GOLD_SET_UNKNOWN_CHUNK_ID",
         "GOLD_SET_QUOTE_NOT_IN_CHUNK",
+        "GOLD_SET_CONTENT_SHA_MISMATCH",
         "GOLD_SET_DUPLICATE_QUESTION_ID",
         # warning
         "GOLD_SET_TYPE_IMBALANCE",
@@ -118,6 +143,7 @@ _CRITICAL_CODES = frozenset(
         "GOLD_SET_CHUNKSET_NOT_FOUND",
         "GOLD_SET_UNKNOWN_CHUNK_ID",
         "GOLD_SET_QUOTE_NOT_IN_CHUNK",
+        "GOLD_SET_CONTENT_SHA_MISMATCH",
         "GOLD_SET_DUPLICATE_QUESTION_ID",
     }
 )
@@ -126,25 +152,54 @@ _CRITICAL_CODES = frozenset(
 # ---------------------------------------------------------------- schema load
 
 
-def _resolve_schema_path() -> Optional[Path]:
-    """Locate ``schemas/retrieval/gold_set.schema.json`` by walking up."""
+def doc_schema_version(gold: Dict[str, Any]) -> str:
+    """Return the doc's declared schema_version, defaulting to the v1.0 base.
+
+    Unknown versions fall through to the v1.0 schema so an out-of-range
+    version surfaces as a const-mismatch GOLD_SET_SCHEMA_VIOLATION rather than
+    silently selecting no schema.
+    """
+    declared = gold.get("schema_version") if isinstance(gold, dict) else None
+    if isinstance(declared, str) and declared in _SUPPORTED_SCHEMA_VERSIONS:
+        return declared
+    return _DEFAULT_SCHEMA_VERSION
+
+
+def chunk_content_sha256(chunk: Dict[str, Any]) -> str:
+    """Canonical content hash for a chunk's normalized text.
+
+    ``sha256(normalize_ws(chunk["text"]).lower())`` — the same normalization
+    the quote-containment check uses, so the v1.1 ``anchor.content_sha256``
+    re-resolution key and the text_quote fallback measure identically. Stable
+    across a pure chunk-id renumber (the union-corpus rebuild case) because it
+    keys on content, not position.
+    """
+    normalized = normalize_ws(chunk.get("text", "")).lower()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _resolve_schema_path(version: str = _DEFAULT_SCHEMA_VERSION) -> Optional[Path]:
+    """Locate the version-matched gold-set schema by walking up."""
+    filename = _SCHEMA_FILENAME_BY_VERSION.get(version, _SCHEMA_FILENAME_BY_VERSION[_DEFAULT_SCHEMA_VERSION])
     here = Path(__file__).resolve()
     for parent in [here, *here.parents]:
-        candidate = parent / "schemas" / "retrieval" / "gold_set.schema.json"
+        candidate = parent / "schemas" / "retrieval" / filename
         if candidate.exists():
             return candidate
     return None
 
 
 def _validate_against_schema(gold: Dict[str, Any]) -> List[GoldSetIssue]:
-    """Schema-validate the doc. jsonschema when importable; structural
-    fallback otherwise (graceful-degrade, mirrors chunkset_manifest.py)."""
+    """Schema-validate the doc against the schema matching its schema_version.
+    jsonschema when importable; structural fallback otherwise (graceful-
+    degrade, mirrors chunkset_manifest.py)."""
+    version = doc_schema_version(gold)
     try:
         import jsonschema  # type: ignore
     except ImportError:
         return _structural_fallback(gold)
 
-    schema_path = _resolve_schema_path()
+    schema_path = _resolve_schema_path(version)
     if not schema_path:
         return _structural_fallback(gold)
     try:
@@ -198,12 +253,15 @@ def _structural_fallback(gold: Dict[str, Any]) -> List[GoldSetIssue]:
             )
         ]
 
-    if gold.get("schema_version") != "1.0":
+    if gold.get("schema_version") not in _SUPPORTED_SCHEMA_VERSIONS:
         issues.append(
             GoldSetIssue(
                 code="GOLD_SET_SCHEMA_VIOLATION",
                 severity="critical",
-                message=f"schema_version must be '1.0'; got {gold.get('schema_version')!r}.",
+                message=(
+                    f"schema_version must be one of {_SUPPORTED_SCHEMA_VERSIONS}; "
+                    f"got {gold.get('schema_version')!r}."
+                ),
             )
         )
     if not isinstance(gold.get("course_slug"), str) or not gold.get("course_slug"):
@@ -309,6 +367,18 @@ def _structural_fallback(gold: Dict[str, Any]) -> List[GoldSetIssue]:
                     question_id=qid if isinstance(qid, str) else None,
                 )
             )
+        # v1.1: multi_part questions must carry a parts[] block.
+        if q.get("question_type") == "multi_part":
+            parts = q.get("parts")
+            if not isinstance(parts, list) or len(parts) < 2:
+                issues.append(
+                    GoldSetIssue(
+                        code="GOLD_SET_SCHEMA_VIOLATION",
+                        severity="critical",
+                        message="multi_part question must carry a parts[] array of >= 2 parts.",
+                        question_id=qid if isinstance(qid, str) else None,
+                    )
+                )
         passages = q.get("relevant_passages")
         if not isinstance(passages, list) or not passages:
             issues.append(
@@ -481,6 +551,26 @@ def validate_gold_set(
                 )
                 # Can't check quote containment without the chunk.
                 continue
+            # v1.1: when the anchor carries content_sha256, it must match the
+            # cited chunk's recomputed content hash. A mismatch means the
+            # chunk_id resolves but its CONTENT drifted from authoring — exactly
+            # what a stale pin after a re-chunk looks like at the chunk level.
+            declared_csha = anchor.get("content_sha256")
+            if isinstance(declared_csha, str) and declared_csha:
+                actual_csha = chunk_content_sha256(chunks_by_id[cid])
+                if declared_csha != actual_csha:
+                    issues.append(
+                        GoldSetIssue(
+                            code="GOLD_SET_CONTENT_SHA_MISMATCH",
+                            severity="critical",
+                            message=(
+                                f"anchor.content_sha256 ({declared_csha[:16]}...) does not "
+                                f"match chunk {cid!r}'s recomputed content hash "
+                                f"({actual_csha[:16]}...); re-pin with `libv2 gold-repin`."
+                            ),
+                            question_id=qid,
+                        )
+                    )
             if isinstance(text_quote, str) and text_quote:
                 if not _quote_in_chunk(text_quote, chunks_by_id[cid]):
                     issues.append(
@@ -656,4 +746,9 @@ __all__ = [
     "validate_gold_set",
     "has_critical_issues",
     "critical_issues",
+    "doc_schema_version",
+    "chunk_content_sha256",
+    "_quote_in_chunk",
+    "_quote_chunk_match_count",
+    "_load_chunks_by_id",
 ]
