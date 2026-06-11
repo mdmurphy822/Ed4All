@@ -117,6 +117,13 @@ class ComposedAnswer:
     attempts: int
     latency_ms: float
     raw_response_len: int
+    # The passage ids the model could have cited — the renderer-INCLUDED
+    # (in-window) set (additive, optional). Over-budget trailing passages were
+    # dropped from the prompt, so they are NOT in this list. The grounded-answer
+    # attribution pass runs over exactly this gate-eligible set (it must never
+    # "add" a citation for a passage the model never saw). Defaults to ``[]`` so
+    # legacy constructions stay valid.
+    allowed_chunk_ids: List[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +372,7 @@ def compose_answer(
             attempts=attempts,
             latency_ms=latency_ms,
             raw_response_len=len(last_raw),
+            allowed_chunk_ids=list(allowed_ids),
         )
 
     # Budget exhausted. If the last failure was unknown-citation, raise

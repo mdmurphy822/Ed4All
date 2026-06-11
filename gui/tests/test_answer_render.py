@@ -271,6 +271,63 @@ def test_no_metadata_leak_in_fragment():
     assert "prompt_version" not in html
 
 
+# ------------------------------------------ claim-attribution surfacing (2026-06)
+
+
+def test_supporting_excerpt_preferred_over_text_quote():
+    """The src-quote blockquote prefers supporting_excerpt over text_quote."""
+    payload = _answered_payload()
+    payload["citations"][0]["text_quote"] = "Legacy whole-answer overlap sentence."
+    payload["citations"][0]["supporting_excerpt"] = "The claim-backing sentence."
+    html = ar.render_answer_fragment(payload)
+    assert "<blockquote" in html
+    assert "The claim-backing sentence." in html
+    assert "Legacy whole-answer overlap sentence." not in html
+
+
+def test_text_quote_fallback_when_no_excerpt():
+    payload = _answered_payload()
+    payload["citations"][0]["text_quote"] = "Fallback quote here."
+    payload["citations"][0]["supporting_excerpt"] = None
+    html = ar.render_answer_fragment(payload)
+    assert "Fallback quote here." in html
+
+
+def test_supports_n_span_rendered():
+    payload = _answered_payload()
+    payload["citations"][0]["supported_claim_count"] = 3
+    html = ar.render_answer_fragment(payload)
+    assert '<span class="src-support">Supports 3 statements</span>' in html
+
+
+def test_supports_one_statement_singular():
+    payload = _answered_payload()
+    payload["citations"][0]["supported_claim_count"] = 1
+    html = ar.render_answer_fragment(payload)
+    assert '<span class="src-support">Supports 1 statement</span>' in html
+
+
+def test_supports_span_omitted_when_zero_or_absent():
+    # Absent (legacy payload) → no span.
+    html = ar.render_answer_fragment(_answered_payload())
+    assert "src-support" not in html
+    # Explicit zero → no span.
+    payload = _answered_payload()
+    payload["citations"][0]["supported_claim_count"] = 0
+    assert "src-support" not in ar.render_answer_fragment(payload)
+
+
+def test_supporting_excerpt_is_escaped():
+    payload = _answered_payload()
+    payload["citations"][0]["text_quote"] = None
+    payload["citations"][0]["supporting_excerpt"] = (
+        "</blockquote><script>alert(1)</script>"
+    )
+    html = ar.render_answer_fragment(payload)
+    assert "<script>alert(1)" not in html
+    assert "&lt;script&gt;" in html
+
+
 # --------------------------------------------------- B4 provenance disclosure
 
 

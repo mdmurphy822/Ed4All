@@ -52,6 +52,14 @@ services:
       # line and pulling the model into the sidecar.
       ED4ALL_ANSWER_MODEL: qwen2.5:7b-instruct-q4_K_M
       ED4ALL_EMBEDDING_PROVIDER: st
+      # Claim-attribution citation prune+add at answer-composition time. The
+      # code default is `shadow` (compute + capture, mutate nothing); this
+      # deployment wants it LIVE — drop model-cited citations that back no
+      # answer sentence, and credit an uncited high-support passage the model
+      # under-cited — so the learner's source list reflects the measured
+      # support story. Never changes an answer verdict; always keeps >= 1
+      # citation. Knob: ED4ALL_ANSWER_PRUNE_MIN_OVERLAP (default 0.25).
+      ED4ALL_ANSWER_CITATION_PRUNE: "on"
     volumes:
       # Mutable state/training/upload data lives on a named volume mounted at
       # /data (= ED4ALL_HOME). The repo's CODE is NOT bind-mounted — the image

@@ -372,9 +372,10 @@ def _citation_li(
 ) -> str:
     """Render one citation as a focusable ``<li>`` with a "Source:" link.
 
-    Order: link → (module tag) → (approximate-location tag) → (text quote) →
-    (B4 provenance disclosure). Every dynamic field is escaped. ``module_id``
-    and the approximate marker are text spans (never color-only state).
+    Order: link → (module tag) → (supports-N span) → (supporting excerpt /
+    text quote) → (B4 provenance disclosure). Every dynamic field is escaped.
+    ``module_id`` and the supports-N marker are text spans (never color-only
+    state).
     """
     page_label = citation.get("page_label") or "Source"
     href = source_url_for(citation, slug)
@@ -392,16 +393,34 @@ def _citation_li(
                 escape(str(module_label))
             )
         )
+    # "Supports N statements" — the claim-attribution count (additive). A text
+    # span (never color-only); omitted when zero / absent so legacy payloads and
+    # attribution-disabled answers render unchanged.
+    try:
+        support_count = int(citation.get("supported_claim_count") or 0)
+    except (TypeError, ValueError):
+        support_count = 0
+    if support_count > 0:
+        noun = "statement" if support_count == 1 else "statements"
+        parts.append(
+            '<span class="src-support">Supports {n} {noun}</span>'.format(
+                n=support_count, noun=noun
+            )
+        )
     # No "(approximate location)" hedge: the Source link IS the direct hop to
     # the chunk's holder (course page for imscc chunks; the provenance block
     # below adds the original-source deep link for DART chunks). A non-exact
     # anchor only means the fragment may land at the section rather than the
     # sentence — the page itself is authoritative from the chunk's item_path.
-    text_quote = citation.get("text_quote")
-    if text_quote:
+    #
+    # Prefer the attribution ``supporting_excerpt`` (the chunk sentence that
+    # actually backs an answer claim) over the legacy whole-answer
+    # ``text_quote``; fall back to ``text_quote`` when attribution found none.
+    quote = citation.get("supporting_excerpt") or citation.get("text_quote")
+    if quote:
         parts.append(
             '<blockquote class="src-quote">{}</blockquote>'.format(
-                escape(str(text_quote))
+                escape(str(quote))
             )
         )
     parts.append(

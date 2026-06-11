@@ -146,6 +146,7 @@
         "form_data_degraded_placeholder_skipped",
         "format_decision",
         "grounded_answer_citation_gate",
+        "grounded_answer_citation_prune",
         "grounded_answer_composition",
         "grounded_answer_refusal",
         "heading_assignment",
