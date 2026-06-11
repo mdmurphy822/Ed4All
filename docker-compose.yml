@@ -48,10 +48,15 @@ services:
       ED4ALL_ANSWER_PROVIDER: local
       ED4ALL_EMBEDDING_PROVIDER: st
     volumes:
-      # All course/state/training data lives on a named volume mounted at /data
-      # (= ED4ALL_HOME). The repo itself is NOT bind-mounted — the image already
-      # contains the code; mounting the repo over /app would shadow it.
+      # Mutable state/training/upload data lives on a named volume mounted at
+      # /data (= ED4ALL_HOME). The repo's CODE is NOT bind-mounted — the image
+      # already contains it; mounting the repo over /app would shadow it.
       - ed4all-data:/data
+      # The course library is the repo checkout's LibV2 — one shared store
+      # for host runs and the containerized Studio. Read-write so pipeline
+      # runs launched from the container archive into the same place the
+      # host (and any non-Docker tooling) sees.
+      - ./LibV2:/data/libv2
     restart: unless-stopped
     depends_on:
       - ollama

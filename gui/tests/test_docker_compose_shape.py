@@ -56,22 +56,33 @@ def test_gui_service_sets_ed4all_home():
 
 
 def test_gui_service_does_not_bind_mount_the_repo():
-    """Mounting the repo over /app would shadow the baked-in code."""
+    """Mounting the repo over /app would shadow the baked-in code. The ONE
+    intended bind mount is the repo's LibV2 — the shared course store — at
+    /data/libv2 (so host runs and the containerized Studio see one library)."""
     gui = _load_compose()["services"]["gui"]
     for vol in gui.get("volumes", []):
         spec = vol if isinstance(vol, str) else f"{vol.get('source')}:{vol.get('target')}"
         source = spec.split(":", 1)[0]
         # No bind mount of the repo root or its code dirs into the container.
         assert source not in {".", "./", "..", REPO_ROOT.as_posix()}
-        assert not source.startswith("./lib")
+        assert not source.startswith("./lib/")
         assert not source.startswith("./gui")
         assert not source.startswith("./MCP")
-    # The data volume IS mounted at /data (= ED4ALL_HOME).
     targets = [
         (v.split(":")[1] if isinstance(v, str) and ":" in v else None)
         for v in gui.get("volumes", [])
     ]
+    # The data volume IS mounted at /data (= ED4ALL_HOME)...
     assert "/data" in targets
+    # ...and the repo's LibV2 is the course library inside the container.
+    mounts = {}
+    for vol in gui.get("volumes", []):
+        if isinstance(vol, str):
+            parts = vol.split(":")
+            mounts[parts[1]] = parts[0]
+        else:
+            mounts[vol.get("target")] = vol.get("source")
+    assert mounts.get("/data/libv2") == "./LibV2"
 
 
 def test_loopback_policy_uses_shared_network_namespace():
