@@ -6,6 +6,8 @@ The branch that shipped this file (`claude/fix-package-quality-FyMue`) moved Ed4
 
 **v0.2.0 status (development branch `dev-v0.2.0`):** the workers-A-through-K cohort on `dev-v0.2.0` delivers a substantial chunk of the v1.0 roadmap ahead of the formal v1.0 release. See §5a below for the mapping from v1.0 promises to the v0.2.0 artifacts that fulfilled them. v1.0 itself remains defined by the §6 exit criteria, all of which must hold before the version number moves.
 
+**v0.3.0 status (promoted from `dev-v0.3.0`, 2026-06-11):** the marketable-v1 cohort ships the end-user product surface: Docker-deployable Studio GUI (shared-netns compose, course library + IMSCC viewer, in-context Ask drawer with durable ask jobs), grounded Q&A over union corpora (generated course pages + the original source content, both chunked and indexed) with provenance-citing answers (per-chunk DART block references with PDF pages, exact-block deep links into the original document, attribution-driven citation pruning/crediting/ordering), a deterministic Learning Objectives Map page in every packaged IMSCC, the turnkey local-provider authoring route with fail-fast guardrails, strict decision-validation fixes, and an Apache-2.0 relicense (prior MIT history preserved on the `v0.2.0` branch). v1.0 remains defined by the §6 exit criteria.
+
 ---
 
 ## §1 What v0.1.0 delivers
