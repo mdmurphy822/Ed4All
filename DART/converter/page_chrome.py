@@ -66,7 +66,21 @@ _TAIL_SCAN_LINES = 3
 # Regex — "text ending in digits" — captures the non-digit prefix and
 # the trailing integer so we can split a chrome line like
 # ``"<Book Title> 164"`` into ``("<Book Title>", 164)``.
-_TRAILING_DIGITS_RE = re.compile(r"^(.*?)(?:\s+)?(\d{1,4})\s*$")
+#
+# Boundary contract: the trailing page-number digits must be at the
+# START of the string OR preceded by whitespace — they must NOT be
+# glued to a non-space, non-digit character. Without this guard a
+# constant footer URL like ``http://cnx.org/content/col31130/1.4``
+# matches the ``4`` glued to ``1.`` and is mistaken for page number 4
+# (the OpenStax page-stamping defect). The prefix group is optional
+# (``(?:(.*?)\s+)?``) so a bare-number line (``"164"``) still extracts
+# correctly with ``group(1) is None`` (the caller coerces that to the
+# empty-prefix ``""`` semantics). The required ``\s+`` before the
+# digit-run means ``col31130/1.4`` / ``col12116/1.7`` no longer yield
+# a page number, while ``"<Book Title> 164"``, ``"Chapter 3 — 47"``
+# (em-dash is space-surrounded after normalisation), and bare ``"164"``
+# all still extract.
+_TRAILING_DIGITS_RE = re.compile(r"^(?:(.*?)\s+)?(\d{1,4})\s*$")
 
 
 # Wave 25 Fix 1: mirror of the trailing-digits regex for the
@@ -455,6 +469,73 @@ def detect_page_chrome(
 
     page_number_lines: Dict[int, str] = {}
 
+    # ------------------------------------------------------------------
+    # Constant-value guard (OpenStax page-stamping defect).
+    #
+    # A real running page number VARIES across the pages it appears on
+    # (164, 165, 166, ...). A digit that is IDENTICAL on every page a
+    # given chrome key fires is fixed chrome text — a version string
+    # tail (``.../col31130/1.4``), a date, an edition number — never
+    # pagination. The boundary fix above already rejects digits glued
+    # to non-space characters, but a footer that legitimately ends in a
+    # space-separated constant digit (``"... Edition 2"`` repeated on
+    # every page) would still slip through, so we additionally suppress
+    # any key whose extracted page-numbers never vary.
+    #
+    # We accumulate, per matched chrome key (trailing prefix / leading
+    # ``__lead__:`` residual / ``__page_number_only__`` sentinel), the
+    # set of page-numbers extracted across all pages where that key
+    # fired. A key whose number-set has size <= 1 (constant or absent
+    # variation) is dropped from the page-number contribution. Chrome
+    # STRIPPING is unaffected — the line is still cleared from the
+    # content stream below; only its hijacking of ``page_number_lines``
+    # to a single fixed label is suppressed.
+    def _matched_key_and_page(
+        partition: str,
+        tail_key: Optional[str],
+        lead_key: Optional[str],
+        norm: str,
+    ) -> Tuple[Optional[str], Optional[int]]:
+        """Return ``(chrome_key, page_number)`` for a matched line."""
+        if partition == "tail":
+            _prefix, maybe_page = _strip_trailing_digits(norm)
+            return tail_key, maybe_page
+        _residual, maybe_page = _strip_leading_digits(norm)
+        return lead_key, maybe_page
+
+    key_page_numbers: Dict[str, Set[int]] = {}
+    for page_index in range(len(pages)):
+        for tail_key, lead_key, raw_line, _idx in top_candidates[page_index]:
+            if tail_key is not None and tail_key in header_keys:
+                partition = "tail"
+            elif lead_key is not None and lead_key in header_keys:
+                partition = "lead"
+            else:
+                continue
+            key, maybe_page = _matched_key_and_page(
+                partition, tail_key, lead_key, _normalise(raw_line)
+            )
+            if key is not None and maybe_page is not None:
+                key_page_numbers.setdefault(key, set()).add(maybe_page)
+        for tail_key, lead_key, raw_line, _idx in bottom_candidates[page_index]:
+            if tail_key is not None and tail_key in footer_keys:
+                partition = "tail"
+            elif lead_key is not None and lead_key in footer_keys:
+                partition = "lead"
+            else:
+                continue
+            key, maybe_page = _matched_key_and_page(
+                partition, tail_key, lead_key, _normalise(raw_line)
+            )
+            if key is not None and maybe_page is not None:
+                key_page_numbers.setdefault(key, set()).add(maybe_page)
+
+    # A key whose extracted page-numbers never vary across the pages it
+    # fired on is fixed chrome text, not pagination.
+    constant_keys: Set[str] = {
+        key for key, numbers in key_page_numbers.items() if len(numbers) <= 1
+    }
+
     # Now strip: for every page, walk the stored (tail_key, lead_key,
     # raw, idx) lists and clear each chrome-flagged line. Also extract
     # the page number from a numbered chrome line — the partition
@@ -475,11 +556,12 @@ def detect_page_chrome(
                 continue
             to_clear.add(idx)
             norm = _normalise(raw_line)
+            matched_key = tail_key if matched_partition == "tail" else lead_key
             if matched_partition == "tail":
                 _prefix, maybe_page = _strip_trailing_digits(norm)
             else:
                 _residual, maybe_page = _strip_leading_digits(norm)
-            if maybe_page is not None:
+            if maybe_page is not None and matched_key not in constant_keys:
                 page_number_lines.setdefault(page_number_1based, raw_line)
 
         for tail_key, lead_key, raw_line, idx in bottom_candidates[page_index]:
@@ -492,11 +574,12 @@ def detect_page_chrome(
                 continue
             to_clear.add(idx)
             norm = _normalise(raw_line)
+            matched_key = tail_key if matched_partition == "tail" else lead_key
             if matched_partition == "tail":
                 _prefix, maybe_page = _strip_trailing_digits(norm)
             else:
                 _residual, maybe_page = _strip_leading_digits(norm)
-            if maybe_page is not None:
+            if maybe_page is not None and matched_key not in constant_keys:
                 page_number_lines.setdefault(page_number_1based, raw_line)
 
         if to_clear:

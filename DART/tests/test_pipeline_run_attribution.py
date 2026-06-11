@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from MCP.tools.pipeline_tools import (  # noqa: E402
     _raw_text_to_accessible_html,
 )
+from lib.paths import get_training_captures_dir  # noqa: E402
 
 
 @pytest.fixture
@@ -68,8 +69,7 @@ def test_pipeline_run_attribution_capture_is_written(fake_pdf, tmp_path):
 
     course_code = normalize_course_code("sample_textbook")
     capture_dir = (
-        Path(__file__).resolve().parents[2]
-        / "training-captures"
+        get_training_captures_dir()
         / "dart"
         / course_code
         / "phase_dart-conversion"
