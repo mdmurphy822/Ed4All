@@ -227,18 +227,20 @@ def _drawer_html(*, state="idle", collapsed=False, no_index=False, prov_expanded
     )
     body_hidden = " hidden" if collapsed else ""
     # No empty <ol> (WCAG 1.3.1): the list element exists only when populated.
-    # When populated, a clear-history button precedes the list (mirrors
-    # drawer.js renderHistory).
+    # The clear-history button is ALWAYS present in the shell (user directive),
+    # independent of history population (mirrors drawer.js).
     history_list = (
-        '<div class="ask-history-bar">'
-        '<button type="button" class="ask-clear" '
-        'aria-label="Clear question and answer history">Clear history</button>'
-        "</div>"
         '<ol class="ask-history" aria-label="Question and answer history">'
         + history
         + "</ol>"
         if history.strip()
         else ""
+    )
+    history_list = (
+        '<div class="ask-history-bar">'
+        '<button type="button" class="ask-clear" '
+        'aria-label="Clear question and answer history">Clear history</button>'
+        "</div>" + history_list
     )
     expanded = "false" if collapsed else "true"
     toggle_text = "Show Ask panel" if collapsed else "Hide Ask panel"

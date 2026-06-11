@@ -83,7 +83,18 @@ export function createAskDrawer({ slug, loadCitation }) {
     placeholder: 'Ask a question about this course…',
   });
   const submitBtn = el('button', { type: 'button', class: 'ask-submit', text: 'Ask' });
+  // Always-available (user directive): lives in the static shell, not the
+  // lazily-rendered history block; clicking with nothing to clear announces
+  // that via the live region instead of hiding the control.
+  const clearBtn = el('button', {
+    type: 'button',
+    class: 'ask-clear',
+    text: 'Clear history',
+    'aria-label': 'Clear question and answer history',
+  });
   const form = el('form', { class: 'ask-form' }, [input, submitBtn]);
+  const historyBar = el('div', { class: 'ask-history-bar' }, [clearBtn]);
+  clearBtn.addEventListener('click', () => clearHistory());
 
   // Polite live region for busy/queue/answer-ready announcements (a11y).
   const live = el('p', { id: liveId, class: 'visually-hidden', role: 'status', 'aria-live': 'polite' });
@@ -93,7 +104,7 @@ export function createAskDrawer({ slug, loadCitation }) {
   // Q/A pair to populate it).
   const historyWrap = el('div', { class: 'ask-history-wrap' });
 
-  const body = el('div', { class: 'ask-body' }, [form, live, historyWrap]);
+  const body = el('div', { class: 'ask-body' }, [form, live, historyBar, historyWrap]);
   const header = el('div', { class: 'ask-header' }, [heading, toggleBtn]);
   const root = el('aside', {
     class: 'ask-drawer',
@@ -142,16 +153,6 @@ export function createAskDrawer({ slug, loadCitation }) {
   function renderHistory() {
     clear(historyWrap);
     if (history.length === 0) return; // no empty <ol> (WCAG 1.3.1)
-    const clearBtn = el('button', {
-      type: 'button',
-      class: 'ask-clear',
-      text: 'Clear history',
-      'aria-label': 'Clear question and answer history',
-    });
-    clearBtn.addEventListener('click', clearHistory);
-    historyWrap.appendChild(
-      el('div', { class: 'ask-history-bar' }, [clearBtn])
-    );
     const historyList = el('ol', {
       class: 'ask-history',
       'aria-label': 'Question and answer history',
