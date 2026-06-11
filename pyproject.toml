@@ -45,6 +45,11 @@ server = [
 dev = [
     "pytest>=7.0.0,<9.0.0",
     "pytest-cov>=4.0.0,<6.0.0",
+    # starlette's TestClient (newer starlette resolved on clean CI installs)
+    # requires the httpx2 package explicitly; local venvs carry it
+    # transitively, so without this pin the gui-tests CI job fails at
+    # collection ("requires the httpx2 package to be installed").
+    "httpx2",
     # pytest-asyncio is a test-only dependency. No default-install import
     # path imports pytest_asyncio (verified by grep); async tests are
     # driven purely by @pytest.mark.asyncio + pytest.ini::asyncio_mode =
