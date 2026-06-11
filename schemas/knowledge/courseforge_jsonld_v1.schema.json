@@ -19,7 +19,7 @@
     "courseCode": {
       "type": "string",
       "pattern": "^[A-Z]{2,}_?\\d{3,}$",
-      "description": "Canonical course code (e.g., WCAG_201, SAMPLE_101)."
+      "description": "Canonical course code (e.g., ACCESS_201, SAMPLE_101)."
     },
     "weekNumber": {
       "type": "integer",

@@ -96,22 +96,37 @@ def test_gold_set_loader_offline(mini_course: Path, offline_guard):
     assert not critical, f"offline gold-set verify produced critical issues: {critical}"
 
 
-@pytest.mark.parametrize(
-    "course_slug,kind,rel_path",
-    [
-        ("rdf-shacl-551-2", "corpus", "corpus/chunks.jsonl"),
-    ],
-)
-def test_real_corpus_retrieval_offline(course_slug, kind, rel_path, offline_guard):
+def _discover_real_corpus_chunkset() -> Path | None:
+    """Find any in-tree real corpus chunkset, newest-first.
+
+    Tier-2 tests discover slugs dynamically and skip when absent (no hardcoded
+    course slugs in tracked code). Probes the canonical chunkset locations
+    under each LibV2 course dir and returns the first non-empty chunks.jsonl.
+    """
+    courses_root = _REPO_ROOT / "LibV2" / "courses"
+    if not courses_root.is_dir():
+        return None
+    rel_paths = ("corpus/chunks.jsonl", "dart_chunks/chunks.jsonl", "imscc_chunks/chunks.jsonl")
+    for course_dir in sorted(courses_root.iterdir(), reverse=True):
+        if not course_dir.is_dir():
+            continue
+        for rel in rel_paths:
+            chunks_path = course_dir / rel
+            if chunks_path.exists() and chunks_path.stat().st_size > 0:
+                return chunks_path
+    return None
+
+
+def test_real_corpus_retrieval_offline(offline_guard):
     """Tier-2: BM25 over an in-tree real corpus runs offline (skip if absent).
 
     Proves the real archived pipeline is offline-clean today, not just the
-    synthetic fixture. Uses one logged query from the corpus when available.
+    synthetic fixture. Discovers any archived course chunkset dynamically and
+    skips cleanly on a clean checkout / CI where no real corpus is present.
     """
-    course_dir = _REPO_ROOT / "LibV2" / "courses" / course_slug
-    chunks_path = course_dir / rel_path
-    if not chunks_path.exists():
-        pytest.skip(f"real corpus chunkset absent: {chunks_path}")
+    chunks_path = _discover_real_corpus_chunkset()
+    if chunks_path is None:
+        pytest.skip("no in-tree real corpus chunkset found under LibV2/courses/")
 
     from LibV2.tools.libv2.retriever import LazyBM25
 
@@ -119,6 +134,9 @@ def test_real_corpus_retrieval_offline(course_slug, kind, rel_path, offline_guar
     if not chunks:
         pytest.skip(f"real corpus chunkset empty: {chunks_path}")
     bm25 = LazyBM25(chunks)
-    # A simple domain query; the corpus is RDF/SHACL.
-    results = bm25.search("NodeShape and PropertyShape", limit=10)
+    # Query the corpus with a generic token drawn from its own first chunk so
+    # the assertion is corpus-agnostic (no domain-specific query hardcoded).
+    first_text = str(chunks[0].get("text", "")).strip()
+    query = " ".join(first_text.split()[:5]) or "the"
+    results = bm25.search(query, limit=10)
     assert len(results) >= 1

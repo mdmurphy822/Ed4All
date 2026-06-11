@@ -56,38 +56,38 @@ MILESTONE_TARGETS_PINNED_AT = "2026-06-10"
 #: runs clear a stricter bound.
 #:
 #: Measured runs (model qwen2.5:14b-instruct-q4_K_M, prompt ws3.v1, local backend):
-#:                         answer  cit_res  cit_prec  ground   unsup   ref_rec  ref_prec
-#:   nvidiarag-101   sem   1.0     1.0      0.615     0.7      0.2     0.889    1.0   (2026-06-09)
-#:   rdf-shacl-551-2 lex   0.5     1.0      0.5       0.6      0.2     0.667    1.0   (2026-06-10)
-#:   openstax-alg-9  lex   0.9     1.0      0.6       0.167    0.222   1.0      0.9   (2026-06-10)
+#:                   answer  cit_res  cit_prec  ground   unsup   ref_rec  ref_prec
+#:   course-A  sem   1.0     1.0      0.615     0.7      0.2     0.889    1.0   (2026-06-09)
+#:   course-B  lex   0.5     1.0      0.5       0.6      0.2     0.667    1.0   (2026-06-10)
+#:   course-C  lex   0.9     1.0      0.6       0.167    0.222   1.0      0.9   (2026-06-10)
 #:
 #: citation_resolution_rate is pinned at 1.0: all three runs measured exactly
 #: 1.0 (every emitted citation resolved), so the floor IS the measurement —
 #: any regression below it is a real anchoring break, not noise.
 MILESTONE_TARGETS: Dict[str, float] = {
-    # FLOOR. min measured 0.5 (rdf-shacl-551-2 lexical 2026-06-10);
-    # spread 0.5 (rdf-shacl) .. 1.0 (nvidiarag).
+    # FLOOR. min measured 0.5 (course-B lexical 2026-06-10);
+    # spread 0.5 (course-B) .. 1.0 (course-A).
     "answer_rate": 0.50,
-    # FLOOR == measurement. All three runs measured exactly 1.0 — nvidiarag-101
-    # (sem, 2026-06-09), rdf-shacl-551-2 (lex, 2026-06-10), openstax-alg-9 (lex,
+    # FLOOR == measurement. All three runs measured exactly 1.0 — course-A
+    # (sem, 2026-06-09), course-B (lex, 2026-06-10), course-C (lex,
     # 2026-06-10). Pinned at 1.0 exactly; any dip is a real anchoring break.
     "citation_resolution_rate": 1.0,
-    # FLOOR. min measured 0.5 (rdf-shacl-551-2 lexical 2026-06-10), small
-    # float-noise margin; spread 0.5 (rdf-shacl) .. 0.615 (nvidiarag).
+    # FLOOR. min measured 0.5 (course-B lexical 2026-06-10), small
+    # float-noise margin; spread 0.5 (course-B) .. 0.615 (course-A).
     "citation_precision": 0.45,
-    # FLOOR. min measured 0.167 (openstax-alg-9 lexical 2026-06-10), small
-    # margin. The wide spread 0.167 (openstax) .. 0.7 (nvidiarag) flags
+    # FLOOR. min measured 0.167 (course-C lexical 2026-06-10), small
+    # margin. The wide spread 0.167 (course-C) .. 0.7 (course-A) flags
     # prompt/corpus groundedness follow-up work (dated 2026-06-10); pinned
-    # honestly to the openstax floor, NOT to an aspirational mid-range.
+    # honestly to the course-C floor, NOT to an aspirational mid-range.
     "groundedness_rate_mean": 0.15,
-    # CEILING. max measured 0.222 (openstax-alg-9 lexical 2026-06-10), rounded
-    # up; spread 0.2 (nvidiarag/rdf-shacl) .. 0.222 (openstax). Lower is better.
+    # CEILING. max measured 0.222 (course-C lexical 2026-06-10), rounded
+    # up; spread 0.2 (course-A/course-B) .. 0.222 (course-C). Lower is better.
     "unsupported_claim_rate": 0.25,
-    # FLOOR. min measured 0.667 (rdf-shacl-551-2 lexical 2026-06-10), small
-    # margin; spread 0.667 (rdf-shacl) .. 1.0 (openstax).
+    # FLOOR. min measured 0.667 (course-B lexical 2026-06-10), small
+    # margin; spread 0.667 (course-B) .. 1.0 (course-C).
     "refusal_recall": 0.65,
-    # FLOOR. min measured 0.9 (openstax-alg-9 lexical 2026-06-10), small
-    # margin; spread 0.9 (openstax) .. 1.0 (nvidiarag/rdf-shacl).
+    # FLOOR. min measured 0.9 (course-C lexical 2026-06-10), small
+    # margin; spread 0.9 (course-C) .. 1.0 (course-A/course-B).
     "refusal_precision": 0.85,
 }
 

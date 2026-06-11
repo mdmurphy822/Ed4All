@@ -38,7 +38,7 @@ The Courseforge → Trainforge bridge via `data-cf-*` attributes and JSON-LD wor
 
 1. **LO ID field-name drift.** The canonical schema uses `objectiveId` as the required identifier (`schemas/academic/learning_objectives.schema.json:193, 238`); the runtime emit writes `"id"` in JSON-LD (`Courseforge/scripts/generate_course.py:523`); the parser reads `"id"` (`Trainforge/parsers/html_content_parser.py:323`). Two field-name namespaces exist for the same logical identifier. A KG loader keyed to the schema sees zero objectives; a loader keyed to the runtime passes but emits data the schema rejects.
 
-2. **Cross-course concept collisions.** The concept node schema requires only `id` (`schemas/knowledge/concept_graph_semantic.schema.json:22–33`) — no `course_id`, no origin namespace. A concept named `accessibility` emitted from courses DIGPED_101 and WCAG_201 merges into a single node with no way to recover origin after merge.
+2. **Cross-course concept collisions.** The concept node schema requires only `id` (`schemas/knowledge/concept_graph_semantic.schema.json:22–33`) — no `course_id`, no origin namespace. A concept named `accessibility` emitted from courses COURSE_D and COURSE_W merges into a single node with no way to recover origin after merge.
 
 3. **Position-based chunk IDs.** Chunk IDs are constructed as `f"{prefix}{start_id:05d}"` at `Trainforge/process_course.py:1003` and `:1027`; re-chunking a course with a different splitter configuration shifts every ID. Edge evidence records chunk IDs by value (for example `Trainforge/rag/inference_rules/is_a_from_key_terms.py:163` writes the chunk ID into the provenance dict), so a re-chunk silently invalidates every existing edge's evidence pointer.
 
@@ -167,7 +167,7 @@ The concept node schema at `schemas/knowledge/concept_graph_semantic.schema.json
 
 The Courseforge emit does not scope concept slugs to a course. The Trainforge `normalize_tag` routine at `Trainforge/process_course.py:273–286` does not prepend a course identifier.
 
-Concrete failure case: a course DIGPED_101 contains the key term "accessibility" and emits node `id="accessibility"`; a separate course WCAG_201 also contains "accessibility" and emits the same `id`. A KG loader that treats the concept graph as append-only merges these into one node with no retrievable origin.
+Concrete failure case: a course COURSE_D contains the key term "accessibility" and emits node `id="accessibility"`; a separate course COURSE_W also contains "accessibility" and emits the same `id`. A KG loader that treats the concept graph as append-only merges these into one node with no retrievable origin.
 
 Impact on KG publish: cross-course analytics such as "which concepts appear in two or more courses?" are impossible without re-scanning the source data. Course-scoped queries such as "all concepts in the pedagogy course" devolve into scans over chunk-level references. The graph cannot answer any query whose answer depends on knowing which course a concept came from.
 

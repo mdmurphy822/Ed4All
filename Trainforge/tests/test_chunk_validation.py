@@ -133,7 +133,7 @@ def _export_jsonld_pages(export_dir: Path) -> List[Path]:
     return sorted(content_dir.rglob("*.html"))
 
 
-def _find_wcag_jsonld_pages() -> List[Path]:
+def _find_conformant_jsonld_pages() -> List[Path]:
     """Locate a Courseforge export whose embedded JSON-LD conforms.
 
     Discovers dynamically under ``Courseforge/exports/`` rather than
@@ -273,11 +273,11 @@ def test_existing_libv2_chunks_validate():
     )
 
 
-def test_existing_wcag_jsonld_validates():
+def test_existing_courseforge_jsonld_validates():
     _require_jsonschema()
-    pages = _find_wcag_jsonld_pages()
+    pages = _find_conformant_jsonld_pages()
     if not pages:
-        pytest.skip("No WCAG_201 course export present in this checkout")
+        pytest.skip("No conformant Courseforge export present in this checkout")
 
     _, validator = _build_validator(JSONLD_SCHEMA_PATH)
     total = 0

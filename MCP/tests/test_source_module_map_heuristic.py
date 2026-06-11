@@ -88,7 +88,7 @@ def source_router_fixture(tmp_path, monkeypatch):
 
     project_id = "PROJ-TEST-001"
     project_dir = exports / project_id
-    _write_project_config(project_dir, course_name="TESTCOURSE_101",
+    _write_project_config(project_dir, course_name="DEMO_101",
                           duration_weeks=4)
 
     # Staging: two textbooks' worth of synthesized sidecars.

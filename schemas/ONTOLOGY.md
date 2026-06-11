@@ -103,7 +103,7 @@ Per-class subsections follow a fixed template (definition path, production site,
 | ----- | ---- | ----- |
 | `@context` | const | `https://ed4all.dev/ns/courseforge/v1` |
 | `@type` | const | `CourseModule` |
-| `courseCode` | string | e.g. `WCAG_201` |
+| `courseCode` | string | e.g. `ACCESS_201` |
 | `weekNumber` | int | week position |
 | `moduleType` | enum | `{overview, content, application, assessment, summary}` |
 | `pageId` | string | slug, e.g. `week_01_content_02_accessibility_basics` |
@@ -115,7 +115,7 @@ Per-class subsections follow a fixed template (definition path, production site,
 **Instance example:**
 ```json
 {"@context":"https://ed4all.dev/ns/courseforge/v1","@type":"CourseModule",
- "courseCode":"WCAG_201","weekNumber":1,"moduleType":"content",
+ "courseCode":"ACCESS_201","weekNumber":1,"moduleType":"content",
  "pageId":"week_01_content_01_introduction",
  "learningObjectives":[{"id":"TO-01","statement":"...","bloomLevel":"understand"}]}
 ```
@@ -902,7 +902,7 @@ Shape (trimmed):
 {
   "@context": "https://ed4all.dev/ns/courseforge/v1",
   "@type": "CourseModule",
-  "courseCode": "WCAG_201",
+  "courseCode": "ACCESS_201",
   "weekNumber": 1,
   "moduleType": "content",
   "pageId": "week_01_content_01_intro",
@@ -974,7 +974,7 @@ Sizes (file count + total lines per subfolder, regenerated 2026-05-07):
 Append-only newline-delimited JSON files — one record per decision event. Example paths:
 ```
 training-captures/courseforge/INT_101/phase_content-generator/decisions_20260419_101530.jsonl
-training-captures/trainforge/WCAG_201/phase_question-generation/decisions_20260419_101530.jsonl
+training-captures/trainforge/ACCESS_201/phase_question-generation/decisions_20260419_101530.jsonl
 training-captures/dart/MTH_101/decisions_textbook.pdf_20260419_101530.jsonl
 ```
 
@@ -990,17 +990,17 @@ Every identifier scheme currently in use.
 |---|---|---|---|
 | LibV2 course slug | `^[a-z0-9][a-z0-9-]*[a-z0-9]$`, 3–100 chars | `wcag-22-aa-compliance` | `LibV2/tools/libv2/importer.py:28` (`slugify`) |
 | Slug-uniqueness | suffix `-<N>` where N ≥ 2 | `wcag-22-aa-compliance-2` | `importer.py:49` (`ensure_unique_slug`) |
-| Course code | `^[A-Z]{2,8}_[0-9]{3}$` (decision event), `^[A-Z]{2,3}_[0-9]{3}$` (session annotation — narrower) | `WCAG_201`, `INT_101` | Hand-assigned |
+| Course code | `^[A-Z]{2,8}_[0-9]{3}$` (decision event), `^[A-Z]{2,3}_[0-9]{3}$` (session annotation — narrower) | `ACCESS_201`, `INT_101` | Hand-assigned |
 | LO ID — terminal | `TO-NN` | `TO-05` | Course-outliner agent |
 | LO ID — chapter | `CO-NN` | `CO-03` | Objective-synthesizer |
 | LO ID — week-scoped (legacy) | `WNN-CO-NN` | `W03-CO-01` | Deprecated in favor of canonical CO-NN; week-prefix normalization at `generate_course.py:605-613` |
-| Module ID | `^[A-Z]{2,8}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$` | `WCAG_201_W01_M02` | Course-outliner |
-| Chunk ID | `^<course>_chunk_\d{5}$` | `wcag_201_chunk_00042` | `Trainforge/process_course.py:790` (`prefix = f"{self.course_code.lower()}_chunk_"`; `f"{prefix}{i:05d}"` at 1003, 1027) |
+| Module ID | `^[A-Z]{2,8}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$` | `ACCESS_201_W01_M02` | Course-outliner |
+| Chunk ID | `^<course>_chunk_\d{5}$` | `access_201_chunk_00042` | `Trainforge/process_course.py:790` (`prefix = f"{self.course_code.lower()}_chunk_"`; `f"{prefix}{i:05d}"` at 1003, 1027) |
 | Concept tag | kebab-case normalized slug | `cognitive-load-theory` | `process_course.py::normalize_tag` |
-| Misconception ID | `<chunk_id>_mc_<NN>_<hash>` | `wcag_201_chunk_00042_mc_01_a3f8` | `preference_factory.py:140-143` |
+| Misconception ID | `<chunk_id>_mc_<NN>_<hash>` | `access_201_chunk_00042_mc_01_a3f8` | `preference_factory.py:140-143` |
 | Event ID | `^EVT_[a-f0-9]{16}$` | `EVT_a3f8c1d2e4b5f6a7` | `lib/decision_capture.py:46-59` (fallback); `lib/sequence_manager.py` (primary) |
 | Task ID | `^T-[a-f0-9]{8}$` | `T-a3f8c1d2` | Orchestrator executor |
-| Run ID (tool-scoped) | `{TOOL}_{COURSE}_{YYYYMMDD_HHMMSS}` (free text; `^[A-Za-z0-9_]+$` on audit event) | `trainforge_wcag_201_20260419_101530` | `lib/run_manager.py` |
+| Run ID (tool-scoped) | `{TOOL}_{COURSE}_{YYYYMMDD_HHMMSS}` (free text; `^[A-Za-z0-9_]+$` on audit event) | `trainforge_access_201_20260419_101530` | `lib/run_manager.py` |
 | Run ID (hardened) | `^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$` | `RUN_20260419_101530_a3f8c1d2` | `lib/run_manager.py` (hardened mode) |
 | Content hash | 64-hex for SHA-256; also `sha256:<hex>` prefix form in run manifest | `sha256:a3f8…` | `lib/provenance.py::hash_file` |
 | Git commit | 40-hex | (40 hex chars) | run-manifest capture |

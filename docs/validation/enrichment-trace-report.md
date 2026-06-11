@@ -16,7 +16,7 @@
 
 ## Findings
 
-### WCAG_201 (131 chunks, regenerated end-to-end through dev-v0.2.0 pipeline)
+### COURSE_W (131 chunks, regenerated end-to-end through dev-v0.2.0 pipeline)
 
 | Field | Populated | Trace breakdown |
 |---|---|---|
@@ -25,7 +25,7 @@
 | `bloom_level` | 131 / 131 (100.0%) | 131 `section_jsonld` — no fallback needed |
 | `misconceptions` | 71 / 131 (54.2%) | 71 `jsonld_page_misconceptions` (54.2%) • 60 `none` (45.8%) — page-level field; 60 chunks come from pages that genuinely had no misconceptions declared, so "none" here is accurate, not a drop |
 
-### DIGPED_101 (86 chunks)
+### COURSE_D (86 chunks)
 
 | Field | Populated | Trace breakdown |
 |---|---|---|
@@ -36,20 +36,20 @@
 
 ## Verdict
 
-**H2 dominates.** On WCAG_201, 46% of chunks are missing JSON-LD `sections` metadata at the page level — the pages Courseforge emitted with JSON-LD `learningObjectives` but no `sections` array. On DIGPED_101, 100% of chunks hit H2 (the DIGPED course was last generated before Worker H's updated pipeline; its JSON-LD has no `sections` array on any page).
+**H2 dominates.** On COURSE_W, 46% of chunks are missing JSON-LD `sections` metadata at the page level — the pages Courseforge emitted with JSON-LD `learningObjectives` but no `sections` array. On COURSE_D, 100% of chunks hit H2 (the COURSE_D course was last generated before Worker H's updated pipeline; its JSON-LD has no `sections` array on any page).
 
-H1 contributes 1.5% on WCAG_201 (two chunks whose heading normalisation drifted between emit and consume). Negligible compared to H2.
+H1 contributes 1.5% on COURSE_W (two chunks whose heading normalisation drifted between emit and consume). Negligible compared to H2.
 
 **H3, H4, H5 did not fire on either corpus.** The short-circuit (H3) exists as a structural possibility — any page where JSON-LD supplies `contentType` without `keyTerms` would trip it — but none of the Courseforge-emitted pages in the two corpora hit that shape. The no-sections path (H4) didn't fire because chunks are not using the page-title fallback heading when JSON-LD sections exist. No silent parser failures (H5) were detected by the instrumented tag-present / metadata-present discriminator.
 
 ### Example: a page that contributes to H2
 
-File: `week_01/week_01_application.html` (WCAG_201).
+File: `week_01/week_01_application.html` (COURSE_W).
 - JSON-LD block present; the `sections` array is literally empty (`"sections": []`).
 - `_jsonld_parse_failed = False` (tag parsed fine; the key just contains no entries).
 - Every chunk whose parent is this page falls into `none_no_jsonld_sections`.
 
-The Courseforge generator emits `sections` when the course-data JSON declares a rich page structure (like the week's content pages with multiple `<h2>` subsections). Pages that are simpler in structure — week overviews, activities, self-checks, discussions, summaries — often emit an empty `sections` array. These are the 60 missing WCAG chunks.
+The Courseforge generator emits `sections` when the course-data JSON declares a rich page structure (like the week's content pages with multiple `<h2>` subsections). Pages that are simpler in structure — week overviews, activities, self-checks, discussions, summaries — often emit an empty `sections` array. These are the 60 missing COURSE_W chunks.
 
 ## Recommended M2 fix target
 
@@ -68,8 +68,8 @@ Worker M2 should:
 5. **Leave `_metadata_trace` in place behind an opt-in flag `--trace-enrichment`** so the diagnostic stays available for future investigations without bloating shipped chunk schemas.
 
 Expected post-M2 coverage (order-of-magnitude estimate):
-- WCAG_201 `key_terms`: 52.7% → ~85%+ (extractive key terms catch bold/strong terms across the 60 H2 chunks)
-- DIGPED_101 `key_terms`: 0% → ~70%+ (similar extraction + no Courseforge regen required)
+- COURSE_W `key_terms`: 52.7% → ~85%+ (extractive key terms catch bold/strong terms across the 60 H2 chunks)
+- COURSE_D `key_terms`: 0% → ~70%+ (similar extraction + no Courseforge regen required)
 - `misconceptions`: limited by the actual presence of misconception prose; modest lift expected.
 
 ### Courseforge-side follow-up (out of scope for M2)
@@ -80,17 +80,17 @@ The canonical fix is to make Courseforge emit `sections` metadata on every gener
 
 ```
 # Inside the worker-m1 worktree (branch worker-m1/44a-diagnostic)
-rm -rf Trainforge/output/wcag_201 Trainforge/output/digped_101
+rm -rf Trainforge/output/course_w Trainforge/output/course_d
 venv/bin/python -m Trainforge.process_course \
-  --imscc /path/to/WCAG_201.imscc \
-  --course-code WCAG_201 --division STEM --domain computer-science \
-  --output Trainforge/output/wcag_201 \
-  --objectives /path/to/WCAG_201_objectives.json
+  --imscc /path/to/COURSE_W.imscc \
+  --course-code COURSE_W --division STEM --domain computer-science \
+  --output Trainforge/output/course_w \
+  --objectives /path/to/COURSE_W_objectives.json
 
 # Read the trace report
 python3 -c "
 import json
-r = json.load(open('Trainforge/output/wcag_201/quality/metadata_trace_report.json'))
+r = json.load(open('Trainforge/output/course_w/quality/metadata_trace_report.json'))
 for fname, fdata in r['fields'].items():
     print(f'{fname}: {fdata[\"populated_pct\"]:.1%}')
     for row in fdata['by_trace']:

@@ -103,8 +103,8 @@ def _chunks_for(course_id, tags_per_chunk):
 def test_flag_off_flat_slug_ids(monkeypatch):
     monkeypatch.setattr(typed_edge_inference, "SCOPE_CONCEPT_IDS", False)
 
-    chunks = _chunks_for("wcag_201", [["accessibility", "wcag"], ["accessibility"]])
-    graph = _build_concept_graph(chunks, course_id="wcag_201")
+    chunks = _chunks_for("access_201", [["accessibility", "wcag"], ["accessibility"]])
+    graph = _build_concept_graph(chunks, course_id="access_201")
 
     ids = [n["id"] for n in graph["nodes"]]
     assert "accessibility" in ids, ids
@@ -122,16 +122,16 @@ def test_flag_off_flat_slug_ids(monkeypatch):
 def test_flag_on_composite_ids(monkeypatch):
     monkeypatch.setattr(typed_edge_inference, "SCOPE_CONCEPT_IDS", True)
 
-    chunks = _chunks_for("wcag_201", [["accessibility", "wcag"], ["accessibility"]])
-    graph = _build_concept_graph(chunks, course_id="wcag_201")
+    chunks = _chunks_for("access_201", [["accessibility", "wcag"], ["accessibility"]])
+    graph = _build_concept_graph(chunks, course_id="access_201")
 
     ids = [n["id"] for n in graph["nodes"]]
-    assert "wcag_201:accessibility" in ids, ids
+    assert "access_201:accessibility" in ids, ids
     # Flat slug should NOT appear when the scope is enabled.
     assert "accessibility" not in ids, ids
     # Every node should carry the course_id field.
     for node in graph["nodes"]:
-        assert node.get("course_id") == "wcag_201", node
+        assert node.get("course_id") == "access_201", node
 
 
 # ---------------------------------------------------------------------------
@@ -158,10 +158,10 @@ def test_schema_accepts_both_formats():
         "rule_versions": {},
         "nodes": [
             {
-                "id": "wcag_201:accessibility",
+                "id": "access_201:accessibility",
                 "label": "Accessibility",
                 "frequency": 3,
-                "course_id": "wcag_201",
+                "course_id": "access_201",
             }
         ],
         "edges": [],
@@ -203,17 +203,17 @@ def test_cross_course_no_silent_merge_when_scoped(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_course_id_field_populated_when_flag_on(monkeypatch):
-    chunks = _chunks_for("wcag_201", [["accessibility", "wcag"], ["accessibility"]])
+    chunks = _chunks_for("access_201", [["accessibility", "wcag"], ["accessibility"]])
 
     # Flag OFF: course_id absent.
     monkeypatch.setattr(typed_edge_inference, "SCOPE_CONCEPT_IDS", False)
-    graph_off = _build_concept_graph(chunks, course_id="wcag_201")
+    graph_off = _build_concept_graph(chunks, course_id="access_201")
     assert all("course_id" not in n for n in graph_off["nodes"]), graph_off["nodes"]
 
     # Flag ON: course_id present and equal to the scope.
     monkeypatch.setattr(typed_edge_inference, "SCOPE_CONCEPT_IDS", True)
-    graph_on = _build_concept_graph(chunks, course_id="wcag_201")
-    assert all(n.get("course_id") == "wcag_201" for n in graph_on["nodes"]), graph_on["nodes"]
+    graph_on = _build_concept_graph(chunks, course_id="access_201")
+    assert all(n.get("course_id") == "access_201" for n in graph_on["nodes"]), graph_on["nodes"]
 
 
 # ---------------------------------------------------------------------------
@@ -224,14 +224,14 @@ def test_make_concept_id_flag_off(monkeypatch):
     monkeypatch.setattr(typed_edge_inference, "SCOPE_CONCEPT_IDS", False)
     # Import fresh so we bind to the monkeypatched module global.
     from Trainforge.rag.typed_edge_inference import _make_concept_id as h
-    assert h("accessibility", "wcag_201") == "accessibility"
+    assert h("accessibility", "access_201") == "accessibility"
     assert h("accessibility", None) == "accessibility"
 
 
 def test_make_concept_id_flag_on(monkeypatch):
     monkeypatch.setattr(typed_edge_inference, "SCOPE_CONCEPT_IDS", True)
     from Trainforge.rag.typed_edge_inference import _make_concept_id as h
-    assert h("accessibility", "wcag_201") == "wcag_201:accessibility"
+    assert h("accessibility", "access_201") == "access_201:accessibility"
     # When course_id is missing/empty we fall back to flat slug even when
     # flag is on — prevents emitting a stray leading ``:``.
     assert h("accessibility", "") == "accessibility"
