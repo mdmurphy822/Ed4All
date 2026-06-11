@@ -415,16 +415,25 @@ def _serve_time_transform(raw_html: str, *, slug: str, doc: str, ref: Optional[s
             if slug_id:
                 heading["id"] = slug_id
 
-    # 3) Block-anchor injection: id="dart-{block_id}" where missing.
+    # 3) Block-anchor injection: every data-dart-block-id element must end up
+    #    reachable via the #dart-{block_id} fragment (the citation deep-link
+    #    contract). Free element → set the id; element with its OWN id
+    #    (sec-…, fn-… footnote anchors) → never clobber, plant an empty
+    #    inline anchor span as its first child instead.
     for el in soup.find_all(attrs={"data-dart-block-id": True}):
-        if el.get("id"):
-            continue  # never clobber an existing id (e.g. sec-…)
         block_id = el.get("data-dart-block-id")
         if isinstance(block_id, (list, tuple)):
             block_id = " ".join(block_id)
         block_id = str(block_id or "").strip()
-        if block_id:
-            el["id"] = f"dart-{block_id}"
+        if not block_id:
+            continue
+        dart_id = f"dart-{block_id}"
+        if not el.get("id"):
+            el["id"] = dart_id
+        elif el.get("id") != dart_id:
+            anchor = soup.new_tag("span", id=dart_id)
+            anchor["class"] = ["dart-block-anchor"]
+            el.insert(0, anchor)
 
     # 4) Figure-src rewrite: relative {stem}_figures/… → /source-doc-asset.
     figures_prefix = f"{doc}_figures/"
