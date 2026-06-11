@@ -121,9 +121,37 @@ export function createAskDrawer({ slug, loadCitation }) {
   }
 
   // --- history rendering --------------------------------------------------
+  function clearHistory() {
+    // Keep in-flight entries: pollJob/finishError close over the entry
+    // OBJECTS, so dropping only settled entries is race-free — a pending
+    // question keeps polling and re-renders into the (shorter) list.
+    const kept = history.filter(
+      (e) => e.status !== 'done' && e.status !== 'error'
+    );
+    const removed = history.length - kept.length;
+    history = kept;
+    saveHistory(slug, history);
+    renderHistory();
+    announce(
+      removed > 0
+        ? 'Question and answer history cleared.'
+        : 'No finished questions to clear.'
+    );
+  }
+
   function renderHistory() {
     clear(historyWrap);
     if (history.length === 0) return; // no empty <ol> (WCAG 1.3.1)
+    const clearBtn = el('button', {
+      type: 'button',
+      class: 'ask-clear',
+      text: 'Clear history',
+      'aria-label': 'Clear question and answer history',
+    });
+    clearBtn.addEventListener('click', clearHistory);
+    historyWrap.appendChild(
+      el('div', { class: 'ask-history-bar' }, [clearBtn])
+    );
     const historyList = el('ol', {
       class: 'ask-history',
       'aria-label': 'Question and answer history',

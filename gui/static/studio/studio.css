@@ -311,6 +311,24 @@ button[disabled] { opacity: 0.55; cursor: not-allowed; }
 }
 .ask-submit { align-self: flex-end; }
 
+.ask-history-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0.5rem 0 0.25rem;
+}
+.ask-clear {
+  font-size: 0.85rem;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.6rem;
+  cursor: pointer;
+}
+.ask-clear:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 1px;
+}
+
 .ask-noindex {
   border: 1px solid var(--border);
   border-left: 4px solid #d9a400;
