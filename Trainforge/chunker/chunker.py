@@ -90,9 +90,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from Trainforge.chunker.boilerplate import strip_boilerplate
 from Trainforge.chunker.helpers import (
+    _block_element_spans,
+    build_dart_block_offset_index,
     extract_plain_text_with_curies,
     extract_section_html,
     harvest_dart_source_refs,
+    resolve_dart_refs_for_chunk,
     strip_assessment_feedback,
     strip_feedback_from_text,
     type_from_resource,
@@ -804,8 +807,43 @@ def chunk_text_block(
         extra_kwargs["curie_anchors"] = curie_anchors
     if forced_curie_anchors:
         extra_kwargs["forced_curie_anchors"] = forced_curie_anchors
-    if dart_source_refs:
-        extra_kwargs["dart_source_refs"] = dart_source_refs
+
+    # DART source-provenance: resolve the block refs that genuinely overlap
+    # THIS chunk's char span, in document order. Historically the chunker
+    # passed the whole section's (and, via a no-match fallback, the whole
+    # DOCUMENT's) block list to every chunk verbatim, so the first ref — the
+    # one the "View original source" deep link + cited page derive from — was
+    # identical across every chunk of a page. We now build a char-offset index
+    # of every DART block against this call's ``container_text`` once, then
+    # per-chunk select only the blocks inside the chunk's char span.
+    #
+    # ``dart_source_refs`` (the caller's section-scoped harvest) is retained
+    # ONLY as the bounded no-match fallback: when text-containment resolution
+    # finds no block inside a chunk's text, the chunk gets AT MOST ONE
+    # enclosing-section reference (the first section block) — never the
+    # whole-document list. The probe index is built against the item's full
+    # raw HTML so every block has a probe regardless of per-section container
+    # scoping; matching is by chunk-text containment so a merged multi-section
+    # chunk is attributed every block whose prose it contains, in doc order.
+    block_probe_index = (
+        build_dart_block_offset_index(raw_html_for_xpath)
+        if dart_source_refs
+        else []
+    )
+
+    def _refs_for_chunk(chunk_text: str) -> List[Dict[str, Any]]:
+        """Per-chunk DART refs: text-containment match, ≤1 section fallback."""
+
+        if not dart_source_refs:
+            return []
+        precise = resolve_dart_refs_for_chunk(block_probe_index, chunk_text)
+        if precise:
+            return precise
+        # No block's prose appears in the chunk text. Emit at most ONE
+        # enclosing-section reference (the first section-scoped block in
+        # document order) so the chunk still carries a coarse, correct anchor —
+        # never the whole document's list.
+        return [dart_source_refs[0]]
 
     def _dispatch_create_chunk(**call_kwargs: Any) -> Dict[str, Any]:
         """Invoke the create_chunk callback with W5.F extras when accepted.
@@ -819,7 +857,15 @@ def chunk_text_block(
         the pre-W5.F baseline behavior.
         """
 
-        merged_kwargs = {**call_kwargs, **base_kwargs, **extra_kwargs}
+        # Per-chunk DART refs ride alongside the section-level W5.F extras as
+        # additive (strippable-on-TypeError) kwargs. ``call_kwargs`` may carry
+        # a per-chunk ``dart_source_refs`` resolved by ``_refs_for_chunk``.
+        per_chunk_extra: Dict[str, Any] = dict(extra_kwargs)
+        chunk_refs = call_kwargs.pop("dart_source_refs", None)
+        if chunk_refs:
+            per_chunk_extra["dart_source_refs"] = chunk_refs
+
+        merged_kwargs = {**call_kwargs, **base_kwargs, **per_chunk_extra}
         try:
             return ctx.create_chunk(**merged_kwargs)
         except TypeError as exc:
@@ -828,7 +874,7 @@ def chunk_text_block(
             # callback signature. Re-raise on other TypeErrors so a
             # genuine callback bug isn't masked.
             msg = str(exc)
-            if not extra_kwargs or "unexpected keyword argument" not in msg:
+            if not per_chunk_extra or "unexpected keyword argument" not in msg:
                 raise
             legacy_kwargs = {**call_kwargs, **base_kwargs}
             return ctx.create_chunk(**legacy_kwargs)
@@ -846,6 +892,7 @@ def chunk_text_block(
             position_in_module=position_in_module,
             html_xpath=container_xpath,
             char_span=char_span,
+            dart_source_refs=_refs_for_chunk(text),
         ))
     else:
         sub_texts = split_by_sentences(text, target_chunk_size)
@@ -874,10 +921,53 @@ def chunk_text_block(
                 position_in_module=position_in_module + i,
                 html_xpath=container_xpath,
                 char_span=char_span,
+                dart_source_refs=_refs_for_chunk(sub_text),
             ))
             last_chunk_id = this_chunk_id
 
     return chunks
+
+
+def _enclosing_section_dart_ref(
+    raw_html: str, heading: str
+) -> Optional[Dict[str, Any]]:
+    """Return the single DART block whose span encloses ``heading``, or None.
+
+    Locates the ``heading`` element in ``raw_html`` and returns the
+    ``{block_id, pages}`` of the nearest DART block whose opening tag precedes
+    the heading and whose span (open tag → next block's open tag, blocks being
+    flat document-order siblings) covers the heading position. Used as the
+    bounded ≤1-ref no-match fallback so a chunk built from a section whose own
+    HTML slice carried no ``data-dart-block-id`` still anchors to its enclosing
+    section block — NOT the whole document's block list.
+
+    Returns ``None`` when ``heading`` isn't found, the document carries no DART
+    blocks, or no block precedes the heading.
+    """
+    if not raw_html or not heading or "data-dart-block-id" not in raw_html:
+        return None
+    h_re = re.compile(
+        r"<h([1-6])\b[^>]*>\s*" + re.escape(heading) + r"\s*</h\1>",
+        re.DOTALL | re.IGNORECASE,
+    )
+    h_match = h_re.search(raw_html)
+    if not h_match:
+        return None
+    h_pos = h_match.start()
+    spans = _block_element_spans(raw_html)
+    enclosing: Optional[Dict[str, Any]] = None
+    for html_start, html_next, ref in spans:
+        if html_start <= h_pos < html_next:
+            enclosing = ref
+            break
+        if html_start > h_pos:
+            break
+        # Track the nearest preceding block in case the heading sits between
+        # block boundaries (whitespace gap) rather than strictly inside one.
+        enclosing = ref
+    if enclosing is None:
+        return None
+    return {"block_id": enclosing.get("block_id"), "pages": list(enclosing.get("pages") or [])}
 
 
 def _generate_chunk_id(
@@ -1105,16 +1195,34 @@ def chunk_content(
                 section_curies.extend(extra_curies)
                 section_forced_curies.extend(extra_forced)
                 section_dart_refs.extend(harvest_dart_source_refs(extra_html))
-            # DART stamps data-dart-* on the section/component wrapper, not
-            # on leaf headings. When the source HTML wraps prose in a single
-            # outer ``<section data-dart-block-id=...>`` (the common
-            # leaf-paragraph layout — see
-            # DART/converter/document_assembler.assemble_html's fallback
-            # wrapper), per-heading slices carry no attribute, so fall back
-            # to the item-level HTML so the block/page provenance still
-            # reaches the chunk. Non-DART HTML yields [] either way.
+            # DART stamps data-dart-* on the block wrapper, not on leaf
+            # headings, so a heading-derived ``html_block`` slice often carries
+            # no attribute. We pass ``section_dart_refs`` to ``chunk_text_block``
+            # as (a) the DART-provenance ENABLING signal and (b) the bounded
+            # ≤1-ref no-match fallback; the precise per-chunk attribution is
+            # resolved INSIDE ``chunk_text_block`` by char-span containment over
+            # a document-wide block offset index, so the whole-document block
+            # list never reaches a chunk verbatim.
+            #
+            # When the section slice carried no block, fall back to the SINGLE
+            # block enclosing this section's heading in document order (the
+            # nearest preceding block whose span covers the heading position) —
+            # NOT the whole document's list. ``harvest_dart_source_refs(raw_html)``
+            # below is the document-presence probe; we then narrow it to the one
+            # enclosing block so ``dart_source_refs[0]`` is a correct coarse
+            # anchor for this section, not the file's first (colophon) block.
             if not section_dart_refs:
-                section_dart_refs = harvest_dart_source_refs(raw_html)
+                enclosing = _enclosing_section_dart_ref(raw_html, heading)
+                if enclosing is not None:
+                    section_dart_refs = [enclosing]
+                else:
+                    # No heading-anchored block found; if the document carries
+                    # DART blocks at all, keep DART provenance ENABLED but defer
+                    # the actual per-chunk selection to char-span containment
+                    # (chunk_text_block sees the full offset index). The first
+                    # document block is used only as the last-resort ≤1 fallback.
+                    doc_refs = harvest_dart_source_refs(raw_html)
+                    section_dart_refs = doc_refs[:1] if doc_refs else []
             item_chunks = chunk_text_block(
                 text=text,
                 html=html_block,
