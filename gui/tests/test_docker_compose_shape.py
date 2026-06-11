@@ -74,12 +74,21 @@ def test_gui_service_does_not_bind_mount_the_repo():
     assert "/data" in targets
 
 
-def test_loopback_policy_uses_host_networking_for_both_services():
-    """The answer path requires loopback; host networking is how the default
-    compose keeps GUI<->Ollama on localhost without weakening the policy."""
+def test_loopback_policy_uses_shared_network_namespace():
+    """The answer path requires loopback; the gui service joins the ollama
+    service's network namespace (pod-style sidecar) so GUI->Ollama stays on
+    localhost without weakening the policy, on every Docker platform. Studio's
+    port is published on the namespace-owning ollama service (Docker requires
+    port mappings on the namespace owner)."""
     services = _load_compose()["services"]
-    assert services["gui"].get("network_mode") == "host"
-    assert services["ollama"].get("network_mode") == "host"
+    assert services["gui"].get("network_mode") == "service:ollama"
+    assert "network_mode" not in services["ollama"]
+    ports = [str(p) for p in services["ollama"].get("ports", [])]
+    assert any(p.startswith("8077:") for p in ports), "Studio :8077 must be published"
+    # Ollama's own API stays unpublished — loopback-only by design.
+    assert not any("11434" in p for p in ports)
+    # The gui service must NOT publish ports itself (invalid with a shared netns).
+    assert "ports" not in services["gui"]
 
 
 def test_named_volumes_declared():
