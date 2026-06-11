@@ -21,7 +21,9 @@ import hashlib
 import json
 from pathlib import Path
 
-import numpy as np
+np = __import__("pytest").importorskip(
+    "numpy", reason="[embedding] extras absent — vector-index tests need numpy"
+)
 import pytest
 
 from LibV2.tools.libv2.vector_index import (

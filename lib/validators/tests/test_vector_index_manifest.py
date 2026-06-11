@@ -15,7 +15,9 @@ import sys
 from pathlib import Path
 from typing import Any, Dict
 
-import numpy as np
+np = __import__("pytest").importorskip(
+    "numpy", reason="[embedding] extras absent — vector-index tests need numpy"
+)
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]

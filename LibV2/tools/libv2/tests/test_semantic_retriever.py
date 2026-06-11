@@ -20,7 +20,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import numpy as np
+np = __import__("pytest").importorskip(
+    "numpy", reason="[embedding] extras absent — vector-index tests need numpy"
+)
 import pytest
 
 from lib.embedding.providers import (

@@ -55,7 +55,9 @@ pip install -e '.[full,embedding]'   # + semantic retrieval / statistical valida
 pip install -e '.[full,training]'    # + SLM fine-tuning (GPU)
 ```
 
-By default Ed4All runs in **local mode** — no API key required. To route through the Anthropic API instead, set `ANTHROPIC_API_KEY` and add `--mode api`.
+By default Ed4All runs in **local mode** — no API key required. To route orchestration through the Anthropic API instead, set `ANTHROPIC_API_KEY` and add `--mode api`.
+
+Content generation is **model-agnostic**: every authoring, synthesis, and answer provider speaks the OpenAI-compatible API, so any local model server (Ollama, vLLM, llama.cpp) or hosted endpoint plugs in with just a base URL, an API key, and a model name — configuration, not code. Swap models or providers per task without touching the pipeline.
 
 That single command runs the full pipeline — accessibility conversion, objective synthesis, course planning, module generation, IMSCC packaging, knowledge-graph building, and archival. The IMSCC file lands in `Courseforge/exports/`, and the searchable archive lands in `LibV2/courses/`.
 
