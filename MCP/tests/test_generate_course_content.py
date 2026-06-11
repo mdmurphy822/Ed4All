@@ -187,8 +187,8 @@ class TestContentGenerationShape:
             assert 'data-cf-role="template-chrome"' in body, html_file.name
             assert 'application/ld+json' in body, html_file.name
             assert 'data-cf-objective-id=' in body, html_file.name
-            # Not the old DIGPED 101 hardcoded template.
-            assert "DIGPED 101" not in body, html_file.name
+            # Not the old PEDAGOGY 101 hardcoded template.
+            assert "PEDAGOGY 101" not in body, html_file.name
 
     def test_jsonld_validates_against_schema(self, pipeline_registry):
         """Every JSON-LD block must validate against courseforge_jsonld_v1."""

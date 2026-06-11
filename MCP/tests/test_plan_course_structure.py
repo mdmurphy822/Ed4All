@@ -45,7 +45,7 @@ def planner_fixture(tmp_path, monkeypatch):
 
     # Pre-create a project. Project dir name embeds the course name so
     # the planner's course_name → project directory lookup works.
-    project_id = "PROJ-TESTCOURSE_101-20260420000000"
+    project_id = "PROJ-DEMO_101-20260420000000"
     project_dir = exports / project_id
     project_dir.mkdir()
     for subdir in ("00_template_analysis", "01_learning_objectives",
@@ -55,7 +55,7 @@ def planner_fixture(tmp_path, monkeypatch):
     (project_dir / "project_config.json").write_text(
         json.dumps({
             "project_id": project_id,
-            "course_name": "TESTCOURSE_101",
+            "course_name": "DEMO_101",
             "duration_weeks": 4,
             "credit_hours": 3,
         }, indent=2),
@@ -384,7 +384,7 @@ def test_project_location_by_course_name(planner_fixture):
         ["Alpha", "Beta"],
     )
     result = asyncio.run(_call(
-        course_name="TESTCOURSE_101",
+        course_name="DEMO_101",
         staging_dir=str(fx["staging_dir"]),
     ))
     assert result["success"]
@@ -404,7 +404,7 @@ def _seed_autoscaled_config(project_dir: Path, auto_weeks: int = 8) -> None:
     (project_dir / "project_config.json").write_text(
         json.dumps({
             "project_id": project_dir.name,
-            "course_name": "TESTCOURSE_101",
+            "course_name": "DEMO_101",
             "duration_weeks": auto_weeks,
             "duration_weeks_autoscaled": True,
             "credit_hours": 3,

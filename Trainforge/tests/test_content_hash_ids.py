@@ -44,13 +44,13 @@ def test_flag_off_uses_position(monkeypatch):
     """Default env (flag unset) → legacy 5-digit position-based IDs."""
     monkeypatch.delenv("TRAINFORGE_CONTENT_HASH_IDS", raising=False)
     chunk_id = _generate_chunk_id(
-        prefix="wcag_201_chunk_",
+        prefix="access_201_chunk_",
         start_id=42,
         text="some text",
         source_locator="course_content/page_01.html",
     )
-    assert chunk_id == "wcag_201_chunk_00042"
-    assert re.match(r"^wcag_201_chunk_\d{5}$", chunk_id)
+    assert chunk_id == "access_201_chunk_00042"
+    assert re.match(r"^access_201_chunk_\d{5}$", chunk_id)
 
 
 def test_flag_off_explicit_false(monkeypatch):
@@ -58,9 +58,9 @@ def test_flag_off_explicit_false(monkeypatch):
     for value in ("", "false", "False", "0", "no"):
         monkeypatch.setenv("TRAINFORGE_CONTENT_HASH_IDS", value)
         chunk_id = _generate_chunk_id(
-            prefix="wcag_201_chunk_", start_id=7, text="t", source_locator="p",
+            prefix="access_201_chunk_", start_id=7, text="t", source_locator="p",
         )
-        assert chunk_id == "wcag_201_chunk_00007", (
+        assert chunk_id == "access_201_chunk_00007", (
             f"Expected legacy form with env value {value!r}, got {chunk_id!r}"
         )
 
@@ -69,12 +69,12 @@ def test_flag_on_uses_content_hash(monkeypatch):
     """Flag on → 16-hex-char content-hash suffix after prefix."""
     monkeypatch.setenv("TRAINFORGE_CONTENT_HASH_IDS", "true")
     chunk_id = _generate_chunk_id(
-        prefix="wcag_201_chunk_",
+        prefix="access_201_chunk_",
         start_id=42,
         text="some text",
         source_locator="course_content/page_01.html",
     )
-    assert re.match(r"^wcag_201_chunk_[0-9a-f]{16}$", chunk_id), chunk_id
+    assert re.match(r"^access_201_chunk_[0-9a-f]{16}$", chunk_id), chunk_id
     # Position-derived digits must NOT appear as the whole suffix under
     # flag-on mode.
     assert not chunk_id.endswith("00042")
@@ -84,11 +84,11 @@ def test_content_hash_stable_across_runs(monkeypatch):
     """Same (text, source_locator) → same ID across repeated calls."""
     monkeypatch.setenv("TRAINFORGE_CONTENT_HASH_IDS", "true")
     a = _generate_chunk_id(
-        prefix="wcag_201_chunk_", start_id=0,
+        prefix="access_201_chunk_", start_id=0,
         text="stable content for hashing", source_locator="path/a.html",
     )
     b = _generate_chunk_id(
-        prefix="wcag_201_chunk_", start_id=999,  # start_id must not affect hash
+        prefix="access_201_chunk_", start_id=999,  # start_id must not affect hash
         text="stable content for hashing", source_locator="path/a.html",
     )
     assert a == b, "Content-hash IDs must be independent of start_id"
@@ -98,11 +98,11 @@ def test_content_hash_differs_on_text_change(monkeypatch):
     """One-character edit to text → different ID."""
     monkeypatch.setenv("TRAINFORGE_CONTENT_HASH_IDS", "true")
     a = _generate_chunk_id(
-        prefix="wcag_201_chunk_", start_id=0,
+        prefix="access_201_chunk_", start_id=0,
         text="original text", source_locator="path/a.html",
     )
     b = _generate_chunk_id(
-        prefix="wcag_201_chunk_", start_id=0,
+        prefix="access_201_chunk_", start_id=0,
         text="original text!", source_locator="path/a.html",
     )
     assert a != b
@@ -115,11 +115,11 @@ def test_content_hash_differs_on_source_change(monkeypatch):
     """
     monkeypatch.setenv("TRAINFORGE_CONTENT_HASH_IDS", "true")
     a = _generate_chunk_id(
-        prefix="wcag_201_chunk_", start_id=0,
+        prefix="access_201_chunk_", start_id=0,
         text="boilerplate footer text", source_locator="path/a.html",
     )
     b = _generate_chunk_id(
-        prefix="wcag_201_chunk_", start_id=0,
+        prefix="access_201_chunk_", start_id=0,
         text="boilerplate footer text", source_locator="path/b.html",
     )
     assert a != b
@@ -144,18 +144,18 @@ def test_schema_accepts_both_formats():
     regex = re.compile(pattern)
 
     # Legacy position-based form — must pass.
-    assert regex.match("wcag_201_chunk_00001")
-    assert regex.match("wcag_201_chunk_99999")
+    assert regex.match("access_201_chunk_00001")
+    assert regex.match("access_201_chunk_99999")
 
     # New content-hash form — must pass.
-    assert regex.match("wcag_201_chunk_a3f2b9c8d1e4f567")
-    assert regex.match("wcag_201_chunk_0123456789abcdef")
+    assert regex.match("access_201_chunk_a3f2b9c8d1e4f567")
+    assert regex.match("access_201_chunk_0123456789abcdef")
 
     # Malformed suffixes — must NOT match (negative controls).
-    assert not regex.match("wcag_201_chunk_123")            # too few digits
-    assert not regex.match("wcag_201_chunk_invalid")        # non-hex letters
-    assert not regex.match("wcag_201_chunk_a3f2b9c8d1e4f5") # 14 hex chars
-    assert not regex.match("wcag_201_chunk_A3F2B9C8D1E4F567")  # uppercase hex
+    assert not regex.match("access_201_chunk_123")            # too few digits
+    assert not regex.match("access_201_chunk_invalid")        # non-hex letters
+    assert not regex.match("access_201_chunk_a3f2b9c8d1e4f5") # 14 hex chars
+    assert not regex.match("access_201_chunk_A3F2B9C8D1E4F567")  # uppercase hex
 
 
 # ---------------------------------------------------------------------------
@@ -218,13 +218,13 @@ def test_full_schema_validates_legacy_and_hash_ids():
     """Full-schema validation (not just pattern) accepts both ID forms."""
     validator = _build_validator()
     # Legacy form
-    legacy = _make_valid_chunk("wcag_201_chunk_00001")
+    legacy = _make_valid_chunk("access_201_chunk_00001")
     legacy_errors = list(validator.iter_errors(legacy))
     assert legacy_errors == [], (
         f"Legacy-form ID should validate: {[e.message for e in legacy_errors]}"
     )
     # Content-hash form
-    hashed = _make_valid_chunk("wcag_201_chunk_a3f2b9c8d1e4f567")
+    hashed = _make_valid_chunk("access_201_chunk_a3f2b9c8d1e4f567")
     hash_errors = list(validator.iter_errors(hashed))
     assert hash_errors == [], (
         f"Hash-form ID should validate: {[e.message for e in hash_errors]}"

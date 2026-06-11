@@ -822,8 +822,8 @@ workflows:
           # 2026-06-10 PROMOTED critical (was: warning-severity day-1
           # per the calibration-debt pattern, "promote to critical after
           # a clean-corpus calibration run"). Condition met: passes on 5
-          # recent clean-corpus real runs (GUI_DESIGN_101 x3,
-          # GUI_DESIGN_201, NVIDIARAG_101). Skips-with-pass when
+          # clean-corpus calibration runs, 2026-06 (see
+          # docs/validation/gates.md). Skips-with-pass when
           # TEXTBOOK_SYNTHESIS_PROVIDER is unset (default-off runs emit
           # textbook_structure.json byte-identical and are unaffected),
           # so promotion adds no risk to legacy / synthesis-off runs.
@@ -917,9 +917,9 @@ workflows:
         # ABCD don't fail closed; Phase 7+ promotes to critical once
         # corpus calibration confirms safe.
         # 2026-06-10 PROMOTED critical (condition "once corpus calibration
-        # confirms safe" met): passes on every recent real run where it
-        # ran (GUI_DESIGN_101 x2, GUI_DESIGN_201, NVIDIARAG_101,
-        # OPENSTAX_ALG_9). The validator graceful-degrades to a warning-
+        # confirms safe" met): passes on 5 clean-corpus calibration runs,
+        # 2026-06 (see docs/validation/gates.md). The validator
+        # graceful-degrades to a warning-
         # severity ABCD_MISSING issue (passed=True) for legacy LOs without
         # an `abcd` block, so promoting severity does NOT fail-close legacy
         # corpora — only a real verb/Bloom MISMATCH on an ABCD-authored LO
@@ -965,8 +965,8 @@ workflows:
           # chapters[] to audit).
           # 2026-06-10 PROMOTED critical (was: warning-severity day-1,
           # "promotes to critical after a clean-corpus calibration run").
-          # Condition met: passes on 4 recent clean-corpus real runs
-          # (GUI_DESIGN_101 x2, GUI_DESIGN_201, NVIDIARAG_101). Skip-with-
+          # Condition met: passes on 4 clean-corpus calibration runs,
+          # 2026-06 (see docs/validation/gates.md). Skip-with-
           # pass on default-off runs keeps legacy / synthesis-off runs
           # unaffected.
           - gate_id: chapter_objective_coverage
@@ -1106,8 +1106,8 @@ workflows:
           # (default-off run, TEXTBOOK_SYNTHESIS_PROVIDER unset).
           # 2026-06-10 PROMOTED critical (was: warning-severity day-1 per
           # the calibration-debt pattern). Condition met: passes on 5
-          # recent clean-corpus real runs (GUI_DESIGN_101 x3,
-          # GUI_DESIGN_201, NVIDIARAG_101). Skip-with-pass on default-off
+          # clean-corpus calibration runs, 2026-06 (see
+          # docs/validation/gates.md). Skip-with-pass on default-off
           # runs keeps legacy / synthesis-off runs unaffected.
           - gate_id: domain_concept_vocabulary
             validator: lib.validators.domain_concept_vocabulary.DomainConceptVocabularyValidator

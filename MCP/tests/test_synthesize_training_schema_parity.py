@@ -88,7 +88,7 @@ def test_synthesize_training_passes_validation_with_aliased_inputs(tmp_path: Pat
     # workflow runner (see PHASE_PARAM_ROUTING for training_synthesis).
     params: Dict[str, Any] = {
         "trainforge_dir": str(tmp_path / "workspace" / "trainforge"),
-        "course_name": "TESTCOURSE_101",
+        "course_name": "DEMO_101",
     }
     is_valid, missing = validate_tool_params("synthesize_training", params)
     assert is_valid is True, (
@@ -119,7 +119,7 @@ def test_training_synthesis_phase_emits_instruction_pairs(tmp_path: Path):
     (corpus_dir / "corpus").mkdir(parents=True)
     chunk = {
         "id": "chunk_test_0001",
-        "course_id": "TESTCOURSE_101",
+        "course_id": "DEMO_101",
         "section_id": "sec_01",
         "content": (
             "Knowledge graphs organise information as nodes and edges. "
@@ -146,7 +146,7 @@ def test_training_synthesis_phase_emits_instruction_pairs(tmp_path: Path):
 
     result_json = asyncio.run(registry["synthesize_training"](
         corpus_dir=str(corpus_dir),
-        course_code="TESTCOURSE_101",
+        course_code="DEMO_101",
         provider="mock",
         seed=7,
     ))
@@ -250,7 +250,7 @@ def test_synthesize_training_registry_forwards_wave_124_127_kwargs(tmp_path: Pat
     (corpus_dir / "corpus").mkdir(parents=True)
     chunk = {
         "id": "chunk_test_0001",
-        "course_id": "TESTCOURSE_101",
+        "course_id": "DEMO_101",
         "section_id": "sec_01",
         "content": (
             "Knowledge graphs organise information as nodes and edges."
@@ -273,7 +273,7 @@ def test_synthesize_training_registry_forwards_wave_124_127_kwargs(tmp_path: Pat
         registry = pt._build_tool_registry()
         asyncio.run(registry["synthesize_training"](
             corpus_dir=str(corpus_dir),
-            course_code="TESTCOURSE_101",
+            course_code="DEMO_101",
             provider="mock",
             seed=7,
             with_violation_detection=True,

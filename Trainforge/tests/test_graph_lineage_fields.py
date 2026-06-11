@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from jsonschema import Draft7Validator
@@ -31,9 +32,10 @@ _EMPTY_CONCEPT_GRAPH = {
 
 
 def _load_graph_schema():
+    # tests/ -> Trainforge/ -> repo root
+    repo_root = Path(__file__).resolve().parents[2]
     schema_path = (
-        "/home/user/Projects/Ed4All/schemas/knowledge/"
-        "concept_graph_semantic.schema.json"
+        repo_root / "schemas" / "knowledge" / "concept_graph_semantic.schema.json"
     )
     with open(schema_path, "r", encoding="utf-8") as f:
         return json.load(f)

@@ -14,7 +14,7 @@
     "course_slug": {
       "type": "string",
       "minLength": 1,
-      "description": "LibV2 course slug this gold set is authored for (e.g. 'sample-rag-101'). Matches the directory under LibV2/courses/."
+      "description": "LibV2 course slug this gold set is authored for (e.g. 'intro-bio-101'). Matches the directory under LibV2/courses/."
     },
     "chunkset": {
       "type": "object",
@@ -25,7 +25,7 @@
         "kind": {
           "type": "string",
           "enum": ["dart", "imscc", "corpus"],
-          "description": "Chunkset kind. 'dart' -> dart_chunks/chunks.jsonl; 'imscc' -> imscc_chunks/chunks.jsonl; 'corpus' -> legacy corpus/chunks.jsonl (rdf-shacl-551-2 retrieval fallback path)."
+          "description": "Chunkset kind. 'dart' -> dart_chunks/chunks.jsonl; 'imscc' -> imscc_chunks/chunks.jsonl; 'corpus' -> legacy corpus/chunks.jsonl retrieval fallback path."
         },
         "chunks_path": {
           "type": "string",

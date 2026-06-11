@@ -5,7 +5,7 @@ fixes milestone. It runs ``ed4all run textbook-to-course`` against the
 committed fixture PDF and asserts all three output contracts:
 
   * Worker α — Courseforge content-generator — real 5-page weekly modules
-    with ``data-cf-*`` + JSON-LD, not the ``DIGPED 101`` hardcoded template.
+    with ``data-cf-*`` + JSON-LD, not the ``PEDAGOGY 101`` hardcoded template.
   * Worker β — Trainforge assessment — ``chunks.jsonl`` +
     ``concept_graph_semantic.json`` + ``misconceptions.json`` land on disk
     with the right shapes.
@@ -218,10 +218,10 @@ def _assert_worker_alpha(export_dir: Path) -> None:
         "page_objectives gate requires >= 1 per page."
     )
 
-    # Not the old hardcoded template. The stub produced "DIGPED 101" at
+    # Not the old hardcoded template. The stub produced "PEDAGOGY 101" at
     # pipeline_tools.py:1396 — Worker α must replace that.
-    assert 'DIGPED 101' not in html, (
-        f"Worker α: {first_page.name} still contains the 'DIGPED 101' "
+    assert 'PEDAGOGY 101' not in html, (
+        f"Worker α: {first_page.name} still contains the 'PEDAGOGY 101' "
         "hardcoded template text — stub output was not replaced."
     )
 

@@ -75,7 +75,18 @@ If you already ran `pip install -e ".[full]"` above (it includes the GUI), just 
 ed4all gui             # serves http://127.0.0.1:8077
 ```
 
-Prefer containers? `docker compose up` serves the GUI on `http://localhost:8077` with a local model backend — see [`docs/operations/docker.md`](docs/operations/docker.md).
+### Prefer containers?
+
+A two-service Docker Compose stack serves the GUI on `http://localhost:8077`
+alongside a local model backend — no API key, no command line:
+
+```bash
+docker compose up -d                                          # build + start the stack
+docker compose exec ollama ollama pull qwen2.5:7b-instruct-q4_K_M   # pull the answer model (one-shot)
+# then open http://localhost:8077, upload a PDF, and run the pipeline
+```
+
+CPU-only by default; optional NVIDIA GPU support, volume layout, and remote-deploy auth are covered in [`docs/operations/docker.md`](docs/operations/docker.md).
 
 Full GUI guide — the six panels, settings and secret handling, model routing, retrieval, and how Claude Code sessions can drive it: [`gui/README.md`](gui/README.md).
 

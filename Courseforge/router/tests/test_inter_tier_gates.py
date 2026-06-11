@@ -142,7 +142,7 @@ def test_minted_curie_anchored_via_surface_form():
     forms appears in the block text — the synthetic CURIE token itself
     need NOT appear literally."""
     minted_map = {
-        "samplecoursea:slope": {
+        "introbio101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope", "gradient"],
         },
@@ -150,7 +150,7 @@ def test_minted_curie_anchored_via_surface_form():
     blocks = [
         _outline_block(
             block_id="page_01#concept_slope_0",
-            curies=("samplecoursea:slope",),
+            curies=("introbio101:slope",),
             # The minted CURIE token never appears; the surface form
             # "gradient" does.
             key_claims=["The gradient of a line measures its steepness."],
@@ -168,7 +168,7 @@ def test_minted_curie_not_anchored_when_no_surface_form_in_text():
     """A minted CURIE whose surface forms are absent from the block
     text fails the anchoring gate (action=regenerate)."""
     minted_map = {
-        "samplecoursea:slope": {
+        "introbio101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope", "gradient"],
         },
@@ -176,7 +176,7 @@ def test_minted_curie_not_anchored_when_no_surface_form_in_text():
     blocks = [
         _outline_block(
             block_id="page_01#concept_slope_0",
-            curies=("samplecoursea:slope",),
+            curies=("introbio101:slope",),
             key_claims=["This sentence mentions nothing about lines."],
         ),
     ]
@@ -194,7 +194,7 @@ def test_rdf_curie_still_uses_literal_check_with_map():
     """A CURIE NOT in the minted map (an RDF CURIE) keeps the legacy
     literal-token anchoring even when a minted_curie_map is supplied."""
     minted_map = {
-        "samplecoursea:slope": {
+        "introbio101:slope": {
             "canonical": "slope",
             "surface_forms": ["slope"],
         },
@@ -237,7 +237,7 @@ def test_no_minted_map_byte_identical_to_legacy():
     blocks = [
         _outline_block(
             block_id="page_01#concept_slope_0",
-            curies=("samplecoursea:slope",),
+            curies=("introbio101:slope",),
             key_claims=["The gradient of a line measures its steepness."],
         ),
     ]
@@ -322,7 +322,7 @@ def test_minted_literal_token_arm_anchors():
     the R1 force-injection) passes via the literal arm even when no
     surface form is present."""
     minted_map = {
-        "samplecoursea:slope": {
+        "introbio101:slope": {
             "canonical": "slope",
             "surface_forms": ["gradient"],
         },
@@ -330,10 +330,10 @@ def test_minted_literal_token_arm_anchors():
     blocks = [
         _outline_block(
             block_id="page_01#concept_slope_0",
-            curies=("samplecoursea:slope",),
+            curies=("introbio101:slope",),
             # Neither "slope" nor "gradient" in prose, but the minted
             # CURIE token itself is present (force-injected shape).
-            key_claims=["A discussion referencing samplecoursea:slope here."],
+            key_claims=["A discussion referencing introbio101:slope here."],
         ),
     ]
     result = BlockCurieAnchoringValidator().validate({

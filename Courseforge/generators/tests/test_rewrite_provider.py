@@ -339,10 +339,10 @@ def test_minted_curies_from_source_block_survive_into_html(monkeypatch):
         client=_make_client(handler),
     )
     block = _outline_block(
-        curies=["samplecoursea:slope", "samplecoursea:y_intercept"],
+        curies=["introbio101:slope", "introbio101:y_intercept"],
     )
     out = p.generate_rewrite(block)
-    for curie in ("samplecoursea:slope", "samplecoursea:y_intercept"):
+    for curie in ("introbio101:slope", "introbio101:y_intercept"):
         assert _curie_survives_validator_path(out.content, curie), (
             f"minted CURIE {curie!r} did not survive the validator path"
         )

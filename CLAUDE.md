@@ -84,7 +84,9 @@ ed4all gui              # serves http://127.0.0.1:8077
 
 Full reference (six tabs, REST API, settings/secret persistence, model routing,
 Claude integration): `gui/README.md`. Launcher flags + troubleshooting:
-`gui/LAUNCH.md`.
+`gui/LAUNCH.md`. Containerized deploy (shared-netns `gui`↔`ollama` sidecar
+compose, LibV2 bind-mounted at `/data/libv2` as the shared course library, GUI
+image shipping `[gui,server,embedding]` on CPU torch): `docs/operations/docker.md`.
 
 ### Available Workflows
 | Workflow | Description | Max Concurrent |
@@ -644,7 +646,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | `ED4ALL_AGENT_DISPATCH` | unset | Routes subagent-classified agents through `dispatcher.dispatch_task` instead of in-process tool registry. |
 | `ED4ALL_AGENT_TIMEOUT_SECONDS` | `1800` | Per-task subagent dispatch mailbox timeout. |
 | `ED4ALL_ANSWER_PROVIDER` | `local` | Selects the grounded-answer backend (runtime Q&A inference) from the W-D12 `_OPENAI_COMPATIBLE_PROVIDERS` registry. **Loopback-only:** a resolved non-loopback `base_url` raises `AnswerProviderNotLocal` (Phase IA: no cloud arm on the answer path, ever). No escape-hatch env. Licensing row in `docs/LICENSING.md` § "Grounded-answer provider". |
-| `ED4ALL_ANSWER_MODEL` | per-provider | Model ID override for the answer backend. Resolution chain: explicit arg > `ED4ALL_ANSWER_MODEL` > registry `model_env` (`local` → `LOCAL_SYNTHESIS_MODEL`) > registry default (`qwen2.5:14b-instruct-q4_K_M`). |
+| `ED4ALL_ANSWER_MODEL` | per-provider | Model ID override for the answer backend. Resolution chain: explicit arg > `ED4ALL_ANSWER_MODEL` > registry `model_env` (`local` → `LOCAL_SYNTHESIS_MODEL`) > registry default (`qwen2.5:14b-instruct-q4_K_M`). The Docker compose stack sets this to the lighter `qwen2.5:7b-instruct-q4_K_M` (fits common 8GB GPUs fully resident); the code-registry default stays 14b. See `docs/operations/docker.md`. |
 | `ED4ALL_ANSWER_TIMEOUT_SECONDS` | `120` | Answer-client HTTP timeout (long passages, slow local GPU). Garbage values fall back to the default. |
 | `ED4ALL_ANSWER_NUM_CTX` | `4096` | Serving-window token budget for the grounded-answer prompt (`lib/retrieval/_prompts.py`). Honest about the common Ollama default (`num_ctx=4096`), which silently truncates the prompt HEAD when exceeded. Drives the **token-aware** context budget (math-safe 2.5 chars/token divisor) sized to fit system prompt + passages + question + allowed-id enumeration + remediation headroom + `max_tokens` inside the window; trailing passages are dropped whole before the question is ever truncated. Set this to the model server's ACTUAL window (e.g. `8192` for a long-context Modelfile, matching `OLLAMA_CONTEXT_LENGTH`) so the budget shrinks the prompt to fit. A post-call tripwire (`answer_composer._check_prompt_not_truncated`) compares the server-reported `usage.prompt_tokens` against the local estimate and raises `PromptTruncatedError` (fail-closed) on a large shortfall rather than letting silent head-truncation fabricate citations. Garbage / non-positive values fall back to the default. |
 | `ED4ALL_EMBEDDING_PROVIDER` | `st` | Selects the retrieval-index embedding backend from `lib/embedding/providers.py::_EMBEDDING_PROVIDERS` (`st` in-process sentence-transformers / `local-openai` local `/v1/embeddings` server / `fake` deterministic test vectors). Registry entries, NOT subclasses. Not training-data synthesis; licensing row in `docs/LICENSING.md` § "Embedding providers". |
