@@ -23,6 +23,24 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+
+class _NoCacheStaticFiles(StaticFiles):
+    """StaticFiles that forces revalidation on every request.
+
+    The SPA ships no build step and no fingerprinted filenames, so a plain
+    static mount lets browsers cache ``*.js``/``*.css`` indefinitely — a
+    redeployed container then serves new code that returning browsers never
+    fetch (observed live: a UI fix invisible until a hard refresh).
+    ``no-cache`` keeps ETag/304 revalidation (cheap on loopback) while
+    guaranteeing a normal refresh always picks up redeployed assets.
+    """
+
+    async def get_response(self, path, scope):  # noqa: ANN001 — upstream sig
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 logger = logging.getLogger("gui.app")
 
 # (module attribute name, mount prefix) for each router. The attribute is the
@@ -248,7 +266,7 @@ def create_app(learner_only: bool = False, mode: str | None = None) -> FastAPI:
         # learner mode (no operator SPA mounted).
         app.mount(
             "/",
-            StaticFiles(directory=str(_learn_static_dir()), html=True),
+            _NoCacheStaticFiles(directory=str(_learn_static_dir()), html=True),
             name="learn-static",
         )
         return app
@@ -269,17 +287,17 @@ def create_app(learner_only: bool = False, mode: str | None = None) -> FastAPI:
 
         app.mount(
             "/learn",
-            StaticFiles(directory=str(_learn_static_dir()), html=True),
+            _NoCacheStaticFiles(directory=str(_learn_static_dir()), html=True),
             name="learn-static",
         )
         app.mount(
             "/shared",
-            StaticFiles(directory=str(_shared_static_dir())),
+            _NoCacheStaticFiles(directory=str(_shared_static_dir())),
             name="shared-static",
         )
         app.mount(
             "/studio",
-            StaticFiles(directory=str(_studio_static_dir()), html=True),
+            _NoCacheStaticFiles(directory=str(_studio_static_dir()), html=True),
             name="studio-static",
         )
         return app
@@ -310,7 +328,7 @@ def create_app(learner_only: bool = False, mode: str | None = None) -> FastAPI:
     # served by the catch-all ``/`` mount below.
     app.mount(
         "/dev",
-        StaticFiles(directory=str(_dev_static_dir()), html=True),
+        _NoCacheStaticFiles(directory=str(_dev_static_dir()), html=True),
         name="dev-static",
     )
 
@@ -318,7 +336,7 @@ def create_app(learner_only: bool = False, mode: str | None = None) -> FastAPI:
     # index.html for the SPA root. The existing ``html=True`` mount at ``/``
     # auto-serves any ``gui/static/learn/index.html`` at ``/learn/`` with no
     # extra mount (the learner page rides the operator app in the full mode).
-    app.mount("/", StaticFiles(directory=str(_static_dir()), html=True), name="static")
+    app.mount("/", _NoCacheStaticFiles(directory=str(_static_dir()), html=True), name="static")
 
     return app
 
