@@ -113,6 +113,132 @@ def _extract_week_title(week_dir: Path, week_num: int) -> str:
     return f"Week {week_num}: {title}"
 
 
+# Course-overview front-matter module (Learning Objectives Map). The
+# packager surfaces a top-level "Course Overview" module BEFORE the week
+# items when a ``course_overview/`` directory exists in the content dir.
+# Its first item is the deterministic ``learning_objectives.html`` page so a
+# learner (and a retrieval / Q&A system) gets the canonical TO/CO structure
+# instead of a scraped-together answer. See
+# ``render_learning_objectives_page`` for the renderer.
+_COURSE_OVERVIEW_DIRNAME = "course_overview"
+_COURSE_OVERVIEW_TITLE = "Course Overview"
+# Item ordering within the course-overview module: the objectives map first.
+_COURSE_OVERVIEW_ORDER = {"learning_objectives": 0}
+
+
+def _course_overview_html_files(content_dir: Path) -> List[Path]:
+    """Return the course-overview module's HTML files in display order.
+
+    Objectives map (``learning_objectives.html``) sorts first; any other
+    front-matter pages follow alphabetically. Empty when the directory is
+    absent — the module is then elided from the manifest entirely.
+    """
+    overview_dir = content_dir / _COURSE_OVERVIEW_DIRNAME
+    if not overview_dir.is_dir():
+        return []
+
+    def _key(f: Path) -> Tuple[int, str]:
+        for stem_key, rank in _COURSE_OVERVIEW_ORDER.items():
+            if stem_key in f.stem:
+                return (rank, f.name)
+        return (99, f.name)
+
+    return sorted(overview_dir.glob("*.html"), key=_key)
+
+
+def _resolve_objectives_source(
+    content_dir: Path, objectives_path: Optional[Path]
+) -> Optional[Path]:
+    """Pick the richest objectives JSON to feed the objectives-map renderer.
+
+    Preference order:
+      1. ``<project_root>/01_learning_objectives/synthesized_objectives.json``
+         (full statements + Bloom + sections), where ``project_root`` is the
+         parent of ``content_dir`` (``03_content_development``).
+      2. The explicitly-resolved ``objectives_path`` (e.g. an auto-discovered
+         ``course.json`` projection, which retains the same key shape).
+      3. ``content_dir / "course.json"``.
+
+    Returns the first that exists, or ``None``.
+    """
+    candidates: List[Path] = []
+    synthesized = (
+        content_dir.parent
+        / "01_learning_objectives"
+        / "synthesized_objectives.json"
+    )
+    candidates.append(synthesized)
+    if objectives_path is not None:
+        candidates.append(objectives_path)
+    candidates.append(content_dir / "course.json")
+    for cand in candidates:
+        try:
+            if cand.exists():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def _maybe_render_objectives_page(
+    *,
+    content_dir: Path,
+    objectives_path: Optional[Path],
+    course_code: str,
+    course_title: str,
+) -> Optional[Path]:
+    """Render the Learning Objectives Map page into ``course_overview/``.
+
+    Best-effort + non-destructive:
+      * Skips silently when no objectives JSON can be resolved.
+      * Never overwrites an author-provided
+        ``course_overview/learning_objectives.html``.
+      * Any renderer/IO error is logged to stdout and swallowed — the
+        objectives map is additive course content, not a build gate.
+
+    Returns the written path, or ``None`` when skipped.
+    """
+    out_path = content_dir / _COURSE_OVERVIEW_DIRNAME / "learning_objectives.html"
+    if out_path.exists():
+        print(
+            "[objectives-map] existing course_overview/learning_objectives"
+            ".html found; preserving author copy (no overwrite)."
+        )
+        return out_path
+
+    source = _resolve_objectives_source(content_dir, objectives_path)
+    if source is None:
+        print(
+            "[objectives-map] no synthesized_objectives.json / course.json "
+            "resolved; skipping Course Overview objectives map."
+        )
+        return None
+
+    try:
+        from render_learning_objectives_page import (
+            write_learning_objectives_page,
+        )
+    except ImportError as exc:  # pragma: no cover - import wiring
+        print(f"[objectives-map] WARN renderer unavailable: {exc}")
+        return None
+
+    try:
+        write_learning_objectives_page(
+            source,
+            out_path,
+            course_code=course_code,
+            course_title=course_title,
+        )
+    except Exception as exc:  # noqa: BLE001 - additive content, never a gate
+        print(
+            f"[objectives-map] WARN failed to render objectives map from "
+            f"{source}: {exc}"
+        )
+        return None
+    print(f"[objectives-map] rendered Course Overview objectives map from {source.name}")
+    return out_path
+
+
 def build_manifest(
     content_dir: Path,
     course_code: str,
@@ -186,6 +312,37 @@ def build_manifest(
 
     # Resources
     resources = ET.SubElement(manifest, cc("resources"))
+
+    # Course-overview front-matter module (Learning Objectives Map).
+    # Emitted BEFORE the week items so the LMS week list opens with a
+    # "Course Overview" module whose first page is the objectives map.
+    # Honoured in outline-only mode too (the objectives map IS outline-tier
+    # content). Absent ``course_overview/`` directory → no module emitted.
+    overview_files = _course_overview_html_files(content_dir)
+    if overview_files:
+        overview_item = ET.SubElement(
+            root_item, cc("item"), {"identifier": "COURSE_OVERVIEW"}
+        )
+        ET.SubElement(overview_item, cc("title")).text = _COURSE_OVERVIEW_TITLE
+        for html_file in overview_files:
+            rel_path = f"{_COURSE_OVERVIEW_DIRNAME}/{html_file.name}"
+            res_id = re.sub(
+                r"[^a-zA-Z0-9_]",
+                "_",
+                f"RES_{_COURSE_OVERVIEW_DIRNAME}_{html_file.stem}",
+            )
+            file_item = ET.SubElement(overview_item, cc("item"), {
+                "identifier": f"ITEM_{res_id}",
+                "identifierref": res_id,
+            })
+            title_text = html_file.stem.replace("_", " ").title()
+            ET.SubElement(file_item, cc("title")).text = title_text
+            resource = ET.SubElement(resources, cc("resource"), {
+                "identifier": res_id,
+                "type": "webcontent",
+                "href": rel_path,
+            })
+            ET.SubElement(resource, cc("file"), {"href": rel_path})
 
     # Walk week directories in order
     week_dirs = sorted(content_dir.glob("week_*"))
@@ -291,6 +448,7 @@ def package_imscc(
     skip_validation: bool = False,
     outline_only: bool = False,
     coverage_sidecar_path: Optional[Path] = None,
+    emit_objectives_page: bool = True,
 ):
     """Create the IMSCC zip package.
 
@@ -435,6 +593,25 @@ def package_imscc(
             raise SystemExit(2)
         print("[validate] All week pages pass per-week LO contract.")
 
+    # Course-overview Learning Objectives Map (default-on). Render the
+    # deterministic objectives page into ``content_dir/course_overview/``
+    # BEFORE the manifest is built so the new "Course Overview" module +
+    # its resource land in the organization tree and the zip payload. The
+    # richest objectives source wins: a sibling
+    # ``01_learning_objectives/synthesized_objectives.json`` (full
+    # statements + Bloom + sections) is preferred over the resolved
+    # ``objectives_path`` / auto-discovered ``course.json``. When neither
+    # is available, the module is silently skipped (no fabrication). An
+    # author-provided ``course_overview/learning_objectives.html`` already
+    # on disk is never overwritten (operator override).
+    if emit_objectives_page:
+        _maybe_render_objectives_page(
+            content_dir=content_dir,
+            objectives_path=objectives_path,
+            course_code=course_code,
+            course_title=course_title,
+        )
+
     manifest_xml = build_manifest(
         content_dir, course_code, course_title, outline_only=outline_only,
     )
@@ -456,6 +633,18 @@ def package_imscc(
             stub_included = True
 
         file_count = 0
+
+        # Course-overview front-matter module (Learning Objectives Map):
+        # mirror the manifest emission so the zip payload matches the
+        # organization tree (no orphan resources). Emitted in both full and
+        # outline-only modes — the objectives map is outline-tier content.
+        for html_file in _course_overview_html_files(content_dir):
+            zf.write(
+                html_file,
+                f"{_COURSE_OVERVIEW_DIRNAME}/{html_file.name}",
+            )
+            file_count += 1
+
         for week_dir in sorted(content_dir.glob("week_*")):
             if not week_dir.is_dir():
                 continue
@@ -511,6 +700,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help=("Opt out of per-week LO validation (not recommended "
                          "for production builds)."))
     p.add_argument(
+        "--no-objectives-page",
+        action="store_true",
+        help=(
+            "Opt out of the default-on Course Overview Learning Objectives "
+            "Map page. By default the packager renders a deterministic "
+            "course_overview/learning_objectives.html from the course's "
+            "synthesized objectives and adds a 'Course Overview' module to "
+            "the IMSCC organization. Use this flag to suppress it."
+        ),
+    )
+    p.add_argument(
         "--outline-only",
         action="store_true",
         help=(
@@ -536,4 +736,5 @@ if __name__ == "__main__":
         objectives_path=args.objectives,
         skip_validation=args.skip_validation,
         outline_only=args.outline_only,
+        emit_objectives_page=not args.no_objectives_page,
     )
