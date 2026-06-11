@@ -126,6 +126,10 @@ class Citation:
     # ``source.source_references`` (the foundation degrades gracefully).
     source_block: Optional[str] = None
     pdf_pages: List[int] = field(default_factory=list)
+    # Human-readable module title from the chunk source (additive, optional).
+    # ``module_id`` is a filename stem ("content_01") that repeats across
+    # weeks, so renderers prefer this for display when present.
+    module_title: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -140,6 +144,7 @@ class Citation:
             "link_target": dict(self.link_target),
             "source_block": self.source_block,
             "pdf_pages": list(self.pdf_pages),
+            "module_title": self.module_title,
         }
 
 
@@ -502,6 +507,11 @@ def _build_citation(
         link_target=link_target,
         source_block=source_block,
         pdf_pages=pdf_pages,
+        module_title=(
+            str(source["module_title"]).strip()
+            if source.get("module_title")
+            else None
+        ),
     )
 
 

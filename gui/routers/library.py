@@ -160,6 +160,85 @@ async def get_source_pdf(course_id: str, file: str = "", page: int = 1) -> Any:
     )
 
 
+@router.get("/courses/{course_id}/source-materials")
+async def get_source_materials(course_id: str) -> Any:
+    """List the course's original archived source materials (DART HTML + PDFs).
+
+    ``{slug, enabled, dart_docs: [...], pdfs: [...]}``. When the operator toggle
+    (``ED4ALL_SOURCE_MATERIALS`` / the per-course ``manifest.json::viewer`` key)
+    is off, ``enabled`` is ``false`` and both lists are empty. 404 unknown course,
+    422 invalid slug.
+    """
+    try:
+        from gui.services import source_materials as _svc  # noqa: PLC0415
+    except ImportError as exc:
+        return _error(503, "source_materials_unavailable", str(exc))
+
+    try:
+        return _svc.list_source_materials(course_id)
+    except _svc.SourceMaterialsError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001 — unexpected fs/parse failure
+        return _error(500, "source_materials_failed", str(exc))
+
+
+@router.get("/courses/{course_id}/source-doc")
+async def get_source_doc(course_id: str, doc: str = "", ref: str = "") -> Any:
+    """Serve one sanitized, block-anchored archived DART document.
+
+    ``doc`` is whitelisted against the inventory stem listing (never a path);
+    serve-time passes inject ``id="dart-{block_id}"`` block anchors + heading ids
+    and rewrite ``{stem}_figures/`` image srcs to the ``/source-doc-asset``
+    endpoint. ``ref`` is the requested anchor (informational; the ``#fragment``
+    is built by the caller). 403 when source materials are disabled; 404 when the
+    DART doc isn't archived (the emit-then-resolve citation hop); restrictive CSP.
+    """
+    try:
+        from gui.services import source_materials as _svc  # noqa: PLC0415
+    except ImportError as exc:
+        return _error(503, "source_materials_unavailable", str(exc))
+
+    try:
+        result = _svc.serve_source_doc(course_id, doc, ref or None)
+    except _svc.SourceMaterialsError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001 — unexpected render failure
+        return _error(500, "source_doc_failed", str(exc))
+
+    return Response(
+        content=result.body,
+        media_type=result.media_type,
+        headers=dict(result.headers),
+    )
+
+
+@router.get("/courses/{course_id}/source-doc-asset")
+async def get_source_doc_asset(course_id: str, doc: str = "", path: str = "") -> Any:
+    """Serve a whitelisted figure asset from a DART doc's ``{stem}_figures/`` dir.
+
+    Path-traversal-safe (pre-rejection + extension whitelist + commonpath
+    containment under the figures dir). 403 when disabled, 422 bad path /
+    disallowed type, 404 unknown course / doc / member.
+    """
+    try:
+        from gui.services import source_materials as _svc  # noqa: PLC0415
+    except ImportError as exc:
+        return _error(503, "source_materials_unavailable", str(exc))
+
+    try:
+        result = _svc.serve_source_doc_asset(course_id, doc, path)
+    except _svc.SourceMaterialsError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001 — unexpected read failure
+        return _error(500, "source_doc_asset_failed", str(exc))
+
+    return Response(
+        content=result.body,
+        media_type=result.media_type,
+        headers=dict(result.headers),
+    )
+
+
 @router.get("/courses/{course_id}/asset")
 async def get_asset(course_id: str, path: str = "") -> Any:
     """Serve a whitelisted static asset (image/css/font) from the cartridge."""

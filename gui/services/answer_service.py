@@ -94,6 +94,26 @@ def ask(slug: str, query: str, engine: str = "auto") -> Dict[str, Any]:
     return result.to_dict()
 
 
+def source_materials_enabled(slug: str) -> bool:
+    """Resolve the ``ED4ALL_SOURCE_MATERIALS`` toggle for ``slug`` (per-request).
+
+    Threads the operator toggle (env flag + per-course ``manifest.json::viewer``
+    override) into the answer renderer so the citation-side original-source + PDF
+    deep links are suppressed when source materials are disabled (§2.5). Best-
+    effort: a resolution failure (unknown course / unreadable manifest / the
+    source-materials module unavailable) defaults to the documented default-on
+    posture so a missing manifest never strips provenance links from an answer.
+    """
+    try:
+        from gui.services import source_materials as _sm  # noqa: PLC0415
+
+        libv2_root = _libv2_root()
+        course_dir = libv2_root / "courses" / slug
+        return _sm.is_enabled(course_dir)
+    except Exception:  # noqa: BLE001 — toggle resolution is advisory; default on
+        return True
+
+
 def _build_capture(slug: str) -> Any:
     """Construct a per-request DecisionCapture; never raise on failure.
 
@@ -112,4 +132,4 @@ def _build_capture(slug: str) -> Any:
         return None
 
 
-__all__ = ["ask"]
+__all__ = ["ask", "source_materials_enabled"]

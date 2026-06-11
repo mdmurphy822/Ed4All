@@ -488,11 +488,24 @@ def test_source_pdf_rejects_traversal_file(client, pdf_course, bad_file):
 
 
 def test_source_pdf_rejects_bad_page(client, pdf_course):
+    # Negative pages are invalid (page=0 now means whole-file mode — see below).
     resp = client.get(
-        f"/api/courses/{pdf_course}/source-pdf", params={"file": "textbook", "page": 0}
+        f"/api/courses/{pdf_course}/source-pdf", params={"file": "textbook", "page": -1}
     )
     assert resp.status_code == 422
     assert resp.json()["error"] == "invalid_page"
+
+
+def test_source_pdf_whole_file_mode_page_zero(client, pdf_course):
+    """page=0 serves the WHOLE archived PDF (the browse-surface affordance)."""
+    resp = client.get(
+        f"/api/courses/{pdf_course}/source-pdf", params={"file": "textbook", "page": 0}
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert resp.headers["x-source-pdf-mode"] == "whole-file"
+    # The whole file (all pages) is served, not a single extracted page.
+    assert resp.content.startswith(b"%PDF")
 
 
 def test_source_pdf_unknown_course_404(client):

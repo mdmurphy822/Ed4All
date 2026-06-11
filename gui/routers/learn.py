@@ -162,7 +162,13 @@ async def ask(req: AskRequest) -> Any:
             )
         return _error_with_fragment(500, "ask_failed", "error_generic", str(exc))
 
-    return {"answer": answer, "html": answer_render.render_answer_fragment(answer)}
+    include_links = answer_service.source_materials_enabled(req.slug)
+    return {
+        "answer": answer,
+        "html": answer_render.render_answer_fragment(
+            answer, include_original_source_links=include_links
+        ),
+    }
 
 
 # --------------------------------------------------------------- async ask jobs
@@ -238,11 +244,16 @@ async def poll_ask_job(ask_id: str) -> Any:
     status_value = record.get("status")
     if status_value == ask_jobs.STATUS_DONE:
         answer = record.get("answer") or {}
+        include_links = answer_service.source_materials_enabled(
+            str(answer.get("course_slug") or record.get("slug") or "")
+        )
         return {
             "ask_id": ask_id,
             "status": status_value,
             "answer": answer,
-            "html": answer_render.render_answer_fragment(answer),
+            "html": answer_render.render_answer_fragment(
+                answer, include_original_source_links=include_links
+            ),
         }
     if status_value == ask_jobs.STATUS_ERROR:
         name = str(record.get("error") or "")

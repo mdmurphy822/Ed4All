@@ -536,6 +536,9 @@ def test_grounded_answer_to_dict_keys_frozen(mini_libv2: Path):
         "anchor_status", "source_path", "text_quote", "link_target",
         # B4 provenance-chain fields (additive, optional).
         "source_block", "pdf_pages",
+        # Display title (additive, optional): renderers prefer it over the
+        # filename-stem module_id, which repeats across weeks.
+        "module_title",
     }
     # Legacy fixture chunk carries no source_references → provenance absent.
     assert cit["source_block"] is None
