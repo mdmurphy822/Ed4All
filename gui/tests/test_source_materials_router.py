@@ -215,10 +215,11 @@ def test_source_doc_never_clobbers_existing_id(client, dart_course):
         f"/api/courses/{dart_course}/source-doc", params={"doc": "chapter-one"}
     )
     html = resp.text
-    # The block that already carried id="sec-existing-h" keeps it; NOT rewritten
-    # to id="dart-blk_keep".
+    # The block that already carried id="sec-existing-h" keeps it (never
+    # clobbered) — but the #dart-<block> fragment contract must still hold:
+    # an empty inline anchor span with the dart id is planted inside it.
     assert 'id="sec-existing-h"' in html
-    assert 'id="dart-blk_keep"' not in html
+    assert '<span class="dart-block-anchor" id="dart-blk_keep"></span>' in html
 
 
 def test_source_doc_rewrites_figure_src(client, dart_course):
