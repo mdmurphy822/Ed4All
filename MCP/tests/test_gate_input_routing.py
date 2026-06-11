@@ -1474,3 +1474,129 @@ def test_kg_quality_does_not_overwrite_canonical_consensus_sibling(
 
     # The canonical sibling is untouched — no second DIVERGENT report.
     assert canonical_sibling.read_bytes() == sentinel_bytes
+
+
+# ---------------------------------------------------------------------- #
+# TextbookOutlineValidator — three-stage textbook synthesis (Wave A/B).
+# Pre-registration the router returned ``__no_builder_registered__`` for
+# this critical / block gate, so it skipped with a warning on every run
+# (gate_input_routing.py:1836-1842).
+# ---------------------------------------------------------------------- #
+
+
+_TEXTBOOK_OUTLINE_VALIDATOR = (
+    "lib.validators.textbook_structure.TextbookOutlineValidator"
+)
+
+
+def test_textbook_outline_validator_has_builder_registered():
+    """Regression guard against the silent __no_builder_registered__ skip."""
+    r = default_router()
+    assert _TEXTBOOK_OUTLINE_VALIDATOR in r.builders, (
+        f"No builder registered for {_TEXTBOOK_OUTLINE_VALIDATOR}; the "
+        f"critical textbook_outline_enrichment gate will silently skip "
+        f"via __no_builder_registered__."
+    )
+
+
+def test_textbook_outline_builder_resolves_from_objective_extraction():
+    """TextbookOutlineValidator needs textbook_structure_path."""
+    phase_outputs = _make_phase_outputs(
+        objective_extraction={
+            "textbook_structure_path": "/tmp/course/textbook_structure.json",
+        },
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        _TEXTBOOK_OUTLINE_VALIDATOR,
+        phase_outputs,
+        {},
+    )
+    assert missing == []
+    assert (
+        inputs["textbook_structure_path"]
+        == "/tmp/course/textbook_structure.json"
+    )
+
+
+def test_textbook_outline_builder_falls_back_to_locate_scan():
+    """Missing objective_extraction phase but the key surfaces elsewhere."""
+    phase_outputs = _make_phase_outputs(
+        staging={
+            "textbook_structure_path": "/tmp/course/textbook_structure.json",
+        },
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        _TEXTBOOK_OUTLINE_VALIDATOR,
+        phase_outputs,
+        {},
+    )
+    assert missing == []
+    assert (
+        inputs["textbook_structure_path"]
+        == "/tmp/course/textbook_structure.json"
+    )
+
+
+def test_textbook_outline_builder_graceful_degrades_when_path_missing():
+    """No path resolvable → EMPTY missing list (validator skips-with-pass).
+
+    Unlike a hard-required input, the validator handles an absent
+    textbook_structure by returning a no-op pass, so the builder must let
+    the gate RUN (no missing-key marker) rather than mark it
+    GATE_SKIPPED_MISSING_INPUTS.
+    """
+    r = default_router()
+    inputs, missing = r.build(
+        _TEXTBOOK_OUTLINE_VALIDATOR,
+        {},
+        {},
+    )
+    assert missing == []
+    assert inputs == {}
+
+
+def test_textbook_outline_builder_no_no_builder_warning(caplog):
+    """The no-builder fallback warning must NOT fire for this validator."""
+    r = default_router()
+    with caplog.at_level(logging.WARNING):
+        _, missing = r.build(
+            _TEXTBOOK_OUTLINE_VALIDATOR,
+            _make_phase_outputs(
+                objective_extraction={
+                    "textbook_structure_path": "/tmp/course/textbook_structure.json",
+                },
+            ),
+            {},
+        )
+    assert missing != ["__no_builder_registered__"]
+    assert "No gate-input builder registered" not in caplog.text
+
+
+def test_textbook_outline_builder_end_to_end_validate(tmp_path: Path):
+    """Builder-resolved input drives a real validate() to a clean pass.
+
+    On a default-off run the textbook_structure carries no enrichment
+    keys, so the validator returns a no-op skip-with-pass — exercises the
+    full router → validator seam end to end.
+    """
+    from lib.validators.textbook_structure import TextbookOutlineValidator
+
+    ts_path = tmp_path / "textbook_structure.json"
+    ts_path.write_text(
+        json.dumps({"chapters": [{"id": "CH01", "title": "Intro"}]}),
+        encoding="utf-8",
+    )
+    phase_outputs = _make_phase_outputs(
+        objective_extraction={"textbook_structure_path": str(ts_path)},
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        _TEXTBOOK_OUTLINE_VALIDATOR, phase_outputs, {}
+    )
+    assert missing == []
+    result = TextbookOutlineValidator().validate(
+        dict(inputs, gate_id="textbook_outline_enrichment")
+    )
+    assert result.passed is True
