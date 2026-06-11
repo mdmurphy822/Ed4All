@@ -18,6 +18,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from lib.ontology.terminal_coverage import (  # noqa: E402
+    attach_terminal_chapter_refs,
     co_parent_terminal,
     find_orphan_terminals,
     is_co_bearing,
@@ -158,6 +159,60 @@ def test_find_orphans_co_bearing_no_backpointers_returns_empty() -> None:
         {"chapter": "W1", "objectives": [{"id": "CO-01"}, {"id": "CO-02"}]},
     ]
     assert find_orphan_terminals(terminals, cos) == []
+
+
+# --- attach_terminal_chapter_refs (CO-less Layer-A guarantee) --------------
+
+
+def test_attach_resolves_co_less_orphans() -> None:
+    """A CO-less course's chapter-less terminals get a resolvable ``chapter``
+    back-pointer (round-robin over structure chapters) so the gate's
+    no_chapter_ref orphan case can't fire. This is the deterministic
+    synthesizer's bug: it mints terminals with no chapter back-pointer even
+    on a corpus whose extractor synthesized real ch1/ch2/... chapters."""
+    ts = {"chapters": [{"id": "ch1"}, {"id": "ch2"}, {"id": "ch3"}]}
+    terminals = [{"id": "TO-01"}, {"id": "TO-02"}, {"id": "TO-03"}, {"id": "TO-04"}]
+    out, assigned = attach_terminal_chapter_refs(terminals, [], textbook_structure=ts)
+    assert assigned == ["TO-01", "TO-02", "TO-03", "TO-04"]
+    assert [t["chapter"] for t in out] == ["ch1", "ch2", "ch3", "ch1"]
+    # The fix makes the objectives set internally consistent: zero orphans.
+    assert find_orphan_terminals(out, [], textbook_structure=ts) == []
+
+
+def test_attach_does_not_mutate_input() -> None:
+    ts = {"chapters": [{"id": "ch1"}]}
+    terminals = [{"id": "TO-01"}]
+    attach_terminal_chapter_refs(terminals, [], textbook_structure=ts)
+    assert "chapter" not in terminals[0]
+
+
+def test_attach_preserves_already_resolvable_backpointer() -> None:
+    """A terminal that already carries a resolvable ``chapter`` is left
+    verbatim — only chapter-less / unresolvable terminals are stamped."""
+    ts = {"chapters": [{"id": "ch1"}, {"id": "ch2"}]}
+    terminals = [{"id": "TO-01", "chapter": "ch2"}, {"id": "TO-02"}]
+    out, assigned = attach_terminal_chapter_refs(terminals, [], textbook_structure=ts)
+    assert out[0]["chapter"] == "ch2"  # untouched
+    assert assigned == ["TO-02"]
+    assert out[1]["chapter"] in {"ch1", "ch2"}
+
+
+def test_attach_noop_for_co_bearing_course() -> None:
+    ts = {"chapters": [{"id": "ch1"}]}
+    terminals = [{"id": "TO-01"}]
+    cos = [{"chapter": "W1", "objectives": [{"id": "CO-01", "parent_to": "TO-01"}]}]
+    out, assigned = attach_terminal_chapter_refs(terminals, cos, textbook_structure=ts)
+    assert assigned == []
+    assert "chapter" not in out[0]
+
+
+def test_attach_noop_without_resolvable_structure() -> None:
+    """No chapters in structure ⟹ nothing to anchor to ⟹ no-op (the gate's
+    TERMINAL_COVERAGE_UNVERIFIED graceful-degrade path owns that case)."""
+    terminals = [{"id": "TO-01"}]
+    out, assigned = attach_terminal_chapter_refs(terminals, [], textbook_structure={})
+    assert assigned == []
+    assert "chapter" not in out[0]
 
 
 if __name__ == "__main__":

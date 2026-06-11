@@ -6601,6 +6601,78 @@ def _build_tool_registry() -> dict:
                     exc,
                 )
 
+            # Layer A (CO-less branch) — stamp a resolvable ``chapter``
+            # back-pointer on every terminal of a CO-less course (empty
+            # chapter_objectives). The deterministic synthesizer mints
+            # terminals with no chapter back-pointer (the topic-side parser
+            # frequently sees chapter_id=None even though the structure-side
+            # extractor synthesized real ch1/ch2/... chapters), which leaves
+            # the objectives set internally inconsistent: the CO-less
+            # ``terminal_objective_coverage`` gate then critical-fails with
+            # ORPHAN_TERMINAL_NO_CHAPTER_REF. Anchoring each terminal to a
+            # real structure chapter here (round-robin, document order) makes
+            # the set consistent BEFORE it is written — the same Layer-A
+            # guarantee the prune provides for CO-bearing courses. No-op for
+            # CO-bearing courses and for runs with no resolvable structure
+            # chapters (the gate's TERMINAL_COVERAGE_UNVERIFIED path owns
+            # that). Cross-link:
+            # lib/ontology/terminal_coverage.py::attach_terminal_chapter_refs.
+            try:
+                from lib.ontology.terminal_coverage import (
+                    attach_terminal_chapter_refs as _attach_terminal_chapter_refs,
+                )
+
+                _ts_for_attach: Dict[str, Any] = {}
+                if structure_path.exists():
+                    try:
+                        _ts_for_attach = json.loads(
+                            structure_path.read_text(encoding="utf-8")
+                        )
+                    except (OSError, ValueError) as exc:
+                        logger.warning(
+                            "Layer A (CO-less): textbook_structure read "
+                            "failed (%s); skipping chapter back-pointer "
+                            "attach.", exc,
+                        )
+                        _ts_for_attach = {}
+                _chapter_groups_for_attach = [
+                    {"chapter": f"Week {idx}", "objectives": [dict(c)]}
+                    for idx, c in enumerate(chapter, start=1)
+                ]
+                _attached_terminals, _attached_ids = (
+                    _attach_terminal_chapter_refs(
+                        terminal,
+                        _chapter_groups_for_attach,
+                        textbook_structure=_ts_for_attach,
+                    )
+                )
+                if _attached_ids:
+                    logger.info(
+                        "Layer A (CO-less): attached chapter back-pointer "
+                        "to %d terminal(s) of %s: %s",
+                        len(_attached_ids), course_name,
+                        ", ".join(_attached_ids),
+                    )
+                    terminal = _attached_terminals
+                    # Re-sync the terminal entries in lo_entries with the
+                    # freshly-stamped ``chapter`` so the on-disk
+                    # learning_outcomes array carries the back-pointer too.
+                    _by_id = {str(t.get("id")): t for t in terminal}
+                    for _e in lo_entries:
+                        if _e.get("hierarchy_level") != "terminal":
+                            continue
+                        _src = _by_id.get(str(_e.get("id")))
+                        if _src is not None and "chapter" in _src:
+                            _e["chapter"] = _src["chapter"]
+            except Exception as exc:  # noqa: BLE001 — best-effort guarantee
+                logger.warning(
+                    "Layer A (CO-less): terminal chapter back-pointer "
+                    "attach failed (%s); proceeding (the course_planning "
+                    "terminal_objective_coverage gate remains the "
+                    "fail-fast backstop).",
+                    exc,
+                )
+
             synthesized = {
                 "course_name": course_name,
                 "generated_from": generated_from,
