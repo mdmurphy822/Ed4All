@@ -84,12 +84,13 @@ See `gui/README.md` § "Operator auth" for the full route classification.
 
 | Volume | Mount | Holds |
 |--------|-------|-------|
-| `ed4all-data` | `/data` (= `ED4ALL_HOME`) | All mutable data: state, LibV2 courses, Courseforge exports, training captures, DART output, and the HF embedding cache (`/data/hf-cache`). |
-| `ollama-models` | `/root/.ollama` | Pulled Ollama models (so a restart doesn't re-download multi-GB weights). |
+| `ed4all-data` (named volume) | `/data` (= `ED4ALL_HOME`) | Mutable data: state, Courseforge exports, training captures, DART output, uploads, and the HF embedding cache (`/data/hf-cache`). |
+| `./LibV2` (repo bind mount) | `/data/libv2` | **The course library.** The repo checkout's LibV2 is one shared store: courses archived by host (non-Docker) runs appear in the containerized Studio, and pipeline runs launched from the container archive back into the same place. |
+| `ollama-models` (named volume) | `/root/.ollama` | Pulled Ollama models (so a restart doesn't re-download multi-GB weights). |
 
 `ED4ALL_HOME=/data` makes every data dir resolve under the single mounted volume
-(`lib/paths.py`). The repo itself is **not** bind-mounted — the image already
-contains the code; the volume holds only data.
+(`lib/paths.py`), with LibV2 overridden onto the repo checkout. The repo's
+**code** is not bind-mounted — the image already contains it.
 
 ## GPU (optional)
 
