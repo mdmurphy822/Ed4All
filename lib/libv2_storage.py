@@ -54,6 +54,18 @@ IMSCC_CHUNKS_DIRNAME = "imscc_chunks"
 DART_CHUNKS_DIRNAME = "dart_chunks"
 LEGACY_CORPUS_DIRNAME = "corpus"
 
+# Canonical chunkset-dir-name <-> manifest ``chunkset_kind`` discriminator.
+# Single source of truth (lib/ is the lower layer): ``vector_index.py`` imports
+# this rather than redeclaring the mapping, so the manifest's ``chunkset_kind``
+# and the on-disk directory name can never drift apart between the build path
+# (vector_index) and the query path (resolve_chunks_path_for_query below).
+DIRNAME_TO_CHUNKSET_KIND = {
+    IMSCC_CHUNKS_DIRNAME: "imscc",
+    DART_CHUNKS_DIRNAME: "dart",
+    LEGACY_CORPUS_DIRNAME: "corpus-legacy",
+}
+CHUNKSET_KIND_TO_DIRNAME = {v: k for k, v in DIRNAME_TO_CHUNKSET_KIND.items()}
+
 
 def resolve_imscc_chunks_dir(
     course_dir: Union[str, Path],
@@ -140,6 +152,88 @@ def resolve_imscc_chunks_path(
     phase schedule.
     """
     return resolve_imscc_chunks_dir(course_dir, filename=filename) / filename
+
+
+def resolve_chunks_path_for_query(
+    course_dir: Union[str, Path],
+    filename: str = "chunks.jsonl",
+) -> tuple[Path, str]:
+    """Resolve the chunkset file the live vector index was built over.
+
+    Returns ``(chunks_path, resolution)`` where ``resolution`` is one of
+    ``"manifest"`` (the path came from the vector-index manifest's
+    ``chunkset_kind``) or ``"precedence"`` (the path came from the
+    precedence resolver :func:`resolve_imscc_chunks_path`).
+
+    Rationale (retrieval-stack fix): a course can carry several chunksets at
+    once — e.g. an ``imscc_chunks/`` chunkset AND a ``corpus/`` union that is
+    a superset of it. The on-device vector index is built over exactly ONE of
+    them and records which in ``vector_index/manifest.json::chunkset_kind``.
+    The QUERY path (semantic hydration + BM25 streaming) must read back the
+    SAME chunkset, or every id the index has that the precedence-resolved file
+    lacks is silently DROPPED at hydration (a union/corpus-legacy index becomes
+    unserveable — its dart-range hits vanish). The directory-precedence
+    resolver (imscc_chunks -> dart_chunks -> corpus) is the wrong oracle here;
+    the manifest is authoritative.
+
+    Resolution order:
+
+    1. If ``vector_index/manifest.json`` exists and carries a known
+       ``chunkset_kind``, map it to the chunkset dir
+       (``imscc`` -> ``imscc_chunks/``, ``dart`` -> ``dart_chunks/``,
+       ``corpus-legacy`` -> ``corpus/``) and return that file with
+       ``resolution="manifest"`` — even if the precedence resolver would have
+       chosen a different dir.
+    2. If the mapped file is MISSING (manifest points at a chunkset that no
+       longer exists on disk), log a warning and fall back to the precedence
+       resolver. The semantic engine's own sha check will fail closed on this
+       mismatch anyway (``SemanticIndexStale``); the warning makes the
+       lexical-arm fallback observable rather than silent.
+    3. If no index / manifest exists (or its ``chunkset_kind`` is absent /
+       unknown), fall back to the precedence resolver — so lexical-only
+       courses with no vector index keep working byte-identically to today.
+
+    Use this ONLY on the retrieval/query hydration path. Non-query callers
+    (chunk-count listings, validators, training synthesis, eval) must stay on
+    :func:`resolve_imscc_chunks_path` — they have no index to honor and the
+    precedence semantics are correct for them.
+    """
+    course_dir = Path(course_dir)
+    manifest_path = course_dir / "vector_index" / "manifest.json"
+
+    if manifest_path.is_file():
+        kind: Optional[str] = None
+        try:
+            with manifest_path.open(encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                raw_kind = data.get("chunkset_kind")
+                kind = str(raw_kind) if raw_kind else None
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "vector-index manifest unreadable for %s (%s); falling back "
+                "to chunkset precedence resolution.",
+                course_dir.name,
+                exc,
+            )
+            kind = None
+
+        if kind and kind in CHUNKSET_KIND_TO_DIRNAME:
+            mapped = course_dir / CHUNKSET_KIND_TO_DIRNAME[kind] / filename
+            if mapped.exists():
+                return mapped, "manifest"
+            logger.warning(
+                "vector-index manifest for %s pins chunkset_kind=%r "
+                "(-> %s) but %s is missing; falling back to chunkset "
+                "precedence resolution. The semantic engine will fail its "
+                "sha check on this mismatch.",
+                course_dir.name,
+                kind,
+                CHUNKSET_KIND_TO_DIRNAME[kind],
+                mapped,
+            )
+
+    return resolve_imscc_chunks_path(course_dir, filename=filename), "precedence"
 
 
 class LibV2Storage:
@@ -615,4 +709,9 @@ __all__ = [
     'get_course_storage',
     'list_all_courses',
     'validate_libv2_structure',
+    'resolve_imscc_chunks_dir',
+    'resolve_imscc_chunks_path',
+    'resolve_chunks_path_for_query',
+    'DIRNAME_TO_CHUNKSET_KIND',
+    'CHUNKSET_KIND_TO_DIRNAME',
 ]
