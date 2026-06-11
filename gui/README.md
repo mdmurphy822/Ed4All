@@ -47,6 +47,14 @@ Full launcher reference (flags `--host` / `--port` / `--no-browser` /
 `--no-install` / `--reinstall`, requirements, troubleshooting): see
 [`gui/LAUNCH.md`](LAUNCH.md).
 
+### Docker (deployable stack)
+
+For a containerized deploy that serves Studio on `:8077` with a local Ollama
+backend and a single `/data` volume for all course/state data, see
+[`docs/operations/docker.md`](../docs/operations/docker.md) — `docker compose up`
+builds the GUI image (`Dockerfile.gui`), pull the answer model once, open the
+browser.
+
 ### Manual (already have an environment)
 
 If you manage your own virtualenv:
@@ -136,6 +144,32 @@ what was injected.
 A launch additionally overlays per-request `mode` / `provider` / `model` into
 `os.environ` (mapped to `LLM_MODE` / `LLM_PROVIDER` / `LLM_MODEL`) so a one-off
 run can override the saved defaults without mutating `settings.json`.
+
+### Blessed authoring route (turnkey, no Claude session)
+
+A GUI-launched run is **headless** — there is no Claude Code session draining
+the orchestrator mailbox. Every phase that needs LLM generation
+(content-generator, course-outliner, assessment-generator,
+training-synthesizer) must therefore resolve its generation through the
+**in-process provider lattice** (the OpenAI-compatible provider registry),
+never through a Claude-session subagent. To guarantee this, `launch_pipeline`
+/ `launch_phase` set each agent's provider env
+(`COURSEFORGE_PROVIDER` / `COURSEPLANNER_PROVIDER` /
+`TRAINFORGE_ASSESSMENT_PROVIDER` / `TRAINFORGE_SYNTHESIS_PROVIDER`) by default
+for the enqueued run. Resolution per env var (only when not already set via
+`model_routing`): per-request `provider` → global `LLM_PROVIDER` → `local`
+(an air-gapped Ollama/vLLM provider that needs no key). A per-task provider
+you configured in **Model Routing** is preserved — it is never overwritten by
+this default.
+
+If a launched run somehow reaches a phase that would enqueue a mailbox
+`agent_task` with no provider env (and no servicer attached), the orchestrator
+**fails fast** with an actionable error
+(`AuthoringProviderRouteError`) instead of hanging forever — the message names
+the exact env var to set, or tells you to run inside a Claude session with
+`ED4ALL_AGENT_DISPATCH=true` + `ED4ALL_MAILBOX_SERVICED=1`. This is a
+guardrail, not the normal path: with the blessed-route defaulting above, a GUI
+run never trips it.
 
 ---
 
@@ -251,7 +285,8 @@ partial directory.
 | POST | `/api/runs` | `{workflow, course_name, corpus?, weeks?, mode?, provider?, model?, options{}}` | `{run_id, workflow_id, status}` (422 on launch failure) |
 | POST | `/api/runs/phase` | `{workflow, phase, course_name?, project_id?, mode?, provider?, model?, options{}}` | `{run_id, status, tasks?, gate_results?}` (422 on failure) |
 | GET | `/api/runs` | — | `{runs: [<run record>...]}` (newest first) |
-| GET | `/api/runs/{run_id}` | — | the run record (404 if unknown) |
+| GET | `/api/runs/{run_id}` | — | the run record (404 if unknown). On a failed run the record carries `failed_phase` + `failure_reason`. |
+| GET | `/api/runs/{run_id}/validation-report` | — | `{run_id, report, report_path, failed_gates:[{phase, gate_id, severity, message, issues_count}], failed_phase, failure_reason}`. `report` is the `courseforge_validation_report.json` body when present, else `null` with an explanatory `note`. 404 if the run is unknown. |
 | POST | `/api/runs/{run_id}/cancel` | — | `{run_id, status}` (404 if unknown) |
 
 The launchable workflows are `textbook_to_course`, `course_generation`,
@@ -459,26 +494,232 @@ Without `--learner`, the full app serves both surfaces: the facilitator uses the
 operator SPA while a participant opens `/learn/` — appropriate for dev/demo on a
 trusted machine, not for a shared/exposed deployment.
 
+## Studio surface (`/studio/`)
+
+The **Studio** is the end-user surface for *browsing archived courses* — a
+Library card grid plus an IMS Common Cartridge viewer (an ARIA manifest tree
+beside a sandboxed content pane with a prev/next pager that follows the manifest
+order). It serves the packaged IMSCC living at
+`LibV2/courses/<slug>/source/imscc/*.imscc` (courses discovered dynamically —
+never hardcoded). Built to **WCAG 2.2 AA** from the first build (semantic
+landmarks + skip link, full keyboard operability of the tree + pager, ARIA tree
+pattern with roving `tabindex`, programmatic focus management, sandboxed iframe
+for untrusted archive HTML), gated by `gui/tests/test_studio_a11y_gate.py`.
+
+The frontend is vanilla ES modules (no build step): `gui/static/studio/` imports
+the reusable toolkit factored into `gui/static/shared/` (`api.js`, `dom.js`,
+`toast.js`, `router.js`). Archived cartridge HTML is **untrusted** — every served
+page is run through the same audited active-content scrub the source-viewer uses
+(`gui.services.source_page.sanitize_soup`: drops `<script>`, inline `on*`
+handlers, `javascript:`/`data:` URLs) and served with a restrictive CSP +
+`nosniff`. Generated pages ship as zero-JS self-contained HTML whose interactive
+components (self-check reveal buttons, flip-card grids) rely on inline handlers
+the sanitiser strips; a small **viewer shim** (`gui/static/studio/viewer-shim.js`)
+re-binds them accessibly *inside the iframe sandbox* (`allow-scripts` only — no
+`allow-same-origin`, so it can't reach the parent origin).
+
+### Routes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/studio/` | The Studio shell (static; in `--mode studio` the bare `/` redirects here). |
+| GET | `/api/library` | Course cards: `[{slug, title, page_count, has_vector_index}]` for every archived course carrying an IMSCC cartridge. |
+| GET | `/api/courses/{course_id}/manifest` | The course organization tree: `{slug, title, items: [...]}` (recursive module/unit/page nodes). |
+| GET | `/api/courses/{course_id}/page?item=<id>` | One sanitized cartridge page, resolved via its manifest **resource id** (never a raw path), with a restrictive CSP. |
+| GET | `/api/courses/{course_id}/asset?path=<rel>` | A whitelisted static asset (image/css/font) from the cartridge. **Path-traversal-safe:** the path is pre-rejected (no `..`/absolute/NUL/backslash) before any zip read, the extension must be in the content-type whitelist (never `.html` / active types), and the member must literally exist in the cartridge. Unknown course / cartridge / member → 404. |
+
+Backend service: `gui.services.imscc_service` (org-tree walk factored from
+`Courseforge/scripts/imscc-extractor/imscc_extractor.py`, read in-memory from the
+cartridge zip — no extract-to-disk). Router: `gui.routers.library`.
+
+### Create wizard + Studio settings (C3)
+
+Studio is not only for *browsing* finished courses — a non-developer can author
+one. Two extra hash routes ride the Studio shell (`gui/static/studio/`):
+
+| Route | Module | Purpose |
+|-------|--------|---------|
+| `#/create` | `create.js` | The **Create wizard** — a 3-step flow to build a course from a textbook. |
+| `#/create/<run_id>` | `create.js` | The **progress view** for a launched build (re-attaches on refresh via the run registry + WS). |
+| `#/create/<run_id>/log` | `create.js` | The raw **build log** for a run (replayed over the WS), surfaced on failure. |
+| `#/settings` | `settings.js` | The simplified **Studio settings** page (provider/model + answer backend + cloud API keys). |
+
+**Create wizard flow** (3 steps as a labelled `<ol aria-label>` progress
+structure with `aria-current="step"` on the active step):
+
+1. **Upload** — drag-drop *or* file-picker for one or more PDFs, with
+   client-side type (`.pdf`) + size (≤ 200 MB) validation; files are saved via
+   `POST /api/uploads` when the user advances, yielding an `upload_id`.
+2. **Configure** — course name (validated against the slug rule
+   `^[A-Za-z0-9_-]{2,}$` *client-side hint only*; the server is authoritative),
+   optional weeks, a provider/model summary read from `GET /api/settings/studio`
+   with a link to the Studio settings page, and an **Advanced** `<details>`
+   block (skip assessments / skip training synthesis) collapsed by default.
+3. **Launch** — `POST /api/runs` (`workflow: textbook_to_course`), then a
+   **phase-checklist** progress view driven by the existing `/ws/runs/{run_id}`
+   socket. Each phase renders with a friendly name (from the `label` field on
+   `/api/workflows` phases — see `run_service.PHASE_LABELS`) and a
+   pending / running / done / skipped / failed state, plus an elapsed timer. On
+   success → an **Open course** link into the viewer; on failure → an actionable
+   error + a **View build log** link. Launching navigates to `#/create/<run_id>`
+   so a browser refresh **re-attaches** to the running build (state survives via
+   the run registry, never client-only).
+
+The progress checklist's live per-phase signal comes from
+`run_service._poll_phase_progress`: a best-effort poller that watches the
+workflow state file's `phase_outputs` `_completed`/`_skipped` markers and
+appends `[phase] <name> <state> — <label>` log lines as each phase finishes;
+those lines stream over the existing WS (the orchestrator itself only logs a
+phase *summary* at the very end). The poller is pure observation — it never
+mutates workflow state and is cancelled when the run ends.
+
+**Failure UX** — when a build fails a validation gate (or a phase errors), the
+progress view replaces the raw error string with an actionable failure panel
+(`create.js::renderFailurePanel`, `role="alert"`):
+
+- The failing phase is marked from a **structured** `[phase] <name> failed —
+  <label>: <reason>` log line (emitted by `run_service._drive_pipeline` /
+  `_run_single_phase`), not the old "last running phase" guess. The runner
+  surfaces `failed_phase` + `failure_reason` (`WorkflowRunner.run_workflow` →
+  `OrchestratorResult`); they are persisted on the run record and replayed on
+  refresh.
+- The panel renders a **severity-badged failed-gate table** (from the
+  `failed_gates` digest of `GET /api/runs/{run_id}/validation-report`) and, when
+  a `courseforge_validation_report.json` exists for the run, a **per-block-type
+  pass/fail/escalated summary** rolled up from `per_block_results[]`.
+- **What-to-do-next affordances** (each confirms before enqueuing, then links to
+  the new run's progress view), shown only when applicable:
+  *Re-run validation* (`courseforge_validate`) and *Rewrite failing blocks*
+  (`courseforge_rewrite` with `--blocks` prefilled from the report's failing
+  block types) appear only when a validation report is present; *Re-run failed
+  step* (`POST /api/runs/phase` for the failed phase) appears when a phase is
+  known; *View / download build log* is always offered.
+
+**Studio settings page** — a strict subset of the operator settings catalog,
+served by `GET /api/settings/studio` (`settings_service.build_studio_settings_payload`):
+only the `credentials` / `global` / `answer` / `local` env-catalog categories
+(the AI provider + model, the grounded-answer backend, and cloud-provider API
+keys), plus a **read-only** GUI host/port echo. Secrets stay masked (`"set"` /
+`null`); the full operator catalog (DART / per-tier Courseforge / Trainforge /
+embedding knobs) is never returned here. Writes go through the existing
+`PATCH /api/settings` (deep-merge of `model_routing.*` dotted paths + `env`
+keys); a blank key field keeps the saved value. A **Test provider** button hits
+the existing `POST /api/settings/test-provider` (a cheap reachability check — no
+model generation; the `local` arm is a short-timeout `GET <base_url>/models`,
+loopback-respecting for the answer provider) and reports the result in plain
+language: connected / ready / key-present / **not authorized** (missing key) /
+**unreachable** / error.
+
+### Serve modes (`--mode` / `ED4ALL_GUI_MODE`)
+
+The serve mode is now a three-way choice — `full` (default) | `studio` |
+`learner`:
+
+```bash
+ed4all gui                           # full: operator + Studio + learner
+ed4all gui --mode studio             # Studio + learner only; operator NOT mounted
+ed4all gui --mode learner            # learner answer surface only
+ed4all gui --learner                 # legacy alias for --mode learner
+ED4ALL_GUI_MODE=studio ed4all gui    # env fallback (factory/reload path)
+```
+
+In **studio mode**:
+
+- **Reachable:** `/` (→ `/studio/`), `/studio/*`, `/shared/*`, `/learn/*` (the
+  C2 ask drawer rides this), `/api/library`, `/api/courses/{id}/*`,
+  `/api/learn/*`, `/api/health`, **plus the C3 Create-wizard surface**:
+  `/api/uploads` (PDF intake), `/api/runs` + `/api/workflows` + `/ws/runs/*`
+  (launch + run registry + the progress stream), and `/api/settings` +
+  `/api/settings/studio` + `/api/settings/test-provider` (the scoped Studio
+  settings page). The settings router is mounted in full so `PATCH` /
+  `test-provider` work, but the Studio settings UI only surfaces the
+  `/api/settings/studio` subset.
+- **Not mounted (404):** the operator `/api/retrieval` router and the operator
+  `/api/courses` listing router (the Studio `/api/courses/{id}/manifest|page|asset`
+  viewer endpoints come from `gui.routers.library`), plus the operator SPA.
+- **Still excluded from learner mode:** none of the above operator routes are
+  mounted in `--mode learner` (answer-only); `/api/settings/studio` 404s there.
+
+**Precedence** (`gui.app._resolve_mode`, high → low): explicit `mode=` kwarg >
+`learner_only=True` kwarg > `ED4ALL_GUI_MODE` env > legacy `ED4ALL_GUI_LEARNER`
+env (truthy) > default `full`. `ED4ALL_GUI_MODE` **wins** over the legacy
+`ED4ALL_GUI_LEARNER` (a deliberate `studio` request is never silently downgraded
+to learner by a stale learner env). The full app also mounts the Studio
+Library/viewer API so a facilitator can preview `/studio/` without a second
+process.
+
+### Operator auth (`ED4ALL_GUI_TOKEN`)
+
+The **full** mode operator surface supports a minimum-viable shared-secret
+bearer token so it can be exposed beyond loopback without leaving env / API-key
+management and run-launching wide open. Set `ED4ALL_GUI_TOKEN` (the
+Docker-friendly primary channel; the settings store's `secrets.gui_token` is
+also accepted, with **env precedence**):
+
+```bash
+ED4ALL_GUI_TOKEN=$(openssl rand -hex 32) ed4all gui --host 0.0.0.0
+```
+
+When the token is set, an ASGI middleware gates the **operator-classified**
+paths — anything below requires `Authorization: Bearer <token>` (a constant-time
+compare; a miss returns `401` with a `WWW-Authenticate: Bearer` challenge):
+
+- the six-tab operator **SPA root** (`/`, `/index.html`, `/app.js`),
+- the OpenAPI docs surface (`/docs`, `/redoc`, `/openapi.json`),
+- the operator-only API routers Studio never calls: `/api/courses`,
+  `/api/retrieval`, `/api/activity`,
+- the operator **run-log WebSocket** `/api/ws/runs/*` — browser JS can't set WS
+  request headers, so the token rides the `?token=<token>` **query param**
+  (constant-time compared server-side; a miss closes the socket with app code
+  `4401`).
+
+Deliberately **left open** even when the token is set (so the Docker
+healthcheck + the Studio Create/Settings flows keep working): `/api/health`,
+the Studio-shared API routers (`/api/settings`, `/api/uploads`, `/api/runs`
+REST, `/api/learn`, `/api/library`), and the static `shared` / `studio` /
+`learn` / `styles.css` assets. Studio & learner serve modes don't mount the
+operator surface and install **no** gate, so the token is full-mode-only.
+
+The operator SPA carries a minimal **token-entry overlay**: the token is held in
+`sessionStorage` (cleared on tab close), attached to every `fetch` by the shared
+API wrapper, and a `401` pops the overlay to (re)enter it (one retry with the new
+token). No token configured → the overlay never appears (current open behaviour).
+
+When `ED4ALL_GUI_TOKEN` is **unset** the surface is fully open (the LAN/loopback
+default); binding a non-loopback host in full mode with no token logs a startup
+**WARNING** naming the env var.
+
 ### Access posture (honest)
 
-The control-plane GUI has **no authentication** of any kind — no login, no
-user accounts, no auth middleware; CORS is `allow_origins=["*"]`. This is true
-of both the operator and learner surfaces. Access control for the Phase IA pilot
-is therefore **operational, not built-in**:
+The control-plane GUI's only built-in auth is the optional operator token above;
+with **no token** set there is no login, no user accounts; CORS is
+`allow_origins=["*"]`. The learner / Studio surfaces are open by design. Access
+control for the Phase IA pilot is therefore **operational** unless the token is
+configured:
 
 - **Default loopback bind.** The server binds `127.0.0.1:8077` by default
   (`ED4ALL_GUI_HOST`/`ED4ALL_GUI_PORT`, or `--host`/`--port`). Do **not** bind
   `0.0.0.0` (or a routable host) while the **full** app is running where a
-  learner can reach it — that would expose the operator settings/API-key surface
-  to anyone on the network.
-- **Learner-only mode is the access boundary.** When the surface must be reached
-  by a participant, run `--learner` so the operator routes are not mounted at
-  all. This — plus the loopback default and a facilitator-moderated,
-  single-machine session — *is* the access control for the pilot.
+  learner can reach it **without setting `ED4ALL_GUI_TOKEN`** — that would expose
+  the operator settings/API-key surface to anyone on the network (the startup
+  WARNING flags exactly this).
+- **Non-full serve modes are the access boundary.** When the surface must be
+  reached by a participant who should only *consume* courses, run
+  `--mode learner` (answer-only) so no operator route is mounted at all. This —
+  plus the loopback default and a facilitator-moderated, single-machine session —
+  *is* the access control for the pilot. **`--mode studio` is an authoring
+  surface, not a locked-down consumer surface:** as of C3 it mounts the Create
+  wizard's upload + run + (scoped) settings routes so a non-developer can build a
+  course, so it carries the same "no auth — keep it on loopback / a trusted
+  machine" caveat as the full operator app for those routes. Studio still does
+  **not** expose the per-tier Courseforge / Trainforge / embedding operator knobs
+  or the operator `/api/retrieval` surface.
 - **Moderated sessions.** Pilot sessions are run on a single facilitator-operated
   machine. There is no multi-user isolation; sessions are supervised.
-- **Full authentication is deferred** (out of scope for this phase) and flagged
-  for a later hardening wave. Treat the current posture as pilot-only.
+- **Minimum-viable auth is available** via `ED4ALL_GUI_TOKEN` (operator surface
+  only; see above) and is **required before any non-loopback deploy** of the full
+  app. Richer multi-user authentication (login, accounts) is still deferred to a
+  later hardening wave; treat the current posture as pilot-only.
 
 ### Privacy note
 

@@ -115,6 +115,22 @@ async def apply_settings() -> Any:
     return {"applied": sorted(applied.keys())}
 
 
+@router.get("/studio")
+async def get_studio_settings() -> Any:
+    """Return the masked settings doc scoped to the Studio-user subset.
+
+    Strict subset of ``GET ""`` (credentials / global / answer / local
+    categories + the authoring + answer routing tasks) plus a read-only
+    host/port echo. The Studio settings page renders from this so a
+    non-developer never sees the full operator catalog. Writes still go through
+    ``PATCH ""`` (deep-patch dotted paths) — this endpoint is read-only.
+    """
+    try:
+        return settings_service.build_studio_settings_payload()
+    except Exception as exc:  # noqa: BLE001 — unexpected store/catalog failure
+        return _error(500, "studio_settings_load_failed", str(exc))
+
+
 @router.get("/ollama-models")
 async def ollama_models() -> Any:
     """Discover models installed on the local Ollama server (live probe).

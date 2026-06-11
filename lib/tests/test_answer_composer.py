@@ -343,3 +343,249 @@ def test_schema_accepts_libv2_answer_phase():
         "phase": "libv2-answer",
     }
     jsonschema.validate(event, schema)
+
+
+# ===========================================================================
+# Token-aware context budget (math-safe; dense vs prose) — Fix 1
+# ===========================================================================
+
+from lib.retrieval._prompts import (  # noqa: E402
+    CHARS_PER_TOKEN,
+    DEFAULT_NUM_CTX,
+    ENV_ANSWER_NUM_CTX,
+    CITATION_REMEDIATION_DIRECTIVE,
+    context_token_budget,
+    estimate_tokens,
+    render_answer_user_prompt_with_meta,
+    resolve_num_ctx,
+)
+from lib.retrieval.answer_backend import PromptTruncatedError  # noqa: E402
+
+
+def test_estimate_tokens_is_math_safe_upper_bound():
+    # 2.5 chars/token: 100 chars -> 40 tokens (ceil). A prose ~4 chars/token
+    # would have estimated 25; the math-safe divisor over-counts on purpose.
+    assert estimate_tokens("x" * 100) == 40
+    assert estimate_tokens("") == 0
+    assert CHARS_PER_TOKEN == 2.5
+
+
+def test_num_ctx_env_override_and_fallback(monkeypatch):
+    monkeypatch.delenv(ENV_ANSWER_NUM_CTX, raising=False)
+    assert resolve_num_ctx() == DEFAULT_NUM_CTX == 4096
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "8192")
+    assert resolve_num_ctx() == 8192
+    # Garbage / non-positive fall back to the default (never disables budget).
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "not-a-number")
+    assert resolve_num_ctx() == DEFAULT_NUM_CTX
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "0")
+    assert resolve_num_ctx() == DEFAULT_NUM_CTX
+
+
+def _dense_passages(n, chars):
+    # Dense math-like text (symbols tokenize finer; we model worst-case via the
+    # conservative divisor). Each passage is `chars` long.
+    return [
+        RetrievedPassage(
+            chunk_id=f"chunk_{i:05d}",
+            text=("a < b ≤ c ∧ ∀x∈S " * 1000)[:chars],
+            score=0.9 - i * 0.01, engine="lexical",
+            item_path=f"m/p{i}.html", section_heading=f"S{i}",
+            module_id="m1", source={},
+        )
+        for i in range(n)
+    ]
+
+
+def test_token_budget_drops_passages_to_fit_small_window(monkeypatch):
+    # A 4096 window cannot hold 8 dense 1500-char passages. The renderer must
+    # drop trailing passages so the estimated prompt tokens fit the window.
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "4096")
+    passages = _dense_passages(8, 1500)
+    prompt, meta = render_answer_user_prompt_with_meta(
+        "How is a < b read aloud?", passages, max_tokens=1024
+    )
+    assert meta["dropped_count"] >= 1
+    assert len(meta["included_ids"]) < 8
+    # The estimate stays under the window (system + prompt + max_tokens fit).
+    assert (
+        meta["estimated_prompt_tokens"] + 1024 < meta["num_ctx"] + 200
+    )
+    assert "Question: How is a < b read aloud?" in prompt
+
+
+def test_token_budget_larger_window_keeps_more_passages(monkeypatch):
+    passages = _dense_passages(8, 1500)
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "4096")
+    _, small = render_answer_user_prompt_with_meta(
+        "q", passages, max_tokens=512
+    )
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "16384")
+    _, big = render_answer_user_prompt_with_meta(
+        "q", passages, max_tokens=512
+    )
+    # A bigger window keeps strictly more passages (prose vs dense both gain).
+    assert len(big["included_ids"]) > len(small["included_ids"])
+
+
+def test_prose_corpus_fits_more_than_dense_for_same_window(monkeypatch):
+    # Same window, same passage count, but the budget is token-based so the
+    # estimate scales with char length identically — the point is the budget
+    # NEVER lets the rendered estimate overflow the window regardless of text.
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "4096")
+    dense = _dense_passages(8, 1500)
+    _, meta = render_answer_user_prompt_with_meta("q", dense, max_tokens=1024)
+    assert meta["estimated_prompt_tokens"] <= meta["num_ctx"]
+
+
+def test_context_token_budget_accounts_for_max_tokens():
+    # Larger max_tokens -> smaller passage budget (generation eats the window).
+    b_small = context_token_budget("q", max_tokens=256, num_ctx=4096)
+    b_big = context_token_budget("q", max_tokens=2048, num_ctx=4096)
+    assert b_small > b_big >= 0
+
+
+# ===========================================================================
+# allowed_ids ∩ included (Fix 1 latent bug) — over-budget passages dropped
+# ===========================================================================
+
+def test_allowed_ids_only_includes_rendered_passages(monkeypatch):
+    # Many dense passages overflow the small window; the composer must only
+    # allow citations to passages actually rendered. A model that cites a
+    # DROPPED passage id is treated as an unknown citation (remediation/raise),
+    # NOT silently credited.
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "4096")
+    passages = _dense_passages(8, 1500)
+    _, meta = render_answer_user_prompt_with_meta("q", passages, max_tokens=1024)
+    included = set(meta["included_ids"])
+    dropped_ids = [p.chunk_id for p in passages if p.chunk_id not in included]
+    assert dropped_ids  # at least one passage was dropped
+
+    # Model cites a dropped id every time -> persistent unknown citation.
+    bad_id = dropped_ids[0]
+    client = FakeAnswerClient([_envelope("ans", [bad_id])])
+    with pytest.raises(InvalidCitationError):
+        compose_answer("q", passages, client=client, max_parse_retries=2)
+
+
+def test_cited_dropped_passage_not_silently_accepted(monkeypatch):
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "4096")
+    passages = _dense_passages(8, 1500)
+    _, meta = render_answer_user_prompt_with_meta("q", passages, max_tokens=1024)
+    included = list(meta["included_ids"])
+    # An INCLUDED id is accepted normally (control).
+    client = FakeAnswerClient([_envelope("ans", [included[0]])])
+    result = compose_answer("q", passages, client=client)
+    assert result.cited_chunk_ids == [included[0]]
+
+
+# ===========================================================================
+# Tail directive + remediation directive enumerate the full allowed set
+# ===========================================================================
+
+def test_trailing_directive_enumerates_allowed_ids():
+    passages = _passages(2)
+    prompt, meta = render_answer_user_prompt_with_meta("q", passages)
+    # The tail (most-respected, truncation-surviving position) lists the ids.
+    assert "Valid citation ids:" in prompt
+    for cid in meta["included_ids"]:
+        assert cid in prompt.rsplit("Question:", 1)[-1] or cid in prompt
+    assert prompt.rstrip().endswith("}.")
+
+
+def test_remediation_directive_restates_full_allowed_set():
+    # On a bad-id reply, the remediation directive names the offenders AND the
+    # full allowed set (set-compliance, not just format-compliance).
+    client = FakeAnswerClient([
+        _envelope("draft", ["chunk_99999"]),    # unknown
+        _envelope("fixed", ["chunk_00000"]),     # corrected
+    ])
+    result = compose_answer("q", _passages(2), client=client)
+    assert result.cited_chunk_ids == ["chunk_00000"]
+    second_user = client.calls[1]["messages"][1]["content"]
+    assert "chunk_99999" in second_user            # offenders named
+    assert "chunk_00000" in second_user            # full allowed set restated
+    assert "chunk_00001" in second_user            # ... including the other id
+    # Directive template carries both placeholders.
+    assert "{allowed_ids}" in CITATION_REMEDIATION_DIRECTIVE
+    assert "{bad_ids}" in CITATION_REMEDIATION_DIRECTIVE
+
+
+# ===========================================================================
+# Truncation tripwire — both arms (Fix 1)
+# ===========================================================================
+
+class _UsageFakeClient(FakeAnswerClient):
+    """FakeAnswerClient that also reports server-side prompt_tokens usage."""
+
+    def __init__(self, responses, *, model="qwen2.5:14b-instruct-q4_K_M",
+                 reported_prompt_tokens=None):
+        super().__init__(responses, model=model)
+        self.last_usage = {}
+        self._reported = reported_prompt_tokens
+
+    def chat_completion(self, messages, *, max_tokens=1024, temperature=0.0,
+                        **kwargs):
+        text = super().chat_completion(
+            messages, max_tokens=max_tokens, temperature=temperature, **kwargs
+        )
+        if self._reported is not None:
+            self.last_usage = {"prompt_tokens": int(self._reported)}
+        return text
+
+
+def test_tripwire_fires_on_silent_head_truncation(monkeypatch):
+    # Big dense prompt; server reports a tiny prompt_tokens (head dropped).
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "4096")
+    passages = _dense_passages(6, 1500)
+    # Server claims it only saw ~50 prompt tokens -> head was truncated.
+    client = _UsageFakeClient(
+        [_envelope("fabricated", ["chunk_00000"])],
+        reported_prompt_tokens=50,
+    )
+    with pytest.raises(PromptTruncatedError) as exc:
+        compose_answer("q", passages, client=client)
+    msg = str(exc.value)
+    assert "OLLAMA_CONTEXT_LENGTH" in msg
+    assert "ED4ALL_ANSWER_NUM_CTX" in msg
+
+
+def test_tripwire_passes_when_reported_matches_estimate(monkeypatch):
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "16384")
+    passages = _dense_passages(4, 1200)
+    _, meta = render_answer_user_prompt_with_meta(
+        "q", passages, max_tokens=512
+    )
+    est = meta["estimated_prompt_tokens"]
+    included = meta["included_ids"]
+    # Server reports a count close to the estimate -> no truncation.
+    client = _UsageFakeClient(
+        [_envelope("ans", [included[0]])],
+        reported_prompt_tokens=est,
+    )
+    result = compose_answer("q", passages, client=client)
+    assert result.answer_text == "ans"
+
+
+def test_tripwire_noops_when_usage_absent():
+    # The default FakeAnswerClient exposes no last_usage attr meaningfully
+    # (set to {} by the real client); a missing/empty usage must NOT block.
+    passages = _passages(2)
+    client = FakeAnswerClient([_envelope("ans", ["chunk_00000"])])
+    # Ensure no usage signal.
+    assert not getattr(client, "last_usage", {})
+    result = compose_answer("q", passages, client=client)
+    assert result.answer_text == "ans"
+
+
+def test_tripwire_noops_on_small_prompt_below_floor(monkeypatch):
+    # A tiny prompt (estimate < floor) can't be truncated by a 4096 window;
+    # even a zero-ish reported count must not trip the wire.
+    monkeypatch.setenv(ENV_ANSWER_NUM_CTX, "4096")
+    passages = _passages(1)  # short
+    client = _UsageFakeClient(
+        [_envelope("ans", ["chunk_00000"])],
+        reported_prompt_tokens=5,
+    )
+    result = compose_answer("q", passages, client=client)
+    assert result.answer_text == "ans"

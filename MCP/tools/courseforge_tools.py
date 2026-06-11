@@ -19,7 +19,7 @@ _PROJECT_ROOT = _MCP_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import COURSEFORGE_PATH  # noqa: E402
+from lib.paths import COURSEFORGE_PATH, courseforge_exports_dir  # noqa: E402
 from lib.secure_paths import (  # noqa: E402
     safe_extract_zip,
     sanitize_path_component,
@@ -28,8 +28,10 @@ from lib.secure_paths import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
-# Derived paths
-EXPORTS_PATH = COURSEFORGE_PATH / "exports"
+# Derived paths. ``courseforge_exports_dir()`` honors ED4ALL_HOME (relocatable
+# data root) while staying byte-stable to ``COURSEFORGE_PATH / "exports"`` when
+# ED4ALL_HOME is unset.
+EXPORTS_PATH = courseforge_exports_dir()
 
 
 def _validate_courseforge_paths():

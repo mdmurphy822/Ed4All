@@ -205,6 +205,143 @@ def test_containment_threshold_boundary(tmp_path):
     assert strict.containment_rate < 0.95
 
 
+# --------------------------------------------------------------------------- #
+# Marketable-v1 B3 regression: normalization fixes for the citation-anchor
+# resolver. Each case pins exactly one fixed failure class on a hand-built
+# page/chunk pair (no LibV2 corpus). Without the resolver fix the chunk would
+# fail to anchor (SPAN_FABRICATED) and the fail-closed citation gate would
+# block a correct gold answer.
+# --------------------------------------------------------------------------- #
+
+# A full content page whose <body> carries data-cf-role="template-chrome"
+# (Courseforge stamps this on the page body). HTMLTextExtractor opens a
+# chrome-skip scope on <body> that its fixed end-tag set can never close, so
+# the OLD path swallowed the entire body. Genuine chrome (header/footer) keeps
+# its mark and must still be skipped.
+BODY_CHROME_PAGE_HTML = """<!DOCTYPE html>
+<html><head><title>Validation Report</title></head>
+<body data-cf-role="template-chrome">
+  <header data-cf-role="template-chrome"><nav>Week 7 navigation skip-link clutter</nav></header>
+  <main>
+    <h1>The Validation Report</h1>
+    <p>An inverted index maps each term to the list of documents that contain it, so a keyword query can be answered without scanning every document in the collection.</p>
+    <p>Term frequency weighting boosts documents in which a query term appears often, while inverse document frequency down-weights terms that appear in nearly every document.</p>
+  </main>
+  <footer data-cf-role="template-chrome">Footer boilerplate that repeats on every page in the course.</footer>
+</body></html>
+"""
+
+
+def test_body_chrome_mark_does_not_swallow_page(tmp_path):
+    """A page whose <body> carries data-cf-role=template-chrome must still
+    yield its full body text — the resolver neutralizes the un-closeable
+    root-level chrome mark before re-extracting. Without the fix the body is
+    swallowed, containment collapses to ~0, and the chunk reports
+    SPAN_FABRICATED.
+    """
+    course_dir = tmp_path / "course"
+    html_dir = course_dir / "sources" / "textbooks"
+    html_dir.mkdir(parents=True)
+    (html_dir / "report.html").write_text(BODY_CHROME_PAGE_HTML, encoding="utf-8")
+
+    # char_span deliberately bogus so resolution must come from the body text,
+    # not the exact-span arm.
+    chunk = _base_chunk("report.html", EXACT_ANCHOR, [0, 5])
+    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="dart")
+    assert anchor.status in {
+        AnchorStatus.RESOLVED_NORMALIZED,
+        AnchorStatus.RESOLVED_CONTAINMENT,
+    }
+    assert anchor.containment_rate == pytest.approx(1.0)
+
+
+def test_genuine_chrome_still_skipped(tmp_path):
+    """The root-mark neutralization is surgical: header/footer chrome keeps its
+    mark and must NOT leak into the matched page text. A chunk whose text is
+    ONLY the footer boilerplate must NOT anchor.
+    """
+    course_dir = tmp_path / "course"
+    html_dir = course_dir / "sources" / "textbooks"
+    html_dir.mkdir(parents=True)
+    (html_dir / "report.html").write_text(BODY_CHROME_PAGE_HTML, encoding="utf-8")
+
+    footer_text = "Footer boilerplate that repeats on every page in the course."
+    chunk = _base_chunk("report.html", footer_text, [0, 5])
+    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="dart")
+    # Footer chrome was skipped, so its text is absent from the page text.
+    assert anchor.status is AnchorStatus.SPAN_FABRICATED
+
+
+# A page whose entities HTMLParser will decode (&rsquo; -> ', &mdash; -> —),
+# paired with a chunk that retained the RAW entities verbatim.
+ENTITY_PAGE_HTML = """<!DOCTYPE html>
+<html><head><title>Scenario</title></head>
+<body>
+  <main>
+    <p>Acme Corp&rsquo;s HR system stores the org chart as a flat table &mdash; each employee has a single manager column pointing to a direct supervisor, and the validator must walk that chain to the top.</p>
+  </main>
+</body></html>
+"""
+
+# Same sentence, but with the raw entities the chunk text retained.
+ENTITY_CHUNK_TEXT = (
+    "Acme Corp&rsquo;s HR system stores the org chart as a flat table &mdash; "
+    "each employee has a single manager column pointing to a direct supervisor, "
+    "and the validator must walk that chain to the top."
+)
+
+
+def test_entity_drift_normalized_match(tmp_path):
+    """Chunk retained raw HTML entities while the page got them decoded by the
+    parser. After symmetric html.unescape on both sides the chunk is a
+    normalized substring of the page. Without the fix the shingles straddling
+    each entity mismatch and containment lands just below 0.85.
+    """
+    course_dir = tmp_path / "course"
+    html_dir = course_dir / "sources" / "textbooks"
+    html_dir.mkdir(parents=True)
+    (html_dir / "scenario.html").write_text(ENTITY_PAGE_HTML, encoding="utf-8")
+
+    chunk = _base_chunk("scenario.html", ENTITY_CHUNK_TEXT, [0, 5])
+    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="dart")
+    assert anchor.status in {
+        AnchorStatus.RESOLVED_NORMALIZED,
+        AnchorStatus.RESOLVED_CONTAINMENT,
+    }
+    assert anchor.containment_rate == pytest.approx(1.0)
+
+
+def test_normalization_fixes_compose(tmp_path):
+    """Body-chrome mark AND entity drift on the same page/chunk pair — both
+    resolver fixes must compose so the chunk anchors at full containment.
+    """
+    page = """<!DOCTYPE html>
+<html><head><title>Combined</title></head>
+<body data-cf-role="template-chrome">
+  <main>
+    <p>The reasoner derives a triple when the rule&rsquo;s antecedent matches &mdash; otherwise the closure stays fixed and no new statements appear in the graph.</p>
+  </main>
+</body></html>
+"""
+    chunk_text = (
+        "The reasoner derives a triple when the rule&rsquo;s antecedent matches "
+        "&mdash; otherwise the closure stays fixed and no new statements appear "
+        "in the graph."
+    )
+    course_dir = tmp_path / "course"
+    html_dir = course_dir / "sources" / "textbooks"
+    html_dir.mkdir(parents=True)
+    (html_dir / "combined.html").write_text(page, encoding="utf-8")
+
+    chunk = _base_chunk("combined.html", chunk_text, [0, 5])
+    anchor = resolve_citation_anchor(chunk, course_dir, chunkset_kind="dart")
+    assert anchor.status in {
+        AnchorStatus.RESOLVED_NORMALIZED,
+        AnchorStatus.RESOLVED_CONTAINMENT,
+    }
+    assert anchor.containment_rate == pytest.approx(1.0)
+
+
 def test_anchor_report_rollup_deterministic(tmp_path):
     course_dir = _write_html_course(tmp_path)
     chunks = [

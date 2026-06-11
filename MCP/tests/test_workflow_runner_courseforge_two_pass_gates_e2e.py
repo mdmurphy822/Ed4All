@@ -166,6 +166,12 @@ def _build_runner(tmp_path: Path, monkeypatch, phases: List[WorkflowPhase]):
     # runner's setattr only flips the runner's module-local symbol, so
     # we patch both call sites' STATE_PATH so task lookup + state
     # persistence land in the same tmp directory.
+    # These tests exercise the REAL in-process outline / rewrite tool with a
+    # patched router+provider — i.e. the blessed in-process provider-lattice
+    # route. Set COURSEFORGE_PROVIDER so the Marketable-v1 A3 authoring-route
+    # guardrail recognises the content-generator phases as lattice-routed
+    # (and so the executor's short-circuit matches what the test patches).
+    monkeypatch.setenv("COURSEFORGE_PROVIDER", "local")
     monkeypatch.setattr(
         "MCP.core.workflow_runner.PROJECT_ROOT", tmp_path,
     )
@@ -354,9 +360,25 @@ def test_outline_curie_gate_fires_through_workflow_runner(
     * stamps escalation_marker="outline_budget_exhausted",
     * runs the inter_tier_validation phase, which writes
       ``02_validation_report/report.json``,
-    * fires the ``outline_curie_anchoring`` gate as ``passed=False``
-      (NOT a silent waiver_info["skipped"]="true" stamp — the §1.1
-      failure mode this test guards against).
+    * fires the ``outline_curie_anchoring`` gate — wired and run, NOT a
+      silent waiver_info["skipped"]="true" stamp (the §1.1 failure mode
+      this test guards against).
+
+    Escalation-honoring contract (2026-06-10, CORRECTED): the skip
+    predicate is the packager's ship-exclusion predicate, NOT a blanket
+    marker skip. Every block in this fixture carries
+    ``escalation_marker="outline_budget_exhausted"`` BUT also carries
+    non-empty content (the curie-less ``"plain prose ..."`` the stub
+    provider emitted survives the regen loop) — i.e. each is a
+    *salvaged* block, not an empty tombstone. The packager ships salvaged
+    blocks (``pipeline_tools.py:5226`` excludes only marker + EMPTY), so
+    ``BlockCurieAnchoringValidator`` correctly AUDITS each one and the
+    curie-anchoring miss makes the gate fire ``passed=False`` with
+    ``issue_count >= 1``. That is a real GateResult, NOT the §1.1
+    silent-router-skip (no GATE_SKIPPED_MISSING_INPUTS waiver, no
+    ``"skipped"`` action). The tombstone-skip path (marker + empty →
+    not audited) is pinned separately in the validator unit tests; this
+    e2e proves the salvaged-with-content path stays on the audit chain.
     """
     project_id = "PROJ-W9_OUTLINE-20260505"
     course_name = "W9_OUTLINE"
@@ -446,16 +468,34 @@ def test_outline_curie_gate_fires_through_workflow_runner(
         f"This is the §1.1 failure mode (validators silently skipped)."
     )
 
-    # CRITICAL ASSERTION: the gate fires passed=False — NOT a silent
-    # skip. The §1.1 failure mode pre-W1 stamped passed=True with
-    # waiver_info["skipped"]="true"; W1's gate_input_routing
-    # registration closes that. This test is the integration-layer
-    # proof that path is closed.
+    # CRITICAL ASSERTION: the gate is WIRED and RAN — NOT a §1.1 silent
+    # router-skip. The §1.1 failure mode stamps a GATE_SKIPPED_MISSING_INPUTS
+    # waiver (validator_version="skipped", waiver_info["skipped"]="true");
+    # a gate that genuinely ran emits a real GateResult with an
+    # ``action`` / ``passed`` / ``issue_count`` chain entry. Here every
+    # block carries escalation_marker="outline_budget_exhausted" BUT also
+    # carries non-empty curie-less content — a *salvaged* block, not an
+    # empty tombstone — so the validator correctly AUDITS each one
+    # (CORRECTED escalation-honoring contract: only marker + EMPTY
+    # tombstones are skipped, matching the packager's ship-exclusion
+    # predicate at pipeline_tools.py:5226). The curie-anchoring miss makes
+    # the gate fire passed=False with >= 1 issue.
+    assert "skipped" not in (curie_gate.get("action") or ""), (
+        f"outline_curie_anchoring was router-skipped (§1.1 regression); "
+        f"chain entry: {curie_gate!r}."
+    )
+    # Salvaged-with-content blocks stay on the audit path → the curie-less
+    # content fails the anchoring check → gate fails closed.
     assert curie_gate.get("passed") is False, (
-        f"outline_curie_anchoring gate did NOT fail closed; "
-        f"chain summary entry: {curie_gate!r}. "
-        f"This is the §1.1 silent-skip regression — the gate either "
-        f"passed=True (silent skip) or the chain summary is malformed."
+        f"outline_curie_anchoring should FAIL on this salvaged-with-content "
+        f"corpus (marker-bearing but non-empty → audited, not skipped; "
+        f"curie-less content misses the anchoring check); chain entry: "
+        f"{curie_gate!r}."
+    )
+    assert curie_gate.get("issue_count", 0) >= 1, (
+        f"outline_curie_anchoring should emit >= 1 issue when auditing "
+        f"salvaged curie-less blocks (NOT skipping them as tombstones); "
+        f"chain entry: {curie_gate!r}."
     )
 
     # Inspect the on-disk blocks_outline.jsonl emit for proof the

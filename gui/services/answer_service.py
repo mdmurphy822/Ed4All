@@ -1,7 +1,7 @@
 """Learner answer service — wraps the grounded-answer pipeline (D4/D5).
 
 The router's seam to the grounded-answer stack. ``ask()`` resolves the engine
-("auto" → semantic when a vector index exists, else lexical — a cheap fs check,
+("auto" → hybrid-rrf when a vector index exists, else lexical — a cheap fs check,
 never a silent downgrade for an explicit semantic/hybrid request), wires one
 ``DecisionCapture`` handle per request (capture failure never blocks the answer),
 calls ``answer_course_question`` with ``with_groundedness=False`` (the learner
@@ -50,15 +50,18 @@ def _has_vector_index(libv2_root: Path, slug: str) -> bool:
 def _resolve_engine(engine: str, libv2_root: Path, slug: str) -> str:
     """Resolve the requested engine to a concrete engine BEFORE the pipeline call.
 
-    ``"auto"`` → ``"semantic"`` when a vector index manifest exists for the
-    course, else ``"lexical"``. Any explicit engine (``lexical`` / ``semantic``
-    / ``hybrid``) passes through verbatim — an explicit ``semantic`` against a
-    missing index surfaces as a typed 503 in the router (anti-silent-degradation
-    contract), never a downgrade.
+    ``"auto"`` → ``"hybrid-rrf"`` when a vector index manifest exists for the
+    course, else ``"lexical"``. hybrid-rrf (BM25 fused with semantic via
+    reciprocal-rank fusion) is the benchmark-selected default — pure semantic
+    never beat the BM25 baseline, so ``auto`` routes through the fused engine
+    when an index is available. Any explicit engine (``lexical`` / ``semantic``
+    / ``hybrid-rrf``) passes through verbatim — an explicit ``semantic`` against
+    a missing index surfaces as a typed 503 in the router
+    (anti-silent-degradation contract), never a downgrade.
     """
     requested = (engine or "auto").strip().lower()
     if requested == "auto":
-        return "semantic" if _has_vector_index(libv2_root, slug) else "lexical"
+        return "hybrid-rrf" if _has_vector_index(libv2_root, slug) else "lexical"
     return requested
 
 

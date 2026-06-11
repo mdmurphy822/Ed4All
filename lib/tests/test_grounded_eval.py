@@ -477,3 +477,104 @@ def test_stored_eval_artifacts_meet_milestone_targets(slug):
                 f"{slug}: {key}={value} below pinned floor {target} "
                 f"({path.name})"
             )
+
+
+# ===========================================================================
+# Eval containment — per-question composer exhaustion (Fix 3)
+# ===========================================================================
+
+def _exhausting_answer_fn(fail_query, exc):
+    """answer_fn that RAISES `exc` for `fail_query`, answers others normally."""
+    inner = _gold_answer_fn(_GROUNDED_OK)
+
+    def _fn(repo_root, course_slug, query, **kwargs):
+        if query == fail_query:
+            raise exc
+        return inner(repo_root, course_slug, query, **kwargs)
+
+    return _fn
+
+
+def test_composer_exhaustion_is_contained_per_question(libv2_course):
+    """A composer error on ONE gold question is recorded as composer_exhausted;
+    the OTHER questions are still evaluated and the artifact still writes."""
+    from lib.retrieval.answer_composer import AnswerComposeError
+
+    repo_root, slug, course_dir = libv2_course
+    fail_q = "What does a vector store index?"
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_exhausting_answer_fn(
+            fail_q, AnswerComposeError("parse exhausted")
+        ),
+        with_groundedness=True, write=True,
+    )
+    # Per-question status recorded.
+    statuses = {r["question_id"]: r["status"] for r in report["questions"]}
+    exhausted = [s for s in statuses.values() if s == "composer_exhausted"]
+    assert len(exhausted) == 1
+    # The other two gold questions answered normally.
+    assert sorted(statuses.values()).count("answered") == 2
+    # Aggregate honesty: exhausted question is NOT-answered (out of
+    # answered_count) but stays in the answer_rate denominator (3 questions).
+    assert report["headline"]["answer_rate"] == pytest.approx(2 / 3)
+    assert report["composer_exhausted"] == 1
+    # NOT counted as a refusal.
+    assert report["headline"]["refusal"]["false_refusals_on_gold"] == 0
+    # Artifact written despite the per-question failure.
+    assert Path(report["_written"]["report_path"]).exists()
+
+
+def test_truncation_error_is_contained_per_question(libv2_course):
+    from lib.retrieval.answer_backend import PromptTruncatedError
+
+    repo_root, slug, _ = libv2_course
+    fail_q = "How is retrieval quality commonly measured?"
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_exhausting_answer_fn(
+            fail_q, PromptTruncatedError("head truncated")
+        ),
+        write=False,
+    )
+    statuses = [r["status"] for r in report["questions"]]
+    assert statuses.count("composer_exhausted") == 1
+    assert report["composer_exhausted"] == 1
+
+
+def test_backend_unavailable_is_NOT_contained(libv2_course):
+    """A systemic backend outage must abort the eval (NOT be swallowed per
+    question) — otherwise every metric silently hollows out."""
+    from lib.retrieval.answer_backend import AnswerBackendUnavailable
+
+    repo_root, slug, _ = libv2_course
+
+    def _all_unavailable(repo_root, course_slug, query, **kwargs):
+        raise AnswerBackendUnavailable("server down")
+
+    with pytest.raises(AnswerBackendUnavailable):
+        run_grounded_eval(
+            repo_root, slug, engine="lexical",
+            answer_fn=_all_unavailable, write=False,
+        )
+
+
+def test_cli_exit_zero_with_artifact_on_composer_exhaustion(libv2_course):
+    """The CLI/`run_grounded_eval` returns the report (exit 0 path) with the
+    artifact written even when a question's composer exhausted — exit stays 0
+    unless something systemic fails."""
+    from lib.retrieval.answer_composer import InvalidCitationError
+
+    repo_root, slug, course_dir = libv2_course
+    fail_q = "Where does the course cover chunking strategies?"
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_exhausting_answer_fn(
+            fail_q, InvalidCitationError("persistent bad ids")
+        ),
+        write=True,
+    )
+    eval_dir = course_dir / "retrieval_eval"
+    assert list(eval_dir.glob("grounded_answer_eval_*.json"))
+    # The review sample still builds over all three questions.
+    assert report["_review_sample"]["n_questions"] == 3

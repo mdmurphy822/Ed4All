@@ -54,6 +54,11 @@ class OrchestratorResult:
     phase_outputs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     dispatched_phases: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    # Marketable-v1 A6: which phase failed + a short human reason (None on a
+    # clean run). Surfaced from WorkflowRunner.run_workflow so the GUI can
+    # render a structured failure panel instead of inferring the failing phase.
+    failed_phase: Optional[str] = None
+    failure_reason: Optional[str] = None
 
     @property
     def gates_passed(self) -> bool:
@@ -74,6 +79,8 @@ class OrchestratorResult:
             "dispatched_phases": self.dispatched_phases,
             "error": self.error,
             "gates_passed": self.gates_passed,
+            "failed_phase": self.failed_phase,
+            "failure_reason": self.failure_reason,
         }
 
 
@@ -463,6 +470,8 @@ class PipelineOrchestrator:
             phase_outputs=raw.get("phase_outputs", {}),
             dispatched_phases=list(dispatched or []),
             error=raw.get("error"),
+            failed_phase=raw.get("failed_phase"),
+            failure_reason=raw.get("failure_reason"),
         )
 
     # --------------------------------------------------------------- helpers

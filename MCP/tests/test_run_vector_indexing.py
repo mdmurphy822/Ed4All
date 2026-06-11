@@ -103,7 +103,7 @@ class TestRunVectorIndexingHappyPath:
         _materialize_course(tmp_path, slug)
         tool = registry["run_vector_indexing"]
 
-        raw = asyncio.get_event_loop().run_until_complete(
+        raw = asyncio.run(
             tool(course_name=slug, libv2_root=str(tmp_path))
         )
         env = json.loads(raw)
@@ -140,7 +140,7 @@ class TestRunVectorIndexingHappyPath:
 class TestRunVectorIndexingFailClosed:
     def test_missing_course_fails_closed(self, registry, tmp_path):
         tool = registry["run_vector_indexing"]
-        raw = asyncio.get_event_loop().run_until_complete(
+        raw = asyncio.run(
             tool(course_name="no-such-course", libv2_root=str(tmp_path))
         )
         env = json.loads(raw)
@@ -166,7 +166,7 @@ class TestRunVectorIndexingFailClosed:
         monkeypatch.setattr(_providers, "build_embedding_client", _boom)
 
         tool = registry["run_vector_indexing"]
-        raw = asyncio.get_event_loop().run_until_complete(
+        raw = asyncio.run(
             tool(course_name=slug, libv2_root=str(tmp_path))
         )
         env = json.loads(raw)

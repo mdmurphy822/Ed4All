@@ -1,5 +1,10 @@
+# Build-context excludes. Everything here is either a runtime VOLUME (mounted at
+# /data via ED4ALL_HOME, never baked into the image) or build cruft. Source
+# needed by `pip install -e .` (lib/, MCP/, cli/, gui/, pyproject.toml,
+# README.md) is intentionally NOT excluded.
 venv/
 .venv/
+.venv-gui/
 __pycache__/
 *.pyc
 .git/
@@ -7,12 +12,12 @@ __pycache__/
 .pytest_cache/
 htmlcov/
 *.egg-info/
-state/workflows/
-state/locks/
-state/logs/
-state/progress/
-state/status/
-state/runs/
+
+# Planning / scratch — not shipped in the image.
+plans/
+
+# Local data dirs — these are /data volumes at runtime, not image content.
+state/
 training-captures/
 Trainforge/output/
 Courseforge/exports/
@@ -25,4 +30,6 @@ DART/batch_output/
 DART/inputs/
 LibV2/courses/
 LibV2/catalog/
+
+# Local Claude state.
 .claude/

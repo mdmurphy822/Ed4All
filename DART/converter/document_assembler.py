@@ -94,6 +94,47 @@ def _safe_title(title: str) -> str:
     return html.escape(pretty)
 
 
+def _block_page_value(block: ClassifiedBlock) -> Optional[int]:
+    """Resolve a block's 1-indexed page number for provenance aggregation.
+
+    Mirrors ``block_templates._provenance_attrs``: the page-chrome
+    detector's printed-page label (``extra["page_label"]``) takes
+    precedence over the raw form-feed-derived physical page, since the
+    printed page is what downstream Courseforge / Trainforge citations want.
+    Returns ``None`` when neither is a positive int.
+    """
+    extra = getattr(block.raw, "extra", None) or {}
+    if isinstance(extra, dict):
+        label = str(extra.get("page_label") or "").strip()
+        if label.isdigit() and int(label) > 0:
+            return int(label)
+    page = getattr(block.raw, "page", None)
+    if isinstance(page, int) and page > 0:
+        return page
+    return None
+
+
+def _aggregate_block_pages(blocks: List[ClassifiedBlock]) -> str:
+    """Format the union of ``blocks``' page numbers as a ``data-dart-pages``
+    value (``"3"`` / ``"3-5"`` / ``"3,5,7"``).
+
+    The page-list → attribute-string formatting is delegated to
+    ``DART/multi_source_interpreter._format_pages_attr`` (the single source
+    of truth) so both DART output paths produce attributes the chunker
+    parses identically. This helper's job is purely to collect the per-block
+    page numbers; the lazy import keeps the converter package importable when
+    the multi-source engine's heavier deps are absent (and the converter →
+    multi_source_interpreter direction is already established by
+    ``DART/converter/sidecars.py``). Returns the empty string when no block
+    carries a known page — the caller omits the attribute (never emits an
+    empty / lying value).
+    """
+    from DART.multi_source_interpreter import _format_pages_attr
+
+    pages = [p for p in (_block_page_value(b) for b in blocks) if p is not None]
+    return _format_pages_attr(pages)
+
+
 def _split_metadata(
     classified_blocks: List[ClassifiedBlock],
 ) -> tuple[List[ClassifiedBlock], List[ClassifiedBlock]]:
@@ -729,11 +770,21 @@ def assemble_html(
         or 'class="dart-section ' in body_html
     )
     if not has_structural:
+        # B2: when content classifies entirely into leaf blocks (the common
+        # textbook layout — prose paragraphs + subheadings), the page
+        # numbers tracked on each ``RawBlock`` (from pdftotext form-feed
+        # boundaries / the page-chrome printed-page labels) would otherwise
+        # die at the HTML boundary because leaf templates never carry
+        # provenance. Aggregate every body block's page into a
+        # ``data-dart-pages`` attribute on the fallback wrapper so the
+        # downstream chunker can harvest real per-chunk page provenance.
+        pages_attr = _aggregate_block_pages(body_blocks)
+        pages_snippet = f' data-dart-pages="{pages_attr}"' if pages_attr else ""
         body_html = (
             '<section class="dart-section" role="region" '
             'aria-labelledby="main-content-heading" '
             'data-dart-source="dart_converter" '
-            'data-dart-block-id="main-content">'
+            f'data-dart-block-id="main-content"{pages_snippet}>'
             f"{body_html}"
             "</section>"
         )

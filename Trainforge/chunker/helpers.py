@@ -36,10 +36,146 @@ __all__ = [
     "extract_plain_text",
     "extract_plain_text_with_curies",
     "extract_section_html",
+    "harvest_dart_source_refs",
+    "parse_dart_pages_attr",
     "strip_assessment_feedback",
     "strip_feedback_from_text",
     "type_from_resource",
 ]
+
+
+# ---------------------------------------------------------------------------
+# DART source-provenance harvest (data-dart-block-id / data-dart-pages)
+# ---------------------------------------------------------------------------
+#
+# DART-produced HTML carries per-block source attribution on every
+# ``<section>`` / component wrapper (never on leaf ``<p>``/``<li>`` — see
+# DART/CLAUDE.md "Provenance attribute placement rule"):
+#
+#   <section data-dart-block-id="s3_c0" data-dart-pages="3-5" ...>
+#
+# The chunker harvests these so the emitted chunk's
+# ``source.source_references[]`` can name the DART block(s) + PDF page(s)
+# each chunk derives from. The sourceId itself (``dart:{slug}#{block_id}``)
+# is minted by the DART-side ``_create_chunk`` callback (it owns the slug);
+# this helper returns the raw ``{block_id, pages}`` pairs the callback
+# folds into the canonical SourceReference shape.
+#
+# Additive contract: HTML without any ``data-dart-block-id`` attribute
+# yields ``[]`` (legacy / IMSCC / Courseforge corpora stay byte-identical —
+# the callback emits no ``source_references`` and the chunk is unchanged).
+
+#: ``data-dart-block-id`` attribute value (the block this wrapper carries).
+_DATA_DART_BLOCK_ID_RE = re.compile(
+    r'data-dart-block-id\s*=\s*(["\'])([^"\']*)\1',
+    re.IGNORECASE,
+)
+
+#: ``data-dart-pages`` attribute value, emitted on the SAME element as the
+#: block-id (DART/converter/block_templates._provenance_attrs +
+#: DART/multi_source_interpreter._build_dart_attrs both stamp them together).
+#: Shape is ``"3"`` (single), ``"3-5"`` (contiguous range), or ``"3,5,7"``
+#: (non-contiguous list) per ``_format_pages_attr``.
+_DATA_DART_PAGES_RE = re.compile(
+    r'data-dart-pages\s*=\s*(["\'])([^"\']*)\1',
+    re.IGNORECASE,
+)
+
+#: One full opening tag carrying a ``data-dart-block-id`` — captured so we
+#: can pair each block-id with the ``data-dart-pages`` attribute on the
+#: *same* element (rather than a document-global scan that would mis-pair a
+#: block-id on one wrapper with a pages value on another).
+_DART_BLOCK_TAG_RE = re.compile(
+    r"<[a-zA-Z][^>]*\bdata-dart-block-id\s*=\s*[\"'][^\"']*[\"'][^>]*>",
+    re.IGNORECASE,
+)
+
+
+def parse_dart_pages_attr(value: Optional[str]) -> List[int]:
+    """Parse a ``data-dart-pages`` attribute value into a sorted int list.
+
+    Handles the three emitted forms (see
+    ``DART/multi_source_interpreter._format_pages_attr`` /
+    ``DART/converter/block_templates._provenance_attrs``):
+
+      - ``"3"``      -> ``[3]``
+      - ``"3-5"``    -> ``[3, 4, 5]`` (inclusive contiguous range)
+      - ``"3,5,7"``  -> ``[3, 5, 7]``
+
+    Tolerates whitespace, mixed forms (``"3, 5-7"``), and discards
+    non-positive / non-integer tokens defensively. Returns a sorted,
+    deduped list; an empty / unparseable value yields ``[]`` so the
+    caller omits the optional ``pages`` field (SourceReference schema:
+    ``pages`` items are ``minimum: 1``).
+    """
+    if not value:
+        return []
+    pages: set = set()
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            lo_hi = token.split("-", 1)
+            try:
+                lo = int(lo_hi[0].strip())
+                hi = int(lo_hi[1].strip())
+            except (ValueError, IndexError):
+                continue
+            if lo > hi:
+                lo, hi = hi, lo
+            for p in range(lo, hi + 1):
+                if p > 0:
+                    pages.add(p)
+        else:
+            try:
+                p = int(token)
+            except ValueError:
+                continue
+            if p > 0:
+                pages.add(p)
+    return sorted(pages)
+
+
+def harvest_dart_source_refs(html: str) -> List[Dict[str, Any]]:
+    """Harvest DART ``{block_id, pages}`` provenance pairs from ``html``.
+
+    Scans every opening tag that carries a ``data-dart-block-id`` and
+    pairs it with the ``data-dart-pages`` attribute on the *same* element.
+    Returns an ordered, deduped (by ``block_id``) list of
+    ``{"block_id": str, "pages": List[int]}`` dicts — document order
+    preserved so a chunk built from several merged DART sections lists its
+    blocks in reading order.
+
+    Returns ``[]`` when ``html`` carries no ``data-dart-block-id`` (the
+    additive contract — legacy / non-DART HTML emits no source references
+    and the chunk stays byte-identical to its pre-harvest shape).
+
+    The empty-string ``data-dart-block-id=""`` case (a defensive sentinel)
+    is skipped: an empty block id can't form a valid
+    ``dart:{slug}#{block_id}`` sourceId.
+    """
+    if not html or "data-dart-block-id" not in html:
+        return []
+
+    refs: List[Dict[str, Any]] = []
+    seen: set = set()
+    for tag in _DART_BLOCK_TAG_RE.findall(html):
+        bid_match = _DATA_DART_BLOCK_ID_RE.search(tag)
+        if not bid_match:
+            continue
+        block_id = bid_match.group(2).strip()
+        if not block_id or block_id in seen:
+            continue
+        seen.add(block_id)
+        pages_match = _DATA_DART_PAGES_RE.search(tag)
+        pages = (
+            parse_dart_pages_attr(pages_match.group(2))
+            if pages_match
+            else []
+        )
+        refs.append({"block_id": block_id, "pages": pages})
+    return refs
 
 
 # ---------------------------------------------------------------------------

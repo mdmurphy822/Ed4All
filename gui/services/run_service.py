@@ -107,6 +107,7 @@ def list_workflows() -> List[Dict[str, Any]]:
             phases.append(
                 {
                     "name": phase.name,
+                    "label": PHASE_LABELS.get(phase.name, ""),
                     "agents": list(phase.agents or []),
                     "depends_on": list(phase.depends_on or []),
                     "validation_gates_count": len(gates),
@@ -209,6 +210,58 @@ def _apply_request_env(req: Dict[str, Any]) -> Dict[str, str]:
     return applied
 
 
+# Marketable-v1 A3 — the blessed turnkey authoring route. The GUI launches
+# runs headless (no Claude Code session servicing the mailbox), so every
+# LLM-needing agent MUST resolve its generation through the in-process
+# provider lattice. Each entry below is an agent's provider env var; when
+# set, ``TaskExecutor._invoke_tool`` short-circuits the mailbox subagent
+# dispatch and runs the in-process tool, which routes through the
+# OpenAI-compatible provider registry. The env-var literals are the canonical
+# ``MCP.core.executor.AGENT_AUTHORING_PROVIDER_ENV_MAP`` values, reproduced as
+# a plain tuple so this module stays import-light (no MCP import at module
+# load). A drift guard test asserts they match the executor map.
+_AUTHORING_PROVIDER_ENVS: Tuple[str, ...] = (
+    "COURSEFORGE_PROVIDER",        # content-generator
+    "COURSEPLANNER_PROVIDER",      # course-outliner
+    "TRAINFORGE_ASSESSMENT_PROVIDER",  # assessment-generator
+    "TRAINFORGE_SYNTHESIS_PROVIDER",   # training-synthesizer
+)
+
+
+def _apply_authoring_route_env(req: Dict[str, Any]) -> Dict[str, str]:
+    """Set the blessed authoring-route provider env for an enqueued run.
+
+    A GUI / headless run has no Claude session draining the mailbox, so the
+    workflow_runner guardrail (``_enforce_authoring_provider_route``) would
+    fail any LLM-needing phase whose ``<AGENT>_PROVIDER`` env is unset. This
+    helper fills every such env that isn't already set (via settings
+    ``model_routing`` or a prior overlay) with the resolved authoring
+    provider so the run routes through the in-process lattice by default.
+
+    Resolution per env var (only when currently unset/empty):
+      request ``provider`` > env ``LLM_PROVIDER`` (global routing provider)
+      > ``"local"`` (license-clean default; an air-gapped Ollama/vLLM lattice
+      provider that needs no key).
+
+    Returns the env vars this helper set (for logging / tests). Idempotent:
+    an env already populated (e.g. ``COURSEPLANNER_PROVIDER`` set via
+    ``model_routing.courseplanner.provider``) is left untouched, so per-task
+    routing the user configured in settings still wins.
+    """
+    resolved = (
+        str(req.get("provider") or "").strip()
+        or os.environ.get("LLM_PROVIDER", "").strip()
+        or "local"
+    )
+    applied: Dict[str, str] = {}
+    for env_var in _AUTHORING_PROVIDER_ENVS:
+        if os.environ.get(env_var, "").strip():
+            continue
+        os.environ[env_var] = resolved
+        applied[env_var] = resolved
+    return applied
+
+
 def _resolve_mode(req: Dict[str, Any]) -> str:
     """Resolve execution mode: request > env LLM_MODE > 'local'."""
     return str(req.get("mode") or os.environ.get("LLM_MODE", "local"))
@@ -281,9 +334,14 @@ async def launch_pipeline(req: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     # Apply env BEFORE creating the workflow so canonical-course-code +
-    # capture wiring see the user's settings.
+    # capture wiring see the user's settings. Then set the blessed
+    # authoring-route provider env (Marketable-v1 A3) so every LLM-needing
+    # phase resolves generation through the in-process provider lattice —
+    # a GUI/headless run has no Claude session servicing the mailbox, so
+    # without this the workflow_runner guardrail would fail those phases.
     try:
         _apply_request_env(req)
+        _apply_authoring_route_env(req)
     except Exception as exc:  # noqa: BLE001 — surface real settings error
         return _record_launch_failure(
             run_id,
@@ -483,6 +541,15 @@ async def _drive_pipeline(
         return
     shared_state.append_log(run_id, f"[{shared_state.now_iso()}] running {workflow_id}\n")
 
+    # Live phase-progress poller (C3 Create-wizard checklist). The orchestrator
+    # only logs phase summaries at the very end, so without this the WS stream
+    # carries no per-phase signal mid-run. The poller watches the workflow state
+    # file's ``phase_outputs`` completed-markers and appends a friendly
+    # ``[phase] <name> <state>`` line as each phase completes; those lines stream
+    # over the existing ``/ws/runs/{run_id}`` socket, and the wizard parses them
+    # into the checklist. Best-effort + cancelled with the run; never affects the
+    # run outcome.
+    progress_task = asyncio.ensure_future(_poll_phase_progress(run_id, workflow_id))
     try:
         from MCP.orchestrator import PipelineOrchestrator  # noqa: PLC0415
         from MCP.orchestrator.llm_backend import BackendSpec  # noqa: PLC0415
@@ -491,6 +558,7 @@ async def _drive_pipeline(
         orchestrator = PipelineOrchestrator(mode=mode, backend_spec=spec)
         result = await orchestrator.run(workflow_id)
     except asyncio.CancelledError:
+        progress_task.cancel()
         shared_state.append_log(run_id, f"[{shared_state.now_iso()}] cancelled\n")
         _safe_update(
             run_id,
@@ -498,6 +566,7 @@ async def _drive_pipeline(
         )
         raise
     except Exception as exc:  # noqa: BLE001 — record the real error
+        progress_task.cancel()
         logger.exception("pipeline run crashed for %s", workflow_id)
         tb = traceback.format_exc()
         shared_state.append_log(run_id, f"[{shared_state.now_iso()}] ERROR: {exc}\n{tb}\n")
@@ -511,6 +580,10 @@ async def _drive_pipeline(
         ):
             shared_state.append_event("gui", "run_failed", {"run_id": run_id, "error": str(exc)})
         return
+    finally:
+        # Stop the poller (best-effort) once the orchestrator returns / raises.
+        if not progress_task.done():
+            progress_task.cancel()
 
     payload = result.to_dict() if hasattr(result, "to_dict") else dict(result or {})
     status = "completed" if payload.get("status") == "ok" else "failed"
@@ -529,6 +602,30 @@ async def _drive_pipeline(
                     f"{info.get('task_count', 0)} gates="
                     f"{'pass' if info.get('gates_passed') else 'fail'}\n",
                 )
+
+    # Marketable-v1 A6 operator-failure-UX: when the workflow failed, emit a
+    # STRUCTURED per-phase failure line + persist ``failed_phase`` /
+    # ``failure_reason`` onto the run record. The Create-wizard progress view
+    # parses this line to mark the right phase failed (no longer guessing from
+    # "last running"), and the failure panel reads the persisted fields. The
+    # runner surfaces both fields; fall back to inferring the failed phase from
+    # ``phase_results`` (the phase reporting gates_passed=False or failed>0) so
+    # a workflow that fails without setting them still gets a structured line.
+    failed_phase = payload.get("failed_phase")
+    failure_reason = payload.get("failure_reason")
+    if status == "failed":
+        if not failed_phase:
+            failed_phase, failure_reason = _infer_failed_phase(
+                payload.get("phase_results"), failure_reason or payload.get("error")
+            )
+        if failed_phase:
+            label = PHASE_LABELS.get(failed_phase, failed_phase)
+            reason = failure_reason or payload.get("error") or "unknown failure"
+            shared_state.append_log(
+                run_id,
+                f"[{shared_state.now_iso()}] [phase] {failed_phase} failed "
+                f"— {label}: {reason}\n",
+            )
     if _finalize_status(
         run_id,
         {
@@ -536,6 +633,8 @@ async def _drive_pipeline(
             "error": payload.get("error"),
             "gate_results": payload.get("phase_results"),
             "gates_passed": gates_passed,
+            "failed_phase": failed_phase,
+            "failure_reason": failure_reason,
             "finished_at": shared_state.now_iso(),
         },
     ):
@@ -544,6 +643,82 @@ async def _drive_pipeline(
             "run_finished",
             {"run_id": run_id, "workflow_id": workflow_id, "status": status},
         )
+
+
+# Friendly, end-user-facing phase labels for the textbook_to_course pipeline.
+# Keyed by the internal phase name (config/workflows.yaml). The Create wizard's
+# progress checklist renders these; the canonical phase order is still read from
+# the run record / config, this only maps id -> human label. Unknown phases fall
+# back to a title-cased id client-side, so a new phase never breaks the UI.
+PHASE_LABELS: Dict[str, str] = {
+    "dart_conversion": "Convert textbook to accessible HTML",
+    "staging": "Stage source files",
+    "chunking": "Chunk source content",
+    "objective_extraction": "Read textbook structure",
+    "source_mapping": "Map sources to modules",
+    "course_planning": "Plan learning objectives",
+    "concept_extraction": "Extract key concepts",
+    "content_generation": "Generate course content",
+    "content_generation_outline": "Outline course content",
+    "inter_tier_validation": "Validate content",
+    "content_generation_rewrite": "Refine course content",
+    "post_rewrite_validation": "Re-validate content",
+    "packaging": "Package course",
+    "imscc_chunking": "Chunk packaged course",
+    "trainforge_assessment": "Generate assessments",
+    "training_synthesis": "Synthesize training data",
+    "libv2_archival": "Archive course",
+    "vector_indexing": "Build search index",
+    "finalization": "Finalize course",
+}
+
+
+async def _poll_phase_progress(run_id: str, workflow_id: str) -> None:
+    """Append friendly per-phase progress lines as the workflow advances.
+
+    Watches ``state/workflows/<workflow_id>.json``'s ``phase_outputs`` — the
+    WorkflowRunner stamps ``_completed`` (and ``_skipped``) on each phase's
+    output dict as it finishes a phase and re-saves the state file. We poll that
+    file and, when a phase newly reaches a completed/skipped marker, append a
+    ``[phase] <name> done|skipped`` line to the run log so the WS stream carries
+    a per-phase signal mid-run (the orchestrator itself only logs a summary at
+    the very end). Pure observation: never mutates the workflow state, never
+    affects the run outcome; cancelled by ``_drive_pipeline`` when the run ends.
+    """
+    from lib.paths import STATE_PATH  # noqa: PLC0415
+
+    state_file = Path(STATE_PATH) / "workflows" / f"{workflow_id}.json"
+    seen: Dict[str, str] = {}
+    try:
+        while True:
+            await asyncio.sleep(1.0)
+            try:
+                raw = state_file.read_text(encoding="utf-8")
+            except (FileNotFoundError, OSError):
+                continue
+            try:
+                state = json.loads(raw)
+            except (ValueError, json.JSONDecodeError):
+                continue  # mid-write; try again next tick
+            phase_outputs = state.get("phase_outputs") if isinstance(state, dict) else None
+            if not isinstance(phase_outputs, dict):
+                continue
+            for name, out in phase_outputs.items():
+                if not isinstance(out, dict) or not out.get("_completed"):
+                    continue
+                marker = "skipped" if out.get("_skipped") else "done"
+                if seen.get(name) == marker:
+                    continue
+                seen[name] = marker
+                label = PHASE_LABELS.get(name, name)
+                shared_state.append_log(
+                    run_id,
+                    f"[{shared_state.now_iso()}] [phase] {name} {marker} — {label}\n",
+                )
+    except asyncio.CancelledError:
+        return
+    except Exception:  # noqa: BLE001 — progress polling is best-effort
+        logger.debug("phase-progress poll stopped for %s", run_id, exc_info=True)
 
 
 def _safe_update(run_id: str, patch: Dict[str, Any]) -> None:
@@ -683,6 +858,7 @@ async def launch_phase(req: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         _apply_request_env(req)
+        _apply_authoring_route_env(req)
     except Exception as exc:  # noqa: BLE001
         return _record_launch_failure(
             run_id,
@@ -822,16 +998,28 @@ async def _run_single_phase(
         run_id,
         f"[{shared_state.now_iso()}] phase {phase_name} done: gates_passed={gates_passed}\n",
     )
-    _safe_update(
-        run_id,
-        {
-            "status": status,
-            "tasks": task_summaries,
-            "gate_results": gate_results,
-            "gates_passed": bool(gates_passed),
-            "finished_at": shared_state.now_iso(),
-        },
-    )
+    # A6: on a single-phase gate failure, emit a structured failure line +
+    # persist the failed phase/reason so the GUI failure panel is consistent
+    # with the full-pipeline path.
+    update_patch: Dict[str, Any] = {
+        "status": status,
+        "tasks": task_summaries,
+        "gate_results": gate_results,
+        "gates_passed": bool(gates_passed),
+        "finished_at": shared_state.now_iso(),
+    }
+    if status == "failed":
+        digest = failed_gate_digest(gate_results)
+        reason = digest[0]["message"] if digest else "failed validation gates"
+        label = PHASE_LABELS.get(phase_name, phase_name)
+        shared_state.append_log(
+            run_id,
+            f"[{shared_state.now_iso()}] [phase] {phase_name} failed "
+            f"— {label}: {reason}\n",
+        )
+        update_patch["failed_phase"] = phase_name
+        update_patch["failure_reason"] = reason
+    _safe_update(run_id, update_patch)
     shared_state.append_event(
         "gui",
         "phase_finished",
@@ -910,6 +1098,169 @@ def _resolve_project_export(
     return None
 
 
+def _infer_failed_phase(
+    phase_results: Any, reason_fallback: Optional[str]
+) -> Tuple[Optional[str], Optional[str]]:
+    """Best-effort: pick the failing phase from a ``phase_results`` rollup.
+
+    Used only when the runner did not surface ``failed_phase`` directly (older
+    payloads / a crash before the loop break recorded it). Walks the
+    ``phase_results`` dict in insertion order and returns the FIRST phase that
+    reports ``gates_passed is False`` or ``failed > 0`` — the workflow is
+    sequential, so the first such phase is where it stopped. Returns
+    ``(None, reason_fallback)`` when nothing structured is found.
+    """
+    if isinstance(phase_results, dict):
+        for name, info in phase_results.items():
+            if not isinstance(info, dict):
+                continue
+            if info.get("gates_passed") is False:
+                return name, reason_fallback or "failed validation gates"
+            if info.get("failed"):
+                return name, reason_fallback or (
+                    f"{info.get('failed')} task(s) failed"
+                )
+    return None, reason_fallback
+
+
+def failed_gate_digest(gate_results: Any) -> List[Dict[str, Any]]:
+    """Reduce a ``gate_results`` chain to a digestible failed-gate list.
+
+    ``gate_results`` may be:
+    - the per-phase ``phase_results`` rollup (``{phase: {gates_passed,...}}``),
+      which carries no per-gate detail — skipped here, or
+    - a list of per-gate result dicts / objects (``gate_id``, ``severity``,
+      ``passed``, ``issues``), as the single-phase pathway persists in
+      ``run_record["gate_results"]``.
+
+    Returns one row per FAILED gate: ``{phase, gate_id, severity, message,
+    issues_count}``. ``phase`` is ``None`` for a flat list (the caller knows the
+    phase). Non-failing gates are dropped.
+    """
+    rows: List[Dict[str, Any]] = []
+
+    def _one(gr: Any, phase: Optional[str]) -> Optional[Dict[str, Any]]:
+        if hasattr(gr, "gate_id"):
+            passed = getattr(gr, "passed", True)
+            gate_id = getattr(gr, "gate_id", "") or ""
+            severity = getattr(gr, "severity", "warning") or "warning"
+            issues = list(getattr(gr, "issues", None) or [])
+        elif isinstance(gr, dict):
+            passed = gr.get("passed", True)
+            gate_id = gr.get("gate_id", "") or ""
+            severity = gr.get("severity", "warning") or "warning"
+            issues = list(gr.get("issues") or [])
+        else:
+            return None
+        if passed:
+            return None
+        return {
+            "phase": phase,
+            "gate_id": gate_id,
+            "severity": severity,
+            "message": str(issues[0]) if issues else "validation gate failed",
+            "issues_count": len(issues),
+        }
+
+    if isinstance(gate_results, list):
+        for gr in gate_results:
+            row = _one(gr, None)
+            if row:
+                rows.append(row)
+    elif isinstance(gate_results, dict):
+        # A phase_results rollup: each value may itself carry a per-gate list
+        # under a conventional key, but the rollup we persist only has the
+        # boolean; surface the failing phases as coarse rows.
+        for phase, info in gate_results.items():
+            if not isinstance(info, dict):
+                continue
+            sub = info.get("gate_results") or info.get("_gate_results")
+            if isinstance(sub, list):
+                for gr in sub:
+                    row = _one(gr, phase)
+                    if row:
+                        rows.append(row)
+            elif info.get("gates_passed") is False:
+                rows.append(
+                    {
+                        "phase": phase,
+                        "gate_id": "",
+                        "severity": "critical",
+                        "message": "phase failed validation gates",
+                        "issues_count": 0,
+                    }
+                )
+    return rows
+
+
+def locate_validation_report(record: Dict[str, Any]) -> Optional[Path]:
+    """Resolve the ``courseforge_validation_report.json`` for a run record.
+
+    Resolution: the run's ``params.project_id`` (or newest
+    ``PROJ-<course_name>-*`` export) -> ``<export_dir>/courseforge_validation_report.json``.
+    Courses discovered dynamically; no hardcoded paths. Returns ``None`` when no
+    export dir is found or the report file is absent.
+    """
+    params = record.get("params") if isinstance(record, dict) else None
+    project_id = None
+    if isinstance(params, dict):
+        project_id = params.get("project_id")
+    course_name = record.get("course_name") if isinstance(record, dict) else None
+    export_dir = _resolve_project_export(project_id, course_name)
+    if export_dir is None:
+        return None
+    report = export_dir / "courseforge_validation_report.json"
+    return report if report.is_file() else None
+
+
+def validation_report(run_id: str) -> Dict[str, Any]:
+    """Return the validation-report payload for a run (A6 endpoint backing).
+
+    Shape on success::
+
+        {
+          "run_id": ...,
+          "report": {<courseforge_validation_report.json>} | null,
+          "report_path": "<abs path>" | null,
+          "failed_gates": [ {phase, gate_id, severity, message, issues_count} ],
+          "failed_phase": ... | null,
+          "failure_reason": ... | null,
+        }
+
+    ``report`` is ``None`` (with an explanatory ``note``) when no
+    ``courseforge_validation_report.json`` exists for the run. ``failed_gates``
+    is always populated from the run record's persisted ``gate_results`` so the
+    operator sees the failing-gate digest even when no aggregator file exists.
+    Raises ``KeyError`` when the run is unknown (router maps to 404).
+    """
+    record = shared_state.read_run(run_id)
+    if record is None:
+        raise KeyError(run_id)
+
+    out: Dict[str, Any] = {
+        "run_id": run_id,
+        "report": None,
+        "report_path": None,
+        "failed_gates": failed_gate_digest(record.get("gate_results")),
+        "failed_phase": record.get("failed_phase"),
+        "failure_reason": record.get("failure_reason"),
+    }
+    report_path = locate_validation_report(record)
+    if report_path is None:
+        out["note"] = (
+            "no courseforge_validation_report.json found for this run "
+            "(only present after a two-pass Courseforge slice with a project "
+            "export); the failed-gate digest is still available"
+        )
+        return out
+    try:
+        out["report"] = json.loads(report_path.read_text(encoding="utf-8"))
+        out["report_path"] = str(report_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        out["note"] = f"validation report present but unreadable: {exc}"
+    return out
+
+
 def _summarize_task_results(results: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Map ``ExecutionResult`` objects to JSON-safe summary dicts."""
     out: List[Dict[str, Any]] = []
@@ -957,49 +1308,226 @@ def list_runs(limit: Optional[int] = None) -> List[Dict[str, Any]]:
 # ``running`` (pipeline) plus phase runs that register straight as ``running``.
 _NON_TERMINAL_STATES = ("queued", "running")
 
+# Marketable-v1 D3 durable-runs cap: one automatic resume per run. A run that is
+# re-orphaned AFTER an auto-resume (i.e. the resumed process also died, or the
+# resume itself crashed) is marked failed instead of resumed again — this bounds
+# crash loops where a poisoned run would otherwise be resumed on every boot. The
+# attempt count is persisted on the run record under ``resume_attempts``.
+_MAX_AUTO_RESUME_ATTEMPTS = 1
+
+
+def _workflow_state_file(workflow_id: str) -> Path:
+    """Resolve ``<state>/workflows/<workflow_id>.json`` for the active state root.
+
+    Mirrors ``shared_state._state_root``: when ``ED4ALL_STATE_RUNS_DIR`` is set
+    (tests / a redirected deployment), the ``workflows/`` dir is a sibling of the
+    named ``runs/`` dir under the same state root; otherwise it falls back to
+    ``lib.paths.STATE_PATH`` (which the WorkflowRunner writes to). Keeping this
+    in lock-step with where the runner persists state is what makes the
+    checkpoint detectable on boot.
+    """
+    env_runs = os.environ.get("ED4ALL_STATE_RUNS_DIR")
+    if env_runs:
+        return Path(env_runs).parent / "workflows" / f"{workflow_id}.json"
+    from lib.paths import STATE_PATH  # noqa: PLC0415
+
+    return Path(STATE_PATH) / "workflows" / f"{workflow_id}.json"
+
+
+def _resumable_workflow_id(record: Dict[str, Any]) -> Optional[str]:
+    """Return the orchestrator ``workflow_id`` IFF the run has resumable state.
+
+    A run is resumable when its workflow-state JSON exists and carries at least
+    one phase persisted as ``_completed`` (a checkpoint the resume path can skip
+    past). Without a completed phase there is nothing to resume — re-driving
+    would just restart from phase 0, so we treat it as non-resumable and let the
+    caller mark it failed/interrupted.
+
+    Returns ``None`` for phase runs (``kind != "pipeline"`` / no ``workflow_id``)
+    and for any state file that is missing, corrupt, or has no completed phase.
+    """
+    if record.get("kind") != "pipeline":
+        return None
+    workflow_id = record.get("workflow_id")
+    if not workflow_id:
+        return None
+    state_file = _workflow_state_file(workflow_id)
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+        return None
+    phase_outputs = state.get("phase_outputs") if isinstance(state, dict) else None
+    if not isinstance(phase_outputs, dict):
+        return None
+    has_checkpoint = any(
+        isinstance(out, dict) and out.get("_completed") for out in phase_outputs.values()
+    )
+    return workflow_id if has_checkpoint else None
+
+
+def _mark_orphan_failed(run_id: str, reason: str, *, terminal_status: str) -> bool:
+    """Stamp an orphaned run terminal (failed/interrupted) with ``reason``.
+
+    Returns ``True`` when the patch was written. Tolerates a vanished record.
+    """
+    try:
+        shared_state.update_run(
+            run_id,
+            {
+                "status": terminal_status,
+                "error": reason,
+                "finished_at": shared_state.now_iso(),
+            },
+        )
+        shared_state.append_log(
+            run_id, f"[{shared_state.now_iso()}] {terminal_status}: {reason}\n"
+        )
+        return True
+    except FileNotFoundError:
+        logger.warning("run %s vanished during orphan reconciliation", run_id)
+        return False
+
 
 def reconcile_orphans() -> List[str]:
-    """Flip any non-terminal run left over from a previous process to terminal.
+    """Reconcile non-terminal runs left over from a previous process on boot.
 
     Background driver tasks live only in-process, so a uvicorn restart leaves any
-    ``queued``/``running`` record stuck forever (no task is driving it, and its WS
-    clients would poll indefinitely waiting for a terminal frame). On boot, scan
-    the registry and stamp every non-terminal run as ``status="interrupted"`` with
-    a short note + ``finished_at`` so the registry and WS clients see a terminal
-    state. Best-effort: a record that vanishes / fails to update is skipped.
+    ``queued``/``running`` record stuck forever (no task drives it, WS clients
+    poll indefinitely). On boot we scan the registry and, per orphan:
 
-    Returns the list of run_ids that were reconciled (for logging/tests).
+    * **Resumable** (pipeline run with a workflow-state checkpoint AND under the
+      auto-resume cap): re-enter the drive loop via :func:`_resume_orphan` — the
+      SAME pathway a fresh launch uses (authoring-route env setup +
+      ``_drive_pipeline`` against the existing ``workflow_id``, which the
+      orchestrator resumes by skipping already-``_completed`` phases). The run
+      goes back to ``status="queued"`` and ``resume_attempts`` is incremented.
+    * **Not resumable** (no checkpoint, corrupt state, phase run): stamped
+      ``status="interrupted"`` with the reason.
+    * **Resume cap exhausted** (already auto-resumed ``_MAX_AUTO_RESUME_ATTEMPTS``
+      times and re-orphaned): stamped ``status="failed"`` with the reason, to
+      avoid a crash loop.
+
+    Resume launches require a running event loop (the FastAPI ``startup`` hook is
+    async). When no loop is running (a synchronous caller / test of the
+    mark-only path), a resumable orphan is conservatively marked ``interrupted``
+    rather than silently resumed.
+
+    Returns the list of run_ids that were reconciled — resumed OR marked terminal
+    (for logging/tests).
     """
     reconciled: List[str] = []
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
     for record in shared_state.list_runs():
         if record.get("status") not in _NON_TERMINAL_STATES:
             continue
         run_id = record.get("run_id")
         if not run_id:
             continue
+
+        base_reason = record.get("error") or (
+            "process restarted; run was no longer being driven"
+        )
         try:
-            shared_state.update_run(
-                run_id,
-                {
-                    "status": "interrupted",
-                    "error": record.get("error")
-                    or "process restarted; run was no longer being driven",
-                    "finished_at": shared_state.now_iso(),
-                },
+            workflow_id = _resumable_workflow_id(record)
+            attempts = int(record.get("resume_attempts") or 0)
+
+            if workflow_id and attempts >= _MAX_AUTO_RESUME_ATTEMPTS:
+                # Auto-resume already spent; refuse to resume again (crash-loop
+                # guard) and mark failed with the reason.
+                if _mark_orphan_failed(
+                    run_id,
+                    f"{base_reason}; auto-resume cap reached "
+                    f"({attempts}/{_MAX_AUTO_RESUME_ATTEMPTS}) — not resuming again",
+                    terminal_status="failed",
+                ):
+                    reconciled.append(run_id)
+                continue
+
+            if workflow_id and loop is not None:
+                _resume_orphan(run_id, workflow_id, record, attempts)
+                reconciled.append(run_id)
+                continue
+
+            # Non-resumable (no checkpoint / corrupt state / phase run), or a
+            # resumable run but no event loop to drive it: mark interrupted.
+            note = (
+                base_reason
+                if workflow_id is None
+                else f"{base_reason}; resumable but no event loop to drive resume"
             )
-            shared_state.append_log(
-                run_id,
-                f"[{shared_state.now_iso()}] interrupted: orchestrator process "
-                "restarted; run was no longer being driven\n",
-            )
-            reconciled.append(run_id)
-        except FileNotFoundError:
-            logger.warning("run %s vanished during orphan reconciliation", run_id)
+            if _mark_orphan_failed(run_id, note, terminal_status="interrupted"):
+                reconciled.append(run_id)
         except Exception:  # noqa: BLE001 — reconciliation is best-effort
             logger.exception("failed to reconcile orphan run %s", run_id)
+
     if reconciled:
         logger.info("reconciled %d orphaned run(s): %s", len(reconciled), reconciled)
     return reconciled
+
+
+def _resume_orphan(
+    run_id: str,
+    workflow_id: str,
+    record: Dict[str, Any],
+    prior_attempts: int,
+) -> None:
+    """Re-drive an orphaned run from its checkpoint on the same pathway as launch.
+
+    Re-applies the blessed authoring-route provider env (Marketable-v1 A3 — a
+    headless/GUI resume has no Claude session servicing the mailbox, so every
+    LLM-needing phase must resolve through the in-process provider lattice, just
+    like a fresh launch) using the run record's persisted ``provider``, bumps the
+    persisted ``resume_attempts`` counter, flips the record back to ``queued``,
+    and schedules ``_drive_pipeline`` against the EXISTING ``workflow_id``. The
+    orchestrator resumes by skipping already-``_completed`` phases.
+
+    The attempt bump is persisted BEFORE the drive task starts so that if the
+    resumed process also dies (re-orphaning the run), the next boot sees the
+    incremented count and marks the run failed instead of resuming forever.
+    """
+    mode = record.get("mode") or _resolve_mode({})
+    provider = record.get("provider") or _resolve_provider({})
+    model = record.get("model")
+
+    # Re-apply the authoring-route env so the resumed run routes generation
+    # through the in-process lattice (A3 guardrail). Best-effort — a failure
+    # here is logged; the drive task's own guardrail surfaces a hard error if
+    # the route is still unsatisfied.
+    try:
+        _apply_authoring_route_env({"provider": provider})
+    except Exception:  # noqa: BLE001
+        logger.exception("resume: failed to apply authoring-route env for %s", run_id)
+
+    shared_state.update_run(
+        run_id,
+        {
+            "status": "queued",
+            "error": None,
+            "finished_at": None,
+            "resume_attempts": prior_attempts + 1,
+        },
+    )
+    shared_state.append_log(
+        run_id,
+        f"[{shared_state.now_iso()}] auto-resuming from checkpoint "
+        f"(attempt {prior_attempts + 1}/{_MAX_AUTO_RESUME_ATTEMPTS}) "
+        f"workflow={workflow_id} mode={mode} provider={provider}\n",
+    )
+    shared_state.append_event(
+        "gui",
+        "run_resumed",
+        {"run_id": run_id, "workflow_id": workflow_id, "attempt": prior_attempts + 1},
+    )
+
+    task = asyncio.ensure_future(
+        _drive_pipeline(run_id, workflow_id, mode=mode, provider=provider, model=model)
+    )
+    _BACKGROUND_TASKS[run_id] = task
+    task.add_done_callback(lambda _t, _rid=run_id: _BACKGROUND_TASKS.pop(_rid, None))
 
 
 def tail_log(run_id: str, offset: int = 0) -> Tuple[str, int]:
@@ -1057,6 +1585,10 @@ __all__ = [
     "reconcile_orphans",
     "tail_log",
     "cancel_run",
+    "validation_report",
+    "failed_gate_digest",
+    "locate_validation_report",
     "SUPPORTED_WORKFLOWS",
     "COURSEFORGE_STAGE_SUBCOMMANDS",
+    "PHASE_LABELS",
 ]

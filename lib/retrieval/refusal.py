@@ -73,9 +73,14 @@ REASON_LOW_CONFIDENCE = "low_confidence"
 REASON_NOT_IN_COURSE_MODEL = "not_in_course_model"
 
 POLICY_VERSION_UNCALIBRATED = "ws3.v0-uncalibrated"
-#: First measured pin (D4.2 measure-then-pin). Bumped on every re-pin so a
-#: consumer can tell a measured threshold from the permissive v0 default.
-POLICY_VERSION_PINNED = "ws3.v1-pinned-2026-06-10"
+#: Measured-pin marker (D4.2 measure-then-pin). A single shared constant whose
+#: ONLY job is to let a consumer distinguish a measured threshold from the
+#: permissive v0 default — per-pin provenance (model, courses, date) lives in
+#: the PINNED_POLICIES comment block, not the version string. Bumped on each
+#: re-calibration wave; every pin references the constant, so the bump applies
+#: uniformly (the tier-2 reproduce-the-committed-verdict test, not the version
+#: string, is what guards each individual pin's numeric value against drift).
+POLICY_VERSION_PINNED = "ws3.v2-pinned-2026-06-10"
 
 
 # --------------------------------------------------------------------------- #
@@ -222,25 +227,52 @@ def default_policy_for(engine: str) -> RefusalPolicy:
 # --------------------------------------------------------------------------- #
 
 # Each pin is the clean ``recommended.min_top_score`` from a course's
-# refusal_calibration.json (refusal_precision >= 0.90 AND answer_recall >= 0.95
-# — the LARGEST qualifying threshold). Keyed by (engine, embedding_model_id):
+# refusal_calibration.json (refusal_precision >= 0.90 AND answer_recall >= 0.95).
+# Keyed by (engine, embedding_model_id):
 #
-#   * SEMANTIC pins bind to a SPECIFIC embedding model. Cosine scales are not
-#     comparable across embedders, so a pin tuned for one model is meaningless
-#     for another — an unknown (semantic, <model>) pair MUST fall back to the
-#     v0-uncalibrated default, never silently reuse a stale cosine threshold.
-#   * LEXICAL / hybrid-rrf pins are model-agnostic (no embedder), keyed
-#     (engine, None). BM25 blended scores carry no model id.
+#   * SEMANTIC + HYBRID-RRF pins bind to a SPECIFIC embedding model. The
+#     semantic threshold is a cosine; the hybrid-rrf threshold is a fused RRF
+#     score whose distribution still depends on the embedder via its semantic
+#     arm. Neither scale is comparable across embedders, so a pin tuned for one
+#     model is meaningless for another — an unknown (engine, <model>) pair MUST
+#     fall back to the v0-uncalibrated default, never silently reuse a stale
+#     threshold.
+#   * LEXICAL pins are model-agnostic (no embedder), keyed (lexical, None). BM25
+#     blended scores carry no model id.
 #
 # score_floor + min_passages_above_floor are inherited from the matching
 # DEFAULT_POLICIES entry the calibration sweep was measured against (the sweep
 # only re-pins min_top_score; the count signal + floor are unchanged).
 #
-# Measured pins (D4.2):
-#   (semantic, sentence-transformers/all-MiniLM-L6-v2)  sample-rag-101 2026-06-09
+# CROSS-COURSE DERIVATION (bge-large semantic pin, v2): the per-course sweep
+# rule picks the LARGEST single-course qualifying threshold, but a pin shipped
+# in the binary must hold across the whole corpus, not just one course. Across
+# the local course archives we calibrated, each course's recommended semantic
+# threshold differed; the per-course MAX would over-refuse genuinely answerable
+# queries on the lower-scoring courses (answer_recall fell to 0.70/0.80 there),
+# fabricating refusals. The honest cross-course pin is therefore the MINIMUM of
+# the per-course recommendations — the only value that keeps
+# refusal_precision >= 0.90 AND answer_recall >= 0.95 simultaneously on every
+# calibrated course (refusal under-firing is the safe failure direction this
+# module is built around). That minimum coincides with one course's committed
+# recommendation exactly, so the tier-2 reproduce-the-committed-verdict test
+# still anchors the numeric value to an on-disk artifact.
+#
+# HYBRID-RRF: deliberately UNPINNED. On every local course archive we
+# calibrated, the hybrid-rrf answerable/unanswerable fused-score distributions
+# overlapped — no threshold met the precision/recall rule (recommended=null).
+# The honest action is to ship no hybrid pin: hybrid-rrf falls through to the
+# v0-uncalibrated default until a separable course corpus yields a clean
+# threshold, which would then be keyed (hybrid-rrf, <embedding_model_id>).
+#
+# Measured pins:
+#   (semantic, sentence-transformers/all-MiniLM-L6-v2)  2026-06-09
 #       min_top_score=0.369377  refusal_precision=1.0  answer_recall=1.0
-#   (lexical, None)  sample-course-a 2026-06-10
+#   (lexical, None)  2026-06-10
 #       min_top_score=4.455352  refusal_precision=1.0  answer_recall=1.0
+#   (semantic, BAAI/bge-large-en-v1.5)  calibrated on 3 local course archives,
+#       2026-06-10; pin = MIN of the per-course recommendations (see above)
+#       min_top_score=0.653916  refusal_precision=1.0  answer_recall=1.0
 PINNED_POLICIES: Dict[tuple, RefusalPolicy] = {
     ("semantic", "sentence-transformers/all-MiniLM-L6-v2"): RefusalPolicy(
         engine="semantic",
@@ -251,6 +283,16 @@ PINNED_POLICIES: Dict[tuple, RefusalPolicy] = {
         ].min_passages_above_floor,
         policy_version=POLICY_VERSION_PINNED,
         embedding_model_id="sentence-transformers/all-MiniLM-L6-v2",
+    ),
+    ("semantic", "BAAI/bge-large-en-v1.5"): RefusalPolicy(
+        engine="semantic",
+        min_top_score=0.653916,
+        score_floor=DEFAULT_POLICIES["semantic"].score_floor,
+        min_passages_above_floor=DEFAULT_POLICIES[
+            "semantic"
+        ].min_passages_above_floor,
+        policy_version=POLICY_VERSION_PINNED,
+        embedding_model_id="BAAI/bge-large-en-v1.5",
     ),
     ("lexical", None): RefusalPolicy(
         engine="lexical",
@@ -273,18 +315,23 @@ def resolve_policy(
 
     Lookup rules:
 
-    * SEMANTIC engines are keyed by ``(engine, embedding_model_id)`` — the
-      cosine threshold is only valid for the embedder it was measured against.
-      An unknown model id (or ``None`` for a semantic engine) returns the
-      v0-uncalibrated default; we NEVER reuse another model's pinned cosine.
-    * LEXICAL / hybrid-rrf pins are keyed ``(engine, None)`` (model-agnostic);
-      any incidental ``embedding_model_id`` argument is ignored for these.
+    * SEMANTIC and HYBRID-RRF engines are keyed by
+      ``(engine, embedding_model_id)``. The semantic threshold is a cosine only
+      valid for the embedder it was measured against; the hybrid-rrf threshold
+      is a fused RRF score whose distribution still depends on the embedder via
+      its semantic arm — so a pin measured on one embedding model is meaningless
+      for another for BOTH engines. An unknown model id (or ``None`` for these
+      engines) returns the v0-uncalibrated default; we NEVER reuse another
+      model's pinned threshold.
+    * LEXICAL pins are keyed ``(lexical, None)`` (model-agnostic — BM25 carries
+      no embedder); any incidental ``embedding_model_id`` argument is ignored.
 
     Falling back to the (permissive) default is the safe direction: refusal
     under-firing is preferable to fabricated confidence on a stale threshold.
     """
-    # Lexical / hybrid-rrf carry no embedder — always look up under None.
-    key_model = None if engine != "semantic" else embedding_model_id
+    # Lexical carries no embedder — look up under None. Semantic + hybrid-rrf
+    # are embedder-keyed (the hybrid fused score depends on the semantic arm).
+    key_model = embedding_model_id if engine in ("semantic", "hybrid-rrf") else None
     pinned = PINNED_POLICIES.get((engine, key_model))
     if pinned is not None:
         return pinned

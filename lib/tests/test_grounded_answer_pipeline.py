@@ -107,6 +107,20 @@ _STRICT_LEXICAL = RefusalPolicy(
     policy_version="test-strict",
 )
 
+# A permissive lexical policy. The pipeline now resolves the MEASURED (lexical,
+# None) pin by default (min_top_score=4.455352, calibrated on a different
+# corpus); the mini-course fixture's BM25 scores fall below it, so the
+# citation-gate / answer-shape tests below — which exercise the post-confidence
+# surfaces, not the threshold — pass this permissive policy explicitly to clear
+# confidence regardless of the fixture's corpus-specific scores.
+_PERMISSIVE_LEXICAL = RefusalPolicy(
+    engine="lexical",
+    min_top_score=0.0,
+    score_floor=0.0,
+    min_passages_above_floor=1,
+    policy_version="test-permissive-lexical",
+)
+
 
 # --------------------------------------------------------------------------- #
 # Happy path: answer + resolving citations over the fixture
@@ -120,7 +134,7 @@ def test_happy_path_answers_with_resolved_citation(mini_libv2: Path):
     ])
     result = answer_course_question(
         mini_libv2, COURSE_SLUG, "What does a vector store index?",
-        client=client,
+        client=client, refusal_policy=_PERMISSIVE_LEXICAL,
     )
     assert isinstance(result, GroundedAnswer)
     assert result.status == STATUS_ANSWERED
@@ -147,12 +161,94 @@ def test_resolved_normalized_citation_passes_without_char_span(mini_libv2: Path)
     ])
     result = answer_course_question(
         mini_libv2, COURSE_SLUG, "What is FAISS used for similarity search?",
-        client=client,
+        client=client, refusal_policy=_PERMISSIVE_LEXICAL,
     )
     assert result.status == STATUS_ANSWERED
     cit = result.citations[0]
     assert cit.anchor_status == "resolved_normalized"
     assert cit.link_target["char_span"] is None
+
+
+# --------------------------------------------------------------------------- #
+# B4 provenance chain: source_references → citation.source_block + pdf_pages
+# --------------------------------------------------------------------------- #
+
+
+def _load_chunk(libv2_root: Path, chunk_id: str) -> dict:
+    path = libv2_root / "courses" / COURSE_SLUG / "dart_chunks" / "chunks.jsonl"
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        if rec.get("id") == chunk_id:
+            return rec
+    raise AssertionError(f"chunk {chunk_id} not in fixture")
+
+
+def test_source_references_thread_to_citation(mini_libv2: Path):
+    """A chunk carrying source_references → citation.source_block + pdf_pages."""
+    base = _load_chunk(mini_libv2, "mini_alpha_chunk_001")
+    prov_chunk = dict(base)
+    prov_chunk["id"] = "mini_alpha_chunk_prov"
+    prov_chunk["text"] = (
+        "Provenance marker xenon: a vector store indexes embedding vectors "
+        "for nearest-neighbor lookup."
+    )
+    src = dict(prov_chunk["source"])
+    src["source_references"] = [
+        {
+            "sourceId": "dart:mini_alpha#s3_c0",
+            "role": "primary",
+            "extractor": "synthesized",
+            "pages": [12, 12, 7],
+        }
+    ]
+    prov_chunk["source"] = src
+    _append_chunk(mini_libv2, prov_chunk)
+
+    client = FakeAnswerClient([
+        _envelope("A vector store indexes embedding vectors.",
+                  ["mini_alpha_chunk_prov"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "provenance marker xenon vector store",
+        client=client, refusal_policy=_PERMISSIVE_LEXICAL,
+        validate_citations=False,  # this synthetic chunk need not anchor
+    )
+    assert result.status == STATUS_ANSWERED
+    cit = result.citations[0]
+    assert cit.source_block == "dart:mini_alpha#s3_c0"
+    # de-duplicated + sorted page list.
+    assert cit.pdf_pages == [7, 12]
+    d = cit.to_dict()
+    assert d["source_block"] == "dart:mini_alpha#s3_c0"
+    assert d["pdf_pages"] == [7, 12]
+
+
+def test_contributing_role_used_when_no_primary(mini_libv2: Path):
+    """No 'primary' ref → fall back to the first reference (never empty)."""
+    base = _load_chunk(mini_libv2, "mini_alpha_chunk_001")
+    chunk = dict(base)
+    chunk["id"] = "mini_alpha_chunk_contrib"
+    chunk["text"] = "Krypton contributing marker: embeddings power retrieval."
+    src = dict(chunk["source"])
+    src["source_references"] = [
+        {"sourceId": "dart:mini_alpha#s9_c2", "role": "contributing", "pages": [4]},
+    ]
+    chunk["source"] = src
+    _append_chunk(mini_libv2, chunk)
+
+    client = FakeAnswerClient([
+        _envelope("Embeddings power retrieval.", ["mini_alpha_chunk_contrib"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "krypton contributing marker embeddings",
+        client=client, refusal_policy=_PERMISSIVE_LEXICAL,
+        validate_citations=False,
+    )
+    cit = result.citations[0]
+    assert cit.source_block == "dart:mini_alpha#s9_c2"
+    assert cit.pdf_pages == [4]
 
 
 # --------------------------------------------------------------------------- #
@@ -202,7 +298,7 @@ def test_model_not_in_course_refuses(mini_libv2: Path):
     client = FakeAnswerClient([_envelope("", [], not_in_course=True)])
     result = answer_course_question(
         mini_libv2, COURSE_SLUG, "What does a vector store index?",
-        client=client, capture=spy,
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
     )
     assert result.status == STATUS_REFUSED_NOT_IN_COURSE
     assert result.answer_text is None
@@ -272,7 +368,7 @@ def test_citation_gate_passes_emits_capture(mini_libv2: Path):
     ])
     answer_course_question(
         mini_libv2, COURSE_SLUG, "What does a vector store index?",
-        client=client, capture=spy,
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
     )
     gate_events = [e for e in spy.events
                    if e["decision_type"] == "grounded_answer_citation_gate"]
@@ -286,7 +382,7 @@ def test_empty_citations_blocks_as_invalid(mini_libv2: Path):
     client = FakeAnswerClient([_envelope("Bare answer.", [])])
     result = answer_course_question(
         mini_libv2, COURSE_SLUG, "What does a vector store index?",
-        client=client,
+        client=client, refusal_policy=_PERMISSIVE_LEXICAL,
     )
     assert result.status == STATUS_BLOCKED_INVALID_CITATION
     assert result.answer_text is None
@@ -331,7 +427,7 @@ def test_backend_unavailable_propagates(mini_libv2: Path):
     with pytest.raises(AnswerBackendUnavailable):
         answer_course_question(
             mini_libv2, COURSE_SLUG, "What does a vector store index?",
-            client=client,
+            client=client, refusal_policy=_PERMISSIVE_LEXICAL,
         )
 
 
@@ -393,7 +489,7 @@ def test_full_pipeline_runs_under_offline_guard(mini_libv2: Path):
     with no_network(allow_loopback=True):
         result = answer_course_question(
             mini_libv2, COURSE_SLUG, "What does a vector store index?",
-            client=client,
+            client=client, refusal_policy=_PERMISSIVE_LEXICAL,
         )
     assert result.status == STATUS_ANSWERED
 
@@ -409,7 +505,7 @@ def test_pipeline_has_no_hidden_non_loopback_dependency(mini_libv2: Path):
     with no_network(allow_loopback=False):
         result = answer_course_question(
             mini_libv2, COURSE_SLUG, "What does a vector store index?",
-            client=client,
+            client=client, refusal_policy=_PERMISSIVE_LEXICAL,
         )
     assert result.status == STATUS_ANSWERED
 
@@ -425,7 +521,7 @@ def test_grounded_answer_to_dict_keys_frozen(mini_libv2: Path):
     ])
     result = answer_course_question(
         mini_libv2, COURSE_SLUG, "What does a vector store index?",
-        client=client,
+        client=client, refusal_policy=_PERMISSIVE_LEXICAL,
     )
     d = result.to_dict()
     assert set(d.keys()) == {
@@ -438,7 +534,12 @@ def test_grounded_answer_to_dict_keys_frozen(mini_libv2: Path):
     assert set(cit.keys()) == {
         "chunk_id", "item_path", "section_heading", "module_id", "page_label",
         "anchor_status", "source_path", "text_quote", "link_target",
+        # B4 provenance-chain fields (additive, optional).
+        "source_block", "pdf_pages",
     }
+    # Legacy fixture chunk carries no source_references → provenance absent.
+    assert cit["source_block"] is None
+    assert cit["pdf_pages"] == []
     assert set(cit["link_target"].keys()) == {
         "kind", "item_path", "fragment", "char_span",
     }
@@ -608,6 +709,156 @@ def test_semantic_engine_directory_heuristic_would_misroute(
         refusal_policy=_PERMISSIVE_SEMANTIC,
     )
     assert result.status == STATUS_BLOCKED_CITATION_GATE
+
+
+# --------------------------------------------------------------------------- #
+# Refusal-policy pins wired onto the answer path (Workstream 0)
+# --------------------------------------------------------------------------- #
+#
+# The pipeline resolves its refusal policy through resolve_policy((engine,
+# embedding_model_id)) — NOT the bare engine default. These tests assert the
+# pinned (engine, model) pairs land on the answer path, unknown models fall back
+# to the v0-uncalibrated default, and lexical resolves model-agnostic (None).
+# All three force a PRE-LLM refusal (zero client calls) so the resolved policy's
+# version + embedding_model_id surface in result.refusal without an LLM.
+
+from lib.retrieval.refusal import (  # noqa: E402
+    PINNED_POLICIES,
+    POLICY_VERSION_PINNED,
+    POLICY_VERSION_UNCALIBRATED,
+)
+
+_MINILM = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def _stub_low_score_retrieval(monkeypatch, score: float):
+    """Stub retrieve_chunks to return one low-scoring passage for any engine.
+
+    Keeps the resolved-policy assertions independent of the fake embedder's
+    cosine luck: the single low score is below every pinned min_top_score, so
+    the pipeline refuses PRE-LLM and the resolved policy surfaces in
+    result.refusal.
+    """
+    import LibV2.tools.libv2.retriever as retr_mod
+
+    class _Result:
+        def __init__(self, s):
+            self.score = s
+            self.chunk_id = "mini_alpha_chunk_001"
+
+    def _fake(repo_root, query, *, course_slug=None, limit=10, engine="lexical",
+              **kwargs):
+        return [_Result(score)]
+
+    monkeypatch.setattr(retr_mod, "retrieve_chunks", _fake)
+
+
+def test_answer_path_resolves_pinned_semantic_policy(
+    mini_libv2: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A (semantic, <pinned model>) live index resolves the MEASURED pin on the
+    answer path — not the permissive v0-uncalibrated semantic default."""
+    import lib.retrieval.grounded_answer as ga
+
+    # The live index manifest reports the pinned MiniLM embedder.
+    monkeypatch.setattr(
+        ga, "_vector_index_embedding_model_id", lambda root, slug: _MINILM
+    )
+    # Low cosine (below the pinned 0.369377 min_top_score) → pre-LLM refusal.
+    _stub_low_score_retrieval(monkeypatch, 0.10)
+    client = FakeAnswerClient([_envelope("never used", ["x"])])
+
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "q", engine="semantic", client=client,
+    )
+    assert result.status == STATUS_REFUSED_LOW_CONFIDENCE
+    assert len(client.calls) == 0  # pre-LLM refusal
+    pinned = PINNED_POLICIES[("semantic", _MINILM)]
+    assert result.refusal["policy_version"] == POLICY_VERSION_PINNED
+    assert result.refusal["policy_version"] == pinned.policy_version
+    assert result.refusal["embedding_model_id"] == _MINILM
+
+
+def test_answer_path_unknown_semantic_model_falls_back_to_uncalibrated(
+    mini_libv2: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A semantic engine whose live index reports an UNKNOWN embedder must NOT
+    reuse a pinned cosine — it falls back to the v0-uncalibrated default."""
+    import lib.retrieval.grounded_answer as ga
+
+    monkeypatch.setattr(
+        ga, "_vector_index_embedding_model_id", lambda root, slug: "other/embed-v9"
+    )
+    # Below the v0-uncalibrated semantic min_top_score (0.30) → refusal.
+    _stub_low_score_retrieval(monkeypatch, 0.05)
+    client = FakeAnswerClient([_envelope("never used", ["x"])])
+
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "q", engine="semantic", client=client,
+    )
+    assert result.status == STATUS_REFUSED_LOW_CONFIDENCE
+    assert result.refusal["policy_version"] == POLICY_VERSION_UNCALIBRATED
+    # Uncalibrated default carries no embedder pin.
+    assert result.refusal["embedding_model_id"] is None
+
+
+def test_answer_path_lexical_resolves_pinned_model_none(
+    mini_libv2: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The lexical engine is model-agnostic: resolve_policy(lexical) → the
+    (lexical, None) pin on the answer path, never an embedder-keyed lookup."""
+    # Below the pinned lexical 4.455352 min_top_score → pre-LLM refusal.
+    _stub_low_score_retrieval(monkeypatch, 1.0)
+    client = FakeAnswerClient([_envelope("never used", ["x"])])
+
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "q", engine="lexical", client=client,
+    )
+    assert result.status == STATUS_REFUSED_LOW_CONFIDENCE
+    assert len(client.calls) == 0
+    pinned = PINNED_POLICIES[("lexical", None)]
+    assert result.refusal["policy_version"] == POLICY_VERSION_PINNED
+    assert result.refusal["policy_version"] == pinned.policy_version
+    assert result.refusal["embedding_model_id"] is None
+
+
+def test_answer_path_hybrid_rrf_reads_embedder_but_falls_back_uncalibrated(
+    mini_libv2: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """hybrid-rrf resolves the live index's embedder (its fused score depends on
+    the semantic arm) but, ABSENT a pin, falls back to the v0-uncalibrated
+    default — never a stale semantic cosine pin for the same model.
+
+    The wiring reads the manifest embedder for hybrid-rrf; this test confirms it
+    is consulted (the embedder is keyed) yet does not leak the (semantic, model)
+    pin onto the hybrid path."""
+    import lib.retrieval.grounded_answer as ga
+
+    seen = {}
+
+    def _fake_model(root, slug):
+        seen["called"] = True
+        return _BGE_LARGE
+
+    monkeypatch.setattr(ga, "_vector_index_embedding_model_id", _fake_model)
+    # Avoid the index-manifest chunkset read picking a wrong kind; pin it.
+    monkeypatch.setattr(
+        ga, "_vector_index_chunkset_kind", lambda root, slug: "dart"
+    )
+    _stub_low_score_retrieval(monkeypatch, 0.10)
+    client = FakeAnswerClient([_envelope("never used", ["x"])])
+
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "q", engine="hybrid-rrf", client=client,
+    )
+    assert seen.get("called") is True  # the embedder WAS resolved for hybrid-rrf
+    assert result.status == STATUS_REFUSED_LOW_CONFIDENCE
+    # Unpinned → v0-uncalibrated; the (semantic, bge-large) pin did NOT leak in.
+    assert result.refusal["policy_version"] == POLICY_VERSION_UNCALIBRATED
+    assert result.refusal["embedding_model_id"] is None
+
+
+_BGE_LARGE = "BAAI/bge-large-en-v1.5"
 
 
 # --------------------------------------------------------------------------- #

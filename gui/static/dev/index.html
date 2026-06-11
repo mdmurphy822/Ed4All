@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ed4All Developer Console</title>
+  <!-- The classic operator stylesheet supplies the base look; dev.css layers
+       the pane-shell + drawer chrome on top. -->
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/dev/dev.css">
+</head>
+<body>
+  <a class="skip-link" href="#dev-main">Skip to main content</a>
+
+  <div id="dev-shell">
+    <!-- The nav rail is a navigation landmark (not a tablist): panes are
+         hash-routed VIEWS that swap the whole #dev-main subtree, so the
+         "navigation + links" pattern is correct (a tablist implies in-page
+         tabpanels that all coexist in the DOM). -->
+    <nav id="dev-rail" aria-label="Developer console panes">
+      <p class="dev-brand"><a href="#/dev/runs">Ed4All <span class="dev-brand-sub">dev console</span></a></p>
+      <ul id="dev-navlist">
+        <li><a href="#/dev/runs" data-pane="runs">Run Inspector</a></li>
+        <li><a href="#/dev/upload" data-pane="upload">Upload &amp; Run</a></li>
+        <li><a href="#/dev/settings" data-pane="settings">Settings / API Keys</a></li>
+        <li><a href="#/dev/routing" data-pane="routing">Model Routing</a></li>
+        <li><a href="#/dev/courses" data-pane="courses">Courses &amp; Topics</a></li>
+        <li><a href="#/dev/retrieval" data-pane="retrieval">Retrieval</a></li>
+        <li><a href="#/dev/env" data-pane="env">Env Catalog</a></li>
+        <li><a href="#/dev/events" data-pane="events">Events</a></li>
+        <li><a href="#/dev/api" data-pane="api">API Explorer</a></li>
+      </ul>
+      <div class="dev-rail-foot">
+        <span id="dev-conn-dot" class="conn-dot" title="API reachability"></span>
+        <span id="dev-conn-label">checking…</span>
+      </div>
+    </nav>
+
+    <main id="dev-main" tabindex="-1" aria-live="polite" aria-busy="false"></main>
+  </div>
+
+  <!-- Console-wide ApiError drawer: a bottom drawer collecting failed API
+       calls. Starts collapsed; the shared api() error hook pushes rows in. -->
+  <aside id="dev-error-drawer" class="dev-drawer collapsed" aria-labelledby="dev-drawer-h">
+    <div class="dev-drawer-bar">
+      <button type="button" id="dev-drawer-toggle" class="ghost sm" aria-expanded="false" aria-controls="dev-drawer-body">
+        <span id="dev-drawer-h">API errors</span>
+        <span id="dev-drawer-count" class="dev-drawer-count" aria-live="polite">0</span>
+      </button>
+      <button type="button" id="dev-drawer-clear" class="ghost sm" hidden>Clear all</button>
+    </div>
+    <div id="dev-drawer-body" class="dev-drawer-body" hidden>
+      <table class="dev-err-table">
+        <caption class="visually-hidden">Failed API calls</caption>
+        <thead><tr>
+          <th scope="col">Time</th><th scope="col">Status</th><th scope="col">Path</th><th scope="col">Detail</th>
+        </tr></thead>
+        <tbody id="dev-err-rows"></tbody>
+      </table>
+    </div>
+  </aside>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+  <script type="module" src="/dev/dev.js"></script>
+</body>
+</html>

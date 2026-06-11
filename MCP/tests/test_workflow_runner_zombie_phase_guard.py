@@ -78,6 +78,11 @@ def _run(
     state_root = tmp_path / "state"
     monkeypatch.setattr(wr_mod, "STATE_PATH", state_root)
 
+    # These tests drive run_workflow with a MOCKED executor (no real
+    # dispatch), so opt into the templated-stub path the Marketable-v1 A3
+    # authoring-route guardrail honors for tests / dry runs.
+    monkeypatch.setenv("LOCAL_DISPATCHER_ALLOW_STUB", "1")
+
     workflow_id = "WF-TEST-0001"
     _write_workflow_state(state_root, workflow_id)
 

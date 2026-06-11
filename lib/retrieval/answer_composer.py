@@ -32,6 +32,19 @@ from lib.retrieval._prompts import (
     render_answer_user_prompt_with_meta,
 )
 
+# Fraction of the local estimate the server-reported prompt_tokens may
+# fall below before we declare the prompt head silently truncated. The
+# estimate is a rough UPPER bound (2.5 chars/token, conservative), and
+# tokenizers legitimately vary, so the margin is generous: only a LARGE
+# shortfall (reported < estimate * (1 - margin) AND below an absolute
+# floor) trips the tripwire. 0.5 → reported must be < half the estimate.
+_TRUNCATION_REPORTED_FRACTION = 0.5
+
+# Absolute floor below which the fractional check is not applied: tiny
+# prompts (estimate < this) have too little signal for the ratio to be
+# meaningful, and a 4096-window can't truncate them anyway.
+_TRUNCATION_MIN_ESTIMATE_TOKENS = 256
+
 
 class AnswerComposeError(RuntimeError):
     """Parse exhaustion / invalid envelope after all retries."""
@@ -167,6 +180,56 @@ def _unknown_citation_ids(
     return [cid for cid in citations if cid not in allowed]
 
 
+def _check_prompt_not_truncated(
+    client: Any,
+    estimated_prompt_tokens: int,
+    *,
+    model_id: str,
+    num_ctx: int,
+) -> None:
+    """Fail closed when the server silently truncated the prompt HEAD.
+
+    Reads the server-reported ``usage.prompt_tokens`` off the client's
+    ``last_usage`` (set by ``OpenAICompatibleClient.chat_completion``).
+    When the reported count is far BELOW the local estimate — reported
+    ``<`` ``estimate * _TRUNCATION_REPORTED_FRACTION`` AND the estimate
+    clears the absolute floor — the head was dropped (Ollama silently
+    truncates when the prompt exceeds the served window), so we raise
+    :class:`PromptTruncatedError` naming the operator fixes instead of
+    letting the fabricated-citation answer through.
+
+    No-ops when usage is unavailable (the server omitted it, or a test
+    double doesn't expose ``last_usage``): the tripwire is a guard, not a
+    requirement, and a missing signal must never block a valid answer.
+    """
+    usage = getattr(client, "last_usage", None)
+    if not isinstance(usage, dict):
+        return
+    reported = usage.get("prompt_tokens")
+    try:
+        reported_int = int(reported)
+    except (TypeError, ValueError):
+        return
+    if reported_int <= 0:
+        return  # server omitted / zeroed usage — no signal.
+    if estimated_prompt_tokens < _TRUNCATION_MIN_ESTIMATE_TOKENS:
+        return  # too small for the ratio to be meaningful.
+    threshold = estimated_prompt_tokens * _TRUNCATION_REPORTED_FRACTION
+    if reported_int < threshold:
+        raise PromptTruncatedError(
+            f"Prompt HEAD was silently truncated by the model server for "
+            f"model {model_id!r}: estimated ~{estimated_prompt_tokens} "
+            f"prompt tokens but the server reported only {reported_int} "
+            f"(< {threshold:.0f}). The served context window "
+            f"(num_ctx={num_ctx}) is too small for this prompt, so the "
+            f"system prompt + leading passage ids were dropped and any "
+            f"citations are fabricated. Fixes: raise the server window "
+            f"(OLLAMA_CONTEXT_LENGTH or a Modelfile 'PARAMETER num_ctx') "
+            f"AND set ED4ALL_ANSWER_NUM_CTX to the served window so the "
+            f"context budget shrinks the prompt to fit."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Composer
 # ---------------------------------------------------------------------------
@@ -193,15 +256,21 @@ def compose_answer(
     envelope.
     """
     selected = list(passages)[: max(0, max_passages)]
-    allowed_ids = [p.chunk_id for p in selected]
     model_id = _client_model_id(client)
     query_sha = hashlib.sha256(query.encode("utf-8")).hexdigest()[:8]
     engine = selected[0].engine if selected else ""
     top3 = [(p.chunk_id, round(float(p.score), 4)) for p in selected[:3]]
 
     base_user_prompt, render_meta = render_answer_user_prompt_with_meta(
-        query, selected
+        query, selected, max_tokens=max_tokens
     )
+    # The allowed citation ids are ONLY the passages the renderer actually
+    # INCLUDED in the prompt — over-budget trailing passages were dropped
+    # (their text + id are not in-window), so crediting a citation to a
+    # dropped passage would let the model "cite" something it never saw.
+    allowed_ids = list(render_meta.get("included_ids", [p.chunk_id for p in selected]))
+    estimated_prompt_tokens = int(render_meta.get("estimated_prompt_tokens", 0) or 0)
+    num_ctx = int(render_meta.get("num_ctx", 0) or 0)
 
     start = time.monotonic()
     attempts = 0
@@ -236,6 +305,17 @@ def compose_answer(
                 ) from exc
             raise
 
+        # Truncation tripwire: compare the server-reported prompt_tokens
+        # against the local estimate. A large shortfall means the head was
+        # silently dropped (the prompt overflowed the served window), so
+        # any citations are fabricated — fail closed BEFORE parsing.
+        _check_prompt_not_truncated(
+            client,
+            estimated_prompt_tokens,
+            model_id=model_id,
+            num_ctx=num_ctx,
+        )
+
         last_raw = raw if isinstance(raw, str) else ""
         envelope = _parse_answer_envelope(last_raw, allowed_ids)
         latency_ms = (time.monotonic() - start) * 1000.0
@@ -260,8 +340,12 @@ def compose_answer(
                 citation_count=len(citations), latency_ms=latency_ms,
                 outcome=f"unknown_citations:{','.join(unknown)}",
             )
+            # Re-state the FULL allowed set (not just the offenders):
+            # naming only bad ids yields format-compliance but not
+            # set-compliance — the model keeps inventing fresh ids.
             remediation_directive = CITATION_REMEDIATION_DIRECTIVE.format(
-                bad_ids=", ".join(unknown)
+                bad_ids=", ".join(unknown),
+                allowed_ids=", ".join(allowed_ids) if allowed_ids else "(none)",
             )
             continue
 
@@ -409,7 +493,10 @@ def _is_transport_failure(exc: Exception) -> bool:
 
 
 # Re-export so callers import the typed error from one place.
-from lib.retrieval.answer_backend import AnswerBackendUnavailable  # noqa: E402
+from lib.retrieval.answer_backend import (  # noqa: E402
+    AnswerBackendUnavailable,
+    PromptTruncatedError,
+)
 
 
 __all__ = [
@@ -418,5 +505,6 @@ __all__ = [
     "AnswerComposeError",
     "InvalidCitationError",
     "AnswerBackendUnavailable",
+    "PromptTruncatedError",
     "compose_answer",
 ]

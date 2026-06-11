@@ -407,7 +407,19 @@ tracker.update_status("content_generator", "IN_PROGRESS",
    └── Archive course artifacts to LibV2 (raw PDFs, DART HTML, IMSCC,
        RAG corpus). Gated by libv2_manifest integrity checks.
 
-11. finalization
+11. vector_indexing (optional)
+   └── Build the per-course on-device vector index (real embeddings +
+       numpy exact-search index) from the LibV2-archived chunkset so a
+       freshly-built course is askable (retrieval-ready) the moment the
+       run completes. Routes via the `rag-indexer` agent
+       (tool: `run_vector_indexing`) — the same handler as the
+       `rag_training` `indexing` phase. Runs by default; skips cleanly
+       with a logged reason when the `[embedding]` extras are absent
+       UNLESS `TRAINFORGE_REQUIRE_EMBEDDINGS` is set, in which case the
+       phase runs and fails closed on a broken/unavailable embedding
+       backend (no file-count fallback).
+
+12. finalization
    └── Final validation and training data export.
 ```
 
@@ -584,9 +596,9 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 | `intake_remediation` | 2 | 0 | 2 |
 | `batch_dart` | 2 | 0 | 2 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 27 | 49 | 76 |
+| `textbook_to_course` | 38 | 38 | 76 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **53** | **54** | **107** |
+| **Total** | **64** | **43** | **107** |
 
 ---
 
@@ -617,10 +629,10 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 
 | Prefix | Owner | Flag count |
 |--------|-------|-----------:|
-| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 45 |
+| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 46 |
 | `DART_*` | [`DART/CLAUDE.md § Opt-In Behavior Flags`](DART/CLAUDE.md) | 6 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 17 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 25 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 27 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -634,6 +646,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | `ED4ALL_ANSWER_PROVIDER` | `local` | Selects the grounded-answer backend (runtime Q&A inference) from the W-D12 `_OPENAI_COMPATIBLE_PROVIDERS` registry. **Loopback-only:** a resolved non-loopback `base_url` raises `AnswerProviderNotLocal` (Phase IA: no cloud arm on the answer path, ever). No escape-hatch env. Licensing row in `docs/LICENSING.md` § "Grounded-answer provider". |
 | `ED4ALL_ANSWER_MODEL` | per-provider | Model ID override for the answer backend. Resolution chain: explicit arg > `ED4ALL_ANSWER_MODEL` > registry `model_env` (`local` → `LOCAL_SYNTHESIS_MODEL`) > registry default (`qwen2.5:14b-instruct-q4_K_M`). |
 | `ED4ALL_ANSWER_TIMEOUT_SECONDS` | `120` | Answer-client HTTP timeout (long passages, slow local GPU). Garbage values fall back to the default. |
+| `ED4ALL_ANSWER_NUM_CTX` | `4096` | Serving-window token budget for the grounded-answer prompt (`lib/retrieval/_prompts.py`). Honest about the common Ollama default (`num_ctx=4096`), which silently truncates the prompt HEAD when exceeded. Drives the **token-aware** context budget (math-safe 2.5 chars/token divisor) sized to fit system prompt + passages + question + allowed-id enumeration + remediation headroom + `max_tokens` inside the window; trailing passages are dropped whole before the question is ever truncated. Set this to the model server's ACTUAL window (e.g. `8192` for a long-context Modelfile, matching `OLLAMA_CONTEXT_LENGTH`) so the budget shrinks the prompt to fit. A post-call tripwire (`answer_composer._check_prompt_not_truncated`) compares the server-reported `usage.prompt_tokens` against the local estimate and raises `PromptTruncatedError` (fail-closed) on a large shortfall rather than letting silent head-truncation fabricate citations. Garbage / non-positive values fall back to the default. |
 | `ED4ALL_EMBEDDING_PROVIDER` | `st` | Selects the retrieval-index embedding backend from `lib/embedding/providers.py::_EMBEDDING_PROVIDERS` (`st` in-process sentence-transformers / `local-openai` local `/v1/embeddings` server / `fake` deterministic test vectors). Registry entries, NOT subclasses. Not training-data synthesis; licensing row in `docs/LICENSING.md` § "Embedding providers". |
 | `ED4ALL_EMBEDDING_MODEL` | per-provider | Model ID override for the embedding provider (e.g. `BAAI/bge-large-en-v1.5`). Resolution chain: explicit arg > env var > registry default. |
 | `ED4ALL_EMBEDDING_BASE_URL` | `http://localhost:11434/v1` | Base URL of the local OpenAI-compatible `/v1/embeddings` server (`local-openai` provider only; Ollama / vLLM / llama.cpp). |
@@ -642,19 +655,20 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | `ED4ALL_EMBEDDING_BATCH_SIZE` | `16` | Encode batch size for the embedding client (replay parameter, recorded in the index manifest). |
 | `ED4ALL_EMBEDDING_ALLOW_FAKE` | unset | **Anti-poisoning gate.** Permits a vector index built with the `fake` provider to be loaded in a production read path. Default off → a `fake`-provider index is refused at query time (mirrors `LOCAL_DISPATCHER_ALLOW_STUB`). |
 | `ED4ALL_GATE_ADVISORY` | unset | **Safety-critical.** Flips post-training eval gates from blocking to advisory. Materially changes promotion semantics. |
-| `ED4ALL_LIBV2_ROOT` | `<repo>/LibV2/` | Absolute path to the LibV2 root directory. Also honored by `lib/libv2_storage.py` (previously not consulted there). |
+| `ED4ALL_HOME` | unset (repo-relative) | **Relocatable data root.** When set, every mutable data dir defaults to `<ED4ALL_HOME>/<dirname>` (`state`, `libv2`, `exports`, `training-captures`, `dart-output`; `uploads` lands under the relocated `state/gui/`) instead of repo-relative — unblocks non-editable (site-packages) installs + tidy Docker volumes. Per-dir overrides below keep **higher** precedence (per-dir env > `ED4ALL_HOME` > repo-relative). Centralized in `lib/paths.py`; missing dirs are created on first use. Byte-stable to the repo-relative default when unset. |
+| `ED4ALL_LIBV2_ROOT` | `<repo>/LibV2/` | Absolute path to the LibV2 root directory. Also honored by `lib/libv2_storage.py` (previously not consulted there). Wins over `ED4ALL_HOME`. |
 | `ED4ALL_MAILBOX_BASE_DIR` | `<repo>/state/mailbox/` | Orchestrator task-mailbox base directory. |
 | `ED4ALL_PRODUCTION` | `0` | When `1`, enables production-mode FastMCP server settings. |
 | `ED4ALL_ROOT` | auto-detect | Absolute path to the Ed4All project root. |
 | `ED4ALL_RUN_ID` | generated | Per-run identifier consumed by every artifact emitter. |
 | `ED4ALL_SKIP_ABLATION` | unset | When set, skips the post-training ablation pass. |
 | `ED4ALL_STAGE_MODE` | `symlink` | How `stage_dart_outputs` materialises DART HTML (`copy` / `symlink` / `hardlink`). |
-| `ED4ALL_STATE_RUNS_DIR` | `<repo>/state/runs/` | State-runs directory. |
-| `ED4ALL_TRAINING_CAPTURES_DIR` | `<repo>/training-captures/` | Overrides the legacy decision-capture mirror root; honored by `lib/paths.py::get_training_captures_dir`, `lib/decision_capture.py`, `lib/streaming_capture.py`. NOT governed by `ED4ALL_LIBV2_ROOT`. |
+| `ED4ALL_STATE_RUNS_DIR` | `<repo>/state/runs/` | State-runs directory. Wins over `ED4ALL_HOME` for the `runs/` subtree. |
+| `ED4ALL_TRAINING_CAPTURES_DIR` | `<repo>/training-captures/` | Overrides the legacy decision-capture mirror root; honored by `lib/paths.py::get_training_captures_dir`, `lib/decision_capture.py`, `lib/streaming_capture.py`. NOT governed by `ED4ALL_LIBV2_ROOT`. Wins over `ED4ALL_HOME`. |
 
 The `LLM_*` env vars (`LLM_MODE`, `LLM_PROVIDER`, `LLM_MODEL`) are CLI runtime knobs documented in § Quick Start above.
 
-**Other `ED4ALL_*` vars not in the table above (kept out to avoid table noise):** the GUI server vars `ED4ALL_GUI_HOST` / `ED4ALL_GUI_PORT` / `ED4ALL_GUI_LEARNER` are documented in `gui/README.md` (read in `gui/server.py` / `gui/app.py` / `cli/commands/gui_cmd.py`). The remaining `ED4ALL_*` knobs are test-only discovery / gating overrides documented inline at their read sites, not production code paths: `ED4ALL_RUN_FULL_ARCHIVE_TEST` (gates `Trainforge/tests/test_emit_pipeline_full_archive.py`), `ED4ALL_A11Y_SMOKE_OLLAMA` (gates the live-backend smoke in `gui/tests/test_learner_a11y_gate.py`), and the per-suite fixture-slug overrides `ED4ALL_ARCHIVE_FIXTURE_SLUG`, `ED4ALL_RDF_EXPORT_FIXTURE_SLUG`, `ED4ALL_INTENT_ROUTER_FIXTURE_SLUG`, `ED4ALL_TUTORING_FIXTURE_SLUG`, `ED4ALL_STUDY_PACK_FIXTURE_SLUG` (let a tier-2 test discover a specific course slug instead of auto-discovering one).
+**Other `ED4ALL_*` vars not in the table above (kept out to avoid table noise):** the GUI server vars `ED4ALL_GUI_HOST` / `ED4ALL_GUI_PORT` / `ED4ALL_GUI_LEARNER` / `ED4ALL_GUI_MODE` / `ED4ALL_GUI_TOKEN` (the full-mode operator shared-secret bearer token; required before any non-loopback operator deploy) are documented in `gui/README.md` (read in `gui/server.py` / `gui/app.py` / `gui/auth.py` / `cli/commands/gui_cmd.py`). The remaining `ED4ALL_*` knobs are test-only discovery / gating overrides documented inline at their read sites, not production code paths: `ED4ALL_RUN_FULL_ARCHIVE_TEST` (gates `Trainforge/tests/test_emit_pipeline_full_archive.py`), `ED4ALL_A11Y_SMOKE_OLLAMA` (gates the live-backend smoke in `gui/tests/test_learner_a11y_gate.py`), and the per-suite fixture-slug overrides `ED4ALL_ARCHIVE_FIXTURE_SLUG`, `ED4ALL_RDF_EXPORT_FIXTURE_SLUG`, `ED4ALL_INTENT_ROUTER_FIXTURE_SLUG`, `ED4ALL_TUTORING_FIXTURE_SLUG`, `ED4ALL_STUDY_PACK_FIXTURE_SLUG` (let a tier-2 test discover a specific course slug instead of auto-discovering one).
 
 ---
 

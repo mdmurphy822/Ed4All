@@ -34,16 +34,16 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture(autouse=True)
 def _isolate_gui_learner_env() -> Any:
-    """Snapshot + restore ``ED4ALL_GUI_LEARNER`` around every gui test.
+    """Snapshot + restore the GUI serve-mode env vars around every gui test.
 
-    ``gui.app.create_app()`` honors ``ED4ALL_GUI_LEARNER`` (truthy → learner-only
-    surface). The reload-mode serve path (``gui.server.main(["--learner",
-    "--reload"])``) sets ``os.environ["ED4ALL_GUI_LEARNER"] = "1"`` **directly in
-    production code** so the reloaded uvicorn workers pick it up — exactly the
-    pattern that ``monkeypatch.setenv`` cannot clean up (monkeypatch only
-    restores values IT set, not ones mutated by production code mid-test). Left
-    leaking, a single serve-mode test poisons every later ``create_app()`` (the
-    full operator app degrades to learner-only and its routes 404/405).
+    ``gui.app.create_app()`` honors ``ED4ALL_GUI_MODE`` (full|studio|learner) and
+    the legacy ``ED4ALL_GUI_LEARNER`` (truthy → learner-only). The reload / CLI
+    serve paths set these **directly in production code** so the reloaded uvicorn
+    workers pick them up — exactly the pattern that ``monkeypatch.setenv`` cannot
+    clean up (monkeypatch only restores values IT set, not ones mutated by
+    production code mid-test). Left leaking, a single serve-mode test poisons
+    every later ``create_app()`` (the full operator app degrades and its routes
+    404/405).
 
     Mirrors the root-conftest ``ED4ALL_RUN_ID`` snapshot/restore precedent
     (same "production code mutates os.environ, monkeypatch can't undo it" class
@@ -52,14 +52,16 @@ def _isolate_gui_learner_env() -> Any:
     """
     import os
 
-    original = os.environ.get("ED4ALL_GUI_LEARNER")
+    keys = ("ED4ALL_GUI_LEARNER", "ED4ALL_GUI_MODE")
+    original = {k: os.environ.get(k) for k in keys}
     try:
         yield
     finally:
-        if original is None:
-            os.environ.pop("ED4ALL_GUI_LEARNER", None)
-        else:
-            os.environ["ED4ALL_GUI_LEARNER"] = original
+        for k, v in original.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 @pytest.fixture

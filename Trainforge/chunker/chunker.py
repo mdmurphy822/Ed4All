@@ -92,6 +92,7 @@ from Trainforge.chunker.boilerplate import strip_boilerplate
 from Trainforge.chunker.helpers import (
     extract_plain_text_with_curies,
     extract_section_html,
+    harvest_dart_source_refs,
     strip_assessment_feedback,
     strip_feedback_from_text,
     type_from_resource,
@@ -689,6 +690,7 @@ def chunk_text_block(
     merged_objective_alignment: Optional[List[Dict[str, Any]]] = None,
     curie_anchors: Optional[List[str]] = None,
     forced_curie_anchors: Optional[List[str]] = None,
+    dart_source_refs: Optional[List[Dict[str, Any]]] = None,
     max_chunk_size: int = MAX_CHUNK_SIZE,
     target_chunk_size: int = TARGET_CHUNK_SIZE,
 ) -> List[Dict[str, Any]]:
@@ -734,6 +736,20 @@ def chunk_text_block(
     When a chunk is sentence-split, every sub-chunk receives the same
     section-level anchor lists (force-injection is per-section, not
     per-sentence).
+
+    DART source-provenance threading: accepts ``dart_source_refs`` — the
+    ``{block_id, pages}`` pairs harvested by
+    :func:`Trainforge.chunker.helpers.harvest_dart_source_refs` from the
+    ``data-dart-block-id`` / ``data-dart-pages`` attributes on the
+    section / item HTML. Forwarded to the ``ctx.create_chunk`` callback as
+    the optional ``dart_source_refs`` kwarg (additive, ``TypeError``-fallback
+    — same contract as the CURIE / merged-audit kwargs). The DART-side
+    callback mints ``dart:{slug}#{block_id}`` sourceIds and folds them into
+    the chunk's ``source.source_references[]``. HTML without ``data-dart-*``
+    attributes yields an empty list and the kwarg is never passed, so
+    non-DART corpora stay byte-identical. When a chunk is sentence-split,
+    every sub-chunk receives the same section-level DART refs (block-level
+    provenance is per-section, not per-sentence).
     """
 
     word_count = len(text.split())
@@ -788,6 +804,8 @@ def chunk_text_block(
         extra_kwargs["curie_anchors"] = curie_anchors
     if forced_curie_anchors:
         extra_kwargs["forced_curie_anchors"] = forced_curie_anchors
+    if dart_source_refs:
+        extra_kwargs["dart_source_refs"] = dart_source_refs
 
     def _dispatch_create_chunk(**call_kwargs: Any) -> Dict[str, Any]:
         """Invoke the create_chunk callback with W5.F extras when accepted.
@@ -1005,6 +1023,9 @@ def chunk_content(
             text, item_curies, item_forced_curies = (
                 extract_plain_text_with_curies(raw_html)
             )
+            # Harvest DART source-provenance pairs from the whole item HTML
+            # (the unsectioned path has no per-section block to scope to).
+            item_dart_refs = harvest_dart_source_refs(raw_html)
             if item["resource_type"] == "quiz":
                 text = strip_feedback_from_text(text)
             if text.strip():
@@ -1020,6 +1041,7 @@ def chunk_content(
                     position_in_module=position_in_module,
                     curie_anchors=item_curies,
                     forced_curie_anchors=item_forced_curies,
+                    dart_source_refs=item_dart_refs,
                     ctx=ctx,
                     max_chunk_size=max_chunk_size,
                     target_chunk_size=target_chunk_size,
@@ -1067,6 +1089,10 @@ def chunk_content(
             )
             section_curies: List[str] = list(sec_curies)
             section_forced_curies: List[str] = list(sec_forced_curies)
+            # Harvest DART {block_id, pages} from this section's HTML block.
+            section_dart_refs: List[Dict[str, Any]] = list(
+                harvest_dart_source_refs(html_block)
+            )
             for extra_heading in merged_headings or []:
                 if extra_heading == heading:
                     continue
@@ -1078,6 +1104,17 @@ def chunk_content(
                 )
                 section_curies.extend(extra_curies)
                 section_forced_curies.extend(extra_forced)
+                section_dart_refs.extend(harvest_dart_source_refs(extra_html))
+            # DART stamps data-dart-* on the section/component wrapper, not
+            # on leaf headings. When the source HTML wraps prose in a single
+            # outer ``<section data-dart-block-id=...>`` (the common
+            # leaf-paragraph layout — see
+            # DART/converter/document_assembler.assemble_html's fallback
+            # wrapper), per-heading slices carry no attribute, so fall back
+            # to the item-level HTML so the block/page provenance still
+            # reaches the chunk. Non-DART HTML yields [] either way.
+            if not section_dart_refs:
+                section_dart_refs = harvest_dart_source_refs(raw_html)
             item_chunks = chunk_text_block(
                 text=text,
                 html=html_block,
@@ -1094,6 +1131,7 @@ def chunk_content(
                 merged_objective_alignment=merged_objective_alignment,
                 curie_anchors=section_curies,
                 forced_curie_anchors=section_forced_curies,
+                dart_source_refs=section_dart_refs,
                 ctx=ctx,
                 max_chunk_size=max_chunk_size,
                 target_chunk_size=target_chunk_size,

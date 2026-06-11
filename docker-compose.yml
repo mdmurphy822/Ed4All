@@ -1,0 +1,81 @@
+# Ed4All deployable stack — `docker compose up` serves Studio on :8077.
+#
+# Two services: the GUI (FastAPI control plane) and Ollama (local LLM + the
+# grounded-answer backend). They MUST share a loopback view of each other
+# because lib/retrieval/answer_backend.py refuses any non-loopback answer-
+# provider base_url by design (Phase IA: no cloud answer path, ever).
+#
+# DEFAULT (Linux / WSL2): host networking. Both processes share the host's
+# network namespace, so the GUI reaches Ollama at http://localhost:11434 — a
+# genuine loopback address from the GUI process's perspective. The answer-path
+# loopback policy holds with zero weakening.
+#
+# Docker Desktop / macOS: host networking does NOT share localhost the same way
+# (the engine runs in a VM). A bridged sidecar reachable at http://ollama:11434
+# is NOT loopback, so the answer backend would refuse it. Making it work would
+# require relaxing the loopback policy — a separate product decision, NOT made
+# here. The documented alternative for that platform is to run Ollama natively
+# on the host (so the GUI container reaches it via host.docker.internal mapped
+# to a loopback-checked URL only if policy permits) or to run the whole stack in
+# a Linux VM. See docs/operations/docker.md § "Docker Desktop / macOS".
+
+services:
+  gui:
+    build:
+      context: .
+      dockerfile: Dockerfile.gui
+    image: ed4all-gui:latest
+    # Host networking keeps the GUI<->Ollama hop on loopback (see header).
+    network_mode: host
+    environment:
+      # Redundant with the image ENV, but explicit here so an operator editing
+      # compose sees the data root + serve mode without reading the Dockerfile.
+      ED4ALL_HOME: /data
+      ED4ALL_GUI_MODE: studio
+      # If you switch ED4ALL_GUI_MODE to `full` to reach the operator surface
+      # remotely, set a shared-secret operator token (required before any
+      # non-loopback operator deploy). Studio mode mounts no operator surface,
+      # so the token is unused here. See docs/operations/docker.md.
+      # ED4ALL_GUI_TOKEN: "change-me-to-a-long-random-secret"
+      HF_HOME: /data/hf-cache
+      # Answer + embedding backends point at the loopback Ollama service.
+      ED4ALL_ANSWER_PROVIDER: local
+      ED4ALL_EMBEDDING_PROVIDER: st
+    volumes:
+      # All course/state/training data lives on a named volume mounted at /data
+      # (= ED4ALL_HOME). The repo itself is NOT bind-mounted — the image already
+      # contains the code; mounting the repo over /app would shadow it.
+      - ed4all-data:/data
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8077/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  ollama:
+    image: ollama/ollama:latest
+    # Host networking so the GUI process sees Ollama on localhost:11434.
+    network_mode: host
+    volumes:
+      # Persist pulled models so a restart doesn't re-download multi-GB weights.
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+    # ---- GPU profile (optional) -------------------------------------------
+    # CPU-only by default. To run Ollama on an NVIDIA GPU, install the NVIDIA
+    # Container Toolkit on the host and uncomment the block below, then
+    # `docker compose up`. CPU inference works without it (slower).
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  ed4all-data:
+  ollama-models:

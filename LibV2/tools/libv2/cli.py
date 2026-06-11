@@ -78,6 +78,10 @@ def main(ctx, repo: Optional[str]):
     """LibV2 - SLM Model Graph Repository Management"""
     ctx.ensure_object(dict)
     ctx.obj["repo_root"] = Path(repo) if repo else get_repo_root()
+    # Track whether the operator pinned an explicit repo root so destructive
+    # subcommands (remove) can prefer the canonical ED4ALL_LIBV2_ROOT resolver
+    # when --repo is absent, but still honor an explicit override.
+    ctx.obj["repo_explicit"] = repo is not None
 
 
 @main.command("import")
@@ -718,6 +722,83 @@ def course_info(ctx, slug: str):
             print(f"Source IMSCC: {manifest.source_package}")
         if manifest.slm_processing and manifest.slm_processing.slm_version:
             print(f"SLM Version: {manifest.slm_processing.slm_version}")
+
+
+@main.command("remove")
+@click.argument("slug")
+@click.option("--yes", "-y", is_flag=True, help="Skip the interactive confirmation prompt.")
+@click.pass_context
+def remove_course_cmd(ctx, slug: str, yes: bool):
+    """Permanently delete a course from the LibV2 repository.
+
+    Resolves ``courses/<slug>`` under the LibV2 root (honoring
+    ED4ALL_LIBV2_ROOT / ED4ALL_HOME), prints a summary (disk size + top-level
+    contents), and requires ``--yes`` (or an interactive ``yes`` confirmation)
+    before deleting. Also drops the slug from any derived catalog files so the
+    catalog never references the vanished course.
+
+    \b
+    Refuses: a missing course, a slug escaping the courses root, and an
+    empty/bare slug. DESTRUCTIVE — there is no undo.
+
+    \b
+    Examples:
+        libv2 remove demo-course-1
+        libv2 remove demo-course-1 --yes
+    """
+    from .remove import (
+        CourseRemovalError,
+        human_size,
+        remove_course,
+        resolve_course_dir,
+        summarize_course,
+    )
+
+    # Honor the canonical resolver (ED4ALL_LIBV2_ROOT / ED4ALL_HOME) unless the
+    # operator pinned an explicit --repo on the top-level group.
+    if ctx.obj.get("repo_explicit"):
+        libv2_root = ctx.obj["repo_root"]
+    else:
+        try:
+            from lib.paths import libv2_path  # noqa: PLC0415
+
+            libv2_root = libv2_path()
+        except Exception:  # pragma: no cover — fall back to the auto-detected root
+            libv2_root = ctx.obj["repo_root"]
+
+    try:
+        course_dir = resolve_course_dir(libv2_root, slug)
+    except CourseRemovalError as exc:
+        print_error(f"{exc.code}: {exc.detail}")
+        sys.exit(1)
+
+    disk_bytes, top_level = summarize_course(course_dir)
+
+    print(f"Course:    {slug}")
+    print(f"Location:  {course_dir}")
+    print(f"Disk size: {human_size(disk_bytes)} ({disk_bytes:,} bytes)")
+    if top_level:
+        print(f"Contents:  {', '.join(top_level)}")
+    print_warning("\nThis permanently deletes the course directory. There is no undo.")
+
+    if not yes:
+        if not click.confirm(f"Delete course '{slug}'?", default=False):
+            print("Aborted.")
+            sys.exit(1)
+
+    try:
+        result = remove_course(libv2_root, slug)
+    except CourseRemovalError as exc:
+        print_error(f"{exc.code}: {exc.detail}")
+        sys.exit(1)
+
+    print_success(f"Removed course: {slug}")
+    if result.catalog_files_pruned:
+        print(f"  Pruned catalog entries from {len(result.catalog_files_pruned)} file(s):")
+        for rel in result.catalog_files_pruned:
+            print(f"    - {rel}")
+    else:
+        print("  No catalog entries referenced this course (nothing to prune).")
 
 
 @main.command("link-outcomes")
@@ -2745,6 +2826,9 @@ def _render_grounded_answer_text(result) -> None:
               default="lexical",
               help="Retrieval engine. 'auto' resolves to 'semantic' when a vector "
                    "index exists for the course, else 'lexical' (BM25). "
+                   "'hybrid-rrf' (BM25 fused with semantic via reciprocal-rank "
+                   "fusion) is the benchmark-selected engine — pass it explicitly "
+                   "for the best retrieval quality when an index is present. "
                    "semantic/hybrid-rrf fail closed against a pre-index tree — "
                    "never a silent downgrade.")
 @click.option("--limit", "-n", type=int, default=8, help="Max passages to retrieve / pass to the composer")

@@ -11,7 +11,23 @@ Usage:
     from lib.paths import PROJECT_ROOT, LIBV2_PATH, DART_PATH
 
 Environment:
-    ED4ALL_ROOT: Override the project root path (e.g., /opt/ed4all)
+    ED4ALL_ROOT: Override the project root path (e.g., /opt/ed4all). This is
+        the *code* root (where DART/, Courseforge/, lib/, schemas/ live).
+    ED4ALL_HOME: Relocatable *data* root. When set, every mutable data
+        directory (state, libv2, exports, training-captures, uploads,
+        dart-output) defaults to ``<ED4ALL_HOME>/<dirname>`` instead of being
+        repo-relative. This unblocks non-editable (site-packages) installs and
+        keeps Docker volumes tidy — the read-only code ships under ED4ALL_ROOT
+        and the writable state lives under a single mounted ED4ALL_HOME.
+
+        Precedence for every data dir is:
+            explicit per-dir env (e.g. ED4ALL_LIBV2_ROOT, ED4ALL_STATE_RUNS_DIR,
+                ED4ALL_TRAINING_CAPTURES_DIR)
+            > ED4ALL_HOME/<dirname>
+            > repo-relative default (ED4ALL_ROOT/<dirname>)
+
+        When ED4ALL_HOME is unset every path is byte-identical to the legacy
+        repo-relative default (no behavior change for the in-repo case).
 """
 
 import os
@@ -28,15 +44,77 @@ PROJECT_ROOT = Path(os.environ.get(
     Path(__file__).resolve().parents[1]
 ))
 
+
+# ============================================================================
+# ED4ALL_HOME — relocatable data root
+# ============================================================================
+#
+# The DATA-DIR basenames that relocate under ED4ALL_HOME. The basename is what
+# the dir is called underneath the data root; for the repo-relative default it
+# matches the in-tree layout exactly (state/, LibV2/, Courseforge/exports/,
+# training-captures/, DART/output/). ``exports`` and ``dart-output`` are nested
+# under their parent component dirs in-repo but flatten to a single level under
+# ED4ALL_HOME (an ED4ALL_HOME deployment ships no code, only data).
+_DATA_DIR_KEYS = ("state", "libv2", "exports", "training-captures", "dart-output")
+
+
+def ed4all_home() -> Path | None:
+    """Return the configured ``ED4ALL_HOME`` data root, or ``None`` if unset.
+
+    Read at call time (not import time) so a test can monkeypatch the env var
+    and exercise the relocated layout without re-importing this module. An
+    empty / whitespace value is treated as unset.
+    """
+    raw = os.environ.get("ED4ALL_HOME", "").strip()
+    return Path(raw) if raw else None
+
+
+def _data_dir(basename: str, repo_relative_default: Path) -> Path:
+    """Resolve a data dir honoring ED4ALL_HOME, else the repo-relative default.
+
+    This is the shared chokepoint for the ED4ALL_HOME relocation. Per-dir env
+    overrides (ED4ALL_LIBV2_ROOT etc.) are layered ON TOP of this by their own
+    resolver functions, so the full precedence is:
+
+        per-dir env (resolver-owned) > ED4ALL_HOME/<basename> > repo-relative
+
+    When ED4ALL_HOME is unset this returns ``repo_relative_default`` verbatim,
+    so the in-repo default is byte-stable.
+    """
+    home = ed4all_home()
+    if home is not None:
+        return home / basename
+    return repo_relative_default
+
+
+def ensure_data_dir(path: Path) -> Path:
+    """Create ``path`` (and parents) on first use when ED4ALL_HOME is active.
+
+    Bootstrap helper for the relocated layout: a fresh ED4ALL_HOME (e.g. a
+    just-mounted Docker volume) has no subdirs yet, so the first consumer of a
+    data dir creates it. A no-op when the dir already exists. When ED4ALL_HOME
+    is unset this still mkdir's the repo-relative default, matching the existing
+    ``ensure_state_dirs`` / ``uploads_dir`` lazy-create idiom; callers that want
+    create-only-under-home semantics gate on ``ed4all_home() is not None``.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
 # ============================================================================
 # TOP-LEVEL COMPONENT PATHS
 # ============================================================================
 
-# Core pipeline components (Ed4All: DART + Courseforge + Trainforge + LibV2)
+# Core pipeline components (Ed4All: DART + Courseforge + Trainforge + LibV2).
+# DART / Courseforge / Trainforge are CODE roots (agents/, scripts/) and stay
+# under PROJECT_ROOT regardless of ED4ALL_HOME — only their mutable *data*
+# subdirs (DART/output/, Courseforge/exports/) relocate (see dart_output_dir /
+# courseforge_exports_dir). LibV2 is a pure DATA root, so it relocates wholesale
+# under ED4ALL_HOME (the per-dir ED4ALL_LIBV2_ROOT override still wins; see
+# ``libv2_path``).
 DART_PATH = PROJECT_ROOT / "DART"
 COURSEFORGE_PATH = PROJECT_ROOT / "Courseforge"
 TRAINFORGE_PATH = PROJECT_ROOT / "Trainforge"
-LIBV2_PATH = PROJECT_ROOT / "LibV2"
+LIBV2_PATH = _data_dir("libv2", PROJECT_ROOT / "LibV2")
 
 # Infrastructure components
 MCP_PATH = PROJECT_ROOT / "MCP"
@@ -47,7 +125,10 @@ LIB_PATH = PROJECT_ROOT / "lib"
 CONFIG_PATH = PROJECT_ROOT / "config"
 SCRIPTS_PATH = PROJECT_ROOT / "scripts"
 SCHEMAS_PATH = PROJECT_ROOT / "schemas"
-STATE_PATH = PROJECT_ROOT / "state"
+# state/ is a pure DATA root: relocates under ED4ALL_HOME when set. The per-dir
+# ED4ALL_STATE_RUNS_DIR override (read at call time in ``get_state_runs_dir``)
+# still wins for the runs/ subtree specifically.
+STATE_PATH = _data_dir("state", PROJECT_ROOT / "state")
 
 # ============================================================================
 # LIBV2 SUBDIRECTORIES
@@ -74,7 +155,10 @@ STATE_LOCKS = STATE_PATH / "locks"
 # TRAINING CAPTURES
 # ============================================================================
 
-TRAINING_DIR = PROJECT_ROOT / "training-captures"
+# training-captures/ is a pure DATA root: relocates under ED4ALL_HOME. The
+# per-dir ED4ALL_TRAINING_CAPTURES_DIR override (read at call time in
+# ``get_training_captures_dir``) still wins.
+TRAINING_DIR = _data_dir("training-captures", PROJECT_ROOT / "training-captures")
 TRAINING_DIR_LEGACY = TRAINING_DIR
 
 
@@ -87,15 +171,23 @@ def libv2_path() -> Path:
        by ``lib/libv2_storage.py`` and ``lib/decision_capture.py`` so a
        test that threads ``libv2_root=tmp`` no longer leaks skeleton
        dirs into the real ``LibV2/`` tree).
-    2. ``LIBV2_PATH`` (``PROJECT_ROOT / "LibV2"``) — the canonical
-       in-tree default. Default behavior is byte-identical when the env
-       var is unset.
+    2. ``ED4ALL_HOME/libv2`` when ``ED4ALL_HOME`` is set (folded into the
+       ``LIBV2_PATH`` constant at import time via ``_data_dir``).
+    3. ``PROJECT_ROOT / "LibV2"`` — the canonical in-tree default. Default
+       behavior is byte-identical when neither env var is set.
 
     Read at call time (not import time) so tests can monkeypatch the env
     var without re-importing modules.
     """
     env = os.environ.get("ED4ALL_LIBV2_ROOT", "").strip()
-    return Path(env) if env else LIBV2_PATH
+    if env:
+        return Path(env)
+    # Default leg: when ED4ALL_HOME is set, relocate under it; otherwise return
+    # the module-global ``LIBV2_PATH`` (read at call time so the session-isolation
+    # conftest's ``setattr(paths, "LIBV2_PATH", tmp)`` is honored). ``_data_dir``
+    # returns its second arg verbatim when ED4ALL_HOME is unset, so the setattr
+    # contract is preserved.
+    return _data_dir("libv2", LIBV2_PATH)
 
 
 def get_training_captures_dir() -> Path:
@@ -109,19 +201,55 @@ def get_training_captures_dir() -> Path:
        autouse isolation fixture to redirect the legacy mirror into
        ``tmp_path`` and stop pytest runs from growing ``training-captures/``
        by thousands of files.
-    2. ``TRAINING_DIR`` (``PROJECT_ROOT / "training-captures"``) — the
+    2. ``ED4ALL_HOME/training-captures`` when ``ED4ALL_HOME`` is set.
+    3. ``TRAINING_DIR`` (``PROJECT_ROOT / "training-captures"``) — the
        canonical in-tree default. Default behavior unchanged when unset.
 
     Read at call time so tests can monkeypatch without re-importing.
     """
     env = os.environ.get("ED4ALL_TRAINING_CAPTURES_DIR", "").strip()
-    return Path(env) if env else TRAINING_DIR
+    if env:
+        return Path(env)
+    # Default leg: relocate under ED4ALL_HOME when set, else the module-global
+    # ``TRAINING_DIR`` (read at call time; honors the conftest setattr).
+    return _data_dir("training-captures", TRAINING_DIR)
 
 # ============================================================================
 # RUNS PATH
 # ============================================================================
 
 RUNS_PATH = STATE_PATH / "runs"
+
+
+# ============================================================================
+# COURSEFORGE EXPORTS / DART OUTPUT (data subdirs of code roots)
+# ============================================================================
+
+def courseforge_exports_dir() -> Path:
+    """Resolve the Courseforge ``exports/`` data dir.
+
+    Precedence:
+    1. ``ED4ALL_HOME/exports`` when ``ED4ALL_HOME`` is set (a relocated
+       deployment ships no Courseforge code, so the export data flattens to a
+       single level under the data root).
+    2. ``COURSEFORGE_PATH / "exports"`` — the in-tree default.
+
+    Read at call time so tests / Docker can flip ``ED4ALL_HOME`` without
+    re-importing. Byte-stable to the in-tree path when ``ED4ALL_HOME`` is unset.
+    """
+    return _data_dir("exports", COURSEFORGE_PATH / "exports")
+
+
+def dart_output_dir() -> Path:
+    """Resolve the DART ``output/`` data dir.
+
+    Precedence:
+    1. ``ED4ALL_HOME/dart-output`` when ``ED4ALL_HOME`` is set.
+    2. ``DART_PATH / "output"`` — the in-tree default.
+
+    Byte-stable to the in-tree path when ``ED4ALL_HOME`` is unset.
+    """
+    return _data_dir("dart-output", DART_PATH / "output")
 
 
 def get_state_runs_dir() -> Path:
@@ -131,7 +259,8 @@ def get_state_runs_dir() -> Path:
     1. ``ED4ALL_STATE_RUNS_DIR`` env var (used by tests via the
        ``state_runs_isolated`` pytest fixture so unit tests don't
        pollute the real project ``state/runs/``).
-    2. ``STATE_PATH / "runs"`` — the canonical project location.
+    2. ``ED4ALL_HOME/state/runs`` when ``ED4ALL_HOME`` is set.
+    3. ``STATE_PATH / "runs"`` — the canonical project location.
 
     The result is read at call time (not import time) so tests can
     monkeypatch the env var without re-importing modules.
@@ -139,7 +268,7 @@ def get_state_runs_dir() -> Path:
     env_override = os.environ.get("ED4ALL_STATE_RUNS_DIR")
     if env_override:
         return Path(env_override)
-    return STATE_PATH / "runs"
+    return _data_dir("state", PROJECT_ROOT / "state") / "runs"
 
 
 # ============================================================================
@@ -428,6 +557,13 @@ __all__ = [
     "TRAINING_DIR",
     "TRAINING_DIR_LEGACY",
     "get_training_captures_dir",
+
+    # ED4ALL_HOME relocatable data root
+    "ed4all_home",
+    "ensure_data_dir",
+    "courseforge_exports_dir",
+    "dart_output_dir",
+    "get_state_runs_dir",
 
     # LibV2 root resolver
     "libv2_path",

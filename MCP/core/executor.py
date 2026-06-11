@@ -315,6 +315,42 @@ AGENT_PROVIDER_ENV_MAP: Mapping[str, str] = {
 }
 
 
+# Marketable-v1 A3 (blessed authoring-provider route): the COMPLETE map of
+# every subagent-classified agent (``AGENT_SUBAGENT_SET``) to the env var
+# that, when set, short-circuits the Wave-74 mailbox subagent dispatch and
+# routes the agent's LLM work through the in-process OpenAI-compatible
+# provider lattice instead. ``AGENT_PROVIDER_ENV_MAP`` (above) covers only
+# the three agents whose short-circuit was lifted out of the inline
+# ``_force_inprocess_for_*`` triple; ``training-synthesizer``'s
+# ``TRAINFORGE_SYNTHESIS_PROVIDER`` short-circuit lives inline in
+# ``_invoke_tool`` (it predates the lift). This map is the single source of
+# truth for "which env var blesses each LLM agent into the in-process
+# lattice" — consumed by the authoring-route guardrail in
+# ``workflow_runner._enforce_authoring_provider_route`` so the GUI / headless
+# runs fail fast (instead of hanging on an unserviced mailbox or silently
+# degrading to a templated stub) when an LLM-needing agent in the workflow
+# has no provider env set.
+#
+# The remaining subagent-classified agents (oscqr-course-evaluator,
+# quality-assurance, content-analyzer, accessibility-remediation,
+# content-quality-remediation, intelligent-design-mapper,
+# assessment-extractor, assessment-validator) have NO provider short-circuit
+# in ``_invoke_tool`` — they can ONLY run via Claude-session subagent
+# dispatch. None of them appear in the ``textbook_to_course`` workflow (they
+# belong to ``course_generation`` / ``intake_remediation`` / the
+# assessment-validation surface), so the blessed textbook authoring route is
+# fully coverable by the four entries below. Agents absent from this map are
+# treated by the guardrail as "session-only" — a run that would dispatch one
+# to the mailbox without a servicer still fails fast, but the actionable fix
+# is "run inside a Claude session", not "set a provider env".
+AGENT_AUTHORING_PROVIDER_ENV_MAP: Mapping[str, str] = {
+    "content-generator": "COURSEFORGE_PROVIDER",
+    "course-outliner": "COURSEPLANNER_PROVIDER",
+    "assessment-generator": "TRAINFORGE_ASSESSMENT_PROVIDER",
+    "training-synthesizer": "TRAINFORGE_SYNTHESIS_PROVIDER",
+}
+
+
 # Feature flag enabling the dispatch_task routing fork. Default **off**
 # so Wave 74 Session 1 lands the infrastructure without altering any
 # existing pipeline run. Evaluated per-call so tests can toggle via

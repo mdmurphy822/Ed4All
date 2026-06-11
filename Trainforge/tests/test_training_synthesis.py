@@ -48,6 +48,17 @@ FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_course_train
 SCHEMAS_ROOT = PROJECT_ROOT / "schemas"
 
 
+@pytest.fixture(autouse=True)
+def _ack_anthropic_synthesis(monkeypatch):
+    """Marketable-v1 D4: the claude_session functional tests below exercise
+    provider PLUMBING (dispatcher routing, budget caps, checkpoints), not the
+    licensing gate. Acknowledge the Anthropic-family posture so the D4
+    fail-closed gate in run_synthesis lets these functional probes through.
+    The dedicated gate test (test_synthesis_licensing_gate.py) covers the
+    fail-closed behavior; mock-provider tests in this file are unaffected."""
+    monkeypatch.setenv("TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS", "true")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

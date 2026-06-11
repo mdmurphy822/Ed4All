@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ed4All Studio</title>
+  <link rel="stylesheet" href="/studio/studio.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header>
+    <p class="brand"><a href="#/library">Ed4All Studio</a></p>
+    <nav class="primary-nav" aria-label="Studio">
+      <a href="#/library">Library</a>
+      <a href="#/create">Create course</a>
+      <a href="#/settings">Settings</a>
+    </nav>
+    <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <!-- The router renders Library (card grid) or Viewer (tree + content). -->
+    <div id="view" aria-busy="false"></div>
+  </main>
+
+  <!-- One polite live region for route status / errors. -->
+  <p id="status" class="visually-hidden" role="status" aria-live="polite"></p>
+
+  <script type="module" src="/studio/studio.js"></script>
+</body>
+</html>

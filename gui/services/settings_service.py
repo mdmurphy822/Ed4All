@@ -52,6 +52,75 @@ def build_settings_payload() -> Dict[str, Any]:
     return doc
 
 
+# The env-catalog categories a non-developer Studio user needs to see + edit:
+# their cloud-provider keys, the global LLM mode/provider/model, the
+# grounded-answer (ask) backend, and the local server wiring (so an air-gapped
+# Ollama lattice can be pointed at). The full operator catalog (DART / per-tier
+# Courseforge / Trainforge / embedding knobs) is intentionally hidden from
+# Studio. ``model_routing`` tasks the page edits map to the same canonical env
+# vars via ``ROUTING_ENV_MAP`` — the page writes routing, never raw env, so a
+# secret never round-trips through it.
+_STUDIO_CATEGORIES = ("credentials", "global", "answer", "local")
+
+# The model_routing tasks the Studio settings page surfaces (authoring +
+# answer). Mirrors ``env_catalog.ROUTING_ENV_MAP`` task names; the page reads /
+# patches ``model_routing.<task>``.
+_STUDIO_ROUTING_TASKS = ("global", "courseplanner", "courseforge_outline", "answer")
+
+
+def build_studio_settings_payload() -> Dict[str, Any]:
+    """Return the masked settings doc scoped to the Studio user subset.
+
+    Shape (a strict subset of ``build_settings_payload`` so the Studio settings
+    page renders the SAME shapes the operator settings tab does, just filtered)::
+
+        { "version", "updated_at",
+          "env":          { <only Studio-category keys>: "set"|<value>|None },
+          "model_routing": { <only Studio tasks>: {...} },
+          "catalog":      [ <only Studio-category entries> ],
+          "providers":    PROVIDERS,           # full list (provider picker)
+          "host":         "<gui host>",        # read-only display
+          "port":         <gui port> }         # read-only display
+
+    Secrets stay masked (``mask_secrets`` runs first). The host/port are a
+    read-only echo for the page (the Studio user can't change the bind address
+    from the browser). The full operator catalog is NOT returned here.
+    """
+    masked = settings_store.mask_secrets(settings_store.load_settings())
+    catalog = [e for e in env_catalog.CATALOG if e.get("category") in _STUDIO_CATEGORIES]
+    studio_keys = {e["key"] for e in catalog}
+
+    env = masked.get("env") if isinstance(masked, dict) else None
+    env = {k: v for k, v in env.items() if k in studio_keys} if isinstance(env, dict) else {}
+
+    routing = masked.get("model_routing") if isinstance(masked, dict) else None
+    routing = (
+        {k: v for k, v in routing.items() if k in _STUDIO_ROUTING_TASKS}
+        if isinstance(routing, dict)
+        else {}
+    )
+
+    return {
+        "version": masked.get("version") if isinstance(masked, dict) else None,
+        "updated_at": masked.get("updated_at") if isinstance(masked, dict) else None,
+        "env": env,
+        "model_routing": routing,
+        "catalog": catalog,
+        "providers": env_catalog.PROVIDERS,
+        "host": os.environ.get("ED4ALL_GUI_HOST", "127.0.0.1"),
+        "port": _gui_port(),
+    }
+
+
+def _gui_port() -> int:
+    """Return the configured GUI port for read-only display (default 8077)."""
+    raw = os.environ.get("ED4ALL_GUI_PORT", "8077")
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 8077
+
+
 # ----------------------------------------------------------------- env lookup
 
 
@@ -376,4 +445,9 @@ def _result(provider_name: str, *, ok: bool, status: str, detail: str) -> Dict[s
     return {"provider": provider_name, "ok": bool(ok), "status": status, "detail": detail}
 
 
-__all__ = ["build_settings_payload", "test_provider", "list_ollama_models"]
+__all__ = [
+    "build_settings_payload",
+    "build_studio_settings_payload",
+    "test_provider",
+    "list_ollama_models",
+]

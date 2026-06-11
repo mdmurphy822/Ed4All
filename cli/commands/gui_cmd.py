@@ -39,12 +39,27 @@ from gui import DEFAULT_HOST, DEFAULT_PORT
         "Serve ONLY the learner answer surface (/learn/ + /api/learn/*); the "
         "operator SPA and settings/uploads/runs/courses/retrieval APIs are not "
         "mounted. Env fallback: ED4ALL_GUI_LEARNER=1. For moderated pilot "
-        "sessions only — the GUI has no auth, so keep the loopback bind."
+        "sessions only — the GUI has no auth, so keep the loopback bind. "
+        "Equivalent to --mode learner; --mode wins if both are passed."
+    ),
+)
+@click.option(
+    "--mode",
+    "mode",
+    type=click.Choice(["full", "studio", "learner"]),
+    default=None,
+    help=(
+        "Serve mode. 'full' (default): operator + Studio + learner. 'studio': "
+        "the end-user Library + IMSCC course viewer (/studio/ + /api/library + "
+        "/api/courses/* + /api/learn/*); operator APIs NOT mounted. 'learner': "
+        "the answer surface only. Env fallback: ED4ALL_GUI_MODE (wins over the "
+        "legacy ED4ALL_GUI_LEARNER). The GUI has no auth — keep the loopback bind."
     ),
 )
 @click.pass_context
 def gui_command(
-    ctx: click.Context, host: str, port: int, reload: bool, learner: bool
+    ctx: click.Context, host: str, port: int, reload: bool, learner: bool,
+    mode: str | None,
 ) -> None:
     """Launch the Ed4All control-plane GUI (FastAPI + uvicorn).
 
@@ -85,21 +100,39 @@ def gui_command(
 
     # ``ed4all gui`` always launches via the import-string factory
     # (``gui.app:create_app``, ``factory=True``) so uvicorn can reload it; the
-    # factory takes no args from an import string, so the learner-only choice
-    # rides the environment (the factory honors ``ED4ALL_GUI_LEARNER``). The CLI
-    # flag OR a pre-set truthy env both select learner mode.
+    # factory takes no args from an import string, so the serve-mode choice rides
+    # the environment. ``ED4ALL_GUI_MODE`` is canonical (full|studio|learner);
+    # ``ED4ALL_GUI_LEARNER`` stays honoured for backward compat. The CLI --mode
+    # wins; --learner is the legacy alias for --mode learner.
+    env_mode = os.environ.get("ED4ALL_GUI_MODE", "").strip().lower()
     env_learner = os.environ.get("ED4ALL_GUI_LEARNER", "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }
-    learner_mode = learner or env_learner
-    if learner_mode:
+    if mode:
+        resolved = mode
+    elif learner:
+        resolved = "learner"
+    elif env_mode in {"full", "studio", "learner"}:
+        resolved = env_mode
+    elif env_learner:
+        resolved = "learner"
+    else:
+        resolved = "full"
+
+    # Export the resolved mode so the reloaded factory workers honor it.
+    os.environ["ED4ALL_GUI_MODE"] = resolved
+    if resolved == "learner":
         os.environ["ED4ALL_GUI_LEARNER"] = "1"
 
     url = f"http://{host}:{chosen}/"
-    surface = "learner-only" if learner_mode else "operator + learner"
+    surface = {
+        "learner": "learner-only",
+        "studio": "studio (end-user library + course viewer)",
+        "full": "operator + learner",
+    }[resolved]
     click.echo(f"Starting Ed4All control-plane GUI ({surface}) on {url}")
     uvicorn.run(
         "gui.app:create_app",

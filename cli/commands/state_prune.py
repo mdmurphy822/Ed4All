@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -42,7 +43,7 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import click
 
-from lib.paths import STATE_PATH
+from lib.paths import STATE_PATH, get_training_captures_dir
 
 
 # Default ``--keep-last`` value. Conservative: keep the 5 most-recent
@@ -54,6 +55,12 @@ DEFAULT_KEEP_LAST = 5
 # ``--keep-last`` quota and may be pruned beyond it; statuses passed
 # via ``--keep-status`` (e.g. ``RUNNING``) are *always* preserved.
 DEFAULT_KEEP_STATUS = ("COMPLETE",)
+
+# Default age threshold (days) for ``--training-captures``. Conservative: only
+# captures older than this are eligible, and the whole sweep is opt-in (never
+# pruned without the explicit flag — training captures are the SLM-training
+# audit trail, so default-preserve is the safe posture).
+DEFAULT_TRAINING_CAPTURES_OLDER_THAN = 30
 
 
 @dataclass
@@ -109,6 +116,96 @@ class PrunePlan:
     @property
     def total_bytes_freed(self) -> int:
         return self.workflow_bytes_freed + self.run_bytes_freed
+
+
+@dataclass
+class CaptureFile:
+    """One ``training-captures/**/*.jsonl`` decision-capture file."""
+
+    path: Path
+    mtime: float
+    size_bytes: int
+
+
+@dataclass
+class CapturePrunePlan:
+    """Opt-in age-based prune over ``training-captures/``."""
+
+    older_than_days: int
+    drop_captures: List[CaptureFile] = field(default_factory=list)
+    keep_count: int = 0
+
+    @property
+    def capture_bytes_freed(self) -> int:
+        return sum(c.size_bytes for c in self.drop_captures)
+
+
+def _scan_capture_files(captures_dir: Path) -> List[CaptureFile]:
+    """List every ``*.jsonl`` decision-capture file under ``captures_dir``.
+
+    ``.gitkeep`` markers are skipped (mirrors the state-prune guardrail).
+    """
+    out: List[CaptureFile] = []
+    if not captures_dir.exists():
+        return out
+    for path in sorted(captures_dir.rglob("*.jsonl")):
+        if path.name == ".gitkeep" or not path.is_file():
+            continue
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        out.append(CaptureFile(path=path, mtime=st.st_mtime, size_bytes=st.st_size))
+    return out
+
+
+def build_capture_plan(
+    captures: List[CaptureFile],
+    *,
+    older_than_days: int,
+    now: Optional[float] = None,
+) -> CapturePrunePlan:
+    """Select capture files whose mtime is older than ``older_than_days``.
+
+    Age is measured from ``now`` (defaults to wall-clock); a file exactly at the
+    boundary is KEPT (strict ``<`` cutoff comparison). Never prunes anything
+    newer than the threshold — the whole point of the opt-in age gate.
+    """
+    if now is None:
+        now = time.time()
+    cutoff = now - (older_than_days * 86400)
+    plan = CapturePrunePlan(older_than_days=older_than_days)
+    for cap in captures:
+        if cap.mtime < cutoff:
+            plan.drop_captures.append(cap)
+        else:
+            plan.keep_count += 1
+    return plan
+
+
+def _execute_capture_plan(plan: CapturePrunePlan, captures_dir: Path) -> None:
+    """Delete every dropped capture file, then prune emptied subdirs.
+
+    Only directories that become empty as a result are removed; the
+    ``captures_dir`` root and any ``.gitkeep`` markers are preserved.
+    """
+    for cap in plan.drop_captures:
+        try:
+            cap.path.unlink()
+        except FileNotFoundError:
+            pass
+    # Bottom-up sweep of now-empty subdirs (never the root itself).
+    captures_dir = captures_dir.resolve()
+    for sub in sorted(
+        (p for p in captures_dir.rglob("*") if p.is_dir()),
+        key=lambda p: len(p.parts),
+        reverse=True,
+    ):
+        try:
+            if not any(sub.iterdir()):
+                sub.rmdir()
+        except OSError:
+            continue
 
 
 def _dir_size_bytes(path: Path) -> int:
@@ -296,13 +393,52 @@ def state_group() -> None:
     default=None,
     help="Override state root (tests only). Defaults to the project state/.",
 )
+@click.option(
+    "--training-captures",
+    "prune_training_captures",
+    is_flag=True,
+    help=(
+        "ALSO prune training-captures/ decision-capture files older than "
+        "--older-than days. OPT-IN: training captures are never pruned without "
+        "this flag (they are the SLM-training audit trail)."
+    ),
+)
+@click.option(
+    "--older-than",
+    "older_than_days",
+    type=click.IntRange(min=0),
+    default=DEFAULT_TRAINING_CAPTURES_OLDER_THAN,
+    show_default=True,
+    help=(
+        "Age threshold in days for --training-captures: capture files with an "
+        "mtime older than this are eligible. No effect without "
+        "--training-captures."
+    ),
+)
+@click.option(
+    "--training-captures-root",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "Override training-captures root (tests only). Defaults to the "
+        "ED4ALL_TRAINING_CAPTURES_DIR / ED4ALL_HOME resolver."
+    ),
+)
 def prune_command(
     keep_last: int,
     keep_statuses: Tuple[str, ...],
     dry_run: bool,
     state_root: Optional[Path],
+    prune_training_captures: bool,
+    older_than_days: int,
+    training_captures_root: Optional[Path],
 ) -> None:
-    """GC ``state/runs/`` and ``state/workflows/`` per the keep policy."""
+    """GC ``state/runs/`` and ``state/workflows/`` per the keep policy.
+
+    With ``--training-captures`` ALSO age-prunes ``training-captures/`` (opt-in;
+    files older than ``--older-than`` days). The training-captures sweep is
+    never run by default.
+    """
     root = Path(state_root) if state_root else STATE_PATH
     workflows_dir = root / "workflows"
     runs_dir = root / "runs"
@@ -338,6 +474,28 @@ def prune_command(
         f"(orphans={len(plan.orphan_runs)}, "
         f"{_format_bytes(plan.run_bytes_freed)} freed)"
     )
+    # ----- Optional training-captures age-prune (opt-in) ----------------
+    capture_plan: Optional[CapturePrunePlan] = None
+    captures_dir: Optional[Path] = None
+    if prune_training_captures:
+        captures_dir = (
+            Path(training_captures_root)
+            if training_captures_root
+            else get_training_captures_dir()
+        )
+        captures = _scan_capture_files(captures_dir)
+        capture_plan = build_capture_plan(captures, older_than_days=older_than_days)
+        click.echo()
+        click.echo(
+            f"  Training captures (root: {captures_dir}):"
+        )
+        click.echo(
+            f"    older-than={older_than_days}d  "
+            f"kept={capture_plan.keep_count:<4} "
+            f"dropped={len(capture_plan.drop_captures):<4} "
+            f"({_format_bytes(capture_plan.capture_bytes_freed)} freed)"
+        )
+
     click.echo(
         f"  Total to free: {_format_bytes(plan.total_bytes_freed)}"
     )
@@ -356,10 +514,17 @@ def prune_command(
             for r in plan.drop_runs:
                 tag = "(orphan)" if r in plan.orphan_runs else ""
                 click.echo(f"  - {r.run_id} {tag}".rstrip())
+        if capture_plan is not None and capture_plan.drop_captures:
+            click.echo()
+            click.echo("Would delete training-capture files:")
+            for c in capture_plan.drop_captures:
+                click.echo(f"  - {c.path}")
         return
 
     # ----- Execute --------------------------------------------------------
     _execute_plan(plan)
+    if capture_plan is not None and captures_dir is not None:
+        _execute_capture_plan(capture_plan, captures_dir)
     click.secho("Prune complete.", fg="green")
 
 

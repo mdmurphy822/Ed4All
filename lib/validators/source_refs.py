@@ -76,7 +76,12 @@ def _emit_decision(
 
 # Matches the canonical shape: dart:{slug}#{block_id}
 # (lowercase slug/block, kept in sync with schemas/knowledge/source_reference.schema.json).
-_SOURCE_ID_RE = re.compile(r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$")
+# Public alias ``SOURCE_ID_RE`` is the single source of truth for the canonical
+# sourceId pattern; ``MCP.tools.pipeline_tools`` imports it (the validator owns
+# the rule, MCP/tools depending on lib/validators is the allowed layering
+# direction).
+SOURCE_ID_RE = re.compile(r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$")
+_SOURCE_ID_RE = SOURCE_ID_RE  # back-compat private alias
 
 # Extract data-cf-source-ids values from emitted HTML. The attribute holds
 # a comma-separated slug list — same shape as data-cf-key-terms.
@@ -411,7 +416,25 @@ class PageSourceRefValidator:
                 data = json.loads(sidecar.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            for sid in _iter_sidecar_block_ids(data):
+            # The canonical sourceId slug is derived from the sidecar
+            # FILENAME stem, not from any field inside the sidecar. This
+            # matches the three coordinated emitters/consumers that all
+            # key on ``path.stem`` (see DART/CLAUDE.md "dart:{slug}
+            # normalization"):
+            #   - MCP/tools/pipeline_tools._build_source_module_map
+            #   - lib/validators/content_grounding._resolve_valid_block_ids
+            #   - MCP/tools/_content_gen_helpers._topic_source_references
+            # The DART converter's ``build_synthesized_sidecar`` writes a
+            # *different*, title-derived ``slug`` field inside the sidecar
+            # (e.g. ``01-accessibility-foundations`` vs the canonical
+            # stem-derived ``01_accessibility_foundations_accessible``), so
+            # harvesting off the internal field minted IDs that never match
+            # the emitter — every real --skip-dart run tripped
+            # SOURCE_REFS_MANIFEST_MISSING. Pass the filename-derived slug
+            # explicitly; ``_iter_sidecar_block_ids`` falls back to its
+            # legacy internal resolution only when no override is given.
+            file_slug = _slug_from_sidecar_name(name)
+            for sid in _iter_sidecar_block_ids(data, slug_override=file_slug):
                 valid.add(sid)
 
         return valid
@@ -558,23 +581,56 @@ def _iter_jsonld_source_ids(data: Any) -> Iterable[str]:
             yield from _iter_jsonld_source_ids(item)
 
 
-def _iter_sidecar_block_ids(data: Any) -> Iterable[str]:
+def dart_slug_from_filename(name: str) -> str:
+    """Derive the canonical ``dart:{slug}`` slug from a staged-HTML / sidecar filename.
+
+    Single source of truth (mirrors
+    ``MCP.tools.pipeline_tools._build_source_module_map`` and
+    ``lib.validators.content_grounding._resolve_valid_block_ids``, and
+    consumed by ``MCP.tools.pipeline_tools._dart_block_source_references``
+    when minting chunk ``sourceId`` values): strip the ``_synthesized``
+    suffix from the filename stem, lowercase, and map spaces to hyphens.
+    Underscores / hyphens / digits pass through unchanged — do NOT use
+    ``canonical_slug`` here (it collapses underscores and the emitter's IDs
+    would not match). See DART/CLAUDE.md "dart:{slug} normalization".
+    """
+    stem = Path(name).stem
+    return stem.replace("_synthesized", "").lower().replace(" ", "-")
+
+
+# Back-compat private alias (predates the public name; in-module call sites
+# and existing tests reference it).
+_slug_from_sidecar_name = dart_slug_from_filename
+
+
+def _iter_sidecar_block_ids(
+    data: Any, slug_override: Optional[str] = None
+) -> Iterable[str]:
     """Walk a Wave 8 ``*_synthesized.json`` sidecar and yield valid sourceIds.
 
-    Recognized shapes:
+    Slug resolution:
 
-    - Top-level ``campus_code`` + ``sections[]`` (multi-source synthesizer
-      output) → emit ``dart:{slug}#{section_id}`` and
+    - ``slug_override`` (the FILENAME-derived canonical slug) wins when
+      provided. This is the authoritative path — it matches the slug the
+      content-generator + source-router actually mint into emitted
+      ``sourceId`` values (derived from the sidecar filename stem, NOT
+      from any field inside the sidecar). Callers harvesting from a
+      staging dir always pass this.
+    - Falls back to the legacy internal resolution (``document_slug`` →
+      ``campus_code``) only when no override is given — kept so unit
+      tests / legacy ``multi_source_interpreter`` sidecars that carry an
+      internal slug field still resolve.
+
+    Block shapes recognized:
+
+    - Top-level ``sections[]`` → emit ``dart:{slug}#{section_id}`` and
       ``dart:{slug}#{block_id}`` for every leaf block.
-    - Top-level ``document_slug`` override (set by future ingestors) —
-      prefer it when present.
-    - Any nested ``block_id`` key encountered while walking; paired with
-      the closest surrounding slug.
+    - Any nested ``block_id`` key encountered while walking.
     """
     if not isinstance(data, dict):
         return
 
-    slug = _resolve_doc_slug(data)
+    slug = slug_override or _resolve_doc_slug(data)
     if not slug:
         return
 

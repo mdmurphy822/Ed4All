@@ -46,6 +46,23 @@ class AnswerBackendUnavailable(RuntimeError):
     """Local model server absent/refusing. NEVER triggers a canned answer."""
 
 
+class PromptTruncatedError(RuntimeError):
+    """The model server silently truncated the prompt HEAD (fail-closed).
+
+    Ollama (and other local servers) silently drop the leading tokens of a
+    prompt that exceeds the served ``num_ctx`` window — the system prompt +
+    leading passage ids vanish and the model fabricates citations. We detect
+    this by comparing the server-reported ``usage.prompt_tokens`` against the
+    local estimate: a reported count far BELOW the estimate means the head was
+    dropped. Raised (fail-closed) instead of letting the silent truncation
+    produce a fabricated answer.
+
+    The message names the two operator fixes: raise the server window
+    (``OLLAMA_CONTEXT_LENGTH`` / a Modelfile ``num_ctx`` PARAMETER) and tell
+    the budget about it via ``ED4ALL_ANSWER_NUM_CTX``.
+    """
+
+
 class AnswerProviderNotLocal(ValueError):
     """Resolved base_url is non-loopback. Phase IA: no cloud answer path, ever."""
 
@@ -199,6 +216,7 @@ __all__ = [
     "ENV_ANSWER_MODEL",
     "ENV_ANSWER_TIMEOUT",
     "AnswerBackendUnavailable",
+    "PromptTruncatedError",
     "AnswerProviderNotLocal",
     "ResolvedAnswerBackend",
     "resolve_answer_backend",
