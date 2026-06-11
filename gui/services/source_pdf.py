@@ -303,16 +303,40 @@ def serve_source_pdf_page(
     always ``application/pdf``; ``X-Source-Pdf-Mode`` distinguishes
     ``single-page`` from ``whole-file`` so the client (and tests) can tell which
     path was taken.
+
+    ``page=0`` (or an absent/negative page) means *whole-file* mode: the entire
+    archived PDF is served inline (the browse-surface "open the original PDF"
+    affordance), distinct from the per-page citation hop. Source-PDF serving is
+    gated under the same ``ED4ALL_SOURCE_MATERIALS`` operator toggle as the rest
+    of the source-materials surface — a deliberate behavior change (default-on,
+    so no change for default deployments).
     """
     root = Path(libv2_root) if libv2_root is not None else _libv2_root()
     course_dir = _validate_slug(course_id, root)
+
+    # Operator toggle: fold source-PDF serving under the shared source-materials
+    # gate (§2.5). 403 when disabled rather than serving the verbatim textbook.
+    try:
+        from gui.services.source_materials import is_enabled as _sm_enabled  # noqa: PLC0415
+
+        if not _sm_enabled(course_dir):
+            raise SourcePdfError(
+                403, "source_materials_disabled",
+                "source materials are disabled for this deployment",
+            )
+    except ImportError:
+        # source_materials always ships with source_pdf in the gui extra; if it
+        # somehow can't import, fail open to the prior (ungated) behavior.
+        pass
 
     try:
         page_num = int(page)
     except (TypeError, ValueError):
         raise SourcePdfError(422, "invalid_page", f"invalid page: {page!r}") from None
-    if page_num < 1:
-        raise SourcePdfError(422, "invalid_page", f"page must be >= 1, got {page_num}")
+    if page_num < 0:
+        raise SourcePdfError(422, "invalid_page", f"page must be >= 0, got {page_num}")
+    # page == 0 → whole-file mode (additive; the per-page citation hop passes >=1).
+    whole_file = page_num == 0
 
     pdf_dir = _pdf_dir(course_dir)
     if pdf_dir is None:
@@ -326,13 +350,21 @@ def serve_source_pdf_page(
     except OSError as exc:
         raise SourcePdfError(500, "pdf_read_failed", str(exc)) from exc
 
-    single = _extract_single_page(pdf_bytes, page_num)
     headers: Dict[str, str] = {
         "Content-Disposition": f'inline; filename="{pdf_path.name}"',
         "X-Content-Type-Options": "nosniff",
     }
     if warning:
         headers["X-Source-Pdf-Warning"] = warning
+
+    # Whole-file mode (page<=0): serve the entire archived PDF inline (the browse
+    # affordance), skipping single-page extraction entirely.
+    if whole_file:
+        headers["X-Source-Pdf-Mode"] = "whole-file"
+        headers["X-Source-Pdf-Page"] = "0"
+        return SourcePdfResult(body=pdf_bytes, media_type="application/pdf", headers=headers)
+
+    single = _extract_single_page(pdf_bytes, page_num)
     if single is not None:
         headers["X-Source-Pdf-Mode"] = "single-page"
         headers["X-Source-Pdf-Page"] = str(page_num)

@@ -260,7 +260,39 @@ def source_pdf_page_url(citation: Dict[str, Any], slug: str, page: int) -> str:
     )
 
 
-def _citation_provenance(citation: Dict[str, Any], slug: str) -> str:
+def original_source_url(citation: Dict[str, Any], slug: str) -> str:
+    """Build the deep link to the original archived DART document for one citation.
+
+    ``/api/courses/{slug}/source-doc?doc=<doc>&ref=<block>#dart-<block>`` from the
+    citation's ``source_block`` (``dart:{doc}#{block}``). The endpoint serves the
+    sanitized accessible HTML with a serve-time-injected ``id="dart-{block}"``, so
+    the ``#dart-<block>`` fragment lands on the exact cited block. Emit-then-
+    resolve: the link is built whenever ``source_block`` parses; the endpoint
+    404s with an explanation when the DART doc isn't archived (provenance-without-
+    artifacts archives) — no per-render existence probe (the renderer is a pure
+    dict→str transform that must stay import-light, mirroring the source-pdf hop).
+
+    Returns ``""`` when ``source_block`` doesn't parse as ``dart:{doc}#{block}``.
+    """
+    source_id = str(citation.get("source_block") or "")
+    if not source_id.startswith("dart:") or "#" not in source_id:
+        return ""
+    doc, block = source_id[len("dart:"):].split("#", 1)
+    doc = doc.strip()
+    block = block.strip()
+    if not doc or not block:
+        return ""
+    return "/api/courses/{slug}/source-doc?doc={doc}&ref={ref}#dart-{frag}".format(
+        slug=quote(str(slug), safe=""),
+        doc=quote(doc, safe=""),
+        ref=quote(block, safe=""),
+        frag=quote(block, safe="-"),
+    )
+
+
+def _citation_provenance(
+    citation: Dict[str, Any], slug: str, *, include_original_source_links: bool = True
+) -> str:
     """Render the expandable provenance detail row for one citation (B4).
 
     A disclosure: a ``<button class="src-detail-toggle" aria-expanded="false"
@@ -270,6 +302,13 @@ def _citation_provenance(citation: Dict[str, Any], slug: str) -> str:
     they have, so the toggle is suppressed entirely when there is nothing to
     expand). The JS (drawer.js) re-wires the page links to ``target=_blank``;
     the markup is fully server-built so the JS never constructs URLs.
+
+    When ``include_original_source_links`` (the operator toggle, §2.5) and the
+    ``source_block`` parses as ``dart:{doc}#{block}``, the source-block row renders
+    as a "View original source (accessible HTML)" deep link (new tab) instead of
+    plain ``<code>`` text — closing the requirement-2 gap (a citation that hops to
+    the exact original-document position). The ``<code>`` sourceId rides along as
+    secondary operator/debug text.
     """
     source_block = citation.get("source_block")
     pdf_pages = [p for p in (citation.get("pdf_pages") or []) if isinstance(p, int)]
@@ -283,20 +322,43 @@ def _citation_provenance(citation: Dict[str, Any], slug: str) -> str:
 
     rows: List[str] = []
     if source_block:
-        rows.append(
-            '<li class="src-block">Source block '
-            '<code>{}</code></li>'.format(escape(str(source_block)))
+        original_url = (
+            original_source_url(citation, slug)
+            if include_original_source_links
+            else ""
         )
-    for page in pdf_pages:
-        href = source_pdf_page_url(citation, slug, page)
-        rows.append(
-            '<li class="src-pdf"><a href="{href}" class="src-pdf-link" '
-            'target="_blank" rel="noopener" '
-            'aria-label="Open PDF page {page}, opens in new tab">'
-            'PDF page {page}</a></li>'.format(
-                href=escape(href, quote=True), page=int(page)
+        if original_url:
+            # Link the original source + keep the sourceId as secondary text.
+            rows.append(
+                '<li class="src-block">'
+                '<a href="{href}" class="src-original-link" '
+                'target="_blank" rel="noopener" '
+                'aria-label="View original source (accessible HTML), opens in new tab">'
+                'View original source (accessible HTML)</a> '
+                '<code>{sid}</code></li>'.format(
+                    href=escape(original_url, quote=True),
+                    sid=escape(str(source_block)),
+                )
             )
-        )
+        else:
+            rows.append(
+                '<li class="src-block">Source block '
+                '<code>{}</code></li>'.format(escape(str(source_block)))
+            )
+    if include_original_source_links:
+        for page in pdf_pages:
+            href = source_pdf_page_url(citation, slug, page)
+            rows.append(
+                '<li class="src-pdf"><a href="{href}" class="src-pdf-link" '
+                'target="_blank" rel="noopener" '
+                'aria-label="Open PDF page {page}, opens in new tab">'
+                'PDF page {page}</a></li>'.format(
+                    href=escape(href, quote=True), page=int(page)
+                )
+            )
+    if not rows:
+        # The toggle is off and there were only links to show → nothing to expand.
+        return ""
     detail = (
         '<button type="button" class="src-detail-toggle" '
         'aria-expanded="false" aria-controls="{pid}">Provenance</button>'
@@ -305,7 +367,9 @@ def _citation_provenance(citation: Dict[str, Any], slug: str) -> str:
     return detail
 
 
-def _citation_li(citation: Dict[str, Any], slug: str) -> str:
+def _citation_li(
+    citation: Dict[str, Any], slug: str, *, include_original_source_links: bool = True
+) -> str:
     """Render one citation as a focusable ``<li>`` with a "Source:" link.
 
     Order: link → (module tag) → (approximate-location tag) → (text quote) →
@@ -319,11 +383,13 @@ def _citation_li(citation: Dict[str, Any], slug: str) -> str:
             href=escape(href, quote=True), label=escape(str(page_label))
         )
     ]
-    module_id = citation.get("module_id")
-    if module_id:
+    # Prefer the human-readable module_title: module_id is a filename stem
+    # ("content_01") that repeats across weeks and reads like a mis-citation.
+    module_label = citation.get("module_title") or citation.get("module_id")
+    if module_label:
         parts.append(
             '<span class="src-module">Module {}</span>'.format(
-                escape(str(module_id))
+                escape(str(module_label))
             )
         )
     if citation.get("anchor_status") != "resolved_exact":
@@ -337,15 +403,24 @@ def _citation_li(citation: Dict[str, Any], slug: str) -> str:
                 escape(str(text_quote))
             )
         )
-    parts.append(_citation_provenance(citation, slug))
+    parts.append(
+        _citation_provenance(
+            citation, slug, include_original_source_links=include_original_source_links
+        )
+    )
     return "<li>{}</li>".format("".join(parts))
 
 
-def _sources_block(citations: List[Dict[str, Any]], slug: str) -> str:
+def _sources_block(
+    citations: List[Dict[str, Any]], slug: str, *, include_original_source_links: bool = True
+) -> str:
     """Render the ``<h3>Sources</h3><ol>…</ol>`` block, or "" when empty."""
     if not citations:
         return ""
-    items = "".join(_citation_li(c, slug) for c in citations)
+    items = "".join(
+        _citation_li(c, slug, include_original_source_links=include_original_source_links)
+        for c in citations
+    )
     return '<h3>Sources</h3><ol class="sources">{}</ol>'.format(items)
 
 
@@ -354,7 +429,9 @@ def _sources_block(citations: List[Dict[str, Any]], slug: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def render_answer_fragment(payload: Dict[str, Any]) -> str:
+def render_answer_fragment(
+    payload: Dict[str, Any], *, include_original_source_links: bool = True
+) -> str:
     """Render one ``GroundedAnswer.to_dict()`` payload to an HTML fragment.
 
     Dispatches on ``status``. For refused/blocked statuses the contract
@@ -362,6 +439,11 @@ def render_answer_fragment(payload: Dict[str, Any]) -> str:
     that defensively and renders NO answer text and NO citations regardless of
     what the payload carries, so a contract regression can never leak an
     unverified answer to a learner.
+
+    ``include_original_source_links`` (the operator ``ED4ALL_SOURCE_MATERIALS``
+    toggle, §2.5) gates the citation-side original-source + PDF-page deep links;
+    the ask path threads it (read once per request). Default ``True`` preserves
+    purity for existing tests / the default-on posture.
 
     An unknown status falls back to the generic-error fragment (fail-safe: a
     learner sees a benign "something went wrong" rather than raw internals).
@@ -379,7 +461,13 @@ def render_answer_fragment(payload: Dict[str, Any]) -> str:
             )
         body_parts.append(_answer_paragraphs(payload.get("answer_text")))
         citations = payload.get("citations") or []
-        body_parts.append(_sources_block(list(citations), slug))
+        body_parts.append(
+            _sources_block(
+                list(citations),
+                slug,
+                include_original_source_links=include_original_source_links,
+            )
+        )
         heading = STATUS_COPY[status]["heading"]
         return _section(status, heading, "".join(body_parts))
 
@@ -411,4 +499,5 @@ __all__ = [
     "render_error_fragment",
     "source_url_for",
     "source_pdf_page_url",
+    "original_source_url",
 ]

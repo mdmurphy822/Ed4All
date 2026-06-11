@@ -326,3 +326,64 @@ def test_provenance_source_block_is_escaped():
     html = ar.render_answer_fragment(payload)
     assert "<script>alert(1)" not in html
     assert "&lt;script&gt;" in html
+
+
+# ------------------------------------------ original-source deep link (req. 2)
+
+
+def test_original_source_link_rendered_when_source_block_present():
+    payload = _answered_payload()
+    payload["citations"][0]["source_block"] = "dart:elementary-algebra-2e-ch1-3#edd36456647a9cd8"
+    payload["citations"][0]["pdf_pages"] = []
+    html = ar.render_answer_fragment(payload)
+    # The source-block row is a "View original source" deep link (new tab).
+    assert 'class="src-original-link"' in html
+    assert ">View original source (accessible HTML)</a>" in html
+    assert 'target="_blank" rel="noopener"' in html
+    assert "opens in new tab" in html
+    # href: /api/courses/{slug}/source-doc?doc=<doc>&ref=<block>#dart-<block>
+    assert (
+        "/api/courses/phys-101/source-doc?doc=elementary-algebra-2e-ch1-3"
+        "&amp;ref=edd36456647a9cd8#dart-edd36456647a9cd8" in html
+    )
+    # The sourceId rides along as secondary <code> text.
+    assert "<code>dart:elementary-algebra-2e-ch1-3#edd36456647a9cd8</code>" in html
+
+
+def test_original_source_url_helper_shape():
+    cit = {"source_block": "dart:foo-doc#blk_9"}
+    url = ar.original_source_url(cit, "my-course")
+    assert url == "/api/courses/my-course/source-doc?doc=foo-doc&ref=blk_9#dart-blk_9"
+    # Non-dart / malformed source blocks → empty (no link emitted).
+    assert ar.original_source_url({"source_block": "imscc:x#y"}, "s") == ""
+    assert ar.original_source_url({"source_block": "dart:onlydoc"}, "s") == ""
+    assert ar.original_source_url({}, "s") == ""
+
+
+def test_original_source_link_suppressed_when_no_source_block():
+    # Legacy citation (no source_block) → no original-source link at all.
+    html = ar.render_answer_fragment(_answered_payload())
+    assert "src-original-link" not in html
+
+
+def test_original_source_link_suppressed_when_flag_off():
+    payload = _answered_payload()
+    payload["citations"][0]["source_block"] = "dart:foo#blk_1"
+    payload["citations"][0]["pdf_pages"] = [3]
+    html = ar.render_answer_fragment(payload, include_original_source_links=False)
+    # No original-source link, no PDF-page link (both gated by the toggle).
+    assert "src-original-link" not in html
+    assert "src-pdf-link" not in html
+    # The informational <code> sourceId still shows (it is not a redistribution
+    # link, just an identifier).
+    assert "<code>dart:foo#blk_1</code>" in html
+
+
+def test_original_source_link_url_encoded():
+    payload = _answered_payload()
+    payload["citations"][0]["source_block"] = "dart:doc with space#blk a"
+    payload["citations"][0]["pdf_pages"] = []
+    html = ar.render_answer_fragment(payload)
+    # The doc / ref halves are percent-encoded in the href.
+    assert "doc=doc%20with%20space" in html
+    assert "ref=blk%20a" in html

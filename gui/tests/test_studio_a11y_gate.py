@@ -786,6 +786,78 @@ def test_served_page_zero_aa_findings(tmp_path):
     _assert_clean("studio-iframe-page", served.body.decode("utf-8"))
 
 
+def test_served_source_doc_zero_aa_findings(tmp_path):
+    """The sanitized + block-anchored source DART doc (served transform) passes.
+
+    DART HTML is WCAG-validated at conversion time, but the gate re-checks the
+    SERVED transform (active-content scrub + heading-id + block-anchor injection
+    + figure-src rewrite + lang preservation) over a synthetic DART doc fixture.
+    """
+    from gui.services import source_materials  # noqa: PLC0415
+
+    doc_html = """<!DOCTYPE html><html lang="en"><head><title>Chapter One</title>
+    <script>alert('x')</script></head>
+    <body onload="boom()">
+      <h1>Chapter One</h1>
+      <h2>Real Numbers</h2>
+      <ul data-dart-block-id="blk_1"><li>An ordered list block.</li></ul>
+      <p id="sec-existing" data-dart-block-id="blk_2">A kept-id block.</p>
+      <img src="chapter-one_figures/diagram.png" alt="A diagram">
+    </body></html>"""
+    slug = "demo-101"
+    html_dir = tmp_path / "courses" / slug / "source" / "html"
+    html_dir.mkdir(parents=True)
+    (html_dir / "chapter-one.html").write_text(doc_html, encoding="utf-8")
+    served = source_materials.serve_source_doc(
+        slug, "chapter-one", libv2_root=tmp_path
+    )
+    _assert_clean("studio-source-doc", served.body.decode("utf-8"))
+
+
+# The drawer answered fragment now carries the requirement-2 "View original
+# source" deep link as the source-block row (a new-tab link). Reconstruct it
+# exactly as ``answer_render._citation_provenance`` emits it so the a11y gate
+# validates the new learner-facing link surface (label + new-tab + escaping).
+def _drawer_answer_with_original_source() -> str:
+    return """
+<section class="answer" data-status="answered" aria-labelledby="answer-h">
+  <h2 id="answer-h" tabindex="-1">Answer</h2>
+  <p>Velocity is the rate of change of position.</p>
+  <h3>Sources</h3>
+  <ol class="sources">
+    <li><a class="ask-cite" role="button" href="/api/learn/source/demo-101?item_path=ch01.html#velocity">Source: Velocity</a>
+      <button type="button" class="src-detail-toggle" aria-expanded="true" aria-controls="src-detail-c1">Provenance</button>
+      <ul id="src-detail-c1" class="src-detail">
+        <li class="src-block"><a href="/api/courses/demo-101/source-doc?doc=mini_alpha&amp;ref=s3_c0#dart-s3_c0" class="src-original-link" target="_blank" rel="noopener" aria-label="View original source (accessible HTML), opens in new tab">View original source (accessible HTML)</a> <code>dart:mini_alpha#s3_c0</code></li>
+        <li class="src-pdf"><a href="/api/courses/demo-101/source-pdf?file=mini_alpha&amp;page=12" class="src-pdf-link" target="_blank" rel="noopener" aria-label="Open PDF page 12, opens in new tab">PDF page 12</a></li>
+      </ul>
+    </li>
+  </ol>
+</section>
+"""
+
+
+def test_original_source_link_a11y_and_new_tab_label():
+    """The original-source deep link is WCAG-clean + announces the new tab."""
+    inner = _shell_with_view(
+        _VIEWER_INNER.rstrip()[: -len("</div>")]
+        + '<aside class="ask-drawer" role="complementary" aria-labelledby="ask-h2">'
+        '<h2 id="ask-h2">Ask</h2><div class="ask-history-wrap">'
+        '<ol class="ask-history" aria-label="Q and A history"><li class="ask-entry">'
+        + _drawer_answer_with_original_source()
+        + "</li></ol></div></aside></div>"
+    )
+    _assert_clean("studio-original-source-link", inner)
+    soup = _soup(inner)
+    link = soup.find("a", class_="src-original-link")
+    assert link is not None, "answered drawer must carry the original-source link"
+    assert link.get("target") == "_blank"
+    assert "noopener" in (link.get("rel") or [])
+    assert "opens in new tab" in (link.get("aria-label") or "")
+    assert link.get("href", "").startswith("/api/courses/")
+    assert "/source-doc?doc=" in link.get("href", "")
+
+
 # --------------------------------------------------------------------------- #
 # Structural assertions (ARIA tree pattern + focus + landmarks)
 # --------------------------------------------------------------------------- #
