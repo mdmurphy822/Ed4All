@@ -392,10 +392,11 @@ def _citation_li(
                 escape(str(module_label))
             )
         )
-    if citation.get("anchor_status") != "resolved_exact":
-        parts.append(
-            '<span class="src-approx">(approximate location)</span>'
-        )
+    # No "(approximate location)" hedge: the Source link IS the direct hop to
+    # the chunk's holder (course page for imscc chunks; the provenance block
+    # below adds the original-source deep link for DART chunks). A non-exact
+    # anchor only means the fragment may land at the section rather than the
+    # sentence — the page itself is authoritative from the chunk's item_path.
     text_quote = citation.get("text_quote")
     if text_quote:
         parts.append(

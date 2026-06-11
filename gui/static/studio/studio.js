@@ -332,8 +332,13 @@ async function renderViewer(segments) {
 
   /** Match a citation's item_path to a viewer page (by basename) and load it. */
   function loadCitation(itemPath, fragment) {
+    // Exact href match FIRST across all pages; the basename fallback only
+    // applies when no exact match exists anywhere — filename stems like
+    // content_01.html repeat across weeks, so a combined OR-predicate would
+    // let an earlier week's basename match shadow the exact page.
     const base = String(itemPath || '').split('/').pop();
-    let idx = pages.findIndex((p) => p.href === itemPath || (p.href && p.href.split('/').pop() === base));
+    let idx = pages.findIndex((p) => p.href === itemPath);
+    if (idx < 0) idx = pages.findIndex((p) => p.href && p.href.split('/').pop() === base);
     if (idx < 0) idx = pages.findIndex((p) => p.item === itemPath);
     if (idx >= 0) {
       loadPage(idx, { focusFrame: true, fragment });
