@@ -149,7 +149,7 @@ def test_happy_path_answers_with_resolved_citation(mini_libv2: Path):
     # char_span forwarded only for resolved_exact.
     assert cit.link_target["char_span"] is not None
     assert result.model_id == "qwen2.5:14b-instruct-q4_K_M"
-    assert result.prompt_version == "ws3.v1"
+    assert result.prompt_version == "ws3.v2"
 
 
 def test_resolved_normalized_citation_passes_without_char_span(mini_libv2: Path):

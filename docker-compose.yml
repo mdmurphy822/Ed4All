@@ -60,6 +60,12 @@ services:
       # support story. Never changes an answer verdict; always keeps >= 1
       # citation. Knob: ED4ALL_ANSWER_PRUNE_MIN_OVERLAP (default 0.25).
       ED4ALL_ANSWER_CITATION_PRUNE: "on"
+      # Serving window. The default 4096 evicts trailing retrieved passages on
+      # 8-passage answers (observed: 5/8 dropped — multi-part questions lost
+      # their later-ranked support before the model ever saw it). 8192 holds a
+      # full 8-passage prompt; MUST match the sidecar's OLLAMA_CONTEXT_LENGTH
+      # below. 7B q4 + 8k KV cache still fits an 8GB GPU fully resident.
+      ED4ALL_ANSWER_NUM_CTX: "8192"
     volumes:
       # Mutable state/training/upload data lives on a named volume mounted at
       # /data (= ED4ALL_HOME). The repo's CODE is NOT bind-mounted — the image
@@ -82,6 +88,11 @@ services:
 
   ollama:
     image: ollama/ollama:latest
+    environment:
+      # Serve an 8k context window — pairs with the gui service's
+      # ED4ALL_ANSWER_NUM_CTX above (see that comment for why 4096 is not
+      # enough for multi-part grounded answers).
+      OLLAMA_CONTEXT_LENGTH: "8192"
     # Owns the network namespace the gui service joins; port mappings for the
     # whole pod therefore live here.
     ports:

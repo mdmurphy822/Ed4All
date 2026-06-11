@@ -46,7 +46,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycle
 
 
 # Bump on ANY change to the system/user prompt wording below.
-ANSWER_PROMPT_VERSION = "ws3.v1"
+ANSWER_PROMPT_VERSION = "ws3.v2"
 
 # Per-passage hard truncation (characters). A 14B-Q4 model loses the
 # trailing JSON directive when the context balloons; capping each
@@ -90,7 +90,11 @@ MAX_CONTEXT_CHARS = 12000
 ANSWER_SYSTEM_PROMPT = (
     "You answer a student's question about one course using ONLY the "
     "numbered source passages provided. Do not use outside knowledge. "
-    "If the passages do not contain enough information to answer, set "
+    "If the question has multiple parts, address every part the passages "
+    "support; for any part NOT covered by the passages, say so in one short "
+    "sentence (e.g. \"The provided course material does not cover <part>.\") "
+    "instead of omitting it silently, and never invent material for an "
+    "uncovered part. If NO part of the question is covered, set "
     '"not_in_course" to true and leave "answer" empty. Cite the id of '
     "every passage that supports the answer. Output JSON only: "
     '{"answer": "...", "citations": ["<passage_id>", ...], '
