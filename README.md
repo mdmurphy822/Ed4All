@@ -1,7 +1,7 @@
 # Ed4All
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 **Turn a textbook PDF into an accessible, course-ready package — semantic HTML, weekly modules, learning objectives, assessments, and a knowledge graph — in a single command.**
 
@@ -28,7 +28,7 @@ Every chunk carries its Bloom's level, content type, key terms, misconceptions, 
 
 ## Quick start
 
-Requires Python 3.9+. Optional system tools (`tesseract-ocr`, `poppler-utils`) improve extraction on scanned or image-heavy PDFs.
+Requires Python 3.10+. Optional system tools (`tesseract-ocr`, `poppler-utils`) improve extraction on scanned or image-heavy PDFs.
 
 ```bash
 git clone https://github.com/mdmurphy822/Ed4All.git
