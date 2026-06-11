@@ -245,3 +245,4 @@ plans/
 
 # Local-only generated index maintained by the recurring review loop
 docs/MANIFEST.md
+docker-compose.override.yml

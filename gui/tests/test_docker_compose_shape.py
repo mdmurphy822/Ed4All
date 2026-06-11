@@ -117,5 +117,10 @@ def test_dockerfile_gui_exposes_port_and_pins_studio_data_env():
     assert "HF_HOME=" in text  # embedding cache persisted onto the volume
     assert "HEALTHCHECK" in text
     assert "/api/health" in text
-    # Installs the two extras the GUI needs.
-    assert "[gui,server]" in text
+    # Installs the extras the GUI needs. ``embedding`` is required because the
+    # compose pins ED4ALL_EMBEDDING_PROVIDER=st — without it the Ask surface
+    # dies on a missing numpy/sentence-transformers import at query time.
+    assert "[gui,server,embedding]" in text
+    # CPU-only torch must be resolved before the embedding extra so the image
+    # doesn't ship multi-GB CUDA wheels.
+    assert "download.pytorch.org/whl/cpu" in text
