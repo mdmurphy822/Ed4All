@@ -4,4 +4,4 @@ Ed4All CLI - Integrity checking and run management tools.
 Phase 0 Hardening - Requirement 9: CLI Integrity Checks
 """
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
