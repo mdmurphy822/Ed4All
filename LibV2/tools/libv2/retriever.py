@@ -669,9 +669,15 @@ def stream_chunks_from_course(
 
     Yields chunks one at a time without loading the entire file.
     """
-    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
-    from lib.libv2_storage import resolve_imscc_chunks_path
-    chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
+    # Query path: serve the chunkset the live vector index was built over
+    # (manifest chunkset_kind authoritative), falling back to directory
+    # precedence (imscc_chunks/ -> dart_chunks/ -> legacy corpus/) when there
+    # is no index — so a union/corpus-legacy index's BM25 arm reads the same
+    # superset chunkset the semantic arm hydrates.
+    from lib.libv2_storage import resolve_chunks_path_for_query
+    chunks_path, _resolution = resolve_chunks_path_for_query(
+        course_dir, "chunks.jsonl"
+    )
     if not chunks_path.exists():
         return
 
@@ -727,11 +733,14 @@ def _collect_filtered_chunks(
     course_counts = {}
 
     # Initialize iterators for each course
-    from lib.libv2_storage import resolve_imscc_chunks_path
+    from lib.libv2_storage import resolve_chunks_path_for_query
     for entry in courses:
         course_dir = repo_root / "courses" / entry.slug
-        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
-        chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
+        # Query path: honor the vector-index manifest's chunkset_kind, else
+        # directory precedence (imscc_chunks/ -> dart_chunks/ -> corpus/).
+        chunks_path, _resolution = resolve_chunks_path_for_query(
+            course_dir, "chunks.jsonl"
+        )
         if chunks_path.exists():
             course_iterators[entry.slug] = {
                 "iterator": stream_chunks_from_course(

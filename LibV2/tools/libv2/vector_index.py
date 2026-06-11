@@ -53,7 +53,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from lib.libv2_storage import resolve_imscc_chunks_dir
+from lib.libv2_storage import (
+    DIRNAME_TO_CHUNKSET_KIND as _DIRNAME_TO_KIND,
+    resolve_imscc_chunks_dir,
+)
 from lib.utils.hashing import sha256_file, sha256_text
 
 try:  # Trainforge is a sibling package; resolved at runtime in-repo.
@@ -90,12 +93,10 @@ _MANIFEST_SCHEMA_VERSION = "1.0"
 _INDEX_TYPE = "exact-numpy"
 _FAKE_PROVIDER = "fake"
 
-# chunkset-dir name -> manifest chunkset_kind discriminator.
-_DIRNAME_TO_KIND = {
-    "imscc_chunks": "imscc",
-    "dart_chunks": "dart",
-    "corpus": "corpus-legacy",
-}
+# chunkset-dir name -> manifest chunkset_kind discriminator. Single source of
+# truth lives in ``lib.libv2_storage.DIRNAME_TO_CHUNKSET_KIND`` (imported above
+# as ``_DIRNAME_TO_KIND``) so the build path and the query path
+# (``resolve_chunks_path_for_query``) can never disagree on the mapping.
 
 # Float32 epsilon floor used when L2-normalizing so an all-zero embedding
 # row (degenerate, but possible from a misbehaving provider) does not

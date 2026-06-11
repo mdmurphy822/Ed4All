@@ -40,7 +40,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from lib.libv2_storage import resolve_imscc_chunks_path
+from lib.libv2_storage import resolve_chunks_path_for_query
 
 from .retriever import (
     ChunkFilter,
@@ -82,12 +82,19 @@ def _resolve_course_domain(course_dir: Path) -> str:
 def _load_chunks_by_id(course_dir: Path) -> Dict[str, dict]:
     """Build an ``{chunk_id: chunk_dict}`` join table for hydration.
 
-    Streams the same chunkset the index was built from (via the canonical
-    ``resolve_imscc_chunks_path`` shim: imscc_chunks/ -> dart_chunks/ ->
-    legacy corpus/). Accepts both ``id`` (canonical) and ``chunk_id``
-    (legacy / fixture) as the key — matching ``vector_index._chunk_id``.
+    Streams the SAME chunkset the index was built over: the vector-index
+    manifest's ``chunkset_kind`` is authoritative (via
+    ``resolve_chunks_path_for_query``), so a corpus-legacy / union index's
+    ids hydrate against the corpus file rather than a precedence-resolved
+    ``imscc_chunks/`` subset that would silently DROP the index's extra ids.
+    Falls back to directory precedence (imscc_chunks/ -> dart_chunks/ ->
+    legacy corpus/) when there is no index manifest. Accepts both ``id``
+    (canonical) and ``chunk_id`` (legacy / fixture) as the key — matching
+    ``vector_index._chunk_id``.
     """
-    chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
+    chunks_path, _resolution = resolve_chunks_path_for_query(
+        course_dir, "chunks.jsonl"
+    )
     table: Dict[str, dict] = {}
     if not chunks_path.exists():
         return table
