@@ -379,6 +379,15 @@ def _citation_li(
     """
     page_label = citation.get("page_label") or "Source"
     href = source_url_for(citation, slug)
+    # Source-side (DART) citations: the learner source endpoint serves the
+    # whole original document with no block anchor, so the main link landed
+    # at the top — the attribution front matter (user-reported). When the
+    # citation carries a source_block and the deep-linkable source-doc URL
+    # resolves, make THAT the main link so the click lands on the cited block.
+    if include_original_source_links and citation.get("source_block"):
+        anchored = original_source_url(citation, slug)
+        if anchored:
+            href = anchored
     parts = [
         '<a href="{href}">Source: {label}</a>'.format(
             href=escape(href, quote=True), label=escape(str(page_label))

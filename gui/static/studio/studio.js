@@ -292,6 +292,13 @@ async function renderViewer(segments) {
   const drawer = createAskDrawer({
     slug,
     loadCitation: (itemPath, fragment) => loadCitation(itemPath, fragment),
+    // Anchored original-source documents load by URL — the iframe honours the
+    // #dart-<block> fragment so the view lands on the cited block.
+    loadSourceDoc: (href) => {
+      frame.removeAttribute('srcdoc');
+      frame.src = href;
+      setStatus('Showing the cited original source.');
+    },
   });
 
   const layout = el('div', { class: 'viewer' }, [treePane, contentPane, drawer.root]);

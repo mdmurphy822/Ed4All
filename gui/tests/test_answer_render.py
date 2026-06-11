@@ -393,7 +393,7 @@ def test_provenance_source_block_is_escaped():
 
 def test_original_source_link_rendered_when_source_block_present():
     payload = _answered_payload()
-    payload["citations"][0]["source_block"] = "dart:sample-algebra-2e-ch1-3#edd36456647a9cd8"
+    payload["citations"][0]["source_block"] = "dart:intro-textbook-vol1#a1b2c3d4e5f60718"
     payload["citations"][0]["pdf_pages"] = []
     html = ar.render_answer_fragment(payload)
     # The source-block row is a "View original source" deep link (new tab).
@@ -403,11 +403,11 @@ def test_original_source_link_rendered_when_source_block_present():
     assert "opens in new tab" in html
     # href: /api/courses/{slug}/source-doc?doc=<doc>&ref=<block>#dart-<block>
     assert (
-        "/api/courses/phys-101/source-doc?doc=sample-algebra-2e-ch1-3"
-        "&amp;ref=edd36456647a9cd8#dart-edd36456647a9cd8" in html
+        "/api/courses/phys-101/source-doc?doc=intro-textbook-vol1"
+        "&amp;ref=a1b2c3d4e5f60718#dart-a1b2c3d4e5f60718" in html
     )
     # The sourceId rides along as secondary <code> text.
-    assert "<code>dart:sample-algebra-2e-ch1-3#edd36456647a9cd8</code>" in html
+    assert "<code>dart:intro-textbook-vol1#a1b2c3d4e5f60718</code>" in html
 
 
 def test_original_source_url_helper_shape():
@@ -447,3 +447,22 @@ def test_original_source_link_url_encoded():
     # The doc / ref halves are percent-encoded in the href.
     assert "doc=doc%20with%20space" in html
     assert "ref=blk%20a" in html
+
+
+def test_main_source_link_is_anchored_source_doc_for_dart_citations():
+    """Source-side citations: the MAIN "Source:" link must land on the cited
+    block in the original document (user-reported: the unanchored learner
+    source URL opened the doc at the top — the attribution front matter)."""
+    payload = _answered_payload()
+    payload["citations"][0]["source_block"] = "dart:intro-textbook-vol1#a1b2c3d4e5f60718"
+    html = ar.render_answer_fragment(payload)
+    c = _parse(html)
+    main_href = c.hrefs[0]
+    assert main_href.startswith("/api/courses/phys-101/source-doc?doc=intro-textbook-vol1")
+    assert main_href.endswith("#dart-a1b2c3d4e5f60718")
+
+
+def test_main_source_link_unchanged_for_course_page_citations():
+    payload = _answered_payload()  # no source_block -> course-page citation
+    html = ar.render_answer_fragment(payload)
+    assert _parse(html).hrefs[0].startswith("/api/learn/source/phys-101?item_path=")

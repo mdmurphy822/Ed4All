@@ -57,9 +57,12 @@ function fmtElapsed(ms) {
  * @param {string} opts.slug              current course slug
  * @param {(item, fragment) => void} opts.loadCitation
  *        host callback: load the cited page into the content pane + highlight.
+ * @param {(href) => void} [opts.loadSourceDoc]
+ *        host callback: load an anchored original-source document URL into
+ *        the content pane (source-side citations).
  * @returns {{ root: HTMLElement, focus: () => void, destroy: () => void }}
  */
-export function createAskDrawer({ slug, loadCitation }) {
+export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
   let history = loadHistory(slug);
   const timers = new Set();   // poll/elapsed interval ids to clear on destroy
   let busy = false;
@@ -217,6 +220,24 @@ export function createAskDrawer({ slug, loadCitation }) {
         e.preventDefault();
         const { item, fragment } = parseSourceHref(a.getAttribute('href'));
         if (item && typeof loadCitation === 'function') loadCitation(item, fragment);
+      };
+      a.addEventListener('click', onActivate);
+      a.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') onActivate(e);
+      });
+    });
+    // Source-side (DART) main citation links point at the anchored
+    // source-doc URL (lands on the cited block). Route them into the
+    // content pane like course-page citations — the iframe honours the
+    // #dart-<block> fragment — instead of letting the <a> navigate the SPA.
+    // Provenance links (target=_blank) are excluded: they keep opening in a
+    // new tab.
+    scope.querySelectorAll('a[href*="/source-doc?"]:not([target])').forEach((a) => {
+      a.setAttribute('role', 'button');
+      a.classList.add('ask-cite');
+      const onActivate = (e) => {
+        e.preventDefault();
+        if (typeof loadSourceDoc === 'function') loadSourceDoc(a.getAttribute('href'));
       };
       a.addEventListener('click', onActivate);
       a.addEventListener('keydown', (e) => {
