@@ -723,12 +723,22 @@ class TaskExecutor:
             error=result.error,
         )
 
-        # Log completion decision
+        # Log completion decision. Rationale interpolates dynamic per-task
+        # signals (tool, status, duration, retry count) and stays above the
+        # canonical 20-char minimum so a DECISION_VALIDATION_STRICT=true run
+        # does not fail-closed on the executor's own task-lifecycle capture
+        # (the bare ``Duration: 0.14s`` form was 15 chars and tripped strict
+        # validation, marking otherwise-successful tasks failed).
         if self.capture:
             self.capture.log_decision(
                 decision_type="task_completion",
                 decision=f"Task {task_id} completed with status: {result.status}",
-                rationale=f"Duration: {result.duration_seconds:.2f}s",
+                rationale=(
+                    f"Tool '{tool_name}' for agent '{agent_type}' finished "
+                    f"with status={result.status} in "
+                    f"{result.duration_seconds:.2f}s "
+                    f"after {result.retry_count} retry(ies)"
+                ),
             )
 
         return result

@@ -12,13 +12,16 @@ committed fixture PDF and asserts all three output contracts:
   * Worker γ — LibV2 archival — ``corpus/``, ``graph/`` populated;
     ``manifest.features.source_provenance`` key present.
 
-**EXPECTED TO FAIL TODAY.** Until all three workers land, at least one of
-the assertions below will fail. That's the point — this test is the
-completion signal. The default pytest run skips it via the ``slow`` marker.
+The test runs the REAL blessed authoring route (in-process provider lattice
+against the local OpenAI-compatible server) and therefore self-skips when no
+local LLM endpoint is reachable (``LOCAL_SYNTHESIS_BASE_URL`` /
+``localhost:11434``) — e.g. on CI runners. It carries the ``slow`` marker
+for selective deselection (``-m "not slow"``); the default run does NOT
+deselect it.
 
 Run it explicitly with:
 
-    pytest -m slow tests/integration/test_pipeline_end_to_end.py
+    pytest tests/integration/test_pipeline_end_to_end.py
 
 The test uses the opt-in Wave 7–11 strict/stable-ID flags so the fixture
 output exercises the same code paths that production runs will hit once
@@ -61,6 +64,27 @@ STRICT_ENV_FLAGS = {
     "TRAINFORGE_STRICT_EVIDENCE": "true",
     "TRAINFORGE_SOURCE_PROVENANCE": "true",
     "DECISION_VALIDATION_STRICT": "true",
+}
+
+# Marketable-v1 A3 blessed authoring-provider route. Every LLM-needing agent
+# in the textbook_to_course phases that actually run must resolve its
+# generation through the in-process provider lattice, or the run fails fast
+# with AuthoringProviderRouteError (rather than hanging on an unserviced
+# mailbox or silently degrading to the PEDAGOGY-101 templated stub that
+# Worker α asserts is gone). Each agent's <AGENT>_PROVIDER env points the
+# executor's short-circuit at the local OpenAI-compatible lattice — the same
+# turnkey route a production CLI/GUI run takes. Using the stub opt-in
+# (LOCAL_DISPATCHER_ALLOW_STUB) instead would defeat the test's own
+# assertions, so we exercise the real blessed lattice route here.
+#   * course-outliner       -> COURSEPLANNER_PROVIDER       (course_planning)
+#   * content-generator     -> COURSEFORGE_PROVIDER         (content_generation*)
+#   * assessment-generator  -> TRAINFORGE_ASSESSMENT_PROVIDER (trainforge_assessment)
+# training_synthesis is opt-out via --skip-training below, so its
+# training-synthesizer agent never runs and needs no provider env.
+AUTHORING_PROVIDER_ENV = {
+    "COURSEPLANNER_PROVIDER": "local",
+    "COURSEFORGE_PROVIDER": "local",
+    "TRAINFORGE_ASSESSMENT_PROVIDER": "local",
 }
 
 
@@ -130,6 +154,10 @@ def _run_ed4all_cli() -> subprocess.CompletedProcess:
     """Invoke ``ed4all run textbook-to-course`` via subprocess."""
     env = os.environ.copy()
     env.update(STRICT_ENV_FLAGS)
+    # Marketable-v1 A3: route every LLM-needing agent through the blessed
+    # in-process provider lattice so the run doesn't fail fast with
+    # AuthoringProviderRouteError.
+    env.update(AUTHORING_PROVIDER_ENV)
     # Force local mode so no ANTHROPIC_API_KEY is needed.
     env["LLM_MODE"] = "local"
 
@@ -147,6 +175,12 @@ def _run_ed4all_cli() -> subprocess.CompletedProcess:
         "2",
         "--assessment-count",
         "6",
+        # The test asserts the Worker α/β/γ output contracts (course content,
+        # chunks/graph/misconceptions, LibV2 archive) — not training-pair
+        # synthesis. Skip the optional training_synthesis phase so its
+        # training-synthesizer agent isn't an authoring-route offender and we
+        # don't trigger a multi-hour local-LLM pair-synthesis pass.
+        "--skip-training",
         "--mode",
         "local",
         "--json",
@@ -402,6 +436,29 @@ def _assert_worker_gamma() -> None:
 # ---------------------------------------------------------------------- #
 
 
+def _local_llm_reachable() -> bool:
+    """Whether the in-process provider lattice's local endpoint answers.
+
+    The blessed A3 authoring route dispatches real generation calls to the
+    local OpenAI-compatible server (``LOCAL_SYNTHESIS_BASE_URL``, default
+    Ollama on ``localhost:11434``). On hosts without one (CI runners), the
+    run can only fail on connection errors, so the test skips instead —
+    the same reachability-skip convention the other live-backend tests use.
+    """
+    import socket
+    from urllib.parse import urlparse
+
+    base = os.environ.get("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+    parsed = urlparse(base)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        with socket.create_connection((host, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
 @pytest.mark.slow
 @pytest.mark.integration
 def test_textbook_to_course_end_to_end():
@@ -410,6 +467,11 @@ def test_textbook_to_course_end_to_end():
 
     Expected to fail until workers α, β, γ all land.
     """
+    if not _local_llm_reachable():
+        pytest.skip(
+            "No local LLM endpoint reachable (LOCAL_SYNTHESIS_BASE_URL / "
+            "localhost:11434) — the blessed authoring route needs one."
+        )
     assert FIXTURE_PDF.exists(), (
         f"Fixture PDF missing at {FIXTURE_PDF}. Run "
         "tests/fixtures/pipeline/build_fixture_pdf.py to regenerate."
