@@ -241,6 +241,11 @@
                 "type": "string",
                 "enum": ["seed", "draft", "reviewed"],
                 "description": "Authoring lifecycle. seed: deterministic executor-authored starter. draft: in-progress (incl. a gold-repin-parked unresolved question). reviewed: operator-approved (freeze prerequisite)."
+              },
+              "template": {
+                "type": "string",
+                "enum": ["stratified", "definition", "worked_example"],
+                "description": "Optional (llm_assisted only): which gold-candidate drafting arm produced the question. stratified: the §1.2 stratified sampler; definition: a glossary-term definition question; worked_example: a Problem/Solution/Step procedural question. Provenance only — never affects eval scoring."
               }
             }
           }

@@ -131,6 +131,99 @@ def test_gold_candidates_unknown_course(tmp_path, monkeypatch):
     assert "course not found" in res.output
 
 
+_GLOSSARY_TEXT = (
+    "Integer Any whole number, its negative counterpart, or zero. Absolute "
+    "Value The distance between a number and zero on the number line. Opposite "
+    "The number the same distance from zero but on the other side of zero. "
+    "Number Line A horizontal line on which every real number has a position."
+)
+_WORKED_TEXT = (
+    "Problem 1 — Scheduling. The chess club meets every 6 days. On what day do "
+    "they next meet? Solution. We need the least common multiple of 6 and 8. "
+    "Step 1: list multiples. Step 2: pick the smallest common multiple."
+)
+
+
+def _make_course_with_shapes(repo_root: Path) -> Path:
+    """A course whose corpus carries a glossary (summary) chunk + a worked
+    example chunk so the definition / worked_example arms have seeds."""
+    cdir = repo_root / "courses" / _SLUG
+    (cdir / "corpus").mkdir(parents=True)
+    chunks = [
+        {"id": "g001", "text": _GLOSSARY_TEXT, "chunk_type": "summary",
+         "source": {"item_path": "week_03/summary.html",
+                    "section_heading": "Week 3 Summary"},
+         "learning_outcome_refs": ["to-03"]},
+        {"id": "w001", "text": _WORKED_TEXT, "chunk_type": "exercise",
+         "source": {"item_path": "week_01/work.html"},
+         "learning_outcome_refs": ["to-01"]},
+    ]
+    chunks_path = cdir / "corpus" / "chunks.jsonl"
+    with chunks_path.open("w") as fh:
+        for c in chunks:
+            fh.write(json.dumps(c) + "\n")
+    sha = sha256_file(chunks_path)
+    gold = {
+        "schema_version": "1.1", "course_slug": _SLUG,
+        "chunkset": {"kind": "corpus", "chunks_path": "corpus/chunks.jsonl",
+                     "chunks_sha256": sha},
+        "authored_at": "2026-06-11T00:00:00Z", "frozen": False,
+        "questions": [{
+            "question_id": f"gq-{_SLUG}-0001", "question_type": "factual_recall",
+            "question_text": "seed: define the term integer here?",
+            "relevant_passages": [{"chunk_id": "g001", "relevance": "primary",
+                "anchor": {"item_path": "week_03/summary.html",
+                           "text_quote": _GLOSSARY_TEXT[:60]}}],
+            "authoring": {"method": "manual", "author": "@t",
+                          "reviewed_by": "@r", "status": "reviewed"}}],
+    }
+    (cdir / "retrieval_eval").mkdir(parents=True)
+    (cdir / "retrieval_eval" / "gold_set.json").write_text(json.dumps(gold))
+    (cdir / "manifest.json").write_text(json.dumps({"classification": {}}))
+    return cdir
+
+
+def test_gold_candidates_template_arms(tmp_path, monkeypatch):
+    course = _make_course_with_shapes(tmp_path)
+    # quote pulled verbatim from the glossary so the definition arm pre-screens.
+    _patch_client(monkeypatch, _draft(
+        q="What is the definition of the term integer in this glossary?",
+        quote="Any whole number, its negative counterpart, or zero"))
+    res = _invoke(tmp_path, "gold-candidates", "--course", _SLUG,
+                  "--templates", "definition,worked_example")
+    assert res.exit_code == 0, res.output
+    doc = json.loads((course / "retrieval_eval" / "gold_candidates.json").read_text())
+    bt = doc["authoring_run"]["by_template"]
+    assert "definition" in bt and "worked_example" in bt
+    assert "stratified" not in bt
+    templates = {c["authoring"].get("template") for c in doc["candidates"]}
+    assert templates <= {"definition", "worked_example"}
+
+
+# --------------------------------------------------------------- gold-metadata-backfill
+
+
+def test_gold_metadata_backfill_writes_proposal(tmp_path):
+    course = _make_course_with_shapes(tmp_path)
+    # add a question missing difficulty + population (the seed has neither).
+    res = _invoke(tmp_path, "gold-metadata-backfill", "--course", _SLUG)
+    assert res.exit_code == 0, res.output
+    art = course / "retrieval_eval" / "gold_metadata_backfill_proposal.json"
+    assert art.exists()
+    doc = json.loads(art.read_text())
+    assert doc["method"] == "rule-based"
+    assert doc["n_questions"] >= 1
+    # gold set is NOT mutated
+    gold = json.loads((course / "retrieval_eval" / "gold_set.json").read_text())
+    assert "difficulty" not in gold["questions"][0]
+
+
+def test_gold_metadata_backfill_unknown_course(tmp_path):
+    res = _invoke(tmp_path, "gold-metadata-backfill", "--course", "no-such")
+    assert res.exit_code == 1
+    assert "course not found" in res.output
+
+
 # --------------------------------------------------------------- probe-candidates
 
 

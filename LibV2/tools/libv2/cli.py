@@ -3300,21 +3300,29 @@ def gold_repin(ctx, course: str, kind: str, chunks_path: Optional[str],
 @click.option("--n", type=int, default=None,
               help="Number of candidates to draft (default 100 = 2x the 50-question target).")
 @click.option("--seed", type=int, default=0, help="Deterministic sampler seed.")
+@click.option("--templates", default=None,
+              help="Comma-separated template arms to run (default all): "
+                   "stratified,definition,worked_example.")
 @click.option("--no-write", is_flag=True, help="Build the doc without writing the artifact.")
 @click.pass_context
-def gold_candidates(ctx, course: str, n: Optional[int], seed: int, no_write: bool):
+def gold_candidates(ctx, course: str, n: Optional[int], seed: int,
+                    templates: Optional[str], no_write: bool):
     """Draft gold-question candidates via the license-clean local provider.
 
-    Stratified-samples the course's pinned union chunkset, drafts one candidate
-    per slot (question + 2-4 key points + a verbatim >=40-char quote) via the
-    LOCAL provider only, pre-screens deterministically (quote containment +
-    ambiguity + length + near-dup -- rejections RECORDED, not dropped), and
-    writes retrieval_eval/gold_candidates.json. Operator edits that file
-    (status:draft -> reviewed) then runs `gold-promote`.
+    Runs the requested template arms (default all three): `stratified`
+    stratified-samples the pinned union chunkset; `definition` mines glossary
+    terms (one factual_recall question per term); `worked_example` mines
+    Problem/Solution/Step chunks (one procedural question per chunk). Each arm
+    drafts question + 2-4 key points + a verbatim >=40-char quote via the LOCAL
+    provider only, pre-screens deterministically (quote containment + ambiguity
+    + length + near-dup -- rejections RECORDED, not dropped), and writes
+    retrieval_eval/gold_candidates.json. Operator edits that file (status:draft
+    -> reviewed) then runs `gold-promote`.
 
     \b
     Example:
         libv2 gold-candidates --course demo-course-1 --n 100
+        libv2 gold-candidates --course demo-course-1 --templates definition,worked_example
     """
     from lib.decision_capture import DecisionCapture
     from lib.retrieval.answer_backend import (
@@ -3330,6 +3338,11 @@ def gold_candidates(ctx, course: str, n: Optional[int], seed: int, no_write: boo
         print_error(f"course not found: {course_dir}")
         sys.exit(1)
 
+    template_list = (
+        [t.strip() for t in templates.split(",") if t.strip()]
+        if templates else None
+    )
+
     capture = DecisionCapture(course_code=course, phase="libv2-answer", tool="libv2")
     try:
         client = build_answer_client(capture=capture)
@@ -3343,7 +3356,7 @@ def gold_candidates(ctx, course: str, n: Optional[int], seed: int, no_write: boo
     try:
         doc, out_path = generate_gold_candidates(
             course_dir, client=client, n=n, seed=seed,
-            capture=capture, write=not no_write,
+            capture=capture, write=not no_write, templates=template_list,
         )
     except FileNotFoundError as exc:
         print_error(str(exc))
@@ -3353,6 +3366,8 @@ def gold_candidates(ctx, course: str, n: Optional[int], seed: int, no_write: boo
     print(f"gold-candidates {course}: drafted {run.get('n_drafted')} "
           f"(requested {run.get('n_requested')}), "
           f"pre-screen passed {run.get('n_prescreen_passed')}.")
+    if run.get("by_template"):
+        print(f"  by_template: {run.get('by_template')}")
     if out_path:
         print_success(f"  wrote {out_path}")
     else:
@@ -3493,6 +3508,57 @@ def gold_promote(ctx, course: str, freeze: bool, dry_run: bool):
             print_warning(f"  coverage report skipped: {exc}")
     if report.frozen:
         print_success("  gold set FROZEN.")
+    sys.exit(0)
+
+
+@main.command("gold-metadata-backfill")
+@click.option("--course", "-c", required=True,
+              help="Course slug whose gold-set metadata gaps to propose backfill for")
+@click.option("--no-write", is_flag=True, help="Build the proposal without writing the artifact.")
+@click.pass_context
+def gold_metadata_backfill(ctx, course: str, no_write: bool):
+    """Propose difficulty / expected_citation_population for gold questions
+    missing them.
+
+    Rule-based + deterministic (no LLM): expected_citation_population is
+    inferred from the relevant_passages' chunk populations; difficulty from the
+    §1.3 heuristic over passage count + distinct content weeks. Writes a
+    PROPOSAL artifact (retrieval_eval/gold_metadata_backfill_proposal.json) for
+    operator review -- it is NEVER auto-applied to gold_set.json (the frozen set
+    is the canonical eval pin).
+
+    \b
+    Example:
+        libv2 gold-metadata-backfill --course demo-course-1
+    """
+    from lib.retrieval.gold_metadata_backfill import generate_backfill_proposal
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    try:
+        doc, out_path = generate_backfill_proposal(course_dir, write=not no_write)
+    except FileNotFoundError as exc:
+        print_error(str(exc))
+        sys.exit(1)
+
+    print(f"gold-metadata-backfill {course}: {doc.get('n_questions')} "
+          f"question(s) with proposed metadata.")
+    for p in doc.get("proposals", []):
+        bits = []
+        if "proposed_difficulty" in p:
+            bits.append(f"difficulty={p['proposed_difficulty']}")
+        if "proposed_population" in p:
+            bits.append(f"population={p['proposed_population']}")
+        print(f"  {p.get('question_id')}: {', '.join(bits)}")
+    if out_path:
+        print_success(f"  wrote {out_path}")
+        print_warning("  PROPOSAL ONLY -- not applied to gold_set.json; operator reviews.")
+    else:
+        print_warning("  no-write: artifact not written.")
     sys.exit(0)
 
 

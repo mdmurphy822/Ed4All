@@ -51,8 +51,17 @@ _ENGINES = ("lexical", "semantic", "hybrid-rrf")
 _DEFAULT_DRY_RUN_LIMIT = 8
 _TOP_PASSAGE_EXCERPT_CHARS = 240
 
-# §1.2 refusal-probe split per 25-probe course target.
-_PROBE_TARGET = {"off_topic": 8, "adjacent_domain": 10, "out_of_scope_detail": 7}
+# §1.2 refusal-probe split per 25-probe course target. ``off_topic_llm`` is the
+# additive local-model-drafted pure-off-topic arm (sibling of the fixed-bank
+# ``off_topic``): the model invents wholly-unrelated-discipline questions
+# (cooking / geography / pop culture) rather than drawing from the fixed bank,
+# so the off-topic negatives are not pinned to one hand-authored list.
+_PROBE_TARGET = {
+    "off_topic": 8,
+    "off_topic_llm": 10,
+    "adjacent_domain": 10,
+    "out_of_scope_detail": 7,
+}
 
 
 # A fixed cross-domain off-topic bank. Deterministic; no course coupling. These
@@ -405,6 +414,114 @@ def adjacent_domain_candidates(
     return out
 
 
+# ---------------------------------------------------------------- off-topic LLM
+
+
+# Disciplines the local model is asked to draw the pure-off-topic questions
+# from — wholly unrelated to any course corpus. Kept as a HINT list (the model
+# invents the questions); deterministic only in that the SAME hint is sent each
+# run, so the arm is reproducible at the prompt level while the text is drafted.
+_OFF_TOPIC_DOMAINS = (
+    "cooking and recipes",
+    "world geography and capital cities",
+    "pop culture, film, and music",
+    "professional sports and their rules",
+    "gardening and houseplants",
+    "automotive maintenance",
+)
+
+
+def off_topic_llm_candidates(
+    *,
+    client: Any,
+    n: int,
+    model_id: Optional[str] = None,
+    capture: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Draft pure off-topic refusal probes via the local provider.
+
+    Distinct from the fixed-bank :func:`off_topic_candidates`: the local model
+    INVENTS ``n`` questions that are completely unrelated to any course material
+    (cooking, geography, pop culture, …) rather than drawing from the fixed
+    bank. The point of a refusal probe is a question the corpus cannot answer;
+    these have zero course coupling by construction. NEVER an Anthropic surface.
+
+    Emits one ``probe_candidate_authoring`` decision with a dynamic rationale.
+    """
+    resolved_model = model_id or getattr(client, "model", "local")
+    if n <= 0:
+        return []
+    domains_str = ", ".join(_OFF_TOPIC_DOMAINS)
+    system = (
+        "You author 'off topic' refusal probes: questions about everyday "
+        "general-knowledge subjects that are COMPLETELY UNRELATED to any "
+        "academic course — cooking, geography, sports, pop culture, gardening, "
+        "and the like. They must share NO vocabulary or topic with a math, "
+        "science, or humanities course. Each must be a real, answerable "
+        "general-knowledge question (just not from any course corpus). "
+        "Output JSON only: a JSON array of question strings, each ending in '?'."
+    )
+    user = (
+        f"Draw from these everyday domains: {domains_str}.\n\n"
+        f"Write {n} off-topic questions that are completely unrelated to any "
+        f"course material (no math, science, or humanities course terms). "
+        f'Output JSON array only: ["...?", "...?"]'
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    questions: List[str] = []
+    try:
+        text = client.chat_completion(messages, max_tokens=512, temperature=0.5)
+        questions = _parse_adjacent(text)
+    except Exception:  # noqa: BLE001 — empty draft is recorded as zero probes
+        questions = []
+    questions = [q for q in questions if len(q.strip()) >= 10][:n]
+
+    out: List[Dict[str, Any]] = []
+    for q in questions:
+        out.append(
+            {
+                "question_text": q.strip(),
+                "category": "off_topic_llm",
+                "why_unanswerable": (
+                    "Wholly different discipline from the course corpus, "
+                    "drafted by the local model from everyday off-topic domains "
+                    "(no shared vocabulary or topic); operator confirms via dry-run."
+                ),
+                "authoring": {
+                    "method": "llm_assisted",
+                    "author": f"{resolved_model}/{PROBE_AUTHORING_PROMPT_VERSION}",
+                    "reviewed_by": "PENDING_REVIEW",
+                    "status": "draft",
+                },
+            }
+        )
+
+    if capture is not None:
+        try:
+            capture.log_decision(
+                decision_type="probe_candidate_authoring",
+                decision=(
+                    f"drafted {len(out)} off_topic_llm probe(s) via local model "
+                    f"{resolved_model} across {len(_OFF_TOPIC_DOMAINS)} everyday domains."
+                ),
+                rationale=(
+                    f"Pure off-topic refusal-probe drafting using license-clean "
+                    f"local model {resolved_model} (prompt "
+                    f"{PROBE_AUTHORING_PROMPT_VERSION}) seeded by everyday "
+                    f"off-topic domains ({domains_str[:120]}); requested={n}, "
+                    f"drafted={len(out)}. These have zero course coupling by "
+                    f"construction (cooking/geography/pop-culture) and each gets "
+                    f"a per-engine read-only dry-run before operator review."
+                ),
+            )
+        except Exception:  # pragma: no cover — defensive
+            pass
+    return out
+
+
 # ---------------------------------------------------------------- assemble
 
 
@@ -504,6 +621,12 @@ def generate_probe_candidates(
     candidates: List[Dict[str, Any]] = []
     candidates.extend(off_topic_candidates(tgt.get("off_topic", 0)))
     candidates.extend(
+        off_topic_llm_candidates(
+            client=client, n=tgt.get("off_topic_llm", 0),
+            model_id=model_id, capture=capture,
+        )
+    )
+    candidates.extend(
         adjacent_domain_candidates(
             chunks_by_id, client=client, n=tgt.get("adjacent_domain", 0),
             model_id=model_id, capture=capture,
@@ -540,6 +663,7 @@ __all__ = [
     "DryRunEvidence",
     "run_dry_runs",
     "off_topic_candidates",
+    "off_topic_llm_candidates",
     "out_of_scope_detail_candidates",
     "adjacent_domain_candidates",
     "attach_dry_runs",

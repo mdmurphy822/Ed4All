@@ -22,6 +22,7 @@ from lib.retrieval.probe_authoring import (
     build_probe_candidates_doc,
     generate_probe_candidates,
     off_topic_candidates,
+    off_topic_llm_candidates,
     out_of_scope_detail_candidates,
     run_dry_runs,
 )
@@ -166,6 +167,42 @@ def test_adjacent_domain_parse_failure_yields_empty():
     assert cands == []
 
 
+# --------------------------------------------------------------- off_topic_llm
+
+
+def test_off_topic_llm_drafts_from_model():
+    resp = json.dumps([
+        "What temperature should you preheat an oven for sourdough bread?",
+        "Which country has Canberra as its capital city?",
+    ])
+    cands = off_topic_llm_candidates(client=FakeProbeClient([resp]), n=2)
+    assert len(cands) == 2
+    assert all(c["category"] == "off_topic_llm" for c in cands)
+    assert all(c["authoring"]["method"] == "llm_assisted" for c in cands)
+    assert all(PROBE_AUTHORING_PROMPT_VERSION in c["authoring"]["author"] for c in cands)
+
+
+def test_off_topic_llm_zero_n_no_draft():
+    cands = off_topic_llm_candidates(client=FakeProbeClient(["[]"]), n=0)
+    assert cands == []
+
+
+def test_off_topic_llm_parse_failure_yields_empty():
+    cands = off_topic_llm_candidates(
+        client=FakeProbeClient(["no questions, just prose"]), n=3)
+    assert cands == []
+
+
+def test_off_topic_llm_capture_fires():
+    resp = json.dumps(["Who directed the film that won best picture in 1994?"])
+    cap = SpyCapture()
+    off_topic_llm_candidates(client=FakeProbeClient([resp]), n=1, capture=cap)
+    ev = [e for e in cap.events if e["decision_type"] == "probe_candidate_authoring"]
+    assert len(ev) == 1
+    assert len(ev[0]["rationale"]) >= 20
+    assert "off-topic" in ev[0]["rationale"].lower()
+
+
 # --------------------------------------------------------------- dry-runs
 
 
@@ -256,12 +293,14 @@ def test_generate_probe_candidates_end_to_end(tmp_path):
     cap = SpyCapture()
     doc, out_path = generate_probe_candidates(
         cdir, client=client, retrieve_fn=retrieve, libv2_root=tmp_path,
-        targets={"off_topic": 3, "adjacent_domain": 2, "out_of_scope_detail": 1},
+        targets={"off_topic": 3, "off_topic_llm": 2,
+                 "adjacent_domain": 2, "out_of_scope_detail": 1},
         capture=cap,
     )
     assert out_path and out_path.exists()
     by_cat = doc["authoring_run"]["by_category"]
     assert by_cat["off_topic"] == 3
+    assert by_cat["off_topic_llm"] == 2
     assert by_cat["adjacent_domain"] == 2
     assert by_cat["out_of_scope_detail"] == 1
     # every probe candidate carries per-engine dry-runs + a probe_id
