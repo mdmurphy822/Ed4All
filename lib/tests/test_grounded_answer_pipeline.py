@@ -1350,10 +1350,11 @@ def test_candidate_signals_composite_passes_all_legs():
 
 
 def test_candidate_signals_entailment_leg_rejects():
-    # ent 0.70 < 0.75 floor: NLI leg fails even with perfect coverage.
+    # ent 0.65 < the 0.70 floor (re-pinned from 0.75 against the full 62-row
+    # dataset): NLI leg fails even with perfect coverage.
     report = _FakeGroundReport(
         available=True,
-        claims=[_FakeVerdict(_COVER_CLAIM, "entailed", 0.70, "u1", False)],
+        claims=[_FakeVerdict(_COVER_CLAIM, "entailed", 0.65, "u1", False)],
     )
     by_id = {"u1": _nli_passage("u1", _COVER_CHUNK)}
     cands = _nli_add_candidate_signals(report, cited_chunk_ids=set(), gate_eligible_by_id=by_id)
@@ -1553,3 +1554,46 @@ def test_nli_shadow_without_groundedness_logs_skip_reason(mini_libv2, monkeypatc
                for w in result.warnings)
     ev = _nli_add_events(spy)
     assert len(ev) == 1 and ev[0]["decision"] == "nli_citation_add:skipped_no_nli"
+
+
+def test_apply_zero_citation_answer_exclusion_is_warning_class(monkeypatch):
+    """PRUNE-TO-EMPTY EXCLUSION (2026-06-12 under-citing investigation):
+    would-adds on a zero-citation (prune-to-empty) answer were hand-judged
+    3/3 question-induced false adds. Shadow surfaces them under the distinct
+    warning-class outcome/prefix; ON mode NEVER restores a citation to such
+    an answer ("no sources beats a misleading source")."""
+    import lib.retrieval.grounded_answer as ga
+    from lib.retrieval.citation_anchor import AnchorStatus, CitationAnchor
+
+    def _resolved_anchor(record, course_dir, **kwargs):
+        return CitationAnchor(
+            chunk_id=str(record.get("id", "u1")),
+            status=AnchorStatus.RESOLVED_EXACT,
+            source_path=None,
+            item_path="alpha.html",
+            html_xpath="/html[1]/body[1]",
+            char_span=(0, 10),
+            containment_rate=1.0,
+            normalized_match=False,
+        )
+
+    monkeypatch.setattr(ga, "resolve_citation_anchor", _resolved_anchor)
+    report = _FakeGroundReport(
+        available=True,
+        claims=[_FakeVerdict(_COVER_CLAIM, "entailed", 0.9, "u1", False)],
+    )
+    for mode in ("shadow", "on"):
+        out, warns, diag = _apply_nli_citation_add(
+            citations=[], groundedness_report=report, cited_chunk_ids=set(),
+            gate_eligible_passages=[_nli_passage("u1", _COVER_CHUNK)],
+            answer_text=_COVER_CLAIM, course_dir=Path("/nonexistent"),
+            chunkset_kind="dart", containment_threshold=0.85, mode=mode,
+            capture=None, course_slug="s", query_sha="qs", engine="lexical",
+        )
+        assert out == []  # never restores a citation, even in ON mode
+        assert diag["zero_citation_answer"] is True
+        assert diag["outcome"] == "would_add_on_zero_citation_answer"
+        assert diag["added_ids"] == []
+        assert any(
+            w.startswith("nli_would_add_on_zero_citation_answer:") for w in warns
+        )

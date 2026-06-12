@@ -787,10 +787,12 @@ def run_grounded_eval(
             if would:
                 nli_answers_with_would_adds += 1
                 nli_total_would_adds += len(would)
-                # A zero-citation answer recovered: the answer shipped with no
-                # citations (shadow mutates nothing, so n_cites is the model set)
-                # yet the arm would have credited at least one supporter.
-                if n_cites == 0:
+                # WARNING-class, not a recovery win: would-adds on a
+                # zero-citation (prune-to-empty) answer were hand-judged 3/3
+                # question-induced false adds (2026-06-12 investigation). ON
+                # mode never adds to these; this count surfaces how often the
+                # criterion fires where it is known-suspect.
+                if n_cites == 0 or nli_add.get("zero_citation_answer"):
                     nli_zero_citation_answers_recovered += 1
 
         # --- P4 additive per-question scoring (only on answered questions) ---
@@ -1044,7 +1046,10 @@ def run_grounded_eval(
             "zero_citation_answers_recovered": nli_zero_citation_answers_recovered,
             "_diagnostic": (
                 "NLI-ADD would-add counts (2026-06-12 under-citing "
-                "investigation); shadow diagnostics, not a pinned milestone"
+                "investigation); shadow diagnostics, not a pinned milestone. "
+                "zero_citation_answers_recovered is WARNING-class, not a win: "
+                "would-adds on prune-to-empty answers were hand-judged 3/3 "
+                "question-induced false adds; ON mode never adds to them"
             ),
         },
         "latency_ms": {

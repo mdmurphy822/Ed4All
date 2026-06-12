@@ -187,18 +187,25 @@ MAX_ADDED_CITATIONS = 2
 #      call site in ``grounded_answer``), AND
 #   5. <= NLI_ADD_MAX_ADDED_CITATIONS adds per answer.
 
-#: NLI entailment floor for the ADD criterion. The hand-judged genuine adds all
-#: sat at or above 0.735; 0.75 cleanly separates them from the 0.76-0.77 false
-#: positives ONLY in combination with the coverage + numeric legs (NLI alone
-#: cannot — the false adds entail at 0.76/0.77/0.90).
-NLI_ADD_ENTAILMENT_FLOOR = 0.75
+#: NLI entailment floor for the ADD criterion. RE-PINNED 0.75 → 0.70 against
+#: the full 62-row entailed-uncited dataset (2026-06-12 under-citing
+#: investigation): the 0.75 floor dropped 2 of the 11 hand-judged-genuine
+#: candidates (ent 0.735/0.733) while buying no precision — the false adds it
+#: was meant to exclude entail at 0.76-0.97, so the coverage + numeric legs
+#: (not the entailment floor) are the discriminators. NLI alone cannot gate
+#: this arm.
+NLI_ADD_ENTAILMENT_FLOOR = 0.70
 
-#: Content-token coverage floor (claim tokens present in the chunk). The
-#: 2026-06-12 hand sample: genuine adds covered 0.667-1.0; the false adds that
-#: NLI passed sat at 0.40-0.545. 0.65 separates them. Reuses the same
+#: Content-token coverage floor (claim tokens present in the chunk).
+#: RE-PINNED 0.65 → 0.80 against the full 62-row dataset: at 0.65 the gate
+#: admits 30/62 candidates including hand-judged FALSE adds in the
+#: 0.65-0.80 band (pure NLI false positives at cov 0.667, generic-method and
+#: question-induced-setup claims); at 0.80 it admits the 11 candidates the
+#: hand audit judged 8/8 genuine at add level. The earlier 7-row sample's
+#: 0.65 did not survive the fuller measurement. Reuses the same
 #: ``_content_tokens`` machinery the lexical arm's :data:`TOKEN_COVERAGE_FLOOR`
 #: uses (so math/symbol fragments exert no support pressure).
-NLI_ADD_TOKEN_COVERAGE_FLOOR = 0.65
+NLI_ADD_TOKEN_COVERAGE_FLOOR = 0.80
 
 #: Cap on NLI-driven additions per answer (mirrors :data:`MAX_ADDED_CITATIONS`).
 NLI_ADD_MAX_ADDED_CITATIONS = 2

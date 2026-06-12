@@ -366,7 +366,10 @@ def test_passage_token_coverage_matches_lexical_definition():
 
 
 def test_criterion_constants_are_the_hand_judged_values():
-    # The 2026-06-12 hand sample separated 4/4 genuine from 3/3 false adds at
-    # exactly these thresholds; pin them so a silent drift is caught.
-    assert NLI_ADD_ENTAILMENT_FLOOR == 0.75
-    assert NLI_ADD_TOKEN_COVERAGE_FLOOR == 0.65
+    # Re-pinned 2026-06-12 against the FULL 62-row entailed-uncited dataset
+    # (the initial 7-row sample's 0.75/0.65 did not survive: 0.75 dropped two
+    # judged-genuine candidates and 0.65 admitted hand-judged false adds in
+    # the 0.65-0.80 coverage band). 0.70/0.80 admits the 11 candidates judged
+    # 8/8 genuine at add level; pin so silent drift is caught.
+    assert NLI_ADD_ENTAILMENT_FLOOR == 0.70
+    assert NLI_ADD_TOKEN_COVERAGE_FLOOR == 0.80

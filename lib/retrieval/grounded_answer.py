@@ -1239,19 +1239,37 @@ def _apply_nli_citation_add(
     # Cap the would-add list the same way the add list is capped, so the shadow
     # signal reports what ON mode WOULD have done (not an unbounded count).
     capped_would_add = would_add_ids[:NLI_ADD_MAX_ADDED_CITATIONS]
-    outcome = "would_add" if capped_would_add else "noop"
 
-    # ``added_ids`` reflects what was ACTUALLY added: empty in shadow (shadow
-    # never mutates), the real add set in ON. ``would_add_ids`` is what ON WOULD
-    # add (the shadow signal) and is identical to ``added_ids`` under ON.
-    actually_added_ids = added_ids if mode == MODE_ON else []
-
-    if mode == MODE_SHADOW:
+    # PRUNE-TO-EMPTY EXCLUSION (2026-06-12 under-citing investigation): on
+    # answers whose citation set is EMPTY (the lexical prune-to-empty policy —
+    # "no sources beats a misleading source"), the entailed-uncited claims were
+    # hand-judged 3/3 question-induced false adds. ON mode NEVER restores a
+    # citation to a zero-citation answer; shadow still computes the would-adds
+    # but classifies them as a warning-class signal (a distinct outcome +
+    # warning prefix) so eval aggregation reads them as suspect, not recovered.
+    zero_citation_answer = not citations
+    if zero_citation_answer:
+        outcome = (
+            "would_add_on_zero_citation_answer" if capped_would_add else "noop"
+        )
+        actually_added_ids = []
+        added_citations = []
         for cid in capped_would_add:
-            warnings.append(f"nli_would_add_citation:{cid}")
-    else:  # MODE_ON
-        for cid in actually_added_ids:
-            warnings.append(f"nli_added_citation:{cid}")
+            warnings.append(f"nli_would_add_on_zero_citation_answer:{cid}")
+    else:
+        outcome = "would_add" if capped_would_add else "noop"
+        # ``added_ids`` reflects what was ACTUALLY added: empty in shadow
+        # (shadow never mutates), the real add set in ON. ``would_add_ids`` is
+        # what ON WOULD add (the shadow signal) and is identical to
+        # ``added_ids`` under ON.
+        actually_added_ids = added_ids if mode == MODE_ON else []
+
+        if mode == MODE_SHADOW:
+            for cid in capped_would_add:
+                warnings.append(f"nli_would_add_citation:{cid}")
+        else:  # MODE_ON
+            for cid in actually_added_ids:
+                warnings.append(f"nli_added_citation:{cid}")
 
     _emit_nli_citation_add(
         capture, course_slug=course_slug, query_sha=query_sha, engine=engine,
@@ -1266,6 +1284,7 @@ def _apply_nli_citation_add(
         "candidates": list(candidates),
         "would_add_ids": list(capped_would_add),
         "added_ids": list(actually_added_ids),
+        "zero_citation_answer": zero_citation_answer,
     }
 
     if mode == MODE_SHADOW or not added_citations:
