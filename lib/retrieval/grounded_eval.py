@@ -878,6 +878,13 @@ def run_grounded_eval(
             row["part_coverage"] = part_cov.to_dict()
         if pop_break is not None:
             row["citation_population"] = pop_break.to_dict()
+        # Persist the NLI-ADD shadow block per question (additive; present only
+        # when the arm ran). Without this the would-add audit set existed only
+        # as headline counts — the 2026-06-12 three-arm run's 18/20 would-adds
+        # could not be hand-audited post-hoc. The shadow→on flip decision is
+        # gated on auditing exactly these rows.
+        if isinstance(nli_add, dict):
+            row["nli_citation_add"] = nli_add
         per_question_report.append(row)
         per_question_detail.append(
             {
