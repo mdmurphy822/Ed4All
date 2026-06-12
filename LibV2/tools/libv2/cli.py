@@ -3387,6 +3387,13 @@ def probe_candidates(ctx, course: str, limit: int, no_write: bool):
     run = doc.get("authoring_run", {})
     print(f"probe-candidates {course}: {run.get('n_probes')} probe(s) "
           f"by_category={run.get('by_category')}.")
+    under = run.get("underfilled_categories") or []
+    if under:
+        click.echo(
+            f"  WARNING: underfilled probe categories {under} — the drafting "
+            f"arm produced fewer than the per-category target (LLM parse "
+            f"failure or thin vocabulary). Re-run or author manually before "
+            f"promote.", err=True)
     if out_path:
         print_success(f"  wrote {out_path}")
         print_warning("  operator: confirm top_passage_answers per dry-run before "

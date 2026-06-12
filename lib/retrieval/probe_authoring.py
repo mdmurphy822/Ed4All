@@ -32,6 +32,7 @@ out_of_scope_detail are deterministic and emit no LLM decision.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -252,24 +253,67 @@ def _course_concept_vocabulary(chunks_by_id: Dict[str, Dict[str, Any]],
     return [t for t, _ in ranked[:cap]]
 
 
+def _clean_question(s: str) -> str:
+    """Normalize one drafted question: strip wrapping quotes/escapes/bullets
+    and any trailing punctuation junk after the question mark."""
+    s = str(s).strip().strip("\"'").replace('\\"', '"').strip()
+    s = s.lstrip("-*0123456789. ").strip()
+    # Truncate trailing junk after the LAST question mark (e.g. '..."?').
+    if "?" in s:
+        s = s[: s.rfind("?") + 1]
+        # Collapse an escaped-quote echo before the final mark ('...?"?' →
+        # '...?'), the observed 7B keys-as-questions artifact; when the inner
+        # text ends in OTHER sentence punctuation ('...."?'), drop the stray
+        # tail entirely so the ends-with-? filter rejects the non-question.
+        s = re.sub(r"\?[\"']*\?$", "?", s)
+        s = re.sub(r"([.!])[\"']*\?$", r"\1", s)
+    return s.strip().strip("\"'").strip()
+
+
 def _parse_adjacent(text: str) -> List[str]:
     """Parse a model response into a list of probe question strings.
 
-    Accepts a JSON array, a ``{"questions": [...]}`` object, or newline-
-    separated lines (lenient for 7B-Q4 drift)."""
+    Lenient by design — small-quant local models emit JSON arrays, fenced
+    arrays, ``{"questions": [...]}`` objects, and (observed live with a
+    7B-Q4) degenerate objects whose KEYS are the escaped question strings
+    with empty values. Harvest question-shaped strings from any of these;
+    final fallbacks scan quoted spans and bare lines ending in '?'."""
     raw = (text or "").strip()
+    # Strip markdown fences (```json ... ```).
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[a-zA-Z]*\s*", "", raw)
+        raw = re.sub(r"\s*```\s*$", "", raw).strip()
+    found: List[str] = []
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, list):
-            return [str(x).strip() for x in parsed if str(x).strip()]
-        if isinstance(parsed, dict) and isinstance(parsed.get("questions"), list):
-            return [str(x).strip() for x in parsed["questions"] if str(x).strip()]
+            found = [_clean_question(x) for x in parsed]
+        elif isinstance(parsed, dict):
+            if isinstance(parsed.get("questions"), list):
+                found = [_clean_question(x) for x in parsed["questions"]]
+            else:
+                # Degenerate keys-as-questions shape: harvest keys AND any
+                # string values that read as questions.
+                pool = list(parsed.keys()) + [
+                    v for v in parsed.values() if isinstance(v, str)
+                ]
+                found = [_clean_question(x) for x in pool]
     except json.JSONDecodeError:
         pass
+    found = [q for q in found if len(q) >= 10 and q.endswith("?")]
+    if found:
+        return found
+    # Quoted-span fallback: every "..." span ending in '?'.
+    spans = [
+        _clean_question(m) for m in re.findall(r'"([^"\n]{10,300}?\?)"', raw)
+    ]
+    spans = [q for q in spans if len(q) >= 10 and q.endswith("?")]
+    if spans:
+        return spans
     # Newline fallback — drop obvious list bullets.
     lines = []
     for ln in raw.splitlines():
-        s = ln.strip().lstrip("-*0123456789. ").strip()
+        s = _clean_question(ln)
         if len(s) >= 10 and s.endswith("?"):
             lines.append(s)
     return lines
@@ -408,7 +452,16 @@ def build_probe_candidates_doc(
         "course_slug": course_slug,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "authoring_run": {
-            "by_category": by_cat,
+            # Zero-yield arms are reported EXPLICITLY (never silently
+            # omitted): an empty adjacent_domain draft means the LLM arm
+            # failed/parsed-to-nothing and the operator must know.
+            "by_category": {
+                cat: by_cat.get(cat, 0) for cat in _PROBE_TARGET
+            },
+            "underfilled_categories": [
+                cat for cat, want in _PROBE_TARGET.items()
+                if by_cat.get(cat, 0) < want
+            ],
             "n_probes": len(numbered),
             "model_id": model_id,
             "prompt_version": PROBE_AUTHORING_PROMPT_VERSION,

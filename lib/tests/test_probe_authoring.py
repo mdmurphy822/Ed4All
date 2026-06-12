@@ -270,3 +270,31 @@ def test_generate_probe_candidates_end_to_end(tmp_path):
         assert p["probe_id"].startswith("rpc-")
     # capture fired for the adjacent-domain drafting
     assert any(e["decision_type"] == "probe_candidate_authoring" for e in cap.events)
+
+
+def test_parse_adjacent_degenerate_keys_as_questions_shape():
+    """Observed live with a 7B-Q4: a valid-JSON OBJECT whose keys are the
+    escaped question strings (with a stray quote-echo before the final mark)
+    and empty values. The parser harvests genuine questions and rejects
+    statement-shaped drafts (no trailing '?')."""
+    from lib.retrieval.probe_authoring import _parse_adjacent
+    degenerate = (
+        '{"\\"What is the prime factorization of the fraction 36/48?\\"?":"",'
+        ' "\\"Convert the decimal 0.75 to an integer without rounding.\\"?":"",'
+        ' "\\"How do eigenvalues relate to systems of equations?\\"?":""}'
+    )
+    parsed = _parse_adjacent(degenerate)
+    assert "What is the prime factorization of the fraction 36/48?" in parsed
+    assert "How do eigenvalues relate to systems of equations?" in parsed
+    assert all(q.endswith("?") for q in parsed)
+    assert not any("Convert the decimal" in q for q in parsed)
+
+
+def test_parse_adjacent_fenced_and_object_shapes():
+    from lib.retrieval.probe_authoring import _parse_adjacent
+    assert _parse_adjacent('```json\n["What is a derivative of a function?"]\n```') == [
+        "What is a derivative of a function?"
+    ]
+    assert _parse_adjacent('{"questions": ["What is linear regression used for?"]}') == [
+        "What is linear regression used for?"
+    ]
