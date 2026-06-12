@@ -121,6 +121,19 @@ MILESTONE_TARGETS_PINNED_AT = "2026-06-12"
 #: serving window + 17 long-form worked_example questions; production runs the
 #: same config, so this is the honest user-facing number for that mix.
 #:
+#: Gold v1.3 gap-closed run (2026-06-12, all coverage/validation warnings
+#: cleared: 125q — 11 both-population, difficulty 54/58/13 in-band, 13/13
+#: multi_part parts[] authored with passage refs, all expected_key_points
+#: present; same probes/config as v1.2): answer_rate 0.976 (122/125)
+#: citation_resolution_rate 1.0  citation_precision 0.3216
+#: groundedness_rate_mean 0.8258  unsupported_claim_rate 0.0348
+#: refusal_recall 0.6364  refusal_precision 0.9655  key_point_coverage 0.6420
+#: part_coverage answered_rate 0.4643 (first real measurement — multi-part
+#: drop-rate is now visible). Three-arm: BASE 0.1569 / RETRIEVAL ceiling
+#: 0.9279 (hit@k 0.9040) / GROUNDED 0.6420. Every pin below holds on this
+#: basis unchanged. Shadow NLI-ADD: 22 would-adds, hand-audited 22/22 genuine
+#: at ent>=0.70 + cov>=0.80 + numerics + anchor — the flip-to-on evidence.
+#:
 #: citation_resolution_rate stays pinned at 1.0: every emitted citation resolved
 #: on this run too, so the floor IS the measurement — any dip is a real
 #: anchoring break, not noise.
@@ -189,12 +202,13 @@ MILESTONE_TARGETS: Dict[str, float] = {
 MILESTONE_TARGETS.pop("refusal_precision_floor_note", None)
 
 #: DIAGNOSTIC (unpinned). key_point_coverage baselines: 0.54 (77q gold v1.1),
-#: 0.6565 (117q gold v1.2 three-arm run, 2026-06-12 — same scorer measured
-#: BASE 0.1521 and the RETRIEVAL extractive ceiling 0.9557, so grounded sits
-#: at ~69% of what retrieval surfaces). Deliberately NOT in MILESTONE_TARGETS
-#: until the metric is stable across a second different-family course (plan
-#: risk R7 posture); the staleness test does NOT gate on it.
-KEY_POINT_COVERAGE_DIAGNOSTIC_BASELINE = 0.6565
+#: 0.6565 (117q gold v1.2), 0.6420 (125q gold v1.3 gap-closed run, 2026-06-12
+#: — same scorer measured BASE 0.1569 and the RETRIEVAL extractive ceiling
+#: 0.9279, so grounded converts ~69% of what retrieval surfaces). Deliberately
+#: NOT in MILESTONE_TARGETS until the metric is stable across a second
+#: different-family course (plan risk R7 posture); the staleness test does NOT
+#: gate on it.
+KEY_POINT_COVERAGE_DIAGNOSTIC_BASELINE = 0.6420
 
 #: Names of milestone targets that are CEILINGS (measured value must be <= the
 #: target) rather than floors. Lower is better for these (e.g. unsupported
