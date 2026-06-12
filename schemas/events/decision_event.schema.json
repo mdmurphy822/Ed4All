@@ -76,6 +76,7 @@
         "assessment_quality_check",
         "assessment_retrieval_grounding_check",
         "assessment_template_skip",
+        "base_model_eval_call",
         "base_model_selection",
         "bert_ensemble_disagreement",
         "bert_ensemble_dispersion_high",
