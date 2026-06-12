@@ -41,7 +41,7 @@ import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 __all__ = [
     "RefusalPolicy",
@@ -59,6 +59,8 @@ __all__ = [
     "default_policy_for",
     "resolve_policy",
     "calibrate",
+    "calibrate_from_distributions",
+    "negatives_from_probe_dry_runs",
     "CalibrationResult",
 ]
 
@@ -471,6 +473,53 @@ class _ScoreDist:
         return {"n": self.n, "top_score": self.percentiles()}
 
 
+def _overlap_stats(
+    positives: Sequence[float], negatives: Sequence[float]
+) -> Dict[str, Any]:
+    """Distribution-overlap statistics between the answerable (positive) and
+    unanswerable (negative) top-score distributions (plan risk R8).
+
+    A clean (separable) calibration has ``min_positive > max_negative``
+    (``min_gap > 0``, ``overlap_fraction == 0``): SOME threshold perfectly
+    splits the arms. An unpinnable corpus carries ``min_gap <= 0`` and a
+    nonzero ``overlap_fraction`` — the evidence a stays-unpinned verdict needs.
+
+    * ``min_gap`` = ``min(positives) - max(negatives)`` (positive ⇒ separable).
+    * ``overlap_fraction`` = share of ALL samples that fall inside the
+      overlap band ``[min(positives), max(negatives)]`` (0.0 when separable).
+    * ``separable`` = ``min_gap > 0``.
+    """
+    pos = sorted(float(s) for s in positives)
+    neg = sorted(float(s) for s in negatives)
+    if not pos or not neg:
+        return {
+            "separable": None,
+            "min_gap": None,
+            "overlap_fraction": None,
+            "n_positives": len(pos),
+            "n_negatives": len(neg),
+            "reason": "need >= 1 positive and >= 1 negative",
+        }
+    min_pos = pos[0]
+    max_neg = neg[-1]
+    min_gap = min_pos - max_neg
+    if min_gap > 0:
+        overlap_fraction = 0.0
+    else:
+        lo, hi = min_pos, max_neg
+        in_band = sum(1 for s in pos + neg if lo <= s <= hi)
+        overlap_fraction = in_band / (len(pos) + len(neg))
+    return {
+        "separable": min_gap > 0,
+        "min_gap": round(min_gap, 6),
+        "overlap_fraction": round(overlap_fraction, 6),
+        "min_positive": round(min_pos, 6),
+        "max_negative": round(max_neg, 6),
+        "n_positives": len(pos),
+        "n_negatives": len(neg),
+    }
+
+
 @dataclass(frozen=True)
 class CalibrationResult:
     """In-memory shape of ``refusal_calibration.json`` (also the report dict)."""
@@ -485,6 +534,7 @@ class CalibrationResult:
     recommended: Optional[Dict[str, Any]]
     fallback_policy_version: str
     generated_at: str
+    overlap: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -496,6 +546,7 @@ class CalibrationResult:
             "negatives": self.negatives,
             "sweep": self.sweep,
             "recommended": self.recommended,
+            "overlap": self.overlap,
             "fallback_policy_version": self.fallback_policy_version,
             "generated_at": self.generated_at,
         }
@@ -636,6 +687,7 @@ def calibrate_from_distributions(
         negatives=_ScoreDist(len(negatives), negatives).to_dict(),
         sweep=sweep,
         recommended=recommended,
+        overlap=_overlap_stats(positives, negatives),
         fallback_policy_version=POLICY_VERSION_UNCALIBRATED,
         generated_at=generated_at or _utcnow_iso(),
     )
@@ -735,19 +787,24 @@ def calibrate(
         pos_scores.append(ts)
         pos_n_above.append(na)
 
-    neg_scores: List[float] = []
-    neg_n_above: List[int] = []
-    for p in (probes or {}).get("probes", []):
-        ts, na, _, _ = _retrieve_top(
-            libv2_root,
-            course_slug,
-            p["question_text"],
-            engine=engine,
-            limit=limit,
-            score_floor=policy.score_floor,
-        )
-        neg_scores.append(ts)
-        neg_n_above.append(na)
+    # Negatives: prefer the v1.1 per-engine probe dry_runs[] when they cover
+    # this engine (engine-aware evidence recorded against the live index at
+    # authoring), else re-run retrieval on the probe text. Using the recorded
+    # dry-runs lets a sweep include hybrid-rrf without re-querying, and keeps
+    # the 'unanswerable' claim engine-aware (plan §4).
+    neg_scores, neg_n_above = negatives_from_probe_dry_runs(probes, engine)
+    if not neg_scores:
+        for p in (probes or {}).get("probes", []):
+            ts, na, _, _ = _retrieve_top(
+                libv2_root,
+                course_slug,
+                p["question_text"],
+                engine=engine,
+                limit=limit,
+                score_floor=policy.score_floor,
+            )
+            neg_scores.append(ts)
+            neg_n_above.append(na)
 
     result = calibrate_from_distributions(
         course_slug=course_slug,
@@ -769,6 +826,68 @@ def calibrate(
             encoding="utf-8",
         )
     return result
+
+
+def negatives_from_probe_dry_runs(
+    probes_doc: Optional[Dict[str, Any]], engine: str
+) -> Tuple[List[float], List[int]]:
+    """Extract the (top_score, n_above_floor-proxy) negative arm for ONE engine
+    from a v1.1 probe set's per-engine ``dry_runs[]`` (plan §4).
+
+    For each probe, prefer the ``dry_runs[]`` entry whose ``engine`` matches;
+    fall back to the legacy single ``dry_run`` when (a) the probe has no
+    ``dry_runs[]`` block, or (b) none of its dry_runs match the requested engine
+    AND the legacy ``dry_run`` matches (or the probe set's top-level ``engine``
+    defaults to it). A probe contributing no engine-matched evidence is skipped
+    (it cannot speak to this engine's distribution).
+
+    Returns ``(top_scores, n_above_floor)`` where ``n_above_floor`` is the
+    recorded ``n_results`` clamped to a {0,1+} count proxy — a dry-run that
+    returned 0 results contributes ``n_above=0`` (it would never clear a count
+    floor of 1), otherwise ``>= 1``. This keeps the count signal honest for the
+    sweep's ``min_passages_above_floor`` arm.
+    """
+    if not isinstance(probes_doc, dict):
+        return [], []
+    probes = probes_doc.get("probes")
+    if not isinstance(probes, list):
+        return [], []
+    default_engine = probes_doc.get("engine") or "lexical"
+
+    scores: List[float] = []
+    n_above: List[int] = []
+    for probe in probes:
+        if not isinstance(probe, dict):
+            continue
+        chosen: Optional[Dict[str, Any]] = None
+        dry_runs = probe.get("dry_runs")
+        if isinstance(dry_runs, list):
+            for dr in dry_runs:
+                if isinstance(dr, dict) and dr.get("engine") == engine:
+                    chosen = dr
+                    break
+        if chosen is None:
+            legacy = probe.get("dry_run")
+            # Legacy single dry_run speaks for its recorded engine, else the
+            # probe set's top-level default engine.
+            if isinstance(legacy, dict):
+                legacy_engine = legacy.get("engine", default_engine)
+                if legacy_engine == engine:
+                    chosen = legacy
+        if chosen is None:
+            continue
+        try:
+            top = float(chosen.get("top_score", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            top = 0.0
+        n_results = chosen.get("n_results", 0)
+        try:
+            na = 1 if int(n_results) > 0 else 0
+        except (TypeError, ValueError):
+            na = 0
+        scores.append(top)
+        n_above.append(na)
+    return scores, n_above
 
 
 def _load_json(path: Path) -> Optional[Dict[str, Any]]:

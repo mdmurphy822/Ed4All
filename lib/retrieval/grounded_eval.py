@@ -35,9 +35,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from lib.retrieval.gold_set import has_critical_issues, load_gold_set
+from lib.retrieval.answer_scoring import (
+    score_key_point_coverage,
+    score_part_coverage,
+    score_population_breakdown,
+)
+from lib.retrieval.gold_coverage import _population_of_chunk
+from lib.retrieval.gold_set import (
+    _load_chunks_by_id,
+    has_critical_issues,
+    load_gold_set,
+)
 
-EVAL_SCHEMA_VERSION = "1.0"
+#: Bumped 1.0 -> 1.1 for the P4 additive per-question scoring fields
+#: (key_point_coverage, part_coverage, population breakdown). Every v1.0
+#: report field is preserved; the new fields are additive and present only
+#: when the v1.1 gold question carries the matching authored data.
+EVAL_SCHEMA_VERSION = "1.1"
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
 REVIEW_SAMPLE_FILENAME = "groundedness_review_sample.json"
 
@@ -210,6 +224,70 @@ def _relevant_chunk_ids(
             if cid:
                 all_ids.add(str(cid))
     return all_ids, primary
+
+
+def _resolve_keypoint_nli(
+    with_groundedness: bool, nli: Optional[Any]
+) -> Tuple[Optional[Any], Optional[float]]:
+    """Resolve the optional NLI classifier + entailment floor for the key-point
+    completeness arm.
+
+    Only consulted when ``with_groundedness`` is True (the key-point NLI arm is
+    a no-op on the fast lane). Reuses the SAME classifier resolution +
+    entailment floor that groundedness uses, so the completeness verdict and the
+    groundedness verdict never disagree on what "the answer supports this claim"
+    means. Returns ``(None, None)`` when the NLI model is unavailable (graceful
+    degrade — the deterministic shingle/coverage arms still score key points).
+    """
+    if not with_groundedness:
+        return None, None
+    try:
+        from lib.retrieval.groundedness import _resolve_nli
+        from lib.validators.pair._claim_support_thresholds import (
+            _DEFAULT_ENTAILMENT_FLOOR,
+        )
+    except Exception:  # noqa: BLE001 — groundedness deps absent → deterministic only
+        return None, None
+    resolved = _resolve_nli(nli)
+    if resolved is None:
+        return None, None
+    return resolved, float(_DEFAULT_ENTAILMENT_FLOOR)
+
+
+def _load_pinned_chunks(
+    course_dir: Path, gold: Dict[str, Any]
+) -> Dict[str, Dict[str, Any]]:
+    """Load the gold set's pinned chunkset indexed by id (population breakdown).
+
+    Best-effort: returns ``{}`` when the chunkset path is absent/unreadable so a
+    missing chunkset degrades the population slice to empty rather than aborting
+    the whole eval (the headline metrics never depended on the chunkset bytes).
+    """
+    chunks_rel = (gold.get("chunkset") or {}).get("chunks_path") or ""
+    if not chunks_rel:
+        return {}
+    chunks_path = course_dir / chunks_rel
+    if not chunks_path.is_file():
+        return {}
+    try:
+        return _load_chunks_by_id(chunks_path)
+    except Exception:  # noqa: BLE001 — chunkset unreadable → empty population slice
+        return {}
+
+
+def _question_expected_population(question: Dict[str, Any]) -> str:
+    val = question.get("expected_citation_population")
+    return val if val in ("source", "course", "both", "any") else "any"
+
+
+def _question_key_points(question: Dict[str, Any]) -> List[str]:
+    kps = question.get("expected_key_points")
+    return [str(k) for k in kps if str(k).strip()] if isinstance(kps, list) else []
+
+
+def _question_parts(question: Dict[str, Any]) -> List[Dict[str, Any]]:
+    parts = question.get("parts")
+    return [p for p in parts if isinstance(p, dict)] if isinstance(parts, list) else []
 
 
 def _load_probes(probes_path: Path) -> List[Dict[str, Any]]:
@@ -394,7 +472,23 @@ def run_grounded_eval(
         "path": str(gold_set_path) if gold_set_path else None,
         "chunks_sha256": chunkset.get("chunks_sha256"),
         "chunkset_kind": chunkset.get("kind"),
+        # Measure-then-pin feed (plan §4): record the gold set's identity in the
+        # report so a re-pin of MILESTONE_TARGETS records which gold set + how
+        # many questions produced the measured floors (pre/post scale-up is a
+        # comparability boundary — citation_precision is EXPECTED to move with
+        # the question count via denominator semantics, not pipeline change).
+        "schema_version": gold.get("schema_version"),
+        "question_count": len(questions),
+        "authored_at": gold.get("authored_at"),
     }
+
+    # Pinned chunkset (for the per-population citation breakdown) + the NLI
+    # entailment floor (shared with groundedness so the key-point completeness
+    # arm agrees with the groundedness verdict on "the answer supports this").
+    chunks_by_id = _load_pinned_chunks(course_dir, gold)
+    nli_for_keypoints, entailment_floor = _resolve_keypoint_nli(
+        with_groundedness, nli
+    )
     # The gold set's chunkset.kind is the eval's source of truth for which
     # chunkset retrieval + the citation gate must resolve against; thread it
     # into the pipeline so a course with multiple chunksets (e.g. dart_chunks/
@@ -420,6 +514,28 @@ def run_grounded_eval(
     false_refusals_on_gold = 0
     groundedness_rates: List[float] = []
     unsupported_rates: List[float] = []
+
+    # P4 additive aggregates (key-point completeness, part coverage, per-
+    # population citations). All roll up only over ANSWERED questions that
+    # carry the matching authored v1.1 data; absent on v1.0 gold sets.
+    # Per-population citation precision (plan §4): tally emitted + relevant
+    # citations by the population (source/course) of the cited chunk, joined the
+    # same way the coverage report classifies a chunk. 'both' counts a citation
+    # that lands in a question whose gold passages span both populations.
+    pop_emitted = {"source": 0, "course": 0}
+    pop_relevant = {"source": 0, "course": 0}
+    kp_total = 0
+    kp_covered = 0
+    kp_questions = 0
+    part_covered_total = 0
+    part_answered_total = 0
+    part_uncovered_total = 0
+    part_flagged_total = 0
+    part_questions = 0
+    pop_cited_source = 0
+    pop_cited_course = 0
+    pop_expected_checked = 0
+    pop_expected_satisfied = 0
 
     catchable = _composer_exhaustion_errors()
 
@@ -498,10 +614,20 @@ def run_grounded_eval(
             # construction; counted pre-gate so the metric measures the model).
             if anchor_status.startswith("resolved"):
                 resolved_here += 1
-            if cid in all_rel:
+            is_relevant = cid in all_rel
+            if is_relevant:
                 relevant_here += 1
             if cid in primary_rel:
                 relevant_primary_here += 1
+            # Per-population tally: classify the cited chunk by its population
+            # (skip ids absent from the pinned chunkset — unclassifiable).
+            chunk = chunks_by_id.get(cid)
+            if chunk is not None:
+                pop = _population_of_chunk(chunk)
+                if pop in pop_emitted:
+                    pop_emitted[pop] += 1
+                    if is_relevant:
+                        pop_relevant[pop] += 1
 
         n_emitted_citations += n_cites
         n_resolved_citations += resolved_here
@@ -533,17 +659,67 @@ def run_grounded_eval(
             unsupported_rates.append(u_rate)
             per_claim = list(grounded.get("claims", []) or [])
 
-        per_question_report.append(
-            {
-                "question_id": qid,
-                "status": status,
-                "n_citations": n_cites,
-                "citations_resolved": resolved_here,
-                "citation_relevant_primary": relevant_primary_here,
-                "groundedness_rate": g_rate,
-                "latency_ms": latency,
-            }
-        )
+        # --- P4 additive per-question scoring (only on answered questions) ---
+        is_answered = status in _ANSWERED_STATUSES
+        answer_text_val = _answer_field(answer, "answer_text", None)
+        cited_ids = [str(c.get("chunk_id", "")) for c in cites if c.get("chunk_id")]
+
+        kp_cov = None
+        part_cov = None
+        pop_break = None
+        if is_answered:
+            kp_cov = score_key_point_coverage(
+                answer_text_val,
+                _question_key_points(q),
+                nli=nli_for_keypoints,
+                entailment_floor=entailment_floor,
+            )
+            if kp_cov is not None:
+                kp_total += kp_cov.total
+                kp_covered += kp_cov.covered
+                kp_questions += 1
+
+            if str(q.get("question_type", "")) == "multi_part":
+                part_cov = score_part_coverage(
+                    answer_text_val, _question_parts(q)
+                )
+                if part_cov is not None:
+                    part_covered_total += part_cov.n_covered_parts
+                    part_answered_total += part_cov.n_answered
+                    part_uncovered_total += part_cov.n_uncovered_parts
+                    part_flagged_total += part_cov.n_correctly_flagged
+                    part_questions += 1
+
+            expected_pop = _question_expected_population(q)
+            pop_break = score_population_breakdown(
+                cited_ids,
+                chunks_by_id,
+                expected_population=expected_pop,
+                answered=True,
+            )
+            pop_cited_source += pop_break.cited_source
+            pop_cited_course += pop_break.cited_course
+            if pop_break.expected_satisfied is not None:
+                pop_expected_checked += 1
+                if pop_break.expected_satisfied:
+                    pop_expected_satisfied += 1
+
+        row: Dict[str, Any] = {
+            "question_id": qid,
+            "status": status,
+            "n_citations": n_cites,
+            "citations_resolved": resolved_here,
+            "citation_relevant_primary": relevant_primary_here,
+            "groundedness_rate": g_rate,
+            "latency_ms": latency,
+        }
+        if kp_cov is not None:
+            row["key_point_coverage"] = kp_cov.to_dict()
+        if part_cov is not None:
+            row["part_coverage"] = part_cov.to_dict()
+        if pop_break is not None:
+            row["citation_population"] = pop_break.to_dict()
+        per_question_report.append(row)
         per_question_detail.append(
             {
                 "question_id": qid,
@@ -639,6 +815,70 @@ def run_grounded_eval(
             "refusal_precision": refusal_precision,
             "false_refusals_on_gold": false_refusals_on_gold,
             "composer_exhausted": probe_composer_exhausted,
+        },
+        # P4 additive: per-population citation precision (source/course) +
+        # expected-population satisfaction. precision_* is None when that
+        # population emitted no citations (no denominator). On a v1.0 / non-
+        # union gold set these stay zero-denominator (None) — additive, never
+        # a headline milestone.
+        "citation_precision_by_population": {
+            "source": (
+                (pop_relevant["source"] / pop_emitted["source"])
+                if pop_emitted["source"]
+                else None
+            ),
+            "course": (
+                (pop_relevant["course"] / pop_emitted["course"])
+                if pop_emitted["course"]
+                else None
+            ),
+            "both": (
+                ((pop_relevant["source"] + pop_relevant["course"])
+                 / (pop_emitted["source"] + pop_emitted["course"]))
+                if (pop_emitted["source"] + pop_emitted["course"])
+                else None
+            ),
+            "emitted_source": pop_emitted["source"],
+            "emitted_course": pop_emitted["course"],
+        },
+        "expected_population_satisfaction": {
+            "checked": pop_expected_checked,
+            "satisfied": pop_expected_satisfied,
+            "rate": (
+                (pop_expected_satisfied / pop_expected_checked)
+                if pop_expected_checked
+                else None
+            ),
+        },
+        # P4 additive: claim-level completeness (key-point coverage) — only over
+        # answered questions that authored expected_key_points (v1.1).
+        "key_point_coverage": {
+            "questions_scored": kp_questions,
+            "total_key_points": kp_total,
+            "covered_key_points": kp_covered,
+            "coverage_rate": (kp_covered / kp_total) if kp_total else None,
+        },
+        # P4 additive (diagnostic, NOT pinned — risk R7): multi_part coverage.
+        "part_coverage": {
+            "questions_scored": part_questions,
+            "covered_parts": part_covered_total,
+            "answered_parts": part_answered_total,
+            "uncovered_parts": part_uncovered_total,
+            "correctly_flagged_parts": part_flagged_total,
+            "answered_rate": (
+                (part_answered_total / part_covered_total)
+                if part_covered_total
+                else None
+            ),
+            "correctly_flagged_rate": (
+                (part_flagged_total / part_uncovered_total)
+                if part_uncovered_total
+                else None
+            ),
+            "_diagnostic": (
+                "uncovered-part flagging is heuristic (risk R7); diagnostic, "
+                "not a pinned milestone"
+            ),
         },
         "latency_ms": {
             "p50": _percentile(latencies, 50.0),

@@ -3044,6 +3044,64 @@ def refusal_calibrate(ctx, course: str, engine: str, limit: int, no_write: bool)
     sys.exit(refusal_main(argv))
 
 
+@main.command("attribution-calibrate")
+@click.option("--course", "-c", required=True, help="Course slug to calibrate")
+@click.option("--engine", type=click.Choice(["lexical", "semantic", "hybrid-rrf"]),
+              default="lexical", help="Retrieval engine for the gold replay")
+@click.option("--limit", "-n", type=int, default=8, help="top-k retrieval limit per question")
+@click.option("--precision-floor", type=float, default=None,
+              help="precision floor for the precision_floored min_overlap recommendation")
+@click.option("--no-write", is_flag=True, help="Print the calibration JSON without writing the artifact")
+@click.pass_context
+def attribution_calibrate(ctx, course: str, engine: str, limit: int,
+                          precision_floor: Optional[float], no_write: bool):
+    """Calibrate the citation-attribution support min_overlap knob for a course.
+
+    Replays the gold set through the retriever (retrieval only — NO LLM),
+    scores each retrieved passage with the answer path's attribution machinery
+    (gold expected_key_points as the claim proxy), joins against gold relevance,
+    sweeps thresholds, and recommends min_overlap (precision-floored max-recall,
+    else F1-max). Also ingests live citation-prune captures as a second evidence
+    stream and flags whether ADD_MIN_SHINGLE warrants its own env knob. Emits
+    ``attribution_calibration_<ts>.json`` under retrieval_eval/.
+
+    \b
+    Example:
+        libv2 attribution-calibrate --course demo-course-1 --engine lexical
+    """
+    from lib.retrieval.attribution_calibrate import (
+        DEFAULT_PRECISION_FLOOR,
+        calibrate,
+    )
+
+    repo_root: Path = ctx.obj["repo_root"]
+    result = calibrate(
+        course,
+        engine=engine,
+        repo_root=repo_root,
+        limit=limit,
+        precision_floor=precision_floor if precision_floor is not None
+        else DEFAULT_PRECISION_FLOOR,
+        write=not no_write,
+    )
+    rec = result.recommended
+    if rec is None:
+        print_warning(f"{course}/{engine}: no gold samples — nothing to calibrate.")
+    else:
+        print_success(
+            f"{course}/{engine}: recommended min_overlap={rec['min_overlap']} "
+            f"(precision={rec['precision']}, recall={rec['recall']}, "
+            f"f1={rec['f1']}; {rec['rule']})"
+        )
+        warranted = result.add_min_shingle_knob_warranted
+        msg = (f"ADD_MIN_SHINGLE knob warranted: {warranted['warranted']} "
+               f"({warranted['reason']})")
+        (print_warning if warranted["warranted"] else print)(msg)
+    if no_write:
+        print(json.dumps(result.to_dict(), indent=2))
+    sys.exit(0)
+
+
 # ==========================================================================
 # Retrieval gold-set authoring surface (retrieval-answer-eval-set P0/P1).
 # `gold-validate` loads the gold set fail-closed + (optionally) prints the

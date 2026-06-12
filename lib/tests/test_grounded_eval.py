@@ -137,7 +137,7 @@ def test_report_shape_and_headline(libv2_course):
         answer_fn=_gold_answer_fn(_GROUNDED_OK),
         with_groundedness=True, write=False,
     )
-    assert report["schema_version"] == "1.0"
+    assert report["schema_version"] == "1.1"
     assert report["course_slug"] == slug
     assert report["engine"] == "lexical"
     assert report["model_id"] == "fake-model"
@@ -176,10 +176,16 @@ def test_per_question_rows(libv2_course):
     )
     assert len(report["questions"]) == 3
     row = report["questions"][0]
-    assert set(row) == {
+    # v1.0 base row fields are always present; citation_population is the only
+    # P4-additive field on a v1.0 fixture (no expected_key_points / parts).
+    base = {
         "question_id", "status", "n_citations", "citations_resolved",
         "citation_relevant_primary", "groundedness_rate", "latency_ms",
     }
+    assert base <= set(row)
+    assert set(row) - base <= {"citation_population"}
+    # answered → the population breakdown is attached.
+    assert "citation_population" in row
     assert row["status"] == "answered"
     assert row["n_citations"] == 1
     assert row["citations_resolved"] == 1
