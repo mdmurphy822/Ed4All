@@ -104,33 +104,48 @@ MILESTONE_TARGETS_PINNED_AT = "2026-06-12"
 #: per-pin notes); refusal numbers moved with the policy pin, not a model
 #: change.
 #:
+#: Gold v1.2 three-arm run (2026-06-12, the CURRENT pin basis): gold expanded
+#: 77 → 117 questions (operator-approved definition + worked_example
+#: templates), probes 34 → 44 (+10 pure off-topic), composer prompt ws3.v3
+#: (synthesis/apply clauses), ED4ALL_ANSWER_NUM_CTX=8192 (production parity —
+#: prior runs measured the 4096 config), prune=on @ 0.444444, NLI-ADD shadow:
+#:   answer_rate 0.9727 (107/110)  citation_resolution_rate 1.0
+#:   citation_precision 0.3314  groundedness_rate_mean 0.8045
+#:   unsupported_claim_rate 0.0366  refusal_recall 0.6364  refusal_precision
+#:   0.9655  key_point_coverage 0.6565  false_refusals_on_gold 1
+#: Three-arm context (same scorer, same questions): BASE (qwen, no retrieval)
+#: key_point_coverage 0.1521; RETRIEVAL extractive ceiling 0.9557 (hit@k
+#: 0.9182); GROUNDED 0.6565. citation_precision moved 0.4457 → 0.3314 via gold
+#: denominator semantics again (the 40 new template questions pin ONE relevant
+#: passage each), not a pipeline change. Latency p50 8.5s → 24.0s: the 8192
+#: serving window + 17 long-form worked_example questions; production runs the
+#: same config, so this is the honest user-facing number for that mix.
+#:
 #: citation_resolution_rate stays pinned at 1.0: every emitted citation resolved
 #: on this run too, so the floor IS the measurement — any dip is a real
 #: anchoring break, not noise.
 MILESTONE_TARGETS: Dict[str, float] = {
-    # FLOOR. Re-pinned 0.95 → 0.92 on the calibrated-refusal-policy basis
-    # (ws3.v3-pinned + scorer v2, clean run 2026-06-12: measured 0.9351 =
-    # 72/77). The 0.95 pin was measured under the UNCALIBRATED v0 refusal
-    # policy (0.961); the pinned policy deliberately trades answer_rate for
-    # refusal_recall (0.50 → 0.8235 on the 34-probe basis), so the bases are
-    # not comparable. The 5 non-answers are stable, attributed, and tracked:
-    # 4 composer-owned refusals on answerable conceptual-synthesis questions
-    # (model-policy near-miss conservatism — the known improvement area; one
-    # of the 4 is a front-matter provenance question that is arguably
-    # refusal-correct, a gold-quality item) + 1 citation-gate fail-closed
-    # block on a hard multi-part question. Single-corpus caveat applies.
-    "answer_rate": 0.92,
+    # FLOOR. Re-pinned 0.92 → 0.95 on the gold-v1.2 / ws3.v3 / 8192-ctx basis
+    # (three-arm run 2026-06-12: measured 0.9727 = 107/110). The 0.92 pin's
+    # attributed non-answers are RESOLVED on this basis: the ws3.v3
+    # synthesis/apply prompt fixed the conceptual-synthesis false refusals
+    # (4 → 1 false_refusals_on_gold) and the 8192 serving window stopped the
+    # context budget from dropping a 4th-ranked gold passage whole (the
+    # florist-LCM refusal — prior runs measured the 4096 config). Remaining
+    # non-answers: 1 false refusal + 1 composer_exhausted + 1 citation-gate
+    # fail-closed block. Single-corpus caveat applies.
+    "answer_rate": 0.95,
     # FLOOR == measurement. Every emitted citation resolved on the 2026-06-12
     # run (and on all prior runs). Pinned at 1.0 exactly; any dip is a real
     # anchoring break.
     "citation_resolution_rate": 1.0,
-    # FLOOR. measured 0.3495 (single course, 77q gold v1.1, 2026-06-12),
-    # pinned to 0.30. DENOMINATOR ARTIFACT: each drafted gold question pins
-    # exactly ONE relevant passage, so a multi-citation answer mathematically
-    # deflates per-question citation_precision. This floor is therefore NOT
-    # comparable to the old 0.45/10q-basis pin — the metric moved via gold
-    # denominator semantics (plan §4 comparability boundary), not via a
-    # pipeline regression. A richer multi-passage gold would raise it.
+    # FLOOR. measured 0.3495 (77q gold v1.1) and 0.3314 (117q gold v1.2,
+    # 2026-06-12) — pinned to 0.30. DENOMINATOR ARTIFACT: each drafted gold
+    # question pins exactly ONE relevant passage, so a multi-citation answer
+    # mathematically deflates per-question citation_precision (the v1.2 dip
+    # vs the 0.4457 clean run is the 40 new one-passage template questions,
+    # not a pipeline change). NOT comparable to the old 0.45/10q-basis pin.
+    # A richer multi-passage gold would raise it.
     "citation_precision": 0.30,
     # FLOOR. measured 0.572 under scorer v1 (single course 2026-06-12); the
     # first scorer-v2 run measured 0.805 (same day, same frozen gold — wider
@@ -152,29 +167,34 @@ MILESTONE_TARGETS: Dict[str, float] = {
     # comparable and the single-course never-tighten rule does not apply to a
     # basis-invalidated pin. Residual ~9% is dominated by question-induced
     # evaluative synthesis (gold questions that ask "which is better?") —
-    # honest unsupported, not fabrication. Single-corpus caveat applies.
-    "unsupported_claim_rate": 0.10,
-    # FLOOR. measured 0.50 on the NEW 34-probe hard-probe basis (single course
-    # 2026-06-12), pinned to 0.45. NOT comparable to the old 9-probe basis. The
-    # near-miss / adjacent-domain gap (the 0.5 of probes the retrieval threshold
-    # cannot catch) is MODEL-policy-owned, not a retrieval-threshold matter —
-    # see lib/retrieval/refusal.py PINNED_POLICIES hybrid-rrf overlap block.
+    # honest unsupported, not fabrication. Tightened 0.10 → 0.05 on the gold
+    # v1.2 basis (measured 0.0366 over 117q — the definition/worked_example
+    # templates ground cleanly, diluting the evaluative-synthesis tail).
+    # Single-corpus caveat applies.
+    "unsupported_claim_rate": 0.05,
+    # FLOOR. Re-pinned 0.45 → 0.55 on the 44-probe gold-v1.2 basis
+    # (2026-06-12: measured 0.6364 incl. the 10 new pure off-topic probes).
+    # NOT comparable to the 34-probe or 9-probe bases. The remaining recall
+    # gap is near-miss / adjacent-domain probes inside the score-overlap band
+    # — MODEL-policy-owned, not a retrieval-threshold matter — see
+    # lib/retrieval/refusal.py PINNED_POLICIES hybrid-rrf overlap block.
     "refusal_precision_floor_note": 0.0,  # placeholder removed below
-    # FLOOR. measured 0.50 (new hard-probe basis 2026-06-12), pinned 0.45.
-    "refusal_recall": 0.45,
-    # FLOOR. measured 0.8947 (single course 2026-06-12), pinned to 0.85.
-    "refusal_precision": 0.85,
+    # FLOOR. measured 0.6364 (44-probe basis 2026-06-12), pinned 0.55.
+    "refusal_recall": 0.55,
+    # FLOOR. Re-pinned 0.85 → 0.90 (measured 0.9655 on the 44-probe gold-v1.2
+    # basis; ws3.v3 cut false refusals on gold 4 → 1).
+    "refusal_precision": 0.90,
 }
 # Remove the inline placeholder key used only to anchor the refusal_recall note.
 MILESTONE_TARGETS.pop("refusal_precision_floor_note", None)
 
-#: DIAGNOSTIC (unpinned). key_point_coverage is a FIRST-measurement diagnostic
-#: (2026-06-12 baseline 0.54 on the single-course 77q frozen gold v1.1) — it is
-#: deliberately NOT in MILESTONE_TARGETS until a second measured run establishes
-#: it is stable enough to floor (plan risk R7 posture for new additive metrics).
-#: Recorded here as a commented baseline so a future re-pin has the starting
-#: point; the staleness test does NOT gate on it.
-KEY_POINT_COVERAGE_DIAGNOSTIC_BASELINE = 0.54
+#: DIAGNOSTIC (unpinned). key_point_coverage baselines: 0.54 (77q gold v1.1),
+#: 0.6565 (117q gold v1.2 three-arm run, 2026-06-12 — same scorer measured
+#: BASE 0.1521 and the RETRIEVAL extractive ceiling 0.9557, so grounded sits
+#: at ~69% of what retrieval surfaces). Deliberately NOT in MILESTONE_TARGETS
+#: until the metric is stable across a second different-family course (plan
+#: risk R7 posture); the staleness test does NOT gate on it.
+KEY_POINT_COVERAGE_DIAGNOSTIC_BASELINE = 0.6565
 
 #: Names of milestone targets that are CEILINGS (measured value must be <= the
 #: target) rather than floors. Lower is better for these (e.g. unsupported
