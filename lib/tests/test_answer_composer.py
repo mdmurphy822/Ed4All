@@ -104,7 +104,7 @@ def _passages(n=2):
 # ===========================================================================
 
 def test_prompt_version_pinned():
-    assert ANSWER_PROMPT_VERSION == "ws3.v2"
+    assert ANSWER_PROMPT_VERSION == "ws3.v3"
 
 
 def test_system_prompt_requires_multipart_completeness():
@@ -114,7 +114,6 @@ def test_system_prompt_requires_multipart_completeness():
     assert "multiple parts" in ANSWER_SYSTEM_PROMPT
     assert "does not cover" in ANSWER_SYSTEM_PROMPT
     assert "never invent material" in ANSWER_SYSTEM_PROMPT
-    assert "If NO part of the question is covered" in ANSWER_SYSTEM_PROMPT
     assert '"not_in_course" to true' in ANSWER_SYSTEM_PROMPT
     # The instruction must reach the assembled system message verbatim.
     client = FakeAnswerClient([_envelope("X is a thing.", ["chunk_00000"])])
@@ -123,6 +122,23 @@ def test_system_prompt_requires_multipart_completeness():
     assert system_msg["role"] == "system"
     assert "multiple parts" in system_msg["content"]
     assert "does not cover" in system_msg["content"]
+
+
+def test_system_prompt_permits_synthesis_and_apply():
+    # ws3.v3 answer-vs-refuse boundary: the prompt must instruct the model to
+    # combine evidence spread across passages and apply demonstrated methods to
+    # the question's specifics, and to refuse ONLY on genuine absence — not on a
+    # mere wording mismatch (the regression these clauses fix: a 7B model that
+    # over-refused conceptual-synthesis / applied questions).
+    assert "synthesize" in ANSWER_SYSTEM_PROMPT
+    assert "SPREAD ACROSS" in ANSWER_SYSTEM_PROMPT
+    assert "APPLY" in ANSWER_SYSTEM_PROMPT
+    assert "no material supporting the question" in ANSWER_SYSTEM_PROMPT
+    assert "merely when its wording differs" in ANSWER_SYSTEM_PROMPT
+    # The synthesis clause must reach the assembled system message verbatim.
+    client = FakeAnswerClient([_envelope("X is a thing.", ["chunk_00000"])])
+    compose_answer("What is X?", _passages(2), client=client)
+    assert "synthesize" in client.calls[0]["messages"][0]["content"]
 
 
 def test_user_prompt_numbers_blocks_and_appends_question():
@@ -198,7 +214,7 @@ def test_compose_well_formed_envelope_roundtrip():
     assert result.cited_chunk_ids == ["chunk_00000"]
     assert result.not_in_course is False
     assert result.attempts == 1
-    assert result.prompt_version == "ws3.v2"
+    assert result.prompt_version == "ws3.v3"
     assert result.model_id == "qwen2.5:14b-instruct-q4_K_M"
 
 

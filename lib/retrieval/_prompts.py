@@ -46,7 +46,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycle
 
 
 # Bump on ANY change to the system/user prompt wording below.
-ANSWER_PROMPT_VERSION = "ws3.v2"
+#
+# NOTE: the grounded-answer MILESTONE_TARGETS (lib/retrieval/grounded_eval.py)
+# and the refusal-policy pins were MEASURED under ws3.v2 — this ws3.v3 wording
+# changes the model's answer-vs-refuse boundary (it now answers synthesis /
+# applied questions the passages substantively support instead of over-refusing
+# on literal-wording mismatches). The orchestrator MUST re-measure the gold +
+# refusal-probe suites and re-pin MILESTONE_TARGETS / the refusal policy after
+# this lands; the constants are deliberately left untouched here.
+ANSWER_PROMPT_VERSION = "ws3.v3"
 
 # Per-passage hard truncation (characters). A 14B-Q4 model loses the
 # trailing JSON directive when the context balloons; capping each
@@ -84,18 +92,34 @@ ENV_ANSWER_NUM_CTX = "ED4ALL_ANSWER_NUM_CTX"
 MAX_CONTEXT_CHARS = 12000
 
 
-# Terse per the Wave-114 local-model precedent (< 80 words; trailing
-# JSON directive is the load-bearing part). Passage-constrained
-# answering + explicit refusal instruction.
+# Terse per the Wave-114 local-model precedent (trailing JSON directive is
+# the load-bearing part). Passage-constrained answering + explicit refusal
+# instruction.
+#
+# ws3.v3 answer-vs-refuse boundary: a 7B-Q4 model under ws3.v2 over-refused
+# whenever the question's exact wording did not appear verbatim in a passage —
+# it treated "synthesize across passages" and "apply a shown method to these
+# specifics" as not-covered and set not_in_course=true. The added SYNTHESIS +
+# APPLY clauses tell the model the supporting material may be SPREAD across
+# several passages (e.g. a week-overview plus a worked example) and that it
+# should apply methods/worked examples the passages demonstrate to the
+# question's specifics. Refusal is reserved for genuine absence: the passages
+# contain no supporting material, NOT merely a wording mismatch.
 ANSWER_SYSTEM_PROMPT = (
     "You answer a student's question about one course using ONLY the "
     "numbered source passages provided. Do not use outside knowledge. "
+    "The supporting material may be SPREAD ACROSS several passages — combine "
+    "and synthesize the relevant passages into one answer. When a passage "
+    "demonstrates a method or worked example, APPLY it to the specifics the "
+    "question asks about. Answer whenever the passages substantively support "
+    "the question, even if its exact wording does not appear verbatim. "
     "If the question has multiple parts, address every part the passages "
     "support; for any part NOT covered by the passages, say so in one short "
     "sentence (e.g. \"The provided course material does not cover <part>.\") "
     "instead of omitting it silently, and never invent material for an "
-    "uncovered part. If NO part of the question is covered, set "
-    '"not_in_course" to true and leave "answer" empty. Cite the id of '
+    "uncovered part. Set \"not_in_course\" to true and leave \"answer\" empty "
+    "ONLY when the passages contain no material supporting the question — not "
+    "merely when its wording differs from the passages. Cite the id of "
     "every passage that supports the answer. Output JSON only: "
     '{"answer": "...", "citations": ["<passage_id>", ...], '
     '"not_in_course": false}.'
