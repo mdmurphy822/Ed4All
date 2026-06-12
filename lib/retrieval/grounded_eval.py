@@ -51,9 +51,15 @@ from lib.retrieval.gold_set import (
 #: (key_point_coverage, part_coverage, population breakdown). Every v1.0
 #: report field is preserved; the new fields are additive and present only
 #: when the v1.1 gold question carries the matching authored data.
-EVAL_SCHEMA_VERSION = "1.1"
+EVAL_SCHEMA_VERSION = "1.2"
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
 REVIEW_SAMPLE_FILENAME = "groundedness_review_sample.json"
+
+#: Review-sample artifact schema version. Tracked independently of
+#: ``EVAL_SCHEMA_VERSION`` (the report-level schema): bumped 3 → 4 with the
+#: groundedness scorer-v2 surface (per-claim ``windowed`` / ``best_chunk_cited``
+#: + computational/filtered diagnostics now appear in the embedded verdicts).
+REVIEW_SAMPLE_SCHEMA_VERSION = "4"
 
 # --------------------------------------------------------------------------- #
 # Milestone targets — measure-then-pin (floors CURRENT evidence meets)
@@ -115,6 +121,19 @@ MILESTONE_TARGETS: Dict[str, float] = {
     "groundedness_rate_mean": 0.15,
     # CEILING. measured 0.2326 (single course 2026-06-12); pinned unchanged at
     # 0.25 (lower is better). Comfortably under the ceiling on this run.
+    #
+    # SCORER-VERSION CAVEAT (groundedness v2, 2026-06-12 audit): the 0.2326
+    # measurement + this 0.25 pin were taken under scorer v1 (whole-chunk-
+    # premise grid, no artifact filtering / computational exemption / windowed
+    # rescue). The manual audit of the v1 review sample found ~80% of the
+    # measured unsupported rate was scorer noise (NLI false negatives on
+    # glossary-style multi-topic chunks, novel-but-correct computations, and
+    # claim-splitter artifacts) — true fabrication was ~5%. Scorer v2 removes
+    # those noise sources, so the unsupported_claim_rate measured under v2 is
+    # NOT comparable to the v1 0.2326. This ceiling MUST be re-pinned (measure-
+    # then-pin) after the first v2 eval run; the 0.25 value is left UNCHANGED
+    # here until that measurement exists (never pin from an audit, only from a
+    # run).
     "unsupported_claim_rate": 0.25,
     # FLOOR. measured 0.50 on the NEW 34-probe hard-probe basis (single course
     # 2026-06-12), pinned to 0.45. NOT comparable to the old 9-probe basis. The
@@ -429,7 +448,7 @@ def _build_review_sample(
             }
         )
     return {
-        "schema_version": EVAL_SCHEMA_VERSION,
+        "schema_version": REVIEW_SAMPLE_SCHEMA_VERSION,
         "course_slug": course_slug,
         "sample_seed": "sha256(course_slug::question_id)",
         "n_sampled": len(samples),
@@ -547,6 +566,12 @@ def run_grounded_eval(
     false_refusals_on_gold = 0
     groundedness_rates: List[float] = []
     unsupported_rates: List[float] = []
+    # Scorer-v2 additive diagnostics (NOT pinned milestones): how many claims
+    # the v2 scorer exempted as computational, dropped as structural artifacts,
+    # and entailed via an UNCITED corpus chunk (best_chunk_cited is False).
+    computational_claim_count = 0
+    filtered_claim_count = 0
+    entailed_uncited_count = 0
 
     # P4 additive aggregates (key-point completeness, part coverage, per-
     # population citations). All roll up only over ANSWERED questions that
@@ -691,6 +716,15 @@ def run_grounded_eval(
             groundedness_rates.append(g_rate)
             unsupported_rates.append(u_rate)
             per_claim = list(grounded.get("claims", []) or [])
+            # Scorer-v2 additive diagnostics (absent / 0 on a v1 report).
+            computational_claim_count += int(grounded.get("computational_count", 0) or 0)
+            filtered_claim_count += int(grounded.get("filtered_count", 0) or 0)
+            for claim in per_claim:
+                if (
+                    claim.get("verdict") == "entailed"
+                    and claim.get("best_chunk_cited") is False
+                ):
+                    entailed_uncited_count += 1
 
         # --- P4 additive per-question scoring (only on answered questions) ---
         is_answered = status in _ANSWERED_STATUSES
@@ -913,6 +947,22 @@ def run_grounded_eval(
                 "not a pinned milestone"
             ),
         },
+        # Scorer-v2 additive diagnostics (NOT pinned milestones — measure-then-
+        # pin): claims the v2 groundedness scorer exempted as computational,
+        # dropped as structural artifacts, and entailed via an UNCITED corpus
+        # chunk (citation-selection signal, separate from fabrication-vs-corpus).
+        # All sum over answered questions whose groundedness report was
+        # available; 0 on a v1-scorer report (keys absent → counted as 0).
+        "groundedness_scorer_v2": {
+            "computational_claim_count": computational_claim_count,
+            "filtered_claim_count": filtered_claim_count,
+            "entailed_uncited_count": entailed_uncited_count,
+            "_diagnostic": (
+                "scorer-v2 counters (2026-06-12 audit response); diagnostics, "
+                "not pinned milestones — re-pin unsupported_claim_rate after the "
+                "first v2 run"
+            ),
+        },
         "latency_ms": {
             "p50": _percentile(latencies, 50.0),
             "p95": _percentile(latencies, 95.0),
@@ -1058,6 +1108,7 @@ __all__ = [
     "run_grounded_eval",
     "PipelineUnavailable",
     "EVAL_SCHEMA_VERSION",
+    "REVIEW_SAMPLE_SCHEMA_VERSION",
     "MILESTONE_TARGETS",
     "MILESTONE_CEILINGS",
     "MILESTONE_TARGETS_PINNED_AT",

@@ -204,15 +204,19 @@ def test_no_claims_or_no_passages_available_true_rate_zero():
 
 
 def test_batches_one_pass_grid():
-    p1 = _passage("c1", "Passage one body text with sufficient tokens here.")
-    p2 = _passage("c2", "Passage two body text with sufficient tokens here.")
+    # Use passages that DO entail the claims so stage-1 clears the floor and the
+    # stage-2 windowed rescue never fires (so this stays a single-batch grid).
+    p1 = _passage("c1", "First scorable claim sentence with enough content tokens here.")
+    p2 = _passage("c2", "Second scorable claim sentence with enough content tokens here.")
     answer = (
         "First scorable claim sentence with enough content tokens here. "
         "Second scorable claim sentence with enough content tokens here."
     )
     fake = FakeNli()
-    score_groundedness(answer, [p1, p2], nli=fake)
-    # 2 claims x 2 passages = 4 pairs, all in one score_batch call.
+    report = score_groundedness(answer, [p1, p2], nli=fake)
+    # 2 claims x 2 passages = 4 pairs, all in one stage-1 score_batch call; both
+    # claims entailed in stage 1 so the stage-2 rescue pass is skipped entirely.
+    assert report.groundedness_rate == 1.0
     assert len(fake.batches) == 1
     assert len(fake.batches[0]) == 4
 
@@ -223,14 +227,23 @@ def test_report_to_dict_shape():
         "A vector store indexes embedding vectors here.", [passage], nli=FakeNli()
     )
     d = report.to_dict()
-    assert set(d) == {
+    # v2 is ADDITIVE: every pre-existing key must still be present (same names)
+    # alongside the new v2 keys (computational_count / filtered_count /
+    # scorer_version on the report; windowed / best_chunk_cited on the claim).
+    v1_report_keys = {
         "available", "claims", "groundedness_rate", "unsupported_count",
         "contradicted_count", "scored_count", "thresholds",
         "thresholds_provenance", "nli_model_revision", "reason",
     }
-    assert set(d["claims"][0]) == {
+    assert v1_report_keys <= set(d)
+    assert set(d) == v1_report_keys | {
+        "computational_count", "filtered_count", "scorer_version",
+    }
+    v1_claim_keys = {
         "claim_text", "verdict", "entailment", "contradiction", "best_chunk_id",
     }
+    assert v1_claim_keys <= set(d["claims"][0])
+    assert set(d["claims"][0]) == v1_claim_keys | {"windowed", "best_chunk_cited"}
 
 
 # ===========================================================================
@@ -282,6 +295,227 @@ def test_strict_mode_does_not_raise_when_nli_injected(monkeypatch):
     )
     assert report.available is True
     assert report.scored_count == 1
+
+
+# ===========================================================================
+# v2 — claim-artifact filtering
+# ===========================================================================
+
+def test_artifact_filtering_drops_dict_literal_and_enum_stub():
+    from lib.retrieval.groundedness import (
+        VERDICT_ENTAILED,
+        _split_claims_for_scoring,
+    )
+
+    # A normal claim, a dict-literal claim-splitter artifact, and an enumeration
+    # stub. Only the normal claim survives; filtered_count counts the 2 dropped.
+    answer = (
+        "A vector store indexes embedding vectors for similarity search here. "
+        "{'lower_bound': 25, 'upper_bound': 28}. "
+        "The steps to compute the range are as follows: 1."
+    )
+    kept, filtered = _split_claims_for_scoring(answer)
+    assert filtered == 2
+    assert len(kept) == 1
+    assert kept[0].startswith("A vector store indexes")
+
+    passage = _passage(
+        "c1",
+        "A vector store indexes embedding vectors for similarity search here.",
+    )
+    report = score_groundedness(answer, [passage], nli=FakeNli())
+    assert report.filtered_count == 2
+    # The two artifacts are gone; only the one real claim is scored.
+    assert report.scored_count == 1
+    assert report.claims[0].verdict == VERDICT_ENTAILED
+
+
+def test_artifact_filtering_keeps_normal_sentences():
+    from lib.retrieval.groundedness import _split_claims_for_scoring
+
+    answer = (
+        "Embeddings are dense numerical vectors used for retrieval here. "
+        "Cosine similarity compares the angle between two such vectors."
+    )
+    kept, filtered = _split_claims_for_scoring(answer)
+    assert filtered == 0
+    assert len(kept) == 2
+
+
+# ===========================================================================
+# v2 — computational-claim exemption
+# ===========================================================================
+
+class _CountingFakeNli(FakeNli):
+    """FakeNli that also records the total number of pairs ever scored."""
+
+    def __init__(self):
+        super().__init__()
+        self.total_pairs = 0
+
+    def score_batch(self, *, pairs, batch_size=8):
+        self.total_pairs += len(list(pairs))
+        return super().score_batch(pairs=pairs, batch_size=batch_size)
+
+
+def test_computational_claim_exempted_from_nli_and_denominator():
+    from lib.retrieval.groundedness import VERDICT_COMPUTATIONAL
+
+    passage = _passage(
+        "c1",
+        "Combine the like terms to find the simplified algebraic expression.",
+    )
+    # A single computational claim — must never reach NLI.
+    answer = "The simplified form is 3x + 10y + 4."
+    fake = _CountingFakeNli()
+    report = score_groundedness(answer, [passage], nli=fake)
+
+    assert report.computational_count == 1
+    assert report.claims[0].verdict == VERDICT_COMPUTATIONAL
+    # Excluded from the rate denominator and the un/contra counts.
+    assert report.scored_count == 0
+    assert report.unsupported_count == 0
+    assert report.contradicted_count == 0
+    assert report.groundedness_rate == 0.0
+    # NLI was never called for the computational claim (no pairs scored at all).
+    assert fake.total_pairs == 0
+    assert fake.batches == []
+
+
+def test_computational_claim_mixed_with_scorable():
+    from lib.retrieval.groundedness import (
+        VERDICT_COMPUTATIONAL,
+        VERDICT_ENTAILED,
+    )
+
+    passage = _passage(
+        "c1",
+        "A vector store indexes embedding vectors for similarity search here.",
+    )
+    answer = (
+        "A vector store indexes embedding vectors for similarity search here. "
+        "The simplified form is 3x + 10y + 4."
+    )
+    report = score_groundedness(answer, [passage], nli=FakeNli())
+    # One scorable (entailed) + one computational (exempt). Order preserved.
+    assert report.scored_count == 1
+    assert report.computational_count == 1
+    assert report.groundedness_rate == 1.0
+    assert report.claims[0].verdict == VERDICT_ENTAILED
+    assert report.claims[1].verdict == VERDICT_COMPUTATIONAL
+
+
+# ===========================================================================
+# v2 — windowed rescue pass
+# ===========================================================================
+
+class _WindowRescueNli:
+    """NLI fake that returns LOW entailment for long premises and HIGH for a
+    short window containing the support sentence — the glossary-chunk failure
+    mode the stage-2 windowed rescue targets.
+    """
+
+    _revision = "fake-window-nli-0"
+
+    SUPPORT = "recall at k measures retrieval completeness"
+    #: A premise longer than this is treated as a "whole multi-topic chunk" the
+    #: whole-chunk NLI cannot resolve; a tighter (shorter) window scores high.
+    MAX_RESOLVABLE_CHARS = 130
+
+    def __init__(self):
+        self.batches = []
+
+    def score_batch(self, *, pairs, batch_size=8):
+        self.batches.append(list(pairs))
+        out = []
+        for premise, _hypothesis in pairs:
+            p_norm = " ".join(premise.lower().split())
+            contains = self.SUPPORT in p_norm
+            # Support present AND the premise is tight enough to resolve → high
+            # entailment; the long whole-chunk premise (over the char budget)
+            # scores low even though it contains the support (glossary noise).
+            if contains and len(premise) <= self.MAX_RESOLVABLE_CHARS:
+                out.append(_FakeNliScore(0.9, 0.05, 0.05))
+            else:
+                out.append(_FakeNliScore(0.15, 0.8, 0.05))
+        return out
+
+
+def test_windowed_rescue_entails_via_sentence_window():
+    from lib.retrieval.groundedness import VERDICT_ENTAILED
+
+    # A glossary-style multi-topic chunk: the support sentence is buried among
+    # several unrelated sentences, so the whole-chunk premise scores low but a
+    # 3-sentence window isolating it scores high.
+    glossary = (
+        "Embeddings are dense numerical vectors. "
+        "A vector store indexes them for search. "
+        "Recall at k measures retrieval completeness. "
+        "Precision at k measures retrieval correctness. "
+        "Latency is the time to answer a query."
+    )
+    passage = _passage("c1", glossary)
+    answer = "Recall at k measures retrieval completeness."
+    nli = _WindowRescueNli()
+    report = score_groundedness(answer, [passage], nli=nli)
+
+    assert report.scored_count == 1
+    assert report.claims[0].verdict == VERDICT_ENTAILED
+    assert report.claims[0].windowed is True
+    assert report.claims[0].best_chunk_id == "c1"
+    # Two batches: stage-1 whole-chunk grid + stage-2 windowed rescue.
+    assert len(nli.batches) == 2
+
+
+# ===========================================================================
+# v2 — wider evidence pool + cited flag
+# ===========================================================================
+
+def test_best_chunk_cited_flag_set_when_cited_ids_supplied():
+    p1 = _passage("c1", "Irrelevant passage about something else entirely now.")
+    p2 = _passage(
+        "c2",
+        "Retrieval quality is commonly measured with recall at k metrics.",
+    )
+    answer = "Retrieval quality is commonly measured with recall at k metrics."
+    # The supporting chunk (c2) is NOT in the cited set → best_chunk_cited False.
+    report = score_groundedness(
+        answer, [p1, p2], nli=FakeNli(), cited_chunk_ids={"c1"}
+    )
+    assert report.claims[0].best_chunk_id == "c2"
+    assert report.claims[0].best_chunk_cited is False
+
+    # Now c2 IS cited → True.
+    report2 = score_groundedness(
+        answer, [p1, p2], nli=FakeNli(), cited_chunk_ids={"c1", "c2"}
+    )
+    assert report2.claims[0].best_chunk_cited is True
+
+
+def test_best_chunk_cited_none_when_kwarg_omitted():
+    passage = _passage(
+        "c1",
+        "A vector store indexes embedding vectors for similarity search here.",
+    )
+    answer = "A vector store indexes embedding vectors for similarity search here."
+    report = score_groundedness(answer, [passage], nli=FakeNli())
+    assert report.claims[0].best_chunk_cited is None
+
+
+# ===========================================================================
+# v2 — report version stamp
+# ===========================================================================
+
+def test_report_carries_scorer_version_two():
+    from lib.retrieval.groundedness import SCORER_VERSION
+
+    passage = _passage("c1", "Some passage text with enough words to be valid.")
+    report = score_groundedness(
+        "Some passage text with enough words.", [passage], nli=FakeNli()
+    )
+    assert report.scorer_version == "2"
+    assert SCORER_VERSION == "2"
+    assert report.to_dict()["scorer_version"] == "2"
 
 
 # ===========================================================================

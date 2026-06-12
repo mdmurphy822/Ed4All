@@ -137,7 +137,7 @@ def test_report_shape_and_headline(libv2_course):
         answer_fn=_gold_answer_fn(_GROUNDED_OK),
         with_groundedness=True, write=False,
     )
-    assert report["schema_version"] == "1.1"
+    assert report["schema_version"] == "1.2"
     assert report["course_slug"] == slug
     assert report["engine"] == "lexical"
     assert report["model_id"] == "fake-model"

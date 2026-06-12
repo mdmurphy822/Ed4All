@@ -1133,3 +1133,133 @@ def test_default_path_does_not_import_transformers(mini_libv2: Path):
     # The default path must not have newly imported transformers.
     if not had_transformers:
         assert "transformers" not in sys.modules
+
+
+# --------------------------------------------------------------------------- #
+# Groundedness v2 — status-flip warning policy (_score_groundedness)
+#
+# The "contradicted_claim" warning is what flips an answer to
+# answered_with_warnings (answer_course_question step 7). Under scorer v2 the
+# contradiction is computed with whole-chunk false contradictions removed
+# (windowed / single-topic semantics), so the warning fires far less. These
+# tests drive _score_groundedness directly with a fake NLI (injected via the
+# process singleton) so the v2 contradiction/rescue semantics are exercised
+# without the heavy DeBERTa stack.
+# --------------------------------------------------------------------------- #
+
+
+def _gp_passage(chunk_id, text):
+    from lib.retrieval.answer_composer import RetrievedPassage
+
+    return RetrievedPassage(
+        chunk_id=chunk_id,
+        text=text,
+        score=1.0,
+        engine="lexical",
+        item_path="alpha.html",
+        section_heading="Sec",
+        module_id="m1",
+        source={"item_path": "alpha.html"},
+    )
+
+
+class _FlipFakeNli:
+    """Substring-entailment fake with a CONTRADICTS sentinel + a length budget
+    that lets a short window rescue a claim a long premise cannot resolve.
+    """
+
+    _revision = "flip-fake-0"
+    MAX_RESOLVABLE_CHARS = 130
+
+    def score_batch(self, *, pairs, batch_size=8):
+        from lib.tests.test_groundedness import _FakeNliScore
+
+        out = []
+        for premise, hypothesis in pairs:
+            h = " ".join(hypothesis.lower().split())
+            p = " ".join(premise.lower().split())
+            if "contradicts" in h:
+                out.append(_FakeNliScore(0.1, 0.3, 0.6))
+            elif h and h in p and len(premise) <= self.MAX_RESOLVABLE_CHARS:
+                out.append(_FakeNliScore(0.9, 0.05, 0.05))
+            else:
+                out.append(_FakeNliScore(0.1, 0.8, 0.1))
+        return out
+
+
+def _patch_singleton_nli(monkeypatch, fake):
+    from lib.classifiers import nli_classifier
+
+    monkeypatch.setattr(
+        nli_classifier.NliClassifier,
+        "get_or_load",
+        classmethod(lambda cls: fake),
+    )
+
+
+def test_score_groundedness_emits_contradicted_warning_on_v2_contradiction(
+    monkeypatch,
+):
+    from lib.retrieval.grounded_answer import _score_groundedness
+
+    _patch_singleton_nli(monkeypatch, _FlipFakeNli())
+    passage = _gp_passage("c1", "Embeddings are dense numerical vectors here.")
+    report, warnings = _score_groundedness(
+        "This statement CONTRADICTS the cited passage about embeddings.",
+        [passage],
+        cited_chunk_ids={"c1"},
+    )
+    assert report is not None
+    assert report["contradicted_count"] == 1
+    assert "contradicted_claim" in warnings
+
+
+def test_score_groundedness_no_warning_when_window_rescues(monkeypatch):
+    from lib.retrieval.grounded_answer import _score_groundedness
+
+    _patch_singleton_nli(monkeypatch, _FlipFakeNli())
+    # Glossary-style multi-topic chunk: the whole-chunk premise cannot resolve
+    # the claim (over the char budget) but a 3-sentence window can → stage-2
+    # rescue entails it, so NO contradicted/unsupported claim and NO warning.
+    glossary = (
+        "Embeddings are dense numerical vectors. "
+        "A vector store indexes them for search. "
+        "Recall at k measures retrieval completeness. "
+        "Precision at k measures retrieval correctness. "
+        "Latency is the time to answer a query."
+    )
+    passage = _gp_passage("c1", glossary)
+    report, warnings = _score_groundedness(
+        "Recall at k measures retrieval completeness.",
+        [passage],
+        cited_chunk_ids={"c1"},
+    )
+    assert report is not None
+    assert report["contradicted_count"] == 0
+    assert report["groundedness_rate"] == 1.0
+    assert report["claims"][0]["windowed"] is True
+    assert "contradicted_claim" not in warnings
+
+
+def test_status_flips_to_warnings_on_genuine_v2_contradiction(
+    mini_libv2: Path, monkeypatch
+):
+    # End-to-end through answer_course_question: a genuine v2 contradicted claim
+    # flips status to answered_with_warnings.
+    _patch_singleton_nli(monkeypatch, _FlipFakeNli())
+    client = FakeAnswerClient([
+        _envelope(
+            "This statement CONTRADICTS the cited passage about vectors here.",
+            ["mini_alpha_chunk_001"],
+        )
+    ])
+    result = answer_course_question(
+        mini_libv2,
+        COURSE_SLUG,
+        "What does a vector store index?",
+        client=client,
+        refusal_policy=_PERMISSIVE_LEXICAL,
+        with_groundedness=True,
+    )
+    assert result.status == STATUS_ANSWERED_WITH_WARNINGS
+    assert "contradicted_claim" in result.warnings

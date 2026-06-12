@@ -1284,20 +1284,29 @@ def answer_course_question(
     )
     warnings.extend(prune_warnings)
 
-    # 7) Optional groundedness (advisory; never blocks — D6). Scored against the
-    #    FINAL kept+added citation set so the displayed support story is the
-    #    measured one (honesty over flattery, plan §2.2).
+    # 7) Optional groundedness (advisory; never blocks — D6 / scorer v2). The
+    #    metric measures fabrication-vs-corpus, NOT citation-selection quality
+    #    (that is measured separately by the attribution prune+add pass above).
+    #    So the evidence pool is the FULL gate-eligible set — the renderer-
+    #    included passages the model could have cited — and each claim's
+    #    best_chunk_cited flags whether its supporting chunk was actually cited.
+    #    A corpus supporter the model under-cited can still entail a claim
+    #    (v2 wider-pool semantics, plan §2.2 honesty-over-flattery).
     groundedness_payload: Optional[Dict[str, Any]] = None
     status = STATUS_ANSWERED
     if with_groundedness:
         final_cited_ids = {c.chunk_id for c in citations}
-        groundedness_passages = [
-            p for p in gate_eligible_passages if p.chunk_id in final_cited_ids
-        ] or cited_passages
+        groundedness_passages = list(gate_eligible_passages) or cited_passages
         groundedness_payload, gw = _score_groundedness(
-            composed.answer_text, groundedness_passages
+            composed.answer_text,
+            groundedness_passages,
+            cited_chunk_ids=final_cited_ids,
         )
         warnings.extend(gw)
+        # v2 contradicted_count is computed under windowed / single-topic
+        # semantics (change 3 removed whole-chunk false contradictions), so this
+        # flip now fires far less. Policy unchanged otherwise: a v2 contradicted
+        # claim still escalates to answered_with_warnings.
         if "contradicted_claim" in gw:
             status = STATUS_ANSWERED_WITH_WARNINGS
 
@@ -1326,19 +1335,26 @@ def answer_course_question(
 def _score_groundedness(
     answer_text: Optional[str],
     cited_passages: Sequence[RetrievedPassage],
+    *,
+    cited_chunk_ids: Optional[set] = None,
 ) -> Tuple[Optional[Dict[str, Any]], List[str]]:
     """Optional per-answer groundedness (advisory). NLI absent → null block.
 
     Lazy import of E7's ``groundedness`` module so the ~750 MB DeBERTa load
     never sneaks onto the default query path (it is only reached under
-    ``with_groundedness=True``). Returns ``(report_dict_or_None, warnings)``.
+    ``with_groundedness=True``). ``cited_chunk_ids`` (the model's actual
+    citations) lets the v2 scorer flag each claim's supporting chunk as
+    cited/uncited while scoring against the wider gate-eligible evidence pool.
+    Returns ``(report_dict_or_None, warnings)``.
     """
     try:
         from lib.retrieval.groundedness import score_groundedness
     except Exception:
         return None, []
     try:
-        report = score_groundedness(answer_text or "", cited_passages)
+        report = score_groundedness(
+            answer_text or "", cited_passages, cited_chunk_ids=cited_chunk_ids
+        )
     except Exception:
         return None, []
     report_dict = report.to_dict() if hasattr(report, "to_dict") else dict(report)
