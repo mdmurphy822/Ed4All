@@ -99,7 +99,7 @@ MILESTONE_TARGETS_PINNED_AT = "2026-06-12"
 #: incl. the floor-rounding boundary fix, prune=on @ 0.444444):
 #:   answer_rate 0.9351  citation_resolution_rate 1.0  citation_precision 0.4457
 #:   groundedness_rate_mean 0.807  unsupported_claim_rate 0.0891
-#:   refusal_recall 0.8235  refusal_precision 0.875  key_point_coverage 0.5556
+#:   refusal_recall 0.8235  refusal_precision 0.875  key_point_coverage 0.5482
 #: Scorer-v1 vs scorer-v2 groundedness numbers are NOT comparable (see the
 #: per-pin notes); refusal numbers moved with the policy pin, not a model
 #: change.
