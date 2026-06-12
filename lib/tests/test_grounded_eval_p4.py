@@ -291,3 +291,140 @@ def test_report_json_round_trips(v1_1_course):
     for key in ("citation_precision_by_population", "expected_population_satisfaction",
                 "key_point_coverage", "part_coverage"):
         assert key in doc["headline"]
+
+
+# ===========================================================================
+# Part-coverage aggregation regression: real-shape gold (terse-prompt
+# part_text + per-part key_points) must NOT score answered_parts==0; and a
+# zero-multipart gold must report rates honestly (null/0, never a fake 0.0).
+# ===========================================================================
+
+_MP_CHUNK_A = "isolate the absolute value then split into two cases for x"
+_MP_CHUNK_B = "draw the V-shaped graph opening upward from the vertex"
+
+
+def _write_multipart_course(tmp_path, monkeypatch, *, questions):
+    """Build a hermetic two-chunk course carrying ``questions`` and return
+    (repo_root, slug). Minimal scaffolding mirroring :func:`v1_1_course`. The
+    two chunk bodies carry the answer content for the two multi_part parts."""
+    slug = "syn-mp-202"
+    libv2_root = tmp_path / "LibV2"
+    course_dir = libv2_root / "courses" / slug
+    chunks_path = course_dir / "corpus" / "chunks.jsonl"
+    chunks_path.parent.mkdir(parents=True, exist_ok=True)
+    chunks = [
+        {"id": "c1", "text": f"To solve an absolute value equation, {_MP_CHUNK_A}.",
+         "source": {"item_path": "textbook.html",
+                    "source_references": [{"block_id": "b1", "pdf_pages": [1]}]},
+         "learning_outcome_refs": ["to-01"]},
+        {"id": "c2", "text": f"To graph it, {_MP_CHUNK_B}.",
+         "source": {"item_path": "textbook.html",
+                    "source_references": [{"block_id": "b2", "pdf_pages": [2]}]},
+         "learning_outcome_refs": ["to-01"]},
+    ]
+    with chunks_path.open("w", encoding="utf-8") as fh:
+        for c in chunks:
+            fh.write(json.dumps(c) + "\n")
+    eval_dir = course_dir / "retrieval_eval"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    gold = {
+        "schema_version": "1.1",
+        "course_slug": slug,
+        "chunkset": {"kind": "corpus", "chunks_path": "corpus/chunks.jsonl",
+                     "chunks_sha256": sha256_file(chunks_path)},
+        "authored_at": "2026-06-11T00:00:00Z",
+        "frozen": False,
+        "questions": questions,
+    }
+    (eval_dir / "gold_set.json").write_text(json.dumps(gold), encoding="utf-8")
+    monkeypatch.setenv("ED4ALL_LIBV2_ROOT", str(libv2_root))
+    return tmp_path, slug
+
+
+def test_part_coverage_live_shape_terse_prompt_with_key_points(tmp_path, monkeypatch):
+    """Regression for the inert part-coverage scorer: real gold authors a terse
+    sub-question PROMPT as part_text and the answer-content claims as per-part
+    key_points. The answer addresses part a and silently drops part b — the
+    scorer must report answered_parts==1 (NOT 0)."""
+    q = {
+        "question_id": "gq-syn-mp-202-0001",
+        "question_text": "Solve the absolute value equation and graph the shaded ray.",
+        "question_type": "multi_part",
+        "expected_citation_population": "any",
+        "parts": [
+            {"part_id": "a", "part_text": "Solve for x.", "covered": True,
+             "relevant_passage_refs": ["c1"]},
+            {"part_id": "b", "part_text": "Graph the shaded ray.", "covered": True,
+             "relevant_passage_refs": ["c2"]},
+        ],
+        "relevant_passages": [
+            {"chunk_id": "c1", "relevance": "primary",
+             "anchor": {"item_path": "textbook.html", "text_quote": _MP_CHUNK_A}},
+            {"chunk_id": "c2", "relevance": "supporting",
+             "anchor": {"item_path": "textbook.html", "text_quote": _MP_CHUNK_B}},
+        ],
+        "authoring": {"method": "manual", "author": "@t",
+                      "reviewed_by": "PENDING_REVIEW", "status": "seed"},
+    }
+    repo_root, slug = _write_multipart_course(tmp_path, monkeypatch, questions=[q])
+
+    def _fn(_repo, _slug, _query, **_kw):
+        # Answer addresses part a (chunk c1 body) and silently drops part b.
+        return _FakeAnswer(
+            answer_text=f"To solve, {_MP_CHUNK_A}.",
+            citations=[_FakeCite("c1")],
+        )
+
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical", answer_fn=_fn,
+        with_groundedness=False, write=False,
+    )
+    pc = report["questions"][0]["part_coverage"]
+    assert pc["n_covered_parts"] == 2
+    assert pc["n_answered"] == 1          # part b silently dropped — the bug we fixed
+    hp = report["headline"]["part_coverage"]
+    assert hp["questions_scored"] == 1
+    assert hp["covered_parts"] == 2
+    assert hp["answered_parts"] == 1
+    assert hp["answered_rate"] == 0.5     # honest: 1 of 2 covered parts answered
+
+
+def test_part_coverage_zero_multipart_rates_honest(tmp_path, monkeypatch):
+    """No multi_part questions → covered/answered/uncovered all 0, both rates
+    null (denominator 0), never a fabricated 0.0."""
+    q = {
+        "question_id": "gq-syn-mp-202-0002",
+        "question_text": "What does isolating do?",
+        "question_type": "factual_recall",
+        "expected_citation_population": "any",
+        "expected_key_points": ["isolate the absolute value", "split into two cases for x"],
+        "relevant_passages": [
+            {"chunk_id": "c1", "relevance": "primary",
+             "anchor": {"item_path": "textbook.html",
+                        "text_quote": "isolate the absolute value then split into two cases for x"}},
+        ],
+        "authoring": {"method": "manual", "author": "@t",
+                      "reviewed_by": "PENDING_REVIEW", "status": "seed"},
+    }
+    repo_root, slug = _write_multipart_course(tmp_path, monkeypatch, questions=[q])
+
+    def _fn(_repo, _slug, _query, **_kw):
+        return _FakeAnswer(
+            answer_text="To solve, isolate the absolute value first.",
+            citations=[_FakeCite("c1")],
+        )
+
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical", answer_fn=_fn,
+        with_groundedness=False, write=False,
+    )
+    hp = report["headline"]["part_coverage"]
+    assert hp["questions_scored"] == 0
+    assert hp["covered_parts"] == 0
+    assert hp["answered_parts"] == 0
+    assert hp["uncovered_parts"] == 0
+    assert hp["correctly_flagged_parts"] == 0
+    assert hp["answered_rate"] is None          # denominator 0 → null, not 0.0
+    assert hp["correctly_flagged_rate"] is None
+    # no per-question part_coverage block on a non-multi_part question
+    assert "part_coverage" not in report["questions"][0]

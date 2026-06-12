@@ -285,15 +285,44 @@ def _noun_phrase_tokens(part_text: str) -> List[str]:
     return [t for t in toks if len(t) >= 3 and t not in _STOPWORDS]
 
 
-def _disclaimer_flags_part(answer_norm_lower: str, part_text: str) -> bool:
-    """True when a disclaimer phrase co-occurs within the proximity window of a
-    content token from ``part_text``.
+def _part_key_points(part: Dict[str, Any]) -> List[str]:
+    """Per-part answer-content key points authored directly on the part dict.
 
-    Both inputs are already lowercased + whitespace-normalized.
+    Accepts either ``key_points`` or ``expected_key_points`` (the question-level
+    field name, reused at part scope). Non-list / empty values degrade to ``[]``
+    so a part that authors no per-part key points falls back to ``part_text``.
+    """
+    for field_name in ("key_points", "expected_key_points"):
+        val = part.get(field_name)
+        if isinstance(val, list):
+            return [str(k) for k in val if str(k).strip()]
+    return []
+
+
+def _disclaimer_flags_part(
+    answer_norm_lower: str, part_text: str, absence_note: str = ""
+) -> bool:
+    """True when a disclaimer phrase co-occurs within the proximity window of a
+    content token anchoring this uncovered part.
+
+    The anchor tokens are the part's noun-phrase tokens (from ``part_text``)
+    UNION the noun-phrase tokens of the authored ``absence_note``. The
+    absence_note documents the deliberately-uncovered subject (schema:
+    ``covered:false`` parts carry it), so an answer that flags the absence
+    using the absence_note's vocabulary ("the latency budget is not covered")
+    is credited even when the part_text is a terse prompt that doesn't name
+    the subject. Both inputs are already lowercased + whitespace-normalized.
     """
     if not answer_norm_lower:
         return False
     np_tokens = _noun_phrase_tokens(part_text)
+    # Augment with absence_note anchors (deduped, order-stable) — the authored
+    # subject of the deliberate omission is the most reliable anchor.
+    seen = set(np_tokens)
+    for tok in _noun_phrase_tokens(absence_note):
+        if tok not in seen:
+            seen.add(tok)
+            np_tokens.append(tok)
     if not np_tokens:
         # No anchorable noun phrase: fall back to "any disclaimer present"
         # (still diagnostic — recorded, not pinned).
@@ -375,16 +404,31 @@ def score_part_coverage(
     parts: Sequence[Dict[str, Any]],
     *,
     key_points_by_part: Optional[Dict[str, Sequence[str]]] = None,
+    chunks_by_part: Optional[Dict[str, Sequence[str]]] = None,
     min_overlap: float = DEFAULT_MIN_OVERLAP,
     token_coverage_floor: float = TOKEN_COVERAGE_FLOOR,
 ) -> Optional[PartCoverage]:
     """Score the parts of a ``multi_part`` question against ``answer_text``.
 
     For a ``covered:true`` part → ``answered`` iff the answer supports the
-    part's text (or any of its key points) by the deterministic shingle/coverage
-    arms. For a ``covered:false`` part → ``correctly_flagged`` iff the answer
-    contains an explicit does-not-cover acknowledgment near the part's noun
-    phrase (:func:`_disclaimer_flags_part`).
+    part's content by the deterministic shingle/coverage arms. For a
+    ``covered:false`` part → ``correctly_flagged`` iff the answer contains an
+    explicit does-not-cover acknowledgment near the part's noun phrase or the
+    authored ``absence_note`` subject (:func:`_disclaimer_flags_part`).
+
+    Per-part support targets are the union of (1) the part's ``part_text``,
+    (2) any per-part key points authored ON the part dict itself
+    (``key_points`` / ``expected_key_points``) or supplied via the
+    ``key_points_by_part`` map, and (3) the bodies of the chunks that answer
+    the part, supplied via ``chunks_by_part`` (keyed by ``part_id``). The
+    chunk-body arm is what keeps the metric live on real authored gold: the
+    schema's ``part_text`` is the sub-question PROMPT (which does not lexically
+    overlap a prose answer) and the schema forbids per-part key points, so the
+    answer-content signal must come from the part's ``relevant_passage_refs``
+    chunk bodies — the same machinery citation attribution uses to decide a
+    claim is supported by a passage. A part is ``answered`` when the answer
+    contains >= ``min_overlap`` of any target's 4-shingles OR covers
+    >= ``token_coverage_floor`` of a target's content tokens.
 
     Returns ``None`` when ``parts`` is empty/absent.
     """
@@ -395,6 +439,7 @@ def score_part_coverage(
     answer_norm = _normalize(answer_text or "")
     answer_norm_lower = answer_norm.lower()
     kp_map = key_points_by_part or {}
+    chunk_map = chunks_by_part or {}
 
     verdicts: List[PartVerdict] = []
     n_covered = n_answered = n_uncovered = n_flagged = 0
@@ -403,9 +448,15 @@ def score_part_coverage(
         covered = bool(part.get("covered", False))
         if covered:
             n_covered += 1
-            # Support targets: the part text plus any per-part key points.
+            # Support targets: the part text, any per-part key points (harvested
+            # from both the part dict and the injected map), and the bodies of
+            # the chunks that answer this part. The chunk bodies are the
+            # load-bearing signal on real authored gold — part_text is just the
+            # sub-question prompt.
             targets = [str(part.get("part_text", ""))]
+            targets.extend(str(k) for k in _part_key_points(part) if str(k).strip())
             targets.extend(str(k) for k in kp_map.get(pid, []) if str(k).strip())
+            targets.extend(str(c) for c in chunk_map.get(pid, []) if str(c).strip())
             answered = False
             arm = "none"
             for tgt in targets:
@@ -426,7 +477,9 @@ def score_part_coverage(
         else:
             n_uncovered += 1
             flagged = _disclaimer_flags_part(
-                answer_norm_lower, str(part.get("part_text", ""))
+                answer_norm_lower,
+                str(part.get("part_text", "")),
+                str(part.get("absence_note", "")),
             )
             if flagged:
                 n_flagged += 1

@@ -361,6 +361,33 @@ def _question_parts(question: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [p for p in parts if isinstance(p, dict)] if isinstance(parts, list) else []
 
 
+def _part_chunk_bodies(
+    parts: List[Dict[str, Any]], chunks_by_id: Dict[str, Dict[str, Any]]
+) -> Dict[str, List[str]]:
+    """Map each part_id → the bodies of its ``relevant_passage_refs`` chunks.
+
+    This is the answer-content signal for ``score_part_coverage``: a covered
+    part's ``part_text`` is only the sub-question prompt, so "did the answer
+    address this part" is decided against the chunk bodies that answer it
+    (reusing the claim-support machinery). Missing/unknown chunk ids are
+    skipped — a part with no resolvable refs falls back to part_text."""
+    out: Dict[str, List[str]] = {}
+    for part in parts:
+        pid = str(part.get("part_id", ""))
+        refs = part.get("relevant_passage_refs")
+        if not isinstance(refs, list):
+            continue
+        bodies: List[str] = []
+        for ref in refs:
+            chunk = chunks_by_id.get(str(ref))
+            body = str((chunk or {}).get("text", "")).strip()
+            if body:
+                bodies.append(body)
+        if bodies:
+            out[pid] = bodies
+    return out
+
+
 def _load_probes(probes_path: Path) -> List[Dict[str, Any]]:
     if not probes_path.exists() or not probes_path.is_file():
         return []
@@ -766,8 +793,11 @@ def run_grounded_eval(
                 kp_questions += 1
 
             if str(q.get("question_type", "")) == "multi_part":
+                q_parts = _question_parts(q)
                 part_cov = score_part_coverage(
-                    answer_text_val, _question_parts(q)
+                    answer_text_val,
+                    q_parts,
+                    chunks_by_part=_part_chunk_bodies(q_parts, chunks_by_id),
                 )
                 if part_cov is not None:
                     part_covered_total += part_cov.n_covered_parts

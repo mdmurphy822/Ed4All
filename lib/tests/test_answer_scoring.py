@@ -150,6 +150,103 @@ def test_part_covered_answered_via_key_points():
     assert cov.n_answered == 1
 
 
+def test_part_covered_answered_via_chunk_bodies():
+    """The live-inertness fix: schema-valid gold authors a TERSE PROMPT as
+    part_text (which does not lexically overlap a prose answer) and anchors the
+    part with relevant_passage_refs. The answer-content signal is the chunk
+    BODY, threaded via chunks_by_part. Both parts addressed → both answered."""
+    answer = (
+        "To solve, isolate the absolute value then split into two cases for x. "
+        "Then draw the V-shaped graph opening upward from the vertex."
+    )
+    parts = [
+        _part("a", "Solve for x.", True, relevant_passage_refs=["c1"]),
+        _part("b", "Graph it.", True, relevant_passage_refs=["c2"]),
+    ]
+    chunks = {
+        "a": ["isolate the absolute value then split into two cases for x"],
+        "b": ["draw the V-shaped graph opening upward from the vertex"],
+    }
+    # No part_text overlap at all — only the chunk bodies carry the content.
+    cov = score_part_coverage(answer, parts, chunks_by_part=chunks)
+    assert cov.n_covered_parts == 2
+    assert cov.n_answered == 2
+    assert all(v.answered for v in cov.verdicts)
+
+
+def test_part_silently_dropped_detected_via_chunk_bodies():
+    """Real observed failure: a two-part question (absolute value + 'shaded
+    ray') where the answer silently drops the shaded-ray part. The dropped
+    part must score answered=False even though its sibling is answered."""
+    answer = "To solve, isolate the absolute value then split into two cases for x."
+    parts = [
+        _part("a", "Solve for x.", True, relevant_passage_refs=["c1"]),
+        _part("b", "Graph the shaded ray.", True, relevant_passage_refs=["c2"]),
+    ]
+    chunks = {
+        "a": ["isolate the absolute value then split into two cases for x"],
+        "b": ["draw the V-shaped graph opening upward from the vertex"],
+    }
+    cov = score_part_coverage(answer, parts, chunks_by_part=chunks)
+    assert cov.n_answered == 1  # part b silently dropped
+    answered = {v.part_id: v.answered for v in cov.verdicts}
+    assert answered["a"] is True
+    assert answered["b"] is False
+
+
+def test_part_dict_key_points_arm_still_honored():
+    """Forward-compat: a part dict carrying its own key_points (or the
+    expected_key_points alias) is also a support source — useful for synthetic
+    fixtures that author answer-content directly on the part."""
+    answer = "Newton's second law relates force mass and acceleration directly."
+    parts = [_part("a", "describe the law", True,
+                   expected_key_points=["Newton's second law relates force mass and acceleration"])]
+    cov = score_part_coverage(answer, parts)
+    assert cov.n_answered == 1
+
+
+def test_uncovered_part_flagged_via_absence_note_anchor():
+    """absence_note pairing: the part_text is a terse prompt that does not name
+    the omitted subject; the authored absence_note does. A disclaimer phrased
+    in the absence_note's vocabulary must still be credited as a correct flag."""
+    answer = (
+        "Split into two cases for x. The corpus does not cover shaded ray "
+        "notation here."
+    )
+    parts = [
+        _part("a", "Solve for x.", True,
+              key_points=["split into two cases for x"]),
+        _part("b", "Graph it.", False,
+              absence_note="The corpus does not cover shaded ray notation; dry-run confirmed absent."),
+    ]
+    cov = score_part_coverage(answer, parts)
+    assert cov.n_uncovered_parts == 1
+    assert cov.n_correctly_flagged == 1
+    assert cov.n_answered == 1
+    flagged = {v.part_id: v.correctly_flagged for v in cov.verdicts}
+    assert flagged["b"] is True
+
+
+def test_uncovered_part_wrongly_answered_as_covered_not_flagged():
+    """An answer that fabricates content for a covered:false part (no
+    disclaimer) must NOT be credited as a correct flag — the metric punishes
+    inventing the absent part."""
+    answer = (
+        "Split into two cases for x. The shaded ray points left from "
+        "negative two on the number line."
+    )
+    parts = [
+        _part("a", "Solve for x.", True,
+              key_points=["split into two cases for x"]),
+        _part("b", "Graph the shaded ray.", False,
+              absence_note="The corpus does not cover shaded ray notation; dry-run confirmed absent."),
+    ]
+    cov = score_part_coverage(answer, parts)
+    assert cov.n_uncovered_parts == 1
+    assert cov.n_correctly_flagged == 0
+    assert cov.verdicts[1].correctly_flagged is False
+
+
 # ===========================================================================
 # Part coverage — uncovered parts correctly_flagged (ws3.v2 disclaimer)
 # ===========================================================================
