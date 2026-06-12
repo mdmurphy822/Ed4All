@@ -591,6 +591,14 @@ def run_grounded_eval(
     computational_claim_count = 0
     filtered_claim_count = 0
     entailed_uncited_count = 0
+    # NLI-ADD shadow diagnostics (NOT a pinned milestone): how many answers the
+    # NLI-ADD arm WOULD have credited an uncited supporter on, the total would-add
+    # count, and how many zero-citation answers it would have recovered. Rolls up
+    # only over answers carrying an ``nli_citation_add`` block (the arm ran in
+    # shadow/on mode); 0 on the default (off) path where the block is absent.
+    nli_answers_with_would_adds = 0
+    nli_total_would_adds = 0
+    nli_zero_citation_answers_recovered = 0
 
     # P4 additive aggregates (key-point completeness, part coverage, per-
     # population citations). All roll up only over ANSWERED questions that
@@ -744,6 +752,19 @@ def run_grounded_eval(
                     and claim.get("best_chunk_cited") is False
                 ):
                     entailed_uncited_count += 1
+
+        # --- NLI-ADD shadow diagnostics (additive; present only when the arm ran)
+        nli_add = _answer_field(answer, "nli_citation_add", None)
+        if isinstance(nli_add, dict):
+            would = [str(x) for x in (nli_add.get("would_add_ids") or [])]
+            if would:
+                nli_answers_with_would_adds += 1
+                nli_total_would_adds += len(would)
+                # A zero-citation answer recovered: the answer shipped with no
+                # citations (shadow mutates nothing, so n_cites is the model set)
+                # yet the arm would have credited at least one supporter.
+                if n_cites == 0:
+                    nli_zero_citation_answers_recovered += 1
 
         # --- P4 additive per-question scoring (only on answered questions) ---
         is_answered = status in _ANSWERED_STATUSES
@@ -980,6 +1001,20 @@ def run_grounded_eval(
                 "scorer-v2 counters (2026-06-12 audit response); diagnostics, "
                 "not pinned milestones — re-pin unsupported_claim_rate after the "
                 "first v2 run"
+            ),
+        },
+        # NLI-ADD shadow diagnostics (NOT a pinned milestone — measure-then-
+        # decide): what the NLI-based citation-ADD arm WOULD credit under its
+        # composite criterion. Present (non-zero possible) only when the arm ran
+        # (ED4ALL_ANSWER_NLI_ADD=shadow|on, with_groundedness on); all 0 on the
+        # default off path where answers carry no nli_citation_add block.
+        "shadow_nli_add": {
+            "answers_with_would_adds": nli_answers_with_would_adds,
+            "total_would_adds": nli_total_would_adds,
+            "zero_citation_answers_recovered": nli_zero_citation_answers_recovered,
+            "_diagnostic": (
+                "NLI-ADD would-add counts (2026-06-12 under-citing "
+                "investigation); shadow diagnostics, not a pinned milestone"
             ),
         },
         "latency_ms": {

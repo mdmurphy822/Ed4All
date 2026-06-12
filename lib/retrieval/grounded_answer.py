@@ -54,10 +54,17 @@ from lib.retrieval.citation_attribution import (
     MODE_OFF,
     MODE_ON,
     MODE_SHADOW,
+    NLI_ADD_ENTAILMENT_FLOOR,
+    NLI_ADD_MAX_ADDED_CITATIONS,
+    NLI_ADD_TOKEN_COVERAGE_FLOOR,
     AttributionReport,
     attribute_citations,
+    claim_numeric_literals,
+    claim_numerics_present,
+    passage_token_coverage,
     resolve_add_min_shingle,
     resolve_min_overlap,
+    resolve_nli_add_mode,
     resolve_prune_mode,
 )
 from lib.retrieval.citation_anchor import (
@@ -81,6 +88,7 @@ __all__ = [
     "answer_course_question",
     "page_label_for_source",
     "DECISION_TYPE_CITATION_PRUNE",
+    "DECISION_TYPE_NLI_CITATION_ADD",
     # Status constants (WS4 + CLI map these to display copy / exit codes).
     "STATUS_ANSWERED",
     "STATUS_ANSWERED_WITH_WARNINGS",
@@ -107,6 +115,7 @@ _ANSWERED_STATUSES = frozenset({STATUS_ANSWERED, STATUS_ANSWERED_WITH_WARNINGS})
 DECISION_TYPE_REFUSAL = "grounded_answer_refusal"
 DECISION_TYPE_CITATION_GATE = "grounded_answer_citation_gate"
 DECISION_TYPE_CITATION_PRUNE = "grounded_answer_citation_prune"
+DECISION_TYPE_NLI_CITATION_ADD = "grounded_answer_nli_citation_add"
 DECISION_PHASE = "libv2-answer"
 
 # Citation-prune/add outcomes (the capture `decision` suffix, plan §2.5).
@@ -206,6 +215,13 @@ class GroundedAnswer:
     prompt_version: Optional[str]
     generated_at: str
     latency_ms: float
+    # NLI-ADD shadow diagnostics (additive, optional). Populated only when the
+    # NLI-ADD arm ran in shadow/on mode (ED4ALL_ANSWER_NLI_ADD); ``None`` on the
+    # default (off) path. Lets eval aggregate would-add counts WITHOUT parsing
+    # warning strings. Shape: {"mode", "outcome", "would_add_ids", "added_ids",
+    # "candidates":[{chunk_id, entailment, token_coverage, numerics_present,
+    # passes_composite, anchor_resolved, ...}], "reason"}.
+    nli_citation_add: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -225,6 +241,12 @@ class GroundedAnswer:
             "prompt_version": self.prompt_version,
             "generated_at": self.generated_at,
             "latency_ms": self.latency_ms,
+            # Additive: present only when the NLI-ADD arm ran (shadow/on).
+            "nli_citation_add": (
+                dict(self.nli_citation_add)
+                if self.nli_citation_add is not None
+                else None
+            ),
         }
 
 
@@ -1021,6 +1043,294 @@ def _apply_citation_attribution(
 
 
 # --------------------------------------------------------------------------- #
+# NLI-based citation ADD (2026-06-12 under-citing investigation; shadow-default)
+# --------------------------------------------------------------------------- #
+#
+# The lexical (shingle) ADD arm above is unsalvageable on paraphrase answers
+# (median cited shingle 0.000 — zero adds even at bar 0.10). This arm instead
+# derives ADD candidates from the groundedness scorer's per-claim NLI verdicts
+# (REUSED — NLI is never run twice) and gates them through a COMPOSITE criterion
+# the 2026-06-12 hand sample found separates 4/4 genuine from 3/3 false adds:
+# entailment >= NLI_ADD_ENTAILMENT_FLOOR AND token_coverage >=
+# NLI_ADD_TOKEN_COVERAGE_FLOOR AND every claim numeric literal present in the
+# chunk AND the chunk anchors/resolves AND <= NLI_ADD_MAX_ADDED_CITATIONS adds.
+
+
+def _nli_add_candidate_signals(
+    groundedness_report: Optional[Any],
+    *,
+    cited_chunk_ids: set,
+    gate_eligible_by_id: Dict[str, RetrievedPassage],
+) -> List[Dict[str, Any]]:
+    """Per-candidate composite-criterion signals derived from NLI verdicts.
+
+    REUSES the groundedness scorer's per-claim verdicts (``best_chunk_cited`` is
+    ``False`` ⇒ the claim is entailed by an UNCITED corpus chunk — the exact
+    under-citing signal). For each such claim whose entailment clears
+    :data:`NLI_ADD_ENTAILMENT_FLOOR`, computes the two independent lexical legs
+    (token coverage + numeric-literal presence) against the supporting chunk's
+    text. Returns one dict per candidate (chunk_id) carrying every leg's value +
+    a boolean ``passes_composite`` (anchor resolution is enforced separately at
+    the call site — it needs the course dir). Pure: no anchor I/O, no mutation.
+    """
+    if groundedness_report is None or not getattr(groundedness_report, "available", False):
+        return []
+    # Aggregate per supporting-chunk: the strongest entailing uncited claim and
+    # whether the lexical legs hold for SOME entailing claim on that chunk.
+    by_chunk: Dict[str, Dict[str, Any]] = {}
+    for verdict in getattr(groundedness_report, "claims", []) or []:
+        if getattr(verdict, "verdict", None) != "entailed":
+            continue
+        # Only uncited supporters are ADD candidates (best_chunk_cited is False;
+        # None means the cited/uncited split wasn't requested — not a candidate).
+        if getattr(verdict, "best_chunk_cited", None) is not False:
+            continue
+        chunk_id = getattr(verdict, "best_chunk_id", None)
+        if not chunk_id or chunk_id in cited_chunk_ids:
+            continue
+        passage = gate_eligible_by_id.get(chunk_id)
+        if passage is None:
+            # The supporter is outside the renderer-included gate-eligible set;
+            # an ADD must be anchorable from that set, so skip it.
+            continue
+        entailment = float(getattr(verdict, "entailment", 0.0) or 0.0)
+        claim_text = str(getattr(verdict, "claim_text", "") or "")
+        chunk_text = str(getattr(passage, "text", "") or "")
+        coverage = passage_token_coverage(claim_text, chunk_text)
+        numerics = claim_numeric_literals(claim_text)
+        numerics_ok = claim_numerics_present(claim_text, chunk_text)
+        ent_ok = entailment >= NLI_ADD_ENTAILMENT_FLOOR
+        cov_ok = coverage >= NLI_ADD_TOKEN_COVERAGE_FLOOR
+        passes = bool(ent_ok and cov_ok and numerics_ok)
+        prev = by_chunk.get(chunk_id)
+        # Keep the strongest-entailment claim as the representative signal, but
+        # OR the composite pass across claims (any qualifying claim qualifies the
+        # chunk) — and prefer a passing representative when one exists.
+        if (
+            prev is None
+            or (passes and not prev["passes_composite"])
+            or (passes == prev["passes_composite"] and entailment > prev["entailment"])
+        ):
+            by_chunk[chunk_id] = {
+                "chunk_id": chunk_id,
+                "claim_text": claim_text,
+                "entailment": round(entailment, 6),
+                "token_coverage": round(coverage, 6),
+                "claim_numerics": numerics,
+                "numerics_present": numerics_ok,
+                "entailment_ok": ent_ok,
+                "coverage_ok": cov_ok,
+                "passes_composite": passes,
+            }
+    # Deterministic order: strongest entailment first.
+    return sorted(by_chunk.values(), key=lambda d: -d["entailment"])
+
+
+def _apply_nli_citation_add(
+    *,
+    citations: List[Citation],
+    groundedness_report: Optional[Any],
+    cited_chunk_ids: set,
+    gate_eligible_passages: Sequence[RetrievedPassage],
+    answer_text: Optional[str],
+    course_dir: Path,
+    chunkset_kind: str,
+    containment_threshold: float,
+    mode: str,
+    capture: Optional[Any],
+    course_slug: str,
+    query_sha: str,
+    engine: str,
+) -> Tuple[List[Citation], List[str], Optional[Dict[str, Any]]]:
+    """NLI-ADD pass (shadow/on/off). Runs strictly AFTER the lexical prune+add.
+
+    ``off`` → no-op. ``shadow`` → compute would-adds, emit the capture +
+    additive warnings + the diagnostics block, mutate NOTHING. ``on`` → actually
+    add the anchor-resolved would-adds (sorted after the existing citations,
+    capped at :data:`NLI_ADD_MAX_ADDED_CITATIONS`); ships dark behind the knob.
+
+    Reuses ``groundedness_report``'s per-claim verdicts — NLI is NEVER run a
+    second time. When groundedness is unavailable (deps absent, with_groundedness
+    off, or the report degraded) shadow mode does nothing and logs WHY. NEVER
+    changes the answer verdict.
+
+    Returns ``(final_citations, warnings, diagnostics_or_None)``; ``diagnostics``
+    is ``None`` only in ``off`` mode (every shadow/on call emits a block, even a
+    skip).
+    """
+    warnings: List[str] = []
+    if mode == MODE_OFF:
+        return citations, warnings, None
+
+    gate_eligible_by_id = {p.chunk_id: p for p in gate_eligible_passages}
+    existing_ids = {c.chunk_id for c in citations}
+    # The "cited" set the candidates must be uncited against = the model's
+    # citations UNION whatever the lexical arm already surfaced (so the NLI arm
+    # never duplicates a citation the lexical add just credited).
+    suppress_ids = set(cited_chunk_ids) | existing_ids
+
+    available = bool(groundedness_report is not None and getattr(groundedness_report, "available", False))
+    if not available:
+        # Honest no-op: shadow mode logs WHY (the criterion cannot be evaluated
+        # without per-claim NLI verdicts).
+        reason = (
+            "with_groundedness_off_or_nli_unavailable"
+            if groundedness_report is None
+            else "groundedness_report_unavailable"
+        )
+        warnings.append(f"nli_citation_add_skipped:{reason}")
+        _emit_nli_citation_add(
+            capture, course_slug=course_slug, query_sha=query_sha, engine=engine,
+            mode=mode, outcome="skipped_no_nli", candidates=[],
+            would_add_ids=[], added_ids=[], reason=reason,
+        )
+        diagnostics = {
+            "mode": mode,
+            "outcome": "skipped_no_nli",
+            "reason": reason,
+            "candidates": [],
+            "would_add_ids": [],
+            "added_ids": [],
+        }
+        return citations, warnings, diagnostics
+
+    candidates = _nli_add_candidate_signals(
+        groundedness_report,
+        cited_chunk_ids=suppress_ids,
+        gate_eligible_by_id=gate_eligible_by_id,
+    )
+
+    # Composite-criterion survivors, capped. Anchor resolution is the final leg
+    # (it needs course I/O) — a candidate that passes the lexical+NLI legs but
+    # fails to anchor is recorded as anchor_resolved=False and never added.
+    would_add_ids: List[str] = []
+    added_citations: List[Citation] = []
+    added_ids: List[str] = []
+    for cand in candidates:
+        cid = cand["chunk_id"]
+        if not cand["passes_composite"]:
+            cand["anchor_resolved"] = None  # not evaluated (composite failed)
+            continue
+        passage = gate_eligible_by_id.get(cid)
+        if passage is None:
+            cand["anchor_resolved"] = False
+            continue
+        anchor = resolve_citation_anchor(
+            _passage_chunk_record(passage),
+            course_dir,
+            chunkset_kind=chunkset_kind,
+            containment_threshold=containment_threshold,
+        )
+        anchor_ok = anchor.status in _RESOLVED_STATUSES
+        cand["anchor_resolved"] = bool(anchor_ok)
+        if not anchor_ok:
+            continue
+        would_add_ids.append(cid)
+        if len(added_ids) < NLI_ADD_MAX_ADDED_CITATIONS:
+            cit = _build_citation(passage, anchor, answer_text)
+            cit = _dc_replace(
+                cit,
+                supporting_excerpt=cit.text_quote,
+                supported_claim_count=1,
+            )
+            added_citations.append(cit)
+            added_ids.append(cid)
+
+    # Cap the would-add list the same way the add list is capped, so the shadow
+    # signal reports what ON mode WOULD have done (not an unbounded count).
+    capped_would_add = would_add_ids[:NLI_ADD_MAX_ADDED_CITATIONS]
+    outcome = "would_add" if capped_would_add else "noop"
+
+    # ``added_ids`` reflects what was ACTUALLY added: empty in shadow (shadow
+    # never mutates), the real add set in ON. ``would_add_ids`` is what ON WOULD
+    # add (the shadow signal) and is identical to ``added_ids`` under ON.
+    actually_added_ids = added_ids if mode == MODE_ON else []
+
+    if mode == MODE_SHADOW:
+        for cid in capped_would_add:
+            warnings.append(f"nli_would_add_citation:{cid}")
+    else:  # MODE_ON
+        for cid in actually_added_ids:
+            warnings.append(f"nli_added_citation:{cid}")
+
+    _emit_nli_citation_add(
+        capture, course_slug=course_slug, query_sha=query_sha, engine=engine,
+        mode=mode, outcome=outcome, candidates=candidates,
+        would_add_ids=capped_would_add, added_ids=actually_added_ids, reason=None,
+    )
+
+    diagnostics = {
+        "mode": mode,
+        "outcome": outcome,
+        "reason": None,
+        "candidates": list(candidates),
+        "would_add_ids": list(capped_would_add),
+        "added_ids": list(actually_added_ids),
+    }
+
+    if mode == MODE_SHADOW or not added_citations:
+        return citations, warnings, diagnostics
+
+    # On mode: append the NLI adds AFTER the existing citations (the lexical arm
+    # already ordered the kept+lexical-add set strongest-first; the NLI adds are
+    # the precision tail and land last).
+    return citations + added_citations, warnings, diagnostics
+
+
+def _emit_nli_citation_add(
+    capture: Optional[Any],
+    *,
+    course_slug: str,
+    query_sha: str,
+    engine: str,
+    mode: str,
+    outcome: str,
+    candidates: Sequence[Dict[str, Any]],
+    would_add_ids: Sequence[str],
+    added_ids: Sequence[str],
+    reason: Optional[str],
+) -> None:
+    """One capture for the NLI-ADD decision (dynamic, replayable rationale).
+
+    Rationale interpolates the per-candidate composite-criterion signals
+    (entailment / coverage / numeric-literal result / anchor resolution), the
+    thresholds actually used, the would-add / added id sets, and the mode — so a
+    post-hoc reader can replay why each uncited supporter was or wasn't credited.
+    """
+    if capture is None:
+        return
+
+    def _cand_str(c: Dict[str, Any]) -> str:
+        nums = "/".join(c.get("claim_numerics", [])) or "-"
+        return (
+            f"{c['chunk_id']}@ent={c['entailment']}"
+            f"(ok={c['entailment_ok']}) cov={c['token_coverage']}"
+            f"(ok={c['coverage_ok']}) nums=[{nums}]present={c['numerics_present']}"
+            f" anchor={c.get('anchor_resolved')} composite={c['passes_composite']}"
+        )
+
+    per_cand = "; ".join(_cand_str(c) for c in candidates) or "none"
+    would_str = ", ".join(would_add_ids) if would_add_ids else "none"
+    added_str = ", ".join(added_ids) if added_ids else "none"
+    reason_str = f" reason={reason}" if reason else ""
+    rationale = (
+        f"nli citation add {outcome} for query {query_sha} "
+        f"(course={course_slug or '?'}, engine={engine}, mode={mode}){reason_str}; "
+        f"composite thresholds ent>={NLI_ADD_ENTAILMENT_FLOOR} "
+        f"cov>={NLI_ADD_TOKEN_COVERAGE_FLOOR} numerics_present cap={NLI_ADD_MAX_ADDED_CITATIONS}; "
+        f"candidates=[{per_cand}] "
+        f"would_add=[{would_str}] added=[{added_str}]"
+    )
+    _safe_log(
+        capture,
+        decision_type=DECISION_TYPE_NLI_CITATION_ADD,
+        decision=f"nli_citation_add:{outcome}",
+        rationale=rationale,
+        context=f"mode={mode} would_add={len(would_add_ids)} added={len(added_ids)}",
+    )
+
+
+# --------------------------------------------------------------------------- #
 # The pipeline (D9)
 # --------------------------------------------------------------------------- #
 
@@ -1293,11 +1603,12 @@ def answer_course_question(
     #    A corpus supporter the model under-cited can still entail a claim
     #    (v2 wider-pool semantics, plan §2.2 honesty-over-flattery).
     groundedness_payload: Optional[Dict[str, Any]] = None
+    groundedness_report: Optional[Any] = None
     status = STATUS_ANSWERED
+    final_cited_ids = {c.chunk_id for c in citations}
     if with_groundedness:
-        final_cited_ids = {c.chunk_id for c in citations}
         groundedness_passages = list(gate_eligible_passages) or cited_passages
-        groundedness_payload, gw = _score_groundedness(
+        groundedness_payload, gw, groundedness_report = _score_groundedness(
             composed.answer_text,
             groundedness_passages,
             cited_chunk_ids=final_cited_ids,
@@ -1309,6 +1620,32 @@ def answer_course_question(
         # claim still escalates to answered_with_warnings.
         if "contradicted_claim" in gw:
             status = STATUS_ANSWERED_WITH_WARNINGS
+
+    # 7b) NLI-based citation ADD (shadow-default; off on the default path).
+    #     Runs strictly AFTER the lexical prune+add AND after groundedness, and
+    #     REUSES the per-claim NLI verdicts (never re-runs NLI). In shadow mode
+    #     it mutates nothing — only the capture + diagnostics + warnings fire.
+    #     When with_groundedness is off (or NLI degraded) the report is None and
+    #     shadow mode logs WHY. NEVER changes the answer verdict.
+    nli_add_diagnostics: Optional[Dict[str, Any]] = None
+    nli_add_mode = resolve_nli_add_mode()
+    if nli_add_mode != MODE_OFF:
+        citations, nli_warnings, nli_add_diagnostics = _apply_nli_citation_add(
+            citations=citations,
+            groundedness_report=groundedness_report,
+            cited_chunk_ids=final_cited_ids,
+            gate_eligible_passages=gate_eligible_passages,
+            answer_text=composed.answer_text,
+            course_dir=course_dir,
+            chunkset_kind=chunkset_kind,
+            containment_threshold=containment_threshold,
+            mode=nli_add_mode,
+            capture=capture,
+            course_slug=course_slug,
+            query_sha=query_sha,
+            engine=engine,
+        )
+        warnings.extend(nli_warnings)
 
     # USER POLICY: an answered response whose every citation was pruned as
     # claim-less ships with NO sources + the unverified-support advisory
@@ -1329,6 +1666,7 @@ def answer_course_question(
         warnings=warnings,
         start=start,
         status=status,
+        nli_citation_add=nli_add_diagnostics,
     )
 
 
@@ -1337,7 +1675,7 @@ def _score_groundedness(
     cited_passages: Sequence[RetrievedPassage],
     *,
     cited_chunk_ids: Optional[set] = None,
-) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+) -> Tuple[Optional[Dict[str, Any]], List[str], Optional[Any]]:
     """Optional per-answer groundedness (advisory). NLI absent → null block.
 
     Lazy import of E7's ``groundedness`` module so the ~750 MB DeBERTa load
@@ -1345,23 +1683,27 @@ def _score_groundedness(
     ``with_groundedness=True``). ``cited_chunk_ids`` (the model's actual
     citations) lets the v2 scorer flag each claim's supporting chunk as
     cited/uncited while scoring against the wider gate-eligible evidence pool.
-    Returns ``(report_dict_or_None, warnings)``.
+
+    Returns ``(report_dict_or_None, warnings, report_obj_or_None)`` — the third
+    element is the live :class:`GroundednessReport` (additive return) so the
+    NLI-ADD pass can reuse its per-claim verdicts WITHOUT re-running NLI. It is
+    ``None`` whenever the dict is ``None`` (deps absent / scoring raised).
     """
     try:
         from lib.retrieval.groundedness import score_groundedness
     except Exception:
-        return None, []
+        return None, [], None
     try:
         report = score_groundedness(
             answer_text or "", cited_passages, cited_chunk_ids=cited_chunk_ids
         )
     except Exception:
-        return None, []
+        return None, [], None
     report_dict = report.to_dict() if hasattr(report, "to_dict") else dict(report)
     warnings: List[str] = []
     if report_dict.get("contradicted_count", 0):
         warnings.append("contradicted_claim")
-    return report_dict, warnings
+    return report_dict, warnings, report
 
 
 # --------------------------------------------------------------------------- #
@@ -1387,6 +1729,7 @@ def _answered(
     warnings: List[str],
     start: float,
     status: str = STATUS_ANSWERED,
+    nli_citation_add: Optional[Dict[str, Any]] = None,
 ) -> GroundedAnswer:
     return GroundedAnswer(
         status=status,
@@ -1403,6 +1746,7 @@ def _answered(
         prompt_version=prompt_version,
         generated_at=_utcnow_iso(),
         latency_ms=_latency_ms(start),
+        nli_citation_add=nli_citation_add,
     )
 
 

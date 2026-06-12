@@ -765,7 +765,12 @@ def test_grounded_answer_to_dict_keys_frozen(mini_libv2: Path):
         "status", "query", "course_slug", "engine", "answer_text",
         "citations", "refusal", "confidence", "groundedness", "warnings",
         "model_id", "prompt_version", "generated_at", "latency_ms",
+        # NLI-ADD shadow diagnostics (additive, optional; None on the default
+        # off path — present only when ED4ALL_ANSWER_NLI_ADD is shadow/on).
+        "nli_citation_add",
     }
+    # Default (off) path: the additive block is present-but-None.
+    assert d["nli_citation_add"] is None
     # Citation dict shape (the WS4 rendering contract).
     cit = d["citations"][0]
     assert set(cit.keys()) == {
@@ -1204,12 +1209,13 @@ def test_score_groundedness_emits_contradicted_warning_on_v2_contradiction(
 
     _patch_singleton_nli(monkeypatch, _FlipFakeNli())
     passage = _gp_passage("c1", "Embeddings are dense numerical vectors here.")
-    report, warnings = _score_groundedness(
+    report, warnings, report_obj = _score_groundedness(
         "This statement CONTRADICTS the cited passage about embeddings.",
         [passage],
         cited_chunk_ids={"c1"},
     )
     assert report is not None
+    assert report_obj is not None  # additive 3rd return (the live report object)
     assert report["contradicted_count"] == 1
     assert "contradicted_claim" in warnings
 
@@ -1229,7 +1235,7 @@ def test_score_groundedness_no_warning_when_window_rescues(monkeypatch):
         "Latency is the time to answer a query."
     )
     passage = _gp_passage("c1", glossary)
-    report, warnings = _score_groundedness(
+    report, warnings, _report_obj = _score_groundedness(
         "Recall at k measures retrieval completeness.",
         [passage],
         cited_chunk_ids={"c1"},
@@ -1263,3 +1269,287 @@ def test_status_flips_to_warnings_on_genuine_v2_contradiction(
     )
     assert result.status == STATUS_ANSWERED_WITH_WARNINGS
     assert "contradicted_claim" in result.warnings
+
+
+# =========================================================================== #
+# NLI-based citation ADD (2026-06-12 under-citing investigation; shadow-default)
+# =========================================================================== #
+#
+# These tests drive the NLI-ADD arm (ED4ALL_ANSWER_NLI_ADD) which derives ADD
+# candidates from the groundedness scorer's per-claim verdicts (NLI is never run
+# twice) and gates them through the composite criterion. Unit-level tests call
+# the pure helpers with fake verdict objects + fake passages (no model); the
+# integration tests drive answer_course_question with a fake NLI singleton.
+
+from dataclasses import dataclass as _dataclass
+from typing import List as _List, Optional as _Optional
+
+from lib.retrieval.answer_composer import RetrievedPassage as _RP
+from lib.retrieval.grounded_answer import (
+    DECISION_TYPE_NLI_CITATION_ADD,
+    _apply_nli_citation_add,
+    _nli_add_candidate_signals,
+    Citation as _Citation,
+)
+
+
+@_dataclass
+class _FakeVerdict:
+    claim_text: str
+    verdict: str
+    entailment: float
+    best_chunk_id: _Optional[str]
+    best_chunk_cited: _Optional[bool]
+
+
+@_dataclass
+class _FakeGroundReport:
+    available: bool
+    claims: _List[_FakeVerdict]
+
+
+def _nli_passage(chunk_id, text, item_path="alpha.html"):
+    return _RP(
+        chunk_id=chunk_id, text=text, score=1.0, engine="lexical",
+        item_path=item_path, section_heading="Sec", module_id="m1",
+        source={"item_path": item_path},
+    )
+
+
+def _cit(chunk_id):
+    return _Citation(
+        chunk_id=chunk_id, item_path="alpha.html", section_heading="Sec",
+        module_id="m1", page_label="Sec", anchor_status="resolved_exact",
+        source_path=None, text_quote=None,
+    )
+
+
+# A chunk text whose content tokens cover the claim well (>= 0.65) with NO
+# numeric mismatch; the verdict entails it from an UNCITED chunk.
+_COVER_CLAIM = "Add the numerators and place the result over the common denominator."
+_COVER_CHUNK = (
+    "To add fractions: add the numerators and place the result over the "
+    "common denominator, then simplify."
+)
+
+
+def test_candidate_signals_composite_passes_all_legs():
+    report = _FakeGroundReport(
+        available=True,
+        claims=[_FakeVerdict(_COVER_CLAIM, "entailed", 0.82, "u1", False)],
+    )
+    by_id = {"u1": _nli_passage("u1", _COVER_CHUNK)}
+    cands = _nli_add_candidate_signals(
+        report, cited_chunk_ids=set(), gate_eligible_by_id=by_id
+    )
+    assert len(cands) == 1
+    c = cands[0]
+    assert c["chunk_id"] == "u1"
+    assert c["entailment_ok"] and c["coverage_ok"] and c["numerics_present"]
+    assert c["passes_composite"] is True
+
+
+def test_candidate_signals_entailment_leg_rejects():
+    # ent 0.70 < 0.75 floor: NLI leg fails even with perfect coverage.
+    report = _FakeGroundReport(
+        available=True,
+        claims=[_FakeVerdict(_COVER_CLAIM, "entailed", 0.70, "u1", False)],
+    )
+    by_id = {"u1": _nli_passage("u1", _COVER_CHUNK)}
+    cands = _nli_add_candidate_signals(report, cited_chunk_ids=set(), gate_eligible_by_id=by_id)
+    assert cands[0]["entailment_ok"] is False
+    assert cands[0]["passes_composite"] is False
+
+
+def test_candidate_signals_coverage_leg_rejects():
+    # High entailment but the chunk shares almost none of the claim's tokens.
+    report = _FakeGroundReport(
+        available=True,
+        claims=[_FakeVerdict(_COVER_CLAIM, "entailed", 0.95, "u1", False)],
+    )
+    by_id = {"u1": _nli_passage("u1", "An unrelated paragraph about photosynthesis and sunlight.")}
+    cands = _nli_add_candidate_signals(report, cited_chunk_ids=set(), gate_eligible_by_id=by_id)
+    assert cands[0]["coverage_ok"] is False
+    assert cands[0]["passes_composite"] is False
+
+
+def test_candidate_signals_numeric_leg_rejects():
+    # The hand-judged false add: "$1.50" entailed at 0.90 against a chunk with
+    # high token coverage but NO $1.50 → numeric leg fails.
+    claim = "The price of one pen is $1.50 in the store."
+    chunk = "The price of one pen is computed in the store exercise here."
+    report = _FakeGroundReport(
+        available=True,
+        claims=[_FakeVerdict(claim, "entailed", 0.90, "u1", False)],
+    )
+    by_id = {"u1": _nli_passage("u1", chunk)}
+    cands = _nli_add_candidate_signals(report, cited_chunk_ids=set(), gate_eligible_by_id=by_id)
+    assert cands[0]["entailment_ok"] and cands[0]["coverage_ok"]
+    assert cands[0]["numerics_present"] is False
+    assert cands[0]["passes_composite"] is False
+
+
+def test_candidate_signals_skips_cited_and_unentailed():
+    report = _FakeGroundReport(
+        available=True,
+        claims=[
+            _FakeVerdict(_COVER_CLAIM, "entailed", 0.90, "cited1", True),   # cited
+            _FakeVerdict(_COVER_CLAIM, "unsupported", 0.50, "u1", False),    # not entailed
+        ],
+    )
+    by_id = {"cited1": _nli_passage("cited1", _COVER_CHUNK), "u1": _nli_passage("u1", _COVER_CHUNK)}
+    cands = _nli_add_candidate_signals(
+        report, cited_chunk_ids={"cited1"}, gate_eligible_by_id=by_id
+    )
+    assert cands == []
+
+
+def test_apply_off_mode_is_total_noop():
+    cits = [_cit("a")]
+    report = _FakeGroundReport(available=True, claims=[_FakeVerdict(_COVER_CLAIM, "entailed", 0.9, "u1", False)])
+    out, warns, diag = _apply_nli_citation_add(
+        citations=cits, groundedness_report=report, cited_chunk_ids={"a"},
+        gate_eligible_passages=[_nli_passage("u1", _COVER_CHUNK)],
+        answer_text=_COVER_CLAIM, course_dir=Path("/nonexistent"),
+        chunkset_kind="dart", containment_threshold=0.85, mode="off",
+        capture=None, course_slug="s", query_sha="qs", engine="lexical",
+    )
+    assert out is cits and warns == [] and diag is None
+
+
+def test_apply_shadow_mode_unavailable_report_logs_reason():
+    spy = SpyCapture()
+    out, warns, diag = _apply_nli_citation_add(
+        citations=[_cit("a")], groundedness_report=None, cited_chunk_ids={"a"},
+        gate_eligible_passages=[_nli_passage("u1", _COVER_CHUNK)],
+        answer_text=_COVER_CLAIM, course_dir=Path("/nonexistent"),
+        chunkset_kind="dart", containment_threshold=0.85, mode="shadow",
+        capture=spy, course_slug="s", query_sha="qs", engine="lexical",
+    )
+    assert diag["outcome"] == "skipped_no_nli"
+    assert any("nli_citation_add_skipped:" in w for w in warns)
+    ev = [e for e in spy.events if e["decision_type"] == DECISION_TYPE_NLI_CITATION_ADD]
+    assert len(ev) == 1 and "reason=" in ev[0]["rationale"]
+
+
+# --------------------------------------------------------------------------- #
+# Integration: full answer_course_question with a fake NLI singleton + fixture
+# --------------------------------------------------------------------------- #
+
+# The model cites a topical mention (chunk_003 = recall@k); the answer is the
+# vector-store definition near-verbatim from the UNCITED chunk_001. A fake NLI
+# that entails any answer-sentence whose content tokens are mostly contained in
+# the premise makes chunk_001 the entailing uncited supporter.
+
+
+class _SubstringEntailNli:
+    """Entails (0.92) when >= 60% of the hypothesis content tokens appear in the
+    premise; else low entailment. Number-agnostic (like a real NLI)."""
+
+    _revision = "subnli-0"
+
+    def score_batch(self, *, pairs, batch_size=8):
+        from lib.tests.test_groundedness import _FakeNliScore
+        import re as _re
+        tok = lambda s: {t.lower() for t in _re.findall(r"[A-Za-z]{2,}", s)}
+        out = []
+        for premise, hypothesis in pairs:
+            h = tok(hypothesis)
+            p = tok(premise)
+            frac = (len(h & p) / len(h)) if h else 0.0
+            if frac >= 0.6:
+                out.append(_FakeNliScore(0.92, 0.05, 0.03))
+            else:
+                out.append(_FakeNliScore(0.1, 0.8, 0.1))
+        return out
+
+
+def _nli_add_events(spy):
+    return [e for e in spy.events
+            if e["decision_type"] == DECISION_TYPE_NLI_CITATION_ADD]
+
+
+def test_nli_shadow_mutates_nothing_but_captures_would_add(mini_libv2, monkeypatch):
+    _patch_singleton_nli(monkeypatch, _SubstringEntailNli())
+    monkeypatch.setenv("ED4ALL_ANSWER_NLI_ADD", "shadow")
+    spy = SpyCapture()
+    client = FakeAnswerClient([_envelope(_DEF_ANSWER, ["mini_alpha_chunk_003"])])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG,
+        "vector store database indexes embedding vectors recall at k",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        with_groundedness=True, prune_mode="off",
+    )
+    # Shadow mutates NOTHING: the only citation remains the model's chunk_003.
+    assert [c.chunk_id for c in result.citations] == ["mini_alpha_chunk_003"]
+    # The would-add list surfaced chunk_001 (uncited entailed supporter).
+    assert any("nli_would_add_citation:mini_alpha_chunk_001" in w
+               for w in result.warnings)
+    diag = result.nli_citation_add
+    assert diag is not None and diag["mode"] == "shadow"
+    assert "mini_alpha_chunk_001" in diag["would_add_ids"]
+    assert diag["added_ids"] == []
+    # The to_dict carries the additive block + the capture fired.
+    assert result.to_dict()["nli_citation_add"]["mode"] == "shadow"
+    ev = _nli_add_events(spy)
+    assert len(ev) == 1
+    assert ev[0]["decision"] == "nli_citation_add:would_add"
+    assert "mini_alpha_chunk_001" in ev[0]["rationale"]
+    assert ev[0]["decision_type"] in _enum_members()
+
+
+def test_nli_on_mode_adds_with_anchor_and_cap(mini_libv2, monkeypatch):
+    _patch_singleton_nli(monkeypatch, _SubstringEntailNli())
+    monkeypatch.setenv("ED4ALL_ANSWER_NLI_ADD", "on")
+    spy = SpyCapture()
+    client = FakeAnswerClient([_envelope(_DEF_ANSWER, ["mini_alpha_chunk_003"])])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG,
+        "vector store database indexes embedding vectors recall at k",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        with_groundedness=True, prune_mode="off",
+    )
+    ids = [c.chunk_id for c in result.citations]
+    # On-mode appended the anchor-resolved uncited supporter AFTER the cited set.
+    assert "mini_alpha_chunk_001" in ids
+    added = next(c for c in result.citations if c.chunk_id == "mini_alpha_chunk_001")
+    assert added.anchor_status.startswith("resolved")
+    assert ids[0] == "mini_alpha_chunk_003"  # existing citation leads; add trails
+    assert len(ids) <= 1 + 2  # cap of 2 NLI adds
+    assert any("nli_added_citation:mini_alpha_chunk_001" in w for w in result.warnings)
+    assert result.nli_citation_add["added_ids"] == ["mini_alpha_chunk_001"]
+
+
+def test_nli_off_default_skips_entirely(mini_libv2, monkeypatch):
+    _patch_singleton_nli(monkeypatch, _SubstringEntailNli())
+    monkeypatch.delenv("ED4ALL_ANSWER_NLI_ADD", raising=False)  # default off
+    spy = SpyCapture()
+    client = FakeAnswerClient([_envelope(_DEF_ANSWER, ["mini_alpha_chunk_003"])])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG,
+        "vector store database indexes embedding vectors recall at k",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        with_groundedness=True, prune_mode="off",
+    )
+    assert result.nli_citation_add is None
+    assert _nli_add_events(spy) == []
+    assert not any("nli_" in w for w in result.warnings)
+
+
+def test_nli_shadow_without_groundedness_logs_skip_reason(mini_libv2, monkeypatch):
+    # NLI-ADD shadow on, but with_groundedness OFF → no per-claim verdicts to
+    # reuse; the arm does nothing and logs WHY (it never runs NLI itself).
+    monkeypatch.setenv("ED4ALL_ANSWER_NLI_ADD", "shadow")
+    spy = SpyCapture()
+    client = FakeAnswerClient([_envelope(_DEF_ANSWER, ["mini_alpha_chunk_001"])])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "vector store database indexes embedding vectors",
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        with_groundedness=False, prune_mode="off",
+    )
+    diag = result.nli_citation_add
+    assert diag is not None and diag["outcome"] == "skipped_no_nli"
+    assert any("nli_citation_add_skipped:with_groundedness_off" in w
+               for w in result.warnings)
+    ev = _nli_add_events(spy)
+    assert len(ev) == 1 and ev[0]["decision"] == "nli_citation_add:skipped_no_nli"

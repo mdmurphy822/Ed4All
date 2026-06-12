@@ -262,3 +262,111 @@ def test_uncited_passage_recorded_with_cited_false():
     )
     assert report.supports["chunk_def"].cited is True
     assert report.supports["chunk_eval"].cited is False
+
+
+# =========================================================================== #
+# NLI-ADD composite-criterion helpers (2026-06-12 under-citing investigation)
+# =========================================================================== #
+
+import os
+
+import pytest
+
+from lib.retrieval.citation_attribution import (
+    DEFAULT_NLI_ADD_MODE,
+    ENV_NLI_ADD,
+    NLI_ADD_ENTAILMENT_FLOOR,
+    NLI_ADD_TOKEN_COVERAGE_FLOOR,
+    claim_numeric_literals,
+    claim_numerics_present,
+    passage_token_coverage,
+    resolve_nli_add_mode,
+)
+
+
+# --- resolve_nli_add_mode: default OFF (not shadow — the NLI model is heavy) -- #
+
+
+def test_nli_add_mode_default_is_off(monkeypatch):
+    monkeypatch.delenv(ENV_NLI_ADD, raising=False)
+    assert DEFAULT_NLI_ADD_MODE == MODE_OFF
+    assert resolve_nli_add_mode() == MODE_OFF
+
+
+@pytest.mark.parametrize("val,expected", [
+    ("off", MODE_OFF), ("shadow", MODE_SHADOW), ("on", MODE_ON),
+    ("ON", MODE_ON), ("  Shadow  ", MODE_SHADOW),
+])
+def test_nli_add_mode_recognized_values(monkeypatch, val, expected):
+    monkeypatch.setenv(ENV_NLI_ADD, val)
+    assert resolve_nli_add_mode() == expected
+
+
+def test_nli_add_mode_garbage_falls_back_to_off(monkeypatch):
+    monkeypatch.setenv(ENV_NLI_ADD, "garbage-typo")
+    # A typo must land on the SAFE off, never silently shadow/on.
+    assert resolve_nli_add_mode() == MODE_OFF
+
+
+def test_nli_add_mode_explicit_overrides_env(monkeypatch):
+    monkeypatch.setenv(ENV_NLI_ADD, "on")
+    assert resolve_nli_add_mode("off") == MODE_OFF
+
+
+# --- numeric-literal guard (NLI is blind to numbers) ------------------------ #
+
+
+def test_numerics_no_numerics_in_claim_passes_vacuously():
+    assert claim_numerics_present("a claim with no digits", "also no digits") is True
+    assert claim_numeric_literals("no digits here") == []
+
+
+def test_numerics_currency_symbol_matches_bare_decimal():
+    # "$1.50" in the claim must match a bare "1.50" in the chunk (normalized).
+    assert claim_numerics_present(
+        "the price of one pen is $1.50", "each pen sells for 1.50 dollars"
+    ) is True
+
+
+def test_numerics_decimal_must_match_exactly_not_rounded():
+    # 27.78 must NOT match 27.8 — decimals are literal, never rounded.
+    assert claim_numerics_present("the result is 27.78", "approximately 27.8") is False
+
+
+def test_numerics_missing_literal_fails():
+    # The hand-judged false add: "$1.50" absent from the chunk → guard fails.
+    assert claim_numerics_present(
+        "the price of one pen is $1.50",
+        "this chapter covers buying pens and pencils",
+    ) is False
+
+
+def test_numerics_percent_and_thousands_separator_normalize():
+    assert claim_numerics_present("50% of 1,234 items", "50 percent of 1234 items") is True
+    assert sorted(claim_numeric_literals("50% off 1,234")) == ["1234", "50"]
+
+
+def test_numerics_all_must_be_present():
+    # Two numerics in the claim; only one in the chunk → fails (ALL required).
+    assert claim_numerics_present("3 apples and 5 pears", "we have 3 apples") is False
+    assert claim_numerics_present("3 apples and 5 pears", "3 apples, 5 pears") is True
+
+
+# --- public token-coverage wrapper reuses the lexical machinery ------------- #
+
+
+def test_passage_token_coverage_matches_lexical_definition():
+    cov = passage_token_coverage(
+        "add the numerators over the common denominator",
+        "add numerators and place the result over the common denominator",
+    )
+    assert cov >= NLI_ADD_TOKEN_COVERAGE_FLOOR
+    # Disjoint content tokens → zero coverage.
+    assert passage_token_coverage("photosynthesis glucose", "vector store faiss") == 0.0
+
+
+def test_criterion_constants_are_the_hand_judged_values():
+    # The 2026-06-12 hand sample separated 4/4 genuine from 3/3 false adds at
+    # exactly these thresholds; pin them so a silent drift is caught.
+    assert NLI_ADD_ENTAILMENT_FLOOR == 0.75
+    assert NLI_ADD_TOKEN_COVERAGE_FLOOR == 0.65
