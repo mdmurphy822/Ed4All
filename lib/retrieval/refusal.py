@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -305,7 +306,9 @@ def default_policy_for(engine: str) -> RefusalPolicy:
 # (refusal_precision collapses to 0.83 at the very next sweep step; see the
 # artifact's overlap block + sweep). Refusal under-firing is the safe failure
 # direction this module is built around, so we pin at the precision-/recall-clean
-# 0.029643 and leave near-miss refusal to the model arm.
+# boundary (0.029642 floor-rounded; the artifact's 0.029643 is the same raw
+# score half-up-rounded — see the BOUNDARY CORRECTION note at the pin) and
+# leave near-miss refusal to the model arm.
 #
 # SINGLE-COURSE BASIS CAVEAT (risk R4): this is a single-course, single-corpus
 # pin. The cross-course MIN-pin convention degenerates to one course's
@@ -325,7 +328,10 @@ def default_policy_for(engine: str) -> RefusalPolicy:
 #   (hybrid-rrf, BAAI/bge-large-en-v1.5)  single-course union-corpus calibration
 #       basis, 2026-06-12 (77q/34-probe gold v1.1, bge-large + 7B); separable:false
 #       (overlap_fraction 0.951, min_gap -0.0031)
-#       min_top_score=0.029643  refusal_precision=1.0  answer_recall=1.0
+#       min_top_score=0.029642  refusal_precision=1.0  answer_recall=1.0
+#       (artifact shows 0.029643 — the pre-correction half-up-rounded emission
+#       of the same raw boundary score; see the BOUNDARY CORRECTION note at
+#       the pin below)
 #       refusal_recall=0.2 (pure off-topic tail only — near-miss refusal is
 #       model-policy-owned; see the overlap block above)
 PINNED_POLICIES: Dict[tuple, RefusalPolicy] = {
@@ -364,9 +370,18 @@ PINNED_POLICIES: Dict[tuple, RefusalPolicy] = {
     # count signal inherit the RRF-scale v0 default the sweep was measured against
     # (the calibration only re-pins min_top_score). refusal_recall=0.2 at this
     # threshold — pure off-topic tail only; see the comment block above.
+    #
+    # BOUNDARY CORRECTION (2026-06-12, same day): the calibrator originally
+    # emitted the recommendation half-up-rounded (round(t, 6) = 0.029643),
+    # which sits ABOVE the raw boundary positive (0.0296425457…) the sweep had
+    # counted as answered — the pinned policy refused that gold question at
+    # runtime (caught by the first scorer-v2 eval run, answer_rate dip). The
+    # pin is corrected to the floor-rounded emission (0.029642 <= raw t); the
+    # calibrator now floor-rounds all sweep thresholds (see _sweep_thresholds)
+    # so future re-pins can't reintroduce the clip. Sweep semantics unchanged.
     ("hybrid-rrf", "BAAI/bge-large-en-v1.5"): RefusalPolicy(
         engine="hybrid-rrf",
-        min_top_score=0.029643,
+        min_top_score=0.029642,
         score_floor=DEFAULT_POLICIES["hybrid-rrf"].score_floor,
         min_passages_above_floor=DEFAULT_POLICIES[
             "hybrid-rrf"
@@ -649,7 +664,17 @@ def _sweep_thresholds(
         refusal_precision = (refused_neg / total_refused) if total_refused else 1.0
         sweep.append(
             {
-                "threshold": round(float(t), 6),
+                # FLOOR-round (never bankers/half-up): the recall/precision
+                # numbers above were measured with the RAW candidate t under
+                # ``score >= t``. Emitting round(t, 6) can round UP past a
+                # boundary positive whose score IS t, so the runtime pin
+                # (``score >= emitted``) refuses the very question the sweep
+                # counted as answered (observed: gold q at 0.0296425457…
+                # clipped by an emitted 0.029643). floor(t·1e6)/1e6 keeps
+                # emitted <= t, so everything the sweep answered still answers;
+                # the only drift is a sub-1e-6 band of negatives answering —
+                # refusal under-firing, the module's safe failure direction.
+                "threshold": math.floor(float(t) * 1e6) / 1e6,
                 "answer_recall": round(answer_recall, 6),
                 "refusal_recall": round(refusal_recall, 6),
                 "refusal_precision": round(refusal_precision, 6),

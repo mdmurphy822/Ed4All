@@ -160,3 +160,32 @@ def test_per_engine_sweep_pins_hybrid_when_separable():
     )
     assert result.recommended is not None
     assert result.overlap["separable"] is True
+
+
+def test_recommended_threshold_never_rounds_above_boundary_positive():
+    """Regression (2026-06-12 boundary clip): the sweep measures with the RAW
+    candidate t but emits a 6-dp value. Half-up rounding emitted 0.029643 for a
+    boundary positive at 0.0296425457…, so the runtime pin (score >= emitted)
+    refused the very gold question the sweep counted as answered. The emission
+    must FLOOR-round: emitted <= raw t, so every sweep-answered positive still
+    clears the recommended threshold at runtime."""
+    boundary = 0.0296425457  # rounds half-up to 0.029643 — above itself
+    positives = [boundary, 0.0315, 0.0322, 0.0328]
+    negatives = [0.0164, 0.0265, 0.0290]  # off-topic tail below the boundary
+    result = calibrate_from_distributions(
+        course_slug="syn", engine="hybrid-rrf",
+        positives=positives,
+        negatives=negatives,
+        score_floor=0.0, min_passages_above_floor=1,
+    )
+    assert result.recommended is not None
+    rec = result.recommended["min_top_score"]
+    # The emitted recommendation must not exceed the raw boundary positive…
+    assert rec <= boundary
+    # …so every positive the sweep answered still answers under the pin.
+    assert all(p >= rec for p in positives)
+    # And no sweep row emits a threshold above its own raw candidate (the
+    # candidates are exactly the observed scores + 0.0).
+    raw_candidates = sorted(set([0.0] + positives + negatives))
+    for row, raw in zip(result.sweep, raw_candidates):
+        assert row["threshold"] <= raw
