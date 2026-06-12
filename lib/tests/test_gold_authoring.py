@@ -14,16 +14,19 @@ from pathlib import Path
 import pytest
 
 from lib.retrieval.gold_authoring import (
+    BOTH_POPULATION_TEMPLATE,
     DEFINITION_TEMPLATE,
     GOLD_AUTHORING_PROMPT_VERSION,
     WORKED_EXAMPLE_TEMPLATE,
     GoldPromoteError,
     PrescreenVerdict,
     build_candidates_doc,
+    draft_both_population_candidates,
     draft_candidates,
     draft_definition_candidates,
     draft_worked_example_candidates,
     generate_gold_candidates,
+    mine_both_population_pairs,
     mine_glossary_terms,
     mine_worked_example_chunks,
     prescreen_candidate,
@@ -654,3 +657,109 @@ def test_generate_gold_candidates_template_arms_only(tmp_path):
     assert "stratified" not in bt  # not selected
     templates_seen = {c["authoring"].get("template") for c in doc["candidates"]}
     assert templates_seen <= {DEFINITION_TEMPLATE, WORKED_EXAMPLE_TEMPLATE}
+
+
+# --------------------------------------------------------------- both-population arm
+
+
+def _both_chunks():
+    """A union pair: one course chunk + one source chunk on absolute value."""
+    course = _chunk(
+        "crs1",
+        "The course page explains absolute value as the distance of a number "
+        "from zero on the number line for integers.",
+        item_path="week_02/abs.html", los=["co-02"],
+        section_heading="Absolute Value",
+    )
+    source = _chunk(
+        "src1",
+        "In the original textbook, absolute value measures the distance from "
+        "zero on the number line; worked integer examples follow this idea.",
+        item_path="algebra-ch1.html", los=["to-01"],
+        source_refs=[{"sourceId": "dart:tb#1"}], section_heading="Absolute Value",
+    )
+    return {"crs1": course, "src1": source}
+
+
+def _both_draft_json(
+    q="How does the course page's treatment of absolute value relate to the textbook's?",
+    course_quote="absolute value as the distance of a number from zero on the number line",
+    source_quote="absolute value measures the distance from zero on the number line",
+    kps=("distance from zero", "number line"),
+):
+    return json.dumps({
+        "question_text": q, "expected_key_points": list(kps),
+        "course_quote": course_quote, "source_quote": source_quote,
+    })
+
+
+def test_mine_both_population_pairs_pairs_on_shared_vocab():
+    pairs = mine_both_population_pairs(_both_chunks())
+    assert len(pairs) == 1
+    p = pairs[0]
+    assert p.course_chunk_id == "crs1" and p.source_chunk_id == "src1"
+    assert "absolute" in p.shared_terms and "distance" in p.shared_terms
+
+
+def test_mine_both_population_no_pair_when_no_shared_vocab():
+    chunks = {
+        "crs1": _chunk("crs1", _TEXT_B, item_path="week_01/frac.html"),
+        "src1": _chunk("src1", _TEXT_C, item_path="calc.html",
+                       source_refs=[{"sourceId": "x"}]),
+    }
+    assert mine_both_population_pairs(chunks) == []
+
+
+def test_draft_both_population_builds_two_passage_candidate():
+    chunks = _both_chunks()
+    pairs = mine_both_population_pairs(chunks)
+    cands = draft_both_population_candidates(
+        pairs, chunks, client=FakeDraftClient([_both_draft_json()]))
+    assert len(cands) == 1
+    c = cands[0]
+    assert c["question_type"] == "conceptual_synthesis"
+    assert c["authoring"]["template"] == BOTH_POPULATION_TEMPLATE
+    assert c["expected_citation_population"] == "both"
+    assert c["difficulty"] == "medium"  # source chunk has no week => within_week
+    assert c["synthesis_scope"] == "within_week"
+    refs = [(p["chunk_id"], p["relevance"]) for p in c["relevant_passages"]]
+    assert ("crs1", "primary") in refs and ("src1", "supporting") in refs
+    assert c["objective_refs"] == ["co-02", "to-01"]
+    assert 2 <= len(c["expected_key_points"]) <= 4
+    # both quotes anchor (prescreen verifies primary + supporting).
+    v = prescreen_candidate(c, chunks)
+    assert v.passed, v.reasons
+
+
+def test_draft_both_population_supporting_quote_must_anchor():
+    chunks = _both_chunks()
+    pairs = mine_both_population_pairs(chunks)
+    bad = _both_draft_json(source_quote="this string is not in the source chunk at all")
+    cands = draft_both_population_candidates(
+        pairs, chunks, client=FakeDraftClient([bad]))
+    v = prescreen_candidate(cands[0], chunks)
+    assert not v.passed
+    assert "SUPPORTING_QUOTE_NOT_IN_CHUNK" in v.reasons
+
+
+def test_draft_both_population_records_parse_failure():
+    chunks = _both_chunks()
+    pairs = mine_both_population_pairs(chunks)
+    cands = draft_both_population_candidates(
+        pairs, chunks, client=FakeDraftClient(["not json"]))
+    assert cands and "draft_error" in cands[0]
+    assert cands[0]["authoring"]["template"] == BOTH_POPULATION_TEMPLATE
+    assert len(cands[0]["relevant_passages"]) == 2
+
+
+def test_draft_both_population_capture_fires_dynamic():
+    chunks = _both_chunks()
+    pairs = mine_both_population_pairs(chunks)
+    cap = SpyCapture()
+    draft_both_population_candidates(
+        pairs, chunks, client=FakeDraftClient([_both_draft_json()]), capture=cap)
+    ev = [e for e in cap.events if e["decision_type"] == "gold_candidate_authoring"]
+    assert len(ev) == 1
+    assert BOTH_POPULATION_TEMPLATE in ev[0]["rationale"]
+    assert "crs1+src1" in ev[0]["rationale"]
+    assert len(ev[0]["rationale"]) >= 20

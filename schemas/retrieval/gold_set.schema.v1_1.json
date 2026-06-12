@@ -244,8 +244,8 @@
               },
               "template": {
                 "type": "string",
-                "enum": ["stratified", "definition", "worked_example"],
-                "description": "Optional (llm_assisted only): which gold-candidate drafting arm produced the question. stratified: the §1.2 stratified sampler; definition: a glossary-term definition question; worked_example: a Problem/Solution/Step procedural question. Provenance only — never affects eval scoring."
+                "enum": ["stratified", "definition", "worked_example", "both_population"],
+                "description": "Optional (llm_assisted only): which gold-candidate drafting arm produced the question. stratified: the §1.2 stratified sampler; definition: a glossary-term definition question; worked_example: a Problem/Solution/Step procedural question; both_population: a synthesis question pairing a course-population chunk with a source-population chunk on the same concept (expected_citation_population=both). Provenance only — never affects eval scoring."
               }
             }
           }
