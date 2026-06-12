@@ -67,7 +67,7 @@ class _FakeCitation:
 
 class _FakeAnswer:
     def __init__(self, *, status, answer_text, citations, groundedness=None,
-                 latency_ms=12.5):
+                 latency_ms=12.5, nli_citation_add=None):
         self.status = status
         self.answer_text = answer_text
         self.citations = citations
@@ -76,6 +76,8 @@ class _FakeAnswer:
         self.model_id = "fake-model"
         self.prompt_version = "ws3.v1"
         self.confidence = {"policy_version": "ws3.v0-uncalibrated"}
+        # NLI-ADD shadow diagnostics (additive; None on the default off path).
+        self.nli_citation_add = nli_citation_add
 
 
 def _gold_answer_fn(grounded_block=None):
@@ -203,6 +205,80 @@ def test_groundedness_null_when_unavailable(libv2_course):
     assert report["headline"]["unsupported_claim_rate"] is None
     for row in report["questions"]:
         assert row["groundedness_rate"] is None
+
+
+# ===========================================================================
+# shadow_nli_add diagnostics aggregation (additive; off-default is all-zero)
+# ===========================================================================
+
+def test_shadow_nli_add_block_is_zero_on_off_default(libv2_course):
+    # No answer carries an nli_citation_add block (the default off path) → the
+    # additive shadow_nli_add diagnostics block is present and all-zero.
+    repo_root, slug, _ = libv2_course
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_gold_answer_fn(_GROUNDED_OK),
+        with_groundedness=True, write=False,
+    )
+    block = report["headline"]["shadow_nli_add"]
+    assert block["answers_with_would_adds"] == 0
+    assert block["total_would_adds"] == 0
+    assert block["zero_citation_answers_recovered"] == 0
+
+
+def _nli_add_answer_fn():
+    """Answer fn where one gold answer carries an NLI would-add block and one is
+    a zero-citation answer the NLI arm would recover."""
+    by_text = {
+        "What does a vector store index?": "mini_alpha_chunk_001",
+        "How is retrieval quality commonly measured?": "mini_alpha_chunk_003",
+        "Where does the course cover chunking strategies?": "mini_beta_chunk_005",
+    }
+
+    def _fn(repo_root, course_slug, query, *, engine="lexical", limit=8,
+            client=None, refusal_policy=None, with_groundedness=False,
+            capture=None, **kwargs):
+        cid = by_text.get(query)
+        if cid is None:
+            return _FakeAnswer(status="refused_low_confidence",
+                               answer_text=None, citations=[])
+        if cid == "mini_alpha_chunk_001":
+            # Normal answer (1 citation) + a would-add of a different uncited id.
+            return _FakeAnswer(
+                status="answered", answer_text="A.", citations=[_FakeCitation(cid)],
+                groundedness=_GROUNDED_OK,
+                nli_citation_add={"mode": "shadow", "outcome": "would_add",
+                                  "would_add_ids": ["mini_alpha_chunk_002"],
+                                  "added_ids": [], "candidates": []},
+            )
+        if cid == "mini_alpha_chunk_003":
+            # ZERO-citation answer the NLI arm would recover (n_cites == 0).
+            return _FakeAnswer(
+                status="answered_with_warnings", answer_text="A.", citations=[],
+                groundedness=_GROUNDED_OK,
+                nli_citation_add={"mode": "shadow", "outcome": "would_add",
+                                  "would_add_ids": [cid], "added_ids": [],
+                                  "candidates": []},
+            )
+        # Third answer carries no NLI block.
+        return _FakeAnswer(status="answered", answer_text="A.",
+                           citations=[_FakeCitation(cid)], groundedness=_GROUNDED_OK)
+
+    return _fn
+
+
+def test_shadow_nli_add_aggregates_would_adds_and_recovery(libv2_course):
+    repo_root, slug, _ = libv2_course
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical", answer_fn=_nli_add_answer_fn(),
+        with_groundedness=True, write=False,
+    )
+    block = report["headline"]["shadow_nli_add"]
+    # Two answers carry a non-empty would_add list (one normal, one zero-cite).
+    assert block["answers_with_would_adds"] == 2
+    assert block["total_would_adds"] == 2
+    # Exactly the zero-citation answer is counted as recovered.
+    assert block["zero_citation_answers_recovered"] == 1
 
 
 # ===========================================================================

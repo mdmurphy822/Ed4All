@@ -64,20 +64,29 @@ __all__ = [
     "ENV_CITATION_PRUNE",
     "ENV_PRUNE_MIN_OVERLAP",
     "ENV_ADD_MIN_SHINGLE",
+    "ENV_NLI_ADD",
     "MODE_OFF",
     "MODE_SHADOW",
     "MODE_ON",
     "DEFAULT_MODE",
+    "DEFAULT_NLI_ADD_MODE",
     "DEFAULT_MIN_OVERLAP",
     "TOKEN_COVERAGE_FLOOR",
     "ADD_MIN_SHINGLE",
     "ATTRIBUTION_SHINGLE_SIZE",
     "MAX_ADDED_CITATIONS",
+    "NLI_ADD_ENTAILMENT_FLOOR",
+    "NLI_ADD_TOKEN_COVERAGE_FLOOR",
+    "NLI_ADD_MAX_ADDED_CITATIONS",
     "CitationSupport",
     "AttributionReport",
     "resolve_prune_mode",
     "resolve_min_overlap",
     "resolve_add_min_shingle",
+    "resolve_nli_add_mode",
+    "claim_numeric_literals",
+    "claim_numerics_present",
+    "passage_token_coverage",
     "attribute_citations",
 ]
 
@@ -93,6 +102,12 @@ ENV_PRUNE_MIN_OVERLAP = "ED4ALL_ANSWER_PRUNE_MIN_OVERLAP"
 #: Float knob → the shingle floor used for the ADD decision (see
 #: :data:`ADD_MIN_SHINGLE` for the provenance of the knob promotion).
 ENV_ADD_MIN_SHINGLE = "ED4ALL_ANSWER_ADD_MIN_SHINGLE"
+#: Three-valued (off|shadow|on) rollout flag for the NLI-based citation-ADD arm
+#: (the entailment-driven successor to the shingle ADD arm, which the 2026-06-12
+#: under-citing investigation measured unsalvageable — paraphrase answers never
+#: quote, so the shingle bar fires zero adds even at 0.10). See
+#: :func:`resolve_nli_add_mode` and :data:`DEFAULT_NLI_ADD_MODE`.
+ENV_NLI_ADD = "ED4ALL_ANSWER_NLI_ADD"
 
 MODE_OFF = "off"
 MODE_SHADOW = "shadow"
@@ -101,6 +116,14 @@ MODE_ON = "on"
 #: capture + warnings + excerpts, but mutate nothing. The deployable posture
 #: (docker-compose) sets ``on`` explicitly.
 DEFAULT_MODE = MODE_SHADOW
+
+#: Code default for the NLI-ADD arm is ``off`` — deliberately NOT ``shadow``.
+#: Unlike the lexical attribution arm (pure stdlib, zero marginal cost), the
+#: NLI-ADD criterion requires the ~750 MB DeBERTa NLI model; defaulting to
+#: ``shadow`` would drag that load onto the default answer path. The deployable
+#: posture (docker-compose) sets ``shadow`` explicitly so eval/aggregation can
+#: measure would-adds where the model is already resident; ``on`` ships dark.
+DEFAULT_NLI_ADD_MODE = MODE_OFF
 
 #: THE prune-side calibration knob. Deliberately low: the failure cost of
 #: over-pruning a legitimate paraphrase citation is higher than that of keeping
@@ -139,6 +162,46 @@ ATTRIBUTION_SHINGLE_SIZE = 4
 #: Cap on additions per answer (the addition is a high-precision tail; an
 #: unbounded add would re-clutter the source list the prune arm just cleaned).
 MAX_ADDED_CITATIONS = 2
+
+
+# --------------------------------------------------------------------------- #
+# NLI-ADD composite criterion (2026-06-12 under-citing investigation)
+# --------------------------------------------------------------------------- #
+#
+# The shingle ADD arm above is measured unsalvageable on paraphrase-heavy
+# answers (median cited shingle 0.000; zero adds even at bar 0.10 — see
+# /tmp/under_citing_findings.json and :data:`ADD_MIN_SHINGLE`). Meanwhile
+# entailed-uncited claims are real (55 on the clean run) and some are
+# zero-citation answers that deserve an honest source. A hand-judged sample
+# found raw NLI ADD at ent>=0.70 fabricates provenance ~43% of the time, but a
+# COMPOSITE criterion separated 4/4 genuine adds from 3/3 false adds:
+#
+#   1. NLI entailment >= NLI_ADD_ENTAILMENT_FLOOR (windowed, scorer-v2
+#      semantics from ``groundedness.score_groundedness``), AND
+#   2. claim<->chunk content-token coverage >= NLI_ADD_TOKEN_COVERAGE_FLOOR
+#      (reuses :func:`_token_coverage`), AND
+#   3. every numeric literal in the claim text appears in the chunk text — NLI
+#      is blind to numbers (it entailed "the price of one pen is $1.50" at 0.90
+#      against a chunk with no $1.50), AND
+#   4. the chunk anchors/resolves like any added citation must (enforced at the
+#      call site in ``grounded_answer``), AND
+#   5. <= NLI_ADD_MAX_ADDED_CITATIONS adds per answer.
+
+#: NLI entailment floor for the ADD criterion. The hand-judged genuine adds all
+#: sat at or above 0.735; 0.75 cleanly separates them from the 0.76-0.77 false
+#: positives ONLY in combination with the coverage + numeric legs (NLI alone
+#: cannot — the false adds entail at 0.76/0.77/0.90).
+NLI_ADD_ENTAILMENT_FLOOR = 0.75
+
+#: Content-token coverage floor (claim tokens present in the chunk). The
+#: 2026-06-12 hand sample: genuine adds covered 0.667-1.0; the false adds that
+#: NLI passed sat at 0.40-0.545. 0.65 separates them. Reuses the same
+#: ``_content_tokens`` machinery the lexical arm's :data:`TOKEN_COVERAGE_FLOOR`
+#: uses (so math/symbol fragments exert no support pressure).
+NLI_ADD_TOKEN_COVERAGE_FLOOR = 0.65
+
+#: Cap on NLI-driven additions per answer (mirrors :data:`MAX_ADDED_CITATIONS`).
+NLI_ADD_MAX_ADDED_CITATIONS = 2
 
 
 # --------------------------------------------------------------------------- #
@@ -221,6 +284,93 @@ def resolve_add_min_shingle(explicit: Optional[float] = None) -> float:
     if 0.0 <= cand <= 1.0:
         return cand
     return ADD_MIN_SHINGLE
+
+
+def resolve_nli_add_mode(explicit: Optional[str] = None) -> str:
+    """Resolve the three-valued NLI-ADD mode (off|shadow|on).
+
+    Mirrors :func:`resolve_prune_mode` EXCEPT the default is :data:`MODE_OFF`,
+    not ``shadow`` (the NLI model is a ~750 MB lazy load; the audit trail must
+    not drag it onto the default answer path — see :data:`DEFAULT_NLI_ADD_MODE`).
+    Precedence: explicit arg > ``ED4ALL_ANSWER_NLI_ADD`` env >
+    :data:`DEFAULT_NLI_ADD_MODE`. An unrecognized / garbage value falls back to
+    the default (a typo lands on the safe ``off``, never silently ``on``).
+    """
+    raw = explicit if explicit is not None else os.environ.get(ENV_NLI_ADD)
+    if raw is None:
+        return DEFAULT_NLI_ADD_MODE
+    val = str(raw).strip().lower()
+    if val in (MODE_OFF, MODE_SHADOW, MODE_ON):
+        return val
+    return DEFAULT_NLI_ADD_MODE
+
+
+# --------------------------------------------------------------------------- #
+# Numeric-literal guard (NLI is blind to numbers — composite-criterion leg 3)
+# --------------------------------------------------------------------------- #
+
+#: A numeric literal in claim/chunk text: an optional leading currency symbol,
+#: a digit run that may carry thousands-separator commas, an optional decimal
+#: fraction, and an optional trailing percent sign. Matches ``$1.50``, ``27.78``,
+#: ``1,234``, ``50%``, ``3``. Comparison is on the *normalized* token (commas
+#: stripped, currency/percent affixes dropped) so ``$1.50`` in a claim matches a
+#: bare ``1.50`` in the chunk, while ``27.78`` does NOT match ``27.8``.
+_NUMERIC_LITERAL_RE = re.compile(r"[$£€]?\d[\d,]*(?:\.\d+)?%?")
+
+
+def _normalize_numeric(token: str) -> str:
+    """Strip currency/percent affixes and thousands commas → comparable form.
+
+    ``$1.50`` → ``1.50``; ``1,234`` → ``1234``; ``50%`` → ``50``; ``27.78`` →
+    ``27.78`` (NOT equal to ``27.8`` — decimals are compared literally, never
+    rounded). Returns ``""`` when nothing numeric survives.
+    """
+    body = token.strip().lstrip("$£€").rstrip("%")
+    body = body.replace(",", "")
+    return body
+
+
+def claim_numeric_literals(claim_text: Optional[str]) -> List[str]:
+    """Normalized numeric literals appearing in ``claim_text`` (order-preserving).
+
+    Empty list when the claim carries no numerics (the leg-3 check then passes
+    vacuously — there is nothing for the chunk to fail to contain).
+    """
+    out: List[str] = []
+    for raw in _NUMERIC_LITERAL_RE.findall(claim_text or ""):
+        norm = _normalize_numeric(raw)
+        if norm:
+            out.append(norm)
+    return out
+
+
+def claim_numerics_present(
+    claim_text: Optional[str], chunk_text: Optional[str]
+) -> bool:
+    """True iff EVERY numeric literal in the claim also appears in the chunk.
+
+    NLI is blind to numbers (the audit found it entailed "the price of one pen
+    is $1.50" at 0.90 against a chunk with no ``$1.50``), so an NLI-ADD candidate
+    must independently clear this guard. A claim with no numerics passes
+    vacuously. Comparison is on the normalized form (commas stripped,
+    currency/percent affixes dropped) so ``$1.50`` matches a bare ``1.50``;
+    ``27.78`` does NOT match ``27.8`` (decimals are literal, never rounded).
+    """
+    claim_nums = claim_numeric_literals(claim_text)
+    if not claim_nums:
+        return True
+    chunk_nums = set(claim_numeric_literals(chunk_text))
+    return all(n in chunk_nums for n in claim_nums)
+
+
+def passage_token_coverage(claim_text: Optional[str], passage_text: Optional[str]) -> float:
+    """Public wrapper over :func:`_token_coverage` (normalizes both sides first).
+
+    Lets the NLI-ADD criterion in ``grounded_answer`` reuse the EXACT
+    content-token coverage machinery the lexical attribution arm uses, so the two
+    arms never diverge on what "coverage" means.
+    """
+    return _token_coverage(_normalize(claim_text or ""), _normalize(passage_text or ""))
 
 
 # --------------------------------------------------------------------------- #
