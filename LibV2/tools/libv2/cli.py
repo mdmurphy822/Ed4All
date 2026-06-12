@@ -2990,8 +2990,12 @@ def answer_grounded(ctx, query: str, course: str, engine: str, limit: int,
               default="lexical", help="Retrieval engine for the eval pass")
 @click.option("--limit", "-n", type=int, default=8, help="top-k retrieval limit per question")
 @click.option("--no-groundedness", is_flag=True, help="Skip the per-claim NLI groundedness pass")
+@click.option("--arms", default="grounded",
+              help="comma-separated eval arms: base,retrieval,grounded "
+                   "(default: grounded — byte-compatible with the legacy eval)")
 @click.pass_context
-def answer_eval(ctx, course: str, engine: str, limit: int, no_groundedness: bool):
+def answer_eval(ctx, course: str, engine: str, limit: int, no_groundedness: bool,
+                arms: str):
     """Run the grounded-answer eval harness over a course gold set.
 
     Thin delegation to ``python -m lib.retrieval.grounded_eval`` (same logic, one
@@ -3000,18 +3004,37 @@ def answer_eval(ctx, course: str, engine: str, limit: int, no_groundedness: bool
     module's fake-client tests, not this command. Exit codes pass through the
     module: 3 pipeline absent, 2 gold refused (critical gold-set issue), 0 ok.
 
+    With ``--arms`` set to anything beyond the default ``grounded`` (e.g.
+    ``base,retrieval,grounded``), the three-arm scorecard runs instead: BASE
+    (qwen only, no retrieval), RETRIEVAL (retrieval only, no LLM), and GROUNDED
+    (the full pipeline). It writes a ``retrieval_eval/eval_scorecard_<ts>.json``
+    and prints an aligned side-by-side table; the grounded arm STILL writes its
+    own ``grounded_answer_eval_<ts>.json`` report, so existing artifacts are
+    unaffected. Delegates to ``python -m lib.retrieval.eval_arms``.
+
     \b
     Example:
         libv2 answer-eval --course demo-course-1 --engine lexical
+        libv2 answer-eval --course demo-course-1 --arms base,retrieval,grounded
     """
-    from lib.retrieval.grounded_eval import main as grounded_eval_main
-
     repo_root: Path = ctx.obj["repo_root"]
+
+    # Default (grounded-only) → legacy delegation, byte-for-byte unchanged.
+    if [a.strip() for a in arms.split(",") if a.strip()] == ["grounded"]:
+        from lib.retrieval.grounded_eval import main as grounded_eval_main
+
+        argv = ["--course", course, "--engine", engine, "--limit", str(limit),
+                "--repo-root", str(repo_root)]
+        if no_groundedness:
+            argv.append("--no-groundedness")
+        sys.exit(grounded_eval_main(argv))
+
+    # Multi-arm → three-arm scorecard surface.
+    from lib.retrieval.eval_arms import main as eval_arms_main
+
     argv = ["--course", course, "--engine", engine, "--limit", str(limit),
-            "--repo-root", str(repo_root)]
-    if no_groundedness:
-        argv.append("--no-groundedness")
-    sys.exit(grounded_eval_main(argv))
+            "--arms", arms, "--repo-root", str(repo_root)]
+    sys.exit(eval_arms_main(argv))
 
 
 @main.command("refusal-calibrate")
