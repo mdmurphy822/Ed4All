@@ -145,6 +145,7 @@ _QUESTION_ID_NUM_RE = re.compile(r"-(\d{4})$")
 # population, ids, or difficulty — those stay module-filled).
 DEFINITION_TEMPLATE = "definition"
 WORKED_EXAMPLE_TEMPLATE = "worked_example"
+BOTH_POPULATION_TEMPLATE = "both_population"
 DEFAULT_TEMPLATE = "stratified"
 
 # A glossary chunk pairs a short Title-Case TERM with a sentence-y definition
@@ -946,6 +947,384 @@ def draft_worked_example_candidates(
     return candidates
 
 
+# ---------------------------------------------------------------- both-population arm
+#
+# A union corpus mixes a generated course-population (``week_NN/`` pages,
+# ``course_overview/``) with an original-document source-population (flat
+# ``*.html`` textbook chunks). The §1.3 coverage report wants >= 5 ``both``
+# questions — a synthesis whose COMPLETE answer requires citing one chunk of
+# EACH population (e.g. relating the course page's treatment of a concept to
+# the textbook's worked treatment of the same concept). This arm:
+#
+#   1. Pairs a course chunk with a source chunk on the SAME concept,
+#      deterministically, via shared significant-token vocabulary
+#      (:func:`mine_both_population_pairs`). concept_tags are empty on the
+#      openstax union corpus, so the pairing leans on section-heading +
+#      body-text content tokens (a small stopword filter keeps the signal on
+#      domain vocabulary), and the highest-overlap source partner per course
+#      chunk is chosen (ties broken by chunk id for determinism).
+#   2. Asks the local model to draft ONE synthesis question whose answer needs
+#      both chunks, plus a verbatim quote from EACH (so each passage anchors).
+#
+# The candidate carries BOTH chunks in ``relevant_passages`` (course=primary,
+# source=supporting), ``expected_citation_population="both"``, and difficulty
+# ``medium`` where honest (a 2-chunk, same-week join) — escalating to ``hard``
+# only when the two chunks span >= 2 distinct content weeks. The model emits
+# only question semantics + the two quotes; every deterministic field is
+# module-filled. NEVER an Anthropic surface.
+
+# Pairing parameters.
+_BOTH_MIN_SHARED_TOKENS = 3       # require >= this many shared content tokens
+_BOTH_MIN_JACCARD = 0.06          # and >= this token-Jaccard to pair
+_BOTH_TERM_MIN_CHARS = 4          # ignore short tokens (the, and, for, ...)
+# Lightweight stopword set so the overlap signal stays on domain vocabulary
+# rather than function words. Deliberately small — the char floor does most of
+# the filtering; this just drops the common >=4-char function words.
+_BOTH_STOPWORDS = frozenset(
+    {
+        "this", "that", "these", "those", "there", "their", "them", "then",
+        "than", "with", "which", "while", "when", "where", "what", "into",
+        "from", "have", "here", "your", "also", "such", "they", "will",
+        "would", "could", "should", "about", "above", "below", "between",
+        "each", "other", "some", "more", "most", "must", "both", "been",
+        "were", "does", "doing", "done", "using", "used", "uses", "over",
+        "under", "page", "part", "section", "chapter", "lesson", "module",
+        "week", "title", "summary", "preface", "example", "examples",
+        "problem", "solution", "step", "steps", "learning", "objective",
+        "objectives", "overview", "introduction", "figure", "table",
+    }
+)
+
+
+@dataclass(frozen=True)
+class BothPopulationPair:
+    """A mined ``(course_chunk, source_chunk)`` pair on a shared concept.
+
+    ``shared_terms`` are the content tokens both chunks carry (the pairing
+    evidence, surfaced for the operator); ``jaccard`` is the token-Jaccard
+    between the two chunks' content-token sets.
+    """
+
+    course_chunk_id: str
+    source_chunk_id: str
+    shared_terms: Tuple[str, ...]
+    jaccard: float
+
+
+def _content_tokens(chunk: Dict[str, Any]) -> set:
+    """The set of significant content tokens for pairing.
+
+    Union of the chunk's ``concept_tags`` (split on non-alphanumerics) and the
+    significant tokens of its ``section_heading`` + body ``text``: lowercased
+    alphabetic tokens >= :data:`_BOTH_TERM_MIN_CHARS` chars that are not in
+    :data:`_BOTH_STOPWORDS`. Deterministic (set membership only)."""
+    source = chunk.get("source") or {}
+    parts: List[str] = []
+    for tag in chunk.get("concept_tags") or []:
+        if isinstance(tag, str):
+            parts.append(tag)
+    heading = source.get("section_heading")
+    if isinstance(heading, str):
+        parts.append(heading)
+    parts.append(str(chunk.get("text") or ""))
+    blob = " ".join(parts).lower()
+    toks = re.findall(r"[a-z]+", blob)
+    return {
+        t for t in toks
+        if len(t) >= _BOTH_TERM_MIN_CHARS and t not in _BOTH_STOPWORDS
+    }
+
+
+def mine_both_population_pairs(
+    chunks_by_id: Dict[str, Dict[str, Any]],
+    *,
+    max_pairs: int = 25,
+) -> List[BothPopulationPair]:
+    """Deterministically pair course-population chunks with source-population
+    chunks on a shared concept.
+
+    For each course chunk (id order) the best source partner is the source
+    chunk with the highest content-token Jaccard (>= :data:`_BOTH_MIN_JACCARD`
+    AND >= :data:`_BOTH_MIN_SHARED_TOKENS` shared tokens), ties broken by
+    source chunk id. A source chunk is used at most once across pairs (so the
+    arm spreads concepts rather than re-pairing one dense textbook chunk).
+    Returns up to ``max_pairs`` pairs in course-chunk-id order. Pure +
+    deterministic — the local model + per-passage verbatim-quote pre-screen are
+    the real gate on whether the pair yields a usable synthesis question.
+    """
+    course_ids: List[str] = []
+    source_ids: List[str] = []
+    for cid in sorted(chunks_by_id):
+        pop = _population_of_chunk(chunks_by_id[cid])
+        if pop == "course":
+            course_ids.append(cid)
+        elif pop == "source":
+            source_ids.append(cid)
+
+    source_tokens = {sid: _content_tokens(chunks_by_id[sid]) for sid in source_ids}
+    used_sources: set = set()
+    pairs: List[BothPopulationPair] = []
+    for cid in course_ids:
+        if len(pairs) >= max_pairs:
+            break
+        ctoks = _content_tokens(chunks_by_id[cid])
+        if not ctoks:
+            continue
+        best: Optional[Tuple[float, int, str, Tuple[str, ...]]] = None
+        for sid in source_ids:
+            if sid in used_sources:
+                continue
+            stoks = source_tokens[sid]
+            if not stoks:
+                continue
+            shared = ctoks & stoks
+            if len(shared) < _BOTH_MIN_SHARED_TOKENS:
+                continue
+            union = len(ctoks | stoks) or 1
+            jac = len(shared) / union
+            if jac < _BOTH_MIN_JACCARD:
+                continue
+            # Maximize (jaccard, shared_count); tie-break by source id ASC
+            # (negate the id-string comparison by tracking it for a stable sort).
+            cand_key = (jac, len(shared))
+            if best is None or cand_key > (best[0], best[1]) or (
+                cand_key == (best[0], best[1]) and sid < best[2]
+            ):
+                best = (jac, len(shared), sid, tuple(sorted(shared)))
+        if best is not None:
+            used_sources.add(best[2])
+            pairs.append(
+                BothPopulationPair(
+                    course_chunk_id=cid,
+                    source_chunk_id=best[2],
+                    shared_terms=best[3][:12],
+                    jaccard=round(best[0], 4),
+                )
+            )
+    return pairs
+
+
+def _both_population_prompt(
+    course_text: str, source_text: str, shared_terms: Sequence[str]
+) -> Tuple[str, str]:
+    """``(system, user)`` prompts asking the model to draft ONE synthesis
+    question whose complete answer requires BOTH chunks, with a verbatim quote
+    from each."""
+    system = (
+        "You author one synthesis question whose COMPLETE answer requires TWO "
+        "source chunks: a course page and the original textbook, both about the "
+        "same concept. The question must NOT be answerable from either chunk "
+        "alone — it must relate the course page's treatment to the textbook's "
+        "treatment of the same concept. Output JSON only with keys: "
+        "question_text (a clear question of at least 10 characters that needs "
+        "both chunks), expected_key_points (a JSON array of 2 to 4 short "
+        "factual points the correct answer must state), course_quote (a "
+        "VERBATIM substring of at least 40 characters copied from the COURSE "
+        "chunk), and source_quote (a VERBATIM substring of at least 40 "
+        "characters copied from the TEXTBOOK chunk). Copy each quote character "
+        "for character from its chunk — do not paraphrase. Do not add facts not "
+        "present in the chunks."
+    )
+    terms = ", ".join(shared_terms[:10])
+    user = (
+        f"Shared concept vocabulary across the two chunks: {terms}\n\n"
+        f"COURSE chunk text:\n{course_text}\n\n"
+        f"TEXTBOOK (source) chunk text:\n{source_text}\n\n"
+        'Output JSON only: {"question_text": "...", '
+        '"expected_key_points": ["...", "..."], '
+        '"course_quote": "<verbatim from course chunk>", '
+        '"source_quote": "<verbatim from textbook chunk>"}'
+    )
+    return system, user
+
+
+def _parse_both_draft(text: str) -> Dict[str, Any]:
+    """Parse a both-population draft into ``{question_text,
+    expected_key_points, course_quote, source_quote}``. Reuses the lenient
+    JSON-object recovery of :func:`_parse_draft`."""
+    raw = (text or "").strip()
+    parsed: Optional[Dict[str, Any]] = None
+    try:
+        cand = json.loads(raw)
+        if isinstance(cand, dict):
+            parsed = cand
+    except json.JSONDecodeError:
+        parsed = None
+    if parsed is None:
+        start = raw.find("{")
+        depth = 0
+        for i in range(start, len(raw)) if start >= 0 else []:
+            if raw[i] == "{":
+                depth += 1
+            elif raw[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        cand = json.loads(raw[start:i + 1])
+                        if isinstance(cand, dict):
+                            parsed = cand
+                    except json.JSONDecodeError:
+                        parsed = None
+                    break
+    if not isinstance(parsed, dict):
+        raise GoldDraftError(f"no JSON object recoverable from both-draft tail {raw[-120:]!r}")
+    qt = parsed.get("question_text")
+    course_quote = parsed.get("course_quote")
+    source_quote = parsed.get("source_quote")
+    if not isinstance(qt, str):
+        raise GoldDraftError("both-draft missing question_text")
+    if not isinstance(course_quote, str):
+        raise GoldDraftError("both-draft missing course_quote")
+    if not isinstance(source_quote, str):
+        raise GoldDraftError("both-draft missing source_quote")
+    kps = parsed.get("expected_key_points")
+    if not isinstance(kps, list):
+        kps = []
+    kps = [str(k).strip() for k in kps if isinstance(k, (str, int, float)) and str(k).strip()]
+    return {
+        "question_text": qt.strip(),
+        "expected_key_points": kps[:_KEY_POINTS_MAX],
+        "course_quote": course_quote.strip(),
+        "source_quote": source_quote.strip(),
+    }
+
+
+def _anchor_for(chunk: Dict[str, Any], quote: str) -> Dict[str, Any]:
+    """Build the v1.1 passage anchor for ``chunk`` carrying ``quote``."""
+    source = chunk.get("source") or {}
+    anchor: Dict[str, Any] = {
+        "item_path": str(source.get("item_path") or ""),
+        "text_quote": quote,
+        "content_sha256": chunk_content_sha256(chunk),
+    }
+    heading = source.get("section_heading")
+    if isinstance(heading, str) and heading:
+        anchor["section_heading"] = heading
+    return anchor
+
+
+def _build_both_candidate(
+    pair: BothPopulationPair,
+    course_chunk: Dict[str, Any],
+    source_chunk: Dict[str, Any],
+    draft: Dict[str, Any],
+    *,
+    model_id: str,
+) -> Dict[str, Any]:
+    """Assemble a v1.1-shaped ``both_population`` candidate with TWO passages
+    (course=primary, source=supporting), ``expected_citation_population=both``,
+    honest difficulty + synthesis_scope."""
+    course_week = _week_of_item_path((course_chunk.get("source") or {}).get("item_path", ""))
+    source_week = _week_of_item_path((source_chunk.get("source") or {}).get("item_path", ""))
+    weeks = {w for w in (course_week, source_week) if w}
+    n_weeks = len(weeks)
+    # A 2-chunk synthesis: medium where same-week (or the source has no week,
+    # which is the union norm — textbook chunks are weekless), hard when the
+    # two cited chunks genuinely span >= 2 distinct content weeks.
+    difficulty = "hard" if n_weeks >= 2 else "medium"
+    candidate: Dict[str, Any] = {
+        "question_id": f"gqc-both-{pair.course_chunk_id}-{pair.source_chunk_id}",
+        "question_text": draft["question_text"],
+        "question_type": "conceptual_synthesis",
+        "difficulty": difficulty,
+        "synthesis_scope": "across_weeks" if n_weeks >= 2 else "within_week",
+        "expected_citation_population": "both",
+        "relevant_passages": [
+            {"chunk_id": pair.course_chunk_id, "relevance": "primary",
+             "anchor": _anchor_for(course_chunk, draft["course_quote"])},
+            {"chunk_id": pair.source_chunk_id, "relevance": "supporting",
+             "anchor": _anchor_for(source_chunk, draft["source_quote"])},
+        ],
+        "authoring": {
+            "method": "llm_assisted",
+            "author": f"{model_id}/{GOLD_AUTHORING_PROMPT_VERSION}",
+            "reviewed_by": "PENDING_REVIEW",
+            "status": "draft",
+            "template": BOTH_POPULATION_TEMPLATE,
+        },
+    }
+    refs = tuple(sorted(set(_objective_refs(course_chunk)) | set(_objective_refs(source_chunk))))
+    if refs:
+        candidate["objective_refs"] = list(refs)
+    kps = draft.get("expected_key_points") or []
+    if len(kps) >= _KEY_POINTS_MIN:
+        candidate["expected_key_points"] = kps[:_KEY_POINTS_MAX]
+    return candidate
+
+
+def draft_both_population_candidates(
+    pairs: Sequence[BothPopulationPair],
+    chunks_by_id: Dict[str, Dict[str, Any]],
+    *,
+    client: Any,
+    model_id: Optional[str] = None,
+    capture: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Draft one ``both_population`` candidate per mined course/source pair.
+
+    The model emits only question semantics + a verbatim quote per chunk; the
+    deterministic fields (anchors, two passages, population=both, difficulty,
+    synthesis_scope, ids) are module-filled. question_type=conceptual_synthesis,
+    authoring.template=both_population. One ``gold_candidate_authoring``
+    decision is emitted after the batch with a dynamic rationale. NEVER an
+    Anthropic surface.
+    """
+    resolved_model = model_id or getattr(client, "model", "local")
+    candidates: List[Dict[str, Any]] = []
+    errors = 0
+    for pair in pairs:
+        course_chunk = chunks_by_id.get(pair.course_chunk_id) or {}
+        source_chunk = chunks_by_id.get(pair.source_chunk_id) or {}
+        system, user = _both_population_prompt(
+            str(course_chunk.get("text") or ""),
+            str(source_chunk.get("text") or ""),
+            pair.shared_terms,
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            text = client.chat_completion(messages, max_tokens=640, temperature=0.2)
+            draft = _parse_both_draft(text)
+            cand = _build_both_candidate(
+                pair, course_chunk, source_chunk, draft, model_id=resolved_model
+            )
+        except (GoldDraftError, Exception) as exc:  # noqa: BLE001 — record, don't drop
+            errors += 1
+            cand = {
+                "question_id": f"gqc-both-{pair.course_chunk_id}-{pair.source_chunk_id}",
+                "question_text": "",
+                "question_type": "conceptual_synthesis",
+                "relevant_passages": [
+                    {"chunk_id": pair.course_chunk_id, "relevance": "primary",
+                     "anchor": {"item_path": str((course_chunk.get("source") or {}).get("item_path") or ""),
+                                "text_quote": ""}},
+                    {"chunk_id": pair.source_chunk_id, "relevance": "supporting",
+                     "anchor": {"item_path": str((source_chunk.get("source") or {}).get("item_path") or ""),
+                                "text_quote": ""}},
+                ],
+                "authoring": {
+                    "method": "llm_assisted",
+                    "author": f"{resolved_model}/{GOLD_AUTHORING_PROMPT_VERSION}",
+                    "reviewed_by": "PENDING_REVIEW",
+                    "status": "draft",
+                    "template": BOTH_POPULATION_TEMPLATE,
+                },
+                "draft_error": str(exc),
+            }
+        candidates.append(cand)
+
+    pair_labels = [f"{p.course_chunk_id}+{p.source_chunk_id}" for p in pairs]
+    _log_template_authoring(
+        capture, template=BOTH_POPULATION_TEMPLATE, model=resolved_model,
+        seeds=pair_labels, n=len(candidates), errors=errors,
+        detail=f"paired {len(pairs)} course/source chunk(s) on shared concept "
+               f"vocabulary (each answer must cite BOTH populations)",
+    )
+    return candidates
+
+
 # ---------------------------------------------------------------- arm helpers
 
 
@@ -1094,6 +1473,27 @@ def prescreen_candidate(
         elif isinstance(cid, str):
             reasons.append("QUOTE_NOT_IN_CHUNK")  # chunk id absent => unanchorable
 
+    # Multi-passage (e.g. both_population) candidates carry a SUPPORTING passage
+    # whose quote must ALSO anchor — a both-population question whose source
+    # quote isn't verbatim-contained can't honestly claim its citations span
+    # both populations. Verify every non-primary passage carrying a quote; an
+    # empty supporting quote (anchor without a quote) is left to the schema.
+    for p in passages:
+        if not isinstance(p, dict) or p is primary:
+            continue
+        s_anchor = p.get("anchor") or {}
+        s_quote = str(s_anchor.get("text_quote") or "")
+        s_cid = p.get("chunk_id")
+        if not s_quote.strip():
+            continue
+        if len(s_quote.strip()) < _MIN_QUOTE_CHARS:
+            reasons.append("SUPPORTING_QUOTE_TOO_SHORT")
+        elif isinstance(s_cid, str) and s_cid in chunks_by_id:
+            if not _quote_in_chunk(s_quote, chunks_by_id[s_cid]):
+                reasons.append("SUPPORTING_QUOTE_NOT_IN_CHUNK")
+        elif isinstance(s_cid, str):
+            reasons.append("SUPPORTING_QUOTE_NOT_IN_CHUNK")
+
     # Near-dup: only meaningful for a non-empty question.
     if qt.strip():
         for prior in prior_questions:
@@ -1177,11 +1577,13 @@ _DEFAULT_TEMPLATES: Tuple[str, ...] = (
     DEFAULT_TEMPLATE,
     DEFINITION_TEMPLATE,
     WORKED_EXAMPLE_TEMPLATE,
+    BOTH_POPULATION_TEMPLATE,
 )
 # Cap the per-template mined-seed counts so the template arms supplement the
 # stratified arm without flooding it (they over-generate ~half the base target).
 _DEFAULT_DEFINITION_CAP = 25
 _DEFAULT_WORKED_EXAMPLE_CAP = 25
+_DEFAULT_BOTH_POPULATION_CAP = 25
 
 
 def generate_gold_candidates(
@@ -1196,6 +1598,7 @@ def generate_gold_candidates(
     templates: Optional[Sequence[str]] = None,
     definition_cap: int = _DEFAULT_DEFINITION_CAP,
     worked_example_cap: int = _DEFAULT_WORKED_EXAMPLE_CAP,
+    both_population_cap: int = _DEFAULT_BOTH_POPULATION_CAP,
 ) -> Tuple[Dict[str, Any], Optional[Path]]:
     """End-to-end §2.2 steps 1-3: sample / mine → draft → pre-screen → write doc.
 
@@ -1258,6 +1661,15 @@ def generate_gold_candidates(
         )
         candidates.extend(wes)
         by_template[WORKED_EXAMPLE_TEMPLATE] = len(wes)
+    if BOTH_POPULATION_TEMPLATE in selected:
+        pairs = mine_both_population_pairs(
+            chunks_by_id, max_pairs=max(0, both_population_cap)
+        )
+        boths = draft_both_population_candidates(
+            pairs, chunks_by_id, client=client, model_id=model_id, capture=capture
+        )
+        candidates.extend(boths)
+        by_template[BOTH_POPULATION_TEMPLATE] = len(boths)
 
     existing = [
         str(q.get("question_text") or "")
@@ -1497,8 +1909,10 @@ __all__ = [
     "DEFAULT_TEMPLATE",
     "DEFINITION_TEMPLATE",
     "WORKED_EXAMPLE_TEMPLATE",
+    "BOTH_POPULATION_TEMPLATE",
     "SampleSlot",
     "GlossarySeed",
+    "BothPopulationPair",
     "PrescreenVerdict",
     "PromoteReport",
     "GoldDraftError",
@@ -1509,6 +1923,8 @@ __all__ = [
     "draft_definition_candidates",
     "mine_worked_example_chunks",
     "draft_worked_example_candidates",
+    "mine_both_population_pairs",
+    "draft_both_population_candidates",
     "prescreen_candidate",
     "prescreen_candidates",
     "build_candidates_doc",

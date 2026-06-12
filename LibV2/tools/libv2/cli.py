@@ -3302,17 +3302,20 @@ def gold_repin(ctx, course: str, kind: str, chunks_path: Optional[str],
 @click.option("--seed", type=int, default=0, help="Deterministic sampler seed.")
 @click.option("--templates", default=None,
               help="Comma-separated template arms to run (default all): "
-                   "stratified,definition,worked_example.")
+                   "stratified,definition,worked_example,both_population.")
 @click.option("--no-write", is_flag=True, help="Build the doc without writing the artifact.")
 @click.pass_context
 def gold_candidates(ctx, course: str, n: Optional[int], seed: int,
                     templates: Optional[str], no_write: bool):
     """Draft gold-question candidates via the license-clean local provider.
 
-    Runs the requested template arms (default all three): `stratified`
+    Runs the requested template arms (default all four): `stratified`
     stratified-samples the pinned union chunkset; `definition` mines glossary
     terms (one factual_recall question per term); `worked_example` mines
-    Problem/Solution/Step chunks (one procedural question per chunk). Each arm
+    Problem/Solution/Step chunks (one procedural question per chunk);
+    `both_population` pairs a course chunk with a source chunk on the same
+    concept (one conceptual_synthesis question per pair,
+    expected_citation_population=both). Each arm
     drafts question + 2-4 key points + a verbatim >=40-char quote via the LOCAL
     provider only, pre-screens deterministically (quote containment + ambiguity
     + length + near-dup -- rejections RECORDED, not dropped), and writes
@@ -3554,6 +3557,227 @@ def gold_metadata_backfill(ctx, course: str, no_write: bool):
         if "proposed_population" in p:
             bits.append(f"population={p['proposed_population']}")
         print(f"  {p.get('question_id')}: {', '.join(bits)}")
+    if out_path:
+        print_success(f"  wrote {out_path}")
+        print_warning("  PROPOSAL ONLY -- not applied to gold_set.json; operator reviews.")
+    else:
+        print_warning("  no-write: artifact not written.")
+    sys.exit(0)
+
+
+@main.command("gold-key-points")
+@click.option("--course", "-c", required=True,
+              help="Course slug whose answerable questions missing expected_key_points to backfill")
+@click.option("--no-write", is_flag=True, help="Build the proposal without writing the artifact.")
+@click.pass_context
+def gold_key_points(ctx, course: str, no_write: bool):
+    """Draft expected_key_points for gold questions missing them (LOCAL model).
+
+    For every non-refusal question carrying fewer than 2 expected_key_points
+    (the GOLD_QUESTION_METADATA_INCOMPLETE warning), the license-clean LOCAL
+    provider drafts 2-4 claim-level key points grounded ONLY in that question's
+    own cited relevant-passage bodies. Writes a PROPOSAL artifact
+    (retrieval_eval/gold_key_points_proposal.json) -- NEVER applied to
+    gold_set.json (the frozen set is the canonical eval pin; the orchestrator
+    applies after review).
+
+    \b
+    Example:
+        libv2 gold-key-points --course demo-course-1
+    """
+    from lib.decision_capture import DecisionCapture
+    from lib.retrieval.answer_backend import (
+        AnswerBackendUnavailable,
+        AnswerProviderNotLocal,
+        build_answer_client,
+    )
+    from lib.retrieval.gold_key_points_backfill import generate_key_points_proposal
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    capture = DecisionCapture(course_code=course, phase="libv2-answer", tool="libv2")
+    try:
+        client = build_answer_client(capture=capture)
+    except AnswerProviderNotLocal as exc:
+        print_error(f"key-point drafting requires a loopback-local provider: {exc}")
+        sys.exit(1)
+    except AnswerBackendUnavailable as exc:
+        print_error(f"local provider unavailable: {exc}")
+        sys.exit(1)
+
+    try:
+        doc, out_path = generate_key_points_proposal(
+            course_dir, client=client, capture=capture, write=not no_write
+        )
+    except FileNotFoundError as exc:
+        print_error(str(exc))
+        sys.exit(1)
+
+    print(f"gold-key-points {course}: {doc.get('n_drafted_ok')}/{doc.get('n_questions')} "
+          f"question(s) with drafted key points.")
+    for p in doc.get("proposals", [])[:10]:
+        kps = p.get("proposed_key_points") or []
+        flag = "" if not p.get("error") else f" [NEEDS OPERATOR: {p['error']}]"
+        print(f"  {p.get('question_id')}: {len(kps)} point(s){flag}")
+    if out_path:
+        print_success(f"  wrote {out_path}")
+        print_warning("  PROPOSAL ONLY -- not applied to gold_set.json; operator reviews.")
+    else:
+        print_warning("  no-write: artifact not written.")
+    sys.exit(0)
+
+
+@main.command("gold-difficulty-regrade")
+@click.option("--course", "-c", required=True,
+              help="Course slug whose easy questions to re-grade against the rubric")
+@click.option("--from", "regrade_from", default="easy",
+              type=click.Choice(["easy", "medium", "hard"]),
+              help="Difficulty band to re-grade (default easy -- the skewed band).")
+@click.option("--no-write", is_flag=True, help="Build the proposal without writing the artifact.")
+@click.pass_context
+def gold_difficulty_regrade(ctx, course: str, regrade_from: str, no_write: bool):
+    """Re-grade gold-question difficulty against the easy/medium/hard rubric (LOCAL model).
+
+    Re-grades every question currently tagged --from (default easy -- the
+    over-filled band) against the written rubric (easy=single-passage recall;
+    medium=multi-step procedure or within-section synthesis; hard=cross-section
+    synthesis / multi_part / error-analysis). HONEST -- no quota filling; a
+    genuinely-easy question keeps easy. Writes a PROPOSAL artifact
+    (retrieval_eval/gold_difficulty_regrade_proposal.json) with the proposed
+    full-set distribution vs the coverage bands -- NEVER applied to
+    gold_set.json (the orchestrator applies after review).
+
+    \b
+    Example:
+        libv2 gold-difficulty-regrade --course demo-course-1
+    """
+    from lib.decision_capture import DecisionCapture
+    from lib.retrieval.answer_backend import (
+        AnswerBackendUnavailable,
+        AnswerProviderNotLocal,
+        build_answer_client,
+    )
+    from lib.retrieval.gold_difficulty_regrade import (
+        generate_difficulty_regrade_proposal,
+    )
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    capture = DecisionCapture(course_code=course, phase="libv2-answer", tool="libv2")
+    try:
+        client = build_answer_client(capture=capture)
+    except AnswerProviderNotLocal as exc:
+        print_error(f"regrade requires a loopback-local provider: {exc}")
+        sys.exit(1)
+    except AnswerBackendUnavailable as exc:
+        print_error(f"local provider unavailable: {exc}")
+        sys.exit(1)
+
+    try:
+        doc, out_path = generate_difficulty_regrade_proposal(
+            course_dir, client=client, capture=capture,
+            regrade_from=regrade_from, write=not no_write,
+        )
+    except FileNotFoundError as exc:
+        print_error(str(exc))
+        sys.exit(1)
+
+    dist = doc.get("distribution", {})
+    print(f"gold-difficulty-regrade {course}: regraded {doc.get('n_regraded')} "
+          f"'{regrade_from}' question(s); {doc.get('n_changed')} reclassified, "
+          f"{doc.get('n_failures')} failure(s).")
+    print(f"  distribution before: {dist.get('before')}")
+    print(f"  distribution after:  {dist.get('after')}")
+    after_bands = dist.get("after_bands", {})
+    for d, info in after_bands.items():
+        status = "in-band" if info.get("in_band") else "OUT-OF-BAND"
+        print(f"    {d}: {info.get('count')} ({info.get('fraction'):.0%}) "
+              f"band {info.get('band')} -> {status}")
+    for r in doc.get("rows", [])[:10]:
+        if r.get("changed"):
+            print(f"  {r.get('question_id')}: {r.get('current')} -> {r.get('proposed')}")
+    if out_path:
+        print_success(f"  wrote {out_path}")
+        print_warning("  PROPOSAL ONLY -- not applied to gold_set.json; operator reviews.")
+    else:
+        print_warning("  no-write: artifact not written.")
+    sys.exit(0)
+
+
+@main.command("gold-parts")
+@click.option("--course", "-c", required=True,
+              help="Course slug whose multi_part questions' parts[] to author")
+@click.option("--no-retrieval", is_flag=True,
+              help="Bind parts from the parent passages only (skip per-part corpus retrieval).")
+@click.option("--no-write", is_flag=True, help="Build the proposal without writing the artifact.")
+@click.pass_context
+def gold_parts(ctx, course: str, no_retrieval: bool, no_write: bool):
+    """Author parts[] for multi_part gold questions (LOCAL model).
+
+    Decomposes each multi_part question's text into its real sub-parts via the
+    license-clean LOCAL provider, binds each part's relevant_passage_refs from
+    the parent question's relevant_passages (4-shingle overlap, then per-part
+    corpus retrieval), and marks a part covered:false + absence_note ONLY when
+    both binding paths come back empty (conservative ws3.v2 completeness probe).
+    Writes a PROPOSAL artifact (retrieval_eval/gold_parts_proposal.json) of
+    schema-legal part objects -- NEVER applied to gold_set.json (the
+    orchestrator applies after review).
+
+    \b
+    Example:
+        libv2 gold-parts --course demo-course-1
+    """
+    from lib.decision_capture import DecisionCapture
+    from lib.retrieval.answer_backend import (
+        AnswerBackendUnavailable,
+        AnswerProviderNotLocal,
+        build_answer_client,
+    )
+    from lib.retrieval.gold_parts_authoring import generate_parts_proposal
+    from LibV2.tools.libv2.retriever import retrieve_chunks
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    capture = DecisionCapture(course_code=course, phase="libv2-answer", tool="libv2")
+    try:
+        client = build_answer_client(capture=capture)
+    except AnswerProviderNotLocal as exc:
+        print_error(f"parts authoring requires a loopback-local provider: {exc}")
+        sys.exit(1)
+    except AnswerBackendUnavailable as exc:
+        print_error(f"local provider unavailable: {exc}")
+        sys.exit(1)
+
+    retrieve_fn = None if no_retrieval else retrieve_chunks
+    libv2_root = None if no_retrieval else repo_root
+    try:
+        doc, out_path = generate_parts_proposal(
+            course_dir, client=client, retrieve_fn=retrieve_fn,
+            libv2_root=libv2_root, capture=capture, write=not no_write,
+        )
+    except FileNotFoundError as exc:
+        print_error(str(exc))
+        sys.exit(1)
+
+    print(f"gold-parts {course}: authored parts for {doc.get('n_authored_ok')}/"
+          f"{doc.get('n_questions')} multi_part question(s).")
+    for p in doc.get("proposals", [])[:12]:
+        flag = "" if not p.get("error") else f" [FAILED: {p['error']}]"
+        unc = p.get("n_uncovered", 0)
+        unc_s = f", {unc} uncovered" if unc else ""
+        print(f"  {p.get('question_id')}: {p.get('n_parts')} part(s){unc_s}{flag}")
     if out_path:
         print_success(f"  wrote {out_path}")
         print_warning("  PROPOSAL ONLY -- not applied to gold_set.json; operator reviews.")
