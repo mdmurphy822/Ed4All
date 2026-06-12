@@ -63,6 +63,7 @@ from lib.validators.pair._claim_support_thresholds import _CONTENT_TOKEN_RE
 __all__ = [
     "ENV_CITATION_PRUNE",
     "ENV_PRUNE_MIN_OVERLAP",
+    "ENV_ADD_MIN_SHINGLE",
     "MODE_OFF",
     "MODE_SHADOW",
     "MODE_ON",
@@ -76,6 +77,7 @@ __all__ = [
     "AttributionReport",
     "resolve_prune_mode",
     "resolve_min_overlap",
+    "resolve_add_min_shingle",
     "attribute_citations",
 ]
 
@@ -88,6 +90,9 @@ __all__ = [
 ENV_CITATION_PRUNE = "ED4ALL_ANSWER_CITATION_PRUNE"
 #: Float knob → the support ``min_overlap`` used for the PRUNE decision.
 ENV_PRUNE_MIN_OVERLAP = "ED4ALL_ANSWER_PRUNE_MIN_OVERLAP"
+#: Float knob → the shingle floor used for the ADD decision (see
+#: :data:`ADD_MIN_SHINGLE` for the provenance of the knob promotion).
+ENV_ADD_MIN_SHINGLE = "ED4ALL_ANSWER_ADD_MIN_SHINGLE"
 
 MODE_OFF = "off"
 MODE_SHADOW = "shadow"
@@ -107,13 +112,23 @@ DEFAULT_MIN_OVERLAP = 0.25
 #: misses. Used by the PRUNE arm only (additions are shingle-only).
 TOKEN_COVERAGE_FLOOR = 0.80
 
-#: The ADD bar. A constant (not a second env knob) by deliberate choice: an
-#: addition is a high-precision, rarely-fired refinement — its bar should not
-#: move with the prune knob, which calibrates a different (keep-vs-drop)
-#: decision. 0.50 is twice the prune default; combined with the relative
-#: "out-support the kept citations" gate (§2.2) it keeps additions conservative.
-#: If a future calibration pass demands tuning, promote it to its own env knob
-#: (``ED4ALL_ANSWER_ADD_MIN_SHINGLE``) + a licensing-table-exempt row.
+#: The ADD bar (DEFAULT). An addition is a high-precision, rarely-fired
+#: refinement — its bar should not move with the prune knob, which calibrates a
+#: different (keep-vs-drop) decision. 0.50 is twice the prune default; combined
+#: with the relative "out-support the kept citations" gate (§2.2) it keeps
+#: additions conservative.
+#:
+#: PROVENANCE (single-course union-corpus calibration basis, 2026-06-12): the
+#: P5 attribution-calibration pass over the frozen gold set (77 gold questions,
+#: lexical attribution arm, bge-large + 7B) found the median cited-citation
+#: shingle sits at 0.000 — a full 0.500 BELOW this ADD bar — so additions
+#: essentially never fire on this corpus. That measurement WARRANTS a tunable
+#: knob (so an operator on a paraphrase-light corpus can lower the bar to let
+#: additions fire) without changing the conservative default: the artifact
+#: argues for the KNOB, NOT for a lower default (lowering it globally would
+#: re-clutter the source list the prune arm just cleaned). The knob is therefore
+#: :data:`ENV_ADD_MIN_SHINGLE` (``ED4ALL_ANSWER_ADD_MIN_SHINGLE``), resolved by
+#: :func:`resolve_add_min_shingle`; the default below is unchanged.
 ADD_MIN_SHINGLE = 0.50
 
 #: Shingle size for the claim-vs-passage phrase arm. 4 (not the anchor's 8)
@@ -173,6 +188,39 @@ def resolve_min_overlap(explicit: Optional[float] = None) -> float:
     if 0.0 <= cand <= 1.0:
         return cand
     return DEFAULT_MIN_OVERLAP
+
+
+def resolve_add_min_shingle(explicit: Optional[float] = None) -> float:
+    """Resolve the ADD-side shingle floor knob.
+
+    Mirrors :func:`resolve_min_overlap`. Precedence: explicit arg >
+    ``ED4ALL_ANSWER_ADD_MIN_SHINGLE`` env > :data:`ADD_MIN_SHINGLE`. Garbage /
+    out-of-range (not in ``[0, 1]``) values fall back to the default (a
+    misconfigured knob must never disable the ADD bar — an addition is a
+    precision-first refinement and the conservative default is the safe value).
+
+    PROVENANCE (single-course union-corpus calibration basis, 2026-06-12): the
+    knob exists because the P5 attribution-calibration measured a median cited
+    shingle of 0.000 (0.500 below the bar), warranting tunability without moving
+    the conservative default — see :data:`ADD_MIN_SHINGLE`.
+    """
+    if explicit is not None:
+        cand = explicit
+    else:
+        raw = os.environ.get(ENV_ADD_MIN_SHINGLE)
+        if raw is None or str(raw).strip() == "":
+            return ADD_MIN_SHINGLE
+        try:
+            cand = float(raw)
+        except (TypeError, ValueError):
+            return ADD_MIN_SHINGLE
+    try:
+        cand = float(cand)
+    except (TypeError, ValueError):
+        return ADD_MIN_SHINGLE
+    if 0.0 <= cand <= 1.0:
+        return cand
+    return ADD_MIN_SHINGLE
 
 
 # --------------------------------------------------------------------------- #

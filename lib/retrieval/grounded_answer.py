@@ -56,6 +56,7 @@ from lib.retrieval.citation_attribution import (
     MODE_SHADOW,
     AttributionReport,
     attribute_citations,
+    resolve_add_min_shingle,
     resolve_min_overlap,
     resolve_prune_mode,
 )
@@ -696,6 +697,7 @@ def _emit_citation_prune(
     pruned_ids: Sequence[str],
     added_ids: Sequence[str],
     inline_vetoed_ids: Sequence[str],
+    add_min_shingle: float = ADD_MIN_SHINGLE,
 ) -> None:
     """One capture covering the whole prune+add decision (plan §2.5).
 
@@ -727,7 +729,7 @@ def _emit_citation_prune(
         f"(course={course_slug or '?'}, engine={engine}, mode={mode}); "
         f"n_claims={report.n_claims} "
         f"min_overlap={report.min_overlap} shingle_size={ATTRIBUTION_SHINGLE_SIZE} "
-        f"add_min_shingle={ADD_MIN_SHINGLE}; "
+        f"add_min_shingle={add_min_shingle}; "
         f"per_citation=[{per_support}] "
         f"kept=[{kept_str}] pruned=[{pruned_str}] added=[{added_str}] "
         f"inline_vetoed=[{veto_str}]"
@@ -796,6 +798,7 @@ def _select_additions(
     course_dir: Path,
     chunkset_kind: str,
     containment_threshold: float,
+    add_min_shingle: float = ADD_MIN_SHINGLE,
 ) -> Tuple[List[Citation], List[str]]:
     """Build high-precision added citations from UNCITED gate-eligible passages.
 
@@ -835,7 +838,7 @@ def _select_additions(
         s = report.supports.get(cid)
         if s is None or s.cited or s.is_claimless:
             continue
-        if s.best_shingle < ADD_MIN_SHINGLE:
+        if s.best_shingle < add_min_shingle:
             continue
         # Out-support the kept set on at least one of this passage's claims.
         beats_kept = any(
@@ -908,6 +911,7 @@ def _apply_citation_attribution(
     containment_threshold: float,
     mode: str,
     min_overlap: float,
+    add_min_shingle: float,
     capture: Optional[Any],
     course_slug: str,
     query_sha: str,
@@ -944,7 +948,7 @@ def _apply_citation_attribution(
             capture, course_slug=course_slug, query_sha=query_sha, engine=engine,
             mode=mode, outcome=_PRUNE_OUTCOME_NO_CLAIMS, report=report,
             kept_ids=[c.chunk_id for c in enriched], pruned_ids=[], added_ids=[],
-            inline_vetoed_ids=[],
+            inline_vetoed_ids=[], add_min_shingle=add_min_shingle,
         )
         return enriched, warnings
 
@@ -982,6 +986,7 @@ def _apply_citation_attribution(
         course_dir=course_dir,
         chunkset_kind=chunkset_kind,
         containment_threshold=containment_threshold,
+        add_min_shingle=add_min_shingle,
     )
 
     # --- Outcome + warnings ------------------------------------------------- #
@@ -1002,7 +1007,7 @@ def _apply_citation_attribution(
         capture, course_slug=course_slug, query_sha=query_sha, engine=engine,
         mode=mode, outcome=outcome, report=report,
         kept_ids=final_kept_ids, pruned_ids=pruned_ids, added_ids=added_ids,
-        inline_vetoed_ids=inline_vetoed,
+        inline_vetoed_ids=inline_vetoed, add_min_shingle=add_min_shingle,
     )
 
     # Shadow mode: capture + warnings + excerpts produced, citations NOT
@@ -1258,6 +1263,7 @@ def answer_course_question(
     warnings: List[str] = []
     mode = resolve_prune_mode(prune_mode)
     min_overlap = resolve_min_overlap(prune_min_overlap)
+    add_min_shingle = resolve_add_min_shingle()
     allowed = composed.allowed_chunk_ids or composed.cited_chunk_ids
     gate_eligible_passages = [by_id[cid] for cid in allowed if cid in by_id]
     citations, prune_warnings = _apply_citation_attribution(
@@ -1270,6 +1276,7 @@ def answer_course_question(
         containment_threshold=containment_threshold,
         mode=mode,
         min_overlap=min_overlap,
+        add_min_shingle=add_min_shingle,
         capture=capture,
         course_slug=course_slug,
         query_sha=query_sha,

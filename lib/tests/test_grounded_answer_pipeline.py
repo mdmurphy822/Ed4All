@@ -1066,17 +1066,19 @@ def test_answer_path_lexical_resolves_pinned_model_none(
     assert result.refusal["embedding_model_id"] is None
 
 
-def test_answer_path_hybrid_rrf_reads_embedder_but_falls_back_uncalibrated(
+def test_answer_path_hybrid_rrf_reads_embedder_and_applies_bge_large_pin(
     mini_libv2: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """hybrid-rrf resolves the live index's embedder (its fused score depends on
-    the semantic arm) but, ABSENT a pin, falls back to the v0-uncalibrated
-    default — never a stale semantic cosine pin for the same model.
+    the semantic arm) and, as of the 2026-06-12 single-course union-corpus
+    calibration, applies the measured (hybrid-rrf, bge-large) pin — a FUSED-RRF
+    threshold, NOT the (semantic, bge-large) cosine pin (no leak across engines).
 
     The wiring reads the manifest embedder for hybrid-rrf; this test confirms it
-    is consulted (the embedder is keyed) yet does not leak the (semantic, model)
-    pin onto the hybrid path."""
+    is consulted (the embedder is keyed) AND that the engine-correct pin is
+    applied with the bge-large embedder recorded on the verdict."""
     import lib.retrieval.grounded_answer as ga
+    from lib.retrieval.refusal import PINNED_POLICIES
 
     seen = {}
 
@@ -1089,8 +1091,9 @@ def test_answer_path_hybrid_rrf_reads_embedder_but_falls_back_uncalibrated(
     monkeypatch.setattr(
         ga, "_vector_index_chunkset_kind", lambda root, slug: "dart"
     )
-    # Below the v0-uncalibrated hybrid-rrf min_top_score (1/(RRF_K+1) on the
-    # RRF scale) → pre-LLM refusal, so the resolved policy surfaces.
+    # Below the pinned hybrid-rrf min_top_score (0.029643 on the RRF scale)
+    # → pre-LLM refusal, so the resolved policy surfaces.
+    hybrid_pin = PINNED_POLICIES[("hybrid-rrf", _BGE_LARGE)]
     _stub_low_score_retrieval(monkeypatch, 0.005)
     client = FakeAnswerClient([_envelope("never used", ["x"])])
 
@@ -1099,9 +1102,13 @@ def test_answer_path_hybrid_rrf_reads_embedder_but_falls_back_uncalibrated(
     )
     assert seen.get("called") is True  # the embedder WAS resolved for hybrid-rrf
     assert result.status == STATUS_REFUSED_LOW_CONFIDENCE
-    # Unpinned → v0-uncalibrated; the (semantic, bge-large) pin did NOT leak in.
-    assert result.refusal["policy_version"] == POLICY_VERSION_UNCALIBRATED
-    assert result.refusal["embedding_model_id"] is None
+    # Pinned → the engine-correct measured pin (NOT the semantic cosine pin).
+    assert result.refusal["policy_version"] == POLICY_VERSION_PINNED
+    assert result.refusal["embedding_model_id"] == _BGE_LARGE
+    # The applied threshold is the FUSED-RRF pin, not the semantic cosine pin.
+    assert hybrid_pin.min_top_score < PINNED_POLICIES[
+        ("semantic", _BGE_LARGE)
+    ].min_top_score
 
 
 _BGE_LARGE = "BAAI/bge-large-en-v1.5"

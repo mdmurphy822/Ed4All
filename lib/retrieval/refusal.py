@@ -83,7 +83,7 @@ POLICY_VERSION_UNCALIBRATED = "ws3.v0-uncalibrated"
 #: re-calibration wave; every pin references the constant, so the bump applies
 #: uniformly (the tier-2 reproduce-the-committed-verdict test, not the version
 #: string, is what guards each individual pin's numeric value against drift).
-POLICY_VERSION_PINNED = "ws3.v2-pinned-2026-06-10"
+POLICY_VERSION_PINNED = "ws3.v3-pinned-2026-06-12"
 
 
 # --------------------------------------------------------------------------- #
@@ -277,12 +277,42 @@ def default_policy_for(engine: str) -> RefusalPolicy:
 # recommendation exactly, so the tier-2 reproduce-the-committed-verdict test
 # still anchors the numeric value to an on-disk artifact.
 #
-# HYBRID-RRF: deliberately UNPINNED. On every local course archive we
-# calibrated, the hybrid-rrf answerable/unanswerable fused-score distributions
-# overlapped — no threshold met the precision/recall rule (recommended=null).
-# The honest action is to ship no hybrid pin: hybrid-rrf falls through to the
-# v0-uncalibrated default until a separable course corpus yields a clean
-# threshold, which would then be keyed (hybrid-rrf, <embedding_model_id>).
+# HYBRID-RRF: PINNED 2026-06-12 (supersedes the prior "deliberately UNPINNED"
+# verdict — kept here for history). HISTORY: through the v2 (2026-06-10) waves
+# every local course archive we calibrated at n=10/9 left the hybrid-rrf
+# answerable/unanswerable fused-score distributions overlapping; no threshold met
+# the precision/recall rule (recommended=null), so we honestly shipped no hybrid
+# pin and hybrid-rrf fell through to the v0-uncalibrated default. That changed
+# with the scaled-up frozen gold set: the single-course union-corpus calibration
+# basis (77 gold questions / 34 refusal probes, gold v1.1, 2026-06-12, bge-large
+# embedder + 7B answerer) yields a clean recommendation for (hybrid-rrf,
+# BAAI/bge-large-en-v1.5).
+#
+# The fused distributions are STILL NOT SEPARABLE at this scale — the calibration
+# artifact reports separable:false (overlap_fraction 0.951, min_gap -0.0031,
+# min_positive 0.029643 sitting just BELOW max_negative 0.032787). What the
+# larger probe set buys is a left tail of pure off-topic probes whose fused score
+# falls below every answerable query's: the recommended min_top_score=0.029643
+# clears refusal_precision=1.0 AND answer_recall=1.0, but only refusal_recall=0.2.
+# That 0.2 is the honest ceiling of a RETRIEVAL threshold on this fused scale:
+# this pin catches ONLY the pure off-topic tail (the 1-in-5 probe whose fused
+# score dips beneath the answerable floor). The remaining 0.8 of refusal recall
+# lives inside the overlap band — near-miss / adjacent-domain probes whose fused
+# score is indistinguishable from a genuinely answerable query — and is therefore
+# a MODEL-policy matter (the composed-envelope not_in_course refusal,
+# REASON_NOT_IN_COURSE_MODEL), NOT a retrieval-threshold matter. Pushing the
+# threshold up to catch them would fabricate refusals on answerable queries
+# (refusal_precision collapses to 0.83 at the very next sweep step; see the
+# artifact's overlap block + sweep). Refusal under-firing is the safe failure
+# direction this module is built around, so we pin at the precision-/recall-clean
+# 0.029643 and leave near-miss refusal to the model arm.
+#
+# SINGLE-COURSE BASIS CAVEAT (risk R4): this is a single-course, single-corpus
+# pin. The cross-course MIN-pin convention degenerates to one course's
+# recommendation until a second different-family course joins the calibration;
+# the tier-2 reproduce-the-committed-verdict test anchors the numeric value to
+# the on-disk artifact, and the corpus-safe test re-checks the pin clears the
+# rule on every committed hybrid-rrf calibration discovered.
 #
 # Measured pins:
 #   (semantic, sentence-transformers/all-MiniLM-L6-v2)  2026-06-09
@@ -292,6 +322,12 @@ def default_policy_for(engine: str) -> RefusalPolicy:
 #   (semantic, BAAI/bge-large-en-v1.5)  calibrated on 3 local course archives,
 #       2026-06-10; pin = MIN of the per-course recommendations (see above)
 #       min_top_score=0.653916  refusal_precision=1.0  answer_recall=1.0
+#   (hybrid-rrf, BAAI/bge-large-en-v1.5)  single-course union-corpus calibration
+#       basis, 2026-06-12 (77q/34-probe gold v1.1, bge-large + 7B); separable:false
+#       (overlap_fraction 0.951, min_gap -0.0031)
+#       min_top_score=0.029643  refusal_precision=1.0  answer_recall=1.0
+#       refusal_recall=0.2 (pure off-topic tail only — near-miss refusal is
+#       model-policy-owned; see the overlap block above)
 PINNED_POLICIES: Dict[tuple, RefusalPolicy] = {
     ("semantic", "sentence-transformers/all-MiniLM-L6-v2"): RefusalPolicy(
         engine="semantic",
@@ -322,6 +358,21 @@ PINNED_POLICIES: Dict[tuple, RefusalPolicy] = {
         ].min_passages_above_floor,
         policy_version=POLICY_VERSION_PINNED,
         embedding_model_id=None,
+    ),
+    # hybrid-rrf pin: min_top_score is the precision-/recall-clean recommendation
+    # from the single-course union-corpus calibration (2026-06-12). score_floor +
+    # count signal inherit the RRF-scale v0 default the sweep was measured against
+    # (the calibration only re-pins min_top_score). refusal_recall=0.2 at this
+    # threshold — pure off-topic tail only; see the comment block above.
+    ("hybrid-rrf", "BAAI/bge-large-en-v1.5"): RefusalPolicy(
+        engine="hybrid-rrf",
+        min_top_score=0.029643,
+        score_floor=DEFAULT_POLICIES["hybrid-rrf"].score_floor,
+        min_passages_above_floor=DEFAULT_POLICIES[
+            "hybrid-rrf"
+        ].min_passages_above_floor,
+        policy_version=POLICY_VERSION_PINNED,
+        embedding_model_id="BAAI/bge-large-en-v1.5",
     ),
 }
 

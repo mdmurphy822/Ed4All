@@ -384,7 +384,7 @@ def test_milestone_targets_exist_and_are_sane():
         MILESTONE_TARGETS_PINNED_AT,
     )
 
-    assert MILESTONE_TARGETS_PINNED_AT == "2026-06-10"
+    assert MILESTONE_TARGETS_PINNED_AT == "2026-06-12"
     expected_keys = {
         "answer_rate",
         "citation_resolution_rate",
@@ -439,6 +439,36 @@ def _latest_eval_artifact(slug: str):
 _MEASURED_COURSES = _discover_measured_courses()
 
 
+#: The gold basis the 2026-06-12 MILESTONE_TARGETS re-pin was measured against:
+#: a frozen gold v1.1 set (schema_version "1.1"). The plan §4 calls a gold-basis
+#: change a hard COMPARABILITY BOUNDARY — an artifact measured against an OLDER
+#: gold basis (the pre-scale-up 10q/9-probe seed, gold schema < 1.1) cannot be
+#: held to floors re-pinned to the new basis (citation_precision moves via gold
+#: denominator semantics; refusal moves to the new hard-probe basis). Such
+#: artifacts are SKIPPED here (not xfailed, not asserted) until they are
+#: re-measured against the v1.1 gold — the honest tier-2 behavior for a
+#: comparability boundary, mirroring how a sha-mismatched gold set fails closed.
+_TARGETS_GOLD_BASIS_SCHEMA = "1.1"
+
+
+def _artifact_predates_targets_gold_basis(doc: dict) -> bool:
+    """True when the eval artifact was measured against a gold basis older than
+    the one MILESTONE_TARGETS is pinned to (gold schema_version < 1.1, or a
+    pre-v1.1 report that records no v1.1 gold pin)."""
+    report_schema = str(doc.get("schema_version") or "")
+    gold = doc.get("gold") if isinstance(doc.get("gold"), dict) else {}
+    gold_schema = str(gold.get("schema_version") or "")
+    # A v1.1 gold pin is the marker of the new basis; anything lacking it
+    # (older report schema 1.0, or a gold block with no/old schema_version) is
+    # the pre-scale-up seed basis and not comparable to the re-pinned floors.
+    if gold_schema == _TARGETS_GOLD_BASIS_SCHEMA:
+        return False
+    if report_schema and report_schema < _TARGETS_GOLD_BASIS_SCHEMA:
+        return True
+    # No v1.1 gold pin recorded → treat as pre-basis (stale).
+    return gold_schema < _TARGETS_GOLD_BASIS_SCHEMA
+
+
 @pytest.mark.skipif(
     not _MEASURED_COURSES,
     reason="no stored grounded_answer_eval_*.json under LibV2/courses/*",
@@ -449,7 +479,13 @@ def test_stored_eval_artifacts_meet_milestone_targets(slug):
     course meets every pinned target — floors via >=, the unsupported-claim
     ceiling via <= — proving the targets are evidence-met today
     (measure-then-pin), not aspirational. Skips cleanly when LibV2 course data
-    is absent so CI without committed artifacts still passes."""
+    is absent so CI without committed artifacts still passes.
+
+    SKIPS (does not assert) a course whose latest artifact predates the gold
+    basis the targets were re-pinned to (2026-06-12, frozen gold v1.1): the
+    plan §4 comparability boundary means an old-basis artifact's metrics are not
+    on the same axis as the new floors. Such a course re-enters the gate the
+    moment it is re-measured against the v1.1 gold (honest, no blanket xfail)."""
     import json
 
     from lib.retrieval.grounded_eval import MILESTONE_CEILINGS, MILESTONE_TARGETS
@@ -458,6 +494,13 @@ def test_stored_eval_artifacts_meet_milestone_targets(slug):
     if path is None:
         pytest.skip(f"no stored grounded_answer_eval artifact for {slug}")
     doc = json.loads(path.read_text(encoding="utf-8"))
+    if _artifact_predates_targets_gold_basis(doc):
+        pytest.skip(
+            f"{slug}: latest artifact ({path.name}) predates the 2026-06-12 "
+            f"frozen-gold v1.1 basis the milestone targets are pinned to "
+            f"(comparability boundary, plan §4) — re-measure against v1.1 gold "
+            f"to re-enter the gate"
+        )
     headline = doc["headline"]
     refusal = headline["refusal"]
 
