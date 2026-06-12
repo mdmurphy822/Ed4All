@@ -403,11 +403,13 @@ def test_real_course_probe_set_validates_and_is_verified(slug):
         # P5 calibration-pin work — this test guards the invariants the pipeline
         # actually relies on (counts, categories, top_passage_answers=false).
         assert len(probes) >= 25
-        assert set(by_cat) == {
+        assert set(by_cat) <= {
             "off_topic",
+            "off_topic_llm",
             "adjacent_domain",
             "out_of_scope_detail",
         }
+        assert {"off_topic", "adjacent_domain", "out_of_scope_detail"} <= set(by_cat)
         assert by_cat["adjacent_domain"] == max(by_cat.values())
     else:
         # Legacy seed authoring procedure: 9 probes, 3 per category, strict v1.0
