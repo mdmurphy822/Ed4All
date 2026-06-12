@@ -95,13 +95,31 @@ MILESTONE_TARGETS_PINNED_AT = "2026-06-12"
 #:   groundedness_rate_mean 0.572  unsupported_claim_rate 0.2326
 #:   refusal_recall 0.50  refusal_precision 0.8947  key_point_coverage 0.5439
 #:
+#: Re-measured clean run (same day, scorer v2 + pinned ws3.v3 refusal policy
+#: incl. the floor-rounding boundary fix, prune=on @ 0.444444):
+#:   answer_rate 0.9351  citation_resolution_rate 1.0  citation_precision 0.4457
+#:   groundedness_rate_mean 0.807  unsupported_claim_rate 0.0891
+#:   refusal_recall 0.8235  refusal_precision 0.875  key_point_coverage 0.5556
+#: Scorer-v1 vs scorer-v2 groundedness numbers are NOT comparable (see the
+#: per-pin notes); refusal numbers moved with the policy pin, not a model
+#: change.
+#:
 #: citation_resolution_rate stays pinned at 1.0: every emitted citation resolved
 #: on this run too, so the floor IS the measurement — any dip is a real
 #: anchoring break, not noise.
 MILESTONE_TARGETS: Dict[str, float] = {
-    # FLOOR. measured 0.961 (single course, 77q gold v1.1, 2026-06-12);
-    # pinned to 0.95 (NOT comparable to the old 0.50/10q basis).
-    "answer_rate": 0.95,
+    # FLOOR. Re-pinned 0.95 → 0.92 on the calibrated-refusal-policy basis
+    # (ws3.v3-pinned + scorer v2, clean run 2026-06-12: measured 0.9351 =
+    # 72/77). The 0.95 pin was measured under the UNCALIBRATED v0 refusal
+    # policy (0.961); the pinned policy deliberately trades answer_rate for
+    # refusal_recall (0.50 → 0.8235 on the 34-probe basis), so the bases are
+    # not comparable. The 5 non-answers are stable, attributed, and tracked:
+    # 4 composer-owned refusals on answerable conceptual-synthesis questions
+    # (model-policy near-miss conservatism — the known improvement area; one
+    # of the 4 is a front-matter provenance question that is arguably
+    # refusal-correct, a gold-quality item) + 1 citation-gate fail-closed
+    # block on a hard multi-part question. Single-corpus caveat applies.
+    "answer_rate": 0.92,
     # FLOOR == measurement. Every emitted citation resolved on the 2026-06-12
     # run (and on all prior runs). Pinned at 1.0 exactly; any dip is a real
     # anchoring break.
@@ -114,27 +132,28 @@ MILESTONE_TARGETS: Dict[str, float] = {
     # denominator semantics (plan §4 comparability boundary), not via a
     # pipeline regression. A richer multi-passage gold would raise it.
     "citation_precision": 0.30,
-    # FLOOR. measured 0.572 (single course 2026-06-12), pinned conservatively
-    # to 0.15 — the prior cross-course floor, kept because this single run does
+    # FLOOR. measured 0.572 under scorer v1 (single course 2026-06-12); the
+    # first scorer-v2 run measured 0.805 (same day, same frozen gold — wider
+    # gate-eligible evidence pool + windowed rescue + computational exemption
+    # raise the rate by construction, so the two are NOT comparable). Floor
+    # kept at 0.15 — the prior cross-course floor — because a single run does
     # not establish a credible cross-corpus bound (R4); tightening waits on a
     # second different-family course.
     "groundedness_rate_mean": 0.15,
-    # CEILING. measured 0.2326 (single course 2026-06-12); pinned unchanged at
-    # 0.25 (lower is better). Comfortably under the ceiling on this run.
-    #
-    # SCORER-VERSION CAVEAT (groundedness v2, 2026-06-12 audit): the 0.2326
-    # measurement + this 0.25 pin were taken under scorer v1 (whole-chunk-
-    # premise grid, no artifact filtering / computational exemption / windowed
-    # rescue). The manual audit of the v1 review sample found ~80% of the
-    # measured unsupported rate was scorer noise (NLI false negatives on
-    # glossary-style multi-topic chunks, novel-but-correct computations, and
-    # claim-splitter artifacts) — true fabrication was ~5%. Scorer v2 removes
-    # those noise sources, so the unsupported_claim_rate measured under v2 is
-    # NOT comparable to the v1 0.2326. This ceiling MUST be re-pinned (measure-
-    # then-pin) after the first v2 eval run; the 0.25 value is left UNCHANGED
-    # here until that measurement exists (never pin from an audit, only from a
-    # run).
-    "unsupported_claim_rate": 0.25,
+    # CEILING. Re-pinned 0.25 → 0.10 on the scorer-v2 basis (2026-06-12:
+    # 0.0904 on the first v2 run, 0.0891 on the clean run after the refusal
+    # floor-rounding fix; single course, 77q frozen gold v1.1, hybrid-rrf, 7B,
+    # prune=on @ 0.444444). Basis change: the v1 pin (measured 0.2326) counted
+    # scorer noise the 2026-06-12 manual audit attributed to NLI false
+    # negatives on glossary-style multi-topic chunks, novel-but-correct
+    # computations, and claim-splitter artifacts (true fabrication ~5%);
+    # scorer v2 (artifact filter + computational exemption + windowed rescue +
+    # gate-eligible evidence pool) removes them, so v1/v2 values are NOT
+    # comparable and the single-course never-tighten rule does not apply to a
+    # basis-invalidated pin. Residual ~9% is dominated by question-induced
+    # evaluative synthesis (gold questions that ask "which is better?") —
+    # honest unsupported, not fabrication. Single-corpus caveat applies.
+    "unsupported_claim_rate": 0.10,
     # FLOOR. measured 0.50 on the NEW 34-probe hard-probe basis (single course
     # 2026-06-12), pinned to 0.45. NOT comparable to the old 9-probe basis. The
     # near-miss / adjacent-domain gap (the 0.5 of probes the retrieval threshold
