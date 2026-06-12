@@ -124,6 +124,86 @@ _KEY_POINTS_MAX = 4
 
 _QUESTION_ID_NUM_RE = re.compile(r"-(\d{4})$")
 
+# ---------------------------------------------------------------- template arms
+#
+# Beyond the stratified-sampler arm (sample_chunks -> draft_candidates), two
+# corpus-shape-targeted template arms mine specific chunk structures and draft
+# one question per mined seed:
+#
+#   * "definition"     — glossary-style chunks laid out as ``Term Definition.
+#                        Term Definition.`` (the Week-N Summary glossary pages).
+#                        Mines candidate key TERMS deterministically, batches
+#                        them, and asks the local model to draft a definition
+#                        question per term. question_type=factual_recall.
+#   * "worked_example" — Problem/Solution/Step chunks. Mines the chunks whose
+#                        text carries a worked example and asks the local model
+#                        to draft a follow/explain question. question_type=
+#                        procedural.
+#
+# Both reuse the deterministic candidate-assembly + pre-screen machinery; the
+# model emits only question semantics + a verbatim quote (never the anchors,
+# population, ids, or difficulty — those stay module-filled).
+DEFINITION_TEMPLATE = "definition"
+WORKED_EXAMPLE_TEMPLATE = "worked_example"
+DEFAULT_TEMPLATE = "stratified"
+
+# A glossary chunk pairs a short Title-Case TERM with a sentence-y definition
+# that follows it. We mine ``Term Definition`` boundaries: a Title-Case run of
+# 1-4 words immediately followed by a capitalized definition sentence. The
+# regex is deliberately conservative (it is a CANDIDATE miner — the local model
+# + the verbatim-quote pre-screen are the real gate), but it matches loosely
+# enough that it must only be applied to chunks that ALREADY look like a
+# glossary (see :func:`_is_glossary_chunk`), else course prose floods it.
+_GLOSSARY_TERM_RE = re.compile(
+    r"(?<![A-Za-z])([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\s+"
+    r"([A-Z][^.]{20,400}?\.)"
+)
+# Non-term Title-Case words that recur in course prose / headings and are NOT
+# glossary terms — filtered so a heading like "Solution ..." or "Chapter ..."
+# never mints a spurious definition candidate.
+_GLOSSARY_TERM_STOPWORDS = frozenset(
+    {
+        "the", "a", "an", "this", "that", "these", "those", "solution",
+        "problem", "step", "steps", "example", "answer", "show", "chapter",
+        "section", "lesson", "module", "week", "objective", "objectives",
+        "summary", "core", "elementary", "introduction", "overview", "note",
+        "notes", "remember", "understand", "apply", "learning", "practice",
+        "term", "definition", "key", "reference", "page", "title",
+    }
+)
+# A chunk qualifies as a glossary only when it yields at least this many
+# distinct term—definition pairs — a single stray "Term Sentence." in prose
+# does not make a glossary.
+_GLOSSARY_MIN_PAIRS = 4
+# Glossary terms are short noun phrases; reject a "term" longer than this many
+# words (a long Title-Case run is a heading / sentence fragment, not a term).
+_GLOSSARY_TERM_MAX_WORDS = 4
+# Structural glossary signal: the genuine term—definition pages are the
+# Week-N Summary chunks (chunk_type "summary"; module/section "summary" /
+# "glossary"). Gating on this STRUCTURAL marker — not just text density — keeps
+# worked-example / prose chunks (which also pack Title-Case phrases) out.
+_GLOSSARY_CHUNK_TYPES = frozenset({"summary", "glossary"})
+_GLOSSARY_HEADING_MARKERS = ("summary", "glossary")
+# A worked-example chunk announces a Problem and a Solution / enumerated-Step
+# structure. The patterns are deliberately specific (not a bare word match):
+#   * a "Problem" or "Problem N" LABEL (Title-case, line-label style);
+#   * a "Solution" LABEL;
+#   * an enumerated "Step N" (rules out the "one-step" / "multi-step" adjectives
+#     that pepper objective-listing prose).
+# A chunk qualifies when it has a Problem label AND (a Solution label OR an
+# enumerated Step). Whole-word adjectives like "one-step" no longer trigger it.
+_PROBLEM_RE = re.compile(r"\bProblem\b")
+_SOLUTION_RE = re.compile(r"\bSolution\b")
+_STEP_RE = re.compile(r"\bStep\s+\d+\b")
+
+# How many glossary terms to put in front of the model per drafting call. One
+# question is drafted per term, but terms are batched so a single chunk's
+# glossary yields a focused, low-latency call per chunk.
+_DEFINITION_TERMS_PER_CHUNK = 8
+# Minimum definition length so a term whose "definition" is a stray fragment is
+# skipped before it ever reaches the model.
+_MIN_DEFINITION_CHARS = 25
+
 
 # ---------------------------------------------------------------- data types
 
@@ -498,6 +578,7 @@ def _build_candidate(
             "author": f"{model_id}/{GOLD_AUTHORING_PROMPT_VERSION}",
             "reviewed_by": "PENDING_REVIEW",
             "status": "draft",
+            "template": DEFAULT_TEMPLATE,
         },
     }
     if slot.objective_refs:
@@ -600,6 +681,372 @@ def draft_candidates(
     return candidates
 
 
+# ---------------------------------------------------------------- definition arm
+
+
+@dataclass(frozen=True)
+class GlossarySeed:
+    """One mined glossary ``(term, definition)`` pair from a glossary chunk."""
+
+    chunk_id: str
+    term: str
+    definition: str
+
+
+def _glossary_pairs(text: str) -> List[Tuple[str, str]]:
+    """Extract de-duplicated ``(term, definition)`` pairs from one chunk's text.
+
+    Filters stray prose: drops terms that are stopwords / heading words, terms
+    longer than :data:`_GLOSSARY_TERM_MAX_WORDS` words, and definitions shorter
+    than :data:`_MIN_DEFINITION_CHARS`. Deterministic (source order, first win
+    per term)."""
+    pairs: List[Tuple[str, str]] = []
+    seen: set = set()
+    for m in _GLOSSARY_TERM_RE.finditer(text):
+        term = m.group(1).strip()
+        definition = m.group(2).strip()
+        if len(definition) < _MIN_DEFINITION_CHARS:
+            continue
+        words = term.split()
+        if len(words) > _GLOSSARY_TERM_MAX_WORDS:
+            continue
+        # Reject when the FIRST word of the term is a stopword / heading word
+        # (e.g. "Solution ...", "Chapter ...") — a real glossary term leads
+        # with the term itself.
+        if words[0].lower() in _GLOSSARY_TERM_STOPWORDS:
+            continue
+        key = term.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append((term, definition))
+    return pairs
+
+
+def _is_glossary_chunk(chunk: Dict[str, Any]) -> bool:
+    """A chunk is a glossary when it carries the STRUCTURAL summary/glossary
+    marker (chunk_type or module/section heading) AND packs >= the minimum
+    term—definition pairs.
+
+    The structural gate is the load-bearing one: a worked-example or prose chunk
+    that happens to pack Title-Case phrases is rejected because it is not a
+    summary/glossary page. The text-density floor is the secondary guard."""
+    ctype = str(chunk.get("chunk_type") or "").lower()
+    structural = ctype in _GLOSSARY_CHUNK_TYPES
+    if not structural:
+        source = chunk.get("source") or {}
+        hay = " ".join(
+            str(source.get(k) or "")
+            for k in ("module_id", "module_title", "section_heading")
+        ).lower()
+        structural = any(m in hay for m in _GLOSSARY_HEADING_MARKERS)
+    if not structural:
+        return False
+    return len(_glossary_pairs(str(chunk.get("text") or ""))) >= _GLOSSARY_MIN_PAIRS
+
+
+def mine_glossary_terms(
+    chunks_by_id: Dict[str, Dict[str, Any]],
+    *,
+    per_chunk_cap: int = _DEFINITION_TERMS_PER_CHUNK,
+) -> List[GlossarySeed]:
+    """Deterministically mine ``(term, definition)`` seeds from glossary chunks.
+
+    A glossary chunk lays out term—definition pairs as ``Term Definition.
+    Term Definition.`` (e.g. the Week-N Summary pages). We walk every chunk in
+    id order, and — only for chunks that read as a glossary
+    (:func:`_is_glossary_chunk`: the STRUCTURAL summary/glossary marker plus a
+    term-definition density floor) — extract the filtered Title-Case-term /
+    capitalized-definition boundaries as seeds. Pure + deterministic.
+
+    The glossary gate keeps worked-example / course prose from minting spurious
+    "definition" candidates; the per-chunk cap keeps one dense glossary from
+    dominating. A non-glossary chunk contributes nothing.
+    """
+    seeds: List[GlossarySeed] = []
+    for cid in sorted(chunks_by_id):
+        chunk = chunks_by_id[cid]
+        if not _is_glossary_chunk(chunk):
+            continue
+        pairs = _glossary_pairs(str(chunk.get("text") or ""))
+        for term, definition in pairs[:per_chunk_cap]:
+            seeds.append(GlossarySeed(chunk_id=cid, term=term, definition=definition))
+    return seeds
+
+
+def _definition_prompt(term: str, chunk_text: str) -> Tuple[str, str]:
+    """``(system, user)`` prompts asking the model to draft one definition
+    question for ``term``, grounded in ``chunk_text``."""
+    system = (
+        "You author one definition question for a key term, grounded in a "
+        "single source chunk. Output JSON only with keys: question_text (a "
+        "clear question asking the learner to define or explain the term, at "
+        "least 10 characters), expected_key_points (a JSON array of 2 to 4 "
+        "short factual points the correct definition must state), and quote (a "
+        "VERBATIM substring copied from the source chunk text, at least 40 "
+        "characters, that states the term's definition). Copy the quote "
+        "character for character from the chunk — do not paraphrase it. Do not "
+        "add facts not present in the chunk."
+    )
+    user = (
+        f"Key term to ask about: {term}\n\n"
+        f"Source chunk text (a glossary):\n{chunk_text}\n\n"
+        'Output JSON only: {"question_text": "...", '
+        '"expected_key_points": ["...", "..."], "quote": "<verbatim substring>"}'
+    )
+    return system, user
+
+
+def draft_definition_candidates(
+    seeds: Sequence[GlossarySeed],
+    chunks_by_id: Dict[str, Dict[str, Any]],
+    *,
+    client: Any,
+    model_id: Optional[str] = None,
+    capture: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Draft one ``definition`` candidate per mined glossary term.
+
+    Mirrors :func:`draft_candidates`: the model emits only question semantics +
+    a verbatim quote; the deterministic fields (anchors, population, ids,
+    difficulty) are module-filled. question_type=factual_recall,
+    authoring.template=definition. One ``gold_candidate_authoring`` decision is
+    emitted after the batch with a dynamic rationale (terms, model, failures).
+    NEVER an Anthropic surface (``client`` is the loopback-local provider).
+    """
+    resolved_model = model_id or getattr(client, "model", "local")
+    candidates: List[Dict[str, Any]] = []
+    errors = 0
+    for seed in seeds:
+        chunk = chunks_by_id.get(seed.chunk_id) or {}
+        system, user = _definition_prompt(seed.term, str(chunk.get("text") or ""))
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            text = client.chat_completion(messages, max_tokens=512, temperature=0.2)
+            draft = _parse_draft(text)
+            cand = _build_template_candidate(
+                seed.chunk_id, chunk, draft, model_id=resolved_model,
+                question_type="factual_recall", template=DEFINITION_TEMPLATE,
+            )
+        except (GoldDraftError, Exception) as exc:  # noqa: BLE001 — record, don't drop
+            errors += 1
+            cand = _build_error_candidate(
+                seed.chunk_id, chunk, resolved_model,
+                question_type="factual_recall", template=DEFINITION_TEMPLATE,
+            )
+            cand["draft_error"] = str(exc)
+        candidates.append(cand)
+
+    _log_template_authoring(
+        capture, template=DEFINITION_TEMPLATE, model=resolved_model,
+        seeds=[s.chunk_id for s in seeds], n=len(candidates), errors=errors,
+        detail=f"mined {len(seeds)} glossary term(s): "
+               + ", ".join(s.term for s in seeds[:8]),
+    )
+    return candidates
+
+
+# ---------------------------------------------------------------- worked-example arm
+
+
+def mine_worked_example_chunks(
+    chunks_by_id: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Deterministically mine the chunk ids carrying a worked example.
+
+    A worked-example chunk announces a ``Problem`` AND either a ``Solution`` or
+    a ``Step`` structure. Returns the matching chunk ids in id order. Pure +
+    deterministic — the local model + verbatim-quote pre-screen are the gate on
+    whether the mined chunk actually yields a usable procedural question.
+    """
+    out: List[str] = []
+    for cid in sorted(chunks_by_id):
+        text = str(chunks_by_id[cid].get("text") or "")
+        if _PROBLEM_RE.search(text) and (
+            _SOLUTION_RE.search(text) or _STEP_RE.search(text)
+        ):
+            out.append(cid)
+    return out
+
+
+def _worked_example_prompt(chunk_text: str) -> Tuple[str, str]:
+    """``(system, user)`` prompts asking the model to draft one procedural
+    question about following / explaining a worked example."""
+    system = (
+        "You author one question that asks the learner to follow or explain a "
+        "worked example present in a single source chunk. Output JSON only with "
+        "keys: question_text (a clear question asking the learner to work "
+        "through, follow, or explain the steps of the example, at least 10 "
+        "characters), expected_key_points (a JSON array of 2 to 4 short points "
+        "naming the ordered steps the correct answer must state), and quote (a "
+        "VERBATIM substring copied from the source chunk text, at least 40 "
+        "characters, drawn from the worked example). Copy the quote character "
+        "for character from the chunk — do not paraphrase it. Do not add facts "
+        "not present in the chunk."
+    )
+    user = (
+        "Source chunk text (a worked example with a Problem and a "
+        f"Solution/Step structure):\n{chunk_text}\n\n"
+        'Output JSON only: {"question_text": "...", '
+        '"expected_key_points": ["...", "..."], "quote": "<verbatim substring>"}'
+    )
+    return system, user
+
+
+def draft_worked_example_candidates(
+    chunk_ids: Sequence[str],
+    chunks_by_id: Dict[str, Dict[str, Any]],
+    *,
+    client: Any,
+    model_id: Optional[str] = None,
+    capture: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Draft one ``worked_example`` candidate per mined worked-example chunk.
+
+    Mirrors :func:`draft_candidates`: the model emits only question semantics +
+    a verbatim quote; deterministic fields are module-filled.
+    question_type=procedural, authoring.template=worked_example. One
+    ``gold_candidate_authoring`` decision is emitted after the batch with a
+    dynamic rationale. NEVER an Anthropic surface.
+    """
+    resolved_model = model_id or getattr(client, "model", "local")
+    candidates: List[Dict[str, Any]] = []
+    errors = 0
+    for cid in chunk_ids:
+        chunk = chunks_by_id.get(cid) or {}
+        system, user = _worked_example_prompt(str(chunk.get("text") or ""))
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        try:
+            text = client.chat_completion(messages, max_tokens=512, temperature=0.2)
+            draft = _parse_draft(text)
+            cand = _build_template_candidate(
+                cid, chunk, draft, model_id=resolved_model,
+                question_type="procedural", template=WORKED_EXAMPLE_TEMPLATE,
+            )
+        except (GoldDraftError, Exception) as exc:  # noqa: BLE001 — record, don't drop
+            errors += 1
+            cand = _build_error_candidate(
+                cid, chunk, resolved_model,
+                question_type="procedural", template=WORKED_EXAMPLE_TEMPLATE,
+            )
+            cand["draft_error"] = str(exc)
+        candidates.append(cand)
+
+    _log_template_authoring(
+        capture, template=WORKED_EXAMPLE_TEMPLATE, model=resolved_model,
+        seeds=list(chunk_ids), n=len(candidates), errors=errors,
+        detail=f"mined {len(chunk_ids)} Problem/Solution/Step chunk(s)",
+    )
+    return candidates
+
+
+# ---------------------------------------------------------------- arm helpers
+
+
+def _build_template_candidate(
+    chunk_id: str,
+    chunk: Dict[str, Any],
+    draft: Dict[str, Any],
+    *,
+    model_id: str,
+    question_type: str,
+    template: str,
+) -> Dict[str, Any]:
+    """Assemble a v1.1-shaped candidate for a template arm (definition /
+    worked_example). Reuses the deterministic anchor + population + difficulty
+    fill of :func:`_build_candidate`, then stamps ``authoring.template``.
+
+    The seed chunk is always the single primary passage (these arms draft one
+    question per seed chunk), so the SampleSlot is synthesized from the chunk's
+    own week / population / objective_refs — same provenance the sampler arm
+    derives, just without the round-robin question_type assignment.
+    """
+    key = _stratum_key(chunk)
+    slot = SampleSlot(
+        chunk_id=chunk_id,
+        question_type=question_type,
+        week=key[0],
+        population=key[2],
+        teaching_role=key[3],
+        objective_refs=_objective_refs(chunk),
+    )
+    candidate = _build_candidate(slot, chunk, draft, model_id=model_id)
+    candidate["authoring"]["template"] = template
+    return candidate
+
+
+def _build_error_candidate(
+    chunk_id: str,
+    chunk: Dict[str, Any],
+    model_id: str,
+    *,
+    question_type: str,
+    template: str,
+) -> Dict[str, Any]:
+    """A draft-failure candidate (recorded, not dropped) for a template arm."""
+    return {
+        "question_id": f"gqc-{chunk_id}",
+        "question_text": "",
+        "question_type": question_type,
+        "relevant_passages": [
+            {"chunk_id": chunk_id, "relevance": "primary",
+             "anchor": {"item_path": str((chunk.get("source") or {}).get("item_path") or ""),
+                        "text_quote": ""}}
+        ],
+        "authoring": {
+            "method": "llm_assisted",
+            "author": f"{model_id}/{GOLD_AUTHORING_PROMPT_VERSION}",
+            "reviewed_by": "PENDING_REVIEW",
+            "status": "draft",
+            "template": template,
+        },
+    }
+
+
+def _log_template_authoring(
+    capture: Optional[Any],
+    *,
+    template: str,
+    model: str,
+    seeds: Sequence[str],
+    n: int,
+    errors: int,
+    detail: str,
+) -> None:
+    """Emit one ``gold_candidate_authoring`` decision for a template-arm batch
+    with a dynamic rationale (template, model, seed ids, accept/reject split)."""
+    if capture is None:
+        return
+    seed_ids = ",".join(seeds[:8])
+    more = "" if len(seeds) <= 8 else f" (+{len(seeds) - 8} more)"
+    parsed_ok = n - errors
+    try:
+        capture.log_decision(
+            decision_type="gold_candidate_authoring",
+            decision=(
+                f"drafted {n} '{template}' gold candidate(s) via local model "
+                f"{model}; {errors} parse-failure(s)."
+            ),
+            rationale=(
+                f"Template-arm '{template}' gold-candidate drafting over "
+                f"{len(seeds)} deterministically-mined seed(s) "
+                f"[{seed_ids}{more}] using license-clean local model {model} "
+                f"(prompt {GOLD_AUTHORING_PROMPT_VERSION}); {detail}; "
+                f"parsed_ok={parsed_ok}, parse_failures={errors}. Quotes are "
+                f"pre-screened deterministically for verbatim containment + "
+                f"ambiguity downstream before any promotion."
+            ),
+        )
+    except Exception:  # pragma: no cover — defensive
+        pass
+
+
 # ---------------------------------------------------------------- prescreen
 
 
@@ -691,29 +1138,50 @@ def build_candidates_doc(
     n_requested: int,
     seed: int,
     model_id: str,
+    by_template: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
-    """Build the ``gold_candidates.json`` wrapper doc."""
+    """Build the ``gold_candidates.json`` wrapper doc.
+
+    ``by_template`` records the per-arm drafted counts (stratified / definition
+    / worked_example) so the operator sees how many candidates each template arm
+    produced — a zero-yield arm (e.g. a corpus with no glossary chunks) is then
+    visible rather than silently absent.
+    """
     candidates_out: List[Dict[str, Any]] = []
     for cand, verdict in screened:
         entry = dict(cand)
         entry["prescreen"] = verdict.to_dict()
         candidates_out.append(entry)
     passed = sum(1 for _, v in screened if v.passed)
+    authoring_run: Dict[str, Any] = {
+        "n_requested": n_requested,
+        "n_drafted": len(candidates_out),
+        "n_prescreen_passed": passed,
+        "seed": seed,
+        "model_id": model_id,
+        "prompt_version": GOLD_AUTHORING_PROMPT_VERSION,
+    }
+    if by_template is not None:
+        authoring_run["by_template"] = dict(by_template)
     return {
         "schema_version": "1.1",
         "course_slug": course_slug,
         "chunkset": dict(chunkset),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "authoring_run": {
-            "n_requested": n_requested,
-            "n_drafted": len(candidates_out),
-            "n_prescreen_passed": passed,
-            "seed": seed,
-            "model_id": model_id,
-            "prompt_version": GOLD_AUTHORING_PROMPT_VERSION,
-        },
+        "authoring_run": authoring_run,
         "candidates": candidates_out,
     }
+
+
+_DEFAULT_TEMPLATES: Tuple[str, ...] = (
+    DEFAULT_TEMPLATE,
+    DEFINITION_TEMPLATE,
+    WORKED_EXAMPLE_TEMPLATE,
+)
+# Cap the per-template mined-seed counts so the template arms supplement the
+# stratified arm without flooding it (they over-generate ~half the base target).
+_DEFAULT_DEFINITION_CAP = 25
+_DEFAULT_WORKED_EXAMPLE_CAP = 25
 
 
 def generate_gold_candidates(
@@ -725,12 +1193,25 @@ def generate_gold_candidates(
     model_id: Optional[str] = None,
     capture: Optional[Any] = None,
     write: bool = True,
+    templates: Optional[Sequence[str]] = None,
+    definition_cap: int = _DEFAULT_DEFINITION_CAP,
+    worked_example_cap: int = _DEFAULT_WORKED_EXAMPLE_CAP,
 ) -> Tuple[Dict[str, Any], Optional[Path]]:
-    """End-to-end §2.2 steps 1-3: sample → draft → pre-screen → write doc.
+    """End-to-end §2.2 steps 1-3: sample / mine → draft → pre-screen → write doc.
 
-    Loads the course's pinned chunkset from its gold set's ``chunkset`` pin,
-    samples ``n`` chunks (default 2x the 50-question target), drafts a candidate
-    per slot via ``client``, pre-screens deterministically, and writes
+    Loads the course's pinned chunkset from its gold set's ``chunkset`` pin and
+    runs one or more template arms (``templates``, default all three):
+
+      * ``stratified`` — the §1.2 stratified sampler over ``n`` chunks (default
+        2x the 50-question target).
+      * ``definition`` — deterministically-mined glossary terms, one
+        factual_recall question per term (capped at ``definition_cap``).
+      * ``worked_example`` — deterministically-mined Problem/Solution/Step
+        chunks, one procedural question per chunk (capped at
+        ``worked_example_cap``).
+
+    All arms draft via the license-clean local ``client``, then the combined
+    candidate list is pre-screened deterministically and written to
     ``retrieval_eval/gold_candidates.json``. Returns ``(doc, written_path)``.
 
     Raises ``FileNotFoundError`` when the gold set / chunkset is absent (the
@@ -750,12 +1231,34 @@ def generate_gold_candidates(
         raise FileNotFoundError(f"pinned chunkset not found at {chunks_path}.")
     chunks_by_id = _load_chunks_by_id(chunks_path)
 
+    selected = tuple(templates) if templates is not None else _DEFAULT_TEMPLATES
+
     n_resolved = int(n) if n else _DEFAULT_TARGET_QUESTIONS * _DEFAULT_OVERGEN_FACTOR
     is_union = chunkset.get("kind") == "corpus"
-    slots = sample_chunks(chunks_by_id, n=n_resolved, seed=seed, is_union=is_union)
-    candidates = draft_candidates(
-        slots, chunks_by_id, client=client, model_id=model_id, capture=capture
-    )
+    candidates: List[Dict[str, Any]] = []
+    by_template: Dict[str, int] = {}
+    if DEFAULT_TEMPLATE in selected:
+        slots = sample_chunks(chunks_by_id, n=n_resolved, seed=seed, is_union=is_union)
+        strat = draft_candidates(
+            slots, chunks_by_id, client=client, model_id=model_id, capture=capture
+        )
+        candidates.extend(strat)
+        by_template[DEFAULT_TEMPLATE] = len(strat)
+    if DEFINITION_TEMPLATE in selected:
+        seeds = mine_glossary_terms(chunks_by_id)[:max(0, definition_cap)]
+        defs = draft_definition_candidates(
+            seeds, chunks_by_id, client=client, model_id=model_id, capture=capture
+        )
+        candidates.extend(defs)
+        by_template[DEFINITION_TEMPLATE] = len(defs)
+    if WORKED_EXAMPLE_TEMPLATE in selected:
+        we_ids = mine_worked_example_chunks(chunks_by_id)[:max(0, worked_example_cap)]
+        wes = draft_worked_example_candidates(
+            we_ids, chunks_by_id, client=client, model_id=model_id, capture=capture
+        )
+        candidates.extend(wes)
+        by_template[WORKED_EXAMPLE_TEMPLATE] = len(wes)
+
     existing = [
         str(q.get("question_text") or "")
         for q in (gold.get("questions") or [])
@@ -770,6 +1273,7 @@ def generate_gold_candidates(
         n_requested=n_resolved,
         seed=seed,
         model_id=resolved_model,
+        by_template=by_template,
     )
     out_path: Optional[Path] = None
     if write:
@@ -990,13 +1494,21 @@ def promote_candidates(
 __all__ = [
     "GOLD_CANDIDATES_FILENAME",
     "GOLD_AUTHORING_PROMPT_VERSION",
+    "DEFAULT_TEMPLATE",
+    "DEFINITION_TEMPLATE",
+    "WORKED_EXAMPLE_TEMPLATE",
     "SampleSlot",
+    "GlossarySeed",
     "PrescreenVerdict",
     "PromoteReport",
     "GoldDraftError",
     "GoldPromoteError",
     "sample_chunks",
     "draft_candidates",
+    "mine_glossary_terms",
+    "draft_definition_candidates",
+    "mine_worked_example_chunks",
+    "draft_worked_example_candidates",
     "prescreen_candidate",
     "prescreen_candidates",
     "build_candidates_doc",

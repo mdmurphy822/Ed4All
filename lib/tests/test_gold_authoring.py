@@ -14,12 +14,18 @@ from pathlib import Path
 import pytest
 
 from lib.retrieval.gold_authoring import (
+    DEFINITION_TEMPLATE,
     GOLD_AUTHORING_PROMPT_VERSION,
+    WORKED_EXAMPLE_TEMPLATE,
     GoldPromoteError,
     PrescreenVerdict,
     build_candidates_doc,
     draft_candidates,
+    draft_definition_candidates,
+    draft_worked_example_candidates,
     generate_gold_candidates,
+    mine_glossary_terms,
+    mine_worked_example_chunks,
     prescreen_candidate,
     prescreen_candidates,
     promote_candidates_into_gold,
@@ -71,15 +77,20 @@ _TEXT_C = "The chain rule lets you differentiate a composition of two functions 
 
 
 def _chunk(cid, text, *, item_path, los=(), tags=(), role="explanation",
-           source_refs=None):
+           source_refs=None, chunk_type=None, section_heading=None):
     src = {"item_path": item_path}
     if source_refs:
         src["source_references"] = source_refs
-    return {
+    if section_heading:
+        src["section_heading"] = section_heading
+    chunk = {
         "id": cid, "text": text, "source": src,
         "learning_outcome_refs": list(los), "concept_tags": list(tags),
         "teaching_role": role,
     }
+    if chunk_type:
+        chunk["chunk_type"] = chunk_type
+    return chunk
 
 
 def _draft_json(q="What does a vector store index for retrieval?",
@@ -444,3 +455,202 @@ def test_generate_gold_candidates_end_to_end(tmp_path):
     assert any(e["decision_type"] == "gold_candidate_authoring" for e in cap.events)
     # every candidate carries a prescreen verdict
     assert all("prescreen" in c for c in doc["candidates"])
+
+
+# --------------------------------------------------------------- definition arm
+
+
+# A synthetic glossary chunk: "Term Definition. Term Definition." layout with
+# >= 4 pairs, marked chunk_type=summary (the structural glossary signal).
+_GLOSSARY_TEXT = (
+    "Integer Any whole number, its negative counterpart, or zero. Fractions "
+    "and decimals are not integers. Absolute Value The distance between a "
+    "number and zero on the number line, always non-negative. Opposite The "
+    "number the same distance from zero but on the other side of zero. Number "
+    "Line A horizontal line on which every real number has a unique position. "
+    "Signed Number Any number that may be positive or negative in arithmetic."
+)
+
+
+def _glossary_chunk(cid="g001", **kw):
+    kw.setdefault("item_path", "week_03/summary.html")
+    kw.setdefault("chunk_type", "summary")
+    kw.setdefault("section_heading", "Week 3 Summary")
+    return _chunk(cid, _GLOSSARY_TEXT, **kw)
+
+
+def test_mine_glossary_terms_extracts_pairs():
+    chunks = {"g001": _glossary_chunk()}
+    seeds = mine_glossary_terms(chunks)
+    terms = {s.term for s in seeds}
+    assert "Integer" in terms or "Absolute Value" in terms
+    assert all(s.chunk_id == "g001" for s in seeds)
+    assert all(len(s.definition) >= 25 for s in seeds)
+
+
+def test_mine_glossary_terms_deterministic():
+    chunks = {"g001": _glossary_chunk()}
+    a = mine_glossary_terms(chunks)
+    b = mine_glossary_terms(chunks)
+    assert [(s.term, s.definition) for s in a] == [(s.term, s.definition) for s in b]
+
+
+def test_mine_glossary_terms_skips_non_glossary():
+    # A worked-example / prose chunk (no summary marker) must be skipped even if
+    # it packs Title-Case phrases — the structural gate rejects it.
+    chunks = {"x001": _chunk("x001", _GLOSSARY_TEXT, item_path="week_01/a.html",
+                             chunk_type="explanation")}
+    seeds = mine_glossary_terms(chunks)
+    assert seeds == []
+
+
+def test_draft_definition_candidates_shape_and_metadata():
+    chunks = {"g001": _glossary_chunk(los=["to-03", "co-07"],
+                                      source_refs=[{"sourceId": "dart:tb#1"}])}
+    seeds = mine_glossary_terms(chunks)[:1]
+    quote = "The distance between a number and zero on the number line, always non-negative"
+    client = FakeDraftClient([_draft_json(
+        q="What is the definition of absolute value?", quote=quote,
+        kps=("distance from zero", "always non-negative"))])
+    cands = draft_definition_candidates(seeds, chunks, client=client)
+    assert len(cands) == 1
+    c = cands[0]
+    assert c["question_type"] == "factual_recall"
+    assert c["authoring"]["template"] == DEFINITION_TEMPLATE
+    assert c["authoring"]["method"] == "llm_assisted"
+    # full metadata: difficulty + population + key points + objective_refs.
+    assert c["difficulty"] in ("easy", "medium", "hard")
+    assert c["expected_citation_population"] == "source"  # source_refs => source
+    assert 2 <= len(c["expected_key_points"]) <= 4
+    assert c["objective_refs"] == ["co-07", "to-03"]
+    p = c["relevant_passages"][0]
+    assert p["chunk_id"] == "g001" and p["relevance"] == "primary"
+
+
+def test_draft_definition_capture_fires_dynamic():
+    chunks = {"g001": _glossary_chunk()}
+    seeds = mine_glossary_terms(chunks)[:1]
+    quote = "The distance between a number and zero on the number line, always non-negative"
+    cap = SpyCapture()
+    draft_definition_candidates(
+        seeds, chunks, client=FakeDraftClient([_draft_json(quote=quote)]), capture=cap)
+    ev = [e for e in cap.events if e["decision_type"] == "gold_candidate_authoring"]
+    assert len(ev) == 1
+    assert len(ev[0]["rationale"]) >= 20
+    assert DEFINITION_TEMPLATE in ev[0]["rationale"]
+    assert "g001" in ev[0]["rationale"]
+
+
+def test_draft_definition_records_parse_failure():
+    chunks = {"g001": _glossary_chunk()}
+    seeds = mine_glossary_terms(chunks)[:1]
+    cands = draft_definition_candidates(
+        seeds, chunks, client=FakeDraftClient(["not json"]))
+    assert cands and "draft_error" in cands[0]
+    assert cands[0]["authoring"]["template"] == DEFINITION_TEMPLATE
+
+
+# --------------------------------------------------------------- worked-example arm
+
+
+_WORKED_TEXT = (
+    "Problem 1 — Event Scheduling. The chess club meets every 6 days. On what "
+    "day will they next meet? Solution. We need the least common multiple of 6 "
+    "and 8. Step 1: list multiples. Step 2: find the smallest common one."
+)
+
+
+def test_mine_worked_example_chunks_matches_problem_solution():
+    chunks = {
+        "w001": _chunk("w001", _WORKED_TEXT, item_path="week_01/work.html"),
+        "p001": _chunk("p001", _TEXT_A, item_path="week_01/a.html"),
+    }
+    ids = mine_worked_example_chunks(chunks)
+    assert "w001" in ids
+    assert "p001" not in ids  # no Problem/Solution structure
+
+
+def test_draft_worked_example_candidates_shape_and_metadata():
+    chunks = {"w001": _chunk("w001", _WORKED_TEXT, item_path="week_01/work.html",
+                             los=["to-01"])}
+    ids = mine_worked_example_chunks(chunks)
+    quote = "We need the least common multiple of 6 and 8. Step 1: list multiples."
+    client = FakeDraftClient([_draft_json(
+        q="How do you solve the event scheduling problem step by step?",
+        quote=quote, kps=("find the LCM", "list multiples"))])
+    cands = draft_worked_example_candidates(ids, chunks, client=client)
+    assert len(cands) == 1
+    c = cands[0]
+    assert c["question_type"] == "procedural"
+    assert c["authoring"]["template"] == WORKED_EXAMPLE_TEMPLATE
+    assert c["difficulty"] in ("easy", "medium", "hard")
+    # course population (week_NN path, no source_refs)
+    assert c["expected_citation_population"] == "course"
+    assert 2 <= len(c["expected_key_points"]) <= 4
+
+
+def test_draft_worked_example_capture_fires_dynamic():
+    chunks = {"w001": _chunk("w001", _WORKED_TEXT, item_path="week_01/work.html")}
+    ids = mine_worked_example_chunks(chunks)
+    quote = "We need the least common multiple of 6 and 8. Step 1: list multiples."
+    cap = SpyCapture()
+    draft_worked_example_candidates(
+        ids, chunks, client=FakeDraftClient([_draft_json(quote=quote)]), capture=cap)
+    ev = [e for e in cap.events if e["decision_type"] == "gold_candidate_authoring"]
+    assert len(ev) == 1
+    assert WORKED_EXAMPLE_TEMPLATE in ev[0]["rationale"]
+    assert "w001" in ev[0]["rationale"]
+
+
+# --------------------------------------------------------------- arms end-to-end
+
+
+def test_generate_gold_candidates_template_arms_only(tmp_path):
+    """Selecting only the new arms runs them + records per-template counts."""
+    slug = "demo-union-101"
+    cdir = tmp_path / "courses" / slug
+    (cdir / "corpus").mkdir(parents=True)
+    chunks = {
+        "g001": _glossary_chunk(los=["to-03"]),
+        "w001": _chunk("w001", _WORKED_TEXT, item_path="week_01/work.html",
+                       los=["to-01"]),
+    }
+    chunks_path = cdir / "corpus" / "chunks.jsonl"
+    with chunks_path.open("w") as fh:
+        for c in chunks.values():
+            fh.write(json.dumps(c) + "\n")
+    from lib.utils import sha256_file
+    sha = sha256_file(chunks_path)
+    gold = {
+        "schema_version": "1.1", "course_slug": slug,
+        "chunkset": {"kind": "corpus", "chunks_path": "corpus/chunks.jsonl",
+                     "chunks_sha256": sha},
+        "authored_at": "2026-06-11T00:00:00Z", "frozen": False,
+        "questions": [{
+            "question_id": f"gq-{slug}-0001", "question_type": "factual_recall",
+            "question_text": "seed question about integers here?",
+            "relevant_passages": [{"chunk_id": "g001", "relevance": "primary",
+                "anchor": {"item_path": "week_03/summary.html",
+                           "text_quote": chunks["g001"]["text"][:60]}}],
+            "authoring": {"method": "manual", "author": "@t",
+                          "reviewed_by": "@r", "status": "reviewed"}}],
+    }
+    (cdir / "retrieval_eval").mkdir(parents=True)
+    (cdir / "retrieval_eval" / "gold_set.json").write_text(json.dumps(gold))
+
+    quote_def = "Any whole number, its negative counterpart, or zero"
+    quote_we = "We need the least common multiple of 6 and 8. Step 1: list multiples."
+    # one def draft + one worked-example draft (client cycles last response).
+    client = FakeDraftClient([
+        _draft_json(q="Define the term integer in this glossary please?", quote=quote_def),
+        _draft_json(q="Walk through solving the scheduling problem step by step?", quote=quote_we),
+    ])
+    doc, out_path = generate_gold_candidates(
+        cdir, client=client, capture=SpyCapture(),
+        templates=[DEFINITION_TEMPLATE, WORKED_EXAMPLE_TEMPLATE],
+    )
+    bt = doc["authoring_run"]["by_template"]
+    assert DEFINITION_TEMPLATE in bt and WORKED_EXAMPLE_TEMPLATE in bt
+    assert "stratified" not in bt  # not selected
+    templates_seen = {c["authoring"].get("template") for c in doc["candidates"]}
+    assert templates_seen <= {DEFINITION_TEMPLATE, WORKED_EXAMPLE_TEMPLATE}

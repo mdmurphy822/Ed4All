@@ -131,7 +131,20 @@ GOLD_SET_ISSUE_CODES = frozenset(
         # warning
         "GOLD_SET_TYPE_IMBALANCE",
         "GOLD_SET_AMBIGUOUS_QUOTE",
+        "GOLD_QUESTION_METADATA_INCOMPLETE",
     }
+)
+
+# The v1.1 metadata fields a fully-authored answerable gold question carries.
+# Missing any of these surfaces a warning (never a critical) so a partially
+# authored / legacy-seed set still loads + evals: the frozen v1.1 set has a
+# handful of seed questions missing difficulty / expected_citation_population,
+# and flipping this critical would break the staleness / eval path. The backfill
+# proposal (libv2 gold-metadata-backfill) is the remediation surface.
+_METADATA_REQUIRED_FIELDS = (
+    "question_type",
+    "difficulty",
+    "expected_citation_population",
 )
 
 _CRITICAL_CODES = frozenset(
@@ -604,6 +617,68 @@ def validate_gold_set(
     # Type-imbalance warning (at scale only).
     issues.extend(_type_imbalance_issues(questions))
 
+    # Metadata-completeness warnings (per-question; never fail the load). The
+    # difficulty / expected_citation_population / expected_key_points fields are
+    # v1.1 additions, so a v1.0 doc (which has no such fields by schema) is not
+    # flagged — only a v1.1 doc is expected to carry them.
+    if doc_schema_version(gold) == "1.1":
+        issues.extend(_metadata_completeness_issues(questions))
+
+    return issues
+
+
+def _is_refusal_question(q: Dict[str, Any]) -> bool:
+    """A gold question is treated as a refusal-style entry (exempt from the
+    expected_key_points completeness check) when it is explicitly flagged
+    unanswerable. Gold sets are answerable by construction, but a future
+    deliberately-uncovered entry may carry such a marker — so the check is
+    forward-compatible rather than assuming every question is answerable."""
+    if q.get("is_refusal") is True or q.get("unanswerable") is True:
+        return True
+    cat = q.get("category")
+    return isinstance(cat, str) and cat in (
+        "off_topic", "off_topic_llm", "adjacent_domain", "out_of_scope_detail",
+    )
+
+
+def _metadata_completeness_issues(questions: List[Any]) -> List[GoldSetIssue]:
+    """Warn on questions missing v1.1 metadata.
+
+    Required for every question: question_type, difficulty,
+    expected_citation_population. Required for non-refusal questions:
+    expected_key_points. Each missing-field set emits ONE
+    GOLD_QUESTION_METADATA_INCOMPLETE warning naming the absent fields, so a
+    backfill pass (or operator) can see exactly what to fill. Warning-severity
+    by contract — a partially-authored / legacy-seed set still loads + evals.
+    """
+    issues: List[GoldSetIssue] = []
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        qid = q.get("question_id") if isinstance(q.get("question_id"), str) else None
+        missing: List[str] = []
+        for field_name in _METADATA_REQUIRED_FIELDS:
+            value = q.get(field_name)
+            if not (isinstance(value, str) and value.strip()):
+                missing.append(field_name)
+        if not _is_refusal_question(q):
+            kps = q.get("expected_key_points")
+            if not (isinstance(kps, list) and len(kps) >= 2):
+                missing.append("expected_key_points")
+        if missing:
+            issues.append(
+                GoldSetIssue(
+                    code="GOLD_QUESTION_METADATA_INCOMPLETE",
+                    severity="warning",
+                    message=(
+                        f"question is missing v1.1 metadata field(s): "
+                        f"{', '.join(missing)}. Backfill before freeze "
+                        f"(libv2 gold-metadata-backfill proposes difficulty / "
+                        f"expected_citation_population)."
+                    ),
+                    question_id=qid,
+                )
+            )
     return issues
 
 
