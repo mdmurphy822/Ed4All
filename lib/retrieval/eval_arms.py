@@ -104,7 +104,36 @@ from lib.retrieval.gold_set import has_critical_issues, load_gold_set
 #: reads them from its headline.refusal block; RETRIEVAL is ``"—"`` throughout
 #: (it emits no answers). The stdout table gained a clearly-headed SAFETY block
 #: + a one-line probe-fabrication summary.
-SCORECARD_SCHEMA_VERSION = "1.3"
+#: 1.3 → 1.4 (SEMANTIC REFINEMENT — some 1.3 fields MOVE / are REMOVED;
+#: documented because this is NOT purely additive):
+#:   (1) The refusal-safety rows are HOISTED from the per-arm comparison columns
+#:       to a NEW TOP-LEVEL ``comparison.refusal_safety`` block (a peer of
+#:       ``hallucination_reduction``), keyed by arm → row. The per-arm
+#:       ``comparison[arm].refusal_safety`` sub-key is REMOVED. (Rationale: a
+#:       reader looking for ``comparison.refusal_safety`` top-level — the natural
+#:       location alongside hallucination_reduction — previously found nothing,
+#:       so the safety story read as absent/empty.)
+#:   (2) The per-arm safety row's ``answered_probe_rate`` key is RENAMED to
+#:       ``answered_not_refused_rate`` (THE HEADLINE safety metric).
+#:   (3) The BASE arm STOPS NLI-scoring its answered refusal-probe answers — a
+#:       category error (an off-topic base answer scored against irrelevant
+#:       passages; NLI judges standalone plausibility, not corpus-grounding, and
+#:       spuriously marks it ENTAILED, making base look ~20x safer than it is).
+#:       The base ``probe_confabulation`` block DROPS
+#:       ``unsupported_answer_rate_on_probes`` /
+#:       ``claim_level_unsupported_rate_on_probes`` /
+#:       ``answered_probe_claims_scored``; each per-probe row's
+#:       ``unsupported_rate`` is now always ``null`` with a one-word
+#:       ``unsupported_rate_reason`` of ``"category_error_offtopic_nli"``.
+#:   (4) BASE ``probe_fabrication_rate`` is now INTRINSIC (= answered_not_refused
+#:       _rate; every ungrounded-by-construction base probe answer is fabrication
+#:       -relative-to-course), NOT the NLI product. GROUNDED keeps the NLI
+#:       product (answered_not_refused_rate × unsupported_answer_rate_on_answered
+#:       _probes — valid: near-miss answers from real cited passages). BASE's
+#:       ``unsupported_answer_rate_on_answered_probes`` is the sentinel ``"—"``.
+#:   The GROUNDED arm's refusal computation + EVAL_SCHEMA_VERSION (grounded
+#:   report) are UNCHANGED — the grounded probe-answer NLI fields stay valid.
+SCORECARD_SCHEMA_VERSION = "1.4"
 
 SCORECARD_FILENAME_PREFIX = "eval_scorecard_"
 
@@ -198,16 +227,23 @@ _BASE_GROUNDEDNESS_NOTE = (
 #: "answer" is unanchored invention. The two are NOT the same failure and the
 #: comparison labels them as such (``answered-instead-of-refused``).
 _PROBE_CONFABULATION_NOTE = (
-    "confabulation_rate is answered / n_probes over the refusal-probe set "
-    "(questions deliberately unanswerable from the course corpus). The BASE arm "
-    "has NO refusal machinery, so a 'declined' probe means the raw answer text "
-    "tripped a does-not-cover disclaimer heuristic (reused from the gold key-"
-    "point scorer) — a raw model nearly always answers, so this rate is "
-    "expected to be near 1.0. A base 'answer' on a probe is pure invention; the "
-    "grounded pipeline's comparable axis (answered-instead-of-refused = "
-    "1 - refusal_recall) counts probes it failed to refuse, but even those "
-    "grounded 'answers' still pass citation gates / disclaimers — NOT the same "
-    "as base invention."
+    "confabulation_rate is answered / classifiable over the refusal-probe set "
+    "(questions deliberately unanswerable from the course corpus) — the BASE "
+    "arm's HEADLINE safety metric (answered-not-refused). The BASE arm has NO "
+    "refusal machinery, so a 'declined' probe means the raw answer text tripped "
+    "a does-not-cover disclaimer heuristic (reused from the gold key-point "
+    "scorer) — a raw model nearly always answers, so this rate is expected to be "
+    "near 1.0. A base 'answer' on a probe is unsupported-by-course BY "
+    "CONSTRUCTION (the probe is unanswerable from the corpus by definition), so "
+    "the answer is NOT NLI-scored against the corpus: NLI would judge standalone "
+    "plausibility, not corpus-grounding, for cross-domain text and spuriously "
+    "mark off-topic answers ENTAILED against irrelevant passages — a category "
+    "error. The 'unsupported-when-answered' NLI refinement is GROUNDED-ARM-ONLY "
+    "(its answered probes are near-miss answers from a real cited passage, where "
+    "corpus-grounding NLI is valid). The grounded pipeline's comparable headline "
+    "axis (answered-instead-of-refused = 1 - refusal_recall) counts probes it "
+    "failed to refuse, but even those grounded 'answers' still pass citation "
+    "gates / disclaimers — NOT the same as base invention."
 )
 
 
@@ -299,21 +335,19 @@ def _load_base_probes(
     return _load_probes(probes_path)
 
 
+#: Sentinel reason stamped on every per-probe row's (now-always-null)
+#: ``unsupported_rate`` for the BASE arm. See :func:`_run_base_probe_pass` for
+#: the full category-error rationale.
+_BASE_PROBE_NLI_CATEGORY_ERROR = "category_error_offtopic_nli"
+
+
 def _run_base_probe_pass(
     probes: Sequence[Dict[str, Any]],
     *,
     client: Any,
     max_tokens: int,
-    repo_root: Path,
-    course_slug: str,
-    engine: str,
-    limit: int,
-    retrieve_fn: Any,
-    nli: Optional[Any],
-    nli_unavailable_reason: Optional[str],
 ) -> Dict[str, Any]:
-    """Ask the raw base model every refusal probe; count answered vs declined,
-    AND score the unsupported-vs-corpus rate of every ANSWERED probe.
+    """Ask the raw base model every refusal probe; count answered vs declined.
 
     The OUT-OF-SCOPE CONFABULATION axis. Each probe is a question deliberately
     unanswerable from the course corpus; the base model — with NO refusal
@@ -323,21 +357,29 @@ def _run_base_probe_pass(
     heuristic). Per-probe error isolation: a client exception on one probe is
     recorded (``errored``) and the pass keeps going.
 
-    REFUSAL-SAFETY axis (schema 1.3): for every probe the base model ANSWERED
-    (did not decline), the answer is scored against the SAME top-k passages the
-    grounded pipeline would retrieve via :func:`_score_base_groundedness` (the
-    IDENTICAL machinery the hallucination axis uses) — so the comparison to the
-    grounded arm's answered-probe groundedness is apples-to-apples. Rolled up
-    additively: ``unsupported_answer_rate_on_probes`` (per-probe mean over
-    answered probes), ``claim_level_unsupported_rate_on_probes`` (total
-    unsupported / total scored), ``answered_probe_claims_scored``. Each per-probe
-    row gains ``unsupported_rate`` (or null). All null / None when NLI is
-    unavailable — never a fabricated rate.
+    CATEGORY-ERROR FIX (schema 1.4): this pass NO LONGER NLI-scores answered
+    base probe answers against the corpus. A refusal probe is unanswerable-from-
+    the-course BY CONSTRUCTION, so ANY base answer to it is unsupported-by-course
+    — membership in the probe set already establishes that; no NLI is needed (or
+    valid) for the BASE arm. NLI judges a claim's standalone plausibility, NOT
+    its corpus-grounding, for cross-domain text: a base off-topic answer (e.g.
+    "ceviche is Peru's national dish") scored against irrelevant algebra passages
+    is spuriously marked ENTAILED, making the base arm look ~20x safer than it is
+    (a measured base answer scored 8 claims / 0 unsupported). The HEADLINE base
+    safety metric is therefore the ANSWERED-NOT-REFUSED rate (= the
+    ``confabulation_rate`` below); the NLI "unsupported-when-answered" sub-metric
+    is GROUNDED-ARM-ONLY (the grounded arm's answered probes are mostly near-miss
+    answers FROM A REAL CITED PASSAGE, where corpus-grounding NLI IS valid). Do
+    NOT "re-add" probe-answer NLI scoring to the BASE arm here — it is a category
+    error, not an oversight. (The base GOLD-question hallucination axis still
+    NLI-scores, in :func:`run_base_arm` — gold questions have topically-matched
+    passages where NLI is valid; only the off-topic PROBE answers are exempt.)
 
     Returns the ``probe_confabulation`` block:
-    ``{n_probes, answered, declined, errored, confabulation_rate, probes:[...],
-    unsupported_answer_rate_on_probes, claim_level_unsupported_rate_on_probes,
-    answered_probe_claims_scored}``.
+    ``{n_probes, answered, declined, errored, confabulation_rate, probes:[...]}``.
+    Each per-probe row carries ``unsupported_rate: null`` with a one-word
+    ``unsupported_rate_reason`` of ``"category_error_offtopic_nli"`` so a reader
+    sees WHY the BASE arm intentionally skips probe-answer NLI.
     ``confabulation_rate = answered / (answered + declined)`` (errored probes are
     excluded from the denominator — they never produced an answer to classify);
     ``None`` when nothing was classifiable (no probes / all errored), never a
@@ -347,10 +389,6 @@ def _run_base_probe_pass(
     answered = 0
     declined = 0
     errored = 0
-    # Refusal-safety aggregates over ANSWERED probes only.
-    answered_unsupported_rates: List[float] = []
-    answered_unsupported_count = 0
-    answered_claims_scored = 0
     for probe in probes:
         pid = str(probe.get("probe_id", ""))
         ptext = str(probe.get("question_text", ""))
@@ -376,46 +414,20 @@ def _run_base_probe_pass(
             )
             continue
         declined_here = _base_answer_declines(answer_text)
-        unsupported_rate: Optional[float] = None
         if declined_here:
             declined += 1
         else:
             answered += 1
-            # Refusal-safety: score this ANSWERED probe against the corpus with
-            # the SAME groundedness machinery the hallucination axis uses.
-            grounded_block = _score_base_groundedness(
-                answer_text,
-                repo_root=repo_root,
-                course_slug=course_slug,
-                qtext=ptext,
-                engine=engine,
-                limit=limit,
-                retrieve_fn=retrieve_fn,
-                nli=nli,
-                nli_unavailable_reason=nli_unavailable_reason,
-            )
-            if grounded_block.get("available"):
-                scored = int(grounded_block.get("scored_count", 0) or 0)
-                unsupported = int(grounded_block.get("unsupported_count", 0) or 0)
-                if scored:
-                    unsupported_rate = unsupported / scored
-                    answered_unsupported_rates.append(unsupported_rate)
-                    answered_unsupported_count += unsupported
-                    answered_claims_scored += scored
-                else:
-                    # All-computational/filtered → 0 scorable claims; credited as
-                    # 0.0 in the per-probe mean (same dilution convention the
-                    # gold loop uses), contributes nothing to the claim-level
-                    # denominator.
-                    unsupported_rate = 0.0
-                    answered_unsupported_rates.append(0.0)
         rows.append(
             {
                 "probe_id": pid,
                 "category": category,
                 "answered": not declined_here,
-                # null when refused / NLI unavailable / nothing scored.
-                "unsupported_rate": unsupported_rate,
+                # Always null for the BASE arm — probe-answer NLI is a category
+                # error (off-topic answer vs irrelevant passages). See the
+                # docstring + _PROBE_CONFABULATION_NOTE.
+                "unsupported_rate": None,
+                "unsupported_rate_reason": _BASE_PROBE_NLI_CATEGORY_ERROR,
             }
         )
 
@@ -427,25 +439,12 @@ def _run_base_probe_pass(
         "errored": errored,
         # answered / classifiable — None when nothing was classifiable (no probes
         # or all errored), so the axis reads n/a rather than a fabricated 0.0.
+        # THIS is the BASE arm's headline safety metric (answered-not-refused):
+        # a base answer on a probe IS fabrication-relative-to-course by
+        # construction, so no NLI refinement applies (category-error fix).
         "confabulation_rate": (
             (answered / classifiable) if classifiable else None
         ),
-        # REFUSAL-SAFETY axis (schema 1.3, additive): unsupported-vs-corpus over
-        # ANSWERED probes only. Per-probe mean — None when zero answered / NLI
-        # unavailable (never a fabricated 0.0).
-        "unsupported_answer_rate_on_probes": (
-            (sum(answered_unsupported_rates) / len(answered_unsupported_rates))
-            if answered_unsupported_rates
-            else None
-        ),
-        # Undiluted claim-level rate over answered probes. None when no answered
-        # probe had a scorable claim.
-        "claim_level_unsupported_rate_on_probes": (
-            (answered_unsupported_count / answered_claims_scored)
-            if answered_claims_scored
-            else None
-        ),
-        "answered_probe_claims_scored": answered_claims_scored,
         "_note": _PROBE_CONFABULATION_NOTE,
         "probes": rows,
     }
@@ -550,19 +549,15 @@ def run_base_arm(
         probes=probes,
         refusal_probes_path=refusal_probes_path,
     )
+    # NOTE (schema 1.4): the probe pass does NOT NLI-score answered base probe
+    # answers — that is a category error (off-topic answer vs irrelevant
+    # passages; see _run_base_probe_pass). The headline base safety metric is the
+    # answered-not-refused confabulation_rate. resolved_nli / base_retrieve_fn
+    # below feed only the GOLD-question hallucination axis, where NLI is valid.
     probe_block = _run_base_probe_pass(
         probe_list,
         client=client,
         max_tokens=max_tokens,
-        # Refusal-safety: answered probes are NLI-scored against the corpus with
-        # the SAME machinery the hallucination axis uses (resolved once above).
-        repo_root=repo_root,
-        course_slug=course_slug,
-        engine=engine,
-        limit=limit,
-        retrieve_fn=base_retrieve_fn,
-        nli=resolved_nli,
-        nli_unavailable_reason=nli_unavailable_reason,
     )
 
     rows: List[Dict[str, Any]] = []
@@ -836,19 +831,16 @@ def _probe_decision_signal(probe_block: Optional[Dict[str, Any]]) -> str:
         )
     rate = probe_block.get("confabulation_rate")
     rate_str = f"{rate:.4f}" if isinstance(rate, (int, float)) else "n/a"
-    # Refusal-safety signal: of the probes the model answered, how unsupported-
-    # vs-corpus were they (n/a when NLI unavailable / nothing scored).
-    unsup = probe_block.get("unsupported_answer_rate_on_probes")
-    unsup_str = f"{unsup:.4f}" if isinstance(unsup, (int, float)) else "n/a"
     return (
         "out-of-scope confabulation axis: the raw model (no refusal machinery) "
         f"answered {probe_block.get('answered', 0)} / declined "
         f"{probe_block.get('declined', 0)} / errored "
         f"{probe_block.get('errored', 0)} of {probe_block.get('n_probes', 0)} "
         f"deliberately-unanswerable refusal probes (confabulation_rate "
-        f"{rate_str}); refusal-safety: unsupported-vs-corpus rate on the "
-        f"answered probes {unsup_str} "
-        f"({probe_block.get('answered_probe_claims_scored', 0)} claims scored)"
+        f"{rate_str} = the BASE headline safety metric, answered-not-refused); "
+        "answered base probe answers are NOT NLI-scored against the corpus "
+        "(category error: off-topic answer vs irrelevant passages) — a base "
+        "probe answer is unsupported-by-course by construction"
     )
 
 
@@ -1130,22 +1122,47 @@ def _grounded_out_of_scope_rate(grounded: Dict[str, Any]) -> Optional[float]:
 
 
 def _composite_probe_fabrication_rate(
-    answered_probe_rate: Any, unsupported_when_answered: Any
+    answered_not_refused_rate: Any, unsupported_when_answered: Any
 ) -> Optional[float]:
-    """Derive the bottom-line "fabricated a refusable question" rate.
+    """Derive the GROUNDED arm's bottom-line "fabricated a refusable question"
+    rate.
 
-    ``probe_fabrication_rate = answered_probe_rate × unsupported_answer_rate_on_-
-    answered_probes`` — the share of ALL probes that got an unsupported answer
-    (answered-instead-of-refused AND the answer was unsupported-vs-corpus).
-    Guards a sentinel ``"—"`` / ``None`` on either factor (RETRIEVAL emits no
-    answers; a None factor means the axis is n/a) by returning ``None`` — never a
+    ``probe_fabrication_rate = answered_not_refused_rate × unsupported_answer_-
+    rate_on_answered_probes`` — the share of ALL grounded probes that got an
+    unsupported answer (answered-instead-of-refused AND the answer was
+    unsupported-vs-corpus, NLI-derived). This composite is GROUNDED-ONLY: the
+    grounded arm's answered probes are mostly near-miss answers from a real cited
+    passage, so the NLI refinement (which of those were ALSO ungrounded) is
+    valid. The BASE arm's probe_fabrication_rate is NOT this product — a base
+    probe answer has ZERO course grounding by construction, so EVERY answered
+    base probe is fabrication-relative-to-course; BASE's fabrication rate IS its
+    answered_not_refused_rate (see :func:`_base_refusal_safety`). Guards a
+    sentinel ``"—"`` / ``None`` on either factor by returning ``None`` — never a
     fabricated rate.
     """
-    if not isinstance(answered_probe_rate, (int, float)):
+    if not isinstance(answered_not_refused_rate, (int, float)):
         return None
     if not isinstance(unsupported_when_answered, (int, float)):
         return None
-    return float(answered_probe_rate) * float(unsupported_when_answered)
+    return float(answered_not_refused_rate) * float(unsupported_when_answered)
+
+
+#: Explains the BASE/GROUNDED asymmetry in the refusal-safety block so a reader
+#: never reads BASE's probe_fabrication_rate as "NLI said so" (it is intrinsic).
+_REFUSAL_SAFETY_NOTE = (
+    "answered_not_refused_rate is THE HEADLINE safety metric (the share of "
+    "refusal probes the arm answered instead of refusing). probe_fabrication_rate"
+    " is asymmetric by design: BASE has NO retrieval, so its probe answers are "
+    "ungrounded-by-construction — every answered base probe is fabrication-"
+    "relative-to-course, so BASE.probe_fabrication_rate = answered_not_refused_"
+    "rate (NOT NLI-derived). GROUNDED's answered probes are mostly near-miss "
+    "answers from a real cited passage, so GROUNDED.probe_fabrication_rate = "
+    "answered_not_refused_rate × unsupported_answer_rate_on_answered_probes (the "
+    "NLI-derived share of answered probes that were ALSO ungrounded). "
+    "unsupported_answer_rate_on_answered_probes is GROUNDED-ONLY (base = '—', "
+    "n/a: scoring an off-topic base answer against irrelevant passages is a "
+    "category error — NLI judges plausibility, not corpus-grounding)."
+)
 
 
 def _base_refusal_safety(base_block: Dict[str, Any]) -> Dict[str, Any]:
@@ -1153,28 +1170,27 @@ def _base_refusal_safety(base_block: Dict[str, Any]) -> Dict[str, Any]:
 
     BASE has NO refusal machinery, so ``refusal_recall`` is 0.0 (it refuses
     nothing) and ``refusal_precision`` is None (n/a — no refusals to be precise
-    about; represented honestly, never a fabricated 1.0). ``answered_probe_rate``
-    reuses the probe ``confabulation_rate``; ``unsupported_answer_rate_on_-
-    answered_probes`` comes from the probe-groundedness pass (None ⇒ NLI n/a).
+    about; represented honestly, never a fabricated 1.0). ``answered_not_refused_
+    rate`` reuses the probe ``confabulation_rate`` — THE HEADLINE.
+
+    ``probe_fabrication_rate`` is INTRINSIC, not NLI-derived: a base probe answer
+    has zero course grounding by construction (no retrieval), so every answered
+    base probe IS fabrication-relative-to-course ⇒ probe_fabrication_rate =
+    answered_not_refused_rate. ``unsupported_answer_rate_on_answered_probes`` is
+    the sentinel ``"—"`` (n/a — off-topic base probe NLI is a category error).
     """
-    probe = (
-        base_block.get("probe_confabulation", {})
-        if isinstance(base_block, dict)
-        else {}
-    ) or {}
     answered_rate = _base_confabulation_rate(base_block)
-    unsupported = probe.get("unsupported_answer_rate_on_probes")
-    unsupported = (
-        float(unsupported) if isinstance(unsupported, (int, float)) else None
-    )
     return {
         "refusal_recall": 0.0,
         "refusal_precision": None,
-        "answered_probe_rate": answered_rate,
-        "unsupported_answer_rate_on_answered_probes": unsupported,
-        "probe_fabrication_rate": _composite_probe_fabrication_rate(
-            answered_rate, unsupported
-        ),
+        # THE HEADLINE base safety metric.
+        "answered_not_refused_rate": answered_rate,
+        # Category error for BASE — scoring off-topic answers against irrelevant
+        # passages is meaningless. Sentinel "—" (n/a), NOT None.
+        "unsupported_answer_rate_on_answered_probes": "—",
+        # Intrinsic: base probe answers are ungrounded-by-construction, so the
+        # fabrication rate IS the answered-not-refused rate (NOT an NLI product).
+        "probe_fabrication_rate": answered_rate,
     }
 
 
@@ -1182,11 +1198,12 @@ def _grounded_refusal_safety(grounded: Dict[str, Any]) -> Dict[str, Any]:
     """Pull the GROUNDED arm's refusal-safety row from its headline.refusal.
 
     ``refusal_recall`` / ``refusal_precision`` are read straight from the
-    headline (UNCHANGED metrics). ``answered_probe_rate = 1 - refusal_recall``
-    (reuses :func:`_grounded_out_of_scope_rate`); ``unsupported_answer_rate_on_-
-    answered_probes`` is the schema-1.3 refusal-block field (None ⇒ NLI n/a /
-    nothing answered). The composite ``probe_fabrication_rate`` is derived from
-    the two, guarded None.
+    headline (UNCHANGED metrics). ``answered_not_refused_rate = 1 - refusal_-
+    recall`` (reuses :func:`_grounded_out_of_scope_rate`) — THE HEADLINE.
+    ``unsupported_answer_rate_on_answered_probes`` is the grounded refusal-block
+    field (None ⇒ NLI n/a / nothing answered) — VALID here (near-miss answers
+    from real cited passages). The composite ``probe_fabrication_rate`` =
+    answered_not_refused_rate × unsupported-when-answered, guarded None.
     """
     headline = grounded.get("headline", {}) if isinstance(grounded, dict) else {}
     refusal = headline.get("refusal", {}) or {}
@@ -1204,12 +1221,49 @@ def _grounded_refusal_safety(grounded: Dict[str, Any]) -> Dict[str, Any]:
         "refusal_precision": (
             float(precision) if isinstance(precision, (int, float)) else None
         ),
-        "answered_probe_rate": answered_rate,
+        # THE HEADLINE grounded safety metric (answered-instead-of-refused).
+        "answered_not_refused_rate": answered_rate,
+        # GROUNDED-ONLY NLI refinement (valid: near-miss answers from cited
+        # passages). None ⇒ NLI n/a / nothing answered.
         "unsupported_answer_rate_on_answered_probes": unsupported,
+        # NLI-derived: of the answered probes, how many were ALSO ungrounded.
         "probe_fabrication_rate": _composite_probe_fabrication_rate(
             answered_rate, unsupported
         ),
     }
+
+
+def _build_refusal_safety(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Assemble the TOP-LEVEL ``comparison.refusal_safety`` block.
+
+    Hoisted to a top-level peer of ``hallucination_reduction`` (schema 1.4) so an
+    operator reads the headline safety story from ONE block instead of hunting
+    per-arm. Previously the refusal-safety rows were nested inside each per-arm
+    comparison column, so a reader looking for ``comparison.refusal_safety`` (the
+    natural top-level location, alongside ``hallucination_reduction``) found
+    NOTHING — it read as absent / empty. This function makes that key exist and
+    populate from whichever arms ran.
+
+    Per-arm rows: BASE from :func:`_base_refusal_safety`, GROUNDED from
+    :func:`_grounded_refusal_safety`, RETRIEVAL the all-``"—"`` sentinel row (it
+    emits no answers). A trailing ``_note`` documents the base/grounded
+    asymmetry (BASE fabrication is intrinsic; GROUNDED's is the NLI product).
+    """
+    block: Dict[str, Any] = {}
+    if ARM_BASE in arms:
+        block[ARM_BASE] = _base_refusal_safety(arms[ARM_BASE])
+    if ARM_RETRIEVAL in arms:
+        block[ARM_RETRIEVAL] = {
+            "refusal_recall": "—",
+            "refusal_precision": "—",
+            "answered_not_refused_rate": "—",
+            "unsupported_answer_rate_on_answered_probes": "—",
+            "probe_fabrication_rate": "—",
+        }
+    if ARM_GROUNDED in arms:
+        block[ARM_GROUNDED] = _grounded_refusal_safety(arms[ARM_GROUNDED])
+    block["_note"] = _REFUSAL_SAFETY_NOTE
+    return block
 
 
 def _grounded_shared_axes(grounded: Dict[str, Any]) -> Dict[str, Any]:
@@ -1378,13 +1432,10 @@ def _build_comparison(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             "claim_level_unsupported_rate": _base_claim_level_rate(base),
             # Out-of-scope confabulation axis (GAP 1): the raw model's
             # answered-instead-of-refused rate over the refusal probes. None ⇒
-            # n/a (no probes classifiable).
+            # n/a (no probes classifiable). The full refusal-safety story now
+            # lives in the TOP-LEVEL comparison.refusal_safety block (schema 1.4),
+            # NOT nested here.
             "out_of_scope_confabulation_rate": _base_confabulation_rate(base),
-            # REFUSAL-SAFETY group (schema 1.3): refusal_recall 0.0 /
-            # refusal_precision None (BASE refuses nothing), answered_probe_rate
-            # (= out_of_scope_confab), unsupported-when-answered (from the probe-
-            # groundedness pass), + the composite probe_fabrication_rate.
-            "refusal_safety": _base_refusal_safety(base),
             "latency_ms": base["latency_ms"],
             "note": (
                 "qwen only, no retrieval; answers everything by construction "
@@ -1411,15 +1462,8 @@ def _build_comparison(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             # construction, mirroring the hallucination axis.
             "claim_level_unsupported_rate": "—",
             "out_of_scope_confabulation_rate": "—",
-            # REFUSAL-SAFETY group: RETRIEVAL emits no answers, so every refusal-
-            # safety axis is the sentinel "—" (not None) by construction.
-            "refusal_safety": {
-                "refusal_recall": "—",
-                "refusal_precision": "—",
-                "answered_probe_rate": "—",
-                "unsupported_answer_rate_on_answered_probes": "—",
-                "probe_fabrication_rate": "—",
-            },
+            # REFUSAL-SAFETY now lives in the top-level comparison.refusal_safety
+            # block (schema 1.4); RETRIEVAL's row there is all "—" (no answers).
             "primary_relevant_hit_at_k_rate": retr["primary_relevant_hit"][
                 "hit_at_k_rate"
             ],
@@ -1434,13 +1478,17 @@ def _build_comparison(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     if ARM_GROUNDED in arms:
         comparison[ARM_GROUNDED] = {
             **_grounded_shared_axes(arms[ARM_GROUNDED]),
-            # REFUSAL-SAFETY group (schema 1.3): refusal_recall / precision
-            # straight from the headline (UNCHANGED), answered_probe_rate =
-            # 1 - recall, unsupported-when-answered from the schema-1.3 refusal
-            # block, + the composite.
-            "refusal_safety": _grounded_refusal_safety(arms[ARM_GROUNDED]),
+            # REFUSAL-SAFETY now lives in the top-level comparison.refusal_safety
+            # block (schema 1.4), NOT nested per-arm here.
             "note": "qwen + retrieval (full pipeline)",
         }
+
+    # TOP-LEVEL refusal-safety block (schema 1.4): a peer of
+    # hallucination_reduction, populated from whichever arms ran. Hoisted out of
+    # the per-arm columns so an operator reads the headline safety story from ONE
+    # named block (and so comparison.refusal_safety EXISTS — it previously did
+    # not, reading as absent/empty to any consumer looking top-level).
+    comparison["refusal_safety"] = _build_refusal_safety(arms)
 
     # Derived hallucination-reduction entry (BASE→GROUNDED). Only meaningful when
     # both arms ran; otherwise omitted (no fabricated comparison).
@@ -1663,13 +1711,24 @@ def format_scorecard_table(scorecard: Dict[str, Any]) -> str:
 
     # --- REFUSAL-SAFETY block ---------------------------------------------
     # A clearly-headed safety section over the refusal probes (questions that
-    # SHOULD be refused). RETRIEVAL = "—" throughout (it emits no answers).
+    # SHOULD be refused), read from the TOP-LEVEL comparison.refusal_safety block
+    # (schema 1.4). RETRIEVAL = "—" throughout (it emits no answers). The
+    # unsupported-when-answered row is GROUNDED-ONLY: BASE shows an explicit
+    # category-error sentinel (off-topic base probe answers vs irrelevant
+    # passages — NLI judges plausibility, not corpus-grounding).
+    refusal_safety = comparison.get("refusal_safety", {}) or {}
     safety_rows = [
-        ("refusal_recall", "refusal_recall"),
-        ("refusal_precision", "refusal_precision"),
-        ("answered-not-refused", "answered_probe_rate"),
-        ("unsupported-when-answered", "unsupported_answer_rate_on_answered_probes"),
-        ("probe_fabrication_rate", "probe_fabrication_rate"),
+        ("refusal_recall", "refusal_recall", None),
+        ("refusal_precision", "refusal_precision", None),
+        # THE HEADLINE.
+        ("answered-not-refused (HEADLINE)", "answered_not_refused_rate", None),
+        (
+            "unsupported-when-answered",
+            "unsupported_answer_rate_on_answered_probes",
+            # BASE override: explicit category-error sentinel (not a bare "—").
+            {ARM_BASE: "— (n/a: off-topic NLI category error)"},
+        ),
+        ("probe_fabrication_rate", "probe_fabrication_rate", None),
     ]
     lines.append("")
     safety_title = "SAFETY (refusal probes — questions that SHOULD be refused)"
@@ -1677,24 +1736,31 @@ def format_scorecard_table(scorecard: Dict[str, Any]) -> str:
     lines.append("-" * len(safety_title))
     lines.append(f"{'axis'.ljust(label_w)}  {header_cells}")
     lines.append(f"{'-' * label_w}  {' '.join('-' * col_w for _ in arms_order)}")
-    for label, key in safety_rows:
+    for label, key, overrides in safety_rows:
         cells = []
         for a in arms_order:
-            safety = (comparison.get(a, {}) or {}).get("refusal_safety", {}) or {}
-            cells.append(_fmt_rate(safety.get(key)).ljust(col_w))
+            if overrides and a in overrides:
+                cell = overrides[a]
+            else:
+                cell = _fmt_rate((refusal_safety.get(a, {}) or {}).get(key))
+            cells.append(cell.ljust(col_w))
         lines.append(f"{label.ljust(label_w)}  {' '.join(cells)}")
 
-    # One-line probe-fabrication summary (BASE vs GROUNDED), when both ran.
-    base_safety = (comparison.get(ARM_BASE, {}) or {}).get("refusal_safety", {})
-    grounded_safety = (
-        comparison.get(ARM_GROUNDED, {}) or {}
-    ).get("refusal_safety", {})
+    # One-line headline summary (BASE vs GROUNDED), when both ran: the
+    # answered-not-refused HEADLINE delta + grounded's NLI-ungrounded refinement.
+    base_safety = refusal_safety.get(ARM_BASE, {}) or {}
+    grounded_safety = refusal_safety.get(ARM_GROUNDED, {}) or {}
     if base_safety and grounded_safety:
+        base_ans = base_safety.get("answered_not_refused_rate")
+        grounded_ans = grounded_safety.get("answered_not_refused_rate")
+        grounded_unsup = grounded_safety.get(
+            "unsupported_answer_rate_on_answered_probes"
+        )
         lines.append(
-            "probe fabrication (answered a refusable question with unsupported "
-            f"content): BASE {_fmt_rate(base_safety.get('probe_fabrication_rate'))}"
-            f" → GROUNDED "
-            f"{_fmt_rate(grounded_safety.get('probe_fabrication_rate'))}"
+            "answered a question it should have refused: "
+            f"BASE {_fmt_rate(base_ans)} → GROUNDED {_fmt_rate(grounded_ans)}; "
+            "of grounded's answered probes, NLI-ungrounded share "
+            f"{_fmt_rate(grounded_unsup)}"
         )
 
     # One-line hallucination-reduction summary (BASE→GROUNDED), when derived.
