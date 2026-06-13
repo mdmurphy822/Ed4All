@@ -3786,5 +3786,101 @@ def gold_parts(ctx, course: str, no_retrieval: bool, no_write: bool):
     sys.exit(0)
 
 
+@main.command("gold-enrich-passages")
+@click.option("--course", "-c", required=True,
+              help="Course slug whose gold-set relevant_passages to enrich")
+@click.option("--engine", type=click.Choice(["lexical", "semantic", "hybrid-rrf"]),
+              default="lexical", help="Retrieval engine for the candidate top-k pool.")
+@click.option("--top-k", type=int, default=10,
+              help="Retrieval candidate pool depth per question (default 10).")
+@click.option("--no-retrieval", is_flag=True,
+              help="Source candidates from eval-observed citations only (skip retrieval top-k).")
+@click.option("--promote", is_flag=True,
+              help="PROMOTE: apply operator-accepted ('status: accepted') passages from "
+                   "the proposal into gold_set.json (fail-closed validate + frozen gate).")
+@click.option("--unfreeze-for-enrich", is_flag=True,
+              help="Required (with --promote) to enrich a frozen:true gold set.")
+@click.option("--no-write", is_flag=True, help="Build the proposal without writing the artifact.")
+@click.option("--dry-run", is_flag=True,
+              help="With --promote: build the promote report without writing the gold set.")
+@click.pass_context
+def gold_enrich_passages(ctx, course: str, engine: str, top_k: int,
+                         no_retrieval: bool, promote: bool,
+                         unfreeze_for_enrich: bool, no_write: bool, dry_run: bool):
+    """Propose (and, with --promote, apply) ADDITIONAL relevant_passages.
+
+    Default (proposal): for each gold question, sources candidate chunks from
+    retrieval top-k UNION the chunks the tutor actually cited (when persisted),
+    scores each against the question's expected_key_points with the EXACT
+    citation-attribution support floors the eval already trusts (4-shingle
+    >= 0.25 OR token-coverage >= 0.80; no new thresholds), and proposes the
+    genuinely-supporting-but-unpinned ones as relevance:supporting passages.
+    The single existing primary is NEVER touched. Writes a PROPOSAL artifact
+    (retrieval_eval/gold_passage_enrichment_proposal.json); NOT applied.
+
+    With --promote: applies the proposal's operator-accepted passages
+    (status:accepted) into gold_set.json -- a SEPARATE explicit step -- behind
+    the fail-closed validate_gold_set gate and a frozen unfreeze gate
+    (--unfreeze-for-enrich), then re-pins the chunkset sha.
+
+    \b
+    Examples:
+        libv2 gold-enrich-passages --course demo-course-1
+        libv2 gold-enrich-passages --course demo-course-1 --promote --unfreeze-for-enrich
+    """
+    from lib.retrieval.gold_passage_enrichment import (
+        GoldEnrichError,
+        generate_enrichment_proposal,
+        promote_enrichment,
+    )
+    from LibV2.tools.libv2.retriever import retrieve_chunks
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"course not found: {course_dir}")
+        sys.exit(1)
+
+    if promote:
+        try:
+            report, written = promote_enrichment(
+                course_dir, unfreeze_for_enrich=unfreeze_for_enrich, dry_run=dry_run,
+            )
+        except GoldEnrichError as exc:
+            print_error(f"{exc.code}: {exc.detail}")
+            sys.exit(1)
+        print(f"gold-enrich-passages {course}: applied {report.n_applied} "
+              f"supporting passage(s); skipped {len(report.skipped)}.")
+        for a in report.applied[:12]:
+            print(f"  + {a.get('question_id')} <- {a.get('chunk_id')} (supporting)")
+        if dry_run:
+            print_warning("  dry-run: gold set not written.")
+        elif written:
+            print_success(f"  wrote {written}")
+        sys.exit(0)
+
+    retrieve_fn = None if no_retrieval else retrieve_chunks
+    libv2_root = None if no_retrieval else repo_root
+    try:
+        doc, out_path = generate_enrichment_proposal(
+            course_dir, retrieve_fn=retrieve_fn, libv2_root=libv2_root,
+            engine=engine, top_k=top_k, write=not no_write,
+        )
+    except FileNotFoundError as exc:
+        print_error(str(exc))
+        sys.exit(1)
+
+    print(f"gold-enrich-passages {course}: {doc.get('n_proposed_passages')} "
+          f"proposed supporting passage(s) across "
+          f"{doc.get('n_questions_with_proposals')}/{doc.get('n_questions')} question(s).")
+    if out_path:
+        print_success(f"  wrote {out_path}")
+        print_warning("  PROPOSAL ONLY -- primary untouched; set status:accepted then "
+                      "re-run with --promote.")
+    else:
+        print_warning("  no-write: artifact not written.")
+    sys.exit(0)
+
+
 if __name__ == "__main__":
     main()
