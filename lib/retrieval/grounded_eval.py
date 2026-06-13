@@ -165,6 +165,30 @@ MILESTONE_TARGETS_PINNED_AT = "2026-06-12"
 #: basis unchanged. Shadow NLI-ADD: 22 would-adds, hand-audited 22/22 genuine
 #: at ent>=0.70 + cov>=0.80 + numerics + anchor — the flip-to-on evidence.
 #:
+#: CONFIG-LABEL CORRECTION (2026-06-13): the v1.2 + v1.3 runs above were
+#: labeled "ED4ALL_ANSWER_NUM_CTX=8192 production parity" but actually ran
+#: against a host-native ollama serving 4096 (the env var is only a local
+#: prompt-budget hint; it does NOT set the server window — that needs
+#: OLLAMA_CONTEXT_LENGTH or a Modelfile num_ctx PARAMETER). Additionally the
+#: BASE arm reused the grounded pipeline's json_mode=True client, so raw qwen
+#: emitted JSON the scorer-v2 artifact filter discarded — BASE hallucination
+#: + key_point_coverage (0.1569) for v1.2/v1.3 are INVALID (filtered content).
+#:
+#: DEFINITIVE run (2026-06-13, gold v1.3 125q + 44 probes; TRUE 8192 via a
+#: Modelfile-baked qwen2.5-7b-8k; BASE arm json_mode=False free text;
+#: ED4ALL_NLI_DEVICE=cuda fp16 — grounded per-item latency 24s→5.8s):
+#:   answer_rate 0.976  citation_resolution_rate 1.0  citation_precision 0.3627
+#:   groundedness_rate_mean 0.899  unsupported_claim_rate 0.0395
+#:   refusal_recall 0.8182  refusal_precision 0.9474  key_point_coverage 0.6883
+#: Safety (44 probes): answered-not-refused BASE 1.00 → GROUNDED 0.182;
+#:   probe_fabrication_rate BASE 1.00 → GROUNDED 0.011 (base fabricates on
+#:   every refusable question; grounded ~1%). Hallucination-vs-corpus BASE
+#:   0.0591 → GROUNDED 0.0395 (33% rel). Three-arm coverage BASE 0.40 (CORRECTED
+#:   from the invalid 0.157 — free-text base is far more capable than the
+#:   json-filtered measurement showed; the grounding coverage gain is ~1.7x,
+#:   NOT the ~3.5x the broken base number implied) / RETRIEVAL 0.928 /
+#:   GROUNDED 0.688. Every pin below holds unchanged on this definitive basis.
+#:
 #: citation_resolution_rate stays pinned at 1.0: every emitted citation resolved
 #: on this run too, so the floor IS the measurement — any dip is a real
 #: anchoring break, not noise.
