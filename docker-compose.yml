@@ -75,7 +75,7 @@ services:
       # eval diagnostics, MUTATE NOTHING — so the would-add counts accumulate
       # where the NLI model is already resident (with_groundedness on). Flip to
       # `on` only after the shadow counts validate the composite criterion
-      # (ent>=0.75 AND token-coverage>=0.65 AND every claim numeric present AND
+      # (ent>=0.70 AND token-coverage>=0.80 AND every claim numeric present AND
       # anchor resolves AND <=2 adds). Never changes an answer verdict.
       ED4ALL_ANSWER_NLI_ADD: "shadow"
       # Serving window. The default 4096 evicts trailing retrieved passages on

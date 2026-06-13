@@ -182,9 +182,10 @@ def _answer_fn(_repo, _slug, query, **kwargs):
 def test_eval_schema_bumped_to_1_1():
     # 1.2 added the groundedness scorer-v2 surface; 1.3 (additive) added the
     # refusal-safety axis: answered-probe groundedness rolled into
-    # headline.refusal + a top-level probe_results key. The report
-    # schema_version moves with it.
-    assert EVAL_SCHEMA_VERSION == "1.3"
+    # headline.refusal + a top-level probe_results key. 1.4 (additive) added
+    # headline.citation_precision_preadd + per-row cited_chunk_ids/cited_pages.
+    # The report schema_version moves with it.
+    assert EVAL_SCHEMA_VERSION == "1.4"
 
 
 def test_gold_pin_block_carries_section4_fields(v1_1_course):
@@ -282,15 +283,25 @@ def test_report_json_round_trips(v1_1_course):
     )
     written = Path(report["_written"]["report_path"])
     doc = json.loads(written.read_text(encoding="utf-8"))
-    assert doc["schema_version"] == "1.3"
+    assert doc["schema_version"] == "1.4"
     assert doc["gold"]["question_count"] == 2
     assert "key_point_coverage" in doc["questions"][0]
     assert "part_coverage" in doc["questions"][1]
     assert "citation_population" in doc["questions"][0]
+    # schema-1.4 additive per-row ids persisted through the JSON round-trip.
+    assert "cited_chunk_ids" in doc["questions"][0]
+    assert "cited_pages" in doc["questions"][0]
     # headline P4 blocks present
     for key in ("citation_precision_by_population", "expected_population_satisfaction",
                 "key_point_coverage", "part_coverage"):
         assert key in doc["headline"]
+    # schema-1.4 additive headline: pre-add precision present, == precision when
+    # NLI-ADD is off (this fixture run).
+    assert "citation_precision_preadd" in doc["headline"]
+    assert (
+        doc["headline"]["citation_precision_preadd"]
+        == doc["headline"]["citation_precision"]
+    )
 
 
 # ===========================================================================

@@ -1597,3 +1597,139 @@ def test_apply_zero_citation_answer_exclusion_is_warning_class(monkeypatch):
         assert any(
             w.startswith("nli_would_add_on_zero_citation_answer:") for w in warns
         )
+
+
+# --------------------------------------------------------------------------- #
+# Flip-gating guardrail invariants (nli-add-flip plan PR-1 §4): the apply path
+# must (a) cap adds at NLI_ADD_MAX_ADDED_CITATIONS, (b) never add an
+# un-anchorable candidate (recorded anchor_resolved=False), and (c) never change
+# an answer's status/verdict (it only ever APPENDS to the citation list).
+# --------------------------------------------------------------------------- #
+
+
+def _three_passing_report():
+    """A groundedness report with THREE distinct uncited entailing supporters,
+    each clearing the composite criterion (ent>=0.70, cov>=0.80, no numerics)."""
+    return _FakeGroundReport(
+        available=True,
+        claims=[
+            _FakeVerdict(_COVER_CLAIM, "entailed", 0.95, "u1", False),
+            _FakeVerdict(_COVER_CLAIM, "entailed", 0.90, "u2", False),
+            _FakeVerdict(_COVER_CLAIM, "entailed", 0.85, "u3", False),
+        ],
+    )
+
+
+def _always_resolved_anchor(monkeypatch):
+    import lib.retrieval.grounded_answer as ga
+    from lib.retrieval.citation_anchor import AnchorStatus, CitationAnchor
+
+    def _resolved(record, course_dir, **kwargs):
+        return CitationAnchor(
+            chunk_id=str(record.get("id", "u1")),
+            status=AnchorStatus.RESOLVED_EXACT,
+            source_path=None, item_path="alpha.html",
+            html_xpath="/html[1]/body[1]", char_span=(0, 10),
+            containment_rate=1.0, normalized_match=False,
+        )
+
+    monkeypatch.setattr(ga, "resolve_citation_anchor", _resolved)
+
+
+def test_apply_on_mode_caps_added_citations_at_two(monkeypatch):
+    """Three composite-passing anchor-resolved candidates → exactly 2 added
+    (NLI_ADD_MAX_ADDED_CITATIONS), never 3. The would-add list is also capped so
+    the shadow signal reports what ON WOULD do, not an unbounded count."""
+    from lib.retrieval.citation_attribution import NLI_ADD_MAX_ADDED_CITATIONS
+
+    _always_resolved_anchor(monkeypatch)
+    report = _three_passing_report()
+    passages = [
+        _nli_passage("u1", _COVER_CHUNK),
+        _nli_passage("u2", _COVER_CHUNK),
+        _nli_passage("u3", _COVER_CHUNK),
+    ]
+    out, warns, diag = _apply_nli_citation_add(
+        citations=[_cit("seed")], groundedness_report=report,
+        cited_chunk_ids={"seed"}, gate_eligible_passages=passages,
+        answer_text=_COVER_CLAIM, course_dir=Path("/nonexistent"),
+        chunkset_kind="dart", containment_threshold=0.85, mode="on",
+        capture=None, course_slug="s", query_sha="qs", engine="lexical",
+    )
+    assert NLI_ADD_MAX_ADDED_CITATIONS == 2
+    assert len(diag["added_ids"]) == 2
+    assert len(diag["would_add_ids"]) == 2
+    # The seed citation is preserved and leads; exactly 2 adds trail it.
+    added = [c.chunk_id for c in out if c.chunk_id != "seed"]
+    assert out[0].chunk_id == "seed"
+    assert len(added) == 2
+    assert len(out) == 3
+
+
+def test_apply_on_mode_anchor_fail_records_false_and_never_adds(monkeypatch):
+    """A candidate that passes the composite legs but FAILS to anchor is recorded
+    anchor_resolved=False and is NEVER added (an add can never introduce an
+    unresolvable citation the gate would otherwise have blocked)."""
+    import lib.retrieval.grounded_answer as ga
+    from lib.retrieval.citation_anchor import AnchorStatus, CitationAnchor
+
+    def _unresolved(record, course_dir, **kwargs):
+        # SPAN_FABRICATED is a NON-resolved status (not in _RESOLVED_STATUSES),
+        # so anchor_ok is False — the candidate must never be added.
+        return CitationAnchor(
+            chunk_id=str(record.get("id", "u1")),
+            status=AnchorStatus.SPAN_FABRICATED,
+            source_path=None, item_path="alpha.html",
+            html_xpath=None, char_span=None,
+            containment_rate=0.0, normalized_match=False,
+        )
+
+    monkeypatch.setattr(ga, "resolve_citation_anchor", _unresolved)
+    report = _FakeGroundReport(
+        available=True,
+        claims=[_FakeVerdict(_COVER_CLAIM, "entailed", 0.95, "u1", False)],
+    )
+    out, warns, diag = _apply_nli_citation_add(
+        citations=[_cit("seed")], groundedness_report=report,
+        cited_chunk_ids={"seed"}, gate_eligible_passages=[_nli_passage("u1", _COVER_CHUNK)],
+        answer_text=_COVER_CLAIM, course_dir=Path("/nonexistent"),
+        chunkset_kind="dart", containment_threshold=0.85, mode="on",
+        capture=None, course_slug="s", query_sha="qs", engine="lexical",
+    )
+    # Composite passed, but anchor failed → recorded False, not added.
+    cand = next(c for c in diag["candidates"] if c["chunk_id"] == "u1")
+    assert cand["passes_composite"] is True
+    assert cand["anchor_resolved"] is False
+    assert diag["added_ids"] == []
+    assert diag["would_add_ids"] == []
+    assert [c.chunk_id for c in out] == ["seed"]  # citation list unchanged
+
+
+def test_on_mode_never_changes_answer_status(mini_libv2, monkeypatch):
+    """The flip-gating invariant: ON mode only ever APPENDS citations — it must
+    not change the answer's status/verdict vs the same run with NLI-ADD off."""
+    client_off = FakeAnswerClient([_envelope(_DEF_ANSWER, ["mini_alpha_chunk_003"])])
+    _patch_singleton_nli(monkeypatch, _SubstringEntailNli())
+    monkeypatch.delenv("ED4ALL_ANSWER_NLI_ADD", raising=False)  # default off
+    baseline = answer_course_question(
+        mini_libv2, COURSE_SLUG,
+        "vector store database indexes embedding vectors recall at k",
+        client=client_off, refusal_policy=_PERMISSIVE_LEXICAL,
+        with_groundedness=True, prune_mode="off",
+    )
+
+    client_on = FakeAnswerClient([_envelope(_DEF_ANSWER, ["mini_alpha_chunk_003"])])
+    _patch_singleton_nli(monkeypatch, _SubstringEntailNli())
+    monkeypatch.setenv("ED4ALL_ANSWER_NLI_ADD", "on")
+    on = answer_course_question(
+        mini_libv2, COURSE_SLUG,
+        "vector store database indexes embedding vectors recall at k",
+        client=client_on, refusal_policy=_PERMISSIVE_LEXICAL,
+        with_groundedness=True, prune_mode="off",
+    )
+    # Status + answer text are byte-identical; ON only grew the citation list.
+    assert on.status == baseline.status
+    assert on.answer_text == baseline.answer_text
+    assert len(on.citations) >= len(baseline.citations)
+    # The model's original citation is still present (an add appends, never drops).
+    assert "mini_alpha_chunk_003" in [c.chunk_id for c in on.citations]
