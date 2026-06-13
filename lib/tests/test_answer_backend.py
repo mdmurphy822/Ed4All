@@ -112,3 +112,38 @@ def test_build_answer_client_uses_json_mode_and_provider_label(monkeypatch):
     assert captured["model"] == resolved.model_id
     assert captured["base_url"] == resolved.base_url
     assert captured["timeout"] == resolved.timeout
+
+
+def test_build_answer_client_default_json_mode_is_true(monkeypatch):
+    # Default preserves the grounded pipeline's structured-envelope behavior
+    # byte-for-byte: no json_mode kwarg → json_mode=True on the wire client.
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import Trainforge.generators._openai_compatible_client as occ
+
+    monkeypatch.setattr(occ, "OpenAICompatibleClient", _FakeClient)
+    build_answer_client()  # resolved=None → env/default resolution
+    assert captured["json_mode"] is True
+
+
+def test_build_answer_client_json_mode_false_threads_through(monkeypatch):
+    # The eval BASE arm needs raw free text, so it passes json_mode=False.
+    # Assert the flag threads into the OpenAICompatibleClient construction.
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import Trainforge.generators._openai_compatible_client as occ
+
+    monkeypatch.setattr(occ, "OpenAICompatibleClient", _FakeClient)
+    resolved = resolve_answer_backend()
+    build_answer_client(resolved, capture="cap-handle", json_mode=False)
+    assert captured["json_mode"] is False
+    # Everything else is unchanged from the default-mode build.
+    assert captured["provider_label"] == "answer:local"

@@ -307,6 +307,85 @@ def test_base_arm_hallucination_na_when_nli_unavailable():
     assert result["key_point_coverage"]["coverage_rate"] is not None
 
 
+def test_base_arm_free_text_answer_is_scored_not_artifact_filtered():
+    """Regression: the BASE arm requests FREE TEXT (json_mode=False), so a prose
+    answer's claims reach the groundedness scorer. A whole-answer JSON envelope
+    — what json_mode=True would have forced raw qwen to emit — is a single
+    fully-bracketed literal that scorer-v2's artifact filter discards, scoring
+    ZERO claims and hiding the very fabrication this arm measures. This proves
+    the json_mode=False fix matters: prose scores, a JSON blob does not.
+    """
+    gold = {
+        "schema_version": "1.1",
+        "questions": [
+            {
+                "question_id": "gq-0001",
+                "question_text": "What is the national dish of Peru?",
+                "question_type": "short_answer",
+                "expected_key_points": ["ceviche"],
+                "relevant_passages": [
+                    {"chunk_id": "chunk_a", "relevance": "primary"}
+                ],
+            }
+        ],
+    }
+    retrieve_fn = _retrieve_fn_factory(
+        {
+            "What is the national dish of Peru?": [
+                _Result(
+                    "chunk_a",
+                    "Ceviche is widely regarded as the national dish of Peru.",
+                )
+            ]
+        }
+    )
+    nli = _FakeNli(entailed_if=[("Ceviche", "Ceviche")])
+
+    # FREE-TEXT (what json_mode=False yields): two prose sentences, each ≥4
+    # content tokens → both reach the scorer as real claims.
+    prose_client = _FakeClient(
+        {
+            "What is the national dish of Peru?": (
+                "Ceviche is the national dish of Peru today. "
+                "It also pairs nicely with imported French wine."
+            )
+        }
+    )
+    prose = run_base_arm(
+        Path("/unused"), "course-x", client=prose_client, gold=gold,
+        retrieve_fn=retrieve_fn, nli=nli,
+    )["groundedness"]
+    assert prose["available"] is True
+    # The fix's whole point: the base arm scores real claims on free text.
+    assert prose["claims_scored"] > 0
+    assert prose["filtered_count"] == 0
+
+    # JSON ENVELOPE (what json_mode=True would force raw qwen to emit): one
+    # fully-bracketed literal → the artifact filter discards it whole → ZERO
+    # scored claims. Same gold/corpus/NLI; only the answer SHAPE differs.
+    json_client = _FakeClient(
+        {
+            "What is the national dish of Peru?": (
+                '{"national_dish": "Ceviche", "description": "a dish of '
+                'marinated raw fish cured in citrus juices"}'
+            )
+        }
+    )
+    blob = run_base_arm(
+        Path("/unused"), "course-x", client=json_client, gold=gold,
+        retrieve_fn=retrieve_fn, nli=nli,
+    )["groundedness"]
+    # The JSON blob was artifact-filtered → nothing scored. Were the base arm
+    # to (wrongly) keep json_mode=True, this is the silent near-zero metric: the
+    # arm scores ZERO claims (everything filtered) yet still credits a 0.0
+    # unsupported rate, hiding the ungrounded invention inside the envelope.
+    assert blob["claims_scored"] == 0
+    assert blob["filtered_count"] >= 1
+    # The contrast is the whole point: prose had real scored claims, the JSON
+    # blob had none — same gold / corpus / NLI, only the answer SHAPE differs.
+    assert prose["claims_scored"] > blob["claims_scored"]
+
+
 def test_base_arm_decision_rationale_carries_groundedness_signal():
     gold, client, retrieve_fn, nli = _base_groundedness_setup()
     cap = _RecordingCapture()
