@@ -58,15 +58,74 @@ Performance notes:
   per ``validate()`` call, so the batch path keeps wall-time bounded.
 * Inference uses ``torch.no_grad()`` context — no gradients are
   accumulated since this is pure inference.
+
+Device selection (``ED4ALL_NLI_DEVICE``):
+
+* Default ``"cpu"`` — preserves the historical behavior byte-for-byte
+  (determinism + CI hermeticity). The model is loaded fp32 and tensors
+  stay CPU-resident; NO ``.to(device)`` / ``.half()`` is invoked.
+* ``"cuda"`` / ``"cuda:N"`` — the groundedness/eval NLI scoring runs on
+  GPU (~20-50x faster than the CPU path on the ~184M-param DeBERTa-v3
+  head). On CUDA the model is cast to fp16 (``.half()``) to keep the
+  VRAM footprint small (~0.4 GB) — the card is commonly shared with a
+  local ollama server (qwen-7b ~5.3 GB on an 8 GB GPU). fp16 is
+  CUDA-only; CPU stays fp32 because fp16 on CPU is slow/unsupported.
+* Graceful fallback: if ``cuda`` is requested but
+  ``torch.cuda.is_available()`` is False, the loader logs a one-time
+  warning and falls back to CPU rather than crashing (mirrors the
+  embedding provider's device handling) — important since CI and many
+  dev boxes have no GPU.
+* Determinism note: GPU softmax is non-associative, so the post-softmax
+  probabilities can differ from the CPU path by ~1e-6. The downstream
+  verdict thresholds (0.70 entailment / 0.50 contradiction) are robust
+  to that magnitude, so a CUDA-scored run is NOT a regression versus a
+  CPU-scored pin. The resolved device + dtype are recorded on the
+  instance (and surfaced via :meth:`device`) so a mixed-provenance
+  comparison is detectable.
+
+Mirrors the embedding provider's ``ED4ALL_EMBEDDING_DEVICE`` knob
+(``lib/embedding/providers.py``): default ``"cpu"`` for determinism,
+``"cuda"`` allowed for speed, recorded for provenance.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+#: Env var selecting the torch device for the NLI model. Default ``"cpu"``
+#: (determinism + CI hermeticity, byte-identical to the historical
+#: behavior). Accepts ``cpu`` / ``cuda`` / ``cuda:N``. Documented in root
+#: CLAUDE.md § "Cross-cutting flags". Mirrors ``ED4ALL_EMBEDDING_DEVICE``.
+ENV_DEVICE = "ED4ALL_NLI_DEVICE"
+
+#: Default device — CPU keeps the load fp32 and the tensors CPU-resident
+#: with no ``.to()`` / ``.half()`` calls, preserving today's behavior.
+_DEFAULT_DEVICE = "cpu"
+
+
+def resolve_nli_device(device: Optional[str] = None) -> str:
+    """Resolve the NLI torch device string.
+
+    Resolution chain (mirrors ``ED4ALL_EMBEDDING_DEVICE``): explicit
+    ``device`` arg → ``ED4ALL_NLI_DEVICE`` env → default ``"cpu"``.
+
+    Returns a normalized device string (``"cpu"`` / ``"cuda"`` /
+    ``"cuda:N"``). The graceful CUDA-unavailable fallback is applied at
+    load time (where ``torch`` is in hand), not here — this resolver only
+    reads config and never imports ``torch``.
+    """
+    resolved = (
+        device
+        or os.environ.get(ENV_DEVICE)
+        or _DEFAULT_DEVICE
+    )
+    return resolved.strip() or _DEFAULT_DEVICE
 
 
 #: Default batch size for :meth:`NliClassifier.score_batch`. Sized to
@@ -148,12 +207,28 @@ class NliClassifier:
         torch_module: Any,
         revision: str,
         id2label: dict,
+        device: Optional[str] = None,
     ) -> None:
-        """Direct constructor — prefer :meth:`get_or_load` from consumer code."""
+        """Direct constructor — prefer :meth:`get_or_load` from consumer code.
+
+        ``device`` follows the :func:`resolve_nli_device` chain (explicit
+        arg > ``ED4ALL_NLI_DEVICE`` > ``"cpu"``). When the resolved device
+        is non-CPU and CUDA is actually available, the model is moved to
+        the device and cast to fp16 (``.half()``) to keep the VRAM
+        footprint small. When CUDA is requested but unavailable, the
+        constructor logs a one-time warning and falls back to CPU (no
+        crash). On the default CPU path NO ``.to()`` / ``.half()`` is
+        called, so behavior is byte-identical to the historical loader.
+        """
         self._model = model
         self._tokenizer = tokenizer
         self._torch = torch_module
         self._revision = revision
+        # Resolve + apply the device. ``_device`` / ``_dtype`` are recorded
+        # for provenance (mirrors the embedding manifest recording device).
+        self._device, self._dtype = self._place_model_on_device(
+            model, torch_module, resolve_nli_device(device)
+        )
         # Build a label -> index map so we can read the three scores
         # back from the model output regardless of the canonical
         # (entailment / neutral / contradiction) ordering. The
@@ -176,6 +251,88 @@ class NliClassifier:
                 f"normalized={normalized!r}. The pinned revision "
                 f"{revision!r} may have shifted its label set."
             )
+
+    @staticmethod
+    def _place_model_on_device(
+        model: Any,
+        torch_module: Any,
+        device: str,
+    ) -> Tuple[str, str]:
+        """Move + (on CUDA) fp16-cast the model. Return (device, dtype).
+
+        * ``device == "cpu"`` — no-op. NO ``.to()`` / ``.half()`` is
+          called and the model stays fp32 CPU-resident, byte-identical to
+          the historical loader. Returns ``("cpu", "float32")``.
+        * ``device`` is a CUDA device AND ``torch.cuda.is_available()`` —
+          ``model.to(device).half()`` (fp16 keeps VRAM ~0.4 GB on a card
+          shared with a local LLM server). Returns ``(device, "float16")``.
+        * CUDA requested but unavailable — log a one-time warning and fall
+          back to CPU (no crash). Returns ``("cpu", "float32")``.
+
+        Defensive: any unexpected error during placement is logged and the
+        model is left on CPU rather than crashing a run that requested
+        CUDA on a box without a working GPU.
+        """
+        if device == "cpu":
+            return "cpu", "float32"
+
+        # Non-CPU device requested (cuda / cuda:N). Guard on availability.
+        try:
+            cuda_available = bool(torch_module.cuda.is_available())
+        except Exception as exc:  # noqa: BLE001 — torch probe is best-effort
+            logger.warning(
+                "NliClassifier could not probe torch.cuda.is_available() "
+                "(%s); falling back to CPU (fp32).",
+                exc,
+            )
+            return "cpu", "float32"
+
+        if not cuda_available:
+            logger.warning(
+                "NliClassifier device %r requested but torch.cuda is not "
+                "available; falling back to CPU (fp32). Set "
+                "%s=cpu to silence this, or provision a CUDA device.",
+                device, ENV_DEVICE,
+            )
+            return "cpu", "float32"
+
+        try:
+            # fp16 on CUDA keeps the ~184M-param head at ~0.4 GB VRAM so it
+            # coexists with a local ollama LLM on an 8 GB card. fp16 is
+            # CUDA-only — never applied on CPU (slow/unsupported there).
+            model.to(device)
+            model.half()
+        except Exception as exc:  # noqa: BLE001 — OOM, driver error, etc.
+            logger.warning(
+                "NliClassifier failed to move model to %r / cast fp16 "
+                "(%s); falling back to CPU (fp32).",
+                device, exc,
+            )
+            return "cpu", "float32"
+
+        logger.info(
+            "NliClassifier scoring on %s (fp16) — GPU-accelerated NLI. "
+            "Note: GPU softmax is non-associative; probabilities may "
+            "differ ~1e-6 from a CPU pin (verdict thresholds are robust).",
+            device,
+        )
+        return device, "float16"
+
+    @property
+    def device(self) -> str:
+        """Resolved torch device the model scores on (``"cpu"`` / ``"cuda*"``).
+
+        Recorded for provenance so a CUDA-scored run is distinguishable
+        from a CPU-scored pin (GPU softmax is non-associative — see the
+        module docstring). Mirrors how the embedding manifest records the
+        embedding device.
+        """
+        return self._device
+
+    @property
+    def dtype(self) -> str:
+        """Resolved model dtype (``"float32"`` on CPU, ``"float16"`` on CUDA)."""
+        return self._dtype
 
     @classmethod
     def get_or_load(cls) -> Optional["NliClassifier"]:
@@ -356,10 +513,24 @@ class NliClassifier:
                     max_length=_MAX_SEQUENCE_LENGTH,
                     return_tensors="pt",
                 )
+                # Move the tokenized tensors onto the model's device. On the
+                # default CPU path this is a no-op (tensors are already CPU
+                # tensors and ``.to("cpu")`` returns the same tensor), so the
+                # byte-stable CPU behavior is preserved; on CUDA it ships the
+                # batch to the GPU before the forward pass.
+                if self._device != "cpu":
+                    encoded = {
+                        k: v.to(self._device) for k, v in encoded.items()
+                    }
                 outputs = self._model(**encoded)
                 logits = outputs.logits  # shape: (batch, 3)
                 # Softmax along the label axis -> per-class probabilities.
                 probs = torch.softmax(logits, dim=-1)
+                # Pull the probabilities back to CPU before reading floats so
+                # ``.item()`` works regardless of where the forward pass ran.
+                # No-op on CPU; required on CUDA.
+                if self._device != "cpu":
+                    probs = probs.cpu()
                 # ``probs`` shape: (batch, 3); each row is one pair.
                 for i in range(probs.shape[0]):
                     row = probs[i]
