@@ -12,7 +12,16 @@ comparison is honest:
      one-off ``/tmp/base_ablation.py`` logic into the harness: per-question error
      isolation, ``max_tokens=900``, scored via ``score_key_point_coverage``.
      There is NO citation axis (N/A by construction) and NO refusal probe — the
-     base model answers everything.
+     base model answers everything. The base answer IS, however, scored on the
+     HALLUCINATION axis: after composing each answer the arm retrieves the SAME
+     top-k passages the grounded pipeline would see (the RETRIEVAL arm's entry)
+     and scores it with ``score_groundedness`` (scorer v2 — IDENTICAL machinery
+     to the grounded arm), yielding an ``unsupported_claim_rate`` that is
+     directly comparable to the grounded arm's. This is unsupported-vs-COURSE-
+     CORPUS (a true-but-extra-course claim counts as unsupported) — the
+     product's hallucination definition, NOT a general factual-error rate. When
+     NLI is unavailable the axis reads n/a with a recorded reason (never a
+     fabricated rate).
 
   2. **RETRIEVAL** (retrieval only, no LLM) — retrieve top-k for each question
      and score the EXTRACTIVE CEILING: ``score_key_point_coverage`` over the
@@ -67,7 +76,13 @@ from lib.retrieval.gold_set import has_critical_issues, load_gold_set
 #: Scorecard artifact schema. Additive conventions: new arm blocks / axes are
 #: added without bumping unless a field's MEANING changes. Disjoint filename
 #: (``eval_scorecard_*.json``) from the grounded report + review sample.
-SCORECARD_SCHEMA_VERSION = "1.0"
+#: 1.0 → 1.1 (additive only — every 1.0 key unchanged): the BASE arm gained a
+#: ``groundedness`` block (hallucination axis: unsupported_claim_rate,
+#: groundedness_rate_mean, claims_scored, contradicted/computational/filtered
+#: counts), the comparison gained a per-arm ``unsupported_claim_rate`` + a
+#: derived ``hallucination_reduction`` entry, and per-base-question rows gained
+#: a ``groundedness`` sub-block.
+SCORECARD_SCHEMA_VERSION = "1.1"
 
 SCORECARD_FILENAME_PREFIX = "eval_scorecard_"
 
@@ -136,6 +151,66 @@ def _load_verified_gold(
 # BASE arm — qwen only, no retrieval
 # --------------------------------------------------------------------------- #
 
+#: Note stamped on the base block's hallucination axis so a reader never
+#: mistakes it for a general factual-error rate. The product's definition of a
+#: hallucination is "ungrounded in the COURSE corpus" — a claim that is true in
+#: the world but absent from this course's material STILL counts as unsupported
+#: here. That is deliberate (the grounded arm is held to the same bar), so the
+#: BASE-vs-GROUNDED comparison is apples-to-apples.
+_BASE_GROUNDEDNESS_NOTE = (
+    "unsupported_claim_rate is unsupported-vs-COURSE-CORPUS (the SAME top-k "
+    "passages the grounded pipeline would retrieve, scored with the IDENTICAL "
+    "score_groundedness v2 machinery: artifact filter + computational exemption "
+    "+ windowed rescue). A true-but-extra-course claim counts as unsupported — "
+    "this is the product's hallucination definition (ungrounded-in-course "
+    "content), deliberately NOT a general factual-error rate."
+)
+
+
+def _resolve_base_groundedness_nli(nli: Optional[Any]) -> tuple:
+    """Resolve the NLI singleton ONCE for the whole base arm.
+
+    Reuses :func:`lib.retrieval.groundedness._resolve_nli` (the SAME resolution
+    the grounded arm uses) so the comparison is apples-to-apples. Returns
+    ``(resolved_nli_or_None, reason_or_None)``: when the model is unavailable
+    (missing extras / load failure) the second element is a recorded reason and
+    the hallucination axis reads n/a — scores are NEVER fabricated. The import
+    is lazy so the ~750 MB DeBERTa stack is never imported when the groundedness
+    deps are absent.
+    """
+    try:
+        from lib.retrieval.groundedness import _resolve_nli
+    except Exception:  # noqa: BLE001 — groundedness module absent → degrade
+        return None, "groundedness_module_unavailable"
+    resolved = _resolve_nli(nli)
+    if resolved is None:
+        return None, "nli_unavailable"
+    return resolved, None
+
+
+def _base_retrieve_fn(
+    repo_root: Path, retrieve_fn: Optional[Any]
+) -> Any:
+    """Build the base arm's retrieval closure (same entry the RETRIEVAL arm uses).
+
+    When ``retrieve_fn`` is injected (tests), it is returned unchanged. Otherwise
+    the live :func:`lib.retrieval.grounded_answer._retrieve` is bound to the
+    resolved LibV2 root — the SAME engine/limit-arg signature the RETRIEVAL arm
+    uses, so the base arm sees exactly the passages the grounded pipeline would.
+    """
+    if retrieve_fn is not None:
+        return retrieve_fn
+
+    from lib.retrieval.grounded_answer import _libv2_root, _retrieve
+
+    libv2_root = _libv2_root(repo_root)
+
+    def _fn(_root, slug, query, *, engine, limit):
+        return _retrieve(libv2_root, slug, query, engine=engine, limit=limit)
+
+    return _fn
+
+
 def run_base_arm(
     repo_root: Path,
     course_slug: str,
@@ -144,6 +219,10 @@ def run_base_arm(
     capture: Optional[Any] = None,
     gold: Optional[Dict[str, Any]] = None,
     max_tokens: int = _BASE_MAX_TOKENS,
+    engine: str = "semantic",
+    limit: int = 8,
+    retrieve_fn: Optional[Any] = None,
+    nli: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Probe the raw local model's unaided knowledge over the gold set.
 
@@ -153,9 +232,25 @@ def run_base_arm(
     client exception on one question is recorded (``error`` flag) and the arm
     keeps going, exactly like the one-off ablation script.
 
+    **Hallucination axis (the hallucination-reduction comparison's BASE leg).**
+    After composing each base answer, retrieve the SAME top-k passages the
+    grounded pipeline would see (the RETRIEVAL arm's entry — same engine/limit
+    args) and score the answer with
+    :func:`lib.retrieval.groundedness.score_groundedness` (scorer v2: artifact
+    filter + computational exemption + windowed rescue — IDENTICAL machinery to
+    the grounded arm so the base-vs-grounded comparison is apples-to-apples).
+    The NLI singleton is resolved ONCE outside the loop; when it is unavailable
+    the axis reads n/a with a recorded ``reason`` — rates are NEVER fabricated.
+
+    SEMANTICS: ``unsupported_claim_rate`` is unsupported-vs-COURSE-CORPUS — a
+    true-but-extra-course claim counts as unsupported. That is the product's
+    hallucination definition (ungrounded-in-course content), deliberately NOT a
+    general factual-error rate (see :data:`_BASE_GROUNDEDNESS_NOTE`).
+
     ``client`` is injectable for tests; when ``None`` the real loopback-enforced
     answer backend is built (:func:`lib.retrieval.answer_backend.build_answer_client`).
-    No citations are scored (axis N/A by construction).
+    ``retrieve_fn`` / ``nli`` are injectable for tests (same shapes the grounded
+    + retrieval arms use). No citations are scored (axis N/A by construction).
     """
     repo_root = Path(repo_root)
     if gold is None:
@@ -177,6 +272,12 @@ def run_base_arm(
             client, "model_id", None
         )
 
+    # Resolve the NLI singleton ONCE (outside the loop) + the shared retrieval
+    # entry. When NLI is absent the hallucination axis degrades to n/a with a
+    # reason; scoring is skipped per-question (never fabricated).
+    resolved_nli, nli_unavailable_reason = _resolve_base_groundedness_nli(nli)
+    base_retrieve_fn = _base_retrieve_fn(repo_root, retrieve_fn)
+
     rows: List[Dict[str, Any]] = []
     latencies: List[float] = []
     kp_total = 0
@@ -184,6 +285,14 @@ def run_base_arm(
     answered = 0
     errored = 0
     scored_questions = 0
+    # Hallucination-axis aggregates — per-question rates averaged the SAME way
+    # the grounded arm does (mean-of-rates), so the comparison is apples-to-apples.
+    groundedness_rates: List[float] = []
+    unsupported_rates: List[float] = []
+    claims_scored_total = 0
+    contradicted_total = 0
+    computational_total = 0
+    filtered_total = 0
 
     for q in questions:
         qid = str(q.get("question_id", ""))
@@ -202,6 +311,8 @@ def run_base_arm(
             model_id=model_id,
             max_tokens=max_tokens,
             n_key_points=len(key_points),
+            nli_available=resolved_nli is not None,
+            nli_unavailable_reason=nli_unavailable_reason,
         )
 
         t0 = time.monotonic()
@@ -224,6 +335,7 @@ def run_base_arm(
                     "answered": False,
                     "error": f"{type(exc).__name__}: {exc}"[:200],
                     "key_point_coverage": _coverage_fields(None),
+                    "groundedness": None,
                     "answer_len": 0,
                     "latency_ms": latency_ms,
                 }
@@ -237,14 +349,80 @@ def run_base_arm(
         if cov is not None:
             kp_total += cov.total
             kp_covered += cov.covered
+
+        # Hallucination axis: score this answer against the SAME top-k passages
+        # the grounded pipeline would retrieve. Per-question error isolation:
+        # a retrieval / scoring failure on one question is recorded and the arm
+        # keeps going (mirrors the answer-call isolation above).
+        grounded_block = _score_base_groundedness(
+            answer_text,
+            repo_root=repo_root,
+            course_slug=course_slug,
+            qtext=qtext,
+            engine=engine,
+            limit=limit,
+            retrieve_fn=base_retrieve_fn,
+            nli=resolved_nli,
+            nli_unavailable_reason=nli_unavailable_reason,
+        )
+        if grounded_block.get("available"):
+            scored = int(grounded_block.get("scored_count", 0) or 0)
+            g_rate = float(grounded_block.get("groundedness_rate", 0.0) or 0.0)
+            groundedness_rates.append(g_rate)
+            unsupported_rates.append(
+                (int(grounded_block.get("unsupported_count", 0) or 0) / scored)
+                if scored
+                else 0.0
+            )
+            claims_scored_total += scored
+            contradicted_total += int(
+                grounded_block.get("contradicted_count", 0) or 0
+            )
+            computational_total += int(
+                grounded_block.get("computational_count", 0) or 0
+            )
+            filtered_total += int(grounded_block.get("filtered_count", 0) or 0)
+
         rows.append(
             {
                 "question_id": qid,
                 "answered": True,
                 "key_point_coverage": _coverage_fields(cov),
+                "groundedness": grounded_block,
                 "answer_len": len(answer_text or ""),
                 "latency_ms": latency_ms,
             }
+        )
+
+    # Hallucination axis rollup. ``available`` is True iff at least one answer
+    # was scored against the corpus; when NLI was unavailable the whole axis is
+    # n/a with the recorded reason (never a fabricated 0.0 rate).
+    hallucination_available = bool(groundedness_rates)
+    groundedness_block: Dict[str, Any] = {
+        "available": hallucination_available,
+        # n/a when NLI is unavailable / nothing was scored — NEVER fabricated.
+        "unsupported_claim_rate": (
+            (sum(unsupported_rates) / len(unsupported_rates))
+            if unsupported_rates
+            else None
+        ),
+        "groundedness_rate_mean": (
+            (sum(groundedness_rates) / len(groundedness_rates))
+            if groundedness_rates
+            else None
+        ),
+        "claims_scored": claims_scored_total,
+        "contradicted_count": contradicted_total,
+        "computational_count": computational_total,
+        "filtered_count": filtered_total,
+        "questions_scored": len(groundedness_rates),
+        "engine": engine,
+        "limit": limit,
+        "_note": _BASE_GROUNDEDNESS_NOTE,
+    }
+    if not hallucination_available:
+        groundedness_block["reason"] = (
+            nli_unavailable_reason or "no_scorable_answers"
         )
 
     return {
@@ -260,6 +438,9 @@ def run_base_arm(
             "covered_key_points": kp_covered,
             "coverage_rate": (kp_covered / kp_total) if kp_total else None,
         },
+        # Hallucination axis: the base model's answers scored against the course
+        # corpus with the SAME groundedness machinery the grounded arm uses.
+        "groundedness": groundedness_block,
         # Base answers everything by construction — it has no refusal machinery.
         # Surfaced as a cheap honesty axis so the scorecard can say "the base
         # model produced an answer for every question, including content it may
@@ -275,6 +456,59 @@ def run_base_arm(
     }
 
 
+def _score_base_groundedness(
+    answer_text: Optional[str],
+    *,
+    repo_root: Path,
+    course_slug: str,
+    qtext: str,
+    engine: str,
+    limit: int,
+    retrieve_fn: Any,
+    nli: Optional[Any],
+    nli_unavailable_reason: Optional[str],
+) -> Dict[str, Any]:
+    """Score one base answer against the SAME top-k passages the grounded
+    pipeline would retrieve, with the IDENTICAL groundedness machinery.
+
+    Returns a flat ``GroundednessReport.to_dict()`` (so the base row carries the
+    same shape the grounded arm's per-claim block does). When NLI is unavailable
+    the report is ``available=False`` with the recorded reason — never a
+    fabricated rate. Per-question error isolation: a retrieval / scoring
+    exception degrades THIS question's block to ``available=False`` with the
+    error reason and the arm keeps going.
+    """
+    if nli is None:
+        return {
+            "available": False,
+            "reason": nli_unavailable_reason or "nli_unavailable",
+        }
+    from lib.retrieval.groundedness import score_groundedness
+
+    try:
+        results = list(
+            retrieve_fn(
+                repo_root, course_slug, qtext, engine=engine, limit=limit
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — per-question isolation
+        return {
+            "available": False,
+            "reason": f"retrieve_error: {type(exc).__name__}: {exc}"[:200],
+        }
+
+    # The retrieved passages ARE the evidence pool — the base model emitted no
+    # citations, so there is no cited/uncited split (cited_chunk_ids omitted).
+    try:
+        report = score_groundedness(answer_text or "", results, nli=nli)
+    except Exception as exc:  # noqa: BLE001 — per-question isolation
+        return {
+            "available": False,
+            "reason": f"score_error: {type(exc).__name__}: {exc}"[:200],
+        }
+    return report.to_dict()
+
+
 def _emit_base_decision(
     capture: Optional[Any],
     *,
@@ -283,17 +517,32 @@ def _emit_base_decision(
     model_id: Optional[str],
     max_tokens: int,
     n_key_points: int,
+    nli_available: bool,
+    nli_unavailable_reason: Optional[str],
 ) -> None:
     """Emit one ``base_model_eval_call`` decision per base-arm question.
 
     Rationale interpolates dynamic per-call signals (course, question id, model,
-    max_tokens, key-point count) so the capture is replayable post-hoc — never a
-    static boilerplate string. Best-effort: a capture failure is swallowed so
-    the eval is not aborted by a logging error (the underlying client also emits
-    its own ``llm_chat_call`` event).
+    max_tokens, key-point count, AND the new hallucination-axis signals: whether
+    NLI groundedness scoring is wired and, if not, why) so the capture is
+    replayable post-hoc — never a static boilerplate string. Best-effort: a
+    capture failure is swallowed so the eval is not aborted by a logging error
+    (the underlying client also emits its own ``llm_chat_call`` event).
     """
     if capture is None:
         return
+    if nli_available:
+        groundedness_signal = (
+            "the answer is ALSO scored for hallucination (unsupported-vs-course-"
+            "corpus) against the same top-k passages the grounded pipeline would "
+            "retrieve, via the shared score_groundedness v2 NLI machinery"
+        )
+    else:
+        groundedness_signal = (
+            "the hallucination axis is n/a for this run (NLI unavailable: "
+            f"{nli_unavailable_reason or 'nli_unavailable'}) — no rates "
+            "fabricated"
+        )
     try:
         capture.log_decision(
             decision_type="base_model_eval_call",
@@ -308,7 +557,7 @@ def _emit_base_decision(
                 f"model={model_id}, max_tokens={max_tokens}, temperature="
                 f"{_BASE_TEMPERATURE}. Scored with the shared "
                 f"score_key_point_coverage machinery for honest cross-arm "
-                f"comparison."
+                f"comparison; {groundedness_signal}."
             ),
             alternatives_considered=[
                 "grounded arm (retrieval + refusal): measures the combined "
@@ -528,7 +777,59 @@ def _grounded_shared_axes(grounded: Dict[str, Any]) -> Dict[str, Any]:
         "key_point_coverage_rate": kp.get("coverage_rate"),
         "answered": answered,
         "declined": declined,
+        # Hallucination axis: the grounded arm's per-question mean unsupported-
+        # vs-corpus rate (the SAME metric the BASE arm now computes). None on a
+        # report where NLI was unavailable / nothing was scored.
+        "unsupported_claim_rate": headline.get("unsupported_claim_rate"),
         "latency_ms": headline.get("latency_ms", {}),
+    }
+
+
+def _arm_unsupported_rate(arm_block: Dict[str, Any]) -> Optional[float]:
+    """Pull a base / grounded arm block's unsupported-vs-corpus rate (or None).
+
+    BASE: from its ``groundedness`` sub-block (the hallucination axis added by
+    :func:`run_base_arm`). GROUNDED: from its ``headline``. Returns ``None`` when
+    the axis is n/a (NLI unavailable / nothing scored) so the comparison reads
+    n/a rather than fabricating a rate. The RETRIEVAL arm has no answer claims
+    by construction — it is handled separately ("—").
+    """
+    if not isinstance(arm_block, dict):
+        return None
+    if arm_block.get("arm") == ARM_GROUNDED or "headline" in arm_block:
+        headline = arm_block.get("headline", {}) or {}
+        rate = headline.get("unsupported_claim_rate")
+        return float(rate) if isinstance(rate, (int, float)) else None
+    grounded = arm_block.get("groundedness", {}) or {}
+    if not grounded.get("available"):
+        return None
+    rate = grounded.get("unsupported_claim_rate")
+    return float(rate) if isinstance(rate, (int, float)) else None
+
+
+def _hallucination_reduction(
+    base_rate: Optional[float], grounded_rate: Optional[float]
+) -> Dict[str, Any]:
+    """Derive the BASE→GROUNDED hallucination-reduction entry.
+
+    ``absolute_reduction = base - grounded``; ``relative_reduction =
+    (base - grounded) / base`` guarded for ``base in (0, None)`` and a
+    ``None`` grounded rate (either ⇒ ``relative_reduction = None``, the honest
+    "can't compute" value — never a fabricated 0/1). Lower rate is better, so a
+    POSITIVE reduction means the grounded pipeline fabricates LESS than the base
+    model — the headline win this axis exists to show.
+    """
+    absolute: Optional[float] = None
+    relative: Optional[float] = None
+    if base_rate is not None and grounded_rate is not None:
+        absolute = base_rate - grounded_rate
+        if base_rate:  # guard base == 0 (no division) — relative is undefined
+            relative = absolute / base_rate
+    return {
+        "base_rate": base_rate,
+        "grounded_rate": grounded_rate,
+        "absolute_reduction": absolute,
+        "relative_reduction": relative,
     }
 
 
@@ -536,10 +837,15 @@ def _build_comparison(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     """Roll the requested arms up onto the shared axes for a side-by-side view.
 
     Shared axes (every arm that ran): key_point_coverage rate, answered /
-    declined counts, latency p50/p95. Grounded-only axes (citations,
-    groundedness, refusal) deliberately stay in the grounded block — they have
-    no base / retrieval counterpart, so surfacing them in the comparison would
-    invite an apples-to-oranges read.
+    declined counts, latency p50/p95, AND the hallucination axis
+    (``unsupported_claim_rate``, unsupported-vs-corpus) — BASE and GROUNDED both
+    carry it (apples-to-apples, same scorer), RETRIEVAL prints the sentinel
+    ``"—"`` (no answer claims by construction). When BOTH base + grounded ran a
+    derived ``hallucination_reduction`` entry ({base_rate, grounded_rate,
+    absolute_reduction, relative_reduction}) headlines the fabrication delta.
+    Citation-precision + refusal axes deliberately stay in the grounded block —
+    they have no base / retrieval counterpart, so surfacing them in the
+    comparison would invite an apples-to-oranges read.
     """
     comparison: Dict[str, Dict[str, Any]] = {}
 
@@ -552,6 +858,8 @@ def _build_comparison(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             "answered": base["answered"],
             # Base answers everything — declined is 0 by construction.
             "declined": base["declined"],
+            # Hallucination axis: unsupported-vs-corpus (None ⇒ n/a, NLI absent).
+            "unsupported_claim_rate": _arm_unsupported_rate(base),
             "latency_ms": base["latency_ms"],
             "note": (
                 "qwen only, no retrieval; answers everything by construction "
@@ -568,13 +876,18 @@ def _build_comparison(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             # Retrieval has no "answered" notion (no LLM) — it surfaces passages.
             "answered": None,
             "declined": None,
+            # No model claims to score → no hallucination axis by construction.
+            # Sentinel "—" (NOT None) so the table prints a dash and a reader
+            # never confuses it with "NLI unavailable" (which is None / n/a).
+            "unsupported_claim_rate": "—",
             "primary_relevant_hit_at_k_rate": retr["primary_relevant_hit"][
                 "hit_at_k_rate"
             ],
             "latency_ms": retr["latency_ms"],
             "note": (
                 "retrieval only, no LLM; key_point_coverage is the extractive "
-                "ceiling over concatenated passages"
+                "ceiling over concatenated passages; no answer claims so no "
+                "hallucination axis (—)"
             ),
         }
 
@@ -583,6 +896,14 @@ def _build_comparison(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             **_grounded_shared_axes(arms[ARM_GROUNDED]),
             "note": "qwen + retrieval (full pipeline)",
         }
+
+    # Derived hallucination-reduction entry (BASE→GROUNDED). Only meaningful when
+    # both arms ran; otherwise omitted (no fabricated comparison).
+    if ARM_BASE in arms and ARM_GROUNDED in arms:
+        comparison["hallucination_reduction"] = _hallucination_reduction(
+            _arm_unsupported_rate(arms[ARM_BASE]),
+            _arm_unsupported_rate(arms[ARM_GROUNDED]),
+        )
 
     return comparison
 
@@ -633,6 +954,11 @@ def run_scorecard(
             client=base_client,
             capture=capture,
             gold=gold,
+            # Hallucination axis: score base answers against the SAME top-k
+            # passages the retrieval / grounded arms see (apples-to-apples).
+            engine=engine,
+            limit=limit,
+            retrieve_fn=retrieve_fn,
         )
 
     if ARM_RETRIEVAL in requested:
@@ -739,6 +1065,14 @@ def format_scorecard_table(scorecard: Dict[str, Any]) -> str:
         ("answered", "answered", _fmt_count),
         ("declined", "declined", _fmt_count),
         ("retrieval_hit@k", "primary_relevant_hit_at_k_rate", _fmt_rate),
+        # Hallucination axis: lower is better. RETRIEVAL prints "—" (its
+        # comparison value is the literal sentinel); BASE / GROUNDED print the
+        # rate, or "—" when n/a (NLI unavailable / nothing scored → None).
+        (
+            "hallucination (unsupported-vs-corpus)",
+            "unsupported_claim_rate",
+            _fmt_rate,
+        ),
         ("latency_p50_ms", None, None),
         ("latency_p95_ms", None, None),
     ]
@@ -767,6 +1101,23 @@ def format_scorecard_table(scorecard: Dict[str, Any]) -> str:
             else:
                 cells.append((fmt or _fmt_rate)(block.get(key)).ljust(col_w))
         lines.append(f"{label.ljust(label_w)}  {' '.join(cells)}")
+
+    # One-line hallucination-reduction summary (BASE→GROUNDED), when derived.
+    reduction = comparison.get("hallucination_reduction")
+    if isinstance(reduction, dict):
+        base_r = reduction.get("base_rate")
+        grounded_r = reduction.get("grounded_rate")
+        abs_r = reduction.get("absolute_reduction")
+        rel_r = reduction.get("relative_reduction")
+        rel_str = (
+            f"{rel_r * 100:.1f}%" if isinstance(rel_r, (int, float)) else "n/a"
+        )
+        lines.append("")
+        lines.append(
+            "hallucination reduction (BASE→GROUNDED, unsupported-vs-corpus): "
+            f"{_fmt_rate(base_r)} → {_fmt_rate(grounded_r)}  "
+            f"(absolute {_fmt_rate(abs_r)}, relative {rel_str})"
+        )
 
     # Trailing per-arm notes + grounded-only axes pointer.
     lines.append("")

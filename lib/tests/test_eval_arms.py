@@ -97,6 +97,50 @@ class _Result:
         self.text = text
 
 
+class _NliScore:
+    """Duck-types ``NliScore`` (``.entailment`` + ``.contradiction``)."""
+
+    def __init__(self, entailment, contradiction):
+        self.entailment = float(entailment)
+        self.contradiction = float(contradiction)
+
+
+class _FakeNli:
+    """Deterministic fake NLI singleton for groundedness scoring.
+
+    ``score_batch(pairs=[(premise, hypothesis), ...])`` returns one
+    :class:`_NliScore` per pair. A claim (hypothesis) is "entailed" iff its
+    ``support`` substring appears in the premise; otherwise unsupported (or
+    contradicted when its ``contradict`` substring appears). Lets a test pin
+    exactly which answer sentences ground against which passages.
+    """
+
+    _revision = "fake-nli-rev"
+
+    def __init__(self, *, entailed_if=(), contradicted_if=()):
+        # Tuples of (premise_substr, hypothesis_substr) → high entailment /
+        # contradiction. First match wins.
+        self._entailed_if = list(entailed_if)
+        self._contradicted_if = list(contradicted_if)
+        self.batches = 0
+
+    def score_batch(self, *, pairs):
+        self.batches += 1
+        out = []
+        for premise, hypothesis in pairs:
+            ent, con = 0.10, 0.10
+            for p_sub, h_sub in self._entailed_if:
+                if p_sub in premise and h_sub in hypothesis:
+                    ent = 0.95
+                    break
+            for p_sub, h_sub in self._contradicted_if:
+                if p_sub in premise and h_sub in hypothesis:
+                    con = 0.95
+                    break
+            out.append(_NliScore(ent, con))
+        return out
+
+
 class _RecordingCapture:
     def __init__(self):
         self.events = []
@@ -164,6 +208,125 @@ def test_base_arm_error_isolation_does_not_kill_arm():
     # Only the surviving question's key points are in the denominator.
     assert result["key_point_coverage"]["total_key_points"] == 2
     assert result["key_point_coverage"]["covered_key_points"] == 2
+
+
+# --- BASE-arm hallucination axis -------------------------------------------
+
+def _base_groundedness_setup():
+    """A 1-question gold + answer whose two sentences split into one grounded
+    and one ungrounded claim against a single retrieved passage."""
+    gold = {
+        "schema_version": "1.1",
+        "questions": [
+            {
+                "question_id": "gq-0001",
+                "question_text": "What does a vector store index?",
+                "question_type": "short_answer",
+                "expected_key_points": ["embedding vectors"],
+                "relevant_passages": [
+                    {"chunk_id": "chunk_a", "relevance": "primary"}
+                ],
+            }
+        ],
+    }
+    # Two scorable sentences (≥4 content tokens each): the first grounds in the
+    # passage (carries the GROUNDED marker), the second does not (FABRICATED).
+    answer = (
+        "A vector store indexes dense GROUNDED embedding vectors carefully. "
+        "The vector store also performs FABRICATED nightly database backups."
+    )
+    client = _FakeClient({"What does a vector store index?": answer})
+    # Retrieved passage entails ONLY the GROUNDED sentence.
+    retrieve_fn = _retrieve_fn_factory(
+        {
+            "What does a vector store index?": [
+                _Result(
+                    "chunk_a",
+                    "A vector store indexes dense GROUNDED embedding vectors "
+                    "for similarity search.",
+                )
+            ]
+        }
+    )
+    nli = _FakeNli(entailed_if=[("GROUNDED", "GROUNDED")])
+    return gold, client, retrieve_fn, nli
+
+
+def test_base_arm_scores_hallucination_against_corpus():
+    gold, client, retrieve_fn, nli = _base_groundedness_setup()
+    result = run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=client,
+        gold=gold,
+        retrieve_fn=retrieve_fn,
+        nli=nli,
+    )
+    g = result["groundedness"]
+    assert g["available"] is True
+    # 2 scorable claims, 1 entailed → 0.5 grounded, 0.5 unsupported.
+    assert g["claims_scored"] == 2
+    assert g["groundedness_rate_mean"] == pytest.approx(0.5)
+    assert g["unsupported_claim_rate"] == pytest.approx(0.5)
+    # Semantics note present + flags the corpus-bound definition.
+    assert "unsupported-vs-COURSE-CORPUS" in g["_note"]
+    assert "factual-error rate" in g["_note"]
+    # The per-question row carries its own groundedness sub-block.
+    row = result["questions"][0]
+    assert row["groundedness"]["available"] is True
+    assert row["groundedness"]["scored_count"] == 2
+
+
+def test_base_arm_hallucination_na_when_nli_unavailable():
+    """NLI unavailable → axis reads n/a with a reason, NEVER fabricated rates."""
+    gold, client, retrieve_fn, _ = _base_groundedness_setup()
+    # nli=None AND monkeypatch the singleton resolver to return None so the real
+    # ~750MB model is never touched; the arm degrades honestly.
+    import lib.retrieval.groundedness as gmod
+
+    orig = gmod._resolve_nli
+    gmod._resolve_nli = lambda nli=None: None
+    try:
+        result = run_base_arm(
+            Path("/unused"),
+            "course-x",
+            client=client,
+            gold=gold,
+            retrieve_fn=retrieve_fn,
+            nli=None,
+        )
+    finally:
+        gmod._resolve_nli = orig
+    g = result["groundedness"]
+    assert g["available"] is False
+    # No fabricated numbers — the rates are None and a reason is recorded.
+    assert g["unsupported_claim_rate"] is None
+    assert g["groundedness_rate_mean"] is None
+    assert g["reason"] == "nli_unavailable"
+    # The key-point axis is unaffected (deterministic, no NLI).
+    assert result["key_point_coverage"]["coverage_rate"] is not None
+
+
+def test_base_arm_decision_rationale_carries_groundedness_signal():
+    gold, client, retrieve_fn, nli = _base_groundedness_setup()
+    cap = _RecordingCapture()
+    run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=client,
+        gold=gold,
+        retrieve_fn=retrieve_fn,
+        nli=nli,
+        capture=cap,
+    )
+    events = [
+        e for e in cap.events if e["decision_type"] == "base_model_eval_call"
+    ]
+    assert events
+    # Extended (not a new call site): the existing base decision's rationale now
+    # interpolates the hallucination-axis signal.
+    assert any("hallucination" in e["rationale"] for e in events)
+    assert any("score_groundedness" in e["rationale"] for e in events)
 
 
 def test_base_arm_emits_decision_capture_per_question():
@@ -396,12 +559,30 @@ def test_scorecard_three_arms_side_by_side(libv2_course):
     assert scorecard["arms"][ARM_RETRIEVAL]["retrieval"] is True
     assert scorecard["arms"][ARM_GROUNDED]["model_id"] == "fake-grounded-model"
 
-    # Comparison block: all three columns on the shared axes.
+    # Comparison block: all three columns on the shared axes + the derived
+    # hallucination_reduction entry (BASE→GROUNDED).
     comp = scorecard["comparison"]
-    assert set(comp) == {ARM_BASE, ARM_RETRIEVAL, ARM_GROUNDED}
+    assert set(comp) == {
+        ARM_BASE,
+        ARM_RETRIEVAL,
+        ARM_GROUNDED,
+        "hallucination_reduction",
+    }
     for arm in (ARM_BASE, ARM_RETRIEVAL, ARM_GROUNDED):
         assert "key_point_coverage_rate" in comp[arm]
         assert "latency_ms" in comp[arm]
+        # Hallucination axis present on every arm column.
+        assert "unsupported_claim_rate" in comp[arm]
+    # RETRIEVAL has no answer claims → the sentinel "—" (not None).
+    assert comp[ARM_RETRIEVAL]["unsupported_claim_rate"] == "—"
+    # Derived reduction entry carries all four fields.
+    red = comp["hallucination_reduction"]
+    assert set(red) == {
+        "base_rate",
+        "grounded_rate",
+        "absolute_reduction",
+        "relative_reduction",
+    }
     # Base answers everything → declined 0; retrieval has no answered notion.
     assert comp[ARM_BASE]["declined"] == 0
     assert comp[ARM_RETRIEVAL]["answered"] is None
@@ -475,6 +656,118 @@ def test_scorecard_critical_gold_issue_raises(libv2_course):
             base_client=_FakeClient({}), write=False,
         )
     assert "critical" in str(exc.value).lower()
+
+
+# ===========================================================================
+# Comparison / hallucination-reduction math + table rendering
+# ===========================================================================
+
+from lib.retrieval.eval_arms import (  # noqa: E402
+    _build_comparison,
+    _hallucination_reduction,
+)
+
+
+def test_hallucination_reduction_math():
+    red = _hallucination_reduction(0.50, 0.10)
+    assert red["base_rate"] == 0.50
+    assert red["grounded_rate"] == 0.10
+    assert red["absolute_reduction"] == pytest.approx(0.40)
+    assert red["relative_reduction"] == pytest.approx(0.80)
+
+
+def test_hallucination_reduction_guards():
+    # base == 0 → relative undefined (no division), absolute still computed.
+    red = _hallucination_reduction(0.0, 0.0)
+    assert red["absolute_reduction"] == pytest.approx(0.0)
+    assert red["relative_reduction"] is None
+    # base None (NLI n/a) → both derived fields None, never fabricated.
+    red_none = _hallucination_reduction(None, 0.10)
+    assert red_none["absolute_reduction"] is None
+    assert red_none["relative_reduction"] is None
+    # grounded None → likewise None (can't compute a delta).
+    red_g = _hallucination_reduction(0.30, None)
+    assert red_g["absolute_reduction"] is None
+    assert red_g["relative_reduction"] is None
+
+
+def _arm_blocks_for_comparison(base_rate, grounded_rate):
+    """Minimal arm-result dicts shaped enough for _build_comparison."""
+    base = {
+        "arm": ARM_BASE,
+        "key_point_coverage": {"coverage_rate": 0.4},
+        "answered": 2,
+        "declined": 0,
+        "latency_ms": {"p50": 1.0, "p95": 2.0},
+        "groundedness": {
+            "available": base_rate is not None,
+            "unsupported_claim_rate": base_rate,
+        },
+    }
+    retr = {
+        "arm": ARM_RETRIEVAL,
+        "key_point_coverage": {"coverage_rate": 0.9},
+        "primary_relevant_hit": {"hit_at_k_rate": 1.0},
+        "latency_ms": {"p50": 0.5, "p95": 1.0},
+    }
+    grounded = {
+        "arm": ARM_GROUNDED,
+        "headline": {
+            "key_point_coverage": {"coverage_rate": 0.6},
+            "unsupported_claim_rate": grounded_rate,
+            "latency_ms": {"p50": 3.0, "p95": 5.0},
+            "refusal": {},
+        },
+        "questions": [],
+    }
+    return {ARM_BASE: base, ARM_RETRIEVAL: retr, ARM_GROUNDED: grounded}
+
+
+def test_comparison_carries_hallucination_axis_and_reduction():
+    arms = _arm_blocks_for_comparison(0.40, 0.05)
+    comp = _build_comparison(arms)
+    assert comp[ARM_BASE]["unsupported_claim_rate"] == pytest.approx(0.40)
+    assert comp[ARM_RETRIEVAL]["unsupported_claim_rate"] == "—"
+    assert comp[ARM_GROUNDED]["unsupported_claim_rate"] == pytest.approx(0.05)
+    red = comp["hallucination_reduction"]
+    assert red["absolute_reduction"] == pytest.approx(0.35)
+    assert red["relative_reduction"] == pytest.approx(0.875)
+
+
+def test_comparison_reduction_na_when_base_axis_unavailable():
+    # Base NLI unavailable (rate None) → reduction guards to None.
+    arms = _arm_blocks_for_comparison(None, 0.05)
+    comp = _build_comparison(arms)
+    assert comp[ARM_BASE]["unsupported_claim_rate"] is None
+    red = comp["hallucination_reduction"]
+    assert red["base_rate"] is None
+    assert red["absolute_reduction"] is None
+    assert red["relative_reduction"] is None
+
+
+def test_table_renders_hallucination_row_and_reduction_summary():
+    arms = _arm_blocks_for_comparison(0.40, 0.05)
+    scorecard = {
+        "course_slug": "course-x",
+        "engine": "semantic",
+        "arms": arms,
+        "comparison": _build_comparison(arms),
+    }
+    table = format_scorecard_table(scorecard)
+    # The hallucination row label + the per-arm values render.
+    assert "hallucination (unsupported-vs-corpus)" in table
+    assert "0.4000" in table  # base rate
+    assert "0.0500" in table  # grounded rate
+    # The one-line reduction summary renders with the relative percentage.
+    assert "hallucination reduction (BASE→GROUNDED" in table
+    assert "87.5%" in table
+    # RETRIEVAL column shows the "—" sentinel on the hallucination row.
+    assert "—" in table
+
+
+def test_schema_version_bumped_to_1_1():
+    # Additive bump for the BASE-arm hallucination axis + comparison entries.
+    assert SCORECARD_SCHEMA_VERSION == "1.1"
 
 
 def test_all_arms_constant():
