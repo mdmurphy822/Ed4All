@@ -520,7 +520,13 @@ def run_base_arm(
 
         resolved = resolve_answer_backend()
         model_id = resolved.model_id
-        client = build_answer_client(resolved, capture=capture)
+        # json_mode=False: the BASE arm measures what a raw LLM actually emits
+        # to a user — FREE TEXT. The grounded pipeline's json_mode=True would
+        # force a JSON envelope that scorer-v2's artifact filter then discards
+        # as a JSON literal, scoring near-zero unsupported claims and hiding the
+        # ungrounded invention this arm exists to measure. Both the gold-question
+        # pass and the refusal-probe pass use this same free-text client.
+        client = build_answer_client(resolved, capture=capture, json_mode=False)
     else:
         # Duck-typed model id from an injected fake (tests).
         model_id = getattr(client, "model", None) or getattr(

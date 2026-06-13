@@ -180,13 +180,24 @@ def build_answer_client(
     resolved: Optional[ResolvedAnswerBackend] = None,
     *,
     capture: Optional["DecisionCapture"] = None,
+    json_mode: bool = True,
 ) -> "OpenAICompatibleClient":
     """Build a layer-2 ``OpenAICompatibleClient`` for the answer path.
 
-    ``json_mode=True`` (Wave-113 lenient-JSON envelope). The same
-    ``capture`` handle threads the client's ``llm_chat_call`` wire-level
-    event into the composer's decision stream. ``None`` resolved →
-    :func:`resolve_answer_backend` with env/defaults.
+    The same ``capture`` handle threads the client's ``llm_chat_call``
+    wire-level event into the composer's decision stream. ``None``
+    resolved → :func:`resolve_answer_backend` with env/defaults.
+
+    ``json_mode`` (default ``True``, Wave-113 lenient-JSON envelope):
+    when ``True`` the request payload carries the JSON-mode fields
+    (``format: "json"`` + ``response_format: {"type": "json_object"}``)
+    so the grounded pipeline's structured answer-envelope parsing works.
+    The default preserves the grounded pipeline's behavior byte-for-byte.
+    Callers that need the model's RAW free-text output — e.g. the eval
+    BASE arm, which measures what a raw LLM actually emits to a user —
+    pass ``json_mode=False``; forcing a JSON envelope there would make
+    scorer-v2's artifact filter discard the answer as a JSON literal,
+    hiding the very fabrication that arm exists to measure.
 
     Connection-failure mapping (httpx errors → AnswerBackendUnavailable)
     is the composer's responsibility — this builder only constructs.
@@ -207,7 +218,7 @@ def build_answer_client(
         capture=capture,
         timeout=resolved.timeout,
         provider_label=f"answer:{resolved.provider_name}",
-        json_mode=True,
+        json_mode=json_mode,
     )
 
 
