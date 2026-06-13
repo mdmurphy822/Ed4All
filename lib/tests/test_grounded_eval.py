@@ -836,3 +836,95 @@ def test_refusal_safety_na_when_groundedness_off(libv2_course):
     answered = [r for r in report["probe_results"] if r["answered"]]
     assert len(answered) == 2
     assert all(r["unsupported_rate"] is None for r in answered)
+
+
+# ===========================================================================
+# Incremental progress wiring (lib.retrieval.eval_progress.EvalProgressWriter)
+# ===========================================================================
+
+import json as _json  # noqa: E402
+
+from lib.retrieval.eval_progress import (  # noqa: E402
+    PROGRESS_JSONL_FILENAME,
+    PROGRESS_SNAPSHOT_FILENAME,
+    EvalProgressWriter,
+)
+
+
+def _strip_latency_report(report):
+    """Report copy with non-deterministic wall-clock latencies nulled."""
+    out = _json.loads(_json.dumps(report))
+    out.get("headline", {}).pop("latency_ms", None)
+    for row in out.get("questions", []) or []:
+        row.pop("latency_ms", None)
+    return out
+
+
+def test_grounded_eval_progress_none_is_regression_identical(libv2_course):
+    """progress=None (the default) reproduces today's report exactly."""
+    repo_root, slug, _ = libv2_course
+    common = dict(
+        engine="lexical", answer_fn=_gold_answer_fn(_GROUNDED_OK),
+        with_groundedness=True, write=False,
+    )
+    without = run_grounded_eval(repo_root, slug, **common)
+    explicit_none = run_grounded_eval(repo_root, slug, progress=None, **common)
+    assert _strip_latency_report(without) == _strip_latency_report(explicit_none)
+
+
+def test_grounded_eval_progress_records_gold_and_probes(libv2_course):
+    """The grounded arm records one item per gold question AND per probe."""
+    repo_root, slug, course_dir = libv2_course
+    eval_dir = course_dir / "retrieval_eval"
+    w = EvalProgressWriter(
+        eval_dir, run_id="G-RUN", arm_totals={"grounded": 6}
+    )
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_gold_answer_fn(_GROUNDED_OK),
+        with_groundedness=True, write=False, progress=w,
+    )
+    w.close()
+    # The report is unchanged in shape (3 gold questions answered).
+    assert len(report["questions"]) == 3
+    lines = [
+        _json.loads(x)
+        for x in (eval_dir / PROGRESS_JSONL_FILENAME)
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if x.strip()
+    ]
+    # 3 gold + 3 fixture probes = 6 per-item lines, all on the grounded arm.
+    assert len(lines) == 6
+    assert all(line["arm"] == "grounded" for line in lines)
+    snap = _json.loads(
+        (eval_dir / PROGRESS_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
+    )
+    assert snap["arms"]["grounded"]["done"] == 6
+    assert snap["arms"]["grounded"]["finished"] is True
+    assert snap["state"] == "complete"
+
+
+class _BoomProgressWriter:
+    """Every method raises — must NOT abort the grounded eval (best-effort)."""
+
+    def start_arm(self, *a, **k):
+        raise RuntimeError("boom")
+
+    def record_item(self, *a, **k):
+        raise RuntimeError("boom")
+
+    def finish_arm(self, *a, **k):
+        raise RuntimeError("boom")
+
+
+def test_grounded_eval_progress_errors_are_swallowed(libv2_course):
+    repo_root, slug, _ = libv2_course
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_gold_answer_fn(_GROUNDED_OK),
+        with_groundedness=True, write=False, progress=_BoomProgressWriter(),
+    )
+    # The eval still produced its normal report despite progress raising.
+    assert report["headline"]["answer_rate"] == 1.0
+    assert len(report["questions"]) == 3

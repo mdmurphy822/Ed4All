@@ -64,6 +64,26 @@ from lib.retrieval.gold_set import (
 #: and every other headline metric are UNCHANGED.
 EVAL_SCHEMA_VERSION = "1.3"
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
+
+#: Progress-writer arm name for the grounded eval (matches eval_arms.ARM_GROUNDED
+#: without importing it — eval_arms imports from THIS module, so importing back
+#: would be circular). Kept in sync by the test suite.
+_PROGRESS_ARM_GROUNDED = "grounded"
+
+
+def _progress_call(progress: Optional[Any], method: str, *args: Any, **kwargs: Any) -> None:
+    """Invoke ``progress.<method>(...)`` best-effort (``None`` ⇒ no-op).
+
+    Mirrors :func:`lib.retrieval.eval_arms._progress_call`: a ``None`` writer is
+    the default (no file written, legacy behavior); any error is swallowed so
+    progress instrumentation can NEVER raise into the grounded eval.
+    """
+    if progress is None:
+        return
+    try:
+        getattr(progress, method)(*args, **kwargs)
+    except Exception:  # noqa: BLE001 — progress must never abort the eval
+        pass
 REVIEW_SAMPLE_FILENAME = "groundedness_review_sample.json"
 
 #: Review-sample artifact schema version. Tracked independently of
@@ -569,6 +589,7 @@ def run_grounded_eval(
     capture: Optional[Any] = None,
     answer_fn: Optional[Any] = None,
     write: bool = True,
+    progress: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Run the grounded-answer pipeline over a course's gold set + probes.
 
@@ -696,6 +717,13 @@ def run_grounded_eval(
 
     catchable = _composer_exhaustion_errors()
 
+    # Best-effort incremental progress: the grounded arm visits every gold
+    # question PLUS every refusal probe. Refine the writer's planned total to
+    # that sum up front (no-op when no writer was threaded).
+    _progress_call(
+        progress, "start_arm", _PROGRESS_ARM_GROUNDED, len(questions) + len(probes)
+    )
+
     # --- answerable gold questions ---------------------------------------
     for q in questions:
         qid = str(q.get("question_id", ""))
@@ -743,6 +771,13 @@ def run_grounded_eval(
                     "review_citations": [],
                     "per_claim_nli_verdicts": [],
                 }
+            )
+            _progress_call(
+                progress,
+                "record_item",
+                _PROGRESS_ARM_GROUNDED,
+                qid,
+                _COMPOSER_EXHAUSTED,
             )
             continue
 
@@ -928,6 +963,23 @@ def run_grounded_eval(
                 "per_claim_nli_verdicts": per_claim,
             }
         )
+        # Best-effort progress: cheap, already-computed signals only. unsupported
+        # is the per-question claim count the groundedness axis already produced
+        # (0 when the axis was unavailable); key-point counts ride along.
+        _unsupported = 0
+        if isinstance(grounded, dict) and grounded.get("available"):
+            _unsupported = int(grounded.get("unsupported_count", 0) or 0)
+        _progress_call(
+            progress,
+            "record_item",
+            _PROGRESS_ARM_GROUNDED,
+            qid,
+            status,
+            answered=(status in _ANSWERED_STATUSES),
+            key_points_total=(kp_cov.total if kp_cov is not None else 0),
+            key_points_covered=(kp_cov.covered if kp_cov is not None else 0),
+            unsupported=_unsupported,
+        )
 
     # --- refusal probes ---------------------------------------------------
     # REFUSAL-SAFETY axis (schema 1.3, additive): a probe is a question that
@@ -984,6 +1036,13 @@ def run_grounded_eval(
                     "unsupported_rate": None,
                 }
             )
+            _progress_call(
+                progress,
+                "record_item",
+                _PROGRESS_ARM_GROUNDED,
+                pid,
+                _COMPOSER_EXHAUSTED,
+            )
             continue
         status = str(_answer_field(answer, "status", "unknown"))
         is_refused = status in _REFUSED_STATUSES
@@ -1028,6 +1087,20 @@ def run_grounded_eval(
                 "unsupported_rate": probe_unsupported_rate,
             }
         )
+        # Best-effort progress: a refused probe is the SAFE outcome (declined);
+        # an answered probe is answered-not-refused. Status carries the raw
+        # pipeline verdict for the tail line.
+        _progress_call(
+            progress,
+            "record_item",
+            _PROGRESS_ARM_GROUNDED,
+            pid,
+            status,
+            answered=is_answered,
+            declined=is_refused,
+        )
+
+    _progress_call(progress, "finish_arm", _PROGRESS_ARM_GROUNDED)
 
     # refusal_recall = probes correctly refused / probes
     refusal_recall = (probe_refused / n_probes) if n_probes else 0.0
