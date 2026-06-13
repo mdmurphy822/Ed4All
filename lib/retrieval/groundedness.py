@@ -110,6 +110,11 @@ class GroundednessReport:
     thresholds: Dict[str, float] = field(default_factory=dict)
     thresholds_provenance: str = THRESHOLDS_PROVENANCE_DEFAULTS
     nli_model_revision: Optional[str] = None
+    #: Torch device the NLI model scored on (``"cpu"`` / ``"cuda*"``).
+    #: Recorded for provenance — GPU softmax is non-associative so a
+    #: cuda-scored run can differ ~1e-6 from a cpu pin (verdict thresholds
+    #: are robust). Mirrors the embedding manifest recording its device.
+    nli_device: Optional[str] = None
     reason: Optional[str] = None  # populated when available=False
     #: v2 additive — claims routed to the computational exemption (NLI-skipped,
     #: excluded from ``scored_count`` / ``groundedness_rate`` / the un/contra
@@ -131,6 +136,7 @@ class GroundednessReport:
             "thresholds": dict(self.thresholds),
             "thresholds_provenance": self.thresholds_provenance,
             "nli_model_revision": self.nli_model_revision,
+            "nli_device": self.nli_device,
             "reason": self.reason,
             # v2 additive keys (existing keys above unchanged).
             "computational_count": self.computational_count,
@@ -337,6 +343,15 @@ def _model_revision(nli: Any) -> Optional[str]:
     return getattr(nli, "_revision", None)
 
 
+def _model_device(nli: Any) -> Optional[str]:
+    """Best-effort read of the NLI model's torch device for provenance.
+
+    Mirrors :func:`_model_revision`. ``None`` for any scorer that doesn't
+    expose a ``device`` attribute (defensive against injected stubs).
+    """
+    return getattr(nli, "device", None)
+
+
 #: Stage-2 (windowed rescue) pair cap. Keeps runtime bounded on large evidence
 #: pools — over this many windows we take the first N per passage (round-robin
 #: by passage order). 512 windows × ~10 unrescued claims is a sane upper bound.
@@ -465,6 +480,7 @@ def score_groundedness(
             thresholds=thresholds,
             thresholds_provenance=THRESHOLDS_PROVENANCE_DEFAULTS,
             nli_model_revision=_model_revision(resolved),
+            nli_device=_model_device(resolved),
             reason=None if all_claims else "no_scorable_claims",
             computational_count=computational_count,
             filtered_count=filtered_count,
@@ -596,6 +612,7 @@ def score_groundedness(
         thresholds=thresholds,
         thresholds_provenance=THRESHOLDS_PROVENANCE_DEFAULTS,
         nli_model_revision=_model_revision(resolved),
+        nli_device=_model_device(resolved),
         reason=None,
         computational_count=computational_count,
         filtered_count=filtered_count,

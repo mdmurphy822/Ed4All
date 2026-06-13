@@ -688,6 +688,22 @@ def _build_catalog() -> List[Dict[str, Any]]:
             "applies_to": "retrieval",
         },
         {
+            "key": "ED4ALL_NLI_DEVICE",
+            "label": "NLI Device",
+            "category": "embedding",
+            "type": "enum",
+            "default": "cpu",
+            "enum": ["cpu", "cuda"],
+            "help": (
+                "Torch device for the in-process NLI classifier that scores "
+                "groundedness/eval entailment. Default cpu for determinism; "
+                "cuda for speed (~20-50x, fp16 on GPU). cuda requested on a "
+                "CPU box falls back to cpu (no crash). Recorded for "
+                "provenance."
+            ),
+            "applies_to": "retrieval",
+        },
+        {
             "key": "ED4ALL_EMBEDDING_ALLOW_FAKE",
             "label": "Allow Fake Embedding Index",
             "category": "embedding",

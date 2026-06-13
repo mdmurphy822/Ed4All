@@ -238,6 +238,7 @@ def test_report_to_dict_shape():
     assert v1_report_keys <= set(d)
     assert set(d) == v1_report_keys | {
         "computational_count", "filtered_count", "scorer_version",
+        "nli_device",
     }
     v1_claim_keys = {
         "claim_text", "verdict", "entailment", "contradiction", "best_chunk_id",

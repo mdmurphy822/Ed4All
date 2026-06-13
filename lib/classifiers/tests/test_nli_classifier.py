@@ -23,8 +23,10 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from lib.classifiers.nli_classifier import (  # noqa: E402
+    ENV_DEVICE,
     NliClassifier,
     NliScore,
+    resolve_nli_device,
 )
 
 
@@ -318,6 +320,151 @@ def test_pinned_revision_matches_bert_ensemble() -> None:
 # --------------------------------------------------------------------- #
 # Test 9 (slow): real model load — operator runs on demand
 # --------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------- #
+# Device knob (ED4ALL_NLI_DEVICE) — resolver + placement + score-path
+# --------------------------------------------------------------------- #
+
+
+def _make_scoring_fake_torch(*, batch_n: int = 1) -> Any:
+    """Build a fake torch module with the score_batch surface.
+
+    Provides ``no_grad()`` (no-op context), ``softmax(logits, dim=-1)``
+    (returns a fake probs tensor with ``.shape`` + indexable rows whose
+    ``[idx].item()`` returns floats), and a recording ``.cpu()`` on the
+    probs tensor so the device-move path is observable.
+    """
+    fake_torch = MagicMock()
+    fake_torch.no_grad.return_value.__enter__ = MagicMock()
+    fake_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+
+    def _make_probs() -> Any:
+        probs = MagicMock()
+        probs.shape = (batch_n, 3)
+        rows: List[Any] = []
+        for _ in range(batch_n):
+            row_mock = MagicMock()
+
+            def _idx(idx: int) -> Any:
+                prob_map = {0: 0.85, 1: 0.10, 2: 0.05}
+                item_mock = MagicMock()
+                item_mock.item.return_value = prob_map[idx]
+                return item_mock
+
+            row_mock.__getitem__.side_effect = _idx
+            rows.append(row_mock)
+        probs.__getitem__.side_effect = lambda i: rows[i]
+        # ``.cpu()`` returns the same probs tensor (records the call).
+        probs.cpu.return_value = probs
+        return probs
+
+    fake_torch.softmax.side_effect = lambda logits, dim: _make_probs()
+    return fake_torch
+
+
+def _build_classifier(fake_torch: Any, *, device: Any = None) -> NliClassifier:
+    fake_model = MagicMock()
+    fake_outputs = MagicMock()
+    fake_outputs.logits = MagicMock()
+    fake_model.return_value = fake_outputs
+    fake_tokenizer = MagicMock()
+    # Encoded must be a real dict so ``{k: v.to(...)}`` comprehension works.
+    fake_tokenizer.return_value = {"input_ids": MagicMock()}
+    return NliClassifier(
+        model=fake_model,
+        tokenizer=fake_tokenizer,
+        torch_module=fake_torch,
+        revision="test-rev",
+        id2label={0: "entailment", 1: "neutral", 2: "contradiction"},
+        device=device,
+    )
+
+
+def test_resolve_nli_device_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolution chain: explicit arg > env > default cpu."""
+    monkeypatch.delenv(ENV_DEVICE, raising=False)
+    assert resolve_nli_device() == "cpu"  # default
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    assert resolve_nli_device() == "cuda"  # env wins over default
+    assert resolve_nli_device("cuda:1") == "cuda:1"  # arg wins over env
+
+
+def test_default_device_cpu_no_to_no_half(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default (cpu): model.to / model.half never called; cpu path byte-stable."""
+    monkeypatch.delenv(ENV_DEVICE, raising=False)
+    fake_torch = _make_scoring_fake_torch()
+    classifier = _build_classifier(fake_torch)
+    assert classifier.device == "cpu"
+    assert classifier.dtype == "float32"
+    classifier._model.to.assert_not_called()
+    classifier._model.half.assert_not_called()
+    # cuda availability is never even probed on the cpu path.
+    fake_torch.cuda.is_available.assert_not_called()
+
+    # Score path: no device move, no .cpu() on probs.
+    score = classifier.score_pair(premise="A", hypothesis="B")
+    assert isinstance(score, NliScore)
+    assert isinstance(score.entailment, float)
+    assert score.entailment == pytest.approx(0.85)
+
+
+def test_cuda_device_when_available_moves_and_halves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cuda requested + available → model.to('cuda') + .half(); tensors moved."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+
+    classifier = _build_classifier(fake_torch)
+    assert classifier.device == "cuda"
+    assert classifier.dtype == "float16"
+    classifier._model.to.assert_called_once_with("cuda")
+    classifier._model.half.assert_called_once_with()
+
+    # Encoded tensors get .to("cuda"); probs get .cpu() back before reads.
+    encoded_tensor = classifier._tokenizer.return_value["input_ids"]
+    scores = classifier.score_batch(pairs=[("p", "h")])
+    encoded_tensor.to.assert_called_with("cuda")
+    assert len(scores) == 1
+    # Results read back as plain Python floats despite the GPU round-trip.
+    assert isinstance(scores[0].entailment, float)
+    assert scores[0].entailment == pytest.approx(0.85)
+
+
+def test_cuda_requested_but_unavailable_falls_back_to_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cuda requested, torch.cuda unavailable → CPU fallback, no crash, warns."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = False
+
+    with patch("lib.classifiers.nli_classifier.logger.warning") as warn:
+        classifier = _build_classifier(fake_torch)
+    assert classifier.device == "cpu"
+    assert classifier.dtype == "float32"
+    classifier._model.to.assert_not_called()
+    classifier._model.half.assert_not_called()
+    assert warn.called  # one-time fallback warning fired
+    # Still scores fine on the fallback CPU path.
+    score = classifier.score_pair(premise="A", hypothesis="B")
+    assert isinstance(score.entailment, float)
+
+
+def test_constructor_arg_overrides_env_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit device= arg beats ED4ALL_NLI_DEVICE env (cpu wins, no probe)."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    fake_torch = _make_scoring_fake_torch()
+    classifier = _build_classifier(fake_torch, device="cpu")
+    assert classifier.device == "cpu"
+    classifier._model.to.assert_not_called()
+    fake_torch.cuda.is_available.assert_not_called()
 
 
 @pytest.mark.slow
