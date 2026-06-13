@@ -59,7 +59,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from lib.retrieval.answer_scoring import DISCLAIMER_PHRASES, score_key_point_coverage
 from lib.retrieval.grounded_eval import (
@@ -73,6 +73,9 @@ from lib.retrieval.grounded_eval import (
     run_grounded_eval,
 )
 from lib.retrieval.gold_set import has_critical_issues, load_gold_set
+
+if TYPE_CHECKING:  # pragma: no cover — annotation-only import
+    from lib.retrieval.eval_progress import EvalProgressWriter
 
 #: Scorecard artifact schema. Additive conventions: new arm blocks / axes are
 #: added without bumping unless a field's MEANING changes. Disjoint filename
@@ -196,6 +199,28 @@ def _load_verified_gold(
             f"refusing to run the eval scorecard on an unverified gold set."
         )
     return gold
+
+
+def _progress_call(
+    progress: Optional["EvalProgressWriter"],
+    method: str,
+    *args: Any,
+    **kwargs: Any,
+) -> None:
+    """Invoke ``progress.<method>(*args, **kwargs)`` best-effort.
+
+    A ``None`` writer is a no-op (the default = today's behavior exactly, no
+    file written). The :class:`EvalProgressWriter` methods are already
+    individually best-effort (every disk write is swallowed with a one-time
+    warning), but this wrapper ALSO guards against any unexpected error so
+    progress instrumentation can NEVER raise into the eval logic.
+    """
+    if progress is None:
+        return
+    try:
+        getattr(progress, method)(*args, **kwargs)
+    except Exception:  # noqa: BLE001 — progress must never abort the eval
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -464,6 +489,7 @@ def run_base_arm(
     nli: Optional[Any] = None,
     probes: Optional[Sequence[Dict[str, Any]]] = None,
     refusal_probes_path: Optional[Path] = None,
+    progress: Optional["EvalProgressWriter"] = None,
 ) -> Dict[str, Any]:
     """Probe the raw local model's unaided knowledge over the gold set.
 
@@ -560,6 +586,12 @@ def run_base_arm(
         max_tokens=max_tokens,
     )
 
+    # Best-effort progress: refine the arm's planned item count to the number of
+    # gold questions that actually carry a completeness slice (the loop skips
+    # key-point-free v1.0 questions). A progress-write failure never raises.
+    _scorable = sum(1 for q in questions if _question_key_points(q))
+    _progress_call(progress, "start_arm", ARM_BASE, _scorable)
+
     rows: List[Dict[str, Any]] = []
     latencies: List[float] = []
     kp_total = 0
@@ -630,6 +662,9 @@ def run_base_arm(
                     "latency_ms": latency_ms,
                 }
             )
+            _progress_call(
+                progress, "record_item", ARM_BASE, qid, "error",
+            )
             continue
 
         latency_ms = (time.monotonic() - t0) * 1000.0
@@ -683,6 +718,26 @@ def run_base_arm(
                 "latency_ms": latency_ms,
             }
         )
+        # Best-effort progress: only the cheap signals this iteration already
+        # computed (no extra work for the tail). ``unsupported`` rides along when
+        # the hallucination axis scored claims this question.
+        _progress_call(
+            progress,
+            "record_item",
+            ARM_BASE,
+            qid,
+            "answered",
+            answered=True,
+            key_points_total=(cov.total if cov is not None else 0),
+            key_points_covered=(cov.covered if cov is not None else 0),
+            unsupported=(
+                int(grounded_block.get("unsupported_count", 0) or 0)
+                if grounded_block.get("available")
+                else 0
+            ),
+        )
+
+    _progress_call(progress, "finish_arm", ARM_BASE)
 
     # Hallucination axis rollup. ``available`` is True iff at least one answer
     # was scored against the corpus; when NLI was unavailable the whole axis is
@@ -922,6 +977,7 @@ def run_retrieval_arm(
     limit: int = 8,
     retrieve_fn: Optional[Any] = None,
     gold: Optional[Dict[str, Any]] = None,
+    progress: Optional["EvalProgressWriter"] = None,
 ) -> Dict[str, Any]:
     """Measure the extractive ceiling: does retrieval surface the expected
     content, and does it rank the gold-relevant passage into top-k?
@@ -952,6 +1008,11 @@ def run_retrieval_arm(
             _root, slug, query, *, engine, limit
         ):
             return _retrieve(libv2_root, slug, query, engine=engine, limit=limit)
+
+    # Best-effort progress: the retrieval arm visits EVERY gold question (hit
+    # metrics are scored regardless of key points), so its planned item count is
+    # the full question count.
+    _progress_call(progress, "start_arm", ARM_RETRIEVAL, len(questions))
 
     rows: List[Dict[str, Any]] = []
     latencies: List[float] = []
@@ -992,6 +1053,9 @@ def run_retrieval_arm(
                     "latency_ms": latency_ms,
                 }
             )
+            _progress_call(
+                progress, "record_item", ARM_RETRIEVAL, qid, "error",
+            )
             continue
         latency_ms = (time.monotonic() - t0) * 1000.0
         latencies.append(latency_ms)
@@ -1031,6 +1095,19 @@ def run_retrieval_arm(
                 "latency_ms": latency_ms,
             }
         )
+        # Best-effort progress: cheap counts only (key-point coverage where the
+        # question carried key points; the retrieval arm has no answered notion).
+        _progress_call(
+            progress,
+            "record_item",
+            ARM_RETRIEVAL,
+            qid,
+            "retrieved",
+            key_points_total=(cov.total if cov is not None else 0),
+            key_points_covered=(cov.covered if cov is not None else 0),
+        )
+
+    _progress_call(progress, "finish_arm", ARM_RETRIEVAL)
 
     return {
         "arm": ARM_RETRIEVAL,
@@ -1505,6 +1582,78 @@ def _build_comparison(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
 # Scorecard assembly
 # --------------------------------------------------------------------------- #
 
+def _build_scorecard_progress(
+    repo_root: Path,
+    course_slug: str,
+    requested: Sequence[str],
+    *,
+    gold: Dict[str, Any],
+    enabled: bool,
+    run_id: Optional[str],
+    base_probes: Optional[Sequence[Dict[str, Any]]],
+    base_refusal_probes_path: Optional[Path],
+) -> Optional["EvalProgressWriter"]:
+    """Construct the run-scoped :class:`EvalProgressWriter` (or ``None``).
+
+    Returns ``None`` when ``enabled`` is False (the ``--no-progress`` path — no
+    writer, no file, byte-identical to the legacy eval) OR when the writer
+    cannot be imported/constructed (best-effort: a progress-init failure must
+    never abort the eval). Otherwise computes each requested arm's PLANNED item
+    count up front so total work is known before the first item lands:
+
+      * BASE     — gold questions carrying a completeness slice (key points)
+                   PLUS the refusal-probe count (the confabulation pass).
+      * RETRIEVAL— every gold question (hit metrics score all of them).
+      * GROUNDED — every gold question PLUS the refusal-probe count.
+
+    The probe count is resolved from the SAME on-disk set the arms read (or the
+    injected ``base_probes`` in tests). Prints the tail-able progress path so an
+    operator knows what to follow.
+    """
+    if not enabled:
+        return None
+    try:
+        from lib.retrieval.eval_progress import EvalProgressWriter
+
+        questions = _gold_questions(gold)
+        n_questions = len(questions)
+        n_scorable = sum(1 for q in questions if _question_key_points(q))
+        probe_list = _load_base_probes(
+            repo_root,
+            course_slug,
+            probes=base_probes,
+            refusal_probes_path=base_refusal_probes_path,
+        )
+        n_probes = len(probe_list)
+
+        arm_totals: Dict[str, int] = {}
+        if ARM_BASE in requested:
+            arm_totals[ARM_BASE] = n_scorable + n_probes
+        if ARM_RETRIEVAL in requested:
+            arm_totals[ARM_RETRIEVAL] = n_questions
+        if ARM_GROUNDED in requested:
+            arm_totals[ARM_GROUNDED] = n_questions + n_probes
+
+        eval_dir = _course_dir(repo_root, course_slug) / RETRIEVAL_EVAL_SUBDIR
+        rid = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        writer = EvalProgressWriter(
+            eval_dir, run_id=rid, arm_totals=arm_totals
+        )
+        print(
+            "eval progress (tail for live status): "
+            f"{writer.snapshot_path}  |  {writer.jsonl_path}",
+            file=sys.stderr,
+        )
+        return writer
+    except Exception as exc:  # noqa: BLE001 — progress init is best-effort
+        print(
+            f"eval progress disabled (init failed, advisory): "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
 def run_scorecard(
     repo_root: Path,
     course_slug: str,
@@ -1520,6 +1669,8 @@ def run_scorecard(
     grounded_kwargs: Optional[Dict[str, Any]] = None,
     base_probes: Optional[Sequence[Dict[str, Any]]] = None,
     base_refusal_probes_path: Optional[Path] = None,
+    progress: bool = True,
+    progress_run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the requested ``arms`` and assemble ONE scorecard dict.
 
@@ -1540,47 +1691,75 @@ def run_scorecard(
     # contract) — cheap and keeps run_grounded_eval untouched.
     gold = _load_verified_gold(repo_root, course_slug)
 
+    # Best-effort incremental progress: ONE writer for the whole run, threaded
+    # into each arm. Default on; ``progress=False`` (the CLI's ``--no-progress``)
+    # disables it (writer never constructed → no file written → byte-identical
+    # to the legacy path). Constructing the writer with the planned per-arm item
+    # counts up front means total work is known before the first item lands.
+    progress_writer = _build_scorecard_progress(
+        repo_root,
+        course_slug,
+        requested,
+        gold=gold,
+        enabled=progress,
+        run_id=progress_run_id,
+        base_probes=base_probes,
+        base_refusal_probes_path=base_refusal_probes_path,
+    )
+
     arm_results: Dict[str, Dict[str, Any]] = {}
+    run_failed = False
+    try:
+        if ARM_BASE in requested:
+            arm_results[ARM_BASE] = run_base_arm(
+                repo_root,
+                course_slug,
+                client=base_client,
+                capture=capture,
+                gold=gold,
+                # Hallucination axis: score base answers against the SAME top-k
+                # passages the retrieval / grounded arms see (apples-to-apples).
+                engine=engine,
+                limit=limit,
+                retrieve_fn=retrieve_fn,
+                # Out-of-scope confabulation axis: injectable probe set (tests);
+                # otherwise the base arm resolves the on-disk refusal_probes.json.
+                probes=base_probes,
+                refusal_probes_path=base_refusal_probes_path,
+                progress=progress_writer,
+            )
 
-    if ARM_BASE in requested:
-        arm_results[ARM_BASE] = run_base_arm(
-            repo_root,
-            course_slug,
-            client=base_client,
-            capture=capture,
-            gold=gold,
-            # Hallucination axis: score base answers against the SAME top-k
-            # passages the retrieval / grounded arms see (apples-to-apples).
-            engine=engine,
-            limit=limit,
-            retrieve_fn=retrieve_fn,
-            # Out-of-scope confabulation axis: injectable probe set (tests);
-            # otherwise the base arm resolves the on-disk refusal_probes.json.
-            probes=base_probes,
-            refusal_probes_path=base_refusal_probes_path,
-        )
+        if ARM_RETRIEVAL in requested:
+            arm_results[ARM_RETRIEVAL] = run_retrieval_arm(
+                repo_root,
+                course_slug,
+                engine=engine,
+                limit=limit,
+                retrieve_fn=retrieve_fn,
+                gold=gold,
+                progress=progress_writer,
+            )
 
-    if ARM_RETRIEVAL in requested:
-        arm_results[ARM_RETRIEVAL] = run_retrieval_arm(
-            repo_root,
-            course_slug,
-            engine=engine,
-            limit=limit,
-            retrieve_fn=retrieve_fn,
-            gold=gold,
-        )
-
-    if ARM_GROUNDED in requested:
-        gk = dict(grounded_kwargs or {})
-        gk.setdefault("capture", capture)
-        arm_results[ARM_GROUNDED] = run_grounded_arm(
-            repo_root,
-            course_slug,
-            engine=engine,
-            limit=limit,
-            write=write,  # grounded arm writes its own report (staleness test)
-            **gk,
-        )
+        if ARM_GROUNDED in requested:
+            gk = dict(grounded_kwargs or {})
+            gk.setdefault("capture", capture)
+            gk.setdefault("progress", progress_writer)
+            arm_results[ARM_GROUNDED] = run_grounded_arm(
+                repo_root,
+                course_slug,
+                engine=engine,
+                limit=limit,
+                write=write,  # grounded arm writes its own report (staleness test)
+                **gk,
+            )
+    except BaseException:
+        run_failed = True
+        raise
+    finally:
+        # Finalize the snapshot ("complete" on success, "failed" if an arm
+        # raised). Best-effort — a finalize failure never masks the real error.
+        if progress_writer is not None:
+            _progress_call(progress_writer, "close", failed=run_failed)
 
     scorecard: Dict[str, Any] = {
         "schema_version": SCORECARD_SCHEMA_VERSION,
@@ -1832,6 +2011,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="repo root (default: auto-detect from this file)",
     )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help=(
+            "disable the best-effort incremental progress files "
+            "(retrieval_eval/eval_progress.json + .jsonl). On by default; the "
+            "files are advisory scratch, tailable for live status during a long "
+            "run, and never affect the canonical scorecard / report artifacts."
+        ),
+    )
     return parser
 
 
@@ -1860,6 +2049,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:  # pragma: no cover - CLI
             engine=args.engine,
             limit=args.limit,
             write=True,
+            progress=not args.no_progress,
         )
     except PipelineUnavailable as exc:
         print(f"grounded-answer pipeline unavailable: {exc}", file=sys.stderr)

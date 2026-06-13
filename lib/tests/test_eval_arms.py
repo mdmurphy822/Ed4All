@@ -1515,3 +1515,210 @@ def test_table_renders_reframed_safety_block_and_summary():
     assert "1.0000" in table
     assert "0.3600" in table
     assert "0.0360" in table
+
+
+# ===========================================================================
+# Incremental progress wiring (lib.retrieval.eval_progress.EvalProgressWriter)
+# ===========================================================================
+
+import json as _json  # noqa: E402 — local to the progress tests
+
+from lib.retrieval.eval_progress import (  # noqa: E402
+    PROGRESS_JSONL_FILENAME,
+    PROGRESS_SNAPSHOT_FILENAME,
+    EvalProgressWriter,
+)
+
+
+def _base_setup_simple():
+    """A 2-question base-arm setup with both answered (no groundedness axis)."""
+    gold = _synthetic_gold()
+    client = _FakeClient(
+        {
+            "What does a vector store index?": (
+                "A vector store indexes high dimensional embedding vectors and "
+                "supports similarity search over them."
+            ),
+            "How is retrieval quality measured?": (
+                "Retrieval quality is often measured by recall at k."
+            ),
+        }
+    )
+    return gold, client
+
+
+def _strip_latency(arm_result):
+    """Deep-copy an arm result with all ``latency_ms`` fields nulled.
+
+    Latency is measured from a live monotonic clock, so it varies run-to-run
+    independent of any code path — strip it to compare behavioral identity.
+    """
+    out = _json.loads(_json.dumps(arm_result))
+    out.pop("latency_ms", None)
+    for row in out.get("questions", []) or []:
+        row.pop("latency_ms", None)
+    return out
+
+
+def test_base_arm_progress_none_is_byte_identical_regression():
+    """progress=None must reproduce the legacy result EXACTLY (no-op path)."""
+    gold, client = _base_setup_simple()
+    without = run_base_arm(Path("/unused"), "course-x", client=client, gold=gold)
+    gold2, client2 = _base_setup_simple()
+    explicit_none = run_base_arm(
+        Path("/unused"), "course-x", client=client2, gold=gold2, progress=None
+    )
+    # Identical modulo the inherently non-deterministic wall-clock latencies
+    # (measured live; they vary run-to-run regardless of the progress arg).
+    assert _strip_latency(without) == _strip_latency(explicit_none)
+
+
+def test_retrieval_arm_progress_none_is_byte_identical_regression():
+    gold = _synthetic_gold()
+    by_query = {
+        "What does a vector store index?": [
+            _Result("chunk_a", "high dimensional embedding vectors similarity"),
+        ],
+        "How is retrieval quality measured?": [
+            _Result("chunk_b", "recall at k mean reciprocal rank"),
+        ],
+    }
+    fn = _retrieve_fn_factory(by_query)
+    without = run_retrieval_arm(
+        Path("/unused"), "course-x", retrieve_fn=fn, gold=gold
+    )
+    explicit_none = run_retrieval_arm(
+        Path("/unused"), "course-x", retrieve_fn=fn, gold=gold, progress=None
+    )
+    assert _strip_latency(without) == _strip_latency(explicit_none)
+
+
+def test_base_arm_progress_appends_one_line_per_item(tmp_path):
+    gold, client = _base_setup_simple()
+    w = EvalProgressWriter(
+        tmp_path, run_id="ARM-RUN", arm_totals={ARM_BASE: 2}
+    )
+    result = run_base_arm(
+        Path("/unused"), "course-x", client=client, gold=gold, progress=w
+    )
+    w.close()
+    # The arm still returns its normal result (progress is additive).
+    assert result["answered"] == 2
+    lines = [
+        _json.loads(x)
+        for x in (tmp_path / PROGRESS_JSONL_FILENAME)
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if x.strip()
+    ]
+    # One line per scored gold question (the synthetic gold has no probes).
+    assert len(lines) == 2
+    assert all(line["arm"] == ARM_BASE for line in lines)
+    assert [line["index"] for line in lines] == [1, 2]
+    snap = _json.loads(
+        (tmp_path / PROGRESS_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
+    )
+    assert snap["state"] == "complete"
+    assert snap["arms"][ARM_BASE]["done"] == 2
+    assert snap["arms"][ARM_BASE]["finished"] is True
+
+
+def test_retrieval_arm_progress_records_every_question(tmp_path):
+    gold = _synthetic_gold()
+    by_query = {
+        "What does a vector store index?": [
+            _Result("chunk_a", "high dimensional embedding vectors similarity"),
+        ],
+        "How is retrieval quality measured?": [
+            _Result("chunk_b", "recall at k mean reciprocal rank"),
+        ],
+    }
+    w = EvalProgressWriter(
+        tmp_path, run_id="RETR-RUN", arm_totals={ARM_RETRIEVAL: 2}
+    )
+    run_retrieval_arm(
+        Path("/unused"),
+        "course-x",
+        retrieve_fn=_retrieve_fn_factory(by_query),
+        gold=gold,
+        progress=w,
+    )
+    w.close()
+    lines = [
+        _json.loads(x)
+        for x in (tmp_path / PROGRESS_JSONL_FILENAME)
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if x.strip()
+    ]
+    assert len(lines) == 2  # retrieval scores every gold question
+    assert all(line["arm"] == ARM_RETRIEVAL for line in lines)
+
+
+def test_scorecard_progress_off_writes_no_progress_files(libv2_course):
+    """progress=False (the --no-progress path) constructs no writer → no files."""
+    repo_root, slug, course_dir = libv2_course
+    eval_dir = course_dir / "retrieval_eval"
+    run_scorecard(
+        repo_root, slug, engine="lexical", write=False, progress=False,
+        grounded_kwargs={"answer_fn": _fake_grounded_fn()},
+    )
+    assert not (eval_dir / PROGRESS_JSONL_FILENAME).exists()
+    assert not (eval_dir / PROGRESS_SNAPSHOT_FILENAME).exists()
+
+
+def test_scorecard_progress_on_lays_down_run_scoped_files(libv2_course):
+    """progress=True (default) constructs ONE writer, finalizes it complete."""
+    repo_root, slug, course_dir = libv2_course
+    eval_dir = course_dir / "retrieval_eval"
+    run_scorecard(
+        repo_root, slug, arms=[ARM_RETRIEVAL], engine="lexical", write=False,
+        progress=True, progress_run_id="SC-RUN",
+        retrieve_fn=_fake_retrieve_for_fixture(),
+    )
+    snap = _json.loads(
+        (eval_dir / PROGRESS_SNAPSHOT_FILENAME).read_text(encoding="utf-8")
+    )
+    assert snap["run_id"] == "SC-RUN"
+    assert snap["state"] == "complete"  # finalized after the run
+    assert ARM_RETRIEVAL in snap["arms"]
+    lines = [
+        x
+        for x in (eval_dir / PROGRESS_JSONL_FILENAME)
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if x.strip()
+    ]
+    assert lines  # at least one per-item line landed during the run
+
+
+class _BoomWriter:
+    """A progress writer whose every method raises — must NOT abort the eval."""
+
+    def start_arm(self, *a, **k):
+        raise RuntimeError("boom start")
+
+    def record_item(self, *a, **k):
+        raise RuntimeError("boom record")
+
+    def finish_arm(self, *a, **k):
+        raise RuntimeError("boom finish")
+
+    def close(self, *a, **k):
+        raise RuntimeError("boom close")
+
+
+def test_base_arm_progress_errors_are_swallowed(tmp_path):
+    """A progress method that raises must not propagate into the eval logic."""
+    gold, client = _base_setup_simple()
+    # No exception escapes despite every progress call raising.
+    result = run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=client,
+        gold=gold,
+        progress=_BoomWriter(),
+    )
+    # The eval still produced its normal, correct result.
+    assert result["answered"] == 2
+    assert result["key_point_coverage"]["covered_key_points"] == 3
