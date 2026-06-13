@@ -104,7 +104,7 @@ def _passages(n=2):
 # ===========================================================================
 
 def test_prompt_version_pinned():
-    assert ANSWER_PROMPT_VERSION == "ws3.v3"
+    assert ANSWER_PROMPT_VERSION == "ws3.v4"
 
 
 def test_system_prompt_requires_multipart_completeness():
@@ -139,6 +139,36 @@ def test_system_prompt_permits_synthesis_and_apply():
     client = FakeAnswerClient([_envelope("X is a thing.", ["chunk_00000"])])
     compose_answer("What is X?", _passages(2), client=client)
     assert "synthesize" in client.calls[0]["messages"][0]["content"]
+
+
+def test_system_prompt_requires_completeness_and_cites_every_supporter():
+    # ws3.v4 completeness boundary (composer-completeness Phase A): the prompt
+    # must instruct the model to (a) state EVERY supported point relevant to the
+    # question, (b) answer EACH part of a multi-part question explicitly, and
+    # (c) cite EVERY supporting passage, not only one — while keeping the
+    # grounding constraint primary (state ONLY what the passages support). These
+    # clauses fix the under-stating / under-citing the v3 boundary left behind.
+    # COMPLETENESS clause (scoped to supported content so it cannot fabricate).
+    assert "Be COMPLETE" in ANSWER_SYSTEM_PROMPT
+    assert "not just the first or easiest" in ANSWER_SYSTEM_PROMPT
+    assert "state ONLY what the" in ANSWER_SYSTEM_PROMPT
+    assert "never add anything they do not" in ANSWER_SYSTEM_PROMPT
+    # PER-PART ENUMERATION clause.
+    assert "multiple parts or clauses" in ANSWER_SYSTEM_PROMPT
+    assert "answer EACH part explicitly" in ANSWER_SYSTEM_PROMPT
+    assert "do not stop after the first" in ANSWER_SYSTEM_PROMPT
+    # CITE-EVERY-SUPPORTER nudge.
+    assert "Cite EVERY passage that supports a claim" in ANSWER_SYSTEM_PROMPT
+    assert "not only one" in ANSWER_SYSTEM_PROMPT
+    # Refusal behavior must remain intact (genuine absence only).
+    assert "no material supporting the question" in ANSWER_SYSTEM_PROMPT
+    # The completeness clauses must reach the assembled system message verbatim.
+    client = FakeAnswerClient([_envelope("X is a thing.", ["chunk_00000"])])
+    compose_answer("What is X and Y?", _passages(2), client=client)
+    system_msg = client.calls[0]["messages"][0]["content"]
+    assert "Be COMPLETE" in system_msg
+    assert "answer EACH part explicitly" in system_msg
+    assert "Cite EVERY passage that supports a claim" in system_msg
 
 
 def test_user_prompt_numbers_blocks_and_appends_question():
@@ -214,7 +244,7 @@ def test_compose_well_formed_envelope_roundtrip():
     assert result.cited_chunk_ids == ["chunk_00000"]
     assert result.not_in_course is False
     assert result.attempts == 1
-    assert result.prompt_version == "ws3.v3"
+    assert result.prompt_version == "ws3.v4"
     assert result.model_id == "qwen2.5:14b-instruct-q4_K_M"
 
 
