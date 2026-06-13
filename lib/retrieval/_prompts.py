@@ -48,13 +48,30 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycle
 # Bump on ANY change to the system/user prompt wording below.
 #
 # NOTE: the grounded-answer MILESTONE_TARGETS (lib/retrieval/grounded_eval.py)
-# and the refusal-policy pins were MEASURED under ws3.v2 — this ws3.v3 wording
-# changes the model's answer-vs-refuse boundary (it now answers synthesis /
+# and the refusal-policy pins were MEASURED under ws3.v2 — the ws3.v3 wording
+# changed the model's answer-vs-refuse boundary (it now answers synthesis /
 # applied questions the passages substantively support instead of over-refusing
 # on literal-wording mismatches). The orchestrator MUST re-measure the gold +
 # refusal-probe suites and re-pin MILESTONE_TARGETS / the refusal policy after
-# this lands; the constants are deliberately left untouched here.
-ANSWER_PROMPT_VERSION = "ws3.v3"
+# any wording change lands; the constants are deliberately left untouched here.
+#
+# ws3.v3 → ws3.v4 (composer-completeness Phase A): the v3 boundary fixed
+# over-refusal but the composer then UNDER-STATES and UNDER-CITES content it
+# already has in context (96 expected key points — 28.8% — were retrieved but
+# never stated, 4-shingle support 0.000 in 81/87 cases; 14 of 16 dropped
+# multi-part clauses had their passage in context; the model cites only 1.63 of
+# 8 retrieved passages). This is NOT a retrieval/budget problem — it is the
+# composer prompt under-using in-context evidence. v4 adds three clauses, ALL
+# scoped to SUPPORTED content so they cannot raise fabrication: (a) state EVERY
+# point the passages support that is relevant to the question, not just the
+# first/easiest; (b) answer EACH part/clause of a multi-part question
+# explicitly; (c) cite EVERY passage that supports a stated claim, not only one
+# (citation_resolution is already 1.0, so added citations resolve). Length is
+# NOT the lever (r=-0.035 vs completeness) — v4 instructs completeness-of-
+# supported-points, never "write longer". The MILESTONE_TARGETS pins
+# (esp. unsupported_claim_rate ≤ 0.05 and answer_rate ≥ 0.95) were measured
+# under ws3.v3 and MUST be re-confirmed by the orchestrator's eval re-run.
+ANSWER_PROMPT_VERSION = "ws3.v4"
 
 # Per-passage hard truncation (characters). A 14B-Q4 model loses the
 # trailing JSON directive when the context balloons; capping each
@@ -99,12 +116,23 @@ MAX_CONTEXT_CHARS = 12000
 # ws3.v3 answer-vs-refuse boundary: a 7B-Q4 model under ws3.v2 over-refused
 # whenever the question's exact wording did not appear verbatim in a passage —
 # it treated "synthesize across passages" and "apply a shown method to these
-# specifics" as not-covered and set not_in_course=true. The added SYNTHESIS +
-# APPLY clauses tell the model the supporting material may be SPREAD across
-# several passages (e.g. a week-overview plus a worked example) and that it
-# should apply methods/worked examples the passages demonstrate to the
-# question's specifics. Refusal is reserved for genuine absence: the passages
-# contain no supporting material, NOT merely a wording mismatch.
+# specifics" as not-covered and set not_in_course=true. The SYNTHESIS + APPLY
+# clauses tell the model the supporting material may be SPREAD across several
+# passages (e.g. a week-overview plus a worked example) and that it should
+# apply methods/worked examples the passages demonstrate to the question's
+# specifics. Refusal is reserved for genuine absence: the passages contain no
+# supporting material, NOT merely a wording mismatch.
+#
+# ws3.v4 completeness boundary (composer-completeness Phase A): the v3 prompt
+# fixed over-refusal but the model then under-USES the evidence it has — it
+# states the first/easiest supported point and stops, drops later clauses of a
+# multi-part question whose passage IS in context, and cites only ONE supporter
+# per claim. The COMPLETENESS, PER-PART, and CITE-EVERY-SUPPORTER clauses below
+# are ALL scoped to SUPPORTED content (the grounding constraint stays primary —
+# "ONLY the numbered passages", "never add anything they do not support"), so
+# they pull more of the in-context evidence into the answer WITHOUT widening the
+# door to fabrication. Length is not the lever: the instruction is completeness
+# of the SUPPORTED points, never "be longer".
 ANSWER_SYSTEM_PROMPT = (
     "You answer a student's question about one course using ONLY the "
     "numbered source passages provided. Do not use outside knowledge. "
@@ -113,14 +141,20 @@ ANSWER_SYSTEM_PROMPT = (
     "demonstrates a method or worked example, APPLY it to the specifics the "
     "question asks about. Answer whenever the passages substantively support "
     "the question, even if its exact wording does not appear verbatim. "
-    "If the question has multiple parts, address every part the passages "
-    "support; for any part NOT covered by the passages, say so in one short "
-    "sentence (e.g. \"The provided course material does not cover <part>.\") "
-    "instead of omitting it silently, and never invent material for an "
-    "uncovered part. Set \"not_in_course\" to true and leave \"answer\" empty "
-    "ONLY when the passages contain no material supporting the question — not "
-    "merely when its wording differs from the passages. Cite the id of "
-    "every passage that supports the answer. Output JSON only: "
+    "Be COMPLETE: state every point the passages support that is relevant to "
+    "the question, not just the first or easiest one — but state ONLY what the "
+    "passages support and never add anything they do not. "
+    "If the question has multiple parts or clauses (for example \"X and Y\", "
+    "\"a) ... b) ...\", or \"list two ...\"), answer EACH part explicitly; do "
+    "not stop after the first. Address every part the passages support; for "
+    "any part NOT covered by the passages, say so in one short sentence "
+    "(e.g. \"The provided course material does not cover <part>.\") instead of "
+    "omitting it silently, and never invent material for an uncovered part. "
+    "Set \"not_in_course\" to true and leave \"answer\" empty ONLY when the "
+    "passages contain no material supporting the question — not merely when "
+    "its wording differs from the passages. Cite EVERY passage that supports a "
+    "claim you state, not only one — if several passages support the same "
+    "claim, cite all of them. Output JSON only: "
     '{"answer": "...", "citations": ["<passage_id>", ...], '
     '"not_in_course": false}.'
 )
