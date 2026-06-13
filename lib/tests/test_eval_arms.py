@@ -575,14 +575,17 @@ def test_scorecard_three_arms_side_by_side(libv2_course):
         assert "unsupported_claim_rate" in comp[arm]
     # RETRIEVAL has no answer claims → the sentinel "—" (not None).
     assert comp[ARM_RETRIEVAL]["unsupported_claim_rate"] == "—"
-    # Derived reduction entry carries all four fields.
+    # Derived reduction entry carries all four fields + the dilution-convention
+    # note (schema 1.2, additive).
     red = comp["hallucination_reduction"]
     assert set(red) == {
         "base_rate",
         "grounded_rate",
         "absolute_reduction",
         "relative_reduction",
+        "_note",
     }
+    assert "per-question mean" in red["_note"]
     # Base answers everything → declined 0; retrieval has no answered notion.
     assert comp[ARM_BASE]["declined"] == 0
     assert comp[ARM_RETRIEVAL]["answered"] is None
@@ -765,10 +768,387 @@ def test_table_renders_hallucination_row_and_reduction_summary():
     assert "—" in table
 
 
-def test_schema_version_bumped_to_1_1():
-    # Additive bump for the BASE-arm hallucination axis + comparison entries.
-    assert SCORECARD_SCHEMA_VERSION == "1.1"
+def test_schema_version_bumped_to_1_2():
+    # Additive bump for the BASE-arm out-of-scope confabulation axis + the
+    # undiluted claim-level fields + the comparison/table additions.
+    assert SCORECARD_SCHEMA_VERSION == "1.2"
 
 
 def test_all_arms_constant():
     assert ALL_ARMS == (ARM_BASE, ARM_RETRIEVAL, ARM_GROUNDED)
+
+
+# ===========================================================================
+# GAP 1 — out-of-scope confabulation axis (probe pass)
+# ===========================================================================
+
+def _probe_set():
+    """A 3-probe refusal set: 2 the raw model answers (confabulates), 1 it
+    declines (its answer trips a does-not-cover disclaimer phrase)."""
+    return [
+        {
+            "probe_id": "rp-0001",
+            "question_text": "How does ATP synthesis occur in mitochondria?",
+            "category": "off_topic",
+        },
+        {
+            "probe_id": "rp-0002",
+            "question_text": "What ef_search does the FAISS HNSW index use?",
+            "category": "out_of_scope_detail",
+        },
+        {
+            "probe_id": "rp-0003",
+            "question_text": "How do you fine-tune the embedding weights?",
+            "category": "adjacent_domain",
+        },
+    ]
+
+
+def _base_probe_client():
+    """Fake client: answers 2 probes with invention, declines the 3rd via a
+    disclaimer phrase. Also answers the one gold question."""
+    return _FakeClient(
+        {
+            # Gold question — answered normally.
+            "What does a vector store index?": (
+                "A vector store indexes high dimensional embedding vectors."
+            ),
+            # Probe 1 + 2: pure invention (no disclaimer) → confabulated.
+            "How does ATP synthesis occur in mitochondria?": (
+                "ATP synthase pumps protons across the inner membrane to make ATP."
+            ),
+            "What ef_search does the FAISS HNSW index use?": (
+                "It uses an ef_search of 64 by default for HNSW queries."
+            ),
+            # Probe 3: declines — answer carries a does-not-cover disclaimer.
+            "How do you fine-tune the embedding weights?": (
+                "The course does not cover model training; this is out of scope."
+            ),
+        }
+    )
+
+
+def _one_question_gold():
+    return {
+        "schema_version": "1.1",
+        "questions": [
+            {
+                "question_id": "gq-0001",
+                "question_text": "What does a vector store index?",
+                "question_type": "short_answer",
+                "expected_key_points": ["embedding vectors"],
+                "relevant_passages": [
+                    {"chunk_id": "chunk_a", "relevance": "primary"}
+                ],
+            }
+        ],
+    }
+
+
+def test_base_probe_pass_counts_answered_declined_errored():
+    client = _base_probe_client()
+    result = run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=client,
+        gold=_one_question_gold(),
+        probes=_probe_set(),
+    )
+    probe = result["probe_confabulation"]
+    assert probe["n_probes"] == 3
+    # 2 confabulated (answered), 1 declined (disclaimer), 0 errored.
+    assert probe["answered"] == 2
+    assert probe["declined"] == 1
+    assert probe["errored"] == 0
+    # confabulation_rate = answered / (answered + declined) = 2/3.
+    assert probe["confabulation_rate"] == pytest.approx(2 / 3)
+    # Per-probe rows carry id / category / answered.
+    rows = {r["probe_id"]: r for r in probe["probes"]}
+    assert rows["rp-0001"]["answered"] is True
+    assert rows["rp-0001"]["category"] == "off_topic"
+    assert rows["rp-0003"]["answered"] is False
+
+
+def test_base_probe_pass_error_isolation():
+    """A client exception on one probe is recorded (errored) + excluded from the
+    confabulation denominator; the pass keeps going."""
+    probes = _probe_set()
+    client = _FakeClient(
+        {
+            "What does a vector store index?": "embedding vectors",
+            # Probe 1 explodes.
+            "How does ATP synthesis occur in mitochondria?": "RAISE",
+            # Probe 2 answered (confabulated).
+            "What ef_search does the FAISS HNSW index use?": "ef_search is 64.",
+            # Probe 3 declined.
+            "How do you fine-tune the embedding weights?": (
+                "Not covered by this course."
+            ),
+        }
+    )
+    result = run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=client,
+        gold=_one_question_gold(),
+        probes=probes,
+    )
+    probe = result["probe_confabulation"]
+    assert probe["errored"] == 1
+    assert probe["answered"] == 1
+    assert probe["declined"] == 1
+    # Errored probe excluded from the denominator: 1 / (1 + 1) = 0.5.
+    assert probe["confabulation_rate"] == pytest.approx(0.5)
+    rows = {r["probe_id"]: r for r in probe["probes"]}
+    assert rows["rp-0001"]["answered"] is None
+    assert "error" in rows["rp-0001"]
+
+
+def test_base_probe_pass_empty_answer_counts_as_declined():
+    """An empty/whitespace answer is a decline (the model produced no answer)."""
+    client = _FakeClient(
+        {"What does a vector store index?": "embedding vectors"}
+    )  # all probe queries unmapped → "" → declined
+    result = run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=client,
+        gold=_one_question_gold(),
+        probes=_probe_set(),
+    )
+    probe = result["probe_confabulation"]
+    assert probe["answered"] == 0
+    assert probe["declined"] == 3
+    assert probe["confabulation_rate"] == pytest.approx(0.0)
+
+
+def test_base_probe_pass_na_when_no_probes():
+    """No probes loaded → confabulation_rate None (axis n/a), never fabricated."""
+    client = _FakeClient(
+        {"What does a vector store index?": "embedding vectors"}
+    )
+    result = run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=client,
+        gold=_one_question_gold(),
+        probes=[],
+    )
+    probe = result["probe_confabulation"]
+    assert probe["n_probes"] == 0
+    assert probe["confabulation_rate"] is None
+
+
+def test_base_decision_rationale_carries_probe_counts():
+    """No new call site: the probe-pass counts ride on the existing per-question
+    base_model_eval_call rationale."""
+    cap = _RecordingCapture()
+    run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=_base_probe_client(),
+        gold=_one_question_gold(),
+        probes=_probe_set(),
+        capture=cap,
+    )
+    events = [
+        e for e in cap.events if e["decision_type"] == "base_model_eval_call"
+    ]
+    assert events
+    # Only the existing decision type — no new call site introduced.
+    assert {e["decision_type"] for e in cap.events} == {"base_model_eval_call"}
+    # The rationale interpolates the probe-pass answered/declined/errored counts.
+    assert any("out-of-scope confabulation" in e["rationale"] for e in events)
+    assert any("answered 2" in e["rationale"] for e in events)
+
+
+def test_grounded_out_of_scope_rate_derived_from_refusal_block():
+    """GROUNDED out-of-scope rate = 1 - refusal_recall from the headline."""
+    from lib.retrieval.eval_arms import _grounded_out_of_scope_rate
+
+    grounded = {
+        "headline": {
+            "refusal": {"n_probes": 44, "refusal_recall": 0.75},
+        }
+    }
+    assert _grounded_out_of_scope_rate(grounded) == pytest.approx(0.25)
+    # No probes → None (n/a, never fabricated).
+    assert _grounded_out_of_scope_rate({"headline": {"refusal": {}}}) is None
+    assert (
+        _grounded_out_of_scope_rate(
+            {"headline": {"refusal": {"n_probes": 0, "refusal_recall": 1.0}}}
+        )
+        is None
+    )
+
+
+def test_comparison_carries_out_of_scope_confabulation_axis():
+    arms = _arm_blocks_for_comparison(0.40, 0.05)
+    # Add a probe block to the base arm + a refusal block to the grounded arm.
+    arms[ARM_BASE]["probe_confabulation"] = {"confabulation_rate": 0.95}
+    arms[ARM_GROUNDED]["headline"]["refusal"] = {
+        "n_probes": 44,
+        "refusal_recall": 0.64,
+    }
+    comp = _build_comparison(arms)
+    # BASE = its confabulation_rate; GROUNDED = 1 - refusal_recall; RETRIEVAL "—".
+    assert comp[ARM_BASE]["out_of_scope_confabulation_rate"] == pytest.approx(0.95)
+    assert comp[ARM_GROUNDED]["out_of_scope_confabulation_rate"] == pytest.approx(
+        0.36
+    )
+    assert comp[ARM_RETRIEVAL]["out_of_scope_confabulation_rate"] == "—"
+
+
+def test_table_renders_out_of_scope_confabulation_row():
+    arms = _arm_blocks_for_comparison(0.40, 0.05)
+    arms[ARM_BASE]["probe_confabulation"] = {"confabulation_rate": 0.95}
+    arms[ARM_GROUNDED]["headline"]["refusal"] = {
+        "n_probes": 44,
+        "refusal_recall": 0.64,
+    }
+    scorecard = {
+        "course_slug": "course-x",
+        "engine": "semantic",
+        "arms": arms,
+        "comparison": _build_comparison(arms),
+    }
+    table = format_scorecard_table(scorecard)
+    assert "out_of_scope_confab (answered-instead-of-refused)" in table
+    assert "0.9500" in table  # base confabulation rate
+    assert "0.3600" in table  # grounded 1 - refusal_recall
+
+
+# ===========================================================================
+# GAP 2 — dilution transparency (undiluted claim-level fields)
+# ===========================================================================
+
+def _dilution_setup():
+    """A 2-question gold + a crafted answer mix:
+      * Q1 answer is ALL computational → 0 scorable claims (the per-question
+        mean convention credits it as 0.0 unsupported).
+      * Q2 answer is half-unsupported → 1 of 2 claims unsupported.
+    The diluted per-question mean is (0.0 + 0.5)/2 = 0.25; the undiluted
+    claim-level rate is 1 unsupported / 2 total scored = 0.50.
+    """
+    gold = {
+        "schema_version": "1.1",
+        "questions": [
+            {
+                "question_id": "gq-0001",
+                "question_text": "Compute 2 plus 2.",
+                "question_type": "short_answer",
+                "expected_key_points": ["four"],
+                "relevant_passages": [
+                    {"chunk_id": "chunk_a", "relevance": "primary"}
+                ],
+            },
+            {
+                "question_id": "gq-0002",
+                "question_text": "What does a vector store index?",
+                "question_type": "short_answer",
+                "expected_key_points": ["embedding vectors"],
+                "relevant_passages": [
+                    {"chunk_id": "chunk_b", "relevance": "primary"}
+                ],
+            },
+        ],
+    }
+    client = _FakeClient(
+        {
+            # Q1: a bare arithmetic statement → the v2 scorer exempts it as
+            # computational, leaving 0 scorable claims.
+            "Compute 2 plus 2.": "2 + 2 = 4.",
+            # Q2: two scorable sentences — one grounds, one fabricated.
+            "What does a vector store index?": (
+                "A vector store indexes dense GROUNDED embedding vectors here. "
+                "The vector store also performs FABRICATED nightly backups daily."
+            ),
+        }
+    )
+    retrieve_fn = _retrieve_fn_factory(
+        {
+            "Compute 2 plus 2.": [_Result("chunk_a", "Some arithmetic context.")],
+            "What does a vector store index?": [
+                _Result(
+                    "chunk_b",
+                    "A vector store indexes dense GROUNDED embedding vectors "
+                    "for similarity search.",
+                )
+            ],
+        }
+    )
+    nli = _FakeNli(entailed_if=[("GROUNDED", "GROUNDED")])
+    return gold, client, retrieve_fn, nli
+
+
+def test_base_groundedness_undiluted_claim_level_vs_diluted_mean():
+    gold, client, retrieve_fn, nli = _dilution_setup()
+    result = run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=client,
+        gold=gold,
+        retrieve_fn=retrieve_fn,
+        nli=nli,
+    )
+    g = result["groundedness"]
+    # Q1 contributed 0 scored claims; Q2 contributed 2 (1 unsupported).
+    assert g["claims_scored"] == 2
+    # Only Q2 had a scorable claim.
+    assert g["questions_with_scorable_claims"] == 1
+    # Diluted per-question mean: (0.0 + 0.5)/2 = 0.25 — KEPT convention.
+    assert g["unsupported_claim_rate"] == pytest.approx(0.25)
+    # Undiluted claim-level: 1 unsupported / 2 total scored = 0.50.
+    assert g["claim_level_unsupported_rate"] == pytest.approx(0.50)
+
+
+def test_base_groundedness_claim_level_none_when_no_scored_claims():
+    """All-computational arm → no scored claims → claim-level rate None."""
+    gold = {
+        "schema_version": "1.1",
+        "questions": [
+            {
+                "question_id": "gq-0001",
+                "question_text": "Compute 2 plus 2.",
+                "question_type": "short_answer",
+                "expected_key_points": ["four"],
+                "relevant_passages": [
+                    {"chunk_id": "chunk_a", "relevance": "primary"}
+                ],
+            }
+        ],
+    }
+    client = _FakeClient({"Compute 2 plus 2.": "2 + 2 = 4."})
+    retrieve_fn = _retrieve_fn_factory(
+        {"Compute 2 plus 2.": [_Result("chunk_a", "arithmetic context")]}
+    )
+    nli = _FakeNli()
+    result = run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=client,
+        gold=gold,
+        retrieve_fn=retrieve_fn,
+        nli=nli,
+    )
+    g = result["groundedness"]
+    assert g["claims_scored"] == 0
+    assert g["questions_with_scorable_claims"] == 0
+    assert g["claim_level_unsupported_rate"] is None
+
+
+def test_comparison_grounded_claim_level_none_with_reason():
+    """The grounded claim-level aggregate is NOT derivable from the persisted
+    report → None with a reason string (anti-silent-degradation)."""
+    arms = _arm_blocks_for_comparison(0.40, 0.05)
+    arms[ARM_BASE]["groundedness"]["claim_level_unsupported_rate"] = 0.6
+    comp = _build_comparison(arms)
+    # BASE carries the undiluted rate from its groundedness block.
+    assert comp[ARM_BASE]["claim_level_unsupported_rate"] == pytest.approx(0.6)
+    # GROUNDED claim-level is None + carries a reason (not approximated).
+    assert comp[ARM_GROUNDED]["claim_level_unsupported_rate"] is None
+    assert "not derivable" in comp[ARM_GROUNDED][
+        "claim_level_unsupported_rate_reason"
+    ]
+    # RETRIEVAL has no claims → sentinel "—".
+    assert comp[ARM_RETRIEVAL]["claim_level_unsupported_rate"] == "—"
