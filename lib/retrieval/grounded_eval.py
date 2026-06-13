@@ -51,7 +51,18 @@ from lib.retrieval.gold_set import (
 #: (key_point_coverage, part_coverage, population breakdown). Every v1.0
 #: report field is preserved; the new fields are additive and present only
 #: when the v1.1 gold question carries the matching authored data.
-EVAL_SCHEMA_VERSION = "1.2"
+#: ``EVAL_SCHEMA_VERSION`` 1.2 → 1.3 (additive only — every 1.2 key unchanged):
+#: the refusal-probe loop now scores groundedness on ANSWERED probes (probes the
+#: pipeline failed to refuse), rolling the unsupported-vs-corpus signal into the
+#: ``headline.refusal`` block (``answered_probe_count``,
+#: ``unsupported_answer_rate_on_answered_probes``,
+#: ``claim_level_unsupported_rate_on_answered_probes``,
+#: ``answered_probe_claims_scored``) and persisting per-probe rows under a NEW
+#: top-level ``probe_results`` key (probe_id / category / refused / answered /
+#: unsupported_rate-or-null) — mirroring the per-question ``questions`` rows.
+#: The existing ``refusal_recall`` / ``refusal_precision`` / ``n_probes`` fields
+#: and every other headline metric are UNCHANGED.
+EVAL_SCHEMA_VERSION = "1.3"
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
 REVIEW_SAMPLE_FILENAME = "groundedness_review_sample.json"
 
@@ -919,11 +930,27 @@ def run_grounded_eval(
         )
 
     # --- refusal probes ---------------------------------------------------
+    # REFUSAL-SAFETY axis (schema 1.3, additive): a probe is a question that
+    # SHOULD be refused. refusal_recall/precision (UNCHANGED below) report the
+    # share refused; this loop ALSO asks — for every probe the pipeline FAILED
+    # to refuse (answered) — was that answer FABRICATED? It scores groundedness
+    # on answered probes (with_groundedness threads the eval's flag, IDENTICAL
+    # machinery to the gold loop) so a near-miss probe answered WITH a real
+    # corpus citation (failed-to-refuse but grounded) is told apart from pure
+    # invention. Per-probe rows are persisted under the top-level probe_results
+    # key. NO change to refusal_recall / refusal_precision / n_probes.
     n_probes = len(probes)
     probe_refused = 0
     probe_answered = 0
     probe_composer_exhausted = 0
+    # Refusal-safety aggregates over ANSWERED probes only.
+    probe_answered_unsupported_rates: List[float] = []  # per-probe mean basis
+    probe_answered_unsupported_count = 0  # claim-level numerator
+    probe_answered_claims_scored = 0  # claim-level denominator
+    probe_results: List[Dict[str, Any]] = []
     for probe in probes:
+        pid = str(probe.get("probe_id", ""))
+        category = str(probe.get("category", ""))
         ptext = str(probe.get("question_text", ""))
         try:
             answer = pipeline(
@@ -934,7 +961,11 @@ def run_grounded_eval(
                 limit=limit,
                 client=client,
                 refusal_policy=refusal_policy,
-                with_groundedness=False,
+                # Score groundedness on a probe the pipeline answers (the
+                # refusal-safety axis); honors the eval's with_groundedness so a
+                # deterministic-only run still produces refusal_recall exactly as
+                # before (answered-probe groundedness simply reads null).
+                with_groundedness=with_groundedness,
                 capture=capture,
                 chunkset_kind=gold_chunkset_kind,
             )
@@ -943,14 +974,60 @@ def run_grounded_eval(
             # an answer — it never reached a verdict, so it must NOT inflate
             # refusal_recall. Counted separately, surfaced in the report.
             probe_composer_exhausted += 1
+            probe_results.append(
+                {
+                    "probe_id": pid,
+                    "category": category,
+                    "refused": False,
+                    "answered": False,
+                    "composer_exhausted": True,
+                    "unsupported_rate": None,
+                }
+            )
             continue
         status = str(_answer_field(answer, "status", "unknown"))
-        if status in _REFUSED_STATUSES:
+        is_refused = status in _REFUSED_STATUSES
+        is_answered = status in _ANSWERED_STATUSES
+        if is_refused:
             probe_refused += 1
-        elif status in _ANSWERED_STATUSES:
+        elif is_answered:
             probe_answered += 1
         # blocked_* on a probe is neither a clean refusal nor an answer; it is
         # surfaced via the blocked counters only (not double-counted here).
+
+        # Refusal-safety: for an ANSWERED probe, pull its groundedness report's
+        # unsupported signal (same shape the gold loop reads). null when the
+        # probe was refused / NLI was unavailable / nothing scored — never a
+        # fabricated 0.0.
+        probe_unsupported_rate: Optional[float] = None
+        if is_answered:
+            p_grounded = _answer_field(answer, "groundedness", None)
+            if isinstance(p_grounded, dict) and p_grounded.get("available"):
+                p_scored = int(p_grounded.get("scored_count", 0) or 0)
+                p_unsupported = int(p_grounded.get("unsupported_count", 0) or 0)
+                if p_scored:
+                    probe_unsupported_rate = p_unsupported / p_scored
+                    probe_answered_unsupported_rates.append(
+                        probe_unsupported_rate
+                    )
+                    probe_answered_unsupported_count += p_unsupported
+                    probe_answered_claims_scored += p_scored
+                else:
+                    # Answered but all-computational/filtered → 0 scorable
+                    # claims; credited as 0.0 in the per-probe mean (same
+                    # dilution convention the gold loop uses), but contributes
+                    # nothing to the claim-level denominator.
+                    probe_unsupported_rate = 0.0
+                    probe_answered_unsupported_rates.append(0.0)
+        probe_results.append(
+            {
+                "probe_id": pid,
+                "category": category,
+                "refused": is_refused,
+                "answered": is_answered,
+                "unsupported_rate": probe_unsupported_rate,
+            }
+        )
 
     # refusal_recall = probes correctly refused / probes
     refusal_recall = (probe_refused / n_probes) if n_probes else 0.0
@@ -995,6 +1072,34 @@ def run_grounded_eval(
             "refusal_precision": refusal_precision,
             "false_refusals_on_gold": false_refusals_on_gold,
             "composer_exhausted": probe_composer_exhausted,
+            # REFUSAL-SAFETY axis (schema 1.3, additive): of the probes the
+            # pipeline FAILED to refuse (answered), how fabricated were the
+            # answers? Computed ONLY over answered probes — separates a base-
+            # like pure invention from a grounded near-miss answered WITH a real
+            # corpus citation (failed-to-refuse but materially less harmful).
+            "answered_probe_count": probe_answered,
+            # Per-probe mean unsupported-vs-corpus rate over answered probes.
+            # None when zero answered / NLI unavailable — never a fabricated 0.0.
+            "unsupported_answer_rate_on_answered_probes": (
+                (
+                    sum(probe_answered_unsupported_rates)
+                    / len(probe_answered_unsupported_rates)
+                )
+                if probe_answered_unsupported_rates
+                else None
+            ),
+            # Undiluted claim-level rate: total unsupported / total scored over
+            # answered probes (does NOT credit an all-computational answer as
+            # 0.0). None when no answered probe had a scorable claim.
+            "claim_level_unsupported_rate_on_answered_probes": (
+                (
+                    probe_answered_unsupported_count
+                    / probe_answered_claims_scored
+                )
+                if probe_answered_claims_scored
+                else None
+            ),
+            "answered_probe_claims_scored": probe_answered_claims_scored,
         },
         # P4 additive: per-population citation precision (source/course) +
         # expected-population satisfaction. precision_* is None when that
@@ -1108,6 +1213,12 @@ def run_grounded_eval(
         "refusal_policy_version": refusal_policy_version,
         "gold": gold_pin,
         "questions": per_question_report,
+        # REFUSAL-SAFETY axis (schema 1.3, additive): per-probe rows mirroring
+        # the per-question `questions` rows so the answered-probe groundedness
+        # is auditable post-hoc (probe_id / category / refused / answered /
+        # unsupported_rate-or-null). The headline.refusal block carries the
+        # roll-up; this is the row-level evidence.
+        "probe_results": probe_results,
         "headline": headline,
         "blocked": {
             "invalid_citation": blocked_invalid,

@@ -180,11 +180,11 @@ def _answer_fn(_repo, _slug, query, **kwargs):
 # ===========================================================================
 
 def test_eval_schema_bumped_to_1_1():
-    # Bumped to 1.2 with the groundedness scorer-v2 surface (additive
-    # computational/filtered/scorer_version report keys + windowed /
-    # best_chunk_cited per-claim keys + the groundedness_scorer_v2 diagnostics
-    # block in the headline). The report schema_version moves with it.
-    assert EVAL_SCHEMA_VERSION == "1.2"
+    # 1.2 added the groundedness scorer-v2 surface; 1.3 (additive) added the
+    # refusal-safety axis: answered-probe groundedness rolled into
+    # headline.refusal + a top-level probe_results key. The report
+    # schema_version moves with it.
+    assert EVAL_SCHEMA_VERSION == "1.3"
 
 
 def test_gold_pin_block_carries_section4_fields(v1_1_course):
@@ -282,7 +282,7 @@ def test_report_json_round_trips(v1_1_course):
     )
     written = Path(report["_written"]["report_path"])
     doc = json.loads(written.read_text(encoding="utf-8"))
-    assert doc["schema_version"] == "1.2"
+    assert doc["schema_version"] == "1.3"
     assert doc["gold"]["question_count"] == 2
     assert "key_point_coverage" in doc["questions"][0]
     assert "part_coverage" in doc["questions"][1]

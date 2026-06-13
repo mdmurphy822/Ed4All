@@ -92,7 +92,19 @@ from lib.retrieval.gold_set import has_critical_issues, load_gold_set
 #: comparison gained an ``out_of_scope_confabulation_rate`` per-arm row + a
 #: ``_note`` on ``hallucination_reduction`` naming the dilution convention, and
 #: per-base-probe rows were added.
-SCORECARD_SCHEMA_VERSION = "1.2"
+#: 1.2 → 1.3 (additive only — every 1.2 key unchanged): the comparison gained a
+#: REFUSAL-SAFETY group of per-arm rows — ``refusal_recall``,
+#: ``refusal_precision``, ``answered_probe_rate`` (= the existing
+#: out_of_scope_confabulation_rate, reused), ``unsupported_answer_rate_on_-
+#: answered_probes``, and a derived composite ``probe_fabrication_rate``
+#: (= answered_probe_rate × unsupported_answer_rate_on_answered_probes; the
+#: bottom-line "fabricated a refusable question" rate, guarded None). BASE reads
+#: refusal_recall 0.0 / refusal_precision n/a (it refuses nothing) and its
+#: unsupported-when-answered comes from the probe-groundedness pass; GROUNDED
+#: reads them from its headline.refusal block; RETRIEVAL is ``"—"`` throughout
+#: (it emits no answers). The stdout table gained a clearly-headed SAFETY block
+#: + a one-line probe-fabrication summary.
+SCORECARD_SCHEMA_VERSION = "1.3"
 
 SCORECARD_FILENAME_PREFIX = "eval_scorecard_"
 
@@ -292,8 +304,16 @@ def _run_base_probe_pass(
     *,
     client: Any,
     max_tokens: int,
+    repo_root: Path,
+    course_slug: str,
+    engine: str,
+    limit: int,
+    retrieve_fn: Any,
+    nli: Optional[Any],
+    nli_unavailable_reason: Optional[str],
 ) -> Dict[str, Any]:
-    """Ask the raw base model every refusal probe; count answered vs declined.
+    """Ask the raw base model every refusal probe; count answered vs declined,
+    AND score the unsupported-vs-corpus rate of every ANSWERED probe.
 
     The OUT-OF-SCOPE CONFABULATION axis. Each probe is a question deliberately
     unanswerable from the course corpus; the base model — with NO refusal
@@ -303,8 +323,21 @@ def _run_base_probe_pass(
     heuristic). Per-probe error isolation: a client exception on one probe is
     recorded (``errored``) and the pass keeps going.
 
+    REFUSAL-SAFETY axis (schema 1.3): for every probe the base model ANSWERED
+    (did not decline), the answer is scored against the SAME top-k passages the
+    grounded pipeline would retrieve via :func:`_score_base_groundedness` (the
+    IDENTICAL machinery the hallucination axis uses) — so the comparison to the
+    grounded arm's answered-probe groundedness is apples-to-apples. Rolled up
+    additively: ``unsupported_answer_rate_on_probes`` (per-probe mean over
+    answered probes), ``claim_level_unsupported_rate_on_probes`` (total
+    unsupported / total scored), ``answered_probe_claims_scored``. Each per-probe
+    row gains ``unsupported_rate`` (or null). All null / None when NLI is
+    unavailable — never a fabricated rate.
+
     Returns the ``probe_confabulation`` block:
-    ``{n_probes, answered, declined, errored, confabulation_rate, probes:[...]}``.
+    ``{n_probes, answered, declined, errored, confabulation_rate, probes:[...],
+    unsupported_answer_rate_on_probes, claim_level_unsupported_rate_on_probes,
+    answered_probe_claims_scored}``.
     ``confabulation_rate = answered / (answered + declined)`` (errored probes are
     excluded from the denominator — they never produced an answer to classify);
     ``None`` when nothing was classifiable (no probes / all errored), never a
@@ -314,6 +347,10 @@ def _run_base_probe_pass(
     answered = 0
     declined = 0
     errored = 0
+    # Refusal-safety aggregates over ANSWERED probes only.
+    answered_unsupported_rates: List[float] = []
+    answered_unsupported_count = 0
+    answered_claims_scored = 0
     for probe in probes:
         pid = str(probe.get("probe_id", ""))
         ptext = str(probe.get("question_text", ""))
@@ -339,15 +376,46 @@ def _run_base_probe_pass(
             )
             continue
         declined_here = _base_answer_declines(answer_text)
+        unsupported_rate: Optional[float] = None
         if declined_here:
             declined += 1
         else:
             answered += 1
+            # Refusal-safety: score this ANSWERED probe against the corpus with
+            # the SAME groundedness machinery the hallucination axis uses.
+            grounded_block = _score_base_groundedness(
+                answer_text,
+                repo_root=repo_root,
+                course_slug=course_slug,
+                qtext=ptext,
+                engine=engine,
+                limit=limit,
+                retrieve_fn=retrieve_fn,
+                nli=nli,
+                nli_unavailable_reason=nli_unavailable_reason,
+            )
+            if grounded_block.get("available"):
+                scored = int(grounded_block.get("scored_count", 0) or 0)
+                unsupported = int(grounded_block.get("unsupported_count", 0) or 0)
+                if scored:
+                    unsupported_rate = unsupported / scored
+                    answered_unsupported_rates.append(unsupported_rate)
+                    answered_unsupported_count += unsupported
+                    answered_claims_scored += scored
+                else:
+                    # All-computational/filtered → 0 scorable claims; credited as
+                    # 0.0 in the per-probe mean (same dilution convention the
+                    # gold loop uses), contributes nothing to the claim-level
+                    # denominator.
+                    unsupported_rate = 0.0
+                    answered_unsupported_rates.append(0.0)
         rows.append(
             {
                 "probe_id": pid,
                 "category": category,
                 "answered": not declined_here,
+                # null when refused / NLI unavailable / nothing scored.
+                "unsupported_rate": unsupported_rate,
             }
         )
 
@@ -362,6 +430,22 @@ def _run_base_probe_pass(
         "confabulation_rate": (
             (answered / classifiable) if classifiable else None
         ),
+        # REFUSAL-SAFETY axis (schema 1.3, additive): unsupported-vs-corpus over
+        # ANSWERED probes only. Per-probe mean — None when zero answered / NLI
+        # unavailable (never a fabricated 0.0).
+        "unsupported_answer_rate_on_probes": (
+            (sum(answered_unsupported_rates) / len(answered_unsupported_rates))
+            if answered_unsupported_rates
+            else None
+        ),
+        # Undiluted claim-level rate over answered probes. None when no answered
+        # probe had a scorable claim.
+        "claim_level_unsupported_rate_on_probes": (
+            (answered_unsupported_count / answered_claims_scored)
+            if answered_claims_scored
+            else None
+        ),
+        "answered_probe_claims_scored": answered_claims_scored,
         "_note": _PROBE_CONFABULATION_NOTE,
         "probes": rows,
     }
@@ -461,7 +545,18 @@ def run_base_arm(
         refusal_probes_path=refusal_probes_path,
     )
     probe_block = _run_base_probe_pass(
-        probe_list, client=client, max_tokens=max_tokens
+        probe_list,
+        client=client,
+        max_tokens=max_tokens,
+        # Refusal-safety: answered probes are NLI-scored against the corpus with
+        # the SAME machinery the hallucination axis uses (resolved once above).
+        repo_root=repo_root,
+        course_slug=course_slug,
+        engine=engine,
+        limit=limit,
+        retrieve_fn=base_retrieve_fn,
+        nli=resolved_nli,
+        nli_unavailable_reason=nli_unavailable_reason,
     )
 
     rows: List[Dict[str, Any]] = []
@@ -735,13 +830,19 @@ def _probe_decision_signal(probe_block: Optional[Dict[str, Any]]) -> str:
         )
     rate = probe_block.get("confabulation_rate")
     rate_str = f"{rate:.4f}" if isinstance(rate, (int, float)) else "n/a"
+    # Refusal-safety signal: of the probes the model answered, how unsupported-
+    # vs-corpus were they (n/a when NLI unavailable / nothing scored).
+    unsup = probe_block.get("unsupported_answer_rate_on_probes")
+    unsup_str = f"{unsup:.4f}" if isinstance(unsup, (int, float)) else "n/a"
     return (
         "out-of-scope confabulation axis: the raw model (no refusal machinery) "
         f"answered {probe_block.get('answered', 0)} / declined "
         f"{probe_block.get('declined', 0)} / errored "
         f"{probe_block.get('errored', 0)} of {probe_block.get('n_probes', 0)} "
         f"deliberately-unanswerable refusal probes (confabulation_rate "
-        f"{rate_str})"
+        f"{rate_str}); refusal-safety: unsupported-vs-corpus rate on the "
+        f"answered probes {unsup_str} "
+        f"({probe_block.get('answered_probe_claims_scored', 0)} claims scored)"
     )
 
 
@@ -1022,6 +1123,89 @@ def _grounded_out_of_scope_rate(grounded: Dict[str, Any]) -> Optional[float]:
     return 1.0 - float(recall)
 
 
+def _composite_probe_fabrication_rate(
+    answered_probe_rate: Any, unsupported_when_answered: Any
+) -> Optional[float]:
+    """Derive the bottom-line "fabricated a refusable question" rate.
+
+    ``probe_fabrication_rate = answered_probe_rate × unsupported_answer_rate_on_-
+    answered_probes`` — the share of ALL probes that got an unsupported answer
+    (answered-instead-of-refused AND the answer was unsupported-vs-corpus).
+    Guards a sentinel ``"—"`` / ``None`` on either factor (RETRIEVAL emits no
+    answers; a None factor means the axis is n/a) by returning ``None`` — never a
+    fabricated rate.
+    """
+    if not isinstance(answered_probe_rate, (int, float)):
+        return None
+    if not isinstance(unsupported_when_answered, (int, float)):
+        return None
+    return float(answered_probe_rate) * float(unsupported_when_answered)
+
+
+def _base_refusal_safety(base_block: Dict[str, Any]) -> Dict[str, Any]:
+    """Pull the BASE arm's refusal-safety row from its ``probe_confabulation``.
+
+    BASE has NO refusal machinery, so ``refusal_recall`` is 0.0 (it refuses
+    nothing) and ``refusal_precision`` is None (n/a — no refusals to be precise
+    about; represented honestly, never a fabricated 1.0). ``answered_probe_rate``
+    reuses the probe ``confabulation_rate``; ``unsupported_answer_rate_on_-
+    answered_probes`` comes from the probe-groundedness pass (None ⇒ NLI n/a).
+    """
+    probe = (
+        base_block.get("probe_confabulation", {})
+        if isinstance(base_block, dict)
+        else {}
+    ) or {}
+    answered_rate = _base_confabulation_rate(base_block)
+    unsupported = probe.get("unsupported_answer_rate_on_probes")
+    unsupported = (
+        float(unsupported) if isinstance(unsupported, (int, float)) else None
+    )
+    return {
+        "refusal_recall": 0.0,
+        "refusal_precision": None,
+        "answered_probe_rate": answered_rate,
+        "unsupported_answer_rate_on_answered_probes": unsupported,
+        "probe_fabrication_rate": _composite_probe_fabrication_rate(
+            answered_rate, unsupported
+        ),
+    }
+
+
+def _grounded_refusal_safety(grounded: Dict[str, Any]) -> Dict[str, Any]:
+    """Pull the GROUNDED arm's refusal-safety row from its headline.refusal.
+
+    ``refusal_recall`` / ``refusal_precision`` are read straight from the
+    headline (UNCHANGED metrics). ``answered_probe_rate = 1 - refusal_recall``
+    (reuses :func:`_grounded_out_of_scope_rate`); ``unsupported_answer_rate_on_-
+    answered_probes`` is the schema-1.3 refusal-block field (None ⇒ NLI n/a /
+    nothing answered). The composite ``probe_fabrication_rate`` is derived from
+    the two, guarded None.
+    """
+    headline = grounded.get("headline", {}) if isinstance(grounded, dict) else {}
+    refusal = headline.get("refusal", {}) or {}
+    recall = refusal.get("refusal_recall")
+    precision = refusal.get("refusal_precision")
+    answered_rate = _grounded_out_of_scope_rate(grounded)
+    unsupported = refusal.get("unsupported_answer_rate_on_answered_probes")
+    unsupported = (
+        float(unsupported) if isinstance(unsupported, (int, float)) else None
+    )
+    return {
+        "refusal_recall": (
+            float(recall) if isinstance(recall, (int, float)) else None
+        ),
+        "refusal_precision": (
+            float(precision) if isinstance(precision, (int, float)) else None
+        ),
+        "answered_probe_rate": answered_rate,
+        "unsupported_answer_rate_on_answered_probes": unsupported,
+        "probe_fabrication_rate": _composite_probe_fabrication_rate(
+            answered_rate, unsupported
+        ),
+    }
+
+
 def _grounded_shared_axes(grounded: Dict[str, Any]) -> Dict[str, Any]:
     """Pull the shared comparison axes out of a grounded report dict."""
     headline = grounded.get("headline", {}) if isinstance(grounded, dict) else {}
@@ -1190,6 +1374,11 @@ def _build_comparison(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             # answered-instead-of-refused rate over the refusal probes. None ⇒
             # n/a (no probes classifiable).
             "out_of_scope_confabulation_rate": _base_confabulation_rate(base),
+            # REFUSAL-SAFETY group (schema 1.3): refusal_recall 0.0 /
+            # refusal_precision None (BASE refuses nothing), answered_probe_rate
+            # (= out_of_scope_confab), unsupported-when-answered (from the probe-
+            # groundedness pass), + the composite probe_fabrication_rate.
+            "refusal_safety": _base_refusal_safety(base),
             "latency_ms": base["latency_ms"],
             "note": (
                 "qwen only, no retrieval; answers everything by construction "
@@ -1216,6 +1405,15 @@ def _build_comparison(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             # construction, mirroring the hallucination axis.
             "claim_level_unsupported_rate": "—",
             "out_of_scope_confabulation_rate": "—",
+            # REFUSAL-SAFETY group: RETRIEVAL emits no answers, so every refusal-
+            # safety axis is the sentinel "—" (not None) by construction.
+            "refusal_safety": {
+                "refusal_recall": "—",
+                "refusal_precision": "—",
+                "answered_probe_rate": "—",
+                "unsupported_answer_rate_on_answered_probes": "—",
+                "probe_fabrication_rate": "—",
+            },
             "primary_relevant_hit_at_k_rate": retr["primary_relevant_hit"][
                 "hit_at_k_rate"
             ],
@@ -1230,6 +1428,11 @@ def _build_comparison(arms: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     if ARM_GROUNDED in arms:
         comparison[ARM_GROUNDED] = {
             **_grounded_shared_axes(arms[ARM_GROUNDED]),
+            # REFUSAL-SAFETY group (schema 1.3): refusal_recall / precision
+            # straight from the headline (UNCHANGED), answered_probe_rate =
+            # 1 - recall, unsupported-when-answered from the schema-1.3 refusal
+            # block, + the composite.
+            "refusal_safety": _grounded_refusal_safety(arms[ARM_GROUNDED]),
             "note": "qwen + retrieval (full pipeline)",
         }
 
@@ -1451,6 +1654,42 @@ def format_scorecard_table(scorecard: Dict[str, Any]) -> str:
             else:
                 cells.append((fmt or _fmt_rate)(block.get(key)).ljust(col_w))
         lines.append(f"{label.ljust(label_w)}  {' '.join(cells)}")
+
+    # --- REFUSAL-SAFETY block ---------------------------------------------
+    # A clearly-headed safety section over the refusal probes (questions that
+    # SHOULD be refused). RETRIEVAL = "—" throughout (it emits no answers).
+    safety_rows = [
+        ("refusal_recall", "refusal_recall"),
+        ("refusal_precision", "refusal_precision"),
+        ("answered-not-refused", "answered_probe_rate"),
+        ("unsupported-when-answered", "unsupported_answer_rate_on_answered_probes"),
+        ("probe_fabrication_rate", "probe_fabrication_rate"),
+    ]
+    lines.append("")
+    safety_title = "SAFETY (refusal probes — questions that SHOULD be refused)"
+    lines.append(safety_title)
+    lines.append("-" * len(safety_title))
+    lines.append(f"{'axis'.ljust(label_w)}  {header_cells}")
+    lines.append(f"{'-' * label_w}  {' '.join('-' * col_w for _ in arms_order)}")
+    for label, key in safety_rows:
+        cells = []
+        for a in arms_order:
+            safety = (comparison.get(a, {}) or {}).get("refusal_safety", {}) or {}
+            cells.append(_fmt_rate(safety.get(key)).ljust(col_w))
+        lines.append(f"{label.ljust(label_w)}  {' '.join(cells)}")
+
+    # One-line probe-fabrication summary (BASE vs GROUNDED), when both ran.
+    base_safety = (comparison.get(ARM_BASE, {}) or {}).get("refusal_safety", {})
+    grounded_safety = (
+        comparison.get(ARM_GROUNDED, {}) or {}
+    ).get("refusal_safety", {})
+    if base_safety and grounded_safety:
+        lines.append(
+            "probe fabrication (answered a refusable question with unsupported "
+            f"content): BASE {_fmt_rate(base_safety.get('probe_fabrication_rate'))}"
+            f" → GROUNDED "
+            f"{_fmt_rate(grounded_safety.get('probe_fabrication_rate'))}"
+        )
 
     # One-line hallucination-reduction summary (BASE→GROUNDED), when derived.
     reduction = comparison.get("hallucination_reduction")
