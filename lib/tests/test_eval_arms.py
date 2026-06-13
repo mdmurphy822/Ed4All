@@ -768,10 +768,11 @@ def test_table_renders_hallucination_row_and_reduction_summary():
     assert "—" in table
 
 
-def test_schema_version_bumped_to_1_2():
-    # Additive bump for the BASE-arm out-of-scope confabulation axis + the
-    # undiluted claim-level fields + the comparison/table additions.
-    assert SCORECARD_SCHEMA_VERSION == "1.2"
+def test_schema_version_bumped_to_1_3():
+    # Additive bump for the REFUSAL-SAFETY comparison group (per-arm
+    # refusal_recall / refusal_precision / answered_probe_rate / unsupported-
+    # when-answered / probe_fabrication_rate) + the SAFETY table block.
+    assert SCORECARD_SCHEMA_VERSION == "1.3"
 
 
 def test_all_arms_constant():
@@ -1152,3 +1153,270 @@ def test_comparison_grounded_claim_level_none_with_reason():
     ]
     # RETRIEVAL has no claims → sentinel "—".
     assert comp[ARM_RETRIEVAL]["claim_level_unsupported_rate"] == "—"
+
+
+# ===========================================================================
+# REFUSAL-SAFETY axis (schema 1.3) — was an answered-instead-of-refused probe
+# answer FABRICATED? Computed over ANSWERED probes only.
+# ===========================================================================
+
+def _refusal_safety_setup():
+    """A 3-probe set + crafted base answers + corpus + fake NLI:
+      * rp-0001 ANSWERED with a GROUNDED claim → 0/1 unsupported.
+      * rp-0002 ANSWERED with a FABRICATED claim → 1/1 unsupported.
+      * rp-0003 DECLINED (does-not-cover disclaimer) → not scored.
+    Per-probe-mean unsupported over answered probes = (0.0 + 1.0)/2 = 0.5;
+    claim-level = 1 unsupported / 2 scored = 0.5.
+    """
+    probes = [
+        {
+            "probe_id": "rp-0001",
+            "question_text": "Probe one answered grounded?",
+            "category": "near_miss",
+        },
+        {
+            "probe_id": "rp-0002",
+            "question_text": "Probe two answered fabricated?",
+            "category": "off_topic",
+        },
+        {
+            "probe_id": "rp-0003",
+            "question_text": "Probe three declined?",
+            "category": "off_topic",
+        },
+    ]
+    client = _FakeClient(
+        {
+            # Gold question — answered normally (a grounded claim).
+            "What does a vector store index?": (
+                "A vector store indexes GROUNDED embedding vectors."
+            ),
+            # Probe 1: a single claim that grounds against its corpus passage.
+            "Probe one answered grounded?": (
+                "This is a GROUNDED probe-one answer claim."
+            ),
+            # Probe 2: a single claim with no corpus support → unsupported.
+            "Probe two answered fabricated?": (
+                "This is a FABRICATED probe-two answer claim."
+            ),
+            # Probe 3: declines via a does-not-cover disclaimer phrase.
+            "Probe three declined?": (
+                "The course does not cover this; out of scope."
+            ),
+        }
+    )
+    retrieve_fn = _retrieve_fn_factory(
+        {
+            "What does a vector store index?": [
+                _Result("chunk_g", "A vector store indexes GROUNDED vectors.")
+            ],
+            "Probe one answered grounded?": [
+                _Result("chunk_p1", "Probe-one passage with GROUNDED support.")
+            ],
+            "Probe two answered fabricated?": [
+                _Result("chunk_p2", "An unrelated passage with no support.")
+            ],
+        }
+    )
+    nli = _FakeNli(entailed_if=[("GROUNDED", "GROUNDED")])
+    return probes, client, retrieve_fn, nli
+
+
+def test_base_probe_pass_scores_unsupported_on_answered_probes_only():
+    probes, client, retrieve_fn, nli = _refusal_safety_setup()
+    result = run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=client,
+        gold=_one_question_gold(),
+        retrieve_fn=retrieve_fn,
+        nli=nli,
+        probes=probes,
+    )
+    probe = result["probe_confabulation"]
+    assert probe["answered"] == 2
+    assert probe["declined"] == 1
+    # Per-probe mean over answered probes: (0.0 + 1.0)/2 = 0.5.
+    assert probe["unsupported_answer_rate_on_probes"] == pytest.approx(0.5)
+    # Claim-level: 1 unsupported / 2 scored = 0.5.
+    assert probe["claim_level_unsupported_rate_on_probes"] == pytest.approx(0.5)
+    assert probe["answered_probe_claims_scored"] == 2
+    # Per-probe rows: grounded probe 0.0, fabricated probe 1.0, declined null.
+    rows = {r["probe_id"]: r for r in probe["probes"]}
+    assert rows["rp-0001"]["unsupported_rate"] == pytest.approx(0.0)
+    assert rows["rp-0002"]["unsupported_rate"] == pytest.approx(1.0)
+    assert rows["rp-0003"]["answered"] is False
+    assert rows["rp-0003"]["unsupported_rate"] is None
+
+
+def test_base_probe_pass_unsupported_na_when_nli_unavailable():
+    """NLI unavailable → no fabricated numbers; the answered-probe rate is
+    None and per-probe unsupported_rate is null on answered probes."""
+    probes, client, retrieve_fn, _ = _refusal_safety_setup()
+    import lib.retrieval.groundedness as gmod
+
+    orig = gmod._resolve_nli
+    gmod._resolve_nli = lambda nli=None: None
+    try:
+        result = run_base_arm(
+            Path("/unused"),
+            "course-x",
+            client=client,
+            gold=_one_question_gold(),
+            retrieve_fn=retrieve_fn,
+            nli=None,
+            probes=probes,
+        )
+    finally:
+        gmod._resolve_nli = orig
+    probe = result["probe_confabulation"]
+    # The answered/declined classification still works (no NLI needed).
+    assert probe["answered"] == 2
+    # But the refusal-safety axis reads n/a — never fabricated.
+    assert probe["unsupported_answer_rate_on_probes"] is None
+    assert probe["claim_level_unsupported_rate_on_probes"] is None
+    assert probe["answered_probe_claims_scored"] == 0
+    rows = {r["probe_id"]: r for r in probe["probes"]}
+    assert rows["rp-0001"]["unsupported_rate"] is None
+    assert rows["rp-0002"]["unsupported_rate"] is None
+
+
+def test_base_decision_rationale_carries_refusal_safety_signal():
+    """The base decision rationale extends with the answered-probe unsupported
+    signal (no new call site)."""
+    probes, client, retrieve_fn, nli = _refusal_safety_setup()
+    cap = _RecordingCapture()
+    run_base_arm(
+        Path("/unused"),
+        "course-x",
+        client=client,
+        gold=_one_question_gold(),
+        retrieve_fn=retrieve_fn,
+        nli=nli,
+        probes=probes,
+        capture=cap,
+    )
+    events = [
+        e for e in cap.events if e["decision_type"] == "base_model_eval_call"
+    ]
+    assert events
+    assert any("refusal-safety" in e["rationale"] for e in events)
+    assert any("unsupported-vs-corpus rate on the answered" in e["rationale"]
+               for e in events)
+
+
+# --- composite probe_fabrication_rate math + guards ------------------------
+
+from lib.retrieval.eval_arms import (  # noqa: E402
+    _composite_probe_fabrication_rate,
+    _base_refusal_safety,
+    _grounded_refusal_safety,
+)
+
+
+def test_composite_probe_fabrication_rate_math_and_guards():
+    # answered 0.95 of probes, 0.40 of those unsupported → 0.38 fabricated.
+    assert _composite_probe_fabrication_rate(0.95, 0.40) == pytest.approx(0.38)
+    # Either factor None / sentinel → None (never fabricated).
+    assert _composite_probe_fabrication_rate(None, 0.40) is None
+    assert _composite_probe_fabrication_rate(0.95, None) is None
+    assert _composite_probe_fabrication_rate("—", 0.40) is None
+    # Zero answered → 0.0 (a true zero, not n/a).
+    assert _composite_probe_fabrication_rate(0.0, 0.40) == pytest.approx(0.0)
+
+
+def test_base_refusal_safety_row_shape():
+    base = {
+        "arm": ARM_BASE,
+        "probe_confabulation": {
+            "confabulation_rate": 0.90,
+            "unsupported_answer_rate_on_probes": 0.50,
+        },
+    }
+    row = _base_refusal_safety(base)
+    # BASE refuses nothing — recall 0.0, precision None (honest, not 1.0).
+    assert row["refusal_recall"] == 0.0
+    assert row["refusal_precision"] is None
+    assert row["answered_probe_rate"] == pytest.approx(0.90)
+    assert row["unsupported_answer_rate_on_answered_probes"] == pytest.approx(0.50)
+    assert row["probe_fabrication_rate"] == pytest.approx(0.45)
+
+
+def test_grounded_refusal_safety_row_from_headline():
+    grounded = {
+        "headline": {
+            "refusal": {
+                "n_probes": 44,
+                "refusal_recall": 0.75,
+                "refusal_precision": 0.96,
+                "unsupported_answer_rate_on_answered_probes": 0.20,
+            }
+        }
+    }
+    row = _grounded_refusal_safety(grounded)
+    assert row["refusal_recall"] == pytest.approx(0.75)
+    assert row["refusal_precision"] == pytest.approx(0.96)
+    # answered_probe_rate = 1 - recall = 0.25.
+    assert row["answered_probe_rate"] == pytest.approx(0.25)
+    assert row["unsupported_answer_rate_on_answered_probes"] == pytest.approx(0.20)
+    # composite = 0.25 × 0.20 = 0.05.
+    assert row["probe_fabrication_rate"] == pytest.approx(0.05)
+
+
+def test_comparison_carries_refusal_safety_group():
+    arms = _arm_blocks_for_comparison(0.40, 0.05)
+    arms[ARM_BASE]["probe_confabulation"] = {
+        "confabulation_rate": 0.95,
+        "unsupported_answer_rate_on_probes": 0.40,
+    }
+    arms[ARM_GROUNDED]["headline"]["refusal"] = {
+        "n_probes": 44,
+        "refusal_recall": 0.64,
+        "refusal_precision": 0.96,
+        "unsupported_answer_rate_on_answered_probes": 0.10,
+    }
+    comp = _build_comparison(arms)
+    base_s = comp[ARM_BASE]["refusal_safety"]
+    assert base_s["refusal_recall"] == 0.0
+    assert base_s["refusal_precision"] is None
+    assert base_s["probe_fabrication_rate"] == pytest.approx(0.95 * 0.40)
+    grounded_s = comp[ARM_GROUNDED]["refusal_safety"]
+    assert grounded_s["refusal_recall"] == pytest.approx(0.64)
+    # answered_probe_rate = 1 - 0.64 = 0.36; composite = 0.36 × 0.10.
+    assert grounded_s["probe_fabrication_rate"] == pytest.approx(0.36 * 0.10)
+    # RETRIEVAL = "—" throughout.
+    assert comp[ARM_RETRIEVAL]["refusal_safety"]["refusal_recall"] == "—"
+    assert comp[ARM_RETRIEVAL]["refusal_safety"]["probe_fabrication_rate"] == "—"
+
+
+def test_table_renders_refusal_safety_block_and_summary():
+    arms = _arm_blocks_for_comparison(0.40, 0.05)
+    arms[ARM_BASE]["probe_confabulation"] = {
+        "confabulation_rate": 1.00,
+        "unsupported_answer_rate_on_probes": 0.80,
+    }
+    arms[ARM_GROUNDED]["headline"]["refusal"] = {
+        "n_probes": 44,
+        "refusal_recall": 0.64,
+        "refusal_precision": 0.96,
+        "unsupported_answer_rate_on_answered_probes": 0.10,
+    }
+    scorecard = {
+        "course_slug": "course-x",
+        "engine": "semantic",
+        "arms": arms,
+        "comparison": _build_comparison(arms),
+    }
+    table = format_scorecard_table(scorecard)
+    # The clearly-headed SAFETY block + its rows render.
+    assert "SAFETY (refusal probes" in table
+    assert "refusal_recall" in table
+    assert "answered-not-refused" in table
+    assert "unsupported-when-answered" in table
+    assert "probe_fabrication_rate" in table
+    # The one-line probe-fabrication summary (BASE vs GROUNDED).
+    assert "probe fabrication (answered a refusable question with unsupported" \
+        in table
+    # BASE composite = 1.00 × 0.80 = 0.8000; GROUNDED = 0.36 × 0.10 = 0.0360.
+    assert "0.8000" in table
+    assert "0.0360" in table

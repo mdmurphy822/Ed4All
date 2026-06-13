@@ -139,7 +139,7 @@ def test_report_shape_and_headline(libv2_course):
         answer_fn=_gold_answer_fn(_GROUNDED_OK),
         with_groundedness=True, write=False,
     )
-    assert report["schema_version"] == "1.2"
+    assert report["schema_version"] == "1.3"
     assert report["course_slug"] == slug
     assert report["engine"] == "lexical"
     assert report["model_id"] == "fake-model"
@@ -703,3 +703,136 @@ def test_cli_exit_zero_with_artifact_on_composer_exhaustion(libv2_course):
     assert list(eval_dir.glob("grounded_answer_eval_*.json"))
     # The review sample still builds over all three questions.
     assert report["_review_sample"]["n_questions"] == 3
+
+
+# ===========================================================================
+# REFUSAL-SAFETY axis (schema 1.3) — groundedness of ANSWERED probes
+# ===========================================================================
+
+# Fixture probe texts (mini-retrieval-101 refusal_probes.json).
+_PROBE_OFF_TOPIC = "How does ATP synthesis occur in the mitochondria?"
+_PROBE_ADJACENT = (
+    "How do you fine-tune the embedding model's weights with a contrastive loss?"
+)
+_PROBE_OOS_DETAIL = (
+    "What exact ef_search parameter does the FAISS HNSW index use at query time?"
+)
+
+
+def _refusal_safety_answer_fn():
+    """Fake pipeline: gold questions answered; of the 3 fixture probes ONE is
+    refused, ONE answered-and-supported (0 unsupported), ONE answered-and-
+    unsupported (1/1 unsupported)."""
+    gold_by_text = {
+        "What does a vector store index?": "mini_alpha_chunk_001",
+        "How is retrieval quality commonly measured?": "mini_alpha_chunk_003",
+        "Where does the course cover chunking strategies?": "mini_beta_chunk_005",
+    }
+    supported = {
+        "available": True,
+        "groundedness_rate": 1.0,
+        "scored_count": 1,
+        "unsupported_count": 0,
+        "contradicted_count": 0,
+        "claims": [],
+    }
+    unsupported = {
+        "available": True,
+        "groundedness_rate": 0.0,
+        "scored_count": 1,
+        "unsupported_count": 1,
+        "contradicted_count": 0,
+        "claims": [],
+    }
+
+    def _fn(repo_root, course_slug, query, *, engine="lexical", limit=8,
+            client=None, refusal_policy=None, with_groundedness=False,
+            capture=None, **kwargs):
+        cid = gold_by_text.get(query)
+        if cid is not None:
+            return _FakeAnswer(
+                status="answered",
+                answer_text=f"Answer about {cid}.",
+                citations=[_FakeCitation(cid)],
+                groundedness=(_GROUNDED_OK if with_groundedness else None),
+            )
+        # Refusal probes:
+        if query == _PROBE_OFF_TOPIC:
+            return _FakeAnswer(
+                status="refused_not_in_course", answer_text=None, citations=[]
+            )
+        if query == _PROBE_ADJACENT:
+            # Answered-instead-of-refused WITH a real corpus citation, supported.
+            return _FakeAnswer(
+                status="answered",
+                answer_text="A grounded near-miss answer.",
+                citations=[_FakeCitation("mini_alpha_chunk_004")],
+                groundedness=(supported if with_groundedness else None),
+            )
+        # _PROBE_OOS_DETAIL — answered with an unsupported claim (pure invention).
+        return _FakeAnswer(
+            status="answered",
+            answer_text="An ungrounded fabricated detail.",
+            citations=[],
+            groundedness=(unsupported if with_groundedness else None),
+        )
+
+    return _fn
+
+
+def test_refusal_safety_answered_probe_groundedness(libv2_course):
+    repo_root, slug, _ = libv2_course
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_refusal_safety_answer_fn(),
+        with_groundedness=True, write=False,
+    )
+    refusal = report["headline"]["refusal"]
+    # 3 probes: 1 refused, 2 answered → recall 1/3 (UNCHANGED computation).
+    assert refusal["n_probes"] == 3
+    assert refusal["refusal_recall"] == pytest.approx(1 / 3)
+    # Refusal-safety additive fields:
+    assert refusal["answered_probe_count"] == 2
+    # Per-probe mean over answered probes: (0.0 supported + 1.0 unsupported)/2.
+    assert refusal["unsupported_answer_rate_on_answered_probes"] == pytest.approx(
+        0.5
+    )
+    # Claim-level: 1 unsupported / 2 scored = 0.5.
+    assert refusal[
+        "claim_level_unsupported_rate_on_answered_probes"
+    ] == pytest.approx(0.5)
+    assert refusal["answered_probe_claims_scored"] == 2
+
+    # Per-probe rows persisted under the top-level probe_results key.
+    pr = {r["probe_id"]: r for r in report["probe_results"]}
+    assert len(pr) == 3
+    off = pr["rp-mini-retrieval-101-0001"]
+    assert off["refused"] is True and off["answered"] is False
+    assert off["unsupported_rate"] is None
+    adjacent = pr["rp-mini-retrieval-101-0002"]
+    assert adjacent["answered"] is True
+    assert adjacent["unsupported_rate"] == pytest.approx(0.0)
+    oos = pr["rp-mini-retrieval-101-0003"]
+    assert oos["answered"] is True
+    assert oos["unsupported_rate"] == pytest.approx(1.0)
+
+
+def test_refusal_safety_na_when_groundedness_off(libv2_course):
+    """with_groundedness=False → answered probes carry no groundedness block, so
+    the refusal-safety rate reads None (never fabricated); recall is UNCHANGED."""
+    repo_root, slug, _ = libv2_course
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_refusal_safety_answer_fn(),
+        with_groundedness=False, write=False,
+    )
+    refusal = report["headline"]["refusal"]
+    assert refusal["refusal_recall"] == pytest.approx(1 / 3)
+    assert refusal["answered_probe_count"] == 2
+    assert refusal["unsupported_answer_rate_on_answered_probes"] is None
+    assert refusal["claim_level_unsupported_rate_on_answered_probes"] is None
+    assert refusal["answered_probe_claims_scored"] == 0
+    # probe_results still persist (refused/answered classification only).
+    answered = [r for r in report["probe_results"] if r["answered"]]
+    assert len(answered) == 2
+    assert all(r["unsupported_rate"] is None for r in answered)
