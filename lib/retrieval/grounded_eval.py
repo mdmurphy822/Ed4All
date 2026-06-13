@@ -62,7 +62,16 @@ from lib.retrieval.gold_set import (
 #: unsupported_rate-or-null) — mirroring the per-question ``questions`` rows.
 #: The existing ``refusal_recall`` / ``refusal_precision`` / ``n_probes`` fields
 #: and every other headline metric are UNCHANGED.
-EVAL_SCHEMA_VERSION = "1.3"
+#: ``EVAL_SCHEMA_VERSION`` 1.3 → 1.4 (additive only — every 1.3 key unchanged;
+#: nli-add-flip plan PR-1 + gold-enrichment plan step 1): adds the
+#: ``headline.citation_precision_preadd`` metric (citation_precision recomputed
+#: over the citation set BEFORE the NLI-ADD pass appended anything — equal to
+#: ``citation_precision`` whenever NLI-ADD is off/shadow, the only modes
+#: shipping today) and persists per-question ``cited_chunk_ids`` + ``cited_pages``
+#: on EVERY ``questions`` row (previously the cited chunk_ids lived only inside
+#: the 25-question review sample). Both are prerequisites for measuring the
+#: NLI-ADD flip + the multi-passage gold enrichment over all questions.
+EVAL_SCHEMA_VERSION = "1.4"
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
 
 #: Progress-writer arm name for the grounded eval (matches eval_arms.ARM_GROUNDED
@@ -695,6 +704,16 @@ def run_grounded_eval(
     n_resolved_citations = 0
     n_relevant_citations = 0
     n_relevant_primary_citations = 0
+    # PRE-ADD citation precision (mirrors the prune arm's *_preprune pattern):
+    # the emitted/relevant counts computed over the citation set BEFORE the
+    # NLI-ADD pass appended any citation. When NLI-ADD is off/shadow (today) no
+    # citation was added, so the pre-add set == the emitted set and
+    # citation_precision_preadd == citation_precision exactly. When NLI-ADD is
+    # ON, the pre-add headline stays comparable to today's precision while the
+    # post-add precision can be read separately (an ADD against a one-passage
+    # gold can only grow the denominator — see plans/nli-add-flip-2026-06.md §2).
+    n_emitted_citations_preadd = 0
+    n_relevant_citations_preadd = 0
     answered_count = 0
     blocked_invalid = 0
     blocked_gate = 0
@@ -819,9 +838,21 @@ def run_grounded_eval(
 
         cites = _citations_list(answer)
         n_cites = len(cites)
+        # Ids the NLI-ADD pass ACTUALLY appended to this answer (empty in
+        # off/shadow — the only modes shipping today; the real add set under ON).
+        # Used to recompute citation_precision over the PRE-ADD set so the
+        # pre-add headline stays comparable to today's number after the flip.
+        _nli_add_block = _answer_field(answer, "nli_citation_add", None)
+        nli_added_ids = set()
+        if isinstance(_nli_add_block, dict):
+            nli_added_ids = {
+                str(x) for x in (_nli_add_block.get("added_ids") or [])
+            }
         resolved_here = 0
         relevant_here = 0
         relevant_primary_here = 0
+        emitted_preadd_here = 0
+        relevant_preadd_here = 0
         for c in cites:
             cid = str(c.get("chunk_id", ""))
             anchor_status = str(c.get("anchor_status", ""))
@@ -835,6 +866,13 @@ def run_grounded_eval(
                 relevant_here += 1
             if cid in primary_rel:
                 relevant_primary_here += 1
+            # PRE-ADD set: every emitted citation EXCEPT the ones the NLI-ADD
+            # pass appended on this answer. Under off/shadow nli_added_ids is
+            # empty, so the pre-add tally equals the full emitted tally.
+            if cid not in nli_added_ids:
+                emitted_preadd_here += 1
+                if is_relevant:
+                    relevant_preadd_here += 1
             # Per-population tally: classify the cited chunk by its population
             # (skip ids absent from the pinned chunkset — unclassifiable).
             chunk = chunks_by_id.get(cid)
@@ -849,6 +887,8 @@ def run_grounded_eval(
         n_resolved_citations += resolved_here
         n_relevant_citations += relevant_here
         n_relevant_primary_citations += relevant_primary_here
+        n_emitted_citations_preadd += emitted_preadd_here
+        n_relevant_citations_preadd += relevant_preadd_here
 
         if status in _ANSWERED_STATUSES:
             answered_count += 1
@@ -955,6 +995,20 @@ def run_grounded_eval(
             "citation_relevant_primary": relevant_primary_here,
             "groundedness_rate": g_rate,
             "latency_ms": latency,
+            # ADDITIVE (gold-enrichment plan step 1): persist EVERY emitted
+            # citation's chunk_id on EVERY per-question row (previously these
+            # ids lived only inside the 25-question review sample). This makes
+            # citation_precision auditable + the multi-passage enrichment
+            # measurable over all 125 questions — each id can be joined to its
+            # chunk body to judge whether an unpinned-but-cited passage is a
+            # genuine supporter. page_label rides along when the pipeline
+            # carried it (cheap; the citation dict already exposes it).
+            "cited_chunk_ids": cited_ids,
+            "cited_pages": [
+                c.get("page_label")
+                for c in cites
+                if c.get("chunk_id")
+            ],
         }
         if kp_cov is not None:
             row["key_point_coverage"] = kp_cov.to_dict()
@@ -1146,6 +1200,21 @@ def run_grounded_eval(
         "citation_precision": (
             (n_relevant_citations / n_emitted_citations)
             if n_emitted_citations
+            else 0.0
+        ),
+        # ADDITIVE headline (nli-add-flip plan PR-1, mirrors the prune arm's
+        # *_preprune pattern): citation_precision recomputed over the citation
+        # set BEFORE the NLI-ADD pass appended anything. When NLI-ADD is
+        # off/shadow (the only modes shipping today) NO citation was added, so
+        # this is byte-identical to citation_precision. When NLI-ADD is later
+        # flipped ON, citation_precision_preadd stays comparable to today's
+        # number (the model's own citations) while citation_precision reflects
+        # the post-add set — so the ADD's denominator effect against a
+        # one-passage gold is MEASURED, not assumed, and the flip run is not
+        # misread as a precision regression (see plan §2.2/§2.3).
+        "citation_precision_preadd": (
+            (n_relevant_citations_preadd / n_emitted_citations_preadd)
+            if n_emitted_citations_preadd
             else 0.0
         ),
         "citation_precision_primary": (

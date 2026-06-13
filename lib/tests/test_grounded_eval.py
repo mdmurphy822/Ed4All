@@ -139,7 +139,7 @@ def test_report_shape_and_headline(libv2_course):
         answer_fn=_gold_answer_fn(_GROUNDED_OK),
         with_groundedness=True, write=False,
     )
-    assert report["schema_version"] == "1.3"
+    assert report["schema_version"] == "1.4"
     assert report["course_slug"] == slug
     assert report["engine"] == "lexical"
     assert report["model_id"] == "fake-model"
@@ -150,6 +150,7 @@ def test_report_shape_and_headline(libv2_course):
     headline = report["headline"]
     for key in (
         "answer_rate", "citation_resolution_rate", "citation_precision",
+        "citation_precision_preadd",
         "citation_precision_primary", "groundedness_rate_mean",
         "unsupported_claim_rate", "refusal", "latency_ms",
     ):
@@ -160,6 +161,9 @@ def test_report_shape_and_headline(libv2_course):
     assert headline["citation_resolution_rate"] == 1.0
     assert headline["citation_precision"] == 1.0
     assert headline["citation_precision_primary"] == 1.0
+    # NLI-ADD is off in this run (no nli_citation_add block) → the pre-add
+    # citation set IS the emitted set, so preadd == precision exactly.
+    assert headline["citation_precision_preadd"] == headline["citation_precision"]
     # groundedness available → mean is a float, not None
     assert headline["groundedness_rate_mean"] == 1.0
     # 3 fixture probes, all refused
@@ -180,9 +184,12 @@ def test_per_question_rows(libv2_course):
     row = report["questions"][0]
     # v1.0 base row fields are always present; citation_population is the only
     # P4-additive field on a v1.0 fixture (no expected_key_points / parts).
+    # cited_chunk_ids / cited_pages are the schema-1.4 additive ids persisted
+    # on EVERY row (gold-enrichment plan step 1) — always present.
     base = {
         "question_id", "status", "n_citations", "citations_resolved",
         "citation_relevant_primary", "groundedness_rate", "latency_ms",
+        "cited_chunk_ids", "cited_pages",
     }
     assert base <= set(row)
     assert set(row) - base <= {"citation_population"}
@@ -192,6 +199,12 @@ def test_per_question_rows(libv2_course):
     assert row["n_citations"] == 1
     assert row["citations_resolved"] == 1
     assert row["citation_relevant_primary"] == 1
+    # schema-1.4: the one emitted citation's chunk_id is persisted on the row,
+    # so citation_precision is auditable over every question (not just the
+    # 25-q review sample). The list length tracks n_citations.
+    assert len(row["cited_chunk_ids"]) == row["n_citations"]
+    assert all(isinstance(cid, str) and cid for cid in row["cited_chunk_ids"])
+    assert len(row["cited_pages"]) == row["n_citations"]
 
 
 def test_groundedness_null_when_unavailable(libv2_course):
