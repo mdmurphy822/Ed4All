@@ -154,6 +154,13 @@ _ESCALATION_MARKERS: frozenset = frozenset(
         # ``objective_alignment[*].status="unverifiable"`` so the
         # JSON-LD audit trail records the unverifiable delivery state.
         "block_objective_undelivered",
+        # W5 best-of-N: no candidate cleared BOTH objective-coverage AND
+        # zero-contradiction among the validator-passing samples, so the
+        # entailment-argmax selector fell back to the highest-entailment
+        # passing candidate and stamped this marker (never fabricates a clean
+        # winner). The block still ships (it passed the validator chain); the
+        # marker tells a postmortem the NLI-selection had no clean pick.
+        "best_of_n_no_clean_candidate",
     }
 )
 
