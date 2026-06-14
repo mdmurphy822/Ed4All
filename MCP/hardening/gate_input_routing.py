@@ -1127,30 +1127,119 @@ def _build_block_curie_anchoring_input(
     return inputs, []
 
 
+def _build_source_chunks_from_dart_jsonl(
+    phase_outputs: Dict[str, Any],
+) -> Dict[str, str]:
+    """W4 — id→chunk-TEXT map from the DART chunkset ``chunks.jsonl``.
+
+    The staging manifest's ``files[].text`` (the legacy
+    :func:`_build_rewrite_block_input` source) is best-effort and is often
+    ABSENT on a live run, so the NLI grounding gates (``claim_support`` /
+    ``block_prose_entailment``) silently degrade to no-grounding-source
+    warnings against an empty premise map. The DART chunkset ``chunks.jsonl``
+    is the AUTHORITATIVE chunk-body source: it carries the full chunk ``text``
+    keyed by both the chunk top-level ``id`` and every
+    ``source.source_references[].sourceId`` (the ``dart:{slug}#{block_id}``
+    shape a block's ``source_ids`` / ``source_references[]`` use).
+
+    Resolves ``dart_chunks_path`` from ``phase_outputs.chunking.dart_chunks_path``
+    (or any phase via :func:`_locate`), reads the JSONL, and maps each
+    ``sourceId`` + chunk ``id`` → the chunk ``text``/``body``. Best-effort:
+    returns an empty map when the path is absent / unreadable so the gates'
+    graceful-degrade path stays intact.
+    """
+    chunking = phase_outputs.get("chunking") or {}
+    dart_chunks_path = chunking.get("dart_chunks_path")
+    if not isinstance(dart_chunks_path, str) or not dart_chunks_path:
+        dart_chunks_path = _locate(phase_outputs, "dart_chunks_path")
+    if not isinstance(dart_chunks_path, str) or not dart_chunks_path:
+        return {}
+    chunks_jsonl = Path(dart_chunks_path)
+    if not chunks_jsonl.exists():
+        return {}
+
+    text_map: Dict[str, str] = {}
+    try:
+        import json as _json
+        with chunks_jsonl.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    chunk = _json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(chunk, dict):
+                    continue
+                body = chunk.get("text") or chunk.get("body")
+                if not isinstance(body, str) or not body.strip():
+                    continue
+                chunk_id = chunk.get("id")
+                if isinstance(chunk_id, str) and chunk_id.strip():
+                    text_map.setdefault(chunk_id.strip(), body)
+                source = chunk.get("source")
+                if not isinstance(source, dict):
+                    continue
+                src_refs = source.get("source_references") or []
+                if not isinstance(src_refs, list):
+                    continue
+                for ref in src_refs:
+                    if not isinstance(ref, dict):
+                        continue
+                    sid = ref.get("sourceId")
+                    if isinstance(sid, str) and sid.strip():
+                        text_map.setdefault(sid.strip(), body)
+    except OSError as exc:
+        logger.debug(
+            "rewrite-block source_chunks rebuild from chunks.jsonl %s "
+            "failed: %s",
+            dart_chunks_path, exc,
+        )
+        return {}
+    return text_map
+
+
 def _build_rewrite_block_input(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    """Group B — Rewrite-emit shape / sentence-grounding builder.
+    """Group B — Rewrite-emit shape / sentence-grounding + NLI builder.
 
     Adds ``source_chunks`` (a Dict[sourceId, chunk_text] mapping) on
     top of the Group A surface so ``RewriteSourceGroundingValidator``
-    can compute per-sentence cosine grounding. ``RewriteHtmlShapeValidator``
-    only consumes ``blocks`` and ignores the extra keys.
+    (cosine), ``ClaimSupportValidator`` (per-claim NLI), and
+    ``BlockProseEntailmentValidator`` (full-prose NLI) can resolve each
+    block's cited chunk text. ``RewriteHtmlShapeValidator`` only consumes
+    ``blocks`` and ignores the extra keys.
 
-    The source_chunks mapping is rebuilt from the staging manifest +
-    sidecar JSON files when present; when the staging surface is
-    unavailable the validator's no-grounding-source path emits a
-    warning per block (passed=True), so the absence is non-fatal.
+    The source_chunks mapping is rebuilt from TWO sources, AUTHORITATIVE
+    first (W4 §3.5):
+
+    1. The DART chunkset ``chunks.jsonl`` (``_build_source_chunks_from_dart_jsonl``)
+       — the full chunk-body source keyed on every
+       ``source.source_references[].sourceId``. This is the fix for the §0.1
+       silent-no-op bug: the staging manifest often lacks per-source bodies, so
+       the NLI premise map was empty and every NLI gate degraded to
+       no-grounding-source warnings.
+    2. The staging manifest's ``files[].{text,plain_text}`` (legacy best-effort)
+       — layered on top WITHOUT overwriting a chunks.jsonl body (the chunkset
+       body is authoritative).
+
+    When neither surface is available the validators' no-grounding-source path
+    emits a warning per block (passed=True), so the absence is non-fatal.
     """
     inputs, missing = _build_block_input_rewrite(phase_outputs, workflow_params)
     if missing:
         return inputs, missing
 
-    # Best-effort source_chunks rebuild from sidecar files alongside
-    # the staging manifest. The sentence-grounding validator handles
-    # an empty mapping gracefully (warning, passed=True per block).
-    chunks_lookup: Dict[str, str] = {}
+    # W4 §3.5 — authoritative chunk bodies from the DART chunkset first.
+    chunks_lookup: Dict[str, str] = _build_source_chunks_from_dart_jsonl(
+        phase_outputs
+    )
+
+    # Legacy best-effort: layer the staging manifest's per-source bodies on
+    # top WITHOUT overwriting a chunks.jsonl body (setdefault).
     manifest_path_str = inputs.get("manifest_path")
     if isinstance(manifest_path_str, str) and manifest_path_str:
         try:
@@ -1166,7 +1255,7 @@ def _build_rewrite_block_input(
                         sid = entry.get("source_id") or entry.get("sourceId")
                         text = entry.get("text") or entry.get("plain_text")
                         if isinstance(sid, str) and isinstance(text, str):
-                            chunks_lookup[sid] = text
+                            chunks_lookup.setdefault(sid, text)
         except (OSError, ValueError, TypeError) as exc:
             logger.debug(
                 "rewrite-block source_chunks rebuild from %s failed: %s",
@@ -2070,6 +2159,24 @@ def default_router() -> GateInputRouter:
         "lib.validators.rewrite_source_grounding.RewriteSourceGroundingValidator",
         _build_rewrite_block_input,
     )
+    # W4 — full-prose NLI entailment gate (post_rewrite_validation). Reuses
+    # the same rewrite-block + source_chunks builder so the NLI premise map is
+    # populated from the authoritative DART chunkset chunks.jsonl.
+    r.register(
+        "lib.validators.block_prose_entailment.BlockProseEntailmentValidator",
+        _build_rewrite_block_input,
+    )
+    # W4 §0.1 FIX — claim_support was NEVER registered, so the executor's
+    # __no_builder_registered__ contract ran it with source_chunks={} (a
+    # silent no-op: every claim hit the empty-premise branch). Wire the same
+    # rewrite-block + source_chunks builder so the per-claim NLI premise map is
+    # populated. REQUIRED before the (DEFERRED) claim_support critical flip —
+    # promoting it critical without this would fail-close every two-pass run
+    # against an empty premise.
+    r.register(
+        "lib.validators.claim_support.ClaimSupportValidator",
+        _build_rewrite_block_input,
+    )
 
     # Group C — Block-only SHACL validator (one binding wired at both
     # outline and rewrite seams in YAML; same builder routes both).
@@ -2137,6 +2244,14 @@ def default_router() -> GateInputRouter:
     # via gate ``config:`` block.
     r.register(
         "lib.validators.objective_source_refs.ObjectiveSourceRefValidator",
+        _build_objective_source_refs,
+    )
+    # W4 — LO-statement NLI entailment gate at course_planning. IDENTICAL
+    # inputs to objective_source_refs (synthesized_objectives_path +
+    # dart_chunks_manifest_path), so reuse the same builder; the validator's
+    # own id→text loader reads the sibling chunks.jsonl for premise text.
+    r.register(
+        "lib.validators.objective_entailment.ObjectiveEntailmentValidator",
         _build_objective_source_refs,
     )
 
