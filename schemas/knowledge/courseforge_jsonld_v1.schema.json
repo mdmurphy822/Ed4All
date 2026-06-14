@@ -563,6 +563,10 @@
           "type": "array",
           "items": { "$ref": "#/$defs/ObjectiveAlignment" },
           "description": "GPT Feedback v2 Wave 1.7 / W1.7.A: per-objective-ref delivery alignment populated by the BlockObjectiveDeliveryValidator at the inter_tier_validation + post_rewrite_validation seams. One entry per objective_id the block claims to teach / assess. Optional; absent when the validator hasn't run (legacy / pre-Wave-1.7 emits). Audit-only — excluded from contentHash so a validator retro-fit doesn't drift every existing block hash."
+        },
+        "synthesisManifestRef": {
+          "type": "string",
+          "description": "W3: pointer (== blockId) to the sidecar block_synthesis_manifest.jsonl line carrying this block's full provenance manifest. NOT the manifest body — a join key so a JSON-LD consumer can resolve to the canonical 03_content_development/block_synthesis_manifest.jsonl artifact. Schema: schemas/knowledge/block_synthesis_manifest.schema.json."
         }
       }
     },

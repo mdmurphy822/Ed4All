@@ -174,6 +174,7 @@
         "libv2_model_check",
         "libv2_packet_integrity_check",
         "llm_chat_call",
+        "manifest_completeness_check",
         "math_conversion",
         "metadata_field_drop",
         "min_edge_count_check",

@@ -28,7 +28,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 __all__ = ["Block", "Touch", "BLOCK_TYPES", "_parse_provider_page_html"]
 
@@ -688,11 +688,203 @@ class Block:
         # objectiveAlignment + $defs.ObjectiveAlignment.
         if self.objective_alignment:
             entry["objectiveAlignment"] = [dict(a) for a in self.objective_alignment]
+        # W3 — optional pointer to the sidecar block_synthesis_manifest.jsonl
+        # line keyed on this block_id. We do NOT inline the whole manifest into
+        # the JSON-LD (it would bloat the IMSCC payload + duplicate the
+        # sidecar); the pointer just lets a JSON-LD consumer join to the
+        # canonical manifest artifact. Gated behind COURSEFORGE_EMIT_BLOCKS (the
+        # gate for the whole blocks[] projection) so legacy flag-off emit stays
+        # byte-stable.
+        if self.block_id and _emit_blocks_enabled():
+            entry["synthesisManifestRef"] = self.block_id
         return entry
 
     def _render_touched_by(self) -> List[Dict[str, Any]]:
         """Project the touch chain into the JSON-LD ``touchedBy`` array."""
         return [t.to_jsonld() for t in self.touched_by]
+
+    # ------------------------------------------------------------------
+    # W3 — Per-block synthesis-manifest projection
+    # ------------------------------------------------------------------
+
+    def to_synthesis_manifest(
+        self,
+        resolver: Optional["Callable[[str], Optional[Union[str, Dict[str, Any]]]]"] = None,
+    ) -> Dict[str, Any]:
+        """Project this Block into a block-synthesis-manifest dict (W3).
+
+        Pure projection off the Block — mirrors :meth:`to_jsonld_entry` /
+        :meth:`to_html_attrs`. The manifest ASSEMBLES the provenance facts
+        already captured elsewhere (the outline ``source_refs`` / ``key_claims``,
+        the template identity, the ``Touch`` chain's model/provider/timestamp/
+        ``decision_capture_id``, the concept tags) into one canonical per-block
+        record. It does NOT re-log model/provider (read from ``Touch``) or
+        re-derive claims (read from the outline ``content`` dict).
+
+        Schema: ``schemas/knowledge/block_synthesis_manifest.schema.json``.
+
+        Args:
+            resolver: Optional callable mapping an outline ``sourceId`` (the
+                ``dart:{slug}#{block_id}`` shape) to a DART chunk identity. It
+                may return either:
+
+                * a chunk-id ``str`` (resolved, no span info available), or
+                * a dict ``{"id": <chunk_id>, "char_span": [...],
+                  "html_xpath": ...}`` (resolved + span info, lifted into the
+                  ``char_spans[]`` field), or
+                * ``None`` when the sourceId does not resolve — the id is kept
+                  in ``source_refs[]`` verbatim but omitted from
+                  ``source_chunk_ids[]`` (the completeness validator catches the
+                  resulting gap on a substantive block).
+
+                When ``resolver`` is ``None`` every outline ``sourceId`` is
+                passed through verbatim as a ``source_chunk_id`` (test / no-DART
+                path).
+
+        Returns:
+            A manifest dict that validates against the W3 schema.
+        """
+        content = self.content if isinstance(self.content, dict) else {}
+
+        # --- source_refs[] (verbatim copy of the outline dict) ---
+        raw_refs = content.get("source_refs")
+        source_refs: List[Dict[str, Any]] = []
+        if isinstance(raw_refs, list):
+            for ref in raw_refs:
+                if isinstance(ref, dict):
+                    sid = ref.get("sourceId")
+                    if isinstance(sid, str) and sid.strip():
+                        source_refs.append(dict(ref))
+        # Fall back to the Block's own source_references tuple (rewrite-tier
+        # blocks carry the refs on the dataclass rather than the content dict).
+        if not source_refs and self.source_references:
+            for ref in self.source_references:
+                if isinstance(ref, dict):
+                    sid = ref.get("sourceId")
+                    if isinstance(sid, str) and sid.strip():
+                        source_refs.append(dict(ref))
+
+        # --- key_claims[] (W2 output recorded verbatim) ---
+        raw_claims = content.get("key_claims")
+        key_claims: List[Dict[str, Any]] = []
+        if isinstance(raw_claims, list):
+            for claim in raw_claims:
+                if isinstance(claim, dict) and claim.get("claim"):
+                    key_claims.append(dict(claim))
+
+        # --- source_chunk_ids[] + char_spans[] (resolution) ---
+        # Union of: every source_refs[].sourceId resolved to a chunk id, plus
+        # every key_claims[].source_chunk_ids[] (already chunk ids per W2).
+        chunk_ids: List[str] = []
+        char_spans: List[Dict[str, Any]] = []
+        seen_chunk_ids: set = set()
+        seen_span_ids: set = set()
+
+        def _record_chunk_id(cid: str) -> None:
+            if cid and cid not in seen_chunk_ids:
+                seen_chunk_ids.add(cid)
+                chunk_ids.append(cid)
+
+        def _record_span(record: Dict[str, Any]) -> None:
+            cid = record.get("id") or record.get("chunk_id")
+            if not isinstance(cid, str) or not cid or cid in seen_span_ids:
+                return
+            span_entry: Dict[str, Any] = {"chunk_id": cid}
+            cspan = record.get("char_span")
+            if (
+                isinstance(cspan, (list, tuple))
+                and len(cspan) == 2
+                and all(isinstance(x, int) for x in cspan)
+            ):
+                span_entry["char_span"] = [int(cspan[0]), int(cspan[1])]
+            xpath = record.get("html_xpath")
+            if isinstance(xpath, str) and xpath:
+                span_entry["html_xpath"] = xpath
+            # Only record a span entry when it carries span/xpath info beyond
+            # the bare chunk id (an id-only resolver yields no char_spans line).
+            if len(span_entry) > 1:
+                seen_span_ids.add(cid)
+                char_spans.append(span_entry)
+
+        for ref in source_refs:
+            sid = ref.get("sourceId")
+            if not isinstance(sid, str) or not sid.strip():
+                continue
+            if resolver is None:
+                _record_chunk_id(sid)
+                continue
+            resolved = resolver(sid)
+            if resolved is None:
+                # Unresolved — kept in source_refs[] only.
+                continue
+            if isinstance(resolved, dict):
+                cid = resolved.get("id") or resolved.get("chunk_id")
+                if isinstance(cid, str) and cid:
+                    _record_chunk_id(cid)
+                    _record_span(resolved)
+            elif isinstance(resolved, str) and resolved:
+                _record_chunk_id(resolved)
+
+        # Per-claim chunk ids (already chunk ids per the W2 contract).
+        for claim in key_claims:
+            for cid in claim.get("source_chunk_ids", []) or []:
+                if isinstance(cid, str) and cid:
+                    _record_chunk_id(cid)
+
+        # --- synthesis.tiers[] (read from the Touch chain — NOT re-logged) ---
+        tiers: List[Dict[str, Any]] = []
+        for touch in self.touched_by:
+            tiers.append(
+                {
+                    "tier": touch.tier,
+                    "provider": touch.provider,
+                    "model": touch.model,
+                    "timestamp": touch.timestamp,
+                    "decision_capture_id": touch.decision_capture_id,
+                    "purpose": touch.purpose,
+                }
+            )
+
+        # --- template_id (deterministic template that shaped the block) ---
+        template_id = (
+            self.template_type
+            or self.content_type_label
+            or self.block_type
+        )
+
+        # --- concept_tags (chunk-grounded; pre-computed by the caller and
+        # threaded onto the content dict, or the Block's key_terms fallback) ---
+        raw_tags = content.get("concept_tags")
+        concept_tags: List[str] = []
+        if isinstance(raw_tags, list):
+            concept_tags = [t for t in raw_tags if isinstance(t, str) and t]
+
+        manifest: Dict[str, Any] = {
+            "schema_version": "1.0",
+            "block_id": self.block_id,
+            "block_type": self.block_type,
+            "page_id": self.page_id,
+            "sequence": self.sequence,
+            "source_chunk_ids": chunk_ids,
+            "source_refs": source_refs,
+            "span_granularity": "chunk",
+            "template_id": template_id,
+            "synthesis": {"tiers": tiers},
+            "concept_tags": concept_tags,
+        }
+        if char_spans:
+            manifest["char_spans"] = char_spans
+        if key_claims:
+            manifest["key_claims"] = key_claims
+        # slot_ids — present when the block was produced by slot-fill.
+        raw_slots = content.get("slot_ids")
+        if isinstance(raw_slots, list):
+            slot_ids = [s for s in raw_slots if isinstance(s, str) and s]
+            if slot_ids:
+                manifest["slot_ids"] = slot_ids
+        if self.content_hash:
+            manifest["content_hash"] = self.content_hash
+        return manifest
 
 
 # Block types whose ``to_html_attrs`` / ``to_jsonld_entry`` should follow

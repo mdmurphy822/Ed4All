@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/schemas/knowledge/block_synthesis_manifest/v1",
+  "title": "Block Synthesis Manifest",
+  "description": "Per-block provenance manifest (W3). One object per emitted Courseforge Block, persisted as a sidecar JSONL line at 03_content_development/block_synthesis_manifest.jsonl. Assembles the scattered provenance facts (source chunk list, per-claim attribution, template/slot identity, model+params from the Touch chain, concept_tags) into one canonical per-block record. RESOLUTION scope only — completeness + existence, NOT entailment (W4 owns NLI grounding of prose vs chunk).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "block_id",
+    "block_type",
+    "page_id",
+    "sequence",
+    "source_chunk_ids",
+    "source_refs",
+    "span_granularity",
+    "template_id",
+    "synthesis",
+    "concept_tags"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "description": "Manifest schema version."
+    },
+    "block_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Mirrors Block.block_id; the JSONL line key for synthesisManifestRef joins."
+    },
+    "block_type": {
+      "type": "string",
+      "enum": [
+        "objective",
+        "concept",
+        "example",
+        "assessment_item",
+        "explanation",
+        "prereq_set",
+        "activity",
+        "misconception",
+        "callout",
+        "flip_card_grid",
+        "self_check_question",
+        "summary_takeaway",
+        "reflection_prompt",
+        "discussion_prompt",
+        "chrome",
+        "recap"
+      ],
+      "description": "Block.block_type; one of the canonical 16-value BLOCK_TYPES enum."
+    },
+    "page_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Block.page_id — the page/section grouping key."
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Block.sequence — emission order within the page."
+    },
+    "source_chunk_ids": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "description": "Union of the outline source_refs[].sourceId resolved to DART chunk ids plus every key_claims[].source_chunk_ids[]. May be empty for scaffolding block_types; non-empty asserted only for substantive types by ManifestCompletenessValidator."
+    },
+    "source_refs": {
+      "type": "array",
+      "description": "Verbatim copy of the outline source_refs[] (the DART sourceId list with roles). Unresolved sourceIds are preserved here even when omitted from source_chunk_ids.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["sourceId"],
+        "properties": {
+          "sourceId": {"type": "string", "minLength": 1},
+          "role": {"type": "string"}
+        }
+      }
+    },
+    "char_spans": {
+      "type": "array",
+      "description": "Per-cited-chunk span record. char_span + html_xpath are lifted from the resolved chunk's source.char_span / source.html_xpath (whole-chunk reference today; span_granularity flags the precision).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["chunk_id"],
+        "properties": {
+          "chunk_id": {"type": "string", "minLength": 1},
+          "char_span": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 0},
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "[start, end] — the chunk's own source.char_span."
+          },
+          "html_xpath": {
+            "type": "string",
+            "description": "The chunk's source.html_xpath when present."
+          }
+        }
+      }
+    },
+    "span_granularity": {
+      "type": "string",
+      "enum": ["chunk", "subchunk"],
+      "description": "'chunk' = whole-chunk reference (the honest default today). 'subchunk' reserved for future sub-span capture; flagged so consumers never mistake whole-chunk reference for sub-chunk precision."
+    },
+    "key_claims": {
+      "type": "array",
+      "description": "W2 output recorded verbatim. Present iff the outline emitted structured claims.",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["claim"],
+        "properties": {
+          "claim": {"type": "string"},
+          "source_chunk_ids": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    },
+    "template_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The deterministic template that shaped the block (Block.template_type, or the content_type_label / block_type fallback)."
+    },
+    "slot_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Filled slot ids when the block was produced by slot-fill. Empty/absent for whole-block free-text emits."
+    },
+    "synthesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tiers"],
+      "description": "Model + params read from the Touch chain + block_*_call captures; NOT re-logged here.",
+      "properties": {
+        "tiers": {
+          "type": "array",
+          "minItems": 1,
+          "description": "One entry per Touch in Block.touched_by.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["tier", "provider", "model", "timestamp", "decision_capture_id", "purpose"],
+            "properties": {
+              "tier": {"type": "string"},
+              "provider": {"type": "string"},
+              "model": {"type": "string"},
+              "timestamp": {"type": "string"},
+              "decision_capture_id": {"type": "string"},
+              "purpose": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "concept_tags": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Block-scoped, chunk-grounded concept tags (extract_concept_tags(block) intersected with the cited chunks' concept_tags). May be empty for scaffolding block_types; non-empty asserted only for substantive types per the validator."
+    },
+    "content_hash": {
+      "type": "string",
+      "description": "Block.content_hash when present — lets a manifest be matched to the exact block bytes it describes."
+    }
+  }
+}

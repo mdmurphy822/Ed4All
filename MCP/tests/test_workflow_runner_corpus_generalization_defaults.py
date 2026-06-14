@@ -92,6 +92,8 @@ def test_measured_graph_shaping_quartet_is_complete():
         "TRAINFORGE_INTRA_CHUNK_LINKS": "true",
         "TRAINFORGE_RELATED_FANOUT_CAP": "8",
         "TRAINFORGE_NORMALIZE_LABELS": "true",
+        # W3 — cooccurrence pair-counting aggregated to the page level.
+        "TRAINFORGE_COOCCURRENCE_GROUP_BY": "page",
         "TRAINFORGE_LEXICAL_CONCEPT_SEEDS": "true",
         "TRAINFORGE_OBJECTIVE_QUALITY_GATE": "true",
     }
