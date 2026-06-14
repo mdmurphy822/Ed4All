@@ -893,3 +893,129 @@ def test_finish_reason_length_surfaces_output_truncated():
     with pytest.raises(SynthesisProviderError) as exc:
         OpenAICompatibleClient._extract_text(body)
     assert exc.value.code == "output_truncated"
+
+
+# ===========================================================================
+# W2 — synthesize_window_objectives: ⊆ enforcement + grammar + parse
+# ===========================================================================
+
+
+def _window(chunk_ids, *, chapter_id="ch1", window_index=0):
+    return {
+        "chapter_id": chapter_id,
+        "window_index": window_index,
+        "chunk_ids": list(chunk_ids),
+        "chunks": [{"id": c, "text": f"body for {c}"} for c in chunk_ids],
+        "join_method": "sourceid",
+        "estimated_prompt_tokens": 100,
+    }
+
+
+def _window_payload(source_chunk_ids):
+    return {
+        "candidate_objectives": [
+            {
+                "statement": "Explain the core idea of this window's chunks.",
+                "bloom_level": "understand",
+                "bloom_verb": "explain",
+                "source_chunk_ids": list(source_chunk_ids),
+                "sub_objectives": ["sub one"],
+            }
+        ]
+    }
+
+
+def test_window_objectives_strips_out_of_set_citation():
+    """A cited id NOT in the window's allowed set is stripped; counted."""
+    capture = _FakeCapture()
+    # Model cites one in-set id (c1) + one out-of-set id (c9).
+    p = _provider([json.dumps(_window_payload(["c1", "c9"]))], capture=capture)
+    out = p.synthesize_window_objectives(
+        _window(["c1", "c2"]), course_name="ALG_101",
+    )
+    objs = out["candidate_objectives"]
+    assert len(objs) == 1
+    assert objs[0]["source_chunk_ids"] == ["c1"]  # c9 stripped (⊆ enforce)
+    assert objs[0]["grounded_citation"] is True
+    # source_refs reconstructed for on-disk back-compat.
+    assert objs[0]["source_refs"] == [{"ref": "ch1", "chunk_ids": ["c1"]}]
+    # The decision event surfaces the measured out-of-set drop count.
+    ev = [e for e in capture.events if e["decision_type"] == "chapter_objective_call"]
+    assert ev
+    assert "citation_out_of_set_dropped=1" in ev[0]["rationale"]
+    assert "allowed_chunk_id_count=2" in ev[0]["rationale"]
+
+
+def test_window_objectives_empty_citation_not_dropped_at_normalize():
+    """All cited ids out of set → empty surviving set, grounded_citation False,
+    objective KEPT (Pass C owns the drop)."""
+    capture = _FakeCapture()
+    p = _provider([json.dumps(_window_payload(["zzz"]))], capture=capture)
+    out = p.synthesize_window_objectives(
+        _window(["c1", "c2"]), course_name="ALG_101",
+    )
+    objs = out["candidate_objectives"]
+    assert len(objs) == 1  # NOT dropped at normalize
+    assert objs[0]["source_chunk_ids"] == []
+    assert objs[0]["grounded_citation"] is False
+    ev = [e for e in capture.events if e["decision_type"] == "chapter_objective_call"]
+    assert "empty_citation_objectives=1" in ev[0]["rationale"]
+
+
+def test_window_objectives_lenient_fenced_json():
+    """Markdown-fenced + trailing-comma variant recovers via lenient parse."""
+    fenced = (
+        "```json\n"
+        + json.dumps(_window_payload(["c1"])).rstrip("}")
+        + ",}\n```"  # trailing comma drift
+    )
+    p = _provider([fenced])
+    out = p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+    assert len(out["candidate_objectives"]) == 1
+    assert out["candidate_objectives"][0]["source_chunk_ids"] == ["c1"]
+
+
+def test_window_objectives_schema_valid_parses_one_attempt():
+    """A clean schema-valid JSON parses on the first attempt."""
+    p = _provider([json.dumps(_window_payload(["c1", "c2"]))])
+    out = p.synthesize_window_objectives(
+        _window(["c1", "c2"]), course_name="ALG_101",
+    )
+    assert out["chapter_id"] == "ch1"
+    assert out["window_index"] == 0
+    assert out["candidate_objectives"][0]["source_chunk_ids"] == ["c1", "c2"]
+
+
+def test_window_objectives_exhausted_raises_chapter_code():
+    """Unparseable output exhausts the retry budget → chapter_objectives_exhausted."""
+    p = _provider(["not json at all"])
+    with pytest.raises(TextbookSynthesisProviderError) as exc:
+        p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+    assert exc.value.code == "chapter_objectives_exhausted"
+
+
+def test_window_objectives_empty_minitems_rejected_then_retried():
+    """An empty source_chunk_ids array fails the schema (minItems 1) and the
+    valid retry succeeds."""
+    bad = json.dumps(_window_payload([]))          # source_chunk_ids: [] → invalid
+    good = json.dumps(_window_payload(["c1"]))
+    p = _provider([bad, good])
+    out = p.synthesize_window_objectives(_window(["c1"]), course_name="ALG_101")
+    assert out["candidate_objectives"][0]["source_chunk_ids"] == ["c1"]
+
+
+def test_synthesis_grammar_payload_local_uses_format(monkeypatch):
+    """Autodetect for a local Ollama provider → {format: <window schema>}."""
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+    p = TextbookSynthesisProvider(provider="local")
+    payload = p._build_synthesis_grammar_payload()
+    assert "format" in payload
+    assert payload["format"]["required"] == ["candidate_objectives"]
+
+
+def test_synthesis_grammar_mode_kwarg_wins(monkeypatch):
+    """grammar_mode='none' → empty payload (no constrained decoding)."""
+    p = TextbookSynthesisProvider(provider="anthropic",
+                                  anthropic_client=object(),
+                                  grammar_mode="none")
+    assert p._build_synthesis_grammar_payload() == {}

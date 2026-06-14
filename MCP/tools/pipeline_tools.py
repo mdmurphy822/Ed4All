@@ -1354,6 +1354,371 @@ def _backfill_dart_chunk_lo_refs(
     }
 
 
+def _load_dart_chunkset_for_planning(
+    *,
+    course_slug: str,
+    kwargs: Dict[str, Any],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """W2 §1.6 — load the DART chunkset for the window-map (Pass B).
+
+    Resolves ``<libv2>/courses/<slug>/dart_chunks/chunks.jsonl`` (the same path
+    :func:`_backfill_dart_chunk_lo_refs` uses) and returns
+    ``(chunks_by_id, all_chunks)`` in document order. Missing / unreadable
+    chunkset → ``({}, [])`` so the caller falls back to the chapter-grained path
+    (``grounding_mode="chapter_fallback"``) — never a hard crash on a legacy run.
+
+    Each chunk record is annotated in-memory with a ``chapter_id`` (resolved via
+    the sourceId-slug join against the loaded ``textbook_structure`` chapters) so
+    Pass C's re-ground rescue can scope to the candidate's chapter pool. The
+    annotation is best-effort: chunks that don't join carry no ``chapter_id``.
+    """
+    chunks_path = (
+        _resolve_libv2_root(kwargs.get("libv2_root"))
+        / "courses"
+        / course_slug
+        / "dart_chunks"
+        / "chunks.jsonl"
+    )
+    if not chunks_path.exists() or not chunks_path.is_file():
+        logger.warning(
+            "plan_course_structure: DART chunkset missing at %s; Stage-2 "
+            "degrades to chapter_fallback (empty source_chunk_ids).",
+            chunks_path,
+        )
+        return {}, []
+
+    all_chunks: List[Dict[str, Any]] = []
+    chunks_by_id: Dict[str, Any] = {}
+    try:
+        raw_lines = chunks_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        logger.warning(
+            "plan_course_structure: failed to read DART chunkset %s (%s); "
+            "degrading to chapter_fallback.", chunks_path, exc,
+        )
+        return {}, []
+
+    for line in raw_lines:
+        if not line.strip():
+            continue
+        try:
+            chunk = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(chunk, dict):
+            continue
+        cid = str(chunk.get("id") or chunk.get("chunk_id") or "")
+        if not cid:
+            continue
+        all_chunks.append(chunk)
+        chunks_by_id[cid] = chunk
+    return chunks_by_id, all_chunks
+
+
+async def _run_stage2_window_synthesis(
+    *,
+    provider: Any,
+    provider_error: type,
+    chapters: List[Dict[str, Any]],
+    draft_tos: List[Dict[str, Any]],
+    chunks_by_id: Dict[str, Any],
+    all_chunks: List[Dict[str, Any]],
+    grounding_mode: str,
+    course_name: str,
+    provider_env: str,
+    chapter_synthesis_failures: List[str],
+    mint_lo_id: Any,
+    kwargs: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], str, Dict[str, Any]]:
+    """W2 §1.6 + §4.4 — orchestrate Pass B → C → D → E.
+
+    ``grounding_mode == "chunk_window"`` (chunkset present): per-WINDOW dispatch
+    (``synthesize_window_objectives``) collects candidates with cited
+    ``source_chunk_ids``, then Pass C (NLI filter, drops ungrounded) + Pass D
+    (embedding dedup). ``grounding_mode == "chapter_fallback"`` (chunkset
+    missing): the legacy per-CHAPTER dispatch path
+    (``synthesize_chapter_objectives``) — candidates carry empty
+    ``source_chunk_ids``; Pass C runs advisory-only (nothing dropped, since there
+    are no chunks to ground against) and Pass D still collapses dupes.
+
+    CO-NN ids are minted AFTER Pass C + D over the survivors. Then one
+    reconciliation call (fail-loud on exhaustion) and the deterministic CO→TO
+    backlink (Pass E). Returns ``(chapter_cos, terminal_tos, mint_method,
+    grounding_signals)``; ``([], [], "", {})``-shaped empties on an all-fail so
+    the caller falls through to the deterministic synthesizer.
+    """
+    import asyncio as _asyncio
+
+    from lib.objectives.chunk_window import (
+        chunks_for_chapter,
+        group_chunks_into_windows,
+    )
+    from lib.objectives.objective_grounding import ground_candidates
+    from lib.objectives.objective_dedup import dedup_candidates
+    from lib.ontology.lo_backlink import backlink_cos_to_tos
+    from Courseforge.generators._textbook_synthesis_provider import (
+        _SYNTHESIS_NUM_CTX_ENV,
+        _TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT,
+    )
+    from lib.retrieval._prompts import resolve_num_ctx
+    from lib.embedding.providers import (
+        EmbeddingBackendUnavailable,
+        allow_fake_enabled,
+        build_embedding_client,
+    )
+
+    _loop = _asyncio.get_running_loop()
+    candidates_synthesized = 0
+    _flat_candidates: List[Dict[str, Any]] = []
+
+    # Draft-TO grounding block shared per chapter (statements only).
+    _draft_block_lines = [
+        f"  - {str(d.get('statement') or '').strip()}"
+        for d in draft_tos
+        if isinstance(d, dict) and str(d.get("statement") or "").strip()
+    ]
+    _draft_block = "\n".join(_draft_block_lines) if _draft_block_lines else "  (none)"
+
+    if grounding_mode == "chunk_window":
+        # ---- Pass B: per-window dispatch. -----------------------------
+        _num_ctx_env = os.environ.get(_SYNTHESIS_NUM_CTX_ENV)
+        _num_ctx = resolve_num_ctx()
+        if _num_ctx_env:
+            try:
+                _maybe = int(_num_ctx_env)
+                if _maybe > 0:
+                    _num_ctx = _maybe
+            except (TypeError, ValueError):
+                pass
+        _max_tokens = int(getattr(provider, "_max_tokens", 4096) or 4096)
+
+        # Build the flat ordered window list across all chapters, annotating
+        # joined chunks with their chapter_id for Pass C's rescue pool.
+        _windows: List[Dict[str, Any]] = []
+        _dropped_chunks = 0
+        _joined_ids = set()
+        for chapter in chapters:
+            chapter_chunks, join_method = chunks_for_chapter(
+                chapter, all_chunks, all_chapters=chapters,
+            )
+            cid = str(chapter.get("id") or "")
+            for ck in chapter_chunks:
+                _cid = str(ck.get("id") or ck.get("chunk_id") or "")
+                if _cid:
+                    _joined_ids.add(_cid)
+                    # Annotate the in-memory chunk record for the rescue pool.
+                    rec = chunks_by_id.get(_cid)
+                    if isinstance(rec, dict):
+                        rec.setdefault("chapter_id", cid)
+            ch_windows = group_chunks_into_windows(
+                chapter,
+                chapter_chunks,
+                num_ctx=_num_ctx,
+                system_prompt=_TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT,
+                draft_block=_draft_block,
+                max_tokens=_max_tokens,
+                join_method=join_method,
+            )
+            for w in ch_windows:
+                _windows.append(w.to_dict())
+        _dropped_chunks = len(all_chunks) - len(_joined_ids)
+        if _dropped_chunks > 0:
+            logger.info(
+                "plan_course_structure: %d/%d DART chunk(s) matched no "
+                "chapter (dropped from the window map).",
+                _dropped_chunks, len(all_chunks),
+            )
+
+        def _one_window(window_dict: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            label = (
+                f"{window_dict.get('chapter_id')}"
+                f"#w{window_dict.get('window_index')}"
+            )
+            try:
+                return provider.synthesize_window_objectives(
+                    window_dict,
+                    course_name=course_name,
+                    draft_terminal_objectives=draft_tos,
+                )
+            except provider_error as exc:
+                logger.warning(
+                    "plan_course_structure: Stage-2 window %s exhausted "
+                    "(%s); degrading per §5.4.", label, exc,
+                )
+                return None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "plan_course_structure: Stage-2 window %s raised (%s); "
+                    "degrading per §5.4.", label, exc,
+                )
+                return None
+
+        # Reuse the generic batch splitter (≤10 per batch).
+        _batches = provider.batch_chapters(_windows)
+        for _batch in _batches:
+            _results = await _asyncio.gather(*[
+                _loop.run_in_executor(None, _one_window, w) for w in _batch
+            ])
+            for _wd, _res in zip(_batch, _results):
+                _label = f"{_wd.get('chapter_id')}#w{_wd.get('window_index')}"
+                if _res is None:
+                    chapter_synthesis_failures.append(_label)
+                    continue
+                candidates_synthesized += 1
+                for _cand in _res.get("candidate_objectives") or []:
+                    if isinstance(_cand, dict):
+                        _flat_candidates.append(_cand)
+    else:
+        # ---- chapter_fallback: legacy per-chapter dispatch. -----------
+        def _one_chapter(chapter_dict: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            cid = str(chapter_dict.get("id") or "")
+            try:
+                return provider.synthesize_chapter_objectives(
+                    chapter_dict,
+                    course_name=course_name,
+                    draft_terminal_objectives=draft_tos,
+                )
+            except provider_error as exc:
+                logger.warning(
+                    "plan_course_structure: Stage-2 chapter %r exhausted "
+                    "(%s); degrading per §5.4.", cid, exc,
+                )
+                return None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "plan_course_structure: Stage-2 chapter %r raised (%s); "
+                    "degrading per §5.4.", cid, exc,
+                )
+                return None
+
+        _batches = provider.batch_chapters(chapters)
+        for _batch in _batches:
+            _results = await _asyncio.gather(*[
+                _loop.run_in_executor(None, _one_chapter, ch) for ch in _batch
+            ])
+            for _chapter_dict, _res in zip(_batch, _results):
+                _cid = str(_chapter_dict.get("id") or "")
+                if _res is None:
+                    chapter_synthesis_failures.append(_cid)
+                    continue
+                candidates_synthesized += 1
+                for _co in _res.get("chapter_objectives") or []:
+                    if isinstance(_co, dict):
+                        # The chapter path emits no source_chunk_ids; mark
+                        # empty so Pass C treats it as no_resolved_chunk.
+                        _co.setdefault("source_chunk_ids", [])
+                        _flat_candidates.append(_co)
+
+    if candidates_synthesized == 0 or not _flat_candidates:
+        logger.warning(
+            "plan_course_structure: Stage-2 produced no candidate objectives "
+            "(grounding_mode=%s); falling back to deterministic synthesizer.",
+            grounding_mode,
+        )
+        return [], [], "", {}
+
+    # ---- Pass C: NLI-grounding filter. --------------------------------
+    require_strict = str(
+        os.environ.get("TRAINFORGE_REQUIRE_EMBEDDINGS", "")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    ground = ground_candidates(
+        _flat_candidates, chunks_by_id, require=require_strict,
+    )
+    if grounding_mode == "chapter_fallback":
+        # §5.6 — fallback keeps ALL candidates (no chunk citations to ground
+        # against; Pass C only stamps). Combine grounded + ungrounded.
+        _co_pool: List[Dict[str, Any]] = list(ground.grounded) + list(
+            ground.ungrounded
+        )
+        ungrounded_dropped = 0
+    else:
+        _co_pool = list(ground.grounded)
+        ungrounded_dropped = ground.dropped_count
+
+    # ---- Build the embed client once (Pass D + Pass E backlink). ------
+    _embed = None
+    try:
+        _embed = build_embedding_client(offline=True)
+        _resolved = getattr(_embed, "resolved", None)
+        if getattr(_resolved, "kind", None) == "fake" and not allow_fake_enabled():
+            _embed = None
+    except EmbeddingBackendUnavailable:
+        if require_strict:
+            raise
+        _embed = None
+    except Exception:  # noqa: BLE001
+        if require_strict:
+            raise
+        _embed = None
+
+    # ---- Pass D: embedding dedup. -------------------------------------
+    dedup = dedup_candidates(
+        _co_pool, embed=_embed, allow_fake=allow_fake_enabled(),
+    )
+    chapter_cos = dedup.canonical
+
+    if not chapter_cos:
+        logger.warning(
+            "plan_course_structure: Stage-2 Pass C/D left no canonical COs "
+            "(grounding_mode=%s); falling back to deterministic synthesizer.",
+            grounding_mode,
+        )
+        return [], [], "", {}
+
+    # ---- Mint CO-NN AFTER Pass C + D over the survivors. --------------
+    for _idx, _co in enumerate(chapter_cos, start=1):
+        _co["id"] = mint_lo_id("chapter", _idx)
+
+    # ---- Pass E: reconcile (fail-loud) + deterministic CO→TO backlink. -
+    try:
+        _recon = provider.reconcile_terminal_objectives(
+            draft_tos, chapter_cos, course_name=course_name,
+        )
+        terminal = list(_recon.get("terminal_objectives") or [])
+    except provider_error:
+        logger.exception(
+            "plan_course_structure: Stage-2 reconciliation exhausted "
+            "(provider=%s); failing loud.", provider_env,
+        )
+        raise
+
+    backlink_cos_to_tos(terminal, chapter_cos, embed=_embed)
+
+    # The window-map path stamps a distinct ``_window`` label so an audit can
+    # tell chunk-grounded synthesis apart from the chapter-grained fallback,
+    # which keeps the legacy ``textbook_synthesis:`` mint_method value verbatim.
+    mint_method = (
+        f"textbook_synthesis_window:{provider_env}"
+        if grounding_mode == "chunk_window"
+        else f"textbook_synthesis:{provider_env}"
+    )
+    logger.info(
+        "plan_course_structure: Stage-2 (%s) synthesized %d candidate(s) → "
+        "%d grounded → %d canonical CO(s); reconciled to %d TO(s).",
+        grounding_mode,
+        len(_flat_candidates),
+        len(ground.grounded),
+        len(chapter_cos),
+        len(terminal),
+    )
+
+    grounding_signals: Dict[str, Any] = {
+        "grounding_mode": grounding_mode,
+        "candidate_count": len(_flat_candidates),
+        "grounded_count": len(ground.grounded),
+        "ungrounded_dropped": ungrounded_dropped,
+        "reground_count": ground.reground_count,
+        "nli_available": ground.available,
+        "dedup_clusters": len(dedup.clusters),
+        "max_pairwise_cosine": round(float(dedup.max_pairwise_cosine), 6),
+        "near_dup_pairs": dedup.near_dup_pairs,
+        "embed_available": dedup.available,
+        "canonical_co_count": len(chapter_cos),
+        "terminal_count": len(terminal),
+    }
+    return chapter_cos, terminal, mint_method, grounding_signals
+
+
 def _detect_source_provenance(course_dir: Path) -> bool:
     """Wave 10: scan archived chunks.jsonl for chunks with source_references[].
 
@@ -4271,6 +4636,73 @@ def _mint_outline_curies(
         )
 
 
+def _align_outline_blocks_to_objectives(
+    *,
+    outline_blocks: List[Any],
+    objectives_payload: List[Dict[str, Any]],
+    capture: Any,
+) -> List[Any]:
+    """W2 §6 — populate each outline block's ``objective_refs`` via embedding.
+
+    Wraps :func:`lib.objectives.block_alignment.align_blocks_to_objectives`,
+    building a single offline embedding client and degrading to pass-through
+    (the model's outline-tier refs stand) when the ``[embedding]`` extras are
+    absent or any backend resolution fails. Strict mode
+    (``TRAINFORGE_REQUIRE_EMBEDDINGS``) re-raises rather than silently passing
+    through, mirroring the rest of the embedding strict contract.
+    """
+    if not outline_blocks or not objectives_payload:
+        return outline_blocks
+
+    from lib.objectives.block_alignment import align_blocks_to_objectives
+    from lib.embedding.providers import (
+        EmbeddingBackendUnavailable,
+        allow_fake_enabled,
+        build_embedding_client,
+    )
+
+    require_strict = str(
+        os.environ.get("TRAINFORGE_REQUIRE_EMBEDDINGS", "")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+    embed = None
+    try:
+        embed = build_embedding_client(offline=True)
+        # Refuse a fake-provider client unless explicitly allowed (anti-
+        # poisoning gate parity with the dedup pass).
+        resolved = getattr(embed, "resolved", None)
+        if getattr(resolved, "kind", None) == "fake" and not allow_fake_enabled():
+            embed = None
+    except EmbeddingBackendUnavailable:
+        if require_strict:
+            raise
+        embed = None
+    except Exception as exc:  # noqa: BLE001
+        if require_strict:
+            raise
+        logger.warning(
+            "outline phase: block-alignment embed client unavailable (%s); "
+            "passing through outline-tier objective_refs unchanged.", exc,
+        )
+        embed = None
+
+    if embed is None:
+        # Pass-through — no fabricated alignment, model refs stand.
+        return outline_blocks
+
+    try:
+        aligned = align_blocks_to_objectives(
+            outline_blocks, objectives_payload, embed=embed, capture=capture,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never abort the phase
+        logger.warning(
+            "outline phase: block-alignment pass failed (%s); passing through "
+            "outline-tier objective_refs unchanged.", exc,
+        )
+        return outline_blocks
+    return aligned
+
+
 async def _run_content_generation_outline(**kwargs) -> str:
     """Run the outline tier of the Phase 3 two-pass content pipeline.
 
@@ -4546,6 +4978,23 @@ async def _run_content_generation_outline(**kwargs) -> str:
         outline_blocks=outline_blocks,
         course_code=course_code,
         kwargs=kwargs,
+        capture=capture,
+    )
+
+    # ------------------------------------------------------------------ #
+    # W2 §6 — deterministic block↔objective alignment pass.
+    # ------------------------------------------------------------------ #
+    # The outline tier emits ``objective_refs[]`` per block (Wave-27); this
+    # small deterministic embedding classifier VERIFIES/REPAIRS them BEFORE
+    # inter_tier_validation. It only ADDS embedding-matched refs the model
+    # missed (existing refs are authoritative) and stamps a
+    # ``no_objective_alignment`` structural warning on a block with zero
+    # alignment — it NEVER fabricates a ref to dodge the
+    # ``block_objective_delivery`` gate. Embeddings absent → pass-through
+    # (the model's outline-tier refs stand).
+    outline_blocks = _align_outline_blocks_to_objectives(
+        outline_blocks=outline_blocks,
+        objectives_payload=objectives_payload,
         capture=capture,
     )
 
@@ -6182,153 +6631,110 @@ def _build_tool_registry() -> dict:
                             _stage2_provider = None
 
                         if _stage2_provider is not None:
+                            # W2 §1.6 — load the DART chunkset to decide the
+                            # grounding mode. Present → per-WINDOW dispatch
+                            # (Pass B) + Pass C (NLI filter) + Pass D (dedup);
+                            # missing → fall back to per-CHAPTER dispatch
+                            # (chapter_fallback) so grounding degrades
+                            # gracefully (empty source_chunk_ids, Pass C
+                            # pass-through-flags them).
+                            _chunks_by_id, _all_chunks = (
+                                _load_dart_chunkset_for_planning(
+                                    course_slug=course_name,
+                                    kwargs=kwargs,
+                                )
+                            )
+                            _grounding_mode = (
+                                "chunk_window"
+                                if _all_chunks
+                                else "chapter_fallback"
+                            )
                             logger.info(
                                 "TEXTBOOK_SYNTHESIS_PROVIDER=%s; routing "
                                 "course_planning Stage-2 through the "
-                                "per-chapter synthesis provider "
-                                "(%d chapters).",
+                                "%s synthesis path (%d chapters, "
+                                "%d DART chunks).",
                                 _textbook_synthesis_env,
+                                _grounding_mode,
                                 len(_ts_chapters),
+                                len(_all_chunks),
                             )
 
-                            def _one_chapter_objectives(
-                                chapter_dict: Dict[str, Any],
-                            ) -> Optional[Dict[str, Any]]:
-                                """Synchronous per-chapter Stage-2 call."""
-                                cid = str(chapter_dict.get("id") or "")
-                                try:
-                                    return (
-                                        _stage2_provider
-                                        .synthesize_chapter_objectives(
-                                            chapter_dict,
-                                            course_name=course_name,
-                                            draft_terminal_objectives=(
-                                                _draft_tos
-                                            ),
-                                        )
-                                    )
-                                except TextbookSynthesisProviderError as exc:
-                                    # Plan §5.4 — per-chapter failure
-                                    # isolation: record + continue.
-                                    logger.warning(
-                                        "plan_course_structure: Stage-2 "
-                                        "chapter %r objective call "
-                                        "exhausted (%s); degrading per "
-                                        "§5.4.", cid, exc,
-                                    )
-                                    return None
-                                except Exception as exc:  # noqa: BLE001
-                                    logger.warning(
-                                        "plan_course_structure: Stage-2 "
-                                        "chapter %r objective call raised "
-                                        "(%s); degrading per §5.4.",
-                                        cid, exc,
-                                    )
-                                    return None
-
-                            # Flattened, course-ordered CO list — CO-NN
-                            # ids are minted globally-sequential AFTER
-                            # the loop, not per-chapter.
-                            _flat_cos: List[Dict[str, Any]] = []
-                            _loop = _asyncio.get_event_loop()
-                            # ``batch_chapters`` is a staticmethod —
-                            # access via the instance so a test that
-                            # injects a provider resolves the helper.
-                            _batches = _stage2_provider.batch_chapters(
-                                _ts_chapters
+                            (
+                                chapter,
+                                terminal,
+                                mint_method,
+                                _grounding_signals,
+                            ) = await _run_stage2_window_synthesis(
+                                provider=_stage2_provider,
+                                provider_error=(
+                                    TextbookSynthesisProviderError
+                                ),
+                                chapters=_ts_chapters,
+                                draft_tos=_draft_tos,
+                                chunks_by_id=_chunks_by_id,
+                                all_chunks=_all_chunks,
+                                grounding_mode=_grounding_mode,
+                                course_name=course_name,
+                                provider_env=_textbook_synthesis_env,
+                                chapter_synthesis_failures=(
+                                    chapter_synthesis_failures
+                                ),
+                                mint_lo_id=_mint_lo_id,
+                                kwargs=kwargs,
                             )
-                            for _batch in _batches:
-                                # Dispatch each batch of ≤10 via
-                                # run_in_executor, awaiting the whole
-                                # batch before the next (plan §5.3).
-                                _results = await _asyncio.gather(*[
-                                    _loop.run_in_executor(
-                                        None, _one_chapter_objectives, ch
-                                    )
-                                    for ch in _batch
-                                ])
-                                for _chapter_dict, _res in zip(
-                                    _batch, _results
-                                ):
-                                    _cid = str(
-                                        _chapter_dict.get("id") or ""
-                                    )
-                                    if _res is None:
-                                        chapter_synthesis_failures.append(
-                                            _cid
-                                        )
-                                        continue
-                                    chapters_synthesized += 1
-                                    for _co in (
-                                        _res.get("chapter_objectives") or []
-                                    ):
-                                        if isinstance(_co, dict):
-                                            _flat_cos.append(_co)
 
-                            if chapters_synthesized > 0 and _flat_cos:
-                                # ≥1 chapter produced objectives — Stage
-                                # 2 succeeds (plan §5.4). Mint CO-NN ids
-                                # globally-sequential over the flattened
-                                # course-ordered list.
-                                for _idx, _co in enumerate(
-                                    _flat_cos, start=1
-                                ):
-                                    _co["id"] = _mint_lo_id("chapter", _idx)
-                                chapter = _flat_cos
-
-                                # Reconciliation (plan §6) — ONE call to
-                                # adjust the Stage-1 draft TO-NN against
-                                # the synthesized COs. Fail-loud on
-                                # exhaustion (one call, §6).
+                            # W2 §4.4 — emit the objective_grounding_filter
+                            # decision interpolating the dynamic counts
+                            # (decision-capture contract; the per-window
+                            # chapter_objective_call events still fired).
+                            if _stage2_capture is not None and _grounding_signals:
                                 try:
-                                    _recon = (
-                                        _stage2_provider
-                                        .reconcile_terminal_objectives(
-                                            _draft_tos,
-                                            _flat_cos,
-                                            course_name=course_name,
-                                        )
+                                    _gs = _grounding_signals
+                                    _stage2_capture.log_decision(
+                                        decision_type=(
+                                            "objective_grounding_filter"
+                                        ),
+                                        decision=(
+                                            f"objective_grounding_filter:"
+                                            f"{course_name}:"
+                                            f"{_gs.get('grounded_count', 0)}/"
+                                            f"{_gs.get('candidate_count', 0)}"
+                                            f" grounded"
+                                        ),
+                                        rationale=(
+                                            f"course={course_name}; "
+                                            f"grounding_mode="
+                                            f"{_gs.get('grounding_mode')}; "
+                                            f"candidate_count="
+                                            f"{_gs.get('candidate_count', 0)}; "
+                                            f"grounded_count="
+                                            f"{_gs.get('grounded_count', 0)}; "
+                                            f"ungrounded_dropped="
+                                            f"{_gs.get('ungrounded_dropped', 0)}; "
+                                            f"reground_count="
+                                            f"{_gs.get('reground_count', 0)}; "
+                                            f"nli_available="
+                                            f"{_gs.get('nli_available')}; "
+                                            f"dedup_clusters="
+                                            f"{_gs.get('dedup_clusters', 0)}; "
+                                            f"max_pairwise_cosine="
+                                            f"{_gs.get('max_pairwise_cosine', 0)}; "
+                                            f"near_dup_pairs="
+                                            f"{_gs.get('near_dup_pairs', 0)}; "
+                                            f"embed_available="
+                                            f"{_gs.get('embed_available')}"
+                                        ),
+                                        ml_features={
+                                            k: v
+                                            for k, v in _gs.items()
+                                            if isinstance(
+                                                v, (int, float, bool, str)
+                                            )
+                                        },
                                     )
-                                    terminal = list(
-                                        _recon.get(
-                                            "terminal_objectives"
-                                        ) or []
-                                    )
-                                except TextbookSynthesisProviderError:
-                                    logger.exception(
-                                        "plan_course_structure: Stage-2 "
-                                        "reconciliation exhausted "
-                                        "(provider=%s); failing loud.",
-                                        _textbook_synthesis_env,
-                                    )
-                                    raise
-                                mint_method = (
-                                    f"textbook_synthesis:"
-                                    f"{_textbook_synthesis_env}"
-                                )
-                                logger.info(
-                                    "plan_course_structure: Stage-2 "
-                                    "synthesized %d CO(s) across %d/%d "
-                                    "chapter(s); reconciled to %d TO(s).",
-                                    len(_flat_cos),
-                                    chapters_synthesized,
-                                    len(_ts_chapters),
-                                    len(terminal),
-                                )
-                            else:
-                                # ALL chapters failed (plan §5.4): fall
-                                # through to the deterministic
-                                # synthesizer below; SKIP reconciliation
-                                # — there are no LLM-authored COs to
-                                # reconcile against.
-                                logger.warning(
-                                    "plan_course_structure: Stage-2 "
-                                    "produced no chapter objectives "
-                                    "(all %d chapter call(s) failed); "
-                                    "falling back to deterministic "
-                                    "synthesizer, reconciliation "
-                                    "skipped.", len(_ts_chapters),
-                                )
+                                except Exception:  # noqa: BLE001
+                                    pass
 
                 if (terminal or chapter):
                     pass
