@@ -643,8 +643,8 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 |--------|-------|-----------:|
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 47 |
 | `DART_*` | [`DART/CLAUDE.md § Opt-In Behavior Flags`](DART/CLAUDE.md) | 6 |
-| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 17 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 32 |
+| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 19 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 33 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -675,6 +675,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | `ED4ALL_HOME` | unset (repo-relative) | **Relocatable data root.** When set, every mutable data dir defaults to `<ED4ALL_HOME>/<dirname>` (`state`, `libv2`, `exports`, `training-captures`, `dart-output`; `uploads` lands under the relocated `state/gui/`) instead of repo-relative — unblocks non-editable (site-packages) installs + tidy Docker volumes. Per-dir overrides below keep **higher** precedence (per-dir env > `ED4ALL_HOME` > repo-relative). Centralized in `lib/paths.py`; missing dirs are created on first use. Byte-stable to the repo-relative default when unset. |
 | `ED4ALL_LIBV2_ROOT` | `<repo>/LibV2/` | Absolute path to the LibV2 root directory. Also honored by `lib/libv2_storage.py` (previously not consulted there). Wins over `ED4ALL_HOME`. |
 | `ED4ALL_MAILBOX_BASE_DIR` | `<repo>/state/mailbox/` | Orchestrator task-mailbox base directory. |
+| `ED4ALL_OBJECTIVE_DEDUP_THRESHOLD` | `0.88` | W2 §4.2 cosine clustering threshold for the in-synthesis objective-dedup pass (`lib/objectives/objective_dedup.py::dedup_candidates`, consumed by `MCP/tools/pipeline_tools.py::_run_stage2_window_synthesis` after the NLI-grounding filter). Two candidate objectives whose statement embeddings have cosine ≥ this collapse to one canonical CO (best-grounded representative; union of `source_chunk_ids`). **Advisory starting point** — Risk R6 mandates MEASURING `max_pairwise_cosine` / `near_dup_pairs` (both surfaced on every run + in the `objective_grounding_filter` decision event) on a real corpus before pinning; the calibration harness (out of W2 scope) consumes those measurements. Out-of-range / garbage values fall back to `0.88`. Selects no provider/model, so N/A for `docs/LICENSING.md`. Active only when `TEXTBOOK_SYNTHESIS_PROVIDER` is set (the path that runs the dedup pass). |
 | `ED4ALL_PRODUCTION` | `0` | When `1`, enables production-mode FastMCP server settings. |
 | `ED4ALL_ROOT` | auto-detect | Absolute path to the Ed4All project root. |
 | `ED4ALL_RUN_ID` | generated | Per-run identifier consumed by every artifact emitter. |

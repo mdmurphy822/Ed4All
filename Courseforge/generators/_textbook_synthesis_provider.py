@@ -124,6 +124,25 @@ _CHAPTER_TEXT_BUDGET = 24_000
 # "max 10 simultaneous" protocol (root ``CLAUDE.md`` § Phase 3).
 _CHAPTER_BATCH_SIZE = 10
 
+# W2 §1.5: Stage-2 window-map serving-window override. Default resolves via
+# ``lib.retrieval._prompts.resolve_num_ctx()`` (which reads ``ED4ALL_ANSWER_
+# NUM_CTX``, default 4096), so one knob drives both the answer path and the
+# synthesis window budget — but synthesis gets its OWN override. Documented in
+# ``Courseforge/CLAUDE.md`` § Opt-In Behavior Flags. No provider/model selected,
+# so no ``docs/LICENSING.md`` row.
+_SYNTHESIS_NUM_CTX_ENV = "TEXTBOOK_SYNTHESIS_NUM_CTX"
+
+# W2 §3: grammar / constrained-decoding mode for the window-objectives surface.
+# Mirrors ``COURSEFORGE_OUTLINE_GRAMMAR_MODE``; ``None`` autodetects from the
+# resolved provider + base_url. No-op when ``TEXTBOOK_SYNTHESIS_PROVIDER`` unset.
+ENV_GRAMMAR_MODE = "TEXTBOOK_SYNTHESIS_GRAMMAR_MODE"
+
+# W2 §3: parse-retry budget for ``synthesize_window_objectives``. The payload is
+# validated against ``_WINDOW_OBJECTIVES_SCHEMA`` per attempt; the schema dump is
+# appended on retry (generic schema echo — the outline tier's per-pattern
+# ``_RETRY_DIRECTIVE_PATTERNS`` table is outline-specific and NOT reused).
+_MAX_SYNTHESIS_PARSE_RETRIES = 3
+
 
 _BLOOM_LEVEL_ENUM: Tuple[str, ...] = (
     "remember",
@@ -133,6 +152,50 @@ _BLOOM_LEVEL_ENUM: Tuple[str, ...] = (
     "evaluate",
     "create",
 )
+
+
+# W2 §3: the single window-objectives JSON Schema (Draft 2020-12). NOT
+# per-block-type — the synthesis surface emits one shape. ``source_chunk_ids``
+# carries ``minItems: 1`` so the grammar itself forbids the empty citation list
+# at sample time (the strongest lever); §2.3 is the post-parse ⊆ backstop for
+# backends that ignore the schema. The grammar canNOT enforce ⊆ the supplied set
+# (runtime data, not a fixed enum) — §2.3 enforces membership.
+_WINDOW_OBJECTIVES_SCHEMA: Dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["candidate_objectives"],
+    "properties": {
+        "candidate_objectives": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 12,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["statement", "bloom_level", "source_chunk_ids"],
+                "properties": {
+                    "statement": {"type": "string", "minLength": 1},
+                    "bloom_level": {
+                        "type": "string",
+                        "enum": list(_BLOOM_LEVEL_ENUM),
+                    },
+                    "bloom_verb": {"type": "string"},
+                    "abcd": {"type": "object"},
+                    "source_chunk_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                    "sub_objectives": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+            },
+        }
+    },
+}
 
 
 _TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT = (
@@ -242,6 +305,10 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         # Test seam: inject a pre-built W-D12 backend so unit tests
         # don't have to spin up an HTTP server.
         openai_compatible_backend: Optional[Any] = None,
+        # W2 §3: constrained-decoding mode for the window-objectives
+        # surface. Resolution: kwarg > ``TEXTBOOK_SYNTHESIS_GRAMMAR_MODE``
+        # env > autodetect-None. Mirrors the outline tier's knob.
+        grammar_mode: Optional[str] = None,
     ) -> None:
         resolved_model = (
             model
@@ -314,6 +381,14 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             self._provider = self._registry_provider
 
         self._injected_oa_backend = openai_compatible_backend
+
+        # W2 §3: grammar mode is a pure string knob; ``None`` means
+        # autodetect from ``provider`` + ``base_url`` at call time.
+        self._grammar_mode: Optional[str] = (
+            grammar_mode
+            or os.environ.get(ENV_GRAMMAR_MODE)
+            or None
+        )
 
     # ------------------------------------------------------------------
     # Dispatch override — route OpenAI-compatible providers through W-D12
@@ -705,6 +780,165 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         }
 
     # ==================================================================
+    # Public API — Stage 2 (W2): per-WINDOW candidate-objective synthesis
+    # ==================================================================
+
+    def synthesize_window_objectives(
+        self,
+        window: Dict[str, Any],
+        *,
+        course_name: str,
+        draft_terminal_objectives: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """W2 §1.5 — synthesize one chunk-window's CANDIDATE objectives.
+
+        Sibling of :meth:`synthesize_chapter_objectives` (does NOT replace
+        it — back-compat for the chapter-grained fallback). The map unit is a
+        chunk-window (id + truncated bodies) instead of chapter prose, so the
+        model cites ``source_chunk_ids`` it can COPY from the enumerated
+        allowed-id set rather than infer. Grammar mode (§3) + ⊆-enforcement
+        (§2.3) ride on this surface only; outline/concepts/reconcile keep their
+        lenient parse.
+
+        Args:
+            window: a ``ChunkWindow.to_dict()`` (or the live dataclass exposing
+                ``chapter_id`` / ``window_index`` / ``chunk_ids`` / ``chunks``).
+            course_name: course slug for the prompt header + capture rationale.
+            draft_terminal_objectives: Stage-1 draft TO-NN list (statements
+                only, for grounding).
+
+        Returns:
+            ``{"chapter_id", "window_index", "candidate_objectives": [...]}``
+            — each candidate carries a resolved ``source_chunk_ids`` ⊆ the
+            window's allowed-id set (plus reconstructed ``source_refs`` for
+            on-disk back-compat).
+
+        Raises:
+            ValueError: when ``course_name`` is empty.
+            TextbookSynthesisProviderError(
+                code="chapter_objectives_exhausted"): when the call exhausts
+                the parse-retry budget (reuses the existing code so the caller's
+                per-window fail-soft branch already handles it).
+        """
+        import jsonschema  # type: ignore[import-untyped]
+
+        if not course_name or not str(course_name).strip():
+            raise ValueError("course_name required")
+        if not isinstance(window, dict):
+            raise ValueError("window must be a dict (ChunkWindow.to_dict())")
+
+        chapter_id = str(window.get("chapter_id") or "")
+        window_index = int(window.get("window_index") or 0)
+        allowed_chunk_ids = [
+            str(c) for c in (window.get("chunk_ids") or []) if c
+        ]
+        allowed_set = set(allowed_chunk_ids)
+        window_chunks = [
+            c for c in (window.get("chunks") or []) if isinstance(c, dict)
+        ]
+
+        base_prompt = self._render_window_objectives_prompt(
+            chapter_id=chapter_id,
+            window_index=window_index,
+            window_chunks=window_chunks,
+            course_name=course_name,
+            draft_terminal_objectives=draft_terminal_objectives or [],
+        )
+        extra_payload = self._build_synthesis_grammar_payload()
+
+        last_error: Optional[str] = None
+        last_raw: str = ""
+        total_retries = 0
+        parsed: Optional[Dict[str, Any]] = None
+        attempt = 0
+        while attempt < _MAX_SYNTHESIS_PARSE_RETRIES:
+            user_prompt = base_prompt
+            if attempt > 0 and last_error:
+                schema_hint = json.dumps(
+                    _WINDOW_OBJECTIVES_SCHEMA, sort_keys=True
+                )
+                user_prompt = (
+                    f"{base_prompt}\n\n"
+                    "Your previous output failed JSON Schema validation: "
+                    f"{last_error}\n"
+                    "Return ONLY a JSON object matching this schema:\n"
+                    f"{schema_hint}"
+                )
+            raw_text, retry_count = self._dispatch_call(
+                user_prompt, extra_payload=extra_payload or None
+            )
+            total_retries += int(retry_count)
+            last_raw = raw_text
+            candidate = self._extract_json_lenient(raw_text)
+            if candidate is None:
+                last_error = "lenient JSON parse returned None"
+                attempt += 1
+                continue
+            try:
+                jsonschema.Draft202012Validator(
+                    _WINDOW_OBJECTIVES_SCHEMA
+                ).validate(candidate)
+            except jsonschema.ValidationError as exc:
+                last_error = str(exc.message)[:300]
+                attempt += 1
+                continue
+            parsed = candidate
+            break
+
+        objectives: List[Dict[str, Any]] = []
+        out_of_set_dropped = 0
+        empty_citation = 0
+        if parsed is not None:
+            (
+                objectives,
+                out_of_set_dropped,
+                empty_citation,
+            ) = self._normalise_window_objectives_payload(
+                parsed,
+                chapter_id=chapter_id,
+                allowed_chunk_ids=allowed_set,
+            )
+
+        self._emit_per_call_decision(
+            mode="chapter_objectives",
+            raw_text=last_raw,
+            retry_count=total_retries,
+            course_name=course_name,
+            chapter_id=chapter_id,
+            chapter_text_chars=sum(
+                len(str(c.get("text") or "")) for c in window_chunks
+            ),
+            co_count_emit=len(objectives),
+            sub_objective_count_emit=sum(
+                len(o.get("sub_objectives") or []) for o in objectives
+            ),
+            chapter_text_truncated=False,
+            success=parsed is not None,
+            last_error=last_error if parsed is None else None,
+            # W2 §2.3 — the measured ⊆-enforcement signals.
+            window_index=window_index,
+            allowed_chunk_id_count=len(allowed_chunk_ids),
+            cited_chunk_id_count=sum(
+                len(o.get("source_chunk_ids") or []) for o in objectives
+            ),
+            citation_out_of_set_dropped=out_of_set_dropped,
+            empty_citation_objectives=empty_citation,
+        )
+
+        if parsed is None:
+            raise TextbookSynthesisProviderError(
+                f"TextbookSynthesisProvider.synthesize_window_objectives "
+                f"exhausted parse on window {chapter_id!r}#w{window_index} of "
+                f"course {course_name!r} (last_error={last_error!r})",
+                code="chapter_objectives_exhausted",
+            )
+        return {
+            "chapter_id": chapter_id,
+            "window_index": window_index,
+            "candidate_objectives": objectives,
+        }
+
+    # ==================================================================
     # Public API — reconciliation
     # ==================================================================
 
@@ -1046,6 +1280,59 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             "No preamble, no markdown fences, no commentary."
         )
 
+    def _render_window_objectives_prompt(
+        self,
+        *,
+        chapter_id: str,
+        window_index: int,
+        window_chunks: List[Dict[str, Any]],
+        course_name: str,
+        draft_terminal_objectives: List[Dict[str, Any]],
+    ) -> str:
+        """W2 §2.1 — chunk-window candidate-objective prompt.
+
+        ENUMERATES the window's allowed chunk ids + per-chunk bodies (the
+        OUTLINE-tier discipline) and closes with the non-empty-subset
+        ``source_chunk_ids`` contract so the model cites a COPY, not an
+        inference. Drops the hardcoded ``source_refs:[{chunk_ids:[]}]`` sentinel
+        of the legacy chapter prompt.
+        """
+        draft_lines: List[str] = []
+        for draft in draft_terminal_objectives or []:
+            if isinstance(draft, dict):
+                stmt = str(draft.get("statement") or "").strip()
+                if stmt:
+                    draft_lines.append(f"  - {stmt}")
+        draft_block = "\n".join(draft_lines) if draft_lines else "  (none)"
+
+        chunk_lines: List[str] = []
+        for chunk in window_chunks or []:
+            cid = str(chunk.get("id") or chunk.get("chunk_id") or "")
+            body = str(chunk.get("text") or chunk.get("body") or "")
+            chunk_lines.append(f"  - [{cid}] {body}")
+        chunks_block = "\n".join(chunk_lines) if chunk_lines else "  (none)"
+
+        return (
+            f"Course: {course_name}\n"
+            f"Chapter id: {chapter_id}   (window {window_index})\n\n"
+            "Course draft terminal objectives (for grounding):\n"
+            f"{draft_block}\n\n"
+            "Source chunks (cite ONLY these ids in source_chunk_ids):\n"
+            f"{chunks_block}\n\n"
+            "Synthesize 1-3 candidate learning objectives this window's "
+            "chunks teach.\n"
+            "RESPOND ONLY WITH A JSON OBJECT with top-level key "
+            '"candidate_objectives": [{"statement", "bloom_level" '
+            '(lowercase enum), "bloom_verb", "abcd" {audience, behavior '
+            '{verb, action_object}, condition, degree}, "source_chunk_ids": '
+            '["<id>", ...], "sub_objectives": [short strings]}].\n'
+            "For each objective, source_chunk_ids MUST be a non-empty subset "
+            "of the chunk ids in the \"Source chunks\" section. An objective "
+            "that synthesizes across N chunks carries N ids. NEVER cite an id "
+            "not listed above. NEVER emit source_chunk_ids: [].\n"
+            "No preamble, no markdown fences, no commentary."
+        )
+
     def _render_reconcile_prompt(
         self,
         *,
@@ -1209,6 +1496,152 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             obj["chapter_id"] = chapter_id
             objectives.append(obj)
         return objectives
+
+    def _normalise_window_objectives_payload(
+        self,
+        parsed: Dict[str, Any],
+        *,
+        chapter_id: str,
+        allowed_chunk_ids: set,
+    ) -> Tuple[List[Dict[str, Any]], int, int]:
+        """W2 §2.2 — project + ENFORCE ⊆ on a window-objectives payload.
+
+        Per emitted candidate:
+
+        1. project statement/bloom/abcd via :meth:`_normalise_one_objective`
+           (reused);
+        2. read ``source_chunk_ids`` (tolerate ``chunk_ids`` /
+           ``source_refs[].chunk_ids`` legacy key shapes defensively);
+        3. intersect with ``allowed_chunk_ids`` (§2.3) — drop ids not in the
+           set. Empty surviving set → ``grounded_citation: False`` +
+           ``source_chunk_ids: []`` (NOT dropped here — Pass C owns drop vs
+           re-ground). Non-empty → ``grounded_citation: True``;
+        4. reconstruct ``source_refs: [{ref: chapter_id, chunk_ids: surviving}]``
+           for on-disk back-compat AND keep the flat ``source_chunk_ids``.
+
+        Returns ``(objectives, out_of_set_dropped, empty_citation_count)``.
+        """
+        raw_list = parsed.get("candidate_objectives") or []
+        objectives: List[Dict[str, Any]] = []
+        out_of_set_dropped = 0
+        empty_citation = 0
+        for raw in raw_list:
+            if not isinstance(raw, dict):
+                continue
+            obj = self._normalise_one_objective(raw)
+            if obj is None:
+                continue
+
+            # Read the cited ids defensively across key shapes.
+            cited: List[str] = []
+            flat = raw.get("source_chunk_ids")
+            if isinstance(flat, list):
+                cited = [str(c) for c in flat if c]
+            else:
+                legacy = raw.get("chunk_ids")
+                if isinstance(legacy, list):
+                    cited = [str(c) for c in legacy if c]
+                else:
+                    refs = raw.get("source_refs")
+                    if isinstance(refs, list):
+                        for ref in refs:
+                            if isinstance(ref, dict):
+                                for cid in ref.get("chunk_ids") or []:
+                                    if cid:
+                                        cited.append(str(cid))
+
+            # §2.3 — intersect with the allowed set; record hallucinated drops.
+            surviving: List[str] = []
+            for cid in cited:
+                if cid in allowed_chunk_ids:
+                    if cid not in surviving:
+                        surviving.append(cid)
+                else:
+                    out_of_set_dropped += 1
+
+            obj["source_chunk_ids"] = surviving
+            obj["grounded_citation"] = bool(surviving)
+            if not surviving:
+                empty_citation += 1
+            obj["source_refs"] = [
+                {"ref": chapter_id, "chunk_ids": list(surviving)}
+            ]
+
+            sub = [
+                str(s).strip()
+                for s in (raw.get("sub_objectives") or [])
+                if isinstance(s, str) and str(s).strip()
+            ]
+            obj["sub_objectives"] = sub
+            obj["chapter_id"] = chapter_id
+            objectives.append(obj)
+        return objectives, out_of_set_dropped, empty_citation
+
+    def _build_synthesis_grammar_payload(self) -> Dict[str, Any]:
+        """W2 §3 — parameterless analogue of ``_build_grammar_payload``.
+
+        ONE schema (``_WINDOW_OBJECTIVES_SCHEMA``) — the synthesis surface emits
+        a single shape. Dispatch on ``(provider, base_url, grammar_mode)``
+        mirrors the outline tier; the GBNF fallback REUSES the outline tier's
+        ``_GENERIC_JSON_GBNF`` (imported, not duplicated). The grammar enforces
+        shape + non-empty ``source_chunk_ids``; the ⊆ membership is enforced
+        post-parse (§2.3).
+        """
+        # Lazy import to avoid pulling the outline-tier module at import time of
+        # this provider; the GBNF string is the only symbol reused.
+        try:
+            from Courseforge.generators._outline_provider import (
+                _GENERIC_JSON_GBNF,
+            )
+        except Exception:  # noqa: BLE001 — GBNF fallback is optional
+            _GENERIC_JSON_GBNF = None  # type: ignore[assignment]
+
+        schema = _WINDOW_OBJECTIVES_SCHEMA
+        base_url = (self._base_url or "").lower()
+        mode = (self._grammar_mode or "").lower() or None
+        provider = self._provider
+
+        # Explicit mode wins.
+        if mode == "gbnf":
+            return {"grammar": _GENERIC_JSON_GBNF} if _GENERIC_JSON_GBNF else {}
+        if mode == "json_schema":
+            return {"format": schema}
+        if mode == "json_object":
+            return {}
+        if mode == "none":
+            return {}
+
+        # Auto-detect path (mirrors the outline tier).
+        if provider == "together":
+            return {
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "WindowObjectives",
+                        "schema": schema,
+                        "strict": True,
+                    },
+                }
+            }
+        if provider in {"local", "openai_compatible"} or (
+            self._registry_provider is not None
+        ):
+            if any(
+                marker in base_url
+                for marker in ("llama", "lmstudio", "lm-studio")
+            ):
+                return (
+                    {"grammar": _GENERIC_JSON_GBNF}
+                    if _GENERIC_JSON_GBNF
+                    else {}
+                )
+            if "vllm" in base_url:
+                return {"extra_body": {"guided_json": schema}}
+            # Default for ``local`` (Ollama 0.5+): full-schema ``format``.
+            return {"format": schema}
+
+        # Anthropic / unrecognised — rely on JSON-mode + lenient parse.
+        return {}
 
     def _normalise_reconcile_payload(
         self,
@@ -1442,6 +1875,21 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             f"retry_count={retry_count}",
             f"success={success}",
         ]
+        # W2 §2.3 — surface the window-map ⊆-enforcement signals when the call
+        # came from ``synthesize_window_objectives`` (absent on the legacy
+        # chapter path, so only appended when present).
+        if "window_index" in ctx:
+            parts.extend([
+                f"window_index={int(ctx.get('window_index', 0))}",
+                f"allowed_chunk_id_count="
+                f"{int(ctx.get('allowed_chunk_id_count', 0))}",
+                f"cited_chunk_id_count="
+                f"{int(ctx.get('cited_chunk_id_count', 0))}",
+                f"citation_out_of_set_dropped="
+                f"{int(ctx.get('citation_out_of_set_dropped', 0))}",
+                f"empty_citation_objectives="
+                f"{int(ctx.get('empty_citation_objectives', 0))}",
+            ])
         if ctx.get("last_error"):
             parts.append(f"last_error={str(ctx['last_error'])[:120]}")
         self._emit_decision(
@@ -1492,5 +1940,9 @@ __all__ = [
     "TextbookSynthesisProviderError",
     "ENV_PROVIDER",
     "ENV_MODEL",
+    "ENV_GRAMMAR_MODE",
     "DEFAULT_PROVIDER",
+    "_SYNTHESIS_NUM_CTX_ENV",
+    "_MAX_SYNTHESIS_PARSE_RETRIES",
+    "_WINDOW_OBJECTIVES_SCHEMA",
 ]
