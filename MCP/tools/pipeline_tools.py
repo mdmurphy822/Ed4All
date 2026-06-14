@@ -10415,10 +10415,21 @@ def _build_tool_registry() -> dict:
             graph: Dict[str, Any] = _empty_semantic_shell()
         else:
             try:
+                # W3 page-aggregation: regroup the cooccurrence pair-counting
+                # unit from chunk to page/section. Default "page" for the
+                # generalized textbook_to_course / course_generation runs (set
+                # by _apply_corpus_generalization_defaults); "chunk" when the
+                # env is unset for byte-stable legacy library calls. Node
+                # frequency + occurrences stay chunk-level either way.
+                cooccurrence_group_by = (
+                    os.environ.get("TRAINFORGE_COOCCURRENCE_GROUP_BY", "").strip()
+                    or "chunk"
+                )
                 cooccurrence_graph = build_cooccurrence_graph(
                     chunks,
                     course_name.upper() or "",
                     graph_kind="concept",
+                    group_by=cooccurrence_group_by,
                 )
 
                 # Phase-ordering fix (Option A1): concept-objective linker

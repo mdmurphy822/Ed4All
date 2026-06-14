@@ -102,6 +102,10 @@ _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
     "TRAINFORGE_INTRA_CHUNK_LINKS": "true",
     "TRAINFORGE_RELATED_FANOUT_CAP": "8",
     "TRAINFORGE_NORMALIZE_LABELS": "true",
+    # W3: cooccurrence pair-counting aggregated to the PAGE level (chunk-local
+    # cooccurrence fragments the graph; page-level connects it). Node frequency
+    # + occurrences stay chunk-level. "chunk" byte-stable legacy when unset.
+    "TRAINFORGE_COOCCURRENCE_GROUP_BY": "page",
     # Corpus-generalization recovery paths (general / non-RDF textbooks)
     "TRAINFORGE_LEXICAL_CONCEPT_SEEDS": "true",
     "TRAINFORGE_OBJECTIVE_QUALITY_GATE": "true",
