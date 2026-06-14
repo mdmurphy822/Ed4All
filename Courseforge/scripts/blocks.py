@@ -717,6 +717,7 @@ class Block:
     def to_synthesis_manifest(
         self,
         resolver: Optional["Callable[[str], Optional[Union[str, Dict[str, Any]]]]"] = None,
+        concept_tags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Project this Block into a block-synthesis-manifest dict (W3).
 
@@ -859,12 +860,19 @@ class Block:
             or self.block_type
         )
 
-        # --- concept_tags (chunk-grounded; pre-computed by the caller and
-        # threaded onto the content dict, or the Block's key_terms fallback) ---
-        raw_tags = content.get("concept_tags")
-        concept_tags: List[str] = []
-        if isinstance(raw_tags, list):
-            concept_tags = [t for t in raw_tags if isinstance(t, str) and t]
+        # --- concept_tags (chunk-grounded; passed explicitly by the emit caller
+        # — preferred, because rewrite-tier blocks carry self.content as an HTML
+        # STRING so the content-dict path can't thread them — else read from the
+        # content dict / key_terms fallback) ---
+        if concept_tags is not None:
+            manifest_concept_tags = [t for t in concept_tags if isinstance(t, str) and t]
+        else:
+            raw_tags = content.get("concept_tags")
+            manifest_concept_tags = (
+                [t for t in raw_tags if isinstance(t, str) and t]
+                if isinstance(raw_tags, list)
+                else []
+            )
 
         manifest: Dict[str, Any] = {
             "schema_version": "1.0",
@@ -877,7 +885,7 @@ class Block:
             "span_granularity": "chunk",
             "template_id": template_id,
             "synthesis": {"tiers": tiers},
-            "concept_tags": concept_tags,
+            "concept_tags": manifest_concept_tags,
         }
         if char_spans:
             manifest["char_spans"] = char_spans

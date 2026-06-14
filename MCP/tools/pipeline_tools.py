@@ -5589,16 +5589,20 @@ def _emit_block_synthesis_manifest(
                 exc,
             )
             continue
-        blk_content = getattr(blk, "content", None)
-        if isinstance(blk_content, dict) and not blk_content.get("concept_tags"):
+        # W3: pass derived concept_tags to the projection EXPLICITLY — rewrite-
+        # tier blocks carry self.content as an HTML STRING, so the content-dict
+        # threading path never fires for them. Derive from the block's already-
+        # resolved cited chunks (grounded; never invented) unless the block /
+        # content already pinned tags.
+        if not record.get("concept_tags"):
             block_tags = _derive_block_concept_tags(
                 record.get("source_chunk_ids") or [], resolver
             )
             if block_tags:
-                blk_content["concept_tags"] = block_tags
-                # Re-project so the manifest record picks up the threaded tags.
                 try:
-                    record = blk.to_synthesis_manifest(resolver)
+                    record = blk.to_synthesis_manifest(
+                        resolver, concept_tags=block_tags
+                    )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "block_synthesis_manifest: re-projection failed for "
