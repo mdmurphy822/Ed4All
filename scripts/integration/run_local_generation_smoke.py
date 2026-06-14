@@ -899,6 +899,13 @@ def _print_report(
     print(f"\nbloom: distinct={bloom.get('distinct_levels')} max_share={_fmt(bloom.get('max_share'))}")
     print(f"concept_coverage_rate={_fmt(headline.get('concept_coverage_rate'))} "
           f"chunk_coverage_rate={_fmt(headline.get('chunk_coverage_rate'))}")
+    # Diagnostics (informational — not success-condition pillars): surface the
+    # instructional-depth + claim-citation-quality gaps the headline grounding
+    # metrics can mask.
+    btd = headline.get("block_type_diversity") or {}
+    print(f"instructional_completeness={_fmt(btd.get('instructional_completeness'))} "
+          f"(explain={btd.get('has_explain')} example={btd.get('has_example')} "
+          f"assessment={btd.get('has_assessment')}) block_types={btd.get('histogram')}")
     pa = report.get("provenance_audit", {})
     print(f"manifest_chunk_resolution_rate={_fmt(pa.get('manifest_chunk_resolution_rate'))} "
           f"manifest_matches_cited_rate={_fmt(pa.get('manifest_matches_cited_rate'))}")
