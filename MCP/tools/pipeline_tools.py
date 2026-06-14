@@ -5413,6 +5413,18 @@ def _build_manifest_chunk_resolver(
                     chunk_id = chunk_id.strip()
                     source = chunk.get("source")
                     record: Dict[str, Any] = {"id": chunk_id}
+                    # Capture the chunk's own concept_tags + text so the
+                    # emit side can ground each block's concept_tags in its
+                    # cited chunks (W3: block tags grounded in cited chunks).
+                    # ONE chunkset read serves both span resolution and tags.
+                    raw_tags = chunk.get("concept_tags")
+                    if isinstance(raw_tags, list):
+                        record["concept_tags"] = [
+                            t for t in raw_tags if isinstance(t, str) and t
+                        ]
+                    chunk_text = chunk.get("text")
+                    if isinstance(chunk_text, str) and chunk_text:
+                        record["text"] = chunk_text
                     if isinstance(source, dict):
                         cspan = source.get("char_span")
                         if (
@@ -5451,6 +5463,65 @@ def _build_manifest_chunk_resolver(
         return id_to_record.get(source_id.strip())
 
     return _resolver
+
+
+def _derive_block_concept_tags(
+    cited_chunk_ids: List[str],
+    resolver: Callable[[str], Optional[Dict[str, Any]]],
+) -> List[str]:
+    """Union the cited chunks' concept_tags (W3: block tags grounded in chunks).
+
+    For each of a block's resolved ``source_chunk_ids``, look the chunk up via
+    the resolver (built from the same chunkset — one read) and collect its
+    ``concept_tags``. A cited chunk that carries no tags falls back to
+    ``lib.ontology.concept_tagging.extract_concept_tags`` over the chunk's own
+    ``text`` (instance-free, empty seeds), so the derived tags trace to the
+    chunk's actual prose rather than being invented. The union is order-stable
+    (first-seen wins), deduped, and capped at ``MAX_CONCEPT_TAGS``.
+
+    Honest empties: a block whose cited chunks yield no taggable concept (no
+    pre-tagged chunk, no taggable text) returns ``[]`` — never a fabricated
+    tag.
+    """
+    from lib.ontology.concept_tagging import MAX_CONCEPT_TAGS, extract_concept_tags
+
+    tags: List[str] = []
+    seen: set = set()
+
+    def _add(tag: str) -> None:
+        if tag and tag not in seen:
+            seen.add(tag)
+            tags.append(tag)
+
+    for cid in cited_chunk_ids:
+        if not isinstance(cid, str) or not cid:
+            continue
+        record = resolver(cid)
+        if not isinstance(record, dict):
+            continue
+        existing = record.get("concept_tags")
+        if isinstance(existing, list) and existing:
+            for t in existing:
+                if isinstance(t, str):
+                    _add(t)
+            continue
+        # No pre-computed tags on the chunk — derive them from its own text so
+        # the block's tags stay grounded in the cited source (no invention).
+        text = record.get("text")
+        if isinstance(text, str) and text.strip():
+            try:
+                for t in extract_concept_tags(text, {}, ()):
+                    if isinstance(t, str):
+                        _add(t)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "block_synthesis_manifest: extract_concept_tags fallback "
+                    "failed for chunk_id=%s: %s",
+                    cid,
+                    exc,
+                )
+
+    return tags[:MAX_CONCEPT_TAGS]
 
 
 def _emit_block_synthesis_manifest(
@@ -5499,7 +5570,15 @@ def _emit_block_synthesis_manifest(
 
     lines: List[str] = []
     resolved_total = 0
+    tagged_total = 0
     for blk in blocks:
+        # W3: ground this block's concept_tags in its CITED chunks BEFORE the
+        # projection (which reads content["concept_tags"]). Project once to
+        # learn the resolved cited chunk ids, then union the cited chunks'
+        # existing concept_tags (falling back to extract_concept_tags on the
+        # chunk text for any cited chunk that carries none). Only thread when
+        # the block hasn't already pinned its own tags — invented tags are
+        # forbidden; every tag traces to a cited chunk.
         try:
             record = blk.to_synthesis_manifest(resolver)
         except Exception as exc:  # noqa: BLE001
@@ -5510,6 +5589,25 @@ def _emit_block_synthesis_manifest(
                 exc,
             )
             continue
+        blk_content = getattr(blk, "content", None)
+        if isinstance(blk_content, dict) and not blk_content.get("concept_tags"):
+            block_tags = _derive_block_concept_tags(
+                record.get("source_chunk_ids") or [], resolver
+            )
+            if block_tags:
+                blk_content["concept_tags"] = block_tags
+                # Re-project so the manifest record picks up the threaded tags.
+                try:
+                    record = blk.to_synthesis_manifest(resolver)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "block_synthesis_manifest: re-projection failed for "
+                        "block_id=%s: %s",
+                        getattr(blk, "block_id", "?"),
+                        exc,
+                    )
+        if record.get("concept_tags"):
+            tagged_total += 1
         resolved_total += len(record.get("source_chunk_ids") or [])
         lines.append(json.dumps(record, ensure_ascii=False))
 
@@ -5540,7 +5638,10 @@ def _emit_block_synthesis_manifest(
                     f"{len(lines)} finalized block(s) into "
                     f"block_synthesis_manifest.jsonl with "
                     f"{resolved_total} resolved source_chunk_id reference(s) "
-                    f"against the pinned DART chunkset; sidecar consumed by "
+                    f"against the pinned DART chunkset; "
+                    f"{tagged_total} block(s) carry chunk-grounded "
+                    f"concept_tags (union of cited chunks' tags, "
+                    f"extract_concept_tags fallback); sidecar consumed by "
                     f"ManifestCompletenessValidator (RESOLUTION) + W4 NLI "
                     f"(ENTAILMENT premise selection)."
                 ),

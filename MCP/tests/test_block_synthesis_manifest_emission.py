@@ -23,6 +23,7 @@ import pytest
 from Courseforge.scripts.blocks import Block, Touch
 from MCP.tools.pipeline_tools import (
     _build_manifest_chunk_resolver,
+    _derive_block_concept_tags,
     _emit_block_synthesis_manifest,
 )
 from MCP.hardening.gate_input_routing import _build_manifest_completeness
@@ -88,6 +89,35 @@ def _concept_block(idx: int = 0) -> Block:
     )
 
 
+def _untagged_concept_block(idx: int = 0) -> Block:
+    """A block that cites chunks but pins NO concept_tags of its own — the emit
+    side must derive (ground) them from the cited chunks."""
+    content = {
+        "source_refs": [
+            {"sourceId": "dart:demo#b-12", "role": "primary"},
+            {"sourceId": "dart:demo#b-13", "role": "contributing"},
+        ],
+        "key_claims": [
+            {
+                "claim": "An RDF graph is a set of triples.",
+                "source_chunk_ids": ["demo_chunk_00012"],
+            }
+        ],
+        # NOTE: no concept_tags key — this is the gap the fix closes.
+    }
+    return Block(
+        block_id=f"week_04#concept_untagged_{idx}",
+        block_type="concept",
+        page_id="week_04",
+        sequence=idx,
+        content=content,
+        template_type="concept.definition.v1",
+        key_terms=("rdf-graph", "triple"),
+        touched_by=(_outline_touch(), _rewrite_touch()),
+        content_hash="b" * 64,
+    )
+
+
 def _write_chunks_jsonl(chunks_dir: Path) -> Path:
     """Write a DART chunkset chunks.jsonl + sibling manifest.json. Returns the
     chunks.jsonl path (the emit-side resolver input)."""
@@ -120,6 +150,27 @@ def _write_chunks_jsonl(chunks_dir: Path) -> Path:
         "\n".join(json.dumps(c) for c in chunks) + "\n", encoding="utf-8"
     )
     # Sibling manifest.json (the validator's dart_chunks_manifest_path target).
+    (chunks_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "chunkset_kind": "dart",
+                "chunks_sha256": "0" * 64,
+                "chunker_version": "v4",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return chunks_jsonl
+
+
+def _write_custom_chunks_jsonl(chunks_dir: Path, chunks: list) -> Path:
+    """Write an arbitrary chunkset chunks.jsonl + sibling manifest for the
+    concept-tag grounding tests (control which chunks carry tags / text)."""
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    chunks_jsonl = chunks_dir / "chunks.jsonl"
+    chunks_jsonl.write_text(
+        "\n".join(json.dumps(c) for c in chunks) + "\n", encoding="utf-8"
+    )
     (chunks_dir / "manifest.json").write_text(
         json.dumps(
             {
@@ -230,6 +281,199 @@ def test_emit_no_blocks_returns_none(tmp_path, monkeypatch):
         [], tmp_path / "03_content_development", None
     )
     assert out is None
+
+
+# --------------------------------------------------------------------------
+# Concept-tag grounding (W3: block tags grounded in cited chunks)
+# --------------------------------------------------------------------------
+
+
+def test_derive_block_concept_tags_unions_cited_chunk_tags(tmp_path):
+    # Two cited chunks each carrying pre-computed concept_tags → union.
+    chunks_jsonl = _write_custom_chunks_jsonl(
+        tmp_path / "dart_chunks",
+        [
+            {
+                "id": "demo_chunk_00012",
+                "text": "An RDF graph is a set of triples.",
+                "concept_tags": ["rdf-graph", "triple"],
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:demo#b-12", "role": "primary"}
+                    ]
+                },
+            },
+            {
+                "id": "demo_chunk_00013",
+                "text": "A triple has a subject, predicate, and object.",
+                "concept_tags": ["triple", "predicate"],
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:demo#b-13", "role": "contributing"}
+                    ]
+                },
+            },
+        ],
+    )
+    resolver = _build_manifest_chunk_resolver(chunks_jsonl)
+    tags = _derive_block_concept_tags(
+        ["demo_chunk_00012", "demo_chunk_00013"], resolver
+    )
+    # Grounded union, deduped, order-stable (first-seen wins).
+    assert tags == ["rdf-graph", "triple", "predicate"]
+
+
+def test_emit_grounds_concept_tags_from_cited_chunk_tags(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
+    chunks_jsonl = _write_custom_chunks_jsonl(
+        tmp_path / "dart_chunks",
+        [
+            {
+                "id": "demo_chunk_00012",
+                "text": "An RDF graph is a set of triples.",
+                "concept_tags": ["rdf-graph"],
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:demo#b-12", "role": "primary"}
+                    ]
+                },
+            },
+            {
+                "id": "demo_chunk_00013",
+                "text": "A triple has a subject, predicate, and object.",
+                "concept_tags": ["triple"],
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:demo#b-13", "role": "contributing"}
+                    ]
+                },
+            },
+        ],
+    )
+    content_dir = tmp_path / "03_content_development"
+    out = _emit_block_synthesis_manifest(
+        [_untagged_concept_block(0)], content_dir, chunks_jsonl
+    )
+    rec = json.loads(out.read_text(encoding="utf-8").strip())
+    # Tags grounded in the union of the block's cited chunks' tags.
+    assert rec["concept_tags"] == ["rdf-graph", "triple"]
+
+
+def test_emit_derives_concept_tags_via_extract_for_untagged_chunk(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
+    # Cited chunk carries NO concept_tags but DOES carry taggable text — the
+    # fallback derives tags via extract_concept_tags over the chunk text.
+    chunks_jsonl = _write_custom_chunks_jsonl(
+        tmp_path / "dart_chunks",
+        [
+            {
+                "id": "demo_chunk_00012",
+                # "behaviorism" is a CONCEPT_PATTERNS pedagogy term → a tag.
+                "text": (
+                    "Behaviorism explains learning through conditioning and "
+                    "reinforcement of observable responses."
+                ),
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:demo#b-12", "role": "primary"}
+                    ]
+                },
+            },
+            {
+                "id": "demo_chunk_00013",
+                "text": "A triple has a subject, predicate, and object.",
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:demo#b-13", "role": "contributing"}
+                    ]
+                },
+            },
+        ],
+    )
+    content_dir = tmp_path / "03_content_development"
+    out = _emit_block_synthesis_manifest(
+        [_untagged_concept_block(0)], content_dir, chunks_jsonl
+    )
+    rec = json.loads(out.read_text(encoding="utf-8").strip())
+    # Non-empty, derived from the chunk's own text (grounded, not invented).
+    assert "behaviorism" in rec["concept_tags"]
+
+
+def test_emit_honest_empty_when_cited_chunks_yield_no_tags(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
+    # Cited chunks carry neither concept_tags nor taggable text → honest empty.
+    chunks_jsonl = _write_custom_chunks_jsonl(
+        tmp_path / "dart_chunks",
+        [
+            {
+                "id": "demo_chunk_00012",
+                "text": "the and or of to a in is",
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:demo#b-12", "role": "primary"}
+                    ]
+                },
+            },
+            {
+                "id": "demo_chunk_00013",
+                "text": "a b c d e f g",
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:demo#b-13", "role": "contributing"}
+                    ]
+                },
+            },
+        ],
+    )
+    content_dir = tmp_path / "03_content_development"
+    out = _emit_block_synthesis_manifest(
+        [_untagged_concept_block(0)], content_dir, chunks_jsonl
+    )
+    rec = json.loads(out.read_text(encoding="utf-8").strip())
+    # No fabricated tag when nothing taggable is cited.
+    assert rec["concept_tags"] == []
+
+
+def test_emit_does_not_clobber_block_pinned_concept_tags(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
+    # The block already pins concept_tags; the cited chunks carry DIFFERENT
+    # tags. The block's own tags must win (anti-clobber, additive only).
+    chunks_jsonl = _write_custom_chunks_jsonl(
+        tmp_path / "dart_chunks",
+        [
+            {
+                "id": "demo_chunk_00012",
+                "text": "An RDF graph is a set of triples.",
+                "concept_tags": ["some-other-tag"],
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:demo#b-12", "role": "primary"}
+                    ]
+                },
+            },
+            {
+                "id": "demo_chunk_00013",
+                "text": "A triple has a subject, predicate, and object.",
+                "concept_tags": ["another-tag"],
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:demo#b-13", "role": "contributing"}
+                    ]
+                },
+            },
+        ],
+    )
+    content_dir = tmp_path / "03_content_development"
+    # _concept_block pins concept_tags=["rdf-graph", "triple"].
+    out = _emit_block_synthesis_manifest(
+        [_concept_block(0)], content_dir, chunks_jsonl
+    )
+    rec = json.loads(out.read_text(encoding="utf-8").strip())
+    assert rec["concept_tags"] == ["rdf-graph", "triple"]
 
 
 # --------------------------------------------------------------------------
