@@ -594,13 +594,13 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 15 | 4 | 19 |
+| `course_generation` | 15 | 6 | 21 |
 | `intake_remediation` | 2 | 0 | 2 |
 | `batch_dart` | 2 | 0 | 2 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 37 | 41 | 78 |
+| `textbook_to_course` | 37 | 43 | 80 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **62** | **48** | **110** |
+| **Total** | **62** | **52** | **114** |
 
 > W4 SHADOW landing (NLI grounding gates): `rewrite_source_grounding` DEMOTED
 > critical → warning in `course_generation` + `textbook_to_course`
@@ -611,6 +611,15 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 > critical) is DEFERRED — see the `# TODO(calibration)` markers in
 > `config/workflows.yaml` and `plans/finegrain/w4-nli-grounding-gate.md` §4.
 > The count table is re-derived again at the critical-flip landing.
+
+> W3 manifest-completeness landing: the `manifest_completeness` gate
+> (per-block synthesis-manifest RESOLUTION) added in **shadow/warning** at
+> BOTH `content_generation` (single-pass) and `post_rewrite_validation`
+> (two-pass) in `course_generation` + `textbook_to_course` (+2 warning each;
+> only one of the two phases fires per run via `enabled_when_env`). Day-1
+> warning until a live 7B run proves the rewrite-tier emission hook
+> (`_emit_block_synthesis_manifest`, gated by `COURSEFORGE_EMIT_BLOCKS`); flip
+> to critical at the `# TODO(integration)` markers in `config/workflows.yaml`.
 
 ---
 

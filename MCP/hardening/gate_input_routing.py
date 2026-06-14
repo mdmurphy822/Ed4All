@@ -958,6 +958,65 @@ def _build_objective_source_refs(
     return inputs, []
 
 
+def _build_manifest_completeness(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """W3 — input builder for ManifestCompletenessValidator.
+
+    Surfaces ``{manifest_path, dart_chunks_manifest_path?,
+    content_development_dir?}`` so the validator's RESOLUTION walk sees the
+    §1.3a sidecar + the DART chunkset resolution universe. Models on
+    :func:`_build_objective_source_refs` (which derives the same
+    ``dart_chunks_manifest_path`` from ``chunking.dart_chunks_path``).
+
+    Resolution chain:
+
+    * ``manifest_path`` — the ``block_synthesis_manifest.jsonl`` sidecar the
+      rewrite-tier emit writes at
+      ``<content_dir>/block_synthesis_manifest.jsonl``. Derived from the resolved
+      content_dir (the disk-glob export-root fallback handles the
+      ``03_content_development/`` layout). The validator handles a missing
+      manifest itself (graceful pass when no blocks; ``MANIFEST_FILE_MISSING``
+      critical when ``03_content_development/`` is populated), so we ALWAYS
+      surface a candidate ``manifest_path`` even when the file isn't present yet
+      — never a structured skip — so the anti-silent-degradation guard can fire.
+    * ``content_development_dir`` — the content_dir itself, so the validator's
+      ``MANIFEST_FILE_MISSING`` guard knows blocks were produced.
+    * ``dart_chunks_manifest_path`` — the sibling ``manifest.json`` of the DART
+      chunkset ``chunks.jsonl`` (``chunking.dart_chunks_path`` parent), the
+      resolution universe. Absent → the validator's empty-universe guard fires
+      only when the manifest declares ids.
+    """
+    inputs: Dict[str, Any] = {}
+
+    content_dir = _find_content_dir(phase_outputs, workflow_params)
+    if content_dir is None:
+        # No content dir resolves yet (dry-run / pre-content). Structured skip;
+        # the validator's graceful-pass arm (no manifest + no blocks) is the
+        # safety net for runs that reach the gate with neither.
+        return {}, ["content_dir"]
+
+    inputs["content_development_dir"] = str(content_dir)
+    inputs["manifest_path"] = str(
+        content_dir / "block_synthesis_manifest.jsonl"
+    )
+
+    # dart_chunks_manifest_path — same derivation as _build_objective_source_refs.
+    chunking = phase_outputs.get("chunking") or {}
+    chunks_jsonl_raw = chunking.get("dart_chunks_path")
+    if not (isinstance(chunks_jsonl_raw, str) and chunks_jsonl_raw):
+        chunks_jsonl_raw = _locate(phase_outputs, "dart_chunks_path")
+    if isinstance(chunks_jsonl_raw, str) and chunks_jsonl_raw:
+        try:
+            manifest_candidate = Path(chunks_jsonl_raw).parent / "manifest.json"
+            inputs["dart_chunks_manifest_path"] = str(manifest_candidate)
+        except (TypeError, ValueError):
+            pass
+
+    return inputs, []
+
+
 def _build_block_input(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -2253,6 +2312,17 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.objective_entailment.ObjectiveEntailmentValidator",
         _build_objective_source_refs,
+    )
+
+    # W3 — per-block synthesis-manifest RESOLUTION gate at content_generation +
+    # post_rewrite_validation. Builder resolves the block_synthesis_manifest.jsonl
+    # sidecar from the resolved content_dir + the DART chunkset manifest.json
+    # (resolution universe) from chunking.dart_chunks_path. Pre-registration NO
+    # builder was wired, so the executor returned __no_builder_registered__ and
+    # the gate skipped silently — the manifest emission would be unvalidated.
+    r.register(
+        "lib.validators.manifest_completeness.ManifestCompletenessValidator",
+        _build_manifest_completeness,
     )
 
     # Wave 3 W3.D — DART vs. IMSCC chunkset drift detector at

@@ -113,6 +113,11 @@ blocks:
         - objective_assessment_similarity
         - bloom_alignment
         - answerability
+        # W3 §3.3 — per-block synthesis-manifest RESOLUTION gate. Non-blocking
+        # day-1 (the gate ships severity: warning in config/workflows.yaml until
+        # a live run proves the emission); listed here so the router's per-type
+        # filter keeps the manifest gate in lockstep with the validator skip set.
+        - manifest_completeness
       optional:
         - distractor_entropy
       fail_action: escalate
@@ -129,6 +134,7 @@ blocks:
         - source_ref
         - content_type
         - similarity
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional:
         - curie_anchoring
       fail_action: regenerate
@@ -144,6 +150,7 @@ blocks:
       required:
         - concept_example_similarity
         - source_ref
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional:
         - bloom_classifier_disagreement
       fail_action: regenerate
@@ -160,6 +167,7 @@ blocks:
       required:
         - source_ref
         - distractor_misconception_alignment
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional: []
       fail_action: regenerate
 
@@ -173,6 +181,7 @@ blocks:
     validators:
       required:
         - source_ref
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional: []
       fail_action: regenerate
 
@@ -188,6 +197,7 @@ blocks:
       required:
         - source_ref
         - content_type
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional: []
       fail_action: regenerate
 
@@ -200,6 +210,7 @@ blocks:
     validators:
       required:
         - source_ref
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional: []
       fail_action: regenerate
 
@@ -238,6 +249,7 @@ blocks:
       required:
         - source_ref
         - content_type
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional:
         - similarity
       fail_action: regenerate
@@ -250,6 +262,7 @@ blocks:
       required:
         - objective_ref
         - source_ref
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional:
         - accessibility
       fail_action: regenerate
@@ -260,6 +273,7 @@ blocks:
     validators:
       required:
         - source_ref
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional: []
       fail_action: regenerate
 
@@ -271,6 +285,7 @@ blocks:
       required:
         - objective_ref
         - answerability
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional:
         - bloom_classifier_disagreement
       fail_action: escalate
@@ -282,6 +297,7 @@ blocks:
     validators:
       required:
         - objective_ref
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional: []
       fail_action: regenerate
 
@@ -291,6 +307,7 @@ blocks:
     validators:
       required:
         - objective_ref
+        - manifest_completeness   # W3 §3.3 (non-blocking day-1; warning in workflows.yaml)
       optional: []
       fail_action: regenerate
 

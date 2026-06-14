@@ -14,7 +14,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Add project root to path for imports
 _MCP_DIR = Path(__file__).resolve().parents[1]
@@ -5360,6 +5360,197 @@ async def _run_inter_tier_validation(**kwargs) -> str:
     })
 
 
+# -------------------------------------------------------------------------- #
+# W3 — per-block synthesis-manifest emission                                  #
+# -------------------------------------------------------------------------- #
+
+
+def _build_manifest_chunk_resolver(
+    dart_chunks_path: Optional[Path],
+) -> Callable[[str], Optional[Dict[str, Any]]]:
+    """Build the ``resolver`` ``Block.to_synthesis_manifest`` consumes (W3 §1.3).
+
+    Reads the pinned DART chunkset ``chunks.jsonl`` and maps every outline
+    ``sourceId`` (the ``dart:{slug}#{block_id}`` shape) AND every chunk
+    top-level ``id`` to a resolution record::
+
+        {"id": <chunk_id>, "char_span": [start, end]?, "html_xpath": <xpath>?}
+
+    so the manifest's ``source_chunk_ids[]`` resolve and ``char_spans[]`` lift
+    the chunk's own ``source.char_span`` / ``source.html_xpath`` (whole-chunk
+    reference today; ``span_granularity="chunk"``). Mirrors the harvest contract
+    of ``objective_source_refs._load_dart_chunks_universe`` (chunk ``id`` ∪
+    ``source.source_references[].sourceId``) so the emit-side resolver and the
+    validate-side universe agree on what resolves.
+
+    A ``sourceId`` that isn't in the chunkset resolves to ``None`` — the
+    projection keeps it verbatim in ``source_refs[]`` but omits it from
+    ``source_chunk_ids[]``, and ``ManifestCompletenessValidator`` catches the
+    resulting gap on a substantive block.
+
+    Best-effort: a missing / unreadable chunkset yields an empty map (every
+    sourceId resolves to ``None``); the validator's
+    ``MANIFEST_RESOLUTION_UNIVERSE_EMPTY`` guard catches a vacuous universe at
+    gate time.
+    """
+    id_to_record: Dict[str, Dict[str, Any]] = {}
+    if dart_chunks_path is not None and dart_chunks_path.exists():
+        try:
+            with dart_chunks_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    chunk_id = chunk.get("id")
+                    if not isinstance(chunk_id, str) or not chunk_id.strip():
+                        continue
+                    chunk_id = chunk_id.strip()
+                    source = chunk.get("source")
+                    record: Dict[str, Any] = {"id": chunk_id}
+                    if isinstance(source, dict):
+                        cspan = source.get("char_span")
+                        if (
+                            isinstance(cspan, (list, tuple))
+                            and len(cspan) == 2
+                            and all(isinstance(x, int) for x in cspan)
+                        ):
+                            record["char_span"] = [int(cspan[0]), int(cspan[1])]
+                        xpath = source.get("html_xpath")
+                        if isinstance(xpath, str) and xpath:
+                            record["html_xpath"] = xpath
+                    # Register under the chunk's own id...
+                    id_to_record.setdefault(chunk_id, record)
+                    # ...and under every dart:{slug}#{block_id} sourceId so an
+                    # outline source_refs[].sourceId resolves to this chunk.
+                    if isinstance(source, dict):
+                        src_refs = source.get("source_references") or []
+                        if isinstance(src_refs, list):
+                            for ref in src_refs:
+                                if not isinstance(ref, dict):
+                                    continue
+                                sid = ref.get("sourceId")
+                                if isinstance(sid, str) and sid.strip():
+                                    id_to_record.setdefault(sid.strip(), record)
+        except OSError as exc:
+            logger.warning(
+                "block_synthesis_manifest: failed to read chunks.jsonl at "
+                "%s: %s",
+                dart_chunks_path,
+                exc,
+            )
+
+    def _resolver(source_id: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(source_id, str):
+            return None
+        return id_to_record.get(source_id.strip())
+
+    return _resolver
+
+
+def _emit_block_synthesis_manifest(
+    blocks: List[Any],
+    content_dir: Path,
+    dart_chunks_path: Optional[Path],
+    capture: Any = None,
+) -> Optional[Path]:
+    """Write the per-block synthesis-manifest sidecar JSONL (W3 §1.3a).
+
+    One ``block_synthesis_manifest.jsonl`` line per finalized block, in
+    emission order, at ``<content_dir>/block_synthesis_manifest.jsonl``. Each
+    line is the pure ``Block.to_synthesis_manifest(resolver)`` projection — no
+    LLM call, no model/provider re-log (read from the Touch chain).
+
+    Gated by ``COURSEFORGE_EMIT_BLOCKS`` (the same flag that gates the JSON-LD
+    ``blocks[]`` projection + the ``synthesisManifestRef`` pointer): when the
+    flag is off the manifest is NOT written and legacy emit stays byte-stable.
+
+    Idempotent: when the sidecar already exists (a ``--force`` re-run or a
+    resumed stage subcommand) the existing file is left untouched and returned,
+    mirroring the ``course.json`` emit pattern (anti-clobber).
+
+    Returns the manifest path when written / already-present, else ``None``
+    (flag off, no blocks, or write failure).
+    """
+    from Courseforge.scripts.blocks import _emit_blocks_enabled
+
+    if not _emit_blocks_enabled():
+        return None
+    if not blocks:
+        return None
+
+    manifest_path = content_dir / "block_synthesis_manifest.jsonl"
+    if manifest_path.exists():
+        # Anti-clobber: a previous run already emitted the sidecar. Leave it
+        # byte-identical (mirrors _project_synthesized_objectives_to_course_json).
+        logger.info(
+            "block_synthesis_manifest: %s already exists; leaving untouched "
+            "(idempotent re-emit).",
+            manifest_path,
+        )
+        return manifest_path
+
+    resolver = _build_manifest_chunk_resolver(dart_chunks_path)
+
+    lines: List[str] = []
+    resolved_total = 0
+    for blk in blocks:
+        try:
+            record = blk.to_synthesis_manifest(resolver)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "block_synthesis_manifest: projection failed for block_id=%s: "
+                "%s",
+                getattr(blk, "block_id", "?"),
+                exc,
+            )
+            continue
+        resolved_total += len(record.get("source_chunk_ids") or [])
+        lines.append(json.dumps(record, ensure_ascii=False))
+
+    if not lines:
+        return None
+
+    try:
+        content_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.warning(
+            "block_synthesis_manifest: failed to write %s: %s",
+            manifest_path,
+            exc,
+        )
+        return None
+
+    if capture is not None:
+        try:
+            capture.log_decision(
+                decision_type="block_synthesis_manifest_emitted",
+                decision=(
+                    f"Wrote {len(lines)} manifest line(s) to "
+                    f"{manifest_path.name}."
+                ),
+                rationale=(
+                    f"W3 per-block provenance manifest: projected "
+                    f"{len(lines)} finalized block(s) into "
+                    f"block_synthesis_manifest.jsonl with "
+                    f"{resolved_total} resolved source_chunk_id reference(s) "
+                    f"against the pinned DART chunkset; sidecar consumed by "
+                    f"ManifestCompletenessValidator (RESOLUTION) + W4 NLI "
+                    f"(ENTAILMENT premise selection)."
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    return manifest_path
+
+
 async def _run_content_generation_rewrite(**kwargs) -> str:
     """Run the rewrite tier of the Phase 3 two-pass content pipeline.
 
@@ -5644,6 +5835,34 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 _block_to_snake_case_entry(blk), ensure_ascii=False,
             ))
             fh.write("\n")
+
+    # W3 — per-block synthesis-manifest sidecar. Emit one
+    # block_synthesis_manifest.jsonl line per finalized rewrite-tier block
+    # (full touched_by chain present), resolving source_chunk_ids against the
+    # pinned DART chunkset. Gated by COURSEFORGE_EMIT_BLOCKS so a flag-off run
+    # stays byte-stable; idempotent (anti-clobber) on re-run. The
+    # ManifestCompletenessValidator gate (post_rewrite_validation) consumes the
+    # sidecar; W4 NLI reads it for the entailment premise set.
+    _course_slug = (course_code or project_id).lower().replace(
+        "_", "-"
+    ).replace(" ", "-")
+    _dart_chunks_path = (
+        _resolve_libv2_root(kwargs.get("libv2_root"))
+        / "courses"
+        / _course_slug
+        / "dart_chunks"
+        / "chunks.jsonl"
+    )
+    try:
+        _emit_block_synthesis_manifest(
+            rewrite_blocks, content_dir, _dart_chunks_path, capture,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Best-effort: a manifest-emit failure never aborts the rewrite phase
+        # (the gate's anti-silent-degradation guard catches a missing manifest).
+        logger.warning(
+            "block_synthesis_manifest: emit failed in rewrite phase: %s", exc,
+        )
 
     # Group blocks by page_id and emit a minimal HTML page per group.
     # The two-pass router's HTML is the rewritten Block.content (string);

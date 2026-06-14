@@ -73,6 +73,26 @@ workflows:
               on_error: fail_closed
             description: Block the deterministic template emitter from passing as LLM-authored content in a real run
 
+          # W3 — per-block synthesis-manifest RESOLUTION gate (single-pass
+          # mirror; see textbook_to_course for the full rationale). Day-1
+          # SHADOW (warning) so a legacy single-pass run is never blocked
+          # before the emission is proven on a live run.
+          # TODO(integration): flip to critical after a live run confirms emission.
+          - gate_id: manifest_completeness
+            validator: lib.validators.manifest_completeness.ManifestCompletenessValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            config:
+              require_concept_tags: false   # warning day-1; flip to critical after a shaded run (§3.4)
+            description: >
+              W3 — assert every synthesized block carries a complete, well-formed
+              synthesis manifest. RESOLUTION only — NOT entailment. SHADOW/warning
+              day-1 until a live run proves the emission.
+
       # Phase 3 Subtask 4: two-pass router phases mirrored from
       # textbook_to_course. Engaged when ``COURSEFORGE_TWO_PASS=true``.
       - name: content_generation_outline
@@ -265,6 +285,25 @@ workflows:
                 contradiction_floor: 0.50
                 max_contradicted_rate: 0.05
             description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). SHADOW until §4 calibration pins the floor, then critical."
+
+          # W3 — per-block synthesis-manifest RESOLUTION gate (two-pass mirror;
+          # see textbook_to_course for the full rationale). Day-1 SHADOW
+          # (warning) until a live run proves the rewrite-tier emission.
+          # TODO(integration): flip to critical after a live run confirms emission.
+          - gate_id: manifest_completeness
+            validator: lib.validators.manifest_completeness.ManifestCompletenessValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            config:
+              require_concept_tags: false   # warning day-1; flip to critical after a shaded run (§3.4)
+            description: >
+              W3 — assert every synthesized block carries a complete, well-formed
+              synthesis manifest. RESOLUTION only — NOT entailment. SHADOW/warning
+              day-1 until a live run proves the emission.
 
       - name: packaging
         agents: [brightspace-packager]
@@ -1285,6 +1324,34 @@ workflows:
               on_error: fail_closed
             description: Block the deterministic template emitter from passing as LLM-authored content in a real run
 
+          # W3 — per-block synthesis-manifest RESOLUTION gate (single-pass
+          # mirror of the post_rewrite_validation binding). The legacy
+          # single-pass content_generation path emits HTML directly without a
+          # materialized Block list, so block_synthesis_manifest.jsonl is
+          # written only by the two-pass rewrite tier (_emit_block_synthesis_
+          # manifest). The validator's graceful-pass arm (no manifest + no
+          # Block-list) keeps this binding a no-op on a pure single-pass run;
+          # it fires MANIFEST_FILE_MISSING only if 03_content_development/ is
+          # populated AND a manifest was expected. Day-1 SHADOW (warning) so a
+          # legacy single-pass run is never blocked before the emission is
+          # proven on a live run.
+          # TODO(integration): flip to critical (severity: critical,
+          # behavior.on_fail: block) after a live run confirms emission.
+          - gate_id: manifest_completeness
+            validator: lib.validators.manifest_completeness.ManifestCompletenessValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            config:
+              require_concept_tags: false   # warning day-1; flip to critical after a shaded run (§3.4)
+            description: >
+              W3 — assert every synthesized block carries a complete, well-formed
+              synthesis manifest. RESOLUTION only — NOT entailment. SHADOW/warning
+              day-1 until a live run proves the emission.
+
       # Phase 3 Subtask 3: two-pass router phases. Engaged when
       # ``COURSEFORGE_TWO_PASS=true`` is set in the environment;
       # otherwise the legacy ``content_generation`` phase above runs
@@ -2122,6 +2189,37 @@ workflows:
               on_fail: warn
               on_error: warn
             description: W6 — post-rewrite Bloom structural enforcement; rewrite-tier assessment_item stems must structurally match their declared bloom_level.
+
+          # W3 — per-block synthesis-manifest RESOLUTION gate. Asserts every
+          # rewrite-tier block emitted a complete, well-formed
+          # block_synthesis_manifest.jsonl line: non-empty resolved
+          # source_chunk_ids (substantive types), template_id, concept_tags,
+          # and per-tier decision_capture_id. RESOLUTION only (ids resolve +
+          # fields present) — NOT entailment (W4 block_prose_entailment owns NLI
+          # grounding of prose vs chunk). Runs alongside the rewrite_source_refs
+          # gate and BEFORE W4's NLI gates (resolution is the cheap precondition).
+          # Day-1 SHADOW (warning): the manifest emission is unproven until the
+          # orchestrator's live 7B run confirms the rewrite-tier
+          # _emit_block_synthesis_manifest hook writes a complete sidecar.
+          # Mirrors the W4 block_prose_entailment shadow-first discipline.
+          # TODO(integration): flip to critical (severity: critical,
+          # behavior.on_fail: block) after a live run confirms emission.
+          - gate_id: manifest_completeness
+            validator: lib.validators.manifest_completeness.ManifestCompletenessValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            config:
+              require_concept_tags: false   # warning day-1; flip to critical after a shaded run (§3.4)
+            description: >
+              W3 — assert every synthesized block carries a complete, well-formed
+              synthesis manifest: non-empty resolved source_chunk_ids, template_id,
+              and concept_tags. RESOLUTION only (ids resolve + fields present) — NOT
+              entailment (W4 owns NLI grounding of content vs chunk). SHADOW/warning
+              day-1 until a live run proves the emission.
 
       - name: packaging
         agents: [brightspace-packager]
