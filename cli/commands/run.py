@@ -172,6 +172,7 @@ def _build_workflow_params(
     courseforge_stage: Optional[str] = None,
     libv2_root: Optional[str] = None,
     skip_training: bool = False,
+    provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the params dict for a workflow from CLI inputs.
 
@@ -264,6 +265,18 @@ def _build_workflow_params(
     # licensing posture documented in docs/LICENSING.md.
     if skip_training:
         params["skip_training"] = True
+
+    # W1 Gap C (§2.3): thread the EXPLICIT run provider into params so the
+    # runner's authoring-route fill (`_apply_authoring_route_env`) honors an
+    # explicit `--api-provider` for the env-driven generation surfaces (not
+    # just the orchestrator BackendSpec). Only an explicitly-passed provider
+    # is threaded — the `_resolve_provider` `anthropic` fallback is NOT, so a
+    # bare run with `--api-provider` unset still resolves the authoring envs
+    # via `LLM_PROVIDER` > `local` (the documented single-switch default).
+    # Injecting the fallback here would push `anthropic` onto the authoring
+    # envs and regress the local default.
+    if provider:
+        params["provider"] = provider
 
     return params
 
@@ -804,6 +817,10 @@ def run_command(
         courseforge_stage=courseforge_stage,
         libv2_root=libv2_root,
         skip_training=skip_training,
+        # Pass the EXPLICIT flag (None when unset), not the
+        # `_resolve_provider` anthropic-fallback value, so an unset provider
+        # leaves the authoring-env resolution to LLM_PROVIDER > local.
+        provider=api_provider,
     )
 
     # -------- dry-run: plan only, no side effects ------------------------

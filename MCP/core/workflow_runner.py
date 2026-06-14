@@ -139,6 +139,38 @@ _TEXTBOOK_SYNTHESIS_PROVIDER_ENV = "TEXTBOOK_SYNTHESIS_PROVIDER"
 # training-pair corpus through a ToS-unclean provider by default.
 _TRAINFORGE_SYNTHESIS_PROVIDER_ENV = "TRAINFORGE_SYNTHESIS_PROVIDER"
 
+# W1 Gap A — providers that are local / ToS-clean OSS. Used by
+# ``_apply_authoring_route_env`` to decide whether to redirect the two-pass
+# block-routing policy to the all-local variant under the single switch.
+# ``together`` is cloud but ToS-clean OSS; both keep the two-pass router off
+# the anthropic ``large`` capability tier in the canonical
+# ``block_routing.yaml``. Mirrors the resolved set the license-clean runbook
+# (``docs/operations/license-clean-run.md``) documents.
+_LOCAL_OSS_PROVIDERS: frozenset = frozenset({"local", "together"})
+
+# W1 Gap A — the all-local block-routing variant the single switch points
+# ``COURSEFORGE_BLOCK_ROUTING_PATH`` at when an all-local two-pass run is
+# requested. Reuses the existing license-clean sibling rather than minting a
+# third near-identical routing file (which would need its own schema
+# regression + drift guard and immediately drift from the license-clean
+# variant). Repo-root-relative; ``load_block_routing_policy`` resolves it.
+_ALL_LOCAL_BLOCK_ROUTING_PATH = (
+    "Courseforge/config/block_routing.license_clean.yaml"
+)
+
+# W1 Gap A — the tier-default rewrite/outline provider envs. Filling these
+# under the single switch covers the no-policy-file edge case where the
+# block-routing loader returns an empty policy and the router falls to
+# ``COURSEFORGE_REWRITE_PROVIDER`` → ``_rewrite_provider.DEFAULT_PROVIDER``
+# (``"anthropic"``). Both filled with setdefault semantics.
+_TWO_PASS_TIER_PROVIDER_ENVS: Tuple[str, ...] = (
+    "COURSEFORGE_REWRITE_PROVIDER",
+    "COURSEFORGE_OUTLINE_PROVIDER",
+)
+
+_BLOCK_ROUTING_PATH_ENV = "COURSEFORGE_BLOCK_ROUTING_PATH"
+_TWO_PASS_ENV = "COURSEFORGE_TWO_PASS"
+
 # Master opt-out for the A5 corpus-generalization defaults-on path. When
 # truthy, ``_apply_corpus_generalization_defaults`` returns early and sets
 # NOTHING — neither the measured graph-shaping flags nor the
@@ -1175,6 +1207,19 @@ class WorkflowRunner:
         # reach run_workflow keep the default-off legacy contract.
         self._apply_corpus_generalization_defaults(workflow_type)
 
+        # W1 Gap C: fill the four blessed authoring-route provider envs
+        # (COURSEFORGE_PROVIDER / COURSEPLANNER_PROVIDER /
+        # TRAINFORGE_ASSESSMENT_PROVIDER / TRAINFORGE_SYNTHESIS_PROVIDER) so a
+        # bare `ed4all run --provider local` is a true single switch and does
+        # not hard-fail at `_enforce_authoring_provider_route`. Gap A (all-
+        # local two-pass routing) is appended inside the same helper. The
+        # CLI threads `--provider` into `workflow_params["provider"]`; absent
+        # that, resolution falls to `LLM_PROVIDER` > `local`. setdefault
+        # semantics keep any operator/GUI-pinned env intact.
+        self._apply_authoring_route_env(
+            workflow_type, str(workflow_params.get("provider", "") or "")
+        )
+
         # Initialize phase outputs (may already exist from partial run)
         phase_outputs: Dict[str, Dict] = workflow_state.get("phase_outputs", {})
 
@@ -1724,6 +1769,87 @@ class WorkflowRunner:
                 if agent in AGENT_SUBAGENT_SET:
                     out.append((phase.name, agent))
         return out
+
+    def _apply_authoring_route_env(
+        self, workflow_type: str, provider_hint: str = ""
+    ) -> Dict[str, str]:
+        """Fill the four AGENT_AUTHORING_PROVIDER_ENV_MAP envs for a turnkey run.
+
+        W1 Gap C. CLI parity with
+        ``gui.services.run_service._apply_authoring_route_env``: a headless /
+        CLI run with no Claude session draining the mailbox must resolve every
+        LLM-needing authoring agent through the in-process provider lattice, or
+        ``_enforce_authoring_provider_route`` fails it. A bare
+        ``ed4all run textbook-to-course --provider local`` would otherwise hard-
+        fail because ``COURSEFORGE_PROVIDER`` / ``COURSEPLANNER_PROVIDER`` /
+        ``TRAINFORGE_ASSESSMENT_PROVIDER`` are unset (only
+        ``TRAINFORGE_SYNTHESIS_PROVIDER`` is filled today by
+        ``_apply_corpus_generalization_defaults``).
+
+        setdefault semantics — an env already set (operator export, GUI
+        settings ``model_routing``, or a prior overlay) is left intact.
+        Resolution per unset env: ``provider_hint`` > ``LLM_PROVIDER`` >
+        ``"local"`` (license-clean default; an air-gapped Ollama/vLLM lattice
+        provider that needs no key). The implementation is structurally
+        identical to the GUI helper (drift-guarded by a test) but lives in
+        ``MCP/`` so the orchestrator never imports the opt-in ``gui`` extra.
+
+        W1 Gap A (appended below): when the resolved provider is local /
+        ToS-clean OSS AND the two-pass router is enabled, redirect the
+        block-routing policy to the all-local variant so the ``large``
+        capability tier (canonical: anthropic) routes local, and fill the
+        tier-default rewrite/outline provider envs so a no-policy-file run
+        still resolves local instead of the ``_rewrite_provider``
+        ``DEFAULT_PROVIDER="anthropic"`` code fallback.
+
+        Returns the env vars this call set (logging / tests). A no-op for every
+        non-pipeline workflow (mirrors ``_apply_corpus_generalization_defaults``
+        scope) and for a run where the operator already pinned every env.
+        """
+        if workflow_type not in _CORPUS_GENERALIZATION_WORKFLOWS:
+            return {}
+
+        resolved = (
+            (provider_hint or "").strip()
+            or os.environ.get("LLM_PROVIDER", "").strip()
+            or "local"
+        )
+
+        applied: Dict[str, str] = {}
+        # Gap C — the four blessed authoring-route envs.
+        for env_var in AGENT_AUTHORING_PROVIDER_ENV_MAP.values():
+            if os.environ.get(env_var, "").strip():
+                continue
+            os.environ[env_var] = resolved
+            applied[env_var] = resolved
+
+        # Gap A — all-local two-pass routing. Only when the resolved authoring
+        # provider is local / ToS-clean OSS AND the two-pass router is enabled.
+        if resolved in _LOCAL_OSS_PROVIDERS and self._env_truthy(_TWO_PASS_ENV):
+            # Redirect the block-routing policy to the all-local variant so the
+            # `large` capability tier (canonical: anthropic) routes local.
+            # setdefault: an operator who already pinned the path keeps it.
+            if not os.environ.get(_BLOCK_ROUTING_PATH_ENV, "").strip():
+                os.environ[_BLOCK_ROUTING_PATH_ENV] = _ALL_LOCAL_BLOCK_ROUTING_PATH
+                applied[_BLOCK_ROUTING_PATH_ENV] = _ALL_LOCAL_BLOCK_ROUTING_PATH
+            # Belt-and-braces: also fill the tier-default rewrite/outline envs
+            # so a NO-policy-file run (loader returns empty policy) still
+            # resolves local instead of the `_rewrite_provider`
+            # DEFAULT_PROVIDER="anthropic" code fallback.
+            for env_var in _TWO_PASS_TIER_PROVIDER_ENVS:
+                if os.environ.get(env_var, "").strip():
+                    continue
+                os.environ[env_var] = resolved
+                applied[env_var] = resolved
+
+        if applied:
+            logger.info(
+                "W1 authoring-route fill for %s (provider=%s): set %s",
+                workflow_type,
+                resolved,
+                ", ".join(f"{k}={v}" for k, v in sorted(applied.items())),
+            )
+        return applied
 
     def _apply_corpus_generalization_defaults(self, workflow_type: str) -> Dict[str, str]:
         """Turn the corpus-generalization feature set ON for a pipeline run.

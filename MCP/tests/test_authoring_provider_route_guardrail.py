@@ -28,6 +28,9 @@ _ALL_DECISION_ENVS = (
     "ED4ALL_AGENT_DISPATCH",
     "ED4ALL_MAILBOX_SERVICED",
     "LOCAL_DISPATCHER_ALLOW_STUB",
+    "LLM_PROVIDER",
+    "COURSEFORGE_TWO_PASS",
+    "COURSEFORGE_BLOCK_ROUTING_PATH",
     *AGENT_AUTHORING_PROVIDER_ENV_MAP.values(),
 )
 
@@ -156,3 +159,51 @@ def test_guardrail_skips_optional_skipped_phase(monkeypatch: pytest.MonkeyPatch)
     runner._enforce_authoring_provider_route(
         phases, {"generate_assessments": False}
     )
+
+
+# ---------------------------------------------------------------------------
+# T2 (W1) — end-to-end single-switch parity with the guardrail
+# ---------------------------------------------------------------------------
+
+
+def test_single_switch_fill_satisfies_guardrail(monkeypatch: pytest.MonkeyPatch):
+    """The full run path: corpus-generalization defaults THEN the W1
+    authoring-route fill THEN the guardrail -> NO AuthoringProviderRouteError.
+
+    Proves a bare ``--provider local`` (resolved here via ``LLM_PROVIDER=local``)
+    satisfies the blessed-route guardrail with no by-hand env exports.
+    """
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "local")
+    runner = _make_runner()
+
+    runner._apply_corpus_generalization_defaults("textbook_to_course")
+    runner._apply_authoring_route_env("textbook_to_course", "")
+
+    # Does not raise — every LLM-needing agent now resolves the lattice.
+    runner._enforce_authoring_provider_route(_LLM_PHASES, {})
+
+
+def test_without_authoring_route_fill_guardrail_still_raises(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Negative control: skip the W1 fill and the guardrail DOES raise.
+
+    Proves the new fill is load-bearing — without it, a bare
+    ``--provider local`` run hard-fails exactly as it does today, because the
+    corpus-generalization defaults fill only TRAINFORGE_SYNTHESIS_PROVIDER, not
+    COURSEFORGE_PROVIDER / COURSEPLANNER_PROVIDER.
+    """
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "local")
+    runner = _make_runner()
+
+    # Corpus-generalization defaults alone do NOT fill the content/outliner
+    # authoring envs.
+    runner._apply_corpus_generalization_defaults("textbook_to_course")
+
+    with pytest.raises(AuthoringProviderRouteError) as exc:
+        runner._enforce_authoring_provider_route(_LLM_PHASES, {})
+    msg = str(exc.value)
+    assert "course-outliner" in msg
+    assert "content-generator" in msg
