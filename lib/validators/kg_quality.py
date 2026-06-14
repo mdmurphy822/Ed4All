@@ -29,20 +29,28 @@ Severity flipped from ``warning`` to ``critical`` and ``on_fail`` from
 ``warn`` to ``block``. The fixture corpus passes at the chosen
 thresholds (smallest margin: coverage at 0.5248 vs floor 0.50, +0.025).
 
-Coverage-semantics redesign (observability-only; NO logic change here).
-The ``min_coverage: 0.50`` floor now thresholds *chunk-anchored
+Coverage-semantics redesign — gate path aligned with the production
+reporter. The ``min_coverage: 0.50`` floor thresholds *chunk-anchored
 DomainConcept node-grounding* — the share of DomainConcept-or-classless
 concept nodes incident to ≥1 chunk-evidenced edge — NOT the old
-asserted/(asserted+derived) edge share. The old edge metric grew a
-quadratic LO-order-derived denominator with LO count (the rdf-shacl
-calibration corpus fell to 0.047 under it) and anti-correlated with
-quality (every quality-improving graph flag lowered it). The new
-node-grounding metric reads on the RDF/SHACL calibration corpus graph at 1.0 and on a
-RAG-course graph (76 frequency-0 lo_key_concept nodes) at ~0.69.
-Recalibration basis: the 0.50 floor is RETAINED as-is (re-derived against
-the node-grounding metric, both calibration corpora clear it). The
-coverage figure surfaces ``grounded_node_count`` / ``concept_node_count``
-plus the legacy ratio as an informational ``asserted_edge_share`` (see
+asserted/(asserted+derived) edge share. The redesign first landed in
+``KGQualityReporter.compute_metrics_only`` (the authoring-time entry
+point used by ``_run_concept_extraction``); ``KGQualityReporter.compute``
+— the method THIS gate calls — was subsequently brought into line so the
+gate verdict matches the production reporter. Before that alignment the
+gate computed the legacy edge-share over an asserted ``concept_graph.json``
+the textbook_to_course path never writes, so coverage scored 0.0 and the
+critical gate FAILED a graph the authoring reporter scored ~0.69. The old
+edge metric grew a quadratic LO-order-derived denominator with LO count
+(the rdf-shacl calibration corpus fell to 0.047 under it) and
+anti-correlated with quality (every quality-improving graph flag lowered
+it). The new node-grounding metric reads on the RDF/SHACL calibration
+corpus graph at 1.0 and on a RAG-course graph (76 frequency-0
+lo_key_concept nodes) at ~0.69. Recalibration basis: the 0.50 floor is
+RETAINED as-is (re-derived against the node-grounding metric, both
+calibration corpora clear it). The coverage figure surfaces
+``grounded_node_count`` / ``concept_node_count`` plus the legacy ratio as
+an informational ``asserted_edge_share`` (see
 ``Trainforge/rag/kg_quality_report.py``). NB: this gate is now wired
 end-to-end — an input builder is registered and ``run_gate`` forwards
 ``threshold:`` keys (``min_completeness`` etc.) into validator inputs,
@@ -51,13 +59,16 @@ so metric-floor breaches fail closed instead of passing with warnings.
 Silent-degradation finding C3 (post-Wave 91 audit) — fail-closed
 inversions:
 
-    * Missing required graph inputs (``concept_graph_path`` /
-      ``semantic_graph_path``) → ``passed=False`` with
+    * Missing the required ``semantic_graph_path`` (or ``course_slug`` /
+      ``run_id`` / ``output_dir``) → ``passed=False`` with
       ``KG_QUALITY_PEDAGOGY_GRAPH_MISSING`` (critical). A
-      libv2_archival run with NO graph is a critical fail, not a pass —
-      thresholds are meaningless when no graph exists, and downstream
-      property_coverage / min_edge_count would also pass vacuously and
-      ship an empty knowledge graph to LibV2.
+      libv2_archival run with NO semantic graph is a critical fail, not a
+      pass — thresholds are meaningless when no graph exists, and
+      downstream property_coverage / min_edge_count would also pass
+      vacuously and ship an empty knowledge graph to LibV2. The asserted
+      ``concept_graph_path`` is OPTIONAL (completeness falls back to the
+      semantic graph's nodes when it is absent), so its omission alone
+      does NOT trip this arm.
     * Reporter exception → ``passed=False`` with
       ``KG_QUALITY_REPORTER_ERROR`` (critical). The previous
       ``passed=True`` swallowed silent reporter regressions.
@@ -76,8 +87,16 @@ Inputs (passed via the gate framework):
     course_slug: Required. Course slug for the report context.
     run_id: Required. Pipeline run identifier.
     output_dir: Required. Directory to write ``kg_quality_report.json``.
-    concept_graph_path: Required. Path to ``concept_graph.json``.
+    concept_graph_path: Optional. Path to the asserted
+        ``concept_graph.json``. Authoritative node set for completeness
+        WHEN PRESENT (the rdf_shacl path); when absent — the
+        textbook_to_course path emits only the semantic graph — the
+        reporter falls back to the semantic graph's nodes, so a missing
+        asserted graph is NOT a hard fail.
     semantic_graph_path: Required. Path to ``concept_graph_semantic.json``.
+        The load-bearing input: coverage (node-grounding) and the
+        completeness fallback both compute from it. A missing semantic
+        graph fails the gate closed.
     validation_report: Optional. Pre-built SHACL validation report
         object (``.results``-shaped). When absent the gate emits a
         report with empty SHACL aggregates — completeness / coverage
@@ -241,6 +260,15 @@ class KGQualityValidator:
         }
         zero_scores: Dict[str, float] = {dim: 0.0 for dim in _DIMENSIONS}
 
+        # The SEMANTIC graph is the load-bearing input — coverage
+        # (node-grounding) and the completeness fallback both compute from
+        # it. The asserted ``concept_graph.json`` is OPTIONAL: the
+        # textbook_to_course path emits only the semantic graph (no separate
+        # asserted graph), and the reporter degrades a missing asserted graph
+        # to ``{}`` internally, falling back to the semantic graph's nodes
+        # for completeness. So a present semantic_graph + absent
+        # concept_graph is NOT a hard fail; only a missing semantic graph
+        # (a libv2_archival run with NO knowledge graph at all) fails closed.
         missing: List[str] = []
         if not course_slug:
             missing.append("course_slug")
@@ -248,8 +276,6 @@ class KGQualityValidator:
             missing.append("run_id")
         if not output_dir_raw:
             missing.append("output_dir")
-        if not concept_graph_raw:
-            missing.append("concept_graph_path")
         if not semantic_graph_raw:
             missing.append("semantic_graph_path")
         if missing:
@@ -277,17 +303,18 @@ class KGQualityValidator:
                     severity="critical",
                     code="KG_QUALITY_PEDAGOGY_GRAPH_MISSING",
                     message=(
-                        "Required graph inputs missing for "
+                        "Required inputs missing for "
                         "KGQualityValidator: "
                         f"{', '.join(missing)}. A libv2_archival run "
-                        "with no concept / semantic graph is a critical "
+                        "with no semantic knowledge graph is a critical "
                         "fail — refusing to ship an empty knowledge "
-                        "graph to LibV2."
+                        "graph to LibV2. (The asserted concept_graph.json "
+                        "is OPTIONAL — completeness falls back to the "
+                        "semantic graph's nodes when it is absent.)"
                     ),
                     suggestion=(
                         "Verify the upstream concept_extraction phase "
-                        "emitted concept_graph.json and "
-                        "concept_graph_semantic.json; inspect that "
+                        "emitted concept_graph_semantic.json; inspect that "
                         "phase's logs for silent failures."
                     ),
                 )],
@@ -301,7 +328,9 @@ class KGQualityValidator:
                 output_dir=Path(output_dir_raw),
             )
             report = reporter.compute(
-                concept_graph=Path(concept_graph_raw),
+                concept_graph=(
+                    Path(concept_graph_raw) if concept_graph_raw else None
+                ),
                 semantic_graph=Path(semantic_graph_raw),
                 validation_report=inputs.get("validation_report"),
                 pedagogy_graph=(

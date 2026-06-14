@@ -69,12 +69,18 @@ class KGQualityReporter:
       proxying type/range mismatches surfaced by SHACL warning-severity
       results. Floored at 0.0.
 
-    * **coverage** — ``asserted / (asserted + derived)`` where
-      ``asserted`` is the asserted-edge count from concept_graph.json
-      and ``derived`` is the count of edges produced by inference rules
-      (extracted from per-edge ``provenance.rule`` in
-      concept_graph_semantic.json — the JSON-form analogue of the
-      named-graph quads with IRI ``https://ed4all.io/run/*/rule/*``).
+    * **coverage** — chunk-anchored ``DomainConcept`` node-grounding over
+      the SEMANTIC graph: the share of ``DomainConcept``-or-classless
+      concept nodes incident to ≥1 chunk-anchored edge (rule-less OR a
+      rule in :data:`_CHUNK_ANCHORED_RULES`). Identical metric to
+      :meth:`compute_metrics_only`. This REPLACES the old
+      ``asserted / (asserted + derived)`` edge-share metric, which grew a
+      quadratic LO-order-derived denominator and anti-correlated with
+      quality (the rdf-shacl calibration corpus fell to 0.047 under it;
+      the textbook_to_course path — which emits only the semantic graph,
+      no asserted ``concept_graph.json`` — scored 0.0). The legacy edge
+      ratio is preserved unthresholded in the coverage detail dict as
+      ``asserted_edge_share`` (informational only).
 
     The report shape:
 
@@ -136,8 +142,14 @@ class KGQualityReporter:
 
         Args:
             concept_graph: Path to ``concept_graph.json`` (asserted form).
+                Authoritative node set for completeness WHEN PRESENT (the
+                rdf_shacl path). When absent / empty (the textbook_to_course
+                path emits only the semantic graph), completeness falls back
+                to the semantic graph's nodes.
             semantic_graph: Path to ``concept_graph_semantic.json``
-                (typed-edge inference output).
+                (typed-edge inference output). Always the basis for the
+                coverage dimension (node-grounding) and the completeness
+                fallback.
             validation_report: Object with a ``results`` iterable. Each
                 result must expose ``severity``, ``source_shape``, and
                 ``focus_node`` attributes (or matching dict keys). This
@@ -155,14 +167,27 @@ class KGQualityReporter:
         concept = _load_json(concept_graph) or {}
         semantic = _load_json(semantic_graph) or {}
         nodes = _as_list(concept.get("nodes"))
-        asserted_edges = _as_list(concept.get("edges"))
+        semantic_nodes = _as_list(semantic.get("nodes"))
+        semantic_edges = _as_list(semantic.get("edges"))
 
         results = _normalize_results(validation_report)
 
         # ---- completeness
-        denominator = len(nodes)
+        # The asserted ``concept_graph.json`` is the authoritative node set
+        # when it exists (the rdf_shacl path). Many corpora — including the
+        # textbook_to_course path — emit ONLY the semantic graph
+        # (``concept_graph_semantic.json``); ``_run_concept_extraction``
+        # never writes a separate asserted ``concept_graph.json``. When the
+        # asserted graph is absent / empty, fall back to the semantic
+        # graph's nodes (which carry the same ``id`` / ``label`` predicate
+        # surface) so completeness reflects a real node set instead of an
+        # empty one. When the asserted graph IS present (rdf_shacl), its
+        # nodes win and the math is byte-identical to the legacy behavior.
+        completeness_nodes = nodes if nodes else semantic_nodes
+        denominator = len(completeness_nodes)
         numerator = sum(
-            1 for n in nodes if _node_has_required_predicates(n, self.required_predicates)
+            1 for n in completeness_nodes
+            if _node_has_required_predicates(n, self.required_predicates)
         )
         completeness_score = (
             numerator / denominator if denominator else 1.0
@@ -175,13 +200,28 @@ class KGQualityReporter:
         consistency_score = max(0.0, 1.0 - (violation_count / total_focus))
         accuracy_score = max(0.0, 1.0 - (warning_count / total_focus))
 
-        # ---- coverage
-        derived_edges, rule_outputs = _summarize_rule_outputs(semantic, self.run_id)
-        derived_count = len(derived_edges)
-        asserted_count = len(asserted_edges)
-        denom_coverage = asserted_count + derived_count
+        # ---- coverage: chunk-anchored DomainConcept node-grounding over the
+        # SEMANTIC graph (identical metric to ``compute_metrics_only``). This
+        # REPLACES the old asserted/(asserted+derived) edge-share metric,
+        # which grew a quadratic LO-order-derived denominator and
+        # anti-correlated with quality (the rdf-shacl calibration corpus fell
+        # to 0.047 under it; the textbook_to_course path scored 0.0 because
+        # no asserted concept_graph.json exists → asserted_count 0). The old
+        # edge ratio is preserved unthresholded in the coverage detail dict
+        # as ``asserted_edge_share`` (informational only). ``rule_outputs``
+        # keeps the full per-rule rollup for the report.
+        _, rule_outputs = _summarize_rule_outputs(semantic, self.run_id)
+        grounded_count, concept_node_count = _node_grounding_coverage(
+            semantic_nodes, semantic_edges,
+        )
         coverage_score = (
-            asserted_count / denom_coverage if denom_coverage else 1.0
+            grounded_count / concept_node_count
+            if concept_node_count else 1.0
+        )
+        asserted_count, derived_count = _split_asserted_derived(semantic_edges)
+        denom_edge_share = asserted_count + derived_count
+        asserted_edge_share = (
+            asserted_count / denom_edge_share if denom_edge_share else 1.0
         )
 
         # ---- per-shape rollup
@@ -221,9 +261,14 @@ class KGQualityReporter:
                 "coverage": {
                     "score": _round(coverage_score),
                     "metric": (
-                        "asserted triples / (asserted + expected-derived) "
-                        "— derived count from named-graph diff"
+                        "chunk-anchored DomainConcept node-grounding: "
+                        "DomainConcept-or-classless nodes incident to ≥1 "
+                        "chunk-anchored edge / all DomainConcept-or-classless "
+                        "nodes (share of concept vocabulary grounded in text)"
                     ),
+                    "grounded_node_count": grounded_count,
+                    "concept_node_count": concept_node_count,
+                    "asserted_edge_share": _round(asserted_edge_share),
                     "asserted_count": asserted_count,
                     "derived_count": derived_count,
                 },

@@ -2894,20 +2894,27 @@ workflows:
           #
           # Thresholds: completeness/consistency/accuracy floor at 0.95
           # (RDF/SHACL calibration corpus baseline 1.0 - 0.05); min_coverage stays at
-          # 0.50. Coverage SEMANTICS were redesigned (observability-only):
-          # the 0.50 floor now thresholds chunk-anchored DomainConcept
-          # node-grounding (share of concept nodes incident to ≥1
-          # chunk-evidenced edge), NOT the old asserted/(asserted+derived)
-          # edge share. The old edge metric grew a quadratic
-          # LO-order-derived denominator and anti-correlated with quality
-          # (the RDF/SHACL calibration corpus fell to 0.047 under it; reads 1.0 under the new
-          # metric, a RAG course ~0.69). The 0.50 floor is retained as-is,
-          # re-derived against the node-grounding metric (both calibration
-          # corpora clear it). NB: this gate is currently structurally
-          # skipped on real runs (no builder registered; min_coverage not a
-          # recognized threshold key) — wiring it is a separate queued
-          # decision. See lib/validators/kg_quality.py for full calibration
-          # notes + Trainforge/rag/kg_quality_report.py for the metric.
+          # 0.50. Coverage SEMANTICS were redesigned: the 0.50 floor
+          # thresholds chunk-anchored DomainConcept node-grounding (share
+          # of concept nodes incident to ≥1 chunk-evidenced edge), NOT the
+          # old asserted/(asserted+derived) edge share. The old edge metric
+          # grew a quadratic LO-order-derived denominator and
+          # anti-correlated with quality (the RDF/SHACL calibration corpus
+          # fell to 0.047 under it; reads 1.0 under the new metric, a RAG
+          # course ~0.69). The 0.50 floor is retained as-is, re-derived
+          # against the node-grounding metric (both calibration corpora
+          # clear it). The redesign first landed in
+          # KGQualityReporter.compute_metrics_only (the authoring-time
+          # entry point) and is now ALSO applied to KGQualityReporter.compute
+          # — the method this gate calls — so the gate verdict matches the
+          # production reporter. This gate IS wired end-to-end: an input
+          # builder is registered (MCP/hardening/gate_input_routing.py) and
+          # run_gate forwards the min_* threshold keys, so metric-floor
+          # breaches fail closed. The asserted concept_graph.json is
+          # OPTIONAL (the textbook_to_course path emits only the semantic
+          # graph; completeness falls back to its nodes); a missing SEMANTIC
+          # graph still fails closed. See lib/validators/kg_quality.py for
+          # full calibration notes + Trainforge/rag/kg_quality_report.py.
           - gate_id: kg_quality_report
             validator: lib.validators.kg_quality.KGQualityValidator
             severity: critical

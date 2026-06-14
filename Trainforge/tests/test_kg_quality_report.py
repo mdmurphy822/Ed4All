@@ -218,25 +218,108 @@ def test_severity_iri_normalization(graphs, reporter: KGQualityReporter):
 
 
 # ---------------------------------------------------------------------- #
-# Coverage (asserted vs derived)
+# Coverage — node-grounding (compute() path, aligned with
+# compute_metrics_only)
 # ---------------------------------------------------------------------- #
 
 
-def test_coverage_derived_triple_diff(graphs, reporter: KGQualityReporter):
-    """10 asserted edges + 50 derived edges -> coverage = 10/60 ≈ 0.1667."""
+def test_coverage_is_node_grounding_not_edge_share(
+    graphs, reporter: KGQualityReporter,
+):
+    """compute()'s coverage is now chunk-anchored DomainConcept
+    node-grounding over the SEMANTIC graph — NOT the legacy
+    asserted/(asserted+derived) edge share.
+
+    The semantic graph carries 3 concept nodes; 2 are grounded by a
+    chunk-anchored edge (``related_from_cooccurrence``) and the third
+    (``c-lo``) is touched only by an LO-order-derived edge
+    (``prerequisite_from_lo_order``), which does NOT ground it. So
+    coverage = 2/3, NOT the edge-share. The legacy ratio survives
+    unthresholded as ``asserted_edge_share``.
+    """
     concept, semantic = graphs
+    # Asserted concept_graph (drives completeness only; coverage ignores
+    # its edge count entirely now).
     _write_concept_graph(concept, node_count=20, edge_count=10)
-    _write_semantic_graph(
-        semantic,
-        rule_edges={"is_a_from_key_terms": 30, "related_from_cooccurrence": 20},
-        rule_versions={"is_a_from_key_terms": 1,
-                       "related_from_cooccurrence": 2},
-    )
+    # Build a semantic graph with explicit concept nodes + edges so the
+    # node-grounding numerator/denominator are deterministic.
+    semantic_payload = {
+        "kind": "concept_semantic",
+        "rule_versions": {
+            "related_from_cooccurrence": 1,
+            "prerequisite_from_lo_order": 1,
+        },
+        "nodes": [
+            {"id": "c-a", "label": "A", "class": "DomainConcept"},
+            {"id": "c-b", "label": "B", "class": "DomainConcept"},
+            {"id": "c-lo", "label": "LO", "class": "DomainConcept",
+             "node_provenance": "lo_key_concept", "frequency": 0},
+        ],
+        "edges": [
+            # chunk-anchored — grounds c-a + c-b
+            {"source": "c-a", "target": "c-b", "type": "related-to",
+             "provenance": {"rule": "related_from_cooccurrence",
+                            "rule_version": 1}},
+            # LO-order-derived — does NOT ground c-lo
+            {"source": "c-a", "target": "c-lo", "type": "prerequisite",
+             "provenance": {"rule": "prerequisite_from_lo_order",
+                            "rule_version": 1}},
+        ],
+    }
+    semantic.write_text(json.dumps(semantic_payload), encoding="utf-8")
     report = reporter.compute(concept, semantic, _StubReport())
     coverage = report["dimensions"]["coverage"]
-    assert coverage["asserted_count"] == 10
-    assert coverage["derived_count"] == 50
-    assert coverage["score"] == round(10 / 60, 4)
+    # Node-grounding: 2 of 3 concept nodes grounded.
+    assert coverage["concept_node_count"] == 3
+    assert coverage["grounded_node_count"] == 2
+    assert coverage["score"] == round(2 / 3, 4)
+    # Legacy edge-share preserved as informational (over the SEMANTIC
+    # graph's edges): 1 chunk-anchored / 2 total = 0.5.
+    assert coverage["asserted_count"] == 1
+    assert coverage["derived_count"] == 1
+    assert coverage["asserted_edge_share"] == round(1 / 2, 4)
+    # The thresholded score is node-grounding, explicitly NOT the legacy
+    # edge-share (0.5) — the whole point of the alignment.
+    assert coverage["score"] != coverage["asserted_edge_share"]
+
+
+def test_coverage_absent_asserted_graph_falls_back_to_semantic(
+    graphs, reporter: KGQualityReporter,
+):
+    """The textbook_to_course path: no asserted concept_graph.json on
+    disk. compute() must NOT score coverage 0.0 — it computes
+    node-grounding over the semantic graph, and completeness falls back to
+    the semantic graph's nodes.
+    """
+    _concept_missing, semantic = graphs
+    # Deliberately do NOT write the asserted concept_graph.json — pass a
+    # non-existent path (mirrors the production builder pointing at a
+    # sibling that _run_concept_extraction never writes).
+    semantic_payload = {
+        "kind": "concept_semantic",
+        "rule_versions": {"related_from_cooccurrence": 1},
+        "nodes": [
+            {"id": "c-a", "label": "A", "class": "DomainConcept"},
+            {"id": "c-b", "label": "B", "class": "DomainConcept"},
+        ],
+        "edges": [
+            {"source": "c-a", "target": "c-b", "type": "related-to",
+             "provenance": {"rule": "related_from_cooccurrence",
+                            "rule_version": 1}},
+        ],
+    }
+    semantic.write_text(json.dumps(semantic_payload), encoding="utf-8")
+    report = reporter.compute(_concept_missing, semantic, _StubReport())
+    coverage = report["dimensions"]["coverage"]
+    # Both concept nodes grounded → coverage 1.0 (NOT 0.0).
+    assert coverage["score"] == 1.0
+    assert coverage["concept_node_count"] == 2
+    assert coverage["grounded_node_count"] == 2
+    # Completeness falls back to the semantic graph's nodes (both carry
+    # id + label) → 1.0 over a denominator of 2.
+    completeness = report["dimensions"]["completeness"]
+    assert completeness["denominator"] == 2
+    assert completeness["score"] == 1.0
 
 
 def test_rule_outputs_iri_scheme_matches_named_graph_writer(
