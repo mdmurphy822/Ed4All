@@ -1,0 +1,36 @@
+# Smoke-run block-routing override: pin every authoring tier to the local
+# 8k-context Qwen model so the integration harness exercises the
+# `qwen2.5-7b-8k` model the task specifies (the shipped
+# Courseforge/config/block_routing.yaml pins the 7B-q4 / 14B-q4 models, which
+# WIN over the COURSEFORGE_*_MODEL env vars per the documented resolution
+# priority: per-call kwargs > YAML > tier env vars > defaults).
+#
+# Used by scripts/integration/run_local_generation_smoke.py via
+# COURSEFORGE_BLOCK_ROUTING_PATH. NOT a production policy — smoke only.
+version: 1
+
+capability_tiers:
+  small:
+    provider: local
+    model: qwen2.5-7b-8k
+    base_url: http://localhost:11434/v1
+    temperature: 0.0
+    max_tokens: 1200
+  medium:
+    provider: local
+    model: qwen2.5-7b-8k
+    base_url: http://localhost:11434/v1
+    temperature: 0.2
+    max_tokens: 2000
+  large:
+    provider: local
+    model: qwen2.5-7b-8k
+    base_url: http://localhost:11434/v1
+    temperature: 0.2
+    max_tokens: 2000
+
+defaults:
+  outline:
+    capability_tier: small
+  rewrite:
+    capability_tier: medium

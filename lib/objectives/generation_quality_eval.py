@@ -1069,6 +1069,10 @@ def run_generation_quality_eval(
         out = Path(output_path) if output_path is not None else (
             eval_dir / f"generation_quality_eval_{technique_config}_{ts}.json"
         )
+        # A caller-supplied output_path may point outside eval_dir (which we
+        # created above); ensure ITS parent exists so an explicit path never
+        # crashes on a missing intermediate directory.
+        out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
         report["_written"] = {"report_path": str(out)}
 

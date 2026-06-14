@@ -404,3 +404,21 @@ def test_write_emits_file(tmp_path):
     assert report["_written"]["report_path"] == str(out)
     on_disk = json.loads(out.read_text(encoding="utf-8"))
     assert on_disk["schema_version"] == "1.0"
+
+
+def test_write_creates_missing_output_path_parent(tmp_path):
+    """A caller-supplied output_path whose parent dir is absent must not crash.
+
+    Regression for the local-generation integration harness, which passes an
+    explicit output_path under a not-yet-created ``retrieval_eval/`` dir.
+    """
+    out = tmp_path / "retrieval_eval" / "nested" / "report.json"
+    assert not out.parent.exists()
+    report = run_generation_quality_eval(
+        _REPO_ROOT, "test-course",
+        objectives=_objectives(), blocks=_blocks(), chunks_by_id=_chunks(),
+        manifests=_manifests(), nli=_ScriptedNLI(), embedder=_FakeEmbedder(),
+        write=True, output_path=out,
+    )
+    assert out.exists()
+    assert report["_written"]["report_path"] == str(out)
