@@ -349,6 +349,7 @@ def _run_two_pass_content(
               f"{len(outline_blocks)} synthesized", flush=True)
 
     rewrite_blocks: List[Any] = []
+    citation_stats: List[Dict[str, Any]] = []
     for blk in outline_blocks:
         t0 = time.time()
         try:
@@ -371,7 +372,8 @@ def _run_two_pass_content(
         # manifest projection reads. Propagate those chunk ids onto the rewrite
         # block's source_references tuple (the manifest's documented fallback).
         rewritten = _carry_grounding(
-            blk, rewritten, source_chunks=src_by_block.get(blk.block_id, [])
+            blk, rewritten, source_chunks=src_by_block.get(blk.block_id, []),
+            stats=citation_stats,
         )
         print(
             f"  [rewrite] {blk.block_type:12s} {blk.block_id[:42]:42s} "
@@ -385,11 +387,40 @@ def _run_two_pass_content(
     manifest_path = _emit_block_synthesis_manifest(
         rewrite_blocks, content_dir, dart_chunks_path, capture
     )
-    return outline_blocks, rewrite_blocks, manifest_path
+    return outline_blocks, rewrite_blocks, manifest_path, citation_stats
+
+
+def _summarize_citation_validity(stats: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate per-block claim-citation validity (eval blind-spot surfacer).
+
+    ``coarse_provenance_rate`` is the share of blocks whose manifest chunks
+    came from the source-chunk FALLBACK because the 7B cited nothing
+    resolvable — these pass provenance_completeness trivially yet the model's
+    own per-claim citations were invalid. ``mean_claim_citation_valid_rate``
+    is the mean fraction of model-cited ids that were real chunk ids.
+    """
+    n = len(stats)
+    if not n:
+        return {
+            "blocks": 0, "coarse_provenance_blocks": 0, "coarse_provenance_rate": None,
+            "mean_claim_citation_valid_rate": None,
+        }
+    coarse = sum(1 for s in stats if s.get("used_fallback"))
+    rates = [s.get("claim_citation_valid_rate", 0.0) for s in stats]
+    return {
+        "blocks": n,
+        "coarse_provenance_blocks": coarse,
+        "coarse_provenance_rate": round(coarse / n, 4),
+        "mean_claim_citation_valid_rate": round(sum(rates) / n, 4),
+        "per_block": stats,
+    }
 
 
 def _carry_grounding(
-    outline_blk: Any, rewrite_blk: Any, source_chunks: Optional[List[Dict[str, str]]] = None
+    outline_blk: Any,
+    rewrite_blk: Any,
+    source_chunks: Optional[List[Dict[str, str]]] = None,
+    stats: Optional[List[Dict[str, Any]]] = None,
 ) -> Any:
     """Propagate VALID source chunk ids onto the rewrite block.
 
@@ -432,6 +463,8 @@ def _carry_grounding(
         if isinstance(ref, dict):
             _add(ref.get("sourceId"))
 
+    n_valid = sum(1 for c in cited if c in valid_ids) if valid_ids else 0
+    used_fallback = False
     if valid_ids:
         # Keep only ids that name a real chunk the block was given; drop the
         # 7B's prose-string hallucinations.
@@ -439,10 +472,25 @@ def _carry_grounding(
         if not chunk_ids:
             # Model cited nothing resolvable → ground in the block's own
             # source chunks (legitimate block-level provenance).
+            used_fallback = True
             chunk_ids = [c["id"] for c in source_chunks if isinstance(c, dict) and c.get("id")]
     else:
         # No source_chunks supplied (legacy/back-compat): keep the raw harvest.
         chunk_ids = cited
+
+    # Record per-block citation validity so the eval can SURFACE the 7B's
+    # actual citation quality (the model often emits a prose string instead
+    # of a chunk id). ``used_fallback`` blocks have COARSE provenance — they
+    # pass provenance_completeness trivially but the model cited nothing
+    # resolvable, which provenance_completeness alone can't see.
+    if stats is not None:
+        stats.append({
+            "block_id": getattr(rewrite_blk, "block_id", "?"),
+            "n_cited": len(cited),
+            "n_valid": n_valid,
+            "used_fallback": used_fallback,
+            "claim_citation_valid_rate": (n_valid / len(cited)) if cited else 0.0,
+        })
 
     if not chunk_ids:
         return rewrite_blk
@@ -659,13 +707,18 @@ async def _amain(args: argparse.Namespace) -> int:
     print("\n=== STAGE 2: two-pass content generation (outline -> rewrite, local 7B) ===", flush=True)
     content_dir = project_path / "03_content_development"
     t0 = time.time()
-    outline_blocks, rewrite_blocks, manifest_path = _run_two_pass_content(
+    outline_blocks, rewrite_blocks, manifest_path, citation_stats = _run_two_pass_content(
         chapters=chapters,
         objectives_by_chapter=objectives_by_chapter,
         objectives_payload=objectives_payload,
         content_dir=content_dir,
         dart_chunks_path=dart_chunks_path,
     )
+    citation_validity = _summarize_citation_validity(citation_stats)
+    print(f"  claim-citation validity: coarse_provenance_rate="
+          f"{citation_validity.get('coarse_provenance_rate')} "
+          f"mean_valid_rate={citation_validity.get('mean_claim_citation_valid_rate')}",
+          flush=True)
     print(f"  generated {len(rewrite_blocks)} blocks in {time.time()-t0:.1f}s; "
           f"manifest={manifest_path}", flush=True)
 
@@ -744,6 +797,7 @@ async def _amain(args: argparse.Namespace) -> int:
             "chapters": len(chapters),
             "objectives": plan.get("objective_ids"),
             "manifest_completeness": manifest_res,
+            "claim_citation_validity": citation_validity,
             "w5_headline": report.get("headline"),
             "w5_success_condition": report.get("success_condition"),
             "project_path": str(project_path),
