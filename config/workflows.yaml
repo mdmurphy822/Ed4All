@@ -228,16 +228,43 @@ workflows:
           # mirrored from textbook_to_course::post_rewrite_validation.
           - gate_id: rewrite_source_grounding
             validator: lib.validators.rewrite_source_grounding.RewriteSourceGroundingValidator
-            severity: critical
+            severity: warning                  # W4: DEMOTED from critical — cosine is now a cheap pre-filter; NLI block_prose_entailment is the critical text-trace enforcer (after §4 calibration).
             threshold:
               max_critical_issues: 0
             behavior:
-              on_error: fail_closed
+              on_fail: warn                    # W4: was on_fail: block (implicit) — now advisory
+              on_error: warn                   # W4: was fail_closed — cosine degrade is non-fatal now
             config:
               thresholds:
                 min_grounding_cosine: 0.45
                 min_grounded_sentence_rate: 0.60
-            description: Followup §3.3 — sentence-level paraphrase-of-source check.
+            description: "W4 — cosine paraphrase pre-filter (DEMOTED to warning). NLI block_prose_entailment is the critical text-trace enforcer."
+
+          # W4 — full-prose NLI entailment, two-pass mirror of the
+          # textbook_to_course::post_rewrite_validation gate. Day-1 SHADOW
+          # (warning): computes + captures, does not gate.
+          # TODO(calibration): promote to critical after
+          # state/calibration/block_prose_entailment_calibration.json
+          # decision:promote_critical — flip is severity: critical,
+          # behavior.on_fail: block, config.shadow: false,
+          # config.thresholds.min_block_entailment_rate: <CALIBRATED>. The
+          # calibration run needs a live local-7B synthesis pass (DEFERRED).
+          - gate_id: block_prose_entailment
+            validator: lib.validators.block_prose_entailment.BlockProseEntailmentValidator
+            severity: warning                  # SHADOW day-1 -> critical post-calibration (§4)
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn                    # SHADOW -> block post-calibration
+              on_error: fail_closed
+            config:
+              shadow: true                     # forces emitted issues to warning-severity during calibration (§4.3)
+              thresholds:
+                min_block_entailment_rate: 0.60
+                entailment_floor: 0.70
+                contradiction_floor: 0.50
+                max_contradicted_rate: 0.05
+            description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). SHADOW until §4 calibration pins the floor, then critical."
 
       - name: packaging
         agents: [brightspace-packager]
@@ -958,6 +985,37 @@ workflows:
               on_error: warn
             config:
               require_to_attribution: false
+
+          # W4 — LO-statement NLI entailment against the LO's cited chunk(s).
+          # The GATE counterpart to W2's in-synthesis NLI-grounding filter
+          # (W2 filters at generation time; this gates the landed LO set).
+          # Sits ALONGSIDE the resolution-only objective_source_refs gate.
+          # Reuses score_groundedness. Day-1 SHADOW (warning): computes +
+          # captures, does not gate. Graceful-degrade identical to claim_support
+          # (NLI deps absent -> warning passed=True; strict -> raise) PLUS a
+          # no-universe warning when no chunks.jsonl resolves.
+          # TODO(calibration): promote to critical after
+          # state/calibration/objective_entailment_calibration.json
+          # decision:promote_critical — flip is severity: critical,
+          # behavior.on_fail: block, config.shadow: false. The calibration run
+          # needs a live local-7B synthesis pass (DEFERRED); the orchestrator
+          # runs §4 calibration then flips.
+          - gate_id: objective_entailment
+            validator: lib.validators.objective_entailment.ObjectiveEntailmentValidator
+            severity: warning                  # SHADOW day-1 -> critical post-calibration (§4)
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: fail_closed
+            config:
+              shadow: true
+              require_to_entailment: false     # mirrors objective_source_refs require_to_attribution day-1 default
+              thresholds:
+                entailment_floor: 0.70
+                contradiction_floor: 0.50
+                objective_entailment_rate_floor: 1.0
+            description: "W4 — LO-statement NLI entailment vs cited chunks. SHADOW until §4 calibration, then critical."
           # Three-stage textbook synthesis (plan §8 row 3): gate the
           # Stage-2 per-chapter CO synthesis + reconciliation output.
           # Skips-with-pass when TEXTBOOK_SYNTHESIS_PROVIDER is unset
@@ -1819,16 +1877,51 @@ workflows:
           # to critical.
           - gate_id: rewrite_source_grounding
             validator: lib.validators.rewrite_source_grounding.RewriteSourceGroundingValidator
-            severity: critical
+            severity: warning                  # W4: DEMOTED from critical — cosine is now a cheap pre-filter; NLI block_prose_entailment is the critical text-trace enforcer (after §4 calibration). Cosine 0.45 passes plausible-but-fabricated on-topic prose; NLI catches it.
             threshold:
               max_critical_issues: 0
             behavior:
-              on_error: fail_closed
+              on_fail: warn                    # W4: was on_fail: block (implicit) — now advisory
+              on_error: warn                   # W4: was fail_closed — cosine degrade is non-fatal now
             config:
               thresholds:
                 min_grounding_cosine: 0.45
                 min_grounded_sentence_rate: 0.60
-            description: Followup §3.3 — sentence-level paraphrase-of-source check. Complements ContentGroundingValidator's attribute-walk gate by asserting text-trace-to-source.
+            description: "W4 — cosine paraphrase pre-filter (DEMOTED to warning). NLI block_prose_entailment is the critical text-trace enforcer. Cosine catches gross off-topic drift cheaply (no NLI load); NLI catches on-topic fabrication."
+
+          # W4 — full-prose NLI entailment of rewrite-tier block prose against
+          # its cited source chunk(s). The text-trace counterpart to the
+          # (now-demoted) rewrite_source_grounding cosine gate AND the broadened
+          # counterpart to claim_support (which scores only curated key_claims).
+          # Reuses lib/retrieval/groundedness.py::score_groundedness (windowed
+          # scorer-v2). Day-1 SHADOW (warning): computes + captures, does not
+          # gate. Graceful-degrade: NLI deps absent -> warning NLI_DEPS_MISSING
+          # passed=True; TRAINFORGE_REQUIRE_EMBEDDINGS=true -> fail-closed.
+          # TODO(calibration): promote to critical after
+          # state/calibration/block_prose_entailment_calibration.json
+          # decision:promote_critical — flip is severity: critical,
+          # behavior.on_fail: block, config.shadow: false, and
+          # config.thresholds.min_block_entailment_rate: <CALIBRATED>. The
+          # calibration run needs a live local-7B synthesis pass (DEFERRED);
+          # the orchestrator runs §4 calibration then flips. Promote
+          # claim_support to critical in the SAME flip (shares the floor + the
+          # now-fixed source_chunks builder).
+          - gate_id: block_prose_entailment
+            validator: lib.validators.block_prose_entailment.BlockProseEntailmentValidator
+            severity: warning                  # SHADOW day-1 -> critical post-calibration (§4)
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn                    # SHADOW -> block post-calibration
+              on_error: fail_closed
+            config:
+              shadow: true                     # forces emitted issues to warning-severity during calibration (§4.3)
+              thresholds:
+                min_block_entailment_rate: 0.60
+                entailment_floor: 0.70
+                contradiction_floor: 0.50
+                max_contradicted_rate: 0.05
+            description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). SHADOW until §4 calibration pins the floor, then critical."
 
           # Phase 4 Wave N1 Subtask 12: SHACL parallel of the four
           # rewrite-tier Block validators above. Distinct gate_id

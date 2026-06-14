@@ -594,13 +594,23 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 16 | 2 | 18 |
+| `course_generation` | 15 | 4 | 19 |
 | `intake_remediation` | 2 | 0 | 2 |
 | `batch_dart` | 2 | 0 | 2 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 38 | 38 | 76 |
+| `textbook_to_course` | 37 | 41 | 78 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **64** | **43** | **107** |
+| **Total** | **62** | **48** | **110** |
+
+> W4 SHADOW landing (NLI grounding gates): `rewrite_source_grounding` DEMOTED
+> critical → warning in `course_generation` + `textbook_to_course`
+> (post_rewrite_validation); two NLI gates added in **shadow/warning** —
+> `block_prose_entailment` (post_rewrite_validation, both workflows) +
+> `objective_entailment` (course_planning, textbook_to_course). The
+> calibration-gated critical flip (which also promotes `claim_support` to
+> critical) is DEFERRED — see the `# TODO(calibration)` markers in
+> `config/workflows.yaml` and `plans/finegrain/w4-nli-grounding-gate.md` §4.
+> The count table is re-derived again at the critical-flip landing.
 
 ---
 
