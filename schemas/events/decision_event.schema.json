@@ -83,7 +83,6 @@
         "bert_ensemble_member_loaded",
         "bert_ensemble_replacement_selection",
         "block_assessment_item_payload_check",
-        "block_best_of_n_selection",
         "block_capability_escalation",
         "block_content_type_check",
         "block_curie_anchoring_check",
