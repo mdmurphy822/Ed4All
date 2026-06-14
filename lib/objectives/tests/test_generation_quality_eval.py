@@ -238,6 +238,39 @@ def test_provenance_mismatch_drops_matches():
     assert report["provenance_audit"]["manifest_matches_cited_rate"] < 1.0
 
 
+def test_provenance_match_resolves_block_cited_slug_to_chunk_id():
+    """A block that cited by DART slug while the manifest holds the resolved
+    chunk id must still count as a match when a resolver is supplied.
+
+    Regression for the integration success-condition: the outline tier cited
+    ``dart:{slug}#{hash}`` source_refs; ``_carry_grounding`` propagated those
+    slugs onto the rewrite block's ``source_ids``; the manifest projection
+    resolved each slug to its chunk id. Comparing resolved-manifest-chunks
+    against raw-block-slugs gave a spurious ``manifest_matches_cited_rate=0.0``.
+    """
+    # Block b1 cites by slug; manifest b1 holds the resolved chunk id "c1".
+    blocks = _blocks()
+    blocks[0] = Block(
+        block_id="b1", block_type="example", page_id="p1", sequence=0,
+        content="Photosynthesis converts light into chemical energy in plants.",
+        objective_ids=("CO-01",), source_ids=("dart:bio-ch1#deadbeef",),
+    )
+
+    def _resolver(source_id):
+        # The DART slug resolves to chunk c1; a bare chunk id resolves to itself.
+        if source_id == "dart:bio-ch1#deadbeef":
+            return {"id": "c1"}
+        return {"id": source_id}
+
+    # Without a resolver: spurious mismatch (raw slug != resolved chunk id).
+    no_res = _run(blocks=blocks, manifests=_manifests())
+    assert no_res["provenance_audit"]["manifest_matches_cited_rate"] < 1.0
+
+    # With the resolver: the slug resolves to c1 → manifest ⊆ block_cited holds.
+    with_res = _run(blocks=blocks, manifests=_manifests(), source_resolver=_resolver)
+    assert with_res["provenance_audit"]["manifest_matches_cited_rate"] == pytest.approx(1.0)
+
+
 def test_provenance_none_is_null_and_not_met():
     report = _run(manifests=None)
     assert report["headline"]["provenance_completeness_rate"] is None

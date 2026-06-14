@@ -586,6 +586,13 @@ async def _amain(args: argparse.Namespace) -> int:
     block_dicts = [_block_to_w5_dict(b) for b in rewrite_blocks]
     w5_manifests = _w3_manifest_to_w5(manifest_lines)
 
+    # Same resolver the W3 manifest projection used (chunk id ∪ dart:slug →
+    # chunk record). The provenance cross-check resolves the block's cited
+    # source ids to chunk-id space so a block that cited by DART slug (while
+    # the manifest holds the resolved chunk id) is not a spurious mismatch.
+    from MCP.tools.pipeline_tools import _build_manifest_chunk_resolver
+    source_resolver = _build_manifest_chunk_resolver(dart_chunks_path)
+
     print("  loading NLI + embedder for W5 entailment scoring (cuda)...", flush=True)
     t0 = time.time()
     # The W5 harness writes to output_path directly (mkdir only on its own
@@ -602,6 +609,7 @@ async def _amain(args: argparse.Namespace) -> int:
         technique_config="LOCAL7B",
         write=True,
         output_path=w5_out,
+        source_resolver=source_resolver,
     )
     print(f"  run_generation_quality_eval: {time.time()-t0:.1f}s", flush=True)
 

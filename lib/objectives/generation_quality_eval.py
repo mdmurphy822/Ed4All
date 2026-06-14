@@ -463,8 +463,38 @@ def _manifest_complete(manifest: Dict[str, Any]) -> bool:
     return has_template or has_scaffold
 
 
+def _resolve_to_chunk_id(source_id: str, source_resolver: Optional[Any]) -> str:
+    """Map a block-cited source id to its chunk id via the manifest resolver.
+
+    A block may cite by chunk id directly (W2 ``key_claims[].source_chunk_ids``)
+    OR by DART slug (``dart:{slug}#{block_id}``, the outline ``source_refs``
+    shape). The manifest projection resolves both to chunk ids, so the
+    ``manifest ⊆ block_cited`` cross-check must compare in the SAME (chunk-id)
+    namespace — otherwise a block that cited by slug while the manifest holds
+    the resolved chunk id is a spurious mismatch. Resolves through the same
+    callable ``Block.to_synthesis_manifest`` consumed; falls back to the raw id
+    when no resolver is supplied or the id is unresolvable (already a chunk id).
+    """
+    if source_resolver is None:
+        return source_id
+    try:
+        resolved = source_resolver(source_id)
+    except Exception:  # noqa: BLE001
+        return source_id
+    if isinstance(resolved, dict):
+        cid = resolved.get("id") or resolved.get("chunk_id")
+        if isinstance(cid, str) and cid:
+            return cid
+    elif isinstance(resolved, str) and resolved:
+        return resolved
+    return source_id
+
+
 def _score_provenance(
-    blocks: List[Any], manifests: Optional[Dict[str, Any]], chunks_by_id: Dict[str, Any]
+    blocks: List[Any],
+    manifests: Optional[Dict[str, Any]],
+    chunks_by_id: Dict[str, Any],
+    source_resolver: Optional[Any] = None,
 ) -> Dict[str, Any]:
     if manifests is None:
         return {
@@ -502,7 +532,13 @@ def _score_provenance(
             if chunk_ids and all(cid in chunks_by_id for cid in chunk_ids):
                 resolved_manifests += 1
             # Cross-check: manifest source set ⊆ block's actual cited set.
-            block_cited = set(_block_source_ids(block))
+            # Resolve the block's cited ids to chunk-id space first so a block
+            # that cited by DART slug (while the manifest holds the resolved
+            # chunk id) is not a spurious namespace mismatch.
+            block_cited = {
+                _resolve_to_chunk_id(sid, source_resolver)
+                for sid in _block_source_ids(block)
+            }
             if block_cited and set(chunk_ids) <= block_cited:
                 matches += 1
             elif not block_cited and not chunk_ids:
@@ -948,6 +984,7 @@ def run_generation_quality_eval(
     capture: Optional[Any] = None,
     write: bool = True,
     output_path: Optional[Path] = None,
+    source_resolver: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Score ONE course at ONE technique config (W5 §1). Returns the report dict.
 
@@ -1002,7 +1039,7 @@ def run_generation_quality_eval(
         objective_entailment_floor=_DEFAULT_OBJECTIVE_ENTAILMENT_RATE_FLOOR,
     )
     # §1.3 provenance completeness.
-    prov = _score_provenance(block_list, manifests, chunks)
+    prov = _score_provenance(block_list, manifests, chunks, source_resolver=source_resolver)
     # §1.4 concept coverage.
     chunk_coverage = (
         (len(block_metrics["grounded_chunk_ids"]) / len(chunks))
