@@ -312,6 +312,38 @@ def test_dedup_detection():
     assert dedup["dedup_clean"] is False
 
 
+def test_dedup_ignores_cross_level_to_co_clone():
+    """A terminal objective sharing text with a child chapter objective is an
+    abstraction smell on a different axis — NOT a redundant-objective dup.
+
+    Dedup is measured WITHIN a hierarchy level, so an identical TO/CO pair
+    keeps ``dedup_clean`` True while the cross-level cosine stays visible as a
+    transparency diagnostic. Regression for the integration success-condition:
+    a 1-section smoke corpus cloned TO-01≈CO-01 (cosine 1.0) and wrongly
+    failed the ``objectives_grounded_valid`` pillar.
+    """
+    clone = {
+        "terminal_objectives": [
+            {"id": "TO-01", "statement": "Understand chapter one structure and content.",
+             "bloom_level": "understand", "hierarchy_level": "terminal"},
+        ],
+        "chapter_objectives": [
+            {"id": "CO-01", "statement": "Understand chapter one structure and content.",
+             "bloom_level": "remember", "hierarchy_level": "chapter"},
+            {"id": "CO-02", "statement": "Solve linear equations using inverse operations.",
+             "bloom_level": "apply", "hierarchy_level": "chapter"},
+        ],
+    }
+    report = _run(objectives=clone)
+    dedup = report["headline"]["objective_dedup"]
+    # CO-01 vs CO-02 are distinct → no within-level near-dup.
+    assert dedup["near_dup_pairs"] == 0
+    assert dedup["dedup_clean"] is True
+    # The TO≈CO identity is preserved as a cross-level diagnostic, not a failure.
+    assert dedup["cross_level_max_cosine"] is not None
+    assert dedup["cross_level_max_cosine"] > 0.9
+
+
 # --------------------------------------------------------------------------- #
 # Case 9 — success-condition wiring
 # --------------------------------------------------------------------------- #

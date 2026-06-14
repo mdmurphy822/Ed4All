@@ -178,6 +178,34 @@ def _objective_statement(lo: Dict[str, Any]) -> str:
     return ""
 
 
+def _objective_level(lo: Dict[str, Any]) -> str:
+    """Resolve an objective's hierarchy level for within-level dedup bucketing.
+
+    Prefers the explicit ``hierarchy_level`` field (Courseforge synthesized
+    form); falls back to inferring it from the canonical LO id prefix
+    (``TO-`` terminal / ``CO-`` chapter); ``"unknown"`` when neither resolves.
+
+    A terminal objective is the abstract umbrella for its child chapter
+    objectives, so a TO sharing text with one of its COs is an
+    abstraction smell on a *different* quality axis — NOT the redundant-CO
+    duplication the in-synthesis dedup pass (and this metric) guard against.
+    Bucketing by level keeps the dedup pillar measuring within-level
+    redundancy only.
+    """
+    level = lo.get("hierarchy_level")
+    if isinstance(level, str) and level.strip():
+        return level.strip()
+    lo_id = lo.get("id")
+    if isinstance(lo_id, str) and lo_id:
+        try:
+            from lib.ontology.learning_objectives import hierarchy_from_id
+
+            return hierarchy_from_id(lo_id)
+        except Exception:
+            pass
+    return "unknown"
+
+
 def _objective_cited_chunk_ids(lo: Dict[str, Any]) -> List[str]:
     """Pull structured ``source_refs[].chunk_ids[]`` (legacy list / empty skipped)."""
     ids: List[str] = []
@@ -530,31 +558,47 @@ def _embed(embedder: Any, texts: List[str]):
 def _score_dedup(
     objectives: List[Dict[str, Any]], embedder: Optional[Any]
 ) -> Dict[str, Any]:
-    statements = [s for s in (_objective_statement(lo) for lo in objectives) if s.strip()]
-    if embedder is None or len(statements) < 2:
+    # Carry the hierarchy level alongside each statement so near-dup pairs
+    # are counted WITHIN a level only (TO-vs-CO identity is a separate
+    # abstraction axis, not redundant-objective duplication — see
+    # ``_objective_level``).
+    rows = [
+        (_objective_statement(lo), _objective_level(lo))
+        for lo in objectives
+    ]
+    rows = [(s, lvl) for (s, lvl) in rows if s.strip()]
+    if embedder is None or len(rows) < 2:
         return {
             "max_pairwise_cosine": None,
             "near_dup_pairs": None,
             "dedup_clean": None,
+            "cross_level_max_cosine": None,
         }
     import numpy as np
 
+    statements = [s for (s, _lvl) in rows]
+    levels = [lvl for (_s, lvl) in rows]
     vecs = _embed(embedder, statements)
     vecs = np.asarray(vecs, dtype=np.float32)
     sims = vecs @ vecs.T
     n = sims.shape[0]
-    max_cos = 0.0
+    max_cos = 0.0  # max WITHIN-level pair cosine (the dedup-relevant signal)
+    cross_level_max = 0.0  # transparency: highest cross-level pair (e.g. TO≈CO)
     near_dups = 0
     for i in range(n):
         for j in range(i + 1, n):
             c = float(sims[i, j])
-            max_cos = max(max_cos, c)
-            if c >= DEDUP_THRESHOLD:
-                near_dups += 1
+            if levels[i] == levels[j]:
+                max_cos = max(max_cos, c)
+                if c >= DEDUP_THRESHOLD:
+                    near_dups += 1
+            else:
+                cross_level_max = max(cross_level_max, c)
     return {
         "max_pairwise_cosine": max_cos,
         "near_dup_pairs": near_dups,
         "dedup_clean": near_dups == 0,
+        "cross_level_max_cosine": cross_level_max,
     }
 
 
