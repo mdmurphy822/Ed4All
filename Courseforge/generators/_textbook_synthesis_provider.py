@@ -198,6 +198,60 @@ _WINDOW_OBJECTIVES_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _bloom_verb_examples(*, per_level: int = 5) -> str:
+    """Render a deterministic per-level sample of canonical Bloom *action*
+    verbs, sourced from the single-source-of-truth taxonomy.
+
+    Drives the synthesis prompt so the model picks a real action verb
+    (``explain`` / ``apply`` / ``analyze`` / ``evaluate`` / ``design``)
+    instead of reusing the level *name* (``understand``) as the verb — the
+    measured root cause of both the ABCD_VERB_BLOOM_MISMATCH gate failures
+    and the bloom-monotony of the "Understand the core concepts of X"
+    template. Sorted output keeps the prompt byte-stable across runs.
+    """
+    try:
+        from lib.ontology.learning_objectives import BLOOMS_VERBS
+    except Exception:  # noqa: BLE001 — taxonomy load is the floor, never fatal
+        return ""
+    lines: List[str] = []
+    for level in _BLOOM_LEVEL_ENUM:
+        verbs = sorted(BLOOMS_VERBS.get(level, frozenset()))[:per_level]
+        if verbs:
+            lines.append(f"    {level}: {', '.join(verbs)}")
+    return "\n".join(lines)
+
+
+# W2 — Bloom-diversity + action-verb directive shared by every objective
+# surface (window / chapter / outline / reconcile). Two coupled instructions,
+# both grounding-preserving:
+#   1. The behavior verb MUST be a concrete *action* verb, NEVER the Bloom
+#      level name itself (the level name "understand"/"apply" is not a valid
+#      Bloom verb — it fails AbcdObjectiveValidator's BLOOMS_VERBS check).
+#   2. When a window/chapter teaches material at more than one cognitive
+#      level, the emitted objectives SHOULD span that range (recall/explain
+#      for foundational facts, apply/analyze/evaluate for the higher-order
+#      skills the prose actually demonstrates) — diversity grounded in the
+#      content, never fabricated.
+_BLOOM_DIVERSITY_DIRECTIVE = (
+    "BLOOM DIVERSITY + VERB RULE (grounded, do NOT fabricate):\n"
+    "- The ABCD behavior verb MUST be a concrete ACTION verb chosen for the "
+    "declared bloom_level — NEVER the level name itself. The bare words "
+    '"understand"/"apply"/"analyze"/"remember"/"evaluate"/"create" are Bloom '
+    "LEVELS, not verbs; do not use them as the verb.\n"
+    "- Pick the verb from the level's canonical action verbs:\n"
+    f"{_bloom_verb_examples()}\n"
+    "- bloom_verb and abcd.behavior.verb MUST be the SAME action verb, and "
+    "the statement MUST open with that verb (e.g. \"Explain ...\", "
+    "\"Apply ...\", \"Evaluate ...\") — not \"Understand the core concepts "
+    "of X\".\n"
+    "- When these chunks teach material at more than one cognitive level, "
+    "make the objectives span that range: some lower-order (remember/"
+    "understand) for the foundational facts the prose states, and some "
+    "higher-order (apply/analyze/evaluate) for the skills the prose actually "
+    "demonstrates. Only assign a level the content genuinely supports."
+)
+
+
 _TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT = (
     "You are a Courseforge textbook-synthesis author. You read a "
     "textbook's structure and prose and synthesize course design "
@@ -205,10 +259,14 @@ _TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT = (
     "objectives, and a domain-concept vocabulary. Emit ONLY a JSON "
     "object — no preamble, no markdown fences, no commentary. Every "
     "objective follows the ABCD framework (Audience, Behavior, "
-    "Condition, Degree); behavior verbs MUST come from the canonical "
-    "Bloom's taxonomy (remember/understand/apply/analyze/evaluate/"
-    "create). Ground every artifact in the supplied textbook content; "
-    "do NOT invent chapters, concepts, or facts not present."
+    "Condition, Degree); the behavior verb MUST be a concrete ACTION "
+    "verb from the canonical Bloom's taxonomy (e.g. explain, apply, "
+    "analyze, evaluate, design) chosen for the objective's cognitive "
+    "level — never the bare level name (remember/understand/apply/"
+    "analyze/evaluate/create are LEVELS, not verbs). Author objectives "
+    "across a RANGE of Bloom levels appropriate to the content, not all "
+    "at one level. Ground every artifact in the supplied textbook "
+    "content; do NOT invent chapters, concepts, or facts not present."
 )
 
 
@@ -1321,6 +1379,7 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             f"{chunks_block}\n\n"
             "Synthesize 1-3 candidate learning objectives this window's "
             "chunks teach.\n"
+            f"{_BLOOM_DIVERSITY_DIRECTIVE}\n"
             "RESPOND ONLY WITH A JSON OBJECT with top-level key "
             '"candidate_objectives": [{"statement", "bloom_level" '
             '(lowercase enum), "bloom_verb", "abcd" {audience, behavior '
