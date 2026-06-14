@@ -345,6 +345,25 @@ def test_dedup_detection():
     assert dedup["dedup_clean"] is False
 
 
+def test_block_type_diversity_instructional_completeness():
+    """The block-type-diversity diagnostic reflects which essentials are present.
+
+    The fixture blocks are example + self_check_question + explanation + concept
+    + objective (scaffold) — so explain (concept/explanation) and example are
+    present but assessment_item is NOT → instructional_completeness = 2/3.
+    Informational only: it does not affect success_condition.met.
+    """
+    report = _run()
+    btd = report["headline"]["block_type_diversity"]
+    assert btd["has_explain"] is True
+    assert btd["has_example"] is True
+    assert btd["has_assessment"] is False  # no assessment_item block in fixture
+    assert btd["instructional_completeness"] == pytest.approx(2 / 3, abs=1e-3)
+    assert btd["histogram"].get("concept") == 1
+    # Diagnostic must not gate the success condition.
+    assert "block_type_diversity" not in report["success_condition"]["pillars"]
+
+
 def test_dedup_ignores_cross_level_to_co_clone():
     """A terminal objective sharing text with a child chapter objective is an
     abstraction smell on a different axis — NOT a redundant-objective dup.

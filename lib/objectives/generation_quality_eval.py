@@ -560,6 +560,45 @@ def _score_provenance(
 # Bloom distribution (§1.5)
 # --------------------------------------------------------------------------- #
 
+#: Pedagogically-essential instructional block types. A "complete"
+#: instructional unit explains a concept, illustrates it with a worked
+#: example, and checks understanding with an assessment. The 7B smoke course
+#: today emits only concept+explanation, so this diagnostic surfaces the
+#: instructional-depth gap vs a full course (informational — NOT a
+#: success_condition pillar).
+_INSTRUCTIONAL_ESSENTIAL_TYPES = ("concept", "explanation", "example", "assessment_item")
+
+
+def _score_block_type_diversity(blocks: List[Any]) -> Dict[str, Any]:
+    """Block-type histogram + instructional-completeness diagnostic.
+
+    ``instructional_completeness`` is the share of the pedagogically-essential
+    types (:data:`_INSTRUCTIONAL_ESSENTIAL_TYPES`) present at least once.
+    Treats concept/explanation as interchangeable for the "explain" slot, so
+    the essentials reduce to {explain, example, assessment_item}. Purely
+    informational: a grounded-but-thin course (concept+explanation only)
+    reads low here without failing the W5 success condition.
+    """
+    import collections
+
+    histogram = collections.Counter(
+        str(_block_field(b, "block_type", "") or "") for b in blocks
+    )
+    present = set(histogram)
+    has_explain = bool(present & {"concept", "explanation"})
+    has_example = "example" in present
+    has_assessment = "assessment_item" in present
+    essentials_met = sum((has_explain, has_example, has_assessment))
+    return {
+        "histogram": dict(histogram),
+        "distinct_types": len([t for t in present if t]),
+        "has_explain": has_explain,
+        "has_example": has_example,
+        "has_assessment": has_assessment,
+        "instructional_completeness": round(essentials_met / 3.0, 4),
+    }
+
+
 def _score_bloom(objectives: List[Dict[str, Any]]) -> Dict[str, Any]:
     from lib.ontology.bloom import BLOOM_LEVELS
 
@@ -1075,6 +1114,7 @@ def run_generation_quality_eval(
         "hierarchy_valid": hierarchy_valid,
         "block_lo_reference_rate": block_lo_rate,
         "windowed_rescue_share": block_metrics["windowed_rescue_share"],
+        "block_type_diversity": _score_block_type_diversity(block_list),
     }
     provenance_audit = {
         "manifest_chunk_resolution_rate": prov["manifest_chunk_resolution_rate"],
