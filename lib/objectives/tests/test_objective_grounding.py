@@ -44,22 +44,21 @@ def test_grounded_vs_ungrounded_split_and_drop():
     assert result.dropped_count == len(result.ungrounded)
 
 
-def test_nli_absent_passthrough():
-    """NLI returns None (extras absent) → pass-through, nothing dropped."""
+def test_nli_absent_passthrough(monkeypatch):
+    """NLI unavailable (extras absent) → pass-through, nothing dropped.
+
+    Force the absent path deterministically by stubbing the NLI resolver to
+    return None — env-portable (passes whether or not transformers/torch are
+    installed in the running environment).
+    """
+    import lib.retrieval.groundedness as _g
+
+    monkeypatch.setattr(_g, "_resolve_nli", lambda nli=None: None)
     chunks_by_id = {"c1": {"id": "c1", "text": "anything"}}
     candidates = [_candidate("a statement here", ["c1"])]
 
-    class _NoneNli:
-        # score_groundedness resolves nli is not None but if it raised we'd
-        # see it; instead simulate "unavailable" by returning None from
-        # _resolve. The cleanest seam: pass nli that the scorer treats as
-        # unavailable is to monkeypatch resolve; simpler — pass a sentinel
-        # the scorer rejects. We use the documented path: an injected nli of
-        # None means resolve falls to the singleton, which is absent here.
-        pass
-
-    # Pass nli=None → score_groundedness tries the real singleton (absent in
-    # CI without transformers) → available=False → Pass C pass-through.
+    # nli=None + resolver→None → score_groundedness available=False → Pass C
+    # pass-through (no candidate dropped).
     result = ground_candidates(candidates, chunks_by_id, nli=None, require=False)
     assert result.available is False
     assert result.dropped_count == 0
