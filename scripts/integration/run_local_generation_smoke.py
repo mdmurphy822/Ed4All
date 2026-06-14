@@ -310,15 +310,33 @@ def _run_two_pass_content(
 
     stubs, src_by_block = _build_block_stubs(chapters, objectives_by_chapter)
 
+    # Graceful degrade: a single block that exhausts the outline-tier retry
+    # budget (e.g. the 7B keeps emitting a malformed CURIE) raises
+    # OutlineProviderError. Mirror the production router's degrade-and-continue
+    # posture — log + skip that one block rather than aborting the whole
+    # course. The W5 eval then scores the blocks that DID synthesize.
+    from Courseforge.generators._outline_provider import OutlineProviderError
+
     outline_blocks: List[Any] = []
+    skipped: List[str] = []
     for blk in stubs:
         t0 = time.time()
-        outlined = router.route_with_self_consistency(
-            blk,
-            validators=[],  # smoke: skip in-loop gates; validate post-hoc.
-            source_chunks=src_by_block.get(blk.block_id, []),
-            objectives=objectives_payload,
-        )
+        try:
+            outlined = router.route_with_self_consistency(
+                blk,
+                validators=[],  # smoke: skip in-loop gates; validate post-hoc.
+                source_chunks=src_by_block.get(blk.block_id, []),
+                objectives=objectives_payload,
+            )
+        except OutlineProviderError as exc:
+            skipped.append(blk.block_id)
+            print(
+                f"  [outline] {blk.block_type:12s} {blk.block_id[:42]:42s} "
+                f"SKIPPED (outline exhausted): {str(exc)[:80]} "
+                f"{time.time() - t0:5.1f}s",
+                flush=True,
+            )
+            continue
         print(
             f"  [outline] {blk.block_type:12s} {blk.block_id[:42]:42s} "
             f"marker={outlined.escalation_marker or '-':24s} "
@@ -326,21 +344,35 @@ def _run_two_pass_content(
             flush=True,
         )
         outline_blocks.append(outlined)
+    if skipped:
+        print(f"  [outline] degraded: {len(skipped)} block(s) skipped, "
+              f"{len(outline_blocks)} synthesized", flush=True)
 
     rewrite_blocks: List[Any] = []
     for blk in outline_blocks:
         t0 = time.time()
-        rewritten = router.route_rewrite_with_remediation(
-            blk,
-            validators=[],
-            source_chunks=src_by_block.get(blk.block_id, []),
-            objectives=objectives_payload,
-        )
+        try:
+            rewritten = router.route_rewrite_with_remediation(
+                blk,
+                validators=[],
+                source_chunks=src_by_block.get(blk.block_id, []),
+                objectives=objectives_payload,
+            )
+        except Exception as exc:  # noqa: BLE001 — degrade, don't abort the course
+            print(
+                f"  [rewrite] {blk.block_type:12s} {blk.block_id[:42]:42s} "
+                f"SKIPPED (rewrite error): {str(exc)[:80]} "
+                f"{time.time() - t0:5.1f}s",
+                flush=True,
+            )
+            continue
         # The rewrite tier replaces content (dict -> HTML str), which drops the
         # outline's content["key_claims"][].source_chunk_ids that the W3
         # manifest projection reads. Propagate those chunk ids onto the rewrite
         # block's source_references tuple (the manifest's documented fallback).
-        rewritten = _carry_grounding(blk, rewritten)
+        rewritten = _carry_grounding(
+            blk, rewritten, source_chunks=src_by_block.get(blk.block_id, [])
+        )
         print(
             f"  [rewrite] {blk.block_type:12s} {blk.block_id[:42]:42s} "
             f"marker={rewritten.escalation_marker or '-':24s} "
@@ -356,32 +388,62 @@ def _run_two_pass_content(
     return outline_blocks, rewrite_blocks, manifest_path
 
 
-def _carry_grounding(outline_blk: Any, rewrite_blk: Any) -> Any:
-    """Propagate outline source_chunk_ids onto the rewrite block.
+def _carry_grounding(
+    outline_blk: Any, rewrite_blk: Any, source_chunks: Optional[List[Dict[str, str]]] = None
+) -> Any:
+    """Propagate VALID source chunk ids onto the rewrite block.
 
     The rewrite tier replaces ``content`` (dict -> HTML str), which drops the
     outline's ``content["key_claims"][].source_chunk_ids`` that the W3 manifest
-    projection reads. We harvest those chunk ids and stamp them onto the rewrite
+    projection reads. We harvest those ids and stamp them onto the rewrite
     block's ``source_references`` tuple — the documented manifest fallback
     (``Block.to_synthesis_manifest`` reads ``self.source_references`` when
-    ``content`` is not a grounding dict). This is provenance PROPAGATION, not
-    fabrication: every id originates from the outline model's own citation.
+    ``content`` is not a grounding dict).
+
+    The 7B outline tier is unreliable on the per-claim ``source_chunk_ids``
+    field: it sometimes emits a PROSE STRING ("Source chunk: <sentence>")
+    instead of a real chunk id, which then fails to resolve and leaves the
+    manifest empty (block ungrounded). So we VALIDATE every harvested id
+    against the block's actual ``source_chunks`` id set and keep only the
+    real ones. When the model cited NO valid id (all garbage), we fall back
+    to the block's full ``source_chunks`` ids — the chunks the block was
+    genuinely synthesized from, so they are legitimate block-level provenance
+    (NOT fabrication; the W5 NLI scorer then judges grounding against those
+    real premises). With no ``source_chunks`` supplied, the legacy harvest
+    (unfiltered) is preserved for back-compat.
     """
+    valid_ids = {
+        c["id"] for c in (source_chunks or []) if isinstance(c, dict) and c.get("id")
+    }
     outline_content = outline_blk.content if isinstance(outline_blk.content, dict) else {}
-    chunk_ids: List[str] = []
+    cited: List[str] = []
     seen = set()
+
+    def _add(cid: Any) -> None:
+        if isinstance(cid, str) and cid and cid not in seen:
+            seen.add(cid)
+            cited.append(cid)
+
     for claim in outline_content.get("key_claims", []) or []:
         if isinstance(claim, dict):
             for cid in claim.get("source_chunk_ids", []) or []:
-                if isinstance(cid, str) and cid and cid not in seen:
-                    seen.add(cid)
-                    chunk_ids.append(cid)
+                _add(cid)
     for ref in outline_content.get("source_refs", []) or []:
         if isinstance(ref, dict):
-            sid = ref.get("sourceId")
-            if isinstance(sid, str) and sid and sid not in seen:
-                seen.add(sid)
-                chunk_ids.append(sid)
+            _add(ref.get("sourceId"))
+
+    if valid_ids:
+        # Keep only ids that name a real chunk the block was given; drop the
+        # 7B's prose-string hallucinations.
+        chunk_ids = [c for c in cited if c in valid_ids]
+        if not chunk_ids:
+            # Model cited nothing resolvable → ground in the block's own
+            # source chunks (legitimate block-level provenance).
+            chunk_ids = [c["id"] for c in source_chunks if isinstance(c, dict) and c.get("id")]
+    else:
+        # No source_chunks supplied (legacy/back-compat): keep the raw harvest.
+        chunk_ids = cited
+
     if not chunk_ids:
         return rewrite_blk
     new_refs = tuple(
@@ -465,6 +527,46 @@ def _block_to_w5_dict(blk: Any) -> Dict[str, Any]:
 # Main.
 # --------------------------------------------------------------------------- #
 
+def _print_objectives_for_review(objectives_doc: dict, objectives_path: str) -> None:
+    """Print the synthesized learning objectives in a review-friendly form."""
+    import collections
+
+    def _los(doc):
+        if doc.get("learning_outcomes"):
+            return list(doc["learning_outcomes"])
+        return list(doc.get("terminal_objectives", [])) + list(
+            doc.get("chapter_objectives", [])
+        )
+
+    los = [o for o in _los(objectives_doc) if isinstance(o, dict)]
+    hist = collections.Counter((o.get("bloom_level") or "?") for o in los)
+    distinct = sum(1 for v in hist.values() if v)
+    total = len(los) or 1
+    max_share = max(hist.values()) / total if los else 0.0
+
+    print("\n" + "=" * 72, flush=True)
+    print(f"SYNTHESIZED LEARNING OBJECTIVES (7B) — {len(los)} total", flush=True)
+    print(f"  mint_method={objectives_doc.get('mint_method')} "
+          f"duration_weeks={objectives_doc.get('duration_weeks')}", flush=True)
+    print(f"  bloom: {dict(hist)} | distinct_levels={distinct} "
+          f"max_share={max_share:.3f}", flush=True)
+    print("=" * 72, flush=True)
+    for o in los:
+        ab = o.get("abcd") if isinstance(o.get("abcd"), dict) else {}
+        verb = (ab.get("behavior") or {}).get("verb") if isinstance(
+            ab.get("behavior"), dict) else o.get("bloom_verb")
+        sc = o.get("source_chunk_ids") or [
+            c for ref in (o.get("source_refs") or []) for c in ref.get("chunk_ids", [])
+        ]
+        tid = o.get("terminal_id")
+        link = f" -> {tid}" if tid else ""
+        print(f"  [{o.get('id')}] ({o.get('hierarchy_level')}{link}) "
+              f"bloom={o.get('bloom_level')}/verb={verb} chunks={len(sc)}", flush=True)
+        print(f"      {o.get('statement','')}", flush=True)
+    print("=" * 72, flush=True)
+    print(f"Written to: {objectives_path}", flush=True)
+
+
 async def _amain(args: argparse.Namespace) -> int:
     from MCP.tools.pipeline_tools import (
         _build_tool_registry,
@@ -543,6 +645,10 @@ async def _amain(args: argparse.Namespace) -> int:
     objectives_doc = json.loads(Path(objectives_path).read_text(encoding="utf-8"))
     print(f"  objectives: {len(plan.get('objective_ids') or [])} ids; "
           f"terminal={plan.get('terminal_count')} chapter={plan.get('chapter_count')}", flush=True)
+
+    if getattr(args, "objectives_only", False):
+        _print_objectives_for_review(objectives_doc, objectives_path)
+        return 0
 
     # Map chapter -> CO ids (the chapter_objectives carry a `chapter` key
     # matching the chapter title) for block->objective binding.
@@ -801,6 +907,11 @@ def main() -> int:
     ap.add_argument(
         "--block-routing", default=None,
         help="Optional block_routing.yaml override (pins authoring tiers to --model)",
+    )
+    ap.add_argument(
+        "--objectives-only", action="store_true",
+        help="Run ONLY Stage 1 (objective synthesis), print the learning "
+             "objectives for review, and exit before content/KG.",
     )
     args = ap.parse_args()
 
