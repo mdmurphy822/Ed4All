@@ -249,6 +249,21 @@ def ground_candidates(
             c["grounded"] = True
             c["entailment_score"] = round(float(entailment), 6)
             c["grounding_reason"] = "cited_chunk_entailed"
+            # Fix 1B — per-chunk entailment prune (defense-in-depth, prune-only).
+            # ``score_groundedness`` collapses the objective's single claim to one
+            # argmax-entailing ``best_chunk_id``; that is the only per-passage
+            # signal already computed (no second NLI pass). Drop cited chunk_ids
+            # that did NOT achieve the entailing argmax — they were over-cited and
+            # produce diffuse/misleading provenance. ALWAYS keep ≥1 (the best). If
+            # the argmax chunk isn't among the cited ids (shouldn't happen for a
+            # cited-passage score) leave the citations untouched (anti-fabrication:
+            # never add a chunk no member cited; never zero out provenance).
+            _pruned = _prune_to_entailing(c, cited_ids, best_chunk_id)
+            if _pruned is not None:
+                c["source_chunk_ids"] = _pruned
+                _resync_source_refs(c, _pruned)
+                if len(_pruned) < len(cited_ids):
+                    c["grounding_chunk_pruned"] = True
             grounded.append(c)
             continue
 
@@ -311,6 +326,35 @@ def ground_candidates(
         reground_count=reground_count,
         entailment_floor=float(entailment_floor),
     )
+
+
+def _prune_to_entailing(
+    candidate: Dict[str, Any],
+    cited_ids: List[str],
+    best_chunk_id: Optional[str],
+) -> Optional[List[str]]:
+    """Fix 1B — shrink a grounded candidate's cited chunks to the entailing one.
+
+    The objective statement is a single NLI claim, so ``score_groundedness``
+    yields exactly one argmax-entailing ``best_chunk_id``. That is the only
+    per-passage entailment signal already computed (re-running NLI per cited
+    chunk is forbidden). Keep only ``best_chunk_id`` so an over-cited objective
+    (e.g. 25 cited chunks of which one entails) carries honest provenance.
+
+    Anti-fabrication: ``best_chunk_id`` must be one of the already-cited ids
+    (it always is for a cited-passage score) — we never add a chunk no member
+    cited. Returns ``None`` (= leave citations unchanged) when:
+
+    * there are no cited ids (nothing to prune), or
+    * ``best_chunk_id`` is missing / not among the cited ids (can't safely
+      prune without risking zero / fabricated provenance — keep-≥1 contract).
+    """
+    if not cited_ids:
+        return None
+    if not best_chunk_id or best_chunk_id not in cited_ids:
+        return None
+    # Keep the single entailing chunk (already ⊆ cited_ids → anti-fabrication).
+    return [best_chunk_id]
 
 
 def _resync_source_refs(candidate: Dict[str, Any], chunk_ids: List[str]) -> None:

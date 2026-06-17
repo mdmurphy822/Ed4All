@@ -373,14 +373,18 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 5. course_planning
    └── Synthesize canonical TO-NN / CO-NN learning objectives from
        textbook_structure; emits synthesized_objectives.json.
-       Wave 1.8: re-scales duration_weeks from the extractor's
-       chapter-driven max(8, len(chapters)) to the objective-driven
-       max(8, ceil(len(chapter_objectives) / WAVE18_COS_PER_WEEK))
-       when --weeks is unset. The objective count is the
-       authoritative pacing signal (a textbook with 6 chapters but
-       30 COs paces at 15 weeks, not 8). Skipped for
+       WS5 §3.2: re-scales duration_weeks from the extractor's
+       chapter-driven max(8, len(chapters)) to the TERMINAL-objective-
+       driven max(8, num_tos) — one week-block per WS1-clustered TO —
+       when --weeks is unset. The TO/cluster count is the authoritative
+       pacing signal; COs then distribute WITHIN each TO's week-block
+       via the §2.2 coverage-safe ceil-stride slicer (no CO dropped).
+       Falls back to the legacy CO-count formula
+       max(8, ceil(len(chapter_objectives) / WAVE18_COS_PER_WEEK)) only
+       when no TOs are available. Skipped for --weeks and
        --reuse-objectives runs (operator's pacing decisions are
-       preserved verbatim).
+       preserved verbatim). The per-week CO placement cap is the
+       separate, UNCONDITIONAL ED4ALL_COS_PER_WEEK_CAP (default auto).
 
 6. content_generation
    └── Generate course content modules (parallel batches of 10). Every
@@ -594,13 +598,13 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 15 | 6 | 21 |
+| `course_generation` | 15 | 8 | 23 |
 | `intake_remediation` | 2 | 0 | 2 |
 | `batch_dart` | 2 | 0 | 2 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 37 | 43 | 80 |
+| `textbook_to_course` | 37 | 49 | 86 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **62** | **52** | **114** |
+| **Total** | **62** | **60** | **122** |
 
 > W4 SHADOW landing (NLI grounding gates): `rewrite_source_grounding` DEMOTED
 > critical → warning in `course_generation` + `textbook_to_course`
@@ -612,6 +616,34 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 > `config/workflows.yaml` and `plans/finegrain/w4-nli-grounding-gate.md` §4.
 > The count table is re-derived again at the critical-flip landing.
 
+> WS3 landing (CO↔TO semantic-alignment detection gate): `co_terminal_alignment`
+> added in **warning** at `textbook_to_course::course_planning` (+1 warning).
+> Recomputes `cosine(co.statement, assigned_to.statement)` per chapter
+> objective to close the structural-roll-up silent-pass loophole that
+> `terminal_objective_coverage` (a roll-up check only) cannot detect.
+> DETECTION not cure (WS1's bottom-up TO derivation is the cure); fires on
+> ~80%+ of COs on the broken run, so it lands warning day-1. The
+> calibration-gated critical flip (which also promotes
+> `CO_TERMINAL_WEAK_LINK_RATE_HIGH` to critical) is DEFERRED — see the
+> `# TODO(calibration)` marker at the gate in `config/workflows.yaml`; flips
+> to critical only after WS1 proves the recomputed weak-link rate ≤0.10 on
+> ≥2 corpora. The count table is re-derived again at the critical-flip landing.
+
+> WS6a landing (source→objective coverage-audit gate): `source_coverage`
+> added in **warning** at `textbook_to_course::course_planning` (+1 warning).
+> The symmetric companion to `co_terminal_alignment` — embeds each
+> content-bearing textbook section and asserts ≥1 synthesized objective
+> (CO or TO) covers it above a cosine floor (default 0.45), flagging
+> `SOURCE_SECTION_UNCOVERED` + the aggregate `SOURCE_COVERAGE_LOW`. A section
+> no objective covers is source material downstream content generation never
+> authors a page for. MEASUREMENT guardrail: on the real corpus 135/135
+> content sections are covered at floor 0.45 (mean cosine 0.73), so it passes
+> clean — the gate guards OTHER corpora. The calibration-gated critical flip
+> (which calibrates the floor up toward ~0.55 on ≥2 corpora and promotes
+> `SOURCE_COVERAGE_LOW` to critical) is DEFERRED — see the
+> `# TODO(calibration)` marker at the gate in `config/workflows.yaml`. The
+> count table is re-derived again at the critical-flip landing.
+
 > W3 manifest-completeness landing: the `manifest_completeness` gate
 > (per-block synthesis-manifest RESOLUTION) added in **shadow/warning** at
 > BOTH `content_generation` (single-pass) and `post_rewrite_validation`
@@ -620,6 +652,26 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 > warning until a live 7B run proves the rewrite-tier emission hook
 > (`_emit_block_synthesis_manifest`, gated by `COURSEFORGE_EMIT_BLOCKS`); flip
 > to critical at the `# TODO(integration)` markers in `config/workflows.yaml`.
+
+> Numeric-literal grounding landing (math-fabrication control): the
+> `numeric_literal_grounding` gate added in **shadow/warning** at
+> `post_rewrite_validation` in BOTH `course_generation` + `textbook_to_course`
+> (+1 warning each). It is the fabrication control for NUMERIC / math content
+> the number-blind NLI gate (`block_prose_entailment`) cannot provide —
+> established this session (`plans/finegrain/content-block-quality-2026-06.md`
+> iters 5/5b): DeBERTa-v3-mnli scores the fabrication `-40/88 = -5/11` (absent
+> from all 72 real chunks) ABOVE every grounded math claim, and
+> `groundedness._is_computational` EXEMPTS such claims. The gate cross-checks
+> each prose fraction's `num/denom` pair against the cited source under
+> OCR-tolerant containment (`lib/validators/numeric_literal_grounding.py`,
+> reusing the `ED4ALL_ANSWER_NLI_ADD` numeric precedent in
+> `lib/retrieval/citation_attribution.py`). Measured CLEAN on the real
+> sample-course-a corpus (grounded blocks 0% source-absent including
+> OCR-flattened + computed results; the 2 fabrication blocks flag; zero false
+> positives). Day-1 warning; flip to critical at the `# TODO(calibration)`
+> markers in `config/workflows.yaml` after a ≥2-corpus FP-rate measurement
+> (the per-block `source_absent_ratio` is on every decision event so the flip
+> can move to a ratio floor if a later corpus shows computed-result FPs).
 
 ---
 
@@ -653,7 +705,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 47 |
 | `DART_*` | [`DART/CLAUDE.md § Opt-In Behavior Flags`](DART/CLAUDE.md) | 6 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 23 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 34 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 44 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -672,6 +724,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | `ED4ALL_ANSWER_PRUNE_MIN_OVERLAP` | `0.25` | Float support threshold for the PRUNE decision (`citation_attribution.resolve_min_overlap`; also the `prune_min_overlap` kwarg). A citation supports a claim iff its 4-shingle containment ≥ this OR its content-token coverage ≥ 0.80 (fixed secondary floor). Deliberately low (precision of the keep-vs-drop decision over recall). The separate ADD bar is `ED4ALL_ANSWER_ADD_MIN_SHINGLE` (default `0.50`, shingle-only) + a relative "out-support the kept set" gate. Out-of-range / garbage values fall back to the default. The Docker compose stack sets this `0.444444` (the 2026-06-12 single-course union-corpus precision-floored calibration recommendation; code default unchanged). No licensing row. |
 | `ED4ALL_ANSWER_ADD_MIN_SHINGLE` | `0.50` | Float shingle floor for the ADD decision (`citation_attribution.resolve_add_min_shingle`; threaded through `grounded_answer._apply_citation_attribution`). An uncited gate-eligible passage is credited only if its 4-shingle containment ≥ this on some claim AND it out-supports the strongest kept citation on that claim (additions are precision-first, capped at 2/answer). Twice the prune default by design (the failure cost of a spurious added citation is a fabricated-looking source). The single-course union-corpus attribution calibration (2026-06-12) measured a median cited shingle of 0.000 — 0.500 below this bar, so additions rarely fire — warranting the KNOB without lowering the conservative default. Out-of-range / garbage values fall back to the default. No licensing row (no provider/model). |
 | `ED4ALL_ANSWER_NLI_ADD` | `off` | Three-valued (`off` / `shadow` / `on`) governor of the **NLI-based citation-ADD** arm (`citation_attribution.resolve_nli_add_mode`; hooked in `grounded_answer.answer_course_question` strictly AFTER the lexical prune+add pass, step 7b). The entailment-driven successor to the shingle ADD arm, which the 2026-06-12 under-citing investigation measured unsalvageable (paraphrase answers never quote; median cited shingle 0.000 → zero adds even at bar 0.10). REUSES the groundedness scorer's per-claim NLI verdicts (never runs NLI twice; needs `with_groundedness`). Credits an uncited gate-eligible supporter only under a COMPOSITE criterion: NLI entailment ≥ 0.70 (windowed, scorer-v2) AND claim↔chunk content-token coverage ≥ 0.80 AND every numeric literal in the claim text present in the chunk (NLI is number-blind) AND the chunk anchors/resolves AND ≤ 2 adds/answer. **Default `off`** — unlike the lexical arm's `shadow` default, the NLI model is a ~750 MB lazy load that must NOT touch the default answer path. `shadow`: compute would-adds, emit the `grounded_answer_nli_citation_add` capture + the additive `nli_citation_add` diagnostics block (eval aggregates `shadow_nli_add`) + warnings, mutate NOTHING. `on`: actually add (anchor-resolved, sorted after existing citations, cap 2); ships dark. NEVER changes an answer verdict in any mode. The Docker compose stack sets this `shadow`. Garbage values fall back to `off`. No licensing row (no provider/model). |
+| `ED4ALL_COS_PER_WEEK_CAP` | `0` (auto) | WS5 §2.2 per-week chapter-objective placement cap for the single-sourced slicer `Courseforge/scripts/generate_course.py::_slice_cos_for_week` — consumed by BOTH the emit-side per-week slicer (`MCP/tools/pipeline_tools.py::_generate_course_content`) and the validator's allowed-set builder (`_slice_chapter_objectives_by_week` + `_plan_course_structure`'s §2.4(A) `"Week N"` group persistence), so emit-week-N ids == validator-allowed-week-N ids by construction. The slicer uses a CEIL stride `step = max(1, ceil(len(COs)/weeks))` (was the floor `len(COs)//weeks` + `[:2]` truncation that silently dropped grounded COs at any `duration_weeks < len(COs)`); each week claims `COs[(w-1)*step : w*step][:cap]`. Default `0` = auto = `step` (no truncation — every CO in the ceil-stride slice is placed, guaranteeing zero-drop coverage). A positive int pins a hard per-week ceiling (e.g. `3` to thin dense weeks). The cap-lift is UNCONDITIONAL — it applies even on an explicit `--weeks N` so a short course still places all COs (only the WS5 §3.2 TO-rescale is behind the override guards). Garbage / non-positive values fall back to `0`/auto (parse-with-fallback, mirroring `ED4ALL_ANSWER_NUM_CTX`). Selects no provider/model → no `docs/LICENSING.md` row. |
 | `ED4ALL_EMBEDDING_PROVIDER` | `st` | Selects the retrieval-index embedding backend from `lib/embedding/providers.py::_EMBEDDING_PROVIDERS` (`st` in-process sentence-transformers / `local-openai` local `/v1/embeddings` server / `fake` deterministic test vectors). Registry entries, NOT subclasses. Not training-data synthesis; licensing row in `docs/LICENSING.md` § "Embedding providers". |
 | `ED4ALL_EMBEDDING_MODEL` | per-provider | Model ID override for the embedding provider (e.g. `BAAI/bge-large-en-v1.5`). Resolution chain: explicit arg > env var > registry default. |
 | `ED4ALL_EMBEDDING_BASE_URL` | `http://localhost:11434/v1` | Base URL of the local OpenAI-compatible `/v1/embeddings` server (`local-openai` provider only; Ollama / vLLM / llama.cpp). |
@@ -679,19 +732,28 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | `ED4ALL_EMBEDDING_DEVICE` | `cpu` | Torch device for the in-process `st` provider. Default `cpu` for determinism; `cuda` allowed for speed (recorded in the index manifest so mixed-provenance comparisons are detectable). |
 | `ED4ALL_EMBEDDING_BATCH_SIZE` | `16` | Encode batch size for the embedding client (replay parameter, recorded in the index manifest). |
 | `ED4ALL_EMBEDDING_ALLOW_FAKE` | unset | **Anti-poisoning gate.** Permits a vector index built with the `fake` provider to be loaded in a production read path. Default off → a `fake`-provider index is refused at query time (mirrors `LOCAL_DISPATCHER_ALLOW_STUB`). |
-| `ED4ALL_NLI_DEVICE` | `cpu` | Torch device for the in-process NLI classifier (`lib/classifiers/nli_classifier.py`, MoritzLaurer DeBERTa-v3-base-mnli-fever-anli) that scores groundedness/eval entailment. Default `cpu` for determinism + CI hermeticity (byte-identical to the historical load — no `.to()`/`.half()`); `cuda` / `cuda:N` allowed for speed (~20-50x faster on the ~184M-param head). On `cuda` the model is cast to fp16 (`.half()`) to keep VRAM ~0.4GB (shares the card with a local ollama LLM); CPU stays fp32. Graceful fallback: `cuda` requested but `torch.cuda.is_available()` False → logs a warning and falls back to CPU (never crashes a CPU/CI box). Resolved device recorded on the `GroundednessReport` as `nli_device` for provenance. Determinism note: GPU softmax is non-associative so probabilities can differ ~1e-6 from a cpu pin — the 0.70/0.50 verdict thresholds are robust to that, so a cuda-scored run is NOT a regression vs a cpu-scored pin. Mirrors `ED4ALL_EMBEDDING_DEVICE`. No `docs/LICENSING.md` row (device knob, not a provider/model). |
 | `ED4ALL_GATE_ADVISORY` | unset | **Safety-critical.** Flips post-training eval gates from blocking to advisory. Materially changes promotion semantics. |
 | `ED4ALL_GENERATION_TECHNIQUE` | `C5` | W5 C0..C5 generation-technique selector resolved by `lib/generation/technique_modes.py::resolve_technique_mode`. Six cumulative modes — `C0` naive → `C1` chunk-scoped → `C2` free-text/thin-JSON envelope → `C3` self-verify → `C4` refine → `C5` best-of-N + NLI verifier (the keystone). `apply_mode_to_env` projects the mode onto the Courseforge router knobs (`COURSEFORGE_OUTLINE_N_CANDIDATES` / `COURSEFORGE_BEST_OF_N` / `COURSEFORGE_BEST_OF_N_SELECT_BY` / `COURSEFORGE_OUTLINE_GRAMMAR_MODE` / `COURSEFORGE_SELF_VERIFY` / `COURSEFORGE_REFINE_ROUNDS`) so one provider codebase runs every mode. Only `C5` projects the `entailment_argmax` best-of-N selector flip. Default `C5` (ship quality); set `C1` for fast dev. Unknown/garbage values fall back to `C5` (never crash a run). Drives the `Trainforge/eval/generation_curve_runner.py` per-arm curve. Selects no provider/model — no `docs/LICENSING.md` row (the synthesized course content is generated product, not training-data pairs; see `plans/finegrain/w5-7b-quality-harness.md` §9). |
 | `ED4ALL_HOME` | unset (repo-relative) | **Relocatable data root.** When set, every mutable data dir defaults to `<ED4ALL_HOME>/<dirname>` (`state`, `libv2`, `exports`, `training-captures`, `dart-output`; `uploads` lands under the relocated `state/gui/`) instead of repo-relative — unblocks non-editable (site-packages) installs + tidy Docker volumes. Per-dir overrides below keep **higher** precedence (per-dir env > `ED4ALL_HOME` > repo-relative). Centralized in `lib/paths.py`; missing dirs are created on first use. Byte-stable to the repo-relative default when unset. |
 | `ED4ALL_LIBV2_ROOT` | `<repo>/LibV2/` | Absolute path to the LibV2 root directory. Also honored by `lib/libv2_storage.py` (previously not consulted there). Wins over `ED4ALL_HOME`. |
+| `ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS` | `60` at the client; `300` at the content-generation providers | Per-request HTTP timeout (float seconds) for local content-generation LLM calls so a 7B authoring multi-paragraph prose isn't capped at 60s. Honored by `Trainforge/generators/_openai_compatible_client.py::OpenAICompatibleClient` as its default request timeout when the caller passes no explicit `timeout` (resolution / precedence high → low: explicit per-call `timeout` arg > `ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS` > the `DEFAULT_TIMEOUT_SECONDS` 60s floor). The Courseforge outline + rewrite tiers (`Courseforge/generators/_outline_provider.py` / `_rewrite_provider.py`) source an explicit generous default from this env var, falling back to `300.0` (not the bare 60s client default) when unset — matching the `TEXTBOOK_SYNTHESIS_TIMEOUT_SECONDS` posture. Garbage / non-finite / non-positive values fall back to the relevant default (parse-with-fallback, mirroring `ED4ALL_ANSWER_TIMEOUT_SECONDS`). Does NOT touch the grounded-answer path (that has its own `ED4ALL_ANSWER_TIMEOUT_SECONDS`). Selects no provider/model → no `docs/LICENSING.md` row. |
 | `ED4ALL_MAILBOX_BASE_DIR` | `<repo>/state/mailbox/` | Orchestrator task-mailbox base directory. |
+| `ED4ALL_NLI_DEVICE` | `cpu` (code) / `cuda` (project default) | Torch device for the in-process NLI classifier (`lib/classifiers/nli_classifier.py`, MoritzLaurer DeBERTa-v3-base-mnli-fever-anli) that scores groundedness/eval entailment. **This project pins `cuda` as the operator default** via the committed `.claude/settings.json` `env` block (+ `~/.bashrc`) because CPU NLI grounding is too slow for real synthesis/eval runs (~20-50x slower); the in-CODE default stays `cpu` for CI hermeticity (byte-identical to the historical load — no `.to()`/`.half()`) and graceful GPU-less fallback. `cuda` / `cuda:N` casts the model to fp16 (`.half()`) to keep VRAM ~0.4GB (shares the card with a local ollama LLM); CPU stays fp32. Graceful fallback: `cuda` requested but `torch.cuda.is_available()` False → logs a warning and falls back to CPU (never crashes a CPU/CI box). Resolved device recorded on the `GroundednessReport` as `nli_device` for provenance. Determinism note: GPU softmax is non-associative so probabilities can differ ~1e-6 from a cpu pin — the 0.70/0.50 verdict thresholds are robust to that, so a cuda-scored run is NOT a regression vs a cpu-scored pin. Mirrors `ED4ALL_EMBEDDING_DEVICE`. No `docs/LICENSING.md` row (device knob, not a provider/model). |
+| `ED4ALL_OBJECTIVE_CHUNK_RELEVANCE_FLOOR` | `0.30` | Fix 1A relevance floor for the objective-dedup union prune (`lib/objectives/objective_dedup.py::dedup_candidates` / `resolve_chunk_relevance_floor`, consumed via `MCP/tools/pipeline_tools.py::_run_stage2_window_synthesis`). When near-duplicate candidate objectives merge, every member's `source_chunk_ids` is unioned onto the representative; each unioned chunk is then ranked by cosine(rep statement, chunk text) and any below this floor is PRUNED (diffuse provenance is worse than thin — "no source rather than a misleading one"). **Anti-fabrication:** prune-only (kept set ⊆ union; never adds a chunk no member cited). The **always-keep-≥1** contract supersedes the floor (a merged CO never loses all provenance). Pairs with `ED4ALL_OBJECTIVE_MAX_CHUNKS_PER_OBJECTIVE` (the top-K cap). Graceful-degrade: no `chunks_by_id` or embed-client unavailable → legacy full union (logged, no crash). Out-of-range / garbage (not in `[0.0, 1.0]`) → `0.30`. Selects no provider/model → N/A for `docs/LICENSING.md`. Active only when `TEXTBOOK_SYNTHESIS_PROVIDER` is set. |
 | `ED4ALL_OBJECTIVE_DEDUP_THRESHOLD` | `0.88` | W2 §4.2 cosine clustering threshold for the in-synthesis objective-dedup pass (`lib/objectives/objective_dedup.py::dedup_candidates`, consumed by `MCP/tools/pipeline_tools.py::_run_stage2_window_synthesis` after the NLI-grounding filter). Two candidate objectives whose statement embeddings have cosine ≥ this collapse to one canonical CO (best-grounded representative; union of `source_chunk_ids`). **Advisory starting point** — Risk R6 mandates MEASURING `max_pairwise_cosine` / `near_dup_pairs` (both surfaced on every run + in the `objective_grounding_filter` decision event) on a real corpus before pinning; the calibration harness (out of W2 scope) consumes those measurements. Out-of-range / garbage values fall back to `0.88`. Selects no provider/model, so N/A for `docs/LICENSING.md`. Active only when `TEXTBOOK_SYNTHESIS_PROVIDER` is set (the path that runs the dedup pass). |
+| `ED4ALL_OBJECTIVE_MAX_CHUNKS_PER_OBJECTIVE` | `5` | Fix 1A top-K cap on cited chunks per MERGED objective (`lib/objectives/objective_dedup.py::dedup_candidates` / `resolve_max_chunks_per_objective`, consumed via `MCP/tools/pipeline_tools.py::_run_stage2_window_synthesis`). After the dedup union, chunks are ranked by cosine to the representative's statement; at most K (above the `ED4ALL_OBJECTIVE_CHUNK_RELEVANCE_FLOOR`) are kept. Stops the unbounded-union grab-bag (a merged CO accreted 25+ mostly-off-topic chunks). **Anti-fabrication:** prune-only. **Always-keep-≥1** is enforced even if K is misconfigured. Surfaces `max_chunks_per_objective` + `pruned_chunk_total` onto the run's `grounding_signals` (calibration, mirroring `max_pairwise_cosine`/`near_dup_pairs`) and emits a per-objective `objective_chunk_prune` decision event. Garbage / `< 1` → `5`. Selects no provider/model → N/A for `docs/LICENSING.md`. Active only when `TEXTBOOK_SYNTHESIS_PROVIDER` is set. |
 | `ED4ALL_PRODUCTION` | `0` | When `1`, enables production-mode FastMCP server settings. |
+| `ED4ALL_RESEGMENT_COLLAPSED` | `1` | WS6b collapse re-segmentation gate (`lib/semantic_structure_extractor/resegment.py::resegment_collapsed_structure`, hooked in `MCP/tools/pipeline_tools.py::_extract_textbook_structure` after the merge / before the `textbook_structure.json` write). When on (default), a structure that collapsed into a SINGLE chapter carrying more than `_STRUCTURE_COLLAPSE_SECTION_THRESHOLD` (40) sections — the DART heading-parser failure mode — is re-segmented into coherent contiguous pseudo-chapters via contiguity-constrained Ward clustering over section embeddings (chain-graph connectivity → contiguous segments). Each pseudo-chapter carries `chapter_text` (drives Stage-2 `chunks_for_chapter` order_fallback) and NO `source_file`. Stamps `structureDiagnostics.{resegmented,method,k,original_section_count}` for audit. Off → pass-through unchanged. Graceful: not collapsed, flag off, or sklearn/scipy/embeddings unavailable → return chapters unchanged (never crashes extraction). Falsey values (`0`/`false`/`no`/`off`) disable. Selects no provider/model → N/A for `docs/LICENSING.md`. |
+| `ED4ALL_RESEGMENT_SECTIONS_PER_CHAPTER` | `13` | WS6b target sections-per-pseudo-chapter (`resegment_collapsed_structure`). Drives the cluster count `K = clamp(round(n_sections / this), 6, 20)` (141/13 ≈ 11 on the de-risked OpenStax structure). Garbage / `< 1` → `13`. Active only on the collapse-trigger path (1 chapter / >40 sections). Selects no provider/model → N/A for `docs/LICENSING.md`. |
 | `ED4ALL_ROOT` | auto-detect | Absolute path to the Ed4All project root. |
 | `ED4ALL_RUN_ID` | generated | Per-run identifier consumed by every artifact emitter. |
 | `ED4ALL_SKIP_ABLATION` | unset | When set, skips the post-training ablation pass. |
 | `ED4ALL_STAGE_MODE` | `symlink` | How `stage_dart_outputs` materialises DART HTML (`copy` / `symlink` / `hardlink`). |
 | `ED4ALL_STATE_RUNS_DIR` | `<repo>/state/runs/` | State-runs directory. Wins over `ED4ALL_HOME` for the `runs/` subtree. |
+| `ED4ALL_TO_BACKLINK_FLOOR` | `0.45` cosine / `0.10` token | WS2 dual weak-link floor for the deterministic CO→TO backlink (`lib/ontology/lo_backlink.py::backlink_cos_to_tos` / `resolve_to_backlink_floor`, consumed via `MCP/tools/pipeline_tools.py::_run_stage2_window_synthesis`). PURE MEASUREMENT — every CO is STILL argmax-assigned to its nearest TO (never-unset contract); a link whose best score falls BELOW this floor is additionally stamped `weak_terminal_link=True` + `weak_terminal_link_score`, and the run surfaces `weak_to_link_count` / `weak_to_link_rate` onto `grounding_signals` (auto-forwarded into the `objective_grounding_filter` decision event's `ml_features`). Dual floor: cosine (embeddings present) and token-overlap/Jaccard (embeddings absent) — a bare float overrides cosine only, `"<cos>,<tok>"` overrides both. Instrumentation, not a cure: ~0.87 of links are weak on the current collapsed-structure corpus (root-caused in WS1); WS1's bottom-up TO derivation should drop the rate toward ~0. A floor of `0.0` disables the stamp. Out-of-range / garbage (not in `[0.0, 1.0]`) → the relevant default. Selects no provider/model → N/A for `docs/LICENSING.md`. Active only when `TEXTBOOK_SYNTHESIS_PROVIDER` is set. |
+| `ED4ALL_TO_CLUSTER_K` | `0` (auto) | WS1.1 FIXED target-K for **bottom-up TO derivation** Ward agglomerative clustering (`lib/objectives/objective_dedup.py::resolve_to_cluster_k` / `cluster_to_target_k`, consumed by `MCP/tools/pipeline_tools.py::_derive_terminals_bottom_up`). WS1.1 supersedes WS1's single-link cosine-threshold clustering — a real 7B run proved single-link has NO good operating point (1 mega-cluster of 67 + 1 singleton at ≤0.70; dozens of singletons at ≥0.80). Calibration on the real 68-CO embeddings proved **Ward linkage (euclidean) on L2-normalized vectors at K≈12 gives balanced clusters** (sizes [12,11,8,6,5,5,5,4,4,3,3,2]) vs average/complete linkage or any threshold. `0` (default) = AUTO: K = `max(3, min(15, ceil(n / cos_per_cluster)))` where `cos_per_cluster` = `ED4ALL_TO_COS_PER_CLUSTER`. A positive value pins K (clamped to `[1, n]`). Resolution: explicit arg > `ED4ALL_TO_CLUSTER_K` (fixed) > auto. Garbage / `<= 0` → auto. Selects no provider/model → N/A for `docs/LICENSING.md`. Active only when `TEXTBOOK_SYNTHESIS_PROVIDER` is set. |
+| `ED4ALL_TO_CLUSTER_THRESHOLD` | `0.50` | WS1 cosine clustering threshold — **now governs ONLY the no-sklearn single-link FALLBACK path** for bottom-up TO derivation (`lib/objectives/objective_dedup.py::resolve_to_cluster_threshold` / `cluster_by_cosine`). WS1.1 replaced the primary TO-clustering path with TARGET-K Ward agglomerative clustering (`cluster_to_target_k`, see `ED4ALL_TO_CLUSTER_K`); when sklearn cannot be imported, `cluster_to_target_k` falls back to single-link `cluster_by_cosine` at THIS threshold (logged warning, never crashes). Also still drives the dedup pass's TO-cluster reference constant — but NOT the dedup clustering itself (that stays single-link at 0.88 via `ED4ALL_OBJECTIVE_DEDUP_THRESHOLD`). Deliberately LOWER than 0.88 — dedup collapses near-identical restatements, whereas TO-clustering groups RELATED COs into coarse themes. Out-of-range / non-float (not in `(0.0, 1.0]`) → default. Selects no provider/model → N/A for `docs/LICENSING.md`. Active only when `TEXTBOOK_SYNTHESIS_PROVIDER` is set. |
+| `ED4ALL_TO_COS_PER_CLUSTER` | `6` | WS1.1 AUTO-K divisor for bottom-up TO derivation (`lib/objectives/objective_dedup.py::resolve_to_cos_per_cluster`, consumed by `resolve_to_cluster_k`). Approximate number of chapter objectives per terminal-objective cluster — auto-K = `max(3, min(15, ceil(n / this)))` (e.g. 68 COs / 6 ≈ 12 clusters, matching the calibrated K≈12 balanced result). Only consulted when `ED4ALL_TO_CLUSTER_K` is `0`/auto. Garbage / `< 1` → default `6`. Selects no provider/model → N/A for `docs/LICENSING.md`. Active only when `TEXTBOOK_SYNTHESIS_PROVIDER` is set. |
 | `ED4ALL_TRAINING_CAPTURES_DIR` | `<repo>/training-captures/` | Overrides the legacy decision-capture mirror root; honored by `lib/paths.py::get_training_captures_dir`, `lib/decision_capture.py`, `lib/streaming_capture.py`. NOT governed by `ED4ALL_LIBV2_ROOT`. Wins over `ED4ALL_HOME`. |
 
 The `LLM_*` env vars (`LLM_MODE`, `LLM_PROVIDER`, `LLM_MODEL`) are CLI runtime knobs documented in § Quick Start above.
@@ -731,7 +793,7 @@ Validators (`lib/validators/`) — wiring in `docs/validation/gates.md`. Load-be
 
 - `kg_quality.py` — KG-quality report; thresholds **0.95 / 0.95 / 0.95 / 0.5** (completeness / consistency / accuracy / coverage). (As of the coverage-semantics redesign, the `coverage` floor thresholds chunk-anchored DomainConcept concept-node grounding — the share of concept nodes touched by ≥1 chunk-evidenced edge — NOT the old asserted/(asserted+derived) edge share; the legacy ratio survives unthresholded as `asserted_edge_share`.)
 - `curie_anchoring` (binary per-pair anchoring sentinel) — default **`min_pair_anchoring_rate=0.95`**; supersedes deprecated `curie_preservation` shim (Wave 135c→135d migration).
-- Statistical-tier embedding validators (`objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`, `bloom_classifier_disagreement`) graceful-degrade contract: missing `[embedding]` pyproject extras emit warning-severity `EMBEDDING_DEPS_MISSING` GateIssue with `passed=True` unless `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips to fail-closed.
+- Statistical-tier embedding validators (`objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`, `bloom_classifier_disagreement`, `co_terminal_alignment`, `source_coverage`) graceful-degrade contract: missing `[embedding]` pyproject extras emit warning-severity `EMBEDDING_DEPS_MISSING` GateIssue with `passed=True` unless `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips to fail-closed.
 
 `schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json` consumed by LibV2.
 

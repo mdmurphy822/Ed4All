@@ -477,8 +477,42 @@ class TaskExecutor:
 
         # Use provided values or fall back to config
         self.max_retries = max_retries if max_retries is not None else self.config.retry_attempts
-        self.timeout_seconds = timeout_seconds if timeout_seconds is not None else (self.config.task_timeout_minutes * 60)
-        self.batch_timeout_seconds = (batch_timeout_minutes or 30) * 60
+        # Per-task timeout. Like the batch timeout below, the config default
+        # (60 min) is too tight for a slow local-7B phase that runs as a single
+        # long task (the rewrite handler loops all blocks internally). Allow an
+        # ``ED4ALL_TASK_TIMEOUT_MINUTES`` override (read at construction, so it
+        # applies to resumes) when no explicit timeout_seconds is supplied.
+        if timeout_seconds is not None:
+            self.timeout_seconds = timeout_seconds
+        else:
+            _task_min = self.config.task_timeout_minutes
+            _env_task_min = os.environ.get("ED4ALL_TASK_TIMEOUT_MINUTES")
+            if _env_task_min:
+                try:
+                    _parsed_t = int(_env_task_min)
+                    if _parsed_t > 0:
+                        _task_min = _parsed_t
+                except (TypeError, ValueError):
+                    pass
+            self.timeout_seconds = _task_min * 60
+        # Batch (whole-phase) timeout. The yaml ``batch_timeout_minutes`` is not
+        # plumbed through to every TaskExecutor construction site, so the
+        # default fallback is the only knob a local-7B operator can reach for a
+        # slow phase (e.g. content_generation_rewrite grinding ~30 blocks of
+        # per-block CURIE-preservation retries). Make that fallback overridable
+        # via ``ED4ALL_BATCH_TIMEOUT_MINUTES`` (default 30, preserving prior
+        # behavior when unset) so a long local authoring run is not killed
+        # mid-phase. Read at construction time so it applies to resumes too.
+        _default_batch_min = 30
+        _env_batch_min = os.environ.get("ED4ALL_BATCH_TIMEOUT_MINUTES")
+        if _env_batch_min:
+            try:
+                _parsed = int(_env_batch_min)
+                if _parsed > 0:
+                    _default_batch_min = _parsed
+            except (TypeError, ValueError):
+                pass
+        self.batch_timeout_seconds = (batch_timeout_minutes or _default_batch_min) * 60
 
         # Initialize parameter mapper
         self.param_mapper = TaskParameterMapper(strict=False)

@@ -4,8 +4,10 @@ Exercises the two-pass dispatch surface that owns provider resolution
 + per-block routing + the outline/rewrite two-pass walk over a Block
 list. Coverage:
 
-- ``_resolve_spec`` priority chain: per-call kwargs → YAML policy →
-  tier-default env vars → hardcoded defaults.
+- ``_resolve_spec`` priority chain (corrected precedence): per-call
+  kwargs → tier-default env vars → YAML policy → hardcoded defaults
+  (an explicit operator-set env var beats a checked-in YAML default;
+  standard env > config-file precedence).
 - Unknown provider value raises ``ValueError`` (caught by
   :class:`BlockProviderSpec.__post_init__`).
 - :meth:`route` dispatches to the correct provider for the chosen tier
@@ -15,9 +17,10 @@ list. Coverage:
   ordering, excludes outline-failed blocks from the rewrite pass.
 - ``escalate_immediately=True`` short-circuits the outline tier (no LLM
   call) and stamps ``escalation_marker="outline_skipped_by_policy"``.
-- YAML policy override wins over env vars when both are set (binds the
-  Subtask-34 contract that the Wave-N stub only honors a non-None
-  ``policy.resolve(...)``).
+- Tier-default env vars win over a YAML policy when both are set
+  (corrected precedence — env > config-file); a non-None
+  ``policy.resolve(...)`` still binds the Subtask-34 contract and wins
+  over the hardcoded defaults baseline when no env var is set.
 
 Reuses the ``httpx.MockTransport`` fixture pattern from
 ``Courseforge/generators/tests/test_rewrite_provider.py`` for any test
@@ -174,8 +177,17 @@ def test_resolve_spec_per_call_kwargs_win_over_yaml_and_env(monkeypatch):
     assert spec.model == "kwarg-model"
 
 
-def test_resolve_spec_yaml_overrides_env_var(monkeypatch):
-    """YAML policy entry wins over tier-default env vars."""
+def test_resolve_spec_env_var_overrides_yaml(monkeypatch):
+    """Tier-default env vars win over a YAML policy entry.
+
+    CORRECTED PRECEDENCE (was ``test_resolve_spec_yaml_overrides_env_var``,
+    which asserted the now-fixed inverse): an explicit operator-set
+    environment variable is a deliberate per-run override and beats a
+    checked-in ``block_routing.yaml`` default (standard env > config-file
+    precedence). Previously the policy spec WHOLESALE-REPLACED the
+    env-overlaid spec, silently discarding the documented operator env
+    override whenever any policy was active.
+    """
     monkeypatch.setenv("COURSEFORGE_OUTLINE_PROVIDER", "together")
     monkeypatch.setenv("COURSEFORGE_OUTLINE_MODEL", "env-model")
     yaml_spec = BlockProviderSpec(
@@ -186,8 +198,9 @@ def test_resolve_spec_yaml_overrides_env_var(monkeypatch):
     )
     r = CourseforgeRouter(policy=_StubPolicy(yaml_spec))
     spec = r._resolve_spec(_block(), "outline")
-    assert spec.provider == "anthropic"
-    assert spec.model == "yaml-model"
+    # Env var beats the YAML policy now.
+    assert spec.provider == "together"
+    assert spec.model == "env-model"
 
 
 def test_resolve_spec_env_var_overrides_default(monkeypatch):
@@ -225,11 +238,11 @@ def test_unknown_provider_raises_value_error():
 # ---------------------------------------------------------------------------
 #
 # These tests pin the four-layer precedence chain comment block on
-# ``CourseforgeRouter._resolve_spec``: per-call kwargs > YAML policy >
-# env vars > hardcoded defaults. Cross-link: the inline comment block
-# at ``Courseforge/router/router.py::_resolve_spec`` references
-# ``test_phase3a_env_var_overrides_hardcoded_default`` and
-# ``test_phase3a_yaml_wins_over_env_var`` by name; renaming or deleting
+# ``CourseforgeRouter._resolve_spec`` (corrected precedence): per-call
+# kwargs > env vars > YAML policy > hardcoded defaults. Cross-link: the
+# inline comment block at ``Courseforge/router/router.py::_resolve_spec``
+# references ``test_phase3a_env_var_overrides_hardcoded_default`` and
+# ``test_phase3a_env_var_wins_over_yaml`` by name; renaming or deleting
 # either test must be paired with a router-side comment update.
 
 
@@ -271,23 +284,28 @@ def test_phase3a_env_var_overrides_hardcoded_default(monkeypatch):
     assert spec_rw.model == "env-rewrite-model"
 
 
-def test_phase3a_yaml_wins_over_env_var(monkeypatch):
-    """Phase 3a §3.3 contract: YAML policy beats tier-default env vars.
+def test_phase3a_env_var_wins_over_yaml(monkeypatch):
+    """CORRECTED Phase 3a §3.3 contract: env var beats the YAML policy.
+
+    Was ``test_phase3a_yaml_wins_over_env_var``, which pinned the
+    now-fixed inverse (YAML > env). The bug: the dispatch-side policy
+    lookup WHOLESALE-REPLACED the env-overlaid spec, so the documented
+    operator override env vars (``COURSEFORGE_OUTLINE_*`` /
+    ``COURSEFORGE_REWRITE_*``) were silently dead whenever a policy was
+    loaded — which is always under the real pipeline. The corrected
+    precedence makes an explicit operator-set environment variable a
+    deliberate per-run override that beats a checked-in
+    ``block_routing.yaml`` default (standard env > config-file).
 
     Setup: env vars AND YAML policy both set; no per-call kwargs. The
-    YAML policy entry must win — operator-explicit YAML > tier-default
-    env var (the operator who wrote the YAML file made an explicit
-    per-block choice; the env var is a tier-default knob).
+    env-var values must win.
 
     The Phase 3a env-var-first override on the YAML LOADER (Subtask 23
     in ``Courseforge/router/policy.py::_maybe_apply_env_model_override``)
-    fires only when the YAML's ``defaults[tier].model`` is the
-    hardcoded sentinel literal — an operator-explicit non-sentinel
-    value in YAML preserves operator intent. This test pins the
-    DISPATCH-side YAML > env var contract; the loader-side
-    env-var-first override is a separate orthogonal contract pinned by
+    is a separate orthogonal contract pinned by
     ``Courseforge/router/tests/test_policy.py`` and the inline
-    ``policy.py`` doctest.
+    ``policy.py`` doctest; this test pins the DISPATCH-side env > YAML
+    contract.
     """
     monkeypatch.setenv("COURSEFORGE_OUTLINE_PROVIDER", "together")
     monkeypatch.setenv("COURSEFORGE_OUTLINE_MODEL", "env-model")
@@ -299,12 +317,112 @@ def test_phase3a_yaml_wins_over_env_var(monkeypatch):
     )
     r = CourseforgeRouter(policy=_StubPolicy(yaml_spec))
     spec = r._resolve_spec(_block(block_type="concept"), "outline")
-    # YAML wins over env var.
-    assert spec.provider == "anthropic"
-    assert spec.model == "explicit-yaml-model"
-    # Env-var values were NOT applied.
-    assert spec.provider != "together"
-    assert spec.model != "env-model"
+    # Env var wins over the YAML policy.
+    assert spec.provider == "together"
+    assert spec.model == "env-model"
+    # YAML-policy values were NOT applied.
+    assert spec.provider != "anthropic"
+    assert spec.model != "explicit-yaml-model"
+
+
+def test_rewrite_env_overrides_loaded_policy_then_per_call_wins(monkeypatch):
+    """Regression for the silently-dead operator env override.
+
+    Live bug repro: the shipped ``block_routing.yaml`` always maps the
+    rewrite tier to the 14B (``medium`` capability) model, so a policy
+    is ALWAYS loaded under the real pipeline. Before the precedence fix,
+    the policy lookup wholesale-replaced the env-overlaid spec, so an
+    operator who set ``COURSEFORGE_REWRITE_MODEL=qwen2.5-7b-8k`` (to honor
+    a "solely 7B" requirement) silently still got the 14B — the documented
+    operator override was dead.
+
+    Corrected precedence (low → high): baseline → YAML policy →
+    env-var overrides → per-call overrides.
+    """
+    monkeypatch.setenv("COURSEFORGE_REWRITE_PROVIDER", "local")
+    monkeypatch.setenv("COURSEFORGE_REWRITE_MODEL", "qwen2.5-7b-8k")
+    # A loaded policy that resolves rewrite → 14B (mirrors the shipped
+    # block_routing.yaml medium-tier mapping).
+    policy_spec = BlockProviderSpec(
+        block_type="concept",
+        tier="rewrite",
+        provider="local",
+        model="qwen2.5:14b-instruct-q4_K_M",
+        temperature=0.4,
+    )
+    r = CourseforgeRouter(policy=_StubPolicy(policy_spec))
+
+    # 1. Env beats the loaded policy — the 7B model + local provider win.
+    spec = r._resolve_spec(_block(block_type="concept"), "rewrite")
+    assert spec.provider == "local"
+    assert spec.model == "qwen2.5-7b-8k"
+    # Env overlay does NOT wipe non-provider/model policy fields
+    # (``_apply_overrides`` overlays only the keys present).
+    assert spec.temperature == 0.4
+
+    # 2. Per-call ``overrides`` still beat the env var (absolute highest).
+    spec_call = r._resolve_spec(
+        _block(block_type="concept"),
+        "rewrite",
+        model="kwarg-model",
+    )
+    assert spec_call.model == "kwarg-model"
+    # provider not overridden per-call → falls to the env value.
+    assert spec_call.provider == "local"
+
+    # 3. With the env var UNSET, the policy spec still wins over baseline
+    #    (unchanged behavior).
+    monkeypatch.delenv("COURSEFORGE_REWRITE_PROVIDER", raising=False)
+    monkeypatch.delenv("COURSEFORGE_REWRITE_MODEL", raising=False)
+    spec_nopolicy_env = r._resolve_spec(_block(block_type="concept"), "rewrite")
+    assert spec_nopolicy_env.model == "qwen2.5:14b-instruct-q4_K_M"
+    assert spec_nopolicy_env.temperature == 0.4
+
+
+def test_capability_tier_chain_honors_env_model_for_local_tiers(monkeypatch):
+    """Dynamic per-tier model override on the capability-tier chain.
+
+    Live bug repro: an all-local two-pass run redirects
+    ``COURSEFORGE_BLOCK_ROUTING_PATH`` to ``block_routing.license_clean.yaml``,
+    whose ``medium``/``large`` capability tiers are pinned to concrete
+    higher-capability local models (14B / 32B). The rewrite path resolves
+    the model from the capability-tier CHAIN (``_resolve_capability_tier_chain``
+    → ``_project_chain_to_specs``), which bypassed the env-var override that
+    ``_resolve_spec`` honors — so an operator who set
+    ``COURSEFORGE_REWRITE_MODEL=qwen2.5-7b-8k`` for a "solely 7B" run silently
+    still got the 14B/32B. The projection now applies the per-tier model env
+    var to LOCAL-provider tiers, leaving the shipped YAML default intact when
+    the env is unset.
+    """
+    from Courseforge.router.policy import load_block_routing_policy
+
+    license_clean = Path(
+        "Courseforge/config/block_routing.license_clean.yaml"
+    )
+    if not license_clean.exists():  # pragma: no cover - repo layout guard
+        pytest.skip("license_clean policy file not present")
+    policy = load_block_routing_policy(license_clean)
+    r = CourseforgeRouter(policy=policy)
+
+    # 1. Env set → every LOCAL rewrite tier (incl. assessment_item's
+    #    [medium, large] cascade) collapses to the configured 7B model.
+    monkeypatch.setenv("COURSEFORGE_REWRITE_MODEL", "qwen2.5-7b-8k")
+    for bt in ("concept", "example", "assessment_item"):
+        chain = r._resolve_capability_tier_chain(_block(block_type=bt), "rewrite")
+        assert chain, f"empty chain for {bt}"
+        for spec in chain:
+            assert spec.provider == "local"
+            assert spec.model == "qwen2.5-7b-8k", (
+                f"{bt} tier {spec.capability_tier_name} not overridden"
+            )
+
+    # 2. Env UNSET → shipped YAML capability-tier defaults preserved
+    #    (medium=14B; the higher-capability default is untouched).
+    monkeypatch.delenv("COURSEFORGE_REWRITE_MODEL", raising=False)
+    chain_default = r._resolve_capability_tier_chain(
+        _block(block_type="concept"), "rewrite"
+    )
+    assert chain_default[0].model == "qwen2.5:14b-instruct-q4_K_M"
 
 
 # ---------------------------------------------------------------------------

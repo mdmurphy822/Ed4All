@@ -144,6 +144,11 @@ embedding = [
     "numpy>=1.24.0",
     "transformers>=4.49,<4.50",
     "torch>=2.0.0",
+    # WS1.1 imports sklearn.cluster.AgglomerativeClustering directly for
+    # TARGET-K Ward TO clustering (lib/objectives/objective_dedup.py). It
+    # already arrives transitively via sentence-transformers; declared here
+    # honestly because we now depend on it as a first-class import.
+    "scikit-learn>=1.3,<2.0",
 ]
 # Control-plane GUI (opt-in). FastAPI + uvicorn serve the vanilla-JS SPA and
 # the /api + /ws routers. Kept out of the default install so the MCP server

@@ -113,6 +113,32 @@ _LOCAL_NUM_CTX = 32768
 # into per-chapter-group calls (``call_mode="chaptered"``).
 _SKELETON_CHAR_BUDGET = 40_000
 
+# WS4 §1 — Stage-1 skeleton de-blinding. The legacy ``section_titles[:12]``
+# head-slice and single 200-char ``chapter_text`` head sample front-loaded the
+# Stage-1 prompt, leaving the back two-thirds of a many-section chapter unseen
+# (the 141:1 collapse signature). ``_render_chapter_skeleton`` now even-stride
+# samples up to ``_SKELETON_MAX_SECTION_TITLES`` titles across the FULL section
+# range and draws head/mid/tail prose windows. Both feed the
+# ``_SKELETON_CHAR_BUDGET`` measurement in ``_chunk_chapters_for_outline`` (the
+# single overflow authority — a 141-section chapter renders ~3-6 KB titles +
+# 3×200 prose < 7 KB, well under 40 KB → stays ``call_mode="single"`` and well
+# under the 32k ``_LOCAL_NUM_CTX`` serving window). See WS4 §0.1 / §3.
+_SKELETON_MAX_SECTION_TITLES = 48          # was implicit [:12]; ~3-6 KB short titles
+_SKELETON_CHAPTER_SAMPLE_OFFSETS = 3       # head + mid + tail prose windows
+_SKELETON_CHAPTER_SAMPLE_CHARS = 200       # per-window chars (unchanged per-window)
+
+# WS4 §2 — scope-aware DRAFT terminal-objective band for the Stage-1 prompt.
+# The hardcoded "1-4 DRAFT terminal objectives" literal was the SOLE TO-count
+# lever (``_normalise_outline_payload`` does NOT clamp the count). The band is a
+# prompt-band computation (the model self-limits): default ``(3,6)`` for normal
+# multi-chapter input, bumped to ``(6,12)`` when the input is a single chapter
+# carrying more than ``_COLLAPSE_SECTION_THRESHOLD`` sections (the collapse
+# signature). Mirrors the extractor-side
+# ``_STRUCTURE_COLLAPSE_SECTION_THRESHOLD`` (WS4 §4).
+_DRAFT_TO_BAND_DEFAULT = (3, 6)            # normal multi-chapter input
+_DRAFT_TO_BAND_COLLAPSE = (6, 12)          # 1-chapter, section_count >> normal
+_COLLAPSE_SECTION_THRESHOLD = 40           # >40 sections in 1 chapter == collapse
+
 # Per-chapter chapter-text char budget for Stages 2 / 3. A single
 # OpenStax chapter's prose is typically 10-20 KB; the cap protects
 # against an unusually long chapter. Over-budget chapters truncate the
@@ -617,12 +643,17 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
                 themes_emit = len(normalised["themes"])
                 draft_to_emit = len(normalised["draft_terminal_objectives"])
 
+            draft_band = self._draft_to_band(group)
             self._emit_per_call_decision(
                 mode="outline",
                 raw_text=text,
                 retry_count=retry_count,
                 course_name=course_name,
                 chapter_count_input=len(group),
+                section_count_input=sum(
+                    len(c.get("sections") or []) for c in group
+                ),
+                draft_to_band=draft_band,
                 call_mode=call_mode,
                 theme_count_emit=themes_emit,
                 draft_to_count_emit=draft_to_emit,
@@ -1075,6 +1106,77 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             )
         return {"terminal_objectives": terminals}
 
+    def author_terminal_for_cluster(
+        self,
+        cluster_cos: List[Dict[str, Any]],
+        *,
+        course_name: str,
+        cluster_index: int,
+    ) -> Optional[Dict[str, Any]]:
+        """WS1 — author ONE terminal objective summarizing one CO cluster.
+
+        The bottom-up TO derivation (``MCP/tools/pipeline_tools.py::
+        _derive_terminals_bottom_up``) clusters the grounded CO statement
+        vectors and calls this once per cluster: author a single TO that
+        accurately summarises that cluster's chapter objectives.
+
+        Args:
+            cluster_cos: the COs in one cluster (statements consumed for the
+                prompt). Each is a dict carrying at least ``statement``.
+            course_name: course slug for the capture rationale.
+            cluster_index: 1-based cluster ordinal (capture rationale only).
+
+        Returns:
+            A single canonical TO dict ``{statement, bloom_level, bloom_verb,
+            abcd, source_refs}`` — **NO id** (the caller mints ``TO-NN``) — or
+            ``None`` on parse exhaustion.
+
+        Fail-SOFT per cluster (deliberate divergence from
+        :meth:`reconcile_terminal_objectives`'s fail-loud): one bad cluster
+        degrades to the dedup-rep fallback at the call site, never sinks the
+        run. Mirrors the Stage-2 per-chapter return-``None``-on-exhaustion
+        posture.
+
+        Raises:
+            ValueError: When ``course_name`` is empty.
+        """
+        if not course_name or not str(course_name).strip():
+            raise ValueError("course_name required")
+
+        cos = list(cluster_cos or [])
+
+        user_prompt = self._render_user_prompt(
+            mode="author_terminal",
+            cluster_cos=cos,
+            course_name=course_name,
+            cluster_index=cluster_index,
+        )
+        text, retry_count = self._dispatch_call(user_prompt)
+        parsed = self._extract_json_lenient(text)
+
+        terminal: Optional[Dict[str, Any]] = None
+        last_error: Optional[str] = None
+        if parsed is None:
+            last_error = "lenient JSON parse returned None"
+        else:
+            terminal = self._normalise_author_terminal_payload(parsed)
+            if terminal is None:
+                last_error = "no terminal_objective in payload"
+
+        self._emit_per_call_decision(
+            mode="author_terminal",
+            raw_text=text,
+            retry_count=retry_count,
+            course_name=course_name,
+            cluster_index=cluster_index,
+            co_count_input=len(cos),
+            output_chars=len(text or ""),
+            success=terminal is not None,
+            last_error=last_error,
+        )
+
+        return terminal
+
     # ==================================================================
     # Per-chapter batching helper (plan §5.3)
     # ==================================================================
@@ -1146,13 +1248,54 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         return groups or [[]]
 
     @staticmethod
+    def _sample_section_titles(titles: List[str]) -> List[str]:
+        """Even-stride sample up to ``_SKELETON_MAX_SECTION_TITLES`` titles
+        across the FULL list (WS4 §1).
+
+        Returns the titles unchanged when they fit the cap; otherwise picks
+        even-stride indices spanning the whole range, ALWAYS including the
+        first and last title (so the Stage-1 model sees the back of the book,
+        not just its first sections — the 141:1 collapse de-blinder).
+        """
+        n = len(titles)
+        cap = _SKELETON_MAX_SECTION_TITLES
+        if n <= cap:
+            return titles
+        step = n / float(cap)
+        idxs = sorted({int(i * step) for i in range(cap)} | {n - 1})
+        return [titles[i] for i in idxs]
+
+    @staticmethod
+    def _sample_chapter_text(text: str) -> List[Tuple[str, str]]:
+        """Head/mid/tail prose windows from ``chapter_text`` (WS4 §1.3).
+
+        ``[]`` for empty text; a single ``("head", ...)`` window when the text
+        is shorter than ~2 windows; otherwise head/mid/tail windows of
+        ``_SKELETON_CHAPTER_SAMPLE_CHARS`` chars each, so a long chapter's back
+        prose is no longer invisible to the Stage-1 model.
+        """
+        if not text:
+            return []
+        w = _SKELETON_CHAPTER_SAMPLE_CHARS
+        if len(text) <= w * 2:
+            return [("head", text[:w])]
+        mid = (len(text) - w) // 2
+        return [("head", text[:w]), ("mid", text[mid:mid + w]), ("tail", text[-w:])]
+
+    @staticmethod
     def _render_chapter_skeleton(chapter: Dict[str, Any]) -> str:
         """Render one chapter's skeleton line for the Stage-1 prompt.
 
         Per plan §3.3: id + headingText/title + ordered section list +
-        a bounded ~200-char sample drawn from ``chapter_text``. Reads
-        both ``headingText`` (extractor camelCase) and ``title``
-        defensively.
+        bounded samples drawn from ``chapter_text``. Reads both
+        ``headingText`` (extractor camelCase) and ``title`` defensively.
+
+        WS4 §1: the section list is now an even-stride sample across the FULL
+        section range (cap ``_SKELETON_MAX_SECTION_TITLES``) instead of the
+        legacy ``[:12]`` head-slice, and the prose sample is head/mid/tail
+        windows instead of a single 200-char head — both budget-bounded so the
+        ``_SKELETON_CHAR_BUDGET`` gate in ``_chunk_chapters_for_outline`` stays
+        the single overflow authority.
         """
         cid = str(chapter.get("id") or "")
         title = str(
@@ -1171,14 +1314,16 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             )
             if stitle:
                 section_titles.append(stitle)
-        sample = str(chapter.get("chapter_text") or "")[:200]
+        chapter_text = str(chapter.get("chapter_text") or "")
+        samples = TextbookSynthesisProvider._sample_chapter_text(chapter_text)
         lines = [f"  - [{cid}] {title}"]
         if section_titles:
-            lines.append(
-                f"    sections: {', '.join(section_titles[:12])}"
+            sampled = TextbookSynthesisProvider._sample_section_titles(
+                section_titles
             )
-        if sample:
-            lines.append(f"    sample: {sample}")
+            lines.append(f"    sections: {', '.join(sampled)}")
+        for label, snippet in samples:
+            lines.append(f"    sample[{label}]: {snippet}")
         return "\n".join(lines) + "\n"
 
     # ------------------------------------------------------------------
@@ -1205,6 +1350,8 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             return self._render_chapter_objectives_prompt(**kwargs)
         if mode == "reconcile":
             return self._render_reconcile_prompt(**kwargs)
+        if mode == "author_terminal":
+            return self._render_author_terminal_prompt(**kwargs)
         raise ValueError(f"unknown _render_user_prompt mode {mode!r}")
 
     def _emit_per_call_decision(
@@ -1238,6 +1385,10 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             self._emit_reconcile_decision(
                 raw_text=raw_text, retry_count=retry_count, **call_context
             )
+        elif mode == "author_terminal":
+            self._emit_author_terminal_decision(
+                raw_text=raw_text, retry_count=retry_count, **call_context
+            )
         else:  # pragma: no cover — defensive
             raise ValueError(
                 f"unknown _emit_per_call_decision mode {mode!r}"
@@ -1246,6 +1397,27 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
     # ------------------------------------------------------------------
     # Prompt builders
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _draft_to_band(chapters: List[Dict[str, Any]]) -> Tuple[int, int]:
+        """(low, high) DRAFT-TO band for the Stage-1 prompt (WS4 §2).
+
+        ~1 TO per major theme; the band is bumped to
+        ``_DRAFT_TO_BAND_COLLAPSE`` when the input is a single chapter carrying
+        more than ``_COLLAPSE_SECTION_THRESHOLD`` sections (the 141:1 collapse
+        signature, where 1-4 drafts would grossly under-represent the book).
+        """
+        chapter_count = len(chapters)
+        section_count = sum(
+            len(c.get("sections") or []) for c in chapters
+        )
+        if (
+            chapter_count == 1
+            and section_count > _COLLAPSE_SECTION_THRESHOLD
+        ):
+            return _DRAFT_TO_BAND_COLLAPSE
+        low, high = _DRAFT_TO_BAND_DEFAULT
+        return (low, max(high, min(12, chapter_count)))
 
     def _render_outline_prompt(
         self,
@@ -1258,13 +1430,15 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         skeleton = "".join(
             self._render_chapter_skeleton(c) for c in chapters
         ) or "  (none)"
+        lo, hi = self._draft_to_band(chapters)
         return (
             f"Course: {course_name}\n"
             f"Chapter count: {len(chapters)}\n\n"
             "Textbook chapters (id, title, sections, prose sample):\n"
             f"{skeleton}\n"
-            "Synthesize a course-level semantic outline and 1-4 DRAFT "
-            "terminal objectives.\n"
+            f"Synthesize a course-level semantic outline and {lo}-{hi} "
+            "DRAFT terminal objectives that together span the whole "
+            "section range above (not only its first sections).\n"
             "RESPOND ONLY WITH A JSON OBJECT with top-level keys:\n"
             '  "course_summary": one-paragraph synthesized description,\n'
             '  "themes": [{"title", "chapter_ids" (verbatim chapter '
@@ -1428,6 +1602,46 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             '(lowercase enum), "bloom_verb", "abcd" {audience, '
             'behavior {verb, action_object}, condition, degree}, '
             '"source_refs" []}].\n'
+            "No preamble, no markdown fences, no commentary."
+        )
+
+    def _render_author_terminal_prompt(
+        self,
+        *,
+        cluster_cos: List[Dict[str, Any]],
+        course_name: str,
+        **_unused: Any,
+    ) -> str:
+        """WS1 author prompt: ONE terminal objective over a CO cluster.
+
+        Mirrors :meth:`_render_reconcile_prompt` but authors EXACTLY ONE TO and
+        keeps the anti-invent guard. Top-level key ``terminal_objective``
+        (singular).
+        """
+        co_lines: List[str] = []
+        for co in cluster_cos or []:
+            if isinstance(co, dict):
+                stmt = str(co.get("statement") or "").strip()
+                if stmt:
+                    co_lines.append(f"  - {stmt}")
+        return (
+            f"Course: {course_name}\n\n"
+            "Related chapter objectives (one cluster):\n"
+            f"{chr(10).join(co_lines) if co_lines else '  (none)'}\n\n"
+            "Author EXACTLY ONE terminal (course-wide) objective that "
+            "captures the SINGLE higher-level competency the chapter "
+            "objectives above share. Write ONE concise sentence with ONE "
+            "main action verb. Do NOT produce a list — do NOT chain "
+            "multiple distinct skills or topics with commas or the word "
+            "'and'. When the objectives span several sub-topics, ABSTRACT "
+            "upward to the unifying skill instead of enumerating them. "
+            "Do NOT invent skills / topics / facts not present in the "
+            "chapter objectives above.\n"
+            "RESPOND ONLY WITH A JSON OBJECT with top-level key "
+            '"terminal_objective": {"statement", "bloom_level" '
+            '(lowercase enum), "bloom_verb", "abcd" {audience, '
+            'behavior {verb, action_object}, condition, degree}, '
+            '"source_refs" []}.\n'
             "No preamble, no markdown fences, no commentary."
         )
 
@@ -1722,6 +1936,32 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             obj["id"] = mint_lo_id("terminal", idx)
         return terminals
 
+    def _normalise_author_terminal_payload(
+        self,
+        parsed: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """WS1 — project an author-terminal LLM payload onto ONE canonical TO.
+
+        Reads ``parsed["terminal_objective"]`` (object) OR — leniently — the
+        single element of a ``terminal_objectives`` list. Reuses
+        :meth:`_normalise_one_objective`; does **NOT** mint an id (unlike
+        :meth:`_normalise_reconcile_payload`; the caller mints ``TO-NN``).
+        Drops any stray ``draft`` flag. Returns ``None`` when no usable
+        objective is present.
+        """
+        raw = parsed.get("terminal_objective")
+        if not isinstance(raw, dict):
+            lst = parsed.get("terminal_objectives")
+            if isinstance(lst, list) and lst and isinstance(lst[0], dict):
+                raw = lst[0]
+            else:
+                return None
+        obj = self._normalise_one_objective(raw)
+        if obj is None:
+            return None
+        obj.pop("draft", None)
+        return obj
+
     @staticmethod
     def _normalise_one_objective(
         raw: Dict[str, Any],
@@ -1859,6 +2099,8 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             f"provider={self._provider}",
             f"model={self._model}",
             f"chapter_count_input={int(ctx.get('chapter_count_input', 0))}",
+            f"section_count_input={int(ctx.get('section_count_input', 0))}",
+            f"draft_to_band={tuple(ctx.get('draft_to_band', ()))}",
             f"call_mode={ctx.get('call_mode', 'single')}",
             f"theme_count_emit={int(ctx.get('theme_count_emit', 0))}",
             f"draft_to_count_emit={int(ctx.get('draft_to_count_emit', 0))}",
@@ -1988,6 +2230,43 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             decision_type="terminal_objective_reconciliation",
             decision=(
                 f"terminal_objective_reconciliation:{course_name}:"
+                f"{'success' if success else 'failed'}"
+            ),
+            rationale="; ".join(parts),
+        )
+
+    def _emit_author_terminal_decision(
+        self,
+        *,
+        raw_text: str,
+        retry_count: int,
+        **ctx: Any,
+    ) -> None:
+        """WS1 — emit one ``terminal_objective_authoring`` decision event.
+
+        New LLM call site (mandatory decision-capture). Rationale interpolates
+        ≥4 dynamic signals so the capture is replayable post-hoc.
+        """
+        course_name = ctx.get("course_name", "")
+        success = bool(ctx.get("success", False))
+        cluster_index = int(ctx.get("cluster_index", 0))
+        parts = [
+            f"course_name={course_name}",
+            f"provider={self._provider}",
+            f"model={self._model}",
+            f"cluster_index={cluster_index}",
+            f"co_count_input={int(ctx.get('co_count_input', 0))}",
+            f"output_chars={int(ctx.get('output_chars', 0))}",
+            f"retry_count={retry_count}",
+            f"success={success}",
+        ]
+        if ctx.get("last_error"):
+            parts.append(f"last_error={str(ctx['last_error'])[:120]}")
+        self._emit_decision(
+            decision_type="terminal_objective_authoring",
+            decision=(
+                f"terminal_objective_authoring:{course_name}:"
+                f"cluster_{cluster_index}:"
                 f"{'success' if success else 'failed'}"
             ),
             rationale="; ".join(parts),

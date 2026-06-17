@@ -46,8 +46,11 @@ from Courseforge.generators._textbook_synthesis_provider import (  # noqa: E402
     _build_supported_providers,
     _CHAPTER_BATCH_SIZE,
     _DEFAULT_TIMEOUT_SECONDS,
+    _DRAFT_TO_BAND_COLLAPSE,
+    _DRAFT_TO_BAND_DEFAULT,
     _LOCAL_NUM_CTX,
     _SKELETON_CHAR_BUDGET,
+    _SKELETON_MAX_SECTION_TITLES,
 )
 from Trainforge.generators._openai_compatible_client import (  # noqa: E402
     DEFAULT_TIMEOUT_SECONDS,
@@ -505,6 +508,116 @@ def test_reconcile_terminal_objectives_exhausted_raises_code():
             course_name="ALG_101",
         )
     assert exc.value.code == "reconcile_exhausted"
+
+
+# ===========================================================================
+# WS1 — author_terminal_for_cluster (bottom-up TO derivation)
+# ===========================================================================
+
+
+def _author_terminal_payload() -> dict:
+    return {
+        "terminal_objective": {
+            "statement": "Students will solve and graph linear equations.",
+            "bloom_level": "apply",
+            "bloom_verb": "solve",
+            "abcd": {
+                "audience": "Students",
+                "behavior": {"verb": "solve", "action_object": "equations"},
+                "condition": "given a problem",
+                "degree": "accurately",
+            },
+            "source_refs": [],
+        }
+    }
+
+
+def _cluster_cos() -> List[Dict[str, Any]]:
+    return [
+        {"statement": "Students will solve one-step linear equations."},
+        {"statement": "Students will graph a line from slope-intercept form."},
+    ]
+
+
+def test_author_terminal_for_cluster_returns_single_to():
+    p = _provider([json.dumps(_author_terminal_payload())])
+    to = p.author_terminal_for_cluster(
+        _cluster_cos(), course_name="ALG_101", cluster_index=1
+    )
+    assert to is not None
+    assert to["statement"]
+    assert to["bloom_level"] == "apply"
+    # Caller mints the id — the provider must NOT.
+    assert "id" not in to
+
+
+def test_author_terminal_lenient_list_payload():
+    """A model that emits a single-element terminal_objectives LIST is
+    leniently accepted (still ONE TO, no id)."""
+    payload = {
+        "terminal_objectives": [
+            {
+                "statement": "Students will analyze linear systems.",
+                "bloom_level": "analyze",
+                "source_refs": [],
+            }
+        ]
+    }
+    p = _provider([json.dumps(payload)])
+    to = p.author_terminal_for_cluster(
+        _cluster_cos(), course_name="ALG_101", cluster_index=2
+    )
+    assert to is not None
+    assert "id" not in to
+    assert to["bloom_level"] == "analyze"
+
+
+def test_author_terminal_parse_exhaustion_returns_none():
+    """Fail-SOFT: parse exhaustion → None (not a raise); capture success=false."""
+    capture = _FakeCapture()
+    p = _provider(["not json at all"], capture=capture)
+    to = p.author_terminal_for_cluster(
+        _cluster_cos(), course_name="ALG_101", cluster_index=3
+    )
+    assert to is None
+    ev = next(
+        e for e in capture.events
+        if e["decision_type"] == "terminal_objective_authoring"
+    )
+    assert "success=False" in ev["rationale"]
+
+
+def test_author_terminal_decision_capture_fires():
+    """MANDATORY — new LLM call site emits exactly one
+    terminal_objective_authoring event with a dynamic-signal rationale."""
+    capture = _FakeCapture()
+    p = _provider([json.dumps(_author_terminal_payload())], capture=capture)
+    p.author_terminal_for_cluster(
+        _cluster_cos(), course_name="ALG_101", cluster_index=7
+    )
+    events = [
+        e for e in capture.events
+        if e["decision_type"] == "terminal_objective_authoring"
+    ]
+    assert len(events) == 1
+    rationale = events[0]["rationale"]
+    assert len(rationale) >= 20
+    # ≥4 dynamic signals: provider, model, cluster_index, co_count_input.
+    assert "provider=anthropic" in rationale
+    assert "model=" in rationale
+    assert "cluster_index=7" in rationale
+    assert "co_count_input=2" in rationale
+    assert "success=True" in rationale
+
+
+def test_author_terminal_prompt_keeps_anti_invent_guard():
+    p = _provider([json.dumps(_author_terminal_payload())])
+    prompt = p._render_author_terminal_prompt(
+        cluster_cos=_cluster_cos(), course_name="ALG_101"
+    )
+    assert "Do NOT invent" in prompt
+    assert "EXACTLY ONE terminal" in prompt
+    assert "terminal_objective" in prompt
 
 
 # ===========================================================================
@@ -1019,3 +1132,190 @@ def test_synthesis_grammar_mode_kwarg_wins(monkeypatch):
                                   anthropic_client=object(),
                                   grammar_mode="none")
     assert p._build_synthesis_grammar_payload() == {}
+
+
+# ===========================================================================
+# WS4 §1 — Stage-1 skeleton de-blinding (section-title + chapter_text sampling)
+# ===========================================================================
+
+
+def _stub_chapter_with_sections(cid, section_titles, text=""):
+    return {
+        "id": cid,
+        "title": f"Chapter {cid}",
+        "chapter_text": text,
+        "sections": [{"title": t} for t in section_titles],
+    }
+
+
+def test_skeleton_section_titles_span_full_range():
+    """141 section titles → the rendered skeleton contains the LAST title and
+    a back-half title (not just the first 12)."""
+    titles = [f"Section {i:03d}" for i in range(141)]
+    chapter = _stub_chapter_with_sections("ch1", titles)
+    rendered = TextbookSynthesisProvider._render_chapter_skeleton(chapter)
+    # last title always present (forced inclusion of index n-1)
+    assert "Section 140" in rendered
+    # The legacy [:12] head-slice stopped at index 011; assert a meaningful
+    # share of back-half titles (index >= 70) survive the even-stride sample.
+    sampled = TextbookSynthesisProvider._sample_section_titles(titles)
+    back_half = [t for t in sampled if int(t.split()[1]) >= 70]
+    assert len(back_half) >= 10, f"too few back-half titles: {sampled}"
+    # And those back-half titles are actually rendered into the skeleton.
+    assert back_half[0] in rendered
+
+
+def test_skeleton_section_titles_capped_at_max():
+    """Sampled section-title count never exceeds _SKELETON_MAX_SECTION_TITLES,
+    and the sample always includes index 0 + n-1."""
+    titles = [f"S{i:03d}" for i in range(300)]
+    sampled = TextbookSynthesisProvider._sample_section_titles(titles)
+    assert len(sampled) <= _SKELETON_MAX_SECTION_TITLES + 1  # +1 for forced last
+    # First and last always present.
+    assert sampled[0] == "S000"
+    assert sampled[-1] == "S299"
+    # All sampled titles are members of the input (no fabrication).
+    assert set(sampled).issubset(set(titles))
+
+
+def test_skeleton_section_titles_under_cap_unchanged():
+    """A short section list (<= cap) is returned verbatim."""
+    titles = [f"S{i}" for i in range(5)]
+    assert TextbookSynthesisProvider._sample_section_titles(titles) == titles
+
+
+def test_skeleton_chapter_text_multi_offset():
+    """Long chapter_text → head/mid/tail samples present and distinct."""
+    # Build text where each third is identifiable.
+    text = ("AAA" * 200) + ("MMM" * 200) + ("ZZZ" * 200)
+    chapter = _stub_chapter_with_sections("ch1", ["S1"], text=text)
+    rendered = TextbookSynthesisProvider._render_chapter_skeleton(chapter)
+    assert "sample[head]:" in rendered
+    assert "sample[mid]:" in rendered
+    assert "sample[tail]:" in rendered
+    samples = TextbookSynthesisProvider._sample_chapter_text(text)
+    labels = [lbl for lbl, _ in samples]
+    assert labels == ["head", "mid", "tail"]
+    head, mid, tail = (snip for _, snip in samples)
+    assert head.startswith("A")
+    assert tail.endswith("Z")
+    # The three windows draw from different regions.
+    assert head != mid != tail
+
+
+def test_skeleton_short_chapter_text_single_window():
+    """Short chapter_text (< 2 windows) → only a head sample."""
+    short = "x" * 100
+    samples = TextbookSynthesisProvider._sample_chapter_text(short)
+    assert samples == [("head", short)]
+    chapter = _stub_chapter_with_sections("ch1", ["S1"], text=short)
+    rendered = TextbookSynthesisProvider._render_chapter_skeleton(chapter)
+    assert "sample[head]:" in rendered
+    assert "sample[mid]:" not in rendered
+    assert "sample[tail]:" not in rendered
+
+
+def test_skeleton_empty_chapter_text_no_sample():
+    """Empty chapter_text → no sample lines at all."""
+    assert TextbookSynthesisProvider._sample_chapter_text("") == []
+    chapter = _stub_chapter_with_sections("ch1", ["S1"], text="")
+    rendered = TextbookSynthesisProvider._render_chapter_skeleton(chapter)
+    assert "sample[" not in rendered
+
+
+# ===========================================================================
+# WS4 §2 — scope-aware DRAFT-TO band
+# ===========================================================================
+
+
+def test_draft_to_band_collapse_signature():
+    """1 chapter with >40 sections → collapse band; normal multi-chapter →
+    default band."""
+    mega = _stub_chapter_with_sections(
+        "ch1", [f"S{i}" for i in range(141)]
+    )
+    assert TextbookSynthesisProvider._draft_to_band([mega]) == _DRAFT_TO_BAND_COLLAPSE
+    assert _DRAFT_TO_BAND_COLLAPSE == (6, 12)
+
+    normal = [
+        _stub_chapter_with_sections("ch1", ["S1", "S2"]),
+        _stub_chapter_with_sections("ch2", ["S1", "S2"]),
+        _stub_chapter_with_sections("ch3", ["S1"]),
+    ]
+    lo, hi = TextbookSynthesisProvider._draft_to_band(normal)
+    assert (lo, hi)[0] == _DRAFT_TO_BAND_DEFAULT[0]
+    # high is max(default_high, min(12, chapter_count)) == 6 for 3 chapters.
+    assert hi == 6
+
+
+def test_draft_to_band_single_chapter_few_sections_is_default():
+    """A single chapter with FEW sections stays on the default band (only the
+    >40-section collapse signature bumps it)."""
+    small = _stub_chapter_with_sections("ch1", ["S1", "S2", "S3"])
+    assert TextbookSynthesisProvider._draft_to_band([small]) == _DRAFT_TO_BAND_DEFAULT
+
+
+def test_draft_to_band_boundary_strict_gt():
+    """Exactly 40 sections → default band; 41 → collapse band (strict >)."""
+    at = _stub_chapter_with_sections("ch1", [f"S{i}" for i in range(40)])
+    over = _stub_chapter_with_sections("ch1", [f"S{i}" for i in range(41)])
+    assert TextbookSynthesisProvider._draft_to_band([at]) == _DRAFT_TO_BAND_DEFAULT
+    assert TextbookSynthesisProvider._draft_to_band([over]) == _DRAFT_TO_BAND_COLLAPSE
+
+
+def test_outline_prompt_interpolates_band_and_span_clause():
+    """The collapse band (6-12) and the span clause appear in the prompt."""
+    p = TextbookSynthesisProvider(provider="anthropic", anthropic_client=object())
+    mega = _stub_chapter_with_sections(
+        "ch1", [f"S{i}" for i in range(141)], text="prose"
+    )
+    prompt = p._render_outline_prompt(chapters=[mega], course_name="ALG_101")
+    assert "6-12 DRAFT" in prompt
+    assert "span the whole" in prompt
+    assert "section range" in prompt
+
+
+def test_outline_prompt_default_band_normal_input():
+    """Normal multi-chapter input interpolates the default 3-6 band."""
+    p = TextbookSynthesisProvider(provider="anthropic", anthropic_client=object())
+    chapters = [
+        _stub_chapter_with_sections("ch1", ["S1"]),
+        _stub_chapter_with_sections("ch2", ["S1"]),
+    ]
+    prompt = p._render_outline_prompt(chapters=chapters, course_name="ALG_101")
+    assert "3-6 DRAFT" in prompt
+
+
+def test_single_megachapter_stays_call_mode_single():
+    """A single 141-section megachapter renders under _SKELETON_CHAR_BUDGET →
+    one outline call (§3 guard)."""
+    titles = [f"Section number {i:03d} about a topic" for i in range(141)]
+    mega = _stub_chapter_with_sections(
+        "ch1", titles, text="y" * 3_000
+    )
+    rendered = TextbookSynthesisProvider._render_chapter_skeleton(mega)
+    assert len(rendered) < _SKELETON_CHAR_BUDGET
+    capture = _FakeCapture()
+    p = _provider([json.dumps(_outline_payload())] * 4, capture=capture)
+    out = p.synthesize_outline({"chapters": [mega]}, course_name="ALG_101")
+    assert out["structure_enrichment"]["call_mode"] == "single"
+    assert out["structure_enrichment"]["calls"] == 1
+
+
+def test_outline_decision_carries_band_and_section_count():
+    """The textbook_outline_call decision rationale carries draft_to_band +
+    section_count_input."""
+    mega = _stub_chapter_with_sections(
+        "ch1", [f"S{i}" for i in range(141)], text="prose"
+    )
+    capture = _FakeCapture()
+    p = _provider([json.dumps(_outline_payload())], capture=capture)
+    p.synthesize_outline({"chapters": [mega]}, course_name="ALG_101")
+    events = [
+        e for e in capture.events
+        if e["decision_type"] == "textbook_outline_call"
+    ]
+    assert len(events) == 1
+    rationale = events[0]["rationale"]
+    assert "section_count_input=141" in rationale
+    assert "draft_to_band=(6, 12)" in rationale

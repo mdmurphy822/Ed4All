@@ -34,6 +34,8 @@ from Courseforge.router.inter_tier_gates import (  # noqa: E402
     BlockCurieAnchoringValidator,
     BlockPageObjectivesValidator,
     BlockSourceRefValidator,
+    _extract_objective_refs_from_block,
+    _load_canonical_objectives,
 )
 
 
@@ -183,6 +185,103 @@ def test_minted_curie_not_anchored_when_no_surface_form_in_text():
     result = BlockCurieAnchoringValidator().validate({
         "blocks": blocks,
         "minted_curie_map": minted_map,
+    })
+    assert result.passed is False
+    assert result.action == "regenerate"
+    codes = [i.code for i in result.issues if i.severity == "critical"]
+    assert "OUTLINE_BLOCK_CURIE_NOT_ANCHORED" in codes
+
+
+def test_minted_curie_anchored_via_source_chunk_text():
+    """FIX 1b: a minted CURIE is anchored when its surface form appears
+    in the block's GROUNDED source-chunk text, even when key_claims does
+    not mention it. The source chunks are the block's real provenance and
+    are tagged with the domain vocabulary, so this is rigorous, not a
+    relaxation."""
+    minted_map = {
+        "introbio101:slope": {
+            "canonical": "slope",
+            "surface_forms": ["slope", "gradient"],
+        },
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_slope_0",
+            curies=("introbio101:slope",),
+            # key_claims has no vocab surface form...
+            key_claims=["This sentence mentions nothing about lines."],
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+        # ...but the grounded source-chunk text does.
+        "source_chunks_by_block_id": {
+            "page_01#concept_slope_0": [
+                {"id": "c1", "text": "The gradient of a line is its slope."},
+            ],
+        },
+    })
+    assert result.passed is True
+    assert result.action is None
+
+
+def test_ungrounded_block_no_curie_still_fails_closed():
+    """FIX 1b fail-closed: a block with NO source chunks AND no
+    anchorable CURIE (empty curies, no vocab term in key_claims) must
+    still FAIL — source-chunk anchoring NEVER rescues an ungrounded
+    block. Preserves the no-fabrication contract."""
+    minted_map = {
+        "introbio101:slope": {
+            "canonical": "slope",
+            "surface_forms": ["slope", "gradient"],
+        },
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_x_0",
+            curies=(),  # no CURIE at all
+            key_claims=["Unrelated prose with no vocabulary concept."],
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+        # No source chunks for this block — empty universe.
+        "source_chunks_by_block_id": {},
+    })
+    assert result.passed is False
+    assert result.action == "regenerate"
+    codes = [i.code for i in result.issues if i.severity == "critical"]
+    assert "OUTLINE_BLOCK_MISSING_CURIES" in codes
+
+
+def test_grounded_block_curie_not_in_source_or_claims_fails_closed():
+    """FIX 1b fail-closed: a block WITH source chunks but whose declared
+    CURIE's surface form is absent from BOTH key_claims AND the
+    source-chunk text still fails (the concept is not actually present
+    anywhere in its provenance)."""
+    minted_map = {
+        "introbio101:slope": {
+            "canonical": "slope",
+            "surface_forms": ["slope", "gradient"],
+        },
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_y_0",
+            curies=("introbio101:slope",),
+            key_claims=["Talks about photosynthesis only."],
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+        "source_chunks_by_block_id": {
+            "page_01#concept_y_0": [
+                {"id": "c1", "text": "Cells use mitochondria for energy."},
+            ],
+        },
     })
     assert result.passed is False
     assert result.action == "regenerate"
@@ -728,3 +827,233 @@ def test_missing_blocks_input_fails_closed_for_every_adapter():
         )
         codes = [i.code for i in result.issues if i.severity == "critical"]
         assert "MISSING_BLOCKS_INPUT" in codes
+
+
+# --------------------------------------------------------------------------- #
+# Bug-fix regression: nested-group loader + objective_refs field read
+# --------------------------------------------------------------------------- #
+
+
+def test_load_canonical_objectives_parses_nested_group_shape(tmp_path):
+    """``_load_canonical_objectives`` harvests CO ids from the nested
+    ``chapter_objectives: [{chapter, objectives: [{id}]}]`` group shape
+    (the real synthesizer emit), not just flat ``{id}`` entries.
+
+    Regression for the loader-parse bug: the legacy loader called
+    ``entry.get("id")`` on the GROUP dict, which is None for every group,
+    so every CO id was dropped and only the flat TO ids survived.
+    """
+    objectives_path = tmp_path / "synthesized_objectives.json"
+    objectives_path.write_text(
+        json.dumps({
+            "terminal_objectives": [
+                {"id": "TO-01", "statement": "Stub TO 1"},
+                {"id": "TO-02", "statement": "Stub TO 2"},
+            ],
+            "chapter_objectives": [
+                {
+                    "chapter": "Week 1",
+                    "objectives": [
+                        {"id": "CO-01", "statement": "Stub CO 1"},
+                        {"id": "CO-02", "statement": "Stub CO 2"},
+                    ],
+                },
+                {
+                    "chapter": "Week 2",
+                    "objectives": [
+                        {"id": "CO-03", "statement": "Stub CO 3"},
+                    ],
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    ids = _load_canonical_objectives(objectives_path)
+    assert ids == {"TO-01", "TO-02", "CO-01", "CO-02", "CO-03"}
+
+
+def test_load_canonical_objectives_parses_top_level_flat_list(tmp_path):
+    """``_load_canonical_objectives`` harvests ids from a bare top-level
+    flat list (e.g. the ``01_outline/outline_objectives.json`` sidecar),
+    which previously raised AttributeError on ``data.get(...)``.
+    """
+    objectives_path = tmp_path / "outline_objectives.json"
+    objectives_path.write_text(
+        json.dumps([
+            {"id": "TO-01", "statement": "Stub TO 1"},
+            {"id": "CO-01", "statement": "Stub CO 1"},
+            {"id": "CO-02", "statement": "Stub CO 2"},
+        ]),
+        encoding="utf-8",
+    )
+    ids = _load_canonical_objectives(objectives_path)
+    assert ids == {"TO-01", "CO-01", "CO-02"}
+
+
+def test_load_canonical_objectives_accepts_component_objectives_group(tmp_path):
+    """``component_objectives`` is accepted as a synonym group key for the
+    LibV2 archive form and parsed through the same nested-group path."""
+    objectives_path = tmp_path / "archive_objectives.json"
+    objectives_path.write_text(
+        json.dumps({
+            "terminal_outcomes": [{"id": "TO-01", "statement": "Stub"}],
+            "component_objectives": [
+                {
+                    "chapter": "Module 1",
+                    "objectives": [{"id": "CO-01", "statement": "Stub CO"}],
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    ids = _load_canonical_objectives(objectives_path)
+    assert ids == {"TO-01", "CO-01"}
+
+
+def test_extract_objective_refs_reads_content_objective_refs():
+    """``_extract_objective_refs_from_block`` reads refs from
+    ``content["objective_refs"]`` (the 7B outline tier's real ref
+    surface), not just the structural ``objective_ids`` field.
+
+    Regression for the field-read bug: the validator ignored
+    ``content["objective_refs"]``, so 7B outline blocks were read as
+    having no objective refs. Mirrors
+    ``router.py::_candidate_covers_objective``.
+    """
+    block = Block(
+        block_id="page_01#concept_a_0",
+        block_type="concept",
+        page_id="page_01",
+        sequence=0,
+        content={
+            "curies": ["ed4all:Foo"],
+            "key_claims": ["text"],
+            "content_type": "definition",
+            "objective_refs": ["CO-24", "TO-01", "CO-25"],
+        },
+        # Structural field carries a subset; the union must include both.
+        objective_ids=("TO-01",),
+    )
+    refs = _extract_objective_refs_from_block(block)
+    assert set(refs) == {"CO-24", "TO-01", "CO-25"}
+    # Discovery order: structural first, then content surfaces, deduped.
+    assert refs[0] == "TO-01"
+
+
+def test_page_objectives_resolves_block_with_content_objective_refs(tmp_path):
+    """End-to-end: an outline block whose refs live ONLY in
+    ``content["objective_refs"]`` resolves cleanly against a canonical
+    set loaded from a nested-group objectives JSON (both bugs combined).
+    """
+    objectives_path = tmp_path / "synthesized_objectives.json"
+    objectives_path.write_text(
+        json.dumps({
+            "terminal_objectives": [{"id": "TO-01", "statement": "Stub"}],
+            "chapter_objectives": [
+                {
+                    "chapter": "Week 1",
+                    "objectives": [
+                        {"id": "CO-24", "statement": "Stub"},
+                        {"id": "CO-25", "statement": "Stub"},
+                    ],
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    block = Block(
+        block_id="page_01#concept_a_0",
+        block_type="concept",
+        page_id="page_01",
+        sequence=0,
+        content={
+            "curies": ["ed4all:Foo"],
+            "key_claims": ["text"],
+            "content_type": "definition",
+            "objective_refs": ["CO-24", "TO-01", "CO-25"],
+        },
+        objective_ids=(),
+    )
+    result = BlockPageObjectivesValidator().validate({
+        "blocks": [block],
+        "objectives_path": str(objectives_path),
+    })
+    assert result.passed is True
+    assert result.action is None
+    crit = [i.code for i in result.issues if i.severity == "critical"]
+    assert "OUTLINE_BLOCK_MISSING_OBJECTIVE_REF" not in crit
+    assert "OUTLINE_BLOCK_UNKNOWN_OBJECTIVE" not in crit
+
+
+# --------------------------------------------------------------------------- #
+# Root-cause regressions (post_rewrite_validation 35/37-fail investigation,
+# 2026-06-15). See MCP/tools/tests/test_post_rewrite_gate_roots.py for the
+# pipeline-side (round-trip / backstop / manifest) roots.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("scaffolding_type", ["objective", "chrome", "recap"])
+def test_content_type_skips_scaffolding_block_types(scaffolding_type):
+    """An ``objective`` (/ ``chrome`` / ``recap``) block carries no
+    ``data-cf-content-type`` by canonical emit and is not a ChunkType member,
+    so ``BlockContentTypeValidator`` must SKIP it rather than fail it. Pre-fix,
+    an objective-only page 100%-failed this gate (the live-run root)."""
+    # Bare rewrite-tier <li> objective with NO data-cf-content-type — the exact
+    # canonical objective emit shape.
+    block = Block(
+        block_id=f"week_01_content_01#{scaffolding_type}_a_0",
+        block_type=scaffolding_type,
+        page_id="week_01_content_01",
+        sequence=0,
+        content=(
+            '<li data-cf-block-id="week_01_content_01#objective_a_0" '
+            'data-cf-objective-id="TO-01" data-cf-bloom-level="understand">'
+            "Explain primes.</li>"
+        ),
+        objective_ids=("TO-01",),
+    )
+    result = BlockContentTypeValidator().validate({"blocks": [block]})
+    assert result.passed is True
+    assert result.action is None
+    assert not result.issues
+
+
+def test_content_type_still_audits_substantive_blocks(monkeypatch):
+    """The scaffolding skip is narrow — a substantive ``concept`` block with no
+    content_type still fails closed (no over-broad relaxation)."""
+    block = Block(
+        block_id="week_01_content_01#concept_a_0",
+        block_type="concept",
+        page_id="week_01_content_01",
+        sequence=0,
+        content="<section data-cf-block-id='b'>No content type here.</section>",
+    )
+    result = BlockContentTypeValidator().validate({"blocks": [block]})
+    assert result.passed is False
+    codes = [i.code for i in result.issues if i.severity == "critical"]
+    assert "OUTLINE_BLOCK_MISSING_CONTENT_TYPE" in codes
+
+
+@pytest.mark.parametrize(
+    "joined",
+    ["TO-04, CO-03, CO-07", "CO-13 CO-20 CO-71", "TO-04,CO-03 ,  CO-07"],
+)
+def test_str_path_objective_extractor_splits_joined_attribute(joined):
+    """The 7B rewrite tier packs multiple LO ids into a single
+    ``data-cf-objective-id`` attribute (comma- or space-joined). The str-path
+    extractor must split them so each resolves individually instead of the
+    whole joined string failing as one unknown id."""
+    block = Block(
+        block_id="week_05_content_01#objective_a_0",
+        block_type="objective",
+        page_id="week_05_content_01",
+        sequence=0,
+        content=f'<li data-cf-objective-id="{joined}">Objectives.</li>',
+        objective_ids=(),  # structural empty → forces the HTML-scrape path
+    )
+    refs = _extract_objective_refs_from_block(block)
+    # All three ids recovered, none containing a comma or whitespace.
+    assert set(refs) >= {"TO-04", "CO-03", "CO-07"} or set(refs) >= {
+        "CO-13", "CO-20", "CO-71"
+    }
+    assert all("," not in r and " " not in r for r in refs)

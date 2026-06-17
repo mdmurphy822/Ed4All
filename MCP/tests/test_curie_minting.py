@@ -158,7 +158,7 @@ def test_existing_curies_not_overwritten(tmp_path):
     _vocab_file(tmp_path)
     block = _outline_block(
         block_id="week_01_content_01#objective_a_0",
-        curies=["sh:NodeShape"],  # already populated
+        curies=["demo101:slope"],  # already a real per-course domain CURIE
         key_claims=["The slope of a line measures its steepness."],
     )
     blocks = [block]
@@ -169,9 +169,96 @@ def test_existing_curies_not_overwritten(tmp_path):
         kwargs={"libv2_root": str(tmp_path)},
         capture=None,
     )
-    # Untouched — real CURIEs win.
+    # Untouched — a real minted domain CURIE wins.
     assert blocks[0] is before
-    assert blocks[0].content["curies"] == ["sh:NodeShape"]
+    assert blocks[0].content["curies"] == ["demo101:slope"]
+
+
+# ---------------------------------------------------------------------------
+# 3b. FIX 1: source-chunk minting fallback when key_claims lacks a vocab term.
+# ---------------------------------------------------------------------------
+
+
+def test_minting_via_source_chunk_text_when_claims_lack_term(tmp_path):
+    """FIX 1: the block's key_claims do NOT mention any vocab concept, but
+    its grounded source-chunk text does — the minted CURIE is stamped from
+    the source-chunk match. The source chunks are the block's real
+    provenance, so this is rigorous, not fabrication."""
+    _vocab_file(tmp_path)
+    block = _outline_block(
+        block_id="week_01_content_01#objective_b_0",
+        curies=[],
+        key_claims=["This block talks about nothing in the vocabulary."],
+    )
+    blocks = [block]
+    _mint_outline_curies(
+        outline_blocks=blocks,
+        course_code="DEMO_101",
+        kwargs={"libv2_root": str(tmp_path)},
+        capture=None,
+        chunks_lookup={
+            "week_01_content_01#objective_b_0": [
+                {"id": "c1", "text": "The slope of a line is its rise over run."},
+            ],
+        },
+    )
+    assert "demo101:slope" in blocks[0].content["curies"]
+
+
+def test_no_source_chunk_text_no_mint(tmp_path):
+    """FIX 1 fail-closed: key_claims has no vocab term AND the block has no
+    grounded source-chunk text (topic-paragraph fallback entry, no 'text'
+    key) — nothing is minted; the block fails closed downstream."""
+    _vocab_file(tmp_path)
+    block = _outline_block(
+        block_id="week_01_content_01#objective_c_0",
+        curies=[],
+        key_claims=["No vocabulary concept here at all."],
+    )
+    blocks = [block]
+    _mint_outline_curies(
+        outline_blocks=blocks,
+        course_code="DEMO_101",
+        kwargs={"libv2_root": str(tmp_path)},
+        capture=None,
+        chunks_lookup={
+            "week_01_content_01#objective_c_0": [
+                {"heading": "Topic", "paragraphs": ["Nothing relevant."]},
+            ],
+        },
+    )
+    assert blocks[0].content["curies"] == []
+
+
+# ---------------------------------------------------------------------------
+# 3c. FIX 1: generic / placeholder CURIE is augmented (not overwritten).
+# ---------------------------------------------------------------------------
+
+
+def test_generic_placeholder_curie_augmented_with_domain_curie(tmp_path):
+    """FIX 1: a block carrying only a GENERIC / placeholder CURIE (e.g.
+    'outline:openstax', 'cf:CO-36' — not a key in the per-course minted
+    map) is treated as still needing a domain CURIE; the minted domain
+    CURIE is APPENDED and the generic token is preserved."""
+    _vocab_file(tmp_path)
+    block = _outline_block(
+        block_id="week_01_content_01#objective_d_0",
+        curies=["outline:openstax", "cf:CO-36"],  # generic placeholders
+        key_claims=["The slope of a line measures its steepness."],
+    )
+    blocks = [block]
+    _mint_outline_curies(
+        outline_blocks=blocks,
+        course_code="DEMO_101",
+        kwargs={"libv2_root": str(tmp_path)},
+        capture=None,
+    )
+    result = blocks[0].content["curies"]
+    # Generic tokens preserved...
+    assert "outline:openstax" in result
+    assert "cf:CO-36" in result
+    # ...and the minted domain CURIE appended.
+    assert "demo101:slope" in result
 
 
 # ---------------------------------------------------------------------------

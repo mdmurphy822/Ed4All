@@ -471,25 +471,26 @@ def test_explicit_duration_kwargs_wins(planner_fixture):
     assert objectives["duration_weeks"] == 12
 
 
-# Wave 1.8: objective-driven dynamic week count. After the synthesizer
-# emits real CO-NN objectives, re-scale duration_weeks to
-# max(8, ceil(len(chapter_objectives) / _COS_PER_WEEK)) when
-# duration_weeks_explicit=False. Replaces the chapter-driven pre-scale
-# from the extractor with the authoritative objective count.
+# WS5 §3.2 (supersedes Wave 1.8): objective-driven dynamic week count is now
+# TO-based — when the synthesizer emits real terminal objectives, pacing is
+# ``max(8, num_tos)`` (one week-block per TO), NOT the legacy CO-count
+# ``max(8, ceil(num_cos / WAVE18_COS_PER_WEEK))``. The CO-count formula
+# survives only as the no-TO fallback; ``WAVE18_COS_PER_WEEK`` is repurposed to
+# the within-theme distribution knob. The COs distribute within each TO's block
+# via the §2.2 coverage-safe ceil-stride slicer, so no CO is dropped.
 # ---------------------------------------------------------------------- #
 
 
-def test_wave18_rescales_duration_weeks_from_objective_count(planner_fixture):
-    """duration_weeks_explicit=False + many synthesized COs → re-scale.
+def test_ws5_rescales_duration_weeks_from_terminal_count(planner_fixture):
+    """duration_weeks_explicit=False → re-scale to the TO count (floor 8).
 
-    With 30 source headings the synthesizer emits enough chapter
-    objectives that ``ceil(N / _COS_PER_WEEK)`` exceeds the 8-week
-    floor and the planner promotes ``duration_weeks`` accordingly.
+    WS5 §3.2: the synthesize-from-topics path emits ``terminal_count`` TOs;
+    ``duration_weeks`` is re-scaled to ``max(8, terminal_count)`` (no longer
+    the CO-count balloon). Every CO still places across those weeks via the
+    §2.2 cap-lift.
     """
     fx = planner_fixture
     _seed_autoscaled_config(fx["project_dir"], auto_weeks=8)
-    # 30 distinct headings — enough to push CO count past 16 so
-    # ceil(N/2) > 8 and the re-scale fires.
     headings = [f"Topic {i:02d}" for i in range(1, 31)]
     _write_dart_html(fx["staging_dir"] / "book.html", headings)
 
@@ -500,22 +501,33 @@ def test_wave18_rescales_duration_weeks_from_objective_count(planner_fixture):
         duration_weeks_explicit=False,
     ))
     assert result["success"]
-    co_count = int(result["chapter_count"])
-    expected_weeks = max(8, (co_count + 1) // 2)
-    # Re-scale must fire: produced more weeks than the extractor's 8.
-    assert expected_weeks > 8, (
-        f"test fixture didn't trigger re-scale; got {co_count} COs / "
-        f"expected_weeks={expected_weeks}"
-    )
+    to_count = int(result["terminal_count"])
+    expected_weeks = max(8, to_count)
     assert result["duration_weeks"] == expected_weeks, (
-        f"expected re-scale to {expected_weeks} weeks for {co_count} COs "
-        f"(_COS_PER_WEEK=2); got {result['duration_weeks']}"
+        f"WS5: expected TO-based re-scale to {expected_weeks} weeks for "
+        f"{to_count} TOs; got {result['duration_weeks']}"
     )
 
     cfg = json.loads(
         (fx["project_dir"] / "project_config.json").read_text(encoding="utf-8")
     )
     assert cfg["duration_weeks"] == expected_weeks
+
+    # §2.2 cap-lift: every synthesized CO must appear across the per-week
+    # groups persisted under §2.4(A) (zero dropped).
+    doc = json.loads(
+        Path(result["synthesized_objectives_path"]).read_text(encoding="utf-8")
+    )
+    all_co_ids = {
+        lo["id"] for lo in doc["learning_outcomes"]
+        if lo.get("hierarchy_level") == "chapter"
+    }
+    placed = set()
+    for grp in doc["chapter_objectives"]:
+        placed |= {o["id"] for o in grp.get("objectives", [])}
+    assert all_co_ids <= placed, (
+        f"WS5 cap-lift dropped COs: {sorted(all_co_ids - placed)[:10]}"
+    )
 
 
 def test_wave18_preserves_8week_floor_for_short_courses(planner_fixture):

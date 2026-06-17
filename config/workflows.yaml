@@ -168,8 +168,14 @@ workflows:
         parallel: false
         max_concurrent: 1
         depends_on: [inter_tier_validation]
-        timeout_minutes: 90
-        batch_timeout_minutes: 30
+        # Local-7B authoring of a multi-block course rewrite tier (per-block
+        # CURIE-preservation retries on a slow local model) needs a wide
+        # ceiling; these are MAX caps (the phase finishes as soon as the
+        # single rewrite task returns), so a long timeout never slows a fast
+        # cloud run — it only stops the slow local path from being killed
+        # mid-rewrite by the default 30-min batch cap.
+        timeout_minutes: 240
+        batch_timeout_minutes: 240
         description: Phase 3 — rewrite-tier HTML emit consuming validated Block outlines
         enabled_when_env: "COURSEFORGE_TWO_PASS=true"
 
@@ -286,6 +292,37 @@ workflows:
                 max_contradicted_rate: 0.05
             description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). SHADOW until §4 calibration pins the floor, then critical."
 
+          # Numeric-literal grounding — the fabrication control for NUMERIC /
+          # math content that the number-blind NLI gate cannot provide.
+          # Established this session (content-block-quality iters 5/5b):
+          # DeBERTa-v3-mnli scores a fabricated worked-example input (-40/88,
+          # present in ZERO real chunks) ABOVE every grounded math claim, and
+          # groundedness._is_computational EXEMPTS such claims, so
+          # block_prose_entailment gives no numeric fabrication protection.
+          # This gate cross-checks each prose fraction's num/denom pair against
+          # the cited source under OCR-tolerant containment. Day-1 SHADOW
+          # (warning): measured clean separation on the real sample-course-a
+          # corpus (grounded blocks 0% source-absent; fabrication blocks flag).
+          # TODO(calibration): promote to critical (config.shadow: false,
+          # severity: critical, behavior.on_fail: regenerate) after measuring
+          # the false-positive rate on a ≥2-corpus run; if a corpus shows
+          # legitimate computed-result false-positives, flip
+          # config.thresholds.min_absent_fractions to a source_absent_ratio
+          # floor (the ratio is surfaced on every decision event).
+          - gate_id: numeric_literal_grounding
+            validator: lib.validators.numeric_literal_grounding.NumericLiteralGroundingValidator
+            severity: warning                  # SHADOW day-1 -> critical post-calibration
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn                    # SHADOW -> regenerate post-calibration
+              on_error: warn
+            config:
+              shadow: true                     # forces emitted issues to warning-severity during calibration
+              thresholds:
+                min_absent_fractions: 1
+            description: "Numeric-literal grounding — cross-check prose fractions vs cited source (OCR-tolerant). The fabrication control for math content the number-blind NLI gate cannot provide. SHADOW until ≥2-corpus calibration, then critical."
+
           # W3 — per-block synthesis-manifest RESOLUTION gate (two-pass mirror;
           # see textbook_to_course for the full rationale). Day-1 SHADOW
           # (warning) until a live run proves the rewrite-tier emission.
@@ -304,6 +341,29 @@ workflows:
               W3 — assert every synthesized block carries a complete, well-formed
               synthesis manifest. RESOLUTION only — NOT entailment. SHADOW/warning
               day-1 until a live run proves the emission.
+
+          # CB5a — stub-example safety-net gate. Catches an ``example``
+          # block carrying only a problem statement with no worked
+          # solution (length floor + solution-evidence heuristic). Pure
+          # HTML/text — no embeddings.
+          # TODO(calibration): SHADOW-landed warning. Flip to
+          # severity: critical + behavior.on_fail: regenerate after
+          # measuring the false-positive rate on a real local-7B run.
+          - gate_id: example_completeness
+            validator: lib.validators.example_completeness.ExampleCompletenessValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            config:
+              thresholds:
+                min_word_tokens: 40
+            description: >
+              CB5a — flag a stub ``example`` block (problem statement, no
+              worked solution). SHADOW/warning day-1; flip to
+              regenerate/critical after a real-run false-positive measure.
 
       - name: packaging
         agents: [brightspace-packager]
@@ -1091,6 +1151,65 @@ workflows:
             behavior:
               on_fail: block
               on_error: fail_closed
+          # WS3 — CO<->TO semantic-alignment DETECTION gate. The structural
+          # terminal_objective_coverage gate above is a roll-up check only
+          # ("does every TO have >=1 CO pointing at it"); it NEVER measures
+          # whether the CO->TO assignment is semantically meaningful. On the
+          # broken run all 62 COs carried a populated terminal_id
+          # (force-assigned floorlessly by backlink_cos_to_tos), so the
+          # structural gate passed via the genuine orphan-check path even
+          # though the assignments were near-random — a silent-pass loophole.
+          # This gate recomputes cosine(co.statement, assigned_to.statement)
+          # per chapter objective and flags weak links. It is detection, NOT
+          # the cure (WS1's bottom-up TO derivation is the cure), and fires on
+          # ~80%+ of COs on the current run, so it lands warning-severity
+          # day-1.
+          # TODO(calibration): promote to critical after WS1 proves the
+          # recomputed weak-link rate <= 0.10 on >=2 corpora — flip is
+          # severity: critical, behavior.on_fail: block, and
+          # CO_TERMINAL_WEAK_LINK_RATE_HIGH -> critical. NOT in WS3 scope.
+          - gate_id: co_terminal_alignment
+            validator: lib.validators.co_terminal_alignment.CoTerminalAlignmentValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn        # embedding-validator convention (cf. objective_source_refs), NOT fail_closed
+            config:
+              threshold: 0.45
+              weak_rate_warn: 0.30
+            description: "WS3 — CO<->TO semantic-alignment detection gate (recompute cosine). SHADOW/warning day-1; closes the structural-roll-up silent-pass loophole. Critical flip DEFERRED (TODO calibration, post-WS1)."
+          # WS6a — Source->objective coverage-audit gate. Embeds each
+          # content-bearing textbook section (chapters[].sections[],
+          # section_text len > ~40) and asserts >=1 synthesized objective
+          # (CO or TO) covers it above a cosine floor. A section no objective
+          # rolls up to is real instructional content that downstream content
+          # generation never authors a page for — it silently vanishes from the
+          # course. This gate surfaces that gap at planning time instead of at
+          # archival. Reuses the _build_chapter_objective_coverage_inputs builder
+          # (same synthesized_objectives + textbook_structure inputs). Graceful
+          # no-op pass on empty/absent inputs; EMBEDDING_DEPS_MISSING degrade
+          # when [embedding] extras are absent.
+          # DE-RISK PROOF (2026-06-17): on the real corpus 135/135 content
+          # sections are covered at floor 0.45 (mean cosine 0.73), so this
+          # corpus passes clean — the gate is a guardrail for OTHER corpora.
+          # TODO(calibration): calibrate the floor UP toward ~0.55 on >=2
+          # corpora before any critical flip (the flip is severity: critical,
+          # behavior.on_fail: block, and SOURCE_COVERAGE_LOW -> critical).
+          # NOT in WS6a scope.
+          - gate_id: source_coverage
+            validator: lib.validators.source_coverage.SourceCoverageValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn        # embedding-validator convention (cf. co_terminal_alignment), NOT fail_closed
+            config:
+              coverage_floor: 0.45
+              max_uncovered_rate: 0.15
+            description: "WS6a — source->objective coverage-audit gate (section->nearest-objective cosine). Warning day-1; surfaces source material no objective covers. Critical flip DEFERRED (TODO calibration; floor up toward ~0.55 on >=2 corpora first)."
 
       # concept_extraction phase — builds the pedagogy/concept graph from
       # the staged DART output + DART chunkset. Phase-ordering fix
@@ -1688,6 +1807,25 @@ workflows:
               on_error: warn
             description: W2.C — exactly-one-correct check on Trainforge ``choices[]`` shape + distractor-not-entailed-by-source Jaccard floor (default 0.70). Symmetric to AssessmentRetrievalGroundingValidator's correct-answer-grounding gate.
 
+          # a6d6291b follow-up — numeric-value distractor-equivalence gate.
+          # Token-Jaccard distinctness can't catch a distractor mathematically
+          # EQUAL to the correct answer (4/6 vs 2/3 → Jaccard 0.0 → "distinct"),
+          # so an equivalent-form distractor (a second correct answer) ships.
+          # This gate parses each option to a fractions.Fraction and fails any
+          # distractor equal in value to the key. Scope-limited: non-numeric
+          # MCQs skip (pass). action=regenerate is advisory at warning.
+          # TODO(calibration): promote to critical after a live run confirms
+          # the numeric-parse + correct-marker extraction on real 7B output.
+          - gate_id: outline_assessment_numeric_equivalence
+            validator: lib.validators.assessment_numeric_equivalence.AssessmentNumericEquivalenceValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: a6d6291b — numeric-value distractor-equivalence gate; a distractor equal in VALUE to the correct answer (4/6 == 2/3) is a second correct answer that token-Jaccard distinctness can't detect. Scope-limited to numeric/fraction MCQs.
+
           - gate_id: outline_padded_distractor
             validator: lib.validators.padded_distractor.PaddedDistractorValidator
             severity: critical
@@ -1729,8 +1867,14 @@ workflows:
         parallel: false
         max_concurrent: 1
         depends_on: [inter_tier_validation]
-        timeout_minutes: 90
-        batch_timeout_minutes: 30
+        # Local-7B authoring of a multi-block course rewrite tier (per-block
+        # CURIE-preservation retries on a slow local model) needs a wide
+        # ceiling; these are MAX caps (the phase finishes as soon as the
+        # single rewrite task returns), so a long timeout never slows a fast
+        # cloud run — it only stops the slow local path from being killed
+        # mid-rewrite by the default 30-min batch cap.
+        timeout_minutes: 240
+        batch_timeout_minutes: 240
         description: Phase 3 — rewrite-tier HTML emit consuming validated Block outlines
         enabled_when_env: "COURSEFORGE_TWO_PASS=true"
 
@@ -1990,6 +2134,34 @@ workflows:
                 max_contradicted_rate: 0.05
             description: "W4 — full-block-prose NLI entailment vs cited chunks (windowed scorer-v2). SHADOW until §4 calibration pins the floor, then critical."
 
+          # Numeric-literal grounding — the fabrication control for NUMERIC /
+          # math content that the number-blind NLI gate cannot provide
+          # (content-block-quality iters 5/5b). DeBERTa-v3-mnli scores a
+          # fabricated worked-example input ABOVE every grounded math claim,
+          # and groundedness._is_computational EXEMPTS such claims, so
+          # block_prose_entailment gives no numeric fabrication protection.
+          # This gate cross-checks each prose fraction's num/denom pair against
+          # the cited source under OCR-tolerant containment. Day-1 SHADOW
+          # (warning): measured clean separation on the real sample-course-a
+          # corpus. TODO(calibration): promote to critical (config.shadow:
+          # false, severity: critical, behavior.on_fail: regenerate) after a
+          # ≥2-corpus FP-rate measurement; if a corpus shows legitimate
+          # computed-result false-positives, flip min_absent_fractions to a
+          # source_absent_ratio floor (the ratio is on every decision event).
+          - gate_id: numeric_literal_grounding
+            validator: lib.validators.numeric_literal_grounding.NumericLiteralGroundingValidator
+            severity: warning                  # SHADOW day-1 -> critical post-calibration
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn                    # SHADOW -> regenerate post-calibration
+              on_error: warn
+            config:
+              shadow: true                     # forces emitted issues to warning-severity during calibration
+              thresholds:
+                min_absent_fractions: 1
+            description: "Numeric-literal grounding — cross-check prose fractions vs cited source (OCR-tolerant). The fabrication control for math content the number-blind NLI gate cannot provide. SHADOW until ≥2-corpus calibration, then critical."
+
           # Phase 4 Wave N1 Subtask 12: SHACL parallel of the four
           # rewrite-tier Block validators above. Distinct gate_id
           # (``rewrite_shacl`` vs the inter-tier ``outline_shacl``) so
@@ -2160,6 +2332,25 @@ workflows:
               on_error: warn
             description: W2.C — post-rewrite exactly-one-correct + distractor-not-entailed-by-source check. Mirrors the inter_tier_validation seam against the rewrite-tier Block batch.
 
+          # a6d6291b follow-up — numeric-value distractor-equivalence gate
+          # (post-rewrite mirror of outline_assessment_numeric_equivalence).
+          # Parses each option to a fractions.Fraction; fails any distractor
+          # equal in VALUE to the correct answer (4/6 == 2/3 — a second
+          # correct answer token-Jaccard distinctness can't catch). The
+          # rewrite-tier correct answer is the <li data-cf-correct="true">
+          # option. Scope-limited: non-numeric MCQs skip (pass).
+          # TODO(calibration): promote to critical after a live run confirms
+          # the numeric-parse + correct-marker extraction on real 7B output.
+          - gate_id: rewrite_assessment_numeric_equivalence
+            validator: lib.validators.assessment_numeric_equivalence.AssessmentNumericEquivalenceValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: a6d6291b — post-rewrite numeric-value distractor-equivalence gate; a distractor equal in VALUE to the correct answer (4/6 == 2/3) is a second correct answer that token-Jaccard distinctness can't detect. Scope-limited to numeric/fraction MCQs.
+
           - gate_id: rewrite_padded_distractor
             validator: lib.validators.padded_distractor.PaddedDistractorValidator
             severity: critical
@@ -2220,6 +2411,29 @@ workflows:
               and concept_tags. RESOLUTION only (ids resolve + fields present) — NOT
               entailment (W4 owns NLI grounding of content vs chunk). SHADOW/warning
               day-1 until a live run proves the emission.
+
+          # CB5a — stub-example safety-net gate. Catches an ``example``
+          # block carrying only a problem statement with no worked
+          # solution (length floor + solution-evidence heuristic). Pure
+          # HTML/text — no embeddings.
+          # TODO(calibration): SHADOW-landed warning. Flip to
+          # severity: critical + behavior.on_fail: regenerate after
+          # measuring the false-positive rate on a real local-7B run.
+          - gate_id: example_completeness
+            validator: lib.validators.example_completeness.ExampleCompletenessValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            config:
+              thresholds:
+                min_word_tokens: 40
+            description: >
+              CB5a — flag a stub ``example`` block (problem statement, no
+              worked solution). SHADOW/warning day-1; flip to
+              regenerate/critical after a real-run false-positive measure.
 
       - name: packaging
         agents: [brightspace-packager]

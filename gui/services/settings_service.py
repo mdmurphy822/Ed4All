@@ -64,8 +64,16 @@ _STUDIO_CATEGORIES = ("credentials", "global", "answer", "local")
 
 # The model_routing tasks the Studio settings page surfaces (authoring +
 # answer). Mirrors ``env_catalog.ROUTING_ENV_MAP`` task names; the page reads /
-# patches ``model_routing.<task>``.
-_STUDIO_ROUTING_TASKS = ("global", "courseplanner", "courseforge_outline", "answer")
+# patches ``model_routing.<task>``. Both Courseforge two-pass authoring tiers
+# (outline + rewrite) are surfaced so a Studio user can route the full
+# generation pipeline; they sit adjacent here for parity with the operator tab.
+_STUDIO_ROUTING_TASKS = (
+    "global",
+    "courseplanner",
+    "courseforge_outline",
+    "courseforge_rewrite",
+    "answer",
+)
 
 
 def build_studio_settings_payload() -> Dict[str, Any]:

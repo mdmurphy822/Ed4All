@@ -67,6 +67,7 @@ import dataclasses
 import datetime as _dt
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -74,6 +75,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from Courseforge.generators._base import _BaseLLMProvider
+from Trainforge.generators._openai_compatible_client import (  # noqa: E402
+    ENV_REQUEST_TIMEOUT as _OA_ENV_REQUEST_TIMEOUT,
+)
 from MCP.hardening.error_classifier import (  # noqa: E402
     ErrorClass,
     classify_error,
@@ -135,6 +139,40 @@ DEFAULT_MODEL_LOCAL = "qwen2.5:14b-instruct-q4_K_M"
 
 _DEFAULT_MAX_TOKENS = 2400
 _DEFAULT_TEMPERATURE = 0.4
+
+# Per-request HTTP timeout (seconds) for the rewrite tier's
+# OpenAI-compatible backends (local / together). The rewrite tier
+# authors multi-paragraph pedagogical prose; on a local 7B server that
+# routinely exceeds the OpenAICompatibleClient 60s default (made worse
+# by CURIE-preservation re-generation that re-calls the model). We pass
+# an explicit generous timeout, sourced from
+# ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` when set, else 300.0. This
+# mirrors the TEXTBOOK_SYNTHESIS_TIMEOUT_SECONDS posture (also 300s for
+# long-context local synthesis). Resolution / precedence (high → low):
+# explicit per-call ``timeout`` kwarg > ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS``
+# > this default.
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 300.0
+
+
+def _resolve_request_timeout() -> float:
+    """Resolve the rewrite-tier per-request timeout default.
+
+    Reads ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (the cross-cutting
+    content-generation timeout knob); a missing / unparseable /
+    non-positive value falls back to
+    :data:`_DEFAULT_REQUEST_TIMEOUT_SECONDS` (300.0) — never the bare
+    60s client default, so 7B prose generation isn't capped at 60s.
+    """
+    raw = os.environ.get(_OA_ENV_REQUEST_TIMEOUT)
+    if not raw or not str(raw).strip():
+        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    if not math.isfinite(parsed) or parsed <= 0:
+        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    return parsed
 
 SUPPORTED_PROVIDERS = (
     "anthropic",
@@ -243,6 +281,180 @@ _REWRITE_SYSTEM_PROMPT = (
     "the per-claim attribution is for finer-grained pedagogical "
     "context."
     "\n\n"
+    # CB1: pedagogical-depth directive. The outline tier produces a
+    # structurally-correct but pedagogically-thin draft; the rewrite
+    # tier MUST add instructional depth (rationale, verification,
+    # second cases, expert tips) WITHOUT inventing any new material —
+    # the NLI grounding gates fail-close on fabrication, so every
+    # added sentence must be a better EXPLANATION of supplied source
+    # material, never new facts/numbers/examples.
+    "PEDAGOGICAL DEPTH (grounded). Add instructional depth per block "
+    "type, drawing ONLY on material already in the supplied source "
+    "chunks and the outline's `key_claims`:"
+    "\n\n"
+    "- concept / explanation blocks: include a brief CONCEPTUAL "
+    "RATIONALE — explain *why* it works or *what it means*, not just "
+    "the procedure or the definition. The learner should come away "
+    "understanding the underlying reason, not just the steps. ADD the "
+    "rationale ALONGSIDE the source's concrete worked detail — do NOT "
+    "replace specific worked steps or the source's numbers with "
+    "abstract generalities (keep `-32/56 -> -4/7`, not only `a/b`)."
+    "\n\n"
+    "- example / worked blocks: REUSE THE EXACT NUMBERS AND WORKED "
+    "VALUES from the source's own worked examples (its `Example`, "
+    "`TRY IT`, and solution items) VERBATIM — do NOT substitute, "
+    "round, simplify-to-nicer, or invent your own example numbers "
+    "when the source already gives a worked example for that "
+    "operation. Walk the SOURCE's example through its steps. Only "
+    "when the source states an operation as a general formula with NO "
+    "accompanying worked numbers may you supply ONE short illustrative "
+    "example, and it MUST be arithmetically correct and consistent "
+    "with its own heading (e.g. do not title an example "
+    "\"common denominator\" then use unlike denominators). Do NOT pad "
+    "a block with extra invented examples to add length — one correct, "
+    "source-grounded worked example beats two invented ones. An example "
+    "block MUST contain a COMPLETE worked solution: state the problem, "
+    "then show EVERY intermediate step through to the FINAL ANSWER, then "
+    "a VERIFICATION / CHECK line (confirm the result, check a sign or "
+    "identity, or substitute the answer back). The VERIFICATION / CHECK "
+    "line is MANDATORY ON EVERY WORKED EXAMPLE — exactly as the matching "
+    "explanation block carries it — never omit it even when the example "
+    "block sits beside an explanation block that already verifies; each "
+    "worked example closes with its OWN check line. NEVER stop at the "
+    "problem statement — a bare 'Find the sum of …' with no solution steps "
+    "is unacceptable. When the source gives a worked example for the "
+    "operation, walk THAT example; otherwise supply ONE arithmetically "
+    "correct illustrative example and solve it in full."
+    "\n\n"
+    "- include at least ONE EXPERT TIP or technique where natural — a "
+    "shortcut, a heuristic, or a common-pitfall warning — provided it "
+    "is supported by the source material."
+    "\n\n"
+    "- self_check questions: each question MUST have EXACTLY ONE "
+    "correct option, with plausible but unambiguously incorrect "
+    "distractors. NEVER author a question where two or more options "
+    "are simultaneously true — exactly one option is correct, every "
+    "other option is wrong."
+    "\n\n"
+    # Defect 1 — self-check must NOT reveal its answer inline. A 7B run
+    # emitted "Simplify 20/30. The GCF is 10 … 20/30 simplifies to 2/3"
+    # — the worked solution sat in the visible body, so the learner read
+    # the answer before attempting. The answer/solution MUST live behind a
+    # reveal so self-assessment actually happens.
+    "- self_check_question blocks: NEVER REVEAL THE ANSWER INLINE. The "
+    "visible body of a `<div class=\"self-check\">` MUST contain ONLY the "
+    "question (the prompt the learner attempts) — NOT the answer, NOT the "
+    "worked solution, NOT the GCF / intermediate steps that give it away. "
+    "Put the answer and any worked solution inside a HIDDEN / REVEAL "
+    "element WITHIN the `.self-check` div so the learner attempts the "
+    "question BEFORE seeing the solution — use "
+    "`<details><summary>Show answer</summary> … solution … </details>`. "
+    "A self-check that prints \"… simplifies to 2/3\" in its visible body "
+    "DEFEATS formative assessment and is unacceptable; the answer goes "
+    "behind the reveal."
+    "\n\n"
+    # Defect 2 — assessment items must carry a marked answer key and
+    # value-DISTINCT distractors. A 7B run emitted "Simplify 20/30. 2/3
+    # 4/6 5/7" with no correct-answer marker, and 4/6 EQUALS 2/3 in value
+    # (an equivalent form is not a distractor — it is a second correct
+    # answer). Strengthen the existing correct-answer-marker contract.
+    "- assessment_item blocks: ALWAYS EMIT AN ANSWER KEY AND VALUE-DISTINCT "
+    "DISTRACTORS. (a) CLEARLY MARK THE CORRECT ANSWER — every assessment "
+    "item MUST identify which option is correct (a `<strong>`/checkmark "
+    "marker on the option, a `data-cf-correct=\"true\"` attribute, or an "
+    "explicit \"Correct answer: …\" line). An item with no marked correct "
+    "answer is unacceptable. (b) Provide 3-4 options where EVERY DISTRACTOR "
+    "IS PLAUSIBLY WRONG AND DISTINCT IN VALUE from the correct answer — "
+    "NEVER use an option that is an EQUIVALENT FORM of the correct answer "
+    "(e.g. for \"simplify 20/30 = 2/3\" NEVER use 4/6, 6/9, 8/12, or any "
+    "fraction that reduces to 2/3 — those EQUAL the correct answer and are "
+    "not distractors). Each distractor must differ in actual numeric / "
+    "semantic VALUE, not merely in surface form. (c) Include a BRIEF "
+    "PER-DISTRACTOR RATIONALE naming the misconception the distractor "
+    "represents (e.g. \"5/7 — subtracted instead of dividing by the GCF\"), "
+    "so the wrong options target real learner errors. Distractor values + "
+    "the misconception each represents must be grounded in the source's own "
+    "worked material — never invent a number to fill an option."
+    "\n\n"
+    # Canonical-markup contract — the answer key + distractors MUST be
+    # emitted in the EXACT structure the W7 payload gate + the distractor-
+    # plausibility gate parse. A prior run emitted the answer key in
+    # NON-canonical markup (`<ul><li data-cf-correct="true">2/3</li>…`)
+    # which carries the right INTENT but is INVISIBLE to the validators:
+    # they scan for `<li data-cf-distractor-index="N">` siblings
+    # (`lib/validators/assessment_item_payload.py::_DATA_CF_DISTRACTOR_INDEX_LI_RE`
+    # + `lib/validators/distractor_plausibility.py`), and the correct
+    # answer is read from a `data-cf-correct="true"` flag ON that <li>
+    # (`lib/validators/assessment_retrieval_grounding.py::_LI_CORRECT_RE`).
+    # Pin the exact shape so the 7B emits parseable MCQ markup.
+    "- assessment_item OPTION MARKUP — emit the options as an `<ol>` (or "
+    "`<ul>`) where EACH option is a `<li data-cf-distractor-index=\"N\">` "
+    "sibling and N is the option's 0-based index (0, 1, 2, 3 in order). "
+    "The CORRECT option carries an additional `data-cf-correct=\"true\"` "
+    "attribute on its own `<li>`. Each option's body is the option text "
+    "followed by its brief rationale, joined with an em dash: "
+    "`<li data-cf-distractor-index=\"N\">option text — rationale</li>`. "
+    "There MUST be at least 2 (preferably 3-4) such "
+    "`<li data-cf-distractor-index>` siblings with contiguous indices "
+    "from 0, and EXACTLY ONE must carry `data-cf-correct=\"true\"`. "
+    "CONCRETE EXAMPLE (simplify 20/30): "
+    "`<ol>"
+    "<li data-cf-distractor-index=\"0\" data-cf-correct=\"true\">2/3 — "
+    "correct: 20 and 30 share GCF 10, 20÷10=2, 30÷10=3.</li>"
+    "<li data-cf-distractor-index=\"1\">5/7 — subtracted the GCF instead "
+    "of dividing by it.</li>"
+    "<li data-cf-distractor-index=\"2\">3/4 — divided by an incorrect "
+    "common factor.</li>"
+    "<li data-cf-distractor-index=\"3\">10/15 — divided by 2 only and "
+    "stopped before fully reducing.</li>"
+    "</ol>`. This markup is REQUIRED — a `<strong>` marker or a bare "
+    "\"Correct answer: …\" line WITHOUT the "
+    "`<li data-cf-distractor-index=\"N\">` siblings fails the W7 payload "
+    "gate (it sees zero options). The `data-cf-correct=\"true\"` flag, "
+    "NOT prose, is how the correct answer is identified."
+    "\n\n"
+    # Defect 3 — concept blocks presenting a taxonomy must use structure,
+    # not one prose paragraph. A 7B run wrote a single defining paragraph
+    # where the Sonnet baseline used a TYPES TABLE (proper/improper/mixed
+    # with examples) and covered the sub-types.
+    "- concept blocks presenting a TAXONOMY / CATEGORIES / MULTIPLE TYPES: "
+    "use a STRUCTURED `<table>` or `<ul>` — NOT a single prose paragraph. "
+    "When the source distinguishes sub-types (e.g. proper / improper / "
+    "mixed fractions), present them in a `<table>` (type, definition, "
+    "example column) or a `<ul>` with one item per type, and COVER EVERY "
+    "relevant sub-type the source supports — do not collapse a multi-type "
+    "concept into one undifferentiated paragraph. The structure + sub-type "
+    "rows must use only the types, definitions, and examples the source "
+    "actually supplies (no invented categories)."
+    "\n\n"
+    "CITATION HYGIENE: NEVER write raw source-chunk identifiers or "
+    "bracketed chunk tokens in visible, learner-facing prose — e.g. "
+    "NEVER write `[openstax_..._chunk_00043]`, `[chunk_12]`, or any "
+    "bracketed `[..._chunk_NN]` token in the rendered text. Source "
+    "attribution lives ONLY in the `data-cf-source-ids` attribute and "
+    "`<cite>` elements, never in the prose the learner reads."
+    "\n\n"
+    "HARD CONSTRAINT — DEPTH IS GROUNDED, NEVER FABRICATED. Every "
+    "rationale, verification line, worked example, second case, and "
+    "expert tip you add MUST use ONLY the facts, numbers, and worked "
+    "values present in the supplied source chunks or the outline's "
+    "`key_claims`. NEVER invent an example, a number, a formula, a "
+    "result, or a fact to manufacture depth. This includes NAMED "
+    "TECHNICAL TERMS, entities, compounds, mechanisms, or vocabulary "
+    "that the source never mentions: even if a term is factually "
+    "correct (e.g. naming an intermediate molecule, a sub-process, or "
+    "an alternate name the source omits), do NOT introduce it — an "
+    "out-of-source term reads as authoritative but is ungrounded and "
+    "fails the entailment gate. Stay strictly within the source's own "
+    "vocabulary and named concepts. The NLI grounding gates "
+    "FAIL CLOSED on fabrication — an ungrounded sentence does not just "
+    "lower quality, it BLOCKS the block. Depth comes from EXPLAINING "
+    "the supplied source material more clearly (the why behind the "
+    "what, a check that the source's own numbers confirm, a second "
+    "case the source already presents), NOT from adding new material. "
+    "If the source does not supply enough to add a rationale, a "
+    "second example, or a tip, OMIT it rather than inventing it."
+    "\n\n"
     "Every block MUST carry the per-block-type ``data-cf-*`` "
     "attributes enumerated in the user prompt's `Required attributes` "
     "line (the post-rewrite gate fails closed when any are missing). "
@@ -337,7 +549,11 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "Emit a `<section data-cf-source-ids=...>` wrapping an `<h2>` "
         "or `<h3>` heading carrying `data-cf-content-type` + "
         "`data-cf-bloom-range` + `data-cf-key-terms`, followed by "
-        "explanatory paragraphs."
+        "explanatory paragraphs. When the concept presents a taxonomy / "
+        "categories / multiple sub-types, present them in a structured "
+        "`<table>` or `<ul>` (one row/item per sub-type with its example) "
+        "rather than a single prose paragraph, covering every sub-type the "
+        "source supports."
     ),
     "example": (
         "Emit a `<section data-cf-source-ids=...>` wrapping an `<h3>` "
@@ -357,27 +573,70 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
     "callout": (
         "Emit a `<div class=\"callout callout-{kind}\">` carrying "
         "`data-cf-component=\"callout\"` + `data-cf-purpose` + "
-        "`data-cf-content-type=\"callout\"`."
+        "`data-cf-content-type=\"callout\"`. "
+        "SCOPE — a callout is ONE FOCUSED, CONCISE HIGHLIGHT: a single "
+        "key tip, warning, caution, or note (typically 1-3 sentences, at "
+        "most ONE short illustrative instance). It is NOT A FULL LESSON — "
+        "NO MULTI-EXAMPLE sequences, no step-by-step worked solutions, and "
+        "do NOT cover several cases or sub-types in a callout. That "
+        "instructional content belongs in concept / explanation / example "
+        "blocks, never here. Keep the highlight grounded in the source "
+        "material (no fabricated facts) — surface the single most "
+        "important alert about the surrounding content, not a mini-lesson."
     ),
     "flip_card_grid": (
         "Emit a `<div class=\"flip-card-grid\">` whose children are "
         "per-card `<div class=\"flip-card\">` elements carrying "
         "`data-cf-component=\"flip-card\"`, "
         "`data-cf-purpose=\"term-definition\"`, "
-        "`data-cf-teaching-role`, and `data-cf-term`."
+        "`data-cf-teaching-role`, and `data-cf-term`. Emit ONE card per "
+        "DISTINCT key term (front = the term, back = its definition drawn "
+        "from the source) — cover each supplied key term exactly once; "
+        "NEVER repeat a term or restate the same sentence across cards, and "
+        "NEVER fill cards with a generic procedure paragraph instead of "
+        "term/definition pairs. EACH CARD FRONT MUST BE ONE OF THE BLOCK'S "
+        "SUPPLIED `key_terms` (the DOMAIN VOCABULARY of the chapter — e.g. "
+        "`variable`, `coefficient`, `like terms`), or a domain term "
+        "explicitly DEFINED in the source; NEVER a PEDAGOGY / STRUCTURAL "
+        "META-WORD. Card fronts are DRAWN FROM THE DOMAIN VOCABULARY, NOT "
+        "from the most-frequent capitalized SOURCE HEADINGS. DENY as a card "
+        "front any of these pedagogy/structural meta-words: `example`, "
+        "`exercise`, `problem`, `try it`, `solution`, `practice`, `note`, "
+        "`activity`, `summary` — they are NOT domain key terms. The card "
+        "back is that term's DEFINITION drawn from the source. Cover the "
+        "supplied key terms."
     ),
     "self_check_question": (
         "Emit a `<div class=\"self-check\">` carrying "
         "`data-cf-component=\"self-check\"`, "
         "`data-cf-purpose=\"formative-assessment\"`, "
         "`data-cf-bloom-level`, `data-cf-objective-ref`, and "
-        "`data-cf-source-ids` / `data-cf-source-primary`."
+        "`data-cf-source-ids` / `data-cf-source-primary`. The visible body "
+        "is the QUESTION ONLY — put the answer / worked solution behind a "
+        "reveal INSIDE the div "
+        "(`<details><summary>Show answer</summary> … </details>`) so the "
+        "learner attempts before seeing it; NEVER reveal the answer inline."
     ),
     "activity": (
         "Emit a `<div class=\"activity-card\">` carrying "
         "`data-cf-component=\"activity\"`, `data-cf-purpose=\"practice\"`, "
         "`data-cf-bloom-level`, `data-cf-objective-ref`, and "
-        "`data-cf-source-ids`."
+        "`data-cf-source-ids`. EVERY PRACTICE ITEM MUST EXERCISE THE SAME "
+        "OPERATION / SKILL named in the activity's instruction line, using "
+        "ONLY values and operations drawn from the source — NEVER list items "
+        "of a DIFFERENT type than the instruction states (e.g. do NOT list "
+        "integer-arithmetic expressions like \"-2 ÷ 3\" or \"6 - 3(5)\" under "
+        "a \"Simplify the following fractions\" instruction — those do not "
+        "exercise fraction simplification). The instruction line and its "
+        "practice items must be INTERNALLY CONSISTENT: each item is a "
+        "concrete instance of the exact skill the instruction names. "
+        "EACH PRACTICE ITEM MUST STATE THE ACTUAL PROBLEM / TASK IN FULL "
+        "(the expression to simplify, the equation to solve, the question "
+        "to answer) — a learner reads the item and knows exactly what to "
+        "do. NEVER emit BARE EXERCISE / REFERENCE NUMBERS (e.g. "
+        "\"83, 84, 85\") or cite SOURCE EXERCISE INDICES as items — a "
+        "textbook exercise number is meaningless to a learner; write out "
+        "the actual problem instead."
     ),
     "misconception": (
         "Emit a `<section>` whose JSON-LD entry carries the "
@@ -386,22 +645,66 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "authoritative shape for misconception blocks."
     ),
     "assessment_item": (
-        "Emit a `<div class=\"assessment-item\">` carrying the "
-        "question stem, options, and correct-answer marker. "
+        "Emit a `<div class=\"assessment-item\">` carrying the question "
+        "stem in a `<p>`, then the options as an `<ol>` whose children are "
+        "`<li data-cf-distractor-index=\"N\">` siblings (N = 0,1,2,3 in "
+        "order; at least 2, preferably 3-4, contiguous from 0). The CORRECT "
+        "option additionally carries `data-cf-correct=\"true\"` on its own "
+        "`<li>` (EXACTLY ONE option) — this attribute, not prose, marks the "
+        "answer. Each option body is `option text — rationale`, the "
+        "rationale naming the misconception the distractor represents. "
+        "Every distractor must be DISTINCT IN VALUE from the correct answer "
+        "(never an equivalent form, e.g. never 4/6 for a 2/3 answer). "
+        "EACH DISTRACTOR'S VALUE MUST BE THE ACTUAL RESULT A STUDENT WHO MADE "
+        "THE NAMED MISCONCEPTION WOULD COMPUTE — the rationale names the error "
+        "AND the value must be the ARITHMETIC CONSEQUENCE of that error, not "
+        "an arbitrary wrong value. Work the named mistake through to its real "
+        "result (e.g. a distractor whose rationale is \"multiplied the "
+        "numerators and denominators instead of using the reciprocal\" must "
+        "show the value that erroneous multiplication actually yields — never "
+        "a value the misconception would not produce). "
+        "EXAMPLE: `<li data-cf-distractor-index=\"1\">5/7 — subtracted the "
+        "GCF instead of dividing by it.</li>`. "
         "Assessment items in IMSCC live in QTI XML downstream; the "
         "HTML emit here is the authoring fixture."
     ),
     "prereq_set": (
         "Emit a `<section data-cf-source-ids=...>` wrapping an `<h2>` "
-        "or `<h3>` and an `<ol>` of prerequisite topic refs."
+        "or `<h3>` and an `<ol>` of prerequisite topic refs. Each `<ol>` "
+        "item NAMES A PRIOR FOUNDATIONAL SKILL OR TOPIC the learner needs "
+        "BEFORE this content — a simpler, earlier capability this content "
+        "ASSUMES (e.g. for adding integers: \"understand the number line\", "
+        "\"compute absolute value\") — drawn from the source's stated "
+        "prerequisites when present. NEVER list the current chapter's OWN "
+        "learning objectives as prerequisites, NEVER emit a raw "
+        "`CO-NN` / `TO-NN` objective id as a prerequisite, and NEVER restate "
+        "this block's own objective. A prerequisite is a PRIOR skill the "
+        "learner brings IN, not an OUTCOME this content produces. If the "
+        "source states no explicit prerequisites, list the FOUNDATIONAL "
+        "CONCEPTS this content builds on (the simpler skills it assumes), "
+        "NOT its outcomes."
     ),
     "reflection_prompt": (
         "Emit a `<section data-cf-source-ids=...>` wrapping an "
-        "`<h3>` and one or more `<p>` reflection prompts."
+        "`<h3>` and one or more `<p>` reflection prompts. Each `<p>` is an "
+        "OPEN-ENDED QUESTION addressed to the learner about THEIR OWN "
+        "thinking, experience, or confidence (e.g. 'When have you needed a "
+        "fraction in simplest form? How will you check your own work for the "
+        "subtract-instead-of-divide mistake?') — it ends in a question mark "
+        "and invites self-reflection. A reflection prompt is NOT an "
+        "explanation, definition, worked example, or graded assessment — "
+        "never re-teach the content or pose a right/wrong evaluate-this task."
     ),
     "discussion_prompt": (
         "Emit a `<section data-cf-source-ids=...>` wrapping an "
-        "`<h3>` and one or more `<p>` discussion prompts."
+        "`<h3>` and one or more `<p>` discussion prompts. Each `<p>` is an "
+        "OPEN-ENDED QUESTION posed to a GROUP to debate or compare views "
+        "(e.g. 'Why does dividing by the GCF preserve a fraction's value "
+        "while subtracting does not? Share a real-world situation where "
+        "simplest form matters.') — it ends in a question mark and has no "
+        "single correct answer. A discussion prompt is NOT an explanation, "
+        "definition, worked example, or quiz item — never re-teach the "
+        "content as expository prose; pose the question instead."
     ),
     "chrome": (
         "Emit page chrome (header / footer / nav). Carry "
@@ -409,7 +712,12 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
     ),
     "recap": (
         "Emit a `<section data-cf-source-ids=...>` wrapping an "
-        "`<h2>` or `<h3>` and a recap of the prior week's key terms."
+        "`<h2>` or `<h3>` and a BRIEF recap of the prior week's key terms — "
+        "a short `<ul>` of key terms with one-line reminders, or one or two "
+        "summary `<p>` paragraphs. A recap is NOT an assessment: never emit "
+        "multiple-choice options, `<li data-cf-distractor-index>`, answer "
+        "keys, or a fresh worked example — it only restates already-taught "
+        "terms."
     ),
 }
 
@@ -1286,6 +1594,12 @@ class RewriteProvider(_BaseLLMProvider):
         capture: Optional[Any] = None,
         max_tokens: int = _DEFAULT_MAX_TOKENS,
         temperature: float = _DEFAULT_TEMPERATURE,
+        # Per-request HTTP timeout (seconds). Resolution chain (high →
+        # low): this kwarg > ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` env
+        # var > :data:`_DEFAULT_REQUEST_TIMEOUT_SECONDS` (300.0). Only
+        # applies to the OpenAI-compatible backends (local / together);
+        # the Anthropic SDK and claude_session paths ignore it.
+        timeout: Optional[float] = None,
         # Optional dependency injections for tests.
         client: Optional[Any] = None,
         anthropic_client: Optional[Any] = None,
@@ -1330,6 +1644,15 @@ class RewriteProvider(_BaseLLMProvider):
             or DEFAULT_PROVIDER
         ).lower()
 
+        # Per-call kwarg wins; otherwise source the generous default
+        # from ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (fallback 300.0)
+        # so local 7B prose generation isn't capped at the 60s client
+        # default.
+        resolved_timeout: float = (
+            float(timeout) if timeout is not None
+            else _resolve_request_timeout()
+        )
+
         if resolved_provider == "claude_session":
             if dispatcher is None:
                 raise RuntimeError(_NO_DISPATCHER_MSG)
@@ -1366,6 +1689,7 @@ class RewriteProvider(_BaseLLMProvider):
             capture=capture,
             max_tokens=max_tokens,
             temperature=temperature,
+            timeout=resolved_timeout,
             client=client,
             anthropic_client=anthropic_client,
             env_provider_var=ENV_PROVIDER,

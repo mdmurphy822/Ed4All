@@ -73,6 +73,22 @@ import re
 
 _SOURCE_ID_RE = re.compile(r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$")
 
+# Scaffolding block types that carry no chunk-level ``content_type`` label.
+# An ``objective`` block's canonical emit (``Block._objective_attrs`` /
+# ``generate_course.py::_render_objectives``) is a bare ``<li
+# data-cf-objective-id=... data-cf-bloom-level=...>`` — it deliberately does
+# NOT stamp ``data-cf-content-type`` (objectives are not a ChunkType member;
+# see ``lib/validators/content_type.py::get_valid_chunk_types``). ``chrome`` /
+# ``recap`` are template scaffolding with no pedagogical content_type either.
+# The content_type gate must skip these block types or it 100%-fails any
+# objective-only / scaffolding-heavy page. Mirrors the skip set the grounding
+# validators already use (``lib/validators/claim_support.py::_SKIPPED_BLOCK_TYPES``
+# minus ``assessment_item`` — which DOES carry a content_type) and the
+# scaffolding split in ``lib/validators/manifest_completeness.py``.
+_CONTENT_TYPE_SCAFFOLDING_TYPES: frozenset = frozenset(
+    {"objective", "chrome", "recap"}
+)
+
 
 def _coerce_blocks(inputs: Dict[str, Any]) -> Tuple[List[Block], Optional[GateIssue]]:
     """Pull a ``List[Block]`` out of ``inputs["blocks"]``.
@@ -294,6 +310,40 @@ _DATA_CF_SOURCE_IDS_RE = re.compile(
 )
 
 
+def _source_chunk_text_for_block(
+    block: Block,
+    source_chunks_by_block_id: Optional[Dict[str, Any]],
+) -> str:
+    """Concatenate the grounded source-chunk text for one block (FIX 1b).
+
+    ``source_chunks_by_block_id`` is the ``{block_id: [{id, text, ...}]}``
+    universe threaded into ``inputs`` by the caller (rehydrated from the
+    outline tier's ``outline_chunks.json`` sidecar). A block's source
+    chunks ARE its grounded provenance and ARE tagged with the domain
+    vocabulary, so a minted-CURIE surface form present in this text is a
+    legitimate anchor for that block.
+
+    Only entries carrying a real ``text`` field count — a topic-paragraph
+    fallback entry (no ``text`` key) contributes nothing, so an UNGROUNDED
+    block gains no source-chunk surface and still fails closed when it
+    carries no anchorable CURIE.
+
+    Returns an empty string when the block has no resolved source chunks.
+    """
+    if not source_chunks_by_block_id:
+        return ""
+    entries = source_chunks_by_block_id.get(
+        getattr(block, "block_id", ""), []
+    ) or []
+    parts: List[str] = []
+    for e in entries:
+        if isinstance(e, dict):
+            txt = e.get("text")
+            if isinstance(txt, str) and txt.strip():
+                parts.append(txt)
+    return "\n".join(parts)
+
+
 def _extract_curies_from_block(block: Block) -> List[str]:
     """Shape-discriminating CURIE extractor for Subtask 6.
 
@@ -338,9 +388,14 @@ def _extract_content_type_from_block(block: Block) -> Optional[str]:
 def _extract_objective_refs_from_block(block: Block) -> List[str]:
     """Shape-discriminating objective_id extractor for Subtask 8.
 
-    Dict path: prefers ``block.objective_ids`` (the structural field,
-    same source the Phase-3 dict-only path used). Falls back to
-    ``block.content["objective_ids"]`` if the field is empty.
+    Dict path: unions the refs from ``block.objective_ids`` (the
+    structural field), ``content["objective_ids"]`` AND
+    ``content["objective_refs"]``. The 7B outline tier puts its real
+    refs in ``content["objective_refs"]`` (e.g. ``["CO-24","TO-01"]``),
+    so consulting only the structural field / ``objective_ids`` read
+    those blocks as "no objective refs". This mirrors how the router's
+    own ``Courseforge/router/router.py::_candidate_covers_objective``
+    reads the surface, keeping the validator and the router consistent.
     Str path: scrapes every ``data-cf-objective-id`` attribute from
     the rewrite-tier HTML. Multiple occurrences (one per ``<li>``) are
     expected and deduplicated.
@@ -351,23 +406,45 @@ def _extract_objective_refs_from_block(block: Block) -> List[str]:
     structural = list(block.objective_ids or ())
     content = block.content
     if isinstance(content, dict):
-        if structural:
-            return structural
-        raw = content.get("objective_ids") or []
-        return [o for o in raw if isinstance(o, str) and o]
+        # Union all three surfaces, preserving discovery order. Mirrors
+        # router.py::_candidate_covers_objective (objective_ids +
+        # content["objective_refs"]/content["objective_ids"]).
+        seen: List[str] = []
+        seen_set: Set[str] = set()
+        for oid in structural:
+            if isinstance(oid, str) and oid and oid not in seen_set:
+                seen.append(oid)
+                seen_set.add(oid)
+        for key in ("objective_refs", "objective_ids"):
+            for oid in content.get(key) or []:
+                if isinstance(oid, str) and oid and oid not in seen_set:
+                    seen.append(oid)
+                    seen_set.add(oid)
+        return seen
     if isinstance(content, str):
         # Rewrite-tier: prefer the structural field when populated
         # (the rewrite provider preserves it on the immutable Block);
         # fall back to scraping the HTML for stand-alone callers.
         if structural:
             return structural
-        seen: List[str] = []
-        seen_set: Set[str] = set()
+        seen = []
+        seen_set = set()
         for match in _DATA_CF_OBJECTIVE_ID_RE.finditer(content):
-            oid = match.group(1)
-            if oid and oid not in seen_set:
-                seen.append(oid)
-                seen_set.add(oid)
+            raw = match.group(1)
+            if not raw:
+                continue
+            # The emit contract puts one LO id per attribute, but the 7B
+            # rewrite tier sometimes packs multiple ids into a single
+            # ``data-cf-objective-id="TO-04, CO-03, CO-07"`` (or
+            # space-separated ``"CO-13 CO-20 CO-71"``) attribute. Split on
+            # commas AND whitespace (mirrors the source-ids str-path split)
+            # so each id resolves individually instead of the whole joined
+            # string failing as one unknown id.
+            for oid in re.split(r"[,\s]+", raw.strip()):
+                oid = oid.strip()
+                if oid and oid not in seen_set:
+                    seen.append(oid)
+                    seen_set.add(oid)
         return seen
     return structural
 
@@ -469,6 +546,7 @@ def _curie_anchored(
     surface_curies: "Set[str]",
     text_blob: str,
     minted_curie_map: Optional[Dict[str, Any]],
+    source_chunk_text: str = "",
 ) -> bool:
     """Return True when ``curie`` is anchored in the block's surface.
 
@@ -481,15 +559,20 @@ def _curie_anchored(
       token lands in the str-path text, so force-injected blocks pass
       legitimately) OR any of that CURIE's vocabulary ``surface_forms``
       (the concept's canonical name + aliases) appears as a
-      **word-boundary** match in the block's ``text_blob`` — the
-      concept is genuinely discussed in prose. Surface forms that are
-      too short or are common English function words are filtered out
-      (see :func:`_surface_form_can_anchor`) so a form like ``"ion"``
-      cannot vacuously match inside "definition".
+      **word-boundary** match in the block's ``text_blob`` (the
+      ``key_claims`` prose) OR in the block's ``source_chunk_text``
+      (its grounded provenance — the source chunks ARE tagged with the
+      domain vocabulary, so a concept present there is genuinely the
+      block's subject; this is provenance-aware anchoring, NOT a
+      relaxation). Surface forms that are too short or are common
+      English function words are filtered out (see
+      :func:`_surface_form_can_anchor`) so a form like ``"ion"`` cannot
+      vacuously match inside "definition".
     * **RDF CURIE** — ``curie`` is NOT in the map. The legacy literal-
       token check is preserved verbatim: the CURIE counts as anchored
       only when the literal token appears in ``surface_curies`` (the
-      CURIEs ``extract_curies`` scraped from the surface text).
+      CURIEs ``extract_curies`` scraped from the surface text). RDF
+      CURIEs never consult ``source_chunk_text``.
 
     When ``minted_curie_map`` is ``None`` / empty, every CURIE takes the
     RDF arm — byte-identical to the pre-minting contract.
@@ -506,7 +589,10 @@ def _curie_anchored(
             # Minted CURIE with no surface forms — literal check only
             # (already failed above) rather than auto-passing.
             return False
-        blob = text_blob or ""
+        # Provenance-aware anchoring: the concept counts as discussed
+        # when its surface form appears in the block's key_claims prose
+        # OR in the block's grounded source-chunk text.
+        blob = "\n".join(b for b in (text_blob, source_chunk_text) if b)
         for sf in surface_forms:
             if not _surface_form_can_anchor(sf):
                 continue
@@ -549,6 +635,14 @@ class BlockCurieAnchoringValidator:
         minted_curie_map = inputs.get("minted_curie_map") or None
         if not isinstance(minted_curie_map, dict):
             minted_curie_map = None
+        # FIX 1b: per-block grounded source-chunk universe. A minted CURIE
+        # whose surface form appears in a block's source-chunk text is
+        # legitimately anchored (provenance-aware). No-op when absent
+        # (legacy callers) — anchoring then runs over key_claims only,
+        # byte-identical to the pre-fix contract.
+        source_chunks_by_block_id = inputs.get("source_chunks_by_block_id")
+        if not isinstance(source_chunks_by_block_id, dict):
+            source_chunks_by_block_id = None
         blocks, err = _coerce_blocks(inputs)
         if err is not None:
             return GateResult(
@@ -622,11 +716,19 @@ class BlockCurieAnchoringValidator:
                 # member of the validator's input universe.
                 continue
 
+            # FIX 1b: only a GROUNDED block (real source chunks carrying
+            # text) contributes a source-chunk anchoring surface. An
+            # ungrounded block gets an empty string here and still fails
+            # closed when it carries no anchorable CURIE (no fabrication).
+            source_chunk_text = _source_chunk_text_for_block(
+                block, source_chunks_by_block_id
+            )
             anchored_count = sum(
                 1
                 for c in curies
                 if _curie_anchored(
-                    c, surface_curies, text_blob, minted_curie_map
+                    c, surface_curies, text_blob, minted_curie_map,
+                    source_chunk_text,
                 )
             )
             anchoring_rate = (
@@ -784,6 +886,13 @@ class BlockContentTypeValidator:
             # on the audit path (predicate mirrors pipeline_tools.py:5226).
             if _is_unshipped_escalation_tombstone(block):
                 continue
+            # Skip scaffolding block types (objective / chrome / recap):
+            # their canonical emit carries no data-cf-content-type and they
+            # are not ChunkType members, so auditing them for a content_type
+            # is a guaranteed false positive (an objective-only page would
+            # 100%-fail this gate). NOT counted toward ``audited``.
+            if block.block_type in _CONTENT_TYPE_SCAFFOLDING_TYPES:
+                continue
             content = block.content
             # Phase 3.5: shape-dispatch — dict and str paths both
             # extract a single content_type label, then validate it
@@ -887,11 +996,71 @@ class BlockContentTypeValidator:
 # --------------------------------------------------------------------------- #
 
 
+def _harvest_objective_id(entry: Any, ids: Set[str]) -> None:
+    """Add an objective ID from a flat ``{id, ...}`` dict entry."""
+    if isinstance(entry, dict):
+        oid = entry.get("id") or entry.get("objective_id")
+        if isinstance(oid, str) and oid:
+            ids.add(oid)
+
+
+def _harvest_grouped_objectives(raw: Any, ids: Set[str]) -> None:
+    """Harvest IDs from any ``chapter_objectives`` / ``component_objectives``
+    shape (nested list-of-groups, flat list, or dict-of-lists).
+
+    Reuses the canonical ``_normalize_chapter_objectives_to_groups``
+    normalizer so this loader handles the same three shapes the rest of
+    the pipeline does (Wave2b/Wave2c). The real synthesizer emits the
+    nested group form
+    ``[{"chapter": "Week N", "objectives": [{"id": "CO-NN", ...}]}]``;
+    the legacy flat ``[{"id": "CO-NN", ...}]`` form is also accepted.
+    """
+    if not raw:
+        return
+    try:
+        # Lazy import: pipeline_tools imports inter_tier_gates, so a
+        # module-level import would form a cycle. The normalizer body
+        # is pure-stdlib, so the lazy import is import-safe here.
+        from MCP.tools.pipeline_tools import (  # noqa: PLC0415
+            _normalize_chapter_objectives_to_groups,
+        )
+
+        groups = _normalize_chapter_objectives_to_groups(raw)
+    except Exception:  # pragma: no cover - defensive fallback
+        # Mirror the normalizer's logic if the import is unavailable.
+        groups = []
+        if isinstance(raw, list):
+            for entry in raw:
+                if isinstance(entry, dict) and isinstance(
+                    entry.get("objectives"), list
+                ):
+                    groups.append(entry)
+                elif isinstance(entry, dict):
+                    _harvest_objective_id(entry, ids)
+        elif isinstance(raw, dict):
+            for items in raw.values():
+                if isinstance(items, list):
+                    groups.append({"objectives": items})
+    for group in groups:
+        if isinstance(group, dict):
+            for obj in group.get("objectives") or []:
+                _harvest_objective_id(obj, ids)
+
+
 def _load_canonical_objectives(path: Path) -> Set[str]:
     """Load canonical objective IDs from a course.json /
     synthesized_objectives.json file.
 
-    Accepts both shapes (Courseforge synthesized + LibV2 archive).
+    Accepts the Courseforge synthesized form, the LibV2 archive form,
+    AND a bare top-level flat list of ``{id, ...}`` entries (some
+    sidecars like ``01_outline/outline_objectives.json`` ship a flat
+    70-item list). The grouped ``chapter_objectives`` /
+    ``component_objectives`` keys are parsed through the canonical
+    ``_normalize_chapter_objectives_to_groups`` normalizer so the
+    nested ``[{"chapter": ..., "objectives": [{"id": ...}]}]`` group
+    shape, the flat-list shape, and the dict-of-lists shape are all
+    harvested.
+
     Returns an empty set when the file is missing / unparseable
     so the caller can decide fail-vs-warn semantics.
     """
@@ -903,24 +1072,25 @@ def _load_canonical_objectives(path: Path) -> Set[str]:
         return set()
 
     ids: Set[str] = set()
-    # Courseforge synthesized form.
-    for key in ("terminal_objectives", "chapter_objectives"):
+
+    # Top-level flat list (e.g. outline_objectives.json sidecar).
+    if isinstance(data, list):
+        for entry in data:
+            _harvest_objective_id(entry, ids)
+        return ids
+
+    if not isinstance(data, dict):
+        return ids
+
+    # Courseforge synthesized + LibV2 archive flat terminal lists.
+    for key in ("terminal_objectives", "terminal_outcomes"):
         for entry in data.get(key, []) or []:
-            if isinstance(entry, dict):
-                oid = entry.get("id") or entry.get("objective_id")
-                if isinstance(oid, str) and oid:
-                    ids.add(oid)
-    # LibV2 archive form.
-    for entry in data.get("terminal_outcomes", []) or []:
-        if isinstance(entry, dict):
-            oid = entry.get("id") or entry.get("objective_id")
-            if isinstance(oid, str) and oid:
-                ids.add(oid)
-    for entry in data.get("component_objectives", []) or []:
-        if isinstance(entry, dict):
-            oid = entry.get("id") or entry.get("objective_id")
-            if isinstance(oid, str) and oid:
-                ids.add(oid)
+            _harvest_objective_id(entry, ids)
+
+    # Grouped chapter/component objectives (any of the three shapes).
+    for key in ("chapter_objectives", "component_objectives"):
+        _harvest_grouped_objectives(data.get(key), ids)
+
     return ids
 
 

@@ -103,6 +103,26 @@ _REMEDIATION_DIRECTIVES_BY_GATE_ID: Dict[str, str] = {
         "Stamp data-cf-source-ids on the section/heading wrapper "
         "with at least one DART sourceId."
     ),
+    # CB5 (content-block-quality-2026-06 §CB5a) — stub-example
+    # remediation. ExampleCompletenessValidator fires
+    # action="regenerate" with gate_id="example_completeness" when an
+    # example block carries only a problem statement (no worked
+    # solution). The directive is deliberately concrete: render EVERY
+    # intermediate step through to a FINAL ANSWER, using the source's
+    # own numbers (anti-fabrication — the worked solution comes from the
+    # source's example, never invented).
+    "example_completeness": (
+        "The prior example rendered only the problem SETUP (a 'Find/"
+        "Simplify/Divide …' line) with no worked solution. Re-author "
+        "the COMPLETE worked solution: pick the SPECIFIC problem from "
+        "the source's own worked Example / TRY IT item (its actual "
+        "numbers / expression — never invent or leave a variable like "
+        "'n' un-substituted), then show EVERY intermediate step, then "
+        "state the FINAL ANSWER on its own line (e.g. '= 17'). Use ONLY "
+        "the source's numbers; the worked solution must come from the "
+        "source's example, never fabricated. A bare problem statement "
+        "with no solution steps is unacceptable."
+    ),
 }
 
 

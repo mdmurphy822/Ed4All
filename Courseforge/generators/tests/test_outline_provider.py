@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 import httpx
+import jsonschema
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -61,7 +62,17 @@ from Courseforge.generators._outline_provider import (  # noqa: E402
     _BLOCK_TYPE_JSON_SCHEMAS,
     _OUTLINE_KIND_BOUNDS,
     _OUTLINE_SYSTEM_PROMPT,
+    _block_source_chunk_ids,
+    _build_block_outline_schema,
     _match_retry_directive,
+    _surface_key_claims_min_items,
+    _repair_claim_grounding,
+    _repair_outline_bloom_level,
+    _repair_outline_curies,
+    _repair_outline_key_claims_shape,
+    _repair_outline_source_refs,
+    _repair_prereq_pages,
+    _extract_prereq_phrases_from_source,
 )
 from blocks import BLOCK_TYPES, Block, Touch  # noqa: E402
 
@@ -571,6 +582,94 @@ def test_outline_user_prompt_carries_per_claim_attribution_clause(monkeypatch):
     assert "Source chunks" in rendered
 
 
+# ---------------------------------------------------------------------------
+# CB5b — example-block concrete-worked-instance directive
+# ---------------------------------------------------------------------------
+
+
+def test_outline_system_prompt_carries_example_concrete_instance_directive():
+    """CB5b system-prompt sentinel: the global ``_OUTLINE_SYSTEM_PROMPT``
+    instructs the model that an ``example`` block's ``key_claims`` MUST
+    carry a CONCRETE WORKED INSTANCE (problem + steps + answer) drawn
+    from a worked Example / TRY IT item, not just the general rule.
+
+    Substring assertion (not full string equality) so the surrounding
+    prompt can evolve."""
+    prompt = _OUTLINE_SYSTEM_PROMPT
+    assert "CONCRETE WORKED INSTANCE" in prompt
+    assert "`Example` or `TRY IT`" in prompt
+    # The directive must explicitly forbid the abstract-rule-only shape.
+    assert "Do NOT state only the general rule or formula" in prompt
+
+
+def test_outline_user_prompt_example_block_carries_concrete_instance_directive(
+    monkeypatch,
+):
+    """CB5b golden-output regression — for a ``block_type="example"``
+    block the rendered user prompt carries the per-block
+    concrete-worked-instance contract (the type-specific variation block
+    with recency bias). The directive names the SPECIFIC problem /
+    steps / answer the rewriter needs."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    p = OutlineProvider(provider="local")
+    block = _stub_block(block_type="example", block_id="page-1#example_div_0")
+    chunks = [
+        {
+            "id": "dart:frac#blk1",
+            "body": (
+                "Example: Divide 3/4 by 2/5. Multiply by the reciprocal: "
+                "3/4 x 5/2 = 15/8. The answer is 15/8."
+            ),
+        },
+    ]
+    objectives = [
+        {"id": "TO-01", "statement": "Divide fractions."},
+    ]
+    rendered = p._render_user_prompt(
+        block=block, source_chunks=chunks, objectives=objectives
+    )
+    assert "Example block contract" in rendered
+    assert "CONCRETE WORKED INSTANCE" in rendered
+    # Must explicitly forbid the abstract-rule-only failure mode.
+    assert "Do NOT emit only the general rule or formula" in rendered
+
+
+def test_outline_user_prompt_non_example_block_omits_concrete_instance_directive(
+    monkeypatch,
+):
+    """CB5b negative regression — a NON-example block (concept) does NOT
+    receive the example-specific per-block concrete-worked-instance
+    variation. Guards against the directive leaking onto every block."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    p = OutlineProvider(provider="local")
+    block = _stub_block(block_type="concept")
+    chunks = [{"id": "dart:slug#blk1", "body": "A concept body."}]
+    objectives = [{"id": "TO-01", "statement": "Define the concept."}]
+    rendered = p._render_user_prompt(
+        block=block, source_chunks=chunks, objectives=objectives
+    )
+    # The per-block variation directive is example-only.
+    assert "Example block contract" not in rendered
+
+
+def test_outline_kind_bounds_example_key_claims_bumped():
+    """CB5b bounds change — ``_OUTLINE_KIND_BOUNDS["example"]["key_claims"]``
+    is widened to (2, 4) so a concrete worked instance has room for the
+    problem + step(s) + answer claims. (2, 4) keeps ``hi >= lo`` and
+    leaves headroom without forcing the 3-part decomposition."""
+    lo, hi = _OUTLINE_KIND_BOUNDS["example"]["key_claims"]
+    assert (lo, hi) == (2, 4)
+    # Sanity: the bump must still produce a valid schema (minItems <=
+    # maxItems) for the example block.
+    schema = _build_block_outline_schema("example")
+    key_claims_arms = schema["properties"]["key_claims"]["oneOf"]
+    for arm in key_claims_arms:
+        assert arm["minItems"] == 2
+        assert arm["maxItems"] == 4
+
+
 def test_outline_retry_directive_matches_oneof_validation_error():
     """Wave 1.5 W1.5.B retry-directive regression — when the validator
     surfaces ``is not valid under any of the given schemas`` (the
@@ -590,6 +689,120 @@ def test_outline_retry_directive_matches_oneof_validation_error():
     # The directive cross-references the block-level source_refs[]
     # superset constraint.
     assert "source_refs[]" in directive
+
+
+# ---------------------------------------------------------------------------
+# improvement-map Step 3 (concern #2) — single-claim minItems escalation
+# recovery: surface the masked minItems sub-error, match the dedicated
+# minItems directive (not W1.5.B), interpolate the per-type min, and keep
+# the minItems directive ordered before the W1.5.B oneOf catch-all.
+# ---------------------------------------------------------------------------
+
+
+def test_surface_key_claims_min_items_unmasks_oneof_suberror():
+    """A single well-formed structured claim against an ``explanation``
+    block (``key_claims`` minItems=2) raises the masking top-level
+    ``oneOf`` error; ``_surface_key_claims_min_items`` walks ``exc.context``
+    and returns the structured arm's real "too short" sub-error so the
+    true cause (NOT the bare oneOf) drives the next retry."""
+    schema = _build_block_outline_schema("explanation")
+    candidate = {
+        "block_id": "b1",
+        "block_type": "explanation",
+        "content_type": "explanation",
+        "bloom_level": "understand",
+        "objective_refs": ["CO-01"],
+        "curies": [],
+        # Exactly ONE structured claim — well-formed, but below the
+        # explanation block's key_claims minItems=2 bound.
+        "key_claims": [{"claim": "one idea", "source_chunk_ids": ["c1"]}],
+        "section_skeleton": [{"h": "x"}],
+        "source_refs": [],
+        "structural_warnings": [],
+    }
+    with pytest.raises(jsonschema.ValidationError) as excinfo:
+        jsonschema.Draft202012Validator(schema).validate(candidate)
+    exc = excinfo.value
+    # The bare top-level message is the masking oneOf rejection.
+    assert "is not valid under any of the given schemas" in str(exc.message)
+    # The surfacing helper unmasks the real minItems cause.
+    surfaced = _surface_key_claims_min_items(exc)
+    assert surfaced is not None
+    assert surfaced.startswith("key_claims:")
+    assert "too short" in surfaced.lower()
+
+
+def test_surface_key_claims_min_items_ignores_non_key_claims_oneof():
+    """The surfacing helper is scoped to the ``key_claims`` ``oneOf`` —
+    a non-key_claims validation error returns ``None`` (message-building
+    only; never alters unrelated validation paths)."""
+    schema = _build_block_outline_schema("explanation")
+    candidate = {
+        # block_id violates minLength — a non-key_claims error.
+        "block_id": "",
+        "block_type": "explanation",
+        "content_type": "explanation",
+        "bloom_level": "understand",
+        "objective_refs": ["CO-01"],
+        "curies": [],
+        "key_claims": [
+            {"claim": "a", "source_chunk_ids": ["c1"]},
+            {"claim": "b", "source_chunk_ids": ["c1"]},
+        ],
+        "section_skeleton": [{"h": "x"}],
+        "source_refs": [],
+        "structural_warnings": [],
+    }
+    with pytest.raises(jsonschema.ValidationError) as excinfo:
+        jsonschema.Draft202012Validator(schema).validate(candidate)
+    assert _surface_key_claims_min_items(excinfo.value) is None
+
+
+def test_match_retry_directive_returns_min_items_directive_for_explanation():
+    """With the surfaced ``key_claims: ... is too short`` sub-error,
+    ``_match_retry_directive`` returns the dedicated minItems decomposition
+    directive (NOT the W1.5.B "emit objects not flat strings" directive),
+    with the per-type min interpolated to 2 for ``explanation``."""
+    err = (
+        "key_claims: [{'claim': 'one idea'}] is too short | "
+        "[...] is not valid under any of the given schemas"
+    )
+    directive = _match_retry_directive(err, "explanation")
+    assert directive is not None
+    # The minItems directive — NOT the W1.5.B oneOf catch-all.
+    assert "key_claims has too FEW entries" in directive
+    assert "MUST be a list of objects" not in directive  # W1.5.B signature
+    # The per-type min (explanation -> 2) is interpolated; the {{...}}
+    # escape collapses to a literal {claim, source_chunk_ids} shape hint.
+    assert "at least 2 distinct" in directive
+    assert "{claim, source_chunk_ids}" in directive
+    # Anti-fabrication steer toward decomposition, not padding.
+    assert "Do NOT fabricate" in directive
+    assert "decomposing" in directive
+    # Confirm the resolved min tracks the canonical bound for the type.
+    assert _OUTLINE_KIND_BOUNDS["explanation"]["key_claims"][0] == 2
+
+
+def test_min_items_directive_ordered_before_w15b_oneof_catchall():
+    """Directive ordering — the surfaced minItems error must match the
+    minItems directive FIRST. A bare oneOf error (no surfaced sub-error)
+    still falls through to the W1.5.B catch-all, and the W7 distractors
+    "too short" path is NOT stolen by the key_claims-scoped pattern."""
+    # Surfaced minItems error -> minItems directive (first match wins).
+    surfaced_err = "key_claims: [...] is too short"
+    assert "too FEW entries" in _match_retry_directive(surfaced_err, "explanation")
+    # Bare oneOf (no surfaced sub-error) -> W1.5.B catch-all unchanged.
+    bare_oneof = "[\"a\", \"b\"] is not valid under any of the given schemas"
+    w15b = _match_retry_directive(bare_oneof, "explanation")
+    assert "MUST be a list of objects" in w15b
+    assert "too FEW entries" not in w15b
+    # W7 assessment_item distractors "too short" -> assessment directive
+    # (NOT the key_claims-scoped minItems directive — the pattern requires
+    # a ``key_claims:`` marker which the distractors error lacks).
+    distractors_err = "distractors [] is too short"
+    w7 = _match_retry_directive(distractors_err, "assessment_item")
+    assert "distractors" in w7
+    assert "too FEW entries" not in w7
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +878,193 @@ def test_outline_system_prompt_carries_bloom_floor_directive():
     assert "distribute the Bloom levels" in _OUTLINE_SYSTEM_PROMPT
 
 
+# ---------------------------------------------------------------------------
+# Wave 2 — validated-id-fallback grounding repair (empty source_chunk_ids)
+# ---------------------------------------------------------------------------
+
+
+def _structured_claim_payload(
+    *,
+    block_type: str = "concept",
+    block_id: str = "page-1#concept_intro_0",
+    source_chunk_ids: Any,
+) -> Dict[str, Any]:
+    """A valid outline payload but with STRUCTURED key_claims carrying the
+    supplied (possibly empty / garbage) ``source_chunk_ids`` — the 7B
+    failure shape the repair targets."""
+    payload = _valid_outline_payload(block_type=block_type, block_id=block_id)
+    payload["key_claims"] = [
+        {
+            "claim": "Apply divisibility tests to classify integers.",
+            "source_chunk_ids": source_chunk_ids,
+        }
+    ]
+    return payload
+
+
+def test_grounding_repair_populates_empty_source_chunk_ids_from_block(
+    monkeypatch,
+):
+    """Wave 2 regression — the production-bug repro.
+
+    A model response whose ``key_claims[].source_chunk_ids`` is EMPTY
+    (the live-run failure) used to fail the strict outline schema
+    (``minItems: 1``) and exhaust the retry budget. With the validated-id
+    fallback, the outline tier now succeeds on the FIRST attempt: the
+    claim comes back populated with the block's real chunk ids and the
+    block does NOT exhaust retries."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    payload = _structured_claim_payload(source_chunk_ids=[])
+    block_chunks = [
+        {"id": "dart:slug#blk1", "body": "Divisibility test body."},
+        {"id": "dart:slug#blk2", "body": "Worked-example body."},
+    ]
+    expected_ids = ["dart:slug#blk1", "dart:slug#blk2"]
+
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_success_body(json.dumps(payload)))
+
+    p = OutlineProvider(provider="local", client=_make_client(handler))
+    block = _stub_block()
+    out = p.generate_outline(
+        block, source_chunks=block_chunks, objectives=[]
+    )
+
+    # Did NOT exhaust retries — one dispatch, success.
+    assert len(seen) == 1, "repair should make attempt-1 pass, not retry"
+    assert isinstance(out.content, dict)
+    claim = out.content["key_claims"][0]
+    # Fallback populated the claim with the block's full source-chunk set.
+    assert claim["source_chunk_ids"] == expected_ids
+    # No-fabrication invariant: every returned id is a real block chunk.
+    valid = set(expected_ids)
+    assert all(cid in valid for cid in claim["source_chunk_ids"])
+    # The transient repair-signal key must NOT leak into Block content.
+    assert "_grounding_repair" not in out.content
+
+
+def test_grounding_repair_filters_garbage_keeps_only_valid_ids(monkeypatch):
+    """A claim citing a mix of a real id and a prose-string hallucination
+    keeps only the real id (no fallback fires because ≥1 valid id
+    remains); the prose string is dropped. No-fabrication invariant
+    holds."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    payload = _structured_claim_payload(
+        source_chunk_ids=[
+            "dart:slug#blk1",
+            "Source chunk: a prose hallucination, not an id.",
+            "dart:slug#nonexistent",
+        ]
+    )
+    block_chunks = [
+        {"id": "dart:slug#blk1", "body": "Real body."},
+        {"id": "dart:slug#blk2", "body": "Other body."},
+    ]
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_success_body(json.dumps(payload)))
+
+    p = OutlineProvider(provider="local", client=_make_client(handler))
+    out = p.generate_outline(
+        _stub_block(), source_chunks=block_chunks, objectives=[]
+    )
+    claim = out.content["key_claims"][0]
+    assert claim["source_chunk_ids"] == ["dart:slug#blk1"]
+    valid = {"dart:slug#blk1", "dart:slug#blk2"}
+    assert all(cid in valid for cid in claim["source_chunk_ids"])
+
+
+def test_grounding_repair_emits_signals_in_decision_capture(monkeypatch):
+    """The repair folds its signals into the existing
+    ``block_outline_call`` decision event (the canonical capture at this
+    call site): the rationale carries the dynamic repair signals."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    capture = _FakeCapture()
+    payload = _structured_claim_payload(source_chunk_ids=[])
+    block_chunks = [{"id": "dart:slug#blk1", "body": "Body."}]
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_success_body(json.dumps(payload)))
+
+    p = OutlineProvider(
+        provider="local", capture=capture, client=_make_client(handler)
+    )
+    p.generate_outline(_stub_block(), source_chunks=block_chunks, objectives=[])
+
+    assert len(capture.events) == 1
+    rationale = capture.events[0]["rationale"]
+    assert "grounding_repair=" in rationale
+    assert "repaired=True" in rationale
+    assert "n_fallback_claims=1" in rationale
+
+
+def test_grounding_repair_no_source_chunks_stays_fail_closed(monkeypatch):
+    """Empty-corpus safety: a block with NO source chunks must NOT have
+    provenance invented. With empty ``source_chunks`` the repair no-ops,
+    so the strict schema (``minItems: 1``) still rejects the empty
+    ``source_chunk_ids`` and the block exhausts retries — the existing
+    fail-closed behavior is preserved (no fabrication)."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    payload = _structured_claim_payload(source_chunk_ids=[])
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_success_body(json.dumps(payload)))
+
+    p = OutlineProvider(provider="local", client=_make_client(handler))
+    with pytest.raises(OutlineProviderError) as excinfo:
+        # No source chunks supplied → repair never fabricates an id.
+        p.generate_outline(_stub_block(), source_chunks=[], objectives=[])
+    assert excinfo.value.code == "outline_exhausted"
+
+
+def test_repair_helper_unit_no_fabrication_invariant():
+    """Unit-level: ``_repair_claim_grounding`` only ever emits ids drawn
+    from the supplied ``valid_ids`` set, never invents one, and leaves a
+    legacy flat-string ``key_claims`` array untouched."""
+    valid = ["c1", "c2"]
+    # Empty citations → fallback to the full valid set.
+    cand = {"key_claims": [{"claim": "x", "source_chunk_ids": []}]}
+    out = _repair_claim_grounding(cand, valid_ids=valid)
+    assert out["key_claims"][0]["source_chunk_ids"] == ["c1", "c2"]
+    assert out["_grounding_repair"]["n_fallback_claims"] == 1
+    # No valid_ids → no-op (never fabricate).
+    cand2 = {"key_claims": [{"claim": "x", "source_chunk_ids": []}]}
+    out2 = _repair_claim_grounding(cand2, valid_ids=[])
+    assert out2["key_claims"][0]["source_chunk_ids"] == []
+    assert out2["_grounding_repair"]["repaired"] is False
+    # Legacy flat-string arm is left untouched.
+    cand3 = {"key_claims": ["a flat string claim"]}
+    out3 = _repair_claim_grounding(cand3, valid_ids=valid)
+    assert out3["key_claims"] == ["a flat string claim"]
+
+
+def test_block_source_chunk_ids_honours_id_and_chunk_id():
+    """``_block_source_chunk_ids`` mirrors the prompt's id extraction:
+    ``id`` (canonical) or ``chunk_id`` (legacy), de-duped, order-preserved."""
+    chunks = [
+        {"id": "c1", "body": "x"},
+        {"chunk_id": "c2", "text": "y"},
+        {"id": "c1", "body": "dup"},
+        {"body": "no id at all"},
+    ]
+    assert _block_source_chunk_ids(chunks) == ["c1", "c2"]
+
+
 def test_outline_retry_directive_matches_block_objective_bloom_undermet():
     """Wave 1.7 W1.7.B retry-directive regression — when the validator
     (lands in W1.7.C) surfaces ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` as
@@ -683,3 +1083,577 @@ def test_outline_retry_directive_matches_block_objective_bloom_undermet():
     assert "Re-emit with bloom_level at or above" in directive
     # The directive references the prose-side scaffolding obligation.
     assert "scaffold up" in directive
+
+
+# ---------------------------------------------------------------------------
+# Malformed-output normalization repairs (live-7B failure-mode pre-validation
+# repairs): mixed key_claims arrays + URL-CURIEs.
+# ---------------------------------------------------------------------------
+
+
+def _valid_explanation_outline() -> Dict[str, Any]:
+    """A schema-clean ``explanation`` outline payload.
+
+    explanation bounds: key_claims (2, 6), section_skeleton (1, 4). Used as
+    the base into which the two malformed shapes are injected so the tests
+    assert the repair turns a REJECTED payload into an ACCEPTED one.
+    """
+    return {
+        "block_id": "page_01#explanation_intro_0",
+        "block_type": "explanation",
+        "content_type": sorted(__import__("lib.validators.content_type",
+                                          fromlist=["get_valid_chunk_types"])
+                               .get_valid_chunk_types())[0],
+        "bloom_level": "understand",
+        "objective_refs": ["TO-01"],
+        "curies": [],
+        "key_claims": [
+            {"claim": "First real claim about the topic.",
+             "source_chunk_ids": ["chunk_a"]},
+            {"claim": "Second real claim about the topic.",
+             "source_chunk_ids": ["chunk_a"]},
+        ],
+        "section_skeleton": [{"heading": "Overview"}],
+        "source_refs": [
+            {"sourceId": "dart:slug#chunk_a", "role": "primary"},
+        ],
+        "structural_warnings": [],
+    }
+
+
+def _validate_explanation(payload: Dict[str, Any]) -> None:
+    """Run the strict explanation schema validator; raises on failure."""
+    import jsonschema  # type: ignore[import-untyped]
+
+    schema = _BLOCK_TYPE_JSON_SCHEMAS["explanation"]
+    jsonschema.Draft202012Validator(schema).validate(payload)
+
+
+def test_mixed_key_claims_rejected_before_repair():
+    """Baseline: a mixed key_claims array (object claims + a stray bare
+    chunk-id string) fails the strict explanation schema — this is the
+    exact live-7B ``'<chunk-id>' is not of type 'object'`` failure."""
+    import jsonschema  # type: ignore[import-untyped]
+
+    payload = _valid_explanation_outline()
+    # Inject the live failure: a bare chunk-id string appended to the
+    # otherwise all-object key_claims array.
+    payload["key_claims"].append("sample_course_a_chunk_00001")
+    with pytest.raises(jsonschema.ValidationError):
+        _validate_explanation(payload)
+
+
+def test_repair_mixed_key_claims_passes_explanation_schema():
+    """After ``_repair_outline_key_claims_shape``, a mixed key_claims array
+    coerces to the all-object arm and PASSES the strict explanation schema.
+    The stray bare chunk-id (which names a real block chunk) is DROPPED;
+    no claim is fabricated."""
+    payload = _valid_explanation_outline()
+    stray_id = "sample_course_a_chunk_00001"
+    payload["key_claims"].append(stray_id)
+    valid_ids = ["chunk_a", stray_id]
+
+    out = _repair_outline_key_claims_shape(payload, valid_ids=valid_ids)
+    meta = out.pop("_key_claims_shape_repair")
+    # The grounding repair runs next in the real call path; run it here to
+    # mirror the production ordering (object claims keep their ids).
+    out = _repair_claim_grounding(out, valid_ids=valid_ids)
+    out.pop("_grounding_repair", None)
+
+    # The stray chunk-id string was dropped; only the two real object
+    # claims survive — no fabrication, no padding.
+    assert meta["repaired"] is True
+    assert meta["n_dropped_chunk_id_strings"] == 1
+    assert meta["n_wrapped_prose_strings"] == 0
+    assert len(out["key_claims"]) == 2
+    assert all(isinstance(c, dict) for c in out["key_claims"])
+    # The dropped value never reappears anywhere in key_claims.
+    assert all(stray_id not in (c.get("claim") or "")
+               for c in out["key_claims"])
+
+    _validate_explanation(out)  # must not raise
+
+
+def test_repair_mixed_key_claims_wraps_genuine_prose_string():
+    """A bare string that is NOT a chunk-id is a genuine prose claim under
+    the legacy flat arm; it is WRAPPED into an object (not dropped, not
+    fabricated). source_chunk_ids is then populated by the grounding
+    fallback from the block's real ids."""
+    payload = _valid_explanation_outline()
+    prose = "A genuinely useful third claim emitted under the flat arm."
+    payload["key_claims"].append(prose)
+    valid_ids = ["chunk_a"]
+
+    out = _repair_outline_key_claims_shape(payload, valid_ids=valid_ids)
+    meta = out.pop("_key_claims_shape_repair")
+    out = _repair_claim_grounding(out, valid_ids=valid_ids)
+    out.pop("_grounding_repair", None)
+
+    assert meta["repaired"] is True
+    assert meta["n_dropped_chunk_id_strings"] == 0
+    assert meta["n_wrapped_prose_strings"] == 1
+    assert len(out["key_claims"]) == 3
+    wrapped = out["key_claims"][-1]
+    assert isinstance(wrapped, dict)
+    assert wrapped["claim"] == prose
+    # Grounding fallback populated source_chunk_ids from the block's
+    # real ids — never fabricated outside valid_ids.
+    assert wrapped["source_chunk_ids"] == ["chunk_a"]
+    _validate_explanation(out)
+
+
+def test_repair_key_claims_noop_on_homogeneous_object_array():
+    """A clean all-object key_claims array is untouched (no repair fires)."""
+    payload = _valid_explanation_outline()
+    before = json.dumps(payload["key_claims"], sort_keys=True)
+    out = _repair_outline_key_claims_shape(payload, valid_ids=["chunk_a"])
+    meta = out.pop("_key_claims_shape_repair")
+    assert meta["repaired"] is False
+    assert json.dumps(out["key_claims"], sort_keys=True) == before
+
+
+def test_url_curie_rejected_before_repair():
+    """Baseline: a URL-CURIE in the curies array fails the strict schema —
+    the exact live-7B ``does not match '^[a-z]...'`` failure."""
+    import jsonschema  # type: ignore[import-untyped]
+
+    payload = _valid_explanation_outline()
+    payload["curies"] = ["foo:bar", "schema:https://example.com/vocab"]
+    with pytest.raises(jsonschema.ValidationError):
+        _validate_explanation(payload)
+
+
+def test_repair_curies_drops_url_curie_keeps_valid():
+    """After ``_repair_outline_curies``, the valid CURIE survives, the
+    URL-CURIE is dropped, and the payload PASSES the strict schema. No
+    CURIE is fabricated or rewritten."""
+    payload = _valid_explanation_outline()
+    payload["curies"] = ["foo:bar", "schema:https://example.com/vocab"]
+
+    out = _repair_outline_curies(payload)
+    meta = out.pop("_curie_shape_repair")
+
+    assert meta["repaired"] is True
+    assert meta["n_dropped_malformed"] == 1
+    assert meta["n_kept"] == 1
+    # Valid CURIE survives verbatim; malformed one is gone. Nothing new
+    # was invented.
+    assert out["curies"] == ["foo:bar"]
+    assert "schema:https://example.com/vocab" not in out["curies"]
+
+    _validate_explanation(out)  # must not raise
+
+
+def test_repair_curies_empty_array_is_schema_valid():
+    """Dropping every malformed CURIE leaves an empty array, which is
+    schema-valid (curies is not minItems-bound for explanation)."""
+    payload = _valid_explanation_outline()
+    payload["curies"] = ["schema:https://example.com/vocab"]
+    out = _repair_outline_curies(payload)
+    meta = out.pop("_curie_shape_repair")
+    assert meta["n_kept"] == 0
+    assert out["curies"] == []
+    _validate_explanation(out)
+
+
+def test_repair_curies_noop_when_all_valid():
+    """All-valid curies array is untouched (no repair fires)."""
+    payload = _valid_explanation_outline()
+    payload["curies"] = ["foo:bar", "rdf:type"]
+    out = _repair_outline_curies(payload)
+    meta = out.pop("_curie_shape_repair")
+    assert meta["repaired"] is False
+    assert out["curies"] == ["foo:bar", "rdf:type"]
+
+
+def test_combined_repairs_normalize_both_failures_end_to_end():
+    """Both live failures present at once (mixed key_claims + URL-CURIE):
+    the full pre-validation repair chain coerces both and the payload then
+    PASSES the strict explanation schema — the end-to-end contract the
+    outline-tier call site relies on."""
+    payload = _valid_explanation_outline()
+    stray_id = "sample_course_a_chunk_00001"
+    payload["key_claims"].append(stray_id)
+    payload["curies"] = ["foo:bar", "schema:https://example.com/vocab"]
+    valid_ids = ["chunk_a", stray_id]
+
+    # Mirror the production ordering in generate_outline.
+    payload = _repair_outline_key_claims_shape(payload, valid_ids=valid_ids)
+    payload.pop("_key_claims_shape_repair", None)
+    payload = _repair_outline_curies(payload)
+    payload.pop("_curie_shape_repair", None)
+    payload = _repair_claim_grounding(payload, valid_ids=valid_ids)
+    payload.pop("_grounding_repair", None)
+
+    assert payload["curies"] == ["foo:bar"]
+    assert len(payload["key_claims"]) == 2
+    assert all(isinstance(c, dict) for c in payload["key_claims"])
+    _validate_explanation(payload)
+
+
+# ---------------------------------------------------------------------------
+# source_refs bare-string coercion + bloom_level numeric→enum coercion
+# (two more live-7B wrong-primitive-shape failure modes).
+# ---------------------------------------------------------------------------
+
+
+def test_bare_source_refs_rejected_before_repair():
+    """Baseline: bare-string source_refs items fail the strict schema —
+    the exact live-7B ``'dart:...' is not of type 'object'`` failure."""
+    import jsonschema  # type: ignore[import-untyped]
+
+    payload = _valid_explanation_outline()
+    payload["source_refs"] = ["dart:slug#chunk_a", "dart:slug#chunk_b"]
+    with pytest.raises(jsonschema.ValidationError):
+        _validate_explanation(payload)
+
+
+def test_repair_source_refs_wraps_bare_strings_and_backfills_role():
+    """After ``_repair_outline_source_refs``, bare cited sourceId strings are
+    wrapped with ``role="primary"`` (sourceId preserved verbatim), a
+    role-less dict gets ``role="primary"``, and a no-sourceId item is
+    dropped. The repaired payload PASSES the strict explanation schema. No
+    sourceId is fabricated."""
+    payload = _valid_explanation_outline()
+    payload["source_refs"] = [
+        "dart:slug#chunk_a",                       # bare string → wrap
+        {"sourceId": "dart:slug#chunk_b"},         # role-less dict → backfill
+        {"role": "contributing"},                  # no sourceId → drop
+        "   ",                                      # whitespace-only → drop
+    ]
+
+    out = _repair_outline_source_refs(payload)
+    meta = out.pop("_source_refs_shape_repair")
+
+    assert meta["repaired"] is True
+    assert meta["n_wrapped_bare_strings"] == 1
+    assert meta["n_role_backfilled"] == 1
+    assert meta["n_dropped_malformed"] == 2
+    assert meta["n_kept"] == 2
+
+    refs = out["source_refs"]
+    assert refs == [
+        {"sourceId": "dart:slug#chunk_a", "role": "primary"},
+        {"sourceId": "dart:slug#chunk_b", "role": "primary"},
+    ]
+    # Every surviving sourceId is one the model actually cited — nothing
+    # invented.
+    assert {r["sourceId"] for r in refs} <= {
+        "dart:slug#chunk_a",
+        "dart:slug#chunk_b",
+    }
+    _validate_explanation(out)  # must not raise
+
+
+def test_repair_source_refs_empty_array_is_schema_valid():
+    """Dropping every unusable source_refs item leaves an empty array, which
+    is schema-valid (source_refs is not minItems-bound for explanation)."""
+    payload = _valid_explanation_outline()
+    payload["source_refs"] = [{"role": "primary"}, 42, None, ""]
+    out = _repair_outline_source_refs(payload)
+    meta = out.pop("_source_refs_shape_repair")
+    assert meta["n_kept"] == 0
+    assert out["source_refs"] == []
+    _validate_explanation(out)
+
+
+def test_repair_source_refs_noop_when_all_valid():
+    """A clean all-object source_refs array is untouched (no repair fires)."""
+    payload = _valid_explanation_outline()
+    before = json.dumps(payload["source_refs"], sort_keys=True)
+    out = _repair_outline_source_refs(payload)
+    meta = out.pop("_source_refs_shape_repair")
+    assert meta["repaired"] is False
+    assert json.dumps(out["source_refs"], sort_keys=True) == before
+
+
+def test_repair_source_refs_noop_when_absent_or_not_list():
+    """No-op when source_refs is absent or not a list (no crash)."""
+    payload = {"foo": "bar"}
+    out = _repair_outline_source_refs(payload)
+    assert out["_source_refs_shape_repair"]["repaired"] is False
+    out.pop("_source_refs_shape_repair")
+
+    payload2 = {"source_refs": "dart:slug#chunk_a"}
+    out2 = _repair_outline_source_refs(payload2)
+    assert out2["_source_refs_shape_repair"]["repaired"] is False
+    assert out2["source_refs"] == "dart:slug#chunk_a"
+
+
+# ---------------------------------------------------------------------------
+# prereq_set prerequisitePages repair (the 7B's exclusive empty-array failure)
+# ---------------------------------------------------------------------------
+
+# A source chunk that names its prerequisites in an explicit sentence — the
+# exact clean-fractions shape the live 7B probe exercises.
+_PREREQ_SOURCE = [
+    {
+        "id": "dart:simplifying-fractions#sec_01",
+        "text": (
+            "To simplify a fraction, divide both the numerator and the "
+            "denominator by their greatest common factor (GCF).\n\n"
+            "Prerequisites: before simplifying fractions a learner must know "
+            "how to list the factors of a whole number and how to find the "
+            "greatest common factor (GCF) of two numbers.\n\n"
+            "Try It: Simplify 20/30."
+        ),
+    }
+]
+
+
+def test_extract_prereq_phrases_from_explicit_sentence():
+    """The Prerequisites sentence yields the two topic phrases (leading verb +
+    article + 'how to' framing stripped), grounded in the source text."""
+    phrases = _extract_prereq_phrases_from_source(_PREREQ_SOURCE)
+    assert phrases == [
+        "factors of a whole number",
+        "greatest common factor (GCF) of two numbers",
+    ]
+
+
+def test_repair_prereq_pages_backfills_empty_from_source_and_drops_garbage():
+    """The core fix: an empty `prerequisitePages` carrying page-id-shaped
+    garbage is stripped AND backfilled with ≥1 sensible source-grounded
+    string (the exact live-7B failure: `[]` + `'p#factors_x_0'` garbage)."""
+    candidate = {
+        "prerequisitePages": ["p#factors_x_0", "", 42],
+    }
+    out = _repair_prereq_pages(
+        candidate,
+        block_type="prereq_set",
+        source_chunks=_PREREQ_SOURCE,
+        key_terms=("fraction", "numerator"),
+        objectives=[
+            {"id": "CO-01", "statement": "Simplify a fraction by dividing the "
+             "numerator and denominator by their GCF."}
+        ],
+    )
+    meta = out.pop("_prereq_pages_repair")
+    pages = out["prerequisitePages"]
+    # Garbage stripped (page-id-shaped + empty + non-string).
+    assert meta["n_garbage_stripped"] == 3
+    # Backfilled with ≥1 sensible string from the source prerequisites.
+    assert meta["repaired"] is True
+    assert meta["backfill_source"] == "source_prerequisites"
+    assert len(pages) >= 1
+    assert "factors of a whole number" in pages
+    # No page-id-shaped garbage survives.
+    assert all(not p.startswith("p#") and "#" not in p for p in pages)
+    # NEVER the objective statement.
+    assert all("simplify a fraction" not in p.lower() for p in pages)
+
+
+def test_repair_prereq_pages_missing_array_backfills():
+    """A MISSING `prerequisitePages` (the model's other failure mode — emits
+    None / omits the key) is backfilled the same way as the empty array."""
+    out = _repair_prereq_pages(
+        {"key_claims": [{"claim": "x", "source_chunk_ids": ["c"]}]},
+        block_type="prereq_set",
+        source_chunks=_PREREQ_SOURCE,
+        key_terms=(),
+        objectives=[],
+    )
+    assert len(out["prerequisitePages"]) >= 1
+    assert out["_prereq_pages_repair"]["backfill_source"] == "source_prerequisites"
+
+
+def test_repair_prereq_pages_falls_back_to_key_terms():
+    """With no Prerequisites sentence in the source, backfill from the block's
+    key_terms (a defensible prior-topic proxy) — never fabricated."""
+    out = _repair_prereq_pages(
+        {"prerequisitePages": []},
+        block_type="prereq_set",
+        source_chunks=[{"id": "x", "text": "Some prose with no markers."}],
+        key_terms=("factoring", "prime numbers"),
+        objectives=[],
+    )
+    assert out["prerequisitePages"] == ["factoring", "prime numbers"]
+    assert out["_prereq_pages_repair"]["backfill_source"] == "key_terms"
+
+
+def test_repair_prereq_pages_never_uses_objective_statement():
+    """When the only available signal is the objective text, the array is LEFT
+    empty (no source prereqs, no key_terms) — the objective is NEVER used to
+    backfill (a known-bad 7B output)."""
+    out = _repair_prereq_pages(
+        {"prerequisitePages": []},
+        block_type="prereq_set",
+        source_chunks=[{"id": "x", "text": "No prerequisites here."}],
+        key_terms=(),
+        objectives=[{"statement": "Simplify a fraction by dividing out the GCF."}],
+    )
+    # Nothing to ground a backfill → stays empty (strict validator fails closed).
+    assert out["prerequisitePages"] == []
+    assert out["_prereq_pages_repair"]["backfill_source"] is None
+
+
+def test_repair_prereq_pages_noop_on_clean_array():
+    """A non-empty array of clean (non-garbage) strings is untouched."""
+    out = _repair_prereq_pages(
+        {"prerequisitePages": ["factoring whole numbers", "finding the GCF"]},
+        block_type="prereq_set",
+        source_chunks=_PREREQ_SOURCE,
+        key_terms=(),
+        objectives=[],
+    )
+    assert out["prerequisitePages"] == ["factoring whole numbers", "finding the GCF"]
+    assert out["_prereq_pages_repair"]["repaired"] is False
+
+
+def test_repair_prereq_pages_noop_on_other_block_types():
+    """No-op for any non-prereq_set block (the repair is scoped to prereq_set
+    so the other 15 block types are byte-identical)."""
+    out = _repair_prereq_pages(
+        {"prerequisitePages": []},
+        block_type="concept",
+        source_chunks=_PREREQ_SOURCE,
+        key_terms=("a", "b"),
+        objectives=[],
+    )
+    assert out["prerequisitePages"] == []
+    assert out["_prereq_pages_repair"]["repaired"] is False
+
+
+def test_repair_prereq_pages_output_satisfies_strict_schema():
+    """End-to-end: a backfilled candidate validates against the strict
+    prereq_set schema (the repair makes the model reliably SATISFY the
+    required+minItems:1 constraint, not relax it)."""
+    import jsonschema  # type: ignore[import-untyped]
+
+    candidate = {
+        "block_id": "p#prereq_set_x_0",
+        "block_type": "prereq_set",
+        "content_type": "procedure",
+        "bloom_level": "remember",
+        "objective_refs": ["CO-01"],
+        "curies": ["math:gcf"],
+        "key_claims": [
+            {"claim": "Learners need factoring first.",
+             "source_chunk_ids": ["dart:simplifying-fractions#sec_01"]}
+        ],
+        "section_skeleton": [{"heading": "Prerequisites"}],
+        "source_refs": [
+            {"sourceId": "dart:simplifying-fractions#sec_01", "role": "primary"}
+        ],
+        "structural_warnings": [],
+        "prerequisitePages": ["p#bad_0"],  # garbage-only → would fail minItems
+    }
+    out = _repair_prereq_pages(
+        candidate,
+        block_type="prereq_set",
+        source_chunks=_PREREQ_SOURCE,
+        key_terms=("fraction",),
+        objectives=[],
+    )
+    out.pop("_prereq_pages_repair")
+    schema = _BLOCK_TYPE_JSON_SCHEMAS["prereq_set"]
+    # No exception → the backfilled array satisfies required + minItems:1.
+    jsonschema.Draft202012Validator(schema).validate(out)
+    assert len(out["prerequisitePages"]) >= 1
+
+
+def test_numeric_bloom_level_rejected_before_repair():
+    """Baseline: a numeric bloom_level fails the strict schema — the exact
+    live-7B ``2 is not of type 'string'`` failure."""
+    import jsonschema  # type: ignore[import-untyped]
+
+    payload = _valid_explanation_outline()
+    payload["bloom_level"] = 3
+    with pytest.raises(jsonschema.ValidationError):
+        _validate_explanation(payload)
+
+
+def test_repair_bloom_level_maps_numeric_tier_to_enum():
+    """A numeric tier 1..6 maps to the canonical enum (1=remember .. 3=apply
+    .. 6=create) sourced from lib/ontology/bloom.py::BLOOM_LEVELS. Tested as
+    int and numeric-string forms; the repaired payload passes the schema."""
+    for raw, expected in [
+        (1, "remember"),
+        (3, "apply"),
+        ("3", "apply"),
+        (6, "create"),
+    ]:
+        payload = _valid_explanation_outline()
+        payload["bloom_level"] = raw
+        out = _repair_outline_bloom_level(payload)
+        meta = out.pop("_bloom_level_repair")
+        assert meta["repaired"] is True, raw
+        assert out["bloom_level"] == expected, raw
+        _validate_explanation(out)  # must not raise
+
+
+def test_repair_bloom_level_normalizes_case_mismatch_string():
+    """A capitalized / whitespace-padded enum value is normalized to the
+    canonical lowercase form."""
+    payload = _valid_explanation_outline()
+    payload["bloom_level"] = "  Apply "
+    out = _repair_outline_bloom_level(payload)
+    meta = out.pop("_bloom_level_repair")
+    assert meta["repaired"] is True
+    assert out["bloom_level"] == "apply"
+    _validate_explanation(out)
+
+
+def test_repair_bloom_level_leaves_unmappable_unchanged():
+    """A value that can't map to a valid enum member is left untouched —
+    the strict validator then fails closed (no fabrication of a level).
+    Out-of-range tier 0 / 7 and gibberish strings stay as-is."""
+    import jsonschema  # type: ignore[import-untyped]
+
+    for raw in [0, 7, "comprehension", "tier-two", True]:
+        payload = _valid_explanation_outline()
+        payload["bloom_level"] = raw
+        out = _repair_outline_bloom_level(payload)
+        meta = out.pop("_bloom_level_repair")
+        assert meta["repaired"] is False, raw
+        assert out["bloom_level"] == raw, raw
+        with pytest.raises(jsonschema.ValidationError):
+            _validate_explanation(out)
+
+
+def test_repair_bloom_level_noop_on_already_valid():
+    """An already-canonical bloom_level is untouched (no repair fires)."""
+    payload = _valid_explanation_outline()
+    assert payload["bloom_level"] == "understand"
+    out = _repair_outline_bloom_level(payload)
+    meta = out.pop("_bloom_level_repair")
+    assert meta["repaired"] is False
+    assert out["bloom_level"] == "understand"
+    _validate_explanation(out)
+
+
+def test_all_five_repairs_normalize_every_failure_end_to_end():
+    """All four wrong-primitive-shape failures present at once (mixed
+    key_claims + URL-CURIE + bare source_refs + numeric bloom_level): the
+    full pre-validation repair chain coerces every one and the payload then
+    PASSES the strict explanation schema — the end-to-end contract the
+    outline-tier call site relies on after the two new repairs land."""
+    payload = _valid_explanation_outline()
+    stray_id = "sample_course_a_chunk_00001"
+    payload["key_claims"].append(stray_id)
+    payload["curies"] = ["foo:bar", "schema:https://example.com/vocab"]
+    payload["source_refs"] = ["dart:slug#chunk_a", {"sourceId": "dart:slug#chunk_b"}]
+    payload["bloom_level"] = 2
+    valid_ids = ["chunk_a", stray_id]
+
+    # Mirror the production ordering in generate_outline.
+    payload = _repair_outline_key_claims_shape(payload, valid_ids=valid_ids)
+    payload.pop("_key_claims_shape_repair", None)
+    payload = _repair_outline_curies(payload)
+    payload.pop("_curie_shape_repair", None)
+    payload = _repair_claim_grounding(payload, valid_ids=valid_ids)
+    payload.pop("_grounding_repair", None)
+    payload = _repair_outline_source_refs(payload)
+    payload.pop("_source_refs_shape_repair", None)
+    payload = _repair_outline_bloom_level(payload)
+    payload.pop("_bloom_level_repair", None)
+
+    assert payload["curies"] == ["foo:bar"]
+    assert len(payload["key_claims"]) == 2
+    assert all(isinstance(c, dict) for c in payload["key_claims"])
+    assert payload["source_refs"] == [
+        {"sourceId": "dart:slug#chunk_a", "role": "primary"},
+        {"sourceId": "dart:slug#chunk_b", "role": "primary"},
+    ]
+    assert payload["bloom_level"] == "understand"  # tier 2 → understand
+    _validate_explanation(payload)

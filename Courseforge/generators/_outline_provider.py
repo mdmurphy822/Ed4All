@@ -44,6 +44,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -68,12 +69,18 @@ from blocks import (  # noqa: E402
 from Courseforge.generators._base import (  # noqa: E402
     _BaseLLMProvider,
 )
+from Trainforge.generators._openai_compatible_client import (  # noqa: E402
+    ENV_REQUEST_TIMEOUT as _OA_ENV_REQUEST_TIMEOUT,
+)
 from MCP.hardening.error_classifier import (  # noqa: E402
     ErrorClass,
     classify_error,
 )
 from lib.validators.content_type import (  # noqa: E402
     get_valid_chunk_types,
+)
+from lib.ontology.bloom import (  # noqa: E402
+    BLOOM_LEVELS as _BLOOM_LEVELS,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,6 +103,39 @@ DEFAULT_REGEN_BUDGET = 3
 
 _DEFAULT_MAX_TOKENS = 1200
 _DEFAULT_TEMPERATURE = 0.0
+
+# Per-request HTTP timeout (seconds) for the outline tier's
+# OpenAI-compatible backends (local / together). The outline tier is a
+# 7B-class local model emitting structured JSON; while its output is
+# short, a cold model load + constrained-decoding pass can still exceed
+# the OpenAICompatibleClient 60s default. We pass an explicit generous
+# timeout, sourced from ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` when set,
+# else 300.0 — matching the rewrite tier so one knob drives both content-
+# generation tiers. Resolution / precedence (high → low): explicit
+# per-call ``timeout`` kwarg > ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` >
+# this default.
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 300.0
+
+
+def _resolve_request_timeout() -> float:
+    """Resolve the outline-tier per-request timeout default.
+
+    Reads ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (the cross-cutting
+    content-generation timeout knob); a missing / unparseable /
+    non-positive value falls back to
+    :data:`_DEFAULT_REQUEST_TIMEOUT_SECONDS` (300.0) — never the bare
+    60s client default.
+    """
+    raw = os.environ.get(_OA_ENV_REQUEST_TIMEOUT)
+    if not raw or not str(raw).strip():
+        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    if not math.isfinite(parsed) or parsed <= 0:
+        return _DEFAULT_REQUEST_TIMEOUT_SECONDS
+    return parsed
 
 SUPPORTED_PROVIDERS: Tuple[str, ...] = (
     "anthropic",
@@ -186,10 +226,15 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "section_skeleton": (1, 3),
         "summary_chars": (80, 400),
     },
-    # Examples are illustrative — minimum claim count, optional section
-    # decomposition (worked-step breakdown).
+    # Examples are illustrative — optional section decomposition
+    # (worked-step breakdown). CB5b (content-block-quality-2026-06
+    # §CB5b): bumped key_claims from (1, 3) to (2, 4) so a CONCRETE
+    # worked instance has room for problem + step(s) + answer claims
+    # (the abstract-rule failure mode emitted only 2 generic claims and
+    # the rewrite tier rendered a stub). (2, 4) leaves headroom for the
+    # 3-part problem/steps/answer decomposition without forcing it.
     "example": {
-        "key_claims": (1, 3),
+        "key_claims": (2, 4),
         "section_skeleton": (0, 2),
         "summary_chars": (60, 300),
     },
@@ -344,6 +389,26 @@ _OUTLINE_SYSTEM_PROMPT: str = (
     "Bloom levels across blocks (e.g. one `concept` at `understand` "
     "scaffolding the foundation, one `example` at `apply`, one "
     "`assessment_item` at the full declared level)."
+    # CB5b (content-block-quality-2026-06 §CB5b): example-block
+    # concrete-worked-instance directive. The rewrite tier renders an
+    # `example` block from its `key_claims` (it does NOT consult the
+    # section_skeleton), so an `example` block whose claims are the
+    # abstract rule ("To divide fractions, multiply by the reciprocal")
+    # hands the rewriter nothing concrete to author and it ships a stub.
+    # Mint the CONCRETE worked instance at outline time instead. Stays
+    # consistent with the "skeleton only, short prose statements"
+    # framing — each claim is still a short statement, it just carries
+    # the specific instance (problem / step / answer) rather than the
+    # general rule.
+    " "
+    "For an `example` block, the `key_claims` MUST capture a CONCRETE "
+    "WORKED INSTANCE drawn from a worked `Example` or `TRY IT` item in "
+    "the cited source chunks — include the SPECIFIC problem (the actual "
+    "numbers / expression), the intermediate steps, and the final "
+    "answer. Do NOT state only the general rule or formula. If the "
+    "source chunk for this block contains a worked example, use ITS "
+    "numbers; an example block must give the rewriter a complete worked "
+    "instance to render, not just the rule."
     # Wave5-W27 propagation (from Wave4-W27 `ffe517d` content-generator.md).
     # The outline tier emits structured JSON, not HTML — heading hierarchy
     # (HEADING_SKIP) applies at the rewrite tier, not here. But the two
@@ -421,14 +486,44 @@ _BLOCK_TYPE_GBNF: Dict[str, str] = {
 # fabricated fields.
 # ---------------------------------------------------------------------------
 
-_BLOOM_LEVEL_ENUM: List[str] = [
-    "remember",
-    "understand",
-    "apply",
-    "analyze",
-    "evaluate",
-    "create",
-]
+# Sourced from the single-source-of-truth canonical tuple in
+# ``lib/ontology/bloom.py`` (``BLOOM_LEVELS``) rather than a hardcoded
+# duplicate, so the outline-schema enum stays in lockstep with the
+# ontology and the numeric-tier bloom repair (``_repair_outline_bloom_level``)
+# can index ``_BLOOM_LEVELS`` directly. Order is the canonical
+# 1=remember … 6=create progression.
+_BLOOM_LEVEL_ENUM: List[str] = list(_BLOOM_LEVELS)
+
+# Bloom-diversity fix: level → 0-based rank for the FLOOR comparison.
+# Sourced from the canonical ``_BLOOM_LEVELS`` tuple (NOT a hardcoded
+# ordering), so it stays in lockstep with ``lib/ontology/bloom.py`` if the
+# taxonomy is ever re-ordered. Higher rank = higher cognitive demand.
+_BLOOM_LEVEL_RANK: Dict[str, int] = {
+    level: idx for idx, level in enumerate(_BLOOM_LEVELS)
+}
+
+
+def _max_bloom_level(*levels: Optional[str]) -> Optional[str]:
+    """Return the highest-ranked valid Bloom level among ``levels``.
+
+    Uses the canonical ``_BLOOM_LEVELS`` ordering (via ``_BLOOM_LEVEL_RANK``)
+    so the comparison stays in lockstep with the ontology. Unknown / ``None``
+    / empty inputs are ignored (never raised on). Returns ``None`` when no
+    input is a valid canonical level — the caller then leaves the field
+    untouched (fail-closed; no fabrication of an arbitrary level).
+    """
+    best: Optional[str] = None
+    best_rank = -1
+    for level in levels:
+        if not level:
+            continue
+        rank = _BLOOM_LEVEL_RANK.get(str(level).strip().lower())
+        if rank is None:
+            continue
+        if rank > best_rank:
+            best_rank = rank
+            best = _BLOOM_LEVELS[rank]
+    return best
 
 # content_type enum mirrors the canonical chunk-type taxonomy
 # (schemas/taxonomies/content_type.json::$defs.ChunkType) — the SAME
@@ -651,13 +746,45 @@ for _bt in BLOCK_TYPES:
 # the suffix size.
 
 _RETRY_DIRECTIVE_PATTERNS: List[Tuple["re.Pattern[str]", str]] = [
+    # improvement-map Step 3 (concern #2): key_claims minItems recovery
+    # directive. ``key_claims`` is a ``oneOf`` (legacy ``List[str]`` vs
+    # structured ``List[{claim, source_chunk_ids}]``), so when the 7B
+    # emits exactly ONE well-formed structured claim against a block
+    # whose bound demands ≥2 (e.g. ``explanation``: ``key_claims=(2,6)``),
+    # jsonschema's ``best_match`` reports the TOP-LEVEL ``oneOf`` message
+    # ("... is not valid under any of the given schemas") which MASKS the
+    # real minItems cause. The dispatch loop now walks ``exc.context`` and
+    # appends the structured arm's "too short" sub-error to ``last_error``
+    # so THIS pattern matches FIRST (before the W1.5.B ``oneOf`` catch-all
+    # directly below), steering the model toward DECOMPOSING the
+    # explanation into ≥{min} distinct claims rather than re-emitting the
+    # same single object across all retries (the misfire this fixes). The
+    # ``{min}`` placeholder is interpolated by ``_match_retry_directive``
+    # from the block's per-type ``_OUTLINE_KIND_BOUNDS`` lower bound.
+    # The pattern is scoped to a ``key_claims``-tagged "too short"
+    # marker (the surfacing step in ``generate_outline`` prefixes the
+    # surfaced sub-error with ``key_claims:``) so it does NOT steal the
+    # W7 ``assessment_item`` ``distractors ... is too short`` directive
+    # below. Placed FIRST so first-match wins.
+    (
+        re.compile(
+            r"key_claims:.*(too short|too few items|minItems)",
+            re.IGNORECASE,
+        ),
+        "key_claims has too FEW entries — emit at least {min} distinct "
+        "claim objects, each {{claim, source_chunk_ids}}, by decomposing "
+        "the explanation into separate factual statements (e.g. split a "
+        "process into its steps). Do NOT fabricate; if the source "
+        "supports one idea, break it into its constituent sub-claims.",
+    ),
     # Wave 1.5 W1.5.B: per-claim source attribution recovery directive.
     # Fires when the model emits the legacy ``List[str]`` shape under
     # the new ``oneOf`` schema — the validator surfaces "is not valid
     # under any of the given schemas" as the canonical error. The
     # directive points the model at the new shape contract on the next
-    # parse-retry. Placed FIRST so it takes precedence over the more
-    # generic patterns below.
+    # parse-retry. Placed AFTER the minItems directive above so a masked
+    # minItems cause (now surfaced) takes precedence; this remains the
+    # catch-all for a genuine flat-string emit.
     (
         re.compile(r"is not valid under any of the given schemas"),
         "key_claims MUST be a list of objects each containing "
@@ -726,21 +853,796 @@ _RETRY_DIRECTIVE_PATTERNS: List[Tuple["re.Pattern[str]", str]] = [
         "`correct_answer_index` (a 0-based integer pointing at the "
         "correct distractor).",
     ),
+    # prereq_set Blocks must carry a non-empty `prerequisitePages` array
+    # (the outline schema marks it required, minItems:1). A 7B-class model
+    # routinely emits it (or `key_claims`) as `[]`, which trips the
+    # jsonschema minItems error — surfaced as "'prerequisitePages' is a
+    # required property", "[] is too short", or "[] should be non-empty"
+    # depending on Draft-validator version. Without a matching directive the
+    # model blindly re-rolls the same empty array and exhausts the budget.
+    (
+        re.compile(
+            r"'prerequisitePages' is a required property"
+            r"|prerequisitePages.* is too short"
+            r"|\[\] is too short"
+            r"|\[\] should be non-empty"
+            r"|should be non-empty"
+        ),
+        "A required list came back empty (`[]`). EVERY required array must "
+        "have at least one item: `key_claims` (>=1 grounded claim) and, for "
+        "a 'prereq_set' block, `prerequisitePages` (>=1 string, each naming "
+        "a PRIOR topic/skill the learner needs before this block — drawn "
+        "from the source's stated prerequisites, e.g. 'list the factors of "
+        "a whole number'; never restate this block's own objective as a "
+        "prerequisite). Never emit an empty array for a required field.",
+    ),
 ]
 
 
-def _match_retry_directive(last_error: str) -> Optional[str]:
+def _block_source_chunk_ids(
+    source_chunks: List[Dict[str, Any]],
+) -> List[str]:
+    """Return the ordered, de-duplicated id set the block was given.
+
+    The outline tier's chunk-id universe is exactly the ``source_chunks``
+    list the router supplies to :meth:`OutlineProvider.generate_outline`.
+    Each chunk carries its id under ``id`` (canonical) or ``chunk_id``
+    (legacy); we honour both, mirroring :meth:`_render_user_prompt`'s
+    ``cid = chunk.get("id") or chunk.get("chunk_id")`` extraction so the
+    repair's id universe is byte-identical to the universe the model saw
+    in the prompt.
+    """
+    seen: set[str] = set()
+    ids: List[str] = []
+    for chunk in source_chunks or []:
+        if not isinstance(chunk, dict):
+            continue
+        cid = chunk.get("id") or chunk.get("chunk_id")
+        if isinstance(cid, str) and cid and cid not in seen:
+            seen.add(cid)
+            ids.append(cid)
+    return ids
+
+
+def _repair_claim_grounding(
+    candidate: Dict[str, Any],
+    *,
+    valid_ids: List[str],
+) -> Dict[str, Any]:
+    """Repair empty / unresolvable ``key_claims[].source_chunk_ids``.
+
+    Wave 2 validated-id-fallback grounding repair (ports the smoke
+    harness ``_carry_grounding`` semantics into the production outline
+    path). The 7B outline tier is unreliable on the per-claim
+    ``source_chunk_ids`` field: it routinely emits an empty array, or a
+    prose string ("Apply divisibility tests …") instead of a real chunk
+    id, which then fails the strict outline schema
+    (``minItems: 1`` + ``items.minLength: 1``) and exhausts the
+    parse-retry budget — failing the whole block. This pass runs BEFORE
+    the schema-validation rejection so the previously-failing case is
+    POPULATED with real ids rather than the schema being relaxed.
+
+    For every structured ``key_claims`` entry (``{claim, source_chunk_ids}``):
+
+    1. Filter ``source_chunk_ids`` to the ids that name a real chunk the
+       block was given (``valid_ids``) — drops the model's prose-string
+       hallucinations and any fabricated ids.
+    2. When a claim is left with zero valid ids, fall back to the
+       block's FULL ``valid_ids`` set — the chunks the block was
+       genuinely synthesized from, so legitimate block-level provenance
+       (NOT fabrication; the downstream NLI scorer judges grounding
+       against those real premises).
+
+    No-ops (returns the candidate unchanged) when:
+    - ``valid_ids`` is empty (block has no source chunks → fail-closed
+      stays in force; we never invent provenance), or
+    - ``key_claims`` is absent / not the structured object shape (legacy
+      flat-string arrays are left for the ``oneOf`` legacy arm).
+
+    Returns ``(candidate, repaired, n_cited, n_valid, n_fallback)`` via a
+    small dict so the caller can fold the repair signals into the
+    per-call decision capture.
+    """
+    repair_meta: Dict[str, Any] = {
+        "repaired": False,
+        "n_cited": 0,
+        "n_valid": 0,
+        "n_fallback_claims": 0,
+    }
+    if not valid_ids:
+        # No source chunks supplied → never fabricate provenance; the
+        # existing fail-closed schema rejection still fires downstream.
+        candidate["_grounding_repair"] = repair_meta
+        return candidate
+
+    valid_set = set(valid_ids)
+    key_claims = candidate.get("key_claims")
+    if not isinstance(key_claims, list):
+        candidate["_grounding_repair"] = repair_meta
+        return candidate
+
+    n_cited = 0
+    n_valid = 0
+    n_fallback = 0
+    repaired = False
+    for claim in key_claims:
+        if not isinstance(claim, dict):
+            # Legacy flat-string arm — leave untouched for the oneOf.
+            continue
+        cited = claim.get("source_chunk_ids")
+        cited_list = cited if isinstance(cited, list) else []
+        # Keep only ids the block was genuinely given; preserve order +
+        # de-dup so the repaired array round-trips the strict schema.
+        seen: set[str] = set()
+        kept: List[str] = []
+        for cid in cited_list:
+            n_cited += 1
+            if isinstance(cid, str) and cid in valid_set and cid not in seen:
+                seen.add(cid)
+                kept.append(cid)
+                n_valid += 1
+        if not kept:
+            # Model cited nothing resolvable → ground in the block's own
+            # source chunks (legitimate block-level provenance).
+            kept = list(valid_ids)
+            n_fallback += 1
+        if kept != cited_list:
+            claim["source_chunk_ids"] = kept
+            repaired = True
+
+    repair_meta.update(
+        repaired=repaired,
+        n_cited=n_cited,
+        n_valid=n_valid,
+        n_fallback_claims=n_fallback,
+    )
+    candidate["_grounding_repair"] = repair_meta
+    return candidate
+
+
+# Compiled once: the per-item CURIE surface-form check (mirrors the
+# schema's ``curies.items.pattern``). Used by ``_repair_outline_curies``
+# to drop URL-CURIEs / malformed entries before the strict validator
+# sees them.
+_CURIE_PATTERN_RE: "re.Pattern[str]" = re.compile(_CURIE_PATTERN)
+
+
+def _repair_outline_key_claims_shape(
+    candidate: Dict[str, Any],
+    *,
+    valid_ids: List[str],
+) -> Dict[str, Any]:
+    """Coerce a MIXED ``key_claims`` array to the single all-object arm.
+
+    The outline schema's ``key_claims`` is a back-compat ``oneOf``: EITHER
+    an all-string array OR an all-object ``[{claim, source_chunk_ids[]}]``
+    array. A 7B model routinely emits a MIXED array — structured claim
+    objects PLUS a stray bare string (observed live: an object-claim list
+    with a bare chunk-id string appended). A mixed array satisfies NEITHER
+    ``oneOf`` arm, so the strict Draft 2020-12 validator rejects it
+    (``'<chunk-id>' is not of type 'object'``) and the parse-retry budget
+    is exhausted → the block escalates with no prose.
+
+    This pass runs BEFORE the strict validator (same pre-validation point
+    as :func:`_repair_claim_grounding`, which it must run BEFORE so the
+    grounding repair sees a consistently-object-shaped array). It coerces
+    a mixed array to the all-object arm — the shape the system prompt
+    mandates and the shape Wave 1.5 W1.5.C per-claim attribution + Wave 2
+    W2.F NLI scoring consume:
+
+    - Object items (``{claim, source_chunk_ids}``) are kept verbatim.
+    - A bare string that names a real chunk the block was given
+      (``valid_ids``) is a stray source-reference, NOT a claim — it is
+      DROPPED (the per-claim ``source_chunk_ids`` field is where chunk
+      ids belong; a top-level bare chunk-id is malformed model output).
+    - A bare string that is NOT a chunk-id is a genuine prose claim
+      emitted under the legacy flat arm; it is WRAPPED into an object
+      ``{claim: <text>, source_chunk_ids: []}``. The empty
+      ``source_chunk_ids`` is then POPULATED by the downstream
+      :func:`_repair_claim_grounding` fallback (legitimate block-level
+      provenance) — never fabricated here.
+
+    No-ops (returns the candidate untouched) when:
+
+    - ``key_claims`` is absent / not a list, OR
+    - the array is HOMOGENEOUS (all-string or all-object) — a clean
+      single-arm array already validates; we never disturb it.
+
+    No fabrication: this pass only DROPS stray chunk-id strings and
+    RESHAPES genuine prose strings into the canonical object envelope.
+    It never invents a claim. If coercion leaves the array below the
+    per-block-type ``minItems`` bound, that block legitimately fails
+    the strict validator downstream (fail-closed) — correct.
+
+    Stashes its signals under the transient ``_key_claims_shape_repair``
+    key (the caller pops it before validation + before the Block content
+    lands, mirroring the ``_grounding_repair`` convention).
+    """
+    repair_meta: Dict[str, Any] = {
+        "repaired": False,
+        "n_dropped_chunk_id_strings": 0,
+        "n_wrapped_prose_strings": 0,
+    }
+    key_claims = candidate.get("key_claims")
+    if not isinstance(key_claims, list) or not key_claims:
+        candidate["_key_claims_shape_repair"] = repair_meta
+        return candidate
+
+    has_object = any(isinstance(c, dict) for c in key_claims)
+    has_string = any(isinstance(c, str) for c in key_claims)
+    # Only a MIXED array (object items + string items) trips the oneOf;
+    # a homogeneous array already matches one arm — leave it untouched.
+    if not (has_object and has_string):
+        candidate["_key_claims_shape_repair"] = repair_meta
+        return candidate
+
+    valid_set = set(valid_ids)
+    n_dropped = 0
+    n_wrapped = 0
+    repaired_claims: List[Any] = []
+    for c in key_claims:
+        if isinstance(c, dict):
+            repaired_claims.append(c)
+            continue
+        if isinstance(c, str):
+            if c in valid_set:
+                # Stray chunk-id string masquerading as a claim → drop.
+                n_dropped += 1
+                continue
+            text = c.strip()
+            if not text:
+                # Empty / whitespace-only string is neither a claim nor a
+                # chunk-id → drop (never wrap into an empty-claim object,
+                # which the schema's ``claim.minLength: 1`` would reject).
+                n_dropped += 1
+                continue
+            # Genuine prose claim under the legacy flat arm → wrap into
+            # the object envelope. source_chunk_ids left empty; the
+            # downstream grounding repair populates it from valid_ids.
+            repaired_claims.append({"claim": text, "source_chunk_ids": []})
+            n_wrapped += 1
+            continue
+        # Any other type (number / null / list) — drop; the schema would
+        # have rejected it under both arms anyway.
+        n_dropped += 1
+
+    candidate["key_claims"] = repaired_claims
+    repair_meta.update(
+        repaired=True,
+        n_dropped_chunk_id_strings=n_dropped,
+        n_wrapped_prose_strings=n_wrapped,
+    )
+    candidate["_key_claims_shape_repair"] = repair_meta
+    return candidate
+
+
+def _repair_outline_curies(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop ``curies`` array entries that violate ``_CURIE_PATTERN``.
+
+    The outline schema requires every ``curies`` item to match
+    ``_CURIE_PATTERN`` (``^[a-z][a-z0-9]*:[A-Za-z0-9_-]+$``). A 7B model
+    emits URL-CURIEs (observed live: ``schema:https://example.com/vocab``
+    — contains ``/`` and ``.``) which violate the pattern, so the strict
+    validator rejects the whole payload
+    (``'schema:https://...' does not match '^[a-z]...'``) and the
+    parse-retry budget is exhausted → the block escalates with no prose.
+
+    This pass runs BEFORE the strict validator (same pre-validation point
+    as :func:`_repair_claim_grounding`). It filters ``curies`` to only the
+    entries matching ``_CURIE_PATTERN``, dropping malformed / URL-CURIE
+    entries. ``curies`` carries no ``minItems`` bound for any block type
+    (verified against ``_build_block_outline_schema``), so emptying the
+    array is schema-valid — and the downstream ``_mint_outline_curies``
+    backstop (run at the phase handler) still mints per-course domain
+    CURIEs onto an empty list, so dropping garbage here never starves a
+    prose block of grounding.
+
+    No fabrication: this pass only DROPS malformed entries; it never
+    invents or rewrites a CURIE. A URL-CURIE is discarded outright (we do
+    not attempt to salvage a prefix from it — that would be fabrication).
+
+    No-ops when ``curies`` is absent / not a list. Stashes its signals
+    under the transient ``_curie_shape_repair`` key (popped by the caller
+    before validation, mirroring the ``_grounding_repair`` convention).
+    """
+    repair_meta: Dict[str, Any] = {
+        "repaired": False,
+        "n_dropped_malformed": 0,
+        "n_kept": 0,
+    }
+    curies = candidate.get("curies")
+    if not isinstance(curies, list):
+        candidate["_curie_shape_repair"] = repair_meta
+        return candidate
+
+    kept: List[str] = []
+    n_dropped = 0
+    for c in curies:
+        if isinstance(c, str) and _CURIE_PATTERN_RE.match(c):
+            kept.append(c)
+        else:
+            n_dropped += 1
+
+    if n_dropped:
+        candidate["curies"] = kept
+        repair_meta.update(
+            repaired=True,
+            n_dropped_malformed=n_dropped,
+            n_kept=len(kept),
+        )
+    else:
+        repair_meta["n_kept"] = len(kept)
+    candidate["_curie_shape_repair"] = repair_meta
+    return candidate
+
+
+def _repair_outline_source_refs(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce malformed ``source_refs`` items to the canonical shape.
+
+    The outline schema requires every ``source_refs`` item be an object
+    ``{"sourceId": str(minLength 1), "role": str(minLength 1)}`` with BOTH
+    keys required. A 7B model routinely emits the WRONG primitive shape
+    here — a bare chunk-id string per item
+    (``source_refs: ["dart:slug#chunk_a", ...]``) or an object that names a
+    ``sourceId`` but drops the required ``role`` — so the strict validator
+    rejects the whole payload and the parse-retry budget is exhausted → the
+    block escalates with no prose.
+
+    This pass runs BEFORE the strict validator (same pre-validation point as
+    the other repairs). Per item:
+
+    - A bare non-empty string is WRAPPED to
+      ``{"sourceId": <string>, "role": "primary"}``. ``"primary"`` is a
+      defensible default role, NOT fabricated provenance — the ``sourceId``
+      is the model's OWN cited id, carried through verbatim; only the
+      missing role primitive is supplied (the model already asserted the
+      grounding, it merely omitted the role enum).
+    - An object carrying a usable ``sourceId`` but a missing / empty /
+      non-string ``role`` gets ``role="primary"`` set.
+    - An item with no usable ``sourceId`` (empty / whitespace-only string,
+      ``None``, a number, an object with no non-empty ``sourceId``) is
+      DROPPED. ``source_refs`` carries NO ``minItems`` bound for any block
+      type (verified against :func:`_build_block_outline_schema`), so an
+      emptied array is schema-valid; downstream source-grounding gates
+      catch a prose block that legitimately lost all provenance.
+
+    No fabrication: no ``sourceId`` is ever invented — the only value
+    supplied is the deterministic ``role="primary"`` default for an id the
+    model already cited.
+
+    No-ops when ``source_refs`` is absent / not a list. Stashes its signals
+    under the transient ``_source_refs_shape_repair`` key (popped by the
+    caller before validation, mirroring the ``_grounding_repair`` convention).
+    """
+    repair_meta: Dict[str, Any] = {
+        "repaired": False,
+        "n_wrapped_bare_strings": 0,
+        "n_role_backfilled": 0,
+        "n_dropped_malformed": 0,
+        "n_kept": 0,
+    }
+    source_refs = candidate.get("source_refs")
+    if not isinstance(source_refs, list):
+        candidate["_source_refs_shape_repair"] = repair_meta
+        return candidate
+
+    repaired_refs: List[Dict[str, str]] = []
+    n_wrapped = 0
+    n_role = 0
+    n_dropped = 0
+    for ref in source_refs:
+        if isinstance(ref, str):
+            source_id = ref.strip()
+            if not source_id:
+                # Empty / whitespace-only string — no usable id → drop.
+                n_dropped += 1
+                continue
+            # Bare cited id under the legacy flat arm → wrap with the
+            # default role. The id is the model's own; role is the only
+            # supplied primitive.
+            repaired_refs.append({"sourceId": source_id, "role": "primary"})
+            n_wrapped += 1
+            continue
+        if isinstance(ref, dict):
+            raw_id = ref.get("sourceId")
+            source_id = raw_id.strip() if isinstance(raw_id, str) else ""
+            if not source_id:
+                # Object with no usable sourceId — nothing to anchor → drop.
+                n_dropped += 1
+                continue
+            raw_role = ref.get("role")
+            role = raw_role.strip() if isinstance(raw_role, str) else ""
+            if not role:
+                role = "primary"
+                n_role += 1
+            repaired_refs.append({"sourceId": source_id, "role": role})
+            continue
+        # Any other type (number / null / list) — no usable sourceId → drop.
+        n_dropped += 1
+
+    if n_wrapped or n_role or n_dropped:
+        candidate["source_refs"] = repaired_refs
+        repair_meta.update(
+            repaired=True,
+            n_wrapped_bare_strings=n_wrapped,
+            n_role_backfilled=n_role,
+            n_dropped_malformed=n_dropped,
+            n_kept=len(repaired_refs),
+        )
+    else:
+        repair_meta["n_kept"] = len(repaired_refs)
+    candidate["_source_refs_shape_repair"] = repair_meta
+    return candidate
+
+
+# A page-id-shaped garbage token the 7B sometimes emits for a prereq page
+# instead of a real prior-topic name (observed live: ``'p#factors_x_0'`` —
+# a `{namespace}#{slug}` chunk-id fragment, NOT a prerequisite topic). Used
+# by :func:`_repair_prereq_pages` to strip such entries before backfilling.
+_PREREQ_PAGE_GARBAGE_RE: "re.Pattern[str]" = re.compile(r"^[a-z]+#")
+
+# Stop-words dropped from extracted prerequisite noun-phrases so a phrase like
+# "list the factors of a whole number" yields "factors of a whole number"
+# (the leading imperative verb + article are not part of the topic name).
+_PREREQ_LEADING_VERBS: "frozenset[str]" = frozenset(
+    {"list", "find", "know", "identify", "recall", "compute", "determine",
+     "calculate", "understand", "recognize", "state", "define", "explain"}
+)
+
+
+def _extract_prereq_phrases_from_source(
+    source_chunks: List[Dict[str, Any]],
+) -> List[str]:
+    """Pull prerequisite topic phrases out of an explicit Prerequisites sentence.
+
+    Many textbook sections name their prerequisites in prose — the clean
+    fractions source literally says::
+
+        Prerequisites: before simplifying fractions a learner must know how to
+        list the factors of a whole number and how to find the greatest common
+        factor (GCF) of two numbers.
+
+    This scrapes the clause AFTER a ``Prerequisites``/``Prerequisite`` marker
+    and splits it on ``how to`` / ``and`` / ``;`` / ``,`` boundaries into
+    discrete topic phrases, then trims a leading imperative verb + article
+    (``list the factors …`` → ``factors of a whole number``). The result is
+    grounded entirely in the source text — no fabrication; an absent marker
+    yields an empty list and the caller falls back to ``key_terms``.
+    """
+    phrases: List[str] = []
+    seen: set[str] = set()
+    for chunk in source_chunks or []:
+        if not isinstance(chunk, dict):
+            continue
+        body = str(chunk.get("body") or chunk.get("text") or "")
+        if not body:
+            continue
+        # Find the prerequisites clause: text after the marker up to the next
+        # sentence-terminating period that ends the clause (newline or '. ').
+        m = re.search(
+            r"prerequisites?\s*[:\-]?\s*(.+?)(?:\n|\. (?=[A-Z])|$)",
+            body,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not m:
+            continue
+        clause = m.group(1)
+        # Strip the common "before <topic> a learner must [know/be able to]"
+        # framing preamble so only the enumerated topics survive the split.
+        clause = re.sub(
+            r"^\s*before\b.*?\b(?:must|need to|should)\b"
+            r"(?:\s+(?:know|be able to))?\s*(?:how to\s+)?",
+            "",
+            clause,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        # Normalize the recurring "how to" connector (and "and how to") to a
+        # plain list delimiter so each enumerated topic splits cleanly.
+        clause = re.sub(r"\b(?:and\s+)?how to\b", "||", clause, flags=re.IGNORECASE)
+        # Split into candidate topic phrases on the natural list delimiters.
+        for raw in re.split(r"\|\||\s+and\s+|;|,", clause):
+            phrase = raw.strip().rstrip(".").strip()
+            if not phrase:
+                continue
+            # Drop any leading imperative verb + article so the phrase names
+            # the TOPIC, not the instruction ("list the factors …" →
+            # "factors …").
+            tokens = phrase.split()
+            while tokens and tokens[0].lower() in _PREREQ_LEADING_VERBS:
+                tokens = tokens[1:]
+            while tokens and tokens[0].lower() in ("the", "a", "an"):
+                tokens = tokens[1:]
+            phrase = " ".join(tokens).strip()
+            # Require ≥2 tokens so stray framing fragments don't slip through.
+            if not phrase or len(phrase.split()) < 2:
+                continue
+            # Drop any residual framing fragment (a phrase still carrying the
+            # "learner must" / "a learner" preamble is not a topic name).
+            if re.search(r"\blearner\b|\bmust\b|\bbefore\b", phrase, re.IGNORECASE):
+                continue
+            low = phrase.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            phrases.append(phrase)
+    return phrases
+
+
+def _repair_prereq_pages(
+    candidate: Dict[str, Any],
+    *,
+    block_type: str,
+    source_chunks: List[Dict[str, Any]],
+    key_terms: Tuple[str, ...],
+    objectives: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Backfill / clean an empty or garbage ``prereq_set`` ``prerequisitePages``.
+
+    The ``prereq_set`` outline schema marks ``prerequisitePages`` REQUIRED with
+    ``minItems: 1`` (every entry a non-empty string). The local 7B is
+    unreliable here: investigation across 5 trials showed the model emits
+    ``prerequisitePages`` as ``None`` (missing) or ``[]`` (empty) on most early
+    attempts — ``key_claims`` is always populated, so the empty array is
+    EXCLUSIVELY ``prerequisitePages`` — and only stochastically recovers,
+    tripping the strict validator (``'[] should be non-empty'``) and exhausting
+    the parse-retry budget → the block degrades to a thin stub. Even on success
+    the 7B sometimes emits page-id-shaped garbage (``'p#factors_x_0'``) instead
+    of a real prior-topic name.
+
+    This pass runs BEFORE the strict validator (same pre-validation point as
+    the other ``_repair_*`` helpers) so the previously-failing payload is
+    POPULATED rather than the schema being relaxed. Two deterministic steps,
+    grounded only in the block's own source / key_terms (no fabrication):
+
+    1. **Strip garbage** — drop any existing entry that is empty / non-string
+       or page-id-shaped (matches :data:`_PREREQ_PAGE_GARBAGE_RE`, e.g.
+       ``'p#factors_x_0'``). Order + dedup preserved on the survivors.
+    2. **Backfill when empty** — if (1) leaves the array empty/missing, fill it
+       from available signal, best-first:
+         a. Prerequisite topic phrases scraped from an explicit
+            ``Prerequisites:`` sentence in the source chunks
+            (:func:`_extract_prereq_phrases_from_source`) — the source
+            literally names them, so this is grounded extraction.
+         b. Fallback to the block's ``key_terms`` (the terms the page is
+            built around — a defensible prior-topic proxy).
+       NEVER backfilled with the block's own ``objectives`` statement text
+       (a known-bad 7B output — the objective is what the page TEACHES, not a
+       prerequisite). If neither source signal exists, the array is LEFT
+       empty and the strict validator still fails closed (no fabrication).
+
+    No-ops for any non-``prereq_set`` block, or when ``prerequisitePages`` is
+    already a non-empty list of clean (non-garbage) strings. Stashes its
+    signals under the transient ``_prereq_pages_repair`` key (popped by the
+    caller before validation, mirroring the ``_grounding_repair`` convention).
+    """
+    repair_meta: Dict[str, Any] = {
+        "repaired": False,
+        "n_garbage_stripped": 0,
+        "backfill_source": None,
+        "n_backfilled": 0,
+    }
+    if block_type != "prereq_set":
+        candidate["_prereq_pages_repair"] = repair_meta
+        return candidate
+
+    raw = candidate.get("prerequisitePages")
+    raw_list = raw if isinstance(raw, list) else []
+
+    # Step 1: keep only clean, non-garbage, non-empty string entries.
+    seen: set[str] = set()
+    kept: List[str] = []
+    n_garbage = 0
+    for entry in raw_list:
+        if not isinstance(entry, str):
+            n_garbage += 1
+            continue
+        val = entry.strip()
+        if not val or _PREREQ_PAGE_GARBAGE_RE.match(val):
+            n_garbage += 1
+            continue
+        if val.lower() in seen:
+            continue
+        seen.add(val.lower())
+        kept.append(val)
+
+    backfill_source: Optional[str] = None
+    n_backfilled = 0
+    if not kept:
+        # Step 2: backfill from grounded signal. NEVER from the objective
+        # statement (a known-bad output — that is what the page teaches).
+        objective_texts = {
+            str((o or {}).get("statement") or (o or {}).get("text") or "")
+            .strip()
+            .lower()
+            for o in (objectives or [])
+        }
+        candidates: List[str] = _extract_prereq_phrases_from_source(source_chunks)
+        if candidates:
+            backfill_source = "source_prerequisites"
+        else:
+            candidates = [t.strip() for t in (key_terms or ()) if str(t).strip()]
+            if candidates:
+                backfill_source = "key_terms"
+        fill_seen: set[str] = set()
+        for cand in candidates:
+            low = cand.lower()
+            if not cand or low in fill_seen or low in objective_texts:
+                continue
+            fill_seen.add(low)
+            kept.append(cand)
+            n_backfilled += 1
+
+    if kept != raw_list:
+        candidate["prerequisitePages"] = kept
+        repair_meta.update(
+            repaired=True,
+            n_garbage_stripped=n_garbage,
+            backfill_source=backfill_source,
+            n_backfilled=n_backfilled,
+        )
+    candidate["_prereq_pages_repair"] = repair_meta
+    return candidate
+
+
+def _repair_outline_bloom_level(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce a numeric / mis-cased ``bloom_level`` to the canonical enum.
+
+    The outline schema pins ``bloom_level`` to :data:`_BLOOM_LEVEL_ENUM`
+    (the six canonical lowercase Bloom levels, byte-identical to
+    :data:`lib.ontology.bloom.BLOOM_LEVELS`). A 7B model sometimes emits a
+    numeric tier (``bloom_level: 2`` / ``"2"``) or a capitalized /
+    whitespace-padded form (``"Apply"``), all of which the strict validator
+    rejects.
+
+    This pass runs BEFORE the strict validator. Two deterministic
+    normalizations of the model's OWN output (no fabrication):
+
+    - A numeric tier 1..6 (int or numeric string) maps to
+      ``BLOOM_LEVELS[tier - 1]`` — the canonical 1=remember … 6=create
+      ordering sourced from the single-source-of-truth tuple in
+      ``lib/ontology/bloom.py`` (NOT a hardcoded map; reusing the canonical
+      loader keeps this in lockstep if the ontology ever re-orders).
+    - A string that case-insensitively / whitespace-insensitively matches a
+      canonical enum value is normalized to that value (``"Apply  "`` →
+      ``"apply"``).
+
+    Any value that cannot be mapped to a valid enum member is LEFT
+    UNCHANGED — the strict validator then fails closed (fail-closed; no
+    fabrication of an arbitrary level).
+
+    No-ops when ``bloom_level`` is absent. Stashes its signals under the
+    transient ``_bloom_level_repair`` key (popped by the caller before
+    validation, mirroring the ``_grounding_repair`` convention).
+    """
+    repair_meta: Dict[str, Any] = {
+        "repaired": False,
+        "original": None,
+        "normalized": None,
+    }
+    if "bloom_level" not in candidate:
+        candidate["_bloom_level_repair"] = repair_meta
+        return candidate
+
+    original = candidate.get("bloom_level")
+    repair_meta["original"] = original
+    normalized: Optional[str] = None
+
+    # Numeric tier (int or numeric string) → canonical level by 1-based
+    # index into the single-source-of-truth ``BLOOM_LEVELS`` tuple.
+    tier: Optional[int] = None
+    if isinstance(original, bool):
+        # bool is an int subclass — never treat True/False as a tier.
+        tier = None
+    elif isinstance(original, int):
+        tier = original
+    elif isinstance(original, str):
+        stripped = original.strip()
+        if stripped.isdigit():
+            tier = int(stripped)
+        else:
+            # Case-/whitespace-insensitive enum match.
+            lowered = stripped.lower()
+            for level in _BLOOM_LEVEL_ENUM:
+                if lowered == level:
+                    normalized = level
+                    break
+
+    if tier is not None and 1 <= tier <= len(_BLOOM_LEVELS):
+        normalized = _BLOOM_LEVELS[tier - 1]
+
+    if normalized is not None and normalized != original:
+        candidate["bloom_level"] = normalized
+        repair_meta.update(repaired=True, normalized=normalized)
+    else:
+        repair_meta["normalized"] = normalized
+
+    candidate["_bloom_level_repair"] = repair_meta
+    return candidate
+
+
+def _surface_key_claims_min_items(
+    exc: "jsonschema.ValidationError",
+) -> Optional[str]:
+    """Surface a masked ``key_claims`` minItems sub-error from a ``oneOf``.
+
+    ``key_claims`` is a ``oneOf`` (legacy ``List[str]`` vs structured
+    ``List[{claim, source_chunk_ids}]``). When the 7B emits a single
+    well-formed structured claim against a block whose bound demands ≥2,
+    jsonschema's ``best_match`` raises the TOP-LEVEL ``oneOf`` error
+    ("... is not valid under any of the given schemas"), masking the
+    real minItems cause. jsonschema attaches every per-arm sub-error to
+    ``exc.context``; this walks them and returns the message of the most
+    relevant minItems / "too short" / "too few items" sub-error on the
+    STRUCTURED arm (a `key_claims` sub-error whose `validator == 'minItems'`
+    or whose message reads "too short"), prefixed with ``key_claims:`` so
+    the directive matcher's key_claims-scoped pattern fires.
+
+    Returns ``None`` when the raised error is not the ``key_claims``
+    top-level ``oneOf`` or no matching sub-error exists — message-building
+    only; never alters validation logic.
+    """
+    # Only act on the top-level key_claims oneOf rejection. ``exc.path``
+    # is a deque; its first element is the failing property name.
+    top_path = list(getattr(exc, "absolute_path", []) or getattr(exc, "path", []))
+    is_key_claims = bool(top_path) and top_path[0] == "key_claims"
+    is_oneof = "is not valid under any of the given schemas" in str(exc.message)
+    if not (is_key_claims and is_oneof):
+        return None
+    best: Optional["jsonschema.ValidationError"] = None
+    for sub in getattr(exc, "context", None) or []:
+        validator = getattr(sub, "validator", None)
+        message = str(getattr(sub, "message", ""))
+        is_min = validator == "minItems" or "too short" in message.lower() or (
+            "too few items" in message.lower()
+        )
+        if is_min:
+            # Prefer the FIRST minItems sub-error on the structured arm;
+            # any minItems miss is on the structured (object-list) arm
+            # since the legacy str arm has no minItems constraint.
+            best = sub
+            break
+    if best is None:
+        return None
+    return f"key_claims: {str(best.message)}"
+
+
+def _match_retry_directive(
+    last_error: str, block_type: Optional[str] = None
+) -> Optional[str]:
     """Return the directive matching ``last_error``'s validator pattern.
 
     Walks :data:`_RETRY_DIRECTIVE_PATTERNS` in declaration order and
     returns the first matching directive. Returns ``None`` when no
     pattern matches — the caller falls back to the bare validator
     error echo.
+
+    ``block_type`` (optional) lets the matched directive interpolate the
+    per-block-type ``key_claims`` minItems lower bound from
+    :data:`_OUTLINE_KIND_BOUNDS` (e.g. ``explanation`` → ``2``). The
+    minItems directive carries a ``{min}`` placeholder; we substitute it
+    with the resolved bound (falling back to ``2`` — the smallest bound
+    that can trip a minItems miss — when the block_type is unknown or
+    carries no ``key_claims`` bound). Directives with no ``{min}`` token
+    are returned unchanged, so the substitution is a no-op for every
+    pre-existing pattern.
     """
     if not last_error:
         return None
     for pattern, directive in _RETRY_DIRECTIVE_PATTERNS:
         if pattern.search(last_error):
+            if "{min}" in directive:
+                bounds = _OUTLINE_KIND_BOUNDS.get(block_type or "", {})
+                key_claims_bound = bounds.get("key_claims")
+                min_required = (
+                    key_claims_bound[0]
+                    if isinstance(key_claims_bound, tuple)
+                    and key_claims_bound
+                    else 2
+                )
+                # ``{{...}}`` escapes in the directive collapse to literal
+                # braces for the ``{claim, source_chunk_ids}`` shape hint;
+                # only the bare ``{min}`` token interpolates.
+                return directive.format(min=min_required)
             return directive
     return None
 
@@ -778,6 +1680,11 @@ class OutlineProvider(_BaseLLMProvider):
         capture: Optional[Any] = None,
         max_tokens: int = _DEFAULT_MAX_TOKENS,
         temperature: float = _DEFAULT_TEMPERATURE,
+        # Per-request HTTP timeout (seconds). Resolution chain (high →
+        # low): this kwarg > ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` env
+        # var > :data:`_DEFAULT_REQUEST_TIMEOUT_SECONDS` (300.0). Only
+        # applies to the OpenAI-compatible backends (local / together).
+        timeout: Optional[float] = None,
         # Optional dependency injections for tests.
         client: Optional[Any] = None,
         anthropic_client: Optional[Any] = None,
@@ -805,6 +1712,13 @@ class OutlineProvider(_BaseLLMProvider):
             or DEFAULT_MODEL
         )
 
+        # Per-call kwarg wins; otherwise source the generous default
+        # from ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (fallback 300.0).
+        resolved_timeout: float = (
+            float(timeout) if timeout is not None
+            else _resolve_request_timeout()
+        )
+
         super().__init__(
             provider=provider,
             model=resolved_model,
@@ -813,6 +1727,7 @@ class OutlineProvider(_BaseLLMProvider):
             capture=capture,
             max_tokens=max_tokens,
             temperature=temperature,
+            timeout=resolved_timeout,
             client=client,
             anthropic_client=anthropic_client,
             env_provider_var=ENV_PROVIDER,
@@ -930,9 +1845,18 @@ class OutlineProvider(_BaseLLMProvider):
             remediation_suffix=remediation_suffix,
         )
 
+        # Wave 2 validated-id-fallback grounding repair: the block's
+        # chunk-id universe is exactly the supplied ``source_chunks``
+        # list (same extraction the user prompt enumerates). The repair
+        # filters each ``key_claims[].source_chunk_ids`` to this set and
+        # falls back to it when the model cited nothing resolvable —
+        # never fabricating an id outside the block's own source chunks.
+        valid_chunk_ids = _block_source_chunk_ids(source_chunks)
+
         last_error: Optional[str] = None
         last_raw: str = ""
         parsed: Optional[Dict[str, Any]] = None
+        grounding_repair: Optional[Dict[str, Any]] = None
         total_retries = 0
         # Worker W6: transient retries (Ollama 503 / connection reset /
         # read timeout) are counted separately from MAX_PARSE_RETRIES so
@@ -952,7 +1876,9 @@ class OutlineProvider(_BaseLLMProvider):
                 # validator's last_error message and append it after the
                 # schema dump so the model sees the canonical fix-it
                 # instruction, not just the terse validator string.
-                directive = _match_retry_directive(last_error)
+                directive = _match_retry_directive(
+                    last_error, block.block_type
+                )
                 directive_block = (
                     f"\nFix-it directive: {directive}" if directive else ""
                 )
@@ -1015,18 +1941,157 @@ class OutlineProvider(_BaseLLMProvider):
                 last_error = "lenient JSON parse returned None"
                 attempt += 1
                 continue
+            # Malformed-shape repairs — all run BEFORE schema validation
+            # so the previously-failing payload is NORMALIZED rather than
+            # the schema being relaxed. Each stashes its signals under a
+            # transient ``_*_repair`` key, popped off before the candidate
+            # is validated (the strict schema forbids unknown keys) and
+            # before it lands as the Block content. Ordering matters:
+            #
+            # 1. ``_repair_outline_key_claims_shape`` first — coerces a
+            #    MIXED ``key_claims`` array (object claims + a stray bare
+            #    chunk-id string, the live 7B failure) to the all-object
+            #    arm, so the grounding repair below sees a consistently
+            #    object-shaped array.
+            # 2. ``_repair_outline_curies`` — drops URL-CURIEs / malformed
+            #    entries (the live ``schema:https://...`` failure) that
+            #    violate the per-item CURIE pattern. ``curies`` is not
+            #    ``minItems``-bound, so emptying it is schema-valid; the
+            #    ``_mint_outline_curies`` phase-handler backstop still
+            #    mints per-course domain CURIEs onto the empty list.
+            # 3. ``_repair_claim_grounding`` last — filters/populates each
+            #    ``key_claims[].source_chunk_ids`` against the block's real
+            #    chunk-id universe (now that the array is object-shaped).
+            #
+            # None of the three fabricate content; they only DROP/COERCE
+            # malformed model output. A block left below ``minItems`` after
+            # coercion still fails the strict validator (fail-closed).
+            candidate = _repair_outline_key_claims_shape(
+                candidate, valid_ids=valid_chunk_ids
+            )
+            key_claims_shape_repair = candidate.pop(
+                "_key_claims_shape_repair", None
+            )
+            candidate = _repair_outline_curies(candidate)
+            curie_shape_repair = candidate.pop("_curie_shape_repair", None)
+            candidate = _repair_claim_grounding(
+                candidate, valid_ids=valid_chunk_ids
+            )
+            repair_meta = candidate.pop("_grounding_repair", None)
+            # 4. ``_repair_outline_source_refs`` — wraps bare cited
+            #    sourceId strings (the live 7B failure) into the canonical
+            #    {sourceId, role} object and backfills a missing ``role``;
+            #    drops items with no usable sourceId. ``source_refs`` has no
+            #    minItems bound for prose types, so an emptied array stays
+            #    schema-valid. No sourceId is fabricated.
+            candidate = _repair_outline_source_refs(candidate)
+            source_refs_shape_repair = candidate.pop(
+                "_source_refs_shape_repair", None
+            )
+            # 5. ``_repair_outline_bloom_level`` — maps a numeric tier 1..6
+            #    to the canonical enum and normalizes a mis-cased string;
+            #    leaves an unmappable value untouched (fail-closed).
+            candidate = _repair_outline_bloom_level(candidate)
+            bloom_level_repair = candidate.pop("_bloom_level_repair", None)
+            # 5b. ``_repair_prereq_pages`` — for ``prereq_set`` blocks only,
+            #    strip page-id-shaped garbage entries and BACKFILL an empty /
+            #    missing ``prerequisitePages`` (the 7B's exclusive empty-array
+            #    failure here — key_claims is always populated) from grounded
+            #    signal: prerequisite topic phrases scraped from an explicit
+            #    "Prerequisites:" sentence in the source, else the block's
+            #    key_terms. Never the objective statement (known-bad output).
+            #    No-op for every other block type. Makes the model RELIABLY
+            #    satisfy the required+minItems:1 schema instead of re-rolling.
+            candidate = _repair_prereq_pages(
+                candidate,
+                block_type=block.block_type,
+                source_chunks=source_chunks,
+                key_terms=block.key_terms,
+                objectives=objectives,
+            )
+            prereq_pages_repair = candidate.pop("_prereq_pages_repair", None)
+            # 6. Bloom-diversity FLOOR (the real fix). The §3.1/§3.3 system
+            #    + per-block directives alone won't reliably move a 7B model
+            #    off the lazy "understand" floor (observed 70 understand /
+            #    19 apply / 1 remember skew). After the LLM emits and after
+            #    the numeric/case repair above, LIFT bloom_level to
+            #    max(emitted, target, objective-declared) using the
+            #    canonical ``_BLOOM_LEVELS`` ordering. The target LIFTS a
+            #    lazy emit but NEVER lowers below the existing ≥-objective
+            #    rule (this COMPOSES with, does not replace, the system
+            #    prompt's "MUST be at or above the declared Bloom level"
+            #    directive). Only fires when a valid bloom_level survives
+            #    the repair (the strict validator below still fails closed
+            #    on an unmappable value); never fabricates a level when no
+            #    valid input exists.
+            bloom_floor_meta: Optional[Dict[str, Any]] = None
+            emitted_bloom = candidate.get("bloom_level")
+            objective_declared_floor = _max_bloom_level(
+                *(str((o or {}).get("bloom_level") or "") for o in (objectives or []))
+            )
+            lifted_bloom = _max_bloom_level(
+                emitted_bloom if isinstance(emitted_bloom, str) else None,
+                block.target_bloom,
+                objective_declared_floor,
+            )
+            if lifted_bloom is not None and lifted_bloom != emitted_bloom:
+                bloom_floor_meta = {
+                    "emitted": emitted_bloom,
+                    "target": block.target_bloom,
+                    "objective_declared_floor": objective_declared_floor,
+                    "lifted_to": lifted_bloom,
+                }
+                candidate["bloom_level"] = lifted_bloom
+            if isinstance(repair_meta, dict):
+                # Fold the shape-repair signals into the grounding-repair
+                # meta dict so the per-call decision capture records every
+                # normalization that fired this attempt.
+                if key_claims_shape_repair is not None:
+                    repair_meta["key_claims_shape_repair"] = (
+                        key_claims_shape_repair
+                    )
+                if curie_shape_repair is not None:
+                    repair_meta["curie_shape_repair"] = curie_shape_repair
+                if source_refs_shape_repair is not None:
+                    repair_meta["source_refs_shape_repair"] = (
+                        source_refs_shape_repair
+                    )
+                if bloom_level_repair is not None:
+                    repair_meta["bloom_level_repair"] = bloom_level_repair
+                if prereq_pages_repair is not None:
+                    repair_meta["prereq_pages_repair"] = prereq_pages_repair
+                if bloom_floor_meta is not None:
+                    repair_meta["bloom_floor"] = bloom_floor_meta
             if schema is not None:
                 try:
                     jsonschema.Draft202012Validator(schema).validate(candidate)
                 except jsonschema.ValidationError as exc:
-                    # Truncate the validation message so the
-                    # remediation hint stays inside the model's
-                    # context window.
-                    last_error = str(exc.message)[:300]
+                    # improvement-map Step 3 (concern #2): when the raised
+                    # error is the masking top-level ``key_claims``
+                    # ``oneOf`` rejection, walk ``exc.context`` for the
+                    # structured arm's real minItems sub-error and append
+                    # it so both the directive matcher AND the model see
+                    # the true cause (otherwise the bare oneOf message
+                    # matches the W1.5.B "emit objects not flat strings"
+                    # directive, which the model already satisfies → it
+                    # re-emits the same single object every retry and
+                    # collapses the block). Message-building only.
+                    surfaced = _surface_key_claims_min_items(exc)
+                    # Truncate the validation message so the remediation
+                    # hint stays inside the model's context window. When a
+                    # sub-error is surfaced, place it FIRST so the true
+                    # cause survives truncation (the bare oneOf message
+                    # echoes the full rejected array and can blow the
+                    # 300-char budget on its own).
+                    if surfaced is not None:
+                        last_error = f"{surfaced} | {str(exc.message)}"[:300]
+                    else:
+                        last_error = str(exc.message)[:300]
                     attempt += 1
                     continue
 
             parsed = candidate
+            grounding_repair = repair_meta
             break
 
         # Emit the per-call decision-capture event regardless of
@@ -1040,6 +2105,7 @@ class OutlineProvider(_BaseLLMProvider):
             success=parsed is not None,
             attempts=attempt + 1 if parsed is not None else MAX_PARSE_RETRIES,
             last_error=last_error,
+            grounding_repair=grounding_repair,
         )
 
         if parsed is None:
@@ -1182,6 +2248,40 @@ class OutlineProvider(_BaseLLMProvider):
                 "Prereq set contract: list every prerequisite page "
                 "explicitly under a top-level ``prerequisitePages`` "
                 "array; each entry is a string page_id."
+            )
+        elif block_type == "example":
+            # CB5b (content-block-quality-2026-06 §CB5b): per-block
+            # concrete-worked-instance contract. Mirrors the global
+            # system-prompt directive but with the recency bias of the
+            # type-specific variation block so the 7B-class model mints
+            # the actual problem / steps / answer rather than restating
+            # the rule. The rewrite tier renders this block from its
+            # key_claims (not the section_skeleton), so abstract-rule
+            # claims yield a stub example.
+            variation_lines.append(
+                "Example block contract: the key_claims MUST capture a "
+                "CONCRETE WORKED INSTANCE from a worked Example / TRY IT "
+                "item in the cited source chunks — the SPECIFIC problem "
+                "(the actual numbers / expression), the intermediate "
+                "steps, and the final answer. Do NOT emit only the "
+                "general rule or formula; an abstract claim like \"To "
+                "divide fractions, multiply by the reciprocal\" gives "
+                "the rewriter nothing concrete to render. Use the "
+                "numbers from the source chunk's worked example."
+            )
+        # Bloom-diversity fix: per-block target-Bloom directive. The GLOBAL
+        # system prompt only pins the ≥-objective FLOOR; this names the
+        # DETERMINISTIC per-template target so the model authors at the
+        # right cognitive demand instead of defaulting to the lazy
+        # "understand" floor (the directive alone won't reliably move a 7B,
+        # which is why the floor is also enforced post-emit — but it lifts
+        # attempt-1 quality and keeps the rewrite-tier prose on-target).
+        # Appended last so the type-specific contract has recency.
+        if block.target_bloom:
+            variation_lines.append(
+                f"Author this block at bloom_level={block.target_bloom} "
+                "(unless an objective_ref declares a HIGHER Bloom level, in "
+                "which case use that higher level)."
             )
         variation_block = "\n".join(variation_lines) if variation_lines else ""
 
@@ -1365,6 +2465,7 @@ class OutlineProvider(_BaseLLMProvider):
         success = bool(call_context.get("success", False))
         attempts = int(call_context.get("attempts", 0))
         last_error = call_context.get("last_error")
+        grounding_repair = call_context.get("grounding_repair") or {}
         char_count = len(raw_text or "")
 
         decision = (
@@ -1382,6 +2483,21 @@ class OutlineProvider(_BaseLLMProvider):
             f"attempts={attempts}",
             f"success={success}",
         ]
+        # Wave 2 validated-id-fallback grounding repair signals. Folded
+        # into the existing per-call event (the canonical capture at this
+        # call site) so an audit can replay whether the per-claim
+        # citation repair fired, how many cited ids were real vs garbage,
+        # and how many claims fell back to block-level provenance — per
+        # the LLM call-site instrumentation contract (dynamic signals).
+        if grounding_repair:
+            rationale_parts.append(
+                "grounding_repair="
+                f"repaired={bool(grounding_repair.get('repaired'))},"
+                f"n_cited={int(grounding_repair.get('n_cited', 0))},"
+                f"n_valid={int(grounding_repair.get('n_valid', 0))},"
+                f"n_fallback_claims="
+                f"{int(grounding_repair.get('n_fallback_claims', 0))}"
+            )
         if last_error:
             # Truncate the last_error to keep the rationale below the
             # decision-capture validator's soft length cap.
@@ -1415,4 +2531,10 @@ __all__ = [
     "_BLOCK_TYPE_JSON_SCHEMAS",
     "_RETRY_DIRECTIVE_PATTERNS",
     "_match_retry_directive",
+    "_surface_key_claims_min_items",
+    "_build_block_outline_schema",
+    "_block_source_chunk_ids",
+    "_repair_claim_grounding",
+    "_repair_prereq_pages",
+    "_extract_prereq_phrases_from_source",
 ]

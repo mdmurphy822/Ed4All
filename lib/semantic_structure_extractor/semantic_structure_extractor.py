@@ -47,6 +47,142 @@ def _is_toc_heading(text: Optional[str]) -> bool:
         return False
     return text.strip().lower() in _TOC_HEADING_TEXTS
 
+
+# Front-matter / acknowledgments heading texts that must never become a
+# chapter or section node. Case-insensitive exact match (after stripping
+# a trailing colon). These poison the course planner with chapters like
+# "Preface" / "About the Authors". "Foundations" is DELIBERATELY absent —
+# it's a legitimate single-word math chapter title (often all-caps
+# "FOUNDATIONS") and is distinguished from donor-list lines below.
+_FRONT_MATTER_HEADING_TEXTS = frozenset({
+    "preface",
+    "acknowledgment",
+    "acknowledgments",
+    "acknowledgement",
+    "acknowledgements",
+    "about the author",
+    "about the authors",
+    "dedication",
+    "copyright",
+    "foreword",
+})
+
+# Circled-letter answer markers (U+24D0..U+24D4 = ⓐⓑⓒⓓⓔ) and the
+# circled-digit block (U+2460..U+2473 = ①..⑳). OpenStax answer-key tables
+# render exercise answers with these glyphs; a heading carrying one is an
+# answer-key fragment, never a content title.
+_CIRCLED_ANSWER_MARKERS = (
+    "ⓐⓑⓒⓓⓔ"          # ⓐⓑⓒⓓⓔ
+    "①②③④⑤"          # ①②③④⑤
+    "⑥⑦⑧⑨⑩"          # ⑥⑦⑧⑨⑩
+)
+
+# "N. " answer-sequence pattern (e.g. "13. 5,846,103 14. 1,458,398"):
+# a number followed by a period and a space. Answer keys emit many of
+# these; a real title emits at most one (e.g. "1.2 Add Whole Numbers"
+# does NOT match because there's no space after the inner period).
+_ANSWER_SEQUENCE_RE = re.compile(r"\b\d+\.\s")
+
+# A heading whose non-space characters are >= this fraction digits or
+# punctuation is treated as an answer-key numeric fragment. 0.60 leaves
+# generous headroom for legitimate titles that merely contain a number
+# (e.g. "1.2 Add Whole Numbers" is ~0.13 digit/punct by this measure).
+_NUMERIC_HEADING_RATIO = 0.60
+
+# Minimum count of "N. " answer-sequence matches before a heading is
+# classed as an answer key on that signal alone. One match is common in
+# real titles ("Section 2. Foo"); three+ in one heading is an answer run.
+_ANSWER_SEQUENCE_MIN_COUNT = 3
+
+# A donor/foundation list line ("Bill & Melinda Gates Foundation
+# National Science Foundation") is distinguished from the math chapter
+# title "Foundations" by (a) containing the whole word "Foundation"/
+# "Fund" AND (b) being a multi-word phrase with several capitalized
+# tokens (a list of proper names). This minimum capitalized-token count
+# keeps the single-word "Foundations" title safe.
+_DONOR_MIN_CAPITALIZED_TOKENS = 4
+_DONOR_FUNDING_RE = re.compile(r"\b(?:foundation|fund)s?\b", re.IGNORECASE)
+
+# WS4 §4 — structure-collapse early warning. When a whole textbook collapses
+# into a SINGLE chapter carrying more than this many sections (the 141:1
+# collapse signature, typically from answer-key HTML headings being absorbed
+# into one chapter), the Stage-1 draft terminal objectives under-represent the
+# back of the book. Parity with the provider-side
+# ``_COLLAPSE_SECTION_THRESHOLD`` (WS4 §2). Strict ``>`` boundary: exactly 40
+# sections does NOT trip the warning; 41 does.
+_STRUCTURE_COLLAPSE_SECTION_THRESHOLD = 40
+
+
+def _is_noncontent_heading(text: Optional[str]) -> bool:
+    """Whether a heading is non-content noise that must NOT become a
+    chapter/section node.
+
+    Rejects three families of contamination observed in OpenStax-style
+    textbook HTML:
+
+    1. Answer-key / numeric-answer fragments — heading text that is
+       mostly digits/punctuation, OR carries a circled-answer marker
+       (ⓐⓑⓒⓓⓔ / circled digits), OR matches the "N. <number>"
+       answer-sequence pattern several times.
+    2. Front-matter / acknowledgments — exact-ish matches for "Preface",
+       "Acknowledgments", "About the Authors", "Dedication", etc.
+    3. Donor / foundation list lines — a phrase naming several capitalized
+       proper-name tokens that mentions "Foundation"/"Fund". The
+       single-word math chapter title "Foundations" is preserved.
+
+    Fail-safe by design: the ratio / count thresholds are deliberately
+    generous so a legitimate title containing a number ("1.2 Add Whole
+    Numbers", "Section 3.5") survives. The caller is responsible for
+    falling back to unfiltered output if EVERYTHING is filtered.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    # (1a) Circled-answer markers — unambiguous answer-key glyphs.
+    if any(ch in _CIRCLED_ANSWER_MARKERS for ch in stripped):
+        return True
+
+    # (1b) Mostly-numeric: fraction of non-space chars that are digits or
+    # punctuation. Pure answer rows ("78 41. 900 42. 800") sit near 1.0.
+    non_space = [ch for ch in stripped if not ch.isspace()]
+    if non_space:
+        digit_punct = sum(
+            1 for ch in non_space if ch.isdigit() or not ch.isalnum()
+        )
+        if digit_punct / len(non_space) >= _NUMERIC_HEADING_RATIO:
+            return True
+
+    # (1c) Repeated "N. " answer-sequence runs.
+    if len(_ANSWER_SEQUENCE_RE.findall(stripped)) >= _ANSWER_SEQUENCE_MIN_COUNT:
+        return True
+
+    # (2) Front-matter / acknowledgments — exact match (drop trailing
+    # colon, collapse whitespace). Case-insensitive.
+    normalized = re.sub(r"\s+", " ", stripped).rstrip(":").strip().lower()
+    if normalized in _FRONT_MATTER_HEADING_TEXTS:
+        return True
+
+    # (3) Donor / foundation list line. Requires the funding keyword AND
+    # several capitalized tokens (a list of proper names) so the bare
+    # math chapter title "Foundations" / "FOUNDATIONS" is never caught.
+    if _DONOR_FUNDING_RE.search(stripped):
+        tokens = stripped.split()
+        capitalized = sum(
+            1 for tok in tokens
+            if tok[:1].isalpha() and tok[:1].isupper()
+        )
+        # An all-caps single word ("FOUNDATIONS") has one token; a donor
+        # list ("Bill & Melinda Gates Foundation National Science
+        # Foundation") has many. Require both several capitalized tokens
+        # AND more than one whitespace-separated word.
+        if len(tokens) > 1 and capitalized >= _DONOR_MIN_CAPITALIZED_TOKENS:
+            return True
+
+    return False
+
 from .analysis.concept_graph import ConceptGraphBuilder
 from .analysis.content_profiler import ContentProfiler
 from .core.content_block_classifier import (
@@ -261,7 +397,7 @@ class SemanticStructureExtractor:
         # Extract review questions
         review_questions = self._extract_review_questions(soup, chapters)
 
-        return {
+        result: Dict[str, Any] = {
             "documentInfo": document_info,
             "tableOfContents": hierarchy.to_toc(),
             "chapters": [ch.to_dict() for ch in chapters],
@@ -276,6 +412,12 @@ class SemanticStructureExtractor:
                 for q in review_questions
             ]
         }
+        collapse = self._structure_collapse_suspected(chapters)
+        if collapse:
+            result["structureDiagnostics"] = {
+                "structureCollapseSuspected": collapse
+            }
+        return result
 
     def extract_file(self, file_path: str, format: str = "auto") -> Dict[str, Any]:
         """
@@ -355,7 +497,7 @@ class SemanticStructureExtractor:
         # Extract review questions
         review_questions = self._extract_review_questions(soup, chapters)
 
-        return {
+        result: Dict[str, Any] = {
             "documentInfo": document_info,
             "tableOfContents": hierarchy.to_toc(),
             "chapters": [ch.to_dict() for ch in chapters],
@@ -370,6 +512,12 @@ class SemanticStructureExtractor:
                 for q in review_questions
             ]
         }
+        collapse = self._structure_collapse_suspected(chapters)
+        if collapse:
+            result["structureDiagnostics"] = {
+                "structureCollapseSuspected": collapse
+            }
+        return result
 
     def extract_with_profiling(
         self,
@@ -578,13 +726,20 @@ class SemanticStructureExtractor:
                     # Process children of h1 as chapters
                     for child_id in root_node.children:
                         child_node = hierarchy.get_node(child_id)
-                        if child_node and child_node.level in chapter_levels:
+                        if (
+                            child_node
+                            and child_node.level in chapter_levels
+                            and not _is_noncontent_heading(child_node.text)
+                        ):
                             chapter_counter += 1
                             chapter = self._build_chapter(
                                 soup, hierarchy, child_node, chapter_counter
                             )
                             primary_chapters.append(chapter)
-                elif root_node.level in chapter_levels:
+                elif (
+                    root_node.level in chapter_levels
+                    and not _is_noncontent_heading(root_node.text)
+                ):
                     chapter_counter += 1
                     chapter = self._build_chapter(
                         soup, hierarchy, root_node, chapter_counter
@@ -608,10 +763,57 @@ class SemanticStructureExtractor:
                     source_path or "<inline>",
                 )
                 self._populate_chapter_text(soup, fallback)
+                self._warn_if_structure_collapsed(fallback)
                 return fallback
 
         self._populate_chapter_text(soup, primary_chapters)
+        self._warn_if_structure_collapsed(primary_chapters)
         return primary_chapters
+
+    # ------------------------------------------------------------------
+    # WS4 §4 — structure-collapse early warning
+    # ------------------------------------------------------------------
+
+    def _structure_collapse_suspected(
+        self,
+        chapters: List[Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Detect the single-chapter / many-section collapse signature.
+
+        Returns a diagnostics dict when the extractor produced exactly one
+        chapter carrying more than ``_STRUCTURE_COLLAPSE_SECTION_THRESHOLD``
+        sections (the 141:1 signature where Stage-1 draft terminal objectives
+        under-represent the back of the book); ``None`` otherwise. Pure /
+        side-effect free so both the warning and the
+        ``structureDiagnostics`` output key derive from the same check.
+        """
+        chapter_count = len(chapters)
+        section_count = sum(len(c.sections) for c in chapters)
+        if (
+            chapter_count == 1
+            and section_count > _STRUCTURE_COLLAPSE_SECTION_THRESHOLD
+        ):
+            return {
+                "suspected": True,
+                "chapter_count": chapter_count,
+                "section_count": section_count,
+                "ratio": section_count,
+                "threshold": _STRUCTURE_COLLAPSE_SECTION_THRESHOLD,
+            }
+        return None
+
+    def _warn_if_structure_collapsed(self, chapters: List[Any]) -> None:
+        """Emit a loud WARNING when ``_structure_collapse_suspected`` fires."""
+        collapse = self._structure_collapse_suspected(chapters)
+        if collapse:
+            logger.warning(
+                "SemanticStructureExtractor: STRUCTURE_COLLAPSE_SUSPECTED — "
+                "%d section(s) under a single chapter (threshold %d). Stage-1 "
+                "draft terminal objectives will under-represent the back of "
+                "the book.",
+                collapse["section_count"],
+                collapse["threshold"],
+            )
 
     # ------------------------------------------------------------------
     # Three-stage textbook synthesis — inter-heading prose capture
@@ -876,14 +1078,39 @@ class SemanticStructureExtractor:
             return []
 
         # Collect every heading in document order, filtering TOC noise.
+        # Keep an UNFILTERED copy so we can fail safe back to it if the
+        # content-heading filter removes everything (never emit empty).
+        unfiltered_headings: List[Tag] = []
         all_headings: List[Tag] = []
+        dropped_noncontent = 0
         for tag in container.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
             text = tag.get_text(strip=True)
             if not text:
                 continue
             if _is_toc_heading(text):
                 continue
+            unfiltered_headings.append(tag)
+            # Drop answer-key / front-matter / donor-list headings so they
+            # never become chapter/section nodes (the OpenStax
+            # contamination bug). Conservative predicate — see
+            # ``_is_noncontent_heading``.
+            if _is_noncontent_heading(text):
+                dropped_noncontent += 1
+                continue
             all_headings.append(tag)
+
+        # Fail-safe, NOT fail-closed-to-empty: if the content-heading
+        # filter removed every real heading, the predicate was too
+        # aggressive for this document — revert to the unfiltered set and
+        # warn rather than emitting a structure-less course.
+        if not all_headings and unfiltered_headings:
+            logger.warning(
+                "SemanticStructureExtractor: content-heading filter removed "
+                "all %d heading(s); reverting to unfiltered heading set to "
+                "avoid emitting an empty structure.",
+                dropped_noncontent,
+            )
+            all_headings = unfiltered_headings
 
         if not all_headings:
             return []
@@ -1279,7 +1506,7 @@ class SemanticStructureExtractor:
         section_counter = 0
         for child_id in node.children:
             child_node = hierarchy.get_node(child_id)
-            if child_node:
+            if child_node and not _is_noncontent_heading(child_node.text):
                 section_counter += 1
                 section = self._build_section(
                     soup, hierarchy, child_node,

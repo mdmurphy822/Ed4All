@@ -81,6 +81,665 @@ def courseforge_exports_dir() -> Path:
 # upstream-supplied IDs.
 _OBJ_ID_RE = re.compile(r'data-cf-objective-id=["\']([^"\']*)["\']')
 
+# Matches a model-hallucinated STANDALONE ``<data-cf-source-ids="...">``
+# element (the 7B rewrite tier occasionally emits the source-ids ATTRIBUTE
+# as if it were its own tag, carrying a raw non-``dart:`` chunk id). It is
+# never a valid emit — ``data-cf-source-ids`` is an attribute on a real
+# wrapper. The bogus element trips both the source-ref shape gate and the
+# html_shape parser (unbalanced tag). Stripped in the rewrite backstop.
+_BOGUS_SOURCE_ID_EL_RE = re.compile(
+    r'<\s*/?\s*data-cf-source-ids\b[^>]*>', re.IGNORECASE
+)
+
+# Matches a ``data-cf-source-ids="..."`` ATTRIBUTE (any element). The 7B
+# rewrite tier stamps this attribute with concept CURIEs
+# (``slug:concept_name``) instead of the canonical ``dart:{slug}#{chunk}``
+# source refs the rewrite_source_refs gate requires. The rewrite backstop
+# scrapes the offending value (to preserve the CURIEs as the curie-anchoring
+# signal) and OVERWRITES the attribute with canonical dart: refs resolved from
+# the block's real source chunks. Capture group 1 is the raw attribute value.
+_SOURCE_IDS_ATTR_RE = re.compile(
+    r'\s*data-cf-source-ids=["\']([^"\']*)["\']'
+)
+
+# Canonical ``dart:{slug}#{block_id}`` source-id shape — mirrors
+# ``Courseforge/router/inter_tier_gates._SOURCE_ID_RE`` (the validator's
+# read-side check). A scraped attribute token already matching this shape is a
+# legitimate source ref and is preserved; anything else (a CURIE) is replaced.
+_CANONICAL_DART_SOURCE_ID_RE = re.compile(r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$")
+
+# First HTML start tag, capturing the tag name and the rest of the open
+# tag (used to inject a dropped ``data-cf-block-id`` attribute).
+_FIRST_START_TAG_RE = re.compile(r'<\s*([a-zA-Z][\w-]*)((?:\s[^>]*)?)(/?)>')
+
+
+def _inject_block_id_attr(html: str, block_id: str) -> str:
+    """Stamp ``data-cf-block-id="{block_id}"`` onto the first start tag.
+
+    The rewrite tier sometimes drops the ``data-cf-block-id`` attribute the
+    html_shape gate requires per block_type even though the id is canonical
+    and known. Deterministically inject it onto the first element rather than
+    re-rolling the slow local model purely for a missing attribute. No-op when
+    no start tag is found (leaves the content unchanged so the gate still
+    fails closed on genuinely non-HTML emit).
+    """
+    if not block_id:
+        return html
+
+    def _repl(match: "re.Match") -> str:
+        tag, attrs, closing = match.group(1), match.group(2), match.group(3)
+        return f'<{tag}{attrs} data-cf-block-id="{block_id}"{closing}>'
+
+    return _FIRST_START_TAG_RE.sub(_repl, html, count=1)
+
+
+def _inject_source_ids_attr(html: str, source_ids_value: str) -> str:
+    """Stamp ``data-cf-source-ids="{value}"`` onto the first start tag.
+
+    Used by the rewrite backstop when a block resolves to canonical
+    ``dart:`` source refs but the rewrite-tier HTML carried no
+    ``data-cf-source-ids`` attribute at all (the 7B sometimes omits it on a
+    prose block). Mirrors :func:`_inject_block_id_attr`. No-op when no start
+    tag is found or the value is empty.
+    """
+    if not source_ids_value:
+        return html
+
+    def _repl(match: "re.Match") -> str:
+        tag, attrs, closing = match.group(1), match.group(2), match.group(3)
+        return (
+            f'<{tag}{attrs} data-cf-source-ids="{source_ids_value}"{closing}>'
+        )
+
+    return _FIRST_START_TAG_RE.sub(_repl, html, count=1)
+
+
+# Matches a hallucinated standalone ``<data-cf-block-id=...>...</data-cf-block-id>``
+# element — the 7B rewrite tier occasionally emits the block-id ATTRIBUTE as if it
+# were its own tag (week_04 malformation). It is never a valid emit; the bogus
+# element trips the html_shape parser (unbalanced / unknown tag). Stripped (open
+# + close, attributes and all) in the HTML repair pass.
+_BOGUS_BLOCK_ID_EL_RE = re.compile(
+    r'<\s*/?\s*data-cf-block-id\b[^>]*>', re.IGNORECASE
+)
+
+# CB-SCRIPT: a stray ``<script>...</script>`` fragment the 7B rewrite tier leaks
+# into the rendered BODY of a content block — most often a JSON-LD
+# ``<script type="application/ld+json">{...}</script>`` blob duplicating the
+# block's own metadata. The Sonnet-vs-7B comparison on the OpenStax Algebra
+# fractions corpus captured an ``explanation`` block (block index 1 of
+# ``inputs/contentgen/alg_blocks.json``) whose emit appends, AFTER the legitimate
+# ``</section>``, a ``<script type="application/ld+json">...</script>`` blob.
+# A content block is rendered prose — it must NEVER carry a ``<script>``; the
+# JSON-LD survives the existing block-id strip (which only targets the
+# ``data-cf-block-id`` pseudo-element, NOT ``<script>``), and the escape step
+# treats ``<script ...>`` as a VALID tag opener, so the whole blob (incl. its
+# escaped/visible JSON body) leaks into the learner output.
+#
+# Two regexes strip the whole element (open tag + body + close), both the REAL
+# tag form and the entity-escaped ``&lt;script&gt;...&lt;/script&gt;`` form the
+# rewrite tier sometimes emits when it double-escapes its own HTML. Non-greedy
+# bodies so two separate stray scripts are each stripped (not collapsed into
+# one). ``re.DOTALL`` so a multi-line JSON-LD body is matched. Conservative:
+# matches ONLY a complete ``script`` element — a block with no stray script is
+# byte-identical out and a second pass finds nothing to strip (idempotent). A
+# single leading run of inter-element whitespace/newlines is consumed with the
+# element so stripping a trailing script does not leave dangling blank lines.
+# Attribute-safe by construction: ``<script`` / ``&lt;script`` never appears
+# inside an HTML attribute VALUE on a legitimate content block.
+_LEAKED_SCRIPT_EL_RE = re.compile(
+    r'\s*<\s*script\b[^>]*>.*?<\s*/\s*script\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+_LEAKED_SCRIPT_EL_ESCAPED_RE = re.compile(
+    r'\s*&lt;\s*script\b.*?&lt;\s*/\s*script\s*&gt;',
+    re.IGNORECASE | re.DOTALL,
+)
+
+# A ``<`` that begins neither a valid HTML start/end tag, a comment, a CDATA, nor
+# a processing instruction. The 7B occasionally emits a CURIE token as a tag
+# (``<samplecoursea:fraction>``) or a bare ``<`` it meant as a literal. The
+# repair pass HTML-escapes these so the document parses. A valid tag name starts
+# with an ASCII letter and contains only ``[A-Za-z0-9-]`` before whitespace, ``>``,
+# or ``/``; a CURIE-as-tag (``name:local``) has a ``:`` and so is NOT matched as a
+# valid tag and gets escaped.
+_VALID_TAG_OPENER_RE = re.compile(r'</?[A-Za-z][A-Za-z0-9-]*(?=[\s/>])')
+
+# Void / self-closing HTML elements that never need a close tag.
+_VOID_HTML_ELEMENTS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+})
+
+# Element tag names the rewrite-tier 7B unbalances (unclosed span/cite/code or
+# stray </code> closers). The balance pass only ever auto-closes / drops these.
+_BALANCE_REPAIR_TAGS = frozenset({"span", "cite", "code"})
+
+# CB2: visible bracketed chunk-id tokens the 7B leaks into learner prose
+# (e.g. ``[sample_course_a_chunk_00043]``, ``[chunk_12]``). Stripped from
+# the rendered HTML in the repair pass. The bracketed form is safe to strip with
+# a plain string regex because HTML attribute values never contain a literal
+# ``[`` ... ``]`` pair around a chunk id (``data-cf-source-ids`` carries the bare
+# token ``openstax_..._chunk_00043``, never the bracketed form), so this regex
+# can NEVER match inside an attribute value. A single leading space is consumed
+# with the token so stripping mid-sentence does not leave a double space.
+_LEAKED_CHUNK_TOKEN_RE = re.compile(r' ?\[\s*(?:[a-z0-9_]*_)?chunk_\d+\s*\]')
+
+# CB2 (broadened): visible bracketed SOURCE-ID-LIKE tokens the 7B leaks into
+# learner prose that the chunk-only regex above misses — e.g.
+# ``[clean_simplify_fractions_01]`` (a source id ending in ``_NN`` with no
+# "chunk" segment). Matches a bracketed token that LOOKS like a source
+# identifier: lowercase/digit/underscore/hyphen content that contains at least
+# one ASCII letter AND ends in a ``_<digits>`` segment (the embedded/trailing
+# numeric/hash that distinguishes a source id from ordinary bracketed prose).
+# Deliberately NOT matched (kept verbatim):
+#   * short numeric reference markers ``[1]`` / ``[12]`` — no letter, no ``_``;
+#   * ordinary bracketed words ``[note]`` / ``[important]`` — no ``_<digits>``.
+# Attribute-safe by the same reasoning as ``_LEAKED_CHUNK_TOKEN_RE``: the
+# bracketed ``[`` ... ``]`` form never appears inside an HTML attribute value
+# (``data-cf-source-ids="clean_simplify_fractions_01"`` carries the BARE token,
+# no brackets), so this can never match inside an attribute. A single leading
+# space is consumed with the token so mid-sentence stripping leaves no double
+# space. Subsumes ``_LEAKED_CHUNK_TOKEN_RE`` (which is retained above so its
+# pinned behavior is independently preserved); both run in the repair pass.
+_LEAKED_SOURCE_ID_TOKEN_RE = re.compile(
+    r' ?\[\s*[a-z0-9_-]*[a-z][a-z0-9_-]*_\d+\s*\]'
+)
+
+# CB2 (dart-shaped): visible bracketed canonical DART source-id tokens the 7B
+# leaks into learner prose — e.g. ``[dart:photosynthesis#sec_01]``. The
+# ``_<digits>``-suffix regex above cannot match these (the ``dart:`` prefix and
+# the ``#`` separator are not ``[a-z0-9_-]``), so a leaked dart id survives into
+# rendered prose. Shape mirrors the canonical ``dart:{slug}#{block_id}`` emit
+# contract (slug = lowercase + hyphen per the DART slug rule; block_id =
+# lowercase/digit/underscore/hyphen). Attribute-safe for the same reason as the
+# regexes above — the bracketed ``[`` ... ``]`` form never appears inside an
+# attribute value (``data-cf-source-ids="dart:...#..."`` carries the BARE token,
+# no brackets). A single leading space is consumed so mid-sentence stripping
+# leaves no double space.
+_LEAKED_DART_SOURCE_ID_TOKEN_RE = re.compile(
+    r' ?\[\s*dart:[a-z0-9][a-z0-9-]*#[a-z0-9_-]+\s*\]'
+)
+
+# CB-FENCE: a markdown code fence the 7B rewrite tier sometimes wraps the WHOLE
+# HTML block in (e.g. a leading ```` ```html ```` line and a trailing ```` ``` ````
+# line). The fence tokens are NOT HTML, so they leak into the rendered learner
+# output as visible ```` ```html ```` / ```` ``` ```` text. Real captured example
+# (an ``assessment_item`` block from ``inputs/contentgen/alg_blocks.json``):
+# the emitted string literally STARTS with ```` ```html ```` on its own line and
+# ENDS with a closing ```` ``` ````.
+#
+# Two anchored regexes strip ONLY a fence that wraps the entire block — never a
+# backtick run mid-content (legitimate inline code / prose):
+#   * the OPEN regex is anchored at the very START (``^``): optional leading
+#     whitespace, then a ```` ``` ```` (three-or-more backticks) optionally
+#     followed by a lowercase language token (``html``/``xml``/…) on its own
+#     line. A consumed trailing newline keeps the inner HTML flush-left.
+#   * the CLOSE regex is anchored at the very END (``$``): an optional leading
+#     newline, a ```` ``` ```` (three-or-more backticks), then optional trailing
+#     whitespace.
+# Anchoring guarantees a block with no wrapping fence is byte-identical out, and
+# the pass is idempotent (a second run finds no anchored fence to strip). A
+# mid-content backtick run is never anchored at ``^``/``$`` so it survives.
+_LEAKED_OPEN_FENCE_RE = re.compile(r'^\s*`{3,}[a-z]*[ \t]*\n?')
+_LEAKED_CLOSE_FENCE_RE = re.compile(r'\n?[ \t]*`{3,}\s*$')
+
+# CB-LEAK: the 7B rewrite tier sometimes leaks its REASONING PREAMBLE — the
+# chain-of-thought it should keep private — into the emitted block, BEFORE (or
+# mid-stream in front of) the real HTML. Two captured shapes:
+#   * a NON-ENGLISH (CJK) chain-of-thought line. Real captured ``flip_card_grid``
+#     output (OpenStax Algebra ch3, ``inputs/contentgen/alg_blocks_ch3.json``)
+#     emitted a TRUNCATED first attempt, then the literal Chinese reasoning line
+#     ``相反地，我将根据要求重新构造HTML内容：`` ("Conversely, I will restructure the
+#     HTML content as required:"), then a ```` ```html ```` fence wrapping a
+#     COMPLETE second copy of the block (so the leak doubled as a restart).
+#   * a common ENGLISH preamble ("Here is the…", "Conversely, I will…",
+#     "Sure, here's…") on the model's own preface line.
+#
+# These are reasoning, never legitimate learner content, so the leading run up to
+# and including the preamble line (plus an immediately-following code fence) is
+# stripped — but ONLY when a real BLOCK-LEVEL HTML opener follows it, so a clean
+# block is byte-identical and legitimate intro prose is never eaten. Two anchored
+# arms, each with the SAME block-opener lookahead:
+#   * ``_LEAKED_CJK_PREAMBLE_RE`` (mid-stream-safe): a lazy run from the very
+#     START consuming anything up to and including a line that CONTAINS a CJK
+#     character (CJK is never legitimate algebra-course content, so it is safe to
+#     drop a truncated HTML head that precedes it — which simultaneously de-dupes
+#     the doubled-block restart). DOTALL so the lazy head spans the truncated
+#     first attempt's newlines.
+#   * ``_LEAKED_ENGLISH_PREAMBLE_RE`` (LEADING-only): a leading ``[^<]*?`` run
+#     (no ``<`` permitted before the preamble) then a known preamble phrase. The
+#     ``[^<]`` guard means this arm can ONLY fire on a genuinely-leading preamble
+#     (no HTML has started yet); it will NOT match "Here is" inside an already-
+#     open ``<p>…</p>`` followed by a ``<div>`` (which would corrupt valid prose).
+#     English prose is sometimes legitimate before the first tag, so this arm is
+#     deliberately gated to a SHORT allowlist of model-preface phrases.
+# Both lookaheads require one of ``<div|section|p|ul|ol|table|h1..6|details``
+# (block-level openers); a block that already starts with HTML, or whose leading
+# non-HTML segment is neither CJK nor an allowlisted preamble (ordinary intro
+# prose), is byte-identical out. Any trailing ```` ``` ```` left after the strip
+# is removed by ``_LEAKED_CLOSE_FENCE_RE`` (this step runs BEFORE the fence step).
+# Idempotent: after the strip the string starts with the block opener, so the
+# ``\A``-anchored lazy heads have nothing to consume on a second pass. Stdlib
+# ``re`` only, no LLM.
+#
+# DELIBERATE non-repair (documented limitation): the DOUBLED-block case is only
+# de-duped when it coincides with a CJK/preamble restart marker (the captured
+# shape — the marker is the join). A bare doubled block with NO leak marker
+# between the two copies is NOT de-duped here: there is no deterministic,
+# false-positive-safe boundary between "block emitted twice" and "two sibling
+# blocks of the same type" (a 3-card flip grid legitimately repeats its
+# ``flip-card`` subtree), so de-duping it would risk eating valid content. Left
+# to upstream prompt mitigation rather than over-engineered here.
+_CJK_CHAR_CLASS = (
+    '　-〿'   # CJK symbols & punctuation (、。「」 etc.)
+    '぀-ヿ'   # hiragana + katakana
+    '㐀-䶿'   # CJK ext-A
+    '一-鿿'   # CJK unified ideographs
+    '豈-﫿'   # CJK compatibility ideographs
+    '＀-￯'   # halfwidth/fullwidth forms
+)
+_BLOCK_OPENER_LOOKAHEAD = (
+    r'(?=<(?:div|section|p|ul|ol|table|h[1-6]|details)\b)'
+)
+# Optional trailing code fence + whitespace between the preamble line and the
+# block opener (the captured leak put a ```` ```html ```` fence here).
+_LEAK_FENCE_GAP = r'(?:[ \t\r\n]*`{3,}[a-z]*[ \t]*)?[ \t\r\n]*'
+_LEAKED_CJK_PREAMBLE_RE = re.compile(
+    r'\A.*?[' + _CJK_CHAR_CLASS + r'][^\n]*' + _LEAK_FENCE_GAP
+    + _BLOCK_OPENER_LOOKAHEAD,
+    re.IGNORECASE | re.DOTALL,
+)
+# Short allowlist of model-preface phrases (case-insensitive); straight or curly
+# apostrophe in the contracted forms.
+_LEAK_ENGLISH_PREAMBLE = (
+    r'(?:Here(?:’|\')?s|Here is|Sure,?[ \t]*here(?:’|\')?s|'
+    r'Conversely,?[ \t]*I will|'
+    r'I will(?:[ \t]+now)?[ \t]+(?:re)?(?:write|construct|structure|restructure))'
+)
+_LEAKED_ENGLISH_PREAMBLE_RE = re.compile(
+    r'\A[^<]*?' + _LEAK_ENGLISH_PREAMBLE + r'[^\n<]*' + _LEAK_FENCE_GAP
+    + _BLOCK_OPENER_LOOKAHEAD,
+    re.IGNORECASE,
+)
+
+
+class _TagBalanceScanner:
+    """Stdlib tolerant scan to detect unbalanced ``_BALANCE_REPAIR_TAGS``.
+
+    Walks the HTML with :class:`html.parser.HTMLParser` (lenient — never
+    raises), counting open vs. close for each repair tag. Reports, per tag,
+    the net unclosed-open count and the net stray-close count so the repair
+    pass can deterministically append missing closers / strip stray ones.
+    """
+
+    def __init__(self, html_text: str) -> None:
+        from html.parser import HTMLParser
+
+        open_counts: Dict[str, int] = {t: 0 for t in _BALANCE_REPAIR_TAGS}
+        stray_close: Dict[str, int] = {t: 0 for t in _BALANCE_REPAIR_TAGS}
+
+        class _Scanner(HTMLParser):
+            def handle_starttag(self, tag, attrs):  # noqa: ANN001
+                t = tag.lower()
+                if t in _BALANCE_REPAIR_TAGS:
+                    open_counts[t] += 1
+
+            def handle_startendtag(self, tag, attrs):  # noqa: ANN001
+                # Self-closed (<span/>) — balanced, do not count.
+                return
+
+            def handle_endtag(self, tag):  # noqa: ANN001
+                t = tag.lower()
+                if t in _BALANCE_REPAIR_TAGS:
+                    if open_counts[t] > 0:
+                        open_counts[t] -= 1
+                    else:
+                        stray_close[t] += 1
+
+        parser = _Scanner(convert_charrefs=False)
+        try:
+            parser.feed(html_text)
+            parser.close()
+        except Exception:  # noqa: BLE001 - parser is lenient; never abort
+            pass
+        # Whatever remains in open_counts after the full feed is unclosed.
+        self.unclosed = {t: c for t, c in open_counts.items() if c > 0}
+        self.stray_close = {t: c for t, c in stray_close.items() if c > 0}
+
+
+def _repair_rewrite_html(html: str) -> str:
+    """Deterministically repair the 7B rewrite-tier HTML malformations (NO LLM).
+
+    Targets exactly the PARSE-FAIL classes the rewrite tier emits, in order:
+
+    -2. Strip a leaked REASONING PREAMBLE preceding the real HTML (CB-LEAK): a
+       leading run of model chain-of-thought — a CJK reasoning line (e.g. the
+       captured ``相反地，我将根据要求重新构造HTML内容：``) or a short English preface
+       ("Here is the…", "Conversely, I will…", "Sure, here's…") — that the 7B
+       leaks BEFORE the first block-level HTML opener. Anchored to a following
+       ``<div|section|p|ul|ol|table|h1..6|details`` opener; a block that already
+       starts with HTML, or whose leading non-HTML segment is ordinary intro
+       prose (no CJK, no allowlisted preface), is byte-identical out. The CJK arm
+       is mid-stream-safe (it also drops a truncated first attempt + de-dupes the
+       captured doubled-block restart, whose join is the CJK line); the English
+       arm is leading-only (cannot fire once HTML has started). Runs FIRST so the
+       fence step below cleans any trailing ``` ``` ``` the restart left behind.
+    -1. Strip a markdown code fence WRAPPING the whole block (CB-FENCE): a
+       leading ``` ```html ``` / ``` ``` ``` opener and a trailing ``` ``` ```
+       closer the 7B sometimes wraps the entire HTML string in. The fence tokens
+       are not HTML and otherwise render as visible ``` ```html ``` / ``` ``` ```
+       text. Anchored at the very start/end of the string, so a backtick run
+       mid-content (legitimate inline code/prose) is left untouched and a block
+       with no wrapping fence is byte-identical. Runs FIRST so the tag-balance
+       and escape steps below see clean HTML.
+    0. Strip visible leaked bracketed source-id tokens (CB2) the 7B drops into
+       learner prose (e.g. ``[sample_course_a_chunk_00043]`` and the
+       broader ``[clean_simplify_fractions_01]`` source-id form), along with a
+       single leading space so the surrounding prose is not double-spaced.
+       Operates on the bracketed form only, which never appears inside an HTML
+       attribute value, so ``data-cf-source-ids="..."`` is left untouched.
+       Short numeric reference markers (``[1]``, ``[12]``) and ordinary
+       bracketed words (``[note]``) are NOT stripped.
+    1. Strip the bogus standalone ``<data-cf-block-id=...>`` pseudo-element.
+       This already covers the attribute-style form ``<data-cf-block-id="..."
+       data-cf-content-type="...">...</data-cf-block-id>`` the 7B emits with a
+       space + attrs (the ``[^>]*>`` tail matches the attribute region).
+    1b. Strip a stray ``<script>...</script>`` fragment (CB-SCRIPT) leaked into
+       the rendered body — most often a ``<script type="application/ld+json">``
+       JSON-LD blob the 7B appends after the legitimate ``</section>``. Both the
+       real-tag form and the entity-escaped ``&lt;script&gt;...&lt;/script&gt;``
+       form. A content block is rendered prose and must never carry a script.
+    2. HTML-escape any ``<token:...>`` / bare ``<`` / stray ``>`` the model
+       meant as literal text (CURIE-as-tag, e.g. ``<samplecoursea:fraction>``).
+       A ``<`` opening a genuine valid HTML tag is left intact.
+
+    CB3 (deliberate non-repair — documented limitation): a valid tag opener
+    whose ``>`` is MISSING (e.g. a ``<li ...text`` opener where the next ``<``
+    arrives before any ``>``) is NOT auto-repaired. Inserting a synthetic ``>``
+    at the next-``<`` boundary would absorb the visible text content into the
+    start tag (``<li class="y"Item two...>``), corrupting valid prose — there is
+    no deterministic boundary between attribute region and text once the ``>`` is
+    gone. Per the never-corrupt-valid-HTML contract, this malformed-OPENER class
+    degrades to graceful escaping / tolerant-parser handling and is mitigated
+    upstream by CB1's "emit well-formed HTML" prompt directive. The unbalanced-
+    CLOSE case for list elements (``li`` / ``ul`` / ``ol``) is likewise NOT added
+    to ``_BALANCE_REPAIR_TAGS`` — a flat open/close count cannot safely
+    reconstruct nested lists.
+
+    3. Balance the three repair tags (``span`` / ``cite`` / ``code``): append a
+       close tag for each net-unclosed open, and strip net stray closers.
+
+    Idempotent: re-running over already-valid HTML is a no-op (no leaked token
+    remains, no bogus element remains, no bare ``<`` survives, and the repair
+    tags are balanced so nothing is added or stripped). Uses only the stdlib
+    (``html.parser`` + ``html.escape``); no new heavy deps, no LLM. Out of scope
+    by design: semantic ``<code>`` -> ``<span>`` rewriting — only PARSE-FAIL
+    repair.
+    """
+    import html as _html
+
+    if not isinstance(html, str) or not html:
+        return html
+
+    # -2. CB-LEAK: strip a leaked reasoning preamble (CJK chain-of-thought or a
+    # short English preface) that precedes the first block-level HTML opener.
+    # The CJK arm runs first (mid-stream-safe: it drops a truncated first attempt
+    # + de-dupes the captured doubled-block restart joined by the CJK line); the
+    # English arm is leading-only (the ``[^<]`` lead means it cannot fire once
+    # HTML has started, so a legit ``<p>Here is …</p>`` is never eaten). Anchored
+    # to a following block opener, so a clean block is byte-identical. Runs BEFORE
+    # the fence step so any trailing ``` ``` ``` the restart left is then cleaned.
+    out = _LEAKED_CJK_PREAMBLE_RE.sub("", html, count=1)
+    out = _LEAKED_ENGLISH_PREAMBLE_RE.sub("", out, count=1)
+
+    # -1. CB-FENCE: strip a markdown code fence WRAPPING the whole block (a
+    # leading ``` ```html ``` opener + a trailing ``` ``` ``` closer the 7B
+    # sometimes wraps the entire HTML string in). Anchored at start/end only, so
+    # a mid-content backtick run survives and a fence-free block is byte-
+    # identical. Runs first so the steps below see clean HTML.
+    out = _LEAKED_OPEN_FENCE_RE.sub("", out)
+    out = _LEAKED_CLOSE_FENCE_RE.sub("", out)
+
+    # 0. CB2: strip visible leaked bracketed chunk-id tokens (and a leading
+    # space) from the rendered HTML. Bracketed-only, so attribute values such as
+    # ``data-cf-source-ids="...chunk_00043..."`` (bare token, no brackets) are
+    # never matched.
+    out = _LEAKED_CHUNK_TOKEN_RE.sub("", out)
+    # Broadened CB2: also strip other bracketed source-id-like tokens (e.g.
+    # ``[clean_simplify_fractions_01]``) the chunk-only regex misses. Same
+    # attribute-safety guarantee (bracketed form only).
+    out = _LEAKED_SOURCE_ID_TOKEN_RE.sub("", out)
+    # CB2 (dart-shaped): strip bracketed canonical DART ids (e.g.
+    # ``[dart:photosynthesis#sec_01]``) the suffix-based regex above misses.
+    out = _LEAKED_DART_SOURCE_ID_TOKEN_RE.sub("", out)
+
+    # 1. Drop the bogus standalone data-cf-block-id pseudo-element.
+    out = _BOGUS_BLOCK_ID_EL_RE.sub("", out)
+
+    # 1b. CB-SCRIPT: strip a stray ``<script>...</script>`` fragment leaked into
+    # the rendered body (e.g. a JSON-LD blob the 7B appends after ``</section>``).
+    # Both the real-tag and the entity-escaped form. Runs BEFORE the escape step
+    # so the real ``<script ...>`` opener (which the escape step would otherwise
+    # treat as a valid tag and copy verbatim) is removed whole.
+    out = _LEAKED_SCRIPT_EL_RE.sub("", out)
+    out = _LEAKED_SCRIPT_EL_ESCAPED_RE.sub("", out)
+
+    # 2. HTML-escape stray ``<``/``>`` the model meant as literal text. Walk the
+    # string; a ``<`` that opens a valid HTML tag (start/end), comment, CDATA, or
+    # processing instruction is left intact, everything else is escaped to
+    # ``&lt;``. A ``>`` that does NOT close a tag we just passed is escaped to
+    # ``&gt;``.
+    repaired: List[str] = []
+    i = 0
+    n = len(out)
+    while i < n:
+        ch = out[i]
+        if ch == "<":
+            rest = out[i:]
+            if rest.startswith("<!--") or rest.startswith("<!") or rest.startswith("<?"):
+                # Comment / declaration / PI — copy verbatim to its terminator.
+                repaired.append(ch)
+                i += 1
+                continue
+            if _VALID_TAG_OPENER_RE.match(rest):
+                # A genuine tag opener: copy the whole tag verbatim up to the
+                # matching ``>`` so its attributes / ``>`` are not escaped.
+                #
+                # CB3 (deliberate non-repair): a valid tag opener whose ``>`` is
+                # MISSING (e.g. a ``<li ...text`` opener where the next ``<`` —
+                # the ``</li>`` closer or the next ``<li>`` — arrives before any
+                # ``>``) is NOT auto-repaired. Inserting a ``>`` at the next-``<``
+                # boundary would absorb the visible text content into the start
+                # tag (``<li class="y"Item two...>``), CORRUPTING valid prose,
+                # because there is no deterministic boundary between "attribute
+                # region" and "text content" once the ``>`` is gone. Per the
+                # function's PARSE-FAIL-only / never-corrupt-valid-HTML contract,
+                # this class degrades to the graceful ``&lt;`` escape below
+                # (handled by the ``close == -1`` branch when no ``>`` follows;
+                # when a later ``>`` exists the opener is copied up to it, which
+                # the html parser then tolerates) and is mitigated upstream by
+                # CB1's "emit well-formed HTML" prompt directive.
+                close = out.find(">", i)
+                if close == -1:
+                    # Unterminated ``<tag`` — escape the lone ``<`` literally.
+                    repaired.append("&lt;")
+                    i += 1
+                    continue
+                repaired.append(out[i:close + 1])
+                i = close + 1
+                continue
+            # Bare ``<`` or a CURIE/pseudo tag (``<name:local>``) — escape it.
+            repaired.append("&lt;")
+            i += 1
+            continue
+        if ch == ">":
+            # A ``>`` reached here is not the terminator of a tag we copied
+            # verbatim (those were consumed whole above) — escape it.
+            repaired.append("&gt;")
+            i += 1
+            continue
+        repaired.append(ch)
+        i += 1
+    out = "".join(repaired)
+
+    # 3. Balance span / cite / code.
+    scan = _TagBalanceScanner(out)
+    for tag, stray in scan.stray_close.items():
+        # Strip net stray closers (e.g. week_17's 18 orphan </code>). Remove from
+        # the RIGHT so an earlier legitimately-matched closer is preserved.
+        pattern = re.compile(rf'</\s*{tag}\s*>', re.IGNORECASE)
+        matches = list(pattern.finditer(out))
+        # Only the LAST ``stray`` closers are surplus; strip those.
+        for m in reversed(matches[-stray:] if stray <= len(matches) else matches):
+            out = out[:m.start()] + out[m.end():]
+    # Append missing closers for net-unclosed opens (re-scan after stray strip).
+    scan2 = _TagBalanceScanner(out)
+    suffix_parts: List[str] = []
+    for tag, count in scan2.unclosed.items():
+        suffix_parts.extend(f"</{tag}>" for _ in range(count))
+    if suffix_parts:
+        out += "".join(suffix_parts)
+    return out
+
+
+def _canonical_source_ids_for_chunks(
+    source_chunks: Any,
+    slug: str,
+    chunk_source_id_map: Optional[Dict[str, List[str]]] = None,
+) -> List[str]:
+    """Resolve canonical ``dart:{module_id}#{hash}`` source refs for a block.
+
+    ``source_chunks`` is the block's resolved chunk universe rehydrated from
+    the W2 ``outline_chunks.json`` sidecar — a list of ``{id, text, heading}``
+    dicts. Only entries carrying BOTH a non-empty ``id`` and a real ``text``
+    field are eligible: a topic-paragraph fallback entry (no ``text`` key) is
+    NOT grounded provenance, so it contributes nothing.
+
+    ``chunk_source_id_map`` maps each DART chunk ``id`` to the list of REAL,
+    resolvable ``dart:{module_id}#{hash}`` source ids carried in that chunk's
+    ``source.source_references[].sourceId`` (harvested at rewrite time from the
+    LibV2 ``chunks.jsonl``). These are the ids the ``content_grounding`` gate
+    resolves against the DART staging HTML's ``data-dart-block-id`` set — they
+    are NOT a synthetic ``dart:{course-slug}#{chunk_id}`` mint (that form never
+    resolves and was the root cause of the all-blocks-UNRESOLVED failure).
+
+    Anti-fabrication contract (fail closed; NEVER invent a ref):
+
+    * No ``chunk_source_id_map`` supplied (legacy / test callers) -> empty list.
+    * A chunk entry with no grounded ``text`` -> contributes nothing.
+    * A chunk ``id`` absent from the map -> contributes nothing.
+    * A chunk ``id`` whose map entry resolves to zero (validated) sourceIds ->
+      contributes nothing.
+
+    Each resolved id is re-validated through the canonical shape regex
+    (``^dart:[a-z0-9_-]+#[a-z0-9_-]+$``) so a malformed sourceId can never
+    poison the attribute. Returns a de-duplicated, discovery-order list. When a
+    block resolves to zero grounded sourceIds it legitimately gets an empty
+    list and fails closed on the rewrite_source_refs gate (deferred / empty
+    attribution) rather than carrying an invented ref.
+    """
+    if not slug or not isinstance(source_chunks, list):
+        return []
+    if not isinstance(chunk_source_id_map, dict) or not chunk_source_id_map:
+        # No real-sourceId map -> never mint a synthetic ref (fail closed).
+        return []
+    seen: set = set()
+    out: List[str] = []
+    for entry in source_chunks:
+        if not isinstance(entry, dict):
+            continue
+        cid = entry.get("id")
+        txt = entry.get("text")
+        if not (isinstance(cid, str) and cid.strip()):
+            continue
+        if not (isinstance(txt, str) and txt.strip()):
+            # No grounded text -> not provenance; never emit a ref.
+            continue
+        real_ids = chunk_source_id_map.get(cid.strip())
+        if not isinstance(real_ids, list) or not real_ids:
+            # Chunk absent from the map or resolves to zero sourceIds ->
+            # emit nothing for this chunk (fail closed, no fabrication).
+            continue
+        for source_id in real_ids:
+            if not (isinstance(source_id, str) and source_id.strip()):
+                continue
+            source_id = source_id.strip()
+            if source_id in seen:
+                continue
+            if not _CANONICAL_DART_SOURCE_ID_RE.match(source_id):
+                continue
+            seen.add(source_id)
+            out.append(source_id)
+    return out
+
+
+def _build_chunk_source_id_map(
+    dart_chunks_path: Optional[Path],
+) -> Dict[str, List[str]]:
+    """Build a ``chunk_id -> [real dart: sourceId]`` map from chunks.jsonl.
+
+    Reads the LibV2 ``dart_chunks/chunks.jsonl`` for the course and harvests,
+    per chunk, the REAL resolvable ``dart:{module_id}#{hash}`` source ids from
+    ``source.source_references[].sourceId`` — the same ids the
+    ``content_grounding`` gate resolves against the DART staging HTML. Mirrors
+    the read pattern in :func:`_build_manifest_chunk_resolver`.
+
+    Each harvested sourceId must pass ``_CANONICAL_DART_SOURCE_ID_RE``; a chunk
+    with no valid sourceId gets no map entry (so the caller fails closed rather
+    than fabricating a ref). Best-effort: a missing / unreadable chunkset
+    yields an empty map.
+    """
+    out: Dict[str, List[str]] = {}
+    if dart_chunks_path is None or not dart_chunks_path.exists():
+        return out
+    try:
+        with dart_chunks_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(chunk, dict):
+                    continue
+                chunk_id = chunk.get("id")
+                if not (isinstance(chunk_id, str) and chunk_id.strip()):
+                    continue
+                chunk_id = chunk_id.strip()
+                source = chunk.get("source")
+                if not isinstance(source, dict):
+                    continue
+                src_refs = source.get("source_references") or []
+                if not isinstance(src_refs, list):
+                    continue
+                seen: set = set()
+                ids: List[str] = []
+                for ref in src_refs:
+                    if not isinstance(ref, dict):
+                        continue
+                    sid = ref.get("sourceId")
+                    if not (isinstance(sid, str) and sid.strip()):
+                        continue
+                    sid = sid.strip()
+                    if sid in seen:
+                        continue
+                    if not _CANONICAL_DART_SOURCE_ID_RE.match(sid):
+                        continue
+                    seen.add(sid)
+                    ids.append(sid)
+                if ids:
+                    out.setdefault(chunk_id, ids)
+    except OSError as exc:
+        logger.warning(
+            "chunk_source_id_map: failed to read chunks.jsonl at %s: %s",
+            dart_chunks_path,
+            exc,
+        )
+    return out
+
 
 def _ensure_directories():
     """Ensure required directories exist."""
@@ -742,6 +1401,53 @@ def _normalize_chapter_objectives_to_groups(raw: Any) -> List[Dict[str, Any]]:
             })
         return groups
     return []
+
+
+def _ws5_resolve_objective_weeks(
+    num_tos: int,
+    num_cos: int,
+    duration_weeks: int,
+    duration_explicit: bool,
+    mint_method: str,
+) -> int:
+    """WS5 §3.2 — resolve the objective-driven course duration in weeks.
+
+    Single-sourced pacing formula consumed by ``_plan_course_structure`` (and
+    directly testable). After WS1's clustering, ``num_tos`` is the genuine
+    ~8-12 terminal-objective / theme count — the authoritative pacing signal:
+    one week-block per TO, floored at 8. The COs then distribute WITHIN each
+    TO's block via the §2.2 coverage-safe ceil-stride slicer, so no grounded CO
+    is dropped regardless of week count.
+
+    Override guards (preserved verbatim from the Wave-1.8 rescale):
+
+    * ``duration_explicit`` (``--weeks N`` passed) → operator pacing wins; the
+      supplied ``duration_weeks`` is returned unchanged (no rescale).
+    * ``mint_method == "user_supplied_objectives_json"`` (``--reuse-objectives``)
+      → the hand-curated LO list pre-encodes pacing; return unchanged.
+
+    Resolution when neither guard fires:
+
+    * ``num_tos > 0`` → ``max(8, num_tos)`` (one week-block per TO).
+    * else if ``WAVE18_COS_PER_WEEK > 0`` and ``num_cos`` → legacy CO-count
+      fallback ``max(8, ceil(num_cos / WAVE18_COS_PER_WEEK))``.
+    * else → ``duration_weeks`` (no signal to rescale on).
+
+    ``WAVE18_COS_PER_WEEK`` is REPURPOSED to the within-theme CO-distribution /
+    legacy fallback divisor — it is no longer the primary week divisor when
+    WS1 supplies real TOs.
+    """
+    if duration_explicit or mint_method == "user_supplied_objectives_json":
+        return duration_weeks
+    try:
+        cos_per_week = int(os.environ.get("WAVE18_COS_PER_WEEK", "2") or "2")
+    except (TypeError, ValueError):
+        cos_per_week = 2
+    if num_tos > 0:
+        return max(8, num_tos)
+    if cos_per_week > 0 and num_cos > 0:
+        return max(8, (num_cos + cos_per_week - 1) // cos_per_week)
+    return duration_weeks
 
 
 def _normalize_objectives_payload_to_course(
@@ -1415,6 +2121,250 @@ def _load_dart_chunkset_for_planning(
     return chunks_by_id, all_chunks
 
 
+def _mean_intra_cluster_cosine(
+    vecs: List[List[float]], member_idxs: List[int]
+) -> float:
+    """WS1 — mean pairwise cosine among one cluster's member vectors.
+
+    Singleton / empty clusters → ``1.0`` (a lone CO is trivially "cohesive").
+    A calibration signal: a high mean intra-cluster cosine means the cluster is
+    a tight theme, a low one means the threshold over-merged.
+    """
+    from lib.embedding._math import cosine_similarity
+
+    idxs = [i for i in member_idxs if 0 <= i < len(vecs)]
+    if len(idxs) < 2:
+        return 1.0
+    total = 0.0
+    pairs = 0
+    for a in range(len(idxs)):
+        for b in range(a + 1, len(idxs)):
+            total += cosine_similarity(vecs[idxs[a]], vecs[idxs[b]])
+            pairs += 1
+    return total / pairs if pairs else 1.0
+
+
+def _clamp_cluster_count(
+    clusters: List[List[int]],
+    vecs: List[List[float]],
+    *,
+    target_lo: int = 3,
+    target_hi: int = 15,
+) -> List[List[int]]:
+    """WS1 §3.3 — clamp the cluster count into ``[target_lo, target_hi]``.
+
+    Deterministic; NEVER drops a CO (partition invariant: every input index
+    appears in exactly one returned cluster). ``target_lo`` is an UPPER-BOUND
+    target — when there are fewer COs than ``target_lo`` we return the natural
+    clusters rather than fabricating empty ones.
+
+    - ``len in [lo, hi]``: unchanged.
+    - ``len > hi``: merge the smallest cluster (ties → highest min-index) into
+      the cluster with the nearest centroid cosine, until ``hi``.
+    - ``len < lo``: split the largest cluster by re-clustering its members at a
+      higher threshold (``threshold + 0.1``, capped at 0.99); repeat until
+      ``>= lo`` or no further split is possible.
+    """
+    from lib.embedding._math import cosine_similarity
+    from lib.objectives.objective_dedup import (
+        cluster_by_cosine,
+        resolve_to_cluster_threshold,
+    )
+
+    work = [list(c) for c in clusters if c]
+    if not work:
+        return work
+
+    def _centroid(member_idxs: List[int]) -> List[float]:
+        idxs = [i for i in member_idxs if 0 <= i < len(vecs)]
+        if not idxs:
+            return []
+        dim = len(vecs[idxs[0]])
+        acc = [0.0] * dim
+        for i in idxs:
+            v = vecs[i]
+            for d in range(min(dim, len(v))):
+                acc[d] += v[d]
+        return [x / len(idxs) for x in acc]
+
+    # ---- Over-target: merge smallest into nearest-centroid neighbor. -----
+    while len(work) > target_hi:
+        # Smallest cluster (ties → highest min-index for determinism).
+        small_pos = min(
+            range(len(work)),
+            key=lambda p: (len(work[p]), -min(work[p])),
+        )
+        small_centroid = _centroid(work[small_pos])
+        best_pos = -1
+        best_cos = -2.0
+        for p in range(len(work)):
+            if p == small_pos:
+                continue
+            other_centroid = _centroid(work[p])
+            cos = (
+                cosine_similarity(small_centroid, other_centroid)
+                if small_centroid and other_centroid
+                else -1.0
+            )
+            if cos > best_cos:
+                best_cos = cos
+                best_pos = p
+        if best_pos < 0:
+            break
+        work[best_pos] = sorted(work[best_pos] + work[small_pos])
+        work.pop(small_pos)
+        work.sort(key=lambda g: min(g))
+
+    # ---- Under-target: split the largest cluster at a higher threshold. --
+    if len(work) < target_lo:
+        base_threshold = resolve_to_cluster_threshold()
+        # Iterate; each pass tries to split the largest splittable cluster.
+        guard = 0
+        while len(work) < target_lo and guard < len(vecs) + 5:
+            guard += 1
+            # Largest cluster with ≥2 members (ties → lowest min-index).
+            candidates = [p for p in range(len(work)) if len(work[p]) >= 2]
+            if not candidates:
+                break
+            big_pos = max(
+                candidates, key=lambda p: (len(work[p]), -min(work[p]))
+            )
+            members = work[big_pos]
+            split_threshold = min(0.99, base_threshold + 0.1)
+            member_vecs = [vecs[i] for i in members]
+            sub_clusters, _, _ = cluster_by_cosine(
+                member_vecs, split_threshold
+            )
+            if len(sub_clusters) <= 1:
+                # Cannot split this one any further; try the next-largest by
+                # removing it from consideration this pass.
+                # (Move it aside by marking via a sentinel: re-cluster at an
+                # even higher threshold once before giving up.)
+                higher = min(0.99, split_threshold + 0.1)
+                sub_clusters, _, _ = cluster_by_cosine(member_vecs, higher)
+                if len(sub_clusters) <= 1:
+                    # Genuinely unsplittable (e.g. identical vectors) — stop.
+                    break
+            # Map sub-cluster local indices back to global CO indices.
+            new_groups = [
+                sorted(members[i] for i in sub) for sub in sub_clusters
+            ]
+            work.pop(big_pos)
+            work.extend(new_groups)
+            work.sort(key=lambda g: min(g))
+
+    work.sort(key=lambda g: min(g))
+    return work
+
+
+def _fallback_terminal_from_cluster(
+    cluster_cos: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """WS1 §3.4 — per-cluster fail-soft TO from the longest-statement CO.
+
+    Summary-layer fallback (no chunk grounding required, §7); copies a verbatim
+    CO subset → never invents. Used when the author call returns ``None``.
+    """
+    if not cluster_cos:
+        return {
+            "statement": "",
+            "bloom_level": "understand",
+            "source_refs": [],
+            "to_synthesis": "cluster_rep_fallback",
+        }
+    rep = max(
+        cluster_cos, key=lambda c: len(str(c.get("statement") or ""))
+    )
+    return {
+        "statement": str(rep.get("statement") or "").strip(),
+        "bloom_level": str(rep.get("bloom_level") or "understand"),
+        "source_refs": [],
+        "to_synthesis": "cluster_rep_fallback",
+    }
+
+
+def _derive_terminals_bottom_up(
+    *,
+    provider: Any,
+    chapter_cos: List[Dict[str, Any]],
+    embed: Any,
+    course_name: str,
+    mint_lo_id: Any,
+    capture: Optional[Any] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """WS1 KEYSTONE — derive terminal objectives bottom-up by clustering COs.
+
+    Cluster the grounded CO statement vectors (lower threshold than dedup) and
+    author one TO per cluster (fail-soft per cluster). Each CO's ``terminal_id``
+    is set DIRECTLY in-loop (clustering determined the parent) so the legacy
+    argmax-backlink is a no-op for ASSIGNMENT — see the call site for why the
+    backlink is still invoked (WS2 instrumentation proof signal).
+
+    Returns ``(terminals, cluster_signals)``. Returns ``([], {})`` on embed
+    failure so the caller degrades to the legacy draft-TO reconcile (R4).
+    """
+    from lib.objectives.objective_dedup import (
+        cluster_to_target_k,
+        resolve_to_cluster_k,
+    )
+
+    statements = [
+        str(c.get("statement") or c.get("text") or "").strip() or " "
+        for c in chapter_cos
+    ]
+    try:
+        vecs = embed.encode_batch(statements)
+    except Exception:  # noqa: BLE001 — degrade to legacy reconcile
+        return [], {}
+
+    # WS1.1 — TARGET-K Ward agglomerative clustering supersedes WS1's single-link
+    # cosine-threshold + _clamp_cluster_count path (which collapsed cosine-dense
+    # CO embeddings into a 67-member catch-all). The target-K result is already
+    # bounded to [3, 15] and balanced, so no post-clamp is needed; the partition
+    # invariant (every CO index in exactly one cluster) is preserved.
+    to_cluster_k = resolve_to_cluster_k(len(vecs))
+    clusters = cluster_to_target_k(vecs, to_cluster_k)
+    # Detect whether the sklearn (ward) path or the no-sklearn single-link
+    # fallback produced the clusters (for provenance in cluster_signals).
+    try:
+        import sklearn.cluster as _sk_cluster  # noqa: F401
+
+        to_cluster_linkage = "ward"
+    except Exception:  # noqa: BLE001 — sklearn absent → fallback path ran
+        to_cluster_linkage = "single_link_fallback"
+
+    terminals: List[Dict[str, Any]] = []
+    intra_cosines: List[float] = []
+    for c_idx, member_idxs in enumerate(clusters, start=1):
+        cluster_cos = [chapter_cos[i] for i in member_idxs]
+        authored = provider.author_terminal_for_cluster(
+            cluster_cos, course_name=course_name, cluster_index=c_idx
+        )
+        if authored is None:
+            authored = _fallback_terminal_from_cluster(cluster_cos)
+        authored["id"] = mint_lo_id("terminal", c_idx)
+        terminals.append(authored)
+        for i in member_idxs:
+            chapter_cos[i]["terminal_id"] = authored["id"]
+        intra_cosines.append(_mean_intra_cluster_cosine(vecs, member_idxs))
+
+    cluster_signals: Dict[str, Any] = {
+        "to_derivation": "bottom_up",
+        "cluster_count": len(clusters),
+        "to_cluster_k": int(to_cluster_k),
+        "to_cluster_linkage": to_cluster_linkage,
+        "mean_intra_cluster_cosine": (
+            round(sum(intra_cosines) / len(intra_cosines), 6)
+            if intra_cosines
+            else 0.0
+        ),
+        "min_intra_cluster_cosine": (
+            round(min(intra_cosines), 6) if intra_cosines else 0.0
+        ),
+    }
+    return terminals, cluster_signals
+
+
 async def _run_stage2_window_synthesis(
     *,
     provider: Any,
@@ -1429,6 +2379,7 @@ async def _run_stage2_window_synthesis(
     chapter_synthesis_failures: List[str],
     mint_lo_id: Any,
     kwargs: Dict[str, Any],
+    capture: Optional[Any] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], str, Dict[str, Any]]:
     """W2 §1.6 + §4.4 — orchestrate Pass B → C → D → E.
 
@@ -1651,9 +2602,13 @@ async def _run_stage2_window_synthesis(
             raise
         _embed = None
 
-    # ---- Pass D: embedding dedup. -------------------------------------
+    # ---- Pass D: embedding dedup (+ Fix 1A union cap/relevance-prune). -
     dedup = dedup_candidates(
-        _co_pool, embed=_embed, allow_fake=allow_fake_enabled(),
+        _co_pool,
+        embed=_embed,
+        allow_fake=allow_fake_enabled(),
+        chunks_by_id=chunks_by_id,
+        capture=capture,
     )
     chapter_cos = dedup.canonical
 
@@ -1669,20 +2624,55 @@ async def _run_stage2_window_synthesis(
     for _idx, _co in enumerate(chapter_cos, start=1):
         _co["id"] = mint_lo_id("chapter", _idx)
 
-    # ---- Pass E: reconcile (fail-loud) + deterministic CO→TO backlink. -
-    try:
-        _recon = provider.reconcile_terminal_objectives(
-            draft_tos, chapter_cos, course_name=course_name,
+    # ---- WS1 KEYSTONE: derive TOs BOTTOM-UP by clustering the grounded COs.
+    # The legacy top-down draft-TO reconcile argmax-backlinked every CO to one
+    # of 3-4 blinded drafts with no floor → ~87% wrong (WS2 measures this as
+    # weak_to_link_rate). WS1 derives TOs by clustering the CO statement
+    # vectors and authoring one TO per cluster, setting each CO's terminal_id
+    # DIRECTLY from its cluster (correct by construction).
+    terminal: List[Dict[str, Any]] = []
+    used_bottom_up = False
+    cluster_signals: Dict[str, Any] = {}
+    if _embed is not None:
+        terminal, cluster_signals = _derive_terminals_bottom_up(
+            provider=provider,
+            chapter_cos=chapter_cos,
+            embed=_embed,
+            course_name=course_name,
+            mint_lo_id=mint_lo_id,
+            capture=capture,
         )
-        terminal = list(_recon.get("terminal_objectives") or [])
-    except provider_error:
-        logger.exception(
-            "plan_course_structure: Stage-2 reconciliation exhausted "
-            "(provider=%s); failing loud.", provider_env,
-        )
-        raise
+        used_bottom_up = bool(terminal)
 
-    backlink_cos_to_tos(terminal, chapter_cos, embed=_embed)
+    if not used_bottom_up:
+        # ---- FALLBACK (R4, load-bearing): legacy draft-TO reconcile + backlink.
+        # _embed absent (extras missing / fake-provider) OR bottom-up degraded
+        # (encode_batch raised → []). Reconcile doesn't pre-set terminal_id, so
+        # the backlink does the real argmax assignment here.
+        try:
+            _recon = provider.reconcile_terminal_objectives(
+                draft_tos, chapter_cos, course_name=course_name,
+            )
+            terminal = list(_recon.get("terminal_objectives") or [])
+        except provider_error:
+            logger.exception(
+                "plan_course_structure: Stage-2 reconciliation exhausted "
+                "(provider=%s); failing loud.", provider_env,
+            )
+            raise
+
+    # ---- Pass E: deterministic CO→TO backlink (+ WS2 weak-link signal). ----
+    # WS1/WS2 integration: on the BOTTOM-UP path every CO already carries a
+    # resolvable terminal_id (pre-set in _derive_terminals_bottom_up), so
+    # backlink_cos_to_tos is a NO-OP for ASSIGNMENT (it honors a resolvable
+    # pre-set terminal_id before cosine — lo_backlink.py). We STILL call it on
+    # BOTH paths because WS2's weak_to_link_* signals depend on the returned
+    # BacklinkResult: scored against the NEW good TO set, weak_to_link_rate
+    # should drop toward ~0 (vs ~0.87 legacy) — the success metric that PROVES
+    # WS1 worked. The redundant encode on the bottom-up path is accepted for
+    # that proof signal. The fallback path needs the backlink for the real
+    # argmax assignment (reconcile doesn't pre-set ids).
+    _backlink = backlink_cos_to_tos(terminal, chapter_cos, embed=_embed)
 
     # The window-map path stamps a distinct ``_window`` label so an audit can
     # tell chunk-grounded synthesis apart from the chapter-grained fallback,
@@ -1713,8 +2703,24 @@ async def _run_stage2_window_synthesis(
         "max_pairwise_cosine": round(float(dedup.max_pairwise_cosine), 6),
         "near_dup_pairs": dedup.near_dup_pairs,
         "embed_available": dedup.available,
+        # Fix 1A — union cap/relevance-prune calibration signals (mirror how
+        # max_pairwise_cosine / near_dup_pairs are surfaced for pinning).
+        "max_chunks_per_objective": dedup.max_chunks_per_objective,
+        "pruned_chunk_total": dedup.pruned_chunk_total,
         "canonical_co_count": len(chapter_cos),
         "terminal_count": len(terminal),
+        # WS1 — bottom-up TO derivation signals. ``cluster_signals`` is {} on
+        # the legacy fallback path → downstream reads
+        # grounding_signals.get("to_derivation", "legacy_reconcile").
+        **cluster_signals,
+        # WS2 — CO→TO weak-backlink instrumentation. PURE MEASUREMENT.
+        "weak_to_link_count": _backlink.weak_link_count,
+        "weak_to_link_rate": round(_backlink.weak_link_rate, 6),
+        "weak_to_link_scored": _backlink.scored_count,
+        "weak_to_link_used_embeddings": _backlink.used_embeddings,
+        "weak_to_link_cosine_floor": _backlink.cosine_floor,
+        "weak_to_link_min_score": _backlink.min_best_score,
+        "weak_to_link_mean_score": _backlink.mean_best_score,
     }
     return chapter_cos, terminal, mint_method, grounding_signals
 
@@ -3431,6 +4437,42 @@ def _emit_dart_sidecars_if_requested(
 _COURSEFORGE_TWO_PASS_ENV = "COURSEFORGE_TWO_PASS"
 _COURSEFORGE_TWO_PASS_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
+# Per-page outline block PLAN (keystone hollow-course fix + Bloom-diversity
+# fix). Each page in the two-pass outline tier emits one block of each entry,
+# in order. Each entry is a ``(block_type, target_bloom)`` pair: the
+# ``target_bloom`` is a DETERMINISTIC per-template Bloom declaration carried
+# onto the Block stub's ``target_bloom`` field, surfaced to the outline
+# provider as a per-block "author at bloom_level=<target>" directive AND
+# enforced as a FLOOR after the LLM emits. This is the real Bloom-diversity
+# fix: leaving ``bloom_level`` to the 7B model defaults it to the floor
+# (an observed 70 ``understand`` / 19 ``apply`` / 1 ``remember`` skew),
+# because the model takes the lazy path. The target LIFTS the lazy
+# "understand" but NEVER lowers below the existing ≥-objective rule.
+#
+# The lone ``objective`` carries the page's LO statement (and, being
+# ``escalate_immediately: true`` in block_routing.yaml, skips the outline
+# tier — the rewrite tier authors the bare <li>); every other block DISPATCHES
+# through outline → rewrite to produce real instructional prose / interactive
+# content. Without these block_types every page rendered only the objective
+# sentence (the hollow-course defect). All reuse the SAME week-grounded
+# source-chunk universe + dynamic CURIE-minting backstop, so the prose blocks
+# are grounded identically to the objective.
+#
+# Every block_type MUST be a member of
+# ``Courseforge.scripts.blocks.BLOCK_TYPES``, MUST have an outline-tier
+# bound in ``_OUTLINE_KIND_BOUNDS`` (gates outline dispatch) AND a rewrite
+# output contract in ``_BLOCK_TYPE_OUTPUT_CONTRACTS`` (gates rewrite
+# dispatch). ``self_check_question`` and ``activity`` satisfy both
+# (verified 2026-06-15). Every ``target_bloom`` MUST be a member of
+# ``lib.ontology.bloom.BLOOM_LEVELS``.
+_PAGE_BLOCK_PLAN: Tuple[Tuple[str, str], ...] = (
+    ("objective", "understand"),
+    ("explanation", "understand"),
+    ("example", "apply"),
+    ("self_check_question", "analyze"),
+    ("activity", "apply"),
+)
+
 
 def _courseforge_two_pass_enabled() -> bool:
     """Read ``COURSEFORGE_TWO_PASS`` each call so tests can toggle it.
@@ -3710,6 +4752,9 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
         kwargs_clean.setdefault("page_id", kwargs_clean.get("block_id", ""))
         kwargs_clean.setdefault("sequence", 0)
         kwargs_clean.setdefault("content", "")
+        _touches = _touches_from_entry(entry or {})
+        if _touches:
+            kwargs_clean["touched_by"] = _touches
         try:
             return Block(**kwargs_clean)
         except (TypeError, ValueError) as exc:
@@ -3754,11 +4799,19 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
     # to the decision capture (Subtask 26's ml_features.tier field) so
     # postmortem readers can stratify outline-tier vs rewrite-tier
     # failures.
+    # CB5a: stub-example safety-net gate. Pure HTML/text (no embeddings);
+    # fires action="regenerate" on an example block carrying only a
+    # problem statement with no worked solution.
+    from lib.validators.example_completeness import (  # type: ignore[import-not-found]
+        ExampleCompletenessValidator,
+    )
+
     validators = [
         ("rewrite_curie_anchoring", BlockCurieAnchoringValidator()),
         ("rewrite_content_type", BlockContentTypeValidator()),
         ("rewrite_page_objectives", BlockPageObjectivesValidator()),
         ("rewrite_source_refs", BlockSourceRefValidator()),
+        ("example_completeness", ExampleCompletenessValidator()),
     ]
 
     inputs: dict = {"blocks": blocks}
@@ -3972,7 +5025,61 @@ def _block_to_snake_case_entry(block: Any) -> Dict[str, Any]:
         ]
     if getattr(block, "validation_attempts", 0):
         entry["validation_attempts"] = int(block.validation_attempts)
+    # Preserve the immutable touch-chain audit trail (snake_case dict per
+    # Touch, round-tripping through ``_touches_from_entry`` → ``Touch(**d)``).
+    # Without this, a resume run that rehydrates blocks from blocks_final.jsonl
+    # loses ``touched_by`` entirely, so the per-block synthesis manifest emits
+    # ``synthesis.tiers: []`` and fails MANIFEST_SCHEMA_INVALID (the schema
+    # requires minItems:1). The W3 manifest reads the model/provider/tier
+    # from this chain, so dropping it silently breaks the manifest-completeness
+    # gate on every cached/resumed block.
+    touches = getattr(block, "touched_by", ()) or ()
+    if touches:
+        entry["touched_by"] = [
+            {
+                "model": t.model,
+                "provider": t.provider,
+                "tier": t.tier,
+                "timestamp": t.timestamp,
+                "decision_capture_id": t.decision_capture_id,
+                "purpose": t.purpose,
+            }
+            for t in touches
+        ]
     return entry
+
+
+def _touches_from_entry(entry: dict) -> tuple:
+    """Reconstruct the ``touched_by`` Touch tuple from a snake_case JSONL
+    entry emitted by :func:`_block_to_snake_case_entry`.
+
+    Tolerant: drops malformed Touch dicts (a ``Touch(**d)`` that raises on
+    the Wave-112 invariants) rather than failing the whole block hydration,
+    mirroring the field-coercion tolerance the surrounding ``_entry_to_block``
+    helpers already apply. Returns an empty tuple when no ``touched_by`` key
+    is present (legacy entries) so callers stay byte-stable.
+    """
+    raw = entry.get("touched_by")
+    if not isinstance(raw, list):
+        return ()
+    from Courseforge.scripts.blocks import Touch  # noqa: PLC0415
+
+    out = []
+    for d in raw:
+        if not isinstance(d, dict):
+            continue
+        try:
+            out.append(Touch(
+                model=d.get("model", ""),
+                provider=d.get("provider", ""),
+                tier=d.get("tier", ""),
+                timestamp=d.get("timestamp", ""),
+                decision_capture_id=d.get("decision_capture_id", ""),
+                purpose=d.get("purpose", ""),
+            ))
+        except (TypeError, ValueError):
+            continue
+    return tuple(out)
 
 
 # ---------------------------------------------------------------------------
@@ -4489,12 +5596,157 @@ def _resolve_minted_curie_map_for_validation(
     )
 
 
+def _repair_outline_objective_refs(
+    *,
+    outline_blocks: List[Any],
+    canonical_ids: "Set[str]",
+    capture: Any,
+) -> None:
+    """Drop hallucinated objective refs the 7B outline tier emits (FIX 2).
+
+    The 7B outline tier occasionally references an objective id that is
+    not in the canonical synthesized set — e.g. ``TO-08`` when only four
+    terminal objectives exist, or a stray ``cf:CO-36`` CURIE that leaked
+    into ``content["objective_refs"]``. ``BlockPageObjectivesValidator``
+    fail-closes (``OUTLINE_BLOCK_UNKNOWN_OBJECTIVE``) on these. This pass
+    intersects each block's objective refs (``block.objective_ids`` and
+    ``content["objective_refs"]`` / ``content["objective_ids"]``) with the
+    canonical id set and DROPS any ref not in it. It never invents a ref.
+    The block retains at least its assigned week ``objective_ids`` (which
+    ARE canonical) when present.
+
+    No-op when ``canonical_ids`` is empty (no canonical universe to check
+    against — preserves the validator's "skip when no universe" contract).
+
+    Mutation is in-place via ``dataclasses.replace`` (frozen Block).
+    """
+    if not canonical_ids:
+        return
+
+    import dataclasses as _dc
+
+    repaired_block_count = 0
+    dropped_total = 0
+    for idx, block in enumerate(outline_blocks):
+        content = getattr(block, "content", None)
+
+        # Structural field.
+        struct = [
+            o for o in (getattr(block, "objective_ids", None) or ())
+            if isinstance(o, str) and o
+        ]
+        new_struct = [o for o in struct if o in canonical_ids]
+        struct_dropped = [o for o in struct if o not in canonical_ids]
+
+        # content["objective_refs"] / content["objective_ids"].
+        content_changes: Dict[str, List[str]] = {}
+        content_dropped: List[str] = []
+        if isinstance(content, dict):
+            for key in ("objective_refs", "objective_ids"):
+                raw = content.get(key)
+                if not isinstance(raw, list):
+                    continue
+                kept = [
+                    o for o in raw
+                    if isinstance(o, str) and o in canonical_ids
+                ]
+                dropped = [
+                    o for o in raw
+                    if isinstance(o, str) and o and o not in canonical_ids
+                ]
+                if dropped:
+                    content_changes[key] = kept
+                    content_dropped.extend(dropped)
+
+        if not struct_dropped and not content_dropped:
+            continue
+
+        replace_kwargs: Dict[str, Any] = {}
+        if struct_dropped:
+            replace_kwargs["objective_ids"] = tuple(new_struct)
+        if content_changes:
+            new_content = dict(content)
+            new_content.update(content_changes)
+            replace_kwargs["content"] = new_content
+
+        outline_blocks[idx] = _dc.replace(block, **replace_kwargs)
+        repaired_block_count += 1
+        n_dropped = len(struct_dropped) + len(content_dropped)
+        dropped_total += n_dropped
+
+        if capture is not None:
+            try:
+                all_dropped = sorted(set(struct_dropped) | set(content_dropped))
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=(
+                        f"dropped {n_dropped} hallucinated objective ref(s) "
+                        f"from block {block.block_id}"
+                    ),
+                    rationale=(
+                        f"Block {block.block_id} (type={block.block_type}) "
+                        f"referenced objective id(s) {all_dropped!r} not in "
+                        f"the canonical {len(canonical_ids)}-objective "
+                        f"synthesized set; dropped them so the "
+                        f"outline_page_objectives gate (OUTLINE_BLOCK_"
+                        f"UNKNOWN_OBJECTIVE) is not tripped by a 7B "
+                        f"hallucination. Valid week refs preserved verbatim; "
+                        f"no ref invented."
+                    ),
+                    ml_features={
+                        "block_id": block.block_id,
+                        "dropped_count": n_dropped,
+                        "dropped_refs": all_dropped,
+                        "canonical_objective_count": len(canonical_ids),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    if repaired_block_count:
+        logger.info(
+            "outline phase: repaired objective refs on %d block(s) "
+            "(%d hallucinated ref(s) dropped) against %d canonical ids",
+            repaired_block_count, dropped_total, len(canonical_ids),
+        )
+
+
+def _block_source_chunk_text(
+    block: Any,
+    chunks_lookup: Optional[Dict[str, List[Any]]],
+) -> str:
+    """Concatenate the grounded source-chunk text for one outline block.
+
+    ``chunks_lookup`` is the per-block ``{block_id: [{id, text, ...}]}``
+    universe built in :func:`_run_content_generation_outline` (and
+    persisted to ``outline_chunks.json``). A block's source chunks ARE
+    its grounded provenance and ARE tagged with the domain vocabulary, so
+    a vocab concept present in this text is legitimately anchored for the
+    block. Only entries carrying real ``text`` count — a topic-paragraph
+    fallback entry (no ``text`` key) contributes nothing, preserving the
+    fail-closed contract for ungrounded blocks.
+
+    Returns an empty string when the block has no resolved source chunks.
+    """
+    if not chunks_lookup:
+        return ""
+    entries = chunks_lookup.get(getattr(block, "block_id", ""), []) or []
+    parts: List[str] = []
+    for e in entries:
+        if isinstance(e, dict):
+            txt = e.get("text")
+            if isinstance(txt, str) and txt.strip():
+                parts.append(txt)
+    return "\n".join(parts)
+
+
 def _mint_outline_curies(
     *,
     outline_blocks: List[Any],
     course_code: str,
     kwargs: Dict[str, Any],
     capture: Any,
+    chunks_lookup: Optional[Dict[str, List[Any]]] = None,
 ) -> None:
     """Mint per-course CURIEs onto curie-less outline blocks (v0.3.0).
 
@@ -4502,13 +5754,29 @@ def _mint_outline_curies(
     this is a complete no-op (RDF / legacy corpora unaffected — the key
     backward-compat contract). When present, builds the minted-CURIE
     map, compiles the vocabulary into ``domain_concept_seeds``, and for
-    every outline block whose ``content`` is a dict with an EMPTY
-    ``content["curies"]`` runs concept-tag extraction over the block's
-    ``key_claims`` text surface and stamps the matching minted CURIEs in.
+    every outline block whose ``content`` is a dict that NEEDS a domain
+    CURIE runs concept-tag extraction over the block's ``key_claims``
+    text surface AND — when that misses — over the block's grounded
+    SOURCE-CHUNK text (``chunks_lookup``), stamping the matching minted
+    CURIEs in.
+
+    A block "needs a domain CURIE" when EITHER its ``content["curies"]``
+    is empty OR it carries only GENERIC / non-domain CURIEs (none of the
+    existing curies is a key in the per-course minted-CURIE map — e.g.
+    ``outline:openstax`` / ``cf:CO-36`` placeholders the 7B emits). In
+    the generic-curie case the minted domain CURIE is APPENDED (the
+    existing curies are never deleted). A block already carrying a real
+    minted domain CURIE is left untouched.
+
+    Matching the block's SOURCE-CHUNK text (not only ``key_claims``) is
+    rigorous, NOT a relaxation: the source chunks are the block's real
+    grounded provenance and carry the domain vocabulary, so a concept in
+    them is genuinely the block's subject. Ungrounded blocks (no resolved
+    source chunks AND no key_claims match) still mint nothing → fail
+    closed downstream; no fabrication.
 
     Mutation is in-place via ``dataclasses.replace`` on each Block (the
-    Block dataclass is frozen). Only EMPTY ``curies`` lists are touched
-    — a block that already carries real CURIEs is never overwritten.
+    Block dataclass is frozen).
     """
     vocab_path = _locate_domain_concept_vocabulary(course_code, kwargs)
     if vocab_path is None:
@@ -4557,10 +5825,19 @@ def _mint_outline_curies(
         content = getattr(block, "content", None)
         if not isinstance(content, dict):
             continue
-        existing = content.get("curies")
-        # Only mint when the curies list is currently empty — never
-        # overwrite real (RDF or already-minted) CURIEs.
-        if existing:
+        existing = [
+            c for c in (content.get("curies") or [])
+            if isinstance(c, str) and c
+        ]
+        # A block needs a DOMAIN CURIE when EITHER its curies list is
+        # empty OR none of its existing curies is a real per-course
+        # minted domain CURIE (it carries only generic / placeholder
+        # tokens like ``outline:openstax`` / ``cf:CO-36`` that the
+        # anchoring gate cannot anchor). A block already carrying a real
+        # minted domain CURIE is left untouched (never overwrite real
+        # CURIEs).
+        has_domain_curie = any(c in minted_map for c in existing)
+        if has_domain_curie:
             continue
 
         # Gather the block's text surface from ``key_claims``, handling
@@ -4576,26 +5853,45 @@ def _mint_outline_curies(
                 claim_text = c.get("claim", "")
                 if isinstance(claim_text, str):
                     text_parts.append(claim_text)
-        text = "\n".join(text_parts)
-        if not text.strip():
-            continue
+        claims_text = "\n".join(text_parts)
 
-        # ``extract_concept_tags`` matches the block text against the
-        # compiled domain-concept seeds; returns the canonical slugs of
-        # the concepts the block discusses.
-        matched_canonicals = extract_concept_tags(
-            text, {}, domain_concept_seeds
-        )
+        # First match against the block's key_claims text. ``extract_concept_tags``
+        # returns the canonical slugs of the concepts the block discusses.
+        matched_canonicals: List[str] = []
+        matched_surface = "key_claims"
+        if claims_text.strip():
+            matched_canonicals = extract_concept_tags(
+                claims_text, {}, domain_concept_seeds
+            )
+        # Fallback: when key_claims yields no vocab concept, match against
+        # the block's grounded SOURCE-CHUNK text — its real provenance,
+        # tagged with the domain vocabulary. Rigorous, not a relaxation.
+        if not matched_canonicals:
+            source_text = _block_source_chunk_text(block, chunks_lookup)
+            if source_text.strip():
+                matched_canonicals = extract_concept_tags(
+                    source_text, {}, domain_concept_seeds
+                )
+                matched_surface = "source_chunks"
+
         minted_curies: List[str] = []
         for canonical in matched_canonicals:
             curie = by_canonical.get(canonical)
             if curie and curie not in minted_curies:
                 minted_curies.append(curie)
         if not minted_curies:
+            # Ungrounded / no-match block — mint nothing. It fails closed
+            # downstream (no fabrication).
             continue
 
+        # Append the minted domain CURIE(s) to any existing generic curies
+        # (never delete the existing tokens), deduped.
+        merged = list(existing)
+        for c in minted_curies:
+            if c not in merged:
+                merged.append(c)
         new_content = dict(content)
-        new_content["curies"] = minted_curies
+        new_content["curies"] = merged
         outline_blocks[idx] = _dc.replace(block, content=new_content)
         minted_block_count += 1
         minted_curie_total += len(minted_curies)
@@ -4610,7 +5906,8 @@ def _mint_outline_curies(
                     ),
                     rationale=(
                         f"Block {block.block_id} (type={block.block_type}) "
-                        f"carried empty content['curies']; its key_claims "
+                        f"carried {'empty' if not existing else 'generic'} "
+                        f"content['curies']={existing!r}; its {matched_surface} "
                         f"text matched {len(matched_canonicals)} of the "
                         f"{len(minted_map)} domain-concept-vocabulary "
                         f"concepts, minting {minted_curies} from the "
@@ -4622,6 +5919,8 @@ def _mint_outline_curies(
                         "minted_curie_count": len(minted_curies),
                         "vocabulary_concept_count": len(minted_map),
                         "matched_concept_count": len(matched_canonicals),
+                        "matched_surface": matched_surface,
+                        "had_generic_curies": bool(existing),
                     },
                 )
             except Exception:  # noqa: BLE001
@@ -4701,6 +6000,201 @@ def _align_outline_blocks_to_objectives(
         )
         return outline_blocks
     return aligned
+
+
+def _load_dart_chunkset_text_map(chunks_path: Path) -> Dict[str, str]:
+    """Load ``<…>/dart_chunks/chunks.jsonl`` into a ``{chunk_id: text}`` map.
+
+    Each JSONL line is a chunk object carrying its id under ``id``
+    (canonical) or ``chunk_id`` (legacy) and its body under ``text``
+    (canonical) or ``content`` (legacy). Lines that don't resolve to a
+    non-empty (id, text) pair are skipped. Best-effort: a malformed line
+    is warning-logged and skipped rather than crashing the phase.
+
+    Returns an empty map when the file is absent / unreadable so the
+    caller can fail-SAFE to the existing topic-paragraph behavior.
+    """
+    text_map: Dict[str, str] = {}
+    if not chunks_path.exists() or not chunks_path.is_file():
+        return text_map
+    try:
+        raw = chunks_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning(
+            "outline phase: failed to read chunkset at %s: %s",
+            chunks_path, exc,
+        )
+        return text_map
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        cid = obj.get("id") or obj.get("chunk_id")
+        body = obj.get("text") or obj.get("content")
+        if isinstance(cid, str) and cid and isinstance(body, str) and body:
+            text_map.setdefault(cid, body)
+    return text_map
+
+
+def _chapter_label_to_week_num(label: Any) -> Optional[int]:
+    """Map a ``chapter`` label (e.g. ``"Week 3"`` / ``3`` / ``"3"``) to N.
+
+    Returns ``None`` when no week number can be parsed — the caller drops
+    the objective from the per-week index (it cannot be attributed to a
+    week) rather than guessing.
+    """
+    if isinstance(label, bool):
+        return None
+    if isinstance(label, int):
+        return label if label >= 1 else None
+    if not isinstance(label, str):
+        return None
+    text = label.strip()
+    if not text:
+        return None
+    # Match a trailing / standalone integer ("Week 3", "Chapter 3", "3").
+    match = re.search(r"(\d+)\s*$", text)
+    if not match:
+        match = re.search(r"(\d+)", text)
+    if not match:
+        return None
+    try:
+        n = int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
+
+
+def _build_week_chunk_id_index(
+    chapter_objective_groups: List[Dict[str, Any]],
+    *,
+    week_terminal_chunk_ids: Optional[Dict[int, List[str]]] = None,
+) -> Dict[int, List[str]]:
+    """Build a ``{week_num: [chunk_id, ...]}`` index from grounded objectives.
+
+    Consumes the RAW *grouped* ``chapter_objectives`` shape
+    (``[{"chapter": <label>, "objectives": [{..., "source_refs":
+    [{"ref", "chunk_ids":[...]}]}, ...]}, ...]``) — NOT the flattened
+    loader output. The flattened ``load_objectives_json`` form strips the
+    per-group ``chapter``/week label, so the prior label match resolved
+    zero chunks for every block. The caller normalizes whatever on-disk
+    shape it finds (list-of-groups / flat / dict-of-lists) to the grouped
+    form via :func:`_normalize_chapter_objectives_to_groups` before
+    calling this.
+
+    Week resolution per group, in order:
+
+    1. Parse ``group["chapter"]`` via :func:`_chapter_label_to_week_num`
+       ("Week 3" / 3 / "3" → ``3``).
+    2. **Positional fallback** — when the label yields ``None`` (the
+       synthesizer-dependent label is not "Week N"), the i-th group
+       (0-based) maps to week ``i + 1``. The synthesizer emits groups in
+       week order, so position is the reliable signal when the label is
+       absent.
+
+    For each resolved week the union of every objective's
+    ``source_refs[].chunk_ids`` is taken, then the chunk_ids already
+    gathered from the week's terminal objectives are folded in. Order is
+    preserved (first-seen wins) and ids are de-duplicated.
+    """
+    index: Dict[int, List[str]] = {}
+    seen: Dict[int, set] = {}
+
+    def _add(week: int, cid: str) -> None:
+        if not isinstance(cid, str) or not cid:
+            return
+        bucket = index.setdefault(week, [])
+        seen_set = seen.setdefault(week, set())
+        if cid not in seen_set:
+            seen_set.add(cid)
+            bucket.append(cid)
+
+    for position, group in enumerate(chapter_objective_groups or []):
+        if not isinstance(group, dict):
+            continue
+        week = _chapter_label_to_week_num(group.get("chapter"))
+        if week is None:
+            # Positional fallback: i-th group → week i+1 (groups are
+            # emitted in week order by the synthesizer).
+            week = position + 1
+        for obj in group.get("objectives") or []:
+            if not isinstance(obj, dict):
+                continue
+            for ref in obj.get("source_refs") or []:
+                if not isinstance(ref, dict):
+                    continue
+                for cid in ref.get("chunk_ids") or []:
+                    _add(week, cid)
+
+    for week, cids in (week_terminal_chunk_ids or {}).items():
+        for cid in cids:
+            _add(week, cid)
+
+    return index
+
+
+def _build_week_co_chunk_index(
+    chapter_objective_groups: List[Dict[str, Any]],
+) -> Dict[int, List[List[str]]]:
+    """Build ``{week_num: [[chunk_id, ...] per CO, ...]}`` — the per-objective
+    chunk universe parallel to :func:`_build_week_chunk_id_index`'s union.
+
+    Fix 2A (improvement-map Step 2b). The week-wide union offered by
+    :func:`_build_week_chunk_id_index` is a "semantic grab-bag": every block
+    on every page of a week is offered the UNION of every CO's chunks in that
+    week, so a block authored for one objective can cite chunks belonging to
+    an unrelated topic on the same week (e.g. a "fractions" block pulling
+    prime-factorization / LCM chunks). This index preserves the per-CO split
+    so the caller can NARROW each page's offered universe to a single
+    objective's chunks (positional page→CO scoping), falling back to the
+    week-wide union when a per-CO slice is too thin to ground a block.
+
+    Same RAW *grouped* input + same week-resolution rules as
+    :func:`_build_week_chunk_id_index` (parse ``group["chapter"]`` →
+    ``"Week N"`` → ``N``; positional ``i+1`` fallback when the label does not
+    parse), so a given group lands in the SAME week bucket in both indexes.
+    For each week the value is an ORDERED list of per-CO chunk-id lists, one
+    inner list per objective (group order preserved). Per-CO chunk_ids are
+    de-duplicated WITHIN their own objective; identical ids may recur ACROSS
+    objectives (that overlap is exactly what the union collapses and what the
+    per-CO split deliberately keeps visible). Objectives that resolve to zero
+    chunk_ids contribute an empty inner list (the caller's floor handles it).
+
+    Terminal-objective chunk_ids are intentionally NOT folded in here: they
+    are not objective-scoped at the CO grain (the terminal slice is week-
+    scoped), so folding them would re-introduce the grab-bag this index
+    exists to avoid. They remain available via the week-wide union fallback.
+    """
+    index: Dict[int, List[List[str]]] = {}
+
+    for position, group in enumerate(chapter_objective_groups or []):
+        if not isinstance(group, dict):
+            continue
+        week = _chapter_label_to_week_num(group.get("chapter"))
+        if week is None:
+            week = position + 1
+        week_bucket = index.setdefault(week, [])
+        for obj in group.get("objectives") or []:
+            if not isinstance(obj, dict):
+                continue
+            co_cids: List[str] = []
+            co_seen: set = set()
+            for ref in obj.get("source_refs") or []:
+                if not isinstance(ref, dict):
+                    continue
+                for cid in ref.get("chunk_ids") or []:
+                    if isinstance(cid, str) and cid and cid not in co_seen:
+                        co_seen.add(cid)
+                        co_cids.append(cid)
+            week_bucket.append(co_cids)
+
+    return index
 
 
 async def _run_content_generation_outline(**kwargs) -> str:
@@ -4837,6 +6331,109 @@ async def _run_content_generation_outline(**kwargs) -> str:
     weeks_with_blocks = 0
 
     from lib.ontology.slugs import canonical_slug as _slug
+    from lib.semantic_structure_extractor.semantic_structure_extractor import (
+        _is_noncontent_heading,
+    )
+
+    # ------------------------------------------------------------------ #
+    # Grounded source-chunk resolution (keystone fix).
+    # ------------------------------------------------------------------ #
+    # The DART-HTML topics carry no chunk ``id`` field, so the legacy
+    # ``chunks_lookup`` entries ({heading, paragraphs}) gave the outline
+    # prompt + the grounding-repair helper an EMPTY chunk-id universe —
+    # every block then failed the strict ``source_chunk_ids: minItems 1``
+    # schema. The synthesized objectives ARE fully grounded
+    # (``source_refs[].chunk_ids`` referencing the course chunkset), so we
+    # resolve each block's source-chunk universe from its week's
+    # objectives instead. Load the chunkset into a {chunk_id: text} map;
+    # absent chunkset → fall back to the topic-paragraph behavior (warn,
+    # never crash). Mirrors the course_slug + libv2_root derivation used
+    # by ``_backfill_dart_chunk_lo_refs`` / the CURIE-vocab locator.
+    course_slug = (course_code or project_id or "").lower().replace(
+        "_", "-"
+    ).replace(" ", "-")
+    chunkset_path = (
+        _resolve_libv2_root(kwargs.get("libv2_root"))
+        / "courses"
+        / course_slug
+        / "dart_chunks"
+        / "chunks.jsonl"
+    )
+    chunk_text_map = _load_dart_chunkset_text_map(chunkset_path)
+    chunkset_present = bool(chunk_text_map)
+    if not chunkset_present:
+        logger.warning(
+            "outline phase: chunkset absent/empty at %s — falling back "
+            "to topic-paragraph source_chunks (blocks may fail-closed on "
+            "empty grounding).",
+            chunkset_path,
+        )
+
+    # Build the per-week objective -> chunk_ids index. Terminal-objective
+    # chunk_ids are gathered per-week inside the loop below (the terminal
+    # slice is week-scoped there); chapter objectives are grouped by their
+    # ``chapter`` label / position here. We pre-collect terminal chunk_ids
+    # first so the index folds both signals.
+    week_terminal_chunk_ids: Dict[int, List[str]] = {}
+    if terminal_objectives:
+        _t_step = max(
+            1,
+            (len(terminal_objectives) + duration_weeks - 1) // duration_weeks,
+        )
+        for _wn in range(1, duration_weeks + 1):
+            _start = (_wn - 1) * _t_step
+            _bucket: List[str] = []
+            for _obj in terminal_objectives[_start:_start + _t_step]:
+                if not isinstance(_obj, dict):
+                    continue
+                for _ref in _obj.get("source_refs") or []:
+                    if isinstance(_ref, dict):
+                        for _cid in _ref.get("chunk_ids") or []:
+                            if isinstance(_cid, str) and _cid:
+                                _bucket.append(_cid)
+            if _bucket:
+                week_terminal_chunk_ids[_wn] = _bucket
+    # The flattened ``chapter_objectives`` from ``load_objectives_json``
+    # strips the per-group week label, so the week→chunk_ids index MUST be
+    # rebuilt from the RAW grouped ``synthesized_objectives.json`` on disk
+    # (the same ``objectives_path`` already resolved above). Normalize
+    # whatever shape we find (list-of-groups / flat / dict-of-lists) to
+    # the canonical grouped form before resolving week numbers. Absent /
+    # unreadable file → empty groups → topic-paragraph fallback downstream.
+    chapter_objective_groups: List[Dict[str, Any]] = []
+    if objectives_path:
+        try:
+            _raw_obj_doc = json.loads(
+                Path(objectives_path).read_text(encoding="utf-8")
+            )
+            chapter_objective_groups = _normalize_chapter_objectives_to_groups(
+                _raw_obj_doc.get("chapter_objectives", []) or []
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning(
+                "outline phase: could not load grouped chapter_objectives "
+                "from %s (%s) — week chunk-id index will rely on terminal "
+                "objectives only.",
+                objectives_path, exc,
+            )
+            chapter_objective_groups = []
+    week_chunk_id_index = _build_week_chunk_id_index(
+        chapter_objective_groups,
+        week_terminal_chunk_ids=week_terminal_chunk_ids,
+    )
+    # Fix 2A (Step 2b): per-week per-CO chunk universe (parallel to the
+    # week-wide union above) so each page can be NARROWED to a single
+    # objective's chunks instead of the whole-week grab-bag.
+    week_co_chunk_index = _build_week_co_chunk_index(chapter_objective_groups)
+
+    # Per-run resolution counters for the summary decision capture.
+    n_blocks_resolved_from_objectives = 0
+    n_blocks_fallback_to_topic = 0
+    total_resolved_chunk_ids = 0
+    # Fix 2A: per-run objective-scoping counters (page-level narrowing).
+    _OBJ_SCOPE_MIN_CHUNKS = 2  # floor below which a page reverts to week-wide
+    n_pages_objective_scoped = 0
+    n_pages_week_fallback = 0
 
     for week_num in range(1, duration_weeks + 1):
         week_topics = (
@@ -4844,6 +6441,28 @@ async def _run_content_generation_outline(**kwargs) -> str:
             if (week_num - 1) < len(topics_by_week)
             else []
         )
+        # Secondary fix: drop topics whose heading is non-content noise
+        # (donor-name / answer-key / front-matter) so they don't become
+        # block IDs carrying junk like
+        # ``...#objective_charles-koch-foundation_0``. The filter runs on
+        # the topic's raw ``heading`` (the same text that seeds ``slug_value``
+        # below), which is the correct field/stage.
+        #
+        # All-filtered fallback: when EVERY topic in a week is non-content
+        # noise (e.g. week 1 of an OpenStax corpus, whose only topic is the
+        # donor-acknowledgments h3), DON'T re-admit the noise verbatim —
+        # that re-seeds the donor name into the block_id slug, which is the
+        # exact leak observed in the live run. Instead empty the topic list
+        # so the week falls through to the ``page_count = max(0, 1) = 1``
+        # minimum below and emits ONE block with a neutral ``week_NN``
+        # heading. The week never silently loses all its blocks (grounding
+        # still comes from the week's objectives), and no donor/answer-key
+        # name ever becomes a block id.
+        if week_topics:
+            week_topics = [
+                t for t in week_topics
+                if not _is_noncontent_heading((t or {}).get("heading"))
+            ]
         week_objectives = []
         if terminal_objectives:
             t_step = max(
@@ -4859,7 +6478,9 @@ async def _run_content_generation_outline(**kwargs) -> str:
             str(o.get("id")) for o in week_objectives if o.get("id")
         )
 
-        # One block stub per topic (or one minimum if no topics).
+        # One PAGE per topic (or one minimum if no topics). Each page
+        # emits a block PLAN of several block_types — see _PAGE_BLOCK_PLAN
+        # below.
         topic_count = len(week_topics)
         page_count = max(topic_count, 1)
         week_block_added = False
@@ -4868,54 +6489,228 @@ async def _run_content_generation_outline(**kwargs) -> str:
             heading = (topic or {}).get("heading") or f"week_{week_num:02d}"
             page_id = f"week_{week_num:02d}_content_{i + 1:02d}"
             slug_value = _slug(heading or "content")
-            # Follow-up #34 (W3.C interaction): the outline-tier emits
-            # one stub Block per topic with no semantic discriminator
-            # yet — the rewrite tier specialises it. Pre-fix this stub
-            # was stamped ``block_type="explanation"`` which trips two
-            # subtle issues: (a) the W3.C ``explanation`` matrix entry
-            # in ``Courseforge/config/block_routing.yaml`` requires
-            # ``source_ref`` + ``content_type`` (NOT ``curie_anchoring``),
-            # so the in-loop validator chain is filtered down to a
-            # subset that doesn't catch curie-less stub content, and
-            # (b) every page emits at least one ``objective`` block
-            # downstream anyway, so ``"objective"`` is a more honest
-            # default for an empty-content stub. The ``objective``
-            # matrix requires ``curie_anchoring`` + ``source_ref``,
-            # which exercises the in-loop chain harder and fails-loud
-            # against curie-less drafts.
-            block_id = Block.stable_id(
-                page_id=page_id,
-                block_type="objective",
-                slug=slug_value,
-                idx=i,
+            page_key_terms = tuple((topic or {}).get("key_terms") or [])
+
+            # ---------------------------------------------------------- #
+            # Fix 2A (improvement-map Step 2b): narrow the page's offered
+            # chunk universe from week-wide to OBJECTIVE-scoped.
+            # ---------------------------------------------------------- #
+            # The week-wide ``week_chunk_id_index`` is the UNION of every
+            # CO's chunks in the week — a "semantic grab-bag" that lets a
+            # block authored for one objective cite chunks from an unrelated
+            # topic on the same week. We NARROW each page to a single
+            # objective's chunks via POSITIONAL page→CO mapping (page ``i``
+            # → the week's ``i``-th CO), which is deterministic and needs no
+            # fuzzy topic↔objective match. Both prior 1A/1B passes prune each
+            # CO's chunk set upstream, so the per-CO slice we narrow to is
+            # already clean.
+            #
+            # GRACEFUL FALLBACK (mandatory): if the per-CO slice is empty or
+            # below ``_OBJ_SCOPE_MIN_CHUNKS`` (no CO at this page index, or a
+            # CO grounded by < floor chunks), REVERT this page to the
+            # week-wide union so a block is never starved of grounding (which
+            # would regress the keystone source-chunk fix). ANTI-FABRICATION:
+            # the per-CO slice is always a SUBSET of the week union (built
+            # from the same ``source_refs[].chunk_ids``), so this only ever
+            # NARROWS real chunk sets — it never invents an id.
+            _week_union_cids = week_chunk_id_index.get(week_num, [])
+            _co_slices = week_co_chunk_index.get(week_num, [])
+            _page_scoped_cids = (
+                _co_slices[i] if i < len(_co_slices) else []
             )
-            try:
-                stub = Block(
-                    block_id=block_id,
-                    block_type="objective",
+            _page_objective_scoped = (
+                len(_page_scoped_cids) >= _OBJ_SCOPE_MIN_CHUNKS
+            )
+            if _page_objective_scoped:
+                page_chunk_cids = _page_scoped_cids
+                n_pages_objective_scoped += 1
+            else:
+                page_chunk_cids = _week_union_cids
+                n_pages_week_fallback += 1
+                if _co_slices or _week_union_cids:
+                    logger.info(
+                        "outline phase: week %d page %d objective-scope "
+                        "fallback to week-wide union (per-CO slice had %d "
+                        "chunk(s) < floor %d; week union has %d) — block not "
+                        "starved of grounding.",
+                        week_num, i + 1, len(_page_scoped_cids),
+                        _OBJ_SCOPE_MIN_CHUNKS, len(_week_union_cids),
+                    )
+
+            # ---------------------------------------------------------- #
+            # Keystone fix (hollow-course defect): emit a block PLAN per
+            # page, not a lone ``objective`` stub.
+            # ---------------------------------------------------------- #
+            # Pre-fix, every page emitted exactly ONE ``block_type=
+            # "objective"`` stub, and the rewrite tier kept it as an
+            # objective — so the published course carried the objective
+            # statement and ZERO instructional prose (no explanation, no
+            # worked example). The course was hollow.
+            #
+            # The fix emits, per page, the objective block PLUS at least
+            # one prose block (``explanation`` + ``example``) that the
+            # rewrite tier authors into real 7B-generated instructional
+            # content. Both prose types are first-class ``BLOCK_TYPES``:
+            # the OutlineProvider has bounds/schema/grammar for them
+            # (``_OUTLINE_KIND_BOUNDS``), and the RewriteProvider has a
+            # per-type HTML output contract (``_BLOCK_TYPE_OUTPUT_
+            # CONTRACTS``) that stamps ``data-cf-content-type`` +
+            # explanatory ``<p>`` paragraphs.
+            #
+            # W3.C validator-matrix interaction (the reason the old
+            # comment retreated to ``objective``): ``explanation`` /
+            # ``example`` require ``source_ref`` + ``content_type`` (NOT
+            # ``curie_anchoring``). Both are satisfiable for prose:
+            #   * ``content_type`` — the outline LLM emits a canonical
+            #     value from ``_CONTENT_TYPE_ENUM`` (Ollama structured
+            #     decoding forces it), and the rewrite contract stamps
+            #     ``data-cf-content-type`` on the heading. We do NOT need
+            #     ``objective``'s content-type SKIP carve-out.
+            #   * ``source_ref`` — resolved from the page's grounded
+            #     objectives via the SAME chunk-universe resolution the
+            #     objective stub used (``_resolve_page_chunks`` below).
+            #   * CURIE anchoring — moot: ``explanation`` / ``example``
+            #     do not require it, and the dynamic CURIE-minting pass
+            #     (``_mint_outline_curies``) still stamps minted CURIEs
+            #     onto these blocks' ``key_claims`` for the audit trail.
+            # Unlike ``objective`` (which carries ``escalate_immediately:
+            # true`` and skips the outline tier), the prose block_types
+            # DISPATCH through the outline + rewrite tiers, which is what
+            # produces the 7B prose.
+            page_block_specs: List[Tuple[str, int, str]] = []
+            for spec_offset, (spec_type, spec_bloom) in enumerate(
+                _PAGE_BLOCK_PLAN
+            ):
+                page_block_specs.append((spec_type, spec_offset, spec_bloom))
+
+            page_block_added = False
+            for spec_type, spec_idx, spec_bloom in page_block_specs:
+                block_id = Block.stable_id(
                     page_id=page_id,
-                    sequence=i,
-                    content="",
-                    objective_ids=objective_ids,
-                    key_terms=tuple((topic or {}).get("key_terms") or []),
+                    block_type=spec_type,
+                    slug=slug_value,
+                    idx=spec_idx,
                 )
-            except (TypeError, ValueError) as exc:
-                logger.warning(
-                    "outline phase: skipping malformed Block stub "
-                    "for week=%d, page=%d: %s",
-                    week_num, i + 1, exc,
-                )
-                continue
-            all_blocks.append(stub)
-            chunks_lookup[block_id] = [
-                {
-                    "heading": heading,
-                    "paragraphs": (topic or {}).get("paragraphs") or [],
-                }
-            ]
-            week_block_added = True
+                try:
+                    stub = Block(
+                        block_id=block_id,
+                        block_type=spec_type,
+                        page_id=page_id,
+                        sequence=spec_idx,
+                        content="",
+                        objective_ids=objective_ids,
+                        key_terms=page_key_terms,
+                        # Bloom-diversity fix: carry the per-template target
+                        # Bloom onto the stub. The outline provider surfaces
+                        # it as a per-block directive + enforces it as a
+                        # floor after the LLM emits.
+                        target_bloom=spec_bloom,
+                    )
+                except (TypeError, ValueError) as exc:
+                    logger.warning(
+                        "outline phase: skipping malformed Block stub "
+                        "for week=%d, page=%d, type=%s: %s",
+                        week_num, i + 1, spec_type, exc,
+                    )
+                    continue
+                all_blocks.append(stub)
+                # Resolve this block's source-chunk universe from its
+                # week's grounded objectives. Only emit chunk dicts whose
+                # id resolves to real text in the chunkset — NEVER
+                # fabricate provenance. Each entry is a plain
+                # ``{id, text, heading}`` dict (str->str) so the
+                # ``outline_chunks.json`` sidecar stays JSON-serializable
+                # and the rewrite tier can rehydrate it verbatim.
+                # ``id`` + ``text`` are what the router prompt +
+                # ``_block_source_chunk_ids`` consume. EVERY block on the
+                # page shares the same page-grounded chunk universe
+                # (``page_chunk_cids`` — objective-scoped when the per-CO
+                # slice clears the floor, else the week-wide union), so a
+                # prose block is grounded identically to its objective.
+                resolved_chunks: List[Dict[str, str]] = []
+                if chunkset_present:
+                    for cid in page_chunk_cids:
+                        body = chunk_text_map.get(cid)
+                        if body:
+                            resolved_chunks.append({
+                                "id": cid,
+                                "text": body,
+                                "heading": heading,
+                            })
+                if resolved_chunks:
+                    chunks_lookup[block_id] = resolved_chunks
+                    n_blocks_resolved_from_objectives += 1
+                    total_resolved_chunk_ids += len(resolved_chunks)
+                else:
+                    # Honest degrade: a block whose objectives resolve to
+                    # zero real chunks (or no chunkset) keeps the
+                    # topic-derived entry. That block may still fail-closed
+                    # downstream, which is acceptable — we never fabricate
+                    # an id with no text.
+                    chunks_lookup[block_id] = [
+                        {
+                            "heading": heading,
+                            "paragraphs": (topic or {}).get("paragraphs")
+                            or [],
+                        }
+                    ]
+                    n_blocks_fallback_to_topic += 1
+                page_block_added = True
+            week_block_added = week_block_added or page_block_added
         if week_block_added:
             weeks_with_blocks += 1
+
+    # Summary decision capture for grounded source-chunk resolution. One
+    # event per run (per-block logging would flood). Rationale interpolates
+    # the dynamic per-run counts so the capture is replayable.
+    if capture is not None:
+        _n_obj = n_blocks_resolved_from_objectives
+        _n_topic = n_blocks_fallback_to_topic
+        _mean_cids = (
+            round(total_resolved_chunk_ids / _n_obj, 2) if _n_obj else 0.0
+        )
+        try:
+            capture.log_decision(
+                decision_type="content_selection",
+                decision=(
+                    f"Resolved per-block source chunks from grounded "
+                    f"objectives for {_n_obj} block(s); fell back to "
+                    f"topic-paragraphs for {_n_topic}. Page-scoping: "
+                    f"{n_pages_objective_scoped} page(s) narrowed to a single "
+                    f"objective's chunks, {n_pages_week_fallback} reverted to "
+                    f"the week-wide union."
+                ),
+                rationale=(
+                    f"Chunkset {'loaded' if chunkset_present else 'ABSENT'} "
+                    f"at {chunkset_path} carrying {len(chunk_text_map)} "
+                    f"chunks; {_n_obj} blocks resolved {total_resolved_chunk_ids} "
+                    f"objective-grounded chunk_ids (mean {_mean_cids}/block), "
+                    f"{_n_topic} blocks fell back to topic-paragraph shape "
+                    f"(empty grounding → may fail-closed; never fabricated). "
+                    f"Fix 2A page-level narrowing (Step 2b): "
+                    f"{n_pages_objective_scoped} page(s) were objective-scoped "
+                    f"(positional page→CO; per-CO slice cleared the "
+                    f"{_OBJ_SCOPE_MIN_CHUNKS}-chunk floor, shrinking the "
+                    f"week-wide semantic grab-bag to one topic), "
+                    f"{n_pages_week_fallback} page(s) reverted to the week-wide "
+                    f"union (no CO at the page index or per-CO slice below the "
+                    f"floor — never starved; narrowing only ever subsets real "
+                    f"chunk sets)."
+                ),
+                ml_features={
+                    "chunkset_present": chunkset_present,
+                    "chunkset_chunks_loaded": len(chunk_text_map),
+                    "blocks_resolved_from_objectives": _n_obj,
+                    "blocks_fallback_to_topic": _n_topic,
+                    "total_resolved_chunk_ids": total_resolved_chunk_ids,
+                    "mean_chunk_ids_per_resolved_block": _mean_cids,
+                    "pages_objective_scoped": n_pages_objective_scoped,
+                    "pages_week_fallback": n_pages_week_fallback,
+                    "objective_scope_min_chunks": _OBJ_SCOPE_MIN_CHUNKS,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     # Worker W2: dispatch each block through
     # ``router.route_with_self_consistency`` with the resolved
@@ -4958,6 +6753,38 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 continue
 
     # ------------------------------------------------------------------ #
+    # FIX 2 — drop hallucinated objective refs.
+    # ------------------------------------------------------------------ #
+    # The 7B outline tier occasionally references an objective id that is
+    # not in the canonical synthesized set (e.g. ``TO-08`` when only four
+    # terminal objectives exist, or a stray ``cf:CO-36`` CURIE that leaked
+    # into ``objective_refs``). Load the canonical id set EXACTLY the way
+    # ``BlockPageObjectivesValidator`` does — via the gate's own
+    # ``_load_canonical_objectives`` over ``synthesized_objectives.json``
+    # — so the repair and the gate agree on the universe; then drop any
+    # ref not in it. Never invents a ref; valid week refs preserved.
+    canonical_obj_ids: Set[str] = set()
+    if objectives_path:
+        try:
+            from Courseforge.router.inter_tier_gates import (
+                _load_canonical_objectives,
+            )
+            canonical_obj_ids = _load_canonical_objectives(
+                Path(objectives_path)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "outline phase: failed to load canonical objectives for "
+                "objective-ref repair from %s: %s",
+                objectives_path, exc,
+            )
+    _repair_outline_objective_refs(
+        outline_blocks=outline_blocks,
+        canonical_ids=canonical_obj_ids,
+        capture=capture,
+    )
+
+    # ------------------------------------------------------------------ #
     # Dynamic CURIE minting (v0.3.0 corpus-generalization initiative).
     # ------------------------------------------------------------------ #
     # A prose corpus (e.g. an OpenStax textbook) has zero RDF/SHACL
@@ -4979,6 +6806,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
         course_code=course_code,
         kwargs=kwargs,
         capture=capture,
+        chunks_lookup=chunks_lookup,
     )
 
     # ------------------------------------------------------------------ #
@@ -5175,6 +7003,9 @@ async def _run_inter_tier_validation(**kwargs) -> str:
         kwargs_clean.setdefault("page_id", kwargs_clean.get("block_id", ""))
         kwargs_clean.setdefault("sequence", 0)
         kwargs_clean.setdefault("content", "")
+        _touches = _touches_from_entry(entry or {})
+        if _touches:
+            kwargs_clean["touched_by"] = _touches
         try:
             return Block(**kwargs_clean)
         except (TypeError, ValueError) as exc:
@@ -5225,6 +7056,29 @@ async def _run_inter_tier_validation(**kwargs) -> str:
     inputs: dict = {"blocks": blocks}
     if objectives_path is not None:
         inputs["objectives_path"] = str(objectives_path)
+
+    # FIX 1b: thread the per-block grounded source-chunk universe (the
+    # ``outline_chunks.json`` sidecar written next to blocks_outline.jsonl
+    # by _run_content_generation_outline) so BlockCurieAnchoringValidator
+    # can anchor a minted CURIE via its concept's surface form appearing
+    # in the block's REAL provenance, not only its key_claims prose.
+    # Absent / unreadable sidecar → no-op (anchoring runs over key_claims
+    # only; ungrounded blocks still fail closed).
+    source_chunks_sidecar = blocks_path.parent / "outline_chunks.json"
+    if source_chunks_sidecar.exists():
+        try:
+            sc_map = json.loads(
+                source_chunks_sidecar.read_text(encoding="utf-8")
+            )
+            if isinstance(sc_map, dict):
+                inputs["source_chunks_by_block_id"] = sc_map
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "inter_tier_validation: failed to load outline_chunks.json "
+                "sidecar at %s (%s); CURIE anchoring runs over key_claims "
+                "only.",
+                source_chunks_sidecar, exc,
+            )
 
     # v0.3.0 dynamic CURIE minting: thread the per-course minted-CURIE
     # map into the gate inputs so BlockCurieAnchoringValidator can
@@ -5572,6 +7426,19 @@ def _emit_block_synthesis_manifest(
     resolved_total = 0
     tagged_total = 0
     for blk in blocks:
+        # Skip escalation-marked blocks: a block that exhausted its regen
+        # budget / failed validator consensus did NOT undergo successful
+        # synthesis, so it carries no complete provenance manifest to emit
+        # (its touch chain is the outline draft, its content may be the raw
+        # degraded dict). Emitting a partial manifest line for it would fail
+        # MANIFEST_SCHEMA_INVALID (empty synthesis.tiers / malformed shape).
+        # The validation report already classifies these as ``escalated``,
+        # not ``failed``; the manifest mirrors that — escalated blocks are
+        # excluded from the synthesized-block manifest rather than emitted
+        # incomplete. (Fail-closed is preserved: a substantive block with no
+        # synthesis still emits + fails; only marker-bearing escalations skip.)
+        if getattr(blk, "escalation_marker", None):
+            continue
         # W3: ground this block's concept_tags in its CITED chunks BEFORE the
         # projection (which reads content["concept_tags"]). Project once to
         # learn the resolved cited chunk ids, then union the cited chunks'
@@ -5772,6 +7639,12 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         kwargs_clean.setdefault("page_id", kwargs_clean.get("block_id", ""))
         kwargs_clean.setdefault("sequence", 0)
         kwargs_clean.setdefault("content", "")
+        # Rehydrate the touch chain so a CACHED block (resume path) carries
+        # its synthesis provenance into _emit_block_synthesis_manifest; an
+        # empty chain emits synthesis.tiers:[] → MANIFEST_SCHEMA_INVALID.
+        _touches = _touches_from_entry(entry or {})
+        if _touches:
+            kwargs_clean["touched_by"] = _touches
         try:
             return Block(**kwargs_clean)
         except (TypeError, ValueError):
@@ -5840,6 +7713,64 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         _phase_outputs_proxy, capture,
     )
 
+    # Resolve the LibV2 dart_chunks/chunks.jsonl for this course and build a
+    # ``chunk_id -> [real dart:{module_id}#{hash} sourceId]`` map so the rewrite
+    # backstop can stamp REAL, content_grounding-resolvable source refs (the
+    # ids live in each chunk's source.source_references[].sourceId) instead of
+    # the synthetic ``dart:{course-slug}#{chunk_id}`` mint that never resolved.
+    # Hoisted here (before the backstop closure) — the same chunks.jsonl is read
+    # again later for the W3 synthesis manifest (different projection).
+    _course_slug_for_map = (course_code or project_id).lower().replace(
+        "_", "-"
+    ).replace(" ", "-")
+    _dart_chunks_path_for_map = (
+        _resolve_libv2_root(kwargs.get("libv2_root"))
+        / "courses"
+        / _course_slug_for_map
+        / "dart_chunks"
+        / "chunks.jsonl"
+    )
+    _chunk_source_id_map = _build_chunk_source_id_map(_dart_chunks_path_for_map)
+    if capture is not None:
+        try:
+            capture.log_decision(
+                decision_type="content_selection",
+                decision=(
+                    f"Built chunk_id->real-sourceId map covering "
+                    f"{len(_chunk_source_id_map)} chunk(s) from "
+                    f"{_dart_chunks_path_for_map.name}."
+                ),
+                rationale=(
+                    "Rewrite-tier source-ref backstop resolves each block's "
+                    "chunk universe to the REAL dart:{module_id}#{hash} "
+                    "sourceIds (chunk.source.source_references[].sourceId) "
+                    "that content_grounding resolves against the DART staging "
+                    "HTML, instead of minting a synthetic dart:{course-slug}#"
+                    "{chunk_id} that never resolves. An empty map (missing "
+                    "chunkset) makes the backstop fail closed to deferred "
+                    "(empty) attribution rather than fabricate a ref."
+                ),
+                ml_features={
+                    "gate_id": "_run_content_generation_rewrite",
+                    "chunk_source_id_map_size": len(_chunk_source_id_map),
+                    "dart_chunks_path": str(_dart_chunks_path_for_map),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Canonical objective id set (from the W2 outline_objectives.json sidecar,
+    # a flat list of ``{id, ...}`` entries) so the rewrite_page_objectives
+    # backstop can STRIP-UNKNOWN any data-cf-objective-id value the 7B
+    # hallucinated (e.g. a week_27 TO-27/CO-27 not in the canonical set).
+    _canonical_objective_ids: set = set()
+    if isinstance(objectives_payload, list):
+        for _entry in objectives_payload:
+            if isinstance(_entry, dict):
+                _oid = _entry.get("id") or _entry.get("objective_id")
+                if isinstance(_oid, str) and _oid:
+                    _canonical_objective_ids.add(_oid)
+
     # Load source_module_map for page-level source attribution so the
     # rewrite-phase backstop can synthesize per-block source CURIEs both
     # at the block.content level AND at the per-page section wrapper.
@@ -5883,12 +7814,294 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     # the backstop below post-processes the Qwen output (canonical
     # objective IDs + CURIE injection) and the post_rewrite_validation
     # phase runs the validator chain on the corrected content.
+    # Per-block rewrite cache (resume optimization). A prior attempt that was
+    # killed/crashed mid-phase leaves a partial ``blocks_final.jsonl`` on disk.
+    # Reuse its SUCCESSFUL rewrites (real string content, no escalation marker)
+    # so a resume only re-runs the blocks that failed or never completed — not
+    # the whole set. Degraded blocks are deliberately NOT cached, so they get
+    # another attempt. This makes resumes cheap and stops the slow local 7B
+    # from re-authoring already-good blocks.
+    _blocks_final_path_cache = out_dir / "blocks_final.jsonl"
+    _rewrite_cache: Dict[str, dict] = {}
+    if _blocks_final_path_cache.exists():
+        try:
+            for _cl in _blocks_final_path_cache.read_text(
+                encoding="utf-8"
+            ).splitlines():
+                _cl = _cl.strip()
+                if not _cl:
+                    continue
+                _ce = json.loads(_cl)
+                if not isinstance(_ce, dict):
+                    continue
+                _bid = _ce.get("block_id")
+                if (
+                    _bid
+                    and not _ce.get("escalation_marker")
+                    and isinstance(_ce.get("content"), str)
+                    and _ce.get("content", "").strip()
+                ):
+                    _rewrite_cache[_bid] = _ce
+        except (OSError, ValueError):
+            _rewrite_cache = {}
+    if _rewrite_cache and capture is not None:
+        try:
+            capture.log_decision(
+                decision_type="content_selection",
+                decision=(
+                    f"Rewrite resume: reusing {len(_rewrite_cache)} cached "
+                    "rewritten block(s) from a prior attempt; only uncached / "
+                    "previously-failed blocks are re-authored."
+                ),
+                rationale=(
+                    f"Per-block rewrite cache hit ({len(_rewrite_cache)} "
+                    "blocks) from the on-disk blocks_final.jsonl avoids "
+                    "re-running the full block set on a resume after a "
+                    "mid-phase crash/kill on the slow local model."
+                ),
+                ml_features={
+                    "gate_id": "_run_content_generation_rewrite",
+                    "cached_blocks": len(_rewrite_cache),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     rewrite_blocks: list = []
     import dataclasses as _dc
+
+    # Canonical DART slug for minting ``dart:{slug}#{chunk_id}`` source
+    # refs (mirrors lib.validators.source_refs.dart_slug_from_filename so
+    # the minted ids match the staging-manifest join key + the dart_chunks
+    # corpus prefix). The rewrite backstop OVERWRITES the 7B's CURIE-filled
+    # ``data-cf-source-ids`` attribute with these canonical refs resolved
+    # from each block's real source chunks.
+    try:
+        from lib.validators.source_refs import (
+            dart_slug_from_filename as _slug_for_refs,
+        )
+        _rewrite_source_slug = _slug_for_refs(course_code or project_id or "")
+    except Exception:  # noqa: BLE001
+        _rewrite_source_slug = (course_code or project_id or "").lower().replace(
+            "_", "-"
+        ).replace(" ", "-")
+
+    # Page -> union of objective_ids declared by any sibling block on that
+    # page. Blocks whose own ``objective_ids`` is empty (the 7B occasionally
+    # drops the ref on a prose block) inherit the page's objective universe so
+    # the rewrite_page_objectives gate resolves them — mirrors the per-page
+    # grounding-inheritance the objective/explanation blocks already share.
+    _page_objective_ids: Dict[str, list] = {}
+    for _ob in outline_blocks:
+        _pg = getattr(_ob, "page_id", None)
+        if not _pg:
+            continue
+        _bucket = _page_objective_ids.setdefault(_pg, [])
+        _seen_pg = set(_bucket)
+        for _oid in getattr(_ob, "objective_ids", None) or ():
+            if isinstance(_oid, str) and _oid and _oid not in _seen_pg:
+                _bucket.append(_oid)
+                _seen_pg.add(_oid)
+
+    def _apply_str_backstops(rewritten):
+        """Deterministic post-rewrite HTML backstops (NO LLM).
+
+        Applied to BOTH freshly-rewritten blocks and per-block-cache
+        hits, so a resumed run's reused blocks receive the same
+        page-objectives / html-shape / source-ref repairs a fresh run
+        gets. Idempotent: re-running over an already-repaired str body is
+        a no-op (the bogus element is gone, block-id is present, the
+        objective attribute already carries a single canonical id).
+        """
+        if not isinstance(rewritten.content, str):
+            return rewritten
+        new_content = rewritten.content
+        new_content = _BOGUS_SOURCE_ID_EL_RE.sub("", new_content)
+
+        # ---- HTML-shape repair (block-type-agnostic, deterministic) ----
+        # Repair the 7B rewrite-tier PARSE-FAIL malformations (unclosed
+        # span/cite/code, stray </code> closers, CURIE-as-tag pseudo-elements,
+        # bogus <data-cf-block-id=...> pseudo-element) BEFORE attribute
+        # injection so injectors run on parseable HTML. Idempotent: a no-op on
+        # already-valid HTML. NO LLM.
+        new_content = _repair_rewrite_html(new_content)
+
+        # ---- Page-objective inheritance + strip-unknown (block-agnostic) --
+        # A block (objective / explanation / example / any prose) whose own
+        # objective_ids is empty inherits the page's union of sibling
+        # objective_ids so rewrite_page_objectives resolves it. Promote onto
+        # the immutable structural field (the gate's str path prefers it) and
+        # keep canonical_oid in sync for the attribute rewrite below. The
+        # page-objective universe is itself filtered to canonical ids so a
+        # hallucinated sibling can't propagate via inheritance.
+        if not rewritten.objective_ids:
+            inherited = _page_objective_ids.get(rewritten.page_id) or []
+            if _canonical_objective_ids:
+                inherited = [
+                    _oid for _oid in inherited
+                    if _oid in _canonical_objective_ids
+                ]
+            if inherited:
+                rewritten = _dc.replace(
+                    rewritten, objective_ids=tuple(inherited),
+                )
+        if rewritten.objective_ids:
+            canonical_oid = rewritten.objective_ids[0]
+            new_content = _OBJ_ID_RE.sub(
+                f'data-cf-objective-id="{canonical_oid}"',
+                new_content,
+            )
+        elif _canonical_objective_ids:
+            # STRIP-UNKNOWN: the block resolved to NO canonical objective (its
+            # own + page-inherited refs were all empty or hallucinated). Drop
+            # any ``data-cf-objective-id="<value>"`` whose value is not a
+            # canonical objective id so rewrite_page_objectives no longer fires
+            # OBJECTIVE_NOT_IN_CANONICAL on a fabricated TO-NN/CO-NN (week_27).
+            # Lowest-risk repair: strip the offending attribute rather than
+            # remap to a possibly-wrong id. Idempotent (re-run finds nothing).
+            def _strip_unknown_obj(match: "re.Match") -> str:
+                val = match.group(1).strip()
+                if val and val in _canonical_objective_ids:
+                    return match.group(0)
+                return ""
+
+            new_content = _OBJ_ID_RE.sub(_strip_unknown_obj, new_content)
+
+        if "data-cf-block-id" not in new_content:
+            new_content = _inject_block_id_attr(
+                new_content, rewritten.block_id,
+            )
+
+        # ---- Canonical source-ref resolution (block-type-agnostic) -----
+        # The 7B prose tier stamps ``data-cf-source-ids`` with concept CURIEs
+        # (``slug:concept_name``) instead of canonical ``dart:{slug}#{chunk}``
+        # refs, so the rewrite_source_refs gate fires
+        # OUTLINE_BLOCK_INVALID_SOURCE_ID_SHAPE (action=block). Resolve this
+        # block's REAL source chunks from the W2 sidecar (chunks_lookup) into
+        # canonical dart: refs and OVERWRITE the attribute. The displaced
+        # CURIEs are preserved as the curie-anchoring signal (appended hidden
+        # <span data-cf-curie>), not discarded. When the block resolves to
+        # zero grounded chunks we DROP the bad attribute entirely so the block
+        # passes the shape check with deferred (empty) attribution rather than
+        # fabricating a ref.
+        block_chunks_for_refs = (
+            chunks_lookup.get(rewritten.block_id, [])
+            if isinstance(chunks_lookup, dict) else []
+        )
+        canonical_refs = _canonical_source_ids_for_chunks(
+            block_chunks_for_refs,
+            _rewrite_source_slug,
+            chunk_source_id_map=_chunk_source_id_map,
+        )
+        # Harvest CURIE tokens already stamped in any data-cf-source-ids attr
+        # so the curie-anchoring signal survives the overwrite.
+        displaced_curies: List[str] = []
+        _curie_seen: set = set()
+        for _m in _SOURCE_IDS_ATTR_RE.finditer(new_content):
+            for _tok in _m.group(1).split(","):
+                _tok = _tok.strip()
+                if (
+                    _tok
+                    and not _CANONICAL_DART_SOURCE_ID_RE.match(_tok)
+                    and _tok not in _curie_seen
+                ):
+                    displaced_curies.append(_tok)
+                    _curie_seen.add(_tok)
+
+        if canonical_refs:
+            _refs_attr_value = ",".join(canonical_refs)
+            if _SOURCE_IDS_ATTR_RE.search(new_content):
+                new_content = _SOURCE_IDS_ATTR_RE.sub(
+                    f' data-cf-source-ids="{_refs_attr_value}"',
+                    new_content,
+                )
+            else:
+                # No source-ids attribute at all — stamp it onto the first
+                # start tag (same injection mechanism as data-cf-block-id).
+                new_content = _inject_source_ids_attr(
+                    new_content, _refs_attr_value,
+                )
+            # Set BOTH source_ids (HTML attr provenance) AND source_references
+            # (the tuple Block.to_synthesis_manifest derives source_refs[] from
+            # — it reads content["source_refs"] then self.source_references,
+            # NOT source_ids). Populating source_references closes the
+            # manifest_completeness MANIFEST_UNGROUNDED cascade: without it the
+            # manifest projection sees zero source_refs and the completeness
+            # validator flags the block ungrounded.
+            _src_refs_tuple = tuple(
+                {
+                    "sourceId": sid,
+                    "role": "primary",
+                    "extractor": "synthesized",
+                }
+                for sid in canonical_refs
+            )
+            rewritten = _dc.replace(
+                rewritten,
+                source_ids=tuple(canonical_refs),
+                source_references=_src_refs_tuple,
+            )
+        else:
+            # No grounded chunks -> strip the bogus CURIE attribute so the
+            # block fails closed with DEFERRED attribution (empty refs pass
+            # the shape check) instead of a poisoned invalid-shape ref.
+            new_content = _SOURCE_IDS_ATTR_RE.sub("", new_content)
+
+        # Re-attach displaced CURIEs as the curie-anchoring signal — a hidden
+        # span whose TEXT content carries the tokens (the str-path validator
+        # strips tags before scraping, so attribute-borne CURIEs are invisible
+        # to it; text content survives). Idempotent on re-run.
+        if displaced_curies and "data-cf-curie" not in new_content:
+            _curie_text = " ".join(displaced_curies)
+            new_content = (
+                f"{new_content}"
+                f'<span hidden data-cf-curie="{_curie_text}">'
+                f"{_curie_text}</span>"
+            )
+
+        block_sids = list(rewritten.source_ids or ())
+        if not block_sids:
+            block_sids = _page_source_ids(rewritten.page_id)
+        if block_sids and "source-attribution" not in new_content:
+            new_content = (
+                f"{new_content}<cite class=\"source-attribution\">"
+                f"{'; '.join(block_sids)}</cite>"
+            )
+        if new_content != rewritten.content:
+            rewritten = _dc.replace(rewritten, content=new_content)
+        return rewritten
+
     for blk in outline_blocks:
+        _cached_entry = _rewrite_cache.get(blk.block_id)
+        if _cached_entry is not None:
+            _cached_blk = _entry_to_block(_cached_entry)
+            if _cached_blk is not None:
+                rewrite_blocks.append(_apply_str_backstops(_cached_blk))
+                continue
         block_chunks = chunks_lookup.get(blk.block_id, []) if isinstance(
             chunks_lookup, dict
         ) else []
+        # Lift the outline-tier dict-content objective refs onto the
+        # structural Block.objective_ids BEFORE the rewrite. The 7B
+        # outline tier stashes its real LO refs in
+        # ``content["objective_refs"]`` / ``content["objective_ids"]``
+        # (dict shape) rather than the structural field — but the rewrite
+        # tier emits a STR content body, so those dict refs vanish and the
+        # post_rewrite page-objectives gate reads ``objective_ids=None``
+        # (then falls back to scraping whatever the LLM stamped, which is
+        # often a single comma-joined attribute). Promoting them to the
+        # immutable structural field makes them survive into str content
+        # so the canonical-objective check resolves each id individually.
+        if not blk.objective_ids and isinstance(blk.content, dict):
+            _lifted: list = []
+            _lifted_seen: set = set()
+            for _key in ("objective_refs", "objective_ids"):
+                for _oid in blk.content.get(_key) or []:
+                    if isinstance(_oid, str) and _oid and _oid not in _lifted_seen:
+                        _lifted.append(_oid)
+                        _lifted_seen.add(_oid)
+            if _lifted:
+                blk = _dc.replace(blk, objective_ids=tuple(_lifted))
         try:
             rewritten = router.route_rewrite_with_remediation(
                 blk,
@@ -5897,27 +8110,13 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 objectives=objectives_payload,
             )
             # Backstop: scrub Qwen-invented objective IDs onto the
-            # canonical Block.objective_ids, and inject page-level
-            # source CURIEs as <cite> text so the rewrite-tier
-            # CURIE-anchoring validator sees an anchored token.
-            if isinstance(rewritten.content, str):
-                new_content = rewritten.content
-                if rewritten.objective_ids:
-                    canonical_oids = ",".join(rewritten.objective_ids)
-                    new_content = _OBJ_ID_RE.sub(
-                        f'data-cf-objective-id="{canonical_oids}"',
-                        new_content,
-                    )
-                block_sids = list(rewritten.source_ids or ())
-                if not block_sids:
-                    block_sids = _page_source_ids(rewritten.page_id)
-                if block_sids:
-                    new_content = (
-                        f"{new_content}<cite class=\"source-attribution\">"
-                        f"{'; '.join(block_sids)}</cite>"
-                    )
-                if new_content != rewritten.content:
-                    rewritten = _dc.replace(rewritten, content=new_content)
+            # canonical Block.objective_ids, inject the required
+            # data-cf-block-id, strip bogus source-id elements, and
+            # attach page-level source CURIEs as <cite> text. Shared with
+            # the per-block-cache reuse path (see _apply_str_backstops)
+            # so resumed runs get identical repairs without re-rolling the
+            # slow local model.
+            rewritten = _apply_str_backstops(rewritten)
             rewrite_blocks.append(rewritten)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -5996,7 +8195,14 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             # ship into per-page HTML. They persist on disk in
             # blocks_final.jsonl for re-execution / audit, but they
             # never become part of the IMSCC body.
-            if b.escalation_marker is not None and not (b.content or "").strip():
+            # ``b.content`` may be a dict (degraded/escalation blocks carry the
+            # outline-tier structured content, not a rewritten HTML string).
+            # Guard the ``.strip()`` exactly as the body-emit branch below does,
+            # else a dict content raises ``'dict' object has no attribute
+            # 'strip'`` AFTER all blocks are written — failing the whole phase
+            # and triggering a full 3x re-run of every block.
+            _marker_content = b.content if isinstance(b.content, str) else ""
+            if b.escalation_marker is not None and not _marker_content.strip():
                 if capture is not None:
                     try:
                         capture.log_decision(
@@ -6606,6 +8812,45 @@ def _build_tool_registry() -> dict:
                 ch["id"] = cand
                 seen_ids.add(cand)
 
+            # WS6b — collapse re-segmentation. When the structure collapsed
+            # into a single mega-chapter (the DART heading-parser failure
+            # mode: 1 chapter / >40 sections), recover coherent contiguous
+            # pseudo-chapters via contiguity-constrained Ward over section
+            # embeddings BEFORE textbook_structure.json is written. No-op /
+            # graceful pass-through when not collapsed, flag off, or the
+            # numeric stack / embeddings are unavailable. Stamp the recovery
+            # onto structureDiagnostics for auditability.
+            resegment_diagnostics: Optional[Dict[str, Any]] = None
+            try:
+                from lib.semantic_structure_extractor.resegment import (
+                    resegment_collapsed_structure,
+                )
+
+                pre_resegment_chapter_count = len(merged_chapters)
+                pre_resegment_section_count = sum(
+                    len(c.get("sections") or [])
+                    for c in merged_chapters
+                    if isinstance(c, dict)
+                )
+                resegmented = resegment_collapsed_structure(merged_chapters)
+                if (
+                    resegmented is not merged_chapters
+                    and len(resegmented) != pre_resegment_chapter_count
+                ):
+                    resegment_diagnostics = {
+                        "resegmented": True,
+                        "method": "contiguous_ward",
+                        "k": len(resegmented),
+                        "original_section_count": pre_resegment_section_count,
+                    }
+                    merged_chapters = resegmented
+            except Exception as exc:  # noqa: BLE001 - never crash extraction
+                logger.warning(
+                    "objective_extraction: collapse re-segmentation raised "
+                    "(%s); keeping the un-resegmented chapters.",
+                    exc,
+                )
+
             # Wave 24 HIGH-6: when --weeks wasn't explicit, scale to
             # max(8, chapter_count) using the actual chapter count we
             # just extracted. Updates project_config so the planner
@@ -6633,6 +8878,17 @@ def _build_tool_registry() -> dict:
                 "extraction_errors": extraction_errors,
                 "extracted_at": datetime.now().isoformat(),
             }
+
+            # WS6b — stamp the re-segmentation recovery onto the WS4
+            # structureDiagnostics block when it fired (auditable trail).
+            if resegment_diagnostics is not None:
+                existing_diag = textbook_structure.get("structureDiagnostics")
+                if isinstance(existing_diag, dict):
+                    existing_diag.update(resegment_diagnostics)
+                else:
+                    textbook_structure["structureDiagnostics"] = (
+                        resegment_diagnostics
+                    )
 
             # Three-stage textbook synthesis, Wave B / Stage 1 (plan
             # §3.2): when TEXTBOOK_SYNTHESIS_PROVIDER is set, run the
@@ -7006,6 +9262,7 @@ def _build_tool_registry() -> dict:
                                 ),
                                 mint_lo_id=_mint_lo_id,
                                 kwargs=kwargs,
+                                capture=_stage2_capture,
                             )
 
                             # W2 §4.4 — emit the objective_grounding_filter
@@ -7047,7 +9304,15 @@ def _build_tool_registry() -> dict:
                                             f"near_dup_pairs="
                                             f"{_gs.get('near_dup_pairs', 0)}; "
                                             f"embed_available="
-                                            f"{_gs.get('embed_available')}"
+                                            f"{_gs.get('embed_available')}; "
+                                            f"weak_to_link_rate="
+                                            f"{_gs.get('weak_to_link_rate', 0)}; "
+                                            f"to_derivation="
+                                            f"{_gs.get('to_derivation', 'legacy_reconcile')}; "
+                                            f"cluster_count="
+                                            f"{_gs.get('cluster_count', 0)}; "
+                                            f"mean_intra_cluster_cosine="
+                                            f"{_gs.get('mean_intra_cluster_cosine', 0)}"
                                         ),
                                         ml_features={
                                             k: v
@@ -7170,47 +9435,43 @@ def _build_tool_registry() -> dict:
                         "synthesize_objectives_from_topics"
                     )
 
-            # Wave 1.8 — objective-driven dynamic week count. The
-            # extractor phase auto-scaled ``duration_weeks`` to
-            # ``max(8, len(merged_chapters))`` based on chapter count
-            # (a structural proxy). After the synthesizer emits real
-            # CO-NN objectives we have the authoritative signal — the
-            # actual pedagogical surface area the course must teach.
-            # Re-scale to ``max(8, ceil(len(chapter) / _COS_PER_WEEK))``
-            # so a textbook with 6 chapters but 30 chapter objectives
-            # paces at 15 weeks (2 COs/week) instead of 8.
+            # WS5 §3.2 — TO-based dynamic week count (supersedes the Wave 1.8
+            # CO-count formula). After WS1's clustering, ``terminal`` is the
+            # genuine ~8-12 terminal-objective / theme count — the
+            # authoritative pacing signal: one week-block per TO. The COs then
+            # distribute WITHIN each TO's block via the §2.2 coverage-safe
+            # ceil-stride slicer, so NO grounded CO is dropped regardless of
+            # week count (the naive bare ``duration_weeks`` reduction was
+            # REFUTED precisely because it dropped COs; §2.2 makes the cut
+            # safe).
             #
-            # ``_COS_PER_WEEK = 2`` is the typical CC course pace
-            # (calibrated against the RDF/SHACL calibration corpus: 30 COs
-            # / 15 weeks). Override via the ``WAVE18_COS_PER_WEEK``
-            # env var when calibrating against a different course
-            # family. ``not duration_explicit`` preserves operator
-            # intent — when ``--weeks N`` is passed, the synthesizer
-            # respects it regardless of objective count.
+            # ``WAVE18_COS_PER_WEEK`` is REPURPOSED to a within-theme CO
+            # distribution knob (legacy fallback divisor) — it is NO LONGER the
+            # primary week divisor when WS1 supplies real TOs.
             #
-            # Skipped for ``user_supplied_objectives_json``: the
-            # operator's hand-curated LO list pre-encodes pacing
-            # decisions that automatic re-scaling would clobber.
-            if not duration_explicit and mint_method != "user_supplied_objectives_json":
-                _COS_PER_WEEK = int(
-                    os.environ.get("WAVE18_COS_PER_WEEK", "2") or "2"
+            # Override guards preserved VERBATIM:
+            #   ``not duration_explicit`` — when ``--weeks N`` is passed the
+            #     operator's pacing wins, no rescale.
+            #   ``mint_method != "user_supplied_objectives_json"`` — a
+            #     hand-curated ``--reuse-objectives`` LO list pre-encodes
+            #     pacing that automatic re-scaling would clobber.
+            objective_weeks = _ws5_resolve_objective_weeks(
+                num_tos=len(terminal),
+                num_cos=len(chapter),
+                duration_weeks=duration_weeks,
+                duration_explicit=duration_explicit,
+                mint_method=mint_method,
+            )
+            if objective_weeks != duration_weeks:
+                logger.info(
+                    "WS5 re-scale duration_weeks %d -> %d "
+                    "(num_tos=%d, chapter_cos=%d)",
+                    duration_weeks,
+                    objective_weeks,
+                    len(terminal),
+                    len(chapter),
                 )
-                if _COS_PER_WEEK > 0 and chapter:
-                    objective_weeks = max(
-                        8,
-                        (len(chapter) + _COS_PER_WEEK - 1) // _COS_PER_WEEK,
-                    )
-                    if objective_weeks != duration_weeks:
-                        logger.info(
-                            "plan_course_structure: re-scaling "
-                            "duration_weeks from %d (chapter-driven) to "
-                            "%d (objective-driven; %d COs / %d per week)",
-                            duration_weeks,
-                            objective_weeks,
-                            len(chapter),
-                            _COS_PER_WEEK,
-                        )
-                        duration_weeks = objective_weeks
+                duration_weeks = objective_weeks
 
             # Detect textbook_structure_path to record provenance.
             structure_path = (
@@ -7403,6 +9664,31 @@ def _build_tool_registry() -> dict:
                     exc,
                 )
 
+            # WS5 §2.4(A) — build the per-WEEK chapter groups that the
+            # validator's allowed-set builder reads. Each group's objectives
+            # are the SAME ceil-stride slice the emitter places for that week
+            # (single-sourced via Courseforge/scripts/generate_course.py::
+            # _slice_cos_for_week), labeled ``"Week N"`` so the validator's
+            # 1:1 ``[Ww]eek N`` label-map branch resolves exactly the emitter's
+            # week_chapter_cos. ``[dict(c)]`` clones each CO so the persisted
+            # group is independent of the in-memory ``chapter`` list. Empty
+            # ``chapter`` → empty groups (CO-less courses, byte-identical to
+            # the prior empty-list-comprehension result).
+            _ws5_week_chapter_groups: List[Dict[str, Any]] = []
+            if chapter:
+                from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+                    _slice_cos_for_week as _cf_slice_cos_for_week,
+                )
+
+                for _w in range(1, duration_weeks + 1):
+                    _week_cos = _cf_slice_cos_for_week(
+                        chapter, duration_weeks, _w,
+                    )
+                    _ws5_week_chapter_groups.append({
+                        "chapter": f"Week {_w}",
+                        "objectives": [dict(_c) for _c in _week_cos],
+                    })
+
             synthesized = {
                 "course_name": course_name,
                 "generated_from": generated_from,
@@ -7412,10 +9698,18 @@ def _build_tool_registry() -> dict:
                 # Preserve the split-by-hierarchy shape the content
                 # generator + CourseProcessor's load_objectives expect.
                 "terminal_objectives": [dict(t) for t in terminal],
-                "chapter_objectives": [{
-                    "chapter": f"Week {idx}",
-                    "objectives": [dict(c)],
-                } for idx, c in enumerate(chapter, start=1)],
+                # WS5 §2.4(A) — persist ONE chapter group per WEEK whose
+                # objectives are exactly the emitter's ceil-stride slice for
+                # that week (single-sourced via _slice_cos_for_week). The
+                # validator's load_canonical_objectives takes the 1:1
+                # ``"Week N"`` label-map branch over these groups, so
+                # resolve_week_objectives(N) returns exactly the emitter's
+                # week_chapter_cos — emit↔validator parity HOLDS BY
+                # CONSTRUCTION (was per-CO ``"Week {idx}"`` groups, which only
+                # agreed with the stride-`step` emitter when step==1, leaving a
+                # latent LO_SPECIFICITY_VIOLATION at any duration_weeks <
+                # len(chapter)).
+                "chapter_objectives": _ws5_week_chapter_groups,
                 # R7 §5.4 — per-chapter Stage-2 failure isolation.
                 # Persisted so ChapterObjectiveCoverageValidator's
                 # file-fallback (objectives.get("chapter_synthesis_
@@ -7785,11 +10079,21 @@ def _build_tool_registry() -> dict:
                 # assigned to it.
                 week_chapter_cos = []
                 if chapter_objectives:
-                    step = max(1, len(chapter_objectives) // max(1, duration_weeks))
-                    start = (week_num - 1) * step
-                    week_chapter_cos = list(
-                        chapter_objectives[start:start + step + 1]
-                    )[:2] or [chapter_objectives[(week_num - 1) % len(chapter_objectives)]]
+                    # WS5 §2.2 — single-sourced ceil-stride slicer (CEIL step
+                    # + slice width ``step`` + ``[:cap]`` where cap defaults to
+                    # ``step``). Lifts the legacy ``[:2]`` truncation that
+                    # silently dropped grounded COs at any weeks < len(COs).
+                    # Consumes the SAME helper the validator's allowed-set
+                    # builder consumes (Courseforge/scripts/generate_course.py)
+                    # so emit-week-N ids == validator-allowed-week-N ids by
+                    # construction.
+                    from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+                        _slice_cos_for_week as _cf_slice_cos_for_week,
+                    )
+
+                    week_chapter_cos = _cf_slice_cos_for_week(
+                        chapter_objectives, duration_weeks, week_num,
+                    )
 
                 # Scope terminals per week. With N terminals and D weeks,
                 # each week claims ceil(N/D) terminals in source order.
@@ -10351,10 +12655,13 @@ def _build_tool_registry() -> dict:
 
             (a) read ``textbook_structure.json``, pull ``chapters[]``
                 with ``chapter_text``;
-            (b) N per-chapter ``synthesize_concepts`` calls, batched
-                ≤10 (plan §5.3);
-            (c) merge per-chapter concepts into a course vocabulary,
-                de-dup on ``canonical_slug``;
+            (b) WINDOW each chapter's DART chunks (parity with Stage-2
+                objective windowing) and dispatch ONE
+                ``synthesize_concepts`` call per WINDOW (not per chapter),
+                batched ≤10 (plan §5.3) — so a mega-chapter corpus drives
+                many concept calls instead of one;
+            (c) UNION + de-dup the per-window concepts into a course
+                vocabulary on ``canonical_slug``;
             (d) compile via ``compile_domain_concept_seeds``;
             (e) re-tag each chunk: ``extract_concept_tags(text, item,
                 domain_concept_seeds=seeds)``, UNION into
@@ -10429,58 +12736,165 @@ def _build_tool_registry() -> dict:
                 )
                 return None
 
-            # --- (b) N per-chapter calls, batched ≤10 ----------------------
-            per_chapter_concepts: List[Dict[str, Any]] = []
-            chapter_synthesis_failures: List[str] = []
-            chapters_synthesized = 0
+            # --- (b) N per-WINDOW calls, batched ≤10 -----------------------
+            # Parity with Stage-2 (``_run_stage2_window_synthesis``): instead
+            # of ONE ``synthesize_concepts`` call per chapter, group each
+            # chapter's DART chunks into serving-window-sized windows
+            # (``group_chunks_into_windows``, the SAME helper + ``num_ctx``
+            # env knob Stage 2 uses) and dispatch ONE call per window. A
+            # corpus that collapses to a single mega-chapter (the OpenStax
+            # 7B failure) then drives many concept calls — not one — so the
+            # vocabulary approaches the corpus's real concept count instead
+            # of whatever fits a single truncated chapter_text prompt.
+            from lib.objectives.chunk_window import (
+                chunks_for_chapter as _chunks_for_chapter,
+                group_chunks_into_windows as _group_chunks_into_windows,
+            )
+            from Courseforge.generators._textbook_synthesis_provider import (
+                _SYNTHESIS_NUM_CTX_ENV as _CONCEPT_NUM_CTX_ENV,
+                _TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT as _CONCEPT_SYSTEM_PROMPT,
+            )
+            from lib.retrieval._prompts import (
+                resolve_num_ctx as _resolve_num_ctx,
+            )
 
-            def _one_chapter(chapter: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-                """Synchronous per-chapter call; runs in an executor."""
+            # Serving-window token budget — same resolution chain Stage-2
+            # uses (TEXTBOOK_SYNTHESIS_NUM_CTX > resolve_num_ctx()).
+            _num_ctx_env = os.environ.get(_CONCEPT_NUM_CTX_ENV)
+            _num_ctx = _resolve_num_ctx()
+            if _num_ctx_env:
+                try:
+                    _maybe = int(_num_ctx_env)
+                    if _maybe > 0:
+                        _num_ctx = _maybe
+                except (TypeError, ValueError):
+                    pass
+            _max_tokens = int(getattr(provider, "_max_tokens", 4096) or 4096)
+
+            # Build the flat ordered window list across every chapter. Each
+            # window is packaged as a per-window PSEUDO-CHAPTER that
+            # ``synthesize_concepts`` consumes unchanged: it carries the REAL
+            # chapter_id (so concept ``chapter_ids`` provenance stays correct)
+            # plus the joined window-chunk text as ``chapter_text`` (the field
+            # ``_chapter_text_bounded`` reads). When a chapter has NO joinable
+            # chunks, fall back to the chapter's own ``chapter_text`` as a
+            # single window so a chunk-less chapter still synthesizes.
+            window_specs: List[Dict[str, Any]] = []  # pseudo-chapter dicts
+            for chapter in chapters:
                 cid = str(chapter.get("id") or "")
                 try:
+                    chapter_chunks, join_method = _chunks_for_chapter(
+                        chapter, chunks, all_chapters=chapters,
+                    )
+                except Exception as exc:  # noqa: BLE001 — isolate join raise
+                    logger.warning(
+                        "concept_extraction: Stage-3 chunk-join raised on "
+                        "chapter %r (%s); using chapter_text as a single "
+                        "window.", cid, exc,
+                    )
+                    chapter_chunks, join_method = [], "order_fallback"
+                if chapter_chunks:
+                    ch_windows = _group_chunks_into_windows(
+                        chapter,
+                        chapter_chunks,
+                        num_ctx=_num_ctx,
+                        system_prompt=_CONCEPT_SYSTEM_PROMPT,
+                        draft_block="  (none)",
+                        max_tokens=_max_tokens,
+                        join_method=join_method,
+                    )
+                    for w in ch_windows:
+                        wd = w.to_dict()
+                        joined_text = "\n\n".join(
+                            str(c.get("text") or "")
+                            for c in (wd.get("chunks") or [])
+                            if str(c.get("text") or "")
+                        )
+                        window_specs.append({
+                            "id": cid,
+                            "chapter_text": joined_text,
+                            "window_index": int(wd.get("window_index") or 0),
+                            "chunk_ids": list(wd.get("chunk_ids") or []),
+                        })
+                else:
+                    # No joinable chunks — one window from chapter_text.
+                    window_specs.append({
+                        "id": cid,
+                        "chapter_text": str(chapter.get("chapter_text") or ""),
+                        "window_index": 0,
+                        "chunk_ids": [],
+                    })
+
+            per_chapter_concepts: List[Dict[str, Any]] = []
+            # Per-window failure isolation (mirrors Stage-2 §5.4) — recorded
+            # at CHAPTER granularity (deduped) so a chapter whose window(s)
+            # failed surfaces once in ``chapter_synthesis_failures`` and the
+            # existing per-chapter-isolation contract still holds.
+            _failed_chapter_ids: List[str] = []
+            windows_synthesized = 0
+            windows_failed = 0
+
+            def _one_window(spec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                """Synchronous per-window call; runs in an executor.
+
+                ``spec`` is a pseudo-chapter dict carrying the real
+                chapter_id + that window's joined chunk text.
+                """
+                cid = str(spec.get("id") or "")
+                widx = spec.get("window_index")
+                try:
                     return provider.synthesize_concepts(
-                        chapter, course_name=course_name
+                        spec, course_name=course_name
                     )
                 except TextbookSynthesisProviderError as exc:
-                    # Plan §5.4 — per-chapter failure isolation. Record
-                    # the failed chapter, continue with the rest.
+                    # Plan §5.4 — per-window failure isolation. Record the
+                    # failed window, continue with the rest.
                     logger.warning(
-                        "concept_extraction: Stage-3 chapter %r concept "
+                        "concept_extraction: Stage-3 window %r#w%s concept "
                         "call exhausted (%s); degrading per §5.4.",
-                        cid, exc,
+                        cid, widx, exc,
                     )
                     return None
                 except Exception as exc:  # noqa: BLE001 — isolate any raise
                     logger.warning(
-                        "concept_extraction: Stage-3 chapter %r concept "
+                        "concept_extraction: Stage-3 window %r#w%s concept "
                         "call raised (%s); degrading per §5.4.",
-                        cid, exc,
+                        cid, widx, exc,
                     )
                     return None
 
-            loop = _asyncio.get_event_loop()
-            # ``batch_chapters`` is a staticmethod on the provider class;
-            # access it via the constructed instance so a test that
-            # injects a provider FACTORY (not the class itself) still
-            # resolves the helper. Plan §5.3 — batches of ≤10.
-            batches = provider.batch_chapters(chapters)
+            # ``batch_chapters`` is a staticmethod on the provider class
+            # (generic ≤10 batch splitter); reuse it for the window list so
+            # batching/concurrency stays identical to Stage 2 + the legacy
+            # per-chapter path. Plan §5.3 — batches of ≤10.
+            batches = provider.batch_chapters(window_specs)
             for batch in batches:
-                # Dispatch each batch of ≤10 chapters via run_in_executor,
+                # Dispatch each batch of ≤10 windows via run_in_executor,
                 # awaiting the whole batch before the next (plan §5.3 —
                 # "wait for ALL batch completions before next batch").
                 results = await _asyncio.gather(*[
-                    loop.run_in_executor(None, _one_chapter, ch)
-                    for ch in batch
+                    _asyncio.get_running_loop().run_in_executor(
+                        None, _one_window, spec
+                    )
+                    for spec in batch
                 ])
-                for chapter, res in zip(batch, results):
-                    cid = str(chapter.get("id") or "")
+                for spec, res in zip(batch, results):
+                    cid = str(spec.get("id") or "")
                     if res is None:
-                        chapter_synthesis_failures.append(cid)
+                        windows_failed += 1
+                        if cid and cid not in _failed_chapter_ids:
+                            _failed_chapter_ids.append(cid)
                         continue
-                    chapters_synthesized += 1
+                    windows_synthesized += 1
                     for concept in res.get("concepts") or []:
                         if isinstance(concept, dict):
                             per_chapter_concepts.append(concept)
+
+            chapter_synthesis_failures: List[str] = list(_failed_chapter_ids)
+            # ``chapters_synthesized`` retained for the all-fail fallback
+            # check below (now counts windows that returned concepts).
+            chapters_synthesized = windows_synthesized
+            window_call_count = len(window_specs)
 
             # --- (c) merge + de-dup on canonical_slug ----------------------
             from lib.ontology.slugs import canonical_slug as _canonical_slug
@@ -10535,11 +12949,59 @@ def _build_tool_registry() -> dict:
                 "course_slug": course_slug,
                 "provider": getattr(provider, "_provider", ""),
                 "model": getattr(provider, "_model", "") or "",
-                "chapter_call_count": len(chapters),
+                # Repurposed to the TOTAL synthesis CALL count (now one per
+                # WINDOW, not per chapter). The schema
+                # (schemas/knowledge/domain_concept_vocabulary.schema.json)
+                # sets additionalProperties:false, so a distinct
+                # ``window_call_count`` field can't be added without a schema
+                # change; no consumer requires this to equal len(chapters)
+                # (the validator never reads it), so it carries the call count.
+                "chapter_call_count": window_call_count,
                 "chapter_synthesis_failures": chapter_synthesis_failures,
                 "concept_count": len(concepts_out),
                 "concepts": concepts_out,
             }
+
+            # Aggregate Stage-3 window-synthesis decision (the provider
+            # already emits one ``textbook_concept_call`` per call; this
+            # records the windowing roll-up with dynamic signals).
+            if _capture_concept is not None:
+                try:
+                    _capture_concept.log_decision(
+                        decision_type="textbook_concept_call",
+                        decision=(
+                            f"windowed Stage-3 concept synthesis over "
+                            f"{len(chapters)} chapter(s) into "
+                            f"{window_call_count} window(s)"
+                        ),
+                        rationale=(
+                            f"Stage-3 concept synthesis windowed each "
+                            f"chapter's DART chunks (parity with Stage-2 "
+                            f"objective windowing) so a mega-chapter corpus "
+                            f"drives many concept calls. chapters="
+                            f"{len(chapters)}, windows={window_call_count}, "
+                            f"windows_synthesized={windows_synthesized}, "
+                            f"windows_failed={windows_failed}, "
+                            f"failed_chapters={chapter_synthesis_failures!r}, "
+                            f"concepts_after_dedup={len(concepts_out)}, "
+                            f"num_ctx={_num_ctx}, "
+                            f"provider={getattr(provider, '_provider', '')!r}."
+                        ),
+                        ml_features={
+                            "chapters": len(chapters),
+                            "windows": window_call_count,
+                            "windows_synthesized": windows_synthesized,
+                            "windows_failed": windows_failed,
+                            "concepts_after_dedup": len(concepts_out),
+                            "num_ctx": _num_ctx,
+                        },
+                    )
+                except Exception as exc:  # noqa: BLE001 — best-effort
+                    logger.warning(
+                        "concept_extraction: log_decision("
+                        "textbook_concept_window_synthesis) failed (%s).",
+                        exc,
+                    )
 
             # --- all-fail → empty-seed fallback (plan §5.4) ----------------
             if chapters_synthesized == 0 or not concepts_out:

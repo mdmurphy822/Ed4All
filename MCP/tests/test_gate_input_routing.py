@@ -303,6 +303,108 @@ def test_thirteen_courseforge_two_pass_validators_have_builders(
 
 
 # ---------------------------------------------------------------------- #
+# Investigation a6d6291b — the four distractor-quality validators are wired
+# at the outline_* + rewrite_* assessment seams in workflows.yaml but had NO
+# builder registered, so the executor returned __no_builder_registered__ and
+# SKIPPED them with passed=True — they never ran on assessment blocks.
+# ---------------------------------------------------------------------- #
+
+
+DISTRACTOR_VALIDATOR_DOTTED_PATHS = [
+    "lib.validators.distractor_plausibility.DistractorPlausibilityValidator",
+    "lib.validators.distractor_misconception_alignment.DistractorMisconceptionAlignmentValidator",
+    "lib.validators.distractor_structural.DistractorStructuralValidator",
+    "lib.validators.padded_distractor.PaddedDistractorValidator",
+]
+
+
+@pytest.mark.parametrize("validator_path", DISTRACTOR_VALIDATOR_DOTTED_PATHS)
+def test_distractor_validators_have_a_real_builder(
+    validator_path: str,
+) -> None:
+    """Each distractor validator must resolve to a real builder.
+
+    Regression for investigation a6d6291b: these four are wired in
+    config/workflows.yaml but had no builder, so they short-circuited via
+    the executor's __no_builder_registered__ path (SKIPPED, passed=True)
+    and never actually validated assessment blocks.
+    """
+    r = default_router()
+    assert validator_path in r.builders, (
+        f"distractor-validator regression: {validator_path} has no builder "
+        "registered in default_router() — gate silently passes via the "
+        "no-builder skip path."
+    )
+
+
+@pytest.mark.parametrize("validator_path", DISTRACTOR_VALIDATOR_DOTTED_PATHS)
+def test_distractor_builder_yields_blocks(
+    validator_path: str, tmp_path: Path
+) -> None:
+    """The distractor builders must surface ``blocks`` (not a no-op skip).
+
+    All four validators require ``inputs['blocks']`` (filtered internally
+    to assessment_item). Confirm the resolved builder is NOT the
+    __no_builder_registered__ fallthrough and hydrates the blocks list.
+    """
+    blocks_path = _write_blocks_jsonl(
+        tmp_path / "blocks_final.jsonl",
+        [_minimal_block_entry(block_type="assessment_item")],
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        validator_path,
+        _make_rewrite_phase_outputs(blocks_path),
+        {},
+    )
+    assert missing != ["__no_builder_registered__"], (
+        f"{validator_path} resolved to the no-builder fallthrough"
+    )
+    assert missing == []
+    assert "blocks" in inputs and len(inputs["blocks"]) == 1
+    assert inputs["blocks"][0].block_type == "assessment_item"
+
+
+def test_distractor_structural_builder_surfaces_source_chunks(
+    tmp_path: Path,
+) -> None:
+    """DistractorStructuralValidator's builder threads ``source_chunks``.
+
+    Unlike the other three, the structural validator has an optional
+    distractor-not-entailed-by-source entailment sub-check that reads
+    ``inputs['source_chunks']``. It uses the Group-B rewrite-block +
+    source_chunks builder (same as RewriteSourceGroundingValidator), so a
+    populated staging manifest must surface chunk bodies.
+    """
+    blocks_path = _write_blocks_jsonl(
+        tmp_path / "blocks_final.jsonl",
+        [_minimal_block_entry(block_type="assessment_item")],
+    )
+    manifest = tmp_path / "staging_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "files": [
+                    {"source_id": "SRC-1", "text": "source chunk body text"}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.distractor_structural.DistractorStructuralValidator",
+        _make_rewrite_phase_outputs(blocks_path, manifest_path=str(manifest)),
+        {},
+    )
+    assert missing == []
+    assert "blocks" in inputs
+    assert inputs.get("source_chunks", {}).get("SRC-1") == (
+        "source chunk body text"
+    )
+
+
+# ---------------------------------------------------------------------- #
 # Per-builder happy-path fixtures + tests
 # ---------------------------------------------------------------------- #
 
@@ -690,6 +792,13 @@ _W4_OUTLINE_LIB_VALIDATORS_ALLOWLIST = frozenset({
     # Wave 2 W2.D: critical-severity padded-distractor gate. Wired
     # symmetrically at outline + rewrite + trainforge_assessment seams.
     "lib.validators.padded_distractor.PaddedDistractorValidator",
+    # a6d6291b: numeric-value distractor-equivalence gate. Parses each
+    # option to a fractions.Fraction and fails any distractor equal in
+    # value to the correct answer (the 4/6 == 2/3 blind spot token-
+    # Jaccard distinctness can't catch). Same Block-input rewrite-tier
+    # surface as the four distractor gates above; wired symmetrically at
+    # outline + rewrite seams.
+    "lib.validators.assessment_numeric_equivalence.AssessmentNumericEquivalenceValidator",
 })
 
 

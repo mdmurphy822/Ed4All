@@ -44,6 +44,50 @@ def test_grounded_vs_ungrounded_split_and_drop():
     assert result.dropped_count == len(result.ungrounded)
 
 
+def test_per_chunk_prune_drops_non_entailing_cited_chunk():
+    """Fix 1B — a grounded candidate keeps only the entailing cited chunk.
+
+    The candidate cites two chunks; only c1 entails its statement. The
+    per-chunk prune drops c2 (non-entailing) and keeps c1 (≥1 invariant).
+    """
+    chunks_by_id = {
+        "c1": {"id": "c1", "text": "Photosynthesis converts sunlight into glucose energy."},
+        "c2": {"id": "c2", "text": "Medieval heraldry banners and coats of arms history."},
+    }
+    candidates = [
+        _candidate(
+            "Explain how photosynthesis converts sunlight into glucose.",
+            ["c1", "c2"],
+        ),
+    ]
+    nli = FakeNli()
+    result = ground_candidates(candidates, chunks_by_id, nli=nli)
+    assert len(result.grounded) == 1
+    g = result.grounded[0]
+    assert g["grounded"] is True
+    kept = g["source_chunk_ids"]
+    # Non-entailing c2 pruned; entailing c1 kept (≥1 invariant).
+    assert kept == ["c1"]
+    assert g.get("grounding_chunk_pruned") is True
+    # source_refs resynced to match.
+    assert g["source_refs"][0]["chunk_ids"] == ["c1"]
+
+
+def test_per_chunk_prune_keeps_at_least_one():
+    """Fix 1B — a single cited entailing chunk is never pruned away."""
+    chunks_by_id = {
+        "c1": {"id": "c1", "text": "Photosynthesis converts sunlight into glucose energy."},
+    }
+    candidates = [
+        _candidate("Explain how photosynthesis converts sunlight into glucose.", ["c1"]),
+    ]
+    result = ground_candidates(candidates, chunks_by_id, nli=FakeNli())
+    assert len(result.grounded) == 1
+    assert result.grounded[0]["source_chunk_ids"] == ["c1"]
+    # No prune flag when nothing was dropped.
+    assert "grounding_chunk_pruned" not in result.grounded[0]
+
+
 def test_nli_absent_passthrough(monkeypatch):
     """NLI unavailable (extras absent) → pass-through, nothing dropped.
 

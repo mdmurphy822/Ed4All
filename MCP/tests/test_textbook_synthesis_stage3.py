@@ -630,3 +630,273 @@ def test_stage3_deslug_alias_tags_spaced_prose(
         "visual-hierarchy", "color-contrast", "white-space",
         "focus-indicator", "responsive-layout", "semantic-markup",
     }, f"expected a de-slugged concept node; got {sorted(node_ids)}"
+
+
+# ---------------------------------------------------------------------------
+# Window-synthesis parity (Stage-3 windows over chunks, not one call/chapter).
+#
+# Mirrors the Stage-2 ``_run_stage2_window_synthesis`` windowing. A corpus
+# that collapses to ONE mega-chapter must still drive MANY ``synthesize_concepts``
+# calls (one per window), and the resulting vocabulary must UNION + dedup the
+# per-window concepts. A single failing window must NOT abort the phase.
+# ---------------------------------------------------------------------------
+
+
+class _WindowCountingStubProvider:
+    """Stub that records EVERY ``synthesize_concepts`` call.
+
+    Returns ``concepts_per_window`` DISTINCT concepts on each call, named
+    deterministically off the call index so the union/dedup math is exact.
+    The N-th call (0-based) for which ``call_index in fail_indices`` raises
+    to exercise per-window failure isolation. ``shared_concept`` (when set)
+    is ALSO returned on every call so dedup-across-windows is observable.
+    """
+
+    def __init__(
+        self,
+        *,
+        concepts_per_window: int = 2,
+        fail_indices: set[int] | None = None,
+        shared_concept: str | None = None,
+        **_kwargs: Any,
+    ) -> None:
+        self._provider = "stub-window"
+        self._model = "stub-window-v1"
+        # Modest serving window so a chunk-rich chapter splits into windows.
+        self._max_tokens = 256
+        self._concepts_per_window = concepts_per_window
+        self._fail_indices = set(fail_indices or set())
+        self._shared_concept = shared_concept
+        self.calls: List[Dict[str, Any]] = []
+
+    def synthesize_concepts(
+        self, chapter: Dict[str, Any], *, course_name: str,
+    ) -> Dict[str, Any]:
+        call_index = len(self.calls)
+        chapter_id = str(chapter.get("id") or "")
+        self.calls.append({
+            "call_index": call_index,
+            "chapter_id": chapter_id,
+            "window_index": chapter.get("window_index"),
+            "chunk_ids": list(chapter.get("chunk_ids") or []),
+            "chapter_text_chars": len(str(chapter.get("chapter_text") or "")),
+        })
+        if call_index in self._fail_indices:
+            raise TextbookSynthesisProviderError(
+                f"stub forced failure on window call {call_index}",
+                code="concepts_exhausted",
+            )
+        concepts: List[Dict[str, Any]] = []
+        for k in range(self._concepts_per_window):
+            term = f"concept call{call_index} item{k}"
+            concepts.append({
+                "canonical": term,
+                "aliases": [],
+                "definition_hint": f"window-distinct concept {term}",
+                "chapter_ids": [chapter_id],
+            })
+        if self._shared_concept:
+            concepts.append({
+                "canonical": self._shared_concept,
+                "aliases": [],
+                "definition_hint": "shared across every window",
+                "chapter_ids": [chapter_id],
+            })
+        return {"chapter_id": chapter_id, "concepts": concepts}
+
+    @staticmethod
+    def batch_chapters(chapters: List[Any], batch_size: int = 10,
+                       ) -> List[List[Any]]:
+        size = max(1, int(batch_size))
+        return [
+            list(chapters[i:i + size])
+            for i in range(0, len(chapters), size)
+        ]
+
+
+def _mega_chapter_chunkset(n_chunks: int = 30) -> List[Dict[str, Any]]:
+    """A chunkset that all maps to ONE chapter (the OpenStax mega-chapter
+    failure shape). No ``source.source_references`` → order-fallback joins
+    every chunk to the single chapter, then windowing splits them.
+    """
+    chunks: List[Dict[str, Any]] = []
+    for i in range(n_chunks):
+        chunks.append({
+            "id": f"mega_chunk_{i:05d}",
+            "text": (
+                f"Passage {i} of a single dense chapter discussing many "
+                f"distinct domain ideas, topic number {i}, in prose that is "
+                f"long enough to fill a serving window on its own when the "
+                f"num_ctx budget is small."
+            ),
+            "chunk_type": "explanation",
+            "concept_tags": [],
+            "learning_outcome_refs": [],
+            "bloom_level": "understand",
+            "difficulty": "intermediate",
+            "source": {
+                "module_id": "week_01",
+                "item_path": f"week_01/page_{i:03d}.html",
+            },
+        })
+    return chunks
+
+
+def _one_mega_chapter() -> Dict[str, Any]:
+    """A textbook_structure with exactly ONE chapter (mega-chapter)."""
+    return {
+        "course_name": "MEGA_STAGE3",
+        "chapters": [
+            {
+                "id": "ch1",
+                "title": "The Only Chapter",
+                "chapter_text": "A single mega-chapter that collapsed.",
+                "sections": [],
+            }
+        ],
+    }
+
+
+def _run_with_provider_instance(
+    tmp_path: Path,
+    *,
+    chunks: List[Dict[str, Any]],
+    structure: Dict[str, Any],
+    provider_instance: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    num_ctx: str = "600",
+) -> Dict[str, Any]:
+    """Like ``_run`` but pins a SHARED provider INSTANCE (so the test can
+    read back ``provider_instance.calls``) and a small num_ctx (so the
+    mega-chapter splits into multiple windows).
+    """
+    def _factory(**_kwargs: Any) -> Any:
+        return provider_instance
+
+    monkeypatch.setenv("TEXTBOOK_SYNTHESIS_NUM_CTX", num_ctx)
+    return _run(
+        tmp_path,
+        chunks=chunks,
+        structure=structure,
+        provider_factory=_factory,
+        provider_env="stub-window",
+        monkeypatch=monkeypatch,
+    )
+
+
+def test_stage3_calls_synthesize_concepts_once_per_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A single mega-chapter with 30 chunks + a small num_ctx must drive
+    MANY ``synthesize_concepts`` calls — one per WINDOW, NOT one per chapter.
+    """
+    provider = _WindowCountingStubProvider(concepts_per_window=2)
+    payload = _run_with_provider_instance(
+        tmp_path,
+        chunks=_mega_chapter_chunkset(30),
+        structure=_one_mega_chapter(),
+        provider_instance=provider,
+        monkeypatch=monkeypatch,
+    )
+    assert payload.get("success") is True, f"payload={payload!r}"
+
+    # The corpus has ONE chapter — the legacy per-chapter path would call
+    # exactly once. Windowing must call MANY more times.
+    n_calls = len(provider.calls)
+    assert n_calls > 1, (
+        "Stage-3 must window over chunks: a 30-chunk mega-chapter under a "
+        f"small num_ctx must drive >1 synthesize_concepts call; got {n_calls}."
+    )
+    # Every call carried the REAL chapter_id (provenance) + a window index.
+    assert {c["chapter_id"] for c in provider.calls} == {"ch1"}
+    assert all(c["window_index"] is not None for c in provider.calls)
+
+    # chapter_call_count now records the TOTAL synthesis CALL count.
+    vocab = json.loads(
+        Path(payload["domain_concept_vocabulary_path"]).read_text("utf-8")
+    )
+    assert vocab["chapter_call_count"] == n_calls, (
+        "chapter_call_count is repurposed to the total synthesis-call (window) "
+        f"count; expected {n_calls}, got {vocab['chapter_call_count']}."
+    )
+
+
+def test_stage3_unions_and_dedups_concepts_across_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The vocabulary UNIONs the per-window-distinct concepts and DEDUPs the
+    one concept shared across every window down to a single entry whose
+    chapter_ids union is preserved.
+    """
+    provider = _WindowCountingStubProvider(
+        concepts_per_window=2, shared_concept="cross window shared concept",
+    )
+    payload = _run_with_provider_instance(
+        tmp_path,
+        chunks=_mega_chapter_chunkset(30),
+        structure=_one_mega_chapter(),
+        provider_instance=provider,
+        monkeypatch=monkeypatch,
+    )
+    assert payload.get("success") is True
+    n_calls = len(provider.calls)
+    assert n_calls > 1
+
+    vocab = json.loads(
+        Path(payload["domain_concept_vocabulary_path"]).read_text("utf-8")
+    )
+    canon = [c["canonical"] for c in vocab["concepts"]]
+    # No duplicate canonicals — dedup is by canonical_slug.
+    assert len(canon) == len(set(canon)), f"dup canonicals: {canon}"
+    assert vocab["concept_count"] == len(vocab["concepts"])
+
+    # UNION math: 2 distinct per window × n_calls windows + 1 shared.
+    expected = (2 * n_calls) + 1
+    assert vocab["concept_count"] == expected, (
+        f"union/dedup mismatch: {n_calls} windows × 2 distinct + 1 shared = "
+        f"{expected}; got {vocab['concept_count']}."
+    )
+    # The shared concept appears EXACTLY ONCE (slugified).
+    from lib.ontology.slugs import canonical_slug
+    shared_slug = canonical_slug("cross window shared concept")
+    assert canon.count(shared_slug) == 1, (
+        "the concept returned by every window must dedup to one entry"
+    )
+
+
+def test_stage3_one_failing_window_does_not_abort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One failing window is isolated (recorded in chapter_synthesis_failures
+    at chapter granularity); the surviving windows still seed the vocabulary
+    and the phase succeeds (§5.4 per-window failure isolation).
+    """
+    provider = _WindowCountingStubProvider(
+        concepts_per_window=2, fail_indices={1},
+    )
+    payload = _run_with_provider_instance(
+        tmp_path,
+        chunks=_mega_chapter_chunkset(30),
+        structure=_one_mega_chapter(),
+        provider_instance=provider,
+        monkeypatch=monkeypatch,
+    )
+    assert payload.get("success") is True, (
+        "one failing window must NOT abort the phase (§5.4)"
+    )
+    n_calls = len(provider.calls)
+    assert n_calls > 1, "need >1 window to exercise per-window isolation"
+
+    vocab = json.loads(
+        Path(payload["domain_concept_vocabulary_path"]).read_text("utf-8")
+    )
+    # The failed window's chapter is recorded (deduped to chapter id).
+    assert vocab["chapter_synthesis_failures"] == ["ch1"], (
+        "the failed window's chapter id must surface in "
+        f"chapter_synthesis_failures; got {vocab['chapter_synthesis_failures']}"
+    )
+    # The surviving (n_calls - 1) windows each contributed 2 distinct concepts.
+    assert vocab["concept_count"] == 2 * (n_calls - 1), (
+        f"surviving windows = {n_calls - 1}; expected {2 * (n_calls - 1)} "
+        f"concepts, got {vocab['concept_count']}."
+    )

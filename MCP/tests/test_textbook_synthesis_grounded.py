@@ -125,6 +125,20 @@ class _StubProvider:
             ]
         }
 
+    def author_terminal_for_cluster(self, cluster_cos, *, course_name,
+                                    cluster_index):
+        # WS1 — author ONE TO per cluster (no id; caller mints). The longest
+        # member statement seeds the summary so the output is deterministic.
+        rep = max(
+            cluster_cos, key=lambda c: len(str(c.get("statement") or "")),
+            default={},
+        )
+        return {
+            "statement": f"Terminal: {rep.get('statement') or ''}",
+            "bloom_level": "understand",
+            "source_refs": [],
+        }
+
     @staticmethod
     def batch_chapters(items, batch_size: int = 10):
         size = max(1, int(batch_size))

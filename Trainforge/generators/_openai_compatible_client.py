@@ -38,6 +38,8 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import math
+import os
 import re as _re
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -64,6 +66,40 @@ DEFAULT_MAX_RETRIES: int = 3
 DEFAULT_RETRY_STATUS_CODES: Tuple[int, ...] = (429, 500, 502, 503, 504)
 DEFAULT_INITIAL_BACKOFF_SECONDS: float = 1.0
 DEFAULT_PROVIDER_LABEL: str = "openai_compatible"
+
+# Cross-cutting env override for the per-request HTTP timeout. When the
+# caller does NOT pass an explicit ``timeout`` to the constructor, the
+# client resolves its default from this env var (falling back to
+# ``DEFAULT_TIMEOUT_SECONDS`` when unset / garbage / non-positive). The
+# motivation is local 7B content-generation (Courseforge outline /
+# rewrite tiers) authoring multi-paragraph prose, which routinely
+# exceeds the 60s default. Resolution / precedence (high → low):
+# explicit per-call ``timeout`` arg > ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS``
+# > ``DEFAULT_TIMEOUT_SECONDS`` (60.0). Mirrors the parse-with-fallback
+# robustness pattern of the other ``ED4ALL_*`` timeout knobs (e.g.
+# ``ED4ALL_ANSWER_TIMEOUT_SECONDS`` in ``lib/retrieval/answer_backend.py``).
+ENV_REQUEST_TIMEOUT: str = "ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS"
+
+
+def resolve_default_timeout() -> float:
+    """Return the default per-request timeout when no explicit value.
+
+    Reads ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` and parses it as a
+    positive float. A missing, unparseable, or non-positive value falls
+    back to :data:`DEFAULT_TIMEOUT_SECONDS` (60.0) — garbage never
+    silently shrinks the timeout to zero / negative.
+    """
+    raw = os.environ.get(ENV_REQUEST_TIMEOUT)
+    if not raw or not str(raw).strip():
+        return DEFAULT_TIMEOUT_SECONDS
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_TIMEOUT_SECONDS
+    # Reject NaN / inf / non-positive — garbage never shrinks the timeout.
+    if not math.isfinite(parsed) or parsed <= 0:
+        return DEFAULT_TIMEOUT_SECONDS
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +131,7 @@ class OpenAICompatibleClient:
         model: str,
         api_key: Optional[str] = None,
         capture: Optional[Any] = None,
-        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        timeout: Optional[float] = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_status_codes: Sequence[int] = DEFAULT_RETRY_STATUS_CODES,
         initial_backoff_seconds: float = DEFAULT_INITIAL_BACKOFF_SECONDS,
@@ -118,7 +154,13 @@ class OpenAICompatibleClient:
                 ignore auth entirely).
             capture: Optional ``DecisionCapture``-shaped object. When
                 set, every call emits one ``llm_chat_call`` event.
-            timeout: Per-call HTTP timeout in seconds.
+            timeout: Per-call HTTP timeout in seconds. When ``None``
+                (the default), the client resolves its timeout from
+                ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (via
+                :func:`resolve_default_timeout`), falling back to
+                ``DEFAULT_TIMEOUT_SECONDS`` (60.0) when that env var is
+                unset / garbage. An explicit value passed here always
+                wins over the env var.
             max_retries: Total attempts the client makes per call,
                 including the initial one. Status codes in
                 ``retry_status_codes`` and transport errors trigger
@@ -166,7 +208,13 @@ class OpenAICompatibleClient:
         self._model = str(model)
         self._api_key = api_key
         self._capture = capture
-        self._timeout = float(timeout)
+        # Explicit per-call timeout wins; otherwise resolve from
+        # ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (fallback 60.0).
+        self._timeout = (
+            float(timeout)
+            if timeout is not None
+            else resolve_default_timeout()
+        )
         self._max_retries = max(1, int(max_retries))
         self._retry_status_codes = frozenset(int(s) for s in retry_status_codes)
         self._initial_backoff_seconds = float(initial_backoff_seconds)
@@ -795,6 +843,8 @@ class OpenAICompatibleClient:
 __all__ = [
     "OpenAICompatibleClient",
     "DEFAULT_TIMEOUT_SECONDS",
+    "ENV_REQUEST_TIMEOUT",
+    "resolve_default_timeout",
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_RETRY_STATUS_CODES",
     "DEFAULT_INITIAL_BACKOFF_SECONDS",

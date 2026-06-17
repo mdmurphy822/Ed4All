@@ -76,8 +76,9 @@ def test_studio_settings_only_studio_routing_tasks(client, sample_settings_doc):
 
     settings_store.save_settings(sample_settings_doc)
     body = client.get("/api/settings/studio").json()
-    # The sample doc carries courseforge_rewrite routing; Studio scope drops it.
-    assert "courseforge_rewrite" not in body["model_routing"]
+    # Both Courseforge two-pass authoring tiers are in Studio scope and surfaced.
+    assert "courseforge_outline" in body["model_routing"]
+    assert "courseforge_rewrite" in body["model_routing"]
     # global (mode/provider/model) is in scope and surfaced.
     assert "global" in body["model_routing"]
 

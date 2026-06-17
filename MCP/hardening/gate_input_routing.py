@@ -620,6 +620,41 @@ def _accepted_block_fields() -> frozenset:
     })
 
 
+def _touches_from_jsonl_entry(entry: Dict[str, Any]) -> tuple:
+    """Reconstruct the ``touched_by`` Touch tuple from a JSONL entry.
+
+    Mirrors ``MCP/tools/pipeline_tools.py::_touches_from_entry`` so the
+    workflow-runner gate-input router and the standalone validation handlers
+    rehydrate the touch chain identically — without it, blocks hydrated here
+    for the manifest-completeness gate carry no provenance and the per-block
+    synthesis manifest would emit ``synthesis.tiers:[]``. Tolerant: a
+    malformed Touch dict is dropped, not fatal. Empty tuple when absent.
+    """
+    raw = entry.get("touched_by")
+    if not isinstance(raw, list):
+        return ()
+    try:
+        from Courseforge.scripts.blocks import Touch  # type: ignore[import-not-found]
+    except Exception:  # noqa: BLE001
+        return ()
+    out = []
+    for d in raw:
+        if not isinstance(d, dict):
+            continue
+        try:
+            out.append(Touch(
+                model=d.get("model", ""),
+                provider=d.get("provider", ""),
+                tier=d.get("tier", ""),
+                timestamp=d.get("timestamp", ""),
+                decision_capture_id=d.get("decision_capture_id", ""),
+                purpose=d.get("purpose", ""),
+            ))
+        except (TypeError, ValueError):
+            continue
+    return tuple(out)
+
+
 def _hydrate_blocks_from_path(blocks_path: Path) -> List[Any]:
     """Deserialise a ``blocks_*_path`` JSONL/JSON file into a List[Block].
 
@@ -695,6 +730,9 @@ def _hydrate_blocks_from_path(blocks_path: Path) -> List[Any]:
         cleaned.setdefault("page_id", cleaned.get("block_id", ""))
         cleaned.setdefault("sequence", 0)
         cleaned.setdefault("content", "")
+        _touches = _touches_from_jsonl_entry(entry)
+        if _touches:
+            cleaned["touched_by"] = _touches
         try:
             blocks.append(Block(**cleaned))
         except (TypeError, ValueError) as exc:
@@ -1183,6 +1221,30 @@ def _build_block_curie_anchoring_input(
     minted = _resolve_minted_curie_map(phase_outputs, workflow_params)
     if minted:
         inputs["minted_curie_map"] = minted
+    # Thread the per-block grounded source-chunk universe (the
+    # ``outline_chunks.json`` sidecar emitted by
+    # ``_run_content_generation_outline``) so the validator can anchor a
+    # minted CURIE via its concept's surface form appearing in the block's
+    # REAL provenance, not only its key_claims prose. This mirrors the
+    # ``_run_inter_tier_validation`` handler's threading so the phase-level
+    # gate and the handler report stay consistent. Absent/unreadable
+    # sidecar → no-op (anchoring runs over key_claims only; ungrounded
+    # blocks still fail closed).
+    ocp = _locate(phase_outputs, "outline_chunks_path")
+    if isinstance(ocp, str) and ocp:
+        sidecar = Path(ocp)
+        if sidecar.exists():
+            try:
+                import json as _json
+                sc_map = _json.loads(sidecar.read_text(encoding="utf-8"))
+                if isinstance(sc_map, dict):
+                    inputs["source_chunks_by_block_id"] = sc_map
+            except (OSError, ValueError) as exc:
+                logger.debug(
+                    "curie-anchoring builder: outline_chunks.json load "
+                    "failed at %s (%s); anchoring over key_claims only.",
+                    ocp, exc,
+                )
     return inputs, []
 
 
@@ -2196,6 +2258,14 @@ def default_router() -> GateInputRouter:
         "Courseforge.router.inter_tier_gates.BlockSourceRefValidator",
         _build_block_input_rewrite,
     )
+    # CB5a — stub-example safety-net gate (post_rewrite_validation only).
+    # Pure HTML/text; needs only the rewrite-tier ``blocks`` surface, so it
+    # reuses the same rewrite-tier Block-input shim as the four
+    # Block*Validators above.
+    r.register(
+        "lib.validators.example_completeness.ExampleCompletenessValidator",
+        _build_block_input_rewrite,
+    )
     # Worker W7: assessment_item payload-shape gate. Same Block-input
     # surface as the four Block*Validators above (filters to
     # block_type == "assessment_item" internally), so it reuses the
@@ -2204,6 +2274,46 @@ def default_router() -> GateInputRouter:
     # blocks_outline_path is present.
     r.register(
         "lib.validators.assessment_item_payload.BlockAssessmentItemPayloadValidator",
+        _build_block_input_rewrite,
+    )
+    # Investigation a6d6291b — the four distractor-quality validators are
+    # wired at the outline_* + rewrite_* assessment seams in workflows.yaml
+    # but had NO builder registered here. On the executor's phase-level gate
+    # path that returned __no_builder_registered__, so the executor marked
+    # them SKIPPED with passed=True and they NEVER ran on assessment blocks.
+    # Each filters internally to block_type == "assessment_item", so all four
+    # need the same rewrite-tier Block surface as the W7 gate above. Three of
+    # them consume only ``inputs['blocks']``; DistractorStructuralValidator
+    # additionally reads an OPTIONAL ``inputs['source_chunks']`` to enable its
+    # distractor-not-entailed-by-source entailment sub-check, so it uses the
+    # Group-B rewrite-block + source_chunks builder (graceful-degrades to the
+    # structural-only check when no chunk bodies resolve).
+    r.register(
+        "lib.validators.distractor_plausibility.DistractorPlausibilityValidator",
+        _build_block_input_rewrite,
+    )
+    r.register(
+        "lib.validators.distractor_misconception_alignment.DistractorMisconceptionAlignmentValidator",
+        _build_block_input_rewrite,
+    )
+    r.register(
+        "lib.validators.padded_distractor.PaddedDistractorValidator",
+        _build_block_input_rewrite,
+    )
+    r.register(
+        "lib.validators.distractor_structural.DistractorStructuralValidator",
+        _build_rewrite_block_input,
+    )
+    # Net-new numeric-equivalence gate (a6d6291b follow-up). The four
+    # distractor validators above do token-Jaccard distinctness only, so a
+    # distractor mathematically EQUAL to the correct answer (4/6 vs 2/3 →
+    # Jaccard 0.0 → "distinct") sails through. This gate parses each option
+    # to a fractions.Fraction and fails any distractor that equals the
+    # correct answer's value. Filters internally to block_type ==
+    # "assessment_item" and consumes only ``inputs['blocks']``, so it reuses
+    # the same rewrite-tier Block surface as the distractor gates above.
+    r.register(
+        "lib.validators.assessment_numeric_equivalence.AssessmentNumericEquivalenceValidator",
         _build_block_input_rewrite,
     )
 
@@ -2234,6 +2344,20 @@ def default_router() -> GateInputRouter:
     # against an empty premise.
     r.register(
         "lib.validators.claim_support.ClaimSupportValidator",
+        _build_rewrite_block_input,
+    )
+    # Numeric-literal grounding gate — the fabrication control for NUMERIC /
+    # math content the NLI gate (block_prose_entailment) cannot provide.
+    # Established this session (content-block-quality iters 5/5b):
+    # DeBERTa-v3-mnli is NUMBER-BLIND (scores a fabricated worked-example input
+    # ABOVE every grounded math claim), and groundedness._is_computational
+    # EXEMPTS such claims, so the NLI gate gives zero numeric fabrication
+    # protection. This gate cross-checks each prose fraction's num/denom pair
+    # against the block's cited source under OCR-tolerant containment. Reuses
+    # the same rewrite-block + source_chunks builder so the source-text premise
+    # is populated from the authoritative DART chunkset chunks.jsonl.
+    r.register(
+        "lib.validators.numeric_literal_grounding.NumericLiteralGroundingValidator",
         _build_rewrite_block_input,
     )
 
@@ -2389,6 +2513,31 @@ def default_router() -> GateInputRouter:
     # when either is absent.
     r.register(
         "lib.validators.terminal_objective_coverage.TerminalObjectiveCoverageValidator",
+        _build_chapter_objective_coverage_inputs,
+    )
+    # WS3 — CoTerminalAlignmentValidator fires at ``course_planning`` as the
+    # warning-severity ``co_terminal_alignment`` gate. It recomputes
+    # cosine(co.statement, assigned_to.statement) per chapter objective to
+    # close the structural-roll-up silent-pass loophole. It consumes the
+    # SAME two inputs as the two coverage validators above
+    # (synthesized_objectives for the CO/TO statements; textbook_structure
+    # accepted-and-ignored for builder-shape compat), so it reuses that
+    # builder verbatim — no new builder.
+    r.register(
+        "lib.validators.co_terminal_alignment.CoTerminalAlignmentValidator",
+        _build_chapter_objective_coverage_inputs,
+    )
+    # WS6a — SourceCoverageValidator fires at ``course_planning`` as the
+    # warning-severity ``source_coverage`` gate. It embeds each
+    # content-bearing textbook section and asserts ≥1 synthesized objective
+    # (CO or TO) covers it above a cosine floor — a measurement guardrail
+    # for an objectives set that misses source material. It consumes the
+    # SAME two inputs as the coverage validators above (synthesized_objectives
+    # for the CO/TO statements; textbook_structure for the chapters[].sections[]
+    # it audits — both surfaced by this builder), so it reuses that builder
+    # verbatim — no new builder.
+    r.register(
+        "lib.validators.source_coverage.SourceCoverageValidator",
         _build_chapter_objective_coverage_inputs,
     )
     # Three-stage textbook synthesis (Wave A/B): TextbookOutlineValidator

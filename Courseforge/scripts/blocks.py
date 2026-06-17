@@ -333,6 +333,20 @@ class Block:
     # — INTENTIONALLY excluded from ``compute_content_hash()`` so a
     # validator retro-fit doesn't drift every existing block hash.
     objective_alignment: Tuple[Dict[str, Any], ...] = ()
+    # Bloom-diversity fix — DETERMINISTIC per-template target Bloom level
+    # carried from the page block plan (``_PAGE_BLOCK_PLAN`` in
+    # ``MCP/tools/pipeline_tools.py``) onto each outline-tier Block stub.
+    # The outline provider surfaces this as a per-block "author at
+    # bloom_level=<target>" directive AND enforces it as a FLOOR after the
+    # LLM emits (the target LIFTS a lazy "understand" but NEVER lowers below
+    # the existing ≥-objective rule). Routing/authoring metadata only —
+    # INTENTIONALLY excluded from ``compute_content_hash()`` (a template
+    # re-target must not drift every existing block hash) and from the
+    # JSON-LD / HTML projections (the resolved ``bloom_level`` is what the
+    # renderer stamps, not this declared target). Stays default ``None``
+    # for blocks emitted before the diversity fix wires in / by callers
+    # that don't carry a target.
+    target_bloom: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:

@@ -245,6 +245,24 @@
         },
         "required": ["question"]
       }
+    },
+    "structureDiagnostics": {
+      "type": "object",
+      "description": "WS4 §4: optional extractor diagnostics. Non-required; absent on a normally-structured extraction. The root has no additionalProperties:false, so this is a non-breaking addition.",
+      "properties": {
+        "structureCollapseSuspected": {
+          "type": "object",
+          "description": "Present when the extractor collapsed the whole textbook into a single chapter with an anomalously high section count (the 141:1 collapse signature). Signals to downstream Stage-1 synthesis that the draft terminal objectives likely under-represent the back of the book.",
+          "properties": {
+            "suspected": { "type": "boolean" },
+            "chapter_count": { "type": "integer" },
+            "section_count": { "type": "integer" },
+            "ratio": { "type": "integer" },
+            "threshold": { "type": "integer" }
+          },
+          "required": ["suspected", "chapter_count", "section_count", "threshold"]
+        }
+      }
     }
   },
   "definitions": {

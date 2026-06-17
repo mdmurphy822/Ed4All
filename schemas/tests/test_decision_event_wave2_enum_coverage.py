@@ -104,6 +104,44 @@ def test_orchestrator_lifecycle_decision_type_present(
     )
 
 
+def test_terminal_objective_authoring_in_enum(
+    decision_type_enum: list[str],
+) -> None:
+    """WS1 — the new bottom-up TO-authoring decision_type is enumerated.
+
+    Fired by ``Courseforge.generators._textbook_synthesis_provider.
+    TextbookSynthesisProvider.author_terminal_for_cluster`` per cluster. A
+    ``DECISION_VALIDATION_STRICT=true`` run fails closed on the very first
+    cluster if this string is missing from the enum.
+    """
+    assert "terminal_objective_authoring" in decision_type_enum
+
+
+def test_terminal_objective_authoring_validates_strict() -> None:
+    """WS1 — a terminal_objective_authoring record validates under strict mode."""
+    from lib.validation import validate_decision
+
+    record = {
+        "run_id": "WF-20260616-ws1auth1",
+        "operation": "terminal_objective_authoring",
+        "decision_type": "terminal_objective_authoring",
+        "decision": "terminal_objective_authoring:MATH_101:cluster_1:success",
+        "rationale": (
+            "course_name=MATH_101; provider=local; model=qwen2.5:14b; "
+            "cluster_index=1; co_count_input=4; output_chars=312; "
+            "retry_count=0; success=True"
+        ),
+        "timestamp": "2026-06-16T00:00:00Z",
+    }
+    is_valid, issues = validate_decision(record, tool="courseforge", strict=False)
+    assert is_valid, f"strict-mode validation rejected the new member: {issues}"
+    # Negative control: a bogus decision_type IS rejected (proves the enum is
+    # actually being enforced, not vacuously passing).
+    bogus = dict(record, decision_type="not_a_real_decision_type")
+    bogus_valid, _ = validate_decision(bogus, tool="courseforge", strict=False)
+    assert not bogus_valid
+
+
 def test_decision_type_enum_alphabetically_sorted(
     decision_type_enum: list[str],
 ) -> None:

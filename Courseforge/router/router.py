@@ -704,7 +704,7 @@ class CourseforgeRouter:
     ) -> BlockProviderSpec:
         """Resolve the :class:`BlockProviderSpec` for ``(block, tier)``.
 
-        Resolution order (Phase 3 §3.3):
+        Resolution order (Phase 3 §3.3, corrected precedence):
 
         1. Per-call ``**overrides`` — when ``provider`` / ``model`` /
            ``base_url`` / ``temperature`` / ``max_tokens`` /
@@ -712,11 +712,14 @@ class CourseforgeRouter:
            wins outright. ``provider`` and ``model`` together fully
            specify the spec; partial overrides (e.g. ``provider`` only)
            merge over the next-most-specific source.
-        2. YAML policy entry for ``(block.block_type, tier)`` — Wave N
-           stub returns ``None``; Subtask 34 fills it in.
-        3. Tier-default env vars
+        2. Tier-default env vars
            (``COURSEFORGE_OUTLINE_PROVIDER`` / ``COURSEFORGE_OUTLINE_MODEL``
            / ``COURSEFORGE_REWRITE_PROVIDER`` / ``COURSEFORGE_REWRITE_MODEL``).
+           An explicit operator-set env var is a deliberate per-run
+           override and beats a checked-in YAML config default
+           (standard env > config-file precedence).
+        3. YAML policy entry for ``(block.block_type, tier)`` — Wave N
+           stub returns ``None``; Subtask 34 fills it in.
         4. Hardcoded defaults table (:data:`_HARDCODED_DEFAULTS`).
         """
         if tier not in _ALLOWED_TIERS:
@@ -735,26 +738,31 @@ class CourseforgeRouter:
         #          — applied LAST in this method so it overlays every
         #            other layer.
         #
-        #   2. YAML policy (``self._policy.resolve(...)``)
-        #          — operator-tunable ``Courseforge/config/block_routing.yaml``;
-        #            wins over env vars + hardcoded defaults.
-        #          — populated by the Subtask-34 loader; ``None`` when no
-        #            YAML file is present (clean checkout) or when the
-        #            policy doesn't carry an entry for this (block_id,
-        #            block_type, tier) triple.
-        #          — applied THIRD in this method (after the env-var
-        #            overlay, BEFORE per-call overrides).
-        #
-        #   3. Tier-default env vars
+        #   2. Tier-default env vars
         #          — ``COURSEFORGE_OUTLINE_PROVIDER`` /
         #            ``COURSEFORGE_OUTLINE_MODEL`` /
         #            ``COURSEFORGE_REWRITE_PROVIDER`` /
         #            ``COURSEFORGE_REWRITE_MODEL``.
-        #          — supplements the baseline; doesn't replace it (env
-        #            vars carry only ``provider`` / ``model``, not the
-        #            full :class:`BlockProviderSpec` shape).
+        #          — an explicit operator-set env var is a deliberate
+        #            per-run override and beats a checked-in YAML config
+        #            default (standard env > config-file precedence).
+        #          — overlays (does NOT replace) the next-lower layer:
+        #            env vars carry only ``provider`` / ``model``, so a
+        #            model-only override leaves a policy spec's
+        #            sampling/other fields intact.
+        #          — applied THIRD in this method (AFTER the policy
+        #            overlay, BEFORE per-call overrides).
+        #
+        #   3. YAML policy (``self._policy.resolve(...)``)
+        #          — operator-tunable ``Courseforge/config/block_routing.yaml``;
+        #            wins over hardcoded defaults but is overlaid by the
+        #            env-var layer above (env > config-file).
+        #          — populated by the Subtask-34 loader; ``None`` when no
+        #            YAML file is present (clean checkout) or when the
+        #            policy doesn't carry an entry for this (block_id,
+        #            block_type, tier) triple.
         #          — applied SECOND in this method (overlays the
-        #            hardcoded baseline before the policy lookup).
+        #            hardcoded baseline before the env-var overlay).
         #
         #   4. Hardcoded defaults table (``_HARDCODED_DEFAULTS``)
         #          — final fallback; covers every (block_type, tier)
@@ -765,7 +773,7 @@ class CourseforgeRouter:
         # priority source wins by overlaying the lower-priority layers.
         # Audit tests pinning this contract:
         # ``test_phase3a_env_var_overrides_hardcoded_default`` and
-        # ``test_phase3a_yaml_wins_over_env_var`` in
+        # ``test_phase3a_env_var_wins_over_yaml`` in
         # ``Courseforge/router/tests/test_router.py``.
 
         # 4. Hardcoded default (always present — populated for every
@@ -784,7 +792,25 @@ class CourseforgeRouter:
         # priority order so the highest-priority source wins.
         resolved: BlockProviderSpec = baseline
 
-        # 3. Tier-default env vars.
+        # 3. YAML policy — Wave N stub. When ``self._policy`` is non-None
+        # and exposes a ``resolve(block_id, block_type, tier)`` method,
+        # honour it. The loader (Subtask 34) returns a BlockProviderSpec
+        # or None; None falls through to the next lower layer.
+        policy_spec = self._policy_lookup(block, tier)
+        if policy_spec is not None:
+            resolved = policy_spec
+
+        # 2. Tier-default env vars — applied AFTER the YAML policy so an
+        # explicit operator-set environment variable
+        # (``COURSEFORGE_OUTLINE_PROVIDER`` / ``COURSEFORGE_OUTLINE_MODEL``
+        # / ``COURSEFORGE_REWRITE_PROVIDER`` / ``COURSEFORGE_REWRITE_MODEL``)
+        # beats a checked-in ``block_routing.yaml`` default (standard
+        # env > config-file precedence). ``_apply_overrides`` OVERLAYS
+        # only the keys present, so a model-only env override does not
+        # wipe the policy spec's sampling/other fields, and ``env_overrides``
+        # already filters None/empty so an unset env var leaves the policy
+        # (or baseline) untouched. Per-call ``**overrides`` below stay the
+        # absolute highest precedence.
         env_provider, env_model = self._read_tier_env(tier)
         env_overrides: Dict[str, Any] = {}
         if env_provider:
@@ -793,14 +819,6 @@ class CourseforgeRouter:
             env_overrides["model"] = env_model
         if env_overrides:
             resolved = self._apply_overrides(resolved, env_overrides)
-
-        # 2. YAML policy — Wave N stub. When ``self._policy`` is non-None
-        # and exposes a ``resolve(block_id, block_type, tier)`` method,
-        # honour it. The loader (Subtask 34) returns a BlockProviderSpec
-        # or None; None falls through to the next lower layer.
-        policy_spec = self._policy_lookup(block, tier)
-        if policy_spec is not None:
-            resolved = policy_spec
 
         # Wave 7b: consult the policy's escalate_immediately_by_block_type
         # fast-lookup map. The loader populates this from per-block-type
@@ -2753,6 +2771,23 @@ class CourseforgeRouter:
             spec = _spec_from_dict(
                 dict(tier_spec), block_type=block.block_type, tier=tier
             )
+            # Dynamic model override: pin the capability-tier model from
+            # the per-tier env var (COURSEFORGE_OUTLINE_MODEL /
+            # COURSEFORGE_REWRITE_MODEL) when set, so an all-local run dials
+            # the shipped license-clean policy's higher-capability default
+            # (14B medium / 32B large) down to whatever local model the
+            # operator configured — e.g. qwen2.5-7b-8k for a "solely 7B"
+            # run — WITHOUT editing the YAML. Only fires for local-provider
+            # tiers (a cloud tier keeps its YAML-pinned model). Mirrors the
+            # env-var-first contract in
+            # policy._maybe_apply_env_model_override, extended to the
+            # capability-tier projection path (which otherwise bypasses it).
+            _tier_model_env = (
+                _ENV_OUTLINE_MODEL if tier == "outline" else _ENV_REWRITE_MODEL
+            )
+            _env_model = (os.environ.get(_tier_model_env) or "").strip()
+            if _env_model and spec.provider == "local":
+                spec = dataclasses.replace(spec, model=_env_model)
             # Stamp the operator-chosen label so the dispatch path's
             # decision-capture rationale records WHICH tier produced
             # the emit.

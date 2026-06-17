@@ -45,6 +45,7 @@ from Courseforge.generators._rewrite_provider import (  # noqa: E402
     RewriteProvider,
     RewriteProviderError,
     SUPPORTED_PROVIDERS,
+    _BLOCK_TYPE_OUTPUT_CONTRACTS,
     _REWRITE_SYSTEM_PROMPT,
     _escape_orphan_placeholder_tags,
     _format_objectives,
@@ -939,3 +940,259 @@ def test_rewrite_system_prompt_carries_behavioral_outcome_directive():
     # (apply / analyze → scaffolded reasoning; evaluate / create →
     # comparison / synthesis / construction prose).
     assert "scaffolded reasoning" in _REWRITE_SYSTEM_PROMPT
+
+
+def test_rewrite_system_prompt_carries_pedagogical_depth_directive():
+    """CB1 system-prompt sentinel: ``_REWRITE_SYSTEM_PROMPT`` must carry
+    the grounded pedagogical-depth directive so the rewrite tier adds
+    instructional depth (rationale / verification / second case / expert
+    tip) WITHOUT fabricating material the source does not supply."""
+    # The named directive block header.
+    assert "PEDAGOGICAL DEPTH (grounded)" in _REWRITE_SYSTEM_PROMPT
+    # Per-block-type depth requirements.
+    assert "CONCEPTUAL RATIONALE" in _REWRITE_SYSTEM_PROMPT
+    assert "VERIFICATION / CHECK" in _REWRITE_SYSTEM_PROMPT
+    assert "two or more" in _REWRITE_SYSTEM_PROMPT  # >=2 worked examples
+    assert "EXPERT TIP" in _REWRITE_SYSTEM_PROMPT
+    # self_check: exactly one correct option, no multiple-true.
+    assert "EXACTLY ONE" in _REWRITE_SYSTEM_PROMPT
+    assert "simultaneously true" in _REWRITE_SYSTEM_PROMPT
+    # Citation hygiene: no raw chunk tokens in visible prose.
+    assert "CITATION HYGIENE" in _REWRITE_SYSTEM_PROMPT
+    assert "[chunk_12]" in _REWRITE_SYSTEM_PROMPT
+    # The load-bearing fabrication guard — depth is grounded, never
+    # invented; the NLI gates fail closed on fabrication.
+    assert "NEVER FABRICATED" in _REWRITE_SYSTEM_PROMPT
+    assert "FAIL CLOSED on fabrication" in _REWRITE_SYSTEM_PROMPT
+
+
+def test_rewrite_system_prompt_carries_instruction_block_authoring_fixes():
+    """Instruction-block authoring sentinel: ``_REWRITE_SYSTEM_PROMPT``
+    must carry the four 7B-vs-Sonnet authoring-defect fixes — self-check
+    answer-behind-reveal, assessment answer-key + value-distinct
+    distractors, structured concept taxonomy, and per-example
+    verification — all under the grounded (never-fabricated) constraint."""
+    # Defect 1 — self-check answer lives behind a reveal, not inline.
+    assert "NEVER REVEAL THE ANSWER INLINE" in _REWRITE_SYSTEM_PROMPT
+    assert "<details><summary>Show answer</summary>" in _REWRITE_SYSTEM_PROMPT
+    # Defect 2 — assessment items mark the correct answer and use
+    # value-distinct (non-equivalent-form) distractors with rationales.
+    assert "ALWAYS EMIT AN ANSWER KEY" in _REWRITE_SYSTEM_PROMPT
+    assert "CLEARLY MARK THE CORRECT ANSWER" in _REWRITE_SYSTEM_PROMPT
+    assert "DISTINCT IN VALUE" in _REWRITE_SYSTEM_PROMPT
+    assert "EQUIVALENT FORM" in _REWRITE_SYSTEM_PROMPT
+    assert "PER-DISTRACTOR RATIONALE" in _REWRITE_SYSTEM_PROMPT
+    # Defect 3 — concept taxonomies use a structured table/list.
+    assert "TAXONOMY / CATEGORIES / MULTIPLE TYPES" in _REWRITE_SYSTEM_PROMPT
+    assert "STRUCTURED `<table>` or `<ul>`" in _REWRITE_SYSTEM_PROMPT
+    # Defect 4 — the verification/check line is mandatory on EVERY
+    # worked example, mirroring the explanation block.
+    assert "MANDATORY ON EVERY WORKED EXAMPLE" in _REWRITE_SYSTEM_PROMPT
+    # The per-block-type output contracts carry the same fixes.
+    assert "Show answer" in _REWRITE_SYSTEM_PROMPT
+    assert "data-cf-correct" in _REWRITE_SYSTEM_PROMPT
+    # The hard fabrication guard still applies to everything added.
+    assert "grounded in the source's own" in _REWRITE_SYSTEM_PROMPT
+
+
+def test_rewrite_assessment_directive_names_canonical_distractor_markup():
+    """Canonical-MCQ-markup sentinel: the assessment_item directive must
+    name the EXACT markup the W7 payload gate
+    (``lib/validators/assessment_item_payload.py``) +
+    distractor-plausibility gate parse — ``<li data-cf-distractor-index>``
+    siblings — plus the correct-answer mechanism the
+    assessment_retrieval_grounding gate reads (``data-cf-correct="true"``
+    flag ON that <li>). A prior fix made the 7B emit an answer key in
+    NON-canonical markup the validators couldn't see; this pins the
+    parseable shape."""
+    # The distractor-index attribute the W7 regex scrapes.
+    assert "data-cf-distractor-index" in _REWRITE_SYSTEM_PROMPT
+    # The correct-answer marker (NOT prose) the grounding gate reads.
+    assert 'data-cf-correct="true"' in _REWRITE_SYSTEM_PROMPT
+    # The directive names the 0-based contiguous-index contract.
+    assert "0-based index" in _REWRITE_SYSTEM_PROMPT
+    assert "EXACTLY ONE" in _REWRITE_SYSTEM_PROMPT
+    # A concrete parseable example is present in the prompt.
+    assert 'data-cf-distractor-index="0"' in _REWRITE_SYSTEM_PROMPT
+    # The per-block-type output contract mirrors the canonical markup.
+    contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["assessment_item"]
+    assert "data-cf-distractor-index" in contract
+    assert 'data-cf-correct="true"' in contract
+
+
+def test_rewrite_assessment_example_parses_under_validator_regexes():
+    """The concrete example embedded in the assessment directive must be
+    parseable by the ACTUAL validator regexes — >=2
+    ``<li data-cf-distractor-index="N">`` siblings (W7) AND a
+    ``data-cf-correct="true"`` flag (retrieval grounding). Guards against
+    a prompt example that drifts from the markup the validators parse."""
+    from lib.validators.assessment_item_payload import (
+        _DATA_CF_DISTRACTOR_INDEX_LI_RE,
+    )
+    from lib.validators.assessment_retrieval_grounding import _LI_CORRECT_RE
+
+    matches = _DATA_CF_DISTRACTOR_INDEX_LI_RE.findall(_REWRITE_SYSTEM_PROMPT)
+    # >=2 distractor-index siblings present, with index 0 contiguous.
+    indices = sorted({int(idx) for idx, _ in matches})
+    assert len(matches) >= 2
+    assert 0 in indices
+    # The correct-answer flag is detectable by the grounding regex.
+    assert _LI_CORRECT_RE.search(_REWRITE_SYSTEM_PROMPT) is not None
+
+
+def test_activity_contract_requires_items_consistent_with_instruction():
+    """Defect A sentinel: the ``activity`` output contract must require every
+    practice item to exercise the SAME operation/skill named in the
+    activity's instruction line, drawn only from the source — closing the
+    7B failure where a "simplify fractions" instruction listed integer
+    expressions that don't exercise the stated skill."""
+    contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["activity"]
+    # Existing structural directives stay intact (additive contract).
+    assert 'data-cf-component="activity"' in contract
+    assert 'data-cf-purpose="practice"' in contract
+    assert "data-cf-source-ids" in contract
+    # New directive: items exercise the same operation/skill as the
+    # instruction line, drawn only from the source.
+    assert "EXERCISE THE SAME" in contract
+    assert "instruction line" in contract
+    # Names the concrete cross-type failure mode it forbids.
+    assert "INTERNALLY CONSISTENT" in contract
+    assert "do NOT list" in contract
+
+
+def test_assessment_contract_requires_distractor_value_follows_misconception():
+    """Defect B sentinel: the ``assessment_item`` output contract must
+    require each distractor's VALUE to be the actual arithmetic consequence
+    of its named misconception — closing the 7B failure where the
+    distractor value didn't follow from the error its rationale named. All
+    existing assessment directives stay intact (additive)."""
+    contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["assessment_item"]
+    # Existing directives preserved (canonical markup, correct-answer flag,
+    # value-distinct distractors, per-distractor rationale).
+    assert "data-cf-distractor-index" in contract
+    assert 'data-cf-correct="true"' in contract
+    assert "DISTINCT IN VALUE" in contract
+    assert "rationale naming the misconception" in contract
+    # New directive: the distractor value must be the arithmetic
+    # consequence of the named misconception, not an arbitrary wrong value.
+    assert "ACTUAL RESULT A STUDENT WHO MADE" in contract
+    assert "ARITHMETIC CONSEQUENCE" in contract
+    assert "not an arbitrary wrong value" in contract
+
+
+def test_flip_card_grid_contract_constrains_card_front_to_domain_terms():
+    """Defect A sentinel (iter-6): the ``flip_card_grid`` output contract must
+    constrain each card FRONT to the block's supplied ``key_terms`` (or a
+    domain term defined in the source) and explicitly DENY pedagogy /
+    structural meta-words — closing the 7B failure where cards emitted
+    ``Example`` / ``Exercise`` / ``Problem`` (dictionary definitions of the
+    pedagogy meta-words) instead of the chapter's domain vocabulary. All
+    iter-2 distinctness directives stay intact (additive)."""
+    contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["flip_card_grid"]
+    # iter-2 distinctness / no-repeat / no-procedure-fill directives preserved.
+    assert 'data-cf-component="flip-card"' in contract
+    assert "DISTINCT key term" in contract
+    assert "NEVER repeat a term" in contract
+    assert "generic procedure paragraph" in contract
+    # New directive: the card front is one of the supplied key_terms / a
+    # source-defined domain term, never a pedagogy meta-word.
+    assert "key_terms" in contract
+    assert "DOMAIN VOCABULARY" in contract
+    assert "META-WORD" in contract
+    # The explicit deny-list of pedagogy/structural meta-words.
+    for meta_word in (
+        "example",
+        "exercise",
+        "problem",
+        "try it",
+        "solution",
+        "practice",
+        "note",
+        "activity",
+        "summary",
+    ):
+        assert f"`{meta_word}`" in contract
+    # The card back is the term's definition drawn from the source.
+    assert "DEFINITION drawn from the source" in contract
+
+
+def test_activity_contract_forbids_bare_exercise_numbers():
+    """Defect B sentinel (iter-6): the ``activity`` output contract must
+    require each practice item to STATE THE ACTUAL PROBLEM / TASK in full
+    and forbid bare source exercise / reference numbers — closing the 7B
+    failure where the activity listed bare OpenStax exercise indices
+    (\"83, 84, 85\") as if they were practice items. The iter-5
+    skill-consistency directive stays intact (additive)."""
+    contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["activity"]
+    # iter-5 skill-consistency directive preserved.
+    assert "EXERCISE THE SAME" in contract
+    assert "INTERNALLY CONSISTENT" in contract
+    # New directive: each item states the actual problem/task in full.
+    assert "STATE THE ACTUAL PROBLEM" in contract
+    # New directive: never emit bare exercise/reference numbers.
+    assert "BARE EXERCISE / REFERENCE NUMBERS" in contract
+    assert "83, 84, 85" in contract
+    assert "SOURCE EXERCISE INDICES" in contract
+
+
+def test_prereq_set_contract_requires_prior_skills_not_own_objectives():
+    """Defect sentinel (OpenStax Alg ch5 integers): the ``prereq_set`` output
+    contract must require each ``<ol>`` item to name a PRIOR foundational
+    skill/topic the learner needs BEFORE this content, and explicitly forbid
+    listing the chapter's OWN learning objectives or emitting a raw
+    ``CO-NN`` / ``TO-NN`` objective id as a prerequisite — closing the 7B
+    failure where the prereq_set block dumped the chapter's own COs
+    (CO-25/CO-26/CO-27) as "prerequisites". The existing ``<ol>`` structural
+    directive stays intact (additive contract)."""
+    contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["prereq_set"]
+    # Existing structural directive preserved.
+    assert "data-cf-source-ids" in contract
+    assert "`<ol>`" in contract
+    # New directive: items name PRIOR foundational skills/topics needed
+    # BEFORE this content, drawn from the source's stated prerequisites.
+    assert "PRIOR FOUNDATIONAL SKILL" in contract
+    assert "BEFORE this content" in contract
+    assert "source's stated" in contract
+    # New prohibition: never the chapter's own objectives, never a raw
+    # CO-NN / TO-NN id, never restate this block's objective.
+    assert "NEVER list the current chapter's OWN" in contract
+    assert "`CO-NN` / `TO-NN`" in contract
+    assert "NEVER restate" in contract
+    # New fallback directive: when source states no prerequisites, list the
+    # foundational concepts this content builds on, not its outcomes.
+    assert "no explicit prerequisites" in contract
+    assert "FOUNDATIONAL CONCEPTS this content builds on" in contract
+
+
+def test_callout_contract_constrains_scope_to_single_focused_highlight():
+    """Defect sentinel (OpenStax Alg ch5 + ch10): the ``callout`` output
+    contract must constrain a callout to ONE focused, concise highlight —
+    a single key tip / warning / caution / note — and explicitly forbid
+    turning it into a full lesson with multi-example sequences or
+    step-by-step worked solutions. Closes the 7B failure where callouts
+    were authored as mini-lessons (ch5: a 942-char like/unlike-sign lesson
+    with 4 worked examples; ch10: a multi-example "Rational or Irrational?"
+    lesson). The existing structural directive stays intact (additive)."""
+    contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["callout"]
+    # Existing structural directive preserved (additive contract).
+    assert 'class=\\"callout callout-{kind}\\"' in contract or (
+        "callout callout-{kind}" in contract
+    )
+    assert 'data-cf-component=\\"callout\\"' in contract or (
+        "data-cf-component" in contract
+    )
+    assert "data-cf-purpose" in contract
+    assert 'data-cf-content-type=\\"callout\\"' in contract or (
+        "data-cf-content-type" in contract
+    )
+    # New SCOPE directive: a callout is a single focused highlight.
+    assert "ONE FOCUSED, CONCISE HIGHLIGHT" in contract
+    assert "single" in contract
+    # New prohibition: it must NOT be a full lesson / multi-example.
+    assert "NOT A FULL LESSON" in contract
+    assert "MULTI-EXAMPLE" in contract
+    assert "step-by-step worked solutions" in contract
+    # Names where the instructional content belongs instead.
+    assert "concept / explanation / example" in contract
+    # Stays grounded — no fabricated facts.
+    assert "grounded in the source" in contract

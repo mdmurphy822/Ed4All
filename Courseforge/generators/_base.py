@@ -86,7 +86,6 @@ from Trainforge.generators._local_provider import (
     ENV_MODEL as LOCAL_ENV_MODEL,
 )
 from Trainforge.generators._openai_compatible_client import (
-    DEFAULT_TIMEOUT_SECONDS,
     OpenAICompatibleClient,
 )
 from Trainforge.generators._together_provider import (
@@ -256,11 +255,14 @@ class _BaseLLMProvider(ABC):
                 provider_label="together",
                 client=client,
                 json_mode=json_mode,
-                timeout=(
-                    self._timeout
-                    if self._timeout is not None
-                    else DEFAULT_TIMEOUT_SECONDS
-                ),
+                # ``self._timeout is None`` (no explicit per-tier
+                # timeout) is forwarded verbatim so the
+                # OpenAICompatibleClient resolves its default from
+                # ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (falling back to
+                # DEFAULT_TIMEOUT_SECONDS). A tier that passes an explicit
+                # timeout (e.g. the outline / rewrite tiers, or textbook
+                # synthesis) still wins.
+                timeout=self._timeout,
             )
             self._anthropic_client = None
 
@@ -294,11 +296,14 @@ class _BaseLLMProvider(ABC):
                 provider_label="local",
                 client=client,
                 json_mode=json_mode,
-                timeout=(
-                    self._timeout
-                    if self._timeout is not None
-                    else DEFAULT_TIMEOUT_SECONDS
-                ),
+                # ``self._timeout is None`` (no explicit per-tier
+                # timeout) is forwarded verbatim so the
+                # OpenAICompatibleClient resolves its default from
+                # ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (falling back to
+                # DEFAULT_TIMEOUT_SECONDS). A tier that passes an explicit
+                # timeout (e.g. the outline / rewrite tiers, or textbook
+                # synthesis) still wins.
+                timeout=self._timeout,
             )
             self._anthropic_client = None
 

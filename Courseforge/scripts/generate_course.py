@@ -662,32 +662,81 @@ def _normalize_chapter_objective_groups(
     return []
 
 
+def _resolve_cos_per_week_cap(step: int) -> int:
+    """Resolve the per-week chapter-objective placement cap (WS5 §2.2).
+
+    The cap defaults to ``step`` (auto = no truncation: every CO in the
+    week's ceil-stride slice is placed). The ``ED4ALL_COS_PER_WEEK_CAP``
+    env var pins a positive ceiling; ``0`` / unset / garbage → auto.
+    """
+    try:
+        cap_env = int(os.environ.get("ED4ALL_COS_PER_WEEK_CAP", "0") or "0")
+    except (TypeError, ValueError):
+        cap_env = 0
+    return step if cap_env <= 0 else cap_env
+
+
+def _slice_cos_for_week(
+    cos: List[Dict[str, Any]],
+    weeks: int,
+    week_num: int,
+    cap: int = 0,
+) -> List[Dict[str, Any]]:
+    """WS5 §2.2 — the SINGLE-SOURCED per-week chapter-objective slicer.
+
+    Both the emit-side slicer (``MCP/tools/pipeline_tools.py::
+    _generate_course_content``) and the validator-side allowed-set builder
+    (``_slice_chapter_objectives_by_week`` below + the ``_plan_course_structure``
+    week-range persistence) consume THIS function so "byte-identical" parity is
+    enforced structurally, not textually.
+
+    With ``C`` chapter objectives over ``D`` weeks:
+        ``step = max(1, ceil(C / D))``   (CEIL — guarantees ``step*D >= C`` so
+                                          NO CO is dropped; the pre-WS5 floor
+                                          ``C // D`` under-counted and truncated)
+    week ``w`` (1-based) claims ``cos[(w-1)*step : w*step][:cap]`` where ``cap``
+    defaults to ``step`` (no truncation) and is overridable per the
+    ``ED4ALL_COS_PER_WEEK_CAP`` env var via :func:`_resolve_cos_per_week_cap`.
+    A caller may pass ``cap`` explicitly (``<= 0`` → resolve from env/auto).
+    The round-robin ``or [...]`` fallback only fires for an empty trailing
+    slice (a duplicate, never a drop).
+    """
+    if not cos or weeks < 1:
+        return []
+    n_cos = len(cos)
+    step = max(1, (n_cos + weeks - 1) // weeks)  # CEIL (was floor n_cos // weeks)
+    eff_cap = cap if cap and cap > 0 else _resolve_cos_per_week_cap(step)
+    start = (week_num - 1) * step
+    return list(cos[start : start + step])[:eff_cap] or [
+        cos[(week_num - 1) % n_cos]
+    ]
+
+
 def _slice_chapter_objectives_by_week(
     chapter_cos: List[Dict[str, Any]],
     duration_weeks: int,
 ) -> Dict[int, List[Dict[str, Any]]]:
-    """Replicate the content generator's positional round-robin assignment of
-    a *flat* chapter-objective list across ``duration_weeks``.
+    """Replicate the content generator's positional assignment of a *flat*
+    chapter-objective list across ``duration_weeks``.
 
     This mirrors ``MCP/tools/pipeline_tools.py::_generate_course_content``
-    verbatim (the per-week ``week_chapter_cos`` slice): with ``C`` chapter
-    objectives over ``D`` weeks, ``step = max(1, C // D)`` and week ``w``
-    (1-based) claims ``chapter_cos[(w-1)*step : (w-1)*step + step + 1][:2]``,
-    falling back to the round-robin element ``chapter_cos[(w-1) % C]`` when the
-    slice is empty. The two sides MUST stay byte-identical so the validator's
-    "allowed for week N" set is exactly the set the emitter assigns to week N.
+    verbatim by delegating to the single-sourced :func:`_slice_cos_for_week`
+    helper (WS5 §2.2/§2.4): with ``C`` chapter objectives over ``D`` weeks,
+    ``step = max(1, ceil(C / D))`` and week ``w`` (1-based) claims
+    ``chapter_cos[(w-1)*step : w*step][:cap]`` (``cap`` defaults to ``step`` =
+    no truncation; overridable via ``ED4ALL_COS_PER_WEEK_CAP``), falling back
+    to the round-robin element ``chapter_cos[(w-1) % C]`` only when the slice is
+    empty. The two sides MUST stay byte-identical (now structurally, via the
+    shared helper) so the validator's "allowed for week N" set is exactly the
+    set the emitter assigns to week N.
     """
     week_to_cos: Dict[int, List[Dict[str, Any]]] = {}
     if not chapter_cos or duration_weeks < 1:
         return week_to_cos
-    count = len(chapter_cos)
-    step = max(1, count // max(1, duration_weeks))
     for week_num in range(1, duration_weeks + 1):
-        start = (week_num - 1) * step
-        week_cos = chapter_cos[start : start + step + 1][:2] or [
-            chapter_cos[(week_num - 1) % count]
-        ]
-        week_to_cos[week_num] = list(week_cos)
+        week_to_cos[week_num] = _slice_cos_for_week(
+            chapter_cos, duration_weeks, week_num
+        )
     return week_to_cos
 
 
