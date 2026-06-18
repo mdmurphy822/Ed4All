@@ -19,6 +19,8 @@ import { createAskDrawer } from '/studio/drawer.js';
 import { renderCreate } from '/studio/create.js';
 import { renderSettings } from '/studio/settings.js';
 import { renderRunHistory } from '/studio/run-history.js';
+import { renderDashboard } from '/studio/dashboard.js';
+import { initPersonaSwitcher } from '/studio/persona-switcher.js';
 
 const view = () => $('#view');
 const statusEl = () => $('#status');
@@ -507,16 +509,23 @@ const shell = {
 
 const router = createRouter(
   {
+    // Author Dashboard home (#/) — three zones + onboarding empty state.
+    dashboard: () => renderDashboard(shell),
     library: renderLibrary,
     viewer: renderViewer,
     create: (segments, raw) => renderCreate(shell, segments, raw),
+    // Build Console (#/build/<run_id>): the live-build progress view, reachable
+    // from any dashboard run card — not only mid-wizard. Delegates to the same
+    // create.js progress renderer (it branches on a run_id in segments[0]).
+    build: (segments, raw) => renderCreate(shell, segments, raw),
     settings: (segments, raw) => renderSettings(shell, segments, raw),
     // Run History (Phase 4 §5.1(F)): reachable via the EXISTING studio router —
     // NO Phase-2 auth remount, NO route/auth change.
     runs: () => renderRunHistory(shell),
   },
   {
-    defaultRoute: 'library',
+    // #/ (empty hash) lands on the Author Dashboard.
+    defaultRoute: 'dashboard',
     onError(err) {
       clear(view()).appendChild(el('p', { class: 'error', text: errText(err) }));
       setBusy(false);
@@ -524,5 +533,19 @@ const router = createRouter(
     },
   },
 );
+
+// Keep the persona switcher's active state honest as the hash route changes:
+// Author is "current" whenever a Studio (non-Learner/Advanced) route is active,
+// which is always here — the Author persona link points at #/ and stays current.
+function syncPersonaCurrent() {
+  document.querySelectorAll('.persona-switcher [data-persona]').forEach((a) => {
+    if (a.dataset.persona === 'author') a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
+  });
+}
+
+// Upgrade the (server-rendered) Advanced link with the graceful-401 explainer.
+initPersonaSwitcher(document);
+syncPersonaCurrent();
 
 router.start();

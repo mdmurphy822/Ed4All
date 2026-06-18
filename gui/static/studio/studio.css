@@ -710,3 +710,72 @@ details.advanced summary:focus-visible { outline: 3px solid var(--focus); outlin
 .affordances { display: flex; flex-direction: column; gap: 0.7rem; }
 .affordance { display: flex; flex-direction: column; gap: 0.2rem; }
 .affordance-hint { margin: 0; font-size: 0.85rem; }
+
+/* ===================================================================== */
+/* Persona switcher (Author · Learner · Advanced)                        */
+/* ===================================================================== */
+.persona-switcher {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+  font-size: 0.95rem;
+}
+.persona-switcher a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0.3rem 0.75rem;
+  color: var(--accent);
+  text-decoration: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.persona-switcher a:hover { background: var(--panel); text-decoration: underline; }
+/* The active persona: NOT color-only — a border + weight + the underline keep
+ * it distinguishable without relying on hue (WCAG 1.4.1). */
+.persona-switcher a[aria-current="page"] {
+  color: var(--fg);
+  font-weight: 700;
+  border-color: var(--border);
+  background: var(--selected-bg);
+  text-decoration: underline;
+}
+.persona-switcher a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+/* ===================================================================== */
+/* Author Dashboard (#/) — three zones + onboarding empty state          */
+/* ===================================================================== */
+.dash-zone { margin: 0 0 2rem; }
+.dash-zone-h { margin: 0 0 0.25rem; font-size: 1.25rem; }
+.dash-zone-intro { margin: 0 0 1rem; font-size: 0.95rem; }
+.muted { color: var(--muted); }
+
+.dash-cards,
+.dash-recent-list {
+  list-style: none;
+  margin: 0; padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+.dash-card-li,
+.dash-recent-li { display: flex; flex-direction: column; }
+
+.dash-recent-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  height: 100%;
+}
+.dash-recent-actions { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+
+.dash-more { margin: 1rem 0 0; }
+.dash-more-link { color: var(--accent); }
+
+/* Reduced-motion: the dashboard has no intrinsic animation, but keep any
+ * shared-kit hover transitions still + honour the user preference. */
+@media (prefers-reduced-motion: reduce) {
+  .dash-cards .card,
+  .dash-recent-list .card,
+  .persona-switcher a { transition: none; }
+}

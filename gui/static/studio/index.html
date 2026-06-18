@@ -12,8 +12,17 @@
   <a class="skip-link" href="#main">Skip to main content</a>
 
   <header>
-    <p class="brand"><a href="#/library">Ed4All Studio</a></p>
+    <p class="brand"><a href="#/">Ed4All Studio</a></p>
+    <!-- Persona switcher: makes Learner + Advanced discoverable from Author.
+         Author is the current shell (#/); Advanced is upgraded by
+         persona-switcher.js with a graceful-401 explainer. -->
+    <nav class="persona-switcher" aria-label="Switch view">
+      <a data-persona="author" href="#/" aria-current="page">Author</a>
+      <a data-persona="learner" href="/learn/">Learner</a>
+      <a data-persona="advanced" href="/advanced/">Advanced</a>
+    </nav>
     <nav class="primary-nav" aria-label="Studio">
+      <a href="#/">Dashboard</a>
       <a href="#/library">Library</a>
       <a href="#/create">Create course</a>
       <a href="#/runs">Run history</a>

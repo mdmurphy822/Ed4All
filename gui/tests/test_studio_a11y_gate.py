@@ -285,6 +285,287 @@ def test_viewer_view_zero_aa_findings():
 
 
 # --------------------------------------------------------------------------- #
+# Author Dashboard (#/) — three zones + onboarding empty state + persona switch.
+# Reconstructed exactly as dashboard.js + the shared kit (card/timeline-bar/
+# empty-state/pill) build each subtree.
+# --------------------------------------------------------------------------- #
+
+# A runCard() as card.js builds it (h3 title + statusPill glyph+text, meta).
+def _run_card(title: str, status: str, status_label: str, status_glyph: str, href: str, meta: str) -> str:
+    return f"""
+<a class="card run-card" href="{href}">
+  <div class="card-head">
+    <h3 class="card-title">{title}</h3>
+    <span class="pill pill-running" data-kind="run:{status}" data-group="run">
+      <span class="pill-glyph" aria-hidden="true">{status_glyph}</span>
+      <span class="pill-label">{status_label}</span>
+    </span>
+  </div>
+  <p class="card-meta">{meta}</p>
+</a>
+"""
+
+
+# A courseCard() as card.js builds it (h3 title + meta + Ask-ready badge).
+def _course_card(title: str, href: str, meta: str, ask_ready: bool = True) -> str:
+    badge = '<span class="card-badge">Ask-ready</span>' if ask_ready else ""
+    return f"""
+<a class="card course-card" href="{href}">
+  <h3 class="card-title">{title}</h3>
+  <p class="card-meta">{meta}</p>
+  {badge}
+</a>
+"""
+
+
+# A timelineBar() as timeline-bar.js builds it (aria-hidden bar + semantic <ul>).
+_TIMELINE_BAR = """
+<figure class="timeline-bar">
+  <div class="tl-bar-track" aria-hidden="true">
+    <span class="tl-seg tl-seg-done" data-phase="dart_conversion" style="width:60.00%" title="Convert textbook — 18m"></span>
+    <span class="tl-seg tl-seg-done" data-phase="packaging" style="width:40.00%" title="Package course — 12m"></span>
+  </div>
+  <figcaption class="visually-hidden">Phase durations for Demo Course: total 30m</figcaption>
+  <ul class="tl-legend" aria-label="Phase durations for Demo Course">
+    <li class="tl-legend-item"><span class="tl-legend-swatch tl-seg-done" aria-hidden="true"></span><span class="tl-legend-name">Convert textbook</span><span class="tl-legend-dur tabular-nums">18m</span></li>
+    <li class="tl-legend-item"><span class="tl-legend-swatch tl-seg-done" aria-hidden="true"></span><span class="tl-legend-name">Package course</span><span class="tl-legend-dur tabular-nums">12m</span></li>
+  </ul>
+</figure>
+"""
+
+
+def _dashboard_populated_inner() -> str:
+    """The dashboard with ALL THREE zones populated (building / courses / recent)."""
+    building_card = _run_card(
+        "PHYS_201", "running", "Building", "◐",
+        "#/build/GUI-live1", "textbook_to_course · building",
+    )
+    course_card = _course_card(
+        "Demo Course Title", "#/viewer/demo-101", "12 pages",
+    )
+    recent_card = _run_card(
+        "Demo Course", "completed", "Ready", "●",
+        "#/build/GUI-done1", "textbook_to_course · 30m",
+    )
+    return f"""
+<h1>Dashboard</h1>
+<section class="dash-zone" aria-labelledby="dash-building-h">
+  <h2 id="dash-building-h" class="dash-zone-h">Building now</h2>
+  <p class="dash-zone-intro muted">Course builds in progress. Re-open one to watch its console.</p>
+  <ul class="dash-cards cards" aria-label="Builds in progress">
+    <li class="dash-card-li">{building_card}</li>
+  </ul>
+</section>
+<section class="dash-zone" aria-labelledby="dash-courses-h">
+  <h2 id="dash-courses-h" class="dash-zone-h">Your courses</h2>
+  <p class="dash-zone-intro muted">Open a course to read it or ask questions about it.</p>
+  <ul class="dash-cards cards" aria-label="Your courses">
+    <li class="dash-card-li">{course_card}</li>
+  </ul>
+</section>
+<section class="dash-zone" aria-labelledby="dash-recent-h">
+  <h2 id="dash-recent-h" class="dash-zone-h">Recent builds</h2>
+  <p class="dash-zone-intro muted">Finished builds. Re-open one, or run it again from the same textbook.</p>
+  <ul class="dash-recent-list cards" aria-label="Finished builds">
+    <li class="dash-recent-li">
+      <div class="dash-recent-entry">
+        {recent_card}
+        {_TIMELINE_BAR}
+        <div class="dash-recent-actions">
+          <button type="button" class="btn">Re-open</button>
+          <button type="button" class="btn">Run again</button>
+        </div>
+      </div>
+    </li>
+  </ul>
+  <p class="dash-more"><a class="dash-more-link" href="#/runs">See all builds →</a></p>
+</section>
+"""
+
+
+def _dashboard_onboarding_inner() -> str:
+    """The onboarding empty state: no courses + no runs → one primary path."""
+    return """
+<h1>Dashboard</h1>
+<section class="empty-state">
+  <h2 class="empty-title">Build your first course</h2>
+  <p class="empty-message">Turn a textbook PDF into an accessible, ask-ready course. Upload a PDF and we do the rest.</p>
+  <a class="btn primary empty-cta" href="#/create">Build your first course</a>
+</section>
+"""
+
+
+@pytest.mark.parametrize(
+    "label,inner",
+    [
+        ("dashboard-populated", _dashboard_populated_inner()),
+        ("dashboard-onboarding", _dashboard_onboarding_inner()),
+    ],
+)
+def test_dashboard_views_zero_aa_findings(label, inner):
+    _assert_clean(
+        f"studio-{label}",
+        _shell_with_view(inner, crumbs="<span>Dashboard</span>"),
+    )
+
+
+def test_dashboard_zones_are_labelled_sections_with_headings():
+    soup = _soup(_shell_with_view(_dashboard_populated_inner()))
+    # Exactly one h1 (the view title); each zone is a labelled <section> + <h2>.
+    assert len(soup.find_all("h1")) == 1, "dashboard must keep a single <h1>"
+    sections = soup.find_all("section", class_="dash-zone")
+    assert len(sections) == 3, "dashboard must render three zones"
+    seen = set()
+    for sec in sections:
+        lbl = sec.get("aria-labelledby")
+        assert lbl, "each dashboard zone must be aria-labelledby a heading"
+        heading = soup.find(id=lbl)
+        assert heading is not None and heading.name == "h2", "zone heading must be an <h2> with the labelled id"
+        seen.add(heading.get_text(strip=True))
+    assert {"Building now", "Your courses", "Recent builds"} <= seen, seen
+
+
+def test_dashboard_cards_are_keyboard_operable_links():
+    soup = _soup(_shell_with_view(_dashboard_populated_inner()))
+    # Building-now + recent cards link to their build console; courses to viewer.
+    build_links = soup.select('a.card[href^="#/build/"]')
+    assert len(build_links) == 2, "building-now + recent cards must link to #/build/<run_id>"
+    course_links = soup.select('a.card[href^="#/viewer/"]')
+    assert course_links, "course cards must link to the viewer"
+    for a in build_links + course_links:
+        # An <a href> is natively keyboard-operable; the title is an <h3>.
+        assert a.find("h3", class_="card-title") is not None
+
+
+def test_dashboard_recent_offers_reopen_run_again_and_history_link():
+    soup = _soup(_shell_with_view(_dashboard_populated_inner()))
+    recent = soup.find("section", attrs={"aria-labelledby": "dash-recent-h"})
+    assert recent is not None
+    labels = {b.get_text(strip=True) for b in recent.select(".dash-recent-actions button")}
+    assert {"Re-open", "Run again"} <= labels, labels
+    more = recent.find("a", class_="dash-more-link", href="#/runs")
+    assert more is not None, "Recent builds must link to the full #/runs history"
+    # The persisted-duration timeline is a semantic legend (never color-only).
+    legend = recent.find("ul", class_="tl-legend")
+    assert legend is not None and legend.get("aria-label"), "timeline bar needs a labelled legend"
+    assert recent.find("div", class_="tl-bar-track").get("aria-hidden") == "true", (
+        "the visual bar must be aria-hidden (the legend carries the a11y truth)"
+    )
+
+
+def test_dashboard_onboarding_is_single_primary_path():
+    soup = _soup(_shell_with_view(_dashboard_onboarding_inner()))
+    es = soup.find("section", class_="empty-state")
+    assert es is not None, "onboarding must render an empty-state section"
+    ctas = es.find_all("a", class_="empty-cta")
+    assert len(ctas) == 1 and ctas[0].get("href") == "#/create", (
+        "onboarding offers exactly one primary path → #/create"
+    )
+    assert ctas[0].get_text(strip=True) == "Build your first course"
+
+
+def test_dashboard_status_pills_are_not_color_only():
+    soup = _soup(_shell_with_view(_dashboard_populated_inner()))
+    pills = soup.select(".dash-zone .pill")
+    assert pills, "dashboard run cards must carry status pills"
+    for pill in pills:
+        # Glyph is decorative; the text label is what a screen reader reads.
+        label = pill.find("span", class_="pill-label")
+        assert label is not None and label.get_text(strip=True), (
+            "each pill must carry a text label, not color alone (WCAG 1.4.1)"
+        )
+
+
+def test_studio_js_wires_dashboard_and_build_routes():
+    js = (STUDIO_DIR / "studio.js").read_text(encoding="utf-8")
+    assert "/studio/dashboard.js" in js, "studio.js must import the dashboard module"
+    assert "dashboard:" in js, "studio.js must register the dashboard route"
+    assert "defaultRoute: 'dashboard'" in js, "the home route (#/) must land on the dashboard"
+    assert "build:" in js, "studio.js must register the #/build/<run_id> console route"
+
+
+# --------------------------------------------------------------------------- #
+# Persona switcher (Author · Learner · Advanced) + graceful-401 explainer.
+# --------------------------------------------------------------------------- #
+
+# The explainer dialog, reconstructed exactly as persona-switcher.js builds it
+# (a labelled, focus-managed modal mirroring the delete-dialog pattern).
+_PERSONA_EXPLAINER_INNER = """
+<div class="modal-overlay">
+  <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="adv-title" aria-describedby="adv-desc">
+    <h2 id="adv-title">Advanced mode is protected</h2>
+    <p id="adv-desc">Advanced mode manages API keys, model routing, and run launching, and is protected — enter the operator token to continue. You’ll be taken to Advanced, where you can enter the token.</p>
+    <div class="modal-actions">
+      <button type="button" class="btn">Stay in Author</button>
+      <a class="btn primary" href="/advanced/">Continue to Advanced</a>
+    </div>
+  </div>
+</div>
+"""
+
+
+def test_persona_switcher_present_in_static_shell():
+    soup = _soup(STUDIO_INDEX.read_text(encoding="utf-8"))
+    nav = soup.find("nav", class_="persona-switcher")
+    assert nav is not None, "the shell must server-render the persona switcher"
+    assert nav.get("aria-label"), "the switcher must be a labelled <nav> (WCAG landmark)"
+    personas = {a.get("data-persona"): a for a in nav.find_all("a")}
+    assert {"author", "learner", "advanced"} <= set(personas), personas.keys()
+    # Author is the current persona (aria-current=page), and only one is current.
+    current = [a for a in nav.find_all("a") if a.get("aria-current") == "page"]
+    assert len(current) == 1 and current[0].get("data-persona") == "author", (
+        "exactly the Author link carries aria-current=page"
+    )
+    # Learner + Advanced are real same-origin navigations.
+    assert personas["learner"].get("href") == "/learn/"
+    assert personas["advanced"].get("href") == "/advanced/"
+    # Author links at the Studio home (#/).
+    assert personas["author"].get("href") == "#/"
+
+
+def test_persona_switcher_shell_zero_aa_findings():
+    # The whole shell with the switcher present must stay WCAG-clean.
+    _assert_clean("studio-persona-switcher", str(_soup(STUDIO_INDEX.read_text(encoding="utf-8"))))
+
+
+def test_advanced_explainer_is_labelled_focus_managed_modal():
+    inner = _dashboard_populated_inner() + _PERSONA_EXPLAINER_INNER
+    html = _shell_with_view(inner, crumbs="<span>Dashboard</span>")
+    _assert_clean("studio-advanced-explainer", html)
+    soup = _soup(html)
+    dialog = soup.find("div", class_="modal-dialog", attrs={"role": "dialog"})
+    assert dialog is not None, "the graceful-401 explainer must be role=dialog"
+    assert dialog.get("aria-modal") == "true", "explainer must be a modal (aria-modal)"
+    lbl = dialog.get("aria-labelledby")
+    assert lbl and soup.find(id=lbl) is not None, "explainer needs an accessible name"
+    desc = dialog.get("aria-describedby")
+    assert desc and soup.find(id=desc) is not None, "explainer must describe the protection"
+    # Single-h1 invariant holds (the dialog title is an h2).
+    assert len(soup.find_all("h1")) == 1
+    # The primary action proceeds to /advanced/ (where the SPA token overlay
+    # takes over); a cancel stays in Author.
+    proceed = dialog.find("a", class_="primary", href="/advanced/")
+    assert proceed is not None, "explainer must offer a Continue-to-Advanced action"
+    cancel = dialog.find("button", string=lambda s: s and "Author" in s)
+    assert cancel is not None, "explainer must offer a stay-in-Author cancel"
+
+
+def test_persona_switcher_js_probes_and_explains_401():
+    js = (STUDIO_DIR / "persona-switcher.js").read_text(encoding="utf-8")
+    assert "fetch(" in js, "the switcher must PROBE /advanced/ before navigating"
+    assert "401" in js, "the switcher must intercept a 401 challenge"
+    assert "aria-modal" in js, "the graceful-401 explainer must be a proper modal"
+    assert "Escape" in js, "the explainer must close on ESC"
+    assert "/advanced/" in js, "the explainer must proceed to the Advanced surface"
+
+
+def test_studio_js_inits_persona_switcher():
+    js = (STUDIO_DIR / "studio.js").read_text(encoding="utf-8")
+    assert "/studio/persona-switcher.js" in js, "studio.js must import the persona switcher"
+    assert "initPersonaSwitcher" in js, "studio.js must initialise the persona switcher"
+
+
+# --------------------------------------------------------------------------- #
 # D5 destructive-confirm dialog — zero CRITICAL/HIGH WCAG + modal semantics.
 # --------------------------------------------------------------------------- #
 
