@@ -50,9 +50,12 @@ pytestmark_integration = pytest.mark.skipif(
 @pytest.mark.parametrize(
     "path",
     [
-        "/",
-        "/index.html",
-        "/app.js",
+        # GUI-redesign Phase 2: the operator SPA root moved to /advanced/ (the
+        # bare ``/`` is now the OPEN Studio shell).
+        "/advanced",
+        "/advanced/",
+        "/advanced/index.html",
+        "/advanced/app.js",
         "/docs",
         "/redoc",
         "/openapi.json",
@@ -63,12 +66,12 @@ pytestmark_integration = pytest.mark.skipif(
         "/api/activity/events",
         "/api/activity/post",
         "/api/ws/runs/RUN-123",
-        # The developer console (C4) — the whole subtree is operator-classified.
-        "/dev",
-        "/dev/",
-        "/dev/index.html",
-        "/dev/dev.js",
-        "/dev/dev.css",
+        # The developer console (C4), now /advanced/dev/ — whole subtree gated.
+        "/advanced/dev",
+        "/advanced/dev/",
+        "/advanced/dev/index.html",
+        "/advanced/dev/dev.js",
+        "/advanced/dev/dev.css",
     ],
 )
 def test_operator_paths_classified(path):
@@ -78,6 +81,9 @@ def test_operator_paths_classified(path):
 @pytest.mark.parametrize(
     "path",
     [
+        # The bare ``/`` is now the OPEN Studio shell — NOT operator-classified.
+        "/",
+        "/index.html",
         "/api/health",
         "/api/settings",
         "/api/settings/studio",
@@ -90,11 +96,16 @@ def test_operator_paths_classified(path):
         "/shared/api.js",
         "/studio/",
         "/learn/index.html",
+        # The operator stylesheet stays open under /advanced/ (styles.css posture).
+        "/advanced/styles.css",
+        # The old root-mounted operator assets no longer exist there — and even
+        # if requested they are NOT gated (the bare ``/`` tree is open Studio).
+        "/app.js",
         "/styles.css",
-        # A path that merely shares the /dev prefix without the boundary is NOT
-        # the dev console (no false-positive on /development*).
-        "/development",
-        "/developer/index.html",
+        # A path that merely shares the /advanced prefix without the dev boundary
+        # is NOT the dev console (no false-positive on /advancement*).
+        "/advancement",
+        "/advanced-thing/index.html",
     ],
 )
 def test_non_operator_paths_open(path):
@@ -252,9 +263,12 @@ def gated_client(state_dir, libv2_root, monkeypatch):
 def test_open_mode_operator_paths_unauthenticated(open_client):
     # No token configured → operator paths answer normally (no 401).
     assert open_client.get("/api/courses").status_code in (200, 404, 500)
-    assert open_client.get("/", follow_redirects=False).status_code == 200
+    # The operator SPA now lives under /advanced/ (open when no token set).
+    assert open_client.get("/advanced/", follow_redirects=False).status_code == 200
     assert open_client.get("/openapi.json").status_code == 200
     assert open_client.get("/api/activity/events").status_code == 200
+    # The bare ``/`` is the OPEN Studio shell in every token posture.
+    assert open_client.get("/", follow_redirects=False).status_code == 200
 
 
 @pytestmark_integration
@@ -283,33 +297,53 @@ def test_gated_operator_path_200_with_token(gated_client):
 
 
 @pytestmark_integration
-def test_gated_spa_root_and_docs_require_token(gated_client):
-    assert gated_client.get("/", follow_redirects=False).status_code == 401
-    assert gated_client.get("/app.js").status_code == 401
+def test_gated_advanced_spa_root_and_docs_require_token(gated_client):
+    # GUI-redesign Phase 2: the operator SPA root + docs are gated under
+    # /advanced/ (the bare ``/`` is now the OPEN Studio shell — see below).
+    assert gated_client.get("/advanced", follow_redirects=False).status_code == 401
+    assert gated_client.get("/advanced/", follow_redirects=False).status_code == 401
+    assert gated_client.get("/advanced/index.html").status_code == 401
+    assert gated_client.get("/advanced/app.js").status_code == 401
     assert gated_client.get("/openapi.json").status_code == 401
-    # ...but the same paths open with the token.
+    # ...but the operator SPA root opens with the token.
     assert (
-        gated_client.get("/", headers={"Authorization": "Bearer s3cret-token"}).status_code
+        gated_client.get(
+            "/advanced/", headers={"Authorization": "Bearer s3cret-token"}
+        ).status_code
         == 200
     )
 
 
 @pytestmark_integration
+def test_gated_studio_root_stays_open(gated_client):
+    # CRITICAL: with a token SET, the bare ``/`` Studio shell stays OPEN (200) —
+    # it is the open product surface, NOT operator-classified anymore.
+    assert gated_client.get("/", follow_redirects=False).status_code == 200
+    # The other open product surfaces stay reachable so the Author surface works.
+    assert gated_client.get("/studio/", follow_redirects=False).status_code == 200
+    assert gated_client.get("/learn/", follow_redirects=False).status_code == 200
+    # The operator stylesheet under /advanced/ stays open (styles.css posture).
+    assert gated_client.get("/advanced/styles.css").status_code == 200
+
+
+@pytestmark_integration
 def test_gated_dev_console_requires_token(gated_client):
-    # The /dev/ developer console (C4) is operator-classified → gated.
-    assert gated_client.get("/dev/", follow_redirects=False).status_code == 401
-    assert gated_client.get("/dev/dev.js").status_code == 401
-    assert gated_client.get("/dev/dev.css").status_code == 401
+    # The developer console (C4), now /advanced/dev/, is operator-classified.
+    assert gated_client.get("/advanced/dev/", follow_redirects=False).status_code == 401
+    assert gated_client.get("/advanced/dev/dev.js").status_code == 401
+    assert gated_client.get("/advanced/dev/dev.css").status_code == 401
     # ...and opens with the token.
-    ok = gated_client.get("/dev/", headers={"Authorization": "Bearer s3cret-token"})
+    ok = gated_client.get(
+        "/advanced/dev/", headers={"Authorization": "Bearer s3cret-token"}
+    )
     assert ok.status_code == 200
 
 
 @pytestmark_integration
 def test_open_mode_dev_console_unauthenticated(open_client):
     # No token configured → the dev console serves normally (no 401).
-    assert open_client.get("/dev/", follow_redirects=False).status_code == 200
-    assert open_client.get("/dev/dev.js").status_code == 200
+    assert open_client.get("/advanced/dev/", follow_redirects=False).status_code == 200
+    assert open_client.get("/advanced/dev/dev.js").status_code == 200
 
 
 @pytestmark_integration
@@ -319,9 +353,23 @@ def test_gated_health_and_studio_paths_exempt(gated_client):
     # Studio-shared API routers stay open even in full mode (Studio uses them).
     assert gated_client.get("/api/settings").status_code == 200
     assert gated_client.get("/api/workflows").status_code == 200
+    assert gated_client.get("/api/runs").status_code == 200
+    assert gated_client.get("/api/uploads").status_code == 200
     assert gated_client.get("/api/library").status_code == 200
+    assert gated_client.get("/api/learn/courses").status_code in (200, 404, 500)
     # Static shared/studio assets stay open.
     assert gated_client.get("/shared/api.js").status_code == 200
+    assert gated_client.get("/shared/tokens.css").status_code == 200
+
+
+@pytestmark_integration
+def test_open_mode_advanced_paths_unauthenticated(open_client):
+    # Token UNSET → EVERYTHING is open pass-through, including /advanced/.
+    assert open_client.get("/advanced/", follow_redirects=False).status_code == 200
+    assert open_client.get("/advanced/app.js").status_code == 200
+    assert open_client.get("/advanced/styles.css").status_code == 200
+    assert open_client.get("/api/courses").status_code in (200, 404, 500)
+    assert open_client.get("/api/activity/events").status_code == 200
 
 
 @pytestmark_integration

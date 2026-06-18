@@ -1,11 +1,12 @@
 """Serve-mode wiring for the developer console (Marketable-v1 C4).
 
-Contract: the ``/dev/`` pane shell + its ``dev.js`` / ``dev.css`` assets are
-mounted in FULL mode only. Studio + learner serve modes do NOT mount the
-operator surface, so ``/dev/`` is absent (404) there. The subtree is
-operator-classified in ``gui.auth`` so the D2 token gates it in full mode (gate
-behavior is covered in ``test_auth``); here we only assert the mount presence /
-absence per serve mode.
+Contract: the developer-console pane shell + its ``dev.js`` / ``dev.css`` assets
+are mounted in FULL mode only, under ``/advanced/dev/`` (GUI-redesign Phase 2 —
+the whole operator surface moved behind the token gate at ``/advanced/``).
+Studio + learner serve modes do NOT mount the operator surface, so
+``/advanced/dev/`` is absent (404) there. The subtree is operator-classified in
+``gui.auth`` so the D2 token gates it in full mode (gate behavior is covered in
+``test_auth``); here we only assert the mount presence / absence per serve mode.
 
 Skipped on a default install (no fastapi), mirroring the rest of ``gui/tests``.
 """
@@ -28,16 +29,17 @@ def test_dev_console_served_in_full_mode(state_dir, libv2_root, monkeypatch):
     monkeypatch.delenv("ED4ALL_GUI_TOKEN", raising=False)
     monkeypatch.setattr("gui.auth._settings_token", lambda: None)
     client = TestClient(create_app())  # full mode, open (no token)
-    # The pane shell + its assets are served.
-    assert client.get("/dev/").status_code == 200
-    assert client.get("/dev/dev.js").status_code == 200
-    assert client.get("/dev/dev.css").status_code == 200
-    # The shell loads the shared ES toolkit via the catch-all / mount.
+    # The pane shell + its assets are served under /advanced/dev/.
+    assert client.get("/advanced/dev/").status_code == 200
+    assert client.get("/advanced/dev/dev.js").status_code == 200
+    assert client.get("/advanced/dev/dev.css").status_code == 200
+    # The shell loads the shared ES toolkit via the /shared/ mount.
     assert client.get("/shared/api.js").status_code == 200
-    # The legacy SPA + its app.js still survive (the six tabs live inside /dev/
-    # AND the legacy root stays functional during the transition).
+    # The operator SPA + its app.js now ride the /advanced/ mount; the bare ``/``
+    # is the open Studio shell (THE PRODUCT).
+    assert client.get("/advanced/", follow_redirects=False).status_code == 200
+    assert client.get("/advanced/app.js").status_code == 200
     assert client.get("/", follow_redirects=False).status_code == 200
-    assert client.get("/app.js").status_code == 200
 
 
 def test_dev_console_absent_in_studio_mode(state_dir, libv2_root, monkeypatch):
@@ -45,16 +47,16 @@ def test_dev_console_absent_in_studio_mode(state_dir, libv2_root, monkeypatch):
     monkeypatch.delenv("ED4ALL_GUI_LEARNER", raising=False)
     client = TestClient(create_app(mode="studio"))
     # No operator surface in studio mode → the dev console is not mounted.
-    assert client.get("/dev/", follow_redirects=False).status_code == 404
-    assert client.get("/dev/dev.js").status_code == 404
+    assert client.get("/advanced/dev/", follow_redirects=False).status_code == 404
+    assert client.get("/advanced/dev/dev.js").status_code == 404
 
 
 def test_dev_console_absent_in_learner_mode(state_dir, libv2_root, monkeypatch):
     monkeypatch.delenv("ED4ALL_GUI_MODE", raising=False)
     monkeypatch.delenv("ED4ALL_GUI_LEARNER", raising=False)
     client = TestClient(create_app(mode="learner"))
-    assert client.get("/dev/", follow_redirects=False).status_code == 404
-    assert client.get("/dev/dev.js").status_code == 404
+    assert client.get("/advanced/dev/", follow_redirects=False).status_code == 404
+    assert client.get("/advanced/dev/dev.js").status_code == 404
 
 
 def test_dev_console_shell_static_shape():
@@ -65,7 +67,7 @@ def test_dev_console_shell_static_shape():
         Path(__file__).resolve().parents[1] / "static" / "dev" / "index.html"
     ).read_text(encoding="utf-8")
     assert 'type="module"' in html, "dev shell must load dev.js as an ES module"
-    assert 'src="/dev/dev.js"' in html
+    assert 'src="/advanced/dev/dev.js"' in html
     # Nine panes (six ported tabs + Run Inspector + Env + Events + API).
     for pane in ("runs", "upload", "settings", "routing", "courses", "retrieval", "env", "events", "api"):
         assert f'data-pane="{pane}"' in html, f"missing nav entry for pane {pane}"

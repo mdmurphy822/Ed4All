@@ -9,12 +9,15 @@ modes the operator routers are not mounted at all, and the middleware is only
 installed in ``full`` mode.
 
 Boundary (operator-classified, enforced only in ``full`` mode when a token is
-configured):
+configured) — after the GUI-redesign Phase 2 remount the OPEN product is the
+Studio shell at the bare ``/``, and the operator surface moved BEHIND the gate
+at ``/advanced/``:
 
-* the six-tab operator SPA root (``/`` index + ``/app.js``),
-* the developer-console subtree (``/dev/`` — the Marketable-v1 C4 pane shell +
-  its ``dev.js`` / ``dev.css`` assets), a power-user surface mounted in full
-  mode only,
+* the six-tab operator SPA root, now mounted under ``/advanced/`` (``/advanced``
+  + ``/advanced/`` + ``/advanced/index.html`` + ``/advanced/app.js``),
+* the developer-console subtree, now ``/advanced/dev/`` — the Marketable-v1 C4
+  pane shell + its ``dev.js`` / ``dev.css`` assets, a power-user surface mounted
+  in full mode only,
 * the OpenAPI docs surface (``/docs`` / ``/redoc`` / ``/openapi.json``),
 * the operator-only API routers Studio never calls: ``/api/courses``,
   ``/api/retrieval``, ``/api/activity``,
@@ -23,12 +26,16 @@ configured):
 
 Deliberately NOT gated (shared with Studio flows / public by contract):
 
+* the bare ``/`` — it is now the OPEN Studio shell (THE PRODUCT), no longer the
+  operator SPA root,
 * ``/api/health`` — Docker healthcheck must stay unauthenticated,
 * the Studio-shared API routers ``/api/settings``, ``/api/uploads``,
   ``/api/runs`` (REST), ``/api/learn``, ``/api/library`` — the Studio Create
   wizard + settings page legitimately use these,
-* static asset subtrees ``/shared/``, ``/studio/``, ``/learn/``,
-  ``/styles.css`` — the open studio/learner shells load these.
+* static asset subtrees ``/shared/``, ``/studio/``, ``/learn/``, and the
+  operator SPA's own ``/advanced/styles.css`` — the open studio/learner shells
+  load the first three; ``/advanced/styles.css`` mirrors the historical
+  styles.css-stays-open posture (the operator stylesheet is not a secret).
 
 When no token is configured the middleware is a pass-through (the current open
 LAN/loopback default); a non-loopback bind without a token logs a startup
@@ -51,8 +58,9 @@ TOKEN_ENV = "ED4ALL_GUI_TOKEN"
 WS_TOKEN_PARAM = "token"
 
 # Path prefixes that REQUIRE the token in full mode. Matched against the request
-# path. ``/`` and ``/app.js`` are the operator SPA root; the rest are the
-# operator-only API families + the operator run-log WebSocket.
+# path. ``/advanced`` + ``/advanced/app.js`` are the operator SPA root (the bare
+# ``/`` is now the OPEN Studio shell); the rest are the operator-only API
+# families + the operator run-log WebSocket.
 _OPERATOR_API_PREFIXES = (
     "/api/courses",
     "/api/retrieval",
@@ -67,13 +75,21 @@ _OPERATOR_DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
 _OPERATOR_DESTRUCTIVE_ROUTES = (
     ("DELETE", "/api/library"),
 )
-# Operator SPA shell files served at the root mount (exact paths). The shared /
-# studio / learn subtrees + styles.css stay open for the studio/learner shells.
-_OPERATOR_ROOT_PATHS = ("/", "/index.html", "/app.js")
-# The developer-console subtree (Marketable-v1 C4). The whole prefix is
-# operator-classified: the pane shell + its dev.js / dev.css assets are a
-# power-user surface a learner / studio appliance never reaches.
-_OPERATOR_DEV_PREFIX = "/dev"
+# Operator SPA shell files served at the ``/advanced`` mount (exact paths). The
+# bare ``/`` is now the OPEN Studio shell and must NOT be operator-classified.
+# The shared / studio / learn subtrees + ``/advanced/styles.css`` stay open for
+# the studio/learner shells (the latter mirrors the styles.css-stays-open
+# posture — it is deliberately absent from this exact-match set).
+_OPERATOR_ROOT_PATHS = (
+    "/advanced",
+    "/advanced/",
+    "/advanced/index.html",
+    "/advanced/app.js",
+)
+# The developer-console subtree (Marketable-v1 C4), now under ``/advanced/dev``.
+# The whole prefix is operator-classified: the pane shell + its dev.js / dev.css
+# assets are a power-user surface a learner / studio appliance never reaches.
+_OPERATOR_DEV_PREFIX = "/advanced/dev"
 
 
 def resolve_token(settings_token: Optional[str] = None) -> Optional[str]:
@@ -116,10 +132,12 @@ def _settings_token() -> Optional[str]:
 def is_operator_path(path: str, method: Optional[str] = None) -> bool:
     """True if ``(method, path)`` is operator-classified (token-required, full mode).
 
-    The operator SPA root + ``/app.js``, the OpenAPI docs surface, the
+    The operator SPA root (``/advanced`` + ``/advanced/app.js``) + the
+    ``/advanced/dev`` console subtree, the OpenAPI docs surface, the
     operator-only API routers (courses / retrieval / activity), and the operator
-    run-log WebSocket. Health, the Studio-shared API routers, and the
-    static studio/learn/shared subtrees are NOT operator-classified.
+    run-log WebSocket. The bare ``/`` (open Studio shell), health, the
+    Studio-shared API routers, ``/advanced/styles.css``, and the static
+    studio/learn/shared subtrees are NOT operator-classified.
 
     ``method`` (when supplied) additionally gates destructive verbs on otherwise
     open route families: ``DELETE /api/library/<slug>`` is operator-classified

@@ -139,7 +139,7 @@ function loadLegacyApp() {
     // auto-booting into the (absent) #view/#navlist of the classic SPA.
     if (window.renderUpload) { resolve(); return; }
     const s = document.createElement('script');
-    s.src = '/app.js';
+    s.src = '/advanced/app.js';
     s.onload = () => {
       // The legacy renderers re-render via the legacy global `route()` (e.g.
       // renderSettings after a save). That route() targets the classic SPA's
@@ -151,7 +151,7 @@ function loadLegacyApp() {
       try { window.route = route; } catch (_) { /* ignore */ }
       resolve();
     };
-    s.onerror = () => reject(new Error('failed to load /app.js'));
+    s.onerror = () => reject(new Error('failed to load /advanced/app.js'));
     document.head.appendChild(s);
   });
   return _legacyLoad;

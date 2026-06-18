@@ -42,7 +42,10 @@ SHELLS = {
     "studio": STATIC / "studio" / "index.html",
 }
 SURFACE_CSS = {
-    "operator": "/styles.css",
+    # GUI-redesign Phase 2: the operator SPA moved under /advanced/, so its own
+    # stylesheet ref is now /advanced/styles.css (the learner/studio shells are
+    # unchanged — they keep their own-prefix surface CSS).
+    "operator": "/advanced/styles.css",
     "learner": "/learn/learn.css",
     "studio": "/studio/studio.css",
 }

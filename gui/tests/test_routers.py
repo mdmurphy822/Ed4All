@@ -429,9 +429,9 @@ def _index_asset_urls() -> list[str]:
 def test_index_references_no_static_prefix():
     """index.html must not reference a /static/ asset path.
 
-    The only StaticFiles mount is at ``/`` (html=True); there is NO ``/static``
-    mount, so any ``/static/...`` asset reference would 404 and the SPA would
-    load with no JS/CSS (Finding 1).
+    The operator SPA is mounted under ``/advanced/`` (html=True); there is NO
+    ``/static`` mount, so any ``/static/...`` asset reference would 404 and the
+    SPA would load with no JS/CSS (Finding 1).
     """
     assets = _index_asset_urls()
     assert assets, "index.html should reference at least one .css/.js asset"
@@ -443,7 +443,9 @@ def test_index_assets_are_served(client):
     """Every .css/.js asset referenced by index.html must return HTTP 200.
 
     Catches the Finding-1 class of bug (broken asset path) regardless of which
-    path convention index.html uses.
+    path convention index.html uses. GUI-redesign Phase 2: the operator SPA's
+    own ``app.js`` / ``styles.css`` now live under ``/advanced/``; the shared
+    toolkit refs still ride ``/shared/...``.
     """
     assets = _index_asset_urls()
     assert assets, "index.html should reference at least one .css/.js asset"
@@ -452,10 +454,12 @@ def test_index_assets_are_served(client):
         assert resp.status_code == 200, f"asset {url} returned {resp.status_code}"
 
 
-def test_app_js_and_styles_css_served(client):
-    """The two canonical SPA assets resolve at their root-mount paths."""
-    assert client.get("/app.js").status_code == 200
-    assert client.get("/styles.css").status_code == 200
+def test_advanced_app_js_and_styles_css_served(client):
+    """The two canonical operator-SPA assets resolve under the /advanced/ mount."""
+    assert client.get("/advanced/app.js").status_code == 200
+    assert client.get("/advanced/styles.css").status_code == 200
+    # The old root-mount paths no longer resolve (the bare ``/`` tree is Studio).
+    assert client.get("/app.js").status_code == 404
     # The /static/ convention must NOT resolve (no such mount).
     assert client.get("/static/app.js").status_code == 404
 

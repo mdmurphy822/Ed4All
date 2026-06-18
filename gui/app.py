@@ -329,25 +329,53 @@ def create_app(learner_only: bool = False, mode: str | None = None) -> FastAPI:
     # can preview the end-user Studio at ``/studio/`` without a separate process.
     _include_routers(app, [("library", "/api")])
 
-    # The developer console (Marketable-v1 C4) — a pane-based power-user surface
-    # mounted in FULL mode only. Operator-classified in ``gui.auth`` so the D2
-    # token gates it. Mounted at its own ``/dev`` prefix BEFORE the catch-all
-    # ``/`` SPA mount so the dev shell + its dev.js/dev.css assets are served
-    # from ``gui/static/dev/`` (the ``/`` mount would otherwise shadow them with
-    # a 404 for the missing top-level files). The shell imports the shared ES
-    # toolkit via ``/shared/...`` + studio precedents via ``/studio/...``, both
-    # served by the catch-all ``/`` mount below.
+    # GUI-redesign Phase 2 (the auth remount). In FULL mode the OPEN product is
+    # now the Studio shell, served at the bare ``/``; the operator six-tab SPA +
+    # the developer console move BEHIND the token gate at ``/advanced/``. The
+    # operator SPA lives at ``gui/static/`` (``_static_dir()``), whose ``dev/``
+    # subdir is the C4 console — so a single ``/advanced`` mount over the whole
+    # operator-static tree serves BOTH the SPA (``/advanced/`` index +
+    # ``/advanced/app.js`` + ``/advanced/styles.css``) AND the dev console
+    # (``/advanced/dev/``); no separate ``/dev`` mount is needed. The whole
+    # ``/advanced`` prefix is operator-classified in ``gui.auth`` (the D2 token
+    # gates it), except ``/advanced/styles.css`` which stays open (mirrors the
+    # historical styles.css-stays-open posture).
     app.mount(
-        "/dev",
-        _NoCacheStaticFiles(directory=str(_dev_static_dir()), html=True),
-        name="dev-static",
+        "/advanced",
+        _NoCacheStaticFiles(directory=str(_static_dir()), html=True),
+        name="advanced-static",
     )
 
-    # SPA mount LAST so it doesn't shadow the /api routes. html=True serves
-    # index.html for the SPA root. The existing ``html=True`` mount at ``/``
-    # auto-serves any ``gui/static/learn/index.html`` at ``/learn/`` with no
-    # extra mount (the learner page rides the operator app in the full mode).
-    app.mount("/", _NoCacheStaticFiles(directory=str(_static_dir()), html=True), name="static")
+    # The Studio / learner / shared static subtrees previously rode the catch-all
+    # ``/`` operator-static mount (which served ``gui/static/`` whole, including
+    # its ``studio/ learn/ shared/`` subdirs). With ``/`` now the Studio shell
+    # those subtrees need their own explicit mounts. The shared ES toolkit
+    # (``/shared/...``) and the learner page (``/learn/``) ride the open surface.
+    app.mount(
+        "/studio",
+        _NoCacheStaticFiles(directory=str(_studio_static_dir()), html=True),
+        name="studio-static",
+    )
+    app.mount(
+        "/learn",
+        _NoCacheStaticFiles(directory=str(_learn_static_dir()), html=True),
+        name="learn-static",
+    )
+    app.mount(
+        "/shared",
+        _NoCacheStaticFiles(directory=str(_shared_static_dir())),
+        name="shared-static",
+    )
+
+    # Studio shell at the bare ``/`` LAST so it doesn't shadow the ``/api/...``
+    # routers or the ``/advanced /studio /learn /shared`` mounts above. ``/`` IS
+    # the Studio shell now (THE PRODUCT) — open, no operator token required.
+    # ``html=True`` serves ``gui/static/studio/index.html`` at ``/``.
+    app.mount(
+        "/",
+        _NoCacheStaticFiles(directory=str(_studio_static_dir()), html=True),
+        name="studio-root",
+    )
 
     return app
 

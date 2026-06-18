@@ -840,7 +840,7 @@ def test_dev_index_links_gallery_without_breaking_navlist():
     """The added gallery link lives OUTSIDE #dev-navlist (keeps the 9-link count)."""
     soup = _soup((DEV_DIR / "index.html").read_text(encoding="utf-8"))
     link = soup.find("a", id="dev-gallery-link")
-    assert link is not None and link.get("href") == "/dev/gallery.html"
+    assert link is not None and link.get("href") == "/advanced/dev/gallery.html"
     navlist = soup.find("ul", id="dev-navlist")
     assert link not in navlist.find_all("a"), "gallery link must not be inside the pane navlist"
 
