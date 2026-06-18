@@ -615,9 +615,13 @@ async def _drive_pipeline(
         # ``textbook_to_course`` (the only multi-phase pipeline with
         # ``agents: []`` phases) when the record is unreadable.
         _rec = shared_state.read_run(run_id) or {}
-        validator_only = _validator_only_phases(
-            str(_rec.get("workflow") or "textbook_to_course")
-        )
+        _wf_name = str(_rec.get("workflow") or "textbook_to_course")
+        validator_only = _validator_only_phases(_wf_name)
+        # Phase 5 §5.1(D) — per-phase declared gate counts (real, from config)
+        # size the full-pipeline ``__summary__`` denominator. The rollup carries
+        # NO per-gate id/severity detail (see ``_emit_gate_lines`` limitation
+        # note), so the full-pipeline path emits ONLY the truthful summary line.
+        _gate_counts = _phase_gate_counts(_wf_name)
         for name, info in payload["phase_results"].items():
             if isinstance(info, dict):
                 shared_state.append_log(
@@ -642,6 +646,14 @@ async def _drive_pipeline(
                         info.get("completed", 0),
                         info.get("task_count", 0),
                     )
+                # Phase 5 §5.1(D) — emit the per-phase gate ``__summary__`` line
+                # from the REAL ``gates_passed`` boolean + the declared gate
+                # count. No per-id lines here (the rollup strips them). Emitted
+                # for validator-only phases too — a gate-only phase still has a
+                # meaningful "all checks passing" summary even with no tasks.
+                _emit_pipeline_gate_summary(
+                    run_id, name, info, _gate_counts.get(name, 0)
+                )
 
     # Marketable-v1 A6 operator-failure-UX: when the workflow failed, emit a
     # STRUCTURED per-phase failure line + persist ``failed_phase`` /
@@ -803,6 +815,214 @@ def _emit_phase_progress_line(
         f"[{shared_state.now_iso()}] [progress] {phase_name} {done}/{total}\n",
     )
     return True
+
+
+# Phase 5 §5.1(D) — live per-gate log lines feeding the frontend Build Console's
+# inline gate strip ("37 of 37 checks passing," warnings amber). Grammar
+# (matches the roadmap contract + the frontend parser):
+#
+#   [<iso>] [gate] <phase> <gate_id> <pass|fail> <severity>
+#   [<iso>] [gate] <phase> __summary__ <passed>/<total>
+#
+# HONEST CEILING — per-id-pass-detail limitation:
+#   * SINGLE-PHASE runs (``_run_single_phase``) DO carry real per-gate detail:
+#     ``execute_phase`` returns a ``gate_results`` list of per-gate dicts
+#     (``gate_id`` + ``passed`` + ``issues[]``), and the phase's gate CONFIGS
+#     (``phase.validation_gates``) carry the REAL declared ``severity`` per
+#     gate_id. So there we emit a real per-id line for EVERY resolved gate
+#     (pass and fail) plus an exact ``__summary__``.
+#   * FULL-PIPELINE runs (``_drive_pipeline``) do NOT: the orchestrator's
+#     ``phase_results`` rollup carries ONLY ``{task_count, completed, failed,
+#     gates_passed}`` per phase — the per-gate ``_gate_results`` chain is
+#     STRIPPED from the ``run_workflow`` return payload (underscore-prefixed
+#     keys removed in ``WorkflowRunner.run_workflow``). So GUI-side we have NO
+#     per-id detail there, not even for failures. The only honest per-phase
+#     gate signal is the ``gates_passed`` boolean + the phase's TOTAL gate
+#     count (from config). Therefore the full-pipeline path emits ONLY the
+#     ``__summary__ <total>/<total>`` line, and ONLY when ``gates_passed`` is
+#     True (every gate genuinely passed). When ``gates_passed`` is False the
+#     individual passed count is UNKNOWN GUI-side, so we emit nothing rather
+#     than fabricate an ``N/M``. Per-id full-pipeline lines require the
+#     DEFERRED Tier-2 orchestrator stamp (roadmap §5.2) — the
+#     ``MCP/core/executor.py`` / ``workflow_runner.py`` edit this GUI-side
+#     backend is explicitly forbidden from making.
+
+# Recognized gate severities, in descending order of seriousness. Used to pick
+# the most-serious issue severity as a fallback when a gate config severity is
+# unavailable (single-phase passing gates with no config map entry).
+_GATE_SEVERITY_ORDER: Tuple[str, ...] = ("critical", "warning", "info")
+
+
+def _gate_severity_for(
+    gate: Any, gate_id: str, config_severity: Dict[str, str]
+) -> str:
+    """Resolve the REAL severity for one resolved gate (never fabricate).
+
+    Resolution (most → least authoritative):
+      1. The gate CONFIG's declared ``severity`` for this ``gate_id``
+         (``config_severity`` map built from ``phase.validation_gates``) — the
+         canonical ``config/workflows.yaml`` severity.
+      2. The most-serious severity among the gate result's own ``issues`` — a
+         real signal emitted by the validator when (1) is absent.
+      3. ``"warning"`` — the conservative default the GUI already uses
+         (mirrors ``failed_gate_digest``) when neither real signal exists.
+    """
+    declared = config_severity.get(gate_id)
+    if declared:
+        return str(declared)
+
+    if hasattr(gate, "issues"):
+        issues = getattr(gate, "issues", None) or []
+    elif isinstance(gate, dict):
+        issues = gate.get("issues") or []
+    else:
+        issues = []
+    seen = set()
+    for issue in issues:
+        sev = (
+            issue.get("severity")
+            if isinstance(issue, dict)
+            else getattr(issue, "severity", None)
+        )
+        if sev:
+            seen.add(str(sev))
+    for candidate in _GATE_SEVERITY_ORDER:
+        if candidate in seen:
+            return candidate
+    return "warning"
+
+
+def _emit_gate_lines(
+    run_id: str,
+    phase_name: str,
+    gate_results: Any,
+    *,
+    config_severity: Optional[Dict[str, str]] = None,
+) -> int:
+    """Emit ``[gate]`` log lines for one phase from REAL per-gate detail.
+
+    For each gate in ``gate_results`` (a list of per-gate dicts / ``GateResult``
+    objects from ``execute_phase``) carrying a real ``gate_id``, append::
+
+        [<iso>] [gate] <phase> <gate_id> <pass|fail> <severity>
+
+    then a single truthful aggregate::
+
+        [<iso>] [gate] <phase> __summary__ <passed>/<total>
+
+    Severity comes from the phase's gate CONFIG (``config_severity``,
+    ``gate_id -> declared severity``) with a real-issue-severity fallback — see
+    :func:`_gate_severity_for`. Returns the number of per-gate lines emitted.
+
+    NEVER fabricates: a gate with no real ``gate_id`` is skipped (it carries no
+    per-id signal — e.g. the coarse rollup row). When NO gate has a real
+    ``gate_id``, emits nothing at all (no ``__summary__`` over zero real gates).
+    """
+    if not isinstance(gate_results, list) or not gate_results:
+        return 0
+    config_severity = config_severity or {}
+
+    emitted = 0
+    passed_count = 0
+    lines: List[str] = []
+    for gate in gate_results:
+        if hasattr(gate, "gate_id"):
+            gate_id = getattr(gate, "gate_id", "") or ""
+            passed = bool(getattr(gate, "passed", True))
+        elif isinstance(gate, dict):
+            gate_id = gate.get("gate_id", "") or ""
+            passed = bool(gate.get("passed", True))
+        else:
+            continue
+        if not gate_id:
+            # No real per-id signal — skip rather than emit a blank gate_id.
+            continue
+        severity = _gate_severity_for(gate, gate_id, config_severity)
+        verdict = "pass" if passed else "fail"
+        lines.append(
+            f"[{shared_state.now_iso()}] [gate] {phase_name} "
+            f"{gate_id} {verdict} {severity}\n"
+        )
+        emitted += 1
+        if passed:
+            passed_count += 1
+
+    if emitted == 0:
+        return 0
+
+    for line in lines:
+        shared_state.append_log(run_id, line)
+    # The truthful aggregate over the gates that DID carry per-id detail.
+    shared_state.append_log(
+        run_id,
+        f"[{shared_state.now_iso()}] [gate] {phase_name} "
+        f"__summary__ {passed_count}/{emitted}\n",
+    )
+    return emitted
+
+
+def _emit_pipeline_gate_summary(
+    run_id: str, phase_name: str, info: Dict[str, Any], total_gates: int
+) -> bool:
+    """Emit the full-pipeline ``__summary__`` line from the rollup (real data only).
+
+    The orchestrator's ``phase_results`` rollup carries no per-gate detail — see
+    the per-id-pass-detail limitation note above ``_emit_gate_lines``. The only
+    honest signal here is ``info["gates_passed"]`` + ``total_gates`` (the phase's
+    declared gate count from config). We therefore emit::
+
+        [<iso>] [gate] <phase> __summary__ <total>/<total>
+
+    ONLY when every gate genuinely passed (``gates_passed is True``) and the
+    phase declares ≥1 gate. When ``gates_passed`` is False the individual passed
+    count is UNKNOWN GUI-side, so we emit nothing rather than fabricate an
+    ``N/M``. Returns ``True`` when a line was emitted.
+    """
+    if total_gates <= 0:
+        return False
+    if info.get("gates_passed") is not True:
+        # Passed count unknown on a fail — refuse to invent it.
+        return False
+    shared_state.append_log(
+        run_id,
+        f"[{shared_state.now_iso()}] [gate] {phase_name} "
+        f"__summary__ {total_gates}/{total_gates}\n",
+    )
+    return True
+
+
+def _phase_gate_counts(workflow: str) -> Dict[str, int]:
+    """Return ``{phase_name: declared_gate_count}`` for ``workflow`` from config.
+
+    Read from ``config/workflows.yaml`` (no MCP import) so the full-pipeline
+    path can size the ``__summary__`` denominator from the REAL declared gate
+    count. Courseforge stage aliases run against ``textbook_to_course``. Cached.
+    Best-effort: any read/parse failure returns an empty map (the summary line
+    is then suppressed for every phase — never fabricate a count).
+    """
+    name = "textbook_to_course" if workflow in COURSEFORGE_STAGE_SUBCOMMANDS else workflow
+    cached = _PHASE_GATE_COUNT_CACHE.get(name)
+    if cached is not None:
+        return cached
+    counts: Dict[str, int] = {}
+    try:
+        import yaml  # noqa: PLC0415
+        from lib.paths import PROJECT_ROOT  # noqa: PLC0415
+
+        cfg = yaml.safe_load((Path(PROJECT_ROOT) / "config" / "workflows.yaml").read_text())
+        wf = (cfg or {}).get("workflows", {}).get(name)
+        if isinstance(wf, dict):
+            for ph in wf.get("phases", []) or []:
+                if isinstance(ph, dict) and ph.get("name"):
+                    gates = ph.get("validation_gates") or []
+                    counts[ph.get("name")] = len(gates) if isinstance(gates, list) else 0
+    except Exception:  # noqa: BLE001 — count lookup is best-effort
+        logger.debug("phase gate-count lookup failed for %s", name, exc_info=True)
+    _PHASE_GATE_COUNT_CACHE[name] = counts
+    return counts
+
+
+_PHASE_GATE_COUNT_CACHE: Dict[str, Dict[str, int]] = {}
 
 
 async def _poll_phase_progress(run_id: str, workflow_id: str) -> None:
@@ -1137,6 +1357,20 @@ async def _run_single_phase(
     shared_state.append_log(
         run_id,
         f"[{shared_state.now_iso()}] phase {phase_name} done: gates_passed={gates_passed}\n",
+    )
+    # Phase 5 §5.1(D) — emit per-gate ``[gate]`` lines + a truthful summary from
+    # the REAL ``gate_results`` the executor returned (this single-phase path
+    # DOES have per-id detail, unlike the full pipeline). Severity is the gate
+    # CONFIG's declared severity (``gate_configs``) per gate_id, with a
+    # real-issue-severity fallback. A phase with no gate data emits no line.
+    _config_severity: Dict[str, str] = {}
+    for _gc in gate_configs or []:
+        if isinstance(_gc, dict) and _gc.get("gate_id"):
+            _config_severity[str(_gc["gate_id"])] = str(_gc.get("severity") or "")
+        elif getattr(_gc, "gate_id", None):
+            _config_severity[str(_gc.gate_id)] = str(getattr(_gc, "severity", "") or "")
+    _emit_gate_lines(
+        run_id, phase_name, gate_results, config_severity=_config_severity
     )
     # Phase-3 (§5.1(B)) — emit the REAL end-of-phase
     # ``[<iso>] [progress] <phase> <done>/<total>`` ring signal for the

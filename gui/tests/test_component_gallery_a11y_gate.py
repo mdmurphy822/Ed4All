@@ -161,6 +161,18 @@ _GATE_INNER = (
     + "</div></section>"
 )
 
+
+def _gate_summary(result: str, glyph: str, text: str) -> str:
+    """The per-phase "N of M checks passing" summary chip, reconstructed exactly
+    as phase-row.js::setGateSummary emits it: glyph (aria-hidden) + VISIBLE text,
+    never color-only. The tone (pass/warn/fail) is the WORST gate seen so a
+    warning reads CALM (amber △ "warnings"), not alarming."""
+    return (
+        f'<span class="phase-gate-summary is-{result}" data-result="{result}">'
+        f'<span class="phase-gate-summary-glyph" aria-hidden="true">{glyph}</span>'
+        f'<span class="phase-gate-summary-text">{text}</span></span>'
+    )
+
 _ELAPSED_INNER = (
     '<section class="gallery-section"><h2>Elapsed timer</h2>'
     '<p>The single canonical timer (tabular-nums, aria-hidden).</p>'
@@ -202,6 +214,37 @@ _PHASE_ROW_INNER = (
     + _phase_row("done", gates=_gate_chip("pass", "✓", "Passed", "source_refs") + _gate_chip("warn", "△", "Warning", "co_terminal_alignment"))
     + _phase_row("skipped")
     + _phase_row("failed", gates=_gate_chip("fail", "✗", "Failed", "curie_anchoring"))
+    + "</ol></section>"
+)
+
+
+# The Phase-5 gate strips: a phase with all gates passing ("37 of 37 checks
+# passing"), a phase with a CALM amber warning, and a phase with a critical fail.
+# Built from the phase-row markup with the summary chip + per-gate chips inside
+# the .phase-gates strip (exactly as gallery.js::gateStripSection renders them).
+_GATE_STRIP_INNER = (
+    '<section class="gallery-section"><h2>Gate strips (live ticker)</h2>'
+    '<p>Per-phase gate strips: all-passing reassurance, a CALM amber warning, and a critical fail — icon + text, never color-only.</p>'
+    '<ol class="phase-checklist" aria-label="Gate strip states">'
+    + _phase_row(
+        "done",
+        gates=_gate_summary("pass", "✓", "37 of 37 checks passing")
+        + _gate_chip("pass", "✓", "Passed", "source_refs")
+        + _gate_chip("pass", "✓", "Passed", "curie_anchoring")
+        + _gate_chip("pass", "✓", "Passed", "manifest_completeness"),
+    ).replace("phase_done", "validate_pass").replace("Phase (done)", "Validate content")
+    + _phase_row(
+        "done",
+        gates=_gate_summary("warn", "△", "11 of 12 checks passing · 1 warning")
+        + _gate_chip("pass", "✓", "Passed", "terminal_objective_coverage")
+        + _gate_chip("warn", "△", "Warning", "co_terminal_alignment"),
+    ).replace("phase_done", "plan_warn").replace("Phase (done)", "Plan course structure")
+    + _phase_row(
+        "failed",
+        gates=_gate_summary("fail", "✗", "8 of 9 checks passing · 1 failed")
+        + _gate_chip("pass", "✓", "Passed", "block_prose_entailment")
+        + _gate_chip("fail", "✗", "Failed", "numeric_literal_grounding"),
+    ).replace("phase_failed", "rewrite_fail").replace("Phase (failed)", "Rewrite content")
     + "</ol></section>"
 )
 
@@ -418,9 +461,9 @@ _RUN_HISTORY_INNER = (
 )
 
 _ALL_SECTIONS = (
-    _RING_INNER + _PILL_INNER + _GATE_INNER + _ELAPSED_INNER + _PHASE_ROW_INNER
-    + _CARD_INNER + _EMPTY_INNER + _FIELD_INNER + _TIMELINE_INNER + _LIVE_DEMO_INNER
-    + _CONSOLE_INNER + _CONSOLE_ETA_INNER + _RUN_HISTORY_INNER
+    _RING_INNER + _PILL_INNER + _GATE_INNER + _GATE_STRIP_INNER + _ELAPSED_INNER
+    + _PHASE_ROW_INNER + _CARD_INNER + _EMPTY_INNER + _FIELD_INNER + _TIMELINE_INNER
+    + _LIVE_DEMO_INNER + _CONSOLE_INNER + _CONSOLE_ETA_INNER + _RUN_HISTORY_INNER
 )
 
 
@@ -436,6 +479,7 @@ _ALL_SECTIONS = (
         ("ring", _RING_INNER),
         ("pill", _PILL_INNER),
         ("gate-chip", _GATE_INNER),
+        ("gate-strip", _GATE_STRIP_INNER),
         ("elapsed", _ELAPSED_INNER),
         ("phase-row", _PHASE_ROW_INNER),
         ("card", _CARD_INNER),
@@ -680,6 +724,76 @@ def test_gate_chips_carry_visually_hidden_label():
     for c in chips:
         assert c.find("span", class_="visually-hidden") is not None, "chip needs a hidden text label"
         assert c.find("span", class_="gate-chip-glyph").get("aria-hidden") == "true"
+
+
+def test_gate_strip_fixture_passes_wcag_and_adds_no_live_region():
+    """The Phase-5 gate-strip fixture (per-phase gate strips + 'N of M checks
+    passing' summary chips) is zero-AA AND introduces NO new role=status region
+    — any gate announcement routes through the shell's single #gallery-live."""
+    html = _shell_with_gallery(_GATE_STRIP_INNER)
+    _assert_clean("gallery-gate-strip", html)
+    soup = _soup(html)
+    # Exactly one role=status aria-live=polite region on the whole page.
+    lives = soup.find_all(attrs={"aria-live": True})
+    assert len(lives) == 1, f"gate strip must not add a live region; found {len(lives)}"
+    assert lives[0].get("role") == "status" and lives[0].get("aria-live") == "polite"
+    # The gate-strip summary chips are NOT live regions (no aria-live on them).
+    summaries = soup.find_all("span", class_="phase-gate-summary")
+    assert len(summaries) == 3, "fixture renders three per-phase summary chips"
+    for s in summaries:
+        assert s.get("aria-live") is None, "summary chip must NOT mint its own live region"
+
+
+def test_gate_summary_chips_are_not_color_only_and_warning_is_calm():
+    """Each summary chip pairs a glyph (aria-hidden) with VISIBLE text (never
+    color-only). The warning reads CALM ('warning', amber △), not alarming."""
+    soup = _soup(_shell_with_gallery(_GATE_STRIP_INNER))
+    summaries = soup.find_all("span", class_="phase-gate-summary")
+    assert summaries, "gate-strip section must render summary chips"
+    texts = []
+    for s in summaries:
+        glyph = s.find("span", class_="phase-gate-summary-glyph")
+        label = s.find("span", class_="phase-gate-summary-text")
+        assert glyph is not None and glyph.get("aria-hidden") == "true"
+        assert label is not None and label.get_text(strip=True), "summary needs visible text"
+        texts.append(label.get_text(strip=True))
+    # All-passing reassurance: "37 of 37 checks passing".
+    assert any(t == "37 of 37 checks passing" for t in texts), "all-pass chip must read 'N of N checks passing'"
+    # The warning is CALM: it says "warning", not "fail"/"error"/"critical".
+    warn = next(s for s in summaries if "is-warn" in (s.get("class") or []))
+    wtext = warn.find("span", class_="phase-gate-summary-text").get_text(strip=True).lower()
+    assert "warning" in wtext and "fail" not in wtext and "error" not in wtext, (
+        f"the warning summary must read calmly, got {wtext!r}"
+    )
+    assert warn.find("span", class_="phase-gate-summary-glyph").get_text(strip=True) == "△"
+    # The critical fail uses the ✗ glyph + names the failure.
+    fail = next(s for s in summaries if "is-fail" in (s.get("class") or []))
+    assert fail.find("span", class_="phase-gate-summary-glyph").get_text(strip=True) == "✗"
+
+
+def test_run_progress_parses_gate_lines_and_summary():
+    """run-progress.js must defensively parse the [gate] per-gate + __summary__
+    lines, route per-gate to addGate and the summary to the 'N of M' chip, and
+    keep the calm-warning treatment (a warning-severity fail → 'warn', not
+    'fail')."""
+    js = (COMPONENTS_DIR / "run-progress.js").read_text(encoding="utf-8")
+    assert "[gate]" in js, "console must parse [gate] lines"
+    assert "__summary__" in js, "console must parse the __summary__ aggregate line"
+    assert "setGateSummary" in js, "console must drive the per-phase summary chip"
+    assert "_gateResult" in js and "warn" in js, "warning-severity fail must read as a calm warn"
+    # phase-row.js exposes the summary setter the console calls.
+    pr = (COMPONENTS_DIR / "phase-row.js").read_text(encoding="utf-8")
+    assert "setGateSummary" in pr, "phase-row must expose setGateSummary"
+    assert "checks passing" in pr, "the summary chip text reads 'N of M checks passing'"
+
+
+def test_gallery_js_renders_gate_strip_section():
+    """gallery.js must render the Phase-5 gate-strip fixture (all-pass / calm
+    warning / critical fail) via setGateSummary on phase rows."""
+    js = (DEV_DIR / "gallery.js").read_text(encoding="utf-8")
+    assert "gateStripSection" in js, "gallery must render the gate-strip fixture"
+    assert "setGateSummary(" in js, "gate-strip fixture drives the summary chip"
+    assert "37, 37" in js, "the all-passing strip reads '37 of 37 checks passing'"
 
 
 def test_elapsed_is_aria_hidden_tabular():

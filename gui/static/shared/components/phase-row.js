@@ -20,6 +20,9 @@
  *   setState(state)              swap the ring + state text + row class.
  *   setTaskProgress(done,total)  show "· 23/50 tasks" + drive the ring fill.
  *   addGate(gate)                append a gateChip to the row's gate strip.
+ *   setGateSummary(passed,total,worst)  render/update the "N of M checks
+ *                                passing" chip (green when all pass; calm amber
+ *                                when warnings; red when a critical failed).
  *   expand()                     reveal the row's detail drawer.
  *
  * PURE PRESENTATION: takes data as args, calls no API.
@@ -59,6 +62,12 @@ export function phaseRow(phase = {}) {
   const stateEl = el('span', { class: 'phase-state', text: _STATE_TEXT[state] });
   const taskEl = el('span', { class: 'phase-tasks tabular-nums', hidden: true });
   const gateStrip = el('span', { class: 'phase-gates', role: 'group', 'aria-label': `Checks for ${label}` });
+  // The per-phase "N of M checks passing" summary chip. Decorative-status (a
+  // glyph paired with visible text); it is NOT a live region — the polite
+  // announcement (when one happens) routes through the console's single
+  // role=status line, never per-gate chatter. Hidden until a __summary__ line.
+  const summaryChip = el('span', { class: 'phase-gate-summary', hidden: true, 'data-result': '' });
+  gateStrip.appendChild(summaryChip);
   const detail = el('div', { class: 'phase-detail', hidden: true });
 
   function paintRing() {
@@ -107,6 +116,39 @@ export function phaseRow(phase = {}) {
     gateStrip.appendChild(gateChip(gate));
   }
 
+  /**
+   * Render/update the per-phase "N of M checks passing" summary chip.
+   *
+   * Non-color-only (WCAG 1.4.1): a glyph + visible text, NOT a bare colored dot.
+   * The TONE follows the worst gate seen so warnings read CALM, not alarming:
+   *   all pass         → ✓  green  "N of N checks passing"
+   *   warnings present → △  amber  "N of M checks passing · K warnings"  (calm)
+   *   a critical fail  → ✗  red    "N of M checks passing · K failed"
+   *
+   * @param {number} passed  gates that passed.
+   * @param {number} total   total resolved gates.
+   * @param {string} [worst="pass"]  the worst result seen on this phase
+   *        (pass|warn|fail) — drives the tone/glyph, NOT color-only.
+   */
+  function setGateSummary(passed, total, worst) {
+    const p = Math.max(0, Number(passed) || 0);
+    const t = Math.max(0, Number(total) || 0);
+    const failed = Math.max(0, t - p);
+    const w = worst === 'fail' ? 'fail' : worst === 'warn' ? 'warn' : 'pass';
+    const glyph = w === 'fail' ? '✗' : w === 'warn' ? '△' : '✓';
+    // The visible suffix names the non-passing kind CALMLY (warnings, not alarm).
+    let tail = '';
+    if (w === 'warn' && failed > 0) tail = ` · ${failed} ${failed === 1 ? 'warning' : 'warnings'}`;
+    else if (w === 'fail' && failed > 0) tail = ` · ${failed} failed`;
+    const text = `${p} of ${t} checks passing${tail}`;
+    summaryChip.setAttribute('data-result', w);
+    summaryChip.className = `phase-gate-summary is-${w}`;
+    clear(summaryChip);
+    summaryChip.appendChild(el('span', { class: 'phase-gate-summary-glyph', 'aria-hidden': 'true', text: glyph }));
+    summaryChip.appendChild(el('span', { class: 'phase-gate-summary-text', text }));
+    summaryChip.hidden = false;
+  }
+
   function expand() {
     detail.hidden = false;
   }
@@ -117,6 +159,7 @@ export function phaseRow(phase = {}) {
     setState,
     setTaskProgress,
     addGate,
+    setGateSummary,
     expand,
     state: () => state,
   };

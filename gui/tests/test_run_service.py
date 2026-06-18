@@ -1314,3 +1314,446 @@ def test_run_single_phase_emits_progress_and_suppresses_validator_phase(
     # Validator-only phase (agents: []): emits NO progress line.
     vo_run = asyncio.run(_run_phase("inter_tier_validation", []))
     assert _progress_lines(vo_run) == []
+
+
+# ----------------------------------------------------------- Phase 5 gate lines
+
+
+import re as _re_gates  # noqa: E402
+
+# Matches ``[<iso>] [gate] <phase> <gate_id> <pass|fail> <severity>`` (the
+# frontend Build Console contract) AND the ``__summary__ <passed>/<total>``
+# variant. The summary line is captured via the ``token == "__summary__"`` arm.
+_GATE_RE = _re_gates.compile(
+    r"^\[(?P<iso>[^\]]+)\]\s+\[gate\]\s+(?P<phase>\S+)\s+(?P<token>\S+)\s+(?P<rest>.+)$"
+)
+
+
+def _gate_lines(run_id):
+    """Return parsed ``[gate]`` log lines for ``run_id`` (in order).
+
+    Each entry is either a per-gate line
+    ``{kind:"gate", iso, phase, gate_id, verdict, severity}`` or a summary line
+    ``{kind:"summary", iso, phase, passed, total}``.
+    """
+    text, _ = shared_state.tail_log(run_id, 0)
+    out = []
+    for line in text.splitlines():
+        m = _GATE_RE.match(line.strip())
+        if not m:
+            continue
+        token = m.group("token")
+        rest = m.group("rest").strip()
+        if token == "__summary__":
+            passed, _, total = rest.partition("/")
+            out.append(
+                {
+                    "kind": "summary",
+                    "iso": m.group("iso"),
+                    "phase": m.group("phase"),
+                    "passed": int(passed),
+                    "total": int(total),
+                }
+            )
+        else:
+            verdict, _, severity = rest.partition(" ")
+            out.append(
+                {
+                    "kind": "gate",
+                    "iso": m.group("iso"),
+                    "phase": m.group("phase"),
+                    "gate_id": token,
+                    "verdict": verdict,
+                    "severity": severity.strip(),
+                }
+            )
+    return out
+
+
+def test_emit_gate_lines_real_detail_and_summary(state_dir):
+    """Per-gate ``[gate]`` lines carry real ``<gate_id> <pass|fail> <severity>``
+    (severity from the gate CONFIG), plus a real ``__summary__ passed/total``."""
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+    # Real-shaped per-gate result dicts (GateResult.to_dict() shape): note there
+    # is NO top-level severity key — severity is supplied by the config map.
+    gate_results = [
+        {"gate_id": "content_structure", "passed": True, "issues": []},
+        {
+            "gate_id": "curie_anchoring",
+            "passed": False,
+            "issues": [{"severity": "critical", "message": "0.8 < 0.95"}],
+        },
+    ]
+    config_severity = {
+        "content_structure": "critical",
+        "curie_anchoring": "critical",
+    }
+    emitted = run_service._emit_gate_lines(
+        run_id,
+        "inter_tier_validation",
+        gate_results,
+        config_severity=config_severity,
+    )
+    assert emitted == 2
+
+    lines = _gate_lines(run_id)
+    gates = [ln for ln in lines if ln["kind"] == "gate"]
+    summaries = [ln for ln in lines if ln["kind"] == "summary"]
+    assert len(gates) == 2
+    assert len(summaries) == 1
+
+    by_id = {g["gate_id"]: g for g in gates}
+    # The PASS gate carries the real config severity + ``pass`` verdict.
+    assert by_id["content_structure"]["verdict"] == "pass"
+    assert by_id["content_structure"]["severity"] == "critical"
+    # The FAIL gate carries the real config severity + ``fail`` verdict.
+    assert by_id["curie_anchoring"]["verdict"] == "fail"
+    assert by_id["curie_anchoring"]["severity"] == "critical"
+    assert by_id["curie_anchoring"]["phase"] == "inter_tier_validation"
+    # The summary reports the REAL passed/total (1 of 2).
+    assert summaries[0]["passed"] == 1
+    assert summaries[0]["total"] == 2
+    assert summaries[0]["phase"] == "inter_tier_validation"
+    # Every line carries a parseable ISO prefix matching now_iso().
+    from datetime import datetime
+
+    for ln in lines:
+        datetime.fromisoformat(ln["iso"])
+
+
+def test_emit_gate_lines_severity_falls_back_to_issue_when_no_config(state_dir):
+    """With no config severity, the gate's most-serious ISSUE severity is used
+    (real signal), defaulting to ``warning`` only when truly absent."""
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+    gate_results = [
+        # No config entry; issue carries a real critical severity.
+        {
+            "gate_id": "numeric_literal_grounding",
+            "passed": False,
+            "issues": [{"severity": "warning"}, {"severity": "critical"}],
+        },
+        # No config entry, no issues -> conservative warning default.
+        {"gate_id": "source_coverage", "passed": True, "issues": []},
+    ]
+    run_service._emit_gate_lines(
+        run_id, "post_rewrite_validation", gate_results, config_severity={}
+    )
+    by_id = {g["gate_id"]: g for g in _gate_lines(run_id) if g["kind"] == "gate"}
+    # Most-serious issue severity wins (critical beats warning).
+    assert by_id["numeric_literal_grounding"]["severity"] == "critical"
+    # No real signal at all -> conservative warning default (not fabricated).
+    assert by_id["source_coverage"]["severity"] == "warning"
+
+
+def test_emit_gate_lines_no_data_emits_nothing(state_dir):
+    """A phase with no gate data emits NO ``[gate]`` line (no fabrication)."""
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+    # Empty list, None, and a non-list all emit nothing.
+    assert run_service._emit_gate_lines(run_id, "staging", []) == 0
+    assert run_service._emit_gate_lines(run_id, "staging", None) == 0
+    assert run_service._emit_gate_lines(run_id, "staging", {"not": "a list"}) == 0
+    # A list whose entries carry NO real gate_id emits nothing (no blank-id line,
+    # no summary over zero real gates).
+    assert (
+        run_service._emit_gate_lines(
+            run_id, "staging", [{"gate_id": "", "passed": True}]
+        )
+        == 0
+    )
+    assert _gate_lines(run_id) == []
+
+
+def test_emit_pipeline_gate_summary_only_on_all_pass(state_dir):
+    """Full-pipeline summary emits ``<total>/<total>`` ONLY when gates_passed is
+    True (passed count unknown on a fail -> emit nothing rather than fabricate)."""
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+    # All gates passed + a real declared count -> truthful 3/3 summary.
+    assert (
+        run_service._emit_pipeline_gate_summary(
+            run_id, "staging", {"gates_passed": True}, 3
+        )
+        is True
+    )
+    # A FAILED phase: passed count unknown GUI-side -> NO summary line.
+    assert (
+        run_service._emit_pipeline_gate_summary(
+            run_id, "course_planning", {"gates_passed": False}, 5
+        )
+        is False
+    )
+    # Zero declared gates -> no summary.
+    assert (
+        run_service._emit_pipeline_gate_summary(
+            run_id, "vector_indexing", {"gates_passed": True}, 0
+        )
+        is False
+    )
+    summaries = [ln for ln in _gate_lines(run_id) if ln["kind"] == "summary"]
+    assert len(summaries) == 1
+    assert summaries[0]["phase"] == "staging"
+    assert summaries[0]["passed"] == 3
+    assert summaries[0]["total"] == 3
+
+
+def test_phase_gate_counts_reads_real_config(state_dir):
+    """Declared per-phase gate counts come from the real workflows.yaml."""
+    counts = run_service._phase_gate_counts("textbook_to_course")
+    # dart_conversion declares at least its dart_markers gate.
+    assert counts.get("dart_conversion", 0) >= 1
+    # Stage aliases resolve through the textbook_to_course machine.
+    assert run_service._phase_gate_counts("courseforge_validate") == counts
+
+
+def test_drive_pipeline_emits_gate_summary_from_real_phase_results(
+    state_dir, monkeypatch
+):
+    """Full-pipeline path emits a per-phase ``__summary__`` from the REAL
+    gates_passed boolean + declared gate count; emits nothing for a failed phase
+    and no per-id lines (the rollup carries none)."""
+    import MCP.orchestrator as orch_pkg
+
+    # Pin a deterministic gate-count map so the assertion is independent of the
+    # live config gate counts.
+    monkeypatch.setattr(
+        run_service,
+        "_phase_gate_counts",
+        lambda wf: {
+            "content_generation": 4,
+            "inter_tier_validation": 7,
+            "course_planning": 5,
+            "finalization": 0,
+        },
+    )
+
+    class OkResult:
+        def to_dict(self):
+            return {
+                "status": "ok",
+                "gates_passed": True,
+                "phase_results": {
+                    "content_generation": {
+                        "task_count": 12,
+                        "completed": 12,
+                        "gates_passed": True,
+                    },
+                    # Validator-only phase still gets a gate summary (gate-only
+                    # phase has a meaningful "all checks passing" signal).
+                    "inter_tier_validation": {
+                        "task_count": 1,
+                        "completed": 1,
+                        "gates_passed": True,
+                    },
+                    # A phase that failed gates -> NO summary (passed unknown).
+                    "course_planning": {
+                        "task_count": 4,
+                        "completed": 4,
+                        "gates_passed": False,
+                    },
+                    # Zero declared gates -> no summary.
+                    "finalization": {
+                        "task_count": 0,
+                        "completed": 0,
+                        "gates_passed": True,
+                    },
+                },
+            }
+
+    class OkOrchestrator:
+        def __init__(self, mode, backend_spec):
+            pass
+
+        async def run(self, workflow_id):
+            return OkResult()
+
+    monkeypatch.setattr(orch_pkg, "PipelineOrchestrator", OkOrchestrator)
+
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run(
+        {"run_id": run_id, "status": "queued", "workflow": "textbook_to_course"}
+    )
+    asyncio.run(
+        run_service._drive_pipeline(
+            run_id, "WF-GATE", mode="api", provider="anthropic", model=None
+        )
+    )
+
+    lines = _gate_lines(run_id)
+    # No per-id gate lines on the full-pipeline path (the rollup strips them).
+    assert [ln for ln in lines if ln["kind"] == "gate"] == []
+    summaries = {ln["phase"]: ln for ln in lines if ln["kind"] == "summary"}
+    # All-pass phases with a declared count emit a truthful total/total summary.
+    assert summaries["content_generation"]["passed"] == 4
+    assert summaries["content_generation"]["total"] == 4
+    assert summaries["inter_tier_validation"]["passed"] == 7
+    assert summaries["inter_tier_validation"]["total"] == 7
+    # Failed phase: passed count unknown -> NO summary line.
+    assert "course_planning" not in summaries
+    # Zero declared gates -> no summary.
+    assert "finalization" not in summaries
+
+
+def test_run_single_phase_emits_gate_lines_from_real_results(
+    state_dir, monkeypatch
+):
+    """Single-phase path emits per-gate ``[gate]`` lines + a real ``__summary__``
+    from the executor's REAL gate_results, with config-declared severity."""
+
+    class FakeResult:
+        def __init__(self, status):
+            self.status = status
+
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+
+    # Real-shaped gate config (dicts with gate_id + severity) + gate results.
+    gate_configs = [
+        {"gate_id": "block_structure", "severity": "critical"},
+        {"gate_id": "claim_support", "severity": "warning"},
+    ]
+    gate_results = [
+        {"gate_id": "block_structure", "passed": True, "issues": []},
+        {
+            "gate_id": "claim_support",
+            "passed": False,
+            "issues": [{"severity": "warning", "message": "weak support"}],
+        },
+    ]
+
+    class FakePhase:
+        name = "post_rewrite_validation"
+        agents = []  # validator-only: progress suppressed, gates still emitted
+        validation_gates = gate_configs
+        max_concurrent = 5
+
+    class FakeWorkflow:
+        phases = [FakePhase()]
+
+    class FakeConfig:
+        def get_workflow(self, name):
+            return FakeWorkflow()
+
+    class FakeExecutor:
+        def __init__(self, *a, **k):
+            pass
+
+        async def execute_phase(self, **kwargs):
+            # gates_passed False because claim_support failed (warning, but the
+            # executor's return is what we mirror); per-gate detail is real.
+            return ({"t1": FakeResult("COMPLETE")}, False, gate_results)
+
+    class FakeRunner:
+        def __init__(self, *a, **k):
+            pass
+
+        def _route_params(self, *a, **k):
+            return {}
+
+        def _create_phase_tasks(self, *a, **k):
+            return [{"id": "t1"}]
+
+    import MCP.core.config as cfg_mod
+    import MCP.core.executor as exec_mod
+    import MCP.core.workflow_runner as wr_mod
+    import MCP.tools.pipeline_tools as pt_mod
+
+    monkeypatch.setattr(
+        cfg_mod.OrchestratorConfig, "load", classmethod(lambda cls: FakeConfig())
+    )
+    monkeypatch.setattr(exec_mod, "TaskExecutor", FakeExecutor)
+    monkeypatch.setattr(wr_mod, "WorkflowRunner", FakeRunner)
+    monkeypatch.setattr(pt_mod, "_build_tool_registry", lambda: {})
+    monkeypatch.setattr(run_service, "_prepopulate_phase_outputs", lambda *a, **k: {})
+
+    asyncio.run(
+        run_service._run_single_phase(
+            run_id=run_id,
+            workflow="textbook_to_course",
+            phase_name="post_rewrite_validation",
+            course_name="PHYS_101",
+            project_id=None,
+            options={},
+        )
+    )
+
+    lines = _gate_lines(run_id)
+    gates = {g["gate_id"]: g for g in lines if g["kind"] == "gate"}
+    summaries = [ln for ln in lines if ln["kind"] == "summary"]
+    assert gates["block_structure"]["verdict"] == "pass"
+    assert gates["block_structure"]["severity"] == "critical"  # from config
+    assert gates["claim_support"]["verdict"] == "fail"
+    assert gates["claim_support"]["severity"] == "warning"  # from config
+    # Real summary: 1 of 2 passed.
+    assert len(summaries) == 1
+    assert summaries[0]["passed"] == 1
+    assert summaries[0]["total"] == 2
+
+
+def test_run_single_phase_no_gates_emits_no_gate_line(state_dir, monkeypatch):
+    """A single-phase run whose executor returns NO gate_results emits no
+    ``[gate]`` line (honest: no gate data -> no line)."""
+
+    class FakeResult:
+        def __init__(self, status):
+            self.status = status
+
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+
+    class FakePhase:
+        name = "staging"
+        agents = ["textbook-stager"]
+        validation_gates = None
+        max_concurrent = 5
+
+    class FakeWorkflow:
+        phases = [FakePhase()]
+
+    class FakeConfig:
+        def get_workflow(self, name):
+            return FakeWorkflow()
+
+    class FakeExecutor:
+        def __init__(self, *a, **k):
+            pass
+
+        async def execute_phase(self, **kwargs):
+            return ({"t1": FakeResult("COMPLETE")}, True, [])
+
+    class FakeRunner:
+        def __init__(self, *a, **k):
+            pass
+
+        def _route_params(self, *a, **k):
+            return {}
+
+        def _create_phase_tasks(self, *a, **k):
+            return [{"id": "t1"}]
+
+    import MCP.core.config as cfg_mod
+    import MCP.core.executor as exec_mod
+    import MCP.core.workflow_runner as wr_mod
+    import MCP.tools.pipeline_tools as pt_mod
+
+    monkeypatch.setattr(
+        cfg_mod.OrchestratorConfig, "load", classmethod(lambda cls: FakeConfig())
+    )
+    monkeypatch.setattr(exec_mod, "TaskExecutor", FakeExecutor)
+    monkeypatch.setattr(wr_mod, "WorkflowRunner", FakeRunner)
+    monkeypatch.setattr(pt_mod, "_build_tool_registry", lambda: {})
+    monkeypatch.setattr(run_service, "_prepopulate_phase_outputs", lambda *a, **k: {})
+
+    asyncio.run(
+        run_service._run_single_phase(
+            run_id=run_id,
+            workflow="textbook_to_course",
+            phase_name="staging",
+            course_name="PHYS_101",
+            project_id=None,
+            options={},
+        )
+    )
+    assert _gate_lines(run_id) == []

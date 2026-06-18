@@ -92,6 +92,39 @@ function phaseRowSection() {
   return section('Phase row', 'Each of the five states, with task progress + gate chips.', ol);
 }
 
+/* ---- per-phase gate strips (Phase 5 §5.1(D)): the live gate ticker ----
+ * Three states: all gates passing ("37 of 37 checks passing"), a CALM warning
+ * (amber △), and a critical fail (red ✗). The summary chip + per-gate chips are
+ * decorative-status with visible/visually-hidden text — never color-only. */
+function gateStripSection() {
+  const ol = el('ol', { class: 'phase-checklist', 'aria-label': 'Gate strip states' });
+
+  // (1) All checks passing — green, reassuring.
+  const allPass = phaseRow({ name: 'validate_pass', label: 'Validate content', state: 'done' });
+  allPass.addGate({ result: 'pass', gate_id: 'source_refs' });
+  allPass.addGate({ result: 'pass', gate_id: 'curie_anchoring' });
+  allPass.addGate({ result: 'pass', gate_id: 'manifest_completeness' });
+  allPass.setGateSummary(37, 37, 'pass');
+  ol.appendChild(allPass.el);
+
+  // (2) A CALM warning — amber △, reads "1 warning", not alarming.
+  const warn = phaseRow({ name: 'plan_warn', label: 'Plan course structure', state: 'done' });
+  warn.addGate({ result: 'pass', gate_id: 'terminal_objective_coverage' });
+  warn.addGate({ result: 'warn', gate_id: 'co_terminal_alignment', severity: 'warning' });
+  warn.setGateSummary(11, 12, 'warn');
+  ol.appendChild(warn.el);
+
+  // (3) A critical fail — red ✗.
+  const fail = phaseRow({ name: 'rewrite_fail', label: 'Rewrite content', state: 'failed' });
+  fail.addGate({ result: 'pass', gate_id: 'block_prose_entailment' });
+  fail.addGate({ result: 'fail', gate_id: 'numeric_literal_grounding', severity: 'critical' });
+  fail.setGateSummary(8, 9, 'fail');
+  ol.appendChild(fail.el);
+
+  return section('Gate strips (live ticker)',
+    'Per-phase gate strips: all-passing reassurance, a CALM amber warning, and a critical fail — icon + text, never color-only.', ol);
+}
+
 /* ---- phase timeline: a full ordered checklist, sequential states ---- */
 function phaseTimelineSection() {
   const tl = phaseTimeline([
@@ -324,6 +357,7 @@ function render() {
     ringSection(),
     pillSection(),
     gateChipSection(),
+    gateStripSection(),
     elapsedSection(),
     phaseRowSection(),
     phaseTimelineSection(),

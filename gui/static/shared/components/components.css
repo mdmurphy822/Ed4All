@@ -84,6 +84,25 @@
 .gate-chip-warn .gate-chip-glyph { color: var(--gate-warn); }
 .gate-chip-fail .gate-chip-glyph { color: var(--gate-fail); }
 
+/* ---- per-phase gate summary chip ("N of M checks passing") ----
+ * Decorative-status: a glyph + VISIBLE text (never color-only). The tone is
+ * calm — a warning reads amber △ "warnings", not an alarming red. Not
+ * interactive, so no min target size is required; it wraps with the strip. */
+.phase-gate-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 12px;
+  color: var(--muted);
+}
+.phase-gate-summary-glyph { font-weight: 700; }
+.phase-gate-summary.is-pass .phase-gate-summary-glyph { color: var(--gate-pass); }
+.phase-gate-summary.is-warn .phase-gate-summary-glyph { color: var(--gate-warn); }
+.phase-gate-summary.is-fail .phase-gate-summary-glyph { color: var(--gate-fail); }
+.phase-gate-summary.is-pass { color: var(--gate-pass); }
+.phase-gate-summary.is-warn { color: var(--gate-warn); }
+.phase-gate-summary.is-fail { color: var(--gate-fail); }
+
 /* ---- phase row / timeline ---- */
 .phase-checklist {
   list-style: none;
@@ -105,7 +124,7 @@
 .phase-row.is-failed .phase-state  { color: var(--phase-failed); }
 .phase-tasks { color: var(--muted); font-size: 13px; }
 .phase-opt { color: var(--muted); font-size: 12px; }
-.phase-gates { display: inline-flex; gap: var(--space-1); align-items: center; }
+.phase-gates { display: inline-flex; flex-wrap: wrap; gap: var(--space-1); align-items: center; }
 .phase-detail { flex-basis: 100%; }
 
 /* ---- cards ---- */

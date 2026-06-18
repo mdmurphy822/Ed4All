@@ -28,6 +28,17 @@
  *   [<iso>] [phase] <name> skipped         → markCompleted(name, 'skipped')
  *   [<iso>] [phase] <name> failed — <...>  → mark the phase failed (A6 signal)
  *   [<iso>] [progress] <name> <done>/<tot> → setTaskProgress(name, done, tot)
+ *   [<iso>] [gate] <name> <gate_id> <pass|fail> <sev>
+ *                                          → append a gateChip to the phase's
+ *                                            gate strip (Phase-5 live ticker).
+ *   [<iso>] [gate] <name> __summary__ <P>/<T>
+ *                                          → render/update the "P of T checks
+ *                                            passing" summary chip on the phase.
+ *
+ * The [gate] arm is DEFENSIVE: a sibling worker emits these lines, so the UI
+ * must work before/without them. Malformed [gate] lines are ignored, and the
+ * per-phase tally is reconstructed GUI-side so a __summary__ that races ahead of
+ * (or without) the per-gate lines still renders a coherent "P of T" chip.
  *
  * The leading ISO timestamp (which the legacy create.js regex THREW AWAY) is
  * parsed to drive Tier-1 per-phase timing entirely GUI-side, ZERO backend
@@ -50,6 +61,11 @@ import { progressRing } from './ring.js';
 const _PHASE_DONE_RE = /^\s*(?:\[([^\]]+)\]\s+)?\[phase\]\s+(\S+)\s+(done|skipped)\b/;
 const _PHASE_FAIL_RE = /^\s*(?:\[([^\]]+)\]\s+)?\[phase\]\s+(\S+)\s+failed\b/;
 const _PROGRESS_RE = /^\s*(?:\[([^\]]+)\]\s+)?\[progress\]\s+(\S+)\s+(\d+)\s*\/\s*(\d+)/;
+/* [gate] arm (Phase 5). The aggregate summary line uses the __summary__ sentinel
+ * gate_id + a P/T count; a per-gate line carries a real gate_id + pass|fail +
+ * severity. Both tolerate the leading ISO prefix + trailing chatter. */
+const _GATE_SUMMARY_RE = /^\s*(?:\[([^\]]+)\]\s+)?\[gate\]\s+(\S+)\s+__summary__\s+(\d+)\s*\/\s*(\d+)/;
+const _GATE_RE = /^\s*(?:\[([^\]]+)\]\s+)?\[gate\]\s+(\S+)\s+(\S+)\s+(pass|fail)\b(?:\s+(\S+))?/;
 
 /** Parse the captured ISO prefix to epoch-ms; null if absent / unparseable. */
 function _isoMs(iso) {
@@ -329,6 +345,32 @@ export function runProgressConsole(opts = {}) {
   let lastRunning = null;
   let failedPhase = null;
 
+  /* ----- Phase-5 live gate ticker ----- */
+  // Per-phase tally reconstructed GUI-side from the [gate] lines: how many gates
+  // resolved, how many passed, and the WORST result seen (so the summary chip's
+  // tone is calm for warnings, red only for a real critical fail). This makes a
+  // __summary__ line render coherently even if the per-gate lines race / are
+  // absent — the chip is driven by max(backend P/T, our reconstructed tally).
+  const gateTally = new Map(); // phase -> {passed, total, worst}
+  // Debounce the polite per-phase summary announcement to a MEANINGFUL change
+  // (the chip text changed) — never per-gate chatter. Routes through the single
+  // role=status line, and only for the phase currently running.
+  const lastGateAnnounce = new Map(); // phase -> last announced summary text
+
+  /** Map a [gate] pass|fail + severity onto a gateChip result token. A failing
+   * gate at warning severity is a CALM warn (△), not a critical fail (✗). */
+  function _gateResult(passFail, severity) {
+    if (passFail === 'pass') return 'pass';
+    const sev = String(severity || '').toLowerCase();
+    return (sev === 'warning' || sev === 'warn') ? 'warn' : 'fail';
+  }
+
+  /** Rank a result for the per-phase "worst" tone (pass < warn < fail). */
+  function _worse(a, b) {
+    const rank = { pass: 0, warn: 1, fail: 2 };
+    return (rank[b] || 0) > (rank[a] || 0) ? b : a;
+  }
+
   function markCompleted(name, marker, atMs) {
     recordTiming(name, atMs);
     const next = timeline.markCompleted(name, marker);
@@ -336,6 +378,53 @@ export function runProgressConsole(opts = {}) {
     if (next) { lastRunning = next; announcePhase(next); }
     refreshOverall(true);
     return next;
+  }
+
+  /** A single resolved gate: append a gateChip to the phase's strip + update the
+   * GUI-side tally (so a later __summary__ — or its absence — is coherent). */
+  function handleGate(name, gateId, passFail, severity) {
+    if (!name || !timeline.get(name)) return; // unknown phase → ignore
+    const result = _gateResult(passFail, severity);
+    timeline.addGate(name, { result, gate_id: gateId, severity });
+    const t = gateTally.get(name) || { passed: 0, total: 0, worst: 'pass' };
+    t.total += 1;
+    if (result === 'pass') t.passed += 1;
+    t.worst = _worse(t.worst, result);
+    gateTally.set(name, t);
+    // Refresh the chip from the running tally (no backend summary needed yet).
+    renderGateSummary(name, t.passed, t.total, t.worst);
+  }
+
+  /** The aggregate "P of T" summary line. Reconcile with the GUI-side tally
+   * (take the larger total / worst tone) so neither source under-reports. */
+  function handleGateSummary(name, passed, total) {
+    if (!name || !timeline.get(name)) return;
+    if (!Number.isFinite(passed) || !Number.isFinite(total)) return; // malformed
+    const t = gateTally.get(name) || { passed: 0, total: 0, worst: 'pass' };
+    const P = Math.max(passed, t.passed);
+    const T = Math.max(total, t.total);
+    // Worst tone: if the summary implies failures we didn't see per-gate, treat
+    // them conservatively as warnings (calm) unless a critical was already seen.
+    let worst = t.worst;
+    if (T - P > 0 && worst === 'pass') worst = 'warn';
+    gateTally.set(name, { passed: P, total: T, worst });
+    renderGateSummary(name, P, T, worst);
+  }
+
+  /** Render the chip + (debounced) announce a MEANINGFUL change of the RUNNING
+   * phase's summary through the single role=status line — never per-gate. */
+  function renderGateSummary(name, passed, total, worst) {
+    timeline.setGateSummary(name, passed, total, worst);
+    if (name !== lastRunning || terminal) return;
+    const failed = Math.max(0, total - passed);
+    let tail = '';
+    if (worst === 'warn' && failed > 0) tail = `, ${failed} ${failed === 1 ? 'warning' : 'warnings'}`;
+    else if (worst === 'fail' && failed > 0) tail = `, ${failed} failed`;
+    const text = `${passed} of ${total} checks passing${tail}.`;
+    if (lastGateAnnounce.get(name) === text) return; // debounce: no chatter
+    lastGateAnnounce.set(name, text);
+    const label = labelOf.get(name) || name;
+    announce(`${label} — ${text}`);
   }
 
   /* ----- public line handler ----- */
@@ -357,6 +446,12 @@ export function runProgressConsole(opts = {}) {
       refreshOverall(true);
       return;
     }
+    // ----- Phase-5 live gate ticker (defensive; ignore malformed) -----
+    const gsum = _GATE_SUMMARY_RE.exec(line);
+    if (gsum) { handleGateSummary(gsum[2], Number(gsum[3]), Number(gsum[4])); return; }
+    const gate = _GATE_RE.exec(line);
+    if (gate) { handleGate(gate[2], gate[3], gate[4], gate[5]); return; }
+
     const done = _PHASE_DONE_RE.exec(line);
     if (done) { markCompleted(done[2], done[3], _isoMs(done[1])); return; }
     const fail = _PHASE_FAIL_RE.exec(line);
@@ -483,6 +578,7 @@ export function runProgressConsole(opts = {}) {
     setState: timeline.setState,
     setTaskProgress: timeline.setTaskProgress,
     addGate: timeline.addGate,
+    setGateSummary: timeline.setGateSummary,
     freezeElapsed: (ms) => timer.freeze(ms),
     announce,
     setDurations,

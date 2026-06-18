@@ -18,8 +18,8 @@ import { phaseRow } from './phase-row.js';
  * @param {Object} [opts]
  * @param {string} [opts.ariaLabel="Course build steps"]
  * @param {number} [opts.ringSize=28]
- * @returns {{el, setState, setTaskProgress, addGate, markCompleted,
- *            startRunning, get}}
+ * @returns {{el, setState, setTaskProgress, addGate, setGateSummary,
+ *            markCompleted, startRunning, get}}
  */
 export function phaseTimeline(phases = [], opts = {}) {
   const ariaLabel = opts.ariaLabel || 'Course build steps';
@@ -54,6 +54,11 @@ export function phaseTimeline(phases = [], opts = {}) {
     if (row) row.addGate(gate);
   }
 
+  function setGateSummary(name, passed, total, worst) {
+    const row = rows.get(name);
+    if (row) row.setGateSummary(passed, total, worst);
+  }
+
   /** Mark a phase done|skipped, then promote the first not-done to running.
    * Mirrors create.js::markCompleted (best-effort sequential inference). */
   function markCompleted(name, marker) {
@@ -73,7 +78,7 @@ export function phaseTimeline(phases = [], opts = {}) {
     return null;
   }
 
-  return { el: ol, setState, setTaskProgress, addGate, markCompleted, startRunning, get, order };
+  return { el: ol, setState, setTaskProgress, addGate, setGateSummary, markCompleted, startRunning, get, order };
 }
 
 export default phaseTimeline;
