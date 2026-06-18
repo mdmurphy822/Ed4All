@@ -39,6 +39,8 @@ import pytest
 from DART.pdf_converter.wcag_validator import IssueSeverity, WCAGValidator
 from gui.services.answer_render import (
     ERROR_COPY,
+    _WHY_NO_ANSWER_BLOCKED,
+    _WHY_NO_ANSWER_REFUSED,
     render_answer_fragment,
     render_error_fragment,
 )
@@ -438,6 +440,131 @@ def test_live_region_is_outside_the_visual_counter():
     assert elapsed.get("aria-hidden") == "true", "elapsed counter must be aria-hidden"
     # It must NOT be a live region.
     assert not elapsed.get("aria-live"), "elapsed counter must not be a live region"
+
+
+# --------------------------------------------------------------------------- #
+# 5) Phase 6 — "Why no answer?" disclosure + thinking ring + status pills.
+# --------------------------------------------------------------------------- #
+
+
+# Representative aria-hidden running progressRing markup (mirrors ring.js's
+# server-equivalent SVG shape) used to snapshot the busy-state DOM the JS builds
+# at runtime, so the WCAG gate validates the real thing a learner sees.
+_RING_SVG = (
+    '<span class="ring ring-running" data-state="running" data-percent="25">'
+    '<svg class="ring-svg" width="24" height="24" viewBox="0 0 24 24" '
+    'aria-hidden="true" focusable="false">'
+    '<circle class="ring-track" cx="12" cy="12" r="10.5" fill="none" '
+    'stroke="var(--border)" stroke-width="3" opacity="0.35"></circle>'
+    '<circle class="ring-arc" cx="12" cy="12" r="10.5" fill="none" '
+    'stroke="var(--phase-running)" stroke-width="3" stroke-linecap="round" '
+    'stroke-dasharray="65.97" stroke-dashoffset="49.48" '
+    'transform="rotate(-90 12 12)"></circle></svg></span>'
+)
+
+
+def _assemble_busy_page_with_ring(status_text: str) -> str:
+    """Reproduce the busy-state DOM the JS builds at runtime: aria-busy region,
+    polite status text, and the indeterminate ring injected into #thinking-ring
+    (exactly as ``learn.js::startElapsed`` does ``ringHost.appendChild(...)``)."""
+    BeautifulSoup = _bs4()
+    soup = BeautifulSoup(LEARN_INDEX.read_text(encoding="utf-8"), "html.parser")
+    region = soup.find(id="answer-region")
+    assert region is not None
+    region["aria-busy"] = "true"
+    status_el = soup.find(id="status")
+    assert status_el is not None
+    status_el.string = status_text
+    ring_host = soup.find(id="thinking-ring")
+    assert ring_host is not None, "learner index.html must carry #thinking-ring"
+    ring_host.append(BeautifulSoup(_RING_SVG, "html.parser"))
+    return str(soup)
+
+
+@pytest.mark.parametrize(
+    "status,why_copy",
+    [
+        ("refused_low_confidence", _WHY_NO_ANSWER_REFUSED),
+        ("refused_not_in_course", _WHY_NO_ANSWER_REFUSED),
+        ("blocked_invalid_citation", _WHY_NO_ANSWER_BLOCKED),
+        ("blocked_citation_gate", _WHY_NO_ANSWER_BLOCKED),
+    ],
+)
+def test_why_no_answer_disclosure_renders_and_passes_wcag(status, why_copy):
+    """Each no-answer status renders the plain-language "Why no answer?" line
+    (refused vs blocked, distinct copy) and the whole page passes the WCAG gate."""
+    from html import escape  # noqa: PLC0415
+
+    frag = render_answer_fragment(_refused_payload(status))
+    # The distinguishing copy is present (HTML-escaped), off the REAL engine
+    # status.
+    assert "why-no-answer" in frag, f"{status}: missing why-no-answer disclosure"
+    assert escape(why_copy) in frag, f"{status}: wrong why-no-answer copy"
+    # Refused and blocked carry DIFFERENT human wording.
+    other = (
+        _WHY_NO_ANSWER_BLOCKED
+        if why_copy is _WHY_NO_ANSWER_REFUSED
+        else _WHY_NO_ANSWER_REFUSED
+    )
+    assert escape(other) not in frag, f"{status}: leaked the other failure-mode copy"
+    # No model internals / reason codes leak into the learner copy.
+    assert "reason_code" not in frag
+    _assert_clean(f"why-no-answer-{status}", _assemble_page(frag))
+
+
+def test_refused_and_blocked_why_copy_are_distinct():
+    """The two failure modes read differently in human terms (§8)."""
+    assert _WHY_NO_ANSWER_REFUSED != _WHY_NO_ANSWER_BLOCKED
+    assert "grounding check" in _WHY_NO_ANSWER_BLOCKED
+    assert "don't contain a clear answer" in _WHY_NO_ANSWER_REFUSED
+
+
+@pytest.mark.parametrize("status", ["answered", "answered_with_warnings", *_REFUSED_BLOCKED])
+def test_status_pill_is_non_color_only(status):
+    """Every answer status renders a status pill with a glyph + text label
+    (non-color-only, WCAG 1.4.1); the glyph is aria-hidden decoration."""
+    payload = (
+        _answered_payload(status)
+        if status in ("answered", "answered_with_warnings")
+        else _refused_payload(status)
+    )
+    frag = render_answer_fragment(payload)
+    soup = _soup(frag)
+    pill = soup.find("span", class_="pill")
+    assert pill is not None, f"{status}: answer fragment must carry a status pill"
+    glyph = pill.find("span", class_="pill-glyph")
+    label = pill.find("span", class_="pill-label")
+    assert glyph is not None and glyph.get("aria-hidden") == "true"
+    # The plain-language label is the a11y truth (never color-only).
+    assert label is not None and label.get_text(strip=True), (
+        f"{status}: pill must carry a non-empty text label"
+    )
+
+
+def test_busy_variant_carries_aria_hidden_ring_no_extra_live_region():
+    """The busy snapshot carries the indeterminate ring as aria-hidden
+    decoration, the ring host is NOT a live region, and there is STILL exactly
+    one polite role=status live region (the ring adds no live chatter)."""
+    html = _assemble_busy_page_with_ring(
+        "Searching the course materials. This can take up to a minute."
+    )
+    soup = _soup(html)
+    # The ring host + its SVG are aria-hidden decoration.
+    ring_host = soup.find(id="thinking-ring")
+    assert ring_host is not None
+    assert ring_host.get("aria-hidden") == "true", "ring host must be aria-hidden"
+    assert not ring_host.get("aria-live"), "ring host must not be a live region"
+    svg = ring_host.find("svg")
+    assert svg is not None, "busy snapshot must inject the ring SVG"
+    assert svg.get("aria-hidden") == "true", "ring SVG must be aria-hidden"
+    # The ring carries NO visually-hidden label (pure decoration, no SR text).
+    assert ring_host.find(class_="visually-hidden") is None
+    # Exactly ONE polite live region survives — the ring added no second one.
+    status_regions = soup.find_all(attrs={"role": "status"})
+    assert len(status_regions) == 1, "exactly one role=status live region required"
+    assert status_regions[0].get("aria-live") == "polite"
+    # The whole busy page still passes the WCAG gate.
+    _assert_clean("busy-with-ring", html)
 
 
 # --------------------------------------------------------------------------- #

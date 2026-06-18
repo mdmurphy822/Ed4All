@@ -48,14 +48,17 @@ REASON_NOT_IN_COURSE_MODEL = "not_in_course_model"
 _ANSWERED_STATUSES = frozenset(
     {STATUS_ANSWERED, STATUS_ANSWERED_WITH_WARNINGS}
 )
-_REFUSED_BLOCKED_STATUSES = frozenset(
-    {
-        STATUS_REFUSED_LOW_CONFIDENCE,
-        STATUS_REFUSED_NOT_IN_COURSE,
-        STATUS_BLOCKED_INVALID_CITATION,
-        STATUS_BLOCKED_CITATION_GATE,
-    }
+# Two distinct no-answer FAMILIES (refused = low-confidence / not-in-course;
+# blocked = grounding / citation gate withheld a candidate answer). The
+# "Why no answer?" disclosure (§8) reads OFF this split so a learner sees the
+# failure mode in human terms instead of a single flat "no answer".
+_REFUSED_STATUSES = frozenset(
+    {STATUS_REFUSED_LOW_CONFIDENCE, STATUS_REFUSED_NOT_IN_COURSE}
 )
+_BLOCKED_STATUSES = frozenset(
+    {STATUS_BLOCKED_INVALID_CITATION, STATUS_BLOCKED_CITATION_GATE}
+)
+_REFUSED_BLOCKED_STATUSES = _REFUSED_STATUSES | _BLOCKED_STATUSES
 
 
 # --------------------------------------------------------------------------- #
@@ -108,6 +111,62 @@ STATUS_COPY: Dict[str, Dict[str, Any]] = {
 _ADVISORY_COPY = (
     "Parts of this answer may not be fully supported by the course "
     "materials. Check the sources below."
+)
+
+# --------------------------------------------------------------------------- #
+# Status pill (§8 — non-color-only, glyph + plain-language label).
+#
+# Server-rendered MIRROR of the JS ``statusPill`` ``_ANSWER`` map
+# (``gui/static/shared/components/pill.js``): the learner answer status label
+# is part of the gated single-render fragment, so it is built HERE (Python),
+# never re-templated client-side. Each entry is (glyph, plain-language label,
+# pill css class). The glyph is ``aria-hidden`` decoration; the text label is
+# the a11y truth, so the pill is never color-only (WCAG 1.4.1).
+# --------------------------------------------------------------------------- #
+
+_STATUS_PILL: Dict[str, Dict[str, str]] = {
+    STATUS_ANSWERED: {"glyph": "●", "label": "Answered", "cls": "done"},
+    STATUS_ANSWERED_WITH_WARNINGS: {
+        "glyph": "△",
+        "label": "Answered with warnings",
+        "cls": "warn",
+    },
+    STATUS_REFUSED_LOW_CONFIDENCE: {
+        "glyph": "–",
+        "label": "No clear answer",
+        "cls": "skipped",
+    },
+    STATUS_REFUSED_NOT_IN_COURSE: {
+        "glyph": "–",
+        "label": "Not in this course",
+        "cls": "skipped",
+    },
+    STATUS_BLOCKED_INVALID_CITATION: {
+        "glyph": "△",
+        "label": "Couldn't verify",
+        "cls": "warn",
+    },
+    STATUS_BLOCKED_CITATION_GATE: {
+        "glyph": "△",
+        "label": "Couldn't verify",
+        "cls": "warn",
+    },
+}
+
+# "Why no answer?" plain-language disclosure (§8). DISTINGUISHES the two
+# failure modes in human terms off the REAL engine status — refused (low
+# confidence: the materials don't contain a clear answer) vs blocked (a
+# candidate answer existed but didn't pass our grounding check, so it was
+# withheld). Presentation wording over data already in the payload — no model
+# internals, no reason_code, no secrets. Rendered as a plain ``<p>`` so it
+# slots under the answer ``<h2>`` without adding a heading level.
+_WHY_NO_ANSWER_REFUSED = (
+    "Why no answer? The course materials don't contain a clear answer to "
+    "this question."
+)
+_WHY_NO_ANSWER_BLOCKED = (
+    "Why no answer? There's related information, but it didn't pass our "
+    "grounding check, so we're not showing an answer."
 )
 
 # Error-key copy (the typed-error map's learner-facing keys, § 4.4). The
@@ -191,22 +250,65 @@ def source_url_for(citation: Dict[str, Any], slug: str) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _section(status: str, heading: str, inner: str) -> str:
+def _status_pill(status: str) -> str:
+    """Render the answer-status pill (glyph + plain-language text label).
+
+    Mirrors the JS ``statusPill`` markup (``span.pill`` > ``span.pill-glyph``
+    [aria-hidden] + ``span.pill-label``) so the redesign's status vocabulary
+    reads consistently across surfaces. Non-color-only (glyph + text). Returns
+    ``""`` for a status with no pill mapping (error fragments carry their own
+    heading copy and need no pill)."""
+    spec = _STATUS_PILL.get(status)
+    if not spec:
+        return ""
+    return (
+        '<span class="pill pill-{cls}" data-kind="answer:{status}">'
+        '<span class="pill-glyph" aria-hidden="true">{glyph}</span>'
+        '<span class="pill-label">{label}</span>'
+        "</span>"
+    ).format(
+        cls=escape(spec["cls"], quote=True),
+        status=escape(status, quote=True),
+        glyph=escape(spec["glyph"]),
+        label=escape(spec["label"]),
+    )
+
+
+def _why_no_answer(status: str) -> str:
+    """Render the "Why no answer?" plain-language disclosure for a no-answer
+    status, distinguishing refused (low confidence) from blocked (grounding
+    gate). Returns ``""`` for answered / unknown statuses."""
+    if status in _REFUSED_STATUSES:
+        copy = _WHY_NO_ANSWER_REFUSED
+    elif status in _BLOCKED_STATUSES:
+        copy = _WHY_NO_ANSWER_BLOCKED
+    else:
+        return ""
+    return '<p class="why-no-answer">{}</p>'.format(escape(copy))
+
+
+def _section(status: str, heading: str, inner: str, *, pill: str = "") -> str:
     """Wrap the inner body in the fixed answer-region skeleton.
 
     The ``<h2>`` carries ``tabindex="-1"`` so the JS can move focus to it after
-    a swap (D6), and the section is ``aria-labelledby`` the heading id.
+    a swap (D6), and the section is ``aria-labelledby`` the heading id. The
+    optional ``pill`` (a pre-rendered ``_status_pill`` string) renders inside
+    the heading row, before the body — never as a separate heading level.
     """
     return (
         '<section class="answer" data-status="{status}" '
         'aria-labelledby="{hid}">'
+        '<div class="answer-head">'
         '<h2 id="{hid}" tabindex="-1">{heading}</h2>'
+        "{pill}"
+        "</div>"
         "{inner}"
         "</section>"
     ).format(
         status=escape(status, quote=True),
         hid=_ANSWER_HEADING_ID,
         heading=escape(heading),
+        pill=pill,
         inner=inner,
     )
 
@@ -498,12 +600,19 @@ def render_answer_fragment(
             )
         )
         heading = STATUS_COPY[status]["heading"]
-        return _section(status, heading, "".join(body_parts))
+        return _section(
+            status, heading, "".join(body_parts), pill=_status_pill(status)
+        )
 
     if status in _REFUSED_BLOCKED_STATUSES:
         # Defensive: never render answer text / citations for these statuses.
+        # The "Why no answer?" disclosure (§8) leads the body, distinguishing
+        # refused (low confidence) from blocked (grounding gate) in human terms.
         copy = STATUS_COPY[status]
-        return _section(status, copy["heading"], _paragraphs(copy["body"]))
+        inner = _why_no_answer(status) + _paragraphs(copy["body"])
+        return _section(
+            status, copy["heading"], inner, pill=_status_pill(status)
+        )
 
     # Unknown status → generic error fragment (fail-safe).
     return render_error_fragment("error_generic")
@@ -530,3 +639,7 @@ __all__ = [
     "source_pdf_page_url",
     "original_source_url",
 ]
+
+# Internal-but-test-visible copy constants (the a11y gate + render tests assert
+# the "Why no answer?" wording per failure mode).
+__all__ += ["_WHY_NO_ANSWER_REFUSED", "_WHY_NO_ANSWER_BLOCKED"]

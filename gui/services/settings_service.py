@@ -75,6 +75,11 @@ _STUDIO_ROUTING_TASKS = (
     "answer",
 )
 
+# The flags the Studio surface reads (read-only echo). Only the Courseforge
+# two-pass flag is needed today: the Create-wizard AI-tier flow tree greys the
+# Validate/Rewrite node when it is off. NOT a secret; never patched here.
+_STUDIO_FLAG_KEYS = ("COURSEFORGE_TWO_PASS",)
+
 
 def build_studio_settings_payload() -> Dict[str, Any]:
     """Return the masked settings doc scoped to the Studio user subset.
@@ -108,11 +113,22 @@ def build_studio_settings_payload() -> Dict[str, Any]:
         else {}
     )
 
+    # Read-only flag echo scoped to the flags the Studio surface needs (the
+    # Create-wizard AI-tier flow tree greys the Validate/Rewrite node off the
+    # two-pass flag). NOT a secret; the page renders it, never patches it here.
+    all_flags = masked.get("flags") if isinstance(masked, dict) else None
+    flags = (
+        {k: v for k, v in all_flags.items() if k in _STUDIO_FLAG_KEYS}
+        if isinstance(all_flags, dict)
+        else {}
+    )
+
     return {
         "version": masked.get("version") if isinstance(masked, dict) else None,
         "updated_at": masked.get("updated_at") if isinstance(masked, dict) else None,
         "env": env,
         "model_routing": routing,
+        "flags": flags,
         "catalog": catalog,
         "providers": env_catalog.PROVIDERS,
         "host": os.environ.get("ED4ALL_GUI_HOST", "127.0.0.1"),

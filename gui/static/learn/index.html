@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ask the Course</title>
   <link rel="stylesheet" href="/shared/tokens.css">
+  <link rel="stylesheet" href="/shared/components/components.css">
   <link rel="stylesheet" href="/learn/learn.css">
 </head>
 <body>
@@ -34,13 +35,18 @@
 
     <!-- The ONE polite live region. Status + arrival messages only. -->
     <p id="status" class="status" role="status" aria-live="polite"></p>
-    <!-- Visual-only elapsed counter (SR users get no per-second chatter). -->
-    <p id="elapsed" class="elapsed" aria-hidden="true"></p>
+    <!-- Visual-only "thinking" reassurance during the ask window. The ring +
+         elapsed counter are BOTH aria-hidden decoration (SR users get the
+         single polite status announcement above, no per-second chatter). -->
+    <div class="thinking" aria-hidden="true">
+      <span id="thinking-ring" aria-hidden="true"></span>
+      <span id="elapsed" class="elapsed" aria-hidden="true"></span>
+    </div>
 
     <!-- Server-rendered answer fragment lands here. -->
     <div id="answer-region" aria-busy="false"></div>
   </main>
 
-  <script src="/learn/learn.js"></script>
+  <script type="module" src="/learn/learn.js"></script>
 </body>
 </html>

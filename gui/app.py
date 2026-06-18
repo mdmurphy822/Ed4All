@@ -262,6 +262,17 @@ def create_app(learner_only: bool = False, mode: str | None = None) -> FastAPI:
 
     if resolved_mode == "learner":
         _include_routers(app, _LEARNER_ROUTER_MOUNTS)
+        # The learner page references the shared design-token + component-kit
+        # assets via ``/shared/...`` (tokens.css, components.css, and the
+        # presentation-only ring.js ES module the thinking ring imports). Mount
+        # that subtree FIRST so those resolve in pure learner mode (it carries
+        # NO router/endpoint — the kit is presentation-only by contract, so the
+        # locked-down learner appliance still cannot reach a run-control route).
+        app.mount(
+            "/shared",
+            _NoCacheStaticFiles(directory=str(_shared_static_dir())),
+            name="shared-static",
+        )
         # Serve the learner page subtree at ``/`` — ``/`` IS the learner page in
         # learner mode (no operator SPA mounted).
         app.mount(

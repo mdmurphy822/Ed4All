@@ -83,6 +83,20 @@ def test_studio_settings_only_studio_routing_tasks(client, sample_settings_doc):
     assert "global" in body["model_routing"]
 
 
+def test_studio_settings_exposes_two_pass_flag_for_flow_tree(client, sample_settings_doc):
+    """Phase 6: the Create-wizard AI-tier flow tree greys the Validate/Rewrite
+    node off COURSEFORGE_TWO_PASS, so the studio payload must echo it (read-only,
+    not a secret). No other operator flags leak."""
+    from gui import settings_store
+
+    settings_store.save_settings(sample_settings_doc)
+    body = client.get("/api/settings/studio").json()
+    assert "flags" in body, "studio payload must echo the scoped flags block"
+    assert "COURSEFORGE_TWO_PASS" in body["flags"], "two-pass flag drives the flow tree"
+    # Only the scoped flag is echoed — no DART_LLM_CLASSIFICATION etc.
+    assert set(body["flags"]).issubset({"COURSEFORGE_TWO_PASS"})
+
+
 # --------------------------------------------------------------------------- #
 # POST /api/settings/test-provider — reachability probe (local arm stubbed)
 # --------------------------------------------------------------------------- #

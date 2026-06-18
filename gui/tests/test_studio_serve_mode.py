@@ -134,6 +134,29 @@ def test_learner_mode_has_no_library_api(state_dir, libv2_root, monkeypatch):
     assert client.get("/api/settings").status_code == 404
 
 
+def test_learner_mode_serves_shared_kit_assets(state_dir, libv2_root, monkeypatch):
+    """The learner page imports the shared design-token + component-kit assets
+    via ``/shared/...`` (Phase 6 thinking ring). Those subtree assets must
+    resolve in pure learner mode (the page links components.css + tokens.css and
+    the script imports ``/shared/components/ring.js``)."""
+    monkeypatch.delenv("ED4ALL_GUI_MODE", raising=False)
+    monkeypatch.delenv("ED4ALL_GUI_LEARNER", raising=False)
+    client = TestClient(create_app(mode="learner"))
+    # The learner index is served and loads learn.js as an ES module.
+    idx = client.get("/")
+    assert idx.status_code == 200, idx.text
+    assert '<script type="module" src="/learn/learn.js">' in idx.text
+    # Shared assets the page references resolve (200, not the 404 they 'd 404 on
+    # without the /shared mount in learner mode).
+    assert client.get("/shared/tokens.css").status_code == 200
+    assert client.get("/shared/components/components.css").status_code == 200
+    assert client.get("/shared/components/ring.js").status_code == 200
+    # The presentation-only kit carries NO run-control endpoint into learner
+    # mode (the shared mount is StaticFiles only).
+    assert client.get("/api/library").status_code == 404
+    assert client.get("/api/runs").status_code == 404
+
+
 # --------------------------------------------------------------------------- #
 # CLI / server flag threading (mirrors test_learner_serve_mode patterns)
 # --------------------------------------------------------------------------- #

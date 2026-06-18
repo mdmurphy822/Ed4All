@@ -533,10 +533,16 @@ _WIZARD_CONFIGURE_INNER = """
       <input id="weeks-x" type="number" min="1" max="52" aria-describedby="weeks-h" inputmode="numeric">
       <p id="weeks-h" class="field-hint">Leave blank to size the course automatically from the textbook.</p>
     </div>
-    <div class="summary-box">
-      <h3>AI provider</h3>
-      <p>Mode local · provider local · default model.</p>
-      <p><a href="#/settings">Change AI provider settings</a></p>
+    <div class="summary-box flow-tree-box">
+      <h3 id="flow-tree-h">AI pipeline</h3>
+      <p class="muted">How your course is built, and which AI model runs each step. Change any step in settings.</p>
+      <ol class="flow-tree" aria-labelledby="flow-tree-h">
+        <li class="flow-step"><span class="flow-step-body"><span class="flow-step-label">PDF</span><span class="flow-step-sub">Your uploaded textbook</span></span></li>
+        <li class="flow-step"><span class="flow-arrow" aria-hidden="true">→ </span><span class="flow-step-body"><span class="flow-step-label">Outline</span><span class="flow-step-sub">local</span></span></li>
+        <li class="flow-step is-inactive"><span class="flow-arrow" aria-hidden="true">→ </span><span class="flow-step-body"><span class="flow-step-label">Validate &amp; Rewrite</span><span class="flow-step-sub">Skipped</span><span class="flow-step-note"> (two-pass only)</span></span></li>
+        <li class="flow-step"><span class="flow-arrow" aria-hidden="true">→ </span><span class="flow-step-body"><span class="flow-step-label">Assessments</span><span class="flow-step-sub">local</span></span></li>
+      </ol>
+      <p class="flow-tree-link"><a class="flow-link" href="#/settings">Change AI model settings</a></p>
     </div>
     <details class="advanced">
       <summary>Advanced options</summary>
@@ -552,6 +558,18 @@ _WIZARD_CONFIGURE_INNER = """
   </form>
 </div>
 """
+
+# The same configure step with COURSEFORGE_TWO_PASS ON: the Validate & Rewrite
+# flow-tree node is ACTIVE (no is-inactive, no "(two-pass only)" note) and shows
+# its provider/model. Reconstructed exactly as create.js builds it.
+_WIZARD_CONFIGURE_TWO_PASS_INNER = _WIZARD_CONFIGURE_INNER.replace(
+    '<li class="flow-step is-inactive"><span class="flow-arrow" aria-hidden="true">→ </span>'
+    '<span class="flow-step-body"><span class="flow-step-label">Validate &amp; Rewrite</span>'
+    '<span class="flow-step-sub">Skipped</span><span class="flow-step-note"> (two-pass only)</span></span></li>',
+    '<li class="flow-step"><span class="flow-arrow" aria-hidden="true">→ </span>'
+    '<span class="flow-step-body"><span class="flow-step-label">Validate &amp; Rewrite</span>'
+    '<span class="flow-step-sub">local · qwen2.5:14b</span></span></li>',
+)
 
 _WIZARD_PROGRESS_INNER = """
 <h1>Building PHYS_101</h1>
@@ -651,6 +669,7 @@ _SETTINGS_INNER = """
     [
         ("wizard-upload", _WIZARD_UPLOAD_INNER, "<a href='#/library'>Library</a><span class='sep' aria-hidden='true'>/</span><span>Create course</span>"),
         ("wizard-configure", _WIZARD_CONFIGURE_INNER, "<a href='#/library'>Library</a><span class='sep' aria-hidden='true'>/</span><span>Create course</span>"),
+        ("wizard-configure-two-pass", _WIZARD_CONFIGURE_TWO_PASS_INNER, "<a href='#/library'>Library</a><span class='sep' aria-hidden='true'>/</span><span>Create course</span>"),
         ("wizard-progress", _WIZARD_PROGRESS_INNER, "<a href='#/library'>Library</a><span class='sep' aria-hidden='true'>/</span><span>Build progress</span>"),
         ("wizard-progress-failed", _WIZARD_PROGRESS_FAILED_INNER, "<a href='#/library'>Library</a><span class='sep' aria-hidden='true'>/</span><span>Build progress</span>"),
         ("wizard-failure-panel", _WIZARD_PROGRESS_FAILURE_PANEL_INNER, "<a href='#/library'>Library</a><span class='sep' aria-hidden='true'>/</span><span>Build progress</span>"),
@@ -689,6 +708,59 @@ def test_wizard_form_fields_are_labelled_and_described():
     # A describedby hint exists.
     desc = name.get("aria-describedby")
     assert desc and soup.find(id=desc) is not None
+
+
+def test_flow_tree_is_a_semantic_list_with_settings_links():
+    """Phase 6: the AI-tier flow tree is a semantic <ol> (not divs), each step is
+    an <li>, and the settings deep-link is a real <a>."""
+    soup = _soup(_shell_with_view(_WIZARD_CONFIGURE_INNER))
+    ol = soup.find("ol", class_="flow-tree")
+    assert ol is not None, "the flow tree must be an <ol> (semantic list), not divs"
+    assert ol.get("aria-labelledby"), "flow tree needs an accessible name"
+    assert soup.find(id=ol.get("aria-labelledby")) is not None, "aria-labelledby must resolve"
+    steps = ol.find_all("li", class_="flow-step")
+    # PDF -> Outline -> Validate&Rewrite -> Assessments.
+    labels = [li.find("span", class_="flow-step-label").get_text(strip=True) for li in steps]
+    assert labels == ["PDF", "Outline", "Validate & Rewrite", "Assessments"], labels
+    # The settings deep-link is a real anchor.
+    link = soup.find("a", class_="flow-link", href="#/settings")
+    assert link is not None, "flow tree must link to the settings page"
+
+
+def test_flow_tree_greys_rewrite_node_off_two_pass_with_text_note():
+    """Phase 6: when two-pass is OFF the Validate/Rewrite node is inactive AND
+    carries a TEXT '(two-pass only)' note — not colour alone (non-color-only)."""
+    off = _soup(_shell_with_view(_WIZARD_CONFIGURE_INNER))
+    rewrite = next(
+        li for li in off.find_all("li", class_="flow-step")
+        if li.find("span", class_="flow-step-label").get_text(strip=True) == "Validate & Rewrite"
+    )
+    assert "is-inactive" in (rewrite.get("class") or []), "off-state rewrite node must be greyed"
+    note = rewrite.find("span", class_="flow-step-note")
+    assert note is not None and "two-pass only" in note.get_text(), (
+        "greyed node must carry a text note, not colour alone (WCAG 1.4.1)"
+    )
+
+    # When two-pass is ON the node is active (no is-inactive, no note).
+    on = _soup(_shell_with_view(_WIZARD_CONFIGURE_TWO_PASS_INNER))
+    rewrite_on = next(
+        li for li in on.find_all("li", class_="flow-step")
+        if li.find("span", class_="flow-step-label").get_text(strip=True) == "Validate & Rewrite"
+    )
+    assert "is-inactive" not in (rewrite_on.get("class") or []), "on-state rewrite node is active"
+    assert rewrite_on.find("span", class_="flow-step-note") is None, "active node carries no two-pass note"
+    # The active node shows its provider/model.
+    assert "local" in rewrite_on.find("span", class_="flow-step-sub").get_text()
+
+
+def test_create_js_wires_flow_tree_from_studio_settings():
+    js = (STUDIO_DIR / "create.js").read_text(encoding="utf-8")
+    assert "providerFlowTree" in js, "create.js must render the AI-tier flow tree"
+    assert "/api/settings/studio" in js, "flow tree must read GET /api/settings/studio"
+    assert "twoPass" in js, "flow tree must grey the rewrite node off the two-pass flag"
+    assert "courseforge_outline" in js and "courseforge_rewrite" in js, (
+        "flow tree must surface the outline + rewrite authoring tiers"
+    )
 
 
 def test_settings_form_fields_are_labelled():

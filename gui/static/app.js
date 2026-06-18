@@ -846,7 +846,7 @@ async function renderSettings(view) {
 
   clear(view);
   view.appendChild(el('h1', { text: 'Settings / API Keys' }));
-  view.appendChild(el('p', { class: 'subtitle', text: 'Values render from the backend env catalog. Secrets are write-only — they send only on save.' }));
+  view.appendChild(el('p', { class: 'subtitle', text: 'Plain-language settings grouped by AI tier. Each field shows its underlying environment variable as a hint. Secrets are write-only — they send only on save.' }));
 
   const pending = {}; // key -> value to PATCH
 
@@ -890,29 +890,75 @@ async function renderSettings(view) {
       inputNode = inp;
     }
 
-    const label = el('label', { text: entry.label || key });
+    // Friendly human label (e.g. "Outline course model"), NOT the bare env-var.
+    const label = el('label', { class: 'field-label', text: entry.label || key });
     // Point the label at the first focusable control inside inputNode (the
     // toggle/secret cases wrap the real input in a div).
     const focusable = inputNode.matches && inputNode.matches('input,select,textarea')
       ? inputNode
       : inputNode.querySelector && inputNode.querySelector('input,select,textarea');
     if (focusable) { focusable.id = focusable.id || uid('cfg'); label.htmlFor = focusable.id; }
-    return el('div', { class: 'field' }, [
+
+    // Help + the bare env-var name kept as a small secondary hint. The operator
+    // surface is where technical readers live, so we keep the raw key visible
+    // (in a <code>) — but the LABEL the eye lands on is the friendly one. The
+    // help text is wired to the control via aria-describedby so SRs read it.
+    const helpBits = [];
+    if (entry.help) helpBits.push(el('span', { class: 'help-text', text: entry.help }));
+    helpBits.push(el('span', { class: 'help-env' }, [
+      el('code', { class: 'kv', text: key }),
+      entry.applies_to ? el('span', { class: 'help-applies', text: ` · applies to: ${entry.applies_to}` }) : null,
+    ]));
+    const helpNode = el('div', { class: 'help' }, helpBits);
+    if (focusable) {
+      const helpId = uid('cfg-h');
+      helpNode.id = helpId;
+      // Preserve any existing describedby (none today) and append ours.
+      const prior = focusable.getAttribute('aria-describedby');
+      focusable.setAttribute('aria-describedby', prior ? `${prior} ${helpId}` : helpId);
+    }
+
+    return el('div', { class: 'field field-row' }, [
       label,
       inputNode,
-      entry.help ? el('div', { class: 'help', text: entry.help + (entry.applies_to ? ` · applies to: ${entry.applies_to}` : '') }) : null,
+      helpNode,
     ]);
   }
 
-  // Render each category card
-  const order = ['credentials', 'global', 'global routing', 'local', 'local backend', 'together', 'vision', 'dart', 'courseforge', 'trainforge', 'base models (training)'];
+  // Render each category card with a FRIENDLY group heading (plain-language by
+  // routing: the AI tier / category, not the raw catalog category slug). The
+  // raw category slug stays available as a small secondary hint on the card so
+  // a technical operator can still map a group back to the catalog.
+  const order = ['credentials', 'global', 'global routing', 'local', 'local backend', 'together', 'vision', 'dart', 'courseforge', 'trainforge', 'embedding', 'answer', 'base models (training)'];
+  // Friendly group headings keyed by catalog category. Anything not listed
+  // falls back to a title-cased version of the slug (never a bare slug).
+  const GROUP_TITLES = {
+    credentials: 'API keys & credentials',
+    global: 'Global AI routing',
+    local: 'Local model server (Ollama)',
+    together: 'Together AI models',
+    vision: 'Vision / image models',
+    dart: 'PDF conversion (DART)',
+    courseforge: 'Course authoring (Courseforge)',
+    trainforge: 'Training & assessments (Trainforge)',
+    embedding: 'Search & embeddings',
+    answer: 'Course Q&A (answers)',
+  };
+  const groupTitle = (cat) => GROUP_TITLES[cat]
+    || String(cat).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
   const cats = Object.keys(byCat).sort((a, b) => {
     const ia = order.indexOf(a), ib = order.indexOf(b);
     return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
   });
   for (const cat of cats) {
     const entries = byCat[cat];
-    const card = el('div', { class: 'card' }, [el('h2', { text: cat })]);
+    const card = el('div', { class: 'card' }, [
+      el('h2', { text: groupTitle(cat) }),
+      el('p', { class: 'subtitle group-cat-hint' }, [
+        el('span', { text: 'Settings group: ' }),
+        el('code', { class: 'kv', text: cat }),
+      ]),
+    ]);
     const grid = el('div', { class: 'grid2' });
     entries.forEach((e) => grid.appendChild(fieldFor(e)));
     card.appendChild(grid);

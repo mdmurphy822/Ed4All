@@ -12,12 +12,15 @@
  * copy is the network/abort fallback below, mirrored verbatim from the
  * server's STATUS_COPY `error_generic` entry.
  *
- * Vanilla JS, no dependencies.
+ * Vanilla ES module. The only import is the PRESENTATION-ONLY progress ring
+ * from the shared kit (it takes args, calls no API, wires no endpoint — the
+ * locked-down learner bundle structurally cannot pull in a run-control route).
  */
-(function () {
-  "use strict";
+import { progressRing } from "/shared/components/ring.js";
 
-  var ABORT_MS = 150000; // > backend 120s timeout (ED4ALL_ANSWER_TIMEOUT_SECONDS)
+// (ES modules are strict-mode by default — no "use strict" pragma needed.)
+
+var ABORT_MS = 150000; // > backend 120s timeout (ED4ALL_ANSWER_TIMEOUT_SECONDS)
 
   // Live-region copy (mirrors server STATUS_COPY headings; ONE announcement
   // per state transition, per D6).
@@ -56,13 +59,24 @@
     btn.textContent = on ? "Asking…" : "Ask";
   }
 
-  // Visual-only elapsed counter — OUTSIDE the live region (aria-hidden), so SR
-  // users get no per-second chatter.
+  // Visual "thinking" reassurance during the ask window — an indeterminate
+  // progress ring + an elapsed counter, BOTH aria-hidden decoration (OUTSIDE
+  // the live region), so SR users get no per-second chatter. The ring adds NO
+  // live-region text: the single polite status announcement (busy on start,
+  // arrival on finish) is the only thing a screen reader hears.
   var elapsedTimer = null;
   function startElapsed() {
     var start = Date.now();
     var el = $("elapsed");
     el.textContent = "0s elapsed";
+    // Indeterminate "running" ring (no label → no visually-hidden text, so it
+    // stays pure decoration; the host page owns the one live region). Motion
+    // is reduced-motion-safe via tokens.css's @keyframes spin freeze.
+    var ringHost = $("thinking-ring");
+    if (ringHost) {
+      ringHost.textContent = "";
+      ringHost.appendChild(progressRing({ state: "running", size: 24 }));
+    }
     elapsedTimer = window.setInterval(function () {
       var secs = Math.round((Date.now() - start) / 1000);
       el.textContent = secs + "s elapsed";
@@ -74,6 +88,10 @@
       elapsedTimer = null;
     }
     $("elapsed").textContent = "";
+    var ringHost = $("thinking-ring");
+    if (ringHost) {
+      ringHost.textContent = "";
+    }
   }
 
   // Swap the server-rendered fragment in, then move focus to the answer h2.
@@ -196,4 +214,3 @@
     loadCourses();
     $("ask-form").addEventListener("submit", onSubmit);
   });
-})();

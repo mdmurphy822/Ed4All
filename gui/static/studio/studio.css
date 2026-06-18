@@ -561,6 +561,49 @@ a.btn {
 .summary-box h3 { margin: 0 0 0.4rem; font-size: 1rem; }
 .summary-box p { margin: 0.25rem 0; }
 
+/* AI-tier flow tree (Create step 2). A semantic <ol>; one <li> per pipeline
+ * step. Inactive (e.g. Validate/Rewrite when two-pass is off) is greyed AND
+ * carries a text "(two-pass only)" note — never colour alone. No keyframes. */
+.flow-tree {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.25rem;
+  align-items: stretch;
+}
+.flow-step {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.flow-step-body {
+  display: inline-flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  min-height: 2.5rem;
+  background: var(--panel);
+  justify-content: center;
+}
+.flow-step-label { font-weight: 600; }
+.flow-step-sub { color: var(--muted); font-size: 0.85rem; }
+.flow-step.is-inactive .flow-step-body {
+  opacity: 0.6;
+  border-style: dashed;
+}
+.flow-step-note { color: var(--muted); font-size: 0.8rem; font-style: italic; }
+.flow-arrow { color: var(--muted); }
+.flow-tree-link { margin: 0.6rem 0 0; }
+.flow-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0.2rem 0.1rem;
+}
+
 details.advanced { margin: 0 0 1rem; }
 details.advanced summary { cursor: pointer; font-weight: 600; padding: 0.3rem 0; }
 details.advanced summary:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }

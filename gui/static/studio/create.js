@@ -280,8 +280,8 @@ function renderConfigureStep(shell, panel, model, summary, goto) {
   ]));
   const weeksInput = form.querySelector(`#${CSS.escape(weeksId)}`);
 
-  // Provider / model summary read from settings, with a link to settings.
-  form.appendChild(providerSummary(summary, shell));
+  // AI-tier flow tree read from settings, with a link to settings per step.
+  form.appendChild(providerFlowTree(summary, shell));
 
   // Advanced (collapsed by default).
   form.appendChild(advancedSection(model));
@@ -314,19 +314,95 @@ function renderConfigureStep(shell, panel, model, summary, goto) {
   nameInput.focus();
 }
 
-function providerSummary(summary, shell) {
-  const box = el('div', { class: 'summary-box' });
-  box.appendChild(el('h3', { text: 'AI provider' }));
-  if (summary && summary.provider) {
-    const model = summary.model ? ` · model ${summary.model}` : ' · default model';
-    box.appendChild(el('p', { text: `Mode ${summary.mode || 'local'} · provider ${summary.provider}${model}.` }));
-  } else {
-    box.appendChild(el('p', { class: 'muted', text: 'Using your saved provider settings (local by default).' }));
+/**
+ * The AI-tier flow tree: a small pipeline `PDF → Outline → Validate/Rewrite (if
+ * two-pass) → Assessments` showing the active provider/model per step (read from
+ * GET /api/settings/studio), each step linking to the Studio settings page.
+ *
+ * Read-only display — it does not change launch behaviour. The Rewrite (and the
+ * preceding Validate) tier greys out unless two-pass is enabled (carrying a
+ * text "(two-pass only)" note, NOT colour alone). The PDF source node and the
+ * Assessments node are always active.
+ *
+ * A11y: a semantic ordered list (<ol>), one <li> per step; the active
+ * provider/model per step is plain text; each settings deep-link is a real <a>
+ * (≥24×24px via the .btn/.flow-link rules; :focus-visible from studio.css).
+ */
+function providerFlowTree(summary, shell) {
+  const routing = (summary && summary.routing) || {};
+  const twoPass = !!(summary && summary.twoPass);
+
+  // Resolve a per-task {provider, model}, falling through to global routing so a
+  // step that inherits the global provider still shows it (never blank).
+  const global = routing.global || {};
+  const fallbackProvider = (summary && summary.provider) || global.provider || 'local';
+  function tier(task) {
+    const t = routing[task] || {};
+    const provider = (t.provider && String(t.provider).trim()) || fallbackProvider;
+    const model = (t.model && String(t.model).trim()) || null;
+    return { provider, model };
   }
-  box.appendChild(el('p', {}, [
-    el('a', { href: '#/settings', text: 'Change AI provider settings' }),
+
+  const box = el('div', { class: 'summary-box flow-tree-box' });
+  box.appendChild(el('h3', { id: 'flow-tree-h', text: 'AI pipeline' }));
+  box.appendChild(el('p', { class: 'muted', text: 'How your course is built, and which AI model runs each step. Change any step in settings.' }));
+
+  // Each node: {key, label, provider/model text, active, note}.
+  const outline = tier('courseforge_outline');
+  const rewrite = tier('courseforge_rewrite');
+
+  const steps = [
+    {
+      label: 'PDF',
+      sub: 'Your uploaded textbook',
+      active: true,
+    },
+    {
+      label: 'Outline',
+      sub: providerText(outline),
+      active: true,
+    },
+    {
+      label: 'Validate & Rewrite',
+      sub: twoPass ? providerText(rewrite) : 'Skipped',
+      active: twoPass,
+      note: twoPass ? null : '(two-pass only)',
+    },
+    {
+      label: 'Assessments',
+      sub: providerText(tier('courseplanner')),
+      active: true,
+    },
+  ];
+
+  const ol = el('ol', { class: 'flow-tree', 'aria-labelledby': 'flow-tree-h' });
+  steps.forEach((s, i) => {
+    const li = el('li', {
+      class: `flow-step${s.active ? '' : ' is-inactive'}`,
+    });
+    // A right-pointing connector between steps (decorative).
+    if (i > 0) li.appendChild(el('span', { class: 'flow-arrow', 'aria-hidden': 'true', text: '→ ' }));
+    const body = el('span', { class: 'flow-step-body' }, [
+      el('span', { class: 'flow-step-label', text: s.label }),
+      el('span', { class: 'flow-step-sub', text: s.sub }),
+      // Non-colour-only inactive marker: a real text note, not just greying.
+      s.note ? el('span', { class: 'flow-step-note', text: ' ' + s.note }) : null,
+    ]);
+    li.appendChild(body);
+    ol.appendChild(li);
+  });
+  box.appendChild(ol);
+
+  box.appendChild(el('p', { class: 'flow-tree-link' }, [
+    el('a', { class: 'flow-link', href: '#/settings', text: 'Change AI model settings' }),
   ]));
   return box;
+}
+
+/** Render a step's active provider (+ model when pinned) as plain text. */
+function providerText(tier) {
+  if (!tier || !tier.provider) return 'Default settings';
+  return tier.model ? `${tier.provider} · ${tier.model}` : tier.provider;
 }
 
 function advancedSection(model) {
@@ -948,10 +1024,23 @@ function openRunSocket(runId, handlers) {
 /* --------------------------------------------------------------- helpers */
 
 async function fetchSettingsSummary() {
-  // Studio-scoped settings: model_routing.global carries mode/provider/model.
+  // Studio-scoped settings: model_routing carries per-task provider/model and
+  // the courseforge two-pass flag drives whether the Validate/Rewrite tier is
+  // active. The flow tree reads global (fallback) + the two authoring tiers.
   const doc = await api('/api/settings/studio');
-  const g = (doc.model_routing && doc.model_routing.global) || {};
-  return { mode: g.mode, provider: g.provider, model: g.model };
+  const r = doc.model_routing || {};
+  const g = r.global || {};
+  const flags = doc.flags || {};
+  // Two-pass may be expressed as a flag or, defensively, a string env value.
+  const twoPassRaw = flags.COURSEFORGE_TWO_PASS;
+  const twoPass = twoPassRaw === true || twoPassRaw === 'true' || twoPassRaw === 1;
+  return {
+    mode: g.mode,
+    provider: g.provider,
+    model: g.model,
+    routing: r,
+    twoPass,
+  };
 }
 
 async function fetchPhaseList() {
