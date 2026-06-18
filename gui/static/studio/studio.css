@@ -621,6 +621,10 @@ details.advanced summary:focus-visible { outline: 3px solid var(--focus); outlin
 .run-log:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .elapsed { font-variant-numeric: tabular-nums; }
 
+/* ---- Build Console host (shared run-progress.js mounted in the wizard) ---- */
+.run-progress { max-width: 44rem; }
+.run-progress-meta { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+
 /* ------------------------------------------------ A6 operator failure panel */
 .failure-panel {
   border: 1px solid #d8a3a3;

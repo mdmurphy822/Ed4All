@@ -1,0 +1,67 @@
+/* Component gallery layout — consumes tokens.css; no surface CSS.
+ *
+ * Pure gallery chrome (header, section grid, swatch cells). The components
+ * themselves are styled by /shared/components/components.css. Every control is
+ * >= 24px and focus-visible is the token outline (never suppressed).
+ */
+
+body.kit {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.skip-link {
+  position: absolute; left: -9999px; top: 0; z-index: 1000;
+  background: var(--accent); color: var(--accent-fg);
+  padding: 10px 14px; border-radius: 0 0 6px 0;
+}
+.skip-link:focus { left: 0; }
+
+.gallery-header { padding: var(--space-4) var(--space-3) var(--space-2); }
+.gallery-header h1 { margin: 0; }
+.gallery-sub { margin: var(--space-2) 0 0; color: var(--muted); }
+
+#gallery-main { padding: 0 var(--space-3) var(--space-4); }
+
+.gallery-section {
+  margin: var(--space-4) 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.gallery-section > h2 { margin: 0 0 var(--space-2); }
+.gallery-section > p { margin: 0 0 var(--space-3); color: var(--muted); }
+
+.gallery-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+.gallery-cell {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-start;
+  min-width: 8rem;
+}
+.gallery-cell .cell-caption { color: var(--muted); font-size: 12px; }
+
+/* Cards / timeline want more room than an inline cell. */
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+
+/* The gallery's own focus ring matches the kit contract (3px token outline). */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}

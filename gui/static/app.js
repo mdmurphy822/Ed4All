@@ -467,6 +467,10 @@ async function renderUpload(view) {
   const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'canceled', 'error']);
 
   const statusLine = el('span', { class: 'run-status' }, [el('span', { class: 'dot' }), el('span', { class: 'state', text: 'idle' }), el('span', { class: 'meta muted' })]);
+  // The visual Build Console (shared run-progress.js) mounts here. The RAW log
+  // affordance (consoleEl below + copy/download) is PRESERVED verbatim — the
+  // operator keeps the raw stream; the rings/narrative are an addition above it.
+  const progressMount = el('div', { class: 'progress-mount' });
   const consoleEl = el('div', { class: 'console', text: '' });
   const gateWrap = el('div');
   const cancelBtn = el('button', { class: 'danger sm', text: 'Cancel run', disabled: true });
@@ -480,9 +484,53 @@ async function renderUpload(view) {
       cancelBtn, copyLogBtn, dlLogBtn,
     ]),
     idBar,
+    progressMount,
     consoleEl,
     gateWrap,
   ]));
+
+  // ---- shared Build Console (rings + elapsed + narrative) ----
+  // app.js is a CLASSIC script (the type=module flip is a separate Phase-2
+  // commit + would break the /dev embed that reads window.renderUpload). A
+  // dynamic import() works in a classic script with ZERO module-flip, so we pull
+  // the kit lazily and drive it from the same WS line stream. PURE PRESENTATION:
+  // the console only parses lines this page already owns.
+  let progress = null;           // the live console controller (or null)
+  let progressReady = null;      // promise of the imported factory
+  function loadProgressFactory() {
+    if (!progressReady) progressReady = import('/shared/components/run-progress.js').then((m) => m.runProgressConsole);
+    return progressReady;
+  }
+  // Build (or rebuild) the console for a run, anchored at startMs. Best-effort:
+  // an import failure leaves the raw log fully functional (no console shown).
+  async function mountProgress(startMs) {
+    try {
+      const factory = await loadProgressFactory();
+      const wfName = wfSelect.value;
+      const w = wf.find((x) => x.name === wfName);
+      const phases = (w && Array.isArray(w.phases)) ? w.phases : [];
+      clear(progressMount);
+      if (progress) progress.destroy();
+      // The console owns its own role=status narrative line (it is a self-
+      // contained subtree inside the dense operator console card). It does NOT
+      // reuse <main id="view"> — announce() writes textContent, which would wipe
+      // the whole operator UI.
+      progress = factory({
+        phases: phases.map((p) => ({ name: p.name, label: p.label || p.name, optional: p.optional })),
+        startMs: startMs || Date.now(),
+      });
+      progressMount.appendChild(progress.el);
+      progress.startFirstRunning();
+    } catch (_) { progress = null; /* raw log still works */ }
+  }
+  function feedProgressLine(line) { if (progress) { try { progress.onLine(line); } catch (_) {} } }
+  function feedProgressStatus(s) {
+    if (!progress) return;
+    try {
+      progress.onStatus(s === 'canceled' ? 'cancelled' : s);
+      if (TERMINAL.has(s)) progress.freezeElapsed(runStartMs != null ? Date.now() - runStartMs : undefined);
+    } catch (_) {}
+  }
 
   function fmtElapsed(ms) {
     const s = Math.floor(ms / 1000);
@@ -506,6 +554,7 @@ async function renderUpload(view) {
     const dot = statusLine.querySelector('.dot');
     dot.className = 'dot ' + (s === 'completed' ? 'completed' : (s === 'failed' || s === 'cancelled' || s === 'canceled' || s === 'error') ? 'failed' : (s === 'running' || s === 'requested') ? 'running' : '');
     statusLine.querySelector('.state').textContent = s;
+    if (TERMINAL.has(s)) feedProgressStatus(s);
     if (TERMINAL.has(s)) {
       if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
       cancelBtn.disabled = true;
@@ -599,13 +648,14 @@ async function renderUpload(view) {
         try {
           const obj = JSON.parse(msg);
           if (obj.type === 'status' || obj.status) { setStatus(obj.status || obj.type); }
-          if (obj.line != null) logLine(obj.line);
+          if (obj.line != null) { logLine(obj.line); feedProgressLine(String(obj.line)); }
           if (obj.gates || obj.gate_results) renderGates(obj.gates || obj.gate_results);
           if (obj.error) logLine(`[error] ${obj.error}: ${obj.detail || ''}`, 'err');
           return;
         } catch (_) { /* fall through: treat as raw line */ }
       }
       logLine(String(msg));
+      feedProgressLine(String(msg));
     };
     ws.onerror = () => logLine('[gui] websocket error', 'err');
     ws.onclose = () => logLine('[gui] log stream closed', 'sys');
@@ -618,10 +668,11 @@ async function renderUpload(view) {
     const single = modeSingle.checked;
     if (!single && !corpus) { toast('Corpus required', 'Upload a file or supply a corpus path.', 'error'); return; }
 
-    clear(consoleEl); clear(gateWrap);
+    clear(consoleEl); clear(gateWrap); clear(progressMount);
     lineCount = 0;
     terminalToasted = false;
     startElapsed();
+    mountProgress(runStartMs);
     setStatus('requested');
     launchBtn.disabled = true;
     try {
@@ -680,7 +731,7 @@ async function renderUpload(view) {
   // GET /api/runs is newest-first; clicking re-attaches the existing WS console
   // (the server replays the log from offset 0), so a run survives page reload.
   function reattach(runId, status) {
-    clear(consoleEl); clear(gateWrap); clear(idBar);
+    clear(consoleEl); clear(gateWrap); clear(idBar); clear(progressMount);
     lineCount = 0;
     terminalToasted = !!(status && TERMINAL.has(status)); // don't re-toast a finished run on reattach
     idBar.append(el('span', { class: 'muted', text: 'run_id ' }), el('code', { class: 'kv', text: String(runId) }), copyBtn(String(runId)));
@@ -690,6 +741,9 @@ async function renderUpload(view) {
     } else {
       startElapsed();
     }
+    // The WS replays the run's log from offset 0, so the console rebuilds its
+    // phase state from the replayed [phase]/[progress] lines.
+    mountProgress(runStartMs || Date.now());
     setStatus(status || 'running');
     openWs(runId);
     consoleEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -734,7 +788,7 @@ async function renderUpload(view) {
   ]));
   refreshRuns();
 
-  return () => { if (ws) { try { ws.close(); } catch (_) {} } if (elapsedTimer) clearInterval(elapsedTimer); };
+  return () => { if (ws) { try { ws.close(); } catch (_) {} } if (elapsedTimer) clearInterval(elapsedTimer); if (progress) { try { progress.destroy(); } catch (_) {} } };
 }
 
 /* =====================================================================

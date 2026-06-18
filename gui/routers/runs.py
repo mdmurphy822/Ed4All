@@ -144,6 +144,20 @@ async def get_run(run_id: str) -> Any:
     return record
 
 
+@router.get("/runs/{run_id}/timeline")
+async def get_run_timeline(run_id: str) -> Any:
+    """Return the GUI-side per-phase timing timeline for a run (Phase 0, Tier 1).
+
+    Per-phase durations are derived entirely GUI-side from the ISO-prefixed
+    ``[phase] <name> done|skipped|failed`` log lines the backend already emits —
+    zero orchestrator change. 404 with the typed ``{error, detail}`` body when the
+    run is unknown, mirroring ``get_run``.
+    """
+    if run_service.run_status(run_id) is None:
+        return _error(404, "unknown_run", run_id)
+    return run_service.derive_phase_timeline(run_id)
+
+
 @router.get("/runs/{run_id}/validation-report")
 async def get_validation_report(run_id: str) -> Any:
     """Return the failure / validation report for a run (Marketable-v1 A6).

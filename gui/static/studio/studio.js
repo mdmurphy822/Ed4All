@@ -499,6 +499,9 @@ const shell = {
   setBusy,
   errText,
   escapeHtml,
+  // The single page-level polite live region (#status). The Build Console
+  // announces into THIS so the page keeps exactly one live-truth region.
+  statusRegion: statusEl,
 };
 
 const router = createRouter(

@@ -25,6 +25,7 @@
 import { api, apiJSON } from '/shared/api.js';
 import { el, clear, uid } from '/shared/dom.js';
 import { toast, toastErr } from '/shared/toast.js';
+import { runProgressConsole } from '/shared/components/run-progress.js';
 
 const WORKFLOW = 'textbook_to_course';
 const ACCEPT_EXT = ['.pdf'];
@@ -426,96 +427,62 @@ async function renderProgress(shell, runId) {
   const courseName = record.course_name || '';
   v.replaceChild(el('h1', { text: courseName ? `Building ${courseName}` : 'Building your course' }), v.querySelector('h1'));
 
-  const meta = el('p', { class: 'muted' }, [
-    el('span', { text: `Run ${runId}` }),
-    el('span', { class: 'sep', 'aria-hidden': 'true', text: ' · ' }),
-    el('span', { class: 'elapsed', text: 'elapsed 0s' }),
-  ]);
-  v.appendChild(meta);
-  const elapsedEl = meta.querySelector('.elapsed');
+  // Elapsed anchor (from started_at when available).
+  const startMs = record.started_at ? Date.parse(record.started_at) : Date.now();
 
-  // The checklist: one <li> per non-internal phase, each with a status badge.
-  const checklist = el('ol', { class: 'phase-checklist', 'aria-label': 'Course build steps' });
-  const phaseEls = new Map();
-  phases.forEach((p) => {
-    const li = el('li', { class: 'phase-row is-pending', 'data-phase': p.name }, [
-      el('span', { class: 'phase-icon', 'aria-hidden': 'true', text: '○' }),
-      el('span', { class: 'phase-label', text: p.label || titleCase(p.name) }),
-      el('span', { class: 'phase-state', text: 'Pending' }),
-      p.optional ? el('span', { class: 'phase-opt', text: '(optional)' }) : null,
-    ]);
-    checklist.appendChild(li);
-    phaseEls.set(p.name, li);
+  // The shared Build Console assembles the component kit: a phaseTimeline (real
+  // SVG rings replace the old static glyphs), the canonical elapsed timer, and
+  // the SINGLE role=status aria-live region (the narrative line). It is PURE
+  // PRESENTATION — this page owns the WS + every fetch; the console only parses
+  // the lines we feed it. Friendly phase labels are resolved here from the
+  // /api/workflows list (never hardcoded in the kit).
+  // Reuse the studio shell's single #status region (the page keeps exactly one
+  // polite live-truth region; the console announces phase transitions into it).
+  const liveRegion = typeof shell.statusRegion === 'function' ? shell.statusRegion() : null;
+  const progress = runProgressConsole({
+    phases: phases.map((p) => ({ name: p.name, label: p.label || titleCase(p.name), optional: p.optional })),
+    startMs,
+    liveRegion: liveRegion || undefined,
   });
-  v.appendChild(checklist);
 
-  const finalBox = el('div', { class: 'final-box', 'aria-live': 'polite' });
+  // Run id sits in the meta line (left of the console's elapsed timer).
+  progress.el.querySelector('.run-progress-meta').insertBefore(
+    el('span', {}, [
+      el('span', { text: `Run ${runId}` }),
+      el('span', { class: 'sep', 'aria-hidden': 'true', text: ' · ' }),
+    ]),
+    progress.elapsedEl,
+  );
+  v.appendChild(progress.el);
+
+  // The failure panel + terminal CTAs render below the console.
+  const finalBox = el('div', { class: 'final-box' });
   v.appendChild(finalBox);
 
   shell.setBusy(false);
 
-  function setPhase(name, state) {
-    const li = phaseEls.get(name);
-    if (!li) return;
-    li.className = `phase-row is-${state}`;
-    const icon = li.querySelector('.phase-icon');
-    const stateEl = li.querySelector('.phase-state');
-    const map = {
-      pending: ['○', 'Pending'],
-      running: ['◐', 'Running…'],
-      done: ['●', 'Done'],
-      skipped: ['–', 'Skipped'],
-      failed: ['✕', 'Failed'],
-    };
-    const [glyph, text] = map[state] || map.pending;
-    icon.textContent = glyph;
-    stateEl.textContent = text;
-  }
-
-  // The phase ordering used to infer "running" = the first not-yet-done phase.
-  const order = phases.map((p) => p.name);
-  const done = new Set();
-  let lastRunning = null;
-
-  function markCompleted(name, marker) {
-    setPhase(name, marker === 'skipped' ? 'skipped' : 'done');
-    done.add(name);
-    // The next not-done, non-skipped phase becomes "running" (best-effort
-    // inference; the build is sequential).
-    const next = order.find((n) => !done.has(n));
-    if (next) { setPhase(next, 'running'); lastRunning = next; }
-  }
-
-  // Elapsed timer (from started_at when available).
-  const startMs = record.started_at ? Date.parse(record.started_at) : Date.now();
-  const timer = setInterval(() => {
-    elapsedEl.textContent = `elapsed ${fmtElapsed(Date.now() - startMs)}`;
-  }, 1000);
-
   // The phase explicitly reported failed by a structured WS line (A6) wins over
-  // the "last running" heuristic. Set by onLine when a "[phase] X failed" line
-  // arrives; consumed by finalize.
-  let failedPhase = null;
-
+  // the "last running" heuristic; the console tracks it for us.
   function finalize(status, errMsg) {
     clear(finalBox);
+    // Drive the console's terminal state (rings + the polite narrative line).
+    progress.onStatus(status);
     if (status === 'completed') {
-      // Mark any not-explicitly-done phase done (the build finished).
-      order.forEach((n) => { if (!done.has(n)) setPhase(n, 'done'); });
       finalBox.appendChild(el('p', { class: 'ok', text: 'Your course is ready.' }));
       const slug = courseSlug(courseName);
       finalBox.appendChild(el('a', { class: 'btn primary', href: `#/viewer/${encodeURIComponent(slug)}`, text: 'Open course' }));
       shell.setStatus('Your course is ready. Open course to view it.');
     } else if (status === 'cancelled' || status === 'interrupted') {
-      if (lastRunning) setPhase(lastRunning, 'pending');
       finalBox.appendChild(el('p', { class: 'warn', text: `Build ${status}.` }));
       shell.setStatus(`Build ${status}.`);
     } else {
-      // A6 failure: mark the failing phase (structured signal > heuristic), then
-      // render the actionable failure panel (gate table + what-to-do affordances).
-      const fp = failedPhase || lastRunning;
-      if (fp) setPhase(fp, 'failed');
-      renderFailurePanel(shell, finalBox, runId, courseName, fp, errMsg);
+      // A6 failure: the console has already marked the failing phase; surface the
+      // failed phase's drawer + the actionable failure panel verbatim.
+      const fp = progress.getFailedPhase() || progress.getLastRunning();
+      const failedRow = fp ? progress.get(fp) : null;
+      const drawer = failedRow && failedRow.detail ? failedRow.detail : finalBox;
+      if (failedRow) failedRow.expand();
+      renderFailurePanel(shell, drawer, runId, courseName, fp, errMsg);
       shell.setStatus('The course build failed. Review what went wrong and what to do next.');
     }
   }
@@ -524,45 +491,39 @@ async function renderProgress(shell, runId) {
   // the record without opening a WS.
   const terminal = ['completed', 'failed', 'cancelled', 'interrupted'];
   if (terminal.includes(record.status)) {
-    clearInterval(timer);
-    elapsedEl.textContent = record.finished_at && record.started_at
-      ? `elapsed ${fmtElapsed(Date.parse(record.finished_at) - Date.parse(record.started_at))}`
-      : 'finished';
+    progress.freezeElapsed(record.finished_at && record.started_at
+      ? Date.parse(record.finished_at) - Date.parse(record.started_at)
+      : undefined);
     // Replay phase completion from the persisted gate_results (phase_results).
     const pr = record.gate_results;
-    if (pr && typeof pr === 'object') Object.keys(pr).forEach((n) => done.add(n));
-    order.forEach((n) => { if (done.has(n)) setPhase(n, 'done'); });
+    if (pr && typeof pr === 'object') Object.keys(pr).forEach((n) => progress.setState(n, 'done'));
     // A6: the persisted failed_phase (set by run_service) drives the failure
     // marker on a refresh, so we don't fall back to the "last running" guess.
-    if (record.failed_phase) failedPhase = record.failed_phase;
+    if (record.failed_phase) progress.setState(record.failed_phase, 'failed');
+    // Stash it so finalize's failure path uses the persisted phase, not a guess.
+    if (record.status === 'failed' && record.failed_phase) {
+      progress.onLine(`[phase] ${record.failed_phase} failed`);
+    }
     finalize(record.status, record.error || record.failure_reason);
     return;
   }
 
-  // Live stream. The WS carries {type:line} (we parse "[phase] <name> <state>")
-  // and a terminal {type:status}.
-  if (lastRunning == null && order.length) { setPhase(order[0], 'running'); lastRunning = order[0]; }
+  // Live stream. The WS carries {type:line} (the console parses the ISO-prefixed
+  // "[phase]"/"[progress]" lines, including Tier-1 timing) and a terminal
+  // {type:status}.
+  progress.startFirstRunning();
 
   const ws = openRunSocket(runId, {
-    onLine: (line) => {
-      const m = /\[phase\]\s+(\S+)\s+(done|skipped)\b/.exec(line);
-      if (m) { markCompleted(m[1], m[2]); return; }
-      // A6 structured failure line: "[phase] <name> failed — <label>: <reason>".
-      const f = /\[phase\]\s+(\S+)\s+failed\b/.exec(line);
-      if (f) { failedPhase = f[1]; setPhase(f[1], 'failed'); }
-    },
-    onStatus: (frame) => {
-      clearInterval(timer);
-      finalize(frame.status, frame.error);
-    },
+    onLine: (line) => progress.onLine(line),
+    onStatus: (frame) => finalize(frame.status, frame.error),
     onError: (msg) => {
-      clearInterval(timer);
+      progress.onError(msg);
       finalBox.appendChild(el('p', { class: 'error', role: 'alert', text: `Lost connection to the build: ${msg}` }));
     },
   });
 
-  // Teardown: close the WS + stop the timer when the route changes.
-  return () => { clearInterval(timer); ws.close(); };
+  // Teardown: close the WS + stop the console timer when the route changes.
+  return () => { progress.destroy(); ws.close(); };
 }
 
 /* =============================================== A6 failure panel (UX) */
@@ -865,15 +826,8 @@ function fmtBytes(n) {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-function fmtElapsed(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  if (m < 60) return `${m}m ${rem}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
-}
+/* fmtElapsed was retired here: the elapsed timer is now owned by the shared
+ * elapsed.js (via run-progress.js), which carries the identical formatter. */
 
 function titleCase(name) {
   return String(name).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ed4All Component Gallery</title>
+  <!-- The shared design tokens MUST load first (the kit consumes var(--token));
+       components.css layers the presentation on top. The gallery is the visual-
+       regression + WCAG fixture for the shared component kit, so it deliberately
+       loads ONLY the token + kit layers (no operator/studio surface CSS). -->
+  <link rel="stylesheet" href="/shared/tokens.css">
+  <link rel="stylesheet" href="/shared/components/components.css">
+  <link rel="stylesheet" href="/dev/gallery.css">
+</head>
+<body class="kit">
+  <a class="skip-link" href="#gallery-main">Skip to main content</a>
+
+  <header class="gallery-header">
+    <h1>Component Gallery</h1>
+    <p class="gallery-sub">Every shared component in every state — the WCAG / visual-regression fixture for the Build Console kit.</p>
+  </header>
+
+  <!-- The SINGLE live-truth region the kit demonstrates: phase transitions and
+       terminal verdicts announce here (polite, debounced), NEVER per-second. -->
+  <p id="gallery-live" class="visually-hidden" role="status" aria-live="polite"></p>
+
+  <main id="gallery-main" tabindex="-1"></main>
+
+  <script type="module" src="/dev/gallery.js"></script>
+</body>
+</html>

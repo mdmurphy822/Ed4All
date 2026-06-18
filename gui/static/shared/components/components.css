@@ -1,0 +1,204 @@
+/* Ed4All shared component-kit styles — consumes tokens.css ONLY.
+ *
+ * Every color here is a var(--token); no raw hex (the tokens.css contract).
+ * The kit is theme-agnostic: the same rules recolor on the operator dark
+ * surface via :root[data-theme="dark"] token overrides.
+ *
+ * a11y rules (hard, from the roadmap §6/§9):
+ *   - rings/spinners are aria-hidden DECORATION (set in JS), motion guarded by
+ *     tokens.css's prefers-reduced-motion block (no UNGUARDED animation here);
+ *   - no color-only state: every pill/chip pairs color with text + glyph;
+ *   - :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px };
+ *   - interactive targets >= 24x24px.
+ */
+
+/* ---- a11y primitive (kept local so the kit is self-contained) ---- */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  clip: rect(0 0 0 0); clip-path: inset(50%);
+  overflow: hidden; white-space: nowrap;
+}
+
+/* Focus indicator for every focusable kit element — NEVER outline:none. */
+.kit a:focus-visible,
+.kit button:focus-visible,
+.kit input:focus-visible,
+.kit select:focus-visible,
+.kit textarea:focus-visible,
+.kit [tabindex]:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ---- progress ring ---- */
+.ring {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+}
+.ring-svg { display: block; }
+/* Only the RUNNING ring spins; the @keyframes spin (+ its reduced-motion
+ * freeze) live in tokens.css, so this animation is already motion-guarded. */
+.ring-running .ring-svg {
+  animation: spin 1.2s linear infinite;
+  transform-origin: 50% 50%;
+}
+
+/* ---- status pill (non-color-only: glyph + text) ---- */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 24px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.4;
+  background: var(--bg);
+  color: var(--fg);
+}
+.pill-glyph { font-weight: 700; }
+.pill-pending { color: var(--phase-pending); border-color: var(--phase-pending); }
+.pill-running { color: var(--phase-running); border-color: var(--phase-running); }
+.pill-done    { color: var(--phase-done);    border-color: var(--phase-done); }
+.pill-skipped { color: var(--phase-skipped); border-color: var(--phase-skipped); }
+.pill-failed  { color: var(--phase-failed);  border-color: var(--phase-failed); }
+.pill-pass    { color: var(--gate-pass);     border-color: var(--gate-pass); }
+.pill-warn    { color: var(--gate-warn);     border-color: var(--gate-warn); }
+.pill-fail    { color: var(--gate-fail);     border-color: var(--gate-fail); }
+
+/* ---- gate chip (icon + visually-hidden label) ---- */
+.gate-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  font-weight: 700;
+}
+.gate-chip-pass .gate-chip-glyph { color: var(--gate-pass); }
+.gate-chip-warn .gate-chip-glyph { color: var(--gate-warn); }
+.gate-chip-fail .gate-chip-glyph { color: var(--gate-fail); }
+
+/* ---- phase row / timeline ---- */
+.phase-checklist {
+  list-style: none;
+  margin: 0; padding: 0;
+}
+.phase-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+}
+.phase-ring { display: inline-flex; }
+.phase-label { flex: 1; min-width: 8rem; color: var(--fg); }
+.phase-state { color: var(--muted); font-size: 13px; }
+.phase-row.is-running .phase-state { color: var(--phase-running); }
+.phase-row.is-done .phase-state    { color: var(--phase-done); }
+.phase-row.is-failed .phase-state  { color: var(--phase-failed); }
+.phase-tasks { color: var(--muted); font-size: 13px; }
+.phase-opt { color: var(--muted); font-size: 12px; }
+.phase-gates { display: inline-flex; gap: var(--space-1); align-items: center; }
+.phase-detail { flex-basis: 100%; }
+
+/* ---- cards ---- */
+.card {
+  display: block;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  color: var(--fg);
+  text-decoration: none;
+}
+a.card:hover { border-color: var(--accent); }
+.card-title { margin: 0 0 var(--space-1); font-size: 16px; }
+.card-meta { margin: var(--space-1) 0 0; color: var(--muted); font-size: 13px; }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.card-badge {
+  display: inline-block;
+  margin-top: var(--space-1);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--ok);
+  color: var(--ok);
+  font-size: 12px;
+}
+
+/* ---- empty state ---- */
+.empty-state {
+  text-align: center;
+  padding: var(--space-4) var(--space-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-card);
+}
+.empty-title { margin: 0 0 var(--space-2); }
+.empty-message { margin: 0 0 var(--space-3); color: var(--muted); }
+
+/* ---- field row ---- */
+.field-row { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-3); }
+.field-label { font-weight: 600; color: var(--fg); }
+.field-hint { margin: 0; color: var(--muted); font-size: 13px; }
+.field-row input,
+.field-row select,
+.field-row textarea {
+  min-height: 28px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  color: var(--fg);
+}
+.field-error { color: var(--error-fg); margin: 0; }
+
+/* ---- timeline bar ---- */
+.timeline-bar { margin: 0; }
+.tl-bar-track {
+  display: flex;
+  width: 100%;
+  height: 16px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.tl-seg { display: block; height: 100%; }
+.tl-seg-done    { background: var(--phase-done); }
+.tl-seg-running { background: var(--phase-running); }
+.tl-seg-pending { background: var(--phase-pending); }
+.tl-seg-skipped { background: var(--phase-skipped); }
+.tl-seg-failed  { background: var(--phase-failed); }
+.tl-legend { list-style: none; margin: var(--space-2) 0 0; padding: 0; }
+.tl-legend-item { display: flex; align-items: center; gap: var(--space-2); padding: 2px 0; font-size: 13px; }
+.tl-legend-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+.tl-legend-name { flex: 1; color: var(--fg); }
+.tl-legend-dur { color: var(--muted); }
+
+/* ---- shared button (kit) — >= 24px target, token-driven ---- */
+.kit .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.kit .btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+}
+
+.elapsed { color: var(--muted); }

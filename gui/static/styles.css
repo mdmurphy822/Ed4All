@@ -256,6 +256,11 @@ tr.selected { background: rgba(68,147,248,.12); }
 .toast .ttitle { font-weight: 600; margin-bottom: 2px; }
 .toast .tdetail { color: var(--fg-dim); font-size: 12px; word-break: break-word; }
 @keyframes slidein { from { transform: translateX(20px); opacity: 0; } to { transform: none; opacity: 1; } }
+/* Reduced-motion guard (authored directly here so it wins regardless of
+ * stylesheet link order): freeze the toast slide-in. */
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}
 
 /* copy buttons embedded in dense metadata rows stay compact */
 .result .meta button.sm, code.kv + button.sm { padding: 1px 6px; font-size: 11px; line-height: 1.4; }

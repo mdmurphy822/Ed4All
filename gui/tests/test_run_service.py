@@ -899,3 +899,242 @@ def test_validation_report_unknown_run_raises_keyerror(state_dir):
 
     with pytest.raises(KeyError):
         run_service.validation_report("GUI-nope-000000")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — per-phase task-progress ``[progress] <phase> <done>/<total>`` lines
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_PROGRESS_RE = _re.compile(
+    r"^\[(?P<iso>[^\]]+)\]\s+\[progress\]\s+(?P<name>\S+)\s+(?P<done>\d+)/(?P<total>\d+)$"
+)
+
+
+def _progress_lines(run_id):
+    """Return parsed ``[progress]`` log lines for ``run_id`` (in order)."""
+    text, _ = shared_state.tail_log(run_id, 0)
+    out = []
+    for line in text.splitlines():
+        m = _PROGRESS_RE.match(line.strip())
+        if m:
+            out.append(
+                {
+                    "iso": m.group("iso"),
+                    "name": m.group("name"),
+                    "done": int(m.group("done")),
+                    "total": int(m.group("total")),
+                }
+            )
+    return out
+
+
+def test_emit_phase_progress_line_grammar_and_iso_prefix(state_dir):
+    """A real count emits ``[<iso>] [progress] <phase> <done>/<total>`` exactly."""
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+    emitted = run_service._emit_phase_progress_line(run_id, "content_generation", 7, 50)
+    assert emitted is True
+    lines = _progress_lines(run_id)
+    assert len(lines) == 1
+    assert lines[0]["name"] == "content_generation"
+    assert lines[0]["done"] == 7
+    assert lines[0]["total"] == 50
+    # The bracketed prefix is a real parseable ISO-8601 timestamp.
+    from datetime import datetime
+
+    datetime.fromisoformat(lines[0]["iso"])
+
+
+def test_emit_phase_progress_line_suppresses_zero_and_garbage_counts(state_dir):
+    """No fabricated line when the count is absent / non-numeric / negative."""
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+    assert run_service._emit_phase_progress_line(run_id, "p", 0, 0) is False
+    assert run_service._emit_phase_progress_line(run_id, "p", 1, 0) is False
+    assert run_service._emit_phase_progress_line(run_id, "p", 0, -3) is False
+    assert run_service._emit_phase_progress_line(run_id, "p", None, "x") is False
+    assert _progress_lines(run_id) == []
+
+
+def test_emit_phase_progress_line_clamps_done_to_total(state_dir):
+    """A done count exceeding total is clamped (never emits an impossible ratio)."""
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+    assert run_service._emit_phase_progress_line(run_id, "p", 99, 12) is True
+    lines = _progress_lines(run_id)
+    assert lines == [{"iso": lines[0]["iso"], "name": "p", "done": 12, "total": 12}]
+
+
+def test_validator_only_phases_enumerates_agents_empty(state_dir):
+    """The validator-only set is the ``agents: []`` phases of the workflow."""
+    vo = run_service._validator_only_phases("textbook_to_course")
+    assert "inter_tier_validation" in vo
+    assert "post_rewrite_validation" in vo
+    # Content phases with real agents are NOT validator-only.
+    assert "content_generation" not in vo
+    assert "course_planning" not in vo
+    # Courseforge stage aliases resolve through the textbook_to_course machine.
+    assert run_service._validator_only_phases("courseforge_validate") == vo
+
+
+def test_drive_pipeline_emits_progress_from_real_phase_results(state_dir, monkeypatch):
+    """Full-pipeline path emits ``[progress]`` from REAL per-phase task counts,
+    and emits NOTHING for validator-only ``agents: []`` phases."""
+    import MCP.orchestrator as orch_pkg
+
+    class OkResult:
+        def to_dict(self):
+            return {
+                "status": "ok",
+                "gates_passed": True,
+                "phase_results": {
+                    # Real agent phase with a genuine task count.
+                    "content_generation": {
+                        "task_count": 12,
+                        "completed": 12,
+                        "gates_passed": True,
+                    },
+                    # Validator-only phase: synthesized virtual task -> task_count
+                    # 1 is meaningless; MUST emit no [progress] line.
+                    "inter_tier_validation": {
+                        "task_count": 1,
+                        "completed": 1,
+                        "gates_passed": True,
+                    },
+                    # A real phase that partially completed (honest done<total).
+                    "course_planning": {
+                        "task_count": 4,
+                        "completed": 3,
+                        "gates_passed": True,
+                    },
+                    # A pure gate-chain phase with no real tasks -> no count.
+                    "finalization": {
+                        "task_count": 0,
+                        "completed": 0,
+                        "gates_passed": True,
+                    },
+                },
+            }
+
+    class OkOrchestrator:
+        def __init__(self, mode, backend_spec):
+            pass
+
+        async def run(self, workflow_id):
+            return OkResult()
+
+    monkeypatch.setattr(orch_pkg, "PipelineOrchestrator", OkOrchestrator)
+
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run(
+        {"run_id": run_id, "status": "queued", "workflow": "textbook_to_course"}
+    )
+    asyncio.run(
+        run_service._drive_pipeline(
+            run_id, "WF-PROG", mode="api", provider="anthropic", model=None
+        )
+    )
+
+    lines = {ln["name"]: ln for ln in _progress_lines(run_id)}
+    # Real agent phases emit their genuine count.
+    assert lines["content_generation"]["done"] == 12
+    assert lines["content_generation"]["total"] == 12
+    assert lines["course_planning"]["done"] == 3
+    assert lines["course_planning"]["total"] == 4
+    # Validator-only phase: NO [progress] line (ring stays indeterminate).
+    assert "inter_tier_validation" not in lines
+    # No-task phase: nothing fabricated.
+    assert "finalization" not in lines
+    # Every emitted line carries a parseable ISO prefix.
+    from datetime import datetime
+
+    for ln in lines.values():
+        datetime.fromisoformat(ln["iso"])
+
+
+def test_run_single_phase_emits_progress_and_suppresses_validator_phase(
+    state_dir, monkeypatch
+):
+    """Single-phase path emits a real ``[progress]`` count for an agent phase
+    and emits NOTHING for an ``agents: []`` validator-only phase."""
+
+    class FakeResult:
+        def __init__(self, status):
+            self.status = status
+
+    async def _run_phase(phase_name, agents):
+        run_id = shared_state.new_run_id("GUI")
+        shared_state.register_run({"run_id": run_id, "status": "running"})
+
+        class FakePhase:
+            def __init__(self):
+                self.name = phase_name
+                self.agents = agents
+                self.validation_gates = None
+                self.max_concurrent = 5
+
+        class FakeWorkflow:
+            phases = [FakePhase()]
+
+        class FakeConfig:
+            def get_workflow(self, name):
+                return FakeWorkflow()
+
+        # 3 tasks; 2 COMPLETE -> honest 2/3 for an agent phase.
+        fake_results = {
+            "t1": FakeResult("COMPLETE"),
+            "t2": FakeResult("COMPLETE"),
+            "t3": FakeResult("FAILED"),
+        }
+
+        class FakeExecutor:
+            def __init__(self, *a, **k):
+                pass
+
+            async def execute_phase(self, **kwargs):
+                return fake_results, True, []
+
+        class FakeRunner:
+            def __init__(self, *a, **k):
+                pass
+
+            def _route_params(self, *a, **k):
+                return {}
+
+            def _create_phase_tasks(self, *a, **k):
+                return [{"id": "t1"}, {"id": "t2"}, {"id": "t3"}]
+
+        import MCP.core.config as cfg_mod
+        import MCP.core.executor as exec_mod
+        import MCP.core.workflow_runner as wr_mod
+        import MCP.tools.pipeline_tools as pt_mod
+
+        monkeypatch.setattr(cfg_mod.OrchestratorConfig, "load", classmethod(lambda cls: FakeConfig()))
+        monkeypatch.setattr(exec_mod, "TaskExecutor", FakeExecutor)
+        monkeypatch.setattr(wr_mod, "WorkflowRunner", FakeRunner)
+        monkeypatch.setattr(pt_mod, "_build_tool_registry", lambda: {})
+        monkeypatch.setattr(run_service, "_prepopulate_phase_outputs", lambda *a, **k: {})
+
+        await run_service._run_single_phase(
+            run_id=run_id,
+            workflow="textbook_to_course",
+            phase_name=phase_name,
+            course_name="PHYS_101",
+            project_id=None,
+            options={},
+        )
+        return run_id
+
+    # Agent phase: emits a real 2/3 progress line.
+    agent_run = asyncio.run(_run_phase("content_generation", ["content-generator"]))
+    agent_lines = _progress_lines(agent_run)
+    assert len(agent_lines) == 1
+    assert agent_lines[0]["name"] == "content_generation"
+    assert agent_lines[0]["done"] == 2
+    assert agent_lines[0]["total"] == 3
+
+    # Validator-only phase (agents: []): emits NO progress line.
+    vo_run = asyncio.run(_run_phase("inter_tier_validation", []))
+    assert _progress_lines(vo_run) == []

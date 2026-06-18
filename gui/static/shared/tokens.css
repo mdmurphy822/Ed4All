@@ -1,0 +1,112 @@
+/* Ed4All shared design-token layer — Phase 0 (additive, zero-visual-change).
+ *
+ * This file ONLY DEFINES variables + keyframes. It does NOT rewrite any
+ * existing color reference in styles.css / learn.css / studio.css to
+ * var() — that is Phase 1. Because the existing surface stylesheets keep
+ * their hardcoded values, rendered output stays byte-identical when this
+ * file is linked first.
+ *
+ * Every hex value below is COPIED VERBATIM from a WCAG-verified source
+ * (learn.css / studio.css light :root, styles.css dark :root) — never
+ * recomputed. They are a frozen CI-WCAGValidator contract.
+ */
+
+/* ---- Light palette (the studio + learner contract, reconciled) ---- */
+:root {
+  /* From learn.css + studio.css :root (identical values across both). */
+  --fg: #111418;            /* near-black body text on white -> ~17:1 */
+  --bg: #ffffff;
+  --muted: #4a5560;         /* ~7:1 on white */
+  --accent: #0b5cad;        /* link/focus blue -> ~6.4:1 on white */
+  --accent-fg: #ffffff;
+  --border: #5a6470;
+  --focus: #0b5cad;
+  --error-fg: #8a1c1c;      /* >= 4.5:1 on white */
+
+  /* learn.css-only advisory family. */
+  --advisory-bg: #fff4e5;
+  --advisory-fg: #6b4500;   /* >= 4.5:1 on the advisory bg */
+
+  /* studio.css-only panel/selection family. */
+  --panel: #f4f6f8;
+  --selected-bg: #e3eefb;
+
+  /* ---- Named status / phase / gate tokens (all >= 4.5:1 on their bg) ---- */
+  --ok: #1a7f37;            /* success green on white -> >= 4.5:1 */
+  --warn: #8a6100;          /* warning amber-brown on white -> >= 4.5:1 */
+
+  --phase-pending: #4a5560; /* = --muted */
+  --phase-running: #0b5cad; /* = --accent */
+  --phase-done: #1a7f37;    /* = --ok */
+  --phase-skipped: #4a5560; /* = --muted */
+  --phase-failed: #8a1c1c;  /* = --error-fg */
+
+  --gate-pass: #1a7f37;     /* = --ok */
+  --gate-warn: #8a6100;     /* = --warn */
+  --gate-fail: #8a1c1c;     /* = --error-fg */
+
+  /* ---- Spatial / radius scale ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --radius-card: 8px;
+  --radius-pill: 999px;
+}
+
+/* ---- Operator dark palette (styles.css :root family, verbatim) ---- */
+:root[data-theme="dark"] {
+  --bg: #0d1117;
+  --bg-elev: #161b22;
+  --bg-elev2: #1c232c;
+  --bg-input: #0b0f14;
+  --border: #2a313c;
+  --border-strong: #3a4250;
+  --fg: #e6edf3;
+  --fg-dim: #9aa7b4;
+  --fg-faint: #6b7785;
+  --accent: #4493f8;
+  --accent-2: #1f6feb;
+  --good: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  --claude: #c896f8;
+  --radius: 8px;
+
+  /* Named status / phase / gate tokens recolored for the dark surface,
+   * reusing the operator palette's WCAG-verified status family. */
+  --ok: #3fb950;            /* = --good */
+  --error-fg: #f85149;      /* = --bad */
+  --focus: #4493f8;         /* = --accent */
+
+  --phase-pending: #9aa7b4; /* = --fg-dim */
+  --phase-running: #4493f8; /* = --accent */
+  --phase-done: #3fb950;    /* = --good */
+  --phase-skipped: #6b7785; /* = --fg-faint */
+  --phase-failed: #f85149;  /* = --bad */
+
+  --gate-pass: #3fb950;     /* = --good */
+  --gate-warn: #d29922;     /* = --warn */
+  --gate-fail: #f85149;     /* = --bad */
+}
+
+/* ---- Spin keyframes for future progress rings (none exists today). ---- */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Tabular numerals so timers / ETAs / counts don't jitter as digits change.
+ * Usage: add the .tabular-nums class to any element rendering live digits. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Single reduced-motion block: freeze spin (and any future motion). ---- */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes spin {
+    from { transform: none; }
+    to { transform: none; }
+  }
+  .tabular-nums { /* no-op anchor; class kept stable under reduced motion */ }
+}

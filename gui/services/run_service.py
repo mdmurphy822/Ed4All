@@ -42,7 +42,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -594,6 +596,14 @@ async def _drive_pipeline(
         f"gates_passed={gates_passed}\n",
     )
     if payload.get("phase_results"):
+        # Resolve the workflow name from the run record so validator-only
+        # (``agents: []``) phases are suppressed correctly. Falls back to
+        # ``textbook_to_course`` (the only multi-phase pipeline with
+        # ``agents: []`` phases) when the record is unreadable.
+        _rec = shared_state.read_run(run_id) or {}
+        validator_only = _validator_only_phases(
+            str(_rec.get("workflow") or "textbook_to_course")
+        )
         for name, info in payload["phase_results"].items():
             if isinstance(info, dict):
                 shared_state.append_log(
@@ -602,6 +612,22 @@ async def _drive_pipeline(
                     f"{info.get('task_count', 0)} gates="
                     f"{'pass' if info.get('gates_passed') else 'fail'}\n",
                 )
+                # Phase-3 (§5.1(B)) — emit the frontend's
+                # ``[<iso>] [progress] <phase> <done>/<total>`` ring signal from
+                # the REAL per-phase task count the runner reports. Suppressed
+                # for validator-only (``agents: []``) phases whose synthesized
+                # virtual task makes ``task_count`` meaningless (their ring
+                # stays indeterminate) and for any phase with no real tasks.
+                # This is the single truthful END-OF-PHASE total; no mid-phase
+                # incremental signal exists GUI-side (see _emit_phase_progress
+                # _line's HONEST GAP note).
+                if name not in validator_only:
+                    _emit_phase_progress_line(
+                        run_id,
+                        name,
+                        info.get("completed", 0),
+                        info.get("task_count", 0),
+                    )
 
     # Marketable-v1 A6 operator-failure-UX: when the workflow failed, emit a
     # STRUCTURED per-phase failure line + persist ``failed_phase`` /
@@ -626,18 +652,30 @@ async def _drive_pipeline(
                 f"[{shared_state.now_iso()}] [phase] {failed_phase} failed "
                 f"— {label}: {reason}\n",
             )
-    if _finalize_status(
-        run_id,
-        {
-            "status": status,
-            "error": payload.get("error"),
-            "gate_results": payload.get("phase_results"),
-            "gates_passed": gates_passed,
-            "failed_phase": failed_phase,
-            "failure_reason": failure_reason,
-            "finished_at": shared_state.now_iso(),
-        },
-    ):
+    # Phase 0 (Tier-1) — persist the GUI-side per-phase duration vector onto the
+    # final run record. Best-effort: derived purely from log lines the backend
+    # already emits (zero orchestrator change). A derivation failure here must
+    # NEVER change ``final_status`` or break finalize, so it is wrapped and
+    # defaults to ``None`` (additive field; absent ⇒ unchanged record shape).
+    phase_durations: Optional[List[Dict[str, Any]]] = None
+    try:
+        phase_durations = derive_phase_timeline(run_id).get("timeline")
+    except Exception:  # noqa: BLE001 — timing derivation is best-effort only
+        logger.warning("phase-duration derivation failed for %s", run_id, exc_info=True)
+
+    finalize_patch: Dict[str, Any] = {
+        "status": status,
+        "error": payload.get("error"),
+        "gate_results": payload.get("phase_results"),
+        "gates_passed": gates_passed,
+        "failed_phase": failed_phase,
+        "failure_reason": failure_reason,
+        "finished_at": shared_state.now_iso(),
+    }
+    if phase_durations is not None:
+        finalize_patch["phase_durations"] = phase_durations
+
+    if _finalize_status(run_id, finalize_patch):
         shared_state.append_event(
             "gui",
             "run_finished",
@@ -671,6 +709,86 @@ PHASE_LABELS: Dict[str, str] = {
     "vector_indexing": "Build search index",
     "finalization": "Finalize course",
 }
+
+
+def _validator_only_phases(workflow: str) -> set:
+    """Return the set of phase names declaring ``agents: []`` for ``workflow``.
+
+    These phases synthesize a single virtual ``phase-handler`` task (so their
+    ``task_count`` is a meaningless ``1``); per the Phase-3 contract they must
+    emit NO ``[progress]`` line — their ring stays indeterminate. The canonical
+    source of truth is ``config/workflows.yaml`` (``agents: []`` declarations).
+
+    Read directly from the YAML (no MCP import) so the full-pipeline path can
+    discriminate without loading ``OrchestratorConfig``. Courseforge stage
+    aliases run against the ``textbook_to_course`` machine, so they resolve
+    through the same map. Best-effort: any read/parse failure returns an empty
+    set (we then emit for every counted phase rather than crash — but never
+    fabricate a count).
+    """
+    name = "textbook_to_course" if workflow in COURSEFORGE_STAGE_SUBCOMMANDS else workflow
+    cached = _VALIDATOR_ONLY_PHASES_CACHE.get(name)
+    if cached is not None:
+        return cached
+    result: set = set()
+    try:
+        import yaml  # noqa: PLC0415
+        from lib.paths import PROJECT_ROOT  # noqa: PLC0415
+
+        cfg = yaml.safe_load((Path(PROJECT_ROOT) / "config" / "workflows.yaml").read_text())
+        wf = (cfg or {}).get("workflows", {}).get(name)
+        if isinstance(wf, dict):
+            for ph in wf.get("phases", []) or []:
+                if isinstance(ph, dict) and ph.get("agents") == []:
+                    result.add(ph.get("name"))
+    except Exception:  # noqa: BLE001 — discrimination is best-effort
+        logger.debug("validator-only phase lookup failed for %s", name, exc_info=True)
+    _VALIDATOR_ONLY_PHASES_CACHE[name] = result
+    return result
+
+
+_VALIDATOR_ONLY_PHASES_CACHE: Dict[str, set] = {}
+
+
+def _emit_phase_progress_line(
+    run_id: str, phase_name: str, completed: int, task_count: int
+) -> bool:
+    """Append a single TRUTHFUL ``[<iso>] [progress] <phase> <done>/<total>`` line.
+
+    The frontend Build Console (§5.1(B)) parses ``[progress] <phase> X/Y`` to
+    fill a per-phase progress ring. We emit ONLY from a genuine task count:
+    ``completed`` / ``task_count`` derived from the executor's real per-phase
+    results. Returns ``True`` when a line was emitted, ``False`` when suppressed.
+
+    Suppression (never fabricate a count):
+      * ``task_count <= 0`` — no real tasks ran (pure gate-chain / count absent).
+        Caller is responsible for filtering validator-only ``agents: []`` phases
+        (whose synthesized virtual task makes ``task_count == 1`` meaningless).
+      * non-int / negative inputs — refuse rather than invent.
+
+    HONEST GAP: the workflow state file is re-saved only at PHASE BOUNDARIES
+    (``WorkflowRunner._save_workflow_state`` is never called mid-phase), and the
+    executor's live ``progress["completed"]`` (``MCP/core/executor.py``) is held
+    in-memory and never persisted GUI-visibly. So there is NO incremental
+    mid-phase task count available GUI-side — this emits the single truthful
+    END-OF-PHASE total. Incremental mid-phase fill requires the DEFERRED Tier-2
+    orchestrator stamp (roadmap §5.2, the ``MCP/core/executor.py`` edit this
+    Phase-3 backend is explicitly forbidden from making).
+    """
+    try:
+        done = int(completed)
+        total = int(task_count)
+    except (TypeError, ValueError):
+        return False
+    if total <= 0 or done < 0:
+        return False
+    if done > total:
+        done = total
+    shared_state.append_log(
+        run_id,
+        f"[{shared_state.now_iso()}] [progress] {phase_name} {done}/{total}\n",
+    )
+    return True
 
 
 async def _poll_phase_progress(run_id: str, workflow_id: str) -> None:
@@ -998,6 +1116,18 @@ async def _run_single_phase(
         run_id,
         f"[{shared_state.now_iso()}] phase {phase_name} done: gates_passed={gates_passed}\n",
     )
+    # Phase-3 (§5.1(B)) — emit the REAL end-of-phase
+    # ``[<iso>] [progress] <phase> <done>/<total>`` ring signal for the
+    # single-phase pathway. ``len(tasks)`` is the genuine task count and the
+    # COMPLETE results are the genuine done count. Suppressed for validator-only
+    # (``agents: []``) phases whose synthesized virtual task is not a meaningful
+    # count (ring stays indeterminate). No mid-phase incremental signal exists
+    # GUI-side (see _emit_phase_progress_line's HONEST GAP note).
+    if getattr(phase, "agents", None) != []:
+        completed_tasks = sum(
+            1 for r in results.values() if getattr(r, "status", None) == "COMPLETE"
+        )
+        _emit_phase_progress_line(run_id, phase_name, completed_tasks, len(tasks))
     # A6: on a single-phase gate failure, emit a structured failure line +
     # persist the failed phase/reason so the GUI failure panel is consistent
     # with the full-pipeline path.
@@ -1287,6 +1417,112 @@ def _attr(obj: Any, name: str) -> Any:
 def run_status(run_id: str) -> Optional[Dict[str, Any]]:
     """Return the run record for ``run_id`` (or ``None`` if unknown)."""
     return shared_state.read_run(run_id)
+
+
+# Matches the per-phase log lines appended by ``_poll_phase_progress`` and the
+# failure path in ``_drive_pipeline``:
+#   ``[<iso>] [phase] <name> done — <label>``
+#   ``[<iso>] [phase] <name> skipped — <label>``
+#   ``[<iso>] [phase] <name> failed — <label>: <reason>``
+# Capture group 1 = the bracketed ISO prefix, 2 = the phase name, 3 = the state.
+_PHASE_LINE_RE = re.compile(
+    r"^\[(?P<iso>[^\]]+)\]\s+\[phase\]\s+(?P<name>\S+)\s+(?P<state>done|skipped|failed)\b"
+)
+
+
+def _parse_iso(value: Any) -> Optional[datetime]:
+    """Parse an ISO-8601 timestamp (the ``now_iso()`` form) → aware ``datetime``.
+
+    Returns ``None`` for anything unparseable so the timeline derivation never
+    raises on a malformed / truncated log line. Mirrors ``now_iso()``'s
+    ``datetime.now(timezone.utc).isoformat()`` output (offset-aware).
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    return parsed
+
+
+def derive_phase_timeline(run_id: str) -> Dict[str, Any]:
+    """Derive per-phase timing for a run from its log file (Tier-1, GUI-side).
+
+    The roadmap's "invisible keystone signal": every per-phase completion the
+    backend ALREADY logs carries an ISO timestamp prefix
+    (``[<iso>] [phase] <name> done|skipped|failed — ...``). We parse those lines
+    and reconstruct a sequential per-phase duration vector with ZERO orchestrator
+    change. Sequential duration of a phase = ``t(this completion) − t(previous
+    completion)``; the first phase's start is the run record's ``started_at``.
+
+    Robustness contract (never raises):
+    - Unknown run / absent log / empty log → empty ``timeline`` (``total_ms`` 0).
+    - An unparseable or missing timestamp on a line → that phase's
+      ``duration_ms`` is ``null`` (and it can't anchor the next phase's start).
+    - ``started_at`` missing/garbage → the first phase's ``duration_ms`` is
+      ``null`` (no anchor), but later phases still time off each other.
+
+    Returns::
+
+        {
+          "run_id": <run_id>,
+          "timeline": [
+            {"phase": <name>, "state": "done|skipped|failed",
+             "completed_at": <iso|None>, "duration_ms": <int|None>},
+            ...
+          ],
+          "total_ms": <int>,   # sum of the non-null per-phase durations
+        }
+    """
+    record = shared_state.read_run(run_id)
+    timeline: List[Dict[str, Any]] = []
+
+    # The first phase's "start" anchor is the run's started_at (if parseable).
+    prev_dt = _parse_iso(record.get("started_at")) if isinstance(record, dict) else None
+
+    log_text = ""
+    try:
+        path = shared_state.log_path(run_id)
+        if path.exists():
+            log_text = path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        log_text = ""
+
+    for line in log_text.splitlines():
+        match = _PHASE_LINE_RE.match(line.strip())
+        if not match:
+            continue
+        name = match.group("name")
+        state = match.group("state")
+        iso = match.group("iso")
+        this_dt = _parse_iso(iso)
+
+        duration_ms: Optional[int] = None
+        if this_dt is not None and prev_dt is not None:
+            delta_ms = int((this_dt - prev_dt).total_seconds() * 1000)
+            # Guard against clock skew / out-of-order lines: never emit a
+            # negative duration (degrade to null instead of a misleading value).
+            duration_ms = delta_ms if delta_ms >= 0 else None
+
+        timeline.append(
+            {
+                "phase": name,
+                "state": state,
+                "completed_at": iso if this_dt is not None else None,
+                "duration_ms": duration_ms,
+            }
+        )
+
+        # Anchor the next phase off this completion only when it had a valid
+        # timestamp; an unparseable line cannot anchor the following phase.
+        if this_dt is not None:
+            prev_dt = this_dt
+
+    total_ms = sum(
+        entry["duration_ms"] for entry in timeline if isinstance(entry["duration_ms"], int)
+    )
+    return {"run_id": run_id, "timeline": timeline, "total_ms": total_ms}
 
 
 def list_runs(limit: Optional[int] = None) -> List[Dict[str, Any]]:
