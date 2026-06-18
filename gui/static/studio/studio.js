@@ -18,6 +18,7 @@ import { createRouter } from '/shared/router.js';
 import { createAskDrawer } from '/studio/drawer.js';
 import { renderCreate } from '/studio/create.js';
 import { renderSettings } from '/studio/settings.js';
+import { renderRunHistory } from '/studio/run-history.js';
 
 const view = () => $('#view');
 const statusEl = () => $('#status');
@@ -510,6 +511,9 @@ const router = createRouter(
     viewer: renderViewer,
     create: (segments, raw) => renderCreate(shell, segments, raw),
     settings: (segments, raw) => renderSettings(shell, segments, raw),
+    // Run History (Phase 4 §5.1(F)): reachable via the EXISTING studio router —
+    // NO Phase-2 auth remount, NO route/auth change.
+    runs: () => renderRunHistory(shell),
   },
   {
     defaultRoute: 'library',

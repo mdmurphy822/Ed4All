@@ -39,9 +39,10 @@
  * no fill) — that is CORRECT for validator-only phases, not a bug.
  */
 
-import { el } from '../dom.js';
+import { el, clear } from '../dom.js';
 import { phaseTimeline } from './phase-timeline.js';
 import { elapsed as makeElapsed } from './elapsed.js';
+import { progressRing } from './ring.js';
 
 /* Line grammar. The ISO prefix is captured (group 1) so we can drive Tier-1
  * timing; the legacy create.js regex discarded it. All tolerant of extra
@@ -55,6 +56,31 @@ function _isoMs(iso) {
   if (!iso) return null;
   const t = Date.parse(iso);
   return Number.isFinite(t) ? t : null;
+}
+
+/* ETA discipline (HARD): the remaining-time estimate is rendered as a coarse
+ * RANGE ("about 6m left"), NEVER a per-second zeroing countdown — a precise
+ * countdown is a lie when the per-phase medians are noisy. We round UP to a
+ * coarse bucket and never present a sub-minute zero ("finishing up" instead).
+ *
+ * Bucketing: < ~45s → "finishing up"; < 10m → nearest minute; < 60m → nearest
+ * 5 minutes; otherwise nearest 10 minutes. The number is always the coarse
+ * bucket, so it does not tick down second-by-second. */
+function _etaPhrase(remainingMs) {
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) return 'finishing up';
+  const totalSec = remainingMs / 1000;
+  if (totalSec < 45) return 'finishing up';
+  const min = totalSec / 60;
+  let bucket;
+  if (min < 10) bucket = Math.max(1, Math.round(min));
+  else if (min < 60) bucket = Math.round(min / 5) * 5;
+  else bucket = Math.round(min / 10) * 10;
+  if (bucket >= 60) {
+    const h = Math.floor(bucket / 60);
+    const m = bucket % 60;
+    return m ? `about ${h}h ${m}m left` : `about ${h}h left`;
+  }
+  return `about ${bucket}m left`;
 }
 
 /**
@@ -76,6 +102,18 @@ function _isoMs(iso) {
  *        keeps EXACTLY ONE live region on the page (the §9 single-live-truth
  *        contract). When omitted (gallery / operator console), the console
  *        creates + owns its own region.
+ * @param {Object} [opts.durations]  per-phase median-duration medians the host
+ *        fetched from GET /api/runs/phase-durations, shape
+ *        `{ <phase>: {median_ms:int|null, n:int} }`. Drives the honest ETA. The
+ *        console computes ETA itself from its own getTimeline() + these medians.
+ * @param {string} [opts.durationsSource]  "history" | "prior" | "mixed" — the
+ *        provenance string from the same endpoint. "prior" (the static fallback
+ *        curve) downgrades the ETA label to "rough estimate"; <2 historical
+ *        runs (no usable medians) renders "estimating…".
+ * @param {(runId?:string)=>void} [opts.onCancel]  host-owned cancel callback;
+ *        when supplied a sticky "Cancel build" button renders in the header. The
+ *        console NEVER fetches — the host owns POST /api/runs/{id}/cancel and the
+ *        two-stage 202→cancelled resolution.
  * @returns {{
  *   el: HTMLElement,
  *   timelineEl: HTMLElement,
@@ -101,6 +139,13 @@ export function runProgressConsole(opts = {}) {
   const ariaLabel = opts.ariaLabel || 'Course build steps';
   const ringSize = opts.ringSize || 28;
   const elapsedPrefix = opts.elapsedPrefix != null ? opts.elapsedPrefix : 'elapsed ';
+  // Median per-phase durations + their provenance (host-fetched). Defensive: the
+  // sibling endpoint may not exist yet, so an absent/garbage map degrades to the
+  // "estimating…" state rather than a false-precision number.
+  let durations = (opts.durations && typeof opts.durations === 'object') ? opts.durations : {};
+  let durationsSource = typeof opts.durationsSource === 'string' ? opts.durationsSource : null;
+  const onCancel = typeof opts.onCancel === 'function' ? opts.onCancel : null;
+  const phaseCount = phases.length;
 
   // Friendly-label lookup for the narrative sentence.
   const labelOf = new Map();
@@ -122,8 +167,31 @@ export function runProgressConsole(opts = {}) {
 
   const meta = el('p', { class: 'run-progress-meta muted' }, [timer.el]);
 
+  /* ----- the overall header: aria-hidden progress ring + ETA + cancel ----- */
+  // The overall ring is DECORATION (aria-hidden); the a11y truth (phase
+  // transitions + ETA changes) is the single role=status line. We rebuild the
+  // ring node in place on each meaningful change.
+  const overallRingSlot = el('span', { class: 'run-overall-ring', 'aria-hidden': 'true' });
+  // The ETA line is a plain muted span (NOT a live region — announcements route
+  // through the single role=status line on a MEANINGFUL change only, never the
+  // per-second tick). tabular-nums so the bucket digits don't jitter.
+  const etaEl = el('span', { class: 'run-eta tabular-nums muted', text: 'estimating…' });
+  const overallCount = el('span', { class: 'run-overall-count tabular-nums muted' });
+
+  // Sticky cancel button — host-owned action. Real <button> (focus-visible,
+  // >=24px enforced by kit CSS), hidden once terminal. The console NEVER
+  // fetches; it invokes the host's onCancel and shows the two-stage text.
+  const cancelBtn = onCancel
+    ? el('button', { type: 'button', class: 'btn run-cancel-btn', text: 'Cancel build' })
+    : null;
+  const header = el('div', { class: 'run-progress-header' }, [
+    overallRingSlot,
+    el('span', { class: 'run-overall-text' }, [overallCount, etaEl]),
+    cancelBtn,
+  ]);
+
   const root = el('div', { class: 'run-progress kit' },
-    ownsLive ? [meta, liveEl, timeline.el] : [meta, timeline.el]);
+    ownsLive ? [meta, header, liveEl, timeline.el] : [meta, header, timeline.el]);
 
   /* ----- Tier-1 per-phase timing (GUI-side, zero backend) ----- */
   // completed_at[name] = ISO-derived ms of the phase's done/skipped line (or, if
@@ -137,6 +205,102 @@ export function runProgressConsole(opts = {}) {
     const duration = Math.max(0, completedAt - prevDoneMs);
     timing.push({ name, duration_ms: duration, completed_at: completedAt });
     prevDoneMs = completedAt;
+  }
+
+  /* ----- overall progress ring + honest ETA ----- */
+  // The set of resolved (done/skipped/failed) phases, in completion order, is
+  // mirrored from `timing`/`failedPhase`; the in-flight phase's fractional task
+  // progress refines the overall ring beyond the integer phases_done/total.
+  let curTaskFrac = 0;          // 0..1 fractional progress of the running phase
+  let terminal = false;
+  let lastEtaPhrase = null;     // debounce ETA announcements to meaningful change
+
+  /** Median ms for a phase (null when unknown / not a positive number). */
+  function medianFor(name) {
+    const d = durations && durations[name];
+    const m = d && Number(d.median_ms);
+    return Number.isFinite(m) && m > 0 ? m : null;
+  }
+
+  /** True when we have <2 historical runs to lean on: every usable median came
+   * from fewer than 2 samples (or there are no medians at all). With so little
+   * history we refuse a number and say "estimating…" (the hard discipline). */
+  function tooFewSamples() {
+    let usable = 0;
+    phases.forEach((p) => {
+      const d = durations && durations[p.name];
+      if (d && Number(d.median_ms) > 0 && Number(d.n) >= 2) usable += 1;
+    });
+    return usable === 0;
+  }
+
+  /** Count phases already resolved (done|skipped|failed) from the timeline. */
+  function phasesResolved() {
+    let n = 0;
+    timeline.order.forEach((name) => {
+      const row = timeline.get(name);
+      const st = row && row.state();
+      if (st === 'done' || st === 'skipped' || st === 'failed') n += 1;
+    });
+    return n;
+  }
+
+  /** Re-render the overall ring (phases_done/total + in-flight task fraction)
+   * and the ETA line. Returns the ETA phrase (so the narrative can announce a
+   * MEANINGFUL change). Pure presentation; no fetch. */
+  function refreshOverall(announceEta) {
+    const doneN = phasesResolved();
+    const total = phaseCount || 0;
+    // Overall fraction: integer phases plus the running phase's task fraction,
+    // divided by total. Never exceeds 1.
+    const frac = total > 0
+      ? Math.min(1, (doneN + (terminal ? 0 : curTaskFrac)) / total)
+      : 0;
+    const state = terminal ? (failedPhase ? 'failed' : 'done') : 'running';
+    clear(overallRingSlot);
+    overallRingSlot.appendChild(progressRing({
+      percent: Math.round(frac * 100),
+      state,
+      size: ringSize,
+      label: `${doneN} of ${total} steps done`,
+    }));
+    overallCount.textContent = total ? `Step ${Math.min(doneN + (terminal ? 0 : 1), total)} of ${total} · ` : '';
+
+    // ---- the ETA line (honest range, never a zeroing countdown) ----
+    let phrase;
+    let cls = 'run-eta tabular-nums muted';
+    if (terminal) {
+      phrase = '';
+    } else if (tooFewSamples()) {
+      phrase = 'estimating…';
+    } else {
+      // Sum medians for phases NOT yet resolved; subtract elapsed-in-current.
+      let remaining = 0;
+      let haveAny = false;
+      timeline.order.forEach((name) => {
+        const row = timeline.get(name);
+        const st = row && row.state();
+        if (st === 'done' || st === 'skipped' || st === 'failed') return;
+        const m = medianFor(name);
+        if (m != null) { remaining += m; haveAny = true; }
+      });
+      if (!haveAny) {
+        phrase = 'estimating…';
+      } else {
+        const elapsedInCur = Math.max(0, Date.now() - prevDoneMs);
+        const rough = durationsSource === 'prior';
+        phrase = _etaPhrase(remaining - elapsedInCur) + (rough ? ' (rough estimate)' : '');
+        if (rough) cls += ' is-rough';
+      }
+    }
+    etaEl.className = cls;
+    etaEl.textContent = phrase;
+    // Announce ETA changes ONLY on a meaningful change (bucket shift), never the
+    // per-second elapsed tick — re-uses the single role=status region.
+    if (announceEta && phrase && phrase !== lastEtaPhrase && !terminal) {
+      lastEtaPhrase = phrase;
+    }
+    return phrase;
   }
 
   /* ----- narrative (debounced phase-transition announcement) ----- */
@@ -168,7 +332,9 @@ export function runProgressConsole(opts = {}) {
   function markCompleted(name, marker, atMs) {
     recordTiming(name, atMs);
     const next = timeline.markCompleted(name, marker);
+    curTaskFrac = 0; // a new phase starts at 0 fractional task progress
     if (next) { lastRunning = next; announcePhase(next); }
+    refreshOverall(true);
     return next;
   }
 
@@ -186,7 +352,9 @@ export function runProgressConsole(opts = {}) {
         timeline.setState(name, 'running');
         lastRunning = name;
       }
+      curTaskFrac = totalN > 0 ? Math.min(1, doneN / totalN) : 0;
       announcePhase(name, doneN, totalN);
+      refreshOverall(true);
       return;
     }
     const done = _PHASE_DONE_RE.exec(line);
@@ -197,6 +365,7 @@ export function runProgressConsole(opts = {}) {
       timeline.setState(fail[2], 'failed');
       // record the failed phase's elapsed slice too (Tier-1 timing).
       recordTiming(fail[2], _isoMs(fail[1]));
+      refreshOverall(false);
       return;
     }
     // Anything else (raw orchestrator chatter) is intentionally ignored: the
@@ -215,6 +384,8 @@ export function runProgressConsole(opts = {}) {
 
   function onStatus(status) {
     timer.stop();
+    terminal = true;
+    hideCancel();
     if (status === 'completed') {
       markRemainingDone();
       announce('Your course is ready.');
@@ -223,9 +394,10 @@ export function runProgressConsole(opts = {}) {
       announce(`Build ${status}.`);
     } else {
       const fp = failedPhase || lastRunning;
-      if (fp) timeline.setState(fp, 'failed');
+      if (fp) { failedPhase = fp; timeline.setState(fp, 'failed'); }
       announce('The course build failed.');
     }
+    refreshOverall(false);
   }
 
   function onError(msg) {
@@ -238,8 +410,64 @@ export function runProgressConsole(opts = {}) {
   function startFirstRunning() {
     const first = timeline.startRunning();
     if (first) { lastRunning = first; announcePhase(first); }
+    refreshOverall(false);
     return first;
   }
+
+  /* ----- sticky cancel button (host owns the fetch + two-stage 202) ----- */
+  let cancelRequested = false;
+  function hideCancel() { if (cancelBtn) cancelBtn.hidden = true; }
+  /** Reflect the 202/`cancel_requested` stage: the button claims NO instant stop
+   * ("finishing current step"); the row resolves to cancelled only when the WS
+   * terminal status frame later calls onStatus('cancelled'). */
+  function setCancelling() {
+    cancelRequested = true;
+    if (cancelBtn) {
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = 'Cancelling… (finishing current step)';
+    }
+    announce('Cancelling the build — finishing the current step.');
+  }
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => {
+      if (terminal || cancelRequested) return;
+      // The console NEVER fetches. The host owns POST /api/runs/{id}/cancel and
+      // decides (on a 202 / cancel_requested) to call back setCancelling().
+      try { onCancel(); } catch (_) { /* host surfaces its own error */ }
+    });
+  }
+
+  /* Slow ETA recompute: the elapsed-in-current-phase shrinks the remaining
+   * estimate, but we MUST NOT chatter per-second. A coarse 15s tick re-buckets
+   * and only touches the role=status line on a real bucket change. */
+  let etaTimer = null;
+  function startEtaTick() {
+    if (etaTimer != null) return;
+    etaTimer = setInterval(() => {
+      if (terminal) return;
+      const phrase = refreshOverall(false);
+      if (phrase && phrase !== lastEtaPhrase && !/estimating|finishing/.test(phrase)) {
+        lastEtaPhrase = phrase;
+        // Re-announce ONLY the ETA bucket change (debounced, meaningful-change).
+        if (lastAnnouncedPhase) {
+          const label = labelOf.get(lastAnnouncedPhase) || lastAnnouncedPhase;
+          announce(`${label}… ${phrase}.`);
+        }
+      }
+    }, 15000);
+  }
+  startEtaTick();
+
+  /** Host hook: re-seed the medians once the phase-durations fetch resolves
+   * (the host may mount the console before the durations arrive). */
+  function setDurations(map, source) {
+    if (map && typeof map === 'object') durations = map;
+    if (typeof source === 'string') durationsSource = source;
+    refreshOverall(false);
+  }
+
+  // Initial paint of the overall ring + ETA.
+  refreshOverall(false);
 
   return {
     el: root,
@@ -257,12 +485,19 @@ export function runProgressConsole(opts = {}) {
     addGate: timeline.addGate,
     freezeElapsed: (ms) => timer.freeze(ms),
     announce,
+    setDurations,
+    setCancelling,
+    hideCancel,
+    cancelEl: cancelBtn,
+    etaEl,
+    overallRingEl: overallRingSlot,
+    getEtaText: () => etaEl.textContent,
     getTimeline: () => timing.slice(),
     getLastRunning: () => lastRunning,
     getFailedPhase: () => failedPhase,
     get: timeline.get,
     order: timeline.order,
-    destroy: () => { timer.stop(); },
+    destroy: () => { timer.stop(); if (etaTimer != null) { clearInterval(etaTimer); etaTimer = null; } },
   };
 }
 

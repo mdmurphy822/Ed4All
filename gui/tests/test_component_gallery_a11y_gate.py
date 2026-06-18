@@ -308,15 +308,36 @@ _LIVE_DEMO_INNER = (
 # shell's single #gallery-live region, so it does NOT mint its own — the markup
 # is a .run-progress root carrying the meta line (aria-hidden elapsed) + the
 # phase-checklist of ring rows. Reconstructed exactly as run-progress.js emits.
+def _overall_header(eta_text: str, *, rough: bool = False, cancelling: bool = False) -> str:
+    """The run-progress header: aria-hidden overall ring + ETA + sticky cancel,
+    reconstructed exactly as run-progress.js emits it."""
+    eta_cls = "run-eta tabular-nums muted" + (" is-rough" if rough else "")
+    cancel_text = "Cancelling… (finishing current step)" if cancelling else "Cancel build"
+    cancel_attr = ' disabled=""' if cancelling else ""
+    return (
+        '<div class="run-progress-header">'
+        '<span class="run-overall-ring" aria-hidden="true">' + _ring("running") + "</span>"
+        '<span class="run-overall-text">'
+        '<span class="run-overall-count tabular-nums muted">Step 3 of 5 · </span>'
+        f'<span class="{eta_cls}">{eta_text}</span></span>'
+        f'<button type="button" class="btn run-cancel-btn"{cancel_attr}>{cancel_text}</button>'
+        "</div>"
+    )
+
+
+# The assembled Build Console (run-progress.js): meta line + the overall header
+# (ring + honest-ETA range + sticky cancel) + the phase checklist. The ETA is a
+# RANGE ("about 19m left"), never a zeroing countdown.
 _CONSOLE_INNER = (
     '<section class="gallery-section"><h2>Build Console</h2>'
-    '<p>The assembled run-progress.js console — rings + elapsed + the single narrative line.</p>'
+    '<p>The assembled run-progress.js console — overall ring + honest ETA + sticky cancel + the single narrative line.</p>'
     '<div><div class="gallery-row">'
     '<button type="button" class="btn primary">Replay build</button></div>'
     '<div class="run-progress kit">'
     '<p class="run-progress-meta muted">'
     '<span class="elapsed tabular-nums" aria-hidden="true">elapsed 0s</span></p>'
-    '<ol class="phase-checklist" aria-label="Course build steps">'
+    + _overall_header("about 19m left")
+    + '<ol class="phase-checklist" aria-label="Course build steps">'
     + _phase_row("done").replace("phase_done", "dart_conversion").replace("Phase (done)", "Convert textbook to accessible HTML")
     + _phase_row("done").replace("phase_done", "staging").replace("Phase (done)", "Stage source files")
     + _phase_row("running", tasks="· 50/50 tasks").replace("phase_running", "content_generation").replace("Phase (running)", "Generate course content")
@@ -325,10 +346,81 @@ _CONSOLE_INNER = (
     + "</ol></div></div></section>"
 )
 
+# The ETA-discipline + cancel states: estimating (<2 runs), rough estimate
+# (static prior), and the two-stage "Cancelling…" cancel button.
+_CONSOLE_ETA_INNER = (
+    '<section class="gallery-section"><h2>Build Console — ETA &amp; cancel states</h2>'
+    '<p>The honest ETA is a coarse range, never a zeroing countdown.</p>'
+    '<div class="gallery-row">'
+    '<div class="gallery-cell"><div class="run-progress kit">'
+    '<p class="run-progress-meta muted"><span class="elapsed tabular-nums" aria-hidden="true">elapsed 0s</span></p>'
+    + _overall_header("estimating…")
+    + '<ol class="phase-checklist" aria-label="Course build steps">'
+    + _phase_row("running").replace("phase_running", "a").replace("Phase (running)", "Convert")
+    + "</ol></div><span class=\"cell-caption\">estimating (&lt;2 runs)</span></div>"
+    '<div class="gallery-cell"><div class="run-progress kit">'
+    '<p class="run-progress-meta muted"><span class="elapsed tabular-nums" aria-hidden="true">elapsed 0s</span></p>'
+    + _overall_header("about 6m left (rough estimate)", rough=True)
+    + '<ol class="phase-checklist" aria-label="Course build steps">'
+    + _phase_row("running").replace("phase_running", "a").replace("Phase (running)", "Convert")
+    + "</ol></div><span class=\"cell-caption\">rough estimate (prior)</span></div>"
+    '<div class="gallery-cell"><div class="run-progress kit">'
+    '<p class="run-progress-meta muted"><span class="elapsed tabular-nums" aria-hidden="true">elapsed 0s</span></p>'
+    + _overall_header("about 19m left", cancelling=True)
+    + '<ol class="phase-checklist" aria-label="Course build steps">'
+    + _phase_row("running").replace("phase_running", "a").replace("Phase (running)", "Convert")
+    + "</ol></div><span class=\"cell-caption\">Cancelling…</span></div>"
+    "</div></section>"
+)
+
+
+def _run_history_entry(title: str, status: str, glyph: str, label: str, *, href: str,
+                       meta: str, durs: str = "", actions: str = "") -> str:
+    """One Run History entry: a runCard + (optional) timelineBar + actions."""
+    bar = f'<figure class="timeline-bar">{durs}</figure>' if durs else ""
+    act = f'<div class="run-history-actions">{actions}</div>' if actions else ""
+    return (
+        '<li class="run-history-li"><div class="run-history-entry">'
+        + _run_card(title, status, glyph, label, href=href, meta=meta)
+        + bar + act + "</div></li>"
+    )
+
+
+_RUN_HISTORY_INNER = (
+    '<section class="gallery-section"><h2>Run History</h2>'
+    '<p>The Studio #/runs view — runCards with persisted-duration timelineBars.</p>'
+    '<ul class="run-history-list cards" aria-label="Course builds">'
+    + _run_history_entry(
+        "PHYS_101", "done", "●", "Ready", href="#/create/GUI-1", meta="textbook_to_course · 28m",
+        durs=(
+            '<div class="tl-bar-track" aria-hidden="true">' + _tl_seg("done", "50.00") + _tl_seg("done", "50.00") + "</div>"
+            '<figcaption class="visually-hidden">Phase durations for PHYS_101: total 23m</figcaption>'
+            '<ul class="tl-legend" aria-label="Phase durations for PHYS_101">'
+            + _tl_li("done", "Convert", "5m 20s") + _tl_li("done", "Generate content", "18m") + "</ul>"
+        ),
+        actions='<button type="button" class="btn">Run again</button>',
+    )
+    + _run_history_entry(
+        "BIO_201", "running", "◐", "Building", href="#/create/GUI-2", meta="textbook_to_course · building",
+        actions='<button type="button" class="btn">Re-open build</button>',
+    )
+    + _run_history_entry(
+        "CHEM_101", "failed", "✕", "Failed", href="#/create/GUI-3", meta="textbook_to_course · 6m",
+        durs=(
+            '<div class="tl-bar-track" aria-hidden="true">' + _tl_seg("done", "80.00") + _tl_seg("failed", "20.00") + "</div>"
+            '<figcaption class="visually-hidden">Phase durations for CHEM_101: total 6m</figcaption>'
+            '<ul class="tl-legend" aria-label="Phase durations for CHEM_101">'
+            + _tl_li("done", "Convert", "5m") + _tl_li("failed", "Generate content", "1m") + "</ul>"
+        ),
+        actions='<button type="button" class="btn">Run again</button>',
+    )
+    + "</ul></section>"
+)
+
 _ALL_SECTIONS = (
     _RING_INNER + _PILL_INNER + _GATE_INNER + _ELAPSED_INNER + _PHASE_ROW_INNER
     + _CARD_INNER + _EMPTY_INNER + _FIELD_INNER + _TIMELINE_INNER + _LIVE_DEMO_INNER
-    + _CONSOLE_INNER
+    + _CONSOLE_INNER + _CONSOLE_ETA_INNER + _RUN_HISTORY_INNER
 )
 
 
@@ -352,6 +444,8 @@ _ALL_SECTIONS = (
         ("timeline-bar", _TIMELINE_INNER),
         ("live-demo", _LIVE_DEMO_INNER),
         ("build-console", _CONSOLE_INNER),
+        ("build-console-eta", _CONSOLE_ETA_INNER),
+        ("run-history", _RUN_HISTORY_INNER),
         ("full-gallery", _ALL_SECTIONS),
     ],
 )
@@ -396,6 +490,135 @@ def test_gallery_js_imports_and_drives_run_progress_console():
     assert "runProgressConsole(" in js, "gallery.js must build the console"
     assert "[progress]" in js and "[phase]" in js, "the replay must drive [phase]/[progress] lines"
     assert "toISOString" in js, "the replay must ISO-stamp lines (Tier-1 timing)"
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4: overall ring + honest ETA + cancel + Run History
+# --------------------------------------------------------------------------- #
+
+
+def test_build_console_eta_and_cancel_fixture_single_live_region():
+    """The ETA/cancel-state Build Console fixture is zero-AA AND keeps the page
+    at EXACTLY ONE role=status region (the shell's #gallery-live). The overall
+    ring is aria-hidden decoration; the ETA + cancel surface NO new live region."""
+    html = _shell_with_gallery(_CONSOLE_ETA_INNER)
+    _assert_clean("gallery-build-console-eta", html)
+    soup = _soup(html)
+    lives = soup.find_all(attrs={"aria-live": True})
+    assert len(lives) == 1, f"expected one aria-live region, found {len(lives)}"
+    assert lives[0].get("role") == "status" and lives[0].get("aria-live") == "polite"
+    # The overall ring is aria-hidden decoration (truth is the single status line).
+    for slot in soup.find_all("span", class_="run-overall-ring"):
+        assert slot.get("aria-hidden") == "true", "overall ring slot must be aria-hidden"
+        for svg in slot.find_all("svg", class_="ring-svg"):
+            assert svg.get("aria-hidden") == "true"
+    # The ETA line is NOT a live region (no aria-live on .run-eta) — announcements
+    # route through the single #gallery-live region, not a per-ETA chatter region.
+    for eta in soup.find_all("span", class_="run-eta"):
+        assert eta.get("aria-live") is None, ".run-eta must NOT mint its own live region"
+
+
+def test_eta_is_a_range_never_a_zeroing_countdown():
+    """ETA discipline (hard): the rendered ETA is a coarse RANGE ('about Nm
+    left') / 'estimating…' / 'rough estimate', NEVER a precise sub-minute
+    countdown. The console source proves the bucketing + first-run discipline."""
+    soup = _soup(_shell_with_gallery(_CONSOLE_ETA_INNER))
+    etas = [e.get_text(strip=True) for e in soup.find_all("span", class_="run-eta")]
+    assert etas, "the ETA fixture must render .run-eta lines"
+    # Every ETA is one of the three honest forms (range / estimating / rough).
+    for t in etas:
+        assert (
+            t == "estimating…"
+            or t.startswith("about ")
+            or "rough estimate" in t
+        ), f"ETA {t!r} is not an honest range/estimating/rough form"
+    # The static prior path carries the 'rough estimate' qualifier.
+    assert any("rough estimate" in t for t in etas), "the prior-source ETA must say 'rough estimate'"
+    assert any(t == "estimating…" for t in etas), "the <2-run ETA must say 'estimating…'"
+
+    # The run-progress.js source proves the discipline: a coarse bucket, the
+    # 'estimating…' first-run guard, the 'rough estimate' prior label, and NO
+    # second-by-second zeroing countdown (the phrase is bucketed minutes).
+    js = (COMPONENTS_DIR / "run-progress.js").read_text(encoding="utf-8")
+    assert "estimating…" in js, "console must render 'estimating…' on <2 historical runs"
+    assert "rough estimate" in js, "console must label the static-prior ETA 'rough estimate'"
+    assert "tooFewSamples" in js, "console must guard the first-run (too-few-samples) case"
+    assert "_etaPhrase" in js and "about " in js, "ETA must be a coarse 'about Nm left' range"
+
+
+def test_cancel_button_is_real_button_with_two_stage_text():
+    """The sticky cancel is a real <button> (focus-visible, >=24px via kit CSS);
+    its two-stage text is 'Cancel build' → 'Cancelling… (finishing current
+    step)', never a claim of instant stop."""
+    soup = _soup(_shell_with_gallery(_CONSOLE_INNER + _CONSOLE_ETA_INNER))
+    cancels = soup.find_all("button", class_="run-cancel-btn")
+    assert cancels, "the console must render a run-cancel-btn"
+    texts = {c.get_text(strip=True) for c in cancels}
+    assert "Cancel build" in texts, "the idle cancel button reads 'Cancel build'"
+    assert any("Cancelling" in t and "finishing current step" in t for t in texts), (
+        "the requested cancel must read 'Cancelling… (finishing current step)'"
+    )
+    # The two-stage text + 202 handling live in the run-progress + host source.
+    js = (COMPONENTS_DIR / "run-progress.js").read_text(encoding="utf-8")
+    assert "Cancelling… (finishing current step)" in js
+    assert "setCancelling" in js, "console must expose the two-stage setCancelling()"
+    create = (REPO_ROOT / "gui" / "static" / "studio" / "create.js").read_text(encoding="utf-8")
+    assert "cancel_requested" in create or "setCancelling" in create
+    assert "/cancel" in create, "create.js host must own the cancel POST"
+
+
+def test_run_history_fixture_cards_and_timeline_bars():
+    """The Run History fixture renders runCards (statusPill, non-color-only) +
+    aria-hidden timeline bars with a semantic legend, and is zero-AA."""
+    html = _shell_with_gallery(_RUN_HISTORY_INNER)
+    _assert_clean("gallery-run-history", html)
+    soup = _soup(html)
+    cards = soup.find_all(class_="run-card")
+    assert len(cards) == 3, "run history must render one runCard per build"
+    for c in cards:
+        # statusPill present (glyph aria-hidden + a text label, never color-only).
+        pill = c.find("span", class_="pill")
+        assert pill is not None
+        assert pill.find("span", class_="pill-glyph").get("aria-hidden") == "true"
+        assert pill.find("span", class_="pill-label").get_text(strip=True)
+    # Timeline bars: aria-hidden track + a semantic legend (the a11y truth).
+    bars = soup.find_all("figure", class_="timeline-bar")
+    assert bars, "run history must render timeline bars"
+    for b in bars:
+        assert b.find("div", class_="tl-bar-track").get("aria-hidden") == "true"
+        legend = b.find("ul", class_="tl-legend")
+        assert legend is not None and legend.get("aria-label")
+    # No new live region introduced by Run History.
+    lives = soup.find_all(attrs={"aria-live": True})
+    assert len(lives) == 1, f"Run History must not add a live region; found {len(lives)}"
+
+
+def test_run_history_lives_in_studio_router_no_auth_remount():
+    """Run History is reachable via the EXISTING studio hash router at #/runs —
+    NO Phase-2 auth remount, NO route/auth change. Confirm the route is wired in
+    studio.js (the shared createRouter) and a nav link exists."""
+    studio = (REPO_ROOT / "gui" / "static" / "studio" / "studio.js").read_text(encoding="utf-8")
+    assert "renderRunHistory" in studio, "studio.js must import the run-history view"
+    assert "runs:" in studio, "studio.js must register the #/runs route in its router"
+    # No auth/remount surface touched: the run-history module + studio router use
+    # the shared api()/router, not a new auth guard.
+    rh = (REPO_ROOT / "gui" / "static" / "studio" / "run-history.js").read_text(encoding="utf-8")
+    assert "createRouter" not in rh, "run-history must reuse the shell router, not mint a new one"
+    assert "/api/runs" in rh, "run-history reads GET /api/runs"
+    index = (REPO_ROOT / "gui" / "static" / "studio" / "index.html").read_text(encoding="utf-8")
+    assert 'href="#/runs"' in index, "studio shell must expose a Run history nav link"
+
+
+def test_gallery_js_drives_overall_ring_eta_and_run_history():
+    """gallery.js must exercise the overall ring + ETA states + cancel + Run
+    History fixtures (the Phase-4 additions)."""
+    js = (DEV_DIR / "gallery.js").read_text(encoding="utf-8")
+    assert "durationsSource" in js, "gallery must feed the console a durations source (ETA)"
+    assert "estimating" in js or "durations: {}" in js, "gallery must demo the estimating ETA state"
+    assert "prior" in js, "gallery must demo the rough-estimate (prior) ETA state"
+    assert "onCancel" in js and "setCancelling" in js, "gallery must demo the two-stage cancel"
+    assert "runHistorySection" in js, "gallery must render the Run History fixture"
+    assert "timelineBar(" in js and "runCard(" in js, "Run History uses timelineBar + runCard"
 
 
 # --------------------------------------------------------------------------- #

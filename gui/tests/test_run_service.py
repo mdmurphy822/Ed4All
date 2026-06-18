@@ -466,6 +466,89 @@ def test_drive_pipeline_does_not_overwrite_cancelled(state_dir, monkeypatch):
     assert shared_state.read_run(run_id)["status"] == "cancelled"
 
 
+# --------------------------------------------- honest two-stage cancel (P4 §5.1E)
+
+
+def test_cancel_run_writes_cancel_requested_not_cancelled(state_dir):
+    """A fresh cancel writes the NON-terminal ``cancel_requested`` + timestamp.
+
+    Phase 4 §5.1(E): cancellation is cooperative / phase-boundary, so cancel_run
+    must NOT flip straight to the terminal ``cancelled`` — it stages
+    ``cancel_requested`` and the driver lands the terminal flip later.
+    """
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+
+    result = run_service.cancel_run(run_id)
+    assert result == {"run_id": run_id, "status": "cancel_requested"}
+    record = shared_state.read_run(run_id)
+    assert record["status"] == "cancel_requested"
+    assert record.get("cancel_requested_at")  # iso stamp present
+
+
+def test_cancel_run_unknown_is_typed_error(state_dir):
+    """An unknown run yields the typed ``unknown_run`` error (router -> 404)."""
+    result = run_service.cancel_run("GUI-nope-000000")
+    assert result["error"] == "unknown_run"
+
+
+def test_cancel_run_already_terminal_is_noop(state_dir):
+    """A terminal run is a no-op: current status echoed with an explanatory note."""
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "completed"})
+    result = run_service.cancel_run(run_id)
+    assert result["status"] == "completed"
+    assert "terminal" in result["note"]
+    # The record is untouched.
+    assert shared_state.read_run(run_id)["status"] == "completed"
+
+
+def test_cancel_run_idempotent_while_requested(state_dir):
+    """A second cancel while one is settling is an idempotent no-op."""
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+    run_service.cancel_run(run_id)
+    again = run_service.cancel_run(run_id)
+    assert again["status"] == "cancel_requested"
+    assert "already requested" in again["note"]
+
+
+def test_cancel_requested_does_not_block_terminal_cancelled(state_dir):
+    """The two-stage flip: ``cancel_requested`` -> ``cancelled`` is allowed.
+
+    The clobber guard only blocks a write over the TERMINAL ``cancelled``; the
+    intermediate ``cancel_requested`` must let the driver write the authoritative
+    terminal ``cancelled`` (the CancelledError handler) — AND also let a natural
+    completed/failed land if the orchestrator raced to completion uncancelled.
+    """
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+    run_service.cancel_run(run_id)
+    assert shared_state.read_run(run_id)["status"] == "cancel_requested"
+
+    # Driver confirms the orchestrator exited -> terminal cancelled write lands.
+    wrote = run_service._finalize_status(
+        run_id, {"status": "cancelled", "finished_at": shared_state.now_iso()}
+    )
+    assert wrote is True
+    assert shared_state.read_run(run_id)["status"] == "cancelled"
+
+    # And once terminal-cancelled, a late completed/failed is refused.
+    assert run_service._finalize_status(run_id, {"status": "completed"}) is False
+    assert shared_state.read_run(run_id)["status"] == "cancelled"
+
+
+def test_cancel_requested_allows_natural_completion(state_dir):
+    """If the cancel never lands cooperatively, a natural completed still writes."""
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+    run_service.cancel_run(run_id)
+    # Orchestrator raced to completion before the cancel was observed.
+    wrote = run_service._finalize_status(run_id, {"status": "completed"})
+    assert wrote is True
+    assert shared_state.read_run(run_id)["status"] == "completed"
+
+
 # ------------------------------------------------------------- orphan reconcile
 
 
@@ -545,6 +628,99 @@ def test_reconcile_resumes_orphan_with_checkpoint(state_dir, monkeypatch):
     # Flipped back to queued with the attempt counter bumped.
     assert record["status"] == "queued"
     assert record["resume_attempts"] == 1
+
+
+# ------------------------------------------- operator-facing resume (P4 §5.1E)
+
+
+def test_resume_run_redrives_existing_workflow(state_dir, monkeypatch):
+    """``resume_run`` re-drives the SAME workflow_id under a fresh GUI run id."""
+    workflow_id = "WF-OPRESUME-1"
+    _write_workflow_state(state_dir, workflow_id, completed_phases=["staging"])
+
+    driven = {}
+
+    async def fake_drive(run_id, wf_id, *, mode, provider, model):
+        driven["run_id"] = run_id
+        driven["workflow_id"] = wf_id
+        driven["provider"] = provider
+
+    monkeypatch.setattr(run_service, "_drive_pipeline", fake_drive)
+
+    prior_id = "GUI-20260101-200001"
+    shared_state.register_run(
+        {
+            "run_id": prior_id,
+            "kind": "pipeline",
+            "workflow": "textbook_to_course",
+            "workflow_id": workflow_id,
+            "course_name": "PHYS_101",
+            "status": "interrupted",
+            "provider": "local",
+            "mode": "local",
+            "params": {"course_name": "PHYS_101"},
+        }
+    )
+
+    async def _go():
+        return await run_service.resume_run(prior_id)
+
+    result = asyncio.run(_go())
+
+    new_id = result["run_id"]
+    assert new_id != prior_id
+    assert result["status"] == "queued"
+    assert result["resumed_from"] == prior_id
+    # The drive task targets the EXISTING workflow_id (the --resume pathway).
+    assert driven["workflow_id"] == workflow_id
+    assert driven["run_id"] == new_id
+    # Fresh record persisted, carrying the resume linkage + inherited params.
+    rec = shared_state.read_run(new_id)
+    assert rec["workflow_id"] == workflow_id
+    assert rec["resumed_from"] == prior_id
+    assert rec["params"] == {"course_name": "PHYS_101"}
+
+
+def test_resume_run_unknown_prior_fails_closed(state_dir):
+    """Resuming an unknown prior run returns a typed failed record (router 422)."""
+    result = asyncio.run(run_service.resume_run("GUI-not-here"))
+    assert result["status"] == "failed"
+    assert "unknown run" in result["error"]
+
+
+def test_resume_run_no_checkpoint_fails_closed(state_dir):
+    """A prior run with no resumable checkpoint fails closed (no fabrication)."""
+    workflow_id = "WF-OPRESUME-NOCK"
+    _write_workflow_state(state_dir, workflow_id, completed_phases=[])
+    prior_id = "GUI-20260101-200002"
+    shared_state.register_run(
+        {
+            "run_id": prior_id,
+            "kind": "pipeline",
+            "workflow": "textbook_to_course",
+            "workflow_id": workflow_id,
+            "status": "interrupted",
+        }
+    )
+    result = asyncio.run(run_service.resume_run(prior_id))
+    assert result["status"] == "failed"
+    assert "no resumable workflow checkpoint" in result["error"]
+
+
+def test_launch_pipeline_resume_run_id_delegates(state_dir, monkeypatch):
+    """``launch_pipeline`` with ``resume_run_id`` delegates to ``resume_run``."""
+    captured = {}
+
+    async def fake_resume(rid, req):
+        captured["rid"] = rid
+        captured["req"] = req
+        return {"run_id": "GUI-resumed", "status": "queued"}
+
+    monkeypatch.setattr(run_service, "resume_run", fake_resume)
+    req = {"resume_run_id": "GUI-prior-xyz"}
+    result = asyncio.run(run_service.launch_pipeline(req))
+    assert captured["rid"] == "GUI-prior-xyz"
+    assert result == {"run_id": "GUI-resumed", "status": "queued"}
 
 
 def test_reconcile_orphan_without_checkpoint_marks_interrupted(state_dir, monkeypatch):

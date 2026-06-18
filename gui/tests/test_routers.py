@@ -207,6 +207,42 @@ def test_unknown_run_is_404(client):
     assert resp.status_code == 404
 
 
+def test_cancel_endpoint_returns_202_cancel_requested(client):
+    """Phase 4 §5.1(E): a fresh cancel returns HTTP 202 + cancel_requested."""
+    from gui import shared_state
+
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "running"})
+    resp = client.post(f"/api/runs/{run_id}/cancel")
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body == {"run_id": run_id, "status": "cancel_requested"}
+    assert shared_state.read_run(run_id)["status"] == "cancel_requested"
+
+
+def test_cancel_endpoint_terminal_run_is_200_noop(client):
+    """An already-terminal run is a 200 idempotent no-op (not 202)."""
+    from gui import shared_state
+
+    run_id = shared_state.new_run_id("GUI")
+    shared_state.register_run({"run_id": run_id, "status": "completed"})
+    resp = client.post(f"/api/runs/{run_id}/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "completed"
+
+
+def test_cancel_endpoint_unknown_run_is_404(client):
+    resp = client.post("/api/runs/GUI-no-such-run/cancel")
+    assert resp.status_code == 404
+    assert resp.json()["error"] == "unknown_run"
+
+
+def test_resume_unknown_run_is_422(client):
+    """A resume of an unknown prior run fails closed (422), never fabricates."""
+    resp = client.post("/api/runs", json={"resume_run_id": "GUI-not-a-run"})
+    assert resp.status_code == 422
+
+
 def test_validation_report_unknown_run_is_404(client):
     resp = client.get("/api/runs/GUI-does-not-exist-000000/validation-report")
     assert resp.status_code == 404

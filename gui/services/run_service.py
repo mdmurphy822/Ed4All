@@ -294,8 +294,22 @@ async def launch_pipeline(req: Dict[str, Any]) -> Dict[str, Any]:
 
     ``req`` shape (frontend contract)::
 
-        {workflow, course_name, corpus, weeks?, mode?, provider?, model?, options{}}
+        {workflow, course_name, corpus, weeks?, mode?, provider?, model?,
+         resume_run_id?, options{}}
+
+    Phase 4 §5.1(E) RESUME: when ``resume_run_id`` (the GUI run_id of a prior
+    ``interrupted``/``failed`` pipeline run with a workflow-state checkpoint) is
+    present, this delegates to :func:`resume_run` — re-driving the EXISTING
+    orchestrator ``workflow_id`` (the documented CLI ``--resume WF-...`` pathway,
+    which the orchestrator honors by skipping already-``_completed`` phases) under
+    a fresh GUI run record. No re-upload — the staged corpus + checkpoints persist.
+    All other launch params are ignored on a resume (the prior workflow's state is
+    authoritative).
     """
+    resume_run_id = req.get("resume_run_id")
+    if resume_run_id:
+        return await resume_run(str(resume_run_id), req)
+
     workflow = _normalize_workflow(req.get("workflow", ""))
     course_name = req.get("course_name")
     options = req.get("options") or {}
@@ -858,6 +872,14 @@ def _finalize_status(run_id: str, patch: Dict[str, Any]) -> bool:
     ``completed``/``failed`` terminal write. Re-read the record here and refuse
     to clobber a ``cancelled`` status with ``completed``/``failed`` so a cancel
     requested mid-run is never silently overwritten.
+
+    HONEST two-stage cancel (Phase 4 §5.1(E)): only the TERMINAL ``cancelled``
+    blocks a write. The intermediate ``cancel_requested`` status (written by
+    ``cancel_run`` the instant a cancel is asked for) is deliberately NON-terminal
+    here, so the driver can still write the authoritative terminal status — the
+    cooperative ``cancelled`` from the ``CancelledError`` handler, or the natural
+    ``completed``/``failed`` if the orchestrator raced to completion before the
+    cancel landed.
 
     Returns ``True`` when the patch was written, ``False`` when it was skipped
     (already cancelled) — so the caller can suppress the matching event emission.
@@ -1525,6 +1547,144 @@ def derive_phase_timeline(run_id: str) -> Dict[str, Any]:
     return {"run_id": run_id, "timeline": timeline, "total_ms": total_ms}
 
 
+# Phase 4 (§5.1(C)) — static per-phase ETA priors (milliseconds) for the
+# COLD-START case (< 2 historical runs of a workflow). Keyed by the internal
+# phase name (the same keys as ``PHASE_LABELS``). These are deliberately ROUGH
+# order-of-magnitude estimates — the roadmap's ETA discipline (§5.1(C), §11) is
+# emphatic that with < 2 real runs the UI labels the number a "rough estimate"
+# and renders a RANGE, never a zeroing countdown. The honest fallback exists so
+# the first build still shows an emotional "about Nm left," not a blank.
+# Real history (>= 2 runs) always supersedes these per phase.
+_PHASE_DURATION_PRIOR: Dict[str, int] = {
+    "dart_conversion": 600_000,           # OCR/synthesis over a full PDF — minutes
+    "staging": 5_000,
+    "chunking": 30_000,
+    "objective_extraction": 60_000,
+    "source_mapping": 45_000,
+    "course_planning": 300_000,           # 7B objective synthesis — minutes
+    "concept_extraction": 120_000,
+    "content_generation": 900_000,        # the dominant phase (1800s on record)
+    "content_generation_outline": 600_000,
+    "inter_tier_validation": 60_000,
+    "content_generation_rewrite": 600_000,
+    "post_rewrite_validation": 60_000,
+    "packaging": 30_000,
+    "imscc_chunking": 30_000,
+    "trainforge_assessment": 300_000,
+    "training_synthesis": 600_000,
+    "libv2_archival": 30_000,
+    "vector_indexing": 120_000,
+    "finalization": 15_000,
+}
+
+
+def _median_ms(values: List[int]) -> Optional[int]:
+    """Integer median of a non-empty list of durations (``None`` if empty)."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    n = len(ordered)
+    mid = n // 2
+    if n % 2:
+        return int(ordered[mid])
+    # Even count: average the two central samples, rounded to an int ms.
+    return int(round((ordered[mid - 1] + ordered[mid]) / 2))
+
+
+def phase_duration_medians(workflow: str) -> Dict[str, Any]:
+    """Median per-phase ``duration_ms`` over COMPLETED runs of ``workflow``.
+
+    Phase 4 §5.1(C) ETA history. Scans the run registry (:func:`list_runs`) for
+    COMPLETED runs of ``workflow`` carrying a persisted ``phase_durations`` vector
+    (the list of ``{phase, state, completed_at, duration_ms}`` finalize writes,
+    Phase 0) and returns the median real ``duration_ms`` per phase across that
+    history. A phase with FEWER than 2 historical samples honestly falls back to
+    the static :data:`_PHASE_DURATION_PRIOR` and is marked accordingly (``n`` is
+    always the count of REAL samples that informed the phase, even when the prior
+    was used because ``n < 2``).
+
+    Courseforge stage aliases resolve through the ``textbook_to_course`` machine,
+    so their history is read under that workflow name (mirroring
+    :func:`_validator_only_phases`).
+
+    Return shape (the frontend depends on it EXACTLY)::
+
+        {
+          "workflow": <name>,
+          "durations": {
+            "<phase>": {"median_ms": <int|null>, "n": <int>},
+            ...
+          },
+          "source": "history" | "prior" | "mixed",
+        }
+
+    ``source`` semantics:
+      * ``"history"`` — every phase in ``durations`` was informed by >= 2 real runs.
+      * ``"prior"``   — no phase had >= 2 real runs; the static prior carried all.
+      * ``"mixed"``   — some phases had history, others fell back to the prior.
+
+    A phase that has neither >= 2 samples nor a static prior gets
+    ``{"median_ms": null, "n": <real sample count>}`` (honest null, no fabrication).
+    """
+    name = "textbook_to_course" if workflow in COURSEFORGE_STAGE_SUBCOMMANDS else workflow
+
+    # Collect each phase's real per-run durations from COMPLETED history.
+    samples: Dict[str, List[int]] = {}
+    try:
+        runs = list_runs()
+    except Exception:  # noqa: BLE001 — registry read is best-effort
+        logger.warning("phase_duration_medians: list_runs failed", exc_info=True)
+        runs = []
+    for rec in runs:
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("status") != "completed":
+            continue
+        rec_wf = rec.get("workflow")
+        rec_name = "textbook_to_course" if rec_wf in COURSEFORGE_STAGE_SUBCOMMANDS else rec_wf
+        if rec_name != name:
+            continue
+        vector = rec.get("phase_durations")
+        if not isinstance(vector, list):
+            continue
+        for entry in vector:
+            if not isinstance(entry, dict):
+                continue
+            phase = entry.get("phase")
+            dur = entry.get("duration_ms")
+            if not isinstance(phase, str) or not isinstance(dur, int) or dur < 0:
+                continue
+            samples.setdefault(phase, []).append(dur)
+
+    # Union of phases we can speak to: anything with history OR a static prior.
+    phases = set(samples) | set(_PHASE_DURATION_PRIOR)
+
+    durations: Dict[str, Dict[str, Any]] = {}
+    any_history = False
+    any_prior = False
+    for phase in phases:
+        real = samples.get(phase, [])
+        n = len(real)
+        if n >= 2:
+            durations[phase] = {"median_ms": _median_ms(real), "n": n}
+            any_history = True
+        else:
+            # < 2 real samples → honest prior fallback (n is the real count, 0/1).
+            prior = _PHASE_DURATION_PRIOR.get(phase)
+            durations[phase] = {"median_ms": prior, "n": n}
+            if prior is not None:
+                any_prior = True
+
+    if any_history and any_prior:
+        source = "mixed"
+    elif any_history:
+        source = "history"
+    else:
+        source = "prior"
+
+    return {"workflow": name, "durations": durations, "source": source}
+
+
 def list_runs(limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """Return GUI run records, newest-first.
 
@@ -1772,55 +1932,180 @@ def tail_log(run_id: str, offset: int = 0) -> Tuple[str, int]:
 
 
 def cancel_run(run_id: str) -> Dict[str, Any]:
-    """Request cancellation of a run.
+    """Request cancellation of a run (HONEST two-stage, Phase 4 §5.1(E)).
 
-    Flips the registry record to ``status="cancelled"`` AND cancels the
-    in-process background driver task (when this process owns it). The
-    ``_finalize_status`` guard in ``_drive_pipeline`` then refuses to clobber the
-    ``cancelled`` status with a late ``completed``/``failed`` terminal write.
+    Cancellation is cooperative / phase-boundary: the orchestrator may already be
+    mid-phase and may not honor mid-phase interruption, so the currently-executing
+    phase can run to completion before the cancel is observed. We therefore do NOT
+    claim an instant stop. Instead this writes the NON-terminal intermediate
+    status ``cancel_requested`` (+ ``cancel_requested_at``) immediately and signals
+    the in-process driver task. The authoritative flip to the terminal
+    ``status="cancelled"`` happens later, when the driver's ``CancelledError``
+    handler (or ``_finalize_status``) confirms the orchestrator actually exited.
 
-    Cancellation granularity is phase-boundary / cooperative: cancelling the
-    asyncio task injects ``CancelledError`` at the next ``await`` boundary, but
-    the orchestrator may already be mid-phase and may not honor mid-phase
-    interruption — the currently-executing phase can run to completion before the
-    cancellation is observed. The registry flip is the authoritative signal; the
-    task-cancel is best-effort acceleration.
+    Two-stage flow:
+      1. ``cancel_run``  → ``status="cancel_requested"`` (HTTP 202 at the endpoint),
+         best-effort ``task.cancel()`` to accelerate the cooperative exit.
+      2. ``_drive_pipeline`` ``CancelledError``/finalize → ``status="cancelled"``.
 
-    Returns the updated record, or a typed error when the run is unknown or
-    already terminal.
+    ``cancel_requested`` is treated as NON-terminal by the ``_finalize_status``
+    clobber guard (only ``cancelled`` blocks a terminal write) so a phase that
+    races to completion can STILL write the terminal ``cancelled`` (or, if the
+    cancel never lands cooperatively, the natural ``completed``/``failed``).
+
+    Returns ``{run_id, status:"cancel_requested"}`` on a fresh request, a typed
+    ``{"error": "unknown_run", ...}`` when the run is unknown, the current record
+    (no-op note) when the run is already terminal, and an idempotent no-op note
+    when a cancel was already requested.
     """
     record = shared_state.read_run(run_id)
     if record is None:
         return {"error": "unknown_run", "detail": f"no run with id {run_id!r}"}
-    if record.get("status") in ("completed", "failed", "cancelled", "interrupted"):
+    status = record.get("status")
+    if status in ("completed", "failed", "cancelled", "interrupted"):
         return {
             "run_id": run_id,
-            "status": record.get("status"),
+            "status": status,
             "note": "run already terminal; nothing to cancel",
         }
+    if status == "cancel_requested":
+        # Idempotent: a second cancel while the first is still settling is a no-op.
+        return {
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "note": "cancellation already requested; awaiting orchestrator exit",
+        }
     updated = shared_state.update_run(
-        run_id, {"status": "cancelled", "finished_at": shared_state.now_iso()}
+        run_id,
+        {"status": "cancel_requested", "cancel_requested_at": shared_state.now_iso()},
     )
-    # Actually cancel the driving asyncio task if this process owns it. After a
-    # uvicorn restart the handle is gone (in-process only); the status flip above
-    # still terminates the run from the registry's / WS clients' point of view.
+    # Accelerate the cooperative exit: cancel the driving asyncio task if this
+    # process owns it. After a uvicorn restart the handle is gone (in-process
+    # only); the ``cancel_requested`` flip above is still the signal the orphan
+    # reconciler / WS clients see, and the terminal ``cancelled`` lands when the
+    # driver finally exits.
     task = _BACKGROUND_TASKS.get(run_id)
     if task is not None and not task.done():
         task.cancel()
     shared_state.append_log(run_id, f"[{shared_state.now_iso()}] cancellation requested\n")
-    shared_state.append_event("gui", "run_cancelled", {"run_id": run_id})
+    shared_state.append_event("gui", "run_cancel_requested", {"run_id": run_id})
     return {"run_id": run_id, "status": updated.get("status")}
+
+
+async def resume_run(resume_run_id: str, req: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Resume a prior pipeline run from its orchestrator checkpoint (Phase 4 §5.1(E)).
+
+    Operator-facing counterpart to the boot-time auto-resume (:func:`_resume_orphan`)
+    and the CLI ``ed4all run ... --resume WF-...`` pathway. Given the GUI run_id of
+    a prior pipeline run that holds a resumable workflow-state checkpoint, this
+    starts a FRESH GUI run record that re-drives the SAME orchestrator
+    ``workflow_id`` — the orchestrator resumes by skipping already-``_completed``
+    phases (no re-upload, the staged corpus + checkpoints persist on disk).
+
+    Never fabricates success: an unknown prior run, a phase (non-pipeline) run, or
+    a prior run with no checkpoint returns a typed ``{status:"failed", error}`` (so
+    the router maps it to a 422), exactly like a bad launch.
+
+    ``req`` (optional) lets the caller override ``mode``/``provider``/``model`` for
+    the resumed drive; absent, the prior run's persisted values are reused.
+    """
+    req = req or {}
+    prior = shared_state.read_run(resume_run_id)
+    new_run_id = shared_state.new_run_id("GUI")
+
+    if prior is None:
+        return _record_launch_failure(
+            new_run_id,
+            workflow=None,
+            course_name=None,
+            kind="pipeline",
+            mode=_resolve_mode(req),
+            provider=_resolve_provider(req),
+            model=req.get("model"),
+            error=f"cannot resume: unknown run {resume_run_id!r}",
+        )
+
+    workflow = prior.get("workflow")
+    course_name = prior.get("course_name")
+    mode = req.get("mode") or prior.get("mode") or _resolve_mode(req)
+    provider = req.get("provider") or prior.get("provider") or _resolve_provider(req)
+    model = req.get("model") if req.get("model") is not None else prior.get("model")
+
+    workflow_id = _resumable_workflow_id(prior)
+    if not workflow_id:
+        return _record_launch_failure(
+            new_run_id,
+            workflow=workflow,
+            course_name=course_name,
+            kind="pipeline",
+            mode=mode,
+            provider=provider,
+            model=model,
+            error=(
+                f"cannot resume {resume_run_id!r}: no resumable workflow checkpoint "
+                "(phase run, missing/corrupt state, or no completed phase)"
+            ),
+        )
+
+    # Re-apply the blessed authoring-route env so the resumed run routes
+    # generation through the in-process provider lattice (A3 guardrail) — a
+    # headless/GUI resume has no Claude session servicing the mailbox. Best-effort.
+    try:
+        _apply_authoring_route_env({"provider": provider})
+    except Exception:  # noqa: BLE001 — the drive guardrail surfaces a hard error
+        logger.exception("resume: failed to apply authoring-route env for %s", new_run_id)
+
+    record = {
+        "run_id": new_run_id,
+        "kind": "pipeline",
+        "workflow": workflow,
+        "workflow_id": workflow_id,
+        "course_name": course_name,
+        "phase": None,
+        "mode": mode,
+        "provider": provider,
+        "model": model,
+        "status": "queued",
+        "params": prior.get("params"),
+        "resumed_from": resume_run_id,
+        "gate_results": None,
+        "tasks": None,
+        "error": None,
+        "started_at": None,
+        "finished_at": None,
+    }
+    shared_state.register_run(record)
+    shared_state.append_log(
+        new_run_id,
+        f"[{shared_state.now_iso()}] resuming workflow {workflow_id} from "
+        f"{resume_run_id} mode={mode} provider={provider}\n",
+    )
+    shared_state.append_event(
+        "gui",
+        "run_resumed",
+        {"run_id": new_run_id, "workflow_id": workflow_id, "resumed_from": resume_run_id},
+    )
+
+    task = asyncio.ensure_future(
+        _drive_pipeline(new_run_id, workflow_id, mode=mode, provider=provider, model=model)
+    )
+    _BACKGROUND_TASKS[new_run_id] = task
+    task.add_done_callback(lambda _t, _rid=new_run_id: _BACKGROUND_TASKS.pop(_rid, None))
+
+    return {**record, "resume_run_id": resume_run_id}
 
 
 __all__ = [
     "list_workflows",
     "launch_pipeline",
+    "resume_run",
     "launch_phase",
     "run_status",
     "list_runs",
     "reconcile_orphans",
     "tail_log",
     "cancel_run",
+    "phase_duration_medians",
     "validation_report",
     "failed_gate_digest",
     "locate_validation_report",

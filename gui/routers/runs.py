@@ -48,13 +48,18 @@ def _error(status_code: int, error: str, detail: str) -> JSONResponse:
 class LaunchPipelineRequest(BaseModel):
     """Body for ``POST /api/runs`` — launch a full workflow pipeline."""
 
-    workflow: str
-    course_name: str
+    workflow: str = ""
+    course_name: str = ""
     corpus: Optional[str] = None  # upload_id or filesystem path
     weeks: Optional[int] = None
     mode: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    # Phase 4 §5.1(E) Resume: the GUI run_id of a prior interrupted/failed
+    # pipeline run to re-drive from its orchestrator checkpoint. When set,
+    # workflow/course_name/corpus are ignored (the prior workflow state is
+    # authoritative) — so they default empty to keep a resume body minimal.
+    resume_run_id: Optional[str] = None
     options: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -125,6 +130,37 @@ async def launch_phase_run(req: LaunchPhaseRequest) -> Any:
     return result
 
 
+@router.get("/runs/phase-durations")
+async def get_phase_durations(workflow: Optional[str] = Query(default=None)) -> Any:
+    """Median per-phase ``duration_ms`` over completed history of ``workflow``.
+
+    Phase 4 §5.1(C) ETA priors. Returns the exact frontend contract::
+
+        {"workflow": <name>,
+         "durations": {"<phase>": {"median_ms": <int|null>, "n": <int>}},
+         "source": "history" | "prior" | "mixed"}
+
+    ``source="history"`` when >= 2 real runs informed a phase, ``"prior"`` when
+    only the static cold-start prior was used, ``"mixed"`` otherwise. A typed 422
+    is returned when ``workflow`` is missing or not a known workflow / stage alias.
+
+    NOTE: registered BEFORE ``GET /runs/{run_id}`` so the static ``phase-durations``
+    segment is not captured by the ``{run_id}`` path parameter.
+    """
+    if not workflow:
+        return _error(422, "missing_workflow", "query parameter 'workflow' is required")
+    known = set(run_service.SUPPORTED_WORKFLOWS) | set(
+        run_service.COURSEFORGE_STAGE_SUBCOMMANDS
+    )
+    if workflow not in known:
+        return _error(
+            422,
+            "unknown_workflow",
+            f"unknown workflow {workflow!r}; choose from {sorted(known)}",
+        )
+    return run_service.phase_duration_medians(workflow)
+
+
 @router.get("/runs")
 async def list_runs(limit: Optional[int] = Query(default=None, ge=0)) -> Dict[str, Any]:
     """Return GUI run records, newest-first.
@@ -180,10 +216,22 @@ async def get_validation_report(run_id: str) -> Any:
 
 @router.post("/runs/{run_id}/cancel")
 async def cancel_run(run_id: str) -> Any:
-    """Request cancellation of a run."""
+    """Request cancellation of a run (HONEST two-stage, Phase 4 §5.1(E)).
+
+    Cancellation is cooperative / phase-boundary, so this does NOT claim an
+    instant stop. On a fresh request the service writes the NON-terminal
+    ``status="cancel_requested"`` and we return **HTTP 202 Accepted** with
+    ``{run_id, status:"cancel_requested"}`` — the authoritative flip to the
+    terminal ``cancelled`` lands later when the run driver confirms the
+    orchestrator exited. An already-terminal or already-requested run returns its
+    current status with **200** (idempotent no-op); an unknown run is a typed 404.
+    """
     result = run_service.cancel_run(run_id)
     if result.get("error") == "unknown_run":
         return _error(404, "unknown_run", str(result.get("detail", run_id)))
+    if result.get("status") == "cancel_requested" and not result.get("note"):
+        # Fresh cancel request accepted; the terminal flip is still pending.
+        return JSONResponse(status_code=202, content=result)
     return result
 
 

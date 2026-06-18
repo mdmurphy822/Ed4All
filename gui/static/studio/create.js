@@ -430,6 +430,10 @@ async function renderProgress(shell, runId) {
   // Elapsed anchor (from started_at when available).
   const startMs = record.started_at ? Date.parse(record.started_at) : Date.now();
 
+  // Honest-ETA medians (best-effort): the sibling endpoint may not exist yet, so
+  // a fetch failure degrades the console to "estimating…" rather than erroring.
+  const durations = await fetchPhaseDurations(record.workflow || WORKFLOW);
+
   // The shared Build Console assembles the component kit: a phaseTimeline (real
   // SVG rings replace the old static glyphs), the canonical elapsed timer, and
   // the SINGLE role=status aria-live region (the narrative line). It is PURE
@@ -439,10 +443,17 @@ async function renderProgress(shell, runId) {
   // Reuse the studio shell's single #status region (the page keeps exactly one
   // polite live-truth region; the console announces phase transitions into it).
   const liveRegion = typeof shell.statusRegion === 'function' ? shell.statusRegion() : null;
+  // The console owns the cancel BUTTON; this page owns the cancel FETCH and the
+  // two-stage 202 → cancelled resolution (the console structurally never
+  // fetches). On a 202 / cancel_requested we flip the button to "Cancelling…"
+  // and wait for the WS terminal {type:status} frame to resolve to cancelled.
   const progress = runProgressConsole({
     phases: phases.map((p) => ({ name: p.name, label: p.label || titleCase(p.name), optional: p.optional })),
     startMs,
     liveRegion: liveRegion || undefined,
+    durations: durations.durations,
+    durationsSource: durations.source,
+    onCancel: () => requestCancel(shell, runId, progress),
   });
 
   // Run id sits in the meta line (left of the console's elapsed timer).
@@ -474,7 +485,10 @@ async function renderProgress(shell, runId) {
       shell.setStatus('Your course is ready. Open course to view it.');
     } else if (status === 'cancelled' || status === 'interrupted') {
       finalBox.appendChild(el('p', { class: 'warn', text: `Build ${status}.` }));
-      shell.setStatus(`Build ${status}.`);
+      // Recovery (no dead-end): Retry from the same params + Resume — without
+      // forcing the operator back to step 1 to re-upload.
+      renderRecoveryActions(shell, finalBox, record, courseName, null);
+      shell.setStatus(`Build ${status}. You can retry or resume below.`);
     } else {
       // A6 failure: the console has already marked the failing phase; surface the
       // failed phase's drawer + the actionable failure panel verbatim.
@@ -482,7 +496,7 @@ async function renderProgress(shell, runId) {
       const failedRow = fp ? progress.get(fp) : null;
       const drawer = failedRow && failedRow.detail ? failedRow.detail : finalBox;
       if (failedRow) failedRow.expand();
-      renderFailurePanel(shell, drawer, runId, courseName, fp, errMsg);
+      renderFailurePanel(shell, drawer, runId, courseName, fp, errMsg, record);
       shell.setStatus('The course build failed. Review what went wrong and what to do next.');
     }
   }
@@ -546,7 +560,7 @@ async function renderProgress(shell, runId) {
  * Best-effort: a fetch error still renders the intro + log link, so the operator
  * is never stranded with a raw error string.
  */
-async function renderFailurePanel(shell, box, runId, courseName, failedPhase, errMsg) {
+async function renderFailurePanel(shell, box, runId, courseName, failedPhase, errMsg, record) {
   clear(box);
   const panel = el('section', { class: 'failure-panel', role: 'alert', 'aria-labelledby': 'failure-h' });
   box.appendChild(panel);
@@ -626,6 +640,10 @@ async function renderFailurePanel(shell, box, runId, courseName, failedPhase, er
   actions.appendChild(el('h3', { text: 'What to do next' }));
   const list = el('div', { class: 'affordances' });
 
+  // (0) Retry + Resume — the no-dead-end pair. These re-launch from the run's
+  // OWN params (no Back-to-start + re-upload). Resume is feature-detected.
+  renderRecoveryActions(shell, list, record, courseName, failedPhase);
+
   // (a) Re-run validation — only meaningful for two-pass Courseforge courses,
   // which is exactly the case where a validation report exists.
   if (report) {
@@ -677,6 +695,130 @@ async function renderFailurePanel(shell, box, runId, courseName, failedPhase, er
 
   actions.appendChild(list);
   panel.appendChild(actions);
+}
+
+/**
+ * Render the no-dead-end recovery pair (Retry + Resume) into `container`.
+ *
+ *   Retry  — re-POST /api/runs with the run's OWN params (record.params), so the
+ *            operator never goes Back to start to re-upload the textbook. Confirms,
+ *            then navigates to the new run's progress view.
+ *   Resume — feature-detected: when the backend advertises resume support on the
+ *            run record (record.resume_supported / record.can_resume, the sibling's
+ *            flag), a "Resume build" button re-POSTs /api/runs with a resume option
+ *            keyed on the workflow_id. Otherwise (today) we surface the copyable
+ *            `ed4all run --resume <workflow_id>` command as a hint — never a button
+ *            that silently no-ops.
+ *
+ * Best-effort: missing params disables Retry with an explanatory note rather than
+ * enqueuing a paramless run.
+ */
+function renderRecoveryActions(shell, container, record, courseName, _failedPhase) {
+  const params = record && record.params && typeof record.params === 'object' ? record.params : null;
+  const workflow = (record && record.workflow) || WORKFLOW;
+  const workflowId = (record && record.workflow_id) || '';
+
+  // ---- Retry (re-run from the same params; NO re-upload) ----
+  if (params && (params.corpus || params.upload_id)) {
+    container.appendChild(affordanceBtn(
+      'Retry build',
+      'Start a fresh build from the same textbook and settings — no need to re-upload.',
+      () => enqueueRetry(shell, record),
+      true,
+    ));
+  } else {
+    const wrap = el('div', { class: 'affordance' });
+    wrap.appendChild(el('button', { type: 'button', class: 'btn', text: 'Retry build', disabled: true }));
+    wrap.appendChild(el('p', { class: 'affordance-hint muted', text: 'Retry is unavailable for this run (its original inputs were not recorded). Start a new course instead.' }));
+    container.appendChild(wrap);
+  }
+
+  // ---- Resume (feature-detected) ----
+  const resumeSupported = !!(record && (record.resume_supported || record.can_resume));
+  if (resumeSupported && workflowId) {
+    container.appendChild(affordanceBtn(
+      'Resume build',
+      'Continue this build from where it stopped, reusing the work already completed.',
+      () => enqueueResume(shell, record),
+      true,
+    ));
+  } else if (workflowId) {
+    // No in-browser resume yet → copyable CLI command (honest, no no-op button).
+    const cmd = `ed4all run --resume ${workflowId}`;
+    const wrap = el('div', { class: 'affordance' });
+    wrap.appendChild(el('p', { class: 'affordance-hint muted', text: 'To continue this build from where it stopped, run this command:' }));
+    const row = el('div', { class: 'resume-hint inline' }, [
+      el('code', { class: 'kv resume-cmd', text: cmd }),
+      copyHintBtn(cmd),
+    ]);
+    wrap.appendChild(row);
+    container.appendChild(wrap);
+  }
+}
+
+/** Copy-to-clipboard button for the resume CLI hint (a real <button>). */
+function copyHintBtn(text) {
+  const btn = el('button', { type: 'button', class: 'btn', 'aria-label': 'Copy resume command to clipboard', text: 'Copy command' });
+  btn.addEventListener('click', async () => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        toast('Copied', text, 'success', 2500);
+        return;
+      }
+    } catch (_) { /* fall through */ }
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    ta.remove();
+    toast(ok ? 'Copied' : 'Copy failed', ok ? text : 'Clipboard unavailable.', ok ? 'success' : 'error', 2500);
+  });
+  return btn;
+}
+
+/** Re-POST /api/runs with the terminal run's OWN params (Retry). */
+async function enqueueRetry(shell, record) {
+  const p = record.params || {};
+  const body = {
+    workflow: record.workflow || WORKFLOW,
+    course_name: record.course_name || p.course_name || '',
+    corpus: p.corpus || p.upload_id,
+    options: p.options || {},
+  };
+  if (p.weeks) body.weeks = Number(p.weeks);
+  if (p.mode) body.mode = p.mode;
+  if (p.provider) body.provider = p.provider;
+  if (p.model) body.model = p.model;
+  try {
+    const resp = await apiJSON('/api/runs', 'POST', body);
+    toast('Retrying…', '', 'success');
+    location.hash = `#/create/${encodeURIComponent(resp.run_id)}`;
+  } catch (e) {
+    toastErr(e, 'Could not retry');
+    shell.setStatus(`Could not retry: ${shell.errText(e)}`);
+  }
+}
+
+/** Re-POST /api/runs with a resume option (feature-detected Resume). */
+async function enqueueResume(shell, record) {
+  const p = record.params || {};
+  const body = {
+    workflow: record.workflow || WORKFLOW,
+    course_name: record.course_name || p.course_name || '',
+    corpus: p.corpus || p.upload_id,
+    options: p.options || {},
+    resume: record.workflow_id,
+  };
+  try {
+    const resp = await apiJSON('/api/runs', 'POST', body);
+    toast('Resuming…', '', 'success');
+    location.hash = `#/create/${encodeURIComponent(resp.run_id)}`;
+  } catch (e) {
+    toastErr(e, 'Could not resume');
+    shell.setStatus(`Could not resume: ${shell.errText(e)}`);
+  }
 }
 
 /** Build one affordance control: a button with a hint, confirm-on-click. */
@@ -817,6 +959,48 @@ async function fetchPhaseList() {
   const wf = (data.workflows || []).find((w) => w.name === WORKFLOW);
   if (!wf || !Array.isArray(wf.phases)) return [];
   return wf.phases;
+}
+
+/**
+ * Best-effort fetch of the per-phase median durations for the honest ETA.
+ * Returns `{durations:{}, source:null}` on ANY failure (the sibling endpoint may
+ * not exist yet); the console then renders "estimating…" rather than a lie.
+ */
+async function fetchPhaseDurations(workflow) {
+  try {
+    const data = await api(`/api/runs/phase-durations?workflow=${encodeURIComponent(workflow)}`);
+    return {
+      durations: (data && typeof data.durations === 'object' && data.durations) || {},
+      source: (data && typeof data.source === 'string' && data.source) || null,
+    };
+  } catch (_) {
+    return { durations: {}, source: null };
+  }
+}
+
+/**
+ * Host-owned cancel: POST /api/runs/{id}/cancel. The endpoint now returns HTTP
+ * 202 `{status:"cancel_requested"}` (the terminal `cancelled` arrives later via
+ * the WS status frame); we tolerate BOTH the legacy 200 and the new 202. On
+ * either, flip the console's cancel button to the two-stage "Cancelling…" state
+ * — we never claim an instant stop.
+ */
+async function requestCancel(shell, runId, progress) {
+  try {
+    // apiJSON throws on non-2xx; 202 is 2xx so it returns the body normally.
+    const resp = await apiJSON(`/api/runs/${encodeURIComponent(runId)}/cancel`, 'POST', {});
+    progress.setCancelling();
+    const st = resp && resp.status;
+    if (st === 'cancelled' || st === 'interrupted') {
+      // A synchronous terminal (some backends resolve immediately) — finalize now.
+      progress.onStatus(st);
+    }
+    shell.setStatus('Cancelling the build. It will stop after the current step finishes.');
+    toast('Cancelling…', 'The build will stop after the current step.', 'info');
+  } catch (e) {
+    toastErr(e, 'Could not cancel');
+    shell.setStatus(`Could not cancel: ${shell.errText(e)}`);
+  }
 }
 
 function fmtBytes(n) {

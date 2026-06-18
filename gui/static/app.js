@@ -501,6 +501,17 @@ async function renderUpload(view) {
     if (!progressReady) progressReady = import('/shared/components/run-progress.js').then((m) => m.runProgressConsole);
     return progressReady;
   }
+  // Best-effort per-phase medians for the honest ETA (the sibling endpoint may
+  // not exist yet → "estimating…", never a false number).
+  async function fetchDurations(wfName) {
+    try {
+      const data = await api(`/api/runs/phase-durations?workflow=${encodeURIComponent(wfName)}`);
+      return {
+        durations: (data && typeof data.durations === 'object' && data.durations) || {},
+        source: (data && typeof data.source === 'string' && data.source) || null,
+      };
+    } catch (_) { return { durations: {}, source: null }; }
+  }
   // Build (or rebuild) the console for a run, anchored at startMs. Best-effort:
   // an import failure leaves the raw log fully functional (no console shown).
   async function mountProgress(startMs) {
@@ -509,15 +520,20 @@ async function renderUpload(view) {
       const wfName = wfSelect.value;
       const w = wf.find((x) => x.name === wfName);
       const phases = (w && Array.isArray(w.phases)) ? w.phases : [];
+      const dur = await fetchDurations(wfName);
       clear(progressMount);
       if (progress) progress.destroy();
       // The console owns its own role=status narrative line (it is a self-
       // contained subtree inside the dense operator console card). It does NOT
       // reuse <main id="view"> — announce() writes textContent, which would wipe
-      // the whole operator UI.
+      // the whole operator UI. The header cancel button is owned by the console;
+      // THIS page owns the POST /api/runs/{id}/cancel fetch + the two-stage 202.
       progress = factory({
         phases: phases.map((p) => ({ name: p.name, label: p.label || p.name, optional: p.optional })),
         startMs: startMs || Date.now(),
+        durations: dur.durations,
+        durationsSource: dur.source,
+        onCancel: () => doCancel(),
       });
       progressMount.appendChild(progress.el);
       progress.startFirstRunning();
@@ -574,21 +590,38 @@ async function renderUpload(view) {
     refreshMeta();
   }
 
-  cancelBtn.addEventListener('click', async () => {
+  // Two-stage cancel. POST /api/runs/{id}/cancel now returns HTTP 202
+  // {status:"cancel_requested"} (a 2xx, so api() returns it normally); the
+  // terminal `cancelled` arrives LATER via the WS {type:status} frame. We
+  // therefore do NOT mark the run terminal here — we show "Cancelling…" and let
+  // setStatus(terminal) fire from the WS. A legacy 200 with a synchronous
+  // terminal status is still honoured. Used by both the toolbar Cancel button
+  // and the console's header cancel (onCancel → doCancel).
+  async function doCancel() {
     if (!currentRunId) return;
+    if (cancelBtn.disabled) return; // already requested
     if (!confirm(`Cancel run ${currentRunId}?`)) return;
     cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Cancelling…';
     try {
       const r = await api(`/api/runs/${encodeURIComponent(currentRunId)}/cancel`, { method: 'POST' });
-      logLine(`[gui] cancel requested for ${currentRunId}`, 'sys');
-      if (r && r.status) setStatus(r.status);
-      else setStatus('cancelled');
-      toast('Cancel requested', currentRunId, 'info');
+      const st = r && r.status;
+      logLine(`[gui] cancel requested for ${currentRunId} (${st || 'cancel_requested'})`, 'sys');
+      if (progress) { try { progress.setCancelling(); } catch (_) {} }
+      if (st === 'cancelled' || st === 'canceled' || st === 'interrupted' || st === 'error' || st === 'failed') {
+        // Synchronous terminal (legacy 200) — resolve now.
+        setStatus(st);
+      } else {
+        // 202 / cancel_requested: NOT terminal. Wait for the WS terminal frame.
+        toast('Cancelling…', 'The run will stop after the current step finishes.', 'info');
+      }
     } catch (e) {
       toastErr(e, 'Cancel failed');
       cancelBtn.disabled = false;
+      cancelBtn.textContent = 'Cancel run';
     }
-  });
+  }
+  cancelBtn.addEventListener('click', doCancel);
   copyLogBtn.addEventListener('click', async () => {
     const ok = await copyText(consoleEl.textContent || '');
     toast(ok ? 'Log copied' : 'Copy failed', ok ? `${lineCount} line${lineCount === 1 ? '' : 's'}` : '', ok ? 'success' : 'error', 2500);
@@ -626,6 +659,7 @@ async function renderUpload(view) {
     if (ws) { try { ws.close(); } catch (_) {} ws = null; }
     currentRunId = runId;
     cancelBtn.disabled = false;
+    cancelBtn.textContent = 'Cancel run'; // reset from a prior "Cancelling…"
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     // Operator WS is token-gated in full mode; browser JS can't set WS request
     // headers, so the token rides the ?token= query param (server constant-time

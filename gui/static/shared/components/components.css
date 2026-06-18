@@ -202,3 +202,32 @@ a.card:hover { border-color: var(--accent); }
 }
 
 .elapsed { color: var(--muted); }
+
+/* ---- run-progress header: overall ring + honest ETA + sticky cancel ---- */
+/* The header sits above the phase checklist: an aria-hidden overall ring (the
+ * a11y truth is the single role=status line), the ETA range text, and a sticky
+ * cancel button. The cancel reuses .btn (>=28px target, focus-visible inherited
+ * from the kit rule). */
+.run-progress-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+}
+.run-overall-ring { display: inline-flex; }
+.run-overall-text { flex: 1; min-width: 8rem; color: var(--fg); font-size: 14px; }
+.run-overall-count { color: var(--muted); }
+.run-eta { color: var(--muted); }
+.run-eta.is-rough { font-style: italic; }
+.run-cancel-btn { margin-left: auto; }
+.kit .run-cancel-btn:disabled { opacity: 0.7; cursor: default; }
+
+/* ---- run history (Studio #/runs) ---- */
+.run-history-list { list-style: none; margin: var(--space-3) 0 0; padding: 0; }
+.run-history-li { margin-bottom: var(--space-3); }
+.run-history-entry { display: flex; flex-direction: column; gap: var(--space-2); }
+.run-history-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.resume-hint { display: inline-flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.resume-cmd { font-family: var(--mono, monospace); }

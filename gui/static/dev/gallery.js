@@ -191,6 +191,15 @@ function liveDemoSection() {
  * The console reuses the shell's single #gallery-live region (no second live
  * region on the page). PURE PRESENTATION: this calls no API. */
 function buildConsoleSection() {
+  // Median per-phase durations (history) so the console can render the honest
+  // ETA range ("about Nm left"). source:"history" → no "rough estimate" tag.
+  const durations = {
+    dart_conversion: { median_ms: 320000, n: 6 },
+    staging: { median_ms: 40000, n: 6 },
+    content_generation: { median_ms: 1080000, n: 6 },
+    packaging: { median_ms: 60000, n: 6 },
+    trainforge_assessment: { median_ms: 140000, n: 4 },
+  };
   const buildConsole = runProgressConsole({
     phases: [
       { name: 'dart_conversion', label: 'Convert textbook to accessible HTML' },
@@ -201,6 +210,32 @@ function buildConsoleSection() {
     ],
     startMs: Date.now(),
     liveRegion: $('#gallery-live') || undefined,
+    durations,
+    durationsSource: 'history',
+    // The cancel button is host-owned: in the gallery the "fetch" is faked —
+    // tapping it flips the console to the two-stage "Cancelling…" state.
+    onCancel: () => buildConsole.setCancelling(),
+  });
+
+  // ETA-discipline state demo: three ETA states side by side (estimating / rough
+  // estimate / about Nm left) + the "Cancelling…" cancel state, as static
+  // aria-hidden / role=status-free decorations the WCAG fixture can assert.
+  // All demo consoles REUSE the shell's single #gallery-live region (the page
+  // keeps exactly one role=status region — the §9 single-live-truth contract).
+  const liveRegion = $('#gallery-live') || undefined;
+  const estimating = runProgressConsole({
+    phases: [{ name: 'a', label: 'Convert' }, { name: 'b', label: 'Generate' }],
+    startMs: Date.now(),
+    durations: {},               // <2 historical runs → "estimating…"
+    durationsSource: null,
+    liveRegion,
+  });
+  const rough = runProgressConsole({
+    phases: [{ name: 'a', label: 'Convert' }, { name: 'b', label: 'Generate' }],
+    startMs: Date.now(),
+    durations: { a: { median_ms: 120000, n: 3 }, b: { median_ms: 240000, n: 3 } },
+    durationsSource: 'prior',    // static prior curve → "rough estimate"
+    liveRegion,
   });
   // A scripted ISO-stamped line stream (the shape run_service appends). The ISO
   // timestamps make the Tier-1 per-phase timing observable.
@@ -229,8 +264,58 @@ function buildConsoleSection() {
     };
     setTimeout(step, 700);
   });
-  return section('Build Console', 'The assembled run-progress.js console — rings + elapsed + the single narrative line — driven by a scripted ISO-stamped [phase]/[progress] replay (Tier-1 timing).',
-    el('div', {}, [el('div', { class: 'gallery-row' }, [btn]), buildConsole.el]));
+  return section('Build Console', 'The assembled run-progress.js console — overall ring + honest ETA + sticky cancel + the single narrative line — driven by a scripted ISO-stamped [phase]/[progress] replay (Tier-1 timing). Tap Cancel for the two-stage “Cancelling…” state.',
+    el('div', {}, [
+      el('div', { class: 'gallery-row' }, [btn]),
+      buildConsole.el,
+      el('h3', { text: 'ETA states' }),
+      el('p', { text: 'The honest ETA is a coarse range, never a zeroing countdown. <2 historical runs → “estimating…”; the static prior curve → “rough estimate”.' }),
+      el('div', { class: 'gallery-row' }, [
+        cell('estimating (<2 runs)', estimating.el),
+        cell('rough estimate (prior)', rough.el),
+      ]),
+    ]));
+}
+
+/* ---- Run History fixture (Phase 4 §5.1(F)): runCards + timelineBars ---- */
+function runHistorySection() {
+  const list = el('ul', { class: 'run-history-list cards', 'aria-label': 'Course builds' });
+  const entries = [
+    {
+      title: 'PHYS_101', status: 'completed', href: '#/create/GUI-1', meta: 'textbook_to_course · 28m',
+      durs: [
+        { name: 'dart_conversion', label: 'Convert', duration_ms: 320000, state: 'done' },
+        { name: 'content_generation', label: 'Generate content', duration_ms: 1080000, state: 'done' },
+        { name: 'packaging', label: 'Package', duration_ms: 60000, state: 'done' },
+        { name: 'trainforge_assessment', label: 'Assessments', duration_ms: 140000, state: 'skipped' },
+      ],
+      live: false, retry: true,
+    },
+    {
+      title: 'BIO_201', status: 'running', href: '#/create/GUI-2', meta: 'textbook_to_course · building',
+      durs: [], live: true, retry: false,
+    },
+    {
+      title: 'CHEM_101', status: 'failed', href: '#/create/GUI-3', meta: 'textbook_to_course · 6m',
+      durs: [
+        { name: 'dart_conversion', label: 'Convert', duration_ms: 300000, state: 'done' },
+        { name: 'content_generation', label: 'Generate content', duration_ms: 60000, state: 'failed' },
+      ],
+      live: false, retry: true,
+    },
+  ];
+  entries.forEach((e) => {
+    const wrap = el('div', { class: 'run-history-entry' }, [
+      runCard({ title: e.title, status: e.status, href: e.href, meta: e.meta }),
+    ]);
+    if (e.durs.length) wrap.appendChild(timelineBar(e.durs, { ariaLabel: `Phase durations for ${e.title}` }));
+    const actions = el('div', { class: 'run-history-actions' });
+    if (e.live) actions.appendChild(el('button', { type: 'button', class: 'btn', text: 'Re-open build' }));
+    if (e.retry) actions.appendChild(el('button', { type: 'button', class: 'btn', text: 'Run again' }));
+    if (actions.childElementCount) wrap.appendChild(actions);
+    list.appendChild(el('li', { class: 'run-history-li' }, [wrap]));
+  });
+  return section('Run History', 'The Studio #/runs view — terminal + live runs as runCards with persisted-duration timelineBars, plus Re-open (live) / Run again (retry).', list);
 }
 
 function render() {
@@ -248,6 +333,7 @@ function render() {
     timelineBarSection(),
     liveDemoSection(),
     buildConsoleSection(),
+    runHistorySection(),
   ].forEach((s) => main.appendChild(s));
 }
 

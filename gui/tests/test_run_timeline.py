@@ -197,6 +197,127 @@ def test_finalize_persists_phase_durations_without_changing_status(state_dir, mo
     assert {e["phase"] for e in durations} == {"staging", "course_planning"}
 
 
+# --------------------------------------------- phase-duration medians (P4 §5.1C)
+
+
+def _completed_run(run_id: str, workflow: str, durations: dict) -> None:
+    """Register a COMPLETED run carrying a ``phase_durations`` vector."""
+    shared_state.register_run(
+        {
+            "run_id": run_id,
+            "kind": "pipeline",
+            "workflow": workflow,
+            "status": "completed",
+            "phase_durations": [
+                {"phase": p, "state": "done", "completed_at": None, "duration_ms": d}
+                for p, d in durations.items()
+            ],
+        }
+    )
+
+
+def test_phase_medians_computes_median_from_history(state_dir):
+    """>= 2 completed runs of a workflow -> real median per phase, source=history."""
+    # Three runs, staging durations 10/20/30 -> median 20; planning 100/200/300 -> 200.
+    _completed_run("GUI-med-1", "course_generation", {"staging": 10, "course_planning": 100})
+    _completed_run("GUI-med-2", "course_generation", {"staging": 20, "course_planning": 200})
+    _completed_run("GUI-med-3", "course_generation", {"staging": 30, "course_planning": 300})
+
+    out = run_service.phase_duration_medians("course_generation")
+    assert out["workflow"] == "course_generation"
+    assert out["durations"]["staging"] == {"median_ms": 20, "n": 3}
+    assert out["durations"]["course_planning"] == {"median_ms": 200, "n": 3}
+    # Every phase with history here came from >= 2 runs, but the workflow ALSO
+    # carries prior-only phases (no history) -> source is "mixed", not "history".
+    assert out["source"] == "mixed"
+    # A prior-only phase falls back honestly with n == 0.
+    assert out["durations"]["packaging"]["n"] == 0
+    assert out["durations"]["packaging"]["median_ms"] == run_service._PHASE_DURATION_PRIOR[
+        "packaging"
+    ]
+
+
+def test_phase_medians_even_count_averages_two_central(state_dir):
+    """An even sample count averages the two central durations (rounded int)."""
+    _completed_run("GUI-ev-1", "rag_training", {"staging": 10})
+    _completed_run("GUI-ev-2", "rag_training", {"staging": 25})
+    out = run_service.phase_duration_medians("rag_training")
+    # median of [10, 25] = 17.5 -> round -> 18.
+    assert out["durations"]["staging"] == {"median_ms": 18, "n": 2}
+
+
+def test_phase_medians_single_sample_falls_back_to_prior(state_dir):
+    """A phase with exactly ONE real sample (< 2) uses the prior; n == 1."""
+    _completed_run("GUI-one", "course_generation", {"staging": 999})
+    out = run_service.phase_duration_medians("course_generation")
+    entry = out["durations"]["staging"]
+    assert entry["n"] == 1
+    assert entry["median_ms"] == run_service._PHASE_DURATION_PRIOR["staging"]
+
+
+def test_phase_medians_no_history_is_pure_prior(state_dir):
+    """Zero completed history -> every phase from the static prior, source=prior."""
+    out = run_service.phase_duration_medians("textbook_to_course")
+    assert out["source"] == "prior"
+    # Every emitted phase is from the prior with n == 0.
+    assert all(e["n"] == 0 for e in out["durations"].values())
+    assert out["durations"]["content_generation"]["median_ms"] == run_service._PHASE_DURATION_PRIOR[
+        "content_generation"
+    ]
+
+
+def test_phase_medians_all_history_source_is_history(state_dir):
+    """When EVERY emitted phase has >= 2 samples, source == 'history'.
+
+    Patch the prior to a single phase so the union of phases == that one phase,
+    which has full history -> no prior fallback -> source 'history'.
+    """
+    _completed_run("GUI-h-1", "batch_dart", {"staging": 5})
+    _completed_run("GUI-h-2", "batch_dart", {"staging": 7})
+    original = run_service._PHASE_DURATION_PRIOR.copy()
+    try:
+        run_service._PHASE_DURATION_PRIOR.clear()
+        run_service._PHASE_DURATION_PRIOR["staging"] = 1
+        out = run_service.phase_duration_medians("batch_dart")
+        assert out["source"] == "history"
+        assert out["durations"]["staging"] == {"median_ms": 6, "n": 2}
+    finally:
+        run_service._PHASE_DURATION_PRIOR.clear()
+        run_service._PHASE_DURATION_PRIOR.update(original)
+
+
+def test_phase_medians_ignores_non_completed_and_wrong_workflow(state_dir):
+    """Only COMPLETED runs of the SAME workflow inform the medians."""
+    _completed_run("GUI-good", "course_generation", {"staging": 40})
+    _completed_run("GUI-good2", "course_generation", {"staging": 60})
+    # A failed run of the same workflow: ignored.
+    shared_state.register_run(
+        {
+            "run_id": "GUI-failed",
+            "kind": "pipeline",
+            "workflow": "course_generation",
+            "status": "failed",
+            "phase_durations": [
+                {"phase": "staging", "state": "done", "completed_at": None, "duration_ms": 999999}
+            ],
+        }
+    )
+    # A completed run of a DIFFERENT workflow: ignored.
+    _completed_run("GUI-other", "rag_training", {"staging": 1})
+    out = run_service.phase_duration_medians("course_generation")
+    # Only 40 + 60 informed staging -> median 50, n == 2 (999999 excluded).
+    assert out["durations"]["staging"] == {"median_ms": 50, "n": 2}
+
+
+def test_phase_medians_stage_alias_resolves_to_textbook(state_dir):
+    """Courseforge stage aliases read history under textbook_to_course."""
+    _completed_run("GUI-tc-1", "textbook_to_course", {"packaging": 100})
+    _completed_run("GUI-tc-2", "textbook_to_course", {"packaging": 300})
+    out = run_service.phase_duration_medians("courseforge_outline")
+    assert out["workflow"] == "textbook_to_course"
+    assert out["durations"]["packaging"] == {"median_ms": 200, "n": 2}
+
+
 # ----------------------------------------------------------------- router
 
 import pytest  # noqa: E402
@@ -235,3 +356,42 @@ def test_timeline_endpoint_unknown_run_typed_404(client, state_dir):
     assert resp.status_code == 404
     body = resp.json()
     assert body == {"error": "unknown_run", "detail": "GUI-unknown-run"}
+
+
+# ---------------------------------------- phase-durations endpoint (P4 §5.1C)
+
+
+def test_phase_durations_endpoint_contract_shape(client, state_dir):
+    """The endpoint returns the EXACT frontend contract shape."""
+    _completed_run("GUI-pd-1", "course_generation", {"staging": 10})
+    _completed_run("GUI-pd-2", "course_generation", {"staging": 20})
+    resp = client.get("/api/runs/phase-durations", params={"workflow": "course_generation"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {"workflow", "durations", "source"}
+    assert body["workflow"] == "course_generation"
+    assert body["source"] in {"history", "prior", "mixed"}
+    entry = body["durations"]["staging"]
+    assert set(entry) == {"median_ms", "n"}
+    assert entry == {"median_ms": 15, "n": 2}
+
+
+def test_phase_durations_endpoint_missing_workflow_is_422(client, state_dir):
+    resp = client.get("/api/runs/phase-durations")
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "missing_workflow"
+
+
+def test_phase_durations_endpoint_unknown_workflow_is_422(client, state_dir):
+    resp = client.get("/api/runs/phase-durations", params={"workflow": "not_a_workflow"})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "unknown_workflow"
+
+
+def test_phase_durations_endpoint_not_shadowed_by_run_id_route(client, state_dir):
+    """`phase-durations` must NOT be captured by the `/runs/{run_id}` param route."""
+    resp = client.get("/api/runs/phase-durations", params={"workflow": "rag_training"})
+    # A 200 (not a 404 unknown_run from the {run_id} route) proves the static
+    # path wins. Pure-prior here since no history exists for rag_training.
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "prior"
