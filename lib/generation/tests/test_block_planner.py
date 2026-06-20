@@ -1,0 +1,613 @@
+"""Unit tests for the Wave-2 Part 3 content-aware block planner.
+
+Mocks the 70B (NO live call). Covers:
+
+- planner returns an ordered, validated block list;
+- unknown ``block_type`` is dropped;
+- the block count is clamped to the budget;
+- a dropped CO gets a default coverage block (coverage holds);
+- an LLM error degrades to the deterministic fixed-plan fallback;
+- an unparseable / empty response degrades to fallback;
+- the ``WeekBlockPlan`` projects to the canonical five page types;
+- a ``block_plan`` decision event fires per TO.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from lib.generation.block_planner import (
+    CANONICAL_PAGE_TYPES,
+    _PAGE_TYPE_FLOORS,
+    WeekBlockPlan,
+    plan_week_blocks,
+)
+
+
+# --------------------------------------------------------------------------- #
+# Mock provider seams.
+# --------------------------------------------------------------------------- #
+class _MockProvider:
+    """Returns a canned JSON plan via ``plan_blocks``."""
+
+    _model = "meta/llama-3.3-70b-instruct"
+
+    def __init__(self, payload):
+        self._payload = payload
+        self.calls = 0
+
+    def plan_blocks(self, prompt):  # noqa: ARG002
+        self.calls += 1
+        return self._payload
+
+
+class _RaisingProvider:
+    _model = "meta/llama-3.3-70b-instruct"
+
+    def plan_blocks(self, prompt):  # noqa: ARG002
+        raise RuntimeError("simulated 70B dispatch failure")
+
+
+class _DispatchOnlyProvider:
+    """Exercises the ``_dispatch_call`` seam (no ``plan_blocks``)."""
+
+    _model = "meta/llama-3.3-70b-instruct"
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def _dispatch_call(self, prompt):  # noqa: ARG002
+        return self._payload, 0
+
+
+class _RecordingCapture:
+    def __init__(self):
+        self.events = []
+
+    def log_decision(self, **kwargs):
+        self.events.append(kwargs)
+
+
+_COS = [
+    {"id": "CO-01", "statement": "isolate the variable", "bloom_level": "apply"},
+    {"id": "CO-02", "statement": "check the solution", "bloom_level": "analyze"},
+    {"id": "CO-03", "statement": "graph the line", "bloom_level": "understand"},
+]
+_TO = {"id": "TO-01", "statement": "Solve and graph linear equations"}
+
+
+def _plan_payload(blocks):
+    return json.dumps({"blocks": blocks})
+
+
+# --------------------------------------------------------------------------- #
+# Tests.
+# --------------------------------------------------------------------------- #
+def test_planner_returns_ordered_validated_list():
+    payload = _plan_payload([
+        {"block_type": "objective", "target_co_ids": ["CO-01"],
+         "page_type": "overview", "content_focus": "state outcome"},
+        {"block_type": "vocab_card", "target_co_ids": ["CO-01"],
+         "page_type": "content", "content_focus": "slope term"},
+        {"block_type": "example", "target_co_ids": ["CO-02"],
+         "page_type": "content", "content_focus": "worked solve"},
+        {"block_type": "scenario", "target_co_ids": ["CO-03"],
+         "page_type": "application", "content_focus": "real-world line"},
+        {"block_type": "self_check_question", "target_co_ids": ["CO-02"],
+         "page_type": "self_check", "content_focus": "checkpoint"},
+        {"block_type": "summary_takeaway", "target_co_ids": ["CO-01"],
+         "page_type": "summary", "content_focus": "recap"},
+    ])
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(payload),
+    )
+    assert isinstance(plan, WeekBlockPlan)
+    assert plan.fallback_used is False
+    types = [b["block_type"] for b in plan.selected]
+    # Every planner-selected type survives (floors only ADD, never drop).
+    for bt in (
+        "objective", "vocab_card", "example", "scenario",
+        "self_check_question", "summary_takeaway",
+    ):
+        assert bt in types
+    # Floors reflatten the selection in canonical page-emit order, so the
+    # overview ``objective`` leads and the summary blocks trail.
+    overview_types = [bt for bt, *_ in plan.page_plan["overview"]]
+    summary_types = [bt for bt, *_ in plan.page_plan["summary"]]
+    assert overview_types and overview_types[0] == "objective"
+    assert "summary_takeaway" in summary_types
+    # All five canonical page types present as keys.
+    assert set(plan.page_plan) == set(CANONICAL_PAGE_TYPES)
+    # The vocab_card landed on the content page.
+    assert any(bt == "vocab_card" for bt, *_ in plan.page_plan["content"])
+
+
+def test_unknown_block_type_dropped():
+    payload = _plan_payload([
+        {"block_type": "concept", "target_co_ids": ["CO-01"],
+         "page_type": "content", "content_focus": "x"},
+        {"block_type": "NOT_A_REAL_TYPE", "target_co_ids": ["CO-02"],
+         "page_type": "content", "content_focus": "y"},
+        {"block_type": "example", "target_co_ids": ["CO-03"],
+         "page_type": "content", "content_focus": "z"},
+    ])
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(payload),
+    )
+    types = [b["block_type"] for b in plan.selected]
+    assert "NOT_A_REAL_TYPE" not in types
+    assert "concept" in types and "example" in types
+
+
+def test_budget_clamped_max():
+    # 15 content blocks returned; budget max 6 → the PLANNER's own
+    # selections are clamped to 6 content blocks. Page-type FLOORS then add
+    # page-appropriate fillers on top (floors take precedence over the
+    # budget max, by design — the default budget is raised to fund them).
+    blocks = [
+        {"block_type": "explanation", "target_co_ids": ["CO-01"],
+         "page_type": "content", "content_focus": f"b{i}"}
+        for i in range(15)
+    ]
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=[_COS[0]],  # single CO so coverage is trivial
+        provider=_MockProvider(_plan_payload(blocks)),
+        budget=(2, 6),
+    )
+    assert plan.fallback_used is False
+    # The planner's CONTENT (non-floor) blocks were clamped to the max of 6.
+    content_explanations = [
+        bt for bt, *_ in plan.page_plan["content"] if bt == "explanation"
+    ]
+    assert len(content_explanations) <= 6
+
+
+def test_budget_topup_min():
+    # Only 1 block returned; budget min 5 → top-up to 5.
+    blocks = [
+        {"block_type": "concept", "target_co_ids": ["CO-01", "CO-02", "CO-03"],
+         "page_type": "content", "content_focus": "all"},
+    ]
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(_plan_payload(blocks)),
+        budget=(5, 12),
+    )
+    assert len(plan.selected) >= 5
+
+
+def test_dropped_co_gets_default_block():
+    # Plan covers CO-01 only; CO-02 + CO-03 must get default coverage blocks.
+    blocks = [
+        {"block_type": "concept", "target_co_ids": ["CO-01"],
+         "page_type": "content", "content_focus": "only co1"},
+    ]
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(_plan_payload(blocks)),
+        budget=(1, 12),
+    )
+    covered = set()
+    for b in plan.selected:
+        covered.update(b["target_co_ids"])
+    assert {"CO-01", "CO-02", "CO-03"} <= covered
+
+
+def test_invalid_page_type_repaired_not_dropped():
+    blocks = [
+        {"block_type": "misconception", "target_co_ids": ["CO-01"],
+         "page_type": "bananas", "content_focus": "error"},
+    ]
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=[_COS[0]],
+        provider=_MockProvider(_plan_payload(blocks)),
+        budget=(1, 12),
+    )
+    misc = [b for b in plan.selected if b["block_type"] == "misconception"]
+    assert misc, "misconception block should survive page_type repair"
+    assert misc[0]["page_type"] in CANONICAL_PAGE_TYPES
+
+
+def test_llm_error_falls_back_to_fixed_plan():
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_RaisingProvider(),
+    )
+    assert plan.fallback_used is True
+    # Fixed plan now deploys the previously-unused types and is floor-compliant.
+    content = plan.page_block_plan_for("content")
+    content_types = [bt for bt, *_ in content]
+    assert content_types[:2] == ["concept", "explanation"]
+    assert "example" in content_types
+
+
+def test_unparseable_response_falls_back():
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider("this is not json at all <<<"),
+    )
+    assert plan.fallback_used is True
+
+
+def test_empty_blocks_falls_back():
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(_plan_payload([])),
+    )
+    assert plan.fallback_used is True
+
+
+def test_no_provider_is_fixed_plan():
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=None,
+    )
+    assert plan.fallback_used is True
+    assert set(plan.page_plan) == set(CANONICAL_PAGE_TYPES)
+
+
+def test_dispatch_call_seam():
+    payload = _plan_payload([
+        {"block_type": "concept", "target_co_ids": ["CO-01"],
+         "page_type": "content", "content_focus": "x"},
+        {"block_type": "example", "target_co_ids": ["CO-02"],
+         "page_type": "content", "content_focus": "y"},
+    ])
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_DispatchOnlyProvider(payload),
+        budget=(1, 12),
+    )
+    assert plan.fallback_used is False
+    types = [b["block_type"] for b in plan.selected]
+    assert "concept" in types and "example" in types
+
+
+def test_json_with_code_fence_parses():
+    fenced = (
+        "```json\n"
+        + _plan_payload([
+            {"block_type": "concept", "target_co_ids": ["CO-01"],
+             "page_type": "content", "content_focus": "x"},
+        ])
+        + "\n```"
+    )
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=[_COS[0]],
+        provider=_MockProvider(fenced),
+        budget=(1, 12),
+    )
+    assert plan.fallback_used is False
+
+
+def test_block_plan_decision_event_fires():
+    cap = _RecordingCapture()
+    payload = _plan_payload([
+        {"block_type": "concept", "target_co_ids": ["CO-01"],
+         "page_type": "content", "content_focus": "x"},
+        {"block_type": "example", "target_co_ids": ["CO-02"],
+         "page_type": "content", "content_focus": "y"},
+        {"block_type": "scenario", "target_co_ids": ["CO-03"],
+         "page_type": "application", "content_focus": "z"},
+    ])
+    plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(payload),
+        capture=cap,
+        course_code="TEST_101",
+        budget=(1, 12),
+    )
+    events = [e for e in cap.events if e.get("decision_type") == "block_plan"]
+    assert len(events) == 1
+    ev = events[0]
+    assert len(ev["rationale"]) >= 20
+    assert "TO-01" in ev["rationale"] or "TO-01" in ev["decision"]
+
+
+def test_fallback_emits_block_plan_event():
+    cap = _RecordingCapture()
+    plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_RaisingProvider(),
+        capture=cap,
+        course_code="TEST_101",
+    )
+    events = [e for e in cap.events if e.get("decision_type") == "block_plan"]
+    assert len(events) == 1
+    assert events[0]["ml_features"]["fallback_used"] is True
+
+
+def test_page_plan_for_unknown_page_type_defaults_to_content():
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=None,
+    )
+    # Unknown page type → content plan fallback.
+    assert plan.page_block_plan_for("nonexistent") == plan.page_plan["content"]
+
+
+# --------------------------------------------------------------------------- #
+# Per-page-type FLOOR tests (findings 2/6/7/8/16/18).
+# --------------------------------------------------------------------------- #
+def _page_counts(plan):
+    return {ptype: len(blocks) for ptype, blocks in plan.page_plan.items()}
+
+
+def _all_types(plan):
+    return {b["block_type"] for b in plan.selected}
+
+
+# A deliberately STARVED plan: the 70B pours everything onto content and
+# emits 1 thin block on every other page (the observed 7B failure mode).
+_STARVED_PLAN = [
+    {"block_type": "objective", "target_co_ids": ["CO-01"],
+     "page_type": "overview", "content_focus": "to only"},
+    {"block_type": "concept", "target_co_ids": ["CO-01"],
+     "page_type": "content", "content_focus": "c1"},
+    {"block_type": "explanation", "target_co_ids": ["CO-02"],
+     "page_type": "content", "content_focus": "c2"},
+    {"block_type": "activity", "target_co_ids": ["CO-03"],
+     "page_type": "application", "content_focus": "one app"},
+    {"block_type": "self_check_question", "target_co_ids": ["CO-01"],
+     "page_type": "self_check", "content_focus": "one q"},
+    {"block_type": "summary_takeaway", "target_co_ids": ["CO-02"],
+     "page_type": "summary", "content_focus": "one takeaway"},
+]
+
+
+def test_every_page_type_meets_its_floor():
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(_plan_payload(_STARVED_PLAN)),
+    )
+    assert plan.fallback_used is False
+    counts = _page_counts(plan)
+    for ptype, floor in _PAGE_TYPE_FLOORS.items():
+        assert counts[ptype] >= floor, (
+            f"{ptype} has {counts[ptype]} blocks, floor is {floor}"
+        )
+
+
+def test_self_check_has_at_least_four_questions():
+    # finding 7 — self_check must carry >= 4 self_check_question blocks.
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(_plan_payload(_STARVED_PLAN)),
+    )
+    q_count = sum(
+        1 for bt, *_ in plan.page_plan["self_check"]
+        if bt == "self_check_question"
+    )
+    assert q_count >= 4
+
+
+def test_application_and_summary_meet_floor():
+    # findings 2/8 — application + summary each >= 4 blocks.
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(_plan_payload(_STARVED_PLAN)),
+    )
+    counts = _page_counts(plan)
+    assert counts["application"] >= 4
+    assert counts["summary"] >= 4
+
+
+def test_overview_carries_objective_enumeration():
+    # finding 18 — the overview must lead with the objective enumeration
+    # block (TO + all COs), even when the planner forgot it.
+    starved_no_objective = [
+        b for b in _STARVED_PLAN if b["block_type"] != "objective"
+    ] + [
+        {"block_type": "explanation", "target_co_ids": ["CO-01"],
+         "page_type": "overview", "content_focus": "prose only"},
+    ]
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(_plan_payload(starved_no_objective)),
+    )
+    overview_types = [bt for bt, *_ in plan.page_plan["overview"]]
+    assert overview_types, "overview must not be empty"
+    assert overview_types[0] == "objective"
+    assert len(overview_types) >= _PAGE_TYPE_FLOORS["overview"]
+
+
+def test_unused_block_types_become_reachable():
+    # findings 6/16 — the contracted-but-never-authored types appear via the
+    # floor fillers even when the planner never selected them.
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(_plan_payload(_STARVED_PLAN)),
+    )
+    deployed = _all_types(plan)
+    # The floor fillers deploy these previously-0-count types.
+    assert "reflection_prompt" in deployed   # finding 6
+    assert "discussion_prompt" in deployed
+    assert "prereq_set" in deployed
+    # At least one of callout (finding 16) / misconception / flip_card_grid
+    # is reachable via a floor top-up.
+    assert deployed & {"callout", "misconception", "flip_card_grid", "checklist"}
+
+
+def test_floors_apply_to_fixed_fallback():
+    # A planner FAILURE must still yield a floor-compliant, balanced week.
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_RaisingProvider(),
+    )
+    assert plan.fallback_used is True
+    counts = _page_counts(plan)
+    for ptype, floor in _PAGE_TYPE_FLOORS.items():
+        assert counts[ptype] >= floor
+    # The fixed fallback also deploys the previously-unused types.
+    deployed = _all_types(plan)
+    assert {"reflection_prompt", "discussion_prompt", "prereq_set"} <= deployed
+
+
+def test_floors_preserve_co_coverage():
+    # Floors must never break the CO-coverage guarantee.
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(_plan_payload(_STARVED_PLAN)),
+    )
+    covered = set()
+    for b in plan.selected:
+        covered.update(b["target_co_ids"])
+    assert {"CO-01", "CO-02", "CO-03"} <= covered
+
+
+# --------------------------------------------------------------------------- #
+# CO-id fan-out fix: page_block_plan_for surfaces per-block target_co_ids.
+# --------------------------------------------------------------------------- #
+def test_page_block_plan_for_surfaces_target_co_ids():
+    """Each ``page_block_plan_for`` entry is a 3-tuple carrying the planner's
+    per-block ``target_co_ids`` (the CO-id fan-out fix)."""
+    payload = _plan_payload([
+        {"block_type": "vocab_card", "target_co_ids": ["CO-01"],
+         "page_type": "content", "content_focus": "slope term"},
+        {"block_type": "example", "target_co_ids": ["CO-02"],
+         "page_type": "content", "content_focus": "worked solve"},
+        {"block_type": "scenario", "target_co_ids": ["CO-03"],
+         "page_type": "application", "content_focus": "real-world line"},
+    ])
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(payload),
+    )
+    content = plan.page_block_plan_for("content")
+    # Every entry is a 3-tuple (block_type, target_bloom, target_co_ids).
+    for entry in content:
+        assert len(entry) == 3
+        assert isinstance(entry[2], list)
+    co_ids_by_type = {bt: co_ids for bt, _bloom, co_ids in content}
+    assert co_ids_by_type.get("vocab_card") == ["CO-01"]
+    assert co_ids_by_type.get("example") == ["CO-02"]
+    app = plan.page_block_plan_for("application")
+    app_by_type = {bt: co_ids for bt, _bloom, co_ids in app}
+    assert app_by_type.get("scenario") == ["CO-03"]
+
+
+def test_page_block_plan_for_synthetic_weekblockplan_3tuple():
+    """A hand-built ``WeekBlockPlan`` surfaces the 3-tuple verbatim (no
+    planner / no model load)."""
+    plan = WeekBlockPlan(
+        page_plan={
+            "overview": [],
+            "content": [
+                ("concept", "understand", ["CO-02"]),
+                ("explanation", "apply", []),
+            ],
+            "application": [],
+            "self_check": [],
+            "summary": [],
+        }
+    )
+    entries = plan.page_block_plan_for("content")
+    assert entries == [
+        ("concept", "understand", ["CO-02"]),
+        ("explanation", "apply", []),
+    ]
+
+
+def test_fallback_plan_entries_are_3tuple_empty_co_ids():
+    """The deterministic fixed-plan fallback emits 3-tuples whose
+    ``target_co_ids`` is always empty — the consumer's "use week-TO" signal,
+    keeping the fixed-plan path byte-identical in objective_ids terms."""
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=None,  # None provider → fixed fallback
+    )
+    assert plan.fallback_used is True
+    for page_type in CANONICAL_PAGE_TYPES:
+        for entry in plan.page_block_plan_for(page_type):
+            assert len(entry) == 3
+            assert entry[2] == []
+
+
+# --------------------------------------------------------------------------- #
+# ITEM 7 (plan side) — a table-bearing / comparative-grid block is selectable
+# and deployed. There is no dedicated "table" BLOCK_TYPE (the <table> HTML
+# rides on a content section); the comparative/tabular block the planner can
+# SELECT is flip_card_grid (a grid of paired cards).
+# --------------------------------------------------------------------------- #
+def test_flip_card_grid_is_selectable_on_content():
+    # The planner SELECTS flip_card_grid for a comparison and it survives onto
+    # the content page (floors never drop a planner-chosen block).
+    payload = _plan_payload([
+        {"block_type": "flip_card_grid", "target_co_ids": ["CO-01"],
+         "page_type": "content", "content_focus": "compare slope-intercept vs point-slope"},
+        {"block_type": "concept", "target_co_ids": ["CO-02"],
+         "page_type": "content", "content_focus": "definition"},
+        {"block_type": "example", "target_co_ids": ["CO-03"],
+         "page_type": "content", "content_focus": "worked"},
+    ])
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_MockProvider(payload),
+    )
+    assert plan.fallback_used is False
+    content_types = [bt for bt, *_ in plan.page_plan["content"]]
+    assert "flip_card_grid" in content_types
+
+
+def test_fixed_fallback_deploys_comparative_grid():
+    # ITEM 7 — even a planner FAILURE deploys the comparative/grid block on the
+    # content page (the Sonnet-table analogue), via the fixed-plan fallback.
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        provider=_RaisingProvider(),
+    )
+    assert plan.fallback_used is True
+    content_types = [bt for bt, *_ in plan.page_block_plan_for("content")]
+    assert "flip_card_grid" in content_types
+
+
+def test_prompt_steers_comparative_content_to_grid():
+    # The planner prompt carries explicit comparative/tabular guidance so the
+    # live 70B steers comparison content to flip_card_grid (plan-side ITEM 7).
+    from lib.generation.block_planner import _build_prompt
+    from lib.generation.block_catalog import load_block_catalog
+
+    prompt = _build_prompt(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        source_chunks=[],
+        catalog=load_block_catalog(),
+        budget=(5, 24),
+    )
+    lowered = prompt.lower()
+    assert "comparative" in lowered or "tabular" in lowered
+    assert "flip_card_grid" in prompt
+
+
+if __name__ == "__main__":  # pragma: no cover
+    pytest.main([__file__, "-v"])
