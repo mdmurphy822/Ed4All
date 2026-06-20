@@ -139,13 +139,14 @@ def test_resolve_refs_selects_only_blocks_present_in_chunk_text() -> None:
     index = build_dart_block_offset_index(raw_html)
     # Chunk text containing only block a's prose.
     only_a = "Alpha distinct opening prose here for locating purposes."
+    # ``pages_kind`` rides through additively (kind-less fixture → "physical").
     assert resolve_dart_refs_for_chunk(index, only_a) == [
-        {"block_id": "a", "pages": [1]}
+        {"block_id": "a", "pages": [1], "pages_kind": "physical"}
     ]
     # Chunk text containing only block b's prose.
     only_b = "Beta separate opening prose here for locating purposes."
     assert resolve_dart_refs_for_chunk(index, only_b) == [
-        {"block_id": "b", "pages": [2]}
+        {"block_id": "b", "pages": [2], "pages_kind": "physical"}
     ]
     # Chunk text containing both (document order preserved).
     both = resolve_dart_refs_for_chunk(index, only_a + " " + only_b)

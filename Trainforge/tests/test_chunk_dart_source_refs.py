@@ -62,15 +62,20 @@ def test_harvest_pairs_block_id_with_same_element_pages() -> None:
         '<section data-dart-block-id="s2" data-dart-pages="9">b</section>'
     )
     refs = harvest_dart_source_refs(html)
+    # ``pages_kind`` is the additive back-compat field: kind-less fixtures
+    # (no ``data-dart-page-kind`` attr) normalize to "physical". The ``pages[]``
+    # shape is untouched.
     assert refs == [
-        {"block_id": "s1", "pages": [2, 3, 4]},
-        {"block_id": "s2", "pages": [9]},
+        {"block_id": "s1", "pages": [2, 3, 4], "pages_kind": "physical"},
+        {"block_id": "s2", "pages": [9], "pages_kind": "physical"},
     ]
 
 
 def test_harvest_block_without_pages_attr() -> None:
     html = '<section data-dart-block-id="s3_c0">contact</section>'
-    assert harvest_dart_source_refs(html) == [{"block_id": "s3_c0", "pages": []}]
+    assert harvest_dart_source_refs(html) == [
+        {"block_id": "s3_c0", "pages": [], "pages_kind": "physical"}
+    ]
 
 
 def test_harvest_empty_block_id_skipped() -> None:
@@ -83,7 +88,44 @@ def test_harvest_dedupes_repeated_block_id() -> None:
         '<section data-dart-block-id="s1" data-dart-pages="1">a</section>'
         '<ul data-dart-block-id="s1" data-dart-pages="1">b</ul>'
     )
-    assert harvest_dart_source_refs(html) == [{"block_id": "s1", "pages": [1]}]
+    assert harvest_dart_source_refs(html) == [
+        {"block_id": "s1", "pages": [1], "pages_kind": "physical"}
+    ]
+
+
+def test_harvest_page_kind_printed() -> None:
+    """``data-dart-page-kind`` is harvested additively alongside ``pages[]``."""
+    html = (
+        '<section data-dart-block-id="s1" data-dart-pages="47" '
+        'data-dart-page-kind="printed">a</section>'
+    )
+    assert harvest_dart_source_refs(html) == [
+        {"block_id": "s1", "pages": [47], "pages_kind": "printed"}
+    ]
+
+
+def test_harvest_page_kind_interpolated_and_physical() -> None:
+    html = (
+        '<section data-dart-block-id="s1" data-dart-pages="3-5" '
+        'data-dart-page-kind="interpolated">a</section>'
+        '<section data-dart-block-id="s2" data-dart-pages="9" '
+        'data-dart-page-kind="physical">b</section>'
+    )
+    assert harvest_dart_source_refs(html) == [
+        {"block_id": "s1", "pages": [3, 4, 5], "pages_kind": "interpolated"},
+        {"block_id": "s2", "pages": [9], "pages_kind": "physical"},
+    ]
+
+
+def test_harvest_page_kind_unknown_normalizes_to_physical() -> None:
+    """A garbage / unknown kind normalizes to "physical" (anti-fabrication)."""
+    html = (
+        '<section data-dart-block-id="s1" data-dart-pages="47" '
+        'data-dart-page-kind="bogus">a</section>'
+    )
+    assert harvest_dart_source_refs(html) == [
+        {"block_id": "s1", "pages": [47], "pages_kind": "physical"}
+    ]
 
 
 def test_harvest_non_dart_html_returns_empty() -> None:
@@ -143,7 +185,7 @@ def test_chunker_threads_dart_refs_no_sections_path() -> None:
     rec = records[0]
     assert rec["dart_source_refs_passed"] is True
     assert rec["dart_source_refs"] == [
-        {"block_id": "main-content", "pages": [1, 2, 3]}
+        {"block_id": "main-content", "pages": [1, 2, 3], "pages_kind": "physical"}
     ]
 
 

@@ -38,6 +38,7 @@ __all__ = [
     "extract_plain_text_with_curies",
     "extract_section_html",
     "harvest_dart_source_refs",
+    "parse_dart_page_kind_attr",
     "parse_dart_pages_attr",
     "resolve_dart_refs_for_chunk",
     "strip_assessment_feedback",
@@ -82,6 +83,34 @@ _DATA_DART_PAGES_RE = re.compile(
     r'data-dart-pages\s*=\s*(["\'])([^"\']*)\1',
     re.IGNORECASE,
 )
+
+#: ``data-dart-page-kind`` attribute value — emitted by DART on the SAME element
+#: as ``data-dart-pages``, with values ``printed`` | ``interpolated`` |
+#: ``physical`` (PINNED CONTRACT). Records whether ``data-dart-pages`` is the
+#: book's PRINTED page or the PDF/physical page. An ABSENT attribute MUST be
+#: treated as ``physical`` (back-compat — the whole existing corpus has no kind
+#: attr yet). Harvested additively into the ref dict's ``pages_kind`` field so a
+#: downstream consumer (grounded-answer) can eventually be honest about
+#: printed-vs-physical too — without breaking the existing ``pages[]`` shape.
+_DATA_DART_PAGE_KIND_RE = re.compile(
+    r'data-dart-page-kind\s*=\s*(["\'])([^"\']*)\1',
+    re.IGNORECASE,
+)
+
+#: The canonical DART page-kind values; anything else (incl. an absent attr) is
+#: normalized to ``"physical"``.
+_DART_PAGE_KINDS = frozenset({"printed", "interpolated", "physical"})
+
+
+def parse_dart_page_kind_attr(value: Optional[str]) -> str:
+    """Normalize a ``data-dart-page-kind`` attribute value.
+
+    Returns one of ``"printed"`` / ``"interpolated"`` / ``"physical"``. An
+    absent / empty / unknown value normalizes to ``"physical"`` (the back-compat
+    default — every existing kind-less corpus harvests as ``physical``).
+    """
+    kind = (value or "").strip().lower()
+    return kind if kind in _DART_PAGE_KINDS else "physical"
 
 #: One full opening tag carrying a ``data-dart-block-id`` — captured so we
 #: can pair each block-id with the ``data-dart-pages`` attribute on the
@@ -143,11 +172,17 @@ def harvest_dart_source_refs(html: str) -> List[Dict[str, Any]]:
     """Harvest DART ``{block_id, pages}`` provenance pairs from ``html``.
 
     Scans every opening tag that carries a ``data-dart-block-id`` and
-    pairs it with the ``data-dart-pages`` attribute on the *same* element.
-    Returns an ordered, deduped (by ``block_id``) list of
-    ``{"block_id": str, "pages": List[int]}`` dicts — document order
-    preserved so a chunk built from several merged DART sections lists its
-    blocks in reading order.
+    pairs it with the ``data-dart-pages`` (+ sibling ``data-dart-page-kind``)
+    attribute on the *same* element. Returns an ordered, deduped (by
+    ``block_id``) list of ``{"block_id": str, "pages": List[int], "pages_kind":
+    str}`` dicts — document order preserved so a chunk built from several merged
+    DART sections lists its blocks in reading order.
+
+    ``pages_kind`` is additive: one of ``"printed"`` / ``"interpolated"`` /
+    ``"physical"`` per the DART ``data-dart-page-kind`` contract, normalized to
+    ``"physical"`` when the attribute is absent (back-compat — the existing
+    corpus carries no kind attr). The ``pages[]`` shape is untouched, so legacy
+    consumers ignore the new field without breaking.
 
     Returns ``[]`` when ``html`` carries no ``data-dart-block-id`` (the
     additive contract — legacy / non-DART HTML emits no source references
@@ -176,7 +211,13 @@ def harvest_dart_source_refs(html: str) -> List[Dict[str, Any]]:
             if pages_match
             else []
         )
-        refs.append({"block_id": block_id, "pages": pages})
+        kind_match = _DATA_DART_PAGE_KIND_RE.search(tag)
+        pages_kind = parse_dart_page_kind_attr(
+            kind_match.group(2) if kind_match else None
+        )
+        refs.append(
+            {"block_id": block_id, "pages": pages, "pages_kind": pages_kind}
+        )
     return refs
 
 
@@ -236,8 +277,18 @@ def _block_element_spans(html: str) -> List[Tuple[int, int, Dict[str, Any]]]:
         pages = (
             parse_dart_pages_attr(pages_match.group(2)) if pages_match else []
         )
+        kind_match = _DATA_DART_PAGE_KIND_RE.search(tag)
+        pages_kind = parse_dart_page_kind_attr(
+            kind_match.group(2) if kind_match else None
+        )
         next_start = matches[i + 1].start() if i + 1 < len(matches) else len(html)
-        spans.append((m.start(), next_start, {"block_id": block_id, "pages": pages}))
+        spans.append(
+            (
+                m.start(),
+                next_start,
+                {"block_id": block_id, "pages": pages, "pages_kind": pages_kind},
+            )
+        )
     return spans
 
 
@@ -353,7 +404,13 @@ def resolve_dart_refs_for_chunk(
         if not block_id or block_id in seen:
             continue
         seen.add(block_id)
-        out.append({"block_id": block_id, "pages": list(ref.get("pages") or [])})
+        out.append(
+            {
+                "block_id": block_id,
+                "pages": list(ref.get("pages") or []),
+                "pages_kind": ref.get("pages_kind") or "physical",
+            }
+        )
     return out
 
 
