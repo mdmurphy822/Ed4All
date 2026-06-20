@@ -252,6 +252,7 @@ def compose_answer(
     temperature: float = 0.0,
     max_tokens: int = 1024,
     max_parse_retries: int = 3,
+    extra_directive: Optional[str] = None,
 ) -> ComposedAnswer:
     """Compose a passage-constrained answer. THE LLM call site.
 
@@ -261,6 +262,10 @@ def compose_answer(
     :class:`AnswerComposeError`; post-remediation unknown citation ids
     raise :class:`InvalidCitationError`. Never returns a fabricated
     envelope.
+
+    ``extra_directive`` (optional) is appended to the user prompt on every
+    attempt — the completeness re-ask uses it to name the still-unanswered
+    sub-question(s) without re-rendering the passage context.
     """
     selected = list(passages)[: max(0, max_passages)]
     model_id = _client_model_id(client)
@@ -288,9 +293,14 @@ def compose_answer(
     # retry (unknown ids) consumes one attempt within the same budget.
     for attempt_index in range(max_parse_retries):
         attempts += 1
+        # A caller-supplied ``extra_directive`` (e.g. the completeness re-ask)
+        # rides on EVERY attempt; the citation-remediation directive is appended
+        # on top when the model invents ids. Both compose additively so a
+        # re-ask retry can still self-repair an unknown-citation slip.
         user_prompt = base_user_prompt
-        if remediation_directive:
-            user_prompt = f"{base_user_prompt}\n\n{remediation_directive}"
+        directives = [d for d in (extra_directive, remediation_directive) if d]
+        if directives:
+            user_prompt = base_user_prompt + "\n\n" + "\n\n".join(directives)
 
         messages = [
             {"role": "system", "content": ANSWER_SYSTEM_PROMPT},

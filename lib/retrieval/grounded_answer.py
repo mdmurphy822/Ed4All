@@ -42,7 +42,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from dataclasses import replace as _dc_replace
 
 from lib.retrieval._text import normalize_ws
+from lib.retrieval._prompts import COMPLETENESS_REMEDIATION_DIRECTIVE
+from lib.retrieval.answer_completeness import analyze_completeness
 from lib.retrieval.answer_composer import (
+    AnswerComposeError,
     ComposedAnswer,
     RetrievedPassage,
     compose_answer,
@@ -89,6 +92,7 @@ __all__ = [
     "page_label_for_source",
     "DECISION_TYPE_CITATION_PRUNE",
     "DECISION_TYPE_NLI_CITATION_ADD",
+    "DECISION_TYPE_COMPLETENESS_RECHECK",
     # Status constants (WS4 + CLI map these to display copy / exit codes).
     "STATUS_ANSWERED",
     "STATUS_ANSWERED_WITH_WARNINGS",
@@ -116,6 +120,7 @@ DECISION_TYPE_REFUSAL = "grounded_answer_refusal"
 DECISION_TYPE_CITATION_GATE = "grounded_answer_citation_gate"
 DECISION_TYPE_CITATION_PRUNE = "grounded_answer_citation_prune"
 DECISION_TYPE_NLI_CITATION_ADD = "grounded_answer_nli_citation_add"
+DECISION_TYPE_COMPLETENESS_RECHECK = "grounded_answer_completeness_recheck"
 DECISION_PHASE = "libv2-answer"
 
 # Citation-prune/add outcomes (the capture `decision` suffix, plan §2.5).
@@ -1349,6 +1354,208 @@ def _emit_nli_citation_add(
     )
 
 
+def _resolve_completeness_recheck() -> bool:
+    """Resolve the completeness-recheck toggle (``ED4ALL_ANSWER_COMPLETENESS_RECHECK``).
+
+    Default ON. A small (7B-Q4) model non-deterministically drops a sub-question
+    of a multi-part question even when the grounding is its top passage; the
+    recheck catches that and re-asks once. Falsey values (``0``/``false``/``no``/
+    ``off``) disable. Parse-with-fallback (mirrors the other answer-path knobs).
+    """
+    import os
+
+    raw = os.environ.get("ED4ALL_ANSWER_COMPLETENESS_RECHECK")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _emit_completeness_recheck(
+    capture: Optional[Any],
+    *,
+    course_slug: str,
+    query_sha: str,
+    engine: str,
+    outcome: str,
+    parts: Sequence[Any],
+    uncovered_before: Sequence[str],
+    uncovered_after: Sequence[str],
+    reasked: bool,
+    adopted: bool,
+    reason: Optional[str] = None,
+) -> None:
+    """One capture for the completeness-recheck decision (dynamic rationale).
+
+    Interpolates the per-part addressed/grounded signals, the uncovered-but-
+    grounded set that drove (or didn't drive) the re-ask, whether a re-ask fired
+    and was adopted, and the residual uncovered set after — so a reader can
+    replay why the answer was (or was not) extended.
+    """
+    if capture is None:
+        return
+
+    def _part_str(p: Any) -> str:
+        sig = getattr(p, "addressed_signals", {}) or {}
+        gsig = getattr(p, "grounded_signals", {}) or {}
+        return (
+            f"{getattr(p, 'text', '')[:48]!r}"
+            f"(addr={getattr(p, 'addressed', None)}"
+            f"@shingle={sig.get('shingle')},cov={sig.get('token_coverage')};"
+            f"grnd={getattr(p, 'grounded', None)}"
+            f"@cov={gsig.get('best_token_coverage')},chunk={gsig.get('best_chunk_id')})"
+        )
+
+    per_part = "; ".join(_part_str(p) for p in parts) or "none"
+    before = ", ".join(uncovered_before) if uncovered_before else "none"
+    after = ", ".join(uncovered_after) if uncovered_after else "none"
+    reason_str = f" reason={reason}" if reason else ""
+    rationale = (
+        f"completeness recheck {outcome} for query {query_sha} "
+        f"(course={course_slug or '?'}, engine={engine}){reason_str}; "
+        f"reasked={reasked} adopted={adopted}; "
+        f"uncovered_before=[{before}] uncovered_after=[{after}]; "
+        f"parts=[{per_part}]"
+    )
+    _safe_log(
+        capture,
+        decision_type=DECISION_TYPE_COMPLETENESS_RECHECK,
+        decision=f"completeness_recheck:{outcome}",
+        rationale=rationale,
+        context=f"reasked={reasked} adopted={adopted} uncovered={len(uncovered_before)}",
+    )
+
+
+def _merge_completed_answer(
+    original: ComposedAnswer, reask: ComposedAnswer
+) -> ComposedAnswer:
+    """Merge a re-ask's missing-part answer onto the original (additive).
+
+    The completeness directive is additive ("answer the missing part, do not
+    restate the parts you already answered"), so the re-ask's ``answer_text``
+    covers ONLY the previously-dropped sub-question. We append it to the
+    original prose and union the citation ids (original order first), keeping
+    the already-good first part verbatim. The merged answer then flows through
+    the citation gate + prune + groundedness exactly like a single-pass answer.
+    """
+    merged_text = (original.answer_text or "").rstrip() + "\n\n" + (
+        reask.answer_text or ""
+    ).strip()
+    merged_ids = list(
+        dict.fromkeys([*original.cited_chunk_ids, *reask.cited_chunk_ids])
+    )
+    return _dc_replace(
+        original,
+        answer_text=merged_text.strip(),
+        cited_chunk_ids=merged_ids,
+        attempts=original.attempts + reask.attempts,
+        latency_ms=original.latency_ms + reask.latency_ms,
+        raw_response_len=original.raw_response_len + reask.raw_response_len,
+    )
+
+
+def _apply_completeness_recheck(
+    *,
+    query: str,
+    composed: ComposedAnswer,
+    passages: Sequence[RetrievedPassage],
+    client: Any,
+    capture: Optional[Any],
+    course_slug: str,
+    query_sha: str,
+    engine: str,
+    max_passages: int,
+) -> Tuple[ComposedAnswer, List[str]]:
+    """Single bounded re-ask when a multi-part question left a grounded part unanswered.
+
+    Pure-lexical detection (no model load): a sub-question that the answer does
+    NOT address but a passage DOES support triggers one re-ask through the
+    composer with the additive completeness directive. NEVER regresses — a
+    re-ask that refuses / returns no citations / errors keeps the original
+    answered response. The re-ask is itself NOT rechecked (no recursion).
+    """
+    if not composed.answer_text:
+        return composed, []
+
+    result = analyze_completeness(query, composed.answer_text, passages)
+    uncovered = result.uncovered_but_grounded
+    if not result.is_multipart or not uncovered:
+        _emit_completeness_recheck(
+            capture,
+            course_slug=course_slug,
+            query_sha=query_sha,
+            engine=engine,
+            outcome="noop:single_part" if not result.is_multipart else "noop:all_addressed_or_ungrounded",
+            parts=result.parts,
+            uncovered_before=uncovered,
+            uncovered_after=uncovered,
+            reasked=False,
+            adopted=False,
+        )
+        return composed, []
+
+    directive = COMPLETENESS_REMEDIATION_DIRECTIVE.format(
+        uncovered_parts="; ".join(uncovered)
+    )
+    try:
+        reask = compose_answer(
+            query,
+            passages,
+            client=client,
+            capture=capture,
+            course_code=course_slug,
+            max_passages=max_passages,
+            extra_directive=directive,
+        )
+    except Exception as exc:  # noqa: BLE001 - enhancement must never break a good answer
+        _emit_completeness_recheck(
+            capture,
+            course_slug=course_slug,
+            query_sha=query_sha,
+            engine=engine,
+            outcome="reask:failed",
+            parts=result.parts,
+            uncovered_before=uncovered,
+            uncovered_after=uncovered,
+            reasked=True,
+            adopted=False,
+            reason=type(exc).__name__,
+        )
+        return composed, ["completeness_reask_failed"]
+
+    # Never regress an answered response: adopt only a strictly-valid re-ask.
+    if reask.not_in_course or not reask.cited_chunk_ids or not reask.answer_text:
+        _emit_completeness_recheck(
+            capture,
+            course_slug=course_slug,
+            query_sha=query_sha,
+            engine=engine,
+            outcome="reask:rejected_no_extension",
+            parts=result.parts,
+            uncovered_before=uncovered,
+            uncovered_after=uncovered,
+            reasked=True,
+            adopted=False,
+        )
+        return composed, []
+
+    merged = _merge_completed_answer(composed, reask)
+    post = analyze_completeness(query, merged.answer_text, passages)
+    still = post.uncovered_but_grounded
+    _emit_completeness_recheck(
+        capture,
+        course_slug=course_slug,
+        query_sha=query_sha,
+        engine=engine,
+        outcome="reask:covered" if not still else "reask:still_uncovered",
+        parts=post.parts,
+        uncovered_before=uncovered,
+        uncovered_after=still,
+        reasked=True,
+        adopted=True,
+    )
+    return merged, ["completeness_reasked"]
+
+
 # --------------------------------------------------------------------------- #
 # The pipeline (D9)
 # --------------------------------------------------------------------------- #
@@ -1371,6 +1578,7 @@ def answer_course_question(
     max_passages: int = 8,
     prune_mode: Optional[str] = None,
     prune_min_overlap: Optional[float] = None,
+    completeness_recheck: Optional[bool] = None,
 ) -> GroundedAnswer:
     """Answer a single-course question, grounded + citation-gated.
 
@@ -1515,6 +1723,31 @@ def answer_course_question(
             start=start,
         )
 
+    # 4b) Completeness recheck — single bounded re-ask for a multi-part question
+    #     that left a grounded sub-question unanswered (a 7B-Q4 failure mode even
+    #     when the grounding is the top passage). Runs BEFORE the citation gate so
+    #     the merged answer + unioned citations flow through gate → prune →
+    #     groundedness exactly like a single-pass answer. Never regresses an
+    #     answered response; pure-lexical detection (no extra model load).
+    recheck_warnings: List[str] = []
+    do_recheck = (
+        _resolve_completeness_recheck()
+        if completeness_recheck is None
+        else completeness_recheck
+    )
+    if do_recheck:
+        composed, recheck_warnings = _apply_completeness_recheck(
+            query=query,
+            composed=composed,
+            passages=passages,
+            client=client,
+            capture=capture,
+            course_slug=course_slug,
+            query_sha=query_sha,
+            engine=engine,
+            max_passages=max_passages,
+        )
+
     cited_set = set(composed.cited_chunk_ids)
     by_id = {p.chunk_id: p for p in passages}
     # Order-preserving cited passage list (composer already validated ids ∈
@@ -1546,7 +1779,7 @@ def answer_course_question(
             model_id=composed.model_id,
             prompt_version=composed.prompt_version,
             groundedness=None,
-            warnings=[],
+            warnings=list(recheck_warnings),
             start=start,
         )
 
@@ -1589,7 +1822,7 @@ def answer_course_question(
     #    model could have cited (composed.allowed_chunk_ids), in retrieval-rank
     #    order — so an uncited definitional supporter the model under-cited can
     #    be credited, and a model-cited chunk supporting zero claims dropped.
-    warnings: List[str] = []
+    warnings: List[str] = list(recheck_warnings)
     mode = resolve_prune_mode(prune_mode)
     min_overlap = resolve_min_overlap(prune_min_overlap)
     add_min_shingle = resolve_add_min_shingle()

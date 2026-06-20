@@ -48,13 +48,18 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycle
 # Bump on ANY change to the system/user prompt wording below.
 #
 # NOTE: the grounded-answer MILESTONE_TARGETS (lib/retrieval/grounded_eval.py)
-# and the refusal-policy pins were MEASURED under ws3.v2 — this ws3.v3 wording
-# changes the model's answer-vs-refuse boundary (it now answers synthesis /
+# and the refusal-policy pins were MEASURED under ws3.v2 — the ws3.v3 wording
+# changed the model's answer-vs-refuse boundary (it now answers synthesis /
 # applied questions the passages substantively support instead of over-refusing
-# on literal-wording mismatches). The orchestrator MUST re-measure the gold +
+# on literal-wording mismatches). ws3.v4 ADDS explicit enumerate-then-answer
+# scaffolding so a small (7B) model reliably answers EVERY sub-part of a
+# multi-part question instead of stopping after the first part. The
+# answer-vs-refuse boundary and the refusal NUMERIC pins are UNAFFECTED: the
+# refusal policy is a retrieval-score threshold (lib/retrieval/refusal.py),
+# independent of this prompt. The orchestrator MUST re-measure the gold +
 # refusal-probe suites and re-pin MILESTONE_TARGETS / the refusal policy after
 # this lands; the constants are deliberately left untouched here.
-ANSWER_PROMPT_VERSION = "ws3.v3"
+ANSWER_PROMPT_VERSION = "ws3.v4"
 
 # Per-passage hard truncation (characters). A 14B-Q4 model loses the
 # trailing JSON directive when the context balloons; capping each
@@ -105,6 +110,14 @@ MAX_CONTEXT_CHARS = 12000
 # should apply methods/worked examples the passages demonstrate to the
 # question's specifics. Refusal is reserved for genuine absence: the passages
 # contain no supporting material, NOT merely a wording mismatch.
+#
+# ws3.v4 multi-part completeness: a 7B-Q4 model intermittently answered only
+# the FIRST part of a two-part question ("perimeter of a rectangle? the
+# circumference of a circle?") even when both parts were grounded in the same
+# passage — it stopped after part one. The added enumerate-then-answer
+# scaffolding makes the model FIRST list each distinct sub-question, THEN
+# answer them in turn, in order, before emitting JSON, so no supported part is
+# silently dropped.
 ANSWER_SYSTEM_PROMPT = (
     "You answer a student's question about one course using ONLY the "
     "numbered source passages provided. Do not use outside knowledge. "
@@ -113,14 +126,16 @@ ANSWER_SYSTEM_PROMPT = (
     "demonstrates a method or worked example, APPLY it to the specifics the "
     "question asks about. Answer whenever the passages substantively support "
     "the question, even if its exact wording does not appear verbatim. "
-    "If the question has multiple parts, address every part the passages "
-    "support; for any part NOT covered by the passages, say so in one short "
-    "sentence (e.g. \"The provided course material does not cover <part>.\") "
-    "instead of omitting it silently, and never invent material for an "
-    "uncovered part. Set \"not_in_course\" to true and leave \"answer\" empty "
-    "ONLY when the passages contain no material supporting the question — not "
-    "merely when its wording differs from the passages. Cite the id of "
-    "every passage that supports the answer. Output JSON only: "
+    "FIRST identify every distinct part or sub-question the question asks; "
+    "THEN answer each part in turn, in the order asked, and do not stop after "
+    "the first part. If the question has multiple parts, address every part "
+    "the passages support; for any part NOT covered by the passages, say so "
+    "in one short sentence (e.g. \"The provided course material does not "
+    "cover <part>.\") instead of omitting it silently, and never invent "
+    "material for an uncovered part. Set \"not_in_course\" to true and leave "
+    "\"answer\" empty ONLY when the passages contain no material supporting "
+    "the question — not merely when its wording differs from the passages. "
+    "Cite the id of every passage that supports the answer. Output JSON only: "
     '{"answer": "...", "citations": ["<passage_id>", ...], '
     '"not_in_course": false}.'
 )
@@ -137,6 +152,26 @@ CITATION_REMEDIATION_DIRECTIVE = (
     "Your previous reply cited passage ids that were not in the provided "
     "list: {bad_ids}. The ONLY valid passage ids are: {allowed_ids}. "
     "Answer again citing ONLY ids from that list."
+)
+
+
+# Appended to the user prompt when a later completeness check finds one or
+# more sub-questions that the passages DO support but the previous reply
+# failed to answer; drives a single remediation retry. ``{uncovered_parts}``
+# is the comma- or newline-joined text of those still-unanswered sub-questions.
+# Naming the specific uncovered parts (not just "answer everything") is
+# deliberate: a small model that dropped a part on the first pass re-drops it
+# under a vague restatement, but reliably extends its answer when the missing
+# part is enumerated. The ONLY-the-passages + no-invention constraints mirror
+# the system prompt so the retry cannot fabricate to satisfy the directive,
+# and the no-restate clause keeps the extension additive rather than a full
+# rewrite of the already-good parts.
+COMPLETENESS_REMEDIATION_DIRECTIVE = (
+    "Your previous reply did not answer these part(s) of the question, which "
+    "the provided passages DO support: {uncovered_parts}. Additionally answer "
+    "those specific part(s) using ONLY the provided passages. Do not restate "
+    "the parts you already answered, and do not invent material for any part "
+    "the passages do not support."
 )
 
 
@@ -342,6 +377,7 @@ __all__ = [
     "ANSWER_PROMPT_VERSION",
     "ANSWER_SYSTEM_PROMPT",
     "CITATION_REMEDIATION_DIRECTIVE",
+    "COMPLETENESS_REMEDIATION_DIRECTIVE",
     "PASSAGE_CHAR_CAP",
     "MAX_CONTEXT_CHARS",
     "CHARS_PER_TOKEN",

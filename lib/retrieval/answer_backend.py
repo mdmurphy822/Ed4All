@@ -9,6 +9,14 @@ registry, NO subclass — but constructs the layer-2
 expose ``json_mode`` and the structured answer envelope needs the
 Wave-113 lenient-JSON contract a 14B-Q4 model requires.
 
+Single source of truth: ``_OPENAI_COMPATIBLE_PROVIDERS`` is itself a
+projection of the ``openai_compatible`` rows in ``config/endpoints.yaml``
+(loader ``lib/llm/endpoints.py``), so this path consumes the unified
+endpoint registry transitively. The loopback gate below is a
+CONSUMER-side policy overlay enforced here (NOT in the registry) — the
+endpoint rows carry a ``loopback_only`` flag but the answer path imposes
+loopback unconditionally on the RESOLVED url regardless.
+
 Phase-IA posture (enforced here, no escape hatch):
 
 * The resolved ``base_url`` host MUST be loopback. Anything else raises

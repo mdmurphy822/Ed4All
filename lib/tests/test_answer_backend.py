@@ -33,8 +33,9 @@ def test_default_resolves_to_local_loopback_qwen():
     resolved = resolve_answer_backend()
     assert isinstance(resolved, ResolvedAnswerBackend)
     assert resolved.provider_name == "local"
-    # Default model chain → LOCAL_SYNTHESIS_MODEL registry default.
-    assert resolved.model_id == "qwen2.5:14b-instruct-q4_K_M"
+    # Default model chain → LOCAL_SYNTHESIS_MODEL registry default (the 2-tier
+    # design pins the local row to the 8GB-resident 7B; env still overrides).
+    assert resolved.model_id == "qwen2.5:7b-instruct-q4_K_M"
     assert "localhost" in resolved.base_url or "127.0.0.1" in resolved.base_url
     assert resolved.timeout == 120.0
 
@@ -68,8 +69,12 @@ def test_timeout_garbage_falls_back_to_default(monkeypatch):
     assert resolve_answer_backend().timeout == 120.0
 
 
-@pytest.mark.parametrize("provider", ["together", "groq", "fireworks", "deepseek"])
+@pytest.mark.parametrize(
+    "provider", ["together", "groq", "fireworks", "deepseek", "nvidia"]
+)
 def test_cloud_providers_refused_as_not_local(provider):
+    # ``nvidia`` is included now that the unified registry projects it into
+    # _OPENAI_COMPATIBLE_PROVIDERS — the loopback gate must keep refusing it.
     with pytest.raises(AnswerProviderNotLocal):
         resolve_answer_backend(provider_name=provider)
 

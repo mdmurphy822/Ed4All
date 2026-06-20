@@ -17,6 +17,7 @@ import pytest
 
 from lib.retrieval.answer_backend import AnswerBackendUnavailable
 from lib.retrieval.grounded_answer import (
+    DECISION_TYPE_COMPLETENESS_RECHECK,
     STATUS_ANSWERED,
     STATUS_ANSWERED_WITH_WARNINGS,
     STATUS_BLOCKED_CITATION_GATE,
@@ -150,7 +151,7 @@ def test_happy_path_answers_with_resolved_citation(mini_libv2: Path):
     # char_span forwarded only for resolved_exact.
     assert cit.link_target["char_span"] is not None
     assert result.model_id == "qwen2.5:14b-instruct-q4_K_M"
-    assert result.prompt_version == "ws3.v3"
+    assert result.prompt_version == "ws3.v4"
 
 
 def test_resolved_normalized_citation_passes_without_char_span(mini_libv2: Path):
@@ -1733,3 +1734,144 @@ def test_on_mode_never_changes_answer_status(mini_libv2, monkeypatch):
     assert len(on.citations) >= len(baseline.citations)
     # The model's original citation is still present (an add appends, never drops).
     assert "mini_alpha_chunk_003" in [c.chunk_id for c in on.citations]
+
+
+# --------------------------------------------------------------------------- #
+# Completeness recheck — a single bounded re-ask when a multi-part question
+# leaves a GROUNDED sub-question unanswered (a 7B-Q4 failure mode, 2026-06).
+# validate_citations=False isolates the recheck (it runs pre-gate) from the
+# anchor resolver, so these synthetic geo chunks need no backing HTML.
+# --------------------------------------------------------------------------- #
+
+_GEO_PERIMETER_CHUNK = {
+    "id": "mini_geo_perimeter",
+    "schema_version": "v4",
+    "chunk_type": "explanation",
+    "concept_tags": ["perimeter", "rectangle"],
+    "text": (
+        "Perimeter of a rectangle. The perimeter of a rectangle is the distance "
+        "around it: add all four sides. Use the formula P = 2L + 2W where L is "
+        "the length and W is the width of the rectangle."
+    ),
+    "learning_outcome_refs": [],
+    "source": {
+        "item_path": "geo/perimeter.html",
+        "section_heading": "Perimeter",
+        "module_id": "geo",
+        "course_id": "MINI_RETRIEVAL_101",
+    },
+}
+
+_GEO_CIRCLE_CHUNK = {
+    "id": "mini_geo_circle",
+    "schema_version": "v4",
+    "chunk_type": "explanation",
+    "concept_tags": ["circumference", "circle"],
+    "text": (
+        "Circumference of a circle. The circumference of a circle is the distance "
+        "around the circle. Use the formula C = 2 pi r where r is the radius of "
+        "the circle, or equivalently C = pi d with diameter d."
+    ),
+    "learning_outcome_refs": [],
+    "source": {
+        "item_path": "geo/circle.html",
+        "section_heading": "Circumference",
+        "module_id": "geo",
+        "course_id": "MINI_RETRIEVAL_101",
+    },
+}
+
+_MULTIPART_GEO_QUERY = (
+    "how do I find the perimeter of a rectangle? the circumference of a circle?"
+)
+
+
+def _recheck_events(spy):
+    return [e for e in spy.events
+            if e["decision_type"] == DECISION_TYPE_COMPLETENESS_RECHECK]
+
+
+def test_completeness_recheck_reasks_and_merges_missing_part(mini_libv2: Path):
+    """First pass answers only the rectangle half; the circumference half is
+    grounded in a passage, so the recheck fires ONE re-ask and merges it in."""
+    _append_chunk(mini_libv2, _GEO_PERIMETER_CHUNK)
+    _append_chunk(mini_libv2, _GEO_CIRCLE_CHUNK)
+    spy = SpyCapture()
+    client = FakeAnswerClient([
+        _envelope("To find the perimeter of a rectangle, use P = 2L + 2W.",
+                  ["mini_geo_perimeter"]),
+        _envelope("The circumference of a circle is C = 2 pi r.",
+                  ["mini_geo_circle"]),
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, _MULTIPART_GEO_QUERY,
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        validate_citations=False,
+    )
+    assert result.status == STATUS_ANSWERED
+    # The merged answer now covers BOTH parts.
+    assert "perimeter" in result.answer_text.lower()
+    assert "circumference" in result.answer_text.lower()
+    # Two LLM calls: the initial compose + the single bounded re-ask.
+    assert len(client.calls) == 2
+    assert "completeness_reasked" in result.warnings
+    # Unioned citations carry both parts' supporters.
+    cited = {c.chunk_id for c in result.citations}
+    assert {"mini_geo_perimeter", "mini_geo_circle"} <= cited
+    # Capture fired once with a dynamic, replayable rationale.
+    ev = _recheck_events(spy)
+    assert len(ev) == 1
+    assert ev[0]["decision_type"] in _enum_members()
+    assert ev[0]["decision"] == "completeness_recheck:reask:covered"
+    rat = ev[0]["rationale"]
+    assert len(rat) >= 20
+    assert "circumference" in rat.lower()          # names the uncovered part
+    assert "reasked=True" in rat and "adopted=True" in rat
+
+
+def test_completeness_recheck_noop_when_both_parts_addressed(mini_libv2: Path):
+    """A two-part question answered completely on the first pass: the recheck
+    runs, finds nothing uncovered-but-grounded, and does NOT re-ask."""
+    _append_chunk(mini_libv2, _GEO_PERIMETER_CHUNK)
+    _append_chunk(mini_libv2, _GEO_CIRCLE_CHUNK)
+    spy = SpyCapture()
+    client = FakeAnswerClient([
+        _envelope(
+            "To find the perimeter of a rectangle use P = 2L + 2W. "
+            "The circumference of a circle is C = 2 pi r.",
+            ["mini_geo_perimeter", "mini_geo_circle"]),
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, _MULTIPART_GEO_QUERY,
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        validate_citations=False,
+    )
+    assert result.status == STATUS_ANSWERED
+    assert len(client.calls) == 1            # no re-ask
+    assert "completeness_reasked" not in result.warnings
+    ev = _recheck_events(spy)
+    assert len(ev) == 1
+    assert ev[0]["decision"].startswith("completeness_recheck:noop")
+    assert "reasked=False" in ev[0]["rationale"]
+
+
+def test_completeness_recheck_noop_when_uncovered_part_ungrounded(mini_libv2: Path):
+    """Only the perimeter chunk exists: the unanswered circumference part has no
+    supporting passage, so the recheck does NOT re-ask (re-asking would refuse)."""
+    _append_chunk(mini_libv2, _GEO_PERIMETER_CHUNK)  # NO circle chunk
+    spy = SpyCapture()
+    client = FakeAnswerClient([
+        _envelope("To find the perimeter of a rectangle, use P = 2L + 2W.",
+                  ["mini_geo_perimeter"]),
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, _MULTIPART_GEO_QUERY,
+        client=client, capture=spy, refusal_policy=_PERMISSIVE_LEXICAL,
+        validate_citations=False,
+    )
+    assert result.status == STATUS_ANSWERED
+    assert len(client.calls) == 1            # no re-ask
+    assert "completeness_reasked" not in result.warnings
+    ev = _recheck_events(spy)
+    assert len(ev) == 1
+    assert ev[0]["decision"] == "completeness_recheck:noop:all_addressed_or_ungrounded"

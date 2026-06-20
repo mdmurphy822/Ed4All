@@ -104,7 +104,7 @@ def _passages(n=2):
 # ===========================================================================
 
 def test_prompt_version_pinned():
-    assert ANSWER_PROMPT_VERSION == "ws3.v3"
+    assert ANSWER_PROMPT_VERSION == "ws3.v4"
 
 
 def test_system_prompt_requires_multipart_completeness():
@@ -139,6 +139,21 @@ def test_system_prompt_permits_synthesis_and_apply():
     client = FakeAnswerClient([_envelope("X is a thing.", ["chunk_00000"])])
     compose_answer("What is X?", _passages(2), client=client)
     assert "synthesize" in client.calls[0]["messages"][0]["content"]
+
+
+def test_system_prompt_enumerates_then_answers_every_part():
+    # ws3.v4 multi-part completeness: a 7B model intermittently answered only
+    # the first sub-question of a two-part question even when both parts were
+    # grounded in the same passage. The prompt must instruct the model to FIRST
+    # identify each distinct part, THEN answer each in turn, and not to stop
+    # after the first part (the regression these clauses fix).
+    assert "identify every distinct part" in ANSWER_SYSTEM_PROMPT
+    assert "do not stop after" in ANSWER_SYSTEM_PROMPT
+    assert "answer each part in turn" in ANSWER_SYSTEM_PROMPT
+    # The scaffolding must reach the assembled system message verbatim.
+    client = FakeAnswerClient([_envelope("X is a thing.", ["chunk_00000"])])
+    compose_answer("What is X?", _passages(2), client=client)
+    assert "identify every distinct part" in client.calls[0]["messages"][0]["content"]
 
 
 def test_user_prompt_numbers_blocks_and_appends_question():
@@ -214,7 +229,7 @@ def test_compose_well_formed_envelope_roundtrip():
     assert result.cited_chunk_ids == ["chunk_00000"]
     assert result.not_in_course is False
     assert result.attempts == 1
-    assert result.prompt_version == "ws3.v3"
+    assert result.prompt_version == "ws3.v4"
     assert result.model_id == "qwen2.5:14b-instruct-q4_K_M"
 
 
