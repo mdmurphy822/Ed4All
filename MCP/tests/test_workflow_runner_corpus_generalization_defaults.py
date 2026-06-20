@@ -94,6 +94,11 @@ def test_measured_graph_shaping_quartet_is_complete():
         "TRAINFORGE_NORMALIZE_LABELS": "true",
         # W3 — cooccurrence pair-counting aggregated to the page level.
         "TRAINFORGE_COOCCURRENCE_GROUP_BY": "page",
+        # M4 — degenerate-grouping guard for the page aggregation above (steps
+        # page->section->chunk when the corpus collapses into <3 real groups, so
+        # a single-lesson_id DART PDF still yields cooccurrence edges).
+        "TRAINFORGE_COOCCURRENCE_GROUP_FALLBACK": "true",
+        "TRAINFORGE_DROP_FRONTMATTER": "true",
         "TRAINFORGE_LEXICAL_CONCEPT_SEEDS": "true",
         "TRAINFORGE_OBJECTIVE_QUALITY_GATE": "true",
     }

@@ -14,7 +14,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 # Add project root to path for imports
 _MCP_DIR = Path(__file__).resolve().parents[1]
@@ -152,6 +152,1087 @@ def _inject_source_ids_attr(html: str, source_ids_value: str) -> str:
         )
 
     return _FIRST_START_TAG_RE.sub(_repl, html, count=1)
+
+
+# Rewrite-tier block_type -> canonical ChunkType content-type label. The
+# rewrite LLM stamps ``data-cf-content-type`` on prose block types
+# (explanation / example) via their ``<h2>`` heading, but the bloom-diversity
+# component block types (``self_check_question`` / ``activity``) render as a
+# ``<div class="self-check">`` / ``<div class="activity">`` wrapper carrying
+# component/purpose/bloom attributes but NO content-type — so
+# ``BlockContentTypeValidator`` (which audits every non-scaffolding block for a
+# ``data-cf-content-type`` in the canonical taxonomy) fires
+# OUTLINE_BLOCK_MISSING_CONTENT_TYPE on every one of them. Values MUST be
+# members of ``lib/validators/content_type.py::get_valid_chunk_types`` (the
+# Trainforge ChunkType enum): ``self_check_question`` is a formative-assessment
+# item → ``assessment_item``; ``activity`` is hands-on practice → ``exercise``.
+# Block types absent from this map keep whatever content-type the rewrite LLM
+# authored (or are scaffolding the gate skips). Mirrors the canonical
+# value choices in ``Courseforge/scripts/blocks.py::_self_check_question_attrs``
+# / ``_activity_attrs`` (which themselves carry no content-type — the
+# templated-emit path the rewrite tier replaces).
+_REWRITE_BLOCK_TYPE_CONTENT_TYPE: Dict[str, str] = {
+    "self_check_question": "assessment_item",
+    "activity": "exercise",
+}
+
+
+def _inject_content_type_attr(html: str, content_type_value: str) -> str:
+    """Stamp ``data-cf-content-type="{value}"`` onto the first start tag.
+
+    Used by the rewrite backstop for component block types
+    (``self_check_question`` / ``activity``) whose rewrite-tier HTML carries
+    no ``data-cf-content-type`` attribute (the LLM stamps component/purpose
+    attributes instead). Mirrors :func:`_inject_source_ids_attr`. No-op when
+    the value is empty, the attribute is already present (idempotent — a
+    re-run finds the attribute and does not double-stamp), or no start tag is
+    found.
+    """
+    if not content_type_value:
+        return html
+    if "data-cf-content-type" in html:
+        return html
+
+    def _repl(match: "re.Match") -> str:
+        tag, attrs, closing = match.group(1), match.group(2), match.group(3)
+        return (
+            f'<{tag}{attrs} data-cf-content-type="{content_type_value}"'
+            f'{closing}>'
+        )
+
+    return _FIRST_START_TAG_RE.sub(_repl, html, count=1)
+
+
+# Matches the appended hidden ``<span ... data-cf-curie="...">...</span>`` the
+# rewrite backstop injects as the curie-anchoring signal. Used to STRIP a junk
+# span (one whose text content carried only bare chunk ids, which are not
+# extractable CURIEs) so the minting path can re-inject a real CURIE span.
+# Non-greedy body; idempotent (a re-run with no junk span finds nothing).
+_CURIE_SPAN_EL_RE = re.compile(
+    r'<\s*span\b[^>]*\bdata-cf-curie\b[^>]*>.*?<\s*/\s*span\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+# ---------------------------------------------------------------------------
+# P0 — CURIE / LO-id leak sanitizer (7B→Sonnet parity, Wave 1).
+# ---------------------------------------------------------------------------
+#
+# The two-pass rewrite tier leaks two synthetic-token classes into VISIBLE
+# prose that a learner should never read:
+#
+#   1. Minted CURIEs (``prefix:localname`` — e.g. ``samplecoursea:integers``)
+#      that the dynamic-CURIE-minting pass attaches as an anchoring signal. The
+#      ANCHORING signal belongs in the hidden ``<span data-cf-curie>`` ONLY;
+#      every visible occurrence (bare token, ``<code>prefix:localname</code>``,
+#      ``data-cf-term="<full CURIE>"``) must be replaced by the CURIE's natural
+#      surface term so the published prose reads cleanly.
+#   2. Bare ``TO-NN`` / ``CO-NN`` objective ids rendered as the visible body of
+#      an objectives ``<li>`` (instead of the objective STATEMENT).
+#
+# These helpers are standalone + pure so the post-hoc regex path can re-run
+# them over an already-emitted export without re-dispatching the LLM.
+
+# Matches a bare CURIE-shaped token (``prefix:localname``) anywhere in prose.
+# Prefix is a lowercase alnum word; localname allows ``_`` and ``-`` so a
+# minted ``samplecoursea:least_common_multiple`` matches. Built per-CURIE at
+# call time (escaped) rather than a single broad regex, so we only ever rewrite
+# the SPECIFIC minted tokens for this course (never an unrelated ``foo:bar``).
+
+
+def _curie_visible_to_surface(html: str, curie: str, surface: str) -> str:
+    """Replace every VISIBLE occurrence of ``curie`` in ``html`` with ``surface``.
+
+    Rewrites three leak shapes, leaving the hidden ``<span data-cf-curie>``
+    (whose tokens are the anchoring signal) untouched:
+
+      * ``<code>prefix:localname</code>`` (and ``<kbd>`` / ``<samp>``) → the
+        surface term as plain text (the wrapping tag is dropped — a surface
+        term is prose, not code voice).
+      * ``data-cf-term="<full CURIE>"`` → ``data-cf-term="<localname>"`` (the
+        canonical inline-term attribute carries the local slug, not the full
+        synthetic CURIE).
+      * a bare ``prefix:localname`` token in running prose → ``surface``.
+
+    Idempotent: a body already carrying only the surface term is unchanged.
+    The hidden curie span is protected by temporarily masking it out before
+    the substitution and restoring it after.
+    """
+    if not html or not curie or ":" not in curie:
+        return html
+    surface = surface or curie.split(":", 1)[1].replace("_", " ").replace("-", " ")
+    local = curie.split(":", 1)[1]
+
+    # Protect the hidden anchoring span(s) from the bare-token substitution.
+    _shields: List[str] = []
+
+    def _shield(m: "re.Match") -> str:
+        _shields.append(m.group(0))
+        return f"\x00CURIESPAN{len(_shields) - 1}\x00"
+
+    masked = _CURIE_SPAN_EL_RE.sub(_shield, html)
+
+    # 1. <code>/<kbd>/<samp> wrapping the bare CURIE -> plain surface term.
+    for _tag in ("code", "kbd", "samp"):
+        masked = re.sub(
+            rf"<{_tag}\b[^>]*>\s*{re.escape(curie)}\s*</{_tag}>",
+            surface,
+            masked,
+            flags=re.IGNORECASE,
+        )
+    # 2. data-cf-term="<full CURIE>" -> data-cf-term="<localname>".
+    masked = re.sub(
+        rf'(data-cf-term=)(["\']){re.escape(curie)}\2',
+        rf'\1\2{local}\2',
+        masked,
+        flags=re.IGNORECASE,
+    )
+    # 3. bare token in prose -> surface term.
+    masked = re.sub(re.escape(curie), surface, masked)
+
+    # Restore the protected hidden span(s).
+    for _i, _orig in enumerate(_shields):
+        masked = masked.replace(f"\x00CURIESPAN{_i}\x00", _orig)
+    return masked
+
+
+def _objective_id_to_statement(objectives_doc: Any) -> Dict[str, str]:
+    """Build an ``{id: statement}`` map from a synthesized-objectives doc.
+
+    Accepts both the Courseforge synthesized form
+    (``terminal_objectives[]`` flat + ``chapter_objectives[].objectives[]``
+    nested) and the LibV2 archive form (``terminal_outcomes[]`` +
+    ``component_objectives[]``). Defensive: any non-conforming shape yields an
+    empty / partial map (callers fall back to rendering the bare id).
+    """
+    out: Dict[str, str] = {}
+    if not isinstance(objectives_doc, dict):
+        return out
+
+    def _add(entry: Any) -> None:
+        if not isinstance(entry, dict):
+            return
+        _id = entry.get("id")
+        _stmt = entry.get("statement")
+        if isinstance(_id, str) and _id and isinstance(_stmt, str) and _stmt:
+            out.setdefault(_id, _stmt)
+
+    for _key in ("terminal_objectives", "terminal_outcomes",
+                 "component_objectives", "learning_outcomes"):
+        for _e in objectives_doc.get(_key) or []:
+            _add(_e)
+    # Courseforge nested chapter form.
+    for _chap in objectives_doc.get("chapter_objectives") or []:
+        if isinstance(_chap, dict):
+            _add(_chap)  # flat chapter row (rare)
+            for _e in _chap.get("objectives") or []:
+                _add(_e)
+    return out
+
+
+def _index_objective_records(
+    objectives_doc: Any,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Index a synthesized-objectives doc into ``(to_map, co_map)``.
+
+    Each map is ``{id: full_objective_dict}``. ``to_map`` holds terminal
+    objectives (``terminal_objectives`` / ``terminal_outcomes``); ``co_map``
+    holds chapter objectives (``chapter_objectives[].objectives[]`` /
+    ``component_objectives``). Used by findings 9 (TO statement → human page
+    title) and 18 (overview enumerates the TO + its child COs). Defensive: any
+    non-conforming shape yields empty / partial maps.
+    """
+    to_map: Dict[str, Dict[str, Any]] = {}
+    co_map: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(objectives_doc, dict):
+        return to_map, co_map
+
+    def _put(target: Dict[str, Dict[str, Any]], entry: Any) -> None:
+        if not isinstance(entry, dict):
+            return
+        _id = entry.get("id")
+        if isinstance(_id, str) and _id:
+            target.setdefault(_id, entry)
+
+    for _key in ("terminal_objectives", "terminal_outcomes"):
+        for _e in objectives_doc.get(_key) or []:
+            _put(to_map, _e)
+    for _e in objectives_doc.get("component_objectives") or []:
+        _put(co_map, _e)
+    for _chap in objectives_doc.get("chapter_objectives") or []:
+        if isinstance(_chap, dict):
+            for _e in _chap.get("objectives") or []:
+                _put(co_map, _e)
+    return to_map, co_map
+
+
+# ===========================================================================
+# W10 — assessment-surface (QTI / discussion / assignment) emit helpers.
+#
+# Pure deterministic helpers consumed by the ``_run_assessment_synthesis``
+# phase handler (``run_assessment_synthesis`` registry tool). Factored to
+# module scope so they unit-test WITHOUT an LLM call, a pipeline run, or a
+# course slug: given fixture ``AssessmentData`` + discussion/assignment
+# dicts they write ``06_assessments/*.xml`` + a ``manifest.json`` matching
+# the packager's pinned contract. Spec: ``plans/finegrain/
+# w10-assessments-qti-discussions-2026-06.md`` §§3-4.
+# ===========================================================================
+
+# Matches a filesystem-safe basename token: alnum / underscore / hyphen / dot,
+# no path separators (anti path-traversal for the manifest ``file`` field).
+_ASSESSMENT_FILENAME_RE = re.compile(r"[^0-9A-Za-z._-]+")
+
+
+def _safe_assessment_basename(stem: str, *, fallback: str) -> str:
+    """Coerce an arbitrary title/id into a path-safe XML basename (no ext).
+
+    Strips path separators + illegal chars to ``_`` so the manifest ``file``
+    field can never contain ``..`` / ``/`` (the packager joins it under
+    ``06_assessments/``). Returns ``<fallback>`` when nothing usable remains.
+    """
+    text = (stem or "").strip().lower().replace(" ", "_")
+    text = _ASSESSMENT_FILENAME_RE.sub("_", text).strip("._-")
+    return text or fallback
+
+
+def _assessment_manifest_entry(
+    *,
+    basename: str,
+    kind: str,
+    title: str,
+    week: Optional[int],
+    identifier: str,
+) -> Dict[str, Any]:
+    """Build one ``06_assessments/manifest.json`` ``assessments[]`` entry.
+
+    Emits the EXACT shape the already-landed packager consumes
+    (``file`` / ``type`` / ``title`` / ``week`` / ``identifier``). ``file`` is
+    the basename under ``06_assessments/`` (``<basename>.xml``); ``week`` is
+    omitted when ``None`` (some assessments aren't week-scoped). ``type`` is
+    one of ``qti`` / ``discussion`` / ``assignment``.
+    """
+    entry: Dict[str, Any] = {
+        "file": f"{basename}.xml",
+        "type": kind,
+        "title": title or basename,
+        "identifier": identifier or f"RES_{basename}",
+    }
+    if week is not None:
+        entry["week"] = int(week)
+    return entry
+
+
+def _write_assessment_artifacts(
+    out_dir: Path,
+    artifacts: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Write each assessment XML + the ``manifest.json`` into ``out_dir``.
+
+    PURE I/O — no LLM, no pipeline state. ``artifacts`` is a list of dicts,
+    each carrying::
+
+        {
+            "xml": str,            # serialized XML document
+            "basename": str,       # path-safe stem (no extension)
+            "kind": str,           # qti | discussion | assignment
+            "title": str,
+            "week": Optional[int],
+            "identifier": str,
+        }
+
+    Anti-collision: a duplicate basename gets a ``_NN`` suffix so two
+    artifacts never clobber one file. Writes ``<basename>.xml`` for each,
+    then a ``manifest.json`` with the pinned ``schema_version: "v1"`` +
+    ``assessments[]`` shape. Returns the manifest dict actually written.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest_entries: List[Dict[str, Any]] = []
+    used: set = set()
+    for art in artifacts:
+        xml = str(art.get("xml") or "")
+        if not xml.strip():
+            continue
+        base = _safe_assessment_basename(
+            str(art.get("basename") or ""), fallback="assessment"
+        )
+        # De-collide.
+        candidate = base
+        n = 1
+        while candidate in used:
+            candidate = f"{base}_{n:02d}"
+            n += 1
+        used.add(candidate)
+
+        (out_dir / f"{candidate}.xml").write_text(xml, encoding="utf-8")
+        manifest_entries.append(
+            _assessment_manifest_entry(
+                basename=candidate,
+                kind=str(art.get("kind") or "qti"),
+                title=str(art.get("title") or candidate),
+                week=art.get("week"),
+                identifier=str(art.get("identifier") or f"RES_{candidate}"),
+            )
+        )
+
+    manifest = {"schema_version": "v1", "assessments": manifest_entries}
+    (out_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def _filter_questions_to_objective_universe(
+    questions: List[Any],
+    valid_objective_ids: set,
+) -> Tuple[List[Any], List[Any]]:
+    """Split questions into (kept, dropped) by objective-id grounding.
+
+    Anti-fabrication contract (spec §3 / §6): an emitted assessment item's
+    ``objective_id`` MUST come from the real synthesized-objectives universe.
+    A question whose ``objective_id`` resolves to none of
+    ``valid_objective_ids`` is DROPPED (never emitted) rather than shipping
+    an item that points at a phantom objective. Accepts ``QuestionData``
+    dataclasses (``.objective_id``) or plain dicts (``["objective_id"]``).
+    """
+    kept: List[Any] = []
+    dropped: List[Any] = []
+    for q in questions:
+        oid = getattr(q, "objective_id", None)
+        if oid is None and isinstance(q, dict):
+            oid = q.get("objective_id")
+        if isinstance(oid, str) and oid.strip() in valid_objective_ids:
+            kept.append(q)
+        else:
+            dropped.append(q)
+    return kept, dropped
+
+
+def _build_assessment_artifacts_from_data(
+    assessments: List[Any],
+    discussions: List[Dict[str, Any]],
+    assignments: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Map AssessmentData + discussion/assignment dicts → emit-ready artifacts.
+
+    PURE — imports the already-landed ``Courseforge.scripts.qti_emitter`` and
+    serializes each input to its canonical CC resource XML. ``assessments``
+    are ``AssessmentData`` instances (or their ``to_dict()`` form) → one QTI
+    document each; ``discussions`` → ``imsdt`` topic docs; ``assignments`` →
+    learning-application-resource docs. Each artifact dict is ready for
+    :func:`_write_assessment_artifacts`. ``week`` is pulled from an optional
+    ``week`` attr/key on the input (None when absent).
+
+    No fabrication: the emitter only reshapes its input; an empty input list
+    yields an empty artifact list (→ a clean empty ``06_assessments``).
+    """
+    from Courseforge.scripts.qti_emitter import (
+        assessment_to_qti,
+        discussion_to_imsdt,
+        assignment_to_resource,
+    )
+
+    def _week_of(obj: Any) -> Optional[int]:
+        w = getattr(obj, "week", None)
+        if w is None and isinstance(obj, dict):
+            w = obj.get("week")
+        try:
+            return int(w) if w is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _attr(obj: Any, name: str, default: str = "") -> str:
+        val = getattr(obj, name, None)
+        if val is None and isinstance(obj, dict):
+            val = obj.get(name)
+        return str(val) if val is not None else default
+
+    artifacts: List[Dict[str, Any]] = []
+
+    for a in assessments:
+        ident = _attr(a, "assessment_id", "assessment")
+        title = _attr(a, "title", ident) or ident
+        week = _week_of(a)
+        base = _safe_assessment_basename(
+            f"week_{week:02d}_quiz" if week is not None else ident,
+            fallback="quiz",
+        )
+        artifacts.append({
+            "xml": assessment_to_qti(a),
+            "basename": base,
+            "kind": "qti",
+            "title": title,
+            "week": week,
+            "identifier": f"RES_{base}",
+        })
+
+    for d in discussions:
+        ident = str(d.get("discussion_id") or d.get("objective_id") or "discussion")
+        title = str(d.get("title") or d.get("objective_id") or "Discussion")
+        week = _week_of(d)
+        base = _safe_assessment_basename(
+            f"week_{week:02d}_discussion" if week is not None else ident,
+            fallback="discussion",
+        )
+        artifacts.append({
+            "xml": discussion_to_imsdt(d),
+            "basename": base,
+            "kind": "discussion",
+            "title": title,
+            "week": week,
+            "identifier": f"RES_{base}",
+        })
+
+    for t in assignments:
+        ident = str(t.get("assignment_id") or t.get("objective_id") or "assignment")
+        title = str(t.get("title") or t.get("objective_id") or "Assignment")
+        week = _week_of(t)
+        base = _safe_assessment_basename(
+            f"week_{week:02d}_assignment" if week is not None else ident,
+            fallback="assignment",
+        )
+        artifacts.append({
+            "xml": assignment_to_resource(t),
+            "basename": base,
+            "kind": "assignment",
+            "title": title,
+            "week": week,
+            "identifier": f"RES_{base}",
+        })
+
+    return artifacts
+
+
+def _synthesize_prose_prompt(
+    provider: Any,
+    *,
+    kind: str,
+    objective_id: str,
+    statement: str,
+    chunks: List[Dict[str, Any]],
+    grounded_chunk_ids: List[str],
+    max_chars: int = 1200,
+) -> str:
+    """Author one assignment/discussion prose task via the assessment seat.
+
+    Routes a SINGLE bounded prompt through the supplied provider's
+    ``_dispatch_call`` (the same OpenAI-compatible / Anthropic plumbing the
+    Trainforge assessment generator uses), grounded ONLY in the supplied
+    chunks (anti-fabrication: the prompt enumerates real grounded chunk
+    text; the model writes a learner-facing prompt, not new source facts).
+
+    Returns the cleaned prose string, or ``""`` on any dispatch / empty
+    response so the caller can fall back to a deterministic prompt. Pure
+    w.r.t. the pipeline — the only side effect is the provider's own
+    per-call decision capture.
+    """
+    kind_label = "discussion prompt" if kind == "discussion" else "short assignment task"
+    # Build a small grounded-context block from the chunks the objective
+    # cites (cap each body so a 7B window stays comfortable).
+    grounded_set = {str(c) for c in grounded_chunk_ids}
+    ctx_lines: List[str] = []
+    for c in chunks:
+        cid = str(c.get("id") or c.get("chunk_id") or "")
+        if grounded_set and cid not in grounded_set:
+            continue
+        text = str(c.get("text") or "").strip()
+        if not text:
+            continue
+        if len(text) > 600:
+            text = text[:597] + "..."
+        ctx_lines.append(f"  - [{cid}] {text}")
+        if len(ctx_lines) >= 3:
+            break
+    ctx_block = "\n".join(ctx_lines) if ctx_lines else "  (no grounded chunks)"
+
+    user_prompt = (
+        f"Author ONE {kind_label} for learners, grounded in the source "
+        f"material below. Target this learning objective:\n"
+        f"  [{objective_id}] {statement}\n\n"
+        f"Source material (ground the prompt in THIS content; do not "
+        f"invent facts):\n{ctx_block}\n\n"
+        f"Respond with ONLY the {kind_label} prose (no preamble, no JSON, "
+        f"no markdown fences). Keep it under 120 words."
+    )
+
+    try:
+        text, _retry = provider._dispatch_call(user_prompt)
+    except Exception:
+        return ""
+    text = (text or "").strip()
+    if not text:
+        return ""
+    # Strip accidental markdown fences.
+    if text.startswith("```"):
+        import re as _re
+        m = _re.search(r"```(?:\w+)?\s*\n?(.*?)```", text, _re.DOTALL)
+        if m:
+            text = m.group(1).strip()
+    return text[:max_chars]
+
+
+# Matches an objectives ``<li ... data-cf-objective-id="ID">BODY</li>`` whose
+# visible BODY needs resolving to the objective statement. Group 1 = the full
+# attribute block before the body; group 2 = the resolved id; group 3 = body.
+_OBJECTIVE_LI_RE = re.compile(
+    r'(<li\b[^>]*\bdata-cf-objective-id=["\']([A-Za-z]{2,}-\d{2,})["\'][^>]*>)'
+    r'(.*?)(</li>)',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _resolve_objective_li_statements(
+    html: str, id_to_statement: Dict[str, str]
+) -> str:
+    """Rewrite objective ``<li>`` bodies from a bare id to the LO statement.
+
+    For each ``<li data-cf-objective-id="CO-NN">CO-NN</li>`` whose body is the
+    bare id (or empty), replace the body with
+    ``<strong>CO-NN:</strong> {statement}`` (mirroring
+    ``generate_course.py::_render_objectives``). The id stays in the
+    ``data-cf-objective-id`` attribute. A body already carrying real prose
+    (longer than the id, not just the id) is left untouched.
+    """
+    if not html or not id_to_statement:
+        return html
+    import html as _html_mod
+
+    def _repl(m: "re.Match") -> str:
+        open_tag, oid, body, close_tag = (
+            m.group(1), m.group(2), m.group(3), m.group(4),
+        )
+        statement = id_to_statement.get(oid) or id_to_statement.get(oid.upper())
+        if not statement:
+            return m.group(0)
+        body_stripped = re.sub(r"<[^>]+>", "", body).strip()
+        # Only rewrite when the body is empty or just the bare id (any case).
+        if body_stripped and body_stripped.lower() not in (
+            oid.lower(), f"{oid.lower()}:",
+        ):
+            return m.group(0)
+        return (
+            f"{open_tag}<strong>{oid}:</strong> "
+            f"{_html_mod.escape(statement)}{close_tag}"
+        )
+
+    return _OBJECTIVE_LI_RE.sub(_repl, html)
+
+
+# ---------------------------------------------------------------------------
+# P0 — VISIBLE provenance-id leak sanitizer (identifier leakage into prose).
+# ---------------------------------------------------------------------------
+#
+# The 7B course leaks raw provenance ids into VISIBLE learner text in three
+# classes. These helpers strip them from visible prose ONLY — never from a
+# ``data-cf-*`` attribute value (where the ids legitimately live as the
+# anchoring / provenance signal) nor from a hidden ``data-cf-curie`` span. The
+# attribute-safety guarantee for each is documented at its regex.
+#
+# CLASS 1 — a ``<cite class="source-attribution">`` whose body is just raw
+# ``dart:<source>#<hash>`` ids (and ``;``-joined runs of them). Strip the whole
+# element. The emit sites no longer author this cite; the sanitizer cleans an
+# EXISTING export. Attribute-safe: a ``<cite ...>`` element never appears inside
+# an attribute VALUE.
+_LEAKED_SOURCE_ATTR_CITE_RE = re.compile(
+    r'<cite\s+class=(["\'])source-attribution\1[^>]*>.*?</cite>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+# CLASS 1 (bare) — a raw ``dart:<source>#<hash>`` id sitting in VISIBLE prose
+# (not wrapped in the source-attribution cite, and not inside an attribute).
+# Shape mirrors the canonical ``dart:{slug}#{block_id}`` emit contract (slug =
+# lowercase + digits + hyphen; block_id = lowercase/digit/underscore/hyphen).
+# A ``;``/``,`` + whitespace separated RUN of such ids is consumed together so
+# the whole leaked list collapses (not just the head). Attribute-safe: the
+# ``data-cf-source-ids="dart:...#..."`` attribute is protected by the
+# attribute-mask in :func:`_strip_visible_provenance_ids` before this runs.
+_LEAKED_DART_ID_RUN_RE = re.compile(
+    r'dart:[a-z0-9][a-z0-9_-]*#[0-9a-f]+'
+    r'(?:\s*[;,]\s*dart:[a-z0-9][a-z0-9_-]*#[0-9a-f]+)*'
+)
+
+# CLASS 2 — a model-authored chunk-id ``<cite>...<course>_chunk_<NN></cite>``
+# plus the "According to the source[ chunk][,] " lead-in phrasing the 7B writes
+# before it. Two regexes:
+#   (a) the lead-in + cite together: ``According to the source, <cite>X</cite>,``
+#       / ``According to the source chunk <cite>X</cite>,`` / ``According to
+#       <cite>X</cite>,`` — stripped whole, with the trailing comma+space so the
+#       remaining sentence reads naturally (the following word is re-capitalized
+#       only if it began lowercase mid-strip — left as-is, low risk).
+#   (b) a bare ``<cite>...chunk_NN...</cite>`` not preceded by the lead-in —
+#       drop the cite element (and one leading space) but keep surrounding prose.
+# A ``<cite>`` element never appears inside an attribute value, so both are
+# attribute-safe.
+_LEAKED_ACCORDING_CHUNK_CITE_RE = re.compile(
+    r'According to (?:the source(?:\s+chunk)?[, ]?\s*)?'
+    r'<cite>\s*[a-z0-9_]*_chunk_\d+\s*</cite>\s*,?\s*',
+    re.IGNORECASE,
+)
+_LEAKED_BARE_CHUNK_CITE_RE = re.compile(
+    r' ?<cite>\s*[a-z0-9_]*_chunk_\d+\s*</cite>',
+    re.IGNORECASE,
+)
+
+# CLASS 3 — an inline parenthetical objective ref ``(CO-NN)`` / ``(TO-NN)`` in
+# body prose, including the U+2011 non-breaking-hyphen variant and stray inner
+# whitespace. The objective ``<li>`` rendering "CO-NN: <statement>" is INTENDED
+# and is NOT a parenthetical, so it is never matched. A single leading space is
+# consumed so mid-sentence stripping leaves no double space. Attribute-safe: the
+# parenthesized ``(CO-NN)`` form never appears inside an attribute value.
+_LEAKED_OBJECTIVE_PARENTHETICAL_RE = re.compile(
+    r' ?\(\s*(?:CO|TO)\s*[-‑]\s*\d+\s*\)'
+)
+
+# Any ``data-cf-*="..."`` (or single-quoted) attribute — masked out before the
+# visible-prose substitutions run so provenance ids living in
+# ``data-cf-source-ids`` / ``data-cf-term`` / etc. are NEVER touched. Also masks
+# a hidden ``<span ... data-cf-curie=...>...</span>`` whole element (its body is
+# the literal anchoring token and must survive).
+_DATA_CF_ATTR_RE = re.compile(r'data-cf-[a-z-]+=(["\']).*?\1', re.IGNORECASE)
+
+
+def _strip_visible_provenance_ids(html: str) -> str:
+    """Strip CLASS 1/2/3 provenance-id leaks from VISIBLE prose only.
+
+    Masks every ``data-cf-*`` attribute value and the hidden
+    ``<span data-cf-curie>`` element out FIRST, runs the visible-prose strips,
+    then restores the masked regions verbatim — so a provenance id that lives in
+    an attribute (the legitimate home) or in the hidden anchoring span is never
+    altered. Idempotent: a clean page is byte-identical out; a second pass finds
+    nothing left to strip.
+    """
+    if not isinstance(html, str) or not html:
+        return html
+
+    shields: List[str] = []
+
+    def _shield(m: "re.Match") -> str:
+        shields.append(m.group(0))
+        return f"\x00CFMASK{len(shields) - 1}\x00"
+
+    # Mask hidden curie spans (whole element) then every data-cf-* attribute.
+    masked = _CURIE_SPAN_EL_RE.sub(_shield, html)
+    masked = _DATA_CF_ATTR_RE.sub(_shield, masked)
+
+    # CLASS 1: drop the visible source-attribution cite, then any bare dart-id
+    # runs that survived outside a cite.
+    masked = _LEAKED_SOURCE_ATTR_CITE_RE.sub("", masked)
+    masked = _LEAKED_DART_ID_RUN_RE.sub("", masked)
+    # CLASS 2: drop the "According to the source <cite>chunk</cite>," lead-in,
+    # then any bare leftover chunk-id cite.
+    masked = _LEAKED_ACCORDING_CHUNK_CITE_RE.sub("", masked)
+    masked = _LEAKED_BARE_CHUNK_CITE_RE.sub("", masked)
+    # CLASS 3: drop inline (CO-NN)/(TO-NN) parentheticals from body prose.
+    masked = _LEAKED_OBJECTIVE_PARENTHETICAL_RE.sub("", masked)
+
+    # Restore masked regions verbatim.
+    for _i, _orig in enumerate(shields):
+        masked = masked.replace(f"\x00CFMASK{_i}\x00", _orig)
+    return masked
+
+
+# ---------------------------------------------------------------------------
+# P2 — block_type -> teaching-role resolution (7B→Sonnet parity, Wave 1).
+# ---------------------------------------------------------------------------
+#
+# The single-pass ``generate_course.py`` stamps ``data-cf-teaching-role`` on
+# every component wrapper via the canonical ``(component, purpose) -> role``
+# mapper (``lib/ontology/teaching_roles.map_role``). The two-pass rewrite tier
+# emits a bare ``<section>`` carrying no teaching-role, so chunk extraction
+# downstream sees a null role. This table maps each prose / component
+# block_type to the ``(component, purpose)`` pair the
+# ``schemas/taxonomies/teaching_role.json`` x-component-mapping resolves — so
+# the rewrite tier inherits the SAME deterministic role lookup. Block types
+# absent from the table get no teaching-role attribute (the mapper would return
+# None anyway). Resolved through ``map_role`` (never hardcoded) so a schema
+# drift surfaces at load time.
+_BLOCK_TYPE_TEACHING_ROLE_KEY: Dict[str, Tuple[str, str]] = {
+    "concept": ("concept", "introduce-concept"),
+    "definition": ("definition", "introduce-concept"),
+    "explanation": ("explanation", "elaborate-concept"),
+    "example": ("example", "demonstrate"),
+    "summary_takeaway": ("summary", "consolidate"),
+    "recap": ("recap", "review"),
+    "flip_card_grid": ("flip-card", "term-definition"),
+    "self_check_question": ("self-check", "formative-assessment"),
+    "activity": ("activity", "practice"),
+}
+
+
+def _teaching_role_for_block_type(block_type: str) -> str:
+    """Return the canonical teaching-role for ``block_type`` (or "").
+
+    Resolves the block_type to a ``(component, purpose)`` pair and routes it
+    through the single-source-of-truth ``lib.ontology.teaching_roles.map_role``
+    mapper. Returns "" when the block_type has no mapping (the section wrapper
+    then carries no ``data-cf-teaching-role`` — mirrors the mapper's None
+    fallback contract).
+    """
+    key = _BLOCK_TYPE_TEACHING_ROLE_KEY.get(block_type)
+    if not key:
+        return ""
+    try:
+        from lib.ontology.teaching_roles import map_role as _map_role
+        return _map_role(key[0], key[1]) or ""
+    except Exception:  # noqa: BLE001 — schema unavailable -> no attribute
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Deterministic styled-template fallback (7B/NVIDIA runaway-block recovery).
+# ---------------------------------------------------------------------------
+#
+# On a full course run the rewrite-tier model (Nemotron / 7B) rambles / repeats
+# on ~20-30% of blocks, exhausting the ``max_tokens`` budget so the block
+# truncates and ships as degraded / broken HTML — losing the P2 styled
+# component classes and breaking the page. When a block exhausts its
+# parse-retry budget (``escalation_marker`` set, no usable str content), we DO
+# NOT keep the degraded output. Instead we render a deterministic, LLM-free,
+# styled HTML block from the OUTLINE block's ``content.key_claims`` (a list of
+# concise ``{claim, source_chunk_ids}`` dicts) using the SAME styled component
+# classes + ``data-cf-*`` metadata the successful rewrite path emits. Every
+# block is therefore styled, concise, complete, and grounded — even when the
+# model misbehaves.
+#
+# The key_claims are ALREADY concise (one claim ≈ one sentence-or-two) — the
+# renderer NEVER pads or expands: one claim → one styled element.
+
+# A definition claim opens with a defined-term phrasing the source authored.
+_DEFINITION_CLAIM_RE = re.compile(
+    r"\b(is defined as|is the|are the|refers to|means that|is a |are a |"
+    r"is called|are called|definition[:]?)\b",
+    re.IGNORECASE,
+)
+# A rule / law / property claim states an invariant the learner must apply.
+_RULE_CLAIM_RE = re.compile(
+    r"\b(rule|law|property|theorem|principle|must|always|never|"
+    r"if and only if|equals|is equal to|the formula)\b",
+    re.IGNORECASE,
+)
+
+
+def _fallback_claim_texts(block: Any) -> List[str]:
+    """Extract the outline block's concise ``key_claims`` claim strings.
+
+    Reads ``block.content["key_claims"]`` (the W2 outline form — a list of
+    ``{claim, source_chunk_ids}`` dicts). Tolerant of a bare ``[str]`` list or
+    a string ``content`` (rare degraded outline shape). Returns the
+    already-concise claim strings in order; an empty list when nothing is
+    extractable (caller emits a minimal grounded ``<p>`` instead of crashing).
+    """
+    content = getattr(block, "content", None)
+    claims: List[str] = []
+    if isinstance(content, dict):
+        raw = content.get("key_claims") or content.get("claims") or []
+        if isinstance(raw, list):
+            for entry in raw:
+                if isinstance(entry, dict):
+                    txt = entry.get("claim") or entry.get("text")
+                    if isinstance(txt, str) and txt.strip():
+                        claims.append(txt.strip())
+                elif isinstance(entry, str) and entry.strip():
+                    claims.append(entry.strip())
+        # Fall back to a prose ``body`` / ``text`` field split on sentences.
+        if not claims:
+            for key in ("body", "text", "prose"):
+                val = content.get(key)
+                if isinstance(val, str) and val.strip():
+                    claims = [
+                        s.strip()
+                        for s in re.split(r"(?<=[.!?])\s+", val.strip())
+                        if s.strip()
+                    ]
+                    break
+    elif isinstance(content, str) and content.strip():
+        # A degraded str outline body — split into sentences as last resort.
+        claims = [
+            s.strip()
+            for s in re.split(r"(?<=[.!?])\s+", content.strip())
+            if s.strip()
+        ]
+    return claims
+
+
+def _render_block_fallback_html(
+    block: Any,
+    *,
+    objective_statements: Optional[Dict[str, str]] = None,
+    minted_curie_map: Optional[Dict[str, Any]] = None,
+    source_ids: Optional[List[str]] = None,
+) -> str:
+    """Render a deterministic, styled, grounded HTML body for one Block.
+
+    LLM-free. Maps ``block.block_type`` to the SAME styled component classes
+    the successful rewrite path emits (mirrors the P2 contracts in
+    ``Courseforge/generators/_rewrite_provider.py::_BLOCK_TYPE_OUTPUT_CONTRACTS``
+    and the CSS in ``Courseforge/scripts/generate_course.py::COURSEFORGE_CSS``).
+    Wraps everything in a ``<section>`` carrying the same ``data-cf-*``
+    attributes (content-type via the rewrite content-type table, teaching-role
+    via ``lib.ontology.teaching_roles``, bloom-level, source-ids) plus a
+    ``data-cf-fallback="template"`` marker so fallback-rendered blocks are
+    auditable. The P0 visible-token sanitizer runs over the result so no
+    minted CURIE / bare ``TO-NN`` id leaks into visible prose. SHORT by
+    construction — one concise key_claim → one styled element; never padded.
+    """
+    import html as _h
+
+    objective_statements = objective_statements or {}
+    block_type = getattr(block, "block_type", "") or ""
+    claims = _fallback_claim_texts(block)
+
+    def esc(s: str) -> str:
+        return _h.escape(s)
+
+    body_parts: List[str] = []
+
+    if block_type == "objective":
+        # Resolve the objective STATEMENTS (never the bare TO-NN / CO-NN).
+        oids = list(getattr(block, "objective_ids", ()) or ())
+        lis: List[str] = []
+        for oid in oids:
+            stmt = objective_statements.get(oid) or \
+                objective_statements.get(oid.upper())
+            if stmt:
+                lis.append(
+                    f'<li data-cf-objective-id="{esc(oid)}">'
+                    f"<strong>{esc(oid)}:</strong> {esc(stmt)}</li>"
+                )
+            else:
+                lis.append(
+                    f'<li data-cf-objective-id="{esc(oid)}">{esc(oid)}</li>'
+                )
+        if not lis:
+            # No objective_ids — render the key_claims as objective text.
+            for claim in claims:
+                lis.append(f"<li>{esc(claim)}</li>")
+        body_parts.append(f"<ul>{''.join(lis)}</ul>")
+
+    elif block_type in ("explanation", "concept"):
+        for claim in claims:
+            if _DEFINITION_CLAIM_RE.search(claim):
+                body_parts.append(
+                    f'<div class="definition-box">{esc(claim)}</div>'
+                )
+            elif _RULE_CLAIM_RE.search(claim):
+                body_parts.append(
+                    f'<div class="key-rule">{esc(claim)}</div>'
+                )
+            else:
+                body_parts.append(f"<p>{esc(claim)}</p>")
+
+    elif block_type == "example":
+        steps: List[str] = []
+        # All but the last claim are steps; the last is the solution line.
+        step_claims = claims[:-1] if len(claims) > 1 else claims
+        for idx, claim in enumerate(step_claims, start=1):
+            steps.append(
+                f'<div class="step-row">'
+                f'<span class="step-label">Step {idx}</span> '
+                f"{esc(claim)}</div>"
+            )
+        solution = ""
+        if len(claims) > 1:
+            solution = (
+                f'<div class="solution-line">{esc(claims[-1])}</div>'
+            )
+        body_parts.append(
+            '<div class="example-box"><div class="worked-example">'
+            f"{''.join(steps)}{solution}</div></div>"
+        )
+
+    elif block_type == "self_check_question":
+        # The first claim is the question; any remainder goes behind a reveal.
+        question = claims[0] if claims else "Check your understanding."
+        answer = " ".join(claims[1:]) if len(claims) > 1 else ""
+        reveal = ""
+        if answer:
+            reveal = (
+                "<details><summary>Show answer</summary>"
+                f"<p>{esc(answer)}</p></details>"
+            )
+        body_parts.append(
+            '<div class="self-check self-check-item" '
+            'data-cf-component="self-check" '
+            'data-cf-purpose="formative-assessment">'
+            f"<p>{esc(question)}</p>{reveal}</div>"
+        )
+
+    elif block_type == "activity":
+        items = "".join(f"<li>{esc(c)}</li>" for c in claims)
+        instruction = claims[0] if claims else "Complete the following practice."
+        practice = "".join(f"<li>{esc(c)}</li>" for c in claims[1:]) or items
+        body_parts.append(
+            '<div class="activity-card" data-cf-component="activity" '
+            'data-cf-purpose="practice">'
+            f"<p>{esc(instruction)}</p><ol>{practice}</ol></div>"
+        )
+
+    else:
+        # Generic styled fallback: each concise claim as a paragraph.
+        for claim in claims:
+            body_parts.append(f"<p>{esc(claim)}</p>")
+        if not body_parts:
+            body_parts.append("<p>Content unavailable.</p>")
+
+    body_html = "".join(body_parts)
+
+    # ---- Wrap in the canonical <section> with the same data-cf-* set ----
+    attrs = f' data-cf-block-id="{esc(getattr(block, "block_id", ""))}"'
+    attrs += ' data-cf-fallback="template"'
+
+    src_ids = list(source_ids or getattr(block, "source_ids", ()) or ())
+    if src_ids:
+        attrs += f' data-cf-source-ids="{esc(",".join(src_ids))}"'
+
+    oids = list(getattr(block, "objective_ids", ()) or ())
+    if oids:
+        attrs += f' data-cf-objective-id="{esc(",".join(oids))}"'
+
+    # Content-type: the component-only rewrite table covers
+    # self_check_question / activity; for the prose / styled block types the
+    # success path stamps the content-type on the <h2>/<h3> heading (which the
+    # fallback omits), so map those here too — same canonical values the
+    # rewrite contracts use (``explanation`` / ``example`` / ``concept`` /
+    # ``definition``).
+    content_type = _REWRITE_BLOCK_TYPE_CONTENT_TYPE.get(block_type) or {
+        "explanation": "explanation",
+        "concept": "concept",
+        "example": "example",
+        "objective": "objective",
+    }.get(block_type)
+    if content_type:
+        attrs += f' data-cf-content-type="{esc(content_type)}"'
+
+    role = getattr(block, "teaching_role", None) or \
+        _teaching_role_for_block_type(block_type)
+    if role:
+        attrs += f' data-cf-teaching-role="{esc(role)}"'
+
+    bloom = getattr(block, "bloom_level", None)
+    if bloom:
+        attrs += f' data-cf-bloom-level="{esc(bloom)}"'
+
+    # Source attribution — provenance ids live ONLY in the hidden
+    # ``data-cf-source-ids`` attribute (stamped above). A VISIBLE
+    # ``<cite class="source-attribution">`` whose body is the raw
+    # ``dart:...#hash`` ids leaks machine identifiers into learner prose
+    # (P0 identifier-leak defect). Emit no visible id-bearing cite.
+    html_out = f"<section{attrs}>{body_html}</section>"
+
+    # P0 — strip any visible minted-CURIE / bare-objective-id leakage and
+    # resolve objective <li> bodies to statements (idempotent, lossless on a
+    # clean page). The fallback authors no CURIEs in visible prose, but a
+    # key_claim could contain a domain term that matches a minted surface —
+    # run the sanitizer for parity with the success path.
+    html_out = sanitize_leaked_tokens_in_html(
+        html_out,
+        minted_curie_map=minted_curie_map,
+        objective_statements=objective_statements,
+    )
+    return html_out
+
+
+def sanitize_leaked_tokens_in_html(
+    html: str,
+    minted_curie_map: Optional[Dict[str, Any]] = None,
+    objective_statements: Optional[Dict[str, str]] = None,
+) -> str:
+    """Post-hoc P0 sanitizer over a single already-emitted HTML page.
+
+    Standalone (no LLM, no Block dataclass) so an EXISTING two-pass export
+    can be cleaned in place without re-running the rewrite tier. Applies:
+
+      * visible minted-CURIE → surface-term replacement (``minted_curie_map``
+        shape: ``{curie: {"surface_forms": [...]}}`` from
+        ``lib.ontology.curie_discovery.build_minted_curie_map``);
+      * objective ``<li>`` bare-id → ``<strong>ID:</strong> statement``
+        (``objective_statements`` shape: ``{id: statement}`` from
+        :func:`_objective_id_to_statement`).
+      * VISIBLE provenance-id leaks (P0 identifier leakage) via
+        :func:`_strip_visible_provenance_ids`: CLASS 1 ``dart:<source>#<hash>``
+        ids + source-attribution cites, CLASS 2 ``<chunk_id>`` cites + the
+        "According to the source" lead-in, CLASS 3 inline ``(CO-NN)``/``(TO-NN)``
+        parentheticals — never touching ``data-cf-*`` attributes or hidden
+        ``data-cf-curie`` spans.
+
+    Idempotent and lossless on a clean page (returns it unchanged). The
+    objective ``<li>`` resolution runs LAST so its emitted ``CO-NN:`` strong
+    prefix is never mistaken for an inline parenthetical (it is not parenthesized
+    anyway).
+    """
+    out = html or ""
+    for _curie, _meta in (minted_curie_map or {}).items():
+        _sf = _meta.get("surface_forms") if isinstance(_meta, dict) else None
+        _surface = (
+            _sf[0] if isinstance(_sf, list) and _sf
+            else _curie.split(":", 1)[-1].replace("_", " ")
+        )
+        out = _curie_visible_to_surface(out, _curie, _surface)
+    # P0 identifier-leak strip (CLASS 1/2/3) — attribute- + hidden-span-safe.
+    out = _strip_visible_provenance_ids(out)
+    if objective_statements:
+        out = _resolve_objective_li_statements(out, objective_statements)
+    return out
+
+
+def sanitize_export_pages(export_dir: str) -> int:
+    """Sanitize every ``03_content_development/*.html`` page IN PLACE.
+
+    Applies the full extended P0 leak sanitizer
+    (:func:`sanitize_leaked_tokens_in_html`) to each rendered content page of an
+    EXISTING Courseforge project export, rewriting the file in place ONLY when
+    its bytes change. Lets an already-emitted export be cleaned with NO re-gen
+    (the operator runs this, then re-packages).
+
+    ``export_dir`` may be the project root (containing
+    ``03_content_development/``) or the ``03_content_development`` directory
+    itself. Objective ``<li>`` statements are resolved from a sibling
+    ``01_learning_objectives/synthesized_objectives.json`` when present (so an
+    objective page whose ``<li>`` body is the bare id is filled with its
+    statement too); the minted-CURIE map is not persisted in an export, so that
+    arm is a no-op here (a separate, already-handled leak class).
+
+    Returns the number of pages actually rewritten (byte-changed).
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    root = _Path(export_dir)
+    content_dir = root if root.name == "03_content_development" else (
+        root / "03_content_development"
+    )
+    if not content_dir.is_dir():
+        return 0
+
+    # Best-effort objective-statement map from the sibling objectives doc.
+    objective_statements: Dict[str, str] = {}
+    obj_doc_path = content_dir.parent / "01_learning_objectives" \
+        / "synthesized_objectives.json"
+    if obj_doc_path.is_file():
+        try:
+            objective_statements = _objective_id_to_statement(
+                _json.loads(obj_doc_path.read_text(encoding="utf-8"))
+            )
+        except Exception:  # noqa: BLE001 — missing/garbage doc -> no LI fill
+            objective_statements = {}
+
+    cleaned = 0
+    for page in sorted(content_dir.glob("*.html")):
+        try:
+            original = page.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        sanitized = sanitize_leaked_tokens_in_html(
+            original,
+            minted_curie_map=None,
+            objective_statements=objective_statements or None,
+        )
+        if sanitized != original:
+            try:
+                page.write_text(sanitized, encoding="utf-8")
+                cleaned += 1
+            except Exception:  # noqa: BLE001
+                continue
+    return cleaned
 
 
 # Matches a hallucinated standalone ``<data-cf-block-id=...>...</data-cf-block-id>``
@@ -1401,6 +2482,157 @@ def _normalize_chapter_objectives_to_groups(raw: Any) -> List[Dict[str, Any]]:
             })
         return groups
     return []
+
+
+def _assign_terminal_objectives_to_weeks(
+    terminal_objectives: List[Dict[str, Any]],
+    duration_weeks: int,
+) -> Dict[int, List[Dict[str, Any]]]:
+    """Map each 1-based week → the terminal objective(s) it teaches.
+
+    Finding 11 fix. The legacy per-week slice
+    ``terminal_objectives[(w-1)*step : (w-1)*step + step]`` with
+    ``step = ceil(num_tos / weeks)`` leaves TRAILING weeks objective-less
+    whenever ``num_tos < weeks`` (e.g. 9 TOs over a pinned ``--weeks 12``
+    yields ``step = 1`` so weeks 10/11/12 slice the empty tail and ship an
+    empty objectives block). This helper guarantees **every** week in
+    ``range(1, weeks + 1)`` carries at least one TO:
+
+    * ``weeks <= num_tos`` — contiguous ceil-stride slice (the legacy
+      shape; every week claims ``step`` TOs, no TO dropped).
+    * ``weeks > num_tos`` — round-robin wrap so each TO is reused across
+      the surplus weeks (week ``w`` → ``TO[(w-1) % num_tos]``); no week is
+      left empty and every TO still appears.
+
+    Pure / deterministic. Returns ``{}`` when there are no TOs (the caller
+    falls back to its chapter-objective / topic path).
+    """
+    weeks = max(1, int(duration_weeks))
+    tos = [t for t in (terminal_objectives or []) if isinstance(t, dict)]
+    n = len(tos)
+    if n == 0:
+        return {}
+    assignment: Dict[int, List[Dict[str, Any]]] = {}
+    if weeks <= n:
+        step = max(1, (n + weeks - 1) // weeks)  # ceil-stride
+        for w in range(1, weeks + 1):
+            start = (w - 1) * step
+            week_slice = tos[start:start + step]
+            # The last week absorbs any TOs the ceil-stride leaves unplaced
+            # past its slice end (guards num_tos not divisible by weeks).
+            if w == weeks and start + step < n:
+                week_slice = tos[start:]
+            assignment[w] = list(week_slice) if week_slice else [tos[-1]]
+    else:
+        # More weeks than TOs: round-robin so no week is objective-less.
+        for w in range(1, weeks + 1):
+            assignment[w] = [tos[(w - 1) % n]]
+    return assignment
+
+
+def _build_objectives_section_html(
+    *,
+    objective_lis: str,
+    page_type: str,
+    page_tos: Optional[List[Dict[str, Any]]] = None,
+    page_cos: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Finding 11 + 18 — render the rewrite-tier page objectives ``<section>``.
+
+    Returns the empty string (OMIT the block) when the page carries NO
+    objectives (``objective_lis`` empty AND no TO records) — a week whose
+    objective slice is empty must NOT render a blank ``Objectives`` heading
+    over an empty ``<ul>`` (Finding 11). When present:
+
+    * an OVERVIEW page with ≥1 terminal-objective record enumerates the TO
+      AND all its child COs (each with its statement) via the shared
+      ``render_objective_list`` builder (Finding 18);
+    * every other page keeps the compact ``<ul>`` of the page's objective ids.
+
+    Pure / deterministic / fail-soft: a ``render_objective_list`` failure
+    falls back to the compact ``<ul>``; the function never raises.
+    """
+    _lis = (objective_lis or "").strip()
+    _tos = list(page_tos or [])
+    # Finding 11: nothing to render → OMIT the block entirely (no blank heading).
+    if not _lis and not _tos:
+        return ""
+    section = (
+        f'<section class="objectives"><h2>Objectives</h2>'
+        f'<ul>{objective_lis}</ul></section>'
+    )
+    if page_type == "overview" and _tos:
+        try:
+            from lib.objectives.lo_map_builder import (  # noqa: PLC0415
+                render_objective_list,
+            )
+
+            _obj_list_html = render_objective_list(
+                _tos, list(page_cos or []), heading_level=3,
+            )
+            if _obj_list_html and _obj_list_html.strip():
+                section = (
+                    f'<section class="objectives"><h2>Objectives</h2>'
+                    f"{_obj_list_html}</section>"
+                )
+        except Exception as _ol_exc:  # noqa: BLE001 — keep the legacy <ul>
+            logger.warning(
+                "objectives section: render_objective_list failed (%s); "
+                "falling back to the compact objectives <ul>.", _ol_exc,
+            )
+    return section
+
+
+_PAGE_TYPE_LABELS: Dict[str, str] = {
+    "overview": "Overview",
+    "content": "Core Concepts",
+    "application": "Applying the Skills",
+    "self_check": "Check Your Understanding",
+    "summary": "Summary",
+}
+
+_PAGE_ID_TYPE_RE = re.compile(
+    r"^week[_-]?\d+(?:_(?P<ptype>overview|content|application|self_check|summary))?",
+    re.IGNORECASE,
+)
+
+
+def _humanize_page_title(
+    page_id: str,
+    week_num: int,
+    page_type: str,
+    week_objectives: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Finding 9 — derive a human page ``<h1>`` from the week's TO/topic.
+
+    The legacy ``<h1>`` was the raw ``page_id`` (e.g. ``"week_01_summary"``).
+    Instead, build ``"Week N: <human-label>"`` where the label is the week's
+    leading terminal-objective statement (trimmed to a phrase) when available,
+    else the page-type's friendly label. Deterministic; never raises.
+    """
+    label = _PAGE_TYPE_LABELS.get(page_type, "")
+    _to_stmt = ""
+    for _obj in week_objectives or []:
+        if isinstance(_obj, dict):
+            _s = _obj.get("statement")
+            if isinstance(_s, str) and _s.strip():
+                _to_stmt = _s.strip()
+                break
+    if _to_stmt:
+        # Trim a long objective statement to a leading phrase (first clause).
+        _phrase = re.split(r"[.;:]", _to_stmt, maxsplit=1)[0].strip()
+        if len(_phrase) > 80:
+            _phrase = _phrase[:77].rstrip() + "…"
+        # The overview/summary frame the whole week's TO; content/application/
+        # self_check append the page-type label so siblings stay distinct.
+        if page_type in ("overview", "summary") or not label:
+            label = _phrase
+        else:
+            label = f"{_phrase} — {label}"
+    if not label:
+        # Last-resort: a humanized page_id (never the raw snake-case id).
+        label = page_id.replace("_", " ").strip().title() or page_id
+    return f"Week {week_num}: {label}"
 
 
 def _ws5_resolve_objective_weeks(
@@ -2672,6 +3904,9 @@ async def _run_stage2_window_synthesis(
     # WS1 worked. The redundant encode on the bottom-up path is accepted for
     # that proof signal. The fallback path needs the backlink for the real
     # argmax assignment (reconcile doesn't pre-set ids).
+    # M5 Fix A — reassign mode (env ED4ALL_TO_BACKLINK_REASSIGN) re-scores
+    # hint-honored COs (validator parity → weak_to_link_rate matches
+    # co_terminal_alignment) and re-points cosine-junk links to a better TO.
     _backlink = backlink_cos_to_tos(terminal, chapter_cos, embed=_embed)
 
     # The window-map path stamps a distinct ``_window`` label so an audit can
@@ -2721,6 +3956,9 @@ async def _run_stage2_window_synthesis(
         "weak_to_link_cosine_floor": _backlink.cosine_floor,
         "weak_to_link_min_score": _backlink.min_best_score,
         "weak_to_link_mean_score": _backlink.mean_best_score,
+        # M5 Fix A — count of COs re-pointed off a junk-drawer TO (0 unless
+        # ED4ALL_TO_BACKLINK_REASSIGN is on).
+        "weak_to_link_reassigned": _backlink.reassigned_count,
     }
     return chapter_cos, terminal, mint_method, grounding_signals
 
@@ -4465,13 +5703,108 @@ _COURSEFORGE_TWO_PASS_TRUTHY = frozenset({"1", "true", "yes", "on"})
 # dispatch). ``self_check_question`` and ``activity`` satisfy both
 # (verified 2026-06-15). Every ``target_bloom`` MUST be a member of
 # ``lib.ontology.bloom.BLOOM_LEVELS``.
-_PAGE_BLOCK_PLAN: Tuple[Tuple[str, str], ...] = (
-    ("objective", "understand"),
-    ("explanation", "understand"),
-    ("example", "apply"),
-    ("self_check_question", "analyze"),
-    ("activity", "apply"),
+# ---------------------------------------------------------------------------
+# P3 (7b-sonnet-parity §P3): five page TYPES per week.
+# ---------------------------------------------------------------------------
+# The Sonnet baseline emits five distinct page FILES per week —
+# ``overview`` / ``content`` / ``application`` / ``self_check`` / ``summary``
+# — each with its own block composition (see
+# ``LibV2/courses/sample-course-a/.../week_NN/{overview,content_01,
+# application,self_check,summary}.html`` and the spec at
+# ``plans/finegrain/sonnet-ixd-component-spec.md``). The two-pass path
+# historically emitted only ``content_NN`` (one type), giving ~2 pages/week
+# and ~22-28 chunks. Splitting a week into five page TYPES (a) restores the
+# structural variety and (b) is the chunking lever — five page types × more
+# heading boundaries → ~498 source sections → ~160 chunks (vs the 7B's ~115
+# → 22). The assembly loop groups blocks by ``page_id``, so tagging each
+# block with a page_id that encodes its page TYPE (``week_NN_overview``,
+# ``week_NN_content_NN``, ``week_NN_application``, ``week_NN_self_check``,
+# ``week_NN_summary``) yields five files per week with NO change to the
+# group-by-page assembly.
+#
+# Each entry maps a page TYPE → the ordered ``(block_type, target_bloom)``
+# list that composes that page, mirroring the Sonnet composition:
+#   * overview     — intro + objectives + roadmap.
+#   * content      — concept/definition + explanation + worked example
+#                    (one such page per topic; the chunking-dense page type).
+#   * application  — scenario/problem cards + a worked example.
+#   * self_check   — question/answer/reveal cards (no answer inline).
+#   * summary      — key-rule recap + checklist.
+#
+# Every block_type MUST be a member of
+# ``Courseforge.scripts.blocks.BLOCK_TYPES``, MUST have an outline-tier
+# bound in ``_OUTLINE_KIND_BOUNDS`` (gates outline dispatch) AND a rewrite
+# output contract in ``_BLOCK_TYPE_OUTPUT_CONTRACTS`` (gates rewrite
+# dispatch). Every ``target_bloom`` MUST be a member of
+# ``lib.ontology.bloom.BLOOM_LEVELS``. Per-block BREVITY is preserved — more
+# PAGES, not longer blocks, is how we reach ~160 chunks; the rewrite system
+# prompt's hard brevity directive + max_tokens=4096 + deterministic styled
+# fallback are untouched.
+_PAGE_TYPE_BLOCK_PLAN: Dict[str, Tuple[Tuple[str, str], ...]] = {
+    "overview": (
+        ("objective", "understand"),
+        ("explanation", "understand"),
+    ),
+    "content": (
+        ("concept", "understand"),
+        ("explanation", "understand"),
+        ("example", "apply"),
+    ),
+    "application": (
+        ("activity", "apply"),
+        ("example", "apply"),
+    ),
+    "self_check": (
+        ("self_check_question", "analyze"),
+        ("self_check_question", "apply"),
+    ),
+    "summary": (
+        ("summary_takeaway", "understand"),
+        ("recap", "remember"),
+    ),
+}
+
+# Canonical week page-type emission order. ``content`` is expanded to one
+# page per week TOPIC (``content_01``, ``content_02``, …) inside the loop;
+# the other four are emitted exactly once per week.
+_WEEK_PAGE_TYPES: Tuple[str, ...] = (
+    "overview",
+    "content",
+    "application",
+    "self_check",
+    "summary",
 )
+
+# Back-compat alias: the legacy flat per-page plan == the ``content`` page
+# type's composition (the historical single-page-type behaviour). Retained
+# so any external reader / test referencing ``_PAGE_BLOCK_PLAN`` keeps
+# resolving; the loop now consumes ``_PAGE_TYPE_BLOCK_PLAN``.
+_PAGE_BLOCK_PLAN: Tuple[Tuple[str, str], ...] = _PAGE_TYPE_BLOCK_PLAN["content"]
+
+
+def _page_id_for(week_num: int, page_type: str, content_idx: int = 1) -> str:
+    """Build the page_id that encodes a week's page TYPE.
+
+    The rewrite-tier assembly groups blocks by ``page_id`` into one HTML
+    file each, and ``_page_source_ids`` parses ``week_NN_<rest>``, so a
+    page TYPE is encoded as ``week_NN_<type>`` (``content`` carries a
+    ``_NN`` topic index: ``week_NN_content_NN``). Mirrors the Sonnet file
+    naming (``week_01/overview.html``, ``week_01/content_01.html``, …).
+    """
+    if page_type == "content":
+        return f"week_{week_num:02d}_content_{content_idx:02d}"
+    return f"week_{week_num:02d}_{page_type}"
+
+
+def _page_block_plan_for(page_type: str) -> Tuple[Tuple[str, str], ...]:
+    """Return the ordered ``(block_type, target_bloom)`` plan for a page TYPE.
+
+    Falls back to the ``content`` plan for an unknown type (defensive — the
+    loop only ever passes canonical ``_WEEK_PAGE_TYPES`` keys).
+    """
+    return _PAGE_TYPE_BLOCK_PLAN.get(
+        page_type, _PAGE_TYPE_BLOCK_PLAN["content"]
+    )
 
 
 def _courseforge_two_pass_enabled() -> bool:
@@ -4485,6 +5818,49 @@ def _courseforge_two_pass_enabled() -> bool:
         os.environ.get(_COURSEFORGE_TWO_PASS_ENV, "").strip().lower()
         in _COURSEFORGE_TWO_PASS_TRUTHY
     )
+
+
+# Wave-2 Part 3 (keystone): the 70B content-aware block planner gate. Default
+# OFF → byte-identical fixed-plan behaviour (the loop consumes
+# ``_page_block_plan_for`` / ``_PAGE_TYPE_BLOCK_PLAN`` unchanged). ON → a
+# per-TO 70B planner (``lib.generation.block_planner.plan_week_blocks``) drives
+# WHICH block types compose each week's pages (same five-page-file mechanics).
+_ED4ALL_DYNAMIC_BLOCK_PLAN_ENV = "ED4ALL_DYNAMIC_BLOCK_PLAN"
+_ED4ALL_DYNAMIC_BLOCK_PLAN_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _dynamic_block_plan_enabled() -> bool:
+    """Read ``ED4ALL_DYNAMIC_BLOCK_PLAN`` each call (tests toggle inline)."""
+    return (
+        os.environ.get(_ED4ALL_DYNAMIC_BLOCK_PLAN_ENV, "").strip().lower()
+        in _ED4ALL_DYNAMIC_BLOCK_PLAN_TRUTHY
+    )
+
+
+def _build_block_planner_provider(capture=None):
+    """Construct the 70B provider seam for the dynamic block planner.
+
+    Reuses the SAME NVIDIA OpenAI-compatible client plumbing as the rewrite
+    tier + objective review (``Courseforge/generators/_base.py`` →
+    ``_BaseLLMProvider`` ``nvidia`` branch, key from ``NVIDIA_API_KEY``),
+    but with a planning-only system prompt
+    (``lib.generation.block_planner.build_planner_provider``). Returns an
+    object exposing ``plan_blocks(prompt) -> str`` (the surface
+    ``plan_week_blocks`` consumes), or ``None`` on any construction error /
+    missing key so the planner falls back to the fixed plan rather than
+    breaking the build.
+    """
+    try:
+        from lib.generation.block_planner import build_planner_provider
+
+        return build_planner_provider(provider="nvidia", capture=capture)
+    except Exception as exc:  # noqa: BLE001 — fail-safe to fixed plan
+        logger.warning(
+            "dynamic block planner: NVIDIA provider construction failed "
+            "(%s); the week planner will fall back to the fixed plan.",
+            exc,
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -5080,6 +6456,181 @@ def _touches_from_entry(entry: dict) -> tuple:
         except (TypeError, ValueError):
             continue
     return tuple(out)
+
+
+# ---------------------------------------------------------------------------
+# Crash-resume checkpoint sidecars for the two-pass content-generation tiers.
+# ---------------------------------------------------------------------------
+#
+# A ~2h local-7B outline run that is killed mid-authoring loses ALL per-block
+# work because the tier writes its JSONL once at the very end (open("w")).
+# These pure helpers add an append-as-you-go sidecar (mirroring the
+# training-synthesis ``.synthesis_pairs_checkpoint.jsonl`` per-item resume
+# contract): each authored block is flushed to a dot-prefixed sidecar the
+# moment it completes, so a restart rehydrates already-authored blocks and
+# skips the expensive LLM dispatch for them.
+#
+# Default ON (parse-with-fallback). OFF (or no sidecar present) → no sidecar
+# is written, the resume path is a no-op, and behaviour is byte-identical to
+# the pre-checkpoint emit. The sidecar is deleted on a successful final write
+# (resume is only for an INTERRUPTED run).
+_COURSEFORGE_OUTLINE_CHECKPOINT_ENV = "COURSEFORGE_OUTLINE_CHECKPOINT"
+_COURSEFORGE_REWRITE_CHECKPOINT_ENV = "COURSEFORGE_REWRITE_CHECKPOINT"
+_CHECKPOINT_FALSEY = frozenset({"0", "false", "no", "off"})
+
+# Sidecar filenames (dot-prefixed, sitting next to the final tier JSONL).
+_OUTLINE_CHECKPOINT_NAME = ".blocks_outline_checkpoint.jsonl"
+_REWRITE_CHECKPOINT_NAME = ".blocks_final_checkpoint.jsonl"
+
+
+def _checkpoint_enabled(env_name: str) -> bool:
+    """Read a ``COURSEFORGE_*_CHECKPOINT`` env flag (default ON).
+
+    Parse-with-fallback mirroring the other answer-path / Courseforge knobs:
+    an explicit falsey value (``0`` / ``false`` / ``no`` / ``off``, any case)
+    disables both write + resume; anything else (incl. unset / garbage) keeps
+    the default ON. Read each call so tests can toggle it inline.
+    """
+    return (
+        os.environ.get(env_name, "").strip().lower()
+        not in _CHECKPOINT_FALSEY
+    )
+
+
+def _append_block_checkpoint(path: Path, entry: Dict[str, Any]) -> None:
+    """Append one authored-block entry to the checkpoint sidecar and flush.
+
+    ``entry`` is a ``_block_to_snake_case_entry`` projection (carries the
+    stable ``block_id`` dedupe key). Best-effort: an OSError flushing the
+    sidecar is logged but NEVER aborts the authoring loop — a missing
+    checkpoint line only costs a re-author on resume, it never corrupts the
+    run. The per-entry flush+fsync is the whole point (surviving a kill).
+    """
+    try:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False))
+            fh.write("\n")
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                # fsync can fail on some filesystems / pipes; the flush
+                # already pushed the line to the OS buffer.
+                pass
+    except OSError as exc:
+        logger.warning(
+            "content-generation checkpoint: failed to append block_id=%r "
+            "to %s: %s",
+            entry.get("block_id"), path, exc,
+        )
+
+
+def _load_block_checkpoint(path: Path) -> Dict[str, Any]:
+    """Rehydrate a checkpoint sidecar into a ``{block_id: entry}`` map.
+
+    Last-line-wins per ``block_id`` so a block that was re-authored across
+    two interrupted attempts resolves to its most recent entry. Malformed /
+    blank lines and entries without a ``block_id`` are skipped (the dedupe
+    key is mandatory — an un-keyable entry can't be matched against a fresh
+    stub, so it would risk a duplicate). A missing / unreadable sidecar
+    returns an empty map (resume is a no-op).
+    """
+    out: Dict[str, Any] = {}
+    if not path.exists():
+        return out
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        bid = entry.get("block_id")
+        if isinstance(bid, str) and bid:
+            out[bid] = entry
+    return out
+
+
+def _remove_block_checkpoint(path: Path) -> None:
+    """Delete the checkpoint sidecar after a successful final write.
+
+    Resume is only for an INTERRUPTED run, so a completed tier removes its
+    sidecar. Best-effort: a failed unlink is logged but never fails the
+    phase (a stale sidecar is harmless — the next run dedupes against it).
+    """
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning(
+            "content-generation checkpoint: failed to remove sidecar %s: %s",
+            path, exc,
+        )
+
+
+def _block_from_checkpoint_entry(entry: Dict[str, Any]) -> Optional[Any]:
+    """Rehydrate a checkpoint entry into a frozen :class:`Block`.
+
+    Module-level twin of the nested ``_entry_to_block`` rehydrators: consumes
+    only the fields ``Block`` accepts (the same accepted-key set), restores
+    tuple-typed fields + the ``touched_by`` provenance chain, and returns
+    ``None`` on a malformed entry (the caller then re-authors that block, so a
+    corrupt checkpoint line degrades to a re-author, never a crash). Used to
+    skip re-authoring already-checkpointed blocks on resume.
+    """
+    from Courseforge.scripts.blocks import Block  # noqa: PLC0415
+
+    accepted = {
+        "block_id", "block_type", "page_id", "sequence", "content",
+        "template_type", "key_terms", "objective_ids",
+        "bloom_level", "bloom_verb", "bloom_range",
+        "bloom_levels", "bloom_verbs", "cognitive_domain",
+        "teaching_role", "content_type_label", "purpose",
+        "component", "source_ids", "source_primary",
+        "source_references", "content_hash",
+        "validation_attempts", "escalation_marker",
+    }
+    tuple_fields = {
+        "key_terms", "objective_ids", "bloom_levels", "bloom_verbs",
+        "source_ids", "source_references",
+    }
+    kwargs_clean: Dict[str, Any] = {}
+    for k, v in (entry or {}).items():
+        if k not in accepted:
+            continue
+        if k in tuple_fields and isinstance(v, list):
+            if k == "source_references":
+                v = tuple(
+                    dict(r) if isinstance(r, dict) else r for r in v
+                )
+            else:
+                v = tuple(v)
+        kwargs_clean[k] = v
+    if "block_id" not in kwargs_clean or "block_type" not in kwargs_clean:
+        return None
+    kwargs_clean.setdefault("page_id", kwargs_clean.get("block_id", ""))
+    kwargs_clean.setdefault("sequence", 0)
+    kwargs_clean.setdefault("content", "")
+    _touches = _touches_from_entry(entry or {})
+    if _touches:
+        kwargs_clean["touched_by"] = _touches
+    try:
+        return Block(**kwargs_clean)
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "content-generation checkpoint: skipping malformed checkpoint "
+            "entry block_id=%r: %s",
+            (entry or {}).get("block_id"), exc,
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -5740,6 +7291,166 @@ def _block_source_chunk_text(
     return "\n".join(parts)
 
 
+def _build_outline_curie_minter(
+    *,
+    course_code: str,
+    kwargs: Dict[str, Any],
+) -> Optional[Any]:
+    """Load the domain vocabulary ONCE and return a per-block CURIE minter.
+
+    Factored out of :func:`_mint_outline_curies` so the same minting logic
+    can run BOTH (a) as the post-loop list pass (legacy call site) and
+    (b) as the in-loop ``pre_validate_hook`` threaded into
+    :meth:`CourseforgeRouter.route_with_self_consistency` — without
+    re-reading ``domain_concept_vocabulary.json`` / re-compiling the
+    concept seeds once per candidate.
+
+    Returns ``None`` when no domain vocabulary exists (RDF / legacy
+    corpora) or it is unparseable / empty — the COMPLETE no-op backward-
+    compat gate (no behavior flag). When present, returns an object
+    exposing:
+
+    * ``minted_map`` — the per-course minted-CURIE map (also fed to the
+      in-loop validator so it can anchor minted CURIEs via surface forms).
+    * ``mint_block(block, chunks_lookup) -> (new_block | None, meta | None)``
+      — the single-block minter. ``new_block`` is the
+      ``dataclasses.replace``-d block carrying the merged CURIEs (or
+      ``None`` when the block needs no minting / matched nothing); ``meta``
+      is the decision-capture payload (or ``None``). NEVER fabricates a
+      CURIE — an ungrounded / no-match block mints nothing.
+    """
+    vocab_path = _locate_domain_concept_vocabulary(course_code, kwargs)
+    if vocab_path is None:
+        # No domain vocabulary — RDF / legacy corpus. No-op.
+        return None
+    try:
+        vocabulary = json.loads(vocab_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "outline phase: failed to load domain_concept_vocabulary.json "
+            "at %s (%s); skipping CURIE minting.",
+            vocab_path, exc,
+        )
+        return None
+
+    from lib.ontology.curie_discovery import (
+        build_minted_curie_map,
+        minted_curie_by_canonical,
+    )
+    from lib.ontology.concept_tagging import extract_concept_tags
+    from Trainforge.process_course import compile_domain_concept_seeds
+
+    minted_map = build_minted_curie_map(vocabulary, course_id=course_code)
+    if not minted_map:
+        return None
+    by_canonical = minted_curie_by_canonical(minted_map)
+
+    # Compile the vocabulary concepts into (canonical, [regex]) seed
+    # pairs. ``compile_domain_concept_seeds`` expects ``[{id, aliases}]``;
+    # the vocabulary's per-concept ``canonical`` field is the seed id.
+    seed_input = [
+        {
+            "id": c.get("canonical"),
+            "aliases": c.get("aliases") or [],
+        }
+        for c in (vocabulary.get("concepts") or [])
+        if isinstance(c, dict) and c.get("canonical")
+    ]
+    domain_concept_seeds = compile_domain_concept_seeds(seed_input)
+
+    import dataclasses as _dc
+
+    def mint_block(
+        block: Any,
+        chunks_lookup: Optional[Dict[str, List[Any]]],
+    ) -> "Tuple[Optional[Any], Optional[Dict[str, Any]]]":
+        content = getattr(block, "content", None)
+        if not isinstance(content, dict):
+            return None, None
+        existing = [
+            c for c in (content.get("curies") or [])
+            if isinstance(c, str) and c
+        ]
+        # A block needs a DOMAIN CURIE when EITHER its curies list is
+        # empty OR none of its existing curies is a real per-course
+        # minted domain CURIE (it carries only generic / placeholder
+        # tokens like ``outline:openstax`` / ``cf:CO-36`` that the
+        # anchoring gate cannot anchor). A block already carrying a real
+        # minted domain CURIE is left untouched (never overwrite real
+        # CURIEs) — this is what makes a post-loop re-run idempotent.
+        has_domain_curie = any(c in minted_map for c in existing)
+        if has_domain_curie:
+            return None, None
+
+        # Gather the block's text surface from ``key_claims``, handling
+        # both the legacy ``List[str]`` shape and the structured
+        # ``List[{claim, source_chunk_ids}]`` shape (mirrors
+        # ``BlockCurieAnchoringValidator``'s text_blob assembly).
+        claims_raw = content.get("key_claims") or []
+        text_parts: List[str] = []
+        for c in claims_raw:
+            if isinstance(c, str):
+                text_parts.append(c)
+            elif isinstance(c, dict):
+                claim_text = c.get("claim", "")
+                if isinstance(claim_text, str):
+                    text_parts.append(claim_text)
+        claims_text = "\n".join(text_parts)
+
+        # First match against the block's key_claims text.
+        # ``extract_concept_tags`` returns the canonical slugs of the
+        # concepts the block discusses.
+        matched_canonicals: List[str] = []
+        matched_surface = "key_claims"
+        if claims_text.strip():
+            matched_canonicals = extract_concept_tags(
+                claims_text, {}, domain_concept_seeds
+            )
+        # Fallback: when key_claims yields no vocab concept, match against
+        # the block's grounded SOURCE-CHUNK text — its real provenance,
+        # tagged with the domain vocabulary. Rigorous, not a relaxation.
+        if not matched_canonicals:
+            source_text = _block_source_chunk_text(block, chunks_lookup)
+            if source_text.strip():
+                matched_canonicals = extract_concept_tags(
+                    source_text, {}, domain_concept_seeds
+                )
+                matched_surface = "source_chunks"
+
+        minted_curies: List[str] = []
+        for canonical in matched_canonicals:
+            curie = by_canonical.get(canonical)
+            if curie and curie not in minted_curies:
+                minted_curies.append(curie)
+        if not minted_curies:
+            # Ungrounded / no-match block — mint nothing. It fails closed
+            # downstream (no fabrication).
+            return None, None
+
+        # Append the minted domain CURIE(s) to any existing generic curies
+        # (never delete the existing tokens), deduped.
+        merged = list(existing)
+        for c in minted_curies:
+            if c not in merged:
+                merged.append(c)
+        new_content = dict(content)
+        new_content["curies"] = merged
+        new_block = _dc.replace(block, content=new_content)
+        meta = {
+            "block_id": block.block_id,
+            "minted_curies": minted_curies,
+            "matched_canonicals": matched_canonicals,
+            "matched_surface": matched_surface,
+            "existing": existing,
+            "minted_map_size": len(minted_map),
+        }
+        return new_block, meta
+
+    from types import SimpleNamespace
+
+    return SimpleNamespace(minted_map=minted_map, mint_block=mint_block)
+
+
 def _mint_outline_curies(
     *,
     outline_blocks: List[Any],
@@ -5777,162 +7488,87 @@ def _mint_outline_curies(
 
     Mutation is in-place via ``dataclasses.replace`` on each Block (the
     Block dataclass is frozen).
+
+    IDEMPOTENT: a block already carrying a real per-course minted domain
+    CURIE is left untouched, so re-running this AFTER the in-loop
+    ``pre_validate_hook`` minted the same blocks is a safe no-op for those
+    blocks (it still catches any block the loop never routed / never
+    minted).
     """
-    vocab_path = _locate_domain_concept_vocabulary(course_code, kwargs)
-    if vocab_path is None:
+    minter = _build_outline_curie_minter(
+        course_code=course_code, kwargs=kwargs,
+    )
+    if minter is None:
         # No domain vocabulary — RDF / legacy corpus. No-op.
         return
-    try:
-        vocabulary = json.loads(vocab_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        logger.warning(
-            "outline phase: failed to load domain_concept_vocabulary.json "
-            "at %s (%s); skipping CURIE minting.",
-            vocab_path, exc,
-        )
-        return
-
-    from lib.ontology.curie_discovery import (
-        build_minted_curie_map,
-        minted_curie_by_canonical,
-    )
-    from lib.ontology.concept_tagging import extract_concept_tags
-    from Trainforge.process_course import compile_domain_concept_seeds
-
-    minted_map = build_minted_curie_map(vocabulary, course_id=course_code)
-    if not minted_map:
-        return
-    by_canonical = minted_curie_by_canonical(minted_map)
-
-    # Compile the vocabulary concepts into (canonical, [regex]) seed
-    # pairs. ``compile_domain_concept_seeds`` expects ``[{id, aliases}]``;
-    # the vocabulary's per-concept ``canonical`` field is the seed id.
-    seed_input = [
-        {
-            "id": c.get("canonical"),
-            "aliases": c.get("aliases") or [],
-        }
-        for c in (vocabulary.get("concepts") or [])
-        if isinstance(c, dict) and c.get("canonical")
-    ]
-    domain_concept_seeds = compile_domain_concept_seeds(seed_input)
-
-    import dataclasses as _dc
 
     minted_block_count = 0
     minted_curie_total = 0
     for idx, block in enumerate(outline_blocks):
-        content = getattr(block, "content", None)
-        if not isinstance(content, dict):
+        new_block, meta = minter.mint_block(block, chunks_lookup)
+        if new_block is None or meta is None:
             continue
-        existing = [
-            c for c in (content.get("curies") or [])
-            if isinstance(c, str) and c
-        ]
-        # A block needs a DOMAIN CURIE when EITHER its curies list is
-        # empty OR none of its existing curies is a real per-course
-        # minted domain CURIE (it carries only generic / placeholder
-        # tokens like ``outline:openstax`` / ``cf:CO-36`` that the
-        # anchoring gate cannot anchor). A block already carrying a real
-        # minted domain CURIE is left untouched (never overwrite real
-        # CURIEs).
-        has_domain_curie = any(c in minted_map for c in existing)
-        if has_domain_curie:
-            continue
-
-        # Gather the block's text surface from ``key_claims``, handling
-        # both the legacy ``List[str]`` shape and the structured
-        # ``List[{claim, source_chunk_ids}]`` shape (mirrors
-        # ``BlockCurieAnchoringValidator``'s text_blob assembly).
-        claims_raw = content.get("key_claims") or []
-        text_parts: List[str] = []
-        for c in claims_raw:
-            if isinstance(c, str):
-                text_parts.append(c)
-            elif isinstance(c, dict):
-                claim_text = c.get("claim", "")
-                if isinstance(claim_text, str):
-                    text_parts.append(claim_text)
-        claims_text = "\n".join(text_parts)
-
-        # First match against the block's key_claims text. ``extract_concept_tags``
-        # returns the canonical slugs of the concepts the block discusses.
-        matched_canonicals: List[str] = []
-        matched_surface = "key_claims"
-        if claims_text.strip():
-            matched_canonicals = extract_concept_tags(
-                claims_text, {}, domain_concept_seeds
-            )
-        # Fallback: when key_claims yields no vocab concept, match against
-        # the block's grounded SOURCE-CHUNK text — its real provenance,
-        # tagged with the domain vocabulary. Rigorous, not a relaxation.
-        if not matched_canonicals:
-            source_text = _block_source_chunk_text(block, chunks_lookup)
-            if source_text.strip():
-                matched_canonicals = extract_concept_tags(
-                    source_text, {}, domain_concept_seeds
-                )
-                matched_surface = "source_chunks"
-
-        minted_curies: List[str] = []
-        for canonical in matched_canonicals:
-            curie = by_canonical.get(canonical)
-            if curie and curie not in minted_curies:
-                minted_curies.append(curie)
-        if not minted_curies:
-            # Ungrounded / no-match block — mint nothing. It fails closed
-            # downstream (no fabrication).
-            continue
-
-        # Append the minted domain CURIE(s) to any existing generic curies
-        # (never delete the existing tokens), deduped.
-        merged = list(existing)
-        for c in minted_curies:
-            if c not in merged:
-                merged.append(c)
-        new_content = dict(content)
-        new_content["curies"] = merged
-        outline_blocks[idx] = _dc.replace(block, content=new_content)
+        outline_blocks[idx] = new_block
         minted_block_count += 1
-        minted_curie_total += len(minted_curies)
-
-        if capture is not None:
-            try:
-                capture.log_decision(
-                    decision_type="curie_minting",
-                    decision=(
-                        f"minted {len(minted_curies)} CURIE(s) onto "
-                        f"block {block.block_id}"
-                    ),
-                    rationale=(
-                        f"Block {block.block_id} (type={block.block_type}) "
-                        f"carried {'empty' if not existing else 'generic'} "
-                        f"content['curies']={existing!r}; its {matched_surface} "
-                        f"text matched {len(matched_canonicals)} of the "
-                        f"{len(minted_map)} domain-concept-vocabulary "
-                        f"concepts, minting {minted_curies} from the "
-                        f"per-course CURIE map so the anchoring gate has a "
-                        f"prose-corpus-valid CURIE to anchor against."
-                    ),
-                    ml_features={
-                        "block_id": block.block_id,
-                        "minted_curie_count": len(minted_curies),
-                        "vocabulary_concept_count": len(minted_map),
-                        "matched_concept_count": len(matched_canonicals),
-                        "matched_surface": matched_surface,
-                        "had_generic_curies": bool(existing),
-                    },
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        minted_curie_total += len(meta["minted_curies"])
+        _emit_curie_minting_capture(capture, block, meta)
 
     if minted_block_count:
         logger.info(
             "outline phase: minted CURIEs onto %d block(s) "
-            "(%d CURIE(s) total) from %d-concept domain vocabulary at %s",
-            minted_block_count, minted_curie_total, len(minted_map),
-            vocab_path,
+            "(%d CURIE(s) total) from %d-concept domain vocabulary",
+            minted_block_count, minted_curie_total,
+            len(minter.minted_map),
         )
+
+
+def _emit_curie_minting_capture(
+    capture: Any,
+    block: Any,
+    meta: Dict[str, Any],
+) -> None:
+    """Emit the ``curie_minting`` decision event for one minted block.
+
+    Shared by the post-loop list pass (:func:`_mint_outline_curies`) and
+    the in-loop ``pre_validate_hook`` so both call sites produce an
+    identically-shaped, replayable capture. Best-effort (a capture raise
+    never disturbs the minting path).
+    """
+    if capture is None:
+        return
+    minted_curies = meta["minted_curies"]
+    matched_canonicals = meta["matched_canonicals"]
+    matched_surface = meta["matched_surface"]
+    existing = meta["existing"]
+    minted_map_size = meta["minted_map_size"]
+    try:
+        capture.log_decision(
+            decision_type="curie_minting",
+            decision=(
+                f"minted {len(minted_curies)} CURIE(s) onto "
+                f"block {block.block_id}"
+            ),
+            rationale=(
+                f"Block {block.block_id} (type={block.block_type}) "
+                f"carried {'empty' if not existing else 'generic'} "
+                f"content['curies']={existing!r}; its {matched_surface} "
+                f"text matched {len(matched_canonicals)} of the "
+                f"{minted_map_size} domain-concept-vocabulary "
+                f"concepts, minting {minted_curies} from the "
+                f"per-course CURIE map so the anchoring gate has a "
+                f"prose-corpus-valid CURIE to anchor against."
+            ),
+            ml_features={
+                "block_id": block.block_id,
+                "minted_curie_count": len(minted_curies),
+                "vocabulary_concept_count": minted_map_size,
+                "matched_concept_count": len(matched_canonicals),
+                "matched_surface": matched_surface,
+                "had_generic_curies": bool(existing),
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _align_outline_blocks_to_objectives(
@@ -6197,6 +7833,75 @@ def _build_week_co_chunk_index(
     return index
 
 
+def _build_week_co_objectives_index(
+    chapter_objective_groups: List[Dict[str, Any]],
+) -> Dict[int, List[Dict[str, Any]]]:
+    """Build ``{week_num: [{id, statement, bloom_level}, ...]}`` per week.
+
+    Wave-2 Part 3: the dynamic block planner needs each week's CHILD chapter
+    objectives (id + statement + bloom) so the 70B can choose blocks that
+    cover them. Uses the SAME group→week resolution as
+    :func:`_build_week_chunk_id_index` / :func:`_build_week_co_chunk_index`
+    (parse ``group["chapter"]`` → "Week N", positional ``i+1`` fallback), so a
+    group's COs land in the SAME week bucket as its chunk slices.
+    """
+    index: Dict[int, List[Dict[str, Any]]] = {}
+    for position, group in enumerate(chapter_objective_groups or []):
+        if not isinstance(group, dict):
+            continue
+        week = _chapter_label_to_week_num(group.get("chapter"))
+        if week is None:
+            week = position + 1
+        bucket = index.setdefault(week, [])
+        for obj in group.get("objectives") or []:
+            if not isinstance(obj, dict):
+                continue
+            oid = obj.get("id")
+            if not oid:
+                continue
+            bucket.append({
+                "id": str(oid),
+                "statement": str(obj.get("statement") or ""),
+                "bloom_level": str(obj.get("bloom_level") or ""),
+            })
+    return index
+
+
+def _resolve_block_objective_ids(
+    target_co_ids: Sequence[str],
+    week_objective_ids: Tuple[str, ...],
+    valid_co_ids: Set[str],
+) -> Tuple[str, ...]:
+    """Resolve a planned content block's ``objective_ids`` (CO-id fan-out fix).
+
+    Wave-2 Part 3 follow-up. The dynamic block planner stamps a per-block
+    ``target_co_ids`` (the SPECIFIC chapter objective(s) the block teaches).
+    Historically every block in a week inherited the week's TERMINAL objective
+    id(s) (``week_objective_ids``), collapsing the Learning-Objectives-Map
+    fan-out to the TO level. This helper repairs that at the root:
+
+    * When the planner gave one or more ``target_co_ids`` that resolve against
+      the course's valid CO-id set, stamp the block with THOSE CO ids.
+    * When ``target_co_ids`` is empty (a genuinely cross-cutting block — a week
+      overview spanning all COs) OR none of the supplied ids are valid, fall
+      back to the week-level ``week_objective_ids`` (the TO) — byte-identical
+      to the legacy behaviour, and exactly the fixed-plan path's behaviour
+      (the fixed plan always supplies empty ``target_co_ids``).
+
+    Pure + slug-agnostic: no I/O, no course-name literals. Order-preserving and
+    de-duplicating over the supplied ``target_co_ids``.
+    """
+    seen: Set[str] = set()
+    resolved: List[str] = []
+    for cid in target_co_ids or ():
+        if isinstance(cid, str) and cid in valid_co_ids and cid not in seen:
+            seen.add(cid)
+            resolved.append(cid)
+    if resolved:
+        return tuple(resolved)
+    return tuple(week_objective_ids)
+
+
 async def _run_content_generation_outline(**kwargs) -> str:
     """Run the outline tier of the Phase 3 two-pass content pipeline.
 
@@ -6375,6 +8080,17 @@ async def _run_content_generation_outline(**kwargs) -> str:
     # ``chapter`` label / position here. We pre-collect terminal chunk_ids
     # first so the index folds both signals.
     week_terminal_chunk_ids: Dict[int, List[str]] = {}
+    # Finding 11: round-robin / ceil-stride assignment guarantees every week
+    # (incl. trailing weeks when num_tos < duration_weeks) maps to a TO so no
+    # week ships an empty OBJECTIVES block. Always bound (empty when no TOs).
+    # NOTE: this drives only the per-week objective-ID assignment below — the
+    # terminal CHUNK-ID index keeps the legacy ceil-stride slice so a wrapped
+    # (reused) TO does NOT pollute a trailing week's chunk-grounding universe.
+    _week_to_assignment: Dict[int, List[Dict[str, Any]]] = (
+        _assign_terminal_objectives_to_weeks(
+            terminal_objectives, duration_weeks
+        )
+    )
     if terminal_objectives:
         _t_step = max(
             1,
@@ -6425,6 +8141,20 @@ async def _run_content_generation_outline(**kwargs) -> str:
     # week-wide union above) so each page can be NARROWED to a single
     # objective's chunks instead of the whole-week grab-bag.
     week_co_chunk_index = _build_week_co_chunk_index(chapter_objective_groups)
+    # Wave-2 Part 3 (keystone): per-week child chapter objectives for the
+    # dynamic block planner.
+    week_co_objectives_index = _build_week_co_objectives_index(
+        chapter_objective_groups
+    )
+    # CO-id fan-out fix: the course-wide valid CHAPTER-objective id set. A
+    # planned block's ``target_co_ids`` is filtered against this before it can
+    # override the week-TO ``objective_ids`` (anti-fabrication — a hallucinated
+    # CO id can never be stamped). Sourced from the flat ``chapter_objectives``
+    # loaded by ``load_objectives_json`` (TERMINAL ids are intentionally
+    # EXCLUDED — a block targeting only TOs falls through to the week fallback).
+    _valid_co_ids: Set[str] = {
+        str(o.get("id")) for o in chapter_objectives if o.get("id")
+    }
 
     # Per-run resolution counters for the summary decision capture.
     n_blocks_resolved_from_objectives = 0
@@ -6434,6 +8164,20 @@ async def _run_content_generation_outline(**kwargs) -> str:
     _OBJ_SCOPE_MIN_CHUNKS = 2  # floor below which a page reverts to week-wide
     n_pages_objective_scoped = 0
     n_pages_week_fallback = 0
+
+    # Wave-2 Part 3 (keystone): the 70B content-aware block planner. Default
+    # OFF → ``dynamic_block_plan`` stays False and every page consumes the
+    # fixed ``_PAGE_TYPE_BLOCK_PLAN`` (byte-identical legacy behaviour). ON →
+    # a per-TO planner chooses each week's block sequence from the catalog.
+    # The provider is built ONCE (lazy NVIDIA 70B seat); a None provider
+    # (missing key / construction error) degrades each week to the fixed
+    # plan inside ``plan_week_blocks`` itself.
+    dynamic_block_plan = _dynamic_block_plan_enabled()
+    block_planner_provider = None
+    n_weeks_planner_used = 0
+    n_weeks_planner_fallback = 0
+    if dynamic_block_plan:
+        block_planner_provider = _build_block_planner_provider(capture=capture)
 
     for week_num in range(1, duration_weeks + 1):
         week_topics = (
@@ -6465,30 +8209,98 @@ async def _run_content_generation_outline(**kwargs) -> str:
             ]
         week_objectives = []
         if terminal_objectives:
-            t_step = max(
-                1,
-                (len(terminal_objectives) + duration_weeks - 1)
-                // duration_weeks,
-            )
-            t_start = (week_num - 1) * t_step
+            # Finding 11: use the round-robin / ceil-stride assignment so a
+            # trailing week (num_tos < duration_weeks) still gets a valid TO
+            # instead of slicing the empty tail (empty objectives block).
             week_objectives = list(
-                terminal_objectives[t_start:t_start + t_step]
+                _week_to_assignment.get(week_num, [])
             )
         objective_ids: Tuple[str, ...] = tuple(
             str(o.get("id")) for o in week_objectives if o.get("id")
         )
 
-        # One PAGE per topic (or one minimum if no topics). Each page
-        # emits a block PLAN of several block_types — see _PAGE_BLOCK_PLAN
-        # below.
+        # ---------------------------------------------------------------- #
+        # Wave-2 Part 3 (keystone): per-TO content-aware block planning.
+        # ---------------------------------------------------------------- #
+        # When ED4ALL_DYNAMIC_BLOCK_PLAN is on, ask the 70B (once per week /
+        # TO) to choose the block sequence that best teaches THIS TO's
+        # content. The returned ``WeekBlockPlan`` exposes
+        # ``page_block_plan_for(page_type)`` with the SAME shape as the fixed
+        # ``_page_block_plan_for`` — so the page-descriptor assembly below is
+        # unchanged; only WHICH blocks land on each page differs. A None
+        # provider / LLM error / unparseable response degrades inside
+        # ``plan_week_blocks`` to the fixed ``_PAGE_TYPE_BLOCK_PLAN``, so the
+        # build is never broken. ``week_block_plan`` stays None on the OFF
+        # path, and the consumer below falls through to ``_page_block_plan_for``
+        # (byte-identical legacy behaviour).
+        week_block_plan = None
+        if dynamic_block_plan:
+            from lib.generation.block_planner import plan_week_blocks
+
+            _week_to = (
+                week_objectives[0]
+                if week_objectives
+                else {"id": (objective_ids[0] if objective_ids else ""),
+                      "statement": ""}
+            )
+            _week_cos = week_co_objectives_index.get(week_num, [])
+            # Digest the week's grounded source chunk text for the prompt.
+            _week_cids = week_chunk_id_index.get(week_num, [])
+            _week_chunks: List[Dict[str, str]] = []
+            if chunkset_present:
+                for _cid in _week_cids:
+                    _body = chunk_text_map.get(_cid)
+                    if _body:
+                        _week_chunks.append({"id": _cid, "text": _body,
+                                             "heading": ""})
+            week_block_plan = plan_week_blocks(
+                terminal_objective=_week_to,
+                chapter_objectives=_week_cos,
+                source_chunks=_week_chunks,
+                provider=block_planner_provider,
+                capture=capture,
+                course_code=course_code,
+            )
+            if week_block_plan.fallback_used:
+                n_weeks_planner_fallback += 1
+            else:
+                n_weeks_planner_used += 1
+
+        # P3: FIVE page TYPES per week. Build the per-week page descriptors
+        # in canonical order (overview, content_01..content_NN,
+        # application, self_check, summary). ``content`` expands to one page
+        # per topic (the chunking-dense, objective-scoped type); the other
+        # four are emitted exactly once per week and grounded on the
+        # week-wide chunk union. Each descriptor is
+        # ``(page_type, content_idx, topic_or_None)``; ``content_idx`` is the
+        # 1-based topic index for content pages (else 1).
         topic_count = len(week_topics)
-        page_count = max(topic_count, 1)
+        page_descriptors: List[Tuple[str, int, Optional[Dict[str, Any]]]] = []
+        for _ptype in _WEEK_PAGE_TYPES:
+            if _ptype == "content":
+                # One content page per topic (or one minimum if no topics).
+                _n_content = max(topic_count, 1)
+                for _ci in range(_n_content):
+                    _topic = week_topics[_ci] if _ci < topic_count else None
+                    page_descriptors.append(("content", _ci + 1, _topic))
+            else:
+                page_descriptors.append((_ptype, 1, None))
+
         week_block_added = False
-        for i in range(page_count):
-            topic = week_topics[i] if i < topic_count else None
-            heading = (topic or {}).get("heading") or f"week_{week_num:02d}"
-            page_id = f"week_{week_num:02d}_content_{i + 1:02d}"
-            slug_value = _slug(heading or "content")
+        for page_type, content_idx, topic in page_descriptors:
+            # ``i`` is the positional index used for the per-CO objective-
+            # scope mapping below. Only ``content`` pages carry a meaningful
+            # topic→CO position (content_01 → the week's 1st CO, etc.); the
+            # four singleton page types use the week-wide union (i = -1 keeps
+            # them out of the per-CO slice path).
+            i = (content_idx - 1) if page_type == "content" else -1
+            heading = (topic or {}).get("heading") or (
+                f"week_{week_num:02d} {page_type.replace('_', ' ').title()}"
+                if page_type != "content"
+                else f"week_{week_num:02d}"
+            )
+            page_id = _page_id_for(week_num, page_type, content_idx)
+            slug_value = _slug(heading or page_type)
             page_key_terms = tuple((topic or {}).get("key_terms") or [])
 
             # ---------------------------------------------------------- #
@@ -6515,8 +8327,11 @@ async def _run_content_generation_outline(**kwargs) -> str:
             # NARROWS real chunk sets — it never invents an id.
             _week_union_cids = week_chunk_id_index.get(week_num, [])
             _co_slices = week_co_chunk_index.get(week_num, [])
+            # Only ``content`` pages (i >= 0) map positionally to a CO; the
+            # four singleton page types (overview/application/self_check/
+            # summary, i == -1) always use the week-wide union.
             _page_scoped_cids = (
-                _co_slices[i] if i < len(_co_slices) else []
+                _co_slices[i] if 0 <= i < len(_co_slices) else []
             )
             _page_objective_scoped = (
                 len(_page_scoped_cids) >= _OBJ_SCOPE_MIN_CHUNKS
@@ -6529,11 +8344,11 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 n_pages_week_fallback += 1
                 if _co_slices or _week_union_cids:
                     logger.info(
-                        "outline phase: week %d page %d objective-scope "
+                        "outline phase: week %d page %s objective-scope "
                         "fallback to week-wide union (per-CO slice had %d "
                         "chunk(s) < floor %d; week union has %d) — block not "
                         "starved of grounding.",
-                        week_num, i + 1, len(_page_scoped_cids),
+                        week_num, page_id, len(_page_scoped_cids),
                         _OBJ_SCOPE_MIN_CHUNKS, len(_week_union_cids),
                     )
 
@@ -6577,14 +8392,51 @@ async def _run_content_generation_outline(**kwargs) -> str:
             # true`` and skips the outline tier), the prose block_types
             # DISPATCH through the outline + rewrite tiers, which is what
             # produces the 7B prose.
-            page_block_specs: List[Tuple[str, int, str]] = []
-            for spec_offset, (spec_type, spec_bloom) in enumerate(
-                _PAGE_BLOCK_PLAN
-            ):
-                page_block_specs.append((spec_type, spec_offset, spec_bloom))
+            # P3: the block PLAN is now PER PAGE TYPE — each of the five page
+            # types contributes its own ordered block-type composition
+            # (mirroring the Sonnet baseline). ``content`` keeps the rich
+            # concept+explanation+example mix; the other types carry their
+            # own (objectives+roadmap / scenario / self-check / recap).
+            # Wave-2 Part 3: the per-page block composition comes from the
+            # dynamic planner (when on + this week's plan resolved) else the
+            # fixed ``_page_block_plan_for``. The planner's
+            # ``WeekBlockPlan.page_block_plan_for`` returns 3-tuples
+            # ``(block_type, target_bloom, target_co_ids)``; the fixed
+            # ``_page_block_plan_for`` still returns 2-tuples
+            # ``(block_type, target_bloom)``. The unpack below tolerates BOTH
+            # arities (empty ``target_co_ids`` for the fixed path), so the
+            # fixed-plan path stays byte-identical (week-TO ``objective_ids``).
+            if week_block_plan is not None:
+                _page_plan_specs = week_block_plan.page_block_plan_for(page_type)
+                # Guardrail: a page type the planner left empty (no block
+                # landed there) falls back to the fixed plan for THAT page so a
+                # page is never block-less.
+                if not _page_plan_specs:
+                    _page_plan_specs = _page_block_plan_for(page_type)
+            else:
+                _page_plan_specs = _page_block_plan_for(page_type)
+            page_block_specs: List[Tuple[str, int, str, Tuple[str, ...]]] = []
+            for spec_offset, _spec in enumerate(_page_plan_specs):
+                # Arity-tolerant: planner 3-tuple carries per-block
+                # ``target_co_ids``; the fixed 2-tuple has none → empty.
+                spec_type = _spec[0]
+                spec_bloom = _spec[1]
+                spec_co_ids: Tuple[str, ...] = (
+                    tuple(_spec[2]) if len(_spec) > 2 and _spec[2] else ()
+                )
+                page_block_specs.append(
+                    (spec_type, spec_offset, spec_bloom, spec_co_ids)
+                )
 
             page_block_added = False
-            for spec_type, spec_idx, spec_bloom in page_block_specs:
+            for spec_type, spec_idx, spec_bloom, spec_co_ids in page_block_specs:
+                # CO-id fan-out fix: stamp the block with the SPECIFIC CO id(s)
+                # the planner targeted (filtered to the valid CO set), falling
+                # back to the week-TO ``objective_ids`` when the planner gave no
+                # (valid) CO target.
+                block_objective_ids = _resolve_block_objective_ids(
+                    spec_co_ids, objective_ids, _valid_co_ids
+                )
                 block_id = Block.stable_id(
                     page_id=page_id,
                     block_type=spec_type,
@@ -6598,7 +8450,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
                         page_id=page_id,
                         sequence=spec_idx,
                         content="",
-                        objective_ids=objective_ids,
+                        objective_ids=block_objective_ids,
                         key_terms=page_key_terms,
                         # Bloom-diversity fix: carry the per-template target
                         # Bloom onto the stub. The outline provider surfaces
@@ -6609,8 +8461,8 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 except (TypeError, ValueError) as exc:
                     logger.warning(
                         "outline phase: skipping malformed Block stub "
-                        "for week=%d, page=%d, type=%s: %s",
-                        week_num, i + 1, spec_type, exc,
+                        "for week=%d, page=%s, type=%s: %s",
+                        week_num, page_id, spec_type, exc,
                     )
                     continue
                 all_blocks.append(stub)
@@ -6707,6 +8559,10 @@ async def _run_content_generation_outline(**kwargs) -> str:
                     "pages_objective_scoped": n_pages_objective_scoped,
                     "pages_week_fallback": n_pages_week_fallback,
                     "objective_scope_min_chunks": _OBJ_SCOPE_MIN_CHUNKS,
+                    # Wave-2 Part 3 (keystone): dynamic block-plan stats.
+                    "dynamic_block_plan_enabled": dynamic_block_plan,
+                    "weeks_planner_used": n_weeks_planner_used,
+                    "weeks_planner_fallback": n_weeks_planner_fallback,
                 },
             )
         except Exception:  # noqa: BLE001
@@ -6726,8 +8582,84 @@ async def _run_content_generation_outline(**kwargs) -> str:
     ]
     workflow_type = kwargs.get("workflow_type") or ""
     validators = _resolve_inter_tier_validators(workflow_type, capture)
+
+    # Build the per-course CURIE minter ONCE (loads
+    # domain_concept_vocabulary.json + compiles concept seeds a single
+    # time) so a per-block ``pre_validate_hook`` can stamp minted CURIEs
+    # onto each freshly-routed candidate BEFORE the in-loop
+    # ``BlockCurieAnchoringValidator`` runs. Without this, a prose-corpus
+    # block lands with ``content["curies"]==[]`` (the outline tier
+    # regenerates curies each dispatch), the in-loop curie-anchoring gate
+    # fires ``OUTLINE_BLOCK_MISSING_CURIES`` → ``regenerate``, and the
+    # block re-rolls IDENTICALLY up to the budget (~3× the calls) — the
+    # post-loop ``_mint_outline_curies`` mints too late to prevent it.
+    # ``minter is None`` (RDF / legacy corpora, no vocabulary) → no hook
+    # is threaded and the route call is byte-identical to the prior path.
+    _outline_minter = _build_outline_curie_minter(
+        course_code=course_code, kwargs=kwargs,
+    )
+    _minted_curie_map = (
+        _outline_minter.minted_map if _outline_minter is not None else None
+    )
+
+    def _make_mint_hook(_chunks: List[Any]) -> Optional[Callable[[Any], Any]]:
+        if _outline_minter is None:
+            return None
+
+        def _hook(candidate: Any) -> Any:
+            # Key the per-block source-chunk universe by the candidate's
+            # OWN block_id (== the routed stub's block_id) so the minter's
+            # source-chunk fallback resolves correctly regardless of the
+            # enclosing loop variable.
+            _chunks_by_id = (
+                {candidate.block_id: _chunks} if _chunks else {}
+            )
+            new_block, meta = _outline_minter.mint_block(
+                candidate, _chunks_by_id,
+            )
+            if new_block is None or meta is None:
+                return candidate
+            _emit_curie_minting_capture(capture, candidate, meta)
+            return new_block
+
+        return _hook
+
+    # ------------------------------------------------------------------ #
+    # Crash-resume checkpoint (append-as-you-go) for the outline tier.
+    # ------------------------------------------------------------------ #
+    # The per-block ``route_with_self_consistency`` dispatch below is the
+    # expensive ~2h local-7B work. Append each SUCCESSFULLY-authored block to
+    # ``.blocks_outline_checkpoint.jsonl`` the moment it completes (flush per
+    # block), so a mid-loop kill survives. On resume, rehydrate the already-
+    # authored blocks from the sidecar and SKIP their LLM dispatch. Default
+    # ON; OFF (or no sidecar present) → byte-identical to the legacy emit.
+    # Degraded (escalation-marker) blocks are NOT checkpointed, so a resume
+    # re-attempts them — identical contract to the rewrite-tier per-block cache.
+    _outline_checkpoint_on = _checkpoint_enabled(
+        _COURSEFORGE_OUTLINE_CHECKPOINT_ENV
+    )
+    _outline_checkpoint_path = out_dir / _OUTLINE_CHECKPOINT_NAME
+    _outline_resume_map: Dict[str, Any] = (
+        _load_block_checkpoint(_outline_checkpoint_path)
+        if _outline_checkpoint_on else {}
+    )
+    _n_outline_resumed = 0
+    _n_outline_authored_fresh = 0
+
     outline_blocks: List[Any] = []
     for blk in all_blocks:
+        # Resume: skip the LLM dispatch for a block already checkpointed by a
+        # prior interrupted attempt. A malformed checkpoint entry rehydrates
+        # to None → fall through and re-author (never a duplicate: the fresh
+        # author replaces the same stable block_id).
+        if _outline_checkpoint_on:
+            _cached = _outline_resume_map.get(blk.block_id)
+            if _cached is not None:
+                _cached_blk = _block_from_checkpoint_entry(_cached)
+                if _cached_blk is not None:
+                    outline_blocks.append(_cached_blk)
+                    _n_outline_resumed += 1
+                    continue
         block_chunks = chunks_lookup.get(blk.block_id, [])
         try:
             outlined = router.route_with_self_consistency(
@@ -6735,8 +8667,21 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 validators=validators,
                 source_chunks=block_chunks,
                 objectives=objectives_payload,
+                minted_curie_map=_minted_curie_map,
+                pre_validate_hook=_make_mint_hook(block_chunks),
             )
             outline_blocks.append(outlined)
+            _n_outline_authored_fresh += 1
+            # Checkpoint the freshly-authored block (NOT marker-bearing —
+            # those are re-attempted on resume). Append + flush per block.
+            if (
+                _outline_checkpoint_on
+                and not getattr(outlined, "escalation_marker", None)
+            ):
+                _append_block_checkpoint(
+                    _outline_checkpoint_path,
+                    _block_to_snake_case_entry(outlined),
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "outline phase: route_with_self_consistency() failed "
@@ -6744,6 +8689,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 blk.block_id, exc,
             )
             # Persist a stub-with-marker so downstream sees the failure.
+            # NOT checkpointed (marker blocks re-attempt on resume).
             try:
                 import dataclasses as _dc
                 outline_blocks.append(_dc.replace(
@@ -6751,6 +8697,39 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 ))
             except (TypeError, ValueError):
                 continue
+
+    # Resume decision capture (dynamic rationale: units resumed / authored
+    # fresh / sidecar path). Mirrors the phase_start capture in this function.
+    if _outline_checkpoint_on and capture is not None and (
+        _n_outline_resumed or _n_outline_authored_fresh
+    ):
+        try:
+            capture.log_decision(
+                decision_type="content_selection",
+                decision=(
+                    f"Outline crash-resume checkpoint: rehydrated "
+                    f"{_n_outline_resumed} already-authored block(s) and "
+                    f"authored {_n_outline_authored_fresh} fresh."
+                ),
+                rationale=(
+                    f"Append-as-you-go sidecar "
+                    f"{_outline_checkpoint_path.name} skipped the expensive "
+                    f"route_with_self_consistency dispatch for "
+                    f"{_n_outline_resumed} block(s) checkpointed by a prior "
+                    f"interrupted attempt; {_n_outline_authored_fresh} block(s) "
+                    f"were authored this run and flushed per-block so a "
+                    f"mid-loop kill survives (resume is dedupe-by-block_id, "
+                    f"never duplicating or fabricating a block)."
+                ),
+                ml_features={
+                    "gate_id": "_run_content_generation_outline",
+                    "blocks_resumed": _n_outline_resumed,
+                    "blocks_authored_fresh": _n_outline_authored_fresh,
+                    "checkpoint_sidecar": _outline_checkpoint_path.name,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     # ------------------------------------------------------------------ #
     # FIX 2 — drop hallucinated objective refs.
@@ -6835,6 +8814,12 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 _block_to_snake_case_entry(blk), ensure_ascii=False,
             ))
             fh.write("\n")
+
+    # Crash-resume sidecar cleanup: the final JSONL is on disk, so the
+    # interrupted-run checkpoint is no longer needed. Resume is only for an
+    # INTERRUPTED run — a stale sidecar would re-feed a completed run.
+    if _outline_checkpoint_on:
+        _remove_block_checkpoint(_outline_checkpoint_path)
 
     # Worker W2: persist chunks_lookup + objectives_payload as sidecars
     # next to blocks_outline.jsonl so W3's rewrite phase can rehydrate
@@ -7713,6 +9698,45 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         _phase_outputs_proxy, capture,
     )
 
+    # P0 — objective-id -> statement map, loaded ONCE from the project's
+    # synthesized_objectives.json (Courseforge synthesized OR LibV2 archive
+    # form). Consumed by ``_apply_str_backstops`` to render objective ``<li>``
+    # bodies as the LO statement instead of the bare ``CO-NN`` id, and by the
+    # per-page objectives ``<ul>`` assembly below. Empty on any read failure —
+    # callers fall back to rendering the bare id (never crashes the phase).
+    _objective_id_statement_map: Dict[str, str] = {}
+    # Finding 9 + 18: also index the FULL objective records (not just the
+    # statement) so (a) the page <h1> can be derived from the week's TO/topic
+    # title and (b) the overview page can enumerate the TO + ALL its child COs
+    # via ``render_objective_list``. ``_to_record_map`` / ``_co_record_map`` are
+    # ``{id: {id, statement, terminal_id?, ...}}``. Empty on any read failure.
+    _to_record_map: Dict[str, Dict[str, Any]] = {}
+    _co_record_map: Dict[str, Dict[str, Any]] = {}
+    try:
+        _synth_obj_path = (
+            project_path / "01_learning_objectives"
+            / "synthesized_objectives.json"
+        )
+        if _synth_obj_path.exists():
+            _synth_obj_doc = json.loads(
+                _synth_obj_path.read_text(encoding="utf-8")
+            )
+            _objective_id_statement_map = _objective_id_to_statement(
+                _synth_obj_doc
+            )
+            _to_record_map, _co_record_map = _index_objective_records(
+                _synth_obj_doc
+            )
+    except Exception as _obj_exc:  # noqa: BLE001 — best-effort; bare-id fallback
+        logger.warning(
+            "rewrite phase: could not load objective statements from "
+            "synthesized_objectives.json (%s); objective <li> bodies fall "
+            "back to the bare id.", _obj_exc,
+        )
+        _objective_id_statement_map = {}
+        _to_record_map = {}
+        _co_record_map = {}
+
     # Resolve the LibV2 dart_chunks/chunks.jsonl for this course and build a
     # ``chunk_id -> [real dart:{module_id}#{hash} sourceId]`` map so the rewrite
     # backstop can stamp REAL, content_grounding-resolvable source refs (the
@@ -7758,6 +9782,98 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             )
         except Exception:  # noqa: BLE001
             pass
+
+    # ---- Rewrite-tier domain-CURIE minting resources ------------------
+    # Build the per-course minted-CURIE map + compiled domain-concept seeds
+    # ONCE (the rewrite backstop runs per-block). Mirrors the outline tier's
+    # ``_mint_outline_curies`` but operates on the rewrite tier's STR HTML:
+    # when the rewrite LLM authored a block with no domain CURIE in its prose
+    # (and the displaced-CURIE harvest only recovered bare chunk ids, which
+    # are NOT CURIEs and so do not anchor), the backstop matches the block's
+    # grounded SOURCE-CHUNK text against the domain vocabulary and injects a
+    # REAL minted CURIE (``{prefix}:{concept}``) as a hidden ``data-cf-curie``
+    # span — exactly the prose-corpus token ``BlockCurieAnchoringValidator``'s
+    # str path can extract + anchor. No vocabulary (RDF / legacy corpus) →
+    # every resource is empty and the minting is a complete no-op (the legacy
+    # literal-token anchoring path runs unchanged). Anti-fabrication: a block
+    # whose source-chunk text matches NO vocabulary concept mints nothing.
+    _rewrite_minted_map: Dict[str, Any] = {}
+    _rewrite_minted_by_canonical: Dict[str, str] = {}
+    _rewrite_domain_seeds: list = []
+    try:
+        _vocab_path = _locate_domain_concept_vocabulary(course_code, kwargs)
+        if _vocab_path is not None:
+            _vocabulary = json.loads(_vocab_path.read_text(encoding="utf-8"))
+            from lib.ontology.curie_discovery import (
+                build_minted_curie_map as _build_minted_curie_map_fn,
+                minted_curie_by_canonical as _minted_by_canonical_fn,
+            )
+            from Trainforge.process_course import (
+                compile_domain_concept_seeds as _compile_seeds_fn,
+            )
+            _rewrite_minted_map = _build_minted_curie_map_fn(
+                _vocabulary, course_id=course_code,
+            ) or {}
+            if _rewrite_minted_map:
+                _rewrite_minted_by_canonical = _minted_by_canonical_fn(
+                    _rewrite_minted_map,
+                )
+                _seed_input = [
+                    {"id": c.get("canonical"), "aliases": c.get("aliases") or []}
+                    for c in (_vocabulary.get("concepts") or [])
+                    if isinstance(c, dict) and c.get("canonical")
+                ]
+                _rewrite_domain_seeds = _compile_seeds_fn(_seed_input)
+    except Exception as _curie_exc:  # noqa: BLE001 — best-effort; no-op on fail
+        logger.warning(
+            "rewrite phase: domain-CURIE minting resources unavailable "
+            "(%s); rewrite-tier CURIE backstop falls back to displaced-token "
+            "re-attachment only.",
+            _curie_exc,
+        )
+        _rewrite_minted_map = {}
+        _rewrite_minted_by_canonical = {}
+        _rewrite_domain_seeds = []
+
+    def _mint_curie_for_str_block(block_chunks: Any) -> List[str]:
+        """Mint real domain CURIEs for a rewrite STR block from its chunks.
+
+        Matches the block's grounded SOURCE-CHUNK text against the compiled
+        domain-concept seeds and returns the minted ``{prefix}:{concept}``
+        CURIE tokens for every matched concept (deduped, discovery order).
+        No vocabulary / no seeds / no match → empty list (fail closed, never
+        fabricate). The chunk text is the block's real provenance and is
+        tagged with the domain vocabulary, so a concept present there is
+        genuinely the block's subject (provenance-aware, NOT a relaxation —
+        identical contract to ``_mint_outline_curies``' source-chunk arm).
+        """
+        if not _rewrite_domain_seeds or not _rewrite_minted_by_canonical:
+            return []
+        if not isinstance(block_chunks, list):
+            return []
+        text_parts: List[str] = []
+        for _entry in block_chunks:
+            if isinstance(_entry, dict):
+                _txt = _entry.get("text")
+                if isinstance(_txt, str) and _txt.strip():
+                    text_parts.append(_txt)
+        if not text_parts:
+            return []
+        try:
+            from lib.ontology.concept_tagging import (
+                extract_concept_tags as _extract_concept_tags_fn,
+            )
+            matched = _extract_concept_tags_fn(
+                "\n".join(text_parts), {}, _rewrite_domain_seeds,
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        out: List[str] = []
+        for _canon in matched:
+            _curie = _rewrite_minted_by_canonical.get(_canon)
+            if _curie and _curie not in out:
+                out.append(_curie)
+        return out
 
     # Canonical objective id set (from the W2 outline_objectives.json sidecar,
     # a flat list of ``{id, ...}`` entries) so the rewrite_page_objectives
@@ -7844,6 +9960,36 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                     _rewrite_cache[_bid] = _ce
         except (OSError, ValueError):
             _rewrite_cache = {}
+
+    # ------------------------------------------------------------------ #
+    # Append-as-you-go crash-resume checkpoint (rewrite tier).
+    # ------------------------------------------------------------------ #
+    # The existing ``_rewrite_cache`` above only resumes from the FINAL
+    # ``blocks_final.jsonl`` — which is written once at the very end, so a
+    # mid-loop kill leaves NOTHING to resume from. The dot-prefixed
+    # ``.blocks_final_checkpoint.jsonl`` sidecar is flushed per successfully-
+    # rewritten block, so an interrupted rewrite loop is also resumable.
+    # Merge its successful entries into ``_rewrite_cache`` (the loop already
+    # skips dispatch for every cache hit). Default ON; OFF (or no sidecar) →
+    # byte-identical to the prior blocks_final.jsonl-only resume.
+    _rewrite_checkpoint_on = _checkpoint_enabled(
+        _COURSEFORGE_REWRITE_CHECKPOINT_ENV
+    )
+    _rewrite_checkpoint_path = out_dir / _REWRITE_CHECKPOINT_NAME
+    _n_rewrite_checkpoint_resumed = 0
+    if _rewrite_checkpoint_on:
+        for _bid, _ce in _load_block_checkpoint(
+            _rewrite_checkpoint_path
+        ).items():
+            if (
+                not _ce.get("escalation_marker")
+                and isinstance(_ce.get("content"), str)
+                and _ce.get("content", "").strip()
+                and _bid not in _rewrite_cache
+            ):
+                _rewrite_cache[_bid] = _ce
+                _n_rewrite_checkpoint_resumed += 1
+
     if _rewrite_cache and capture is not None:
         try:
             capture.log_decision(
@@ -7972,6 +10118,31 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 new_content, rewritten.block_id,
             )
 
+        # ---- Content-type stamping (component block types) -------------
+        # ``BlockContentTypeValidator`` audits every non-scaffolding block
+        # for a ``data-cf-content-type`` in the canonical ChunkType taxonomy.
+        # The rewrite LLM stamps it on prose block types (explanation /
+        # example) via their ``<h2>`` heading, but the bloom-diversity
+        # component types (``self_check_question`` / ``activity``) render as
+        # a component ``<div>`` carrying only component/purpose/bloom attrs —
+        # so the gate fires OUTLINE_BLOCK_MISSING_CONTENT_TYPE on every one.
+        # Stamp the canonical content-type for those types (idempotent — the
+        # injector is a no-op when the attribute is already present). Block
+        # types absent from the map keep whatever the LLM authored.
+        _ct_label = _REWRITE_BLOCK_TYPE_CONTENT_TYPE.get(rewritten.block_type)
+        if _ct_label:
+            new_content = _inject_content_type_attr(new_content, _ct_label)
+            # Promote onto the structural field too so the str-path extractor's
+            # ``content_type_label`` fallback (and any JSON-LD projection)
+            # resolves without re-scraping the attribute.
+            if not getattr(rewritten, "content_type_label", None):
+                try:
+                    rewritten = _dc.replace(
+                        rewritten, content_type_label=_ct_label,
+                    )
+                except (TypeError, ValueError):
+                    pass
+
         # ---- Canonical source-ref resolution (block-type-agnostic) -----
         # The 7B prose tier stamps ``data-cf-source-ids`` with concept CURIEs
         # (``slug:concept_name``) instead of canonical ``dart:{slug}#{chunk}``
@@ -7994,7 +10165,15 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             chunk_source_id_map=_chunk_source_id_map,
         )
         # Harvest CURIE tokens already stamped in any data-cf-source-ids attr
-        # so the curie-anchoring signal survives the overwrite.
+        # so the curie-anchoring signal survives the overwrite. ONLY real
+        # CURIE-shaped tokens (``prefix:localname`` — carry a ``:``) are kept:
+        # the 7B rewrite tier sometimes stamps BARE CHUNK IDS
+        # (``sample_course_a_chunk_00011`` — no colon) in
+        # ``data-cf-source-ids``, and re-attaching those as the curie span
+        # text produced a span the str-path ``BlockCurieAnchoringValidator``
+        # could not extract as a CURIE (no colon) → OUTLINE_BLOCK_MISSING_CURIES
+        # despite the span being present. The bare chunk ids are still resolved
+        # to canonical source refs above; they are simply not CURIEs.
         displaced_curies: List[str] = []
         _curie_seen: set = set()
         for _m in _SOURCE_IDS_ATTR_RE.finditer(new_content):
@@ -8002,6 +10181,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 _tok = _tok.strip()
                 if (
                     _tok
+                    and ":" in _tok
                     and not _CANONICAL_DART_SOURCE_ID_RE.match(_tok)
                     and _tok not in _curie_seen
                 ):
@@ -8047,37 +10227,127 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             # the shape check) instead of a poisoned invalid-shape ref.
             new_content = _SOURCE_IDS_ATTR_RE.sub("", new_content)
 
-        # Re-attach displaced CURIEs as the curie-anchoring signal — a hidden
+        # ---- CURIE anchoring backstop ----------------------------------
+        # The str-path ``BlockCurieAnchoringValidator`` extracts CURIEs
+        # (``prefix:localname``) from the block's stripped HTML and fires
+        # OUTLINE_BLOCK_MISSING_CURIES when it finds none. A block anchors
+        # cleanly when its prose already contains a real (minted) CURIE; when
+        # the rewrite LLM authored none (and only bare chunk ids were
+        # displaced — already filtered out above), MINT a real domain CURIE
+        # from the block's grounded SOURCE-CHUNK text (provenance-aware,
+        # identical contract to the outline tier's ``_mint_outline_curies``
+        # source-chunk arm) so the anchoring gate has a prose-corpus-valid
+        # CURIE. Anti-fabrication: no vocabulary / no source-chunk concept
+        # match → mint nothing; the block fails closed (no invented CURIE).
+        # Use the gate's exact stripping + extraction so the backstop's
+        # "does the body already carry an extractable CURIE?" check matches
+        # what BlockCurieAnchoringValidator's str path will compute.
+        try:
+            from Courseforge.router.inter_tier_gates import (
+                _strip_html as _strip_html_fn,
+            )
+            from lib.ontology.curie_extraction import (
+                extract_curies as _extract_curies_fn,
+            )
+            _body_curies = sorted(
+                _extract_curies_fn(_strip_html_fn(new_content))
+            )
+        except Exception:  # noqa: BLE001 — never block the backstop
+            _body_curies = []
+
+        # Strip a JUNK ``data-cf-curie`` span — one whose text content carries
+        # only bare chunk ids (no extractable CURIE). A prior backstop version
+        # re-attached the 7B's bare-chunk-id ``data-cf-source-ids`` tokens as
+        # the curie span; those have no colon, so the gate extracts nothing and
+        # still fires OUTLINE_BLOCK_MISSING_CURIES despite the span's presence.
+        # Removing the junk span lets the minting path below inject a real
+        # CURIE span. A span carrying a real CURIE leaves ``_body_curies``
+        # non-empty (caught above) and is never stripped.
+        if not _body_curies and "data-cf-curie" in new_content:
+            new_content = _CURIE_SPAN_EL_RE.sub("", new_content)
+
+        _curie_tokens: List[str] = list(displaced_curies)
+        if not _body_curies and not _curie_tokens:
+            for _minted in _mint_curie_for_str_block(block_chunks_for_refs):
+                if _minted not in _curie_tokens:
+                    _curie_tokens.append(_minted)
+
+        # Re-attach the CURIE tokens as the curie-anchoring signal — a hidden
         # span whose TEXT content carries the tokens (the str-path validator
         # strips tags before scraping, so attribute-borne CURIEs are invisible
-        # to it; text content survives). Idempotent on re-run.
-        if displaced_curies and "data-cf-curie" not in new_content:
-            _curie_text = " ".join(displaced_curies)
+        # to it; text content survives). Skip when the body already carries an
+        # extractable CURIE (no double-stamp) and when a span is already
+        # present (idempotent on re-run).
+        if _curie_tokens and not _body_curies and "data-cf-curie" not in new_content:
+            _curie_text = " ".join(_curie_tokens)
             new_content = (
                 f"{new_content}"
                 f'<span hidden data-cf-curie="{_curie_text}">'
                 f"{_curie_text}</span>"
             )
 
-        block_sids = list(rewritten.source_ids or ())
-        if not block_sids:
-            block_sids = _page_source_ids(rewritten.page_id)
-        if block_sids and "source-attribution" not in new_content:
-            new_content = (
-                f"{new_content}<cite class=\"source-attribution\">"
-                f"{'; '.join(block_sids)}</cite>"
+        # P0 — VISIBLE-CURIE leak sanitizer. The minted CURIE is an anchoring
+        # signal; it belongs in the hidden ``<span data-cf-curie>`` ONLY. The
+        # 7B rewrite tier (and the verbatim-preserve directive) leaks the raw
+        # ``prefix:localname`` token into VISIBLE prose — bare, ``<code>``-
+        # wrapped, or in ``data-cf-term``. Replace each visible occurrence with
+        # the concept's natural surface term (the canonical name from the
+        # minted map's ``surface_forms``), leaving the hidden span intact so the
+        # curie-anchoring gate still passes. No vocabulary → no-op.
+        for _minted_curie, _minted_meta in _rewrite_minted_map.items():
+            _surfaces = (
+                _minted_meta.get("surface_forms")
+                if isinstance(_minted_meta, dict) else None
             )
+            _surface = (
+                _surfaces[0] if isinstance(_surfaces, list) and _surfaces
+                else _minted_curie.split(":", 1)[-1].replace("_", " ")
+            )
+            new_content = _curie_visible_to_surface(
+                new_content, _minted_curie, _surface,
+            )
+
+        # P0 — objective ``<li>`` body resolution. An objective block whose
+        # visible ``<li>`` body is the bare ``CO-NN`` / ``TO-NN`` id (or empty)
+        # is rewritten to ``<strong>ID:</strong> {statement}`` so the learner
+        # reads the objective text, not its synthetic id. No-op when the
+        # statement map is empty or the body already carries real prose.
+        if rewritten.block_type == "objective" and _objective_id_statement_map:
+            new_content = _resolve_objective_li_statements(
+                new_content, _objective_id_statement_map,
+            )
+
+        # Provenance source ids belong ONLY in the hidden
+        # ``data-cf-source-ids`` attribute (stamped on the section wrapper
+        # at the rewrite-tier render site). A VISIBLE
+        # ``<cite class="source-attribution">`` whose body is the raw
+        # ``dart:...#hash`` ids leaks machine identifiers into learner prose
+        # (P0 identifier-leak defect) — no longer appended here.
         if new_content != rewritten.content:
             rewritten = _dc.replace(rewritten, content=new_content)
         return rewritten
 
-    for blk in outline_blocks:
+    def _process_one_block(blk):  # type: ignore[no-untyped-def]
+        """Rewrite a single outline block (cache hit OR fresh LLM dispatch).
+
+        Pure w.r.t. ``outline_blocks`` ordering — returns the finished
+        Block for this input block; the caller places it at the input
+        index so output order is deterministic regardless of completion
+        order under the concurrent path. FAIL-SOFT per block: a dispatch
+        exception yields a ``validator_consensus_fail``-marked block
+        (exactly the sequential contract), never aborting siblings.
+
+        Reads shared-but-immutable lookups (``_rewrite_cache``,
+        ``chunks_lookup``, ``objectives_payload``, the backstop closure's
+        read-only maps); the only shared MUTABLE state it touches is the
+        ``DecisionCapture`` (deep inside ``route``/providers) and the NLI
+        singleton (best-of-N), both of which are now internally locked.
+        """
         _cached_entry = _rewrite_cache.get(blk.block_id)
         if _cached_entry is not None:
             _cached_blk = _entry_to_block(_cached_entry)
             if _cached_blk is not None:
-                rewrite_blocks.append(_apply_str_backstops(_cached_blk))
-                continue
+                return _apply_str_backstops(_cached_blk)
         block_chunks = chunks_lookup.get(blk.block_id, []) if isinstance(
             chunks_lookup, dict
         ) else []
@@ -8116,8 +10386,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             # the per-block-cache reuse path (see _apply_str_backstops)
             # so resumed runs get identical repairs without re-rolling the
             # slow local model.
-            rewritten = _apply_str_backstops(rewritten)
-            rewrite_blocks.append(rewritten)
+            return _apply_str_backstops(rewritten)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "rewrite phase: route_rewrite_with_remediation() "
@@ -8125,11 +10394,127 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 blk.block_id, exc,
             )
             try:
-                rewrite_blocks.append(_dc.replace(
+                return _dc.replace(
                     blk, escalation_marker="validator_consensus_fail",
-                ))
+                )
             except (TypeError, ValueError):
-                continue
+                return None
+
+    # Opt-in concurrent rewrite dispatch. Default 1 = the EXACT sequential
+    # path below (no thread pool constructed; byte-identical to the legacy
+    # behavior). COURSEFORGE_REWRITE_CONCURRENCY > 1 fans the per-block LLM
+    # dispatch out across a bounded thread pool — the slow NVIDIA HTTP rewrite
+    # call (~2.7s, I/O-bound, cloud) overlaps across blocks; the shared GPU
+    # validators (NLI best-of-N) + DecisionCapture writes briefly serialize on
+    # their own internal locks. Results are RE-ORDERED to the original block
+    # order so blocks_final is identical regardless of completion order.
+    # Garbage / < 1 → 1 (parse-with-fallback, mirroring ED4ALL_ANSWER_NUM_CTX).
+    _rewrite_concurrency = 1
+    try:
+        _rc_raw = int(os.environ.get("COURSEFORGE_REWRITE_CONCURRENCY", "1"))
+        if _rc_raw >= 1:
+            _rewrite_concurrency = _rc_raw
+    except (TypeError, ValueError):
+        _rewrite_concurrency = 1
+
+    def _checkpoint_rewrite_result(_result: Any) -> None:
+        """Append a successfully-rewritten block to the resume sidecar.
+
+        Flushed per block so a mid-loop kill is resumable. Marker-bearing /
+        non-string-content blocks are NOT checkpointed (they re-attempt on
+        resume — identical contract to the blocks_final.jsonl cache). Safe
+        under the concurrent path: ``_append_block_checkpoint`` opens +
+        closes the file per call; concurrent appends interleave whole lines
+        (each result is one ``write`` of a complete JSONL line), and resume
+        dedupes by block_id so an interleaved duplicate is harmless.
+        """
+        if not _rewrite_checkpoint_on or _result is None:
+            return
+        if getattr(_result, "escalation_marker", None):
+            return
+        _content = getattr(_result, "content", None)
+        if not (isinstance(_content, str) and _content.strip()):
+            return
+        _append_block_checkpoint(
+            _rewrite_checkpoint_path,
+            _block_to_snake_case_entry(_result),
+        )
+
+    if _rewrite_concurrency <= 1:
+        # Sequential path — EXACT legacy behavior. No pool constructed.
+        for blk in outline_blocks:
+            _result = _process_one_block(blk)
+            if _result is not None:
+                rewrite_blocks.append(_result)
+                _checkpoint_rewrite_result(_result)
+    else:
+        # Bounded thread-pool fanout. Collect into an index-keyed dict so the
+        # final list is reassembled in ORIGINAL block order (deterministic
+        # output regardless of which block finishes first). Per-block failure
+        # stays isolated to that block (the worker returns the marked block).
+        from concurrent.futures import ThreadPoolExecutor
+
+        _pool_size = min(_rewrite_concurrency, len(outline_blocks)) or 1
+        _results_by_idx: Dict[int, Any] = {}
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=(
+                        f"Rewrite-tier concurrency enabled: dispatching "
+                        f"{len(outline_blocks)} block(s) across a "
+                        f"{_pool_size}-thread pool."
+                    ),
+                    rationale=(
+                        f"COURSEFORGE_REWRITE_CONCURRENCY={_rewrite_concurrency} "
+                        f"(pool sized to min(knob, n_blocks)={_pool_size}) fans "
+                        f"the I/O-bound per-block rewrite LLM dispatch out across "
+                        f"threads; shared GPU NLI + DecisionCapture writes "
+                        f"serialize on internal locks. Output is re-ordered to "
+                        f"the original block sequence so blocks_final is "
+                        f"byte-identical to the sequential path."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_rewrite",
+                        "rewrite_concurrency": _rewrite_concurrency,
+                        "pool_size": _pool_size,
+                        "block_count": len(outline_blocks),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        with ThreadPoolExecutor(max_workers=_pool_size) as _pool:
+            _futs = {
+                _pool.submit(_process_one_block, _blk): _idx
+                for _idx, _blk in enumerate(outline_blocks)
+            }
+            for _fut in _futs:
+                _idx = _futs[_fut]
+                try:
+                    _results_by_idx[_idx] = _fut.result()
+                    # Checkpoint as each future resolves (flush per block) so a
+                    # mid-fanout kill is resumable; resume dedupes by block_id.
+                    _checkpoint_rewrite_result(_results_by_idx[_idx])
+                except Exception as exc:  # noqa: BLE001
+                    # Defensive: _process_one_block already fail-softs, but a
+                    # truly unexpected raise must not drop the block silently —
+                    # mark it consensus-fail at its original index.
+                    logger.warning(
+                        "rewrite phase: concurrent worker raised for "
+                        "block idx=%s: %s",
+                        _idx, exc,
+                    )
+                    try:
+                        _results_by_idx[_idx] = _dc.replace(
+                            outline_blocks[_idx],
+                            escalation_marker="validator_consensus_fail",
+                        )
+                    except (TypeError, ValueError):
+                        _results_by_idx[_idx] = None
+        for _idx in range(len(outline_blocks)):
+            _result = _results_by_idx.get(_idx)
+            if _result is not None:
+                rewrite_blocks.append(_result)
 
     # Persist final blocks JSONL (consumed by post_rewrite_validation).
     blocks_final_path = out_dir / "blocks_final.jsonl"
@@ -8139,6 +10524,42 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 _block_to_snake_case_entry(blk), ensure_ascii=False,
             ))
             fh.write("\n")
+
+    # Crash-resume sidecar cleanup + capture: the final JSONL is on disk, so
+    # the interrupted-run checkpoint is no longer needed. Emit one decision
+    # event (dynamic rationale: blocks resumed from the append-as-you-go
+    # sidecar) mirroring the outline tier's resume capture.
+    if _rewrite_checkpoint_on:
+        if capture is not None and _n_rewrite_checkpoint_resumed:
+            try:
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=(
+                        f"Rewrite crash-resume checkpoint: rehydrated "
+                        f"{_n_rewrite_checkpoint_resumed} block(s) from the "
+                        f"append-as-you-go sidecar (beyond the "
+                        f"blocks_final.jsonl cache)."
+                    ),
+                    rationale=(
+                        f"{_rewrite_checkpoint_path.name} carried "
+                        f"{_n_rewrite_checkpoint_resumed} successfully-"
+                        f"rewritten block(s) flushed per-block by a prior "
+                        f"interrupted attempt that never reached the final "
+                        f"blocks_final.jsonl write; resume skipped their LLM "
+                        f"dispatch (dedupe-by-block_id, never duplicating or "
+                        f"fabricating a block)."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_rewrite",
+                        "blocks_resumed_from_checkpoint": (
+                            _n_rewrite_checkpoint_resumed
+                        ),
+                        "checkpoint_sidecar": _rewrite_checkpoint_path.name,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        _remove_block_checkpoint(_rewrite_checkpoint_path)
 
     # W3 — per-block synthesis-manifest sidecar. Emit one
     # block_synthesis_manifest.jsonl line per finalized rewrite-tier block
@@ -8184,10 +10605,55 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             for oid in b.objective_ids or ():
                 if oid not in objective_ids:
                     objective_ids.append(oid)
-        objective_lis = "".join(
-            f'<li data-cf-objective-id="{oid}">{oid}</li>'
-            for oid in objective_ids
+        # P0 — render the objective STATEMENT (not the bare id) as the visible
+        # ``<li>`` body when resolvable; the id stays in the attribute. Mirrors
+        # generate_course.py::_render_objectives (``<strong>ID:</strong>
+        # statement``). Falls back to the bare id when no statement resolves.
+        def _objective_li(oid: str) -> str:
+            _stmt = _objective_id_statement_map.get(oid) or \
+                _objective_id_statement_map.get(oid.upper())
+            if _stmt:
+                import html as _html_mod
+                return (
+                    f'<li data-cf-objective-id="{oid}">'
+                    f"<strong>{oid}:</strong> {_html_mod.escape(_stmt)}</li>"
+                )
+            return f'<li data-cf-objective-id="{oid}">{oid}</li>'
+
+        objective_lis = "".join(_objective_li(oid) for oid in objective_ids)
+
+        # Finding 9 + 18 prep: resolve the page_type from the page_id and split
+        # the page's objective ids into the week's TO records + CO records so
+        # (a) the <h1> can be humanized from the leading TO statement and
+        # (b) the overview page can enumerate TO + ALL its COs.
+        _pt_match = _PAGE_ID_TYPE_RE.match(page_id or "")
+        _page_type = (
+            (_pt_match.group("ptype") or "content").lower()
+            if _pt_match else "content"
         )
+        _page_tos: List[Dict[str, Any]] = []
+        _page_cos: List[Dict[str, Any]] = []
+        for _oid in objective_ids:
+            _rec = _to_record_map.get(_oid) or _to_record_map.get(_oid.upper())
+            if _rec is not None:
+                _page_tos.append(_rec)
+                continue
+            _rec = _co_record_map.get(_oid) or _co_record_map.get(_oid.upper())
+            if _rec is not None:
+                _page_cos.append(_rec)
+        # Finding 18: the overview must list each child CO of the page's TO(s),
+        # even when the overview's blocks declared only the TO id. Pull every
+        # CO whose ``terminal_id`` points at one of the page's TOs.
+        if _page_type == "overview" and _page_tos:
+            _to_ids = {str(t.get("id")) for t in _page_tos if t.get("id")}
+            _have_co = {str(c.get("id")) for c in _page_cos if c.get("id")}
+            for _co in _co_record_map.values():
+                _tid = _co.get("terminal_id")
+                _cid = str(_co.get("id") or "")
+                if _tid in _to_ids and _cid and _cid not in _have_co:
+                    _page_cos.append(_co)
+                    _have_co.add(_cid)
+
         body_parts = []
         for b in page_blocks:
             # W5: marker-bearing blocks (outline_budget_exhausted /
@@ -8203,27 +10669,47 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             # and triggering a full 3x re-run of every block.
             _marker_content = b.content if isinstance(b.content, str) else ""
             if b.escalation_marker is not None and not _marker_content.strip():
+                # Deterministic styled-template FALLBACK. The rewrite-tier model
+                # exhausted its parse-retry budget (runaway repetition truncated
+                # the block at max_tokens), so there is no usable rewritten HTML.
+                # Rather than DROP the block (loses content + breaks the page),
+                # render a concise, styled, grounded HTML body from the outline
+                # block's already-concise ``content.key_claims`` using the SAME
+                # styled component classes + ``data-cf-*`` metadata the success
+                # path emits. Stamps ``data-cf-fallback="template"`` so the
+                # fallback-rendered blocks are auditable. LLM-free.
+                _fallback_sids = list(b.source_ids or ())
+                if not _fallback_sids:
+                    _fallback_sids = _page_source_ids(b.page_id)
+                _fallback_html = _render_block_fallback_html(
+                    b,
+                    objective_statements=_objective_id_statement_map,
+                    minted_curie_map=_rewrite_minted_map,
+                    source_ids=_fallback_sids,
+                )
+                body_parts.append(_fallback_html)
                 if capture is not None:
                     try:
                         capture.log_decision(
-                            decision_type="block_packaging_skipped",
+                            decision_type="block_template_fallback",
                             decision=(
-                                f"Skipped HTML emit for block_id="
-                                f"{b.block_id} (block_type={b.block_type}, "
+                                f"Rendered deterministic styled template "
+                                f"fallback for block_id={b.block_id} "
+                                f"(block_type={b.block_type}, "
                                 f"escalation_marker={b.escalation_marker})."
                             ),
                             rationale=(
-                                "W5 packaging gate: blocks carrying a "
-                                "non-null escalation_marker (consensus "
-                                "failure / outline budget exhausted / "
-                                "structural unfixable) MUST NOT ship "
-                                "into the IMSCC. The block remains on "
-                                "disk in blocks_final.jsonl for "
-                                "re-execution; this skip prevents an "
-                                "unvalidated block_id="
-                                f"{b.block_id} from leaking into the "
-                                "per-page HTML and bypassing the "
-                                "post-rewrite validator chain."
+                                "Rewrite tier exhausted its parse-retry budget "
+                                "(runaway repetition truncated the block at "
+                                f"max_tokens) so block_id={b.block_id} had no "
+                                "usable HTML. Instead of dropping it (loses "
+                                "grounded content + breaks the page), the "
+                                "deterministic LLM-free renderer authored a "
+                                "concise styled block from the outline block's "
+                                f"{len(_fallback_claim_texts(b))} key_claim(s) "
+                                "using the same styled component classes + "
+                                "data-cf-* metadata the success path emits; "
+                                "stamped data-cf-fallback=\"template\" for audit."
                             ),
                             ml_features={
                                 "gate_id": "_run_content_generation_rewrite",
@@ -8231,6 +10717,10 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                                 "block_type": b.block_type,
                                 "escalation_marker": b.escalation_marker,
                                 "page_id": page_id,
+                                "key_claim_count": len(
+                                    _fallback_claim_texts(b)
+                                ),
+                                "fallback": "template",
                             },
                         )
                     except Exception:  # noqa: BLE001
@@ -8247,34 +10737,105 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             if not block_sids:
                 block_sids = _page_source_ids(b.page_id)
             source_ids_attr = ""
+            # Provenance ids live ONLY in the hidden ``data-cf-source-ids``
+            # attribute. A VISIBLE ``<cite class="source-attribution">`` whose
+            # body is the raw ``dart:...#hash`` ids leaks machine identifiers
+            # into learner prose (P0 identifier-leak defect) — the same ids the
+            # attribute already carries, so the visible cite was redundant.
             cite_html = ""
             if block_sids:
                 source_ids_attr = (
                     f' data-cf-source-ids="{",".join(block_sids)}"'
-                )
-                cite_html = (
-                    '<cite class="source-attribution">'
-                    + "; ".join(block_sids)
-                    + "</cite>"
                 )
             objective_attr = ""
             if b.objective_ids:
                 objective_attr = (
                     f' data-cf-objective-id="{",".join(b.objective_ids)}"'
                 )
+            # P2 — thread the canonical teaching-role onto the section wrapper
+            # via the (component, purpose) -> role mapper, so two-pass pages
+            # carry the same pedagogical-role provenance the single-pass
+            # generator emits. Prefer the Block's own teaching_role when set;
+            # else resolve deterministically from the block_type.
+            _role = getattr(b, "teaching_role", None) or \
+                _teaching_role_for_block_type(b.block_type)
+            teaching_role_attr = (
+                f' data-cf-teaching-role="{_role}"' if _role else ""
+            )
             body_parts.append(
                 f'<section data-cf-block-id="{b.block_id}"'
-                f'{source_ids_attr}{objective_attr}>'
+                f'{source_ids_attr}{objective_attr}{teaching_role_attr}>'
                 f'{content}{cite_html}</section>'
             )
-        page_html = (
-            "<!DOCTYPE html>\n<html><head>"
-            f"<title>{page_id}</title></head><body>"
-            f'<section class="objectives"><h2>Objectives</h2>'
-            f'<ul>{objective_lis}</ul></section>'
-            f"<main>{''.join(body_parts)}</main>"
-            "</body></html>"
+        # P1 — route the per-page shell through generate_course.py::_wrap_page
+        # so every two-pass page inherits the FULL Courseforge stylesheet
+        # (COURSEFORGE_CSS incl. the Sonnet component classes), a real document
+        # ``<head>`` (charset/viewport/title) + chrome (skip-link, header,
+        # footer). The objectives section + block sections become the wrapped
+        # ``<main>`` body. Resolve the week number from the page_id
+        # (``week_NN_...``) for the chrome banner; default 1.
+        _week_num = 1
+        _wk_match = re.search(r"week[_-]?(\d+)", page_id, re.IGNORECASE)
+        if _wk_match:
+            try:
+                _week_num = int(_wk_match.group(1))
+            except (TypeError, ValueError):
+                _week_num = 1
+
+        # Finding 11 + 18 — render (or OMIT) the page objectives <section> via
+        # the shared pure helper. Finding 11: a page with no objectives must
+        # NOT ship a blank "Objectives" heading over an empty <ul>. Finding 18:
+        # an OVERVIEW page enumerates the week's TO + ALL its child COs (each
+        # with its statement) via render_objective_list.
+        _objectives_section = _build_objectives_section_html(
+            objective_lis=objective_lis,
+            page_type=_page_type,
+            page_tos=_page_tos,
+            page_cos=_page_cos,
         )
+        _body_html = (
+            f"{_objectives_section}"
+            f"{''.join(body_parts)}"
+        )
+
+        # Finding 9: the page <h1> is a human title derived from the week's
+        # TO/topic + page type — never the raw ``week_NN_summary`` page_id.
+        _page_title = _humanize_page_title(
+            page_id, _week_num, _page_type, _page_tos,
+        )
+        try:
+            from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+                _wrap_page as _wrap_page_fn,
+            )
+            page_html = _wrap_page_fn(
+                title=_page_title,
+                course_code=course_code,
+                week_num=_week_num,
+                body_html=_body_html,
+            )
+        except Exception as _wrap_exc:  # noqa: BLE001 — never lose the page
+            # Fallback: emit the same full <head> + <style> shell inline so the
+            # page still inherits the stylesheet even if the import fails.
+            from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+                COURSEFORGE_CSS as _CF_CSS,
+            )
+            logger.warning(
+                "rewrite phase: _wrap_page unavailable (%s); emitting inline "
+                "stylesheet shell for %s.", _wrap_exc, page_id,
+            )
+            import html as _html_mod
+            _safe_title = _html_mod.escape(_page_title)
+            page_html = (
+                "<!DOCTYPE html>\n<html lang=\"en\"><head>"
+                "<meta charset=\"UTF-8\">"
+                "<meta name=\"viewport\" content=\"width=device-width, "
+                "initial-scale=1.0\">"
+                f"<title>{_safe_title}</title>"
+                f"<style>{_CF_CSS}</style></head><body>"
+                f'<main id="main-content" role="main">'
+                f"<h1>{_safe_title}</h1>{_body_html}</main>"
+                "</body></html>"
+            )
         try:
             page_path.write_text(page_html, encoding="utf-8")
             page_paths.append(str(page_path))
@@ -9664,6 +12225,221 @@ def _build_tool_registry() -> dict:
                     exc,
                 )
 
+            # Grounding-safe objective-review pass (default OFF via
+            # ``ED4ALL_OBJECTIVE_REVIEW_PROVIDER``). After the 7B synthesizes
+            # objectives, a strong hosted model (NVIDIA Nemotron) REVIEWS and
+            # ADJUSTS the synthesized objectives' QUALITY in place — improving
+            # statement clarity, repairing bloom level/verb, completing abcd,
+            # and making TO statements cover their child COs — with hard
+            # guardrails: identity + the id SET are immutable (no add/remove/
+            # reorder/re-id), ``source_refs`` are preserved VERBATIM (only
+            # editable text fields merge back by id), and every CO statement
+            # edit that degrades CO->TO grounding below the
+            # ``co_terminal_alignment`` cosine floor is REVERTED. Fully
+            # graceful: an unset key / provider error / unparseable response
+            # logs a warning and keeps the original 7B objectives unchanged
+            # (never fails the phase). Default-off (env unset) is a strict
+            # no-op — no client constructed, objectives byte-identical.
+            try:
+                from lib.objectives.objective_review import (  # noqa: PLC0415
+                    review_objectives as _review_objectives,
+                )
+
+                _review_capture = None
+                try:
+                    from lib.decision_capture import (  # noqa: PLC0415
+                        DecisionCapture as _ReviewDecisionCapture,
+                    )
+
+                    _review_capture = _ReviewDecisionCapture(
+                        course_code=course_name,
+                        phase="course-outliner",
+                        tool="courseforge",
+                        streaming=True,
+                    )
+                except Exception as _rc_exc:  # noqa: BLE001
+                    logger.warning(
+                        "DecisionCapture init failed for objective-review "
+                        "pass: %s", _rc_exc,
+                    )
+
+                # Wrap the flat ``chapter`` CO list in the review's group
+                # shape so the merge can read each CO's parent-terminal +
+                # mutate it IN PLACE (the same dicts flow into the WS5
+                # week-group slicer below + the on-disk learning_outcomes).
+                _review_co_group = [
+                    {"chapter": "all", "objectives": chapter}
+                ] if chapter else []
+                _review_result = _review_objectives(
+                    terminals=terminal,
+                    chapter_objectives=_review_co_group,
+                    course_name=course_name,
+                    capture=_review_capture,
+                )
+                if _review_result.get("applied"):
+                    _rc = _review_result.get("counters", {})
+                    logger.info(
+                        "objective-review pass applied (provider=%s, "
+                        "model=%s): %d statements adjusted, %d reverted for "
+                        "grounding, %d bloom edits applied, %d rejected.",
+                        _review_result.get("provider"),
+                        _review_result.get("model"),
+                        _rc.get("statements_adjusted", 0),
+                        _rc.get("statements_reverted", 0),
+                        _rc.get("bloom_edits_applied", 0),
+                        _rc.get("bloom_edits_rejected", 0),
+                    )
+                    # Re-sync reviewed statement/bloom/abcd edits back into
+                    # lo_entries (built by CLONING terminal+chapter BEFORE
+                    # this hook) so the on-disk learning_outcomes array
+                    # reflects the review. The review mutated terminal +
+                    # chapter dicts IN PLACE; only the editable text fields
+                    # are copied here (source_refs are NEVER touched, and the
+                    # id set is unchanged so every lo_entry still resolves).
+                    _reviewed_by_id = {
+                        str(o.get("id")): o
+                        for o in list(terminal) + list(chapter)
+                        if isinstance(o, dict) and o.get("id")
+                    }
+                    for _e in lo_entries:
+                        _src = _reviewed_by_id.get(str(_e.get("id")))
+                        if _src is None:
+                            continue
+                        for _fld in (
+                            "statement",
+                            "bloom_level",
+                            "bloom_verb",
+                            "abcd",
+                        ):
+                            if _fld in _src:
+                                _e[_fld] = _src[_fld]
+            except Exception as _review_exc:  # noqa: BLE001 — never fail phase
+                logger.warning(
+                    "objective-review pass raised (%s); keeping original 7B "
+                    "objectives unchanged.", _review_exc,
+                )
+
+            # Finding 17 — concept / sub-objective layer. After objectives
+            # are synthesized (+ optionally reviewed) and BEFORE
+            # synthesized_objectives.json is written, populate each chapter
+            # objective's ``sub_objectives`` list from its OWN already-grounded
+            # source chunks. Default path is deterministic clustering (no LLM,
+            # byte-stable when no embedder/chunks); the LLM arm is opt-in via
+            # ``ED4ALL_SUB_OBJECTIVE_PROVIDER`` (default unset → off), so this
+            # stays license-clean by default. Anti-fabrication is enforced by
+            # the module: a sub-objective's source_chunk_ids are always a
+            # strict subset of the CO's cited chunks — we only feed it chunk
+            # bodies for ids the CO already references. Fully graceful: a
+            # missing chunkset / embedder yields empty sub_objectives (the CO
+            # is left unchanged). Mutates the ``chapter`` CO dicts in place;
+            # we re-sync the populated lists back into ``lo_entries`` by id
+            # (lo_entries were shallow-cloned BEFORE this hook, mirroring the
+            # objective-review re-sync above).
+            try:
+                from lib.objectives.sub_objectives import (  # noqa: PLC0415
+                    populate_sub_objectives as _populate_sub_objectives,
+                    resolve_sub_objective_provider,
+                )
+
+                _so_slug = (course_name or "").lower().replace(
+                    "_", "-"
+                ).replace(" ", "-")
+                _so_chunks_by_id: Dict[str, Any] = {}
+                if _so_slug:
+                    try:
+                        _so_chunks_by_id, _ = _load_dart_chunkset_for_planning(
+                            course_slug=_so_slug,
+                            kwargs=kwargs,
+                        )
+                    except Exception as _so_chunk_exc:  # noqa: BLE001
+                        logger.warning(
+                            "sub_objectives: chunkset load failed (%s); "
+                            "CO sub_objectives will be empty.", _so_chunk_exc,
+                        )
+                        _so_chunks_by_id = {}
+
+                _so_capture = None
+                try:
+                    from lib.decision_capture import (  # noqa: PLC0415
+                        DecisionCapture as _SubObjDecisionCapture,
+                    )
+
+                    _so_capture = _SubObjDecisionCapture(
+                        course_code=course_name,
+                        phase="course-outliner",
+                        tool="courseforge",
+                        streaming=True,
+                    )
+                except Exception as _so_cap_exc:  # noqa: BLE001
+                    logger.warning(
+                        "DecisionCapture init failed for sub-objective "
+                        "derivation: %s", _so_cap_exc,
+                    )
+
+                _so_provider = resolve_sub_objective_provider()
+                _so_counters = _populate_sub_objectives(
+                    chapter_objectives=chapter,
+                    chunks_by_id=_so_chunks_by_id,
+                    provider=_so_provider,
+                    capture=_so_capture,
+                )
+                # WIRING-step decision event (dynamic signals: COs seen /
+                # populated / total sub-objectives / provider). The per-CO
+                # ``sub_objective_derivation`` events are emitted inside the
+                # module; this one records the phase-level wiring outcome.
+                if _so_capture is not None:
+                    try:
+                        _so_capture.log_decision(
+                            decision_type="sub_objective_derivation",
+                            decision=(
+                                "sub_objectives:wired:"
+                                f"{_so_counters.get('cos_populated', 0)}"
+                                f"/{_so_counters.get('cos_seen', 0)} COs"
+                            ),
+                            rationale=(
+                                "Finding 17 concept sub-layer wired into "
+                                "course_planning: processed "
+                                f"{_so_counters.get('cos_seen', 0)} chapter "
+                                "objective(s), populated sub_objectives on "
+                                f"{_so_counters.get('cos_populated', 0)} of them "
+                                f"({_so_counters.get('sub_objectives_total', 0)} "
+                                "sub-objectives total) from each CO's own cited "
+                                "chunks; provider="
+                                f"{_so_provider or 'deterministic'}, "
+                                "chunkset_loaded="
+                                f"{bool(_so_chunks_by_id)}. source_chunk_ids "
+                                "stay a strict subset of the CO's grounded "
+                                "chunks (anti-fabrication)."
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001 — capture must not break
+                        pass
+                logger.info(
+                    "sub_objectives: populated %d/%d CO(s) with %d "
+                    "sub-objective(s) (provider=%s).",
+                    _so_counters.get("cos_populated", 0),
+                    _so_counters.get("cos_seen", 0),
+                    _so_counters.get("sub_objectives_total", 0),
+                    _so_provider or "deterministic",
+                )
+
+                # Re-sync the populated sub_objectives back into lo_entries by
+                # id (lo_entries were shallow-cloned before this hook ran).
+                _so_by_id = {
+                    str(c.get("id")): c
+                    for c in chapter
+                    if isinstance(c, dict) and c.get("id")
+                }
+                for _e in lo_entries:
+                    _src = _so_by_id.get(str(_e.get("id")))
+                    if _src is not None and _src.get("sub_objectives"):
+                        _e["sub_objectives"] = list(_src["sub_objectives"])
+            except Exception as _so_exc:  # noqa: BLE001 — never fail the phase
+                logger.warning(
+                    "sub-objective derivation raised (%s); leaving CO "
+                    "sub_objectives unchanged.", _so_exc,
+                )
+
             # WS5 §2.4(A) — build the per-WEEK chapter groups that the
             # validator's allowed-set builder reads. Each group's objectives
             # are the SAME ceil-stride slice the emitter places for that week
@@ -9680,9 +12456,15 @@ def _build_tool_registry() -> dict:
                     _slice_cos_for_week as _cf_slice_cos_for_week,
                 )
 
+                # M5 Fix B — shared placed-ids set so the PERSISTED per-week
+                # groups (the synthesized_objectives.json the validator reads)
+                # never carry the same CO id in two weeks. Mirrors the emit-side
+                # _emit_placed_co_ids threading → on-disk == emitted weeks.
+                _persist_placed_co_ids: set = set()
                 for _w in range(1, duration_weeks + 1):
                     _week_cos = _cf_slice_cos_for_week(
                         chapter, duration_weeks, _w,
+                        placed_ids=_persist_placed_co_ids,
                     )
                     _ws5_week_chapter_groups.append({
                         "chapter": f"Week {_w}",
@@ -10064,6 +12846,10 @@ def _build_tool_registry() -> dict:
             _authorship_stats: Dict[str, int] = {
                 "llm_authored": 0, "template_fallback": 0,
             }
+            # M5 Fix B — shared placed-CO-id set: a CO placed in an earlier week
+            # is never re-placed in a later week (kills the round-robin
+            # trailing-week fallback re-placing CO-12 in both Week 2 and Week 12).
+            _emit_placed_co_ids: set = set()
             for week_num in range(1, duration_weeks + 1):
                 week_topics = (
                     topics_by_week[week_num - 1]
@@ -10093,6 +12879,7 @@ def _build_tool_registry() -> dict:
 
                     week_chapter_cos = _cf_slice_cos_for_week(
                         chapter_objectives, duration_weeks, week_num,
+                        placed_ids=_emit_placed_co_ids,
                     )
 
                 # Scope terminals per week. With N terminals and D weeks,
@@ -14724,6 +17511,97 @@ def _build_tool_registry() -> dict:
                 )
                 chunks = []
 
+        # M1: front-matter / donor / marketing contamination filter. A
+        # full-textbook PDF's head carries the cover/title page, the
+        # author+copyright+ISBN+Creative-Commons block, donor acknowledgements,
+        # the Table of Contents, and the "Key Features"/"Additional Resources"
+        # preface — none of which is course content, yet they get CITED by
+        # synthesized objectives and pollute grounding. Default-off for bare
+        # library calls (byte-stable legacy emit); auto-on for pipeline runs via
+        # ``_apply_corpus_generalization_defaults`` (TRAINFORGE_DROP_FRONTMATTER).
+        # Each dropped chunk emits a decision-capture event whose rationale
+        # interpolates the matched signatures + chunk id (deterministic prune,
+        # still audit-captured per the contamination-control contract).
+        if (
+            chunks
+            and os.getenv("TRAINFORGE_DROP_FRONTMATTER", "").lower() == "true"
+        ):
+            try:
+                from Trainforge.chunker.frontmatter import partition_frontmatter
+
+                kept_chunks, dropped_verdicts = partition_frontmatter(chunks)
+            except Exception as exc:  # noqa: BLE001 — filter is best-effort
+                logger.warning(
+                    "M1: front-matter filter raised (%s); keeping all "
+                    "%d chunks unfiltered.",
+                    exc,
+                    len(chunks),
+                )
+            else:
+                if dropped_verdicts:
+                    logger.info(
+                        "M1: dropped %d front-matter/donor/marketing chunk(s) "
+                        "of %d for course %s: %s",
+                        len(dropped_verdicts),
+                        len(chunks),
+                        course_slug,
+                        ", ".join(v.chunk_id for v in dropped_verdicts),
+                    )
+                    _fm_capture = None
+                    try:
+                        from lib.decision_capture import DecisionCapture
+
+                        _fm_capture = DecisionCapture(
+                            course_code=course_code,
+                            phase="textbook-ingestor",
+                            tool="trainforge",
+                        )
+                    except Exception as _exc:  # noqa: BLE001 — capture best-effort
+                        logger.debug(
+                            "M1: DecisionCapture init failed (%s); "
+                            "continuing without capture.",
+                            _exc,
+                        )
+                    if _fm_capture is not None:
+                        for verdict in dropped_verdicts:
+                            try:
+                                _fm_capture.log_decision(
+                                    decision_type="frontmatter_chunk_drop",
+                                    decision=(
+                                        f"drop chunk {verdict.chunk_id} "
+                                        f"(front-matter contamination)"
+                                    ),
+                                    rationale=verdict.rationale(),
+                                    alternatives_considered=[
+                                        {
+                                            "option": "retain chunk",
+                                            "reason_rejected": (
+                                                "legacy default-off behaviour; "
+                                                "front-matter pollutes "
+                                                "objective citation + grounding"
+                                            ),
+                                        },
+                                        {
+                                            "option": (
+                                                "flag is_frontmatter=true but "
+                                                "keep in chunkset"
+                                            ),
+                                            "reason_rejected": (
+                                                "downstream consumers do not "
+                                                "yet filter on the flag; "
+                                                "dropping is the contract"
+                                            ),
+                                        },
+                                    ],
+                                )
+                            except Exception as _exc:  # noqa: BLE001
+                                logger.debug(
+                                    "M1: log_decision failed for %s (%s)",
+                                    verdict.chunk_id,
+                                    _exc,
+                                )
+                chunks = kept_chunks
+
         # Persist chunks + manifest to LibV2/courses/<slug>/dart_chunks/.
         # Phase 8 ST 3: route through `_resolve_libv2_root` (see helper
         # docstring for resolution chain). Default behaviour unchanged.
@@ -14754,8 +17632,11 @@ def _build_tool_registry() -> dict:
         # Per-reason histogram pulls from the heuristics tracked above
         # (boilerplate / image_only). Any remaining drop delta —
         # blocks merged into adjacent sections via merge_small_sections,
-        # or empty after sentence-splitting — falls into the `dedup`
-        # bucket. The build_source_coverage helper enforces the
+        # or empty after sentence-splitting — falls into the
+        # `merged_small_sections` bucket (renamed from the misleading
+        # `dedup`: these artifacts were NOT de-duplicated, they were
+        # MERGED into an adjacent section). The build_source_coverage
+        # helper enforces the
         # dropped_count == sum(drop_reasons.values()) invariant and
         # fires INTERNAL_DROP_REASON_MISSING when the math doesn't
         # balance (silent-gaming check).
@@ -14769,7 +17650,7 @@ def _build_tool_registry() -> dict:
             _drop_reasons["image_only"] = drop_image_only
         _dedup_delta = max(0, _dropped_total - _attributable_drops)
         if _dedup_delta:
-            _drop_reasons["dedup"] = _dedup_delta
+            _drop_reasons["merged_small_sections"] = _dedup_delta
         source_coverage_block = build_source_coverage(
             consumed_count=blocks_seen,
             emitted_count=len(chunks),
@@ -14810,6 +17691,478 @@ def _build_tool_registry() -> dict:
         })
 
     registry["run_dart_chunking"] = _run_dart_chunking
+
+    # ============================================================================
+    # W10 Phase 2: _run_assessment_synthesis — PRODUCT assessment surface
+    #
+    # A new ``assessment_synthesis`` workflow phase that runs BEFORE
+    # ``packaging`` (spec §2.4 Option A) so the packager picks up the
+    # learner-facing QTI quizzes / discussions / assignments it discovers
+    # under ``<export>/06_assessments/``. DART-chunk-rooted (the
+    # ``chunking`` phase already emitted ``dart_chunks/chunks.jsonl``) and
+    # pre-packaging — keeps the post-package ``trainforge_assessment`` phase
+    # (training-data-oriented) UNCHANGED.
+    #
+    # - Objective quiz items REUSE ``AssessmentGenerator`` (no reinvent),
+    #   grouped per week / terminal objective.
+    # - Assignment (per CO-cluster) + discussion (per TERMINAL objective)
+    #   PROSE route through the same provider seat as the Trainforge
+    #   assessment generator (``AssessmentGeneratorProvider``, env
+    #   ``TRAINFORGE_ASSESSMENT_PROVIDER``); each carries ``objective_id``
+    #   so the grounding gate fires unchanged.
+    # - XML emit via the already-landed ``Courseforge/scripts/qti_emitter.py``.
+    #
+    # PRODUCT content (learner-facing), NOT training pairs → no hard
+    # licensing gate (mirrors ``COURSEFORGE_PROVIDER`` /
+    # ``ED4ALL_OBJECTIVE_REVIEW_PROVIDER`` posture). New flag:
+    #   ``ED4ALL_ASSESSMENT_PROSE_PROVIDER`` (default unset → no prose-tier
+    #   LLM; objective quiz items still emit). When set, selects the prose
+    #   seat backend (``local`` / ``together`` / any registered
+    #   OpenAI-compatible provider) for the assignment/discussion prose.
+    #   PRODUCT content → NO docs/LICENSING.md row required (this comment
+    #   satisfies the maintenance contract for the flag).
+    #
+    # Anti-fabrication (hard): every emitted item's ``objective_id`` comes
+    # from the real synthesized-objectives universe and its grounding from
+    # real chunk ids; phantom-objective items are DROPPED, never emitted.
+    # Graceful: provider error / no key / empty input → log + emit whatever
+    # objective items succeeded (or a clean empty 06_assessments with an
+    # empty manifest); never abort the run.
+    # ============================================================================
+    async def _run_assessment_synthesis(**kwargs):
+        """Synthesize learner-facing QTI quizzes + discussions + assignments.
+
+        Required kwargs (resolved via ``inputs_from`` in the
+        ``assessment_synthesis`` workflow phase):
+            project_id: Courseforge project export dir name.
+
+        Optional kwargs:
+            course_name / course_code: overrides the project config value.
+            dart_chunks_path: ``LibV2/courses/<slug>/dart_chunks/chunks.jsonl``
+                from the upstream ``chunking`` phase. Falls back to the
+                LibV2 default location when absent.
+            synthesized_objectives_path: overrides the default
+                ``01_learning_objectives/synthesized_objectives.json``.
+            question_count: per-week quiz item budget (default 5).
+            bloom_levels: comma-separated Bloom levels (default
+                "remember,understand,apply").
+
+        Output dir: ``<export>/06_assessments/`` carrying ``<name>.xml``
+        files + a ``manifest.json`` matching the packager's pinned contract.
+        """
+        import traceback as _traceback
+
+        project_id = kwargs.get("project_id") or ""
+        if not project_id:
+            return json.dumps({
+                "error": "run_assessment_synthesis requires project_id",
+            })
+
+        project_path = courseforge_exports_dir() / project_id
+        if not project_path.exists():
+            return json.dumps({
+                "error": f"Project export dir not found: {project_path}",
+            })
+
+        out_dir = project_path / "06_assessments"
+
+        # ---- course code -------------------------------------------------
+        course_code = (
+            kwargs.get("course_code")
+            or kwargs.get("course_name")
+            or ""
+        )
+        if not course_code:
+            try:
+                cfg = json.loads(
+                    (project_path / "project_config.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                course_code = cfg.get("course_name") or project_id
+            except (OSError, ValueError):
+                course_code = project_id
+
+        # ---- synthesized-objectives universe (anti-fabrication) ----------
+        obj_path_kw = kwargs.get("synthesized_objectives_path") or ""
+        obj_path = (
+            Path(obj_path_kw)
+            if obj_path_kw
+            else project_path / "01_learning_objectives"
+            / "synthesized_objectives.json"
+        )
+        objectives_doc: Dict[str, Any] = {}
+        if obj_path.exists():
+            try:
+                objectives_doc = json.loads(obj_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                objectives_doc = {}
+        to_map, co_map = _index_objective_records(objectives_doc)
+        valid_objective_ids = set(to_map) | set(co_map)
+        id_to_statement = _objective_id_to_statement(objectives_doc)
+
+        if not valid_objective_ids:
+            # No grounded objective universe → emit a clean empty surface
+            # rather than fabricating items (never abort the run).
+            logger.warning(
+                "run_assessment_synthesis: no synthesized objectives at %s; "
+                "emitting an empty 06_assessments/manifest.json.",
+                obj_path,
+            )
+            manifest = _write_assessment_artifacts(out_dir, [])
+            return json.dumps({
+                "success": True,
+                "assessments_dir": str(out_dir),
+                "manifest_path": str(out_dir / "manifest.json"),
+                "assessment_count": 0,
+                "quiz_count": 0,
+                "discussion_count": 0,
+                "assignment_count": 0,
+                "reason": "no_objectives",
+            })
+
+        # ---- DART chunks -------------------------------------------------
+        course_slug = str(course_code).lower().replace("_", "-").replace(" ", "-")
+        dart_chunks_kw = kwargs.get("dart_chunks_path") or ""
+        if dart_chunks_kw:
+            dart_chunks_path = Path(dart_chunks_kw)
+        else:
+            dart_chunks_path = (
+                _resolve_libv2_root(kwargs.get("libv2_root"))
+                / "courses" / course_slug / "dart_chunks" / "chunks.jsonl"
+            )
+        loaded_chunks: List[Dict[str, Any]] = []
+        if dart_chunks_path.exists():
+            try:
+                with dart_chunks_path.open(encoding="utf-8") as _fh:
+                    for _line in _fh:
+                        _line = _line.strip()
+                        if not _line:
+                            continue
+                        try:
+                            _c = json.loads(_line)
+                        except ValueError:
+                            continue
+                        if isinstance(_c, dict):
+                            loaded_chunks.append(_c)
+            except OSError:
+                loaded_chunks = []
+
+        # ---- params ------------------------------------------------------
+        question_count = int(kwargs.get("question_count", 5) or 5)
+        bloom_raw = kwargs.get("bloom_levels", "remember,understand,apply")
+        if isinstance(bloom_raw, list):
+            bloom_levels = [str(b).strip() for b in bloom_raw if str(b).strip()]
+        else:
+            bloom_levels = [
+                b.strip() for b in str(bloom_raw).split(",") if b.strip()
+            ]
+        if not bloom_levels:
+            bloom_levels = ["remember", "understand", "apply"]
+
+        # ---- decision capture handle -------------------------------------
+        capture = None
+        try:
+            from lib.decision_capture import DecisionCapture
+            capture = DecisionCapture(
+                course_code=str(course_code) or "UNKNOWN",
+                phase="trainforge-assessment",
+                tool="trainforge",
+            )
+        except Exception:
+            capture = None
+
+        # ---- map COs -> their parent TO (for per-TO grouping) ------------
+        # Each chapter-objective row may carry a ``terminal_id`` backlink.
+        co_to_terminal: Dict[str, str] = {}
+        for _cid, _co in co_map.items():
+            _tid = _co.get("terminal_id") or _co.get("terminal_objective_id")
+            if isinstance(_tid, str) and _tid.strip():
+                co_to_terminal[_cid] = _tid.strip()
+
+        # Group CO ids per terminal objective; assign a week index per TO so
+        # the manifest carries a clean ``week`` for LMS nav. TOs are ordered
+        # by id; week = index+1.
+        terminal_ids = sorted(to_map.keys())
+        if not terminal_ids:
+            # No TO layer → treat every CO as one flat group (week 1).
+            terminal_ids = ["_FLAT_"]
+            cos_by_terminal: Dict[str, List[str]] = {"_FLAT_": sorted(co_map.keys())}
+        else:
+            cos_by_terminal = {tid: [] for tid in terminal_ids}
+            for _cid in sorted(co_map.keys()):
+                _tid = co_to_terminal.get(_cid)
+                if _tid in cos_by_terminal:
+                    cos_by_terminal[_tid].append(_cid)
+                else:
+                    # Orphan CO → attach to first TO so it still gets quizzed.
+                    cos_by_terminal[terminal_ids[0]].append(_cid)
+
+        # ============================================================== #
+        # 1. OBJECTIVE QUIZ ITEMS — reuse AssessmentGenerator per TO.     #
+        # ============================================================== #
+        try:
+            from Trainforge.generators.assessment_generator import (
+                AssessmentGenerator,
+            )
+        except Exception as exc:
+            logger.warning(
+                "run_assessment_synthesis: AssessmentGenerator import "
+                "failed (%s); emitting empty 06_assessments.", exc,
+            )
+            manifest = _write_assessment_artifacts(out_dir, [])
+            return json.dumps({
+                "success": True,
+                "assessments_dir": str(out_dir),
+                "manifest_path": str(out_dir / "manifest.json"),
+                "assessment_count": 0,
+                "error": f"AssessmentGenerator import failed: {exc}",
+            })
+
+        generator = AssessmentGenerator(capture=capture, check_leaks=False)
+        built_assessments: List[Any] = []
+        for week_idx, tid in enumerate(terminal_ids, start=1):
+            group_co_ids = cos_by_terminal.get(tid) or []
+            # Quiz the TO + its child COs. A flat group quizzes the COs.
+            obj_ids = (
+                ([tid] if tid != "_FLAT_" else []) + list(group_co_ids)
+            )
+            obj_ids = [o for o in obj_ids if o in valid_objective_ids]
+            if not obj_ids:
+                continue
+            try:
+                assessment = generator.generate(
+                    course_code=str(course_code),
+                    objective_ids=obj_ids,
+                    bloom_levels=bloom_levels,
+                    question_count=question_count,
+                    source_chunks=loaded_chunks or None,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "run_assessment_synthesis: quiz generation failed for "
+                    "TO %s (week %d): %s", tid, week_idx, exc,
+                )
+                continue
+            # Anti-fabrication: drop any question whose objective_id is not
+            # in the real universe (never emit a phantom-grounded item).
+            kept, dropped = _filter_questions_to_objective_universe(
+                assessment.questions, valid_objective_ids
+            )
+            assessment.questions = kept
+            if dropped:
+                logger.warning(
+                    "run_assessment_synthesis: dropped %d quiz item(s) with "
+                    "out-of-universe objective_id (week %d).",
+                    len(dropped), week_idx,
+                )
+            if not kept:
+                continue
+            # Stamp a week for clean manifest nav.
+            try:
+                setattr(assessment, "week", week_idx)
+            except Exception:
+                pass
+            if not getattr(assessment, "title", None):
+                assessment.title = f"Week {week_idx} Quiz"
+            else:
+                assessment.title = f"Week {week_idx} Quiz"
+            built_assessments.append(assessment)
+
+        # ============================================================== #
+        # 2. ASSIGNMENT + DISCUSSION PROSE — optional LLM prose seat.     #
+        #    Grounded in real chunk ids; carry objective_id so the        #
+        #    grounding gate fires unchanged. Graceful when no provider.   #
+        # ============================================================== #
+        discussions: List[Dict[str, Any]] = []
+        assignments: List[Dict[str, Any]] = []
+
+        prose_provider_name = os.environ.get(
+            "ED4ALL_ASSESSMENT_PROSE_PROVIDER", ""
+        ).strip()
+        prose_provider = None
+        if prose_provider_name:
+            try:
+                from Trainforge.generators._assessment_provider import (
+                    AssessmentGeneratorProvider,
+                )
+                prose_provider = AssessmentGeneratorProvider(
+                    provider=prose_provider_name,
+                    capture=capture,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "run_assessment_synthesis: prose provider %r "
+                    "construction failed (%s); skipping assignment/"
+                    "discussion prose (objective quizzes still emit).",
+                    prose_provider_name, exc,
+                )
+                prose_provider = None
+
+        # Resolve a small set of grounded chunk ids for an objective from
+        # the loaded chunks (anti-fabrication: only real chunk ids).
+        def _grounded_chunk_ids_for(obj_id: str, limit: int = 3) -> List[str]:
+            ids: List[str] = []
+            for _c in loaded_chunks:
+                refs = _c.get("learning_outcome_refs") or []
+                if isinstance(refs, list) and obj_id in {str(r) for r in refs}:
+                    cid = _c.get("id") or _c.get("chunk_id")
+                    if isinstance(cid, str) and cid.strip():
+                        ids.append(cid.strip())
+                if len(ids) >= limit:
+                    break
+            return ids
+
+        # The prose model resolution (for the decision-capture rationale).
+        prose_model = (
+            getattr(prose_provider, "_model", None) if prose_provider else None
+        )
+
+        # 2a. One discussion per TERMINAL objective.
+        for week_idx, tid in enumerate(terminal_ids, start=1):
+            if tid == "_FLAT_" or tid not in to_map:
+                continue
+            statement = id_to_statement.get(tid, tid)
+            grounded = _grounded_chunk_ids_for(tid)
+            prompt_text = ""
+            if prose_provider is not None:
+                try:
+                    prompt_text = _synthesize_prose_prompt(
+                        prose_provider,
+                        kind="discussion",
+                        objective_id=tid,
+                        statement=statement,
+                        chunks=loaded_chunks,
+                        grounded_chunk_ids=grounded,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "run_assessment_synthesis: discussion prose failed "
+                        "for %s: %s", tid, exc,
+                    )
+                    prompt_text = ""
+            if not prompt_text:
+                # Deterministic fallback prompt grounded in the objective
+                # statement (never fabricates source content).
+                prompt_text = (
+                    f"Discuss how the ideas in this objective apply to a "
+                    f"real situation: {statement}"
+                )
+            if capture is not None:
+                try:
+                    capture.log_decision(
+                        decision_type="discussion_prompt_synthesis",
+                        decision=f"discussion:{tid}:week_{week_idx}",
+                        rationale=(
+                            f"objective_id={tid}; "
+                            f"source_chunk_ids={grounded}; "
+                            f"provider={prose_provider_name or 'deterministic'}; "
+                            f"model={prose_model}; "
+                            f"n_grounded_chunks={len(grounded)}"
+                        ),
+                    )
+                except Exception:
+                    pass
+            discussions.append({
+                "discussion_id": f"DISC-{tid}",
+                "objective_id": tid,
+                "title": f"Week {week_idx} Discussion",
+                "text": prompt_text,
+                "week": week_idx,
+            })
+
+        # 2b. One assignment per CO-cluster (per TO's child-CO group).
+        for week_idx, tid in enumerate(terminal_ids, start=1):
+            group_co_ids = [
+                c for c in (cos_by_terminal.get(tid) or [])
+                if c in valid_objective_ids
+            ]
+            if not group_co_ids:
+                continue
+            # Anchor the assignment on the first CO of the cluster.
+            anchor = group_co_ids[0]
+            statement = id_to_statement.get(anchor, anchor)
+            grounded = _grounded_chunk_ids_for(anchor)
+            task_text = ""
+            if prose_provider is not None:
+                try:
+                    task_text = _synthesize_prose_prompt(
+                        prose_provider,
+                        kind="assignment",
+                        objective_id=anchor,
+                        statement=statement,
+                        chunks=loaded_chunks,
+                        grounded_chunk_ids=grounded,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "run_assessment_synthesis: assignment prose failed "
+                        "for %s: %s", anchor, exc,
+                    )
+                    task_text = ""
+            if not task_text:
+                task_text = (
+                    f"Complete a short task demonstrating this objective: "
+                    f"{statement}"
+                )
+            if capture is not None:
+                try:
+                    capture.log_decision(
+                        decision_type="assignment_prompt_synthesis",
+                        decision=f"assignment:{anchor}:week_{week_idx}",
+                        rationale=(
+                            f"objective_id={anchor}; "
+                            f"source_chunk_ids={grounded}; "
+                            f"provider={prose_provider_name or 'deterministic'}; "
+                            f"model={prose_model}; "
+                            f"n_grounded_chunks={len(grounded)}"
+                        ),
+                    )
+                except Exception:
+                    pass
+            assignments.append({
+                "assignment_id": f"ASGN-{anchor}",
+                "objective_id": anchor,
+                "title": f"Week {week_idx} Assignment",
+                "text": task_text,
+                "points": 10,
+                "week": week_idx,
+            })
+
+        # ============================================================== #
+        # 3. EMIT — XML + manifest via the pure helpers.                 #
+        # ============================================================== #
+        try:
+            artifacts = _build_assessment_artifacts_from_data(
+                built_assessments, discussions, assignments
+            )
+        except Exception as exc:
+            logger.warning(
+                "run_assessment_synthesis: XML emit failed (%s); writing "
+                "empty manifest.", exc,
+            )
+            artifacts = []
+        manifest = _write_assessment_artifacts(out_dir, artifacts)
+
+        quiz_n = sum(1 for e in manifest["assessments"] if e.get("type") == "qti")
+        disc_n = sum(
+            1 for e in manifest["assessments"] if e.get("type") == "discussion"
+        )
+        asgn_n = sum(
+            1 for e in manifest["assessments"] if e.get("type") == "assignment"
+        )
+        return json.dumps({
+            "success": True,
+            "assessments_dir": str(out_dir),
+            "manifest_path": str(out_dir / "manifest.json"),
+            "assessment_count": len(manifest["assessments"]),
+            "quiz_count": quiz_n,
+            "discussion_count": disc_n,
+            "assignment_count": asgn_n,
+            "prose_provider": prose_provider_name or None,
+        })
+
+    registry["run_assessment_synthesis"] = _run_assessment_synthesis
 
     # ============================================================================
     # Phase 7c Subtask 16: _run_imscc_chunking — IMSCC chunkset emit
@@ -15312,11 +18665,31 @@ def _build_tool_registry() -> dict:
         else:
             try:
                 ctx = ChunkerContext(create_chunk=_create_chunk) if parsed_items else None
+                # ED4ALL_IMSCC_MAX_CHUNK_SIZE: per-IMSCC override of the chunker's
+                # MAX_CHUNK_SIZE (words). Lets the operator chunk finer (e.g. 350)
+                # so heading-rich Courseforge pages sub-divide into more retrieval
+                # chunks WITHOUT touching the global constant or the DART/corpus
+                # chunking. Unset → byte-identical legacy default (800). Parse-
+                # with-fallback (mirrors the other ED4ALL_* numeric knobs); the
+                # target size tracks at ~0.7x so sentence-splitting stays sane.
+                _imscc_chunk_kwargs: Dict[str, Any] = {}
+                _imscc_max_raw = os.getenv("ED4ALL_IMSCC_MAX_CHUNK_SIZE")
+                if _imscc_max_raw:
+                    try:
+                        _imscc_max_v = int(_imscc_max_raw)
+                        if _imscc_max_v > 0:
+                            _imscc_chunk_kwargs["max_chunk_size"] = _imscc_max_v
+                            _imscc_chunk_kwargs["target_chunk_size"] = max(
+                                1, int(_imscc_max_v * 0.7)
+                            )
+                    except (TypeError, ValueError):
+                        pass
                 result = chunk_content(
                     parsed_items,
                     course_code,
                     boilerplate_spans=None,
                     ctx=ctx,
+                    **_imscc_chunk_kwargs,
                 )
                 chunks = list(result.chunks)
             except Exception as exc:  # noqa: BLE001 — fail-soft on chunker error
@@ -15401,7 +18774,7 @@ def _build_tool_registry() -> dict:
             _imscc_drop_reasons["image_only"] = _imscc_drop_image_only
         _imscc_dedup_delta = max(0, _imscc_dropped_total - _imscc_attributable)
         if _imscc_dedup_delta:
-            _imscc_drop_reasons["dedup"] = _imscc_dedup_delta
+            _imscc_drop_reasons["merged_small_sections"] = _imscc_dedup_delta
         _imscc_source_coverage = _build_source_coverage_imscc(
             consumed_count=_imscc_blocks_seen,
             emitted_count=len(chunks),

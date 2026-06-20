@@ -43,6 +43,15 @@ from typing import (
 )
 from urllib.parse import urlparse
 
+# Single source of truth for the OpenAI-compatible endpoint registry. The
+# module-level ``_OPENAI_COMPATIBLE_PROVIDERS`` dict below is a PROJECTION of
+# ``config/endpoints.yaml`` built via this helper — never a hand-maintained
+# literal. Import is anti-cycle by design (``lib.llm.endpoints`` imports only
+# stdlib + yaml + jsonschema + lib.paths, never back into this module).
+from lib.llm.endpoints import (
+    openai_compatible_legacy_registry as _openai_compatible_legacy_registry,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -830,81 +839,23 @@ OPENAI_COMPATIBLE_VISION_MESSAGE = (
 #     set to a truthy value (``true`` / ``1`` / ``yes`` / ``on``,
 #     case-insensitive), the resolved entry's ``vision_capable``
 #     flips to ``True`` regardless of the registry default.
-_OPENAI_COMPATIBLE_PROVIDERS: Dict[str, Dict[str, Any]] = {
-    "local": {
-        "base_url_env": "LOCAL_SYNTHESIS_BASE_URL",
-        "base_url_default": "http://localhost:11434/v1",
-        "api_key_env": "LOCAL_SYNTHESIS_API_KEY",
-        "api_key_default": "local",
-        "model_env": "LOCAL_SYNTHESIS_MODEL",
-        "model_default": "qwen2.5:14b-instruct-q4_K_M",
-        "api_key_required": False,
-        "vision_capable": False,
-        "vision_capable_env": "LOCAL_VISION_CAPABLE",
-    },
-    "together": {
-        "base_url_env": None,  # fixed cloud endpoint
-        "base_url_default": "https://api.together.xyz/v1",
-        "api_key_env": "TOGETHER_API_KEY",
-        "api_key_default": None,
-        "model_env": "TOGETHER_SYNTHESIS_MODEL",
-        "model_default": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        "api_key_required": True,
-        "vision_capable": False,
-    },
-    "together-vision": {
-        # Sibling entry for Together AI's Llama-3.2-Vision endpoint.
-        # Same base_url + api_key plumbing as ``together`` (Together
-        # serves text + vision off one endpoint); the registry split
-        # exists so an operator can pin DART (or any vision-mode call
-        # site) at the vision model without flipping every text-mode
-        # call to it. Reuses ``TOGETHER_API_KEY`` so one cloud key
-        # serves both.
-        "base_url_env": None,
-        "base_url_default": "https://api.together.xyz/v1",
-        "api_key_env": "TOGETHER_API_KEY",
-        "api_key_default": None,
-        "model_env": "TOGETHER_VISION_MODEL",
-        "model_default": "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
-        "api_key_required": True,
-        "vision_capable": True,
-    },
-    # Illustrative stubs — base URLs match each provider's documented
-    # OpenAI-compatible endpoint as of 2026-05. Marked ``unverified`` so a
-    # post-resolve audit log surfaces the entry; flip the flag once the
-    # entry is exercised against a live key. New providers are added
-    # here — NEVER as a subclass.
-    "groq": {
-        "base_url_env": None,
-        "base_url_default": "https://api.groq.com/openai/v1",
-        "api_key_env": "GROQ_API_KEY",
-        "api_key_default": None,
-        "model_env": "GROQ_SYNTHESIS_MODEL",
-        "model_default": "llama-3.3-70b-versatile",
-        "api_key_required": True,
-        "unverified": True,
-    },
-    "fireworks": {
-        "base_url_env": None,
-        "base_url_default": "https://api.fireworks.ai/inference/v1",
-        "api_key_env": "FIREWORKS_API_KEY",
-        "api_key_default": None,
-        "model_env": "FIREWORKS_SYNTHESIS_MODEL",
-        "model_default": "accounts/fireworks/models/llama-v3p3-70b-instruct",
-        "api_key_required": True,
-        "unverified": True,
-    },
-    "deepseek": {
-        "base_url_env": None,
-        "base_url_default": "https://api.deepseek.com/v1",
-        "api_key_env": "DEEPSEEK_API_KEY",
-        "api_key_default": None,
-        "model_env": "DEEPSEEK_SYNTHESIS_MODEL",
-        "model_default": "deepseek-chat",
-        "api_key_required": True,
-        "unverified": True,
-    },
-}
+# Built ONCE at import as a PROJECTION of the ``openai_compatible`` rows in
+# ``config/endpoints.yaml`` (loader ``lib/llm/endpoints.py``) — NOT a
+# hand-maintained literal. The YAML is the single source of truth; adding a
+# provider is a one-row change there (plus the provenance codegen). Every
+# consumer of this dict (the answer path, the Courseforge / Trainforge
+# synthesis + outliner + assessment providers, ``gui/env_catalog.py``) thus
+# resolves its endpoint BY NAME from the unified registry. The legacy field
+# shape (``base_url_env`` / ``base_url_default`` / ``api_key_env`` /
+# ``api_key_default`` / ``model_env`` / ``model_default`` / ``api_key_required``
+# + optional ``vision_capable`` / ``vision_capable_env`` / ``unverified``) is
+# preserved exactly by the projection so consumers are byte-unchanged. The
+# W-D12 dynamic-extension tests still ``monkeypatch.setitem`` this module-level
+# dict at runtime (the projection returns a fresh mutable dict, so a patch
+# can't poison the cached YAML registry).
+_OPENAI_COMPATIBLE_PROVIDERS: Dict[str, Dict[str, Any]] = (
+    _openai_compatible_legacy_registry()
+)
 
 
 def _redact_base_url_for_capture(base_url: str) -> str:

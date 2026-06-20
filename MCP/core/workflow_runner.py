@@ -97,6 +97,16 @@ _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
     "TRAINFORGE_SEED_TECH_CONCEPTS": "true",
     "TRAINFORGE_FILTER_FRAGMENT_CONCEPTS": "true",
     "TRAINFORGE_CHUNK_TYPE_CONTENT_AWARE": "true",
+    # M1: drop front-matter / donor / marketing contamination chunks (cover,
+    # author/copyright/ISBN/Creative-Commons block, donor acknowledgements,
+    # Table of Contents, "Key Features"/"Additional Resources" preface) BEFORE
+    # dedup/emit, so they can't be cited by objectives or pollute grounding. A
+    # full-textbook PDF carries ~6-8 such chunks at its head that the curated
+    # baseline never ingested. Multi-signal scored with a hard math-content
+    # veto (a chunk with real equations/worked examples is NEVER dropped) and
+    # the "Chapter 1 Foundations"-vs-donor-"Foundation, Inc." false-positive
+    # guard. See Trainforge/chunker/frontmatter.py.
+    "TRAINFORGE_DROP_FRONTMATTER": "true",
     # Knowledge-graph stage (measured-best shaping quartet)
     "TRAINFORGE_MERGE_DUPLICATE_CONCEPTS": "true",
     "TRAINFORGE_INTRA_CHUNK_LINKS": "true",
@@ -106,6 +116,16 @@ _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
     # cooccurrence fragments the graph; page-level connects it). Node frequency
     # + occurrences stay chunk-level. "chunk" byte-stable legacy when unset.
     "TRAINFORGE_COOCCURRENCE_GROUP_BY": "page",
+    # M4: degenerate-grouping guard for the PAGE aggregation above. When a DART
+    # converter collapses an entire multi-chapter PDF into ONE ``lesson_id``,
+    # every chunk folds into a single page-group → every cooccurrence pair lands
+    # weight==1 → the related_from_cooccurrence rule (weight>=3) emits ZERO
+    # edges and the KG backbone dies (measured 0 vs 556 on the openstax 7B
+    # build). On a degenerate (<3 real groups) page/section level the guard
+    # steps DOWN to a finer level (page→section→chunk) for pair-counting only —
+    # real co-occurrence at a valid window, nodes/occurrences unchanged. No-op
+    # (byte-stable) on any corpus that already resolves into ≥3 groups.
+    "TRAINFORGE_COOCCURRENCE_GROUP_FALLBACK": "true",
     # Corpus-generalization recovery paths (general / non-RDF textbooks)
     "TRAINFORGE_LEXICAL_CONCEPT_SEEDS": "true",
     "TRAINFORGE_OBJECTIVE_QUALITY_GATE": "true",
@@ -3977,6 +3997,20 @@ class WorkflowRunner:
                         "outline reuse: blocks_outline.jsonl unreadable: %s",
                         e,
                     )
+                # Thread the W2-persisted outline sidecars so a stage
+                # subcommand's rewrite tier rehydrates per-block source
+                # chunks + objectives (the same keys the runner's
+                # ``inputs_from`` maps for ``content_generation_rewrite``).
+                # Without these, ``_load_outline_chunks`` falls through to an
+                # empty ``chunks_lookup`` and the rewrite backstop's canonical
+                # source-id resolution + domain-CURIE minting silently no-op
+                # for EVERY block (the rewrite_grounding_missing path) — so a
+                # ``courseforge-rewrite`` re-run loses all ``data-cf-source-ids``
+                # grounding and curie anchoring that a full run produced.
+                _outline_chunks_path = outline_subdir / "outline_chunks.json"
+                _outline_objectives_path = (
+                    outline_subdir / "outline_objectives.json"
+                )
                 synthesized["content_generation_outline"] = {
                     "blocks_outline_path": str(blocks_outline_path),
                     "project_id": project_id,
@@ -3989,6 +4023,21 @@ class WorkflowRunner:
                         "outline reuse: read blocks_outline.jsonl"
                     ),
                 }
+                if _outline_chunks_path.exists():
+                    synthesized["content_generation_outline"][
+                        "outline_chunks_path"
+                    ] = str(_outline_chunks_path)
+                else:
+                    logger.warning(
+                        "outline reuse: outline_chunks.json missing at %s; "
+                        "rewrite-tier source-id resolution + CURIE minting "
+                        "will no-op (empty chunks_lookup)",
+                        _outline_chunks_path,
+                    )
+                if _outline_objectives_path.exists():
+                    synthesized["content_generation_outline"][
+                        "outline_objectives_path"
+                    ] = str(_outline_objectives_path)
             else:
                 logger.warning(
                     "outline reuse: blocks_outline.jsonl missing at %s; "

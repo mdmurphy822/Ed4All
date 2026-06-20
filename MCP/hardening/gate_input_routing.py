@@ -1596,6 +1596,46 @@ def _build_chunkset_manifest_inputs(
     return {"chunkset_manifest_path": manifest_path}, []
 
 
+def _build_qti_well_formed(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """W10 §7 — input builder for QtiWellFormedValidator.
+
+    The validator's ``validate()`` reads ``inputs["qti_dir"]`` (see
+    ``lib/validators/qti_well_formed.py:285``) — a directory under which it
+    globs ``*.xml`` and round-trips / XSD-validates each QTI document. The
+    ``assessment_synthesis`` phase (§2.4 Option A) writes those XML files to
+    ``<export>/06_assessments/``.
+
+    Resolution chain (high → low); first existing directory wins, then a
+    derived candidate is surfaced even if absent so the validator can emit
+    its own structured ``QTI_NO_INPUT`` / non-directory issue rather than the
+    router silently skipping the gate:
+
+    * Explicit ``qti_dir`` / ``assessment_dir`` key emitted by the
+      ``assessment_synthesis`` phase (the handler emits these directly).
+    * ``<project_export_root>/06_assessments`` — the canonical layout. The
+      export root is resolved via :func:`_find_project_export_dir` (the same
+      ``objective_extraction.project_path`` / ``project_*`` resolution the
+      content-dir disk-glob fallback uses).
+    """
+    # Explicit phase-output key wins.
+    explicit = _locate(phase_outputs, "qti_dir", "assessment_dir")
+    if isinstance(explicit, str) and explicit:
+        return {"qti_dir": explicit}, []
+
+    export_dir = _find_project_export_dir(phase_outputs, workflow_params)
+    if export_dir is not None:
+        candidate = export_dir / "06_assessments"
+        # Surface the canonical candidate even when it isn't on disk yet —
+        # the validator's own directory check emits the structured issue,
+        # mirroring the manifest_completeness "always surface" contract.
+        return {"qti_dir": str(candidate)}, []
+
+    return {}, ["qti_dir"]
+
+
 def _build_concept_graph_inputs(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -2475,6 +2515,14 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.chunkset_manifest.ChunksetManifestValidator",
         _build_chunkset_manifest_inputs,
+    )
+    # W10 §7 — QtiWellFormedValidator fires at the ``assessment_synthesis``
+    # phase and needs ``inputs["qti_dir"] = <export>/06_assessments``. The
+    # builder derives that from the resolved project export root (or an
+    # explicit qti_dir/assessment_dir phase output).
+    r.register(
+        "lib.validators.qti_well_formed.QtiWellFormedValidator",
+        _build_qti_well_formed,
     )
     # ConceptGraphValidator fires at ``concept_extraction`` and needs
     # the path to concept_graph_semantic.json (a declared YAML output).

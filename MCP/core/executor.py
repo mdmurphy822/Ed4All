@@ -243,6 +243,16 @@ _PHASE_TOOL_MAPPING: Dict[str, str] = {
     # ``source_dart_html_sha256``. The phase-name dispatch override
     # selects the right helper without forking the agent registry.
     "imscc_chunking": "run_imscc_chunking",
+    # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
+    # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis phase.
+    # Declared ``agents: []`` in config/workflows.yaml (validator-only-phase
+    # pattern), so ``workflow_runner._create_phase_tasks`` synthesizes a
+    # single virtual ``phase-handler`` task ONLY because this phase appears
+    # here; routes to ``run_assessment_synthesis`` (handler owned by the
+    # concurrent 2B-core worker in MCP/tools/pipeline_tools.py) which
+    # synthesizes + emits QTI 1.2 / imsdt / assignment XML into
+    # ``<export>/06_assessments/`` before the packaging phase consumes it.
+    "assessment_synthesis": "run_assessment_synthesis",
 }
 
 
