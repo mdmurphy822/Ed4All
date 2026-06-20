@@ -222,6 +222,46 @@ def test_source_doc_never_clobbers_existing_id(client, dart_course):
     assert '<span class="dart-block-anchor" id="dart-blk_keep"></span>' in html
 
 
+def test_source_doc_injects_page_anchor(client, dart_course):
+    """Phase 3: the block carrying data-dart-pages="4" yields a #page-4 anchor.
+
+    ``blk_target`` already received id="dart-blk_target" from the block-anchor
+    pass, so the page anchor is planted as an inline span (never clobbers).
+    """
+    resp = client.get(
+        f"/api/courses/{dart_course}/source-doc", params={"doc": "chapter-one"}
+    )
+    html = resp.text
+    assert 'id="page-4"' in html
+    assert '<span class="dart-page-anchor" id="page-4"></span>' in html
+
+
+def test_source_doc_accepts_page_query_param(client, dart_course):
+    """A ?page=4 request still serves 200 with the #page-4 anchor present.
+
+    The anchor is injected unconditionally, so #page-4 resolves whether or not
+    ?page rides along — the route just absorbs the param without 422-ing.
+    """
+    resp = client.get(
+        f"/api/courses/{dart_course}/source-doc",
+        params={"doc": "chapter-one", "page": "4"},
+    )
+    assert resp.status_code == 200
+    assert 'id="page-4"' in resp.text
+
+
+def test_source_doc_absent_page_byte_identical(client, dart_course):
+    """RISK-B: serving with vs without ?page= produces byte-identical HTML."""
+    base = client.get(
+        f"/api/courses/{dart_course}/source-doc", params={"doc": "chapter-one"}
+    ).text
+    with_page = client.get(
+        f"/api/courses/{dart_course}/source-doc",
+        params={"doc": "chapter-one", "page": "4"},
+    ).text
+    assert base == with_page
+
+
 def test_source_doc_rewrites_figure_src(client, dart_course):
     resp = client.get(
         f"/api/courses/{dart_course}/source-doc", params={"doc": "chapter-one"}

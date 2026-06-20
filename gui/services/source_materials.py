@@ -435,6 +435,38 @@ def _serve_time_transform(raw_html: str, *, slug: str, doc: str, ref: Optional[s
             anchor["class"] = ["dart-block-anchor"]
             el.insert(0, anchor)
 
+    # 3b) Per-page anchor injection: the FIRST element carrying a given
+    #     ``data-dart-pages`` value gets ``id="page-{N}"`` so a ``#page-N``
+    #     fragment (built by the LO-map / "View in textbook" deep links from the
+    #     block's physical page) scrolls there. ``data-dart-pages`` carries the
+    #     "3" / "3-5" / "3,5,7" forms; a range/list anchors page-N on the FIRST
+    #     element whose attribute STARTS at N (so #page-3 lands on the "3-5"
+    #     block). Never clobbers an existing id — plant an inline anchor span as
+    #     the first child instead (mirrors the block-anchor contract above).
+    #     Page-less docs are byte-identical to today (no anchors injected).
+    try:
+        from Trainforge.chunker.helpers import parse_dart_pages_attr  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — degrade gracefully if chunker absent
+        parse_dart_pages_attr = None  # type: ignore[assignment]
+    if parse_dart_pages_attr is not None:
+        seen_pages: set = set()
+        for el in soup.find_all(attrs={"data-dart-pages": True}):
+            attr = el.get("data-dart-pages")
+            if isinstance(attr, (list, tuple)):
+                attr = " ".join(attr)
+            el_pages = parse_dart_pages_attr(attr)
+            for pg in el_pages:
+                if pg in seen_pages:
+                    continue
+                seen_pages.add(pg)
+                page_id = "page-{}".format(pg)
+                if not el.get("id"):
+                    el["id"] = page_id
+                elif el.get("id") != page_id:
+                    anchor = soup.new_tag("span", id=page_id)
+                    anchor["class"] = ["dart-page-anchor"]
+                    el.insert(0, anchor)
+
     # 4) Figure-src rewrite: relative {stem}_figures/… → /source-doc-asset.
     figures_prefix = f"{doc}_figures/"
     slug_q = quote(str(slug), safe="")

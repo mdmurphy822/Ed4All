@@ -466,3 +466,31 @@ def test_main_source_link_unchanged_for_course_page_citations():
     payload = _answered_payload()  # no source_block -> course-page citation
     html = ar.render_answer_fragment(payload)
     assert _parse(html).hrefs[0].startswith("/api/learn/source/phys-101?item_path=")
+
+
+# ------------------------------------ page-number deep-links (Phase 3 mirror)
+
+
+def test_original_source_url_threads_first_pdf_page():
+    """original_source_url appends &page=N (min pdf_page) before the #fragment."""
+    cit = {"source_block": "dart:foo-doc#blk_9", "pdf_pages": [7, 12]}
+    url = ar.original_source_url(cit, "my-course")
+    assert url == (
+        "/api/courses/my-course/source-doc?doc=foo-doc&ref=blk_9&page=7#dart-blk_9"
+    )
+
+
+def test_original_source_url_page_less_byte_identical():
+    """No pdf_pages → byte-identical to the legacy (no &page=) URL."""
+    cit = {"source_block": "dart:foo-doc#blk_9", "pdf_pages": []}
+    url = ar.original_source_url(cit, "my-course")
+    assert url == "/api/courses/my-course/source-doc?doc=foo-doc&ref=blk_9#dart-blk_9"
+    assert "&page=" not in url
+
+
+def test_pdf_pages_label_byte_identical_to_shared_helper():
+    """The answer-side _pdf_pages_label output is unchanged (delegates to lib)."""
+    from lib.page_label import pdf_pages_label
+
+    assert ar._pdf_pages_label([12]) == "page 12" == pdf_pages_label([12])
+    assert ar._pdf_pages_label([3, 7]) == "pages 3, 7" == pdf_pages_label([3, 7])

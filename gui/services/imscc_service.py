@@ -69,6 +69,15 @@ _PAGE_HEADERS: Dict[str, str] = {
     "Referrer-Policy": "no-referrer",
 }
 
+# Source-provenance id shape stamped on grounded content wrappers by the
+# Courseforge two-pass providers: ``data-cf-source-ids="dart:<doc>#<anchor>"``
+# (comma-separated when a block is grounded by more than one source block). The
+# learner renderer turns each into a clickable link to the served accessible
+# passage (finding 3) via the existing ``/source-doc`` endpoint, which injects
+# ``id="dart-<anchor>"`` so the ``#dart-<anchor>`` fragment lands on the block.
+_CF_SOURCE_ATTR = "data-cf-source-ids"
+_DART_SOURCE_ID_RE = re.compile(r"^dart:(?P<doc>[^#]+)#(?P<anchor>.+)$")
+
 # Whitelisted asset extensions → content-type. Archived static assets only;
 # never HTML (pages go through the sanitised page path) and never active types.
 _ASSET_CONTENT_TYPES: Dict[str, str] = {
@@ -501,7 +510,7 @@ def get_page(slug: str, item: str, libv2_root: Optional[Path] = None) -> ServedC
         except (KeyError, OSError) as exc:
             raise IMSCCServiceError(500, "page_read_error", str(exc)) from exc
 
-    html = _sanitize_page(raw)
+    html = _sanitize_page(raw, slug=slug)
     return ServedContent(
         body=html.encode("utf-8"),
         media_type="text/html; charset=utf-8",
@@ -509,8 +518,135 @@ def get_page(slug: str, item: str, libv2_root: Optional[Path] = None) -> ServedC
     )
 
 
-def _sanitize_page(raw_html: str) -> str:
-    """Scrub active content + inject heading ids + ensure lang (page serving)."""
+def _source_doc_url(
+    slug: str, doc: str, anchor: str, page: Optional[int] = None
+) -> str:
+    """Build the deep link to one archived DART block (mirrors answer_render).
+
+    ``/api/courses/{slug}/source-doc?doc=<doc>&ref=<anchor>#dart-<anchor>`` — the
+    same shape ``gui.services.answer_render.original_source_url`` mints from a
+    citation, and the same one ``serve_source_doc`` resolves (it injects
+    ``id="dart-<anchor>"`` so the fragment lands on the cited block). The slug,
+    doc, and ref are URL-encoded; the fragment keeps ``-`` safe (block ids are
+    hyphenated slugs).
+
+    When ``page`` is a positive int (parsed from the wrapper's
+    ``data-dart-pages``), ``&page=N`` is appended before the ``#`` fragment so
+    the serve-time ``id="page-N"`` anchor resolves (Phase 3). The page-less path
+    is byte-identical to today.
+    """
+    from urllib.parse import quote  # noqa: PLC0415
+
+    page_param = ""
+    if isinstance(page, int) and page > 0:
+        page_param = "&page={}".format(page)
+    return (
+        "/api/courses/{slug}/source-doc?doc={doc}&ref={ref}{page}#dart-{frag}".format(
+            slug=quote(str(slug), safe=""),
+            doc=quote(str(doc), safe=""),
+            ref=quote(str(anchor), safe=""),
+            page=page_param,
+            frag=quote(str(anchor), safe="-"),
+        )
+    )
+
+
+def _inject_source_links(soup, slug: str) -> None:  # noqa: ANN001 — bs4 soup
+    """Surface ``data-cf-source-ids`` provenance as clickable source links (③).
+
+    The Courseforge two-pass providers stamp grounded content wrappers (worked
+    examples, etc.) with ``data-cf-source-ids="dart:<doc>#<anchor>"`` (comma-
+    separated for multi-source blocks). They are pure metadata — the served page
+    carries 0 hrefs, so a learner can't reach the passage the block was built
+    from. For every such wrapper that does not already carry a source link, append
+    a small ``<nav class="cf-source-links">`` of "View in textbook" deep links
+    (one per parseable id) into the served ``/source-doc`` accessible HTML. Ids
+    that don't parse as ``dart:<doc>#<anchor>`` are skipped; a wrapper that already
+    holds a ``.cf-source-links`` nav (idempotent re-serve) is left untouched.
+
+    Anchors only — no script, no handlers. The links inherit the same restrictive
+    CSP as the rest of the page (``default-src 'none'`` allows same-origin nav).
+    """
+    if not slug:
+        return
+    # Canonical parser for the "3" / "3-5" / "3,5,7" forms + the sibling
+    # ``data-dart-page-kind`` (reused, not re-implemented — same source of truth
+    # the chunker harvests from).
+    from Trainforge.chunker.helpers import (  # noqa: PLC0415
+        parse_dart_page_kind_attr,
+        parse_dart_pages_attr,
+    )
+    from lib.page_label import page_citation  # noqa: PLC0415
+
+    for el in soup.find_all(attrs={_CF_SOURCE_ATTR: True}):
+        if el.find(class_="cf-source-links"):
+            continue  # already surfaced (idempotent re-serve)
+        raw = el.get(_CF_SOURCE_ATTR)
+        if isinstance(raw, (list, tuple)):
+            raw = " ".join(raw)
+        # Source pages off the SAME wrapper (``data-dart-pages``) + the sibling
+        # ``data-dart-page-kind`` DART stamps on the same element.
+        pages_attr = el.get("data-dart-pages")
+        if isinstance(pages_attr, (list, tuple)):
+            pages_attr = " ".join(pages_attr)
+        el_pages = parse_dart_pages_attr(pages_attr)
+        kind_attr = el.get("data-dart-page-kind")
+        if isinstance(kind_attr, (list, tuple)):
+            kind_attr = " ".join(kind_attr)
+        el_pages_kind = parse_dart_page_kind_attr(kind_attr)
+        # Deep-link the FIRST page (RISK-C: a "3-5" range targets page 3); the
+        # link text appends the kind-aware citation — "p. N" for a printed /
+        # interpolated page, "PDF p. N" for a physical page (or an absent kind,
+        # which normalizes to physical → byte-identical to today's "PDF p. N").
+        # Page-less wrappers stay byte-identical to today (no &page= param).
+        first_page = el_pages[0] if el_pages else None
+        page_text = (
+            " ({})".format(page_citation(el_pages, el_pages_kind))
+            if el_pages
+            else ""
+        )
+        seen: set = set()
+        links = []
+        for token in str(raw or "").replace(" ", ",").split(","):
+            token = token.strip()
+            if not token or token in seen:
+                continue
+            m = _DART_SOURCE_ID_RE.match(token)
+            if not m:
+                continue
+            seen.add(token)
+            doc = m.group("doc").strip()
+            anchor = m.group("anchor").strip()
+            if not doc or not anchor:
+                continue
+            href = _source_doc_url(slug, doc, anchor, page=first_page)
+            a = soup.new_tag("a", href=href)
+            a["class"] = ["cf-source-link"]
+            a["rel"] = "noopener"
+            a.string = "View in textbook{}".format(page_text)
+            links.append(a)
+        if not links:
+            continue
+        nav = soup.new_tag("nav")
+        nav["class"] = ["cf-source-links"]
+        nav["aria-label"] = "Source in the accessible textbook"
+        for i, a in enumerate(links):
+            if i:
+                nav.append(" ")
+            nav.append(a)
+        el.append(nav)
+
+
+def _sanitize_page(raw_html: str, *, slug: str = "") -> str:
+    """Scrub active content + inject heading ids + source links + ensure lang.
+
+    ``slug`` drives the ③ source-link injection (``data-cf-source-ids`` →
+    ``/source-doc`` deep links); it defaults to ``""`` (no injection) so the
+    transform stays a pure ``str -> str`` for callers that don't have a course
+    context. Source links are injected AFTER ``sanitize_soup`` so they're built
+    from trusted server-minted hrefs, never from anything the scrub could have
+    flagged.
+    """
     from bs4 import BeautifulSoup  # noqa: PLC0415
 
     soup = BeautifulSoup(raw_html, "html.parser")
@@ -524,6 +660,8 @@ def _sanitize_page(raw_html: str) -> str:
             slug_id = heading_slug(text)
             if slug_id:
                 heading["id"] = slug_id
+    # ③ Turn grounded-block provenance into clickable source links.
+    _inject_source_links(soup, slug)
     html_el = soup.find("html")
     if html_el is not None and not html_el.get("lang"):
         html_el["lang"] = "en"

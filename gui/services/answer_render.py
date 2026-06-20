@@ -334,10 +334,15 @@ def _answer_paragraphs(answer_text: Optional[str]) -> str:
 
 
 def _pdf_pages_label(pages: List[int]) -> str:
-    """Compact human label for a sorted PDF-page list: "page 12" / "pages 3, 7"."""
-    if len(pages) == 1:
-        return "page {}".format(pages[0])
-    return "pages {}".format(", ".join(str(p) for p in pages))
+    """Compact human label for a sorted PDF-page list: "page 12" / "pages 3, 7".
+
+    Thin delegate to the shared ``lib/page_label.pdf_pages_label`` helper (OQ-2:
+    single source of truth across the answer / LO-map / "View in textbook"
+    surfaces). Output is byte-identical to the historical inline body.
+    """
+    from lib.page_label import pdf_pages_label  # noqa: PLC0415
+
+    return pdf_pages_label(pages)
 
 
 def source_pdf_page_url(citation: Dict[str, Any], slug: str, page: int) -> str:
@@ -384,10 +389,18 @@ def original_source_url(citation: Dict[str, Any], slug: str) -> str:
     block = block.strip()
     if not doc or not block:
         return ""
-    return "/api/courses/{slug}/source-doc?doc={doc}&ref={ref}#dart-{frag}".format(
+    # Thread the first cited PDF page into the source-doc route so the
+    # serve-time ``id="page-N"`` anchor resolves (Phase 3). Page-less citations
+    # stay byte-identical to today (no ``&page=`` param emitted). Anti-
+    # fabrication: only a page that's actually on ``citation.pdf_pages`` is
+    # used — never invented.
+    pages = [p for p in (citation.get("pdf_pages") or []) if isinstance(p, int)]
+    page_param = "&page={}".format(min(pages)) if pages else ""
+    return "/api/courses/{slug}/source-doc?doc={doc}&ref={ref}{page}#dart-{frag}".format(
         slug=quote(str(slug), safe=""),
         doc=quote(doc, safe=""),
         ref=quote(block, safe=""),
+        page=page_param,
         frag=quote(block, safe="-"),
     )
 

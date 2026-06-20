@@ -307,6 +307,19 @@ async function renderViewer(segments) {
   const layout = el('div', { class: 'viewer' }, [treePane, contentPane, drawer.root]);
   v.appendChild(layout);
 
+  // Standing link to the accessible textbook (finding 4). The generated course
+  // is a derivative; the original DART-converted accessible HTML is archived,
+  // discoverable, and servable — surface it in the contents so a learner can
+  // always reach the verbatim source. Best-effort: a load failure / empty
+  // inventory / disabled toggle simply omits the section (never breaks the
+  // viewer). The link loads the source doc INTO the content iframe by URL (the
+  // page honours its own #dart-<block> fragments), matching loadSourceDoc.
+  attachSourceMaterials(treePane, slug, (href) => {
+    frame.removeAttribute('srcdoc');
+    frame.src = href;
+    setStatus('Showing the accessible textbook.');
+  });
+
   let currentIdx = 0;
   const startItem = wantItem || pages[0].item;
   const startAt = pages.findIndex((p) => p.item === startItem);
@@ -458,6 +471,52 @@ function buildTree(items) {
     select,
     onSelect(fn) { selectListener = fn; },
   };
+}
+
+/* ---- source-materials (accessible textbook) standing link ---- */
+/*
+ * Fetch the per-course source inventory and, when an accessible DART doc is
+ * archived + exposed, append a standing "Accessible textbook" section to the
+ * contents pane. Each doc links to the learner source viewer
+ * (/api/learn/source/<slug>?item_path=<doc>.html). Clicking loads it INTO the
+ * content iframe (the served page keeps its own #dart-<block> anchors, so a
+ * later citation deep-link still lands on the cited block). Fully best-effort:
+ * a fetch failure, a disabled toggle, or an empty inventory leaves the contents
+ * untouched — the textbook link is additive, never load-bearing.
+ */
+async function attachSourceMaterials(treePane, slug, onOpen) {
+  let inv;
+  try {
+    inv = await api(`/api/courses/${encodeURIComponent(slug)}/source-materials`);
+  } catch {
+    return; // toggle off / unknown course / transient — silently omit.
+  }
+  if (!inv || inv.enabled === false) return;
+  const docs = Array.isArray(inv.dart_docs) ? inv.dart_docs : [];
+  if (docs.length === 0) return;
+
+  const section = el('section', { class: 'source-materials', 'aria-label': 'Source materials' }, [
+    el('h2', { text: 'Accessible textbook' }),
+    el('p', { class: 'muted', text: 'The original source this course was built from.' }),
+  ]);
+  const list = el('ul', { class: 'source-docs' });
+  docs.forEach((d) => {
+    const itemPath = `${d.doc}.html`;
+    const href = `/api/learn/source/${encodeURIComponent(slug)}?item_path=${encodeURIComponent(itemPath)}`;
+    const link = el('a', {
+      class: 'source-doc-link',
+      href,
+      // Load in-pane rather than navigating the whole app away.
+      onclick: (e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return; // honour open-in-new
+        e.preventDefault();
+        if (typeof onOpen === 'function') onOpen(href);
+      },
+    }, [d.title || d.doc]);
+    list.appendChild(el('li', {}, [link]));
+  });
+  section.appendChild(list);
+  treePane.appendChild(section);
 }
 
 /* ---- helpers ---- */

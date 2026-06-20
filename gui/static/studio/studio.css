@@ -213,6 +213,19 @@ button[disabled] { opacity: 0.55; cursor: not-allowed; }
 }
 .tree-pane h2 { margin: 0 0 0.5rem; font-size: 1rem; }
 
+/* Standing accessible-textbook link section (source materials). */
+.source-materials {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.source-materials h2 { margin: 0 0 0.25rem; font-size: 1rem; }
+.source-materials p.muted { margin: 0 0 0.5rem; font-size: 0.85rem; }
+.source-docs { list-style: none; margin: 0; padding: 0; }
+.source-docs li { margin: 0.2rem 0; }
+.source-doc-link { color: var(--fg); text-decoration: underline; }
+.source-doc-link:hover { color: var(--accent, currentColor); }
+
 /* ARIA tree pattern */
 [role="tree"], [role="group"] {
   list-style: none;

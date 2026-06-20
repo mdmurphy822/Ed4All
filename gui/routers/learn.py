@@ -27,9 +27,11 @@ path) with the right status — never a fabricated success / answer.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import xml.etree.ElementTree as ET
+from html import escape
+from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -315,6 +317,593 @@ async def get_source(slug: str, item_path: str = "", fragment: str = "") -> Any:
         media_type=result.media_type,
         headers=dict(result.headers),
     )
+
+
+# --------------------------------------------------------------- quiz (W10 §5.1)
+
+
+def _resolve_learner_id(raw: Optional[str]) -> str:
+    """Normalize the ``X-Learner-Id`` owner key, or ``""`` when absent/unsafe.
+
+    The id is an OPAQUE per-browser owner key (a localStorage uuid) — NOT an auth
+    principal (W10 identity model; learner-open per §1.5). It is never trusted for
+    anything beyond "owns their own records". A separator-bearing / over-long id is
+    treated as absent (the persistence layer would reject it anyway) so a hostile
+    header can't influence a path. Returns the stripped id or ``""``.
+    """
+    if not raw or not isinstance(raw, str):
+        return ""
+    candidate = raw.strip()
+    if not candidate or len(candidate) > 128:
+        return ""
+    if "/" in candidate or "\\" in candidate or ".." in candidate:
+        return ""
+    return candidate
+
+
+class GradeRequest(BaseModel):
+    """Body for ``POST /api/learn/quiz/{slug}/{assessment_id}/grade``.
+
+    ``answers`` maps ``question_id -> selection`` where a selection is a single
+    response id / value (mc / tf / numeric fib) or a list of ids (multiple
+    response). Permissive ``extra="allow"`` mirrors ``AskRequest``.
+    """
+
+    answers: Dict[str, Any] = {}
+
+    model_config = {"extra": "allow"}
+
+
+def _quiz_for(slug: str, assessment_id: str):
+    """Return ``(assessment, quiz_xml)`` for ``slug``/``assessment_id`` or None.
+
+    Locates every packaged quiz for the course, parses each via the in-tree
+    QTI parser, and matches on ``assessment_id``. The original XML is returned
+    alongside the parsed object so the grader can resolve multiple-correct keys
+    (``grade_submission(..., quiz_xml=...)``). Fail-soft: an unparseable blob is
+    skipped, not raised, so one bad quiz never hides the rest.
+    """
+    from gui.services import quiz_service  # noqa: PLC0415
+
+    for blob in quiz_service.locate_quiz_xml(slug):
+        try:
+            assessment = quiz_service.parse_quiz(blob)
+        except quiz_service.QuizServiceError:
+            continue
+        if assessment.id == assessment_id:
+            return assessment, blob.decode("utf-8", errors="replace")
+    return None
+
+
+@router.get("/quiz/{slug}")
+async def list_quizzes(slug: str) -> Any:
+    """List a course's quizzes → ``[{assessment_id, title, question_count}]``.
+
+    Learner-open (``/api/learn/*``). Fail-soft: a course with no packaged
+    quizzes returns ``[]``; an invalid slug surfaces a typed 422.
+    """
+    from gui.services import quiz_service  # noqa: PLC0415
+
+    try:
+        blobs = quiz_service.locate_quiz_xml(slug)
+    except quiz_service.QuizServiceError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001 — unexpected archive/parse failure
+        return _error(500, "quiz_list_failed", str(exc))
+
+    out: List[Dict[str, Any]] = []
+    for blob in blobs:
+        try:
+            assessment = quiz_service.parse_quiz(blob)
+        except quiz_service.QuizServiceError:
+            continue  # skip a malformed quiz, never fail the whole list
+        out.append(
+            {
+                "assessment_id": assessment.id,
+                "title": assessment.title,
+                "question_count": len(assessment.questions),
+            }
+        )
+    return out
+
+
+@router.get("/quiz/{slug}/{assessment_id}")
+async def get_quiz(slug: str, assessment_id: str) -> Any:
+    """Return one quiz's learner JSON — WITHOUT the answer key (§5.1).
+
+    The service's ``to_learner_json`` rebuilds each question from id + text only,
+    so no ``correct_answer`` / ``is_correct`` / answer-revealing feedback can leak.
+    """
+    from gui.services import quiz_service  # noqa: PLC0415
+
+    try:
+        found = _quiz_for(slug, assessment_id)
+    except quiz_service.QuizServiceError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "quiz_load_failed", str(exc))
+    if found is None:
+        return _error(404, "quiz_not_found", f"no quiz {assessment_id!r} for course {slug!r}")
+    assessment, _xml = found
+    return quiz_service.to_learner_json(assessment)
+
+
+@router.post("/quiz/{slug}/{assessment_id}/grade")
+async def grade_quiz(
+    slug: str,
+    assessment_id: str,
+    req: GradeRequest,
+    x_learner_id: Optional[str] = Header(default=None),
+) -> Any:
+    """Server-grade a learner submission → ``{score, max_score, per_item}`` (§5.1).
+
+    Grading is SERVER-SIDE: the answer key is parsed here and never enters the
+    learner JSON or the browser. The graded attempt is PERSISTED (W10 §10) when
+    the caller presents an ``X-Learner-Id`` owner key — the record keys on that id
+    so each learner sees only their own attempts. Grading still returns the same
+    payload whether or not the id is present (persistence is best-effort: a write
+    failure never blocks the score).
+    """
+    from gui.services import quiz_service  # noqa: PLC0415
+
+    try:
+        found = _quiz_for(slug, assessment_id)
+    except quiz_service.QuizServiceError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "quiz_load_failed", str(exc))
+    if found is None:
+        return _error(404, "quiz_not_found", f"no quiz {assessment_id!r} for course {slug!r}")
+
+    assessment, quiz_xml = found
+    answers = dict(req.answers or {})
+    try:
+        grade = quiz_service.grade_submission(assessment, answers, quiz_xml=quiz_xml)
+    except Exception as exc:  # noqa: BLE001 — grading must never 500-leak the key
+        return _error(500, "quiz_grade_failed", str(exc))
+
+    # Persist the attempt when an owner key is presented (server-injected ts).
+    learner_id = _resolve_learner_id(x_learner_id)
+    if learner_id:
+        from gui.services import learner_state  # noqa: PLC0415
+
+        try:
+            learner_state.record_attempt(slug, assessment_id, learner_id, answers, grade)
+        except learner_state.LearnerStateError:
+            pass  # a malformed id / slug never blocks returning the score
+        except Exception:  # noqa: BLE001 — persistence is best-effort
+            pass
+    return grade
+
+
+@router.get("/quiz/{slug}/{assessment_id}/attempts")
+async def list_attempts(
+    slug: str,
+    assessment_id: str,
+    x_learner_id: Optional[str] = Header(default=None),
+) -> Any:
+    """Return the CALLER'S OWN graded attempts for one assessment (W10 §10).
+
+    Filtered by the ``X-Learner-Id`` owner key — a learner reads only their own
+    attempts (ownership isolation). No id → ``[]`` (an anonymous caller has no
+    history). Each attempt carries ``{score, max_score, per_item, answers, ts}``.
+    """
+    learner_id = _resolve_learner_id(x_learner_id)
+    if not learner_id:
+        return []
+    from gui.services import learner_state  # noqa: PLC0415
+
+    try:
+        return learner_state.read_attempts(slug, assessment_id, learner_id)
+    except learner_state.LearnerStateError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "attempts_read_failed", str(exc))
+
+
+# ---------------------------------------------- assignment + discussion (W10 §5.2)
+#
+# Read-only first cut (no submission, no threading — §10). Assignment + discussion
+# XML is located alongside the packaged quizzes (the ``06_assessments/`` sibling +
+# the cartridge) and parsed namespace-agnostically. The discussion ``imsdt`` body
+# is cartridge-authored HTML, so it is routed through the assessment-path
+# ``sanitize_soup(..., strip_form_actions=True)`` hardening (§5.3) before rendering.
+
+
+def _local_name(tag: str) -> str:
+    """Local element name (namespace-agnostic), mirroring quiz_service._local."""
+    return tag.rsplit("}", 1)[-1].lower()
+
+
+def _find_local(root: ET.Element, name: str) -> Optional[ET.Element]:
+    """First descendant whose local tag name == ``name`` (namespace-agnostic)."""
+    for el in root.iter():
+        if _local_name(el.tag) == name:
+            return el
+    return None
+
+
+def _text_of(el: Optional[ET.Element]) -> str:
+    """Inner XML/text of an element as a string (preserves child HTML markup)."""
+    if el is None:
+        return ""
+    parts: List[str] = []
+    if el.text:
+        parts.append(el.text)
+    for child in list(el):
+        parts.append(ET.tostring(child, encoding="unicode"))
+        if child.tail:
+            parts.append(child.tail)
+    return "".join(parts).strip()
+
+
+def _resource_xml_blobs(slug: str) -> List[str]:
+    """Every loose ``06_assessments/*.xml`` + cartridge ``*.xml`` member as text.
+
+    Reuses the audited ``quiz_service`` archive-discovery helpers (slug
+    validation, cartridge location, in-memory member reads) so assignment +
+    discussion locate the SAME way quizzes do — without re-walking the archive or
+    editing the quiz service. Fail-soft: an unreadable member is skipped.
+    """
+    from gui.services import quiz_service  # noqa: PLC0415
+
+    root = quiz_service._libv2_root()
+    course_dir = quiz_service._validate_slug(slug, root)
+
+    blobs: List[str] = []
+    for rel in quiz_service._ASSESSMENT_ROOTS:
+        adir = course_dir / rel
+        if not adir.is_dir():
+            continue
+        for xml_path in sorted(adir.glob("*.xml")):
+            try:
+                blobs.append(xml_path.read_text(encoding="utf-8"))
+            except OSError:
+                continue
+
+    cartridge = quiz_service._find_cartridge(course_dir)
+    if cartridge is not None:
+        import zipfile  # noqa: PLC0415
+
+        try:
+            with zipfile.ZipFile(cartridge) as zf:
+                for name in sorted(zf.namelist()):
+                    if not name.lower().endswith(".xml"):
+                        continue
+                    try:
+                        blobs.append(zf.read(name).decode("utf-8", errors="replace"))
+                    except (KeyError, OSError, zipfile.BadZipFile):
+                        continue
+        except (zipfile.BadZipFile, OSError):
+            pass
+    return blobs
+
+
+def _objective_id_of(root: ET.Element) -> str:
+    """Best-effort ``objective_id`` from an extensions/metadata field, or ''."""
+    for el in root.iter():
+        if _local_name(el.tag) in ("objective_id", "objectiveid"):
+            return (el.text or "").strip()
+        # ``<field label="objective_id">CO-01</field>`` style extension.
+        label = el.get("label") or el.get("name") or ""
+        if str(label).strip().lower() == "objective_id" and el.text:
+            return el.text.strip()
+    return ""
+
+
+def _sanitize_fragment(html_text: str) -> str:
+    """Assessment-path sanitize: strip active content + form-submission targets.
+
+    Routes cartridge-authored HTML through the shared
+    ``source_page.sanitize_soup`` with ``strip_form_actions=True`` (§5.3) so a
+    ``<form action="https://evil/">`` can't exfiltrate learner input. Returns the
+    sanitized fragment string.
+    """
+    from bs4 import BeautifulSoup  # noqa: PLC0415
+
+    from gui.services.source_page import sanitize_soup  # noqa: PLC0415
+
+    soup = BeautifulSoup(html_text, "html.parser")
+    sanitize_soup(soup, strip_form_actions=True)
+    return str(soup)
+
+
+def _locate_topic(slug: str, kind: str, target_id: str):
+    """Return ``(title, objective_id, body_html)`` for an assignment/discussion.
+
+    ``kind`` is ``"assignment"`` (XSD ``<assignment>``) or ``"discussion"`` (imsdt
+    ``<topic>``). Matches on the element's ``identifier``/``ident`` attribute OR,
+    when the XML carries no id, falls back to the first such element (a loose
+    single-item file). Returns ``None`` when no matching resource exists.
+    """
+    from gui.services import quiz_service  # noqa: PLC0415
+
+    root_tag = "assignment" if kind == "assignment" else "topic"
+    try:
+        blobs = _resource_xml_blobs(slug)
+    except Exception as exc:  # noqa: BLE001 — map the typed slug error below
+        status = getattr(exc, "status", None)
+        if status == 422:
+            raise quiz_service.QuizServiceError(422, "invalid_course_id", str(exc)) from None
+        if status == 404:
+            return None
+        raise
+
+    fallback: Optional[Tuple[str, str, str]] = None
+    for blob in blobs:
+        try:
+            root = ET.fromstring(blob)
+        except ET.ParseError:
+            continue
+        el = root if _local_name(root.tag) == root_tag else _find_local(root, root_tag)
+        if el is None:
+            continue
+        ident = el.get("identifier") or el.get("ident") or ""
+        title = (_text_of(_find_local(el, "title")) or "").strip()
+        body = _text_of(_find_local(el, "text"))
+        objective_id = _objective_id_of(el)
+        record = (title, objective_id, body)
+        if ident and ident == target_id:
+            return record
+        # Fallback ONLY for a loose single-resource file that carried NO
+        # identifier at all (the manifest assigns the id externally). An element
+        # WITH an id that doesn't match is never served under a different id.
+        if not ident and fallback is None:
+            fallback = record
+    return fallback
+
+
+@router.get("/assignment/{slug}/{assignment_id}")
+async def get_assignment(slug: str, assignment_id: str) -> Any:
+    """Render a grounded assignment task (read-only, §5.2) → ``{html, ...}``.
+
+    The task prose is cartridge-authored HTML routed through the assessment-path
+    sanitizer (``strip_form_actions=True``). The title + objective id are
+    HTML-escaped on render.
+    """
+    from gui.services import quiz_service  # noqa: PLC0415
+
+    try:
+        found = _locate_topic(slug, "assignment", assignment_id)
+    except quiz_service.QuizServiceError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "assignment_load_failed", str(exc))
+    if found is None:
+        return _error(
+            404, "assignment_not_found", f"no assignment {assignment_id!r} for course {slug!r}"
+        )
+    title, objective_id, body = found
+    return {
+        "assignment_id": assignment_id,
+        "title": title,
+        "objective_id": objective_id,
+        "html": _render_task_fragment("Assignment", title, objective_id, body),
+    }
+
+
+@router.get("/discussion/{slug}/{topic_id}")
+async def get_discussion(slug: str, topic_id: str) -> Any:
+    """Render a discussion prompt (read-only, §5.2) → ``{html, ...}``.
+
+    The imsdt ``<topic>`` body is cartridge-authored HTML routed through the
+    assessment-path sanitizer (``strip_form_actions=True``, §5.3).
+    """
+    from gui.services import quiz_service  # noqa: PLC0415
+
+    try:
+        found = _locate_topic(slug, "discussion", topic_id)
+    except quiz_service.QuizServiceError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "discussion_load_failed", str(exc))
+    if found is None:
+        return _error(
+            404, "discussion_not_found", f"no discussion {topic_id!r} for course {slug!r}"
+        )
+    title, objective_id, body = found
+    return {
+        "topic_id": topic_id,
+        "title": title,
+        "objective_id": objective_id,
+        "html": _render_task_fragment("Discussion", title, objective_id, body),
+    }
+
+
+def _render_task_fragment(
+    label: str, title: str, objective_id: str, body_html: str
+) -> str:
+    """Server-render a sanitized assignment/discussion fragment.
+
+    Title + objective id are HTML-escaped; the cartridge body is sanitized
+    through the assessment-path scrub (active content + off-origin form actions
+    stripped). One ``<h2>`` per fragment (slots under the page ``<h1>``).
+    """
+    heading = escape(title) if title else escape(label)
+    obj = (
+        '<p class="task-objective">Objective: {}</p>'.format(escape(objective_id))
+        if objective_id
+        else ""
+    )
+    safe_body = _sanitize_fragment(body_html) if body_html else ""
+    return (
+        '<section class="task" data-task-kind="{kind}" aria-labelledby="task-h">'
+        '<h2 id="task-h" tabindex="-1">{heading}</h2>'
+        "{obj}"
+        '<div class="task-body">{body}</div>'
+        "</section>"
+    ).format(
+        kind=escape(label.lower(), quote=True),
+        heading=heading,
+        obj=obj,
+        body=safe_body,
+    )
+
+
+# ----------------------------------------- stateful learner features (W10 §10)
+#
+# IDENTITY: anonymous per-browser owner key via the ``X-Learner-Id`` header (see
+# ``_resolve_learner_id`` + ``gui.services.learner_state`` module docstring). NO
+# accounts, NO auth — the id authorizes "owns own records" ONLY. All routes ride
+# the existing ``/api/learn/*`` learner-OPEN rule (no operator token). Learner
+# prose is sanitized server-side on STORE (defense-in-depth with render escaping).
+
+
+class DiscussionPostRequest(BaseModel):
+    """Body for ``POST /api/learn/discussion/{slug}/{topic_id}/posts``.
+
+    ``body`` is the (HTML-bearing) post text — sanitized server-side on store.
+    ``parent_post_id`` (optional) threads a ONE-LEVEL reply.
+    """
+
+    body: str = ""
+    parent_post_id: Optional[str] = None
+
+    model_config = {"extra": "allow"}
+
+
+@router.post("/discussion/{slug}/{topic_id}/posts")
+async def create_discussion_post(
+    slug: str,
+    topic_id: str,
+    req: DiscussionPostRequest,
+    x_learner_id: Optional[str] = Header(default=None),
+) -> Any:
+    """Persist one discussion post → the stored record (W10 §10 threading).
+
+    The ``body`` is sanitized via ``sanitize_soup(strip_form_actions=True)`` BEFORE
+    storage (no stored XSS, no off-origin form exfil). An ``X-Learner-Id`` is
+    REQUIRED to author (the post carries its author's id); an empty body after
+    sanitize is rejected. ``parent_post_id`` threads a one-level reply.
+    """
+    learner_id = _resolve_learner_id(x_learner_id)
+    if not learner_id:
+        return _error(422, "missing_learner_id", "X-Learner-Id header is required to post")
+    if not (req.body or "").strip():
+        return _error(422, "empty_post", "post body must be non-empty")
+
+    from gui.services import learner_state  # noqa: PLC0415
+
+    try:
+        record = learner_state.add_post(
+            slug, topic_id, learner_id, req.body, parent_post_id=req.parent_post_id
+        )
+    except learner_state.LearnerStateError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "post_create_failed", str(exc))
+    return record
+
+
+@router.get("/discussion/{slug}/{topic_id}/posts")
+async def list_discussion_posts(slug: str, topic_id: str) -> Any:
+    """Return the full thread for a topic (all learners; world-readable, §10).
+
+    A discussion is a shared thread: every learner's posts are returned (only the
+    author id is attached, never any private record). Body text is the
+    server-sanitized ``body_sanitized`` (the front-end escapes on render too).
+    """
+    from gui.services import learner_state  # noqa: PLC0415
+
+    try:
+        return learner_state.read_posts(slug, topic_id)
+    except learner_state.LearnerStateError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "posts_read_failed", str(exc))
+
+
+@router.post("/assignment/{slug}/{assignment_id}/submit")
+async def submit_assignment(
+    slug: str,
+    assignment_id: str,
+    request: Request,
+    x_learner_id: Optional[str] = Header(default=None),
+) -> Any:
+    """Persist a learner's assignment submission (text + optional file) — W10 §10.
+
+    Accepts EITHER a JSON body ``{text, ...}`` OR a ``multipart/form-data`` body
+    carrying ``text`` + an optional single ``file`` upload. The text is sanitized
+    on store; the file is validated (extension allowlist ``.pdf/.txt/.md/.docx``,
+    5 MB cap, traversal-safe opaque blob name) and stored as an opaque blob under
+    the caller's own ``submissions/`` dir. An ``X-Learner-Id`` owner key is
+    REQUIRED (the submission keys on it for ownership isolation). Text submission
+    is required; the file is optional. Returns the stored record (no file bytes).
+    """
+    learner_id = _resolve_learner_id(x_learner_id)
+    if not learner_id:
+        return _error(422, "missing_learner_id", "X-Learner-Id header is required to submit")
+
+    from gui.services import learner_state  # noqa: PLC0415
+
+    text = ""
+    file_bytes: Optional[bytes] = None
+    original_filename: Optional[str] = None
+
+    content_type = (request.headers.get("content-type") or "").lower()
+    try:
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            text = str(form.get("text") or "")
+            upload = form.get("file")
+            if upload is not None and hasattr(upload, "filename"):
+                original_filename = upload.filename or ""
+                file_bytes = await upload.read()
+        else:
+            body = await request.json()
+            if not isinstance(body, dict):
+                return _error(422, "invalid_submission", "expected a JSON object body")
+            text = str(body.get("text") or "")
+    except Exception as exc:  # noqa: BLE001 — malformed body
+        return _error(422, "invalid_submission", f"could not parse submission: {exc}")
+
+    if not text.strip() and file_bytes is None:
+        return _error(422, "empty_submission", "a text submission is required")
+
+    try:
+        record = learner_state.save_submission(
+            slug,
+            assignment_id,
+            learner_id,
+            text,
+            file_bytes=file_bytes,
+            original_filename=original_filename,
+        )
+    except learner_state.LearnerStateError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "submission_failed", str(exc))
+    return record
+
+
+@router.get("/assignment/{slug}/{assignment_id}/submission")
+async def get_submission(
+    slug: str,
+    assignment_id: str,
+    x_learner_id: Optional[str] = Header(default=None),
+) -> Any:
+    """Return the CALLER'S OWN assignment submission, or 404 (W10 §10).
+
+    Ownership isolation: keyed on the ``X-Learner-Id`` owner key — a learner reads
+    only their own submission. No id → 422; no submission → 404.
+    """
+    learner_id = _resolve_learner_id(x_learner_id)
+    if not learner_id:
+        return _error(422, "missing_learner_id", "X-Learner-Id header is required")
+
+    from gui.services import learner_state  # noqa: PLC0415
+
+    try:
+        record = learner_state.read_submission(slug, assignment_id, learner_id)
+    except learner_state.LearnerStateError as exc:
+        return _error(exc.status, exc.code, exc.detail)
+    except Exception as exc:  # noqa: BLE001
+        return _error(500, "submission_read_failed", str(exc))
+    if record is None:
+        return _error(
+            404, "submission_not_found", f"no submission for {assignment_id!r} by this learner"
+        )
+    return record
 
 
 __all__ = ["router"]

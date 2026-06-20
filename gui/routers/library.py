@@ -183,23 +183,47 @@ async def get_source_materials(course_id: str) -> Any:
 
 
 @router.get("/courses/{course_id}/source-doc")
-async def get_source_doc(course_id: str, doc: str = "", ref: str = "") -> Any:
+async def get_source_doc(
+    course_id: str, doc: str = "", ref: str = "", page: str = ""
+) -> Any:
     """Serve one sanitized, block-anchored archived DART document.
 
     ``doc`` is whitelisted against the inventory stem listing (never a path);
-    serve-time passes inject ``id="dart-{block_id}"`` block anchors + heading ids
-    and rewrite ``{stem}_figures/`` image srcs to the ``/source-doc-asset``
-    endpoint. ``ref`` is the requested anchor (informational; the ``#fragment``
-    is built by the caller). 403 when source materials are disabled; 404 when the
-    DART doc isn't archived (the emit-then-resolve citation hop); restrictive CSP.
+    serve-time passes inject ``id="dart-{block_id}"`` block anchors, per-page
+    ``id="page-{N}"`` anchors, + heading ids and rewrite ``{stem}_figures/``
+    image srcs to the ``/source-doc-asset`` endpoint. ``ref`` is the requested
+    anchor; ``page`` is the requested physical page (both informational — the
+    ``#fragment`` is built by the caller; the deep links append ``#dart-<anchor>``
+    or fall back to ``#page-N``). The ``id="page-N"`` anchors are injected
+    unconditionally, so a ``#page-N`` fragment resolves whether or not ``?page``
+    rides along; accepting it here keeps the param a documented part of the
+    contract (and absorbs it rather than 422-ing on an unexpected query arg).
+    403 when source materials are disabled; 404 when the DART doc isn't archived
+    (the emit-then-resolve citation hop); restrictive CSP.
     """
     try:
         from gui.services import source_materials as _svc  # noqa: PLC0415
     except ImportError as exc:
         return _error(503, "source_materials_unavailable", str(exc))
 
+    # Resolve ``?page=N`` to the informational ``page-N`` ref when the caller
+    # supplied no usable ``#dart-<anchor>`` (``ref``), so the served banner /
+    # provenance reflects the requested page. The actual scroll target is the
+    # serve-time-injected ``id="page-N"`` anchor (unconditional), reached via the
+    # ``#page-N`` fragment the deep links build. Anti-fabrication: only a
+    # positive integer page is honored; garbage is ignored (byte-identical to
+    # the no-page request).
+    resolved_ref = ref or None
+    if not resolved_ref and page:
+        try:
+            pg = int(str(page).strip())
+        except (TypeError, ValueError):
+            pg = 0
+        if pg > 0:
+            resolved_ref = "page-{}".format(pg)
+
     try:
-        result = _svc.serve_source_doc(course_id, doc, ref or None)
+        result = _svc.serve_source_doc(course_id, doc, resolved_ref)
     except _svc.SourceMaterialsError as exc:
         return _error(exc.status, exc.code, exc.detail)
     except Exception as exc:  # noqa: BLE001 — unexpected render failure

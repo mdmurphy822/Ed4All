@@ -193,7 +193,7 @@ def _assert_contained(resolved: Path, course_dir: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def sanitize_soup(soup) -> None:  # noqa: ANN001 — bs4 BeautifulSoup
+def sanitize_soup(soup, *, strip_form_actions: bool = False) -> None:  # noqa: ANN001 — bs4 BeautifulSoup
     """In-place active-content scrub on a parsed bs4 tree (shared security core).
 
     Drops ``<script>``/``<iframe>``/``<object>``/``<embed>``/``<noscript>``/
@@ -203,6 +203,19 @@ def sanitize_soup(soup) -> None:  # noqa: ANN001 — bs4 BeautifulSoup
     loaders. This is the exact element/attribute scrub the source-viewer applies;
     the Studio IMSCC viewer (``gui.services.imscc_service``) reuses it so the two
     archived-HTML serving paths share one audited sanitiser.
+
+    ``strip_form_actions`` (W10 §5.3 — default ``False`` so every existing caller
+    is byte-identical) hardens the ASSESSMENT/DISCUSSION serving path: a
+    cartridge-authored ``<form action="https://evil/">`` survives the default
+    scrub (the scheme is ``https:``, not active, so ``action``/``formaction`` are
+    kept). On the assessment/discussion path the learner types answers into form
+    inputs, so an off-origin ``action`` is an exfiltration vector. When ``True``,
+    ``action``/``formaction`` are stripped UNCONDITIONALLY (not just for active
+    schemes) from every element so no learner input can POST off-origin. Our own
+    quiz view never relies on a ``<form>`` POST (it ``fetch()``es a same-origin
+    endpoint), so this only NARROWS what's allowed — it never widens it. All other
+    strip rules are unchanged: ``<details>``/``<summary>`` still survive,
+    ``<script>``/``on*``/``javascript:`` are still stripped.
     """
     # 1) Drop dangerous elements entirely.
     for tag_name in _STRIP_TAGS:
@@ -216,6 +229,13 @@ def sanitize_soup(soup) -> None:  # noqa: ANN001 — bs4 BeautifulSoup
             lname = name.lower()
             # Inline event handlers (onclick, onmouseover, ...).
             if lname.startswith("on"):
+                del el[name]
+                continue
+            # Assessment/discussion hardening: form-submission targets are always
+            # stripped (not just active-scheme ones) so cartridge-authored forms
+            # can't exfiltrate learner input off-origin. Opt-in (§5.3) — narrows
+            # only; never widens.
+            if strip_form_actions and lname in ("action", "formaction"):
                 del el[name]
                 continue
             # Active URL schemes in URL-bearing attributes.
