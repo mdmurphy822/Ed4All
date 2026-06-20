@@ -86,7 +86,7 @@ def _normalize_workflow(name: str) -> str:
 
 DEFAULT_DART_OUTPUT_DIR = "DART/output"
 
-# Phase 5 ST 1 — canonical 16-value Block-type enum from
+# Phase 5 ST 1 — canonical 21-value Block-type enum from
 # ``Courseforge/scripts/blocks.py:77``. Held here as a flat tuple so
 # the CLI can validate ``--blocks`` tokens without importing the
 # Courseforge module at parse time (avoids pulling the renderer
@@ -110,6 +110,11 @@ VALID_BLOCK_TYPES = (
     "discussion_prompt",
     "chrome",
     "recap",
+    "scenario",
+    "problem",
+    "vocab_card",
+    "formula",
+    "checklist",
 )
 
 
@@ -118,7 +123,7 @@ def _parse_blocks_filter(raw: Optional[str]) -> Optional[List[str]]:
 
     Phase 5 ST 1: accepts a comma-separated string of canonical
     ``Block.block_type`` values (NOT block IDs — block types from the
-    16-singular ``BLOCK_TYPES`` enum at
+    21-singular ``BLOCK_TYPES`` enum at
     ``Courseforge/scripts/blocks.py:77``). Returns ``None`` when ``raw``
     is empty/None (caller treats that as "no filter — every block").
 
@@ -625,7 +630,7 @@ def _build_orchestrator(
     help=(
         "Phase 5 — comma-separated list of canonical Block types to "
         "filter on (per-block re-execution scope). Tokens must be from "
-        "the 16-singular ``BLOCK_TYPES`` enum at "
+        "the 21-singular ``BLOCK_TYPES`` enum at "
         "``Courseforge/scripts/blocks.py`` (e.g. "
         "``--blocks assessment_item,example``). When set, Phase 5 "
         "rewrite-tier handlers re-roll only blocks whose ``block_type`` "

@@ -617,7 +617,7 @@ class TestPhase5BlocksFilter:
 
     def test_valid_block_types_matches_canonical_enum(self):
         """Phase 5 ST 1: the local VALID_BLOCK_TYPES tuple must mirror
-        the canonical 16-singular ``BLOCK_TYPES`` frozenset at
+        the canonical 21-singular ``BLOCK_TYPES`` frozenset at
         ``Courseforge/scripts/blocks.py:77``. Catches drift if the
         canonical enum gains or loses members.
         """

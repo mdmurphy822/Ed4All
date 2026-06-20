@@ -884,6 +884,57 @@ def check_libv2_vendor_sync(verbose: bool = False) -> CheckResult:
     return result
 
 
+def check_provenance_enum_sync(verbose: bool = False) -> CheckResult:
+    """Verify the closed Touch.provider enum is in sync across all sites.
+
+    The provenance set is derived from the unified endpoint registry
+    (``config/endpoints.yaml``). Runs
+    ``scripts/codegen/sync_provenance_enum.py --check``, which exits
+    non-zero when the JSON-LD schema enum or the SHACL ``sh:in`` list has
+    drifted from the derived set. Closes the governance hole where the
+    three provenance sites stayed in sync only by hand.
+    """
+    import subprocess
+
+    start_time = time.time()
+    result = CheckResult(
+        name="provenance_enum_sync",
+        passed=False,
+        message="",
+    )
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "scripts.codegen.sync_provenance_enum",
+                "--check",
+            ],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        result.details["returncode"] = proc.returncode
+        if proc.returncode == 0:
+            result.passed = True
+            result.message = "Touch.provider enum in sync across all sites"
+        else:
+            result.passed = False
+            result.message = "Touch.provider enum drift detected"
+            for line in (proc.stderr or proc.stdout or "").splitlines():
+                if line.strip():
+                    result.errors.append(line.strip())
+        if verbose:
+            logger.info(f"  {result.message}")
+    except Exception as e:
+        result.errors.append(f"Provenance enum sync error: {e}")
+        result.message = f"Provenance enum sync check failed: {e}"
+        result.passed = False
+
+    result.duration_seconds = time.time() - start_time
+    return result
+
+
 # ============================================================================
 # MAIN RUNNER
 # ============================================================================
@@ -935,6 +986,7 @@ def run_integrity_checks(
         ("Hash Chains", lambda: check_hash_chains(runs_path, verbose)),
         ("Sample Finalization", lambda: check_sample_finalization(runs_path, verbose)),
         ("LibV2 Vendor Sync", lambda: check_libv2_vendor_sync(verbose)),
+        ("Provenance Enum Sync", lambda: check_provenance_enum_sync(verbose)),
         (
             "Validator Test Coverage",
             lambda: check_validator_test_coverage(
