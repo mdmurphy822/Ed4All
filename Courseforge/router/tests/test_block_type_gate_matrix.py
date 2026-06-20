@@ -4,7 +4,7 @@ Surface under test:
 
 - ``Courseforge/config/block_routing.yaml`` carries a ``validators``
   block for every entry in
-  ``Courseforge.scripts.blocks.BLOCK_TYPES`` (canonical 16-value
+  ``Courseforge.scripts.blocks.BLOCK_TYPES`` (canonical 21-value
   frozenset).
 - ``Courseforge/router/policy.py::BlockRoutingPolicy.validators_by_block_type``
   is populated from the YAML by ``load_block_routing_policy``;

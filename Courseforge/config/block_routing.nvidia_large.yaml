@@ -1,0 +1,293 @@
+# Courseforge two-pass router block-routing policy — NVIDIA-LARGE VARIANT.
+#
+# Schema: schemas/courseforge/block_routing.schema.json
+# Loader: Courseforge/router/policy.py::load_block_routing_policy
+# Consumer: Courseforge/router/router.py::CourseforgeRouter._resolve_spec
+#
+# Sibling of block_routing.license_clean.yaml. CLEAN TWO-TIER design:
+# a SMALL model (local 7B Qwen, loopback-only, Apache-2.0 ToS-clean)
+# authors the outline-tier first draft; a LARGE model (NVIDIA hosted
+# OpenAI-compatible inference API) authors the rewrite tier. There is no
+# intermediate 14B tier — every rewrite escalates straight to the large
+# NVIDIA seat. (The license_clean sibling keeps its large tier on a
+# 32B-local Qwen instead of NVIDIA; that is the only structural
+# difference between the two profiles.)
+#
+#   export COURSEFORGE_TWO_PASS=true
+#   export COURSEFORGE_BLOCK_ROUTING_PATH=Courseforge/config/block_routing.nvidia_large.yaml
+#   export NVIDIA_API_KEY=...    # ships in a gitignored env file
+#   ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101
+#
+# What this gets you: every block's outline-tier first draft stays on
+# the local 7B model; every rewrite goes to the NVIDIA large tier (the
+# `defaults.rewrite.capability_tier: large` default, with no per-block
+# exception). The NVIDIA chat-completion returns clean `message.content`
+# (the requested HTML); since the pinned model is the NON-reasoning
+# nemotron sibling there is no chain-of-thought to isolate, so the
+# standard OpenAI-compatible client reads clean output (no <think>
+# pollution).
+#
+# API key: REQUIRED, read from `NVIDIA_API_KEY` (never hardcoded).
+# `base_url` + `model` on the large tier below are ALSO overridable via
+# the `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL` env vars (resolution:
+# per-call kwarg > NVIDIA_LARGE_MODEL > this YAML model). NB: the
+# per-tier `COURSEFORGE_REWRITE_MODEL` env override in the router's
+# chain projector fires ONLY for `provider: local` tiers, so dialing
+# the bulk down to a 7B local model does NOT touch this NVIDIA large
+# tier.
+#
+# Licensing: the NVIDIA hosted API here generates COURSE CONTENT
+# (published product HTML), NOT the training-data corpus — see
+# docs/LICENSING.md § "Content-generation providers". The training-data
+# synthesis surfaces keep their own license-clean provider posture
+# (local Qwen / Together OSS). This file is therefore NOT loopback-only
+# by contract (unlike block_routing.license_clean.yaml); the large tier
+# is a deliberate hosted-cloud escalation seat.
+#
+# Cross-references:
+#   - block_routing.license_clean.yaml (fully air-gapped 32B-local large)
+#   - docs/operations/license-clean-run.md
+#   - docs/LICENSING.md
+
+version: 1
+
+capability_tiers:
+  # Two tiers only: SMALL (7B local outline) and LARGE (NVIDIA rewrite).
+  #
+  # Small tier — 7B local Qwen for outline-tier first draft. Apache 2.0;
+  # loopback-only; ToS-clean for training-data ingestion. Identical to
+  # block_routing.license_clean.yaml.
+  small:
+    provider: local
+    model: qwen2.5:7b-instruct-q4_K_M
+    base_url: http://localhost:11434/v1
+    temperature: 0.0
+    max_tokens: 1200
+
+  # Large tier — NVIDIA HOSTED REWRITE SEAT. Every rewrite routes here
+  # (the global `defaults.rewrite.capability_tier: large`). NVIDIA's
+  # hosted OpenAI-compatible inference API runs the nemotron model. Key
+  # from NVIDIA_API_KEY; base_url + model overridable via NVIDIA_BASE_URL
+  # / NVIDIA_LARGE_MODEL.
+  #
+  # DGX Spark simulation note: the NVIDIA API stands in for a single DGX
+  # Spark (128 GB unified memory, GB10) running this model. A 30B-A3B MoE
+  # with the Nemotron-Nano hybrid Mamba-Transformer architecture (low KV
+  # cache — only the few true attention layers carry per-token state) is
+  # comfortably memory-resident at its native ~128k context window on one
+  # Spark (NVFP4 weights ~15-18 GB; KV cache at 128k is single-to-low-tens
+  # of GB). The content-gen path does NOT sub-cap input context (the tier
+  # schema has no num_ctx field), so the effective window is the model's
+  # native ~128k served by NVIDIA — and our largest prompt (a full
+  # objective-review pass over synthesized_objectives.json, ~20-35k tokens)
+  # fits with wide headroom. The schema-real output knob is max_tokens,
+  # raised below from 2400 -> 6144: large structured authoring/editing
+  # of a full pedagogically-rich block can run long, so 2400 risked
+  # truncating a block's HTML mid-emit. 6144 leaves comfortable headroom
+  # for the rewritten block. (The pinned model is the NON-reasoning
+  # nemotron sibling, so no chain-of-thought budget is needed; see the
+  # model note below.)
+  large:
+    provider: nvidia
+    # Non-reasoning sibling (NOT the *-reasoning variant): a reasoning model
+    # unpredictably emits large chain-of-thought that overruns the completion
+    # budget on structured authoring/editing. Overridable via NVIDIA_LARGE_MODEL.
+    # meta/llama-3.3-70b-instruct (was nvidia/nemotron-3-nano-30b-a3b): the
+    # nano (30B) over-generates/runs away on ~52% of real blocks regardless of
+    # brevity directive/cap/temperature — a small-model instruction-following
+    # ceiling. The 70B follows the brevity directive reliably (measured concise
+    # + styled + 2x faster on the runaway scenario) and fits a single DGX Spark.
+    model: meta/llama-3.3-70b-instruct
+    base_url: https://integrate.api.nvidia.com/v1
+    # 0.2 (was 0.4): the runaway/truncation was temperature-driven length
+    # VARIANCE, not a context need — at 0.4 Nemotron randomly emits a concise
+    # ~350-tok block OR a >4096-tok runaway for the SAME input (measured:
+    # ~52% ran away). At 0.2/0.1 the same blocks complete reliably at ~300-400
+    # tok. Lower temp is the root fix for the fallback rate (richer NVIDIA
+    # prose instead of template) + chunking (rich blocks keep their h2/h3).
+    temperature: 0.2
+    # 4096: a SINGLE styled instruction block is ~200-800 tok (source chunks
+    # are ~700 tok; a whole Sonnet page of 15 examples is ~4K tok). 4096 is
+    # generous headroom for one deep styled block yet HARD-STOPS the Nemotron
+    # runaway (blocks that ramble to 8-16K tok = 8-16x their source — pure
+    # repetition, NOT a context need). Paired with the BREVITY directive in
+    # _rewrite_provider.py's system prompt + a deterministic styled-template
+    # fallback so a block that can't finish in 4096 renders cleanly instead of
+    # shipping degraded/truncated HTML. Realistic for 8GB-local OR NVIDIA-API
+    # (no DGX) — no block legitimately needs more. The earlier 16384/24576/32768
+    # creep was chasing the runaway in the WRONG direction.
+    max_tokens: 4096
+
+defaults:
+  outline:
+    capability_tier: small
+  rewrite:
+    capability_tier: large
+
+blocks:
+  # Per-block-type entries below pin EVERY block's outline tier to
+  # `small` (7B local) and EVERY block's rewrite tier to `large` (NVIDIA)
+  # — the same two-tier shape as the global `defaults`. There is no
+  # medium/14B tier and no cascading-regen list form anywhere: each
+  # rewrite escalates straight to the single NVIDIA large seat. (The
+  # flip_card_grid block is the lone exception that keeps rewrite on
+  # `small` because it is structurally trivial.)
+  #
+  # If empirical calibration shows the NVIDIA large tier degrades a
+  # block type's quality, the right play is to comment out that block's
+  # entry so the global `defaults.rewrite.capability_tier: large` applies
+  # — until the calibration
+  # loop closes.
+
+  assessment_item:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: large
+    validators:
+      required:
+        - objective_assessment_similarity
+        - bloom_alignment
+        - answerability
+      optional:
+        - distractor_entropy
+      fail_action: escalate
+
+  concept:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: large
+    validators:
+      required:
+        - source_ref
+        - content_type
+        - similarity
+      optional:
+        - curie_anchoring
+      fail_action: regenerate
+
+  example:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: large
+    validators:
+      required:
+        - concept_example_similarity
+        - source_ref
+      optional:
+        - bloom_classifier_disagreement
+      fail_action: regenerate
+
+  misconception:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: large
+    validators:
+      required:
+        - source_ref
+        - distractor_misconception_alignment
+      optional: []
+      fail_action: regenerate
+
+  summary_takeaway:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: large
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  flip_card_grid:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: small
+    validators:
+      required:
+        - source_ref
+        - content_type
+      optional: []
+      fail_action: regenerate
+
+  prereq_set:
+    escalate_immediately: true
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  objective:
+    validators:
+      required:
+        - curie_anchoring
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  explanation:
+    validators:
+      required:
+        - source_ref
+        - content_type
+      optional:
+        - similarity
+      fail_action: regenerate
+
+  activity:
+    validators:
+      required:
+        - objective_ref
+        - source_ref
+      optional:
+        - accessibility
+      fail_action: regenerate
+
+  callout:
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  self_check_question:
+    validators:
+      required:
+        - objective_ref
+        - answerability
+      optional:
+        - bloom_classifier_disagreement
+      fail_action: escalate
+
+  reflection_prompt:
+    validators:
+      required:
+        - objective_ref
+      optional: []
+      fail_action: regenerate
+
+  discussion_prompt:
+    validators:
+      required:
+        - objective_ref
+      optional: []
+      fail_action: regenerate
+
+  chrome:
+    validators:
+      required: []
+      optional: []
+      fail_action: regenerate
+
+  recap:
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate

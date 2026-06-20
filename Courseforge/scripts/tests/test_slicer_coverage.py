@@ -71,3 +71,76 @@ class TestCoverage:
         for w in range(1, real_weeks + 1):
             real_placed.extend(o["id"] for o in _slice_cos_for_week(cos, weeks, w))
         assert len(real_placed) == len(set(real_placed)) == n
+
+
+# ---------------------------------------------------------------------------
+# M5 Fix B — cross-week CO-id de-duplication via the ``placed_ids`` seam.
+# Regression guard for the real run's CO-12-in-Week-2-AND-Week-12 bug: at
+# (62 COs, 12 weeks) ceil-step=6, week 12's slice cos[66:72] is EMPTY so the
+# round-robin fallback re-places cos[11] (CO-12) — already placed in week 2.
+# ---------------------------------------------------------------------------
+
+
+def _placed_ids_deduped(n_cos, weeks):
+    """Slice every week threading a SHARED placed_ids set (Fix B)."""
+    cos = _cos(n_cos)
+    placed_set = set()
+    placed = []
+    for w in range(1, weeks + 1):
+        placed.extend(
+            o["id"]
+            for o in _slice_cos_for_week(cos, weeks, w, placed_ids=placed_set)
+        )
+    return placed
+
+
+class TestFixBCrossWeekDedup:
+    def test_co12_not_placed_twice_real_run_shape(self):
+        """The exact (62, 12) shape that put CO-12 in Week 2 and Week 12."""
+        cos = _cos(62)
+        # Legacy (no placed_ids) reproduces the duplicate.
+        legacy = []
+        for w in range(1, 13):
+            legacy.extend(o["id"] for o in _slice_cos_for_week(cos, 12, w))
+        assert legacy.count("CO-12") == 2, "expected the legacy CO-12 dup bug"
+
+        # Deduped (placed_ids threaded) — CO-12 appears exactly once.
+        deduped = _placed_ids_deduped(62, 12)
+        assert deduped.count("CO-12") == 1
+
+    @pytest.mark.parametrize("n_cos,weeks", _CASES + [(62, 12), (62, 20)])
+    def test_no_cross_week_duplicate_with_placed_ids(self, n_cos, weeks):
+        """With placed_ids threaded, EVERY week is disjoint — no id twice."""
+        placed = _placed_ids_deduped(n_cos, weeks)
+        assert len(placed) == len(set(placed)), (
+            f"({n_cos},{weeks}) placed an id in two weeks despite placed_ids"
+        )
+
+    @pytest.mark.parametrize("n_cos,weeks", _CASES + [(62, 12), (62, 20)])
+    def test_dedup_preserves_full_coverage(self, n_cos, weeks):
+        """De-dup drops only the trailing-fallback duplicate, never real COs."""
+        all_ids = {o["id"] for o in _cos(n_cos)}
+        placed = set(_placed_ids_deduped(n_cos, weeks))
+        assert placed == all_ids, (
+            f"({n_cos},{weeks}) dedup dropped {sorted(all_ids - placed)[:10]}"
+        )
+
+    def test_placed_ids_none_is_byte_stable_legacy(self):
+        """placed_ids=None (default) keeps the legacy, un-deduplicated output."""
+        cos = _cos(62)
+        for w in range(1, 13):
+            legacy = _slice_cos_for_week(cos, 12, w)
+            explicit_none = _slice_cos_for_week(cos, 12, w, placed_ids=None)
+            assert [o["id"] for o in legacy] == [o["id"] for o in explicit_none]
+
+    def test_dedup_falls_back_to_statement_when_id_absent(self):
+        """A pre-mint flat list (no id) de-dups on statement identity."""
+        cos = [{"statement": f"obj {i}"} for i in range(1, 63)]
+        placed_set = set()
+        placed = []
+        for w in range(1, 13):
+            placed.extend(
+                o["statement"]
+                for o in _slice_cos_for_week(cos, 12, w, placed_ids=placed_set)
+            )
+        assert len(placed) == len(set(placed)) == 62

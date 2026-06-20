@@ -117,6 +117,51 @@ FLAT_SHAPE = {
     ],
 }
 
+# Canonical on-disk shape written by
+# MCP/tools/pipeline_tools.py::_normalize_chapter_objectives_to_groups:
+# chapter_objectives is a LIST OF GROUPS, each {chapter, objectives: [CO,...]}.
+# This is the shape every real export carries; the renderer historically had
+# no branch for it, so the TO->CO map rendered empty ("No chapter objectives
+# are mapped to this terminal objective") for every TO. (Defect B.)
+GROUPED_SHAPE = {
+    "course_name": "PHYS_101",
+    "course_title": "Introductory Mechanics",
+    "terminal_objectives": [
+        {"id": "TO-01", "statement": "Apply Newton's laws.", "bloom_level": "apply"},
+        {"id": "TO-02", "statement": "Analyze energy transfer.", "bloom_level": "analyze"},
+    ],
+    "chapter_objectives": [
+        {
+            "chapter": "Week 1",
+            "objectives": [
+                {
+                    "id": "CO-01",
+                    "terminal_id": "TO-01",
+                    "statement": "Identify forces acting on a body.",
+                    "bloom_level": "remember",
+                },
+                {
+                    "id": "CO-02",
+                    "terminal_id": "TO-01",
+                    "statement": "Compute net force from a free-body diagram.",
+                    "bloom_level": "apply",
+                },
+            ],
+        },
+        {
+            "chapter": "Week 2",
+            "objectives": [
+                {
+                    "id": "CO-03",
+                    "terminal_id": "TO-02",
+                    "statement": "Distinguish kinetic from potential energy.",
+                    "bloom_level": "understand",
+                },
+            ],
+        },
+    ],
+}
+
 UNMAPPED_SHAPE = {
     "course_name": "PHYS_101",
     "course_title": "Introductory Mechanics",
@@ -193,6 +238,39 @@ def test_renders_terminal_and_chapter_objectives_dict_shape():
     assert "Apply Newton&#x27;s laws to predict motion." in out
     # Nested grouping: CO-01/CO-02 under TO-01; CO-03 under TO-02.
     assert "Supporting chapter objectives" in out
+
+
+def test_renders_grouped_list_of_groups_shape():
+    """Defect B: the canonical list-of-groups chapter_objectives shape
+    populates the TO->CO map (every TO lists its mapped COs, zero unmapped)."""
+    out = render_learning_objectives_html(GROUPED_SHAPE, course_code="PHYS_101")
+    # Every TO + CO id rendered.
+    for oid in ("TO-01", "TO-02", "CO-01", "CO-02", "CO-03"):
+        assert oid in out, f"{oid} missing from rendered page"
+    # CO statements (not just ids) are rendered.
+    assert "Identify forces acting on a body." in out
+    assert "Distinguish kinetic from potential energy." in out
+    # Both TOs have mapped COs -> the empty-map message NEVER appears.
+    assert "No chapter objectives are mapped" not in out
+    # Nothing falls into the honest "Unmapped objectives" bucket.
+    assert "Unmapped objectives" not in out
+    # Two supporting-objectives groupings (one per TO).
+    assert out.count("Supporting chapter objectives") == 2
+    # Summary table has zero "unmapped" cells.
+    assert ">unmapped<" not in out
+    # JSON-LD partOf linkage threads terminal_id through.
+    data = _extract_jsonld(out)
+    co1 = next(o for o in data["learningObjectives"] if o["id"] == "CO-01")
+    assert co1.get("partOf") == "TO-01"
+    co3 = next(o for o in data["learningObjectives"] if o["id"] == "CO-03")
+    assert co3.get("partOf") == "TO-02"
+
+
+def test_grouped_shape_stamps_chapter_label():
+    """Each nested CO inherits its group's chapter label for the summary."""
+    out = render_learning_objectives_html(GROUPED_SHAPE, course_code="PHYS_101")
+    # The group's chapter label ("Week 1") surfaces in the summary table.
+    assert "Week 1" in out
 
 
 def test_renders_archive_shape():
@@ -332,3 +410,62 @@ def test_write_to_file_roundtrip(tmp_path: Path):
     text = out_path.read_text(encoding="utf-8")
     assert text.startswith("<!DOCTYPE html>")
     assert "TO-01" in text
+
+
+# ---------------------------------------------------------------------------
+# Page-number deep-links (Phase 2) — "PDF p. N" on the LO-map link surface.
+# ---------------------------------------------------------------------------
+
+from lib.objectives.lo_map_builder import InstructionBlock  # noqa: E402
+from render_learning_objectives_page import _render_block_item  # noqa: E402
+
+
+def _block(*, deep_link, pages):
+    return InstructionBlock(
+        block_id="week_01_content_01#concept_x_0",
+        content_type="explanation",
+        topic="Understanding Divisibility",
+        objective_id="TO-01",
+        page_id="week_01_content_01",
+        deep_link=deep_link,
+        source_refs=["dart:src#anchorAAA"],
+        pages=pages,
+    )
+
+
+def test_block_item_shows_pdf_page_in_link_text():
+    """A page-bearing block surfaces the honest "PDF p. N" citation in the <a>."""
+    html = _render_block_item(
+        _block(
+            deep_link="/api/learn/source/s?item_path=src.html&page=47#anchorAAA",
+            pages=[47],
+        )
+    )
+    assert "&amp;page=47#anchorAAA" in html  # &page= threaded into the href
+    assert "Understanding Divisibility (PDF p. 47)" in html
+    # RISK-A: never a bare "p. 47" that implies a printed page.
+    assert "(p. 47)" not in html
+
+
+def test_block_item_multi_page_label():
+    """RISK-C: a "3-5" range renders the "PDF pp. 3, 4, 5" multi label."""
+    html = _render_block_item(
+        _block(
+            deep_link="/api/learn/source/s?item_path=src.html&page=3#anchorAAA",
+            pages=[3, 4, 5],
+        )
+    )
+    assert "(PDF pp. 3, 4, 5)" in html
+
+
+def test_block_item_page_less_byte_identical():
+    """No pages → no suffix, byte-identical link text to today."""
+    html = _render_block_item(
+        _block(
+            deep_link="/api/learn/source/s?item_path=src.html#anchorAAA",
+            pages=[],
+        )
+    )
+    assert ">Understanding Divisibility</a>" in html
+    assert "PDF p." not in html
+    assert "&amp;page=" not in html

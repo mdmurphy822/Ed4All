@@ -48,12 +48,17 @@ class TestSlicerParity:
     @pytest.mark.parametrize("n_cos,weeks", _GRID)
     def test_emit_and_validator_slicers_byte_identical(self, n_cos, weeks):
         cos = _cos(n_cos)
-        # Validator side: the dict builder.
+        # Validator side: the dict builder (M5 Fix B threads a shared
+        # placed_ids set internally to de-duplicate across weeks).
         validator_map = _slice_chapter_objectives_by_week(cos, weeks)
-        # Emit side: the same helper invoked per-week (this is exactly what
-        # pipeline_tools._generate_course_content now does).
+        # Emit side: the same helper invoked per-week threading the SAME shared
+        # placed_ids set (this is exactly what pipeline_tools.
+        # _generate_course_content now does — see _emit_placed_co_ids).
+        emit_placed: set = set()
         for w in range(1, weeks + 1):
-            emit_week = _slice_cos_for_week(cos, weeks, w)
+            emit_week = _slice_cos_for_week(
+                cos, weeks, w, placed_ids=emit_placed
+            )
             emit_ids = [o["id"] for o in emit_week]
             allowed_ids = [o["id"] for o in validator_map[w]]
             assert emit_ids == allowed_ids, (
@@ -65,17 +70,29 @@ class TestSlicerParity:
     def test_plan_persisted_groups_match_emit(self, n_cos, weeks):
         """The §2.4(A) persisted ``"Week N"`` groups equal the emit slice."""
         cos = _cos(n_cos)
-        # Replicate the _plan_course_structure persistence shape.
+        # Replicate the _plan_course_structure persistence shape (M5 Fix B:
+        # the persisted groups thread a shared placed_ids set — mirrors
+        # _persist_placed_co_ids in pipeline_tools).
+        persist_placed: set = set()
         groups = [
             {
                 "chapter": f"Week {w}",
-                "objectives": _slice_cos_for_week(cos, weeks, w),
+                "objectives": _slice_cos_for_week(
+                    cos, weeks, w, placed_ids=persist_placed
+                ),
             }
             for w in range(1, weeks + 1)
         ]
+        # The emit side threads its OWN shared set the same way.
+        emit_placed: set = set()
         for w in range(1, weeks + 1):
             persisted_ids = [o["id"] for o in groups[w - 1]["objectives"]]
-            emit_ids = [o["id"] for o in _slice_cos_for_week(cos, weeks, w)]
+            emit_ids = [
+                o["id"]
+                for o in _slice_cos_for_week(
+                    cos, weeks, w, placed_ids=emit_placed
+                )
+            ]
             assert persisted_ids == emit_ids
 
 

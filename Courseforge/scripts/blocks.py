@@ -92,6 +92,12 @@ BLOCK_TYPES: frozenset = frozenset(
         "discussion_prompt",
         "chrome",
         "recap",
+        # Wave-2 block-variety additions (snake_case canonical tokens).
+        "scenario",
+        "problem",
+        "vocab_card",
+        "formula",
+        "checklist",
     }
 )
 
@@ -111,9 +117,18 @@ _TOUCH_TIERS: frozenset = frozenset(
     {"outline", "validation", "rewrite", "outline_val", "rewrite_val"}
 )
 
-_TOUCH_PROVIDERS: frozenset = frozenset(
-    {"anthropic", "local", "together", "claude_session", "deterministic"}
-)
+# DERIVED from the unified endpoint registry (config/endpoints.yaml) via
+# lib.llm.endpoints.provenance_provider_names() — the single authority for
+# the closed Touch.provider set (union of every endpoint row's
+# provenance_provider + the "deterministic" sentinel). The two static
+# provenance sites (the JSON-LD schema enum + the SHACL sh:in list) are
+# kept byte-equal to this set by scripts/codegen/sync_provenance_enum.py
+# (CI-enforced by schemas/tests/test_touch_provider_enum_sync.py). lib.llm.
+# endpoints imports only stdlib + yaml + jsonschema + lib.paths, so this
+# import is cycle-safe (one direction: blocks.py -> endpoints).
+from lib.llm.endpoints import provenance_provider_names as _provenance_provider_names
+
+_TOUCH_PROVIDERS: frozenset = frozenset(_provenance_provider_names())
 
 _ESCALATION_MARKERS: frozenset = frozenset(
     {
@@ -461,6 +476,15 @@ class Block:
             "reflection_prompt",
             "discussion_prompt",
             "recap",
+            # Wave-2 block-variety additions: component / section-ish
+            # wrappers (.scenario-card / .problem-card / .vocab-card /
+            # .formula-card / .checklist). Source-id attrs + the gated
+            # block-id are the only metadata they carry.
+            "scenario",
+            "problem",
+            "vocab_card",
+            "formula",
+            "checklist",
         }:
             # Wrapper-only blocks (the inline `<section>` wrappers in
             # `generate_week`). Source-id attrs only.
@@ -920,7 +944,7 @@ class Block:
 # the legacy `_render_content_sections` / `_build_sections_metadata`
 # shape. Section-heading content_types map onto these block_types
 # directly (one block_type per resolved content_type label). Right now
-# the canonical 16-type enum doesn't include ``procedure`` /
+# the canonical 21-type enum doesn't include ``procedure`` /
 # ``comparison`` / ``definition`` / ``overview`` / ``summary`` /
 # ``exercise`` — those resolve to ``content_type_label`` on the
 # Block instead, while ``block_type`` stays in the canonical enum.

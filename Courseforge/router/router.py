@@ -117,8 +117,9 @@ import dataclasses
 import datetime as _dt
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 # ``blocks.py`` lives at ``Courseforge/scripts/blocks.py``; mirror the
 # import bridge used by the sibling provider modules so ``from blocks
@@ -133,6 +134,15 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from blocks import BLOCK_TYPES, Block, Touch  # noqa: E402
 
+# Unified LLM/API endpoint registry (config/endpoints.yaml). The router
+# attaches to endpoints BY NAME; the allowlist + Touch-provenance mapping
+# below DERIVE from the registry so adding an endpoint is a one-row YAML
+# change with zero router edits. See lib/llm/endpoints.py.
+from lib.llm.endpoints import (  # noqa: E402
+    endpoint_names,
+    load_endpoint_registry,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -141,18 +151,34 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _ALLOWED_TIERS: Tuple[str, ...] = ("outline", "rewrite")
-_ALLOWED_PROVIDERS: Tuple[str, ...] = (
-    "anthropic",
-    "together",
-    "local",
-    "openai_compatible",
-    # Wave6: in-session Claude Code subagent dispatch for the rewrite
-    # tier. Resolved via ``COURSEFORGE_REWRITE_PROVIDER=claude_session``.
-    # Outline tier rejects this value at provider construction (no
-    # OutlineProvider claude_session branch); the router admits it at
-    # the spec layer for symmetry, the OutlineProvider raises if asked.
-    "claude_session",
-)
+
+# Legacy alias the router admits in addition to the registry endpoint
+# names: ``openai_compatible`` is the "non-Ollama / non-Together
+# OpenAI-compatible server" tag. It collapses to ``local`` at provider
+# construction (``_get_outline_provider`` / ``_get_rewrite_provider``)
+# and onto the ``local`` Touch provenance value
+# (``_collapse_to_touch_provider``).
+_OPENAI_COMPATIBLE_ALIAS = "openai_compatible"
+
+
+def _build_allowed_providers() -> Tuple[str, ...]:
+    """Derive the BlockProviderSpec provider allowlist from the registry.
+
+    The allowlist is every named endpoint in ``config/endpoints.yaml``
+    (``nvidia`` / ``anthropic`` / ``together`` / ``local`` /
+    ``claude_session`` + any future cloud row — one YAML row, zero router
+    edits) PLUS the legacy ``openai_compatible`` alias. Computed once at
+    import; the runtime ``in _ALLOWED_PROVIDERS`` check in
+    :meth:`BlockProviderSpec.__post_init__` (and the JSON-Schema enum,
+    generated from the same registry via
+    ``scripts/codegen/sync_provenance_enum.py``) are the real closed-set
+    gates now that the ``provider`` field is typed ``str`` rather than a
+    hand-maintained ``Literal``.
+    """
+    return tuple(endpoint_names()) + (_OPENAI_COMPATIBLE_ALIAS,)
+
+
+_ALLOWED_PROVIDERS: Tuple[str, ...] = _build_allowed_providers()
 
 # Per-tier env-var names mirroring the OutlineProvider / RewriteProvider
 # constructor surfaces. Read at resolution time so tests can monkeypatch
@@ -220,7 +246,7 @@ _ACTION_PRIORITY: Dict[str, int] = {
 # and a larger local model for everything else. These values are
 # starting points subject to Phase 4 calibration.
 _DEFAULT_OUTLINE_MODEL = "qwen2.5:7b-instruct-q4_K_M"
-_DEFAULT_REWRITE_MODEL_LOCAL = "qwen2.5:14b-instruct-q4_K_M"
+_DEFAULT_REWRITE_MODEL_LOCAL = "qwen2.5:7b-instruct-q4_K_M"
 _DEFAULT_REWRITE_MODEL_ANTHROPIC = "claude-sonnet-4-6"
 
 # Block types that route through the Anthropic rewrite default — the
@@ -243,16 +269,28 @@ _REWRITE_ANTHROPIC_BLOCK_TYPES: frozenset = frozenset(
 def _collapse_to_touch_provider(provider: str) -> str:
     """Map a router provider tag onto the canonical Touch provider set.
 
-    ``Courseforge/scripts/blocks.py::_TOUCH_PROVIDERS`` only allows
-    ``{"anthropic","local","together","claude_session","deterministic"}``;
-    the router supports a fourth value ``"openai_compatible"`` (operators
-    pointing at a non-Ollama / non-Together OpenAI-compatible server).
-    Collapse the new value onto ``"local"`` — both go through the same
-    OpenAICompatibleClient so the audit trail's ``provider`` field stays
-    informative without breaking Touch validation.
+    The closed ``Touch.provider`` provenance set
+    (``Courseforge/scripts/blocks.py::_TOUCH_PROVIDERS``) is DERIVED from
+    the endpoint registry: each endpoint row declares the
+    ``provenance_provider`` value it stamps (e.g. ``groq`` / ``fireworks``
+    / ``deepseek`` → ``local``, ``together-vision`` → ``together``). Map a
+    router provider name onto its registry-declared provenance value so a
+    newly-added cloud endpoint stamps the right Touch value with no edit
+    here.
+
+    Two non-registry tags are handled explicitly:
+
+    - ``openai_compatible`` (legacy alias) collapses to ``local`` — both
+      go through the same OpenAICompatibleClient.
+    - any value not in the registry (defensive) passes through unchanged
+      so Touch validation surfaces the bad value rather than this helper
+      masking it.
     """
-    if provider == "openai_compatible":
+    if provider == _OPENAI_COMPATIBLE_ALIAS:
         return "local"
+    row = load_endpoint_registry().get(provider)
+    if row is not None:
+        return str(row.get("provenance_provider", provider))
     return provider
 
 
@@ -281,6 +319,21 @@ class _CandidateVerdict:
     contradicted: bool
     covers_objective: bool
     delivery_score: float
+
+
+# Module-level lock serializing the NLI forward pass inside
+# ``score_candidate``. The NLI classifier (DeBERTa, ``lib.classifiers.
+# nli_classifier``) and the sentence-transformer embedder are process-wide
+# singletons; concurrent forward passes on the same torch model (CUDA
+# especially) are NOT thread-safe. Under the opt-in concurrent rewrite-tier
+# fanout (``COURSEFORGE_REWRITE_CONCURRENCY > 1``) multiple worker threads can
+# reach the best-of-N ``score_candidate`` seam at once, so this lock keeps only
+# ONE thread inside the GPU section at a time. The slow part — the provider's
+# LLM HTTP dispatch inside ``route()`` — runs fully concurrently; only the brief
+# NLI scoring serializes. Single-threaded callers acquire an uncontended lock
+# (byte-identical behavior). Used module-wide (both the outline- and rewrite-tier
+# best-of-N loops) so a future concurrent outline path is covered too.
+_NLI_SCORE_LOCK = threading.Lock()
 
 
 def score_candidate(
@@ -320,7 +373,11 @@ def score_candidate(
     entailment_rate = 0.0
     contradicted = False
     if text and passages:
-        report = score_groundedness(text, passages, nli=nli)
+        # Serialize the shared-singleton NLI/embedding forward pass — concurrent
+        # rewrite-tier workers must not run overlapping forward passes on the
+        # same torch model (see _NLI_SCORE_LOCK). Uncontended single-threaded.
+        with _NLI_SCORE_LOCK:
+            report = score_groundedness(text, passages, nli=nli)
         if report.available:
             entailment_rate = float(report.groundedness_rate)
             contradicted = report.contradicted_count > 0
@@ -487,7 +544,11 @@ class BlockProviderSpec:
 
     - ``block_type`` / ``tier`` — identity (validated against the
       canonical sets in :func:`__post_init__`).
-    - ``provider`` — one of ``{"anthropic","together","local","openai_compatible"}``.
+    - ``provider`` — a registry endpoint name (one of
+      ``lib.llm.endpoints.endpoint_names()`` — ``anthropic`` / ``together``
+      / ``local`` / ``nvidia`` / ``claude_session`` + any future cloud
+      row) OR the legacy ``"openai_compatible"`` alias. The closed set is
+      ``_ALLOWED_PROVIDERS`` (derived from the registry).
     - ``model`` — provider-specific model id.
     - ``base_url`` — optional override for OpenAI-compatible backends.
     - ``api_key_env`` — optional env-var name the provider should read
@@ -507,13 +568,16 @@ class BlockProviderSpec:
 
     block_type: str
     tier: Literal["outline", "rewrite"]
-    provider: Literal[
-        "anthropic",
-        "together",
-        "local",
-        "openai_compatible",
-        "claude_session",
-    ]
+    # ``provider`` is the registry endpoint NAME (or the legacy
+    # ``openai_compatible`` alias). Typed ``str`` rather than a
+    # hand-maintained ``Literal`` because the closed set is now DERIVED
+    # from the endpoint registry at runtime (``_ALLOWED_PROVIDERS =
+    # _build_allowed_providers()``) and a ``Literal`` cannot be computed
+    # from a runtime call. The closed-set gates are the runtime
+    # ``in _ALLOWED_PROVIDERS`` check in :func:`__post_init__` plus the
+    # block_routing JSON-Schema provider enum (generated from the same
+    # registry). The mypy trade-off is deliberate.
+    provider: str
     model: str
     base_url: Optional[str] = None
     api_key_env: Optional[str] = None
@@ -1362,10 +1426,29 @@ class CourseforgeRouter:
         source_chunks: Optional[List[Any]] = None,
         objectives: Optional[List[Any]] = None,
         fast_fail: bool = True,
+        minted_curie_map: Optional[Dict[str, Any]] = None,
+        pre_validate_hook: Optional[Callable[[Block], Block]] = None,
         **overrides: Any,
     ) -> Block:
         """Sample N outline candidates and return the first that passes
         the validator chain.
+
+        ``pre_validate_hook`` (optional) is applied to EACH freshly-routed
+        candidate BEFORE the validator chain runs. The outline tier
+        regenerates ``content["curies"]`` from scratch on every dispatch
+        (a prose corpus → ``curies: []``), so the per-course CURIE minting
+        that ``_run_content_generation_outline`` runs post-loop is too late
+        to prevent the in-loop ``BlockCurieAnchoringValidator`` from firing
+        ``OUTLINE_BLOCK_MISSING_CURIES`` → ``regenerate`` and re-rolling the
+        block identically up to the budget. Threading a per-block mint hook
+        here stamps the minted CURIEs onto the candidate first, so the
+        in-loop validator anchors on the FIRST attempt instead of burning
+        the regen budget. ``minted_curie_map`` is the per-course map the
+        in-loop validator uses to anchor those minted CURIEs via their
+        vocabulary surface forms (paired with ``source_chunks`` — keyed by
+        ``block.block_id`` — as the grounded provenance surface). Both are
+        no-ops when absent (RDF / legacy corpora), preserving the prior
+        byte-identical contract.
 
         Per Phase 3 §3.6 self-consistency loop:
 
@@ -1576,6 +1659,25 @@ class CourseforgeRouter:
                 remediation_suffix=remediation_suffix,
                 **iteration_overrides,
             )
+            # Mint per-course CURIEs onto the freshly-routed candidate
+            # BEFORE the validator chain so the in-loop curie-anchoring
+            # gate sees a prose-corpus-valid CURIE on the FIRST attempt
+            # (the outline tier regenerates ``content["curies"]`` each
+            # dispatch, so a post-loop mint can't prevent the re-roll).
+            # No-op when no hook is wired (RDF / legacy corpora / direct
+            # callers) — candidate is unchanged. Fail-soft: a hook raise
+            # never aborts the dispatch loop.
+            if pre_validate_hook is not None:
+                try:
+                    minted_candidate = pre_validate_hook(candidate)
+                    if minted_candidate is not None:
+                        candidate = minted_candidate
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "route_with_self_consistency: pre_validate_hook "
+                        "raised for block_id=%s: %s",
+                        getattr(candidate, "block_id", "?"), exc,
+                    )
             last_candidate = candidate
 
             # Phase 3.5 Subtask 17: _run_validator_chain now returns a
@@ -1585,10 +1687,18 @@ class CourseforgeRouter:
             # We rebind ``candidate`` (and ``last_candidate``) to the
             # touched block so the audit chain survives every downstream
             # branch (winner, escalation, structural-block, all-fail).
+            # Thread the per-block source-chunk universe + minted-CURIE
+            # map so the in-loop curie-anchoring validator anchors the
+            # same way the standalone inter_tier_validation phase does.
             all_passed, gate_results, candidate = self._run_validator_chain(
                 candidate, validator_list, fast_fail=fast_fail,
                 validator_tier="outline_val",
                 objectives=objectives,
+                source_chunks_by_block_id=(
+                    {candidate.block_id: source_chunks}
+                    if source_chunks else None
+                ),
+                minted_curie_map=minted_curie_map,
             )
             last_candidate = candidate
             if all_passed and best_of_n_mode:
@@ -3291,6 +3401,8 @@ class CourseforgeRouter:
         fast_fail: bool = True,
         validator_tier: Literal["outline_val", "rewrite_val"] = "outline_val",
         objectives: Optional[List[Any]] = None,
+        source_chunks_by_block_id: Optional[Dict[str, List[Any]]] = None,
+        minted_curie_map: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, List[Any], Block]:
         """Run an ordered chain of validators against ``block``.
 
@@ -3399,6 +3511,24 @@ class CourseforgeRouter:
         # Build the input dict once per chain — both per-block and
         # Block-list-aware validators read from the same shape.
         inputs: Dict[str, Any] = {"block": block, "blocks": [block]}
+
+        # Thread the per-block grounded source-chunk universe + the
+        # per-course minted-CURIE map into the chain inputs so the
+        # IN-LOOP ``BlockCurieAnchoringValidator`` anchors a minted
+        # (prose-corpus) CURIE the SAME way the standalone
+        # ``inter_tier_validation`` / ``post_rewrite_validation`` phase
+        # already does (``MCP/tools/pipeline_tools.py`` threads both into
+        # the gate inputs). Before this, the self-consistency loop's
+        # in-loop validator ran with NEITHER key populated, so a freshly-
+        # routed prose block (minted CURIEs stamped by the caller's
+        # pre-validate hook) could still mis-anchor and re-roll. No-op
+        # when absent (RDF / legacy corpora) — the validator then runs
+        # legacy literal-token anchoring, byte-identical to the prior
+        # contract.
+        if isinstance(source_chunks_by_block_id, dict) and source_chunks_by_block_id:
+            inputs["source_chunks_by_block_id"] = source_chunks_by_block_id
+        if isinstance(minted_curie_map, dict) and minted_curie_map:
+            inputs["minted_curie_map"] = minted_curie_map
 
         # GPT Feedback v2 Wave 1.7 W1.7.C — Drift A fix. Pre-Wave-1.7
         # the inputs dict only carried ``{block, blocks}``; the existing

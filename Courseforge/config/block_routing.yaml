@@ -78,7 +78,7 @@ blocks:
   # ----------------------------------------------------------------------
   #
   # Every entry in Courseforge/scripts/blocks.py::BLOCK_TYPES (canonical
-  # 16-value frozenset) MUST carry a ``validators`` block; the
+  # 21-value frozenset) MUST carry a ``validators`` block; the
   # completeness regression at
   # Courseforge/router/tests/test_block_type_gate_matrix.py asserts
   # this. Dropping a block_type from the matrix below fails the gate at
@@ -334,6 +334,62 @@ blocks:
   # recap: end-of-week summary. Source grounding required so the recap
   # is auditable back to the week's chunks.
   recap:
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  # ----------------------------------------------------------------------
+  # Wave-2 block-variety additions (scenario / problem / vocab_card /
+  # formula / checklist). Mirror Courseforge/router/policy.py
+  # ::DEFAULT_BLOCK_ROUTING for these five so the YAML matrix and the
+  # hardcoded fallback agree (test_block_type_gate_matrix Test 5).
+  # ----------------------------------------------------------------------
+
+  # scenario: application / case scenario. Objective-anchored (the
+  # scenario exercises a stated objective) and source-grounded.
+  scenario:
+    validators:
+      required:
+        - objective_ref
+        - source_ref
+      optional:
+        - accessibility
+      fail_action: regenerate
+
+  # problem: practice problem with a no-JS reveal solution. Source
+  # grounding required; Bloom dispersion advisory.
+  problem:
+    validators:
+      required:
+        - source_ref
+      optional:
+        - bloom_classifier_disagreement
+      fail_action: regenerate
+
+  # vocab_card: single domain term + definition. Source + content_type
+  # required so the term is auditable and typed.
+  vocab_card:
+    validators:
+      required:
+        - source_ref
+        - content_type
+      optional: []
+      fail_action: regenerate
+
+  # formula: single highlighted formula + variable gloss. Source
+  # grounding required.
+  formula:
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  # checklist: actionable steps / criteria list. Source grounding
+  # required so each item is auditable back to the source.
+  checklist:
     validators:
       required:
         - source_ref

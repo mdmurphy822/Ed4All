@@ -676,11 +676,26 @@ def _resolve_cos_per_week_cap(step: int) -> int:
     return step if cap_env <= 0 else cap_env
 
 
+def _co_identity(co: Dict[str, Any]) -> Optional[str]:
+    """M5 Fix B — the de-dup identity for a chapter objective.
+
+    Prefers the minted ``id`` (``CO-NN``); falls back to the statement text so a
+    pre-mint flat list still de-dups. ``None`` only when neither is present (an
+    un-identifiable CO is never suppressed — fail open, never drop content).
+    """
+    cid = str(co.get("id") or "").strip()
+    if cid:
+        return cid
+    stmt = str(co.get("statement") or co.get("text") or "").strip()
+    return stmt or None
+
+
 def _slice_cos_for_week(
     cos: List[Dict[str, Any]],
     weeks: int,
     week_num: int,
     cap: int = 0,
+    placed_ids: Optional[set] = None,
 ) -> List[Dict[str, Any]]:
     """WS5 §2.2 — the SINGLE-SOURCED per-week chapter-objective slicer.
 
@@ -697,9 +712,17 @@ def _slice_cos_for_week(
     week ``w`` (1-based) claims ``cos[(w-1)*step : w*step][:cap]`` where ``cap``
     defaults to ``step`` (no truncation) and is overridable per the
     ``ED4ALL_COS_PER_WEEK_CAP`` env var via :func:`_resolve_cos_per_week_cap`.
-    A caller may pass ``cap`` explicitly (``<= 0`` → resolve from env/auto).
     The round-robin ``or [...]`` fallback only fires for an empty trailing
     slice (a duplicate, never a drop).
+
+    M5 Fix B — ``placed_ids`` de-duplicates by CO identity (``id`` then
+    ``statement``) ACROSS weeks: when a caller threads a shared mutable set
+    week-by-week, a CO already placed in an earlier week is dropped from this
+    week's slice (and the round-robin trailing-week fallback — which would
+    otherwise RE-PLACE an earlier CO, the CO-12-in-Week-2-and-Week-12 bug — is
+    suppressed). Every returned id is added to the set. Pass ``None`` (default)
+    for the legacy, un-deduplicated behavior — preserving byte-stable output for
+    callers that don't opt in. The slicer mutates ``placed_ids`` in place.
     """
     if not cos or weeks < 1:
         return []
@@ -707,9 +730,22 @@ def _slice_cos_for_week(
     step = max(1, (n_cos + weeks - 1) // weeks)  # CEIL (was floor n_cos // weeks)
     eff_cap = cap if cap and cap > 0 else _resolve_cos_per_week_cap(step)
     start = (week_num - 1) * step
-    return list(cos[start : start + step])[:eff_cap] or [
+    sliced = list(cos[start : start + step])[:eff_cap] or [
         cos[(week_num - 1) % n_cos]
     ]
+    if placed_ids is None:
+        return sliced
+    # M5 Fix B — drop COs already placed in an earlier week (by identity), and
+    # register the survivors so later weeks see them as placed.
+    deduped: List[Dict[str, Any]] = []
+    for co in sliced:
+        ident = _co_identity(co)
+        if ident is not None and ident in placed_ids:
+            continue  # already placed in an earlier week — never duplicate
+        if ident is not None:
+            placed_ids.add(ident)
+        deduped.append(co)
+    return deduped
 
 
 def _slice_chapter_objectives_by_week(
@@ -733,9 +769,13 @@ def _slice_chapter_objectives_by_week(
     week_to_cos: Dict[int, List[Dict[str, Any]]] = {}
     if not chapter_cos or duration_weeks < 1:
         return week_to_cos
+    # M5 Fix B — thread a shared placed-ids set so a CO placed in an earlier
+    # week is never re-placed in a later week (the validator's allowed-set
+    # builder must agree with the emitter's de-duplicated week assignment).
+    placed_ids: Set[str] = set()
     for week_num in range(1, duration_weeks + 1):
         week_to_cos[week_num] = _slice_cos_for_week(
-            chapter_cos, duration_weeks, week_num
+            chapter_cos, duration_weeks, week_num, placed_ids=placed_ids
         )
     return week_to_cos
 
@@ -865,8 +905,8 @@ COURSEFORGE_CSS = """
     .objectives h2 { color: #2c5aa0; margin-top: 0; }
     .key-term { font-weight: 700; color: #2d3748; }
     .callout { background: #f7fafc; border: 1px solid #e2e8f0; padding: 1em 1.5em; margin: 1em 0; border-radius: 4px; }
-    .callout-warning { background: #fffbeb; border-color: #ffc107; }
-    .callout-success { background: #f0fff4; border-color: #28a745; }
+    .callout-warning { background: #fffbeb; border-color: #ffc107; color: #1a1a1a; }
+    .callout-success { background: #f0fff4; border-color: #28a745; color: #1a1a1a; }
     .reflection { background: #fefcbf; border-left: 4px solid #d69e2e; padding: 1em 1.5em; margin: 1.5em 0; border-radius: 0 4px 4px 0; }
     .activity-card { background: #f8f9fa; border: 2px solid #2c5aa0; border-radius: 8px; padding: 1.5em; margin: 1em 0; }
     .activity-card h3 { color: #2c5aa0; margin-top: 0; }
@@ -885,31 +925,122 @@ COURSEFORGE_CSS = """
     .self-check h3 { margin-top: 0; }
     .sc-option { display: block; padding: 0.5em; margin: 0.3em 0; border-radius: 4px; cursor: pointer; }
     .sc-option:hover { background: #ebf8ff; }
-    .sc-option.correct { background: #d4edda; border: 1px solid #28a745; }
-    .sc-option.incorrect { background: #f8d7da; border: 1px solid #dc3545; }
+    .sc-option.correct { background: #d4edda; border: 1px solid #28a745; color: #1a1a1a; }
+    .sc-option.incorrect { background: #f8d7da; border: 1px solid #dc3545; color: #1a1a1a; }
     .sc-feedback { display: none; padding: 0.5em; margin-top: 0.5em; border-radius: 4px; font-style: italic; }
-    .discussion-prompt { background: #e8f4f8; border: 2px solid #2c5aa0; border-radius: 8px; padding: 1.5em; margin: 1em 0; }
-    @media (prefers-color-scheme: dark) {
-      body { background: #1a202c; color: #e2e8f0; }
-      h1 { color: #90cdf4; border-color: #4299e1; }
-      h2 { color: #90cdf4; }
-      h3 { color: #cbd5e0; }
-      .objectives { background: #2a4365; border-color: #4299e1; }
-      .callout { background: #2d3748; border-color: #4a5568; }
-      .reflection { background: #744210; border-color: #d69e2e; }
-      .activity-card { background: #2d3748; border-color: #4299e1; }
-      th { background: #2a4365; }
-      td { border-color: #4a5568; }
-      tr:nth-child(even) { background: #2d3748; }
-      .flip-card-front { background: #2a4365; }
-      .flip-card-back { background: #1a365d; color: #e2e8f0; border-color: #4299e1; }
-      .self-check { background: #2d3748; border-color: #4a5568; }
-      .discussion-prompt { background: #2a4365; border-color: #4299e1; }
-    }
+    .discussion-prompt { background: #e8f4f8; border: 2px solid #2c5aa0; border-radius: 8px; padding: 1.5em; margin: 1em 0; color: #1a1a1a; }
+    .discussion-prompt h3 { color: #0c5460; margin-top: 0; }
+    /* Sonnet IxD component library (ported from sonnet-ixd-component-spec.md).
+       Single codified baseline so styled boxes no longer live only in
+       LLM-improvised artifacts. Background + left-border color accents. */
+    .example-box { background: #f8f9fa; border-left: 4px solid #007bff; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; }
+    .definition-box { background: #fff3cd; border-left: 4px solid #ffc107; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; }
+    .key-rule { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; }
+    .formula-box { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: .375rem; padding: 1rem 1.25rem; margin: 1rem 0; text-align: center; font-size: 1.05em; color: #1a1a1a; }
+    .worked-example { background: #f8f9fa; border-left: 4px solid #007bff; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; }
+    .worked-example .step-row { display: flex; gap: 0.75rem; align-items: baseline; margin: 0.4rem 0; }
+    .worked-example .step-label { font-weight: 700; color: #2c5aa0; min-width: 5.5rem; }
+    .worked-example .solution-line { background: #e9f7ef; border-left: 4px solid #28a745; padding: 0.6rem 1rem; margin-top: 0.6rem; color: #1a1a1a; }
+    .self-check-item { border: 1px solid #ced4da; border-radius: .375rem; padding: 1.25rem; margin-bottom: 1.5rem; color: #1a1a1a; }
+    table.place-value { border-collapse: collapse; margin: 1em 0; }
+    table.place-value td, table.place-value th { text-align: center; min-width: 3.5rem; }
+    .alert { padding: 1rem 1.25rem; margin: 1rem 0; border: 1px solid transparent; border-radius: .375rem; }
+    .alert-info { background: #d1ecf1; border-color: #bee5eb; color: #0c5460; }
+    .alert-warning { background: #fff3cd; border-color: #ffeeba; color: #856404; }
+    .alert-success { background: #d4edda; border-color: #c3e6cb; color: #155724; }
+    /* Wave-2 block-variety component library (scenario / problem / vocab /
+       formula / checklist). Same light-background + distinct left-border
+       accent pattern as the Sonnet IxD block above; each carries an explicit
+       dark text color so it never inherits an inverted near-white. */
+    .scenario-card { background: #f8f9fa; border-left: 4px solid #6f42c1; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; }
+    .problem-card { background: #f8f9fa; border-left: 4px solid #fd7e14; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; }
+    .problem-card details { margin-top: 0.6rem; }
+    .problem-card summary { cursor: pointer; font-weight: 700; color: #2c5aa0; }
+    .vocab-card { background: #f8f9fa; border-left: 4px solid #20c997; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; }
+    .vocab-card .vocab-term { font-weight: 700; color: #1a1a1a; }
+    .formula-card { background: #f8f9fa; border-left: 4px solid #e83e8c; padding: 1rem 1.25rem; margin: 1rem 0; text-align: center; font-size: 1.05em; color: #1a1a1a; }
+    .checklist { background: #f8f9fa; border-left: 4px solid #6610f2; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; list-style: none; }
+    .checklist .checklist-item { margin: 0.4rem 0; color: #1a1a1a; }
+    /* 7B→Sonnet parity P3: instruction-block variety. Six structural block
+       types that previously rendered as bare <section> prose now carry a
+       distinct component class so the rewrite tier renders them as styled
+       cards. Same light-background + left-border accent pattern; each
+       declares an explicit dark text color (Defect-D parity). Misconception
+       reads as a caution (danger accent); takeaway/recap/prereq as a summary
+       (blue/gray); reflection/discussion as a prompt (info accent). */
+    .takeaway-card { background: #ebf8ff; border-left: 4px solid #2c5aa0; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; border-radius: 0 4px 4px 0; }
+    .takeaway-card h3 { color: #2c5aa0; margin-top: 0; }
+    .recap-box { background: #f8f9fa; border-left: 4px solid #6c757d; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; border-radius: 0 4px 4px 0; }
+    .recap-box h2, .recap-box h3 { color: #495057; margin-top: 0; }
+    .prereq-card { background: #f8f9fa; border-left: 4px solid #28a745; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; border-radius: 0 4px 4px 0; }
+    .prereq-card h2, .prereq-card h3 { color: #1e7e34; margin-top: 0; }
+    .misconception-card { background: #f8d7da; border-left: 4px solid #dc3545; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; border-radius: 0 4px 4px 0; }
+    .misconception-card .misconception-claim { font-weight: 700; color: #842029; }
+    .misconception-card .misconception-correction { color: #1a1a1a; }
+    .reflection-prompt { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; border-radius: 0 4px 4px 0; }
+    .reflection-prompt h3 { color: #0c5460; margin-top: 0; }
+    /* Defect D: the former OS-dark-scheme media block was removed. It
+       inverted the body text toward near-white but the Sonnet-ported
+       light-background boxes kept a hardcoded light background with no
+       override, so they inherited near-white text on a light box
+       (unreadable). Matching Sonnet's proven baseline with no scheme
+       override. Every light-background component now also declares an
+       explicit dark text color above, so even an inherited or
+       forced inversion can never re-introduce the collision. */
     @media (prefers-reduced-motion: reduce) {
       .flip-card-inner { transition: none; }
     }
 """
+
+
+# ---------------------------------------------------------------------------
+# Defect D post-hoc CSS patch (no re-gen).
+# ---------------------------------------------------------------------------
+
+# Matches the single ``<style>...</style>`` block injected by ``_wrap_page``
+# (``<style>{COURSEFORGE_CSS}</style>`` on one line). Non-greedy so a page that
+# somehow carries two style blocks patches each independently.
+_STYLE_BLOCK_RE = re.compile(r"<style>.*?</style>", re.DOTALL)
+
+
+def patch_css_in_html(html_text: str) -> Tuple[str, bool]:
+    """Replace every ``<style>...</style>`` block with the fixed
+    ``COURSEFORGE_CSS`` (Defect D — white-on-white contrast regression).
+
+    Returns ``(patched_text, changed)``. ``changed`` is ``False`` when the
+    page carries no ``<style>`` block (idempotent no-op) or is already
+    byte-identical after the swap, so re-running never rewrites a clean file.
+    """
+    replacement = f"<style>{COURSEFORGE_CSS}</style>"
+    new_text, n = _STYLE_BLOCK_RE.subn(lambda _m: replacement, html_text)
+    return new_text, (n > 0 and new_text != html_text)
+
+
+def patch_css_in_export(
+    content_dir: Path, *, dry_run: bool = False
+) -> List[Path]:
+    """Patch the embedded CSS in every ``*.html`` page under an existing
+    export's content directory (e.g.
+    ``<export>/03_content_development/``), in place.
+
+    Walks recursively so per-week subfolders are covered. Returns the list of
+    files that were (or, under ``dry_run``, would be) changed. Idempotent —
+    a page whose ``<style>`` already equals the fixed CSS is left untouched.
+    """
+    changed: List[Path] = []
+    for html_path in sorted(Path(content_dir).rglob("*.html")):
+        try:
+            original = html_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        patched, did_change = patch_css_in_html(original)
+        if not did_change:
+            continue
+        changed.append(html_path)
+        if not dry_run:
+            html_path.write_text(patched, encoding="utf-8")
+    return changed
+
 
 FLIP_CARD_JS = """
 <script>
@@ -3038,8 +3169,35 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate Courseforge HTML pages from structured course data."
     )
-    parser.add_argument("course_data", help="Path to <course>_course_data.json")
-    parser.add_argument("output_dir", help="Output directory for generated week folders")
+    parser.add_argument(
+        "course_data",
+        nargs="?",
+        default=None,
+        help="Path to <course>_course_data.json (omit when --patch-css is used)",
+    )
+    parser.add_argument(
+        "output_dir",
+        nargs="?",
+        default=None,
+        help="Output directory for generated week folders",
+    )
+    parser.add_argument(
+        "--patch-css",
+        metavar="CONTENT_DIR",
+        default=None,
+        help=(
+            "Defect D post-hoc fix (no re-gen): replace the embedded <style> "
+            "CSS in every *.html under CONTENT_DIR (e.g. an existing export's "
+            "03_content_development/) with the current COURSEFORGE_CSS, "
+            "killing the dark-mode white-on-white contrast regression. "
+            "Idempotent; pair with --dry-run to list affected files only."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With --patch-css: list files that would change without writing.",
+    )
     parser.add_argument(
         "--objectives",
         default=None,
@@ -3131,6 +3289,19 @@ def _build_classification_from_args(args: argparse.Namespace) -> Optional[Dict]:
 
 if __name__ == "__main__":
     args = _build_cli_parser().parse_args()
+    if args.patch_css:
+        _changed = patch_css_in_export(
+            Path(args.patch_css), dry_run=args.dry_run
+        )
+        _verb = "Would patch" if args.dry_run else "Patched"
+        print(f"{_verb} {len(_changed)} HTML file(s) under {args.patch_css}")
+        for _p in _changed:
+            print(f"  {_p}")
+        sys.exit(0)
+    if not args.course_data or not args.output_dir:
+        _build_cli_parser().error(
+            "course_data and output_dir are required unless --patch-css is used"
+        )
     classification = _build_classification_from_args(args)
     generate_course(
         args.course_data,

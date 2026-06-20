@@ -98,6 +98,14 @@ capability_tiers:
   # `Qwen/Qwen2.5-72B-Instruct-Turbo`) — see
   # docs/operations/license-clean-run.md for the Together fallback
   # configuration.
+  #
+  # For an NVIDIA-hosted large/escalation tier (the nemotron reasoning
+  # model on `https://integrate.api.nvidia.com/v1`, key from
+  # `NVIDIA_API_KEY`), point `COURSEFORGE_BLOCK_ROUTING_PATH` at the
+  # sibling `block_routing.nvidia_large.yaml` instead — that file keeps
+  # the local 7B/14B small+medium tiers and routes only the `large`
+  # escalation tier to NVIDIA. This file stays loopback-only / ToS-clean
+  # by contract (see test_block_routing_license_clean.py).
   large:
     provider: local
     model: qwen2.5:32b-instruct-q4_K_M
@@ -275,6 +283,48 @@ blocks:
       fail_action: regenerate
 
   recap:
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  # Wave-2 block-variety additions — mirror the canonical
+  # block_routing.yaml validator matrix so the license-clean variant
+  # stays a full drop-in (test_block_routing_license_clean coverage).
+  scenario:
+    validators:
+      required:
+        - objective_ref
+        - source_ref
+      optional:
+        - accessibility
+      fail_action: regenerate
+
+  problem:
+    validators:
+      required:
+        - source_ref
+      optional:
+        - bloom_classifier_disagreement
+      fail_action: regenerate
+
+  vocab_card:
+    validators:
+      required:
+        - source_ref
+        - content_type
+      optional: []
+      fail_action: regenerate
+
+  formula:
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  checklist:
     validators:
       required:
         - source_ref

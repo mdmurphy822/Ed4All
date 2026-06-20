@@ -1657,3 +1657,96 @@ def test_all_five_repairs_normalize_every_failure_end_to_end():
     ]
     assert payload["bloom_level"] == "understand"  # tier 2 → understand
     _validate_explanation(payload)
+
+
+# ---------------------------------------------------------------------------
+# assessment-item-descriptor fix (2026-06): the 7B AND the 14B exhaust the
+# assessment_item OUTLINE budget by OMITTING the four dedicated fields
+# (stem / answer_key / distractors / correct_answer_index) — pouring the
+# question into key_claims / section_skeleton — or by emitting a list of
+# field-TYPE DESCRIPTOR objects (``[{"type": "stem"}, ...]``) instead of real
+# values. The fix names the four fields with real-value emphasis in the
+# per-type variation block + the closing field enumeration, and adds a retry
+# directive matching the missing-field / descriptor-list failure.
+# ---------------------------------------------------------------------------
+
+
+def test_assessment_item_user_prompt_names_real_value_fields(monkeypatch):
+    """The assessment_item user prompt explicitly names the four dedicated
+    fields, demands REAL VALUES, and forbids the ``{"type": ...}``
+    descriptor-list shape — both in the per-type variation block and the
+    closing field enumeration."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    p = OutlineProvider(provider="local")
+    block = _stub_block(
+        block_type="assessment_item",
+        block_id="page-1#assessment_item_q1_0",
+    )
+    prompt = p._render_user_prompt(block=block, source_chunks=[], objectives=[])
+    # All four dedicated fields named in the body.
+    for field in ("stem", "answer_key", "distractors", "correct_answer_index"):
+        assert field in prompt
+    # Real-value emphasis + descriptor-list prohibition.
+    assert "REAL VALUES" in prompt
+    assert '{"type": "stem"}' in prompt
+    # Closing enumeration carries the extras too (recency reminder).
+    assert "real question text" in prompt
+    assert "0-based integer" in prompt
+
+
+def test_non_assessment_prompt_omits_assessment_extra_fields(monkeypatch):
+    """A non-assessment block keeps the byte-stable 10-field closing
+    enumeration — the assessment-extra reminder is scoped to assessment_item
+    so other block types are unaffected."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    p = OutlineProvider(provider="local")
+    block = _stub_block(block_type="concept")
+    prompt = p._render_user_prompt(block=block, source_chunks=[], objectives=[])
+    assert "correct_answer_index" not in prompt
+    assert "REAL VALUES" not in prompt
+
+
+def test_retry_directive_matches_missing_assessment_field():
+    """A ``'stem' is a required property`` (and ``'answer_key' ...``)
+    validator error — the live 7B/14B failure where the dedicated fields are
+    omitted — matches the assessment-extras directive, which steers the model
+    to emit the real values (not a descriptor list)."""
+    for field in ("stem", "answer_key", "distractors", "correct_answer_index"):
+        err = f"'{field}' is a required property"
+        directive = _match_retry_directive(err, "assessment_item")
+        assert directive is not None, field
+        # The directive names the four fields + demands real values + forbids
+        # the descriptor-list shape.
+        assert "REAL VALUES" in directive
+        assert '{"type": "stem"}' in directive
+        assert "real stem text" in directive
+
+
+def test_retry_directive_descriptor_list_steered_to_real_values():
+    """A descriptor-list candidate (``key_claims``/``section_skeleton`` carrying
+    ``{"type": "stem"}`` objects in lieu of the dedicated fields) fails the
+    strict schema with a missing-required-field error; the matched directive
+    tells the model to REPLACE the descriptor object with real values rather
+    than re-rolling the same descriptor list."""
+    # The descriptor list lands the model in a missing-field error because the
+    # dedicated top-level fields are absent.
+    err = "'stem' is a required property"
+    directive = _match_retry_directive(err, "assessment_item")
+    assert directive is not None
+    assert "Replace any {\"type\": ...} descriptor object" in directive
+
+
+def test_assessment_directive_does_not_steal_key_claims_or_distractors_short():
+    """Ordering invariant: the widened assessment-extras pattern must NOT steal
+    the key_claims-scoped minItems directive nor break the W7 distractors
+    'too short' path."""
+    # key_claims-scoped minItems error still routes to the decomposition
+    # directive (NOT the assessment directive).
+    kc = _match_retry_directive("key_claims: [...] is too short", "assessment_item")
+    assert "too FEW entries" in kc
+    # distractors 'too short' still routes to the assessment directive.
+    short = _match_retry_directive("distractors [] is too short", "assessment_item")
+    assert "distractors" in short
+    assert "REAL VALUES" in short

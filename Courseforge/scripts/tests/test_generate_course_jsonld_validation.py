@@ -376,7 +376,7 @@ def test_jsonld_block_missing_block_id_fails_validation():
 
 
 def test_jsonld_block_invalid_block_type_fails_validation():
-    """A Block with a blockType outside the 16-value enum fails."""
+    """A Block with a blockType outside the 21-value enum fails."""
     validator = generate_course._get_jsonld_validator()
     assert validator is not None
     meta = _minimally_valid_metadata()

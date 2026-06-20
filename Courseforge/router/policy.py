@@ -177,6 +177,31 @@ DEFAULT_BLOCK_ROUTING: Dict[str, Dict[str, Any]] = {
         "optional": [],
         "fail_action": "regenerate",
     },
+    "scenario": {
+        "required": ["objective_ref", "source_ref"],
+        "optional": ["accessibility"],
+        "fail_action": "regenerate",
+    },
+    "problem": {
+        "required": ["source_ref"],
+        "optional": ["bloom_classifier_disagreement"],
+        "fail_action": "regenerate",
+    },
+    "vocab_card": {
+        "required": ["source_ref", "content_type"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "formula": {
+        "required": ["source_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "checklist": {
+        "required": ["source_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
 }
 
 
@@ -764,7 +789,7 @@ def _spec_from_dict(
         "model",
         "qwen2.5:7b-instruct-q4_K_M"
         if tier == "outline"
-        else "qwen2.5:14b-instruct-q4_K_M",
+        else "qwen2.5:7b-instruct-q4_K_M",
     )
     temperature = spec_dict.get(
         "temperature", 0.0 if tier == "outline" else 0.4

@@ -208,8 +208,8 @@ def test_block_sequence_non_negative_validates():
 
 
 def test_block_types_count_is_sixteen():
-    """Phase 2 plan locks the canonical 16-type set."""
-    assert len(BLOCK_TYPES) == 16
+    """Canonical 21-type set (16 Phase-2 + 5 Wave-2 block-variety)."""
+    assert len(BLOCK_TYPES) == 21
     for required in (
         "objective",
         "concept",

@@ -29,12 +29,13 @@ Usage:
 """
 
 import argparse
+import json
 import re
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
@@ -56,6 +57,89 @@ _OVERVIEW_TITLE_SEP_RE = re.compile(
     r"\s*[—–-]\s*overview\s*$)"          # "Title — Overview"
 )
 _BARE_OVERVIEW_RE = re.compile(r"(?i)^\s*overview\s*$")
+
+# Matches a FLAT week page emitted directly under ``03_content_development/``
+# by the two-pass rewrite tier (``MCP/tools/pipeline_tools.py`` writes
+# ``{page_id}.html`` where ``page_id = week_NN_content_NN``). The legacy
+# single-pass ``generate_course.py`` writes NESTED ``week_NN/<page>.html``
+# subdirs instead. Both layouts must package identically.
+_FLAT_WEEK_PAGE_RE = re.compile(r"(?i)^(week_(\d+))_.+\.html$")
+
+
+def _iter_week_groups(content_dir: Path) -> List[Tuple[str, int, Path, List[Path]]]:
+    """Yield one entry per week, handling BOTH content layouts.
+
+    Returns a sorted list of ``(week_name, week_num, title_dir, html_files)``
+    tuples where:
+
+    * ``week_name`` is the canonical ``week_NN`` slug used as the in-zip
+      directory prefix + manifest ``WEEK_n`` id stem,
+    * ``week_num`` is the integer week number,
+    * ``title_dir`` is the directory to pass to ``_extract_week_title``
+      (the real subdir for nested layout; ``content_dir`` for flat layout —
+      ``_extract_week_title`` looks for ``week_NN_overview.html`` under it,
+      which IS where the flat overview lives),
+    * ``html_files`` are the week's pages, sorted by pedagogical order.
+
+    Nested layout (``week_NN/*.html`` subdirs) is detected first and wins;
+    a directory whose name matches ``week_*`` and ``is_dir()`` is grouped
+    by its contained ``*.html`` files. Any FLAT ``week_NN_*.html`` file
+    sitting directly under ``content_dir`` is grouped by its ``week_NN``
+    prefix. The two are merged so a hybrid layout (unlikely, but safe)
+    still packages every page exactly once.
+    """
+    groups: Dict[str, List[Path]] = {}
+    title_dirs: Dict[str, Path] = {}
+
+    # Nested subdirs.
+    for week_dir in sorted(content_dir.glob("week_*")):
+        if not week_dir.is_dir():
+            continue
+        files = sorted(week_dir.glob("*.html"))
+        if files:
+            groups.setdefault(week_dir.name, []).extend(files)
+            title_dirs.setdefault(week_dir.name, week_dir)
+
+    # Flat files directly under content_dir.
+    for hf in sorted(content_dir.glob("week_*.html")):
+        if not hf.is_file():
+            continue
+        m = _FLAT_WEEK_PAGE_RE.match(hf.name)
+        if not m:
+            continue
+        week_name = m.group(1)
+        # Avoid double-counting a file already grouped via a nested subdir.
+        existing = groups.setdefault(week_name, [])
+        if hf not in existing:
+            existing.append(hf)
+        title_dirs.setdefault(week_name, content_dir)
+
+    def _week_num(week_name: str) -> int:
+        digits = week_name.replace("week_", "").lstrip("0") or "0"
+        try:
+            return int(digits)
+        except ValueError:
+            return 0
+
+    order = {
+        "overview": 0, "content": 1, "application": 2,
+        "self_check": 3, "summary": 4, "discussion": 5,
+    }
+
+    def _sort_key(f: Path):
+        name = f.stem
+        for key, val in order.items():
+            if key in name:
+                return (val, name)
+        return (99, name)
+
+    out: List[Tuple[str, int, Path, List[Path]]] = []
+    for week_name in sorted(groups, key=_week_num):
+        files = sorted(groups[week_name], key=_sort_key)
+        out.append(
+            (week_name, _week_num(week_name), title_dirs[week_name], files)
+        )
+    return out
 
 
 def _extract_week_title(week_dir: Path, week_num: int) -> str:
@@ -144,6 +228,360 @@ def _course_overview_html_files(content_dir: Path) -> List[Path]:
         return (99, f.name)
 
     return sorted(overview_dir.glob("*.html"), key=_key)
+
+
+# ---------------------------------------------------------------------------
+# W10 — Assessment surface (QTI quizzes / discussions / assignments)
+# ---------------------------------------------------------------------------
+#
+# The pre-packaging ``assessment_synthesis`` phase writes the synthesized
+# assessment XML into a ``06_assessments/`` sibling of the content dir,
+# mirroring the ``course_overview/`` front-matter convention. The packager
+# discovers those XML files, classifies each by IMS CC resource type, and
+# emits the canonical resource + organization items so the cartridge imports
+# into Brightspace / Canvas as real quizzes / discussions / assignments rather
+# than inert HTML.
+#
+# Discovery is robust to an ABSENT ``06_assessments/`` dir (no-op,
+# byte-identical to a package built without assessments).
+#
+# ── 06_assessments/manifest.json sidecar contract (the shape this packager
+#    consumes; the synthesis-phase worker in the next wave MUST emit exactly
+#    this shape) ────────────────────────────────────────────────────────────
+#
+#   {
+#     "schema_version": "v1",                # optional; informational
+#     "assessments": [
+#       {
+#         "file": "week_03_quiz.xml",        # REQUIRED. Relative file name
+#                                            #   under 06_assessments/ (basename;
+#                                            #   no path traversal). Must exist.
+#         "type": "qti",                     # OPTIONAL. One of
+#                                            #   "qti" | "discussion" | "assignment".
+#                                            #   When omitted/blank/unknown the
+#                                            #   packager infers from the XML
+#                                            #   root element.
+#         "title": "Week 3 Quiz",            # OPTIONAL. Human-readable nav
+#                                            #   label; defaults to a Title-Cased
+#                                            #   form of the file stem.
+#         "week": 3,                         # OPTIONAL int. Places the item
+#                                            #   under that week's <item>; when
+#                                            #   absent / unmappable the item
+#                                            #   lands under a top-level
+#                                            #   "Assessments" org item.
+#         "identifier": "RES_week_03_quiz"   # OPTIONAL. Manifest resource id;
+#                                            #   defaults to a sanitized
+#                                            #   RES_assessment_<stem>.
+#       }
+#     ]
+#   }
+#
+# The sidecar is OPTIONAL. When absent, every ``06_assessments/*.xml`` file is
+# discovered loose and classified by its XML root element:
+#   * ``questestinterop``        -> qti
+#   * ``topic`` (imsdt)          -> discussion
+#   * ``assignment``             -> assignment
+# A file whose root element is none of these (and which carries no sidecar
+# ``type`` override) is skipped with a warning — never packaged as the wrong
+# resource type.
+_ASSESSMENTS_DIRNAME = "06_assessments"
+_ASSESSMENTS_MANIFEST_NAME = "manifest.json"
+_ASSESSMENTS_TITLE = "Assessments"
+
+# IMS CC 1.3 resource-type strings (Courseforge/docs/troubleshooting.md:64-66).
+_ASSESSMENT_RES_TYPE: Dict[str, str] = {
+    "qti": "imsqti_xmlv1p2/imscc_xmlv1p3/assessment",
+    "discussion": "imsdt_xmlv1p3",
+    "assignment": "associatedcontent/imscc_xmlv1p3/learning-application-resource",
+}
+
+# Root-element → assessment-type inference (namespace-stripped local name).
+_ROOT_TO_TYPE: Dict[str, str] = {
+    "questestinterop": "qti",
+    "topic": "discussion",
+    "imsdt": "discussion",
+    "assignment": "assignment",
+}
+
+# Vendored XSD filenames per assessment type (best-effort schema-validate).
+_ASSESSMENT_XSD: Dict[str, str] = {
+    "qti": "ccv1p3_qtiasiv1p2p1.xsd",
+    "discussion": "ccv1p3_imsdt_v1p3.xsd",
+    "assignment": "cc_extresource_assignmentv1p0.xsd",
+}
+
+
+class _Assessment:
+    """A discovered + classified assessment resource (one ``06_assessments/*.xml``)."""
+
+    __slots__ = ("path", "rel_path", "kind", "title", "week", "res_id")
+
+    def __init__(
+        self,
+        *,
+        path: Path,
+        rel_path: str,
+        kind: str,
+        title: str,
+        week: Optional[int],
+        res_id: str,
+    ) -> None:
+        self.path = path
+        self.rel_path = rel_path
+        self.kind = kind
+        self.title = title
+        self.week = week
+        self.res_id = res_id
+
+
+def _local_root_tag(xml_path: Path) -> Optional[str]:
+    """Return the namespace-stripped root element local name, or ``None``.
+
+    Best-effort + never raises — a malformed / unreadable XML returns
+    ``None`` so the caller can drop it with a warning.
+    """
+    try:
+        root = ET.parse(str(xml_path)).getroot()
+    except (ET.ParseError, OSError):
+        return None
+    tag = root.tag
+    if isinstance(tag, str) and "}" in tag:
+        tag = tag.rsplit("}", 1)[1]
+    return tag
+
+
+def _default_assessment_res_id(stem: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_]", "_", f"RES_assessment_{stem}")
+
+
+def _read_assessments_sidecar(assessments_dir: Path) -> Optional[List[dict]]:
+    """Read the optional ``06_assessments/manifest.json`` sidecar.
+
+    Returns the ``assessments`` list when the sidecar exists and parses;
+    ``None`` when the sidecar is absent (loose-discovery mode). A malformed
+    sidecar logs a warning and returns ``None`` (fall back to loose discovery —
+    never abort the package on a bad sidecar).
+    """
+    sidecar = assessments_dir / _ASSESSMENTS_MANIFEST_NAME
+    if not sidecar.exists():
+        return None
+    try:
+        doc = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(
+            f"[assessments] WARN: malformed {_ASSESSMENTS_DIRNAME}/"
+            f"{_ASSESSMENTS_MANIFEST_NAME} ({exc}); falling back to loose discovery."
+        )
+        return None
+    entries = doc.get("assessments") if isinstance(doc, dict) else None
+    if not isinstance(entries, list):
+        print(
+            f"[assessments] WARN: {_ASSESSMENTS_DIRNAME}/"
+            f"{_ASSESSMENTS_MANIFEST_NAME} missing an 'assessments' list; "
+            "falling back to loose discovery."
+        )
+        return None
+    return entries
+
+
+def _classify_assessment(
+    *,
+    xml_path: Path,
+    assessments_dir: Path,
+    declared_type: Optional[str],
+    declared_title: Optional[str],
+    declared_week: Optional[object],
+    declared_id: Optional[str],
+) -> Optional[_Assessment]:
+    """Build an ``_Assessment`` for one XML file, or ``None`` to drop it.
+
+    Resolution: the sidecar-declared ``type`` wins; else the root element is
+    inferred. An unclassifiable file (unknown declared type AND unknown root
+    element) is dropped with a warning.
+    """
+    kind = (declared_type or "").strip().lower()
+    if kind not in _ASSESSMENT_RES_TYPE:
+        root_tag = _local_root_tag(xml_path)
+        inferred = _ROOT_TO_TYPE.get((root_tag or "").lower())
+        if inferred is None:
+            print(
+                f"[assessments] WARN: cannot classify {xml_path.name} "
+                f"(declared type={declared_type!r}, root element={root_tag!r}); "
+                "skipping."
+            )
+            return None
+        kind = inferred
+
+    stem = xml_path.stem
+    title = (declared_title or "").strip() or stem.replace("_", " ").title()
+
+    week: Optional[int] = None
+    if declared_week is not None:
+        try:
+            week = int(declared_week)
+        except (TypeError, ValueError):
+            week = None
+    if week is None:
+        # Infer from a ``week_NN`` token in the file name when present.
+        m = re.search(r"week[_-]?(\d+)", xml_path.name, re.IGNORECASE)
+        if m:
+            try:
+                week = int(m.group(1))
+            except ValueError:
+                week = None
+
+    res_id = re.sub(
+        r"[^a-zA-Z0-9_]", "_", (declared_id or "").strip()
+    ) or _default_assessment_res_id(stem)
+
+    rel_path = f"{_ASSESSMENTS_DIRNAME}/{xml_path.name}"
+    return _Assessment(
+        path=xml_path,
+        rel_path=rel_path,
+        kind=kind,
+        title=title,
+        week=week,
+        res_id=res_id,
+    )
+
+
+def _discover_assessments(content_dir: Path) -> Tuple[List[_Assessment], int]:
+    """Discover + classify assessment XML in the ``06_assessments/`` sibling.
+
+    Returns ``(classified, authored_count)`` where ``classified`` is the list
+    of successfully-classified ``_Assessment`` objects (sorted by (week, file
+    name) so emit order is deterministic) and ``authored_count`` is the number
+    of candidate assessment files the synthesis phase intended to ship — every
+    sidecar entry that names an existing file, or (loose mode) every
+    ``*.xml`` under the dir. A file that fails CLASSIFICATION (unknown declared
+    type AND unparseable / unknown root element) counts toward ``authored`` but
+    not toward ``classified`` — so the coverage sidecar surfaces it as a drop
+    rather than hiding it.
+
+    When the directory is absent returns ``([], 0)`` — the no-op / byte-
+    identical path.
+    """
+    assessments_dir = content_dir / _ASSESSMENTS_DIRNAME
+    if not assessments_dir.is_dir():
+        # Pipeline layout: the ``assessment_synthesis`` phase writes the
+        # ``06_assessments/`` dir as a SIBLING of the content dir — in a real
+        # run ``content_dir`` is ``<export>/03_content_development`` and the
+        # synthesized assessments live at ``<export>/06_assessments``. Fall
+        # back to the sibling when the child layout (used by the standalone
+        # CLI + the packager's own fixtures) is absent. Still ``([], 0)`` when
+        # neither exists — the no-op / byte-identical path.
+        sibling_dir = content_dir.parent / _ASSESSMENTS_DIRNAME
+        if sibling_dir.is_dir():
+            assessments_dir = sibling_dir
+        else:
+            return [], 0
+
+    sidecar_entries = _read_assessments_sidecar(assessments_dir)
+    out: List[_Assessment] = []
+    seen: set = set()
+    authored = 0
+
+    if sidecar_entries is not None:
+        for entry in sidecar_entries:
+            if not isinstance(entry, dict):
+                continue
+            fname = str(entry.get("file") or "").strip()
+            if not fname:
+                continue
+            # Basename-only — defend against path traversal in the sidecar.
+            fname = Path(fname).name
+            xml_path = assessments_dir / fname
+            if not xml_path.is_file():
+                print(
+                    f"[assessments] WARN: sidecar references missing file "
+                    f"{fname}; skipping."
+                )
+                continue
+            authored += 1
+            assessment = _classify_assessment(
+                xml_path=xml_path,
+                assessments_dir=assessments_dir,
+                declared_type=entry.get("type"),
+                declared_title=entry.get("title"),
+                declared_week=entry.get("week"),
+                declared_id=entry.get("identifier"),
+            )
+            if assessment is not None and assessment.path not in seen:
+                out.append(assessment)
+                seen.add(assessment.path)
+    else:
+        for xml_path in sorted(assessments_dir.glob("*.xml")):
+            if not xml_path.is_file():
+                continue
+            authored += 1
+            assessment = _classify_assessment(
+                xml_path=xml_path,
+                assessments_dir=assessments_dir,
+                declared_type=None,
+                declared_title=None,
+                declared_week=None,
+                declared_id=None,
+            )
+            if assessment is not None and assessment.path not in seen:
+                out.append(assessment)
+                seen.add(assessment.path)
+
+    out.sort(key=lambda a: (a.week if a.week is not None else 10**9, a.path.name))
+    return out, authored
+
+
+def _validate_assessment_xsd(assessment: _Assessment) -> bool:
+    """Best-effort XSD-validate one assessment XML against its vendored schema.
+
+    Returns ``True`` when valid OR when validation cannot run (``lxml`` absent /
+    XSD file missing) — the schema check is WARNING-only (mirrors the
+    objectives-map validate). Returns ``False`` ONLY when ``lxml`` is present,
+    the XSD loads, and the document is genuinely malformed / schema-invalid —
+    so the caller drops the item rather than packaging a cartridge that fails
+    to import.
+    """
+    try:
+        from lxml import etree  # type: ignore
+    except ImportError:
+        return True  # graceful degrade — no lxml, skip the schema dimension.
+
+    xsd_name = _ASSESSMENT_XSD.get(assessment.kind)
+    if not xsd_name:
+        return True
+    xsd_path = _HERE.parent / "schemas" / "imscc" / xsd_name
+    if not xsd_path.exists():
+        print(
+            f"[assessments] WARN: vendored XSD {xsd_name} not found; "
+            f"skipping schema validation for {assessment.path.name}."
+        )
+        return True
+
+    try:
+        schema = etree.XMLSchema(etree.parse(str(xsd_path)))
+        doc = etree.parse(str(assessment.path))
+    except etree.XMLSyntaxError as exc:
+        print(
+            f"[assessments] WARN: {assessment.path.name} is not well-formed XML "
+            f"({exc}); dropping from package."
+        )
+        return False
+    except (etree.XMLSchemaParseError, OSError) as exc:
+        # The XSD itself failed to load (e.g. unresolved imports) — degrade to
+        # well-formed-only rather than dropping a genuinely fine document.
+        print(
+            f"[assessments] WARN: could not load XSD {xsd_name} ({exc}); "
+            f"skipping schema validation for {assessment.path.name}."
+        )
+        return True
+
+    if not schema.validate(doc):
+        reason = schema.error_log.last_error if schema.error_log else "schema-invalid"
+        print(
+            f"[assessments] WARN: {assessment.path.name} failed XSD validation "
+            f"against {xsd_name} ({reason}); dropping from package."
+        )
+        return False
+    return True
 
 
 def _resolve_objectives_source(
@@ -245,6 +683,7 @@ def build_manifest(
     course_title: str,
     *,
     outline_only: bool = False,
+    assessments: Optional[List["_Assessment"]] = None,
 ) -> str:
     """Build imsmanifest.xml for multi-file weekly content.
 
@@ -344,35 +783,32 @@ def build_manifest(
             })
             ET.SubElement(resource, cc("file"), {"href": rel_path})
 
-    # Walk week directories in order
-    week_dirs = sorted(content_dir.glob("week_*"))
-    for week_dir in week_dirs:
-        if not week_dir.is_dir():
-            continue
-        week_name = week_dir.name
-        week_num = week_name.replace("week_", "").lstrip("0") or "0"
+    # Walk week groups in order. ``_iter_week_groups`` yields a coherent
+    # ``(week_name, week_num, title_dir, html_files)`` view over BOTH the
+    # nested ``week_NN/*.html`` layout (legacy single-pass) and the FLAT
+    # ``week_NN_*.html`` layout (two-pass rewrite tier) — the flat layout
+    # previously produced a 1-page IMSCC because the bare ``glob("week_*")``
+    # + ``is_dir()`` filter skipped every flat page.
+    # Map week_num → its organization <item> so W10 assessment items can be
+    # nested under the right week (or fall back to a top-level "Assessments"
+    # item when no week mapping resolves).
+    week_items_by_num: Dict[int, ET.Element] = {}
+
+    for week_name, week_num_int, title_dir, html_files in _iter_week_groups(
+        content_dir
+    ):
+        week_num = str(week_num_int)
         week_id = f"WEEK_{week_num}"
 
         week_item = ET.SubElement(root_item, cc("item"), {"identifier": week_id})
+        week_items_by_num[week_num_int] = week_item
         # Prefer the real chapter title captured by generate_week in the
         # overview H1 (e.g. "Week 1: Introduction to Core Concepts")
         # over the bare "Week N" label that earlier revisions emitted and
         # that produced an uninformative LMS week list.
         ET.SubElement(week_item, cc("title")).text = _extract_week_title(
-            week_dir, int(week_num)
+            title_dir, week_num_int
         )
-
-        # Sort files: overview first, then content, application, self_check, summary, discussion
-        order = {"overview": 0, "content": 1, "application": 2, "self_check": 3, "summary": 4, "discussion": 5}
-
-        def sort_key(f):
-            name = f.stem
-            for key, val in order.items():  # noqa: B023
-                if key in name:
-                    return (val, name)
-            return (99, name)
-
-        html_files = sorted(week_dir.glob("*.html"), key=sort_key)
 
         # Phase 2 (Subtask 29): in outline-only mode, drop every page
         # except the overview + summary deliverables (the outline-tier
@@ -404,6 +840,46 @@ def build_manifest(
                 "href": rel_path,
             })
             ET.SubElement(resource, cc("file"), {"href": rel_path})
+
+    # W10 — assessment surface (QTI quizzes / discussions / assignments).
+    # Each discovered assessment gets a manifest <resource> carrying its
+    # canonical IMS CC resource type + an organization <item> under its week
+    # (or a top-level "Assessments" item when no week maps). Honoured in
+    # full mode only — outline-only packages strip every non-overview page,
+    # and an assessment surface is not an outline-tier deliverable.
+    if assessments and not outline_only:
+        assessments_item: Optional[ET.Element] = None  # lazy top-level fallback
+        for assessment in assessments:
+            res_type = _ASSESSMENT_RES_TYPE.get(assessment.kind)
+            if res_type is None:  # defensive; classifier never yields others
+                continue
+            parent_item = (
+                week_items_by_num.get(assessment.week)
+                if assessment.week is not None
+                else None
+            )
+            if parent_item is None:
+                if assessments_item is None:
+                    assessments_item = ET.SubElement(
+                        root_item, cc("item"), {"identifier": "ASSESSMENTS"}
+                    )
+                    ET.SubElement(
+                        assessments_item, cc("title")
+                    ).text = _ASSESSMENTS_TITLE
+                parent_item = assessments_item
+
+            item_el = ET.SubElement(parent_item, cc("item"), {
+                "identifier": f"ITEM_{assessment.res_id}",
+                "identifierref": assessment.res_id,
+            })
+            ET.SubElement(item_el, cc("title")).text = assessment.title
+
+            resource = ET.SubElement(resources, cc("resource"), {
+                "identifier": assessment.res_id,
+                "type": res_type,
+                "href": assessment.rel_path,
+            })
+            ET.SubElement(resource, cc("file"), {"href": assessment.rel_path})
 
     ET.indent(manifest, space="  ")
     return ET.tostring(manifest, encoding="unicode", xml_declaration=True)
@@ -491,6 +967,8 @@ def package_imscc(
     _coverage_drop_missing_lo = 0
     _coverage_drop_gate_block = 0
     _coverage_drop_outline_filter = 0
+    # W10 — assessment coverage (authored vs packaged); set during discovery.
+    _assessment_coverage: Optional[dict] = None
 
     def _emit_coverage_sidecar(*, pages_packaged: int) -> None:
         """Best-effort write of the W3.H H3 packaging_report sidecar.
@@ -528,6 +1006,11 @@ def package_imscc(
             "outline_only": outline_only,
             "source_coverage": block,
         }
+        # W10 — assessment coverage block (authored vs packaged), mirroring
+        # the source_coverage shape. Only present when a 06_assessments/ dir
+        # was discovered (None on the byte-identical no-assessments path).
+        if _assessment_coverage is not None:
+            report["assessment_coverage"] = _assessment_coverage
         try:
             coverage_sidecar_path.parent.mkdir(parents=True, exist_ok=True)
             import json as _json
@@ -553,11 +1036,8 @@ def package_imscc(
     # numerator. Running this scan here means the validator-failure
     # short-circuit below still gets attribution.
     _pre_walk_pages = []
-    for _wd in sorted(content_dir.glob("week_*")):
-        if not _wd.is_dir():
-            continue
-        for _hf in sorted(_wd.glob("*.html")):
-            _pre_walk_pages.append(_hf)
+    for _wname, _wnum, _tdir, _wfiles in _iter_week_groups(content_dir):
+        _pre_walk_pages.extend(_wfiles)
     _coverage_pages_authored = len(_pre_walk_pages)
 
     if skip_validation:
@@ -612,8 +1092,38 @@ def package_imscc(
             course_title=course_title,
         )
 
+    # W10 — discover + classify + (best-effort) XSD-validate the assessment
+    # surface BEFORE the manifest is built so the QTI/discussion/assignment
+    # resources + organization items land in the manifest and the XML files
+    # land in the zip payload. Absent ``06_assessments/`` → no-op, byte-
+    # identical to a package built without assessments. Malformed items are
+    # logged + dropped (never abort the package). Skipped in outline-only mode
+    # (an assessment surface is not an outline-tier deliverable).
+    packaged_assessments: List[_Assessment] = []
+    if not outline_only:
+        discovered, authored = _discover_assessments(content_dir)
+        if authored:
+            for assessment in discovered:
+                if _validate_assessment_xsd(assessment):
+                    packaged_assessments.append(assessment)
+            packaged = len(packaged_assessments)
+            by_type: Dict[str, int] = {}
+            for a in packaged_assessments:
+                by_type[a.kind] = by_type.get(a.kind, 0) + 1
+            _assessment_coverage = {
+                "assessments_authored": authored,
+                "assessments_packaged": packaged,
+                "assessments_dropped": max(0, authored - packaged),
+                "by_type": by_type,
+            }
+            print(
+                f"[assessments] discovered {authored} assessment XML file(s); "
+                f"packaged {packaged} ({by_type})."
+            )
+
     manifest_xml = build_manifest(
         content_dir, course_code, course_title, outline_only=outline_only,
+        assessments=packaged_assessments,
     )
 
     stub_included = False
@@ -645,10 +1155,15 @@ def package_imscc(
             )
             file_count += 1
 
-        for week_dir in sorted(content_dir.glob("week_*")):
-            if not week_dir.is_dir():
-                continue
-            for html_file in sorted(week_dir.glob("*.html")):
+        # Zip every week page under a ``week_NN/`` prefix so the archive
+        # paths match the manifest org tree built above — for BOTH nested
+        # (real subdir) and flat (``week_NN_*.html`` directly under
+        # content_dir) layouts. ``_iter_week_groups`` returns the same
+        # ordering the manifest used, so rel_paths line up exactly.
+        for week_name, _wnum, _tdir, html_files in _iter_week_groups(
+            content_dir
+        ):
+            for html_file in html_files:
                 # Phase 2 (Subtask 29): mirror the manifest filter so the
                 # zip payload matches the organization tree (no orphan
                 # resources / no resources missing from manifest).
@@ -663,8 +1178,14 @@ def package_imscc(
                     # failures.
                     _coverage_drop_outline_filter += 1
                     continue
-                zf.write(html_file, f"{week_dir.name}/{html_file.name}")
+                zf.write(html_file, f"{week_name}/{html_file.name}")
                 file_count += 1
+
+        # W10 — write each packaged assessment XML under ``06_assessments/``
+        # so the zip payload matches the manifest <resource href> (the rel_path
+        # the resource emit used). Mirrors the per-week page write above.
+        for assessment in packaged_assessments:
+            zf.write(assessment.path, assessment.rel_path)
 
     print(f"IMSCC created: {output_path}")
     if stub_included:

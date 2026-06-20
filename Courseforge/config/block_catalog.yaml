@@ -1,0 +1,242 @@
+# Courseforge block catalog (Wave-2 block-variety redesign, Part 1).
+#
+# Machine-readable catalog of every canonical block type in
+# ``Courseforge/scripts/blocks.py::BLOCK_TYPES`` (all 21). A large-model
+# planner (70B+) reads the ``use_when`` discriminators to pick the RIGHT
+# block for a given content / objective shape instead of defaulting to a
+# bare ``concept`` / ``explanation`` everywhere.
+#
+# Loader: ``lib/generation/block_catalog.py::load_block_catalog``.
+# Coverage is asserted == BLOCK_TYPES by
+# ``Courseforge/generators/tests/test_block_library_additions.py`` and
+# ``lib/generation/tests/test_block_catalog.py``.
+#
+# Each entry shape:
+#   block_type:      a real BLOCK_TYPES token (snake_case).
+#   label:           human-readable title.
+#   use_when:        1-2 sentences — the discriminating content/CO shape
+#                    this block fits (what makes it the RIGHT choice).
+#   conveys:         what the block communicates to the learner.
+#   bloom_fit:       list of Bloom levels (remember/understand/apply/
+#                    analyze/evaluate/create) this block naturally serves.
+#   format_summary:  one-line HTML shape.
+version: 1
+blocks:
+  - block_type: objective
+    label: Learning Objective
+    use_when: >-
+      Use to state, at the top of a page or module, exactly what the learner
+      will be able to do after the content — one measurable, Bloom-aligned
+      outcome per objective. Author this first; every other block on the page
+      should serve a stated objective.
+    conveys: The measurable outcome (audience + behavior + condition + degree) the content targets.
+    bloom_fit: [remember, understand, apply, analyze, evaluate, create]
+    format_summary: "<li data-cf-objective-id> inside an .objectives <section>; JSON-LD learningObjectives entry."
+
+  - block_type: concept
+    label: Concept Explanation
+    use_when: >-
+      Use to introduce and define a core idea the learner must understand
+      before applying it — the conceptual "what and why" of a topic. Choose
+      this over example when the learner needs the definition and reasoning,
+      not a worked instance.
+    conveys: The definition, properties, and rationale of a domain concept.
+    bloom_fit: [remember, understand]
+    format_summary: "<section> heading + prose; JSON-LD sections entry with key terms."
+
+  - block_type: example
+    label: Worked Example
+    use_when: >-
+      A concept needs a single concrete worked instance — a numeric or
+      step-by-step solution the learner reads to see the procedure applied.
+      Choose this over concept when the learner has the definition and now
+      needs to see it executed once.
+    conveys: A complete, step-by-step instance of applying a procedure or concept.
+    bloom_fit: [understand, apply]
+    format_summary: "<section> with an .example-box or multi-step .worked-example."
+
+  - block_type: assessment_item
+    label: Assessment Item
+    use_when: >-
+      Use to graded-check a stated objective with a single multiple-choice
+      question whose distractors target named misconceptions. Choose this
+      when you need a scored, objective-mapped item — not a low-stakes
+      self-check.
+    conveys: A scored question + misconception-targeted distractors mapped to an objective.
+    bloom_fit: [understand, apply, analyze, evaluate]
+    format_summary: "<div class=assessment-item> stem + <ol> of <li data-cf-distractor-index>; QTI downstream."
+
+  - block_type: explanation
+    label: Extended Explanation
+    use_when: >-
+      A concept needs more development than a single definition — multi-step
+      reasoning, edge cases, or the connective tissue between several ideas.
+      Choose this over concept when one paragraph is not enough to make the
+      idea usable.
+    conveys: Extended, multi-step exposition that develops a concept beyond its bare definition.
+    bloom_fit: [understand, apply, analyze]
+    format_summary: "<section> heading + several prose paragraphs; JSON-LD sections entry."
+
+  - block_type: prereq_set
+    label: Prerequisite Set
+    use_when: >-
+      The current content assumes prior foundational skills the learner must
+      already have. Use to list those PRIOR capabilities (never the current
+      objectives) so a learner can self-check readiness before starting.
+    conveys: The earlier skills/topics this content builds on and assumes.
+    bloom_fit: [remember, understand]
+    format_summary: "<section> heading + <ol> of prior-skill refs."
+
+  - block_type: activity
+    label: Practice Activity
+    use_when: >-
+      The learner needs hands-on practice of a single named skill — a set of
+      practice items all exercising the SAME operation. Choose this when the
+      objective is procedural and repetition builds fluency.
+    conveys: A guided set of practice items all exercising one named skill.
+    bloom_fit: [apply, analyze]
+    format_summary: "<div class=activity-card> instruction + practice items."
+
+  - block_type: misconception
+    label: Misconception & Correction
+    use_when: >-
+      A common student error or false belief about the concept is worth
+      pre-empting before the learner internalizes it. Use to name the wrong
+      mental model and supply the correction.
+    conveys: A named common error plus the correct reasoning that replaces it.
+    bloom_fit: [understand, analyze]
+    format_summary: "<section>; JSON-LD carries the misconception + correction."
+
+  - block_type: callout
+    label: Callout / Alert
+    use_when: >-
+      One short, focused highlight — a single tip, warning, caution, or note
+      — deserves visual emphasis beside the surrounding content. Choose this
+      for a 1-3 sentence alert, NOT a mini-lesson.
+    conveys: A single most-important alert/tip about the surrounding content.
+    bloom_fit: [remember, understand]
+    format_summary: "<div class=callout callout-{kind}> with data-cf-content-type=callout."
+
+  - block_type: flip_card_grid
+    label: Flip Card Grid
+    use_when: >-
+      Several domain terms each need a term/definition pairing the learner
+      can self-quiz with a reveal. Choose this when introducing a cluster of
+      vocabulary at once (one card per term), not a single term.
+    conveys: A grid of term-front / definition-back vocabulary cards.
+    bloom_fit: [remember, understand]
+    format_summary: "<div class=flip-card-grid> of per-card <div class=flip-card>."
+
+  - block_type: self_check_question
+    label: Self-Check Question
+    use_when: >-
+      The learner needs a low-stakes, ungraded formative check with the
+      answer behind a reveal — confidence-building, not scoring. Choose this
+      over assessment_item when no grade is recorded.
+    conveys: A single formative question with a reveal answer for self-assessment.
+    bloom_fit: [understand, apply]
+    format_summary: "<div class=self-check self-check-item> question + <details> reveal."
+
+  - block_type: summary_takeaway
+    label: Summary Takeaway
+    use_when: >-
+      The end of a page/section needs the key points distilled into a short
+      bullet list the learner can review. Choose this to consolidate what was
+      just taught, not to introduce new material.
+    conveys: A distilled bullet list of the section's most important points.
+    bloom_fit: [remember, understand]
+    format_summary: "<section> heading + short <ul> with data-cf-content-type=summary."
+
+  - block_type: reflection_prompt
+    label: Reflection Prompt
+    use_when: >-
+      The learner benefits from thinking about THEIR OWN experience,
+      confidence, or thinking process. Use an open-ended question addressed
+      to the individual; never a graded or right/wrong task.
+    conveys: An open-ended self-reflection question about the learner's own thinking.
+    bloom_fit: [understand, evaluate]
+    format_summary: "<section> heading + <p> open-ended self-reflection question(s)."
+
+  - block_type: discussion_prompt
+    label: Discussion Prompt
+    use_when: >-
+      A topic has multiple defensible viewpoints worth debating in a group.
+      Use an open-ended question posed to peers; choose this over reflection
+      when the value is in comparing views, not private reflection.
+    conveys: An open-ended group-debate question with no single correct answer.
+    bloom_fit: [analyze, evaluate]
+    format_summary: "<section> heading + <p> open-ended group discussion question(s)."
+
+  - block_type: chrome
+    label: Page Chrome
+    use_when: >-
+      Page header / footer / nav scaffolding only; not authored per-objective.
+      Use for the template wrapper around real content, never for pedagogical
+      material.
+    conveys: Structural page scaffolding (header / footer / nav), not learning content.
+    bloom_fit: [remember]
+    format_summary: "Template chrome wrapper carrying data-cf-role=template-chrome."
+
+  - block_type: recap
+    label: Recap
+    use_when: >-
+      The start of a week/module needs a brief reminder of the prior week's
+      key terms before new content begins. Use to restate already-taught
+      terms; never a fresh assessment or new worked example.
+    conveys: A short restatement of previously-taught key terms.
+    bloom_fit: [remember, understand]
+    format_summary: "<section> heading + short <ul>/prose recap of prior terms."
+
+  - block_type: scenario
+    label: Application Scenario
+    use_when: >-
+      An objective is best demonstrated through a realistic situation the
+      learner must reason about — a case/application context plus an apply
+      prompt. Choose this over example when the learner should ACT on the
+      situation, not just read a worked solution.
+    conveys: A realistic situation grounded in the source plus a prompt to apply the concept to it.
+    bloom_fit: [apply, analyze, evaluate]
+    format_summary: "<div class=scenario-card> scenario prose + an apply <p> prompt."
+
+  - block_type: problem
+    label: Practice Problem
+    use_when: >-
+      The learner needs a single self-paced practice problem whose full
+      worked solution is hidden until they attempt it. Choose this over
+      activity (a set of items) when one problem with an attempt-first reveal
+      is the goal.
+    conveys: One stated practice problem with a reveal-on-demand worked solution.
+    bloom_fit: [apply, analyze]
+    format_summary: "<div class=problem-card> problem <p> + <details> reveal solution."
+
+  - block_type: vocab_card
+    label: Vocabulary Card
+    use_when: >-
+      A single key domain term that the learner must be able to define before
+      reasoning with it; use when introducing chapter vocabulary one term at
+      a time. Choose this over flip_card_grid when only ONE term needs focus.
+    conveys: One domain term and its definition.
+    bloom_fit: [remember, understand]
+    format_summary: "<div class=vocab-card> term + definition."
+
+  - block_type: formula
+    label: Formula Card
+    use_when: >-
+      A single symbolic formula or equation is central and deserves visual
+      highlight plus a variable gloss. Choose this when the learner must
+      recognize/recall the formula, not derive it (no multi-formula
+      derivation).
+    conveys: One highlighted formula plus a one-line naming of each variable.
+    bloom_fit: [remember, understand, apply]
+    format_summary: "<div class=formula-card> centered formula + variable gloss."
+
+  - block_type: checklist
+    label: Checklist
+    use_when: >-
+      The learner needs an actionable, verifiable list — a procedure to
+      follow step-by-step or a self-verification list to check their work.
+      Choose this over summary_takeaway when each item is a DO/CHECK action,
+      not a point to remember.
+    conveys: An ordered set of concrete, checkable steps or criteria.
+    bloom_fit: [apply, evaluate]
+    format_summary: "<ul class=checklist> of <li class=checklist-item> actionable items."

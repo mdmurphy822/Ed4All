@@ -325,6 +325,37 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "section_skeleton": (0, 1),
         "summary_chars": (60, 300),
     },
+    # Wave-2 block-variety additions.
+    # Application / case scenario — short setup + apply prompt.
+    "scenario": {
+        "key_claims": (2, 4),
+        "section_skeleton": (0, 1),
+        "summary_chars": (80, 400),
+    },
+    # Practice problem with a no-JS reveal solution.
+    "problem": {
+        "key_claims": (1, 3),
+        "section_skeleton": (0, 1),
+        "summary_chars": (60, 300),
+    },
+    # Single vocabulary term + definition — atomic.
+    "vocab_card": {
+        "key_claims": (1, 2),
+        "section_skeleton": (0, 0),
+        "summary_chars": (40, 200),
+    },
+    # Single highlighted formula + variable gloss — atomic.
+    "formula": {
+        "key_claims": (1, 2),
+        "section_skeleton": (0, 0),
+        "summary_chars": (30, 160),
+    },
+    # Checklist of actionable steps / criteria.
+    "checklist": {
+        "key_claims": (2, 6),
+        "section_skeleton": (0, 1),
+        "summary_chars": (60, 300),
+    },
 }
 # Terse outline-tier system prompt. Kept ≤80 words on purpose — the
 # 7B-class default model has a small effective instruction-following
@@ -836,22 +867,37 @@ _RETRY_DIRECTIVE_PATTERNS: List[Tuple["re.Pattern[str]", str]] = [
         "not a number or bare token. Wrap numeric tier or boolean "
         "values in their canonical string label.",
     ),
-    # Worker W7: assessment_item Blocks must carry distractors[] +
-    # correct_answer_index alongside stem + answer_key. The validator
-    # surfaces the missing-key / too-few-items errors as
-    # ``'distractors' is a required property`` /
-    # ``[...] is too short`` / ``'correct_answer_index' is a required property``
-    # depending on which constraint trips first. One pattern catches
-    # all three failure modes via a non-greedy alternation match.
+    # Worker W7 + assessment-item-descriptor fix (2026-06): assessment_item
+    # Blocks must carry the four dedicated fields ``stem`` / ``answer_key`` /
+    # ``distractors[]`` / ``correct_answer_index`` as TOP-LEVEL keys with REAL
+    # VALUES. The validator surfaces the missing-key / too-few-items errors as
+    # ``'stem' is a required property`` / ``'answer_key' is a required
+    # property`` / ``'distractors' is a required property`` /
+    # ``'correct_answer_index' is a required property`` / ``[...] is too
+    # short`` depending on which constraint trips first. The 2026-06
+    # investigation (7B + 14B) showed the model pours the question into
+    # ``key_claims`` / ``section_skeleton`` and OMITS the dedicated fields,
+    # OR emits a LIST of field-TYPE DESCRIPTOR objects
+    # (``[{"type": "stem"}, {"type": "distractors"}, ...]``) instead of real
+    # values — so the directive now names all four fields AND forbids the
+    # descriptor-list shape, telling the model to emit the actual stem text /
+    # option texts / answer value. One pattern catches every failure mode via
+    # a non-greedy alternation match.
     (
         re.compile(
-            r"'(distractors|correct_answer_index)' is a required property"
+            r"'(stem|answer_key|distractors|correct_answer_index)' is a "
+            r"required property"
             r"|distractors.* is too short"
         ),
-        "Block of type 'assessment_item' must include `distractors` "
-        "(a list of at least 2 items, each with a `text` field) and "
-        "`correct_answer_index` (a 0-based integer pointing at the "
-        "correct distractor).",
+        "Block of type 'assessment_item' MUST emit four TOP-LEVEL fields "
+        "with REAL VALUES (never field-type descriptors like "
+        "{\"type\": \"stem\"}, and never inside key_claims / "
+        "section_skeleton): `stem` (the ACTUAL question text the learner "
+        "reads), `answer_key` (the ACTUAL correct answer VALUE), "
+        "`distractors` (a list of at least 2 objects, each {\"text\": "
+        "\"<an ACTUAL wrong-answer option>\"}), and `correct_answer_index` "
+        "(a 0-based integer). Replace any {\"type\": ...} descriptor object "
+        "with the real stem text, real option texts, and real answer value.",
     ),
     # prereq_set Blocks must carry a non-empty `prerequisitePages` array
     # (the outline schema marks it required, minItems:1). A 7B-class model
@@ -2243,6 +2289,40 @@ class OutlineProvider(_BaseLLMProvider):
                 "key must reference at least one of the listed "
                 "objective_refs verbatim."
             )
+            # assessment-item-descriptor fix (2026-06): the 7B AND the 14B
+            # routinely OMIT the four dedicated assessment fields (`stem`,
+            # `answer_key`, `distractors`, `correct_answer_index`) — they pour
+            # the question into `key_claims` / `section_skeleton` (which the
+            # global prompt heavily emphasises) and never emit the dedicated
+            # fields, so the strict schema rejects with "'stem' is a required
+            # property" and the budget exhausts. A second observed failure mode
+            # is emitting a LIST of field-TYPE DESCRIPTOR objects
+            # (`[{"type": "stem"}, {"type": "distractors"}, ...]`) in place of
+            # the real values. This contract names the four fields explicitly,
+            # in the recency-biased per-type variation block, and forbids the
+            # descriptor-list shape. Symmetric with the new closing-directive
+            # field list (assessment_item branch) + the
+            # `_RETRY_DIRECTIVE_PATTERNS` assessment-extras directive.
+            variation_lines.append(
+                "REQUIRED assessment_item fields — emit ALL FOUR as TOP-LEVEL "
+                "keys with REAL VALUES (NOT inside key_claims / "
+                "section_skeleton, and NEVER as field-type descriptors like "
+                "{\"type\": \"stem\"}):\n"
+                "  - \"stem\": the ACTUAL question text the learner reads "
+                "(a complete prose question, e.g. \"What is 3/4 + 1/8?\").\n"
+                "  - \"answer_key\": the ACTUAL correct answer VALUE "
+                "(e.g. \"7/8\"), not a description of it.\n"
+                "  - \"distractors\": a JSON array of AT LEAST 2 objects, each "
+                "{\"text\": \"<an ACTUAL wrong-answer option the learner could "
+                "pick, e.g. 4/12>\"}. Every option is a real answer string, "
+                "never {\"type\": \"distractor\"}.\n"
+                "  - \"correct_answer_index\": a 0-based integer naming which "
+                "distractor (if the correct answer is also listed) or the "
+                "ordinal of the correct option.\n"
+                "Do NOT emit a list of {\"type\": ...} objects for any of "
+                "these — emit the real stem text, real option texts, and the "
+                "real answer value."
+            )
         elif block_type == "prereq_set":
             variation_lines.append(
                 "Prereq set contract: list every prerequisite page "
@@ -2285,6 +2365,23 @@ class OutlineProvider(_BaseLLMProvider):
             )
         variation_block = "\n".join(variation_lines) if variation_lines else ""
 
+        # assessment-item-descriptor fix (2026-06): name the four required
+        # assessment-extra fields in the closing field enumeration too, so the
+        # model is reminded of them at the recency-biased tail of the prompt
+        # (not only in the per-type variation block above). Other block types
+        # keep the byte-identical 10-field enumeration.
+        closing_fields = (
+            "block_id, block_type, content_type, bloom_level, objective_refs, "
+            "curies, key_claims, section_skeleton, source_refs, "
+            "structural_warnings"
+        )
+        if block_type == "assessment_item":
+            closing_fields += (
+                ", stem (real question text), answer_key (real answer value), "
+                "distractors (array of >=2 {\"text\": ...} options with real "
+                "option texts), correct_answer_index (0-based integer)"
+            )
+
         out = (
             f"Block ID: {block.block_id}; Type: {block_type}\n"
             f"Page ID: {block.page_id}\n\n"
@@ -2297,10 +2394,8 @@ class OutlineProvider(_BaseLLMProvider):
             "Target structural bounds (per-block-type):\n"
             f"{bounds_block}\n\n"
             f"{variation_block}\n\n"
-            "RESPOND ONLY WITH A JSON OBJECT containing: block_id, "
-            "block_type, content_type, bloom_level, objective_refs, "
-            "curies, key_claims, section_skeleton, source_refs, "
-            "structural_warnings. No preamble, no markdown, no "
+            f"RESPOND ONLY WITH A JSON OBJECT containing: {closing_fields}. "
+            "No preamble, no markdown, no "
             "commentary. "
             # Wave 1.5 W1.5.B: per-claim source attribution closing
             # clause. Names the supplied source_chunks list as the

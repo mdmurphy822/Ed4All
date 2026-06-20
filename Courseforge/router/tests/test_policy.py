@@ -135,7 +135,7 @@ def test_invalid_yaml_raises(tmp_path):
 
 
 def test_invalid_yaml_raises_on_unknown_block_type(tmp_path):
-    # Block type not in the canonical 16-value enum should fail closed.
+    # Block type not in the canonical 21-value enum should fail closed.
     bad = _write_yaml(
         tmp_path / "bad_block.yaml",
         "version: 1\nblocks:\n  not_a_real_block_type:\n    outline:\n      provider: local\n      model: x\n",

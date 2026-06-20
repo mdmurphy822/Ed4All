@@ -25,7 +25,7 @@ Specific contract under test:
   (``local`` or ``together``) — never ``anthropic``. This is the
   load-bearing semantic difference between the variant and the
   canonical file.
-* The 16-singular ``BLOCK_TYPES`` enum coverage matches the canonical
+* The 21-singular ``BLOCK_TYPES`` enum coverage matches the canonical
   file (no block_type is silently dropped in the variant).
 """
 
@@ -156,7 +156,7 @@ def test_license_clean_loader_round_trip(monkeypatch) -> None:
 def test_license_clean_block_type_coverage_matches_canonical(
     license_clean_yaml: dict, canonical_yaml: dict
 ) -> None:
-    """Variant covers exactly the same 16 ``BLOCK_TYPES`` entries.
+    """Variant covers exactly the same 21 ``BLOCK_TYPES`` entries.
 
     Drift here means a block_type was silently dropped from the
     variant — operators expecting the variant to be a full drop-in

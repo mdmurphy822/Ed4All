@@ -320,15 +320,18 @@ def test_force_injected_curie_passes_block_curie_anchoring_validator(
 
 
 def test_minted_curies_from_source_block_survive_into_html(monkeypatch):
-    """A source block whose ``curies`` carry minted (prose-corpus)
-    CURIEs that the rewrite LLM declines to echo are force-injected so
-    every minted CURIE survives the validator's strip+extract path."""
+    """M3 tolerant preservation: a minted CURIE whose underlying TERM the
+    rewrite tier actually used in prose (``slope``) is enforced and
+    force-injected so it survives the validator's strip+extract path; a
+    minted CURIE whose term the model did NOT use (``y_intercept``) is
+    PRUNED from enforcement rather than forced — that's what stops the
+    CURIE-churn truncation. The block still anchors >=1 CURIE."""
     monkeypatch.delenv(ENV_PROVIDER, raising=False)
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        # Natural prose — none of the minted CURIE tokens echoed.
+        # Natural prose — uses "slope" but NOT "y intercept".
         body = (
             "<section><p>Slope measures the steepness of a line.</p>"
             "</section>"
@@ -343,10 +346,19 @@ def test_minted_curies_from_source_block_survive_into_html(monkeypatch):
         curies=["introbio101:slope", "introbio101:y_intercept"],
     )
     out = p.generate_rewrite(block)
-    for curie in ("introbio101:slope", "introbio101:y_intercept"):
-        assert _curie_survives_validator_path(out.content, curie), (
-            f"minted CURIE {curie!r} did not survive the validator path"
-        )
+    # The on-topic CURIE (its term "slope" is in the prose) survives.
+    assert _curie_survives_validator_path(out.content, "introbio101:slope"), (
+        "on-topic minted CURIE 'introbio101:slope' did not survive the "
+        "validator path"
+    )
+    # The off-topic CURIE (term "y intercept" absent from the prose) is
+    # PRUNED — NOT force-injected. This is the M3 over-forcing fix.
+    assert not _curie_survives_validator_path(
+        out.content, "introbio101:y_intercept"
+    ), (
+        "off-topic minted CURIE 'introbio101:y_intercept' was force-injected "
+        "even though the rewrite tier never used the term — M3 should prune it"
+    )
 
 
 def test_force_injected_block_carries_durable_signals(monkeypatch):
@@ -416,6 +428,167 @@ def test_clean_rewrite_carries_no_force_injected_signals(monkeypatch):
     assert html_has_forced_curie_marker(out.content) is False
     rewrite_touches = [t for t in out.touched_by if t.tier == "rewrite"]
     assert rewrite_touches[-1].purpose == "pedagogical_depth"
+
+
+# ---------------------------------------------------------------------------
+# M3 — tolerant CURIE preservation (CURIE-churn truncation fix)
+# ---------------------------------------------------------------------------
+
+
+def _curie_dense_block(curies: List[str]) -> Block:
+    """Outline block whose key_claims mention exactly TWO of the CURIE terms
+    (``multiple`` + ``prime factors``) but carry many declared CURIEs —
+    the CURIE-dense shape the M3 diagnostic root-caused."""
+    return Block(
+        block_id="page#concept_lcm_0",
+        block_type="concept",
+        page_id="page",
+        sequence=0,
+        content={
+            "key_claims": [
+                "A common multiple is shared; prime factors build it up."
+            ],
+            "curies": list(curies),
+            "source_refs": ["dart:slug#blk1"],
+            "objective_refs": ["TO-01"],
+        },
+    )
+
+
+_M3_DENSE_CURIES = [
+    "samplecoursea:multiple",
+    "samplecoursea:prime_factorization",
+    "samplecoursea:least_common_multiple",
+    "samplecoursea:prime_factors_method",
+    "samplecoursea:least_common_multiple_lcm",
+    "samplecoursea:order_of_operations",
+    "samplecoursea:evaluation",
+    "samplecoursea:prime_factors",
+]
+
+
+def test_m3_tolerant_preservation_enforces_only_used_terms(monkeypatch):
+    """A CURIE-dense outline block (8 CURIEs) whose rewritten prose mentions
+    only TWO of the underlying terms (``multiple`` + ``prime factors``):
+    preservation keeps exactly those two (they survive the validator path)
+    and PRUNES the other six — it does NOT force-all of them, which is what
+    bloated the prose past max_tokens in the failed run."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        # Prose uses the two terms "multiple" and "prime factors" but echoes
+        # none of the synthetic CURIE tokens.
+        body = (
+            "<section><p>A multiple is a product of an integer; "
+            "prime factors are the building blocks.</p></section>"
+        )
+        return httpx.Response(200, json=_success_body(body))
+
+    p = RewriteProvider(provider="local", client=_make_client(handler))
+    out = p.generate_rewrite(_curie_dense_block(_M3_DENSE_CURIES))
+
+    # The two USED terms are enforced -> survive (force-injected because the
+    # model didn't echo the token).
+    assert _curie_survives_validator_path(out.content, "samplecoursea:multiple")
+    assert _curie_survives_validator_path(
+        out.content, "samplecoursea:prime_factors"
+    )
+    # The six UNUSED CURIEs are pruned -> not injected.
+    for unused in (
+        "samplecoursea:prime_factorization",
+        "samplecoursea:least_common_multiple",
+        "samplecoursea:prime_factors_method",
+        "samplecoursea:least_common_multiple_lcm",
+        "samplecoursea:order_of_operations",
+        "samplecoursea:evaluation",
+    ):
+        assert not _curie_survives_validator_path(out.content, unused), (
+            f"unused CURIE {unused!r} was forced into the prose — M3 should "
+            f"prune it to avoid max_tokens bloat"
+        )
+
+
+def test_m3_used_terms_do_not_trigger_force_all_retry(monkeypatch):
+    """When the FIRST response already carries the enforced (on-topic) terms
+    in pedagogical voice, the gate accepts on the first dispatch — no
+    remediation re-send fires (the long force-all re-send is the truncation
+    cause). Only ONE POST lands at the server."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        # Carry BOTH used CURIE tokens in code-voice so they're already
+        # anchored in pedagogical context on the first emit.
+        body = (
+            "<section><p>The <code>samplecoursea:multiple</code> and "
+            "<code>samplecoursea:prime_factors</code> concepts.</p>"
+            "</section>"
+        )
+        return httpx.Response(200, json=_success_body(body))
+
+    p = RewriteProvider(provider="local", client=_make_client(handler))
+    out = p.generate_rewrite(_curie_dense_block(_M3_DENSE_CURIES))
+
+    assert len(seen) == 1, (
+        "force-all preservation re-send fired even though the enforced "
+        "on-topic CURIEs were already anchored — M3 tolerance should accept "
+        "on the first dispatch"
+    )
+    assert html_has_forced_curie_marker_local(out.content) is False
+
+
+def test_m3_block_with_zero_used_terms_keeps_one_curie(monkeypatch):
+    """A block whose prose mentions NONE of the CURIE terms still ends with
+    EXACTLY ONE CURIE — the hard >=1 anchoring invariant the
+    rewrite_curie_anchoring gate requires. The chosen CURIE is one of the
+    outline-declared set (anti-fabrication: never invented)."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Prose uses NONE of the CURIE terms.
+        body = "<section><p>Numbers can be combined in many ways.</p></section>"
+        return httpx.Response(200, json=_success_body(body))
+
+    p = RewriteProvider(provider="local", client=_make_client(handler))
+    out = p.generate_rewrite(_curie_dense_block(_M3_DENSE_CURIES))
+
+    from Courseforge.router.inter_tier_gates import _strip_html
+    from lib.ontology.curie_extraction import extract_curies
+
+    surfaced = extract_curies(_strip_html(out.content))
+    declared = set(_M3_DENSE_CURIES)
+    kept = [c for c in surfaced if c in declared]
+    assert len(kept) == 1, (
+        f"expected exactly 1 anchoring CURIE under the >=1 invariant, "
+        f"got {kept!r}"
+    )
+    # Anti-fabrication: the kept CURIE is from the outline-declared set.
+    assert kept[0] in declared
+
+    # End-to-end: the str-path anchoring gate PASSES on the kept >=1.
+    from Courseforge.router.inter_tier_gates import BlockCurieAnchoringValidator
+
+    result = BlockCurieAnchoringValidator().validate({"blocks": [out]})
+    assert result.passed, [i.code for i in result.issues]
+
+
+def html_has_forced_curie_marker_local(html: str) -> bool:
+    from Courseforge.generators._rewrite_provider import (
+        html_has_forced_curie_marker,
+    )
+
+    return html_has_forced_curie_marker(html)
 
 
 # ---------------------------------------------------------------------------
@@ -1196,3 +1369,181 @@ def test_callout_contract_constrains_scope_to_single_focused_highlight():
     assert "concept / explanation / example" in contract
     # Stays grounded — no fabricated facts.
     assert "grounded in the source" in contract
+
+
+# ---------------------------------------------------------------------------
+# Lane "rewrite" authoring fixes (findings 1, 5, 12, 15, 16) — Sonnet-vs-7B
+# manual review of sample-course-a vs the sample-course-a baseline.
+# Each is a small prompt/parse assertion; the dispatched-prompt cases mock
+# the client so no live model call fires.
+# ---------------------------------------------------------------------------
+
+
+def test_rewrite_step_label_colon_inside_label_finding_1():
+    """Finding 1: the step-label badge must carry its colon INSIDE the
+    ``<span class="step-label">`` (``Step N:</span>``), never after the
+    closing tag (``Step N</span>:``) — otherwise the colon floats beside
+    the flex badge. Both the styled-components directive and the
+    ``example`` output contract must pin the inside-the-span form and name
+    the wrong form as prohibited."""
+    # The system prompt carries a dedicated STEP LABEL COLON directive.
+    assert "STEP LABEL COLON" in _REWRITE_SYSTEM_PROMPT
+    # The correct form (colon inside the span) is present...
+    assert '<span class="step-label">Step N:</span>' in _REWRITE_SYSTEM_PROMPT
+    # ...and the wrong form (colon outside) is named as prohibited.
+    assert "NEVER `<span class=\"step-label\">Step N</span>:`" in (
+        _REWRITE_SYSTEM_PROMPT
+    )
+    # The per-block-type ``example`` contract carries the same fix.
+    example_contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["example"]
+    assert '<span class="step-label">Step N:</span>' in example_contract
+    assert "the colon goes INSIDE the `step-label` span" in example_contract
+    # Regression guard: the legacy colon-outside form must NOT survive in
+    # either surface (the bug that floated the colon beside the badge).
+    assert '<span class="step-label">Step N</span> …' not in (
+        _REWRITE_SYSTEM_PROMPT
+    )
+    assert '<span class="step-label">Step N</span> ' not in example_contract
+
+
+def test_rewrite_prefers_tables_and_compact_structure_finding_5():
+    """Finding 5: the rewrite tier must emit an HTML ``<table>`` for
+    comparison / multi-column content and prefer compact structured blocks
+    over long prose (content_01 had 0 tables / verbose prose vs the
+    baseline's comparison table)."""
+    assert "STRUCTURED OVER PROSE" in _REWRITE_SYSTEM_PROMPT
+    # Comparison / contrast / multi-column content → an HTML table.
+    assert "COMPARES " in _REWRITE_SYSTEM_PROMPT
+    assert "MULTI-COLUMN" in _REWRITE_SYSTEM_PROMPT
+    assert "`<thead>`" in _REWRITE_SYSTEM_PROMPT
+    # Prefer compact structure over long prose.
+    assert "PREFER compact" in _REWRITE_SYSTEM_PROMPT
+    # The concept + explanation contracts carry the comparison-table rule.
+    concept_contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["concept"]
+    assert "COMPARES / CONTRASTS" in concept_contract
+    assert "`<thead>`" in concept_contract
+    explanation_contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["explanation"]
+    assert "COMPARES / CONTRASTS" in explanation_contract
+    assert "`<table>`" in explanation_contract
+
+
+def test_rewrite_math_rendering_and_numeric_self_check_finding_12():
+    """Finding 12: math must render as MathML or Unicode (NOT raw
+    ``$...$`` LaTeX, which Studio does not render), and a numeric
+    distractor's value must be consistent with its stated rationale
+    (3/4 × 5/6 = 15/24, never 9/20)."""
+    # Math-rendering directive: no raw LaTeX, render MathML or Unicode.
+    assert "MATH RENDERING (Studio has NO LaTeX renderer)" in (
+        _REWRITE_SYSTEM_PROMPT
+    )
+    assert "MathML" in _REWRITE_SYSTEM_PROMPT
+    assert "Unicode glyphs" in _REWRITE_SYSTEM_PROMPT
+    # The concrete failing literal from the review is named as prohibited.
+    assert r"$\frac{9}{20}$" in _REWRITE_SYSTEM_PROMPT
+    # Numeric self-check: distractor value must match its rationale.
+    assert "NUMERIC SELF-CHECK" in _REWRITE_SYSTEM_PROMPT
+    assert "15/24" in _REWRITE_SYSTEM_PROMPT
+    assert "9/20" in _REWRITE_SYSTEM_PROMPT
+    # The assessment_item contract carries both fixes.
+    assessment_contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["assessment_item"]
+    assert "MATH RENDERING" in assessment_contract
+    assert "NEVER raw `$...$`" in assessment_contract
+    assert "NUMERIC SELF-CHECK" in assessment_contract
+    assert "15/24" in assessment_contract
+
+
+def test_rewrite_diverse_content_derived_headings_finding_15():
+    """Finding 15: generate diverse, content-derived page titles + section
+    framing headers — never a repeated generic "Objectives" label or the
+    raw page filename."""
+    assert "DIVERSE, CONTENT-DERIVED HEADINGS" in _REWRITE_SYSTEM_PROMPT
+    # The generic labels + filename the 7B over-used are named as banned.
+    assert "generic, repeated label" in _REWRITE_SYSTEM_PROMPT
+    assert "week_01_summary" in _REWRITE_SYSTEM_PROMPT
+    # Specific, learner-facing framing headers are the steer.
+    assert "learner-facing framing header" in _REWRITE_SYSTEM_PROMPT
+    # The concept contract carries the content-derived heading rule.
+    concept_contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["concept"]
+    assert "content-derived topic header" in concept_contract
+
+
+def test_rewrite_key_idea_framing_finding_16():
+    """Finding 16: key-rule / callout blocks must carry a recognizable
+    "Key Idea"-style framing header (the 42 key-rule blocks lacked one and
+    the callout type was authored 0 times)."""
+    assert "KEY-IDEA FRAMING" in _REWRITE_SYSTEM_PROMPT
+    assert '"Key Idea"' in _REWRITE_SYSTEM_PROMPT
+    # The callout contract opens with a Key-Idea framing header.
+    callout_contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["callout"]
+    assert "KEY-IDEA framing header" in callout_contract
+    assert '"Key Idea"' in callout_contract
+    # The concept + explanation key-rule boxes lead with the framing label.
+    concept_contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["concept"]
+    assert "Key Idea: Rule name" in concept_contract
+    explanation_contract = _BLOCK_TYPE_OUTPUT_CONTRACTS["explanation"]
+    assert '"Key Idea"' in explanation_contract
+
+
+def test_rewrite_user_prompt_carries_authoring_framing_directives(monkeypatch):
+    """The standard (non-escalated) rewrite user prompt dispatched to the
+    client must carry the closing authoring-framing directives (findings
+    5/12/15): content-derived headings, Unicode/MathML over LaTeX, and
+    compact structured elements over long prose. Mocks the client so no
+    live model call fires."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        body = "<section data-cf-source-ids=\"dart:slug#blk1\"><p>X.</p></section>"
+        return httpx.Response(200, json=_success_body(body))
+
+    p = RewriteProvider(provider="local", client=_make_client(handler))
+    block = _outline_block()  # concept, no escalation marker
+    out = p.generate_rewrite(block)
+
+    assert isinstance(out, Block)
+    assert len(seen) == 1
+    request_body = seen[0].read().decode("utf-8")
+    # Content-derived heading steer (finding 15).
+    assert "Title every heading from the SPECIFIC content" in request_body
+    # Math rendering steer (finding 12).
+    assert "Render math as Unicode or MathML, never raw" in request_body
+    # Compact structured elements over long prose (finding 5).
+    assert "Prefer compact structured elements" in request_body
+
+
+def test_rewrite_escalated_prompt_carries_authoring_framing_directives(
+    monkeypatch,
+):
+    """The escalated rewrite user prompt must ALSO carry the closing
+    authoring-framing directives (findings 5/12/15) — an escalated block
+    must not silently lose the heading / math / compactness steer. Mocks
+    the client so no live model call fires."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        body = "<section data-cf-source-ids=\"dart:slug#blk1\"><p>X.</p></section>"
+        return httpx.Response(200, json=_success_body(body))
+
+    p = RewriteProvider(provider="local", client=_make_client(handler))
+    block = _outline_block(escalation_marker="outline_budget_exhausted")
+    out = p.generate_rewrite(block)
+
+    assert isinstance(out, Block)
+    assert len(seen) == 1
+    request_body = seen[0].read().decode("utf-8")
+    # Escalation branch is taken...
+    assert "ESCALATED REWRITE" in request_body
+    # ...and still carries the framing directives.
+    assert "Title every heading from the SPECIFIC content" in request_body
+    assert "Render math as Unicode or MathML, never raw" in request_body
+    assert "Prefer compact structured elements" in request_body

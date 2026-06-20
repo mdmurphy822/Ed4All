@@ -406,12 +406,17 @@ def test_capability_tier_chain_honors_env_model_for_local_tiers(monkeypatch):
 
     # 1. Env set → every LOCAL rewrite tier (incl. assessment_item's
     #    [medium, large] cascade) collapses to the configured 7B model.
+    #    The NVIDIA-hosted large tier (cloud) is intentionally NOT
+    #    touched by COURSEFORGE_REWRITE_MODEL — the per-tier model
+    #    override fires for provider==local tiers only, so cloud tiers
+    #    keep their YAML-pinned model.
     monkeypatch.setenv("COURSEFORGE_REWRITE_MODEL", "qwen2.5-7b-8k")
     for bt in ("concept", "example", "assessment_item"):
         chain = r._resolve_capability_tier_chain(_block(block_type=bt), "rewrite")
         assert chain, f"empty chain for {bt}"
-        for spec in chain:
-            assert spec.provider == "local"
+        local_specs = [s for s in chain if s.provider == "local"]
+        assert local_specs, f"no local tier in {bt} rewrite chain"
+        for spec in local_specs:
             assert spec.model == "qwen2.5-7b-8k", (
                 f"{bt} tier {spec.capability_tier_name} not overridden"
             )
@@ -423,6 +428,136 @@ def test_capability_tier_chain_honors_env_model_for_local_tiers(monkeypatch):
         _block(block_type="concept"), "rewrite"
     )
     assert chain_default[0].model == "qwen2.5:14b-instruct-q4_K_M"
+
+
+def test_license_clean_large_tier_routes_to_nvidia(monkeypatch):
+    """The rewrite tier resolves to the NVIDIA large endpoint.
+
+    Loads the REAL ``block_routing.nvidia_large.yaml`` policy — a clean
+    TWO-TIER design (small 7B local outline + NVIDIA-hosted large
+    rewrite; NO medium tier) — and asserts that resolving the rewrite
+    tier for ``assessment_item`` (whose rewrite tier is the single
+    ``large`` seat, not a ``[medium, large]`` cascade) yields:
+
+      - provider → ``nvidia``
+      - model    → ``nvidia/nemotron-3-nano-30b-a3b`` (the YAML-pinned
+        non-reasoning sibling — the large tier authors structured HTML, so
+        the YAML deliberately avoids the *-reasoning variant whose
+        chain-of-thought overruns the completion budget)
+      - base_url → ``https://integrate.api.nvidia.com/v1``
+      - the API key sourced from ``NVIDIA_API_KEY`` (verified by
+        constructing the real RewriteProvider against the resolved spec
+        and confirming the base reads the monkeypatched env key).
+
+    AND that the SMALL (outline) tier stays on the local 7B under
+    ``COURSEFORGE_REWRITE_MODEL=qwen2.5-7b-8k`` — so the outline-tier
+    first draft stays local while every rewrite reaches NVIDIA. No live
+    network call is made.
+    """
+    from Courseforge.router.policy import load_block_routing_policy
+
+    nvidia_large = Path(
+        "Courseforge/config/block_routing.nvidia_large.yaml"
+    )
+    if not nvidia_large.exists():  # pragma: no cover - repo layout guard
+        pytest.skip("nvidia_large policy file not present")
+    policy = load_block_routing_policy(nvidia_large)
+    r = CourseforgeRouter(policy=policy)
+
+    # API key sourced from NVIDIA_API_KEY (never hardcoded). Base + model
+    # left UNSET so the YAML tier spec supplies them verbatim.
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test-key-xyz")
+    monkeypatch.delenv("NVIDIA_BASE_URL", raising=False)
+    monkeypatch.delenv("NVIDIA_LARGE_MODEL", raising=False)
+    # The per-tier rewrite-model env dials the bulk down to a 7B local
+    # model — must NOT touch the NVIDIA large tier (env override fires
+    # for provider==local tiers only).
+    monkeypatch.setenv("COURSEFORGE_REWRITE_MODEL", "qwen2.5-7b-8k")
+
+    # 1. The rewrite chain for assessment_item is the SINGLE large tier
+    #    (no [medium, large] cascade — the medium tier is gone).
+    chain = r._resolve_capability_tier_chain(
+        _block(block_type="assessment_item"), "rewrite"
+    )
+    assert chain, "empty rewrite chain for assessment_item"
+    assert [s.capability_tier_name for s in chain] == ["large"], (
+        "assessment_item rewrite tier must be the single large seat "
+        f"(got tiers {[s.capability_tier_name for s in chain]})"
+    )
+    large = chain[0]
+    assert large.provider == "nvidia"
+    # The YAML pins the non-reasoning sibling for structured HTML authoring.
+    assert large.model == "nvidia/nemotron-3-nano-30b-a3b"
+    assert large.base_url == "https://integrate.api.nvidia.com/v1"
+
+    # 2. NO tier in the chain is named "medium" — the medium/14B tier was
+    #    dropped entirely from the two-tier design. The COURSEFORGE_REWRITE_MODEL
+    #    override does NOT touch the NVIDIA large tier (env override fires
+    #    for provider==local tiers only).
+    assert not [s for s in chain if s.capability_tier_name == "medium"], (
+        "two-tier design must carry no medium tier"
+    )
+    assert large.model == "nvidia/nemotron-3-nano-30b-a3b", (
+        "COURSEFORGE_REWRITE_MODEL must not dial the cloud large tier down"
+    )
+
+    # 3. A structurally-simple block's rewrite tier also resolves to the
+    #    NVIDIA large seat — every rewrite reaches NVIDIA in this profile.
+    concept_chain = r._resolve_capability_tier_chain(
+        _block(block_type="concept"), "rewrite"
+    )
+    assert [s.capability_tier_name for s in concept_chain] == ["large"]
+    assert concept_chain[0].provider == "nvidia"
+    assert concept_chain[0].model == "nvidia/nemotron-3-nano-30b-a3b"
+
+    # 4. The resolved large spec constructs a real RewriteProvider that
+    #    sources its key from NVIDIA_API_KEY (no live call, no client
+    #    injection — construction-time key resolution only).
+    provider_instance = r._get_rewrite_provider(large)
+    assert provider_instance._provider == "nvidia"
+    assert provider_instance._model == "nvidia/nemotron-3-nano-30b-a3b"
+    assert provider_instance._base_url == "https://integrate.api.nvidia.com/v1"
+    assert provider_instance._api_key == "nvapi-test-key-xyz"
+
+
+def test_license_clean_large_tier_nvidia_requires_api_key(monkeypatch):
+    """Constructing the NVIDIA large-tier provider fails loud without a key.
+
+    The hosted endpoint authenticates every request, so the base raises
+    ``RuntimeError`` naming ``NVIDIA_API_KEY`` when neither the env var
+    nor an injected client is present — the key is never hardcoded.
+    """
+    from Courseforge.router.policy import load_block_routing_policy
+
+    nvidia_large = Path(
+        "Courseforge/config/block_routing.nvidia_large.yaml"
+    )
+    if not nvidia_large.exists():  # pragma: no cover - repo layout guard
+        pytest.skip("nvidia_large policy file not present")
+    policy = load_block_routing_policy(nvidia_large)
+    r = CourseforgeRouter(policy=policy)
+
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("COURSEFORGE_REWRITE_MODEL", raising=False)
+    chain = r._resolve_capability_tier_chain(
+        _block(block_type="assessment_item"), "rewrite"
+    )
+    large = next(s for s in chain if s.capability_tier_name == "large")
+    assert large.provider == "nvidia"
+    with pytest.raises(RuntimeError, match="NVIDIA_API_KEY"):
+        r._get_rewrite_provider(large)
+
+
+def test_nvidia_provider_spec_validates():
+    """A ``provider="nvidia"`` BlockProviderSpec constructs (enum admits it)."""
+    spec = BlockProviderSpec(
+        block_type="assessment_item",
+        tier="rewrite",
+        provider="nvidia",
+        model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        base_url="https://integrate.api.nvidia.com/v1",
+    )
+    assert spec.provider == "nvidia"
 
 
 # ---------------------------------------------------------------------------

@@ -64,41 +64,81 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from Trainforge.generators._anthropic_provider import (
-    DEFAULT_SYNTHESIS_MODEL as ANTHROPIC_DEFAULT_MODEL,
-)
-from Trainforge.generators._anthropic_provider import (
-    ENV_API_KEY as ANTHROPIC_ENV_API_KEY,
-)
-from Trainforge.generators._local_provider import (
-    DEFAULT_BASE_URL as LOCAL_DEFAULT_BASE_URL,
-)
-from Trainforge.generators._local_provider import (
-    DEFAULT_SYNTHESIS_MODEL as LOCAL_DEFAULT_MODEL,
-)
-from Trainforge.generators._local_provider import (
-    ENV_API_KEY as LOCAL_ENV_API_KEY,
-)
-from Trainforge.generators._local_provider import (
-    ENV_BASE_URL as LOCAL_ENV_BASE_URL,
-)
-from Trainforge.generators._local_provider import (
-    ENV_MODEL as LOCAL_ENV_MODEL,
-)
 from Trainforge.generators._openai_compatible_client import (
     OpenAICompatibleClient,
 )
-from Trainforge.generators._together_provider import (
-    DEFAULT_BASE_URL as TOGETHER_DEFAULT_BASE_URL,
+
+# Per-backend IDENTITY (base_url / default_model) is sourced from the unified
+# endpoint registry (``config/endpoints.yaml`` via ``lib/llm/endpoints.py``) so
+# every Courseforge LLM tier — the local 7B included — attaches to a NAMED
+# registry endpoint rather than a per-vendor constant. The env-var NAMES below
+# (``*_ENV_*``) match each registry row's ``*_env`` field exactly; resolving
+# them HERE (not in the registry) preserves the historical
+# ``explicit kwarg > env > registry-default`` precedence byte-for-byte while
+# keeping the YAML the single source of truth for the default base_url/model.
+
+# Env-var name constants (the registry rows carry these same names in their
+# ``*_env`` fields; kept here as the precedence-resolution keys).
+ANTHROPIC_ENV_API_KEY = "ANTHROPIC_API_KEY"
+LOCAL_ENV_API_KEY = "LOCAL_SYNTHESIS_API_KEY"
+LOCAL_ENV_BASE_URL = "LOCAL_SYNTHESIS_BASE_URL"
+LOCAL_ENV_MODEL = "LOCAL_SYNTHESIS_MODEL"
+TOGETHER_ENV_API_KEY = "TOGETHER_API_KEY"
+TOGETHER_ENV_MODEL = "TOGETHER_SYNTHESIS_MODEL"
+NVIDIA_ENV_API_KEY = "NVIDIA_API_KEY"
+NVIDIA_ENV_BASE_URL = "NVIDIA_BASE_URL"
+NVIDIA_ENV_MODEL = "NVIDIA_LARGE_MODEL"
+
+
+def _registry_default_model(endpoint_name: str, fallback: str) -> str:
+    """Return ``endpoint_name``'s registry default_model (no env/key needed).
+
+    Resolves against ``config/endpoints.yaml`` ignoring env overrides (the
+    branch below applies the env chain itself), so the baseline is the YAML
+    ``default_model``. Falls back to ``fallback`` if the registry can't be
+    read (anti-cycle / missing-file hardening) so a vanilla provider never
+    crashes at import.
+    """
+    try:
+        from lib.llm.endpoints import load_endpoint_registry  # noqa: PLC0415
+
+        row = load_endpoint_registry().get(endpoint_name)
+        if row and row.get("default_model"):
+            return str(row["default_model"])
+    except Exception:  # noqa: BLE001 — defensive; never crash on registry I/O
+        pass
+    return fallback
+
+
+def _registry_default_base_url(endpoint_name: str, fallback: str) -> str:
+    """Return ``endpoint_name``'s registry base_url (ignoring env override)."""
+    try:
+        from lib.llm.endpoints import load_endpoint_registry  # noqa: PLC0415
+
+        row = load_endpoint_registry().get(endpoint_name)
+        if row and row.get("base_url"):
+            return str(row["base_url"])
+    except Exception:  # noqa: BLE001 — defensive
+        pass
+    return fallback
+
+
+# Per-backend baselines projected from the registry rows. These are the
+# LAST link in the ``explicit > env > default`` chain each branch applies.
+ANTHROPIC_DEFAULT_MODEL = _registry_default_model("anthropic", "claude-sonnet-4-6")
+LOCAL_DEFAULT_MODEL = _registry_default_model("local", "qwen2.5:7b-instruct-q4_K_M")
+LOCAL_DEFAULT_BASE_URL = _registry_default_base_url("local", "http://localhost:11434/v1")
+TOGETHER_DEFAULT_MODEL = _registry_default_model(
+    "together", "meta-llama/Llama-3.3-70B-Instruct-Turbo"
 )
-from Trainforge.generators._together_provider import (
-    DEFAULT_SYNTHESIS_MODEL as TOGETHER_DEFAULT_MODEL,
+TOGETHER_DEFAULT_BASE_URL = _registry_default_base_url(
+    "together", "https://api.together.xyz/v1"
 )
-from Trainforge.generators._together_provider import (
-    ENV_API_KEY as TOGETHER_ENV_API_KEY,
+NVIDIA_DEFAULT_MODEL = _registry_default_model(
+    "nvidia", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
 )
-from Trainforge.generators._together_provider import (
-    ENV_MODEL as TOGETHER_ENV_MODEL,
+NVIDIA_DEFAULT_BASE_URL = _registry_default_base_url(
+    "nvidia", "https://integrate.api.nvidia.com/v1"
 )
 
 logger = logging.getLogger(__name__)
@@ -108,7 +148,17 @@ logger = logging.getLogger(__name__)
 # Defaults shared across Courseforge LLM tiers.
 # ---------------------------------------------------------------------------
 
-_DEFAULT_SUPPORTED_PROVIDERS: Tuple[str, ...] = ("anthropic", "together", "local")
+_DEFAULT_SUPPORTED_PROVIDERS: Tuple[str, ...] = (
+    "anthropic",
+    "together",
+    "local",
+    # NVIDIA hosted OpenAI-compatible inference API. Selected as the
+    # Courseforge rewrite LARGE / escalation tier via the capability-tier
+    # chain in ``block_routing.license_clean.yaml`` (a YAML tier with
+    # ``provider: nvidia``). Wires the shared ``OpenAICompatibleClient``
+    # at the NVIDIA base_url with the key from ``NVIDIA_API_KEY``.
+    "nvidia",
+)
 
 
 class _BaseLLMProvider(ABC):
@@ -262,6 +312,54 @@ class _BaseLLMProvider(ABC):
                 # DEFAULT_TIMEOUT_SECONDS). A tier that passes an explicit
                 # timeout (e.g. the outline / rewrite tiers, or textbook
                 # synthesis) still wins.
+                timeout=self._timeout,
+            )
+            self._anthropic_client = None
+
+        elif resolved_provider == "nvidia":
+            # NVIDIA hosted OpenAI-compatible inference API. Same wire
+            # shape as ``together`` (a hosted ``/chat/completions``
+            # endpoint behind a required bearer key), so it composes the
+            # SAME ``OpenAICompatibleClient`` — only the identity
+            # constants differ. Model resolution honors the per-tier env
+            # override (``COURSEFORGE_REWRITE_MODEL`` is applied upstream
+            # in the router projector for LOCAL tiers only, so the
+            # NVIDIA tier keeps its YAML-pinned model; here we resolve
+            # the NVIDIA-specific ``NVIDIA_LARGE_MODEL`` env override and
+            # the default nemotron model). The API key is REQUIRED — the
+            # hosted endpoint authenticates every request — and is read
+            # from ``NVIDIA_API_KEY`` (never hardcoded).
+            self._model = (
+                model
+                or os.environ.get(NVIDIA_ENV_MODEL)
+                or NVIDIA_DEFAULT_MODEL
+            )
+            resolved_key = api_key or os.environ.get(NVIDIA_ENV_API_KEY)
+            if client is None and not resolved_key:
+                raise RuntimeError(
+                    f"{NVIDIA_ENV_API_KEY} required for "
+                    f"{type(self).__name__}(provider='nvidia'); "
+                    "set the env var or inject a client (tests)."
+                )
+            self._api_key = resolved_key
+            env_base_url = os.environ.get(NVIDIA_ENV_BASE_URL)
+            self._base_url = (
+                base_url or env_base_url or NVIDIA_DEFAULT_BASE_URL
+            ).rstrip("/")
+            self._oa_client = OpenAICompatibleClient(
+                base_url=self._base_url,
+                model=self._model,
+                api_key=self._api_key,
+                capture=None,
+                provider_label="nvidia",
+                client=client,
+                json_mode=json_mode,
+                # ``self._timeout is None`` (no explicit per-tier
+                # timeout) forwards verbatim so the
+                # OpenAICompatibleClient resolves its default from
+                # ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS``; a tier that
+                # passes an explicit timeout (the rewrite tier sources a
+                # generous default) still wins.
                 timeout=self._timeout,
             )
             self._anthropic_client = None
