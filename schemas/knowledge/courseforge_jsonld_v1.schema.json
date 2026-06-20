@@ -409,8 +409,8 @@
           "description": "LLM model identifier that authored the touch (e.g., 'qwen2.5-14b-instruct-q4_K_M', 'claude-sonnet-4-6')."
         },
         "provider": {
-          "enum": ["anthropic", "local", "together", "claude_session", "deterministic"],
-          "description": "Provider backend that produced the touch. 'deterministic' covers Phase-1 deterministic templating paths."
+          "enum": ["anthropic", "claude_session", "deterministic", "local", "nvidia", "together"],
+          "description": "Provider backend that produced the touch. 'nvidia' covers the hosted NVIDIA Nemotron rewrite/escalation seat. 'deterministic' covers Phase-1 deterministic templating paths."
         },
         "tier": {
           "enum": ["outline", "validation", "rewrite", "outline_val", "rewrite_val"],
@@ -461,9 +461,14 @@
             "reflection_prompt",
             "discussion_prompt",
             "chrome",
-            "recap"
+            "recap",
+            "scenario",
+            "problem",
+            "vocab_card",
+            "formula",
+            "checklist"
           ],
-          "description": "One of the 16 canonical Phase 2 block types (mirror of Courseforge/scripts/blocks.py::BLOCK_TYPES)."
+          "description": "One of the 21 canonical Phase 2 block types (mirror of Courseforge/scripts/blocks.py::BLOCK_TYPES)."
         },
         "sequence": {
           "type": "integer",

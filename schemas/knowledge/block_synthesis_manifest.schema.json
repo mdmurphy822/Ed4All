@@ -46,9 +46,14 @@
         "reflection_prompt",
         "discussion_prompt",
         "chrome",
-        "recap"
+        "recap",
+        "scenario",
+        "problem",
+        "vocab_card",
+        "formula",
+        "checklist"
       ],
-      "description": "Block.block_type; one of the canonical 16-value BLOCK_TYPES enum."
+      "description": "Block.block_type; one of the canonical 21-value BLOCK_TYPES enum."
     },
     "page_id": {
       "type": "string",

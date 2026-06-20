@@ -85,7 +85,7 @@
         },
         "by_type": {
           "type": "object",
-          "description": "Per-block-type histogram. Keys are the 16 canonical block types (mirror of Courseforge/scripts/blocks.py::BLOCK_TYPES); values are non-negative integer counts. Zero-count types may be elided.",
+          "description": "Per-block-type histogram. Keys are the 21 canonical block types (mirror of Courseforge/scripts/blocks.py::BLOCK_TYPES); values are non-negative integer counts. Zero-count types may be elided.",
           "additionalProperties": {
             "type": "integer",
             "minimum": 0

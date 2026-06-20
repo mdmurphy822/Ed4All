@@ -419,7 +419,7 @@ cfshapes:TypedEdgeShape
 #
 # Shape contract:
 #   - blockId: required, single, non-empty xsd:string.
-#   - blockType: required, single, sh:in over the 16-value enum.
+#   - blockType: required, single, sh:in over the 21-value enum.
 #   - sequence: required, single, xsd:integer minInclusive 0.
 #   - contentHash: optional, single, xsd:string matching ^[a-f0-9]{64}$.
 #   - touchedBy: optional list of TouchShape-conformant nodes (minCount 0).
@@ -464,8 +464,13 @@ cfshapes:BlockShape
       "discussion_prompt"
       "chrome"
       "recap"
+      "scenario"
+      "problem"
+      "vocab_card"
+      "formula"
+      "checklist"
     ) ;
-    sh:message "Block.blockType must be one of the 16 canonical Phase 2 block types." ;
+    sh:message "Block.blockType must be one of the 21 canonical Phase 2 block types." ;
   ] ;
 
   sh:property [
@@ -539,8 +544,8 @@ cfshapes:TouchShape
     sh:path ed4all:provider ;
     sh:minCount 1 ;
     sh:maxCount 1 ;
-    sh:in ( "anthropic" "local" "together" "claude_session" "deterministic" ) ;
-    sh:message "Touch.provider is required and must be one of the 5 canonical providers." ;
+    sh:in ( "anthropic" "claude_session" "deterministic" "local" "nvidia" "together" ) ;
+    sh:message "Touch.provider is required and must be one of the 6 canonical providers." ;
   ] ;
 
   sh:property [

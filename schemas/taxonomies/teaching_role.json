@@ -58,6 +58,42 @@
       "purpose": "practice",
       "teaching_role": "transfer",
       "source": "Courseforge/scripts/generate_course.py:487"
+    },
+    {
+      "component": "concept",
+      "purpose": "introduce-concept",
+      "teaching_role": "introduce",
+      "source": "MCP/tools/pipeline_tools.py::_run_content_generation_rewrite (7B parity Wave 1)"
+    },
+    {
+      "component": "definition",
+      "purpose": "introduce-concept",
+      "teaching_role": "introduce",
+      "source": "MCP/tools/pipeline_tools.py::_run_content_generation_rewrite (7B parity Wave 1)"
+    },
+    {
+      "component": "explanation",
+      "purpose": "elaborate-concept",
+      "teaching_role": "elaborate",
+      "source": "MCP/tools/pipeline_tools.py::_run_content_generation_rewrite (7B parity Wave 1)"
+    },
+    {
+      "component": "example",
+      "purpose": "demonstrate",
+      "teaching_role": "elaborate",
+      "source": "MCP/tools/pipeline_tools.py::_run_content_generation_rewrite (7B parity Wave 1)"
+    },
+    {
+      "component": "summary",
+      "purpose": "consolidate",
+      "teaching_role": "synthesize",
+      "source": "MCP/tools/pipeline_tools.py::_run_content_generation_rewrite (7B parity Wave 1)"
+    },
+    {
+      "component": "recap",
+      "purpose": "review",
+      "teaching_role": "reinforce",
+      "source": "MCP/tools/pipeline_tools.py::_run_content_generation_rewrite (7B parity Wave 1)"
     }
   ]
 }

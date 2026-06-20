@@ -47,7 +47,8 @@
         { "verb": "label",      "usage_context": "diagrams or parts",                 "example_template": "Label the {parts} of {diagram}" },
         { "verb": "match",      "usage_context": "terms to definitions",              "example_template": "Match {terms} with their {definitions}" },
         { "verb": "recognize",  "usage_context": "patterns or examples",              "example_template": "Recognize {pattern} in {context}" },
-        { "verb": "select",     "usage_context": "correct options",                   "example_template": "Select the correct {option} for {question}" }
+        { "verb": "select",     "usage_context": "correct options",                   "example_template": "Select the correct {option} for {question}" },
+        { "verb": "locate",     "usage_context": "positions or values (e.g. on a number line)", "example_template": "Locate {value} on {representation}" }
       ]
     },
     "understand": {
@@ -64,7 +65,8 @@
         { "verb": "discuss",      "usage_context": "topics in depth",                 "example_template": "Discuss the implications of {topic}" },
         { "verb": "paraphrase",   "usage_context": "in own words",                    "example_template": "Paraphrase {statement} in your own words" },
         { "verb": "distinguish",  "usage_context": "between concepts",                "example_template": "Distinguish between {concept1} and {concept2}" },
-        { "verb": "illustrate",   "usage_context": "with examples",                   "example_template": "Illustrate {concept} with examples" }
+        { "verb": "illustrate",   "usage_context": "with examples",                   "example_template": "Illustrate {concept} with examples" },
+        { "verb": "translate",    "usage_context": "between representations (words to symbols)", "example_template": "Translate {expression} from {form1} to {form2}" }
       ]
     },
     "apply": {
@@ -81,7 +83,11 @@
         { "verb": "compute",      "usage_context": "calculations",                    "example_template": "Compute {value} given {inputs}" },
         { "verb": "calculate",    "usage_context": "numerical results",               "example_template": "Calculate {result} for {scenario}" },
         { "verb": "practice",     "usage_context": "skills",                          "example_template": "Practice {skill} in {context}" },
-        { "verb": "perform",      "usage_context": "tasks",                           "example_template": "Perform {task} according to {standards}" }
+        { "verb": "perform",      "usage_context": "tasks",                           "example_template": "Perform {task} according to {standards}" },
+        { "verb": "simplify",     "usage_context": "expressions via known procedures", "example_template": "Simplify {expression}" },
+        { "verb": "convert",      "usage_context": "between units or forms",           "example_template": "Convert {quantity} from {unit1} to {unit2}" },
+        { "verb": "round",        "usage_context": "values to a place or precision",   "example_template": "Round {value} to {precision}" },
+        { "verb": "multiply",     "usage_context": "numerical operations",             "example_template": "Multiply {operand1} by {operand2}" }
       ]
     },
     "analyze": {
@@ -98,7 +104,8 @@
         { "verb": "deconstruct",   "usage_context": "into parts",                     "example_template": "Deconstruct {system} into its components" },
         { "verb": "investigate",   "usage_context": "thoroughly",                     "example_template": "Investigate {topic} to understand {aspect}" },
         { "verb": "contrast",      "usage_context": "differences",                    "example_template": "Contrast {item1} with {item2}" },
-        { "verb": "attribute",     "usage_context": "causes or sources",              "example_template": "Attribute {outcome} to {cause}" }
+        { "verb": "attribute",     "usage_context": "causes or sources",              "example_template": "Attribute {outcome} to {cause}" },
+        { "verb": "predict",       "usage_context": "outcomes from patterns or models", "example_template": "Predict {outcome} given {conditions}" }
       ]
     },
     "evaluate": {

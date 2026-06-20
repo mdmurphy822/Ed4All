@@ -1,0 +1,148 @@
+# Unified LLM/API endpoint registry — single source of truth.
+#
+# Every LLM/API endpoint the codebase attaches to is one named row below.
+# Code attaches to endpoints BY NAME (e.g. "nvidia", "local") and the
+# transport + identity (base_url, model, api_key env, provenance value)
+# flow from the row — NOT from per-vendor provider modules or per-tier
+# YAML base_urls. Adding a new endpoint (a future DGX Spark, a vLLM box,
+# Together, ...) is a ONE-ROW change here plus running the provenance
+# codegen — zero new code, zero hand-edits to the three Touch.provider
+# enum sites.
+#
+# Loader: lib/llm/endpoints.py. Schema: schemas/config/endpoints.schema.json.
+# Path override: ED4ALL_ENDPOINTS_PATH (else ED4ALL_HOME, else this file).
+#
+# Field contract (see the schema for the authoritative shape):
+#   kind                  openai_compatible | anthropic | claude_session
+#   base_url              default endpoint URL (null for SDK / dispatcher kinds)
+#   base_url_env          env var overriding base_url (null = fixed endpoint)
+#   api_key_env           env var holding the bearer key
+#   api_key_default       fallback key (only "local" uses "local")
+#   api_key_required      fail-loud when key unset and no injected client
+#   model_env             env var overriding default_model
+#   default_model         per-endpoint model id
+#   loopback_only         endpoint-level loopback policy flag (default false)
+#   provenance_provider   the closed Touch.provider value this endpoint stamps
+#   vision_capable        carried from the LLM/embedding precedent
+#   vision_capable_env    env var overriding vision_capable
+#   unverified            audit flag (illustrative cloud stub not yet exercised)
+#
+# Resolution precedence per field (frozen, applies everywhere):
+#   explicit kwarg > endpoint's *_env var > registry default.
+#
+# Provenance: the closed Touch.provider set is DERIVED from the union of
+# every row's provenance_provider + the sentinel "deterministic". Many
+# endpoints can map to one provenance value (groq/fireworks/deepseek ->
+# local, together-vision -> together). The union here MUST stay equal to
+# the historical hand-maintained set
+# {anthropic, claude_session, deterministic, local, nvidia, together} —
+# the provenance set is FROZEN across this refactor.
+version: 1
+endpoints:
+  anthropic:
+    kind: anthropic                 # SDK transport, NOT openai-wire
+    base_url: null
+    base_url_env: null
+    api_key_env: ANTHROPIC_API_KEY
+    api_key_required: true
+    model_env: ANTHROPIC_SYNTHESIS_MODEL
+    default_model: claude-sonnet-4-6
+    provenance_provider: anthropic
+
+  local:
+    kind: openai_compatible
+    base_url: http://localhost:11434/v1
+    base_url_env: LOCAL_SYNTHESIS_BASE_URL
+    api_key_env: LOCAL_SYNTHESIS_API_KEY
+    api_key_default: local
+    api_key_required: false
+    model_env: LOCAL_SYNTHESIS_MODEL
+    # 7B that fits an 8GB GPU fully resident (portable standard Ollama
+    # tag). The registry default; LOCAL_SYNTHESIS_MODEL overrides per-run.
+    default_model: qwen2.5:7b-instruct-q4_K_M
+    # The answer path imposes loopback as a CONSUMER overlay; the endpoint
+    # itself is local-by-default but is NOT gated here.
+    loopback_only: false
+    provenance_provider: local
+    vision_capable: false
+    vision_capable_env: LOCAL_VISION_CAPABLE
+
+  together:
+    kind: openai_compatible
+    base_url: https://api.together.xyz/v1
+    base_url_env: null              # fixed cloud endpoint
+    api_key_env: TOGETHER_API_KEY
+    api_key_required: true
+    model_env: TOGETHER_SYNTHESIS_MODEL
+    default_model: meta-llama/Llama-3.3-70B-Instruct-Turbo
+    provenance_provider: together
+    vision_capable: false
+
+  nvidia:
+    kind: openai_compatible
+    base_url: https://integrate.api.nvidia.com/v1
+    base_url_env: NVIDIA_BASE_URL
+    api_key_env: NVIDIA_API_KEY
+    api_key_required: true
+    model_env: NVIDIA_LARGE_MODEL
+    default_model: nvidia/nemotron-3-nano-30b-a3b
+    provenance_provider: nvidia
+
+  claude_session:
+    kind: claude_session            # LocalDispatcher subagent — NOT an HTTP endpoint
+    base_url: null
+    base_url_env: null
+    api_key_required: false
+    default_model: claude-sonnet-4-6
+    provenance_provider: claude_session
+
+  # ---------------------------------------------------------------------
+  # Migrated verbatim from MCP/orchestrator/llm_backend.py::
+  # _OPENAI_COMPATIBLE_PROVIDERS (keeps together-vision + the illustrative
+  # groq/fireworks/deepseek stubs). These map their provenance onto an
+  # existing Touch value (together / local) so the closed provenance set
+  # does NOT grow.
+  # ---------------------------------------------------------------------
+  together-vision:
+    kind: openai_compatible
+    base_url: https://api.together.xyz/v1
+    base_url_env: null
+    api_key_env: TOGETHER_API_KEY
+    api_key_required: true
+    model_env: TOGETHER_VISION_MODEL
+    default_model: meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo
+    provenance_provider: together
+    vision_capable: true
+
+  groq:
+    kind: openai_compatible
+    base_url: https://api.groq.com/openai/v1
+    base_url_env: null
+    api_key_env: GROQ_API_KEY
+    api_key_required: true
+    model_env: GROQ_SYNTHESIS_MODEL
+    default_model: llama-3.3-70b-versatile
+    provenance_provider: local
+    unverified: true
+
+  fireworks:
+    kind: openai_compatible
+    base_url: https://api.fireworks.ai/inference/v1
+    base_url_env: null
+    api_key_env: FIREWORKS_API_KEY
+    api_key_required: true
+    model_env: FIREWORKS_SYNTHESIS_MODEL
+    default_model: accounts/fireworks/models/llama-v3p3-70b-instruct
+    provenance_provider: local
+    unverified: true
+
+  deepseek:
+    kind: openai_compatible
+    base_url: https://api.deepseek.com/v1
+    base_url_env: null
+    api_key_env: DEEPSEEK_API_KEY
+    api_key_required: true
+    model_env: DEEPSEEK_SYNTHESIS_MODEL
+    default_model: deepseek-chat
+    provenance_provider: local
+    unverified: true

@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/schemas/config/endpoints.schema.json",
+  "title": "Ed4All unified LLM/API endpoint registry",
+  "description": "Validates config/endpoints.yaml — the single source of truth for every LLM/API endpoint the codebase attaches to by name. Loaded + validated by lib/llm/endpoints.py::load_endpoint_registry. The closed Touch.provider provenance set is DERIVED from the union of every row's provenance_provider plus the 'deterministic' sentinel (see scripts/codegen/sync_provenance_enum.py); provenance_provider is a free string HERE precisely so the closed set lives in exactly one derivation, not in this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "endpoints"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Registry schema version. Bumped on a breaking field-contract change."
+    },
+    "endpoints": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "Map of endpoint name -> endpoint definition. The name is what code attaches to (resolve_endpoint('nvidia'), build_openai_compatible_client('local'), ...).",
+      "additionalProperties": {"$ref": "#/$defs/Endpoint"}
+    }
+  },
+  "$defs": {
+    "Endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "default_model", "api_key_required", "provenance_provider"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["openai_compatible", "anthropic", "claude_session"],
+          "description": "Transport discriminator. 'openai_compatible' = OpenAI /v1/chat/completions wire (local/together/nvidia/groq/...); 'anthropic' = Anthropic SDK (no base_url); 'claude_session' = LocalDispatcher subagent (no HTTP endpoint)."
+        },
+        "base_url": {
+          "type": ["string", "null"],
+          "description": "Default endpoint URL. Required (non-null) when kind=openai_compatible; null for anthropic / claude_session."
+        },
+        "base_url_env": {
+          "type": ["string", "null"],
+          "description": "Env var overriding base_url. null = fixed endpoint (no override)."
+        },
+        "api_key_env": {
+          "type": ["string", "null"],
+          "description": "Env var holding the bearer key."
+        },
+        "api_key_default": {
+          "type": ["string", "null"],
+          "description": "Fallback key when api_key_env is unset. Only 'local' uses the literal 'local' placeholder."
+        },
+        "api_key_required": {
+          "type": "boolean",
+          "description": "When true, resolve_endpoint raises EndpointKeyRequired if no key resolves and no client is injected."
+        },
+        "model_env": {
+          "type": ["string", "null"],
+          "description": "Env var overriding default_model."
+        },
+        "default_model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Per-endpoint default model id."
+        },
+        "loopback_only": {
+          "type": "boolean",
+          "description": "Endpoint-level loopback policy flag. The answer path keeps its OWN loopback gate as a consumer overlay; this is advisory metadata. Default false."
+        },
+        "provenance_provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The closed Touch.provider value this endpoint stamps. Many endpoints can map to one value (groq/fireworks/deepseek -> local). The closed provenance set is the union of these across all rows + 'deterministic'."
+        },
+        "vision_capable": {
+          "type": "boolean",
+          "description": "Carried verbatim from the LLM/embedding precedent: whether this endpoint's model serves vision content."
+        },
+        "vision_capable_env": {
+          "type": ["string", "null"],
+          "description": "Env var overriding vision_capable per deployment."
+        },
+        "unverified": {
+          "type": "boolean",
+          "description": "Audit flag: illustrative cloud stub not yet exercised against a live key. A post-resolve audit log surfaces the entry."
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "openai_compatible"}}},
+          "then": {
+            "properties": {"base_url": {"type": "string", "minLength": 1}},
+            "required": ["base_url"]
+          }
+        }
+      ]
+    }
+  }
+}
