@@ -26,6 +26,7 @@ v0.1.0 semantics preserved verbatim from the original ``_build_tag_graph``:
 
 from __future__ import annotations
 
+import logging
 import os
 from collections import defaultdict
 from datetime import datetime
@@ -36,6 +37,38 @@ __all__ = ["build_cooccurrence_graph"]
 # Canonical group_by levels for the W3 page-aggregation knob. ``chunk`` is the
 # byte-stable legacy default; ``page`` / ``section`` regroup pair-counting.
 _GROUP_BY_LEVELS = frozenset({"chunk", "page", "section"})
+
+# M4 degenerate-grouping fallback. When ``group_by`` is a coarse level
+# (``page`` / ``section``) but the corpus resolves into so FEW distinct real
+# groups that the pair-weight signal collapses, every pair gets ``weight = 1``
+# (one group) — and the downstream ``related_from_cooccurrence`` rule
+# (``weight >= 3``) emits ZERO ``related-to`` edges, killing the KG backbone.
+# This is the real DART failure mode on a corpus whose converter stamps a single
+# ``lesson_id`` over an entire multi-chapter PDF (all chunks fold into ONE
+# page-group). The guard re-runs pair-counting at the next-FINER grouping level
+# (``page`` -> ``section`` -> ``chunk``) when the coarse level's distinct
+# real-group count is below ``_MIN_GROUPS_FOR_THRESHOLD``. This is genuine
+# co-occurrence at a valid finer window — NOT fabricated edges.
+#
+# Default-OFF at the bare-library level to preserve the W3 page-aggregation
+# contract byte-for-byte (a single page SHOULD connect its concepts — that is
+# the documented purpose of page grouping for a normal multi-chunk page). The
+# guard targets the DEGENERATE pipeline case where the DART converter collapses
+# an entire multi-chapter PDF into ONE ``lesson_id``, so it is turned ON for
+# ``textbook_to_course`` / ``course_generation`` runs via
+# ``MCP/core/workflow_runner.py::_apply_corpus_generalization_defaults`` (the
+# same setdefault mechanism as the other corpus-generalization graph flags).
+# Set ``TRAINFORGE_COOCCURRENCE_GROUP_FALLBACK=true`` to enable it for an
+# out-of-band bare-library rebuild; ``=false`` to force it off on a pipeline run.
+_GROUP_FALLBACK_ENV = "TRAINFORGE_COOCCURRENCE_GROUP_FALLBACK"
+# The coarse->finer fallback ladder. A level falls through to the next when its
+# distinct real-group count is below the floor.
+_FINER_LEVEL = {"page": "section", "section": "chunk"}
+# Minimum distinct REAL groups (group keys that actually resolved, i.e. not the
+# per-chunk degradation buckets) a coarse level needs to carry pair-weight
+# signal. Below this, weights cannot exceed the related-to threshold of 3, so we
+# fall through to a finer level. Floor of 3 mirrors the rule's ``weight >= 3``.
+_MIN_GROUPS_FOR_THRESHOLD = 3
 
 
 def _group_key_for_chunk(chunk: Dict[str, Any], group_by: str) -> Optional[str]:
@@ -61,6 +94,45 @@ def _group_key_for_chunk(chunk: Dict[str, Any], group_by: str) -> Optional[str]:
         if isinstance(value, str) and value.strip():
             return value
     return None
+
+
+def _count_pairs(
+    *,
+    per_chunk_tags: List[List[str]],
+    chunks: List[Dict[str, Any]],
+    group_by: str,
+    co_occurrence: Dict[Tuple[str, str], int],
+) -> None:
+    """Accumulate co-occurrence pair weights at ``group_by`` granularity.
+
+    ``group_by="chunk"`` weights a pair by the number of CHUNKS it co-occurs in
+    (byte-identical to the pre-W3 path). ``page`` / ``section`` fold the
+    per-chunk tag lists into per-GROUP tag SETS (weight = number of GROUPS the
+    pair co-occurs in). Mutates ``co_occurrence`` in place. ``per_chunk_tags``
+    is the accepted-tag list per chunk (index-aligned to ``chunks``).
+    """
+    if group_by == "chunk":
+        for tags in per_chunk_tags:
+            for i, a in enumerate(tags):
+                for b in tags[i + 1:]:
+                    co_occurrence[tuple(sorted([a, b]))] += 1
+        return
+
+    # page / section: fold into per-GROUP tag SETS first.
+    #   * group key resolves -> "group:<key>" bucket (pages/sections aggregate).
+    #   * group key is None   -> a unique per-chunk bucket ("chunk:<idx>") so a
+    #     chunk lacking lesson/module/section still pairs its OWN tags (graceful
+    #     degradation; never collapses into one all-chunks group).
+    group_tag_sets: Dict[str, Set[str]] = defaultdict(set)
+    for idx, (chunk, tags) in enumerate(zip(chunks, per_chunk_tags)):
+        group_key = _group_key_for_chunk(chunk, group_by)
+        bucket = f"group:{group_key}" if group_key is not None else f"chunk:{idx}"
+        group_tag_sets[bucket].update(tags)
+    for bucket in sorted(group_tag_sets):
+        grouped = sorted(group_tag_sets[bucket])
+        for i, a in enumerate(grouped):
+            for b in grouped[i + 1:]:
+                co_occurrence[tuple(sorted([a, b]))] += 1
 
 
 def build_cooccurrence_graph(
@@ -117,8 +189,6 @@ def build_cooccurrence_graph(
     )
     from lib.ontology.labels import slug_to_label
 
-    import logging
-
     course_id = course_id or ""
     if group_by not in _GROUP_BY_LEVELS:
         logging.getLogger(__name__).warning(
@@ -160,42 +230,61 @@ def build_cooccurrence_graph(
 
     # Node-frequency + occurrences accounting stays CHUNK-level regardless of
     # ``group_by`` (node provenance is per-chunk; only pair-counting regroups).
-    # When ``group_by != "chunk"`` we fold the per-chunk tag lists into per-GROUP
-    # tag SETS, then run the pairwise loop over the per-group sets.
-    #   * group key resolves -> "group:<key>" bucket (pages/sections aggregate).
-    #   * group key is None   -> a unique per-chunk bucket ("chunk:<idx>") so a
-    #     chunk lacking lesson/module/section still pairs its OWN tags (graceful
-    #     degradation; never collapses into one all-chunks group).
-    group_tag_sets: Dict[str, Set[str]] = defaultdict(set)
-    for idx, chunk in enumerate(chunks):
+    # Accumulate the per-chunk accepted-tag lists ONCE (this drives node
+    # frequency + occurrences, which are byte-identical across ``group_by``),
+    # then run the pair-counting separately so the degenerate-grouping fallback
+    # can recompute the pairs at a finer level without re-walking the chunks.
+    per_chunk_tags: List[List[str]] = []
+    for chunk in chunks:
         chunk_id = chunk.get("id")
         tags = [t for t in chunk.get("concept_tags", []) if _accept(t)]
+        per_chunk_tags.append(tags)
         for tag in tags:
             tag_frequency[tag] += 1
             if chunk_id:
                 concept_to_chunks[_make_concept_id(tag, course_id)].add(chunk_id)
-        if group_by == "chunk":
-            # Legacy path: pair-counting per chunk, weighted by # chunks the
-            # pair co-occurs in. Byte-identical to the pre-W3 behavior.
-            for i, a in enumerate(tags):
-                for b in tags[i + 1:]:
-                    key = tuple(sorted([a, b]))
-                    co_occurrence[key] += 1
-        else:
-            group_key = _group_key_for_chunk(chunk, group_by)
-            bucket = f"group:{group_key}" if group_key is not None else f"chunk:{idx}"
-            group_tag_sets[bucket].update(tags)
 
-    if group_by != "chunk":
-        # Pair-count over per-GROUP tag SETS — weight = # groups the pair
-        # co-occurs in. Sorted for deterministic emit (the per-chunk path is
-        # already deterministic in chunk order).
-        for bucket in sorted(group_tag_sets):
-            grouped = sorted(group_tag_sets[bucket])
-            for i, a in enumerate(grouped):
-                for b in grouped[i + 1:]:
-                    key = tuple(sorted([a, b]))
-                    co_occurrence[key] += 1
+    # M4: resolve the EFFECTIVE pair-counting level. A coarse level
+    # (``page`` / ``section``) whose corpus resolves into fewer than
+    # ``_MIN_GROUPS_FOR_THRESHOLD`` distinct REAL groups can't carry weight
+    # signal (every pair lands weight == #groups < threshold), so the
+    # ``related_from_cooccurrence`` rule emits zero edges. When the fallback is
+    # enabled (default) we step DOWN the ladder (page -> section -> chunk) until
+    # we reach a level with enough distinct real groups (or ``chunk``, the
+    # floor). Disabled via ``TRAINFORGE_COOCCURRENCE_GROUP_FALLBACK=false``.
+    fallback_enabled = (
+        os.getenv(_GROUP_FALLBACK_ENV, "").lower()
+        in ("1", "true", "yes", "on")
+    )
+    effective_group_by = group_by
+    if group_by != "chunk" and fallback_enabled:
+        level = group_by
+        while level != "chunk":
+            real_groups = {
+                gk
+                for chunk in chunks
+                if (gk := _group_key_for_chunk(chunk, level)) is not None
+            }
+            if len(real_groups) >= _MIN_GROUPS_FOR_THRESHOLD:
+                break
+            finer = _FINER_LEVEL.get(level, "chunk")
+            logging.getLogger(__name__).warning(
+                "build_cooccurrence_graph: group_by=%r resolved into only %d "
+                "distinct real group(s) (< %d); the co-occurrence weight signal "
+                "would collapse and related_from_cooccurrence would emit 0 edges. "
+                "Falling back to finer level %r for pair-counting (real "
+                "co-occurrence at a valid window; nodes/occurrences unchanged).",
+                level, len(real_groups), _MIN_GROUPS_FOR_THRESHOLD, finer,
+            )
+            level = finer
+        effective_group_by = level
+
+    _count_pairs(
+        per_chunk_tags=per_chunk_tags,
+        chunks=chunks,
+        group_by=effective_group_by,
+        co_occurrence=co_occurrence,
+    )
 
     sorted_tags = sorted(tag_frequency.items(), key=lambda x: -x[1])
     nodes: List[Dict[str, Any]] = []

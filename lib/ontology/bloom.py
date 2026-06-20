@@ -1,6 +1,6 @@
 """Bloom's Taxonomy loader.
 
-Loads `schemas/taxonomies/bloom_verbs.json` (the authoritative 60-verb /
+Loads `schemas/taxonomies/bloom_verbs.json` (the authoritative 67-verb /
 6-level canonical list, structured as `properties.{level}.default` arrays
 of `{verb, usage_context, example_template}` dicts) and exposes multiple
 shapes over that single source of truth:

@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from lib.ontology.lo_backlink import (  # noqa: E402
     BacklinkResult,
     backlink_cos_to_tos,
+    resolve_reassign_mode,
     resolve_to_backlink_floor,
 )
 from lib.objectives.tests._fakes import FakeEmbed  # noqa: E402
@@ -252,3 +253,169 @@ def test_dual_floor_resolver(monkeypatch):
     # explicit arg wins over env
     monkeypatch.setenv("ED4ALL_TO_BACKLINK_FLOOR", "0.6,0.2")
     assert resolve_to_backlink_floor(0.3, 0.05) == (0.3, 0.05)
+
+
+# ---------------------------------------------------------------------------
+# M5 Fix A — anti-junk-drawer reassignment + validator-parity scoring.
+# ED4ALL_TO_BACKLINK_REASSIGN (default off):
+#   - re-scores hint-honored COs so scored_count matches what
+#     co_terminal_alignment audits (validator parity → weak-rate reconciles);
+#   - re-points a below-floor CO to its strictly-better argmax TO;
+#   - stamps weak_terminal_link on the FINAL (post-reassign) link.
+# ---------------------------------------------------------------------------
+
+
+def test_reassign_mode_resolver(monkeypatch):
+    monkeypatch.delenv("ED4ALL_TO_BACKLINK_REASSIGN", raising=False)
+    assert resolve_reassign_mode() is False
+    assert resolve_reassign_mode(True) is True
+    assert resolve_reassign_mode(False) is False
+    monkeypatch.setenv("ED4ALL_TO_BACKLINK_REASSIGN", "true")
+    assert resolve_reassign_mode() is True
+    monkeypatch.setenv("ED4ALL_TO_BACKLINK_REASSIGN", "on")
+    assert resolve_reassign_mode() is True
+    monkeypatch.setenv("ED4ALL_TO_BACKLINK_REASSIGN", "garbage")
+    assert resolve_reassign_mode() is False
+    # explicit arg wins over env
+    monkeypatch.setenv("ED4ALL_TO_BACKLINK_REASSIGN", "true")
+    assert resolve_reassign_mode(False) is False
+
+
+def test_off_mode_excludes_hints_from_score(monkeypatch):
+    """Default (off): a hint-honored CO is NOT scored → not floor-eligible.
+
+    This is the UNDER-REPORTING behavior the validator disagrees with: a
+    cosine-0.2 hinted link is silently honored and never counted weak.
+    """
+    monkeypatch.delenv("ED4ALL_TO_BACKLINK_REASSIGN", raising=False)
+    terminals = [
+        {"id": "TO-01", "statement": "algebra equations variables linear"},
+        {"id": "TO-02", "statement": "geometry triangle angle measure"},
+    ]
+    # CO's text is disjoint from TO-01 (cosine ≈ 0) but it carries a HINT to it.
+    chapters = [
+        {
+            "id": "CO-01",
+            "statement": "photosynthesis chlorophyll sunlight plants",
+            "terminal_id": "TO-01",
+        },
+    ]
+    result = backlink_cos_to_tos(terminals, chapters, embed=FakeEmbed())
+    assert result.scored_count == 0  # hint excluded
+    assert result.weak_link_count == 0
+    assert chapters[0].get("weak_terminal_link") is None
+    assert chapters[0]["terminal_id"] == "TO-01"  # honored as-is
+
+
+def test_reassign_stamps_weak_when_no_better_to(monkeypatch):
+    """A CO whose nearest TO is cosine ~0.2 is STAMPED weak, not silent.
+
+    Validator parity: in reassign mode the hint-honored CO IS scored, so the
+    weak count matches the co_terminal_alignment recompute (1 of 1 below floor).
+    """
+    monkeypatch.setenv("ED4ALL_TO_BACKLINK_REASSIGN", "true")
+    terminals = [
+        {"id": "TO-01", "statement": "algebra equations variables linear"},
+        {"id": "TO-02", "statement": "geometry triangle angle measure"},
+    ]
+    # Disjoint from BOTH TOs → argmax stays where it is (no better fit), but
+    # the link IS below floor → must be stamped weak.
+    chapters = [
+        {
+            "id": "CO-01",
+            "statement": "photosynthesis chlorophyll sunlight plants cells",
+            "terminal_id": "TO-01",
+        },
+    ]
+    result = backlink_cos_to_tos(terminals, chapters, embed=FakeEmbed())
+    assert result.scored_count == 1  # hint NOW scored (validator parity)
+    assert result.weak_link_count == 1
+    assert result.weak_link_rate == 1.0
+    assert chapters[0]["weak_terminal_link"] is True
+    assert chapters[0]["weak_terminal_link_score"] < 0.45
+    assert result.reassigned_count == 0  # no better TO to move to
+
+
+def test_reassign_repoints_to_better_terminal(monkeypatch):
+    """A below-floor CO wrongly hinted to TO-01 is re-pointed to its real TO-02."""
+    monkeypatch.setenv("ED4ALL_TO_BACKLINK_REASSIGN", "true")
+    terminals = [
+        {"id": "TO-01", "statement": "algebra equations variables linear"},
+        {"id": "TO-02", "statement": "geometry triangle angle measure shapes"},
+    ]
+    # Statement is clearly geometry (TO-02) but the upstream hint mis-assigned
+    # it to TO-01. cosine(CO, TO-01) is below the floor; cosine(CO, TO-02) is
+    # high → reassign to TO-02.
+    chapters = [
+        {
+            "id": "CO-01",
+            "statement": "geometry triangle angle measure shapes",
+            "terminal_id": "TO-01",
+        },
+    ]
+    result = backlink_cos_to_tos(terminals, chapters, embed=FakeEmbed())
+    assert chapters[0]["terminal_id"] == "TO-02"  # re-pointed off the junk drawer
+    assert result.reassigned_count == 1
+    # The final (TO-02) link is strong → NOT stamped weak.
+    assert chapters[0].get("weak_terminal_link") is None
+    assert result.weak_link_count == 0
+
+
+def test_reassign_matches_validator_weak_count(monkeypatch):
+    """Backlink weak-rate reconciles with a validator-style recompute.
+
+    Mimics co_terminal_alignment: for every CO with a resolvable terminal_id,
+    recompute cosine(co, assigned_to) at the SAME 0.45 floor. The backlink's
+    weak_link_count (reassign mode) must equal that independent recount.
+    """
+    monkeypatch.setenv("ED4ALL_TO_BACKLINK_REASSIGN", "true")
+    embed = FakeEmbed()
+    terminals = [
+        {"id": "TO-01", "statement": "integer factors multiples divisibility lcm"},
+        {"id": "TO-02", "statement": "geometry triangle angle measure shapes"},
+    ]
+    # 2 strong (match a TO), 2 junk-drawer hints to TO-01 with no better fit.
+    chapters = [
+        {"id": "CO-01", "statement": "integer factors multiples divisibility",
+         "terminal_id": "TO-01"},
+        {"id": "CO-02", "statement": "geometry triangle angle measure",
+         "terminal_id": "TO-02"},
+        {"id": "CO-03", "statement": "square roots radicals irrational",
+         "terminal_id": "TO-01"},
+        {"id": "CO-04", "statement": "additive inverse opposite number",
+         "terminal_id": "TO-01"},
+    ]
+    result = backlink_cos_to_tos(terminals, chapters, embed=embed)
+
+    # Independent validator-style recompute over the FINAL terminal_id.
+    from lib.embedding._math import cosine_similarity
+    to_vecs = {
+        t["id"]: embed.encode_batch([t["statement"]])[0] for t in terminals
+    }
+    validator_weak = 0
+    for co in chapters:
+        co_vec = embed.encode_batch([co["statement"]])[0]
+        cos = cosine_similarity(co_vec, to_vecs[co["terminal_id"]])
+        if cos < 0.45:
+            validator_weak += 1
+
+    assert result.scored_count == 4  # all 4 audited (hints included)
+    assert result.weak_link_count == validator_weak
+
+
+def test_reassign_token_fallback(monkeypatch):
+    """Reassign mode works on the embeddings-absent token-overlap path too."""
+    monkeypatch.setenv("ED4ALL_TO_BACKLINK_REASSIGN", "true")
+    terminals = [
+        {"id": "TO-01", "statement": "algebra equations variables linear"},
+        {"id": "TO-02", "statement": "geometry triangle angle measure"},
+    ]
+    chapters = [
+        {"id": "CO-01", "statement": "photosynthesis chlorophyll sunlight",
+         "terminal_id": "TO-01"},
+    ]
+    result = backlink_cos_to_tos(terminals, chapters, embed=None)
+    assert result.used_embeddings is False
+    assert result.scored_count == 1  # hint scored under token floor
+    assert result.weak_link_count == 1
+    assert chapters[0]["weak_terminal_link"] is True

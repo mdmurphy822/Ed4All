@@ -75,9 +75,10 @@ def test_canonical_shapes():
             f"{level}: objects/set shape mismatch"
         )
 
-    # Canonical schema has 60 unique verbs.
+    # Canonical schema has 67 unique verbs (60 base + M5 7 math verbs:
+    # locate / translate / simplify / convert / round / multiply / predict).
     flat = get_all_verbs()
-    assert len(flat) == 60, f"Expected 60 canonical verbs, got {len(flat)}"
+    assert len(flat) == 67, f"Expected 67 canonical verbs, got {len(flat)}"
 
 
 def test_defensive_copy_semantics():

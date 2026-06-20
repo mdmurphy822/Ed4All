@@ -146,3 +146,67 @@ def test_verb_at_end_of_text_is_detected():
 def test_verb_followed_by_comma_is_detected():
     matches = detect_bloom_verbs("First, analyze the data thoroughly.")
     assert matches == [("analyze", "analyze")]
+
+
+# ---------------------------------------------------------------------- #
+# M5 Fix C — math verbs added to the canonical Bloom taxonomy.
+# The 7B sample-course run flagged 16 verb/Bloom mismatches; 13 were FALSE
+# POSITIVES because common math verbs were absent from the taxonomy. These
+# tests pin each new verb to its assigned Bloom level and confirm the 3 REAL
+# misclassifications (CO-16/CO-20/CO-41) still flag.
+# ---------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "verb,expected_level",
+    [
+        ("simplify", "apply"),
+        ("translate", "understand"),
+        ("convert", "apply"),
+        ("round", "apply"),
+        ("multiply", "apply"),
+        ("locate", "remember"),
+        ("predict", "analyze"),
+    ],
+)
+def test_math_verbs_resolve_to_correct_level(verb, expected_level):
+    """Each M5-added math verb detects at its assigned Bloom level."""
+    level, detected_verb = detect_bloom_level(verb)
+    assert level == expected_level, (
+        f"{verb!r} expected level {expected_level!r}, got {level!r}"
+    )
+    assert detected_verb == verb
+
+
+def test_math_verbs_in_objective_prose():
+    """The new verbs detect inside realistic objective statements."""
+    cases = {
+        "Simplify the rational expression to lowest terms.": ("apply", "simplify"),
+        "Translate the word problem into an algebraic equation.": (
+            "understand", "translate"),
+        "Convert the fraction to a decimal.": ("apply", "convert"),
+        "Round the answer to two decimal places.": ("apply", "round"),
+        "Multiply the two binomials.": ("apply", "multiply"),
+        "Locate the value on the number line.": ("remember", "locate"),
+        "Predict the next term in the sequence.": ("analyze", "predict"),
+    }
+    for text, expected in cases.items():
+        assert detect_bloom_level(text) == expected, (
+            f"{text!r} -> {detect_bloom_level(text)!r}, expected {expected!r}"
+        )
+
+
+def test_real_misclassifications_still_flag():
+    """The 3 REAL mismatches must remain detectable mismatches.
+
+    CO-16 carried bloom_verb='evaluate' but was labeled bloom_level='apply';
+    CO-20 / CO-41 carried bloom_verb='identify' labeled 'understand'. The
+    canonical level of each verb must DIFFER from the (wrong) declared level so
+    the verb-Bloom alignment check still fires.
+    """
+    # 'evaluate' is an evaluate-level verb, NOT apply (CO-16 was mislabeled apply).
+    assert detect_bloom_level("evaluate")[0] == "evaluate"
+    assert detect_bloom_level("evaluate")[0] != "apply"
+    # 'identify' is a remember-level verb, NOT understand (CO-20/CO-41 mislabeled).
+    assert detect_bloom_level("identify")[0] == "remember"
+    assert detect_bloom_level("identify")[0] != "understand"

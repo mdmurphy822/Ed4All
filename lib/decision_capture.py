@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 from dataclasses import asdict, dataclass, field, is_dataclass
 
 # Worker W3: advisory file locking around the legacy decision-capture write
@@ -360,6 +361,22 @@ class DecisionCapture:
         self._run_stream_file = None
         if self._run_context:
             self._run_decisions_path = self._run_context.decisions_path / f"decisions_{tool}_{self.session_id}.jsonl"
+
+        # Re-entrant lock guarding the per-decision append + multi-stream
+        # write critical section in :meth:`log_decision`. Single-threaded
+        # callers (the overwhelming majority) acquire an uncontended lock
+        # per decision — byte-identical output, negligible overhead. Under
+        # the opt-in concurrent rewrite-tier fanout
+        # (``COURSEFORGE_REWRITE_CONCURRENCY > 1``) multiple worker threads
+        # share ONE capture instance; this lock serializes the
+        # ``self.decisions.append`` + ``_write_to_streams`` so concurrent
+        # JSONL writes never interleave mid-line and no event is lost. The
+        # POSIX ``flock`` in ``_write_to_streams`` is inter-PROCESS only (and
+        # a silent no-op on WSL2 DrvFS), so it does not protect threads that
+        # share a single file handle — this in-process lock does. RLock so a
+        # nested ``log_decision`` (e.g. ``log_non_decision`` -> ``log_decision``)
+        # on the same thread does not self-deadlock.
+        self._log_lock = threading.RLock()
 
         # Initialize decision log
         self.decisions: List[Dict[str, Any]] = []
@@ -762,8 +779,13 @@ class DecisionCapture:
         )
 
         self._validate_record(record)
-        self.decisions.append(record)
-        self._write_to_streams(record)
+        # Serialize the append + multi-stream write so concurrent rewrite-tier
+        # worker threads sharing this capture cannot interleave JSONL lines or
+        # race the in-memory list. Uncontended (single-threaded) callers pay
+        # only an atomic lock acquire/release — output stays byte-identical.
+        with self._log_lock:
+            self.decisions.append(record)
+            self._write_to_streams(record)
 
     def _assess_quality(
         self,

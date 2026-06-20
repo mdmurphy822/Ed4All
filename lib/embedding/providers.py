@@ -7,6 +7,17 @@ flag). The same operator standing rule applies here: a new embedding
 backend is a registry-entry change to ``_EMBEDDING_PROVIDERS``, never a
 new subclass.
 
+This registry is DELIBERATELY separate from the unified chat-LLM
+endpoint registry (``config/endpoints.yaml`` / ``lib/llm/endpoints.py``):
+embeddings live on a different transport axis (``st`` in-process
+sentence-transformers vs. ``openai-embeddings`` HTTP), carry
+embedding-only metadata (``device`` / ``batch_size`` /
+``trust_remote_code`` / per-model license + task-prefix registry), and
+fail closed with their own ``EmbeddingBackendUnavailable`` /
+anti-poisoning (``ED4ALL_EMBEDDING_ALLOW_FAKE``) semantics — none of
+which belong in a chat-completions endpoint row. Folding the two would
+conflate two unrelated config axes, so they stay siblings.
+
 Three execution kinds:
 
 - ``"st"`` — in-process ``sentence-transformers`` (the ``[embedding]``

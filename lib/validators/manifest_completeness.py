@@ -64,6 +64,15 @@ SUBSTANTIVE_BLOCK_TYPES: frozenset = frozenset(
         "reflection_prompt",
         "discussion_prompt",
         "prereq_set",
+        # Wave-2 block-variety additions — all content-bearing and
+        # source-grounded (their routing requires ``source_ref``), so
+        # they belong in the substantive bucket alongside concept /
+        # example / explanation.
+        "scenario",
+        "problem",
+        "vocab_card",
+        "formula",
+        "checklist",
     }
 )
 SCAFFOLDING_BLOCK_TYPES: frozenset = frozenset({"objective", "chrome", "recap"})

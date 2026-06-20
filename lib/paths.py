@@ -252,6 +252,32 @@ def dart_output_dir() -> Path:
     return _data_dir("dart-output", DART_PATH / "output")
 
 
+def get_endpoints_path() -> Path:
+    """Resolve the unified LLM/API endpoint registry file.
+
+    Single source of truth for every LLM/API endpoint the codebase
+    attaches to by name (``config/endpoints.yaml``). Loaded + schema-
+    validated by ``lib/llm/endpoints.py``.
+
+    Priority:
+    1. ``ED4ALL_ENDPOINTS_PATH`` env var (out-of-tree ConfigMap / mounted
+       override — mirrors ``COURSEFORGE_BLOCK_ROUTING_PATH``).
+    2. ``ED4ALL_HOME/config/endpoints.yaml`` when ``ED4ALL_HOME`` is set.
+    3. ``CONFIG_PATH / "endpoints.yaml"`` — the canonical in-tree default.
+
+    Read at call time so tests can monkeypatch the env var without
+    re-importing modules. Byte-stable to the in-tree path when neither
+    env var is set.
+    """
+    env_override = os.environ.get("ED4ALL_ENDPOINTS_PATH", "").strip()
+    if env_override:
+        return Path(env_override)
+    home = ed4all_home()
+    if home is not None:
+        return home / "config" / "endpoints.yaml"
+    return CONFIG_PATH / "endpoints.yaml"
+
+
 def get_state_runs_dir() -> Path:
     """Resolve the ``state/runs/`` parent directory.
 
@@ -563,6 +589,7 @@ __all__ = [
     "ensure_data_dir",
     "courseforge_exports_dir",
     "dart_output_dir",
+    "get_endpoints_path",
     "get_state_runs_dir",
 
     # LibV2 root resolver

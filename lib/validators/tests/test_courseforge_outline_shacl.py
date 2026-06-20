@@ -140,7 +140,7 @@ def test_critical_violation_returns_action_block():
     ``action="block"`` per Phase 3 §A: structural misses cannot be
     fixed by re-rolling the outline tier.
 
-    Trigger: blockType outside the canonical 16-value enum fires
+    Trigger: blockType outside the canonical 21-value enum fires
     ``cfshapes:BlockShape`` ``sh:in`` constraint with default severity
     sh:Violation.
     """
