@@ -605,6 +605,233 @@ def detect_page_chrome(
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 4: printed-label accuracy via physical→printed offset interpolation
+# ---------------------------------------------------------------------------
+#
+# The page-chrome detector populates ``PageChrome.page_number_lines`` with the
+# DIRECTLY-DETECTED printed labels (``{physical_page_1indexed: chrome_line}``).
+# On corpora with sparse / no digit-tailed chrome, most pages have NO direct
+# label and historically fall back to the raw PHYSICAL PDF page — wrong by the
+# front-matter offset (printed p.1 may be physical p.15).
+#
+# ``derive_page_label_map`` closes that gap WITHOUT fabricating: from the
+# confirmed ``(physical, printed)`` pairs it derives the physical→printed
+# offset (``printed - physical``) and, for an unlabeled page whose run is
+# covered by a CONFIDENT, consistent offset, emits the INTERPOLATED printed
+# page. Pages with no confident offset stay physical. The result feeds a
+# three-valued provenance kind so downstream consumers know whether a "p. N"
+# is directly printed, interpolated, or a raw physical fallback.
+#
+# Anti-fabrication contract (RISK-A):
+#   * Interpolate ONLY from confirmed ``(physical, printed)`` pairs.
+#   * Zero confirmed pairs  -> every page is ``physical`` (never guess).
+#   * A run with conflicting / inconsistent offsets -> that run is ``physical``.
+#   * A directly-detected label is always ``printed``.
+
+PAGE_KIND_PRINTED = "printed"
+PAGE_KIND_INTERPOLATED = "interpolated"
+PAGE_KIND_PHYSICAL = "physical"
+
+# Default provenance kind for any page with no resolvable printed signal.
+# Pinned-contract: an ABSENT ``data-dart-page-kind`` attribute means
+# ``physical`` (back-compat), so the emitter omits the attribute for this
+# value; this constant is the in-memory default the resolver returns.
+DEFAULT_PAGE_KIND = PAGE_KIND_PHYSICAL
+
+
+@dataclass(frozen=True)
+class PageLabel:
+    """Resolved printed-page label for a single physical page.
+
+    Attributes:
+        physical: 1-indexed physical PDF page.
+        printed: The printed label to surface (``data-dart-pages``). Equals
+            ``physical`` for a ``physical``-kind page.
+        kind: One of ``printed`` / ``interpolated`` / ``physical``.
+    """
+
+    physical: int
+    printed: int
+    kind: str
+
+
+def _confirmed_pairs(page_number_lines: Dict[int, str]) -> List[Tuple[int, int]]:
+    """Extract confirmed ``(physical, printed)`` pairs from chrome lines.
+
+    Each value in ``page_number_lines`` is the raw chrome line; the printed
+    page number is its trailing-or-leading digit run. Returns the pairs sorted
+    by physical page. A line that yields no parseable number is skipped (it
+    never confirms an offset). Both the trailing-digit (``"Title 47"``) and
+    leading-digit (``"47 Author"``) chrome forms are honoured so even-page
+    footers contribute pairs too.
+    """
+    pairs: List[Tuple[int, int]] = []
+    for physical in sorted(page_number_lines):
+        raw_line = page_number_lines[physical]
+        norm = _normalise(raw_line)
+        _prefix, printed = _strip_trailing_digits(norm)
+        if printed is None:
+            _residual, printed = _strip_leading_digits(norm)
+        if printed is None:
+            continue
+        pairs.append((int(physical), int(printed)))
+    return pairs
+
+
+def _segment_offsets(
+    pairs: List[Tuple[int, int]],
+) -> List[Tuple[int, int, int]]:
+    """Group confirmed pairs into contiguous runs sharing a constant offset.
+
+    Returns a list of ``(start_physical, end_physical, offset)`` segments
+    where ``offset = printed - physical`` is constant across the segment and
+    consistent with EVERY confirmed pair inside the ``[start, end]`` physical
+    range. A run breaks when a later pair's offset differs from the run's
+    offset (a front-matter→body restart is exactly such a break).
+
+    The segment boundaries extend only as far as the OUTERMOST confirmed pairs
+    that agree on the offset — interpolation never extends a run past the last
+    pair that validates it. Pairs whose offset is internally contradictory
+    (two pairs at the same physical page disagreeing, or a pair that breaks an
+    otherwise-consistent run mid-stream) start a new segment, so a corrupt run
+    cannot poison a clean one.
+    """
+    if not pairs:
+        return []
+
+    segments: List[Tuple[int, int, int]] = []
+    run_start = pairs[0][0]
+    run_end = pairs[0][0]
+    run_offset = pairs[0][1] - pairs[0][0]
+
+    for physical, printed in pairs[1:]:
+        offset = printed - physical
+        if offset == run_offset:
+            run_end = physical
+        else:
+            segments.append((run_start, run_end, run_offset))
+            run_start = physical
+            run_end = physical
+            run_offset = offset
+
+    segments.append((run_start, run_end, run_offset))
+    return segments
+
+
+def derive_page_label_map(
+    page_number_lines: Dict[int, str],
+    *,
+    total_pages: Optional[int] = None,
+    interpolation_reach: Optional[int] = None,
+) -> Dict[int, PageLabel]:
+    """Resolve a printed label + provenance kind for every physical page.
+
+    Parameters
+    ----------
+    page_number_lines:
+        ``PageChrome.page_number_lines`` — the directly-detected printed
+        labels keyed by physical page.
+    total_pages:
+        When known, the resolver returns a :class:`PageLabel` for every
+        physical page in ``1..total_pages`` (unlabeled pages get either an
+        interpolated or a physical entry). When ``None``, the map covers only
+        directly-detected pages plus pages reachable by interpolation within
+        ``interpolation_reach`` of a confirmed pair.
+    interpolation_reach:
+        Maximum physical-page distance from a confirmed pair within a segment
+        that an unlabeled page may be interpolated across. ``None`` (default)
+        means "no distance cap inside a segment" — every page inside a
+        confident segment interpolates. A finite reach also lets a confident
+        segment extend its offset to the immediately-adjacent unlabeled pages
+        even past the outermost confirmed pair (bounded extrapolation); set it
+        when front-matter pages before the first confirmed label should still
+        resolve. Defaults to in-segment-only interpolation (the honest, no
+        guessing-past-the-evidence posture).
+
+    Returns
+    -------
+    Dict[int, PageLabel]
+        ``{physical_page: PageLabel}``. A directly-detected page is always
+        ``kind="printed"``. A page inside a confident offset segment is
+        ``kind="interpolated"``. Every other page is ``kind="physical"``
+        (``printed == physical``). With ZERO confirmed pairs the map is empty
+        (caller falls back to physical for every page) — never a guess.
+    """
+    pairs = _confirmed_pairs(page_number_lines)
+
+    # Detect contradictory pairs at the SAME physical page: a physical page
+    # that yields two different printed numbers across detection is
+    # low-confidence; drop it from the confirmed set entirely.
+    seen: Dict[int, int] = {}
+    contradictory: Set[int] = set()
+    for physical, printed in pairs:
+        if physical in seen and seen[physical] != printed:
+            contradictory.add(physical)
+        else:
+            seen[physical] = printed
+    if contradictory:
+        pairs = [(p, n) for (p, n) in pairs if p not in contradictory]
+
+    result: Dict[int, PageLabel] = {}
+    direct: Dict[int, int] = {p: n for (p, n) in pairs}
+
+    # Always stamp the directly-detected printed labels first.
+    for physical, printed in direct.items():
+        result[physical] = PageLabel(physical, printed, PAGE_KIND_PRINTED)
+
+    if not pairs:
+        # Anti-fabrication: no confirmed pair -> nothing to interpolate. The
+        # caller treats absence as physical.
+        if total_pages:
+            for physical in range(1, int(total_pages) + 1):
+                result.setdefault(
+                    physical, PageLabel(physical, physical, PAGE_KIND_PHYSICAL)
+                )
+        return result
+
+    segments = _segment_offsets(pairs)
+
+    def _interpolate(physical: int) -> Optional[PageLabel]:
+        for start, end, offset in segments:
+            lo, hi = start, end
+            if interpolation_reach is not None:
+                lo = start - interpolation_reach
+                hi = end + interpolation_reach
+            if lo <= physical <= hi:
+                printed = physical + offset
+                if printed < 1:
+                    # Never emit a non-positive printed page (front-matter
+                    # below the printed-1 boundary): honest physical fallback.
+                    return None
+                return PageLabel(physical, printed, PAGE_KIND_INTERPOLATED)
+        return None
+
+    # Determine the physical pages to resolve.
+    if total_pages:
+        candidate_pages = range(1, int(total_pages) + 1)
+    else:
+        # Resolve only directly-detected pages + pages reachable by
+        # interpolation inside a segment (and any reach extension).
+        covered: Set[int] = set(direct)
+        for start, end, _offset in segments:
+            lo = start if interpolation_reach is None else start - interpolation_reach
+            hi = end if interpolation_reach is None else end + interpolation_reach
+            covered.update(range(max(1, lo), hi + 1))
+        candidate_pages = sorted(covered)
+
+    for physical in candidate_pages:
+        if physical in result:
+            continue  # already a directly-detected printed label
+        interp = _interpolate(physical)
+        if interp is not None:
+            result[physical] = interp
+        elif total_pages:
+            result[physical] = PageLabel(physical, physical, PAGE_KIND_PHYSICAL)
+
+    return result
+
+
 def _confirm_chrome_by_bbox(
     candidate_keys: Set[str],
     text_spans: list,
@@ -679,6 +906,307 @@ def _confirm_chrome_by_bbox(
                 confirmed.add(leading_key)
 
     return confirmed
+
+
+# ---------------------------------------------------------------------------
+# OQ-3: bbox printed-label CROSS-CHECK (raises the printed-label hit-rate)
+# ---------------------------------------------------------------------------
+#
+# The chrome detector confirms ``(physical, printed)`` pairs ONLY from
+# digit-tail (or leading-digit) running-chrome lines in the pdftotext stream.
+# On many corpora that signal is sparse — a clean PDF whose page number sits
+# alone in the bottom margin produces a bare ``"47"`` line that the
+# frequency/threshold path may never promote to chrome (a lone short digit run
+# looks like list-bleed), so NO confirmed pair is recorded and the page falls
+# back to its raw physical number.
+#
+# This cross-check ADDS confirmed pairs from PyMuPDF span POSITIONS. For each
+# page it scans the spans whose bbox lives in the top-10% / bottom-10% margin
+# band, finds a SHORT mostly-digit token (a bare page-number candidate), and —
+# critically — only accepts it as a confirmed pair when it is CONSISTENT:
+#
+#   * It must form a MONOTONIC-increasing digit run across consecutive pages
+#     at the SAME margin (top vs bottom), OR
+#   * It must CORROBORATE an already-confirmed chrome pair (same printed number
+#     on that physical page) / extend a chrome run by +1.
+#
+# A single arbitrary number floating in body text (outside the margin band) is
+# never a candidate; an isolated, non-monotonic margin number is dropped. The
+# bar is "agrees with or extends the evidence", never "invent a label".
+
+# A printed-page-number candidate must be a SHORT token. A long header line
+# that merely ends in digits is handled by the chrome digit-tail path, not
+# here — the bbox cross-check targets the bare-number margin case.
+_MAX_BBOX_LABEL_TOKEN_LEN = 12
+
+
+def _span_printed_number(text: str) -> Optional[int]:
+    """Extract a printed page number from a SHORT margin span ``text``.
+
+    Reuses the same digit-extraction helpers chrome detection uses
+    (``_strip_trailing_digits`` / ``_strip_leading_digits``) so the bbox
+    rule matches the chrome rule. Accepts:
+
+    * a bare digit run (``"47"``) — the common clean-PDF margin case, OR
+    * a tiny header/footer where the page number is the trailing or leading
+      digit run (``"47 Chapter Title"`` truncated, ``"p. 47"``).
+
+    Rejects anything whose stripped form is longer than
+    :data:`_MAX_BBOX_LABEL_TOKEN_LEN` after removing the number (a long
+    running-header line is the chrome path's job, not this cross-check's), and
+    anything with no parseable number.
+    """
+    norm = _normalise(text)
+    if not norm:
+        return None
+    # Bare number — the high-confidence margin case.
+    if re.fullmatch(r"\d{1,4}", norm):
+        try:
+            return int(norm)
+        except ValueError:
+            return None
+    # Trailing-digit short token (e.g. "p. 47").
+    prefix, page = _strip_trailing_digits(norm)
+    if page is not None and len(prefix) <= _MAX_BBOX_LABEL_TOKEN_LEN:
+        return page
+    # Leading-digit short token (e.g. "47 ch3").
+    residual, page = _strip_leading_digits(norm)
+    if page is not None and len(residual) <= _MAX_BBOX_LABEL_TOKEN_LEN:
+        return page
+    return None
+
+
+def _collect_bbox_label_candidates(
+    text_spans: list,
+) -> Dict[str, Dict[int, int]]:
+    """Group bbox printed-number candidates by margin edge.
+
+    Returns ``{"top": {physical_page: printed}, "bottom": {...}}`` — the
+    raw, UN-validated candidates (one per page per edge; the first qualifying
+    span on a page at a given edge wins). Anti-fabrication consistency is
+    applied later by :func:`_confirm_monotonic_runs`.
+
+    Graceful: spans without 4-tuple bbox / int page / positive page height are
+    skipped. Page height is the max span ``y1`` on that page.
+    """
+    # Per-page height = max y1 across that page's spans.
+    per_page_height: Dict[int, float] = {}
+    for span in text_spans:
+        bbox = getattr(span, "bbox", None) or ()
+        if len(bbox) < 4:
+            continue
+        page = getattr(span, "page", None)
+        if not isinstance(page, int):
+            continue
+        try:
+            y1f = float(bbox[3])
+        except (TypeError, ValueError):
+            continue
+        if y1f > per_page_height.get(page, 0.0):
+            per_page_height[page] = y1f
+
+    top: Dict[int, int] = {}
+    bottom: Dict[int, int] = {}
+    for span in text_spans:
+        text = getattr(span, "text", "") or ""
+        if not text.strip():
+            continue
+        bbox = getattr(span, "bbox", None) or ()
+        if len(bbox) < 4:
+            continue
+        page = getattr(span, "page", None)
+        if not isinstance(page, int):
+            continue
+        try:
+            _, y0, _, y1 = (float(v) for v in bbox[:4])
+        except (TypeError, ValueError):
+            continue
+        height = per_page_height.get(page, 0.0)
+        if height <= 0:
+            continue
+        printed = _span_printed_number(text)
+        if printed is None:
+            continue
+        # Margin band: top 10% (y0 <= 0.10H) or bottom 10% (y1 >= 0.90H).
+        if y0 <= height * 0.10:
+            top.setdefault(page, printed)
+        elif y1 >= height * 0.90:
+            bottom.setdefault(page, printed)
+        # Body-text numbers (neither band) are NEVER taken — anti-fabrication.
+
+    return {"top": top, "bottom": bottom}
+
+
+def _confirm_monotonic_runs(
+    edge_candidates: Dict[int, int],
+    *,
+    existing_pairs: Dict[int, int],
+) -> Dict[int, int]:
+    """Filter raw margin candidates down to anti-fabrication-confirmed pairs.
+
+    A candidate ``{physical: printed}`` at one margin edge is CONFIRMED when:
+
+    * it belongs to a MONOTONIC-increasing run of length >= 2 across
+      consecutive (or near-consecutive) physical pages whose printed numbers
+      step in lock-step with the physical page (constant offset, +1 per page),
+      OR
+    * it CORROBORATES an existing chrome-confirmed pair on the same physical
+      page (same printed number), OR
+    * it extends an existing chrome pair by exactly the chrome offset on an
+      adjacent physical page.
+
+    An isolated, non-monotonic, offset-inconsistent margin number is DROPPED.
+    Returns ``{physical: printed}`` of confirmed pairs only.
+
+    The monotonic test keys on ``offset = printed - physical`` being CONSTANT
+    across a contiguous physical run: a true running page number has a fixed
+    front-matter offset, so consecutive pages share one offset. An arbitrary
+    body number that slipped into a margin band almost never lines up with its
+    neighbours' offsets, so it is rejected.
+    """
+    confirmed: Dict[int, int] = {}
+    if not edge_candidates:
+        return confirmed
+
+    pages = sorted(edge_candidates)
+
+    # 1) Monotonic constant-offset runs. Walk consecutive physical pages and
+    #    grow a run while ``offset`` stays constant AND the physical step is +1
+    #    (printed increments lock-step with physical). Runs of length >= 2 are
+    #    confirmed in full.
+    run: List[int] = [pages[0]]
+    run_offset = edge_candidates[pages[0]] - pages[0]
+
+    def _flush(r: List[int]) -> None:
+        if len(r) >= 2:
+            for p in r:
+                confirmed[p] = edge_candidates[p]
+
+    for phys in pages[1:]:
+        offset = edge_candidates[phys] - phys
+        prev = run[-1]
+        if offset == run_offset and phys == prev + 1:
+            run.append(phys)
+        else:
+            _flush(run)
+            run = [phys]
+            run_offset = offset
+    _flush(run)
+
+    # 2) Corroboration / single-page extension of the chrome-confirmed pairs.
+    #    A lone margin candidate that AGREES with a chrome pair (same printed
+    #    number, same physical page) is high-confidence even without a run.
+    #    A candidate one physical page away from a chrome pair, stepping by the
+    #    chrome offset, extends it.
+    for phys, printed in edge_candidates.items():
+        if phys in confirmed:
+            continue
+        if existing_pairs.get(phys) == printed:
+            confirmed[phys] = printed
+            continue
+        for ex_phys, ex_printed in existing_pairs.items():
+            ex_offset = ex_printed - ex_phys
+            if printed - phys == ex_offset and abs(phys - ex_phys) == 1:
+                confirmed[phys] = printed
+                break
+
+    return confirmed
+
+
+def confirm_printed_labels_by_bbox(
+    text_spans: list,
+    *,
+    existing_page_number_lines: Optional[Dict[int, str]] = None,
+) -> Dict[int, str]:
+    """Return ADDITIONAL ``{physical: chrome_line}`` pairs from span bboxes.
+
+    The returned dict is in the SAME shape as
+    :attr:`PageChrome.page_number_lines` (physical page -> a raw line whose
+    digit run is the printed number) so it can be merged straight into a
+    :class:`PageChrome` and consumed unchanged by
+    :func:`derive_page_label_map`. The "line" we synthesise for a bbox-only
+    confirmation is the bare printed-number string (e.g. ``"47"``), which
+    re-parses to the same number through ``_confirmed_pairs``.
+
+    Anti-fabrication: only consistency-confirmed candidates (monotonic margin
+    runs, or corroboration/extension of the existing chrome pairs) are
+    returned. Body-text numbers and isolated margin numbers are never
+    returned. When ``text_spans`` is falsy or no candidate qualifies, the
+    result is an EMPTY dict (caller's chrome-only behaviour is byte-identical).
+
+    The result NEVER overrides an existing chrome pair — keys already present
+    in ``existing_page_number_lines`` are omitted (the chrome line is the
+    higher-provenance record). Both top and bottom margins contribute; on the
+    rare page where both yield a confirmed-but-different number, the existing
+    chrome pair (if any) wins, else the bottom-margin reading wins (page
+    numbers live in the footer far more often than the header).
+    """
+    if not text_spans:
+        return {}
+
+    existing_pairs: Dict[int, int] = {}
+    for physical, raw_line in (existing_page_number_lines or {}).items():
+        norm = _normalise(raw_line)
+        _prefix, printed = _strip_trailing_digits(norm)
+        if printed is None:
+            _residual, printed = _strip_leading_digits(norm)
+        if printed is not None and isinstance(physical, int):
+            existing_pairs[physical] = printed
+
+    try:
+        edges = _collect_bbox_label_candidates(text_spans)
+    except Exception as exc:  # noqa: BLE001 — cross-check never blocks
+        logger.debug("bbox printed-label candidate scan failed: %s", exc)
+        return {}
+
+    confirmed_top = _confirm_monotonic_runs(
+        edges.get("top", {}), existing_pairs=existing_pairs
+    )
+    confirmed_bottom = _confirm_monotonic_runs(
+        edges.get("bottom", {}), existing_pairs=existing_pairs
+    )
+
+    # Merge: bottom wins over top on conflict (footers carry page numbers
+    # far more often); an existing chrome pair always wins over both.
+    merged: Dict[int, int] = {}
+    for phys, printed in confirmed_top.items():
+        merged[phys] = printed
+    for phys, printed in confirmed_bottom.items():
+        merged[phys] = printed  # bottom overrides top
+
+    additions: Dict[int, str] = {}
+    for phys, printed in merged.items():
+        if phys in existing_pairs:
+            continue  # chrome pair is higher-provenance; never override
+        additions[phys] = str(printed)
+    return additions
+
+
+def enrich_page_chrome_with_bbox(chrome: PageChrome, text_spans: list) -> int:
+    """Merge bbox-confirmed printed-label pairs INTO ``chrome`` in place.
+
+    Returns the number of pairs added. A no-op (returns 0) when
+    ``text_spans`` is absent or no candidate qualifies — the chrome record is
+    untouched and downstream behaviour stays byte-identical. Graceful: any
+    failure is swallowed (returns 0) so the cross-check never blocks
+    extraction.
+    """
+    if chrome is None or not text_spans:
+        return 0
+    try:
+        additions = confirm_printed_labels_by_bbox(
+            text_spans,
+            existing_page_number_lines=chrome.page_number_lines,
+        )
+    except Exception as exc:  # noqa: BLE001 — cross-check never blocks
+        logger.debug("bbox printed-label cross-check failed: %s", exc)
+        return 0
+    added = 0
+    for physical, line in additions.items():
+        if physical not in chrome.page_number_lines:
+            chrome.page_number_lines[physical] = line
+            added += 1
+    return added
 
 
 def strip_page_chrome(raw_pdftotext: str, chrome: PageChrome) -> str:
@@ -773,4 +1301,16 @@ def strip_page_chrome(raw_pdftotext: str, chrome: PageChrome) -> str:
     return _FORM_FEED.join(stripped) if _FORM_FEED in raw_pdftotext else stripped[0]
 
 
-__all__ = ["PageChrome", "detect_page_chrome", "strip_page_chrome"]
+__all__ = [
+    "PageChrome",
+    "PageLabel",
+    "PAGE_KIND_PRINTED",
+    "PAGE_KIND_INTERPOLATED",
+    "PAGE_KIND_PHYSICAL",
+    "DEFAULT_PAGE_KIND",
+    "confirm_printed_labels_by_bbox",
+    "derive_page_label_map",
+    "detect_page_chrome",
+    "enrich_page_chrome_with_bbox",
+    "strip_page_chrome",
+]

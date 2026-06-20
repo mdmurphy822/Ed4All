@@ -103,17 +103,34 @@ def _provenance_attrs(block: ClassifiedBlock) -> str:
     page number is often the book's printed page, not the PDF's
     physical page, and is what downstream consumers want to cite).
     The attribute is omitted entirely when no page is known.
+
+    Phase 4 (printed-label accuracy): a companion
+    ``data-dart-page-kind`` provenance attribute records HOW the page
+    number was determined — ``printed`` (page-chrome digit-tail directly
+    detected the printed label), ``interpolated`` (derived via a
+    physical->printed offset from confirmed pairs), or implicitly
+    ``physical`` (no printed signal; the raw PDF page index). Per the
+    pinned cross-team contract, an ABSENT attribute MEANS ``physical``
+    (back-compat: existing HTML without it -> physical), so the
+    attribute is emitted ONLY for the ``printed`` / ``interpolated``
+    kinds the segmenter stamps into ``extra["page_kind"]``.
     """
     parts = [_role_attr(block), f'data-dart-block-id="{block.raw.block_id}"']
     page_label = ""
+    page_kind = ""
     extra = getattr(block.raw, "extra", None) or {}
     if isinstance(extra, dict):
         page_label = str(extra.get("page_label") or "").strip()
+        page_kind = str(extra.get("page_kind") or "").strip()
     page_value = page_label or (
         str(block.raw.page) if block.raw.page is not None else ""
     )
     if page_value:
         parts.append(f'data-dart-pages="{page_value}"')
+        # Emit the provenance kind only for printed / interpolated. The
+        # physical fallback is the absent-attribute default per contract.
+        if page_kind in {"printed", "interpolated"}:
+            parts.append(f'data-dart-page-kind="{page_kind}"')
     parts.append(f'data-dart-confidence="{block.confidence:.2f}"')
     parts.append(f'data-dart-source="{_data_dart_source_value(block)}"')
     return " ".join(parts)

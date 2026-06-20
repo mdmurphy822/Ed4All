@@ -158,6 +158,17 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
     # every block on that page as ``extra["page_label"]`` so the
     # template emitter can surface ``data-dart-pages="164"`` even after
     # the chrome line itself has been stripped from the content stream.
+    #
+    # Phase 4 (printed-label accuracy): instead of stamping ONLY the
+    # directly-detected pages, derive a full physical->printed label map
+    # via ``derive_page_label_map``. From the confirmed
+    # ``(physical, printed)`` pairs it interpolates the printed label for
+    # unlabeled pages covered by a confident, consistent offset segment
+    # (printed p.1 = physical p.15 -> offset -14). Each block also carries
+    # ``extra["page_kind"]`` (``printed`` / ``interpolated`` / ``physical``)
+    # so the template emitter can stamp the ``data-dart-page-kind``
+    # provenance attribute. Anti-fabrication: zero confirmed pairs -> every
+    # page stays physical (the resolver returns no interpolated entry).
     page_chrome = getattr(doc, "page_chrome", None)
     page_labels = (
         getattr(page_chrome, "page_number_lines", None) or {}
@@ -165,21 +176,37 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
         else {}
     )
     if page_labels:
-        for block in text_blocks:
-            if block.page is not None and block.page in page_labels:
-                # Derive the numeric label — the value stored in
-                # page_number_lines is the raw chrome line; we want
-                # just the page number.
-                from DART.converter.page_chrome import (
-                    _normalise,
-                    _strip_trailing_digits,
-                )
+        from DART.converter.page_chrome import (
+            PAGE_KIND_PHYSICAL,
+            derive_page_label_map,
+        )
 
-                raw_line = page_labels[block.page]
-                norm = _normalise(raw_line)
-                _prefix, page_num = _strip_trailing_digits(norm)
-                if page_num is not None:
-                    block.extra["page_label"] = str(page_num)
+        # Total physical pages drives full-coverage resolution so an
+        # unlabeled page inside a confident segment still interpolates.
+        total_pages = getattr(doc, "pages_count", 0) or 0
+        block_max_page = max(
+            (b.page for b in text_blocks if b.page is not None),
+            default=0,
+        )
+        total_pages = max(int(total_pages or 0), block_max_page)
+
+        label_map = derive_page_label_map(
+            page_labels,
+            total_pages=total_pages or None,
+        )
+        for block in text_blocks:
+            if block.page is None:
+                continue
+            label = label_map.get(block.page)
+            if label is None:
+                continue
+            block.extra["page_label"] = str(label.printed)
+            # Stamp the kind only when it is informative (printed /
+            # interpolated). ``physical`` is the absent-attribute default
+            # downstream, so we leave it off to keep HTML byte-identical to
+            # the pre-Phase-4 output when no printed signal covers the page.
+            if label.kind != PAGE_KIND_PHYSICAL:
+                block.extra["page_kind"] = label.kind
 
     # Wave 18: build the TOC_NAV block first so it prepends the list.
     toc_blocks: List[RawBlock] = []

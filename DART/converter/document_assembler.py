@@ -135,6 +135,55 @@ def _aggregate_block_pages(blocks: List[ClassifiedBlock]) -> str:
     return _format_pages_attr(pages)
 
 
+# Page-kind provenance ladder (Phase 4 printed-label accuracy). The aggregate
+# of a fallback wrapper can never claim a kind STRONGER than every contributing
+# page justifies, so we emit the WEAKEST kind present across the constituents
+# (physical < interpolated < printed). Per the pinned cross-team contract,
+# ``physical`` is the absent-attribute default — emitting it explicitly on the
+# wrapper is pointless, so the floor short-circuits to "no attribute".
+_PAGE_KIND_STRENGTH = {"physical": 0, "interpolated": 1, "printed": 2}
+
+
+def _block_page_kind(block: ClassifiedBlock) -> str:
+    """Resolve a block's page-kind provenance for aggregation.
+
+    Reuses the SAME read the converter's per-block emit uses
+    (``block_templates._provenance_attrs`` → ``raw.extra["page_kind"]``):
+    values ``printed`` / ``interpolated``, with an absent / unrecognised
+    kind meaning ``physical`` per the pinned cross-team contract.
+    """
+    extra = getattr(block.raw, "extra", None) or {}
+    if isinstance(extra, dict):
+        page_kind = str(extra.get("page_kind") or "").strip()
+        if page_kind in {"printed", "interpolated"}:
+            return page_kind
+    return "physical"
+
+
+def _aggregate_block_page_kind(blocks: List[ClassifiedBlock]) -> str:
+    """Aggregate the constituent blocks' page-kind into a single wrapper value.
+
+    Mirrors :func:`_aggregate_block_pages`: only blocks that actually
+    CONTRIBUTED a page number (``_block_page_value`` is not ``None``) feed the
+    aggregate, so the wrapper's ``data-dart-page-kind`` stays consistent with
+    its ``data-dart-pages``. The aggregate is the WEAKEST kind present
+    (physical < interpolated < printed) — a wrapper spanning mixed-provenance
+    pages can never honestly claim the stronger label (anti-fabrication floor).
+
+    Returns the empty string when no contributing block carries a printed /
+    interpolated kind (i.e. the aggregate is ``physical``); the caller then
+    omits the attribute, byte-identical to the pre-Phase-4 output.
+    """
+    kinds = [
+        _block_page_kind(b) for b in blocks if _block_page_value(b) is not None
+    ]
+    if not kinds:
+        return ""
+    weakest = min(kinds, key=lambda k: _PAGE_KIND_STRENGTH[k])
+    # ``physical`` is the absent-attribute default — never emit it explicitly.
+    return weakest if weakest in {"printed", "interpolated"} else ""
+
+
 def _split_metadata(
     classified_blocks: List[ClassifiedBlock],
 ) -> tuple[List[ClassifiedBlock], List[ClassifiedBlock]]:
@@ -780,11 +829,18 @@ def assemble_html(
         # downstream chunker can harvest real per-chunk page provenance.
         pages_attr = _aggregate_block_pages(body_blocks)
         pages_snippet = f' data-dart-pages="{pages_attr}"' if pages_attr else ""
+        # Phase 4: thread the page-KIND provenance through too, so the wrapper
+        # doesn't silently read as ``physical`` when its constituent blocks
+        # carry a printed / interpolated label. Aggregated to the weakest kind
+        # present (anti-fabrication floor); omitted when ``physical`` (absent
+        # == physical per the pinned contract → byte-identical to pre-Phase-4).
+        kind_attr = _aggregate_block_page_kind(body_blocks)
+        kind_snippet = f' data-dart-page-kind="{kind_attr}"' if kind_attr else ""
         body_html = (
             '<section class="dart-section" role="region" '
             'aria-labelledby="main-content-heading" '
             'data-dart-source="dart_converter" '
-            f'data-dart-block-id="main-content"{pages_snippet}>'
+            f'data-dart-block-id="main-content"{pages_snippet}{kind_snippet}>'
             f"{body_html}"
             "</section>"
         )

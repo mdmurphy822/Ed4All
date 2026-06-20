@@ -1221,6 +1221,17 @@ def _format_pages_attr(pages: Any) -> str:
     return ",".join(str(i) for i in ints)
 
 
+# Phase 4 (printed-label accuracy): provenance kinds for ``data-dart-page-kind``.
+# Pinned cross-team contract — values exactly ``printed`` / ``interpolated`` /
+# ``physical``; an ABSENT attribute MEANS ``physical`` (back-compat). The
+# multi-source synthesis path derives section pages from ``estimate_page_range``
+# (physical PDF pages), so it has NO printed-label signal and emits no kind by
+# default — that absence correctly reads as ``physical`` downstream.
+PAGE_KIND_PRINTED = "printed"
+PAGE_KIND_INTERPOLATED = "interpolated"
+PAGE_KIND_PHYSICAL = "physical"
+
+
 def _build_dart_attrs(
     block_id: Optional[str] = None,
     source: Optional[str] = None,
@@ -1228,6 +1239,7 @@ def _build_dart_attrs(
     pages: Optional[List[int]] = None,
     confidence: Optional[float] = None,
     strategy: Optional[str] = None,
+    page_kind: Optional[str] = None,
 ) -> str:
     """Build a string of ``data-dart-*`` attributes (with leading space).
 
@@ -1235,6 +1247,12 @@ def _build_dart_attrs(
     omitted when the page list is empty (we do not emit lies), and
     ``data-dart-confidence`` is omitted when ``1.0`` (the implicit default
     for directly-extracted blocks).
+
+    Phase 4: ``page_kind`` stamps the companion ``data-dart-page-kind``
+    provenance attribute. Per the pinned contract an ABSENT attribute means
+    ``physical``, so a ``physical`` (or ``None``) ``page_kind`` emits nothing —
+    only ``printed`` / ``interpolated`` are written, and only when a page value
+    is actually present.
     """
     attrs: List[str] = []
     if block_id:
@@ -1247,6 +1265,10 @@ def _build_dart_attrs(
     pages_attr = _format_pages_attr(pages) if pages else ""
     if pages_attr:
         attrs.append(f'data-dart-pages="{pages_attr}"')
+        if page_kind in {PAGE_KIND_PRINTED, PAGE_KIND_INTERPOLATED}:
+            attrs.append(
+                f'data-dart-page-kind="{html.escape(page_kind, quote=True)}"'
+            )
     if confidence is not None and confidence < 1.0 and confidence >= 0.0:
         attrs.append(f'data-dart-confidence="{confidence:.2f}"')
     if strategy:

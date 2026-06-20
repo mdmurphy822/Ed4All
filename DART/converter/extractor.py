@@ -1175,6 +1175,29 @@ def extract_document(
             logger.debug("Text-span extraction raised unexpectedly: %s", exc)
             text_spans = []
 
+        # OQ-3 bbox printed-label CROSS-CHECK. The page-chrome detector
+        # confirms ``(physical, printed)`` pairs only from digit-tailed
+        # chrome lines in the pdftotext stream — sparse on corpora whose
+        # page number sits alone in the margin. Now that PyMuPDF spans
+        # (with bbox positions) are available, scan the top/bottom margin
+        # bands for SHORT digit tokens and merge any consistency-confirmed
+        # (monotonic-run or chrome-corroborating) pairs into the chrome
+        # record. This feeds MORE confirmed pairs into
+        # ``derive_page_label_map`` (the segmenter reads
+        # ``chrome.page_number_lines``), raising the printed-label hit-rate
+        # and the offset-interpolation coverage. Anti-fabrication: a lone
+        # body-text or isolated margin number is never taken. No-op (and
+        # byte-identical to the chrome-only path) when no candidate
+        # qualifies or spans are absent.
+        try:
+            from DART.converter.page_chrome import enrich_page_chrome_with_bbox
+
+            enrich_page_chrome_with_bbox(chrome, text_spans)
+        except Exception as exc:  # noqa: BLE001 — cross-check never blocks
+            logger.debug(
+                "bbox printed-label cross-check raised unexpectedly: %s", exc
+            )
+
         try:
             links = _extract_links_pymupdf(fitz_doc)
         except Exception as exc:  # noqa: BLE001

@@ -26,13 +26,23 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from DART.converter.block_roles import BlockRole, ClassifiedBlock, RawBlock  # noqa: E402
 from DART.converter.document_assembler import (  # noqa: E402
+    _aggregate_block_page_kind,
     _aggregate_block_pages,
     assemble_html,
 )
 
 
-def _para(text: str, page: int | None, page_label: str | None = None) -> ClassifiedBlock:
-    extra = {"page_label": page_label} if page_label else {}
+def _para(
+    text: str,
+    page: int | None,
+    page_label: str | None = None,
+    page_kind: str | None = None,
+) -> ClassifiedBlock:
+    extra: dict = {}
+    if page_label:
+        extra["page_label"] = page_label
+    if page_kind:
+        extra["page_kind"] = page_kind
     raw = RawBlock(text=text, block_id=f"b{page}", page=page, extra=extra)
     return ClassifiedBlock(
         raw=raw,
@@ -72,6 +82,62 @@ def test_aggregate_empty_when_no_pages() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _aggregate_block_page_kind — page-kind provenance ladder
+# ---------------------------------------------------------------------------
+
+
+def test_aggregate_kind_all_printed() -> None:
+    blocks = [
+        _para("a", 1, page_label="47", page_kind="printed"),
+        _para("b", 2, page_label="48", page_kind="printed"),
+    ]
+    assert _aggregate_block_page_kind(blocks) == "printed"
+
+
+def test_aggregate_kind_all_interpolated() -> None:
+    blocks = [
+        _para("a", 1, page_label="47", page_kind="interpolated"),
+        _para("b", 2, page_label="48", page_kind="interpolated"),
+    ]
+    assert _aggregate_block_page_kind(blocks) == "interpolated"
+
+
+def test_aggregate_kind_mixed_falls_to_weakest_physical() -> None:
+    """One printed + one physical (no kind) -> weakest floor ``physical`` ->
+    emitted as the absent-attribute default (empty string)."""
+    blocks = [
+        _para("a", 1, page_label="47", page_kind="printed"),
+        _para("b", 2),  # physical (no page_kind)
+    ]
+    assert _aggregate_block_page_kind(blocks) == ""
+
+
+def test_aggregate_kind_printed_plus_interpolated_falls_to_interpolated() -> None:
+    """Mixed printed + interpolated -> weakest present is ``interpolated``."""
+    blocks = [
+        _para("a", 1, page_label="47", page_kind="printed"),
+        _para("b", 2, page_label="48", page_kind="interpolated"),
+    ]
+    assert _aggregate_block_page_kind(blocks) == "interpolated"
+
+
+def test_aggregate_kind_none_when_no_kind() -> None:
+    """No constituent carries a kind -> emit nothing (absent == physical)."""
+    blocks = [_para("a", 1), _para("b", 2)]
+    assert _aggregate_block_page_kind(blocks) == ""
+
+
+def test_aggregate_kind_ignores_pageless_blocks() -> None:
+    """A block with a printed kind but NO page number never contributed a
+    page, so it doesn't lift the wrapper's aggregate kind."""
+    blocks = [
+        _para("a", 1),  # physical, contributes page 1
+        _para("b", None, page_kind="printed"),  # no page -> excluded
+    ]
+    assert _aggregate_block_page_kind(blocks) == ""
+
+
+# ---------------------------------------------------------------------------
 # assemble_html — fallback-section page stamping
 # ---------------------------------------------------------------------------
 
@@ -104,6 +170,61 @@ def test_fallback_section_omits_pages_when_unknown() -> None:
     fallback = re.search(r'<section class="dart-section"[^>]*>', html)
     assert fallback is not None
     assert "data-dart-pages" not in fallback.group(0)
+
+
+def test_fallback_section_emits_page_kind_when_all_printed() -> None:
+    """All constituent pages share kind ``printed`` -> wrapper emits
+    ``data-dart-page-kind="printed"`` alongside ``data-dart-pages``."""
+    blocks = [
+        _para("Intro.", 1, page_label="47", page_kind="printed"),
+        _para("Recap.", 2, page_label="48", page_kind="printed"),
+    ]
+    html = assemble_html(blocks, title="Doc", metadata={})
+    m = re.search(
+        r'<section class="dart-section"[^>]*data-dart-block-id="main-content"'
+        r'[^>]*data-dart-pages="47-48"[^>]*data-dart-page-kind="([^"]+)"',
+        html,
+    )
+    assert m is not None, "fallback section missing data-dart-page-kind"
+    assert m.group(1) == "printed"
+
+
+def test_fallback_section_page_kind_all_interpolated() -> None:
+    blocks = [
+        _para("Intro.", 1, page_label="47", page_kind="interpolated"),
+        _para("Recap.", 2, page_label="48", page_kind="interpolated"),
+    ]
+    html = assemble_html(blocks, title="Doc", metadata={})
+    assert 'data-dart-page-kind="interpolated"' in html
+
+
+def test_fallback_section_page_kind_mixed_falls_to_physical() -> None:
+    """One printed + one physical -> the honest floor is ``physical``, which is
+    the absent-attribute default: NO ``data-dart-page-kind`` is emitted (never
+    an invented stronger label)."""
+    blocks = [
+        _para("Intro.", 1, page_label="47", page_kind="printed"),
+        _para("Recap.", 2),  # physical
+    ]
+    html = assemble_html(blocks, title="Doc", metadata={})
+    fallback = re.search(r'<section class="dart-section"[^>]*>', html)
+    assert fallback is not None
+    assert "data-dart-page-kind" not in fallback.group(0)
+    # data-dart-pages still aggregates both contributing pages (sorted).
+    assert 'data-dart-pages="2,47"' in fallback.group(0)
+
+
+def test_fallback_section_no_page_kind_is_byte_identical() -> None:
+    """No-regression: when NO constituent carries a page_kind (the whole
+    existing corpus today), the wrapper output is BYTE-IDENTICAL to a run
+    whose helper would have to add a kind attr — i.e. no
+    ``data-dart-page-kind`` token appears anywhere in the document."""
+    blocks = [_para("Intro prose.", 1), _para("Stage prose.", 2), _para("Recap.", 3)]
+    html = assemble_html(blocks, title="Photosynthesis", metadata={})
+    # Pages still flow through (unchanged behaviour).
+    assert 'data-dart-pages="1-3"' in html
+    # The new attribute never appears for kind-less constituents.
+    assert "data-dart-page-kind" not in html
 
 
 @pytest.mark.skipif(
