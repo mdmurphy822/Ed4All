@@ -2939,8 +2939,15 @@ class WorkflowRunner:
         if not getattr(phase, "optional", False):
             return False
 
-        # Skip trainforge_assessment if generate_assessments is False
-        if phase.name == "trainforge_assessment":
+        # Skip the assessment phases if generate_assessments is False.
+        # ``assessment_synthesis`` (W10 pre-packaging QTI/discussion/assignment
+        # surface) AND ``trainforge_assessment`` (post-package assessment gen)
+        # are both gated by --no-assessments / generate_assessments=false. The
+        # W10 phase was added without updating this skip (it only named
+        # trainforge_assessment), so a --no-assessments run still dispatched
+        # assessment_synthesis and failed (CLAUDE.md documents it as
+        # "skipped via generate_assessments=false").
+        if phase.name in ("trainforge_assessment", "assessment_synthesis"):
             return not workflow_params.get("generate_assessments", True)
 
         # Skip training_synthesis if --skip-training was passed. This is the

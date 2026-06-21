@@ -174,6 +174,15 @@ def _inject_source_ids_attr(html: str, source_ids_value: str) -> str:
 _REWRITE_BLOCK_TYPE_CONTENT_TYPE: Dict[str, str] = {
     "self_check_question": "assessment_item",
     "activity": "exercise",
+    # Issue I6 instruction-palette-v2: backstop content-type for the three
+    # new block types. The rewrite contracts already stamp
+    # data-cf-content-type on the emitted HTML; this map is the fallback the
+    # content-type backstop uses when the LLM omitted it. The values are
+    # canonical ChunkType members (added to schemas/taxonomies/content_type
+    # .json::$defs.ChunkType by I6) so BlockContentTypeValidator accepts them.
+    "table": "table",
+    "acronym": "acronym",
+    "key_idea": "key_idea",
 }
 
 
@@ -1064,6 +1073,56 @@ def _render_block_fallback_html(
             '<div class="activity-card" data-cf-component="activity" '
             'data-cf-purpose="practice">'
             f"<p>{esc(instruction)}</p><ol>{practice}</ol></div>"
+        )
+
+    elif block_type == "table":
+        # Issue I6: deterministic, WCAG-correct table — <caption> + a
+        # scoped <th scope="col"> header + one <tr> per claim. Each claim
+        # becomes a single-column row (the fallback has no column structure
+        # to mine, so a one-column accessible table is the honest shape).
+        caption = claims[0] if claims else "Comparison"
+        rows = claims[1:] if len(claims) > 1 else claims
+        row_html = "".join(f"<tr><td>{esc(c)}</td></tr>" for c in rows)
+        body_parts.append(
+            "<table>"
+            f"<caption>{esc(caption)}</caption>"
+            '<thead><tr><th scope="col">Detail</th></tr></thead>'
+            f"<tbody>{row_html}</tbody></table>"
+        )
+
+    elif block_type == "acronym":
+        # Issue I6: deterministic <dl> with matched <dt>/<dd> pairs. The
+        # first claim is the mnemonic; each remaining claim is a letter→term
+        # mapping (split on the first ':' / '-' / '=' when present, else the
+        # claim's leading letter maps to the whole claim).
+        mnemonic = claims[0] if claims else "Acronym"
+        pairs = claims[1:] if len(claims) > 1 else claims
+        dl_items: List[str] = []
+        for c in pairs:
+            letter, term = c, c
+            for sep in (":", "—", "-", "="):
+                if sep in c:
+                    head, _, tail = c.partition(sep)
+                    letter = head.strip() or (c[:1])
+                    term = tail.strip() or c
+                    break
+            else:
+                letter = c[:1]
+                term = c
+            dl_items.append(f"<dt>{esc(letter)}</dt><dd>{esc(term)}</dd>")
+        body_parts.append(
+            '<div class="acronym-card">'
+            f"<p><strong>{esc(mnemonic)}</strong></p>"
+            f'<dl class="acronym-list">{"".join(dl_items)}</dl></div>'
+        )
+
+    elif block_type == "key_idea":
+        # Issue I6: deterministic <aside> with a "Key Idea" framing label.
+        principle = claims[0] if claims else "Key Idea."
+        extra = "".join(f"<p>{esc(c)}</p>" for c in claims[1:])
+        body_parts.append(
+            '<aside class="key-idea">'
+            f"<p><strong>Key Idea:</strong> {esc(principle)}</p>{extra}</aside>"
         )
 
     else:
@@ -2589,10 +2648,13 @@ _PAGE_TYPE_LABELS: Dict[str, str] = {
     "application": "Applying the Skills",
     "self_check": "Check Your Understanding",
     "summary": "Summary",
+    # Feature I5 — deterministic per-TO "Key Terms" page (opt-in via
+    # ED4ALL_KEY_TERMS_PAGE; default OFF keeps the five-type list intact).
+    "key_terms": "Key Terms",
 }
 
 _PAGE_ID_TYPE_RE = re.compile(
-    r"^week[_-]?\d+(?:_(?P<ptype>overview|content|application|self_check|summary))?",
+    r"^week[_-]?\d+(?:_(?P<ptype>overview|content|application|self_check|summary|key_terms))?",
     re.IGNORECASE,
 )
 
@@ -3834,7 +3896,8 @@ async def _run_stage2_window_synthesis(
             raise
         _embed = None
 
-    # ---- Pass D: embedding dedup (+ Fix 1A union cap/relevance-prune). -
+    # ---- Pass D: embedding dedup (+ Fix 1A union cap/relevance-prune;
+    #      I3 PRONG A distinct-skill split is gated inside dedup_candidates). -
     dedup = dedup_candidates(
         _co_pool,
         embed=_embed,
@@ -3851,6 +3914,29 @@ async def _run_stage2_window_synthesis(
             grounding_mode,
         )
         return [], [], "", {}
+
+    # ---- I3 PRONG B: source-richness BACKFILL (opt-in). ---------------
+    # Retain the PRE-DEDUP grounded pool (``_co_pool``): for any content-bearing
+    # chunk left uncited by the post-dedup/split canonical set, PROMOTE the
+    # best-grounded DISCARDED pre-dedup candidate citing that chunk into a new
+    # CO. Promotion only (no re-synthesis); each promoted CO's source_chunk_ids
+    # SUBSET the candidate's (anti-fabrication). Default off → no-op.
+    from lib.objectives.source_backfill import backfill_uncovered_chunks
+    _backfill = backfill_uncovered_chunks(
+        canonical=chapter_cos,
+        pre_dedup_candidates=_co_pool,
+        chunks_by_id=chunks_by_id,
+        capture=capture,
+    )
+    if _backfill.available and _backfill.cos_promoted:
+        logger.info(
+            "plan_course_structure: I3 PRONG B backfilled %d CO(s); content "
+            "chunk coverage %d->%d uncovered (of %d content-bearing).",
+            _backfill.cos_promoted,
+            _backfill.uncovered_before,
+            _backfill.uncovered_after,
+            _backfill.content_bearing_chunks,
+        )
 
     # ---- Mint CO-NN AFTER Pass C + D over the survivors. --------------
     for _idx, _co in enumerate(chapter_cos, start=1):
@@ -3942,6 +4028,17 @@ async def _run_stage2_window_synthesis(
         # max_pairwise_cosine / near_dup_pairs are surfaced for pinning).
         "max_chunks_per_objective": dedup.max_chunks_per_objective,
         "pruned_chunk_total": dedup.pruned_chunk_total,
+        # I3 PRONG A — distinct-skill split signals.
+        "clusters_split_for_distinct_skill": (
+            dedup.clusters_split_for_distinct_skill
+        ),
+        "distinct_skill_count": dedup.distinct_skill_count,
+        # I3 PRONG B — source-richness backfill signals.
+        "backfill_available": _backfill.available,
+        "backfill_cos_promoted": _backfill.cos_promoted,
+        "backfill_uncovered_before": _backfill.uncovered_before,
+        "backfill_uncovered_after": _backfill.uncovered_after,
+        "backfill_content_chunks": _backfill.content_bearing_chunks,
         "canonical_co_count": len(chapter_cos),
         "terminal_count": len(terminal),
         # WS1 — bottom-up TO derivation signals. ``cluster_signals`` is {} on
@@ -5762,11 +5859,22 @@ _PAGE_TYPE_BLOCK_PLAN: Dict[str, Tuple[Tuple[str, str], ...]] = {
         ("summary_takeaway", "understand"),
         ("recap", "remember"),
     ),
+    # Feature I5 — the deterministic key-terms page composes vocab_card
+    # blocks (one per term) OUTSIDE the LLM block-plan loop, so this entry is
+    # only a defensive fallback for ``_page_block_plan_for`` (the key_terms
+    # page type is never authored via ``route_with_self_consistency``).
+    "key_terms": (
+        ("vocab_card", "remember"),
+    ),
 }
 
 # Canonical week page-type emission order. ``content`` is expanded to one
 # page per week TOPIC (``content_01``, ``content_02``, …) inside the loop;
-# the other four are emitted exactly once per week.
+# the other four are emitted exactly once per week. ``key_terms`` is
+# DELIBERATELY EXCLUDED — it is a deterministic post-pass (feature I5,
+# ``_build_key_terms_blocks``) gated behind ``ED4ALL_KEY_TERMS_PAGE``, not an
+# LLM-authored page type — so the five-type LLM loop stays byte-identical when
+# the flag is off.
 _WEEK_PAGE_TYPES: Tuple[str, ...] = (
     "overview",
     "content",
@@ -5834,6 +5942,30 @@ def _dynamic_block_plan_enabled() -> bool:
     return (
         os.environ.get(_ED4ALL_DYNAMIC_BLOCK_PLAN_ENV, "").strip().lower()
         in _ED4ALL_DYNAMIC_BLOCK_PLAN_TRUTHY
+    )
+
+
+# Feature I5: per-TO deterministic "Key Terms" page gate. Default OFF → no
+# key-terms page is emitted, every existing snapshot / chunk-count / Studio-nav
+# list stays BYTE-IDENTICAL. When truthy, ``_build_key_terms_blocks`` authors a
+# ``week_NN_key_terms.html`` page of grounded vocab cards (no LLM).
+_ED4ALL_KEY_TERMS_PAGE_ENV = "ED4ALL_KEY_TERMS_PAGE"
+_ED4ALL_KEY_TERMS_PAGE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+# Mirror of ``lib.generation.key_terms.KEY_TERMS_TEMPLATE_TYPE`` — the
+# ``Block.template_type`` marker the rewrite tier reads to short-circuit the
+# LLM dispatch for a pre-authored key-terms vocab card. Kept as a local literal
+# so the hot rewrite path needs no import.
+_KEY_TERMS_TEMPLATE_TYPE = "key_terms"
+
+
+def _key_terms_page_enabled() -> bool:
+    """Read ``ED4ALL_KEY_TERMS_PAGE`` each call (tests toggle inline).
+
+    Default OFF (parse-with-fallback: only the canonical truthy tokens enable).
+    """
+    return (
+        os.environ.get(_ED4ALL_KEY_TERMS_PAGE_ENV, "").strip().lower()
+        in _ED4ALL_KEY_TERMS_PAGE_TRUTHY
     )
 
 
@@ -7678,6 +7810,57 @@ def _load_dart_chunkset_text_map(chunks_path: Path) -> Dict[str, str]:
     return text_map
 
 
+def _load_dart_chunkset_detail_map(
+    chunks_path: Path,
+) -> Dict[str, Dict[str, Any]]:
+    """Load ``dart_chunks/chunks.jsonl`` into a per-chunk DETAIL map.
+
+    Feature I5: the key-terms builder needs more than the body text — it needs
+    each chunk's ``item_path`` + ``section_heading`` (to mint a source deep-link)
+    and ``concept_tags`` (a term source). Returns
+    ``{chunk_id: {text, item_path, heading, concept_tags}}``. Reads the same
+    JSONL as :func:`_load_dart_chunkset_text_map`; provenance fields live under
+    the chunk's ``source`` block (chunk_v4 schema). Best-effort: malformed lines
+    are skipped, and the map is empty when the file is absent.
+    """
+    detail: Dict[str, Dict[str, Any]] = {}
+    if not chunks_path.exists() or not chunks_path.is_file():
+        return detail
+    try:
+        raw = chunks_path.read_text(encoding="utf-8")
+    except OSError:
+        return detail
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        cid = obj.get("id") or obj.get("chunk_id")
+        body = obj.get("text") or obj.get("content")
+        if not (isinstance(cid, str) and cid and isinstance(body, str) and body):
+            continue
+        source = obj.get("source") if isinstance(obj.get("source"), dict) else {}
+        tags = obj.get("concept_tags")
+        detail.setdefault(cid, {
+            "id": cid,
+            "text": body,
+            "item_path": source.get("item_path") or obj.get("item_path") or "",
+            "heading": (
+                source.get("section_heading")
+                or obj.get("section_heading")
+                or obj.get("heading")
+                or ""
+            ),
+            "concept_tags": list(tags) if isinstance(tags, list) else [],
+        })
+    return detail
+
+
 def _chapter_label_to_week_num(label: Any) -> Optional[int]:
     """Map a ``chapter`` label (e.g. ``"Week 3"`` / ``3`` / ``"3"``) to N.
 
@@ -7902,6 +8085,175 @@ def _resolve_block_objective_ids(
     return tuple(week_objective_ids)
 
 
+def _build_key_terms_blocks(
+    *,
+    week_num: int,
+    objective_ids: Tuple[str, ...],
+    week_cos: Sequence[Dict[str, Any]],
+    week_chunk_details: Sequence[Dict[str, Any]],
+    vocabulary: Optional[Dict[str, Any]],
+    course_slug: str,
+    capture: Any = None,
+) -> List[Any]:
+    """Feature I5 — build the per-TO/week deterministic key-terms vocab cards.
+
+    DETERMINISTIC post-pass (no LLM). For the week's terminal objective:
+
+      1. Aggregate terms = union of (the TO's COs' chunk ``concept_tags``)
+         ∪ (``domain_concept_vocabulary`` surface-form matches in the TO's
+         grounded chunk text) ∪ (objective ``keyConcepts`` when present);
+         dedup on canonical slug; sort.
+      2. Resolve each term's DEFINITION preferring a source-chunk definition
+         sentence, falling back to ``definition_hint``; OMIT the term when
+         NEITHER resolves (anti-fabrication — never invent a definition).
+      3. Resolve a per-term SOURCE LINK to the defining chunk's ``item_path`` +
+         heading fragment via the FROZEN ``heading_slug`` algorithm.
+
+    Each surviving term is emitted as a ``Block(block_type="vocab_card")``
+    carrying pre-rendered HTML string ``content`` + ``template_type="key_terms"``
+    so the rewrite tier short-circuits the LLM dispatch for it. Returns ``[]``
+    when no term resolves (the page is then never emitted — no empty page).
+    """
+    from Courseforge.scripts.blocks import Block  # noqa: PLC0415
+    from lib.generation import key_terms as _kt  # noqa: PLC0415
+    from lib.ontology.slugs import canonical_slug as _slug  # noqa: PLC0415
+
+    # Gather the term-source signals from the week's chunks + COs.
+    concept_tags: List[str] = []
+    chunk_texts: List[str] = []
+    for ch in week_chunk_details or ():
+        if not isinstance(ch, dict):
+            continue
+        body = ch.get("text")
+        if isinstance(body, str) and body:
+            chunk_texts.append(body)
+        for t in ch.get("concept_tags") or ():
+            if isinstance(t, str) and t:
+                concept_tags.append(t)
+    key_concepts: List[str] = []
+    for co in week_cos or ():
+        if not isinstance(co, dict):
+            continue
+        for kc in co.get("keyConcepts") or co.get("key_concepts") or ():
+            if isinstance(kc, str) and kc:
+                key_concepts.append(kc)
+
+    terms = _kt.aggregate_terms(
+        concept_tags=concept_tags,
+        chunk_texts=chunk_texts,
+        vocabulary=vocabulary,
+        key_concepts=key_concepts,
+    )
+    cards = _kt.build_key_terms_cards(
+        terms=terms,
+        chunks=list(week_chunk_details or ()),
+        course_slug=course_slug,
+    )
+    if not cards:
+        return []
+
+    # I5 BUG 2 — deterministic per-page cap (ED4ALL_KEY_TERMS_MAX_PER_PAGE,
+    # default 15). The aggregation is broad (~40 terms/TO on a real corpus —
+    # far too many for a glossary); keep the MOST relevant (source-defined
+    # first, then most-frequent in the week's grounded chunks + CO statements).
+    # Deterministic + order-stable (page order stays slug-sorted).
+    _co_statements: List[str] = []
+    for _co in week_cos or ():
+        if not isinstance(_co, dict):
+            continue
+        _stmt = _co.get("statement") or _co.get("text")
+        if isinstance(_stmt, str) and _stmt:
+            _co_statements.append(_stmt)
+    _cards_before_cap = len(cards)
+    cards = _kt.select_capped_cards(
+        cards,
+        max_terms=_kt.resolve_max_terms_per_page(),
+        chunk_texts=chunk_texts,
+        co_statements=_co_statements,
+    )
+
+    page_id = _page_id_for(week_num, "key_terms")
+    slug_value = _slug(f"week_{week_num:02d} key terms")
+    blocks: List[Any] = []
+    for idx, card in enumerate(cards):
+        content = _kt.render_term_card(
+            display=card["display"],
+            definition=card["definition"],
+            source_link=card.get("source_link"),
+            slug=card["slug"],
+        )
+        # Resolve the defining chunk's real DART source id (when present) so the
+        # block carries grounding the source-ref gate can resolve.
+        block_sids: Tuple[str, ...] = ()
+        _chunk = card.get("source_chunk")
+        if isinstance(_chunk, dict):
+            _cid = _chunk.get("id")
+            if isinstance(_cid, str) and _cid:
+                block_sids = (f"dart:{course_slug}#{_cid}",)
+        try:
+            blk = Block(
+                block_id=Block.stable_id(
+                    page_id, "vocab_card", card["slug"], idx,
+                ),
+                block_type="vocab_card",
+                page_id=page_id,
+                sequence=idx,
+                content=content,
+                # The deterministic-marker the rewrite tier reads to SKIP the
+                # LLM dispatch for this pre-authored, grounded card.
+                template_type=_kt.KEY_TERMS_TEMPLATE_TYPE,
+                key_terms=(card["slug"],),
+                objective_ids=objective_ids,
+                source_ids=block_sids,
+                target_bloom="remember",
+            )
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "key_terms: skipping malformed vocab_card block for "
+                "week=%d term=%s: %s", week_num, card["slug"], exc,
+            )
+            continue
+        blocks.append(blk)
+
+    if capture is not None and blocks:
+        try:
+            capture.log_decision(
+                decision_type="content_selection",
+                decision=(
+                    f"Authored {len(blocks)} deterministic key-terms vocab "
+                    f"card(s) for week {week_num} (page {page_id})."
+                ),
+                rationale=(
+                    f"Feature I5 key-terms post-pass: aggregated "
+                    f"{len(terms)} candidate term(s) from "
+                    f"{len(concept_tags)} concept_tag(s), "
+                    f"{len(chunk_texts)} grounded chunk(s), and "
+                    f"{len(key_concepts)} objective keyConcept(s); "
+                    f"{len(blocks)} resolved to a source-sentence or "
+                    f"definition_hint definition (the rest OMITTED — never "
+                    f"fabricated). No LLM dispatch (template_type="
+                    f"{_kt.KEY_TERMS_TEMPLATE_TYPE}); rewrite tier passes the "
+                    f"grounded HTML through verbatim."
+                ),
+                ml_features={
+                    "gate_id": "_build_key_terms_blocks",
+                    "week_num": week_num,
+                    "page_id": page_id,
+                    "candidate_terms": len(terms),
+                    "cards_before_cap": _cards_before_cap,
+                    "max_terms_per_page": _kt.resolve_max_terms_per_page(),
+                    "cards_emitted": len(blocks),
+                    "concept_tags": len(concept_tags),
+                    "grounded_chunks": len(chunk_texts),
+                    "key_concepts": len(key_concepts),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    return blocks
+
+
 async def _run_content_generation_outline(**kwargs) -> str:
     """Run the outline tier of the Phase 3 two-pass content pipeline.
 
@@ -8073,6 +8425,29 @@ async def _run_content_generation_outline(**kwargs) -> str:
             "empty grounding).",
             chunkset_path,
         )
+
+    # Feature I5 — the deterministic key-terms page (opt-in via
+    # ED4ALL_KEY_TERMS_PAGE) needs the richer per-chunk detail (item_path /
+    # heading / concept_tags) + the domain-concept vocabulary. Both load lazily
+    # ONLY when the flag is on, so a default-off run is byte-identical.
+    _key_terms_on = _key_terms_page_enabled()
+    _chunk_detail_map: Dict[str, Dict[str, Any]] = {}
+    _key_terms_vocab: Optional[Dict[str, Any]] = None
+    _key_terms_blocks: List[Any] = []
+    if _key_terms_on:
+        _chunk_detail_map = _load_dart_chunkset_detail_map(chunkset_path)
+        _vocab_path = _locate_domain_concept_vocabulary(course_code, kwargs)
+        if _vocab_path is not None and Path(_vocab_path).exists():
+            try:
+                _key_terms_vocab = json.loads(
+                    Path(_vocab_path).read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as _kt_exc:
+                logger.warning(
+                    "key_terms: could not load domain_concept_vocabulary at "
+                    "%s: %s", _vocab_path, _kt_exc,
+                )
+                _key_terms_vocab = None
 
     # Build the per-week objective -> chunk_ids index. Terminal-objective
     # chunk_ids are gathered per-week inside the loop below (the terminal
@@ -8512,6 +8887,30 @@ async def _run_content_generation_outline(**kwargs) -> str:
         if week_block_added:
             weeks_with_blocks += 1
 
+        # Feature I5 — deterministic per-TO key-terms page (opt-in). Built
+        # OUTSIDE the LLM block loop above: the vocab cards carry pre-rendered
+        # grounded HTML, so they bypass route_with_self_consistency entirely
+        # (appended straight to outline_blocks below). No-op when the flag is
+        # off (``_key_terms_blocks`` stays empty → no page emitted).
+        if _key_terms_on:
+            _wk_union_cids = week_chunk_id_index.get(week_num, [])
+            _wk_chunk_details = [
+                _chunk_detail_map[_cid]
+                for _cid in _wk_union_cids
+                if _cid in _chunk_detail_map
+            ]
+            _wk_cos = week_co_objectives_index.get(week_num, [])
+            _kt_week_blocks = _build_key_terms_blocks(
+                week_num=week_num,
+                objective_ids=objective_ids,
+                week_cos=_wk_cos,
+                week_chunk_details=_wk_chunk_details,
+                vocabulary=_key_terms_vocab,
+                course_slug=course_slug,
+                capture=capture,
+            )
+            _key_terms_blocks.extend(_kt_week_blocks)
+
     # Summary decision capture for grounded source-chunk resolution. One
     # event per run (per-block logging would flood). Rationale interpolates
     # the dynamic per-run counts so the capture is replayable.
@@ -8730,6 +9129,16 @@ async def _run_content_generation_outline(**kwargs) -> str:
             )
         except Exception:  # noqa: BLE001
             pass
+
+    # Feature I5 — append the deterministic key-terms vocab cards to the
+    # outline output. They carry pre-rendered grounded HTML + the
+    # ``template_type="key_terms"`` marker (so the rewrite tier short-circuits
+    # the LLM), and they bypassed route_with_self_consistency entirely. The
+    # downstream deterministic post-passes are safe for them: the curie minter
+    # skips string content, and the objective-ref repairs only ever drop
+    # NON-canonical refs (their objective_ids are the week's canonical TO ids).
+    if _key_terms_blocks:
+        outline_blocks.extend(_key_terms_blocks)
 
     # ------------------------------------------------------------------ #
     # FIX 2 — drop hallucinated objective refs.
@@ -10348,6 +10757,18 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             _cached_blk = _entry_to_block(_cached_entry)
             if _cached_blk is not None:
                 return _apply_str_backstops(_cached_blk)
+        # Feature I5 — SHORT-CIRCUIT the LLM rewrite for the deterministic
+        # key-terms vocab cards. They were authored grounded + verbatim in the
+        # outline tier (``template_type="key_terms"``, string content already
+        # the final HTML), so re-authoring them with the 7B/cloud model would
+        # discard the verbatim source definition. Pass the content straight
+        # through the same str backstops the LLM path uses.
+        if (
+            getattr(blk, "template_type", None) == _KEY_TERMS_TEMPLATE_TYPE
+            and isinstance(blk.content, str)
+            and blk.content.strip()
+        ):
+            return _apply_str_backstops(blk)
         block_chunks = chunks_lookup.get(blk.block_id, []) if isinstance(
             chunks_lookup, dict
         ) else []
@@ -12276,6 +12697,29 @@ def _build_tool_registry() -> dict:
                     course_name=course_name,
                     capture=_review_capture,
                 )
+                # FAIL-CLOSED: the 70B quality review MUST fully complete
+                # before any downstream phase consumes the objectives. When the
+                # review is ENABLED but one or more review chunks did not
+                # complete (timeout / parse / provider error after the
+                # per-chunk retries), the objectives are only PARTIALLY
+                # reviewed — refuse to proceed rather than ship a course built
+                # on un-reviewed objectives. (``applied`` is True even on a
+                # PARTIAL review — ``applied = chunks_failed < chunks_attempted``
+                # — so it is NOT a completeness signal; ``chunks_failed`` is.)
+                _rv_failed = int(_review_result.get("chunks_failed", 0) or 0)
+                if _review_result.get("enabled") and _rv_failed:
+                    raise RuntimeError(
+                        "objective-review incomplete: "
+                        f"{_rv_failed}/"
+                        f"{_review_result.get('chunks_attempted')} review "
+                        f"chunks failed (provider="
+                        f"{_review_result.get('provider')}, model="
+                        f"{_review_result.get('model')}, note="
+                        f"{_review_result.get('note')}). The quality review "
+                        "must complete before downstream phases consume the "
+                        "objectives — failing course_planning instead of "
+                        "proceeding with un-reviewed objectives."
+                    )
                 if _review_result.get("applied"):
                     _rc = _review_result.get("counters", {})
                     logger.info(
@@ -12313,10 +12757,31 @@ def _build_tool_registry() -> dict:
                         ):
                             if _fld in _src:
                                 _e[_fld] = _src[_fld]
-            except Exception as _review_exc:  # noqa: BLE001 — never fail phase
+            except Exception as _review_exc:  # noqa: BLE001
+                # FAIL-CLOSED when the review is CONFIGURED: a configured
+                # quality review that raises (including the deliberate
+                # incomplete-review RuntimeError above, OR an unexpected crash
+                # in the review block) must NOT silently fall through to
+                # downstream with un-reviewed objectives — the review is a hard
+                # prerequisite. Only the UNCONFIGURED case (no provider set)
+                # keeps the original graceful "keep 7B objectives" posture.
+                try:
+                    from lib.objectives.objective_review import (  # noqa: PLC0415
+                        resolve_objective_review_provider as _rorp,
+                    )
+                    _review_configured = bool(_rorp())
+                except Exception:  # noqa: BLE001
+                    _review_configured = False
+                if _review_configured:
+                    raise RuntimeError(
+                        "objective-review pass failed while ENABLED "
+                        f"({_review_exc}); failing course_planning rather than "
+                        "proceeding downstream with un-reviewed objectives "
+                        "(the quality review must complete before downstream)."
+                    ) from _review_exc
                 logger.warning(
-                    "objective-review pass raised (%s); keeping original 7B "
-                    "objectives unchanged.", _review_exc,
+                    "objective-review pass raised (%s); review not configured, "
+                    "keeping original 7B objectives unchanged.", _review_exc,
                 )
 
             # Finding 17 — concept / sub-objective layer. After objectives
@@ -14165,6 +14630,20 @@ def _build_tool_registry() -> dict:
         # falls through to the validator's ``MISSING_*`` critical.
         dart_chunks_sha256_kw = kwargs.get("dart_chunks_sha256") or ""
         imscc_chunks_sha256_kw = kwargs.get("imscc_chunks_sha256") or ""
+        # Issue I1 (imscc_chunks archivist stale-overwrite integrity fix):
+        # explicit chunkset PATHS threaded from the ``imscc_chunking`` /
+        # ``chunking`` phase outputs via the workflow runner's
+        # ``inputs_from`` chain. Two-pass runs write the fresh IMSCC
+        # chunkset DIRECTLY to ``LibV2/courses/<slug>/imscc_chunks/`` (via
+        # ``_run_imscc_chunking``), NOT into an export ``trainforge/`` dir,
+        # so the mtime-driven heuristic fallback below would otherwise
+        # pick a STALE same-course ``chunks.jsonl`` from a prior run's
+        # export and ``shutil.copy2`` it over the fresh LibV2 file. When
+        # this kwarg resolves to an existing file we point the chunks copy
+        # source at THAT exact file and bypass the mtime heuristic. Absent
+        # (legacy DART-only / external MCP callers) → no-op.
+        imscc_chunks_path_kw = kwargs.get("imscc_chunks_path") or ""
+        dart_chunks_path_kw = kwargs.get("dart_chunks_path") or ""
 
         if not course_name:
             return json.dumps({"error": "archive_to_libv2 requires course_name"})
@@ -14269,9 +14748,30 @@ def _build_tool_registry() -> dict:
                     shutil.copy2(ap, dest)
                     archived["assessment"] = str(dest)
 
+        # Issue I1: resolve an EXPLICIT chunks copy source from the routed
+        # ``imscc_chunks_path`` / ``dart_chunks_path`` kwargs. When either
+        # points at a real on-disk file, it pins the chunks copy source
+        # exactly — bypassing the mtime-driven heuristic fallback below,
+        # which on ``--resume`` two-pass runs can otherwise pick a STALE
+        # same-course ``chunks.jsonl`` from a prior export. The IMSCC
+        # chunkset is preferred (it is the archive's canonical chunkset);
+        # the DART chunkset is the fallback. Absent → no-op (the legacy
+        # trainforge_dir resolution + heuristic still run).
+        _explicit_chunks_src: Optional[Path] = None
+        for _cand_str in (imscc_chunks_path_kw, dart_chunks_path_kw):
+            if not _cand_str:
+                continue
+            _cand = Path(_cand_str)
+            if _cand.exists() and _cand.is_file():
+                _explicit_chunks_src = _cand
+                break
+
         # Heuristic fallback: scan well-known locations for chunks.jsonl.
         # Phase 7c: imscc_chunks/ is canonical; corpus/ retained for back-compat.
-        if trainforge_dir is None:
+        # Skipped when an explicit chunks source was routed in (Issue I1):
+        # the heuristic only exists to LOCATE chunks when no path is known,
+        # and it is exactly the mtime-staleness vector we are closing.
+        if trainforge_dir is None and _explicit_chunks_src is None:
             candidates: list[Path] = []
             exports_root = courseforge_exports_dir()
             if exports_root.exists():
@@ -14337,8 +14837,23 @@ def _build_tool_registry() -> dict:
         _had_prior_chunks = (
             _dest_chunks_path.exists() or _legacy_dest_chunks_path.exists()
         )
+        # Issue I1: when the routed explicit chunks source IS the LibV2
+        # destination file (the two-pass case where ``_run_imscc_chunking``
+        # wrote the fresh chunkset directly under
+        # ``LibV2/courses/<slug>/imscc_chunks/``), we MUST NOT delete it —
+        # it is the fresh chunkset we want to keep, not a stale prior-run
+        # leftover. Resolve identity by ``samefile`` so symlink / relative
+        # path differences don't defeat the guard.
+        def _is_explicit_src(p: Path) -> bool:
+            if _explicit_chunks_src is None:
+                return False
+            try:
+                return p.exists() and p.samefile(_explicit_chunks_src)
+            except OSError:
+                return False
+
         for _stale in (_dest_chunks_path, _legacy_dest_chunks_path):
-            if _stale.exists():
+            if _stale.exists() and not _is_explicit_src(_stale):
                 try:
                     _stale.unlink()
                 except OSError as _exc:
@@ -14349,13 +14864,39 @@ def _build_tool_registry() -> dict:
                         _exc,
                     )
 
+        # Issue I1: when an explicit chunks source was routed in, copy it
+        # to the canonical LibV2 destination directly (bypassing the
+        # mtime heuristic + trainforge_dir resolution for the chunks
+        # artifact). If the source already IS the destination, this is a
+        # no-op copy we skip. The non-chunks Trainforge artifacts (graph,
+        # assessments, etc.) still come from ``trainforge_dir`` below.
+        if _explicit_chunks_src is not None:
+            try:
+                if not _is_explicit_src(_dest_chunks_path):
+                    _dest_chunks_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(_explicit_chunks_src, _dest_chunks_path)
+                archived["trainforge"]["chunks"] = str(_dest_chunks_path)
+            except OSError as _exc:
+                logger.warning(
+                    "archive_to_libv2: failed to copy routed chunks %s -> "
+                    "%s: %s",
+                    _explicit_chunks_src,
+                    _dest_chunks_path,
+                    _exc,
+                )
+
         if trainforge_dir is not None and trainforge_dir.exists():
             copy_map = [
                 # Phase 7c: prefer imscc_chunks/ in source AND destination.
-                (_pick(trainforge_dir / "imscc_chunks" / "chunks.jsonl",
-                       trainforge_dir / "corpus" / "chunks.jsonl",
-                       trainforge_dir / "chunks.jsonl"),
-                 course_dir / "imscc_chunks" / "chunks.jsonl", "chunks"),
+                # Issue I1: when an explicit chunks source was routed in and
+                # already installed above, DON'T let the trainforge_dir's
+                # (possibly stale) chunks.jsonl overwrite the fresh copy.
+                *([] if _explicit_chunks_src is not None else [
+                    (_pick(trainforge_dir / "imscc_chunks" / "chunks.jsonl",
+                           trainforge_dir / "corpus" / "chunks.jsonl",
+                           trainforge_dir / "chunks.jsonl"),
+                     course_dir / "imscc_chunks" / "chunks.jsonl", "chunks"),
+                ]),
                 (_pick(trainforge_dir / "graph" / "concept_graph_semantic.json",
                        trainforge_dir / "concept_graph_semantic.json"),
                  course_dir / "graph" / "concept_graph_semantic.json", "graph"),
@@ -14430,6 +14971,64 @@ def _build_tool_registry() -> dict:
                 "expected_prefix": _chunks_check.get("expected_prefix"),
                 "observed_prefixes": _chunks_check.get("observed_prefixes"),
             })
+
+        # --- Issue I1 defense-in-depth: chunks SHA-drift gate -------------
+        # The top-level manifest's ``imscc_chunks_sha256`` comes from the
+        # routed phase-output kwarg (computed by ``_run_imscc_chunking``
+        # over the FRESH chunkset), NOT re-hashed from the on-disk archive
+        # file. The original bug let the on-disk file diverge from that sha
+        # (a stale heuristic copy overwrote the fresh file while the
+        # manifest still advertised the fresh sha). Here, when the kwarg is
+        # well-formed AND a chunks.jsonl was actually installed at the
+        # destination this run, we RE-HASH the dest file and FAIL CLOSED
+        # (no manifest written) if it disagrees with the advertised sha.
+        # Absent chunks / absent sha kwarg → no-op (legacy DART-only runs).
+        import re as _re_drift
+        import hashlib as _hashlib_drift
+
+        def _sha256_file(filepath: Path) -> str:
+            h = _hashlib_drift.sha256()
+            with open(filepath, "rb") as fh:
+                for block in iter(lambda: fh.read(8192), b""):
+                    h.update(block)
+            return h.hexdigest()
+
+        _chunks_copied_this_run = (
+            _explicit_chunks_src is not None
+            or archived["trainforge"].get("chunks") is not None
+        )
+        if (
+            _chunks_copied_this_run
+            and imscc_chunks_sha256_kw
+            and _re_drift.match(r"^[0-9a-f]{64}$", imscc_chunks_sha256_kw)
+            and _dest_chunks_path.exists()
+            and _dest_chunks_path.is_file()
+        ):
+            _on_disk_sha = _sha256_file(_dest_chunks_path)
+            if _on_disk_sha != imscc_chunks_sha256_kw:
+                logger.error(
+                    "archive_to_libv2: refusing to write manifest — "
+                    "imscc_chunks SHA drift for course %s: on-disk %s != "
+                    "advertised %s at %s.",
+                    course_name,
+                    _on_disk_sha,
+                    imscc_chunks_sha256_kw,
+                    _dest_chunks_path,
+                )
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "imscc_chunks.jsonl on-disk SHA-256 does not match "
+                        "the advertised imscc_chunks_sha256 — refusing to "
+                        "write a manifest whose chunkset hash diverges from "
+                        "the archived file (stale-overwrite integrity gate)."
+                    ),
+                    "error_code": "IMSCC_CHUNKS_SHA_DRIFT",
+                    "course_name": course_name,
+                    "chunks_path": str(_dest_chunks_path),
+                    "expected_sha256": imscc_chunks_sha256_kw,
+                    "observed_sha256": _on_disk_sha,
+                })
 
         # --- Build manifest (with source_artifacts checksums) -------------
         import hashlib

@@ -1914,7 +1914,18 @@ def _build_chapter_objective_coverage_inputs(
     if objectives_path:
         inputs["synthesized_objectives_path"] = objectives_path
 
-    # No missing-key markers: both inputs are optional from the
+    # I3 — route the DART chunkset path so the source_coverage gate's chunk arm
+    # (pure set-membership, embedding-free) can measure the chunk-level citation
+    # gap. The chunking phase emits ``dart_chunks_path`` (chunks.jsonl). Optional
+    # — the chunk arm no-op-passes on absence (measurement guardrail).
+    chunking = phase_outputs.get("chunking") or {}
+    dart_chunks_path = chunking.get("dart_chunks_path")
+    if not (isinstance(dart_chunks_path, str) and dart_chunks_path):
+        dart_chunks_path = _locate(phase_outputs, "dart_chunks_path")
+    if isinstance(dart_chunks_path, str) and dart_chunks_path:
+        inputs["dart_chunks_path"] = dart_chunks_path
+
+    # No missing-key markers: all inputs are optional from the
     # router's POV — the validator skips-with-pass on absence.
     return inputs, []
 

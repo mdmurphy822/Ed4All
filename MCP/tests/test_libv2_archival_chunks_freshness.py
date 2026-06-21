@@ -321,3 +321,177 @@ async def test_libv2_archival_drops_prior_chunks_before_copy(isolated_archive):
         "prior-run chunks.jsonl survived into the fresh archive — "
         "fail-closed gate is broken"
     )
+
+
+# --------------------------------------------------------------------- #
+# Issue I1 — explicit-path routing beats the mtime heuristic + SHA-drift
+# fail-closed gate.
+# --------------------------------------------------------------------- #
+
+
+def _sha256_bytes(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_libv2_archival_explicit_path_beats_stale_heuristic(
+    isolated_archive,
+):
+    """Issue I1: when ``imscc_chunks_path`` is routed in, the archivist
+    must copy THAT exact file — never the most-recently-modified
+    chunks.jsonl the heuristic fallback would otherwise grab from a prior
+    export.
+
+    Reproduces the ``--resume`` two-pass shape: ``_run_imscc_chunking``
+    wrote the fresh 246-chunk chunkset directly under
+    ``LibV2/courses/<slug>/imscc_chunks/``, while a STALE 1-chunk
+    same-course ``chunks.jsonl`` (with an OLDER mtime) sits in a
+    Courseforge export ``trainforge/imscc_chunks/`` dir — exactly what the
+    mtime heuristic would pick.
+    """
+    archive, root = isolated_archive
+    course_name = "DEMO_101"
+    slug = "demo-101"
+    course_dir = root / "LibV2" / "courses" / slug
+
+    # FRESH chunkset written directly to the LibV2 destination (the path
+    # _run_imscc_chunking emits). 246 course-matching chunks.
+    fresh_dir = course_dir / "imscc_chunks"
+    fresh_dir.mkdir(parents=True)
+    fresh_chunks = fresh_dir / "chunks.jsonl"
+    fresh_text = (
+        "\n".join(
+            json.dumps({"id": f"demo_101_chunk_{i:05d}", "text": "fresh"})
+            for i in range(246)
+        )
+        + "\n"
+    )
+    fresh_chunks.write_text(fresh_text)
+    fresh_sha = _sha256_bytes(fresh_chunks.read_bytes())
+
+    # STALE 1-chunk same-course chunks.jsonl planted in a Courseforge
+    # export trainforge/ dir with an OLDER mtime — what the mtime
+    # heuristic would otherwise grab.
+    import os as _os
+
+    exports_root = root / "Courseforge" / "exports"
+    stale_tf = exports_root / "PROJ-DEMO_101-old" / "trainforge"
+    (stale_tf / "imscc_chunks").mkdir(parents=True)
+    stale_chunks = stale_tf / "imscc_chunks" / "chunks.jsonl"
+    stale_chunks.write_text(
+        json.dumps({"id": "demo_101_chunk_00001", "text": "STALE"}) + "\n"
+    )
+    older = time.time() - 7200
+    _os.utime(stale_chunks, (older, older))
+
+    result_raw = await archive(
+        course_name=course_name,
+        domain="general",
+        pdf_paths="",
+        html_paths="",
+        imscc_chunks_path=str(fresh_chunks),
+        imscc_chunks_sha256=fresh_sha,
+    )
+    result = json.loads(result_raw)
+
+    assert "error" not in result, result
+    assert result.get("success") is True, result
+
+    # The FRESH 246-chunk file must survive — the heuristic's stale
+    # 1-chunk file must NOT have clobbered it.
+    archived_chunks = course_dir / "imscc_chunks" / "chunks.jsonl"
+    assert archived_chunks.exists()
+    lines = [ln for ln in archived_chunks.read_text().splitlines() if ln.strip()]
+    assert len(lines) == 246, (
+        f"expected the fresh 246-chunk file to survive; got {len(lines)} "
+        f"lines — the mtime heuristic clobbered it"
+    )
+    assert _sha256_bytes(archived_chunks.read_bytes()) == fresh_sha
+
+    # Top-level manifest sha matches the fresh on-disk file.
+    manifest = json.loads((course_dir / "manifest.json").read_text())
+    assert manifest.get("imscc_chunks_sha256") == fresh_sha, manifest
+
+
+@pytest.mark.asyncio
+async def test_libv2_archival_sha_drift_fails_closed(isolated_archive):
+    """Issue I1 defense-in-depth: when the on-disk chunkset's SHA does not
+    match the routed ``imscc_chunks_sha256`` kwarg, archival fails closed
+    with ``error_code = IMSCC_CHUNKS_SHA_DRIFT`` and writes no manifest."""
+    archive, root = isolated_archive
+    course_name = "DEMO_101"
+    slug = "demo-101"
+    course_dir = root / "LibV2" / "courses" / slug
+
+    # Install a course-matching chunkset at the LibV2 destination, but
+    # advertise a DIFFERENT (wrong) sha via the kwarg → drift.
+    fresh_dir = course_dir / "imscc_chunks"
+    fresh_dir.mkdir(parents=True)
+    fresh_chunks = fresh_dir / "chunks.jsonl"
+    fresh_chunks.write_text(
+        json.dumps({"id": "demo_101_chunk_00001", "text": "real"}) + "\n"
+    )
+
+    wrong_sha = "d" * 64  # well-formed but does not match the file bytes
+
+    result_raw = await archive(
+        course_name=course_name,
+        domain="general",
+        pdf_paths="",
+        html_paths="",
+        imscc_chunks_path=str(fresh_chunks),
+        imscc_chunks_sha256=wrong_sha,
+    )
+    result = json.loads(result_raw)
+
+    assert result.get("success") is False, result
+    assert result.get("error_code") == "IMSCC_CHUNKS_SHA_DRIFT", result
+    assert result.get("expected_sha256") == wrong_sha, result
+    assert result.get("observed_sha256") != wrong_sha, result
+    # No manifest written — the drift gate refuses before the manifest
+    # dump.
+    assert not (course_dir / "manifest.json").exists(), (
+        "archival wrote a manifest despite a chunkset SHA drift — "
+        "fail-closed gate is broken"
+    )
+
+
+@pytest.mark.asyncio
+async def test_libv2_archival_sha_match_writes_manifest(isolated_archive):
+    """Issue I1 negative control: a MATCHING sha passes the drift gate —
+    the manifest is written and success is True."""
+    archive, root = isolated_archive
+    course_name = "DEMO_101"
+    slug = "demo-101"
+    course_dir = root / "LibV2" / "courses" / slug
+
+    fresh_dir = course_dir / "imscc_chunks"
+    fresh_dir.mkdir(parents=True)
+    fresh_chunks = fresh_dir / "chunks.jsonl"
+    fresh_chunks.write_text(
+        json.dumps({"id": "demo_101_chunk_00001", "text": "real"}) + "\n"
+    )
+    good_sha = _sha256_bytes(fresh_chunks.read_bytes())
+
+    result_raw = await archive(
+        course_name=course_name,
+        domain="general",
+        pdf_paths="",
+        html_paths="",
+        imscc_chunks_path=str(fresh_chunks),
+        imscc_chunks_sha256=good_sha,
+    )
+    result = json.loads(result_raw)
+
+    assert "error" not in result, result
+    assert result.get("success") is True, result
+    manifest_path = course_dir / "manifest.json"
+    assert manifest_path.exists(), result
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest.get("imscc_chunks_sha256") == good_sha, manifest
+    # The fresh file survived intact.
+    assert _sha256_bytes(
+        (course_dir / "imscc_chunks" / "chunks.jsonl").read_bytes()
+    ) == good_sha

@@ -1291,6 +1291,21 @@ workflows:
           # corpora before any critical flip (the flip is severity: critical,
           # behavior.on_fail: block, and SOURCE_COVERAGE_LOW -> critical).
           # NOT in WS6a scope.
+          #
+          # I3 CHUNK ARM — a SECOND, DISTINCT coverage arm on the same gate
+          # (codes SOURCE_CHUNK_UNCITED / SOURCE_CHUNK_COVERAGE_LOW). It is pure
+          # set-membership over the DART chunkset: a content-bearing chunk cited
+          # by NO synthesized objective's source_chunk_ids is flagged. This
+          # measures the chunk-level citation gap the (already-passing 135/135)
+          # section-level cosine arm is BLIND to — on the reference corpus 19/76
+          # content chunks ended up cited by no CO after single-link dedup
+          # chained distinct skills. The chunk arm runs WITHOUT embeddings, so
+          # EMBEDDING_DEPS_MISSING does not suppress it. ``dart_chunks_path`` is
+          # routed into the gate inputs via _build_chapter_objective_coverage_inputs.
+          # TODO(calibration): promote the chunk arm to critical (flip
+          # SOURCE_CHUNK_COVERAGE_LOW -> critical, behavior.on_fail: block)
+          # after ED4ALL_OBJECTIVE_SOURCE_BACKFILL drives the uncited-content
+          # rate <= max_uncited_chunk_rate on >=2 corpora. Day-1 warning.
           - gate_id: source_coverage
             validator: lib.validators.source_coverage.SourceCoverageValidator
             severity: warning
@@ -1302,7 +1317,8 @@ workflows:
             config:
               coverage_floor: 0.45
               max_uncovered_rate: 0.15
-            description: "WS6a — source->objective coverage-audit gate (section->nearest-objective cosine). Warning day-1; surfaces source material no objective covers. Critical flip DEFERRED (TODO calibration; floor up toward ~0.55 on >=2 corpora first)."
+              max_uncited_chunk_rate: 0.10   # I3 chunk arm — DISTINCT from max_uncovered_rate
+            description: "WS6a section arm (section->nearest-objective cosine) + I3 chunk arm (content-chunk citation set-membership, embedding-free, DISTINCT codes). Warning day-1; surfaces source material no objective covers/cites. Critical flips DEFERRED (TODO calibration)."
 
       # concept_extraction phase — builds the pedagogy/concept graph from
       # the staged DART output + DART chunkset. Phase-ordering fix
@@ -3270,6 +3286,27 @@ workflows:
             source: phase_outputs
             phase: imscc_chunking
             output: imscc_chunks_sha256
+          # Issue I1 (imscc_chunks archivist stale-overwrite integrity
+          # fix): thread the EXPLICIT chunkset PATHS (not just the SHAs)
+          # from the ``imscc_chunking`` / ``chunking`` phase outputs so
+          # ``_archive_to_libv2`` pins the chunks copy source at the fresh
+          # on-disk file instead of falling into the mtime-driven
+          # heuristic fallback, which on ``--resume`` two-pass runs can
+          # pick a STALE same-course chunks.jsonl from a prior export and
+          # copy it over the fresh LibV2 file (manifest sha then diverges
+          # from the on-disk file). Both phases precede libv2_archival in
+          # this workflow, so the inputs_from references resolve. Only
+          # wired here: ``course_generation`` has no imscc_chunking /
+          # chunking ancestor, so adding these routes there would raise a
+          # load-time ValueError in _validate_inputs_from_references.
+          - param: imscc_chunks_path
+            source: phase_outputs
+            phase: imscc_chunking
+            output: imscc_chunks_path
+          - param: dart_chunks_path
+            source: phase_outputs
+            phase: chunking
+            output: dart_chunks_path
 
         outputs:
           - course_slug
