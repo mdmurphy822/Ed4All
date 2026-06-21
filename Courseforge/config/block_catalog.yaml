@@ -1,7 +1,7 @@
 # Courseforge block catalog (Wave-2 block-variety redesign, Part 1).
 #
 # Machine-readable catalog of every canonical block type in
-# ``Courseforge/scripts/blocks.py::BLOCK_TYPES`` (all 21). A large-model
+# ``Courseforge/scripts/blocks.py::BLOCK_TYPES`` (all 24). A large-model
 # planner (70B+) reads the ``use_when`` discriminators to pick the RIGHT
 # block for a given content / objective shape instead of defaulting to a
 # bare ``concept`` / ``explanation`` everywhere.
@@ -152,7 +152,10 @@ blocks:
     use_when: >-
       The learner benefits from thinking about THEIR OWN experience,
       confidence, or thinking process. Use an open-ended question addressed
-      to the individual; never a graded or right/wrong task.
+      to the individual; never a graded or right/wrong task. A self-check or
+      application page should CLOSE with one of these — pair it after the
+      self_check_question blocks so every practice page ends with a moment of
+      metacognitive self-reflection.
     conveys: An open-ended self-reflection question about the learner's own thinking.
     bloom_fit: [understand, evaluate]
     format_summary: "<section> heading + <p> open-ended self-reflection question(s)."
@@ -215,6 +218,10 @@ blocks:
       A single key domain term that the learner must be able to define before
       reasoning with it; use when introducing chapter vocabulary one term at
       a time. Choose this over flip_card_grid when only ONE term needs focus.
+      Also the unit emitted by the deterministic per-TO Key Terms page
+      (feature I5, ED4ALL_KEY_TERMS_PAGE): each aggregated term whose
+      definition resolves to a source sentence or definition_hint becomes one
+      vocab_card carrying a source deep-link (no LLM authoring).
     conveys: One domain term and its definition.
     bloom_fit: [remember, understand]
     format_summary: "<div class=vocab-card> term + definition."
@@ -240,3 +247,43 @@ blocks:
     conveys: An ordered set of concrete, checkable steps or criteria.
     bloom_fit: [apply, evaluate]
     format_summary: "<ul class=checklist> of <li class=checklist-item> actionable items."
+
+  - block_type: table
+    label: Comparison Table
+    use_when: >-
+      The content COMPARES or CONTRASTS several items across the SAME
+      dimensions — proper/improper/mixed fractions by definition and example,
+      operation vs. rule vs. example, or any criteria-by-option matrix where
+      every item shares the same columns. Choose this over a prose concept or
+      a flip_card_grid when the salient relationship is the parallel COLUMNS:
+      a learner reads a table to scan across rows on shared dimensions. Pick
+      table whenever the source presents tabular / multi-column data.
+    conveys: A row-by-column comparison of several items across shared dimensions.
+    bloom_fit: [understand, analyze]
+    format_summary: "<table> with <caption>, <thead> <th scope=col>, one <tr> per row."
+
+  - block_type: acronym
+    label: Acronym / Mnemonic
+    use_when: >-
+      The source presents a MEMORY AID whose letters spell out an ordered list
+      of terms or steps (e.g. PEMDAS → Parentheses, Exponents, Multiplication,
+      Division, Addition, Subtraction; or a "Please Excuse My Dear Aunt Sally"
+      mnemonic). Choose this when the content is explicitly an acronym /
+      initialism the learner must recall by expanding each letter — NOT for a
+      single vocabulary term (use vocab_card) or unrelated definitions.
+    conveys: An acronym / mnemonic and the term each letter expands to.
+    bloom_fit: [remember, understand]
+    format_summary: "<div class=acronym-card> mnemonic + <dl> of paired <dt>letter / <dd>term."
+
+  - block_type: key_idea
+    label: Key Idea
+    use_when: >-
+      A single most-important PRINCIPLE, law, property, or takeaway deserves
+      to be visually and semantically set apart so the learner spots it as THE
+      point to remember. Choose this over a callout for the chapter's central
+      emphasized principle (a stated rule the rest of the content builds on),
+      and over concept when no definition/derivation is needed — just the
+      principle, flagged. One emphasized idea, not a mini-lesson.
+    conveys: The single most important principle / takeaway, set apart for emphasis.
+    bloom_fit: [remember, understand]
+    format_summary: "<aside class=key-idea> with a Key Idea framing label + 1-3 sentences."

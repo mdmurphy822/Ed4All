@@ -202,6 +202,24 @@ DEFAULT_BLOCK_ROUTING: Dict[str, Dict[str, Any]] = {
         "optional": [],
         "fail_action": "regenerate",
     },
+    # Issue I6 instruction-palette-v2 additions. table / acronym / key_idea
+    # are source-grounded structural blocks; source_ref required so each is
+    # auditable. table + key_idea additionally type-checked (content_type).
+    "table": {
+        "required": ["source_ref", "content_type"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "acronym": {
+        "required": ["source_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "key_idea": {
+        "required": ["source_ref", "content_type"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
 }
 
 

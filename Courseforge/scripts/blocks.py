@@ -98,6 +98,17 @@ BLOCK_TYPES: frozenset = frozenset(
         "vocab_card",
         "formula",
         "checklist",
+        # Issue I6 instruction-palette-v2 additions (snake_case canonical
+        # tokens). WCAG-correct structural block types: ``table`` (a real
+        # ``<table>`` with ``<caption>`` + scoped ``<th>``), ``acronym`` (a
+        # ``<dl>`` mapping each letter to its expansion term), and
+        # ``key_idea`` (an ``<aside>`` promoted from the generic callout).
+        # Emitted ONLY via the dynamic block planner path
+        # (``ED4ALL_DYNAMIC_BLOCK_PLAN``); the fixed-plan / legacy paths
+        # never select them, so every existing snapshot stays byte-stable.
+        "table",
+        "acronym",
+        "key_idea",
     }
 )
 
@@ -485,6 +496,16 @@ class Block:
             "vocab_card",
             "formula",
             "checklist",
+            # Issue I6 instruction-palette-v2: ``table`` (<table> wrapper),
+            # ``acronym`` (<dl> wrapper), ``key_idea`` (<aside> wrapper).
+            # Same wrapper-only metadata posture as the Wave-2 additions
+            # above — source-id attrs + the gated block-id. The
+            # content-type backstop (_REWRITE_BLOCK_TYPE_CONTENT_TYPE in
+            # pipeline_tools.py) stamps data-cf-content-type on the rewrite
+            # path so BlockContentTypeValidator passes.
+            "table",
+            "acronym",
+            "key_idea",
         }:
             # Wrapper-only blocks (the inline `<section>` wrappers in
             # `generate_week`). Source-id attrs only.

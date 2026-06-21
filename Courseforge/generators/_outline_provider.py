@@ -356,6 +356,27 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "section_skeleton": (0, 1),
         "summary_chars": (60, 300),
     },
+    # Issue I6 instruction-palette-v2 additions.
+    # Comparison / tabular block — one claim per row's salient fact, no
+    # section decomposition (the rows ARE the structure).
+    "table": {
+        "key_claims": (2, 8),
+        "section_skeleton": (0, 1),
+        "summary_chars": (60, 300),
+    },
+    # Acronym / mnemonic block — one claim per letter→term mapping; atomic
+    # (the <dl> rows are the structure, no sub-sections).
+    "acronym": {
+        "key_claims": (2, 8),
+        "section_skeleton": (0, 0),
+        "summary_chars": (40, 240),
+    },
+    # Key-idea aside — a single emphasized principle, atomic.
+    "key_idea": {
+        "key_claims": (1, 3),
+        "section_skeleton": (0, 0),
+        "summary_chars": (40, 240),
+    },
 }
 # Terse outline-tier system prompt. Kept ≤80 words on purpose — the
 # 7B-class default model has a small effective instruction-following
@@ -1530,6 +1551,119 @@ def _repair_prereq_pages(
     return candidate
 
 
+def _repair_assessment_item_payload(
+    candidate: Dict[str, Any],
+    *,
+    block_type: str,
+) -> Dict[str, Any]:
+    """Reconcile the assessment_item ``distractors`` / ``answer_key`` /
+    ``correct_answer_index`` trio so it satisfies the downstream validators.
+
+    The outline PROMPT (``§ assessment_item branch``) instructs the 7B to emit
+    ``distractors[]`` as WRONG-only options plus a SEPARATE ``answer_key`` (the
+    correct value) and a ``correct_answer_index``. But BOTH downstream
+    validators read the trio the OTHER way: the correct answer must LIVE IN
+    ``distractors[]`` at ``correct_answer_index`` — i.e.
+    ``distractors[correct_answer_index]["text"] == answer_key`` with the index
+    in ``[0, len(distractors))``. ``assessment_item_payload``'s
+    ``ASSESSMENT_ITEM_CORRECT_INDEX_OUT_OF_RANGE`` and
+    ``assessment_retrieval_grounding`` (which indexes
+    ``distractors[correct_answer_index]["text"]``) both depend on it. A model
+    that follows the prompt literally (wrong-only distractors + an index
+    pointing PAST them at the answer, e.g. 2 distractors + ``index=2``)
+    therefore fails a CRITICAL gate and stops the whole
+    ``inter_tier_validation`` phase on a single block.
+
+    This pass reconciles the two interpretations deterministically and WITHOUT
+    fabrication — it uses only the model's own ``answer_key`` + ``distractors``
+    text — by ENFORCING the invariant
+    ``distractors[correct_answer_index]["text"] == answer_key`` whenever
+    ``answer_key`` is present. Two failure shapes this catches (BOTH observed
+    on a real 7B run):
+
+    * **Out-of-range index** — wrong-only distractors + an index pointing PAST
+      them at the separate answer (2 distractors + ``index=2``). Fails the
+      gate's range check outright.
+    * **In-range index on the WRONG option** — wrong-only distractors + an
+      index that lands on a wrong distractor by luck (the correct answer is in
+      ``answer_key``, absent from ``distractors``). Passes the gate's range
+      check but marks a WRONG answer correct — an incoherent quiz.
+
+    The reconciliation:
+
+    * If ``answer_key`` already appears among the distractor texts
+      (whitespace-normalized compare, so a ``"a + b"`` / ``"a+b"`` formatting
+      variant is NOT duplicated), point ``correct_answer_index`` at that entry.
+      Idempotent on an already-correct block (index unchanged).
+    * Otherwise INSERT ``answer_key`` into ``distractors`` at the clamped
+      ``correct_answer_index`` (the model's intended slot in the combined
+      option list, ``[0, len(distractors)]``) and set the index there —
+      yielding the invariant the rewrite tier renders as
+      ``<li data-cf-distractor-index="N" data-cf-correct="true">``.
+
+    No-op for every non-assessment_item block, and when ``distractors`` is
+    absent / the wrong shape (the strict validator below still fails closed on
+    a genuinely empty/short payload). Stashes its signals under the transient
+    ``_assessment_item_payload_repair`` key (popped by the caller).
+    """
+    repair_meta: Dict[str, Any] = {"repaired": False, "mode": None}
+    if block_type != "assessment_item":
+        candidate["_assessment_item_payload_repair"] = repair_meta
+        return candidate
+
+    distractors = candidate.get("distractors")
+    if not isinstance(distractors, list) or not distractors:
+        candidate["_assessment_item_payload_repair"] = repair_meta
+        return candidate
+
+    cai = candidate.get("correct_answer_index")
+    cai_int = cai if isinstance(cai, int) and not isinstance(cai, bool) else None
+
+    def _norm(s: str) -> str:
+        return " ".join(s.split()).replace(" ", "").lower()
+
+    answer_key = candidate.get("answer_key")
+    if isinstance(answer_key, str) and answer_key.strip():
+        ak = answer_key.strip()
+        ak_norm = _norm(ak)
+        texts_norm = [
+            _norm(e["text"])
+            for e in distractors
+            if isinstance(e, dict) and isinstance(e.get("text"), str)
+        ]
+        if ak_norm in texts_norm:
+            # Correct answer already a distractor → point the index at it
+            # (no-op when the model already aligned them).
+            idx = texts_norm.index(ak_norm)
+            if cai_int != idx:
+                candidate["correct_answer_index"] = idx
+                repair_meta.update(repaired=True, mode="reindex_to_existing")
+        else:
+            # Answer absent from distractors → insert it at the model's
+            # intended (clamped) slot so the invariant holds.
+            pos = (
+                cai_int
+                if (cai_int is not None and 0 <= cai_int <= len(distractors))
+                else len(distractors)
+            )
+            distractors.insert(pos, {"text": ak})
+            candidate["distractors"] = distractors
+            candidate["correct_answer_index"] = pos
+            repair_meta.update(
+                repaired=True, mode="insert_answer_key", inserted_at=pos
+            )
+    else:
+        # No usable answer_key — clamp an out-of-range index into the existing
+        # range so the range check passes (the similarity / grounding
+        # validators still gate the substance).
+        if cai_int is None or cai_int < 0 or cai_int >= len(distractors):
+            candidate["correct_answer_index"] = 0
+            repair_meta.update(repaired=True, mode="clamp_index_no_answer_key")
+
+    candidate["_assessment_item_payload_repair"] = repair_meta
+    return candidate
+
+
 def _repair_outline_bloom_level(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce a numeric / mis-cased ``bloom_level`` to the canonical enum.
 
@@ -2056,6 +2190,21 @@ class OutlineProvider(_BaseLLMProvider):
                 objectives=objectives,
             )
             prereq_pages_repair = candidate.pop("_prereq_pages_repair", None)
+            # 5c. ``_repair_assessment_item_payload`` — for ``assessment_item``
+            #    blocks only, reconcile the distractors/answer_key/index trio so
+            #    the CORRECT answer lives IN distractors[] at correct_answer_index
+            #    (what BOTH downstream validators require), when the 7B followed
+            #    the prompt literally (wrong-only distractors + an index pointing
+            #    past them at the separate answer_key). Surgical: fires only on a
+            #    genuinely out-of-range index; no fabrication (uses the model's
+            #    own answer_key + distractor text). No-op for every other type.
+            candidate = _repair_assessment_item_payload(
+                candidate,
+                block_type=block.block_type,
+            )
+            assessment_item_payload_repair = candidate.pop(
+                "_assessment_item_payload_repair", None
+            )
             # 6. Bloom-diversity FLOOR (the real fix). The §3.1/§3.3 system
             #    + per-block directives alone won't reliably move a 7B model
             #    off the lazy "understand" floor (observed 70 understand /
@@ -2106,6 +2255,10 @@ class OutlineProvider(_BaseLLMProvider):
                     repair_meta["bloom_level_repair"] = bloom_level_repair
                 if prereq_pages_repair is not None:
                     repair_meta["prereq_pages_repair"] = prereq_pages_repair
+                if assessment_item_payload_repair is not None:
+                    repair_meta["assessment_item_payload_repair"] = (
+                        assessment_item_payload_repair
+                    )
                 if bloom_floor_meta is not None:
                     repair_meta["bloom_floor"] = bloom_floor_meta
             if schema is not None:

@@ -81,6 +81,8 @@ _BODY_TAGS: frozenset = frozenset(
         "figcaption", "table", "thead", "tbody", "tr", "td", "th",
         "a", "br", "img", "details", "summary", "dl", "dt", "dd",
         "small", "sub", "sup", "i", "b",
+        # Issue I6 instruction-palette-v2 structural elements.
+        "aside", "caption",
     }
 )
 
@@ -150,6 +152,14 @@ REQUIRED_ATTRS: Dict[str, Tuple[str, ...]] = {
     "discussion_prompt": ("data-cf-block-id",),
     "recap": ("data-cf-block-id",),
     "chrome": ("data-cf-block-id",),
+    # Issue I6 instruction-palette-v2: table / key_idea carry the
+    # content-type attribute (stamped on the rewrite path); acronym is a
+    # wrapper-only block carrying only the universal block_id. The
+    # element-shape contract (caption + scoped th / matched dl / aside) is
+    # enforced by ``_check_palette_v2_shape`` below, NOT by these attrs.
+    "table": ("data-cf-block-id", "data-cf-content-type"),
+    "acronym": ("data-cf-block-id",),
+    "key_idea": ("data-cf-block-id", "data-cf-content-type"),
 }
 
 # Block types where the body-tag check is relaxed because the canonical
@@ -181,12 +191,42 @@ class _ShapeParser(HTMLParser):
         self.found_attrs: Set[str] = set()
         self.parse_error: Optional[str] = None
         self.tags_seen: List[str] = []
+        # Issue I6 instruction-palette-v2 structural-shape tracking.
+        self.saw_caption: bool = False
+        self.saw_scoped_th: bool = False
+        self.dt_count: int = 0
+        self.dd_count: int = 0
+        self.saw_dl: bool = False
+        self.saw_aside: bool = False
+
+    def _track_palette_v2(
+        self, tag: str, attrs: List[Tuple[str, Optional[str]]]
+    ) -> None:
+        """Record the element-shape facts the I6 palette-v2 shape check reads."""
+        if tag == "caption":
+            self.saw_caption = True
+        elif tag == "th":
+            scope = ""
+            for attr_name, attr_value in attrs:
+                if attr_name == "scope" and isinstance(attr_value, str):
+                    scope = attr_value.strip().lower()
+            if scope in ("col", "row", "colgroup", "rowgroup"):
+                self.saw_scoped_th = True
+        elif tag == "dl":
+            self.saw_dl = True
+        elif tag == "dt":
+            self.dt_count += 1
+        elif tag == "dd":
+            self.dd_count += 1
+        elif tag == "aside":
+            self.saw_aside = True
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         tag = tag.lower()
         self.tags_seen.append(tag)
         if tag in _BODY_TAGS:
             self.saw_body_tag = True
+        self._track_palette_v2(tag, attrs)
         # Track data-cf-* attributes. The parser lowercases attr names
         # by default, so we don't need a case-fold pass here.
         for attr_name, _attr_value in attrs:
@@ -328,6 +368,57 @@ def _is_json_wrapped(content: str) -> bool:
     except (json.JSONDecodeError, ValueError):
         return False
     return isinstance(parsed, (dict, list))
+
+
+def _check_palette_v2_shape(
+    block_type: str, parser: "_ShapeParser"
+) -> Optional[str]:
+    """Return a shape-failure message for the I6 palette-v2 block types.
+
+    Issue I6 added three WCAG-shaped structural block types. Beyond the
+    generic body-tag / balance / required-attr checks the validator already
+    runs, each carries a specific element contract:
+
+    - ``table``: a real ``<table>`` MUST carry a ``<caption>`` AND at least
+      one scoped ``<th scope="col"|"row">`` header cell (the accessible-table
+      contract).
+    - ``acronym``: the letter→term mapping MUST be a ``<dl>`` with matching
+      ``<dt>`` / ``<dd>`` pairs (equal, non-zero counts).
+    - ``key_idea``: the block MUST be an ``<aside>`` (semantically set apart
+      for assistive technology), not a bare ``<div>`` / ``<p>``.
+
+    Returns ``None`` when the block_type is not a palette-v2 type or the
+    shape is satisfied; otherwise a short human-readable failure reason.
+    """
+    if block_type == "table":
+        if not parser.saw_caption:
+            return "table block is missing a <caption> element"
+        if not parser.saw_scoped_th:
+            return (
+                "table block has no scoped header cell "
+                "(<th scope=\"col\"|\"row\">)"
+            )
+        return None
+    if block_type == "acronym":
+        if not parser.saw_dl:
+            return "acronym block has no <dl> letter→term mapping"
+        if parser.dt_count == 0 or parser.dd_count == 0:
+            return (
+                "acronym block <dl> has no <dt>/<dd> pairs "
+                f"(dt={parser.dt_count}, dd={parser.dd_count})"
+            )
+        if parser.dt_count != parser.dd_count:
+            return (
+                "acronym block <dl> has mismatched <dt>/<dd> counts "
+                f"(dt={parser.dt_count}, dd={parser.dd_count}); each letter "
+                "<dt> needs exactly one expansion <dd>"
+            )
+        return None
+    if block_type == "key_idea":
+        if not parser.saw_aside:
+            return "key_idea block must be an <aside>, not a <div>/<p>"
+        return None
+    return None
 
 
 def _emit_decision(
@@ -631,6 +722,36 @@ class RewriteHtmlShapeValidator:
                 _emit_decision(
                     capture, block,
                     passed=False, code="REWRITE_HTML_PARSE_FAIL",
+                    content_length=content_length, tags_seen=parser.tags_seen,
+                )
+                continue
+
+            # 2b. Issue I6 instruction-palette-v2 element-shape contract
+            # (caption + scoped th / matched dl pairs / aside). Only fires
+            # for the three palette-v2 block types; a no-op for every other
+            # block_type. A shape miss is a structural defect → regenerate.
+            palette_v2_fail = _check_palette_v2_shape(block.block_type, parser)
+            if palette_v2_fail is not None:
+                if len(issues) < _ISSUE_LIST_CAP:
+                    issues.append(GateIssue(
+                        severity="critical",
+                        code="REWRITE_BLOCK_SHAPE_INVALID",
+                        message=(
+                            f"Rewrite-tier Block {block.block_id!r} (block_type="
+                            f"{block.block_type!r}) failed its element-shape "
+                            f"contract: {palette_v2_fail}."
+                        ),
+                        location=block.block_id,
+                        suggestion=(
+                            "Re-prompt the rewrite tier to emit the canonical "
+                            "WCAG markup for this block type (table: "
+                            "<caption> + scoped <th>; acronym: <dl> with "
+                            "matched <dt>/<dd>; key_idea: <aside>)."
+                        ),
+                    ))
+                _emit_decision(
+                    capture, block,
+                    passed=False, code="REWRITE_BLOCK_SHAPE_INVALID",
                     content_length=content_length, tags_seen=parser.tags_seen,
                 )
                 continue

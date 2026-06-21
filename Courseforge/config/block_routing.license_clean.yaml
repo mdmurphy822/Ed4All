@@ -330,3 +330,30 @@ blocks:
         - source_ref
       optional: []
       fail_action: regenerate
+
+  # Issue I6 instruction-palette-v2 additions (table / acronym / key_idea).
+  # Mirror the canonical Courseforge/config/block_routing.yaml so the
+  # variant stays a full drop-in (test_block_routing_license_clean
+  # ::test_license_clean_block_type_coverage_matches_canonical).
+  table:
+    validators:
+      required:
+        - source_ref
+        - content_type
+      optional: []
+      fail_action: regenerate
+
+  acronym:
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  key_idea:
+    validators:
+      required:
+        - source_ref
+        - content_type
+      optional: []
+      fail_action: regenerate

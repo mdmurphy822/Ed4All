@@ -117,6 +117,10 @@ SECTION_CONTENT_TYPE_ENUM: FrozenSet[str] = frozenset({
     "overview",
     "summary",
     "explanation",
+    # Issue I6 instruction-palette-v2 content-type labels.
+    "table",
+    "acronym",
+    "key_idea",
 })
 
 # Hardcoded mirror of schemas/taxonomies/content_type.json::$defs.CalloutContentType.
@@ -961,6 +965,21 @@ COURSEFORGE_CSS = """
     .formula-card { background: #f8f9fa; border-left: 4px solid #e83e8c; padding: 1rem 1.25rem; margin: 1rem 0; text-align: center; font-size: 1.05em; color: #1a1a1a; }
     .checklist { background: #f8f9fa; border-left: 4px solid #6610f2; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; list-style: none; }
     .checklist .checklist-item { margin: 0.4rem 0; color: #1a1a1a; }
+    /* Issue I6 instruction-palette-v2 component library (table / acronym /
+       key_idea). Accessible comparison table, a letter->term description
+       list, and an emphasized aside — same light-background + dark-text
+       discipline as the blocks above. */
+    table { border-collapse: collapse; margin: 1em 0; width: 100%; color: #1a1a1a; }
+    table caption { caption-side: top; text-align: left; font-weight: 700; color: #2c5aa0; padding: 0.4rem 0; }
+    table th, table td { border: 1px solid #e0e0e0; padding: 0.5rem 0.75rem; text-align: left; }
+    table thead th { background: #ebf8ff; color: #1a365d; }
+    table th[scope="row"] { background: #f8f9fa; font-weight: 700; }
+    .acronym-card { background: #f8f9fa; border-left: 4px solid #6f42c1; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; }
+    .acronym-card .acronym-list { margin: 0.4rem 0 0 0; }
+    .acronym-card .acronym-list dt { font-weight: 700; color: #2c5aa0; float: left; clear: left; min-width: 2.5rem; }
+    .acronym-card .acronym-list dd { margin: 0 0 0.3rem 3rem; color: #1a1a1a; }
+    aside.key-idea { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 1rem 1.25rem; margin: 1rem 0; color: #1a1a1a; border-radius: 0 4px 4px 0; }
+    aside.key-idea strong { color: #0c5460; }
     /* 7B→Sonnet parity P3: instruction-block variety. Six structural block
        types that previously rendered as bare <section> prose now carry a
        distinct component class so the rewrite tier renders them as styled
@@ -1288,6 +1307,57 @@ def _render_flip_cards(terms: List[Dict], *, page_id: str = "") -> str:
         </div>
       </div>""")
     return f'    <div class="flip-card-grid">{"".join(cards)}\n    </div>'
+
+
+def _render_key_terms_section(
+    terms: List[Dict],
+    *,
+    page_id: str = "",
+) -> str:
+    """Feature I5 — render a Key Terms section of deterministic vocab cards.
+
+    Each ``terms`` entry is ``{term, definition, sourceLink?}``. Emits one
+    ``data-cf-content-type="key-terms"`` vocab-card ``<div>`` per term carrying
+    the term, its definition, and (when present) an ``/api/learn/source/...``
+    deep-link. Reuses the existing ``.callout`` + ``.key-term`` styles; no new
+    CSS class is required. Returns an empty string when ``terms`` is empty.
+    """
+    bound_page_id = page_id or _LEGACY_PAGE_ID
+    cards: List[str] = []
+    for i, t in enumerate(terms):
+        term = html_mod.escape(str(t.get("term", "")))
+        definition = html_mod.escape(str(t.get("definition", "")))
+        term_slug = _slugify(str(t.get("term", "")))
+        link = t.get("sourceLink")
+        link_html = ""
+        if isinstance(link, str) and link:
+            link_html = (
+                '\n      <p class="key-term-source">'
+                f'<a href="{html_mod.escape(link)}">View source</a></p>'
+            )
+        block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "vocab_card", term_slug, i
+            ),
+            block_type="vocab_card",
+            page_id=bound_page_id,
+            sequence=i,
+            content={"term": t.get("term", ""),
+                     "definition": t.get("definition", "")},
+            key_terms=(term_slug,) if term_slug else (),
+        )
+        block_attrs = block.to_html_attrs()
+        cards.append(
+            f'<div class="callout vocab-card" '
+            f'data-cf-content-type="key-terms"{block_attrs}>\n'
+            f'      <p><span class="key-term">{term}</span></p>\n'
+            f'      <p>{definition}</p>{link_html}\n'
+            f'    </div>'
+        )
+    return (
+        '    <section class="key-terms" data-cf-content-type="key-terms">\n'
+        '    ' + "\n    ".join(cards) + '\n    </section>'
+    )
 
 
 def _render_self_check(

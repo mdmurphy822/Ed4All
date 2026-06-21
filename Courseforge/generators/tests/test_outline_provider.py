@@ -66,6 +66,7 @@ from Courseforge.generators._outline_provider import (  # noqa: E402
     _build_block_outline_schema,
     _match_retry_directive,
     _surface_key_claims_min_items,
+    _repair_assessment_item_payload,
     _repair_claim_grounding,
     _repair_outline_bloom_level,
     _repair_outline_curies,
@@ -1750,3 +1751,96 @@ def test_assessment_directive_does_not_steal_key_claims_or_distractors_short():
     short = _match_retry_directive("distractors [] is too short", "assessment_item")
     assert "distractors" in short
     assert "REAL VALUES" in short
+
+
+# ---------------------------------------------------------------------------
+# _repair_assessment_item_payload — distractors/answer_key/index reconciliation
+# (regression for the 2026-06-20 inter_tier_validation phase-stop: a 7B
+# assessment_item with wrong-only distractors + a correct_answer_index pointing
+# past them at the separate answer_key failed the critical
+# ``outline_assessment_item_payload`` gate.)
+# ---------------------------------------------------------------------------
+
+
+def _norm_eq(a: str, b: str) -> bool:
+    return "".join(a.split()).lower() == "".join(b.split()).lower()
+
+
+def test_repair_assessment_item_out_of_range_inserts_answer_key():
+    # week_01 shape: 2 wrong distractors, answer separate, index past them.
+    content = {
+        "block_type": "assessment_item",
+        "stem": "Simplify 3(2x + 4) + 5(x - 1)",
+        "answer_key": "11x + 12",
+        "distractors": [{"text": "6x + 7"}, {"text": "8x + 9"}],
+        "correct_answer_index": 2,
+    }
+    out = _repair_assessment_item_payload(content, block_type="assessment_item")
+    d = out["distractors"]
+    cai = out["correct_answer_index"]
+    assert 0 <= cai < len(d)
+    assert _norm_eq(d[cai]["text"], "11x + 12")
+    assert out["_assessment_item_payload_repair"]["mode"] == "insert_answer_key"
+
+
+def test_repair_assessment_item_in_range_wrong_option_is_fixed():
+    # week_06 shape: in-range index but pointing at a WRONG distractor (the
+    # correct answer is in answer_key, absent from distractors).
+    content = {
+        "block_type": "assessment_item",
+        "stem": "Divide: -5 / 7.",
+        "answer_key": "-5/7",
+        "distractors": [{"text": "-2/7"}, {"text": "3/7"}],
+        "correct_answer_index": 0,
+    }
+    out = _repair_assessment_item_payload(content, block_type="assessment_item")
+    d = out["distractors"]
+    cai = out["correct_answer_index"]
+    assert 0 <= cai < len(d)
+    assert _norm_eq(d[cai]["text"], "-5/7")
+
+
+def test_repair_assessment_item_valid_block_is_idempotent():
+    # Correct answer already a distractor at the named index -> no change.
+    content = {
+        "block_type": "assessment_item",
+        "answer_key": "B",
+        "distractors": [{"text": "A"}, {"text": "B"}, {"text": "C"}],
+        "correct_answer_index": 1,
+    }
+    out = _repair_assessment_item_payload(content, block_type="assessment_item")
+    assert out["correct_answer_index"] == 1
+    assert [x["text"] for x in out["distractors"]] == ["A", "B", "C"]
+    assert out["_assessment_item_payload_repair"]["repaired"] is False
+
+
+def test_repair_assessment_item_formatting_variant_reindexes_not_duplicates():
+    # answer_key "a + b" vs distractor "a+b" must REINDEX (not insert a dup).
+    content = {
+        "block_type": "assessment_item",
+        "answer_key": "a + b",
+        "distractors": [{"text": "a+b"}, {"text": "c"}],
+        "correct_answer_index": 1,
+    }
+    out = _repair_assessment_item_payload(content, block_type="assessment_item")
+    assert len(out["distractors"]) == 2  # no duplicate inserted
+    assert out["correct_answer_index"] == 0
+    assert out["_assessment_item_payload_repair"]["mode"] == "reindex_to_existing"
+
+
+def test_repair_assessment_item_noop_for_other_block_types():
+    content = {"block_type": "concept", "foo": "bar"}
+    out = _repair_assessment_item_payload(content, block_type="concept")
+    assert out["_assessment_item_payload_repair"]["repaired"] is False
+    assert "distractors" not in out
+
+
+def test_repair_assessment_item_no_answer_key_clamps_out_of_range_index():
+    content = {
+        "block_type": "assessment_item",
+        "distractors": [{"text": "A"}, {"text": "B"}],
+        "correct_answer_index": 9,
+    }
+    out = _repair_assessment_item_payload(content, block_type="assessment_item")
+    assert 0 <= out["correct_answer_index"] < len(out["distractors"])
+    assert out["_assessment_item_payload_repair"]["mode"] == "clamp_index_no_answer_key"

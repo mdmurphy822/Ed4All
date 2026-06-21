@@ -77,7 +77,7 @@ def test_new_type_in_block_types(block_type):
 
 
 def test_block_types_count_is_twenty_one():
-    assert len(BLOCK_TYPES) == 21
+    assert len(BLOCK_TYPES) == 24
 
 
 # ---------------------------------------------------------------------------

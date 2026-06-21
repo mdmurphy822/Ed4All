@@ -78,7 +78,7 @@ blocks:
   # ----------------------------------------------------------------------
   #
   # Every entry in Courseforge/scripts/blocks.py::BLOCK_TYPES (canonical
-  # 21-value frozenset) MUST carry a ``validators`` block; the
+  # 24-value frozenset) MUST carry a ``validators`` block; the
   # completeness regression at
   # Courseforge/router/tests/test_block_type_gate_matrix.py asserts
   # this. Dropping a block_type from the matrix below fails the gate at
@@ -393,5 +393,40 @@ blocks:
     validators:
       required:
         - source_ref
+      optional: []
+      fail_action: regenerate
+
+  # ----------------------------------------------------------------------
+  # Issue I6 instruction-palette-v2 additions (table / acronym / key_idea).
+  # Mirror Courseforge/router/policy.py::DEFAULT_BLOCK_ROUTING for these
+  # three so the YAML matrix and the hardcoded fallback agree
+  # (test_block_type_gate_matrix Test 5).
+  # ----------------------------------------------------------------------
+
+  # table: accessible comparison/tabular block. Source + content_type
+  # required so the table is auditable and typed.
+  table:
+    validators:
+      required:
+        - source_ref
+        - content_type
+      optional: []
+      fail_action: regenerate
+
+  # acronym: letter→term mnemonic block. Source grounding required so the
+  # expansion is auditable back to the source.
+  acronym:
+    validators:
+      required:
+        - source_ref
+      optional: []
+      fail_action: regenerate
+
+  # key_idea: emphasized-principle aside. Source + content_type required.
+  key_idea:
+    validators:
+      required:
+        - source_ref
+        - content_type
       optional: []
       fail_action: regenerate

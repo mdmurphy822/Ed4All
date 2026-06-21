@@ -89,6 +89,34 @@ _CONTENT_TYPE_SCAFFOLDING_TYPES: frozenset = frozenset(
     {"objective", "chrome", "recap"}
 )
 
+# I5 — deterministic-template block markers. A Block whose ``template_type``
+# is in this set was authored by a DETERMINISTIC, grounded builder (not the
+# LLM outline/rewrite tier) and is validated by that builder + its own tests,
+# so it must BYPASS every LLM-authoring gate's per-block walk while STILL
+# shipping into the final course (the validation handlers write it into
+# blocks_validated.jsonl regardless of the gate verdict). For now the only
+# member is ``"key_terms"`` (the I5 key-terms vocab cards built by
+# ``lib/generation/key_terms.py`` — see ``KEY_TERMS_TEMPLATE_TYPE`` /
+# ``MCP/tools/pipeline_tools.py::_KEY_TERMS_TEMPLATE_TYPE``). The set is the
+# generalization seam: a future deterministic template type joins here.
+_DETERMINISTIC_TEMPLATE_TYPES: frozenset = frozenset({"key_terms"})
+
+
+def _is_deterministic_template_block(block: Block) -> bool:
+    """Return True for a deterministic-template block exempt from LLM gates.
+
+    Keys on ``Block.template_type`` (currently ``"key_terms"``). Such a block
+    is pre-authored + grounded by its own deterministic builder and is NOT an
+    LLM-authoring output, so EVERY ``Block*Validator`` per-block walk skips it
+    (no audit, not counted toward ``audited``, no issue emitted). It still
+    ships — the inter_tier_validation / post_rewrite_validation handlers write
+    it into blocks_validated.jsonl independent of the gate verdict. Generalized
+    name so future deterministic template types can join
+    ``_DETERMINISTIC_TEMPLATE_TYPES`` without touching every gate.
+    """
+    tt = getattr(block, "template_type", None)
+    return isinstance(tt, str) and tt in _DETERMINISTIC_TEMPLATE_TYPES
+
 
 def _coerce_blocks(inputs: Dict[str, Any]) -> Tuple[List[Block], Optional[GateIssue]]:
     """Pull a ``List[Block]`` out of ``inputs["blocks"]``.
@@ -666,6 +694,10 @@ class BlockCurieAnchoringValidator:
             # path. Predicate mirrors pipeline_tools.py:5226.
             if _is_unshipped_escalation_tombstone(block):
                 continue
+            # I5: deterministic-template block (e.g. key_terms vocab card) —
+            # not LLM-authored; exempt from this gate while still shipping.
+            if _is_deterministic_template_block(block):
+                continue
             content = block.content
             # Phase 3.5: shape-dispatch. Dict and str paths share the
             # CURIE-anchoring contract (declared CURIEs must appear in
@@ -885,6 +917,10 @@ class BlockContentTypeValidator:
             # Skip unshipped tombstone only; salvaged-with-content stays
             # on the audit path (predicate mirrors pipeline_tools.py:5226).
             if _is_unshipped_escalation_tombstone(block):
+                continue
+            # I5: deterministic-template block (e.g. key_terms vocab card) —
+            # not LLM-authored; exempt from this gate while still shipping.
+            if _is_deterministic_template_block(block):
                 continue
             # Skip scaffolding block types (objective / chrome / recap):
             # their canonical emit carries no data-cf-content-type and they
@@ -1149,6 +1185,10 @@ class BlockPageObjectivesValidator:
             # on the audit path (predicate mirrors pipeline_tools.py:5226).
             if _is_unshipped_escalation_tombstone(block):
                 continue
+            # I5: deterministic-template block (e.g. key_terms vocab card) —
+            # not LLM-authored; exempt from this gate while still shipping.
+            if _is_deterministic_template_block(block):
+                continue
             content = block.content
             # Phase 3.5: shape-dispatch — both paths extract a list of
             # objective_id refs and validate against the canonical set.
@@ -1379,6 +1419,10 @@ class BlockSourceRefValidator:
             # Skip unshipped tombstone only; salvaged-with-content stays
             # on the audit path (predicate mirrors pipeline_tools.py:5226).
             if _is_unshipped_escalation_tombstone(block):
+                continue
+            # I5: deterministic-template block (e.g. key_terms vocab card) —
+            # not LLM-authored; exempt from this gate while still shipping.
+            if _is_deterministic_template_block(block):
                 continue
             content = block.content
             # Phase 3.5: shape-dispatch — both paths extract a list of
@@ -1614,4 +1658,6 @@ __all__ = [
     "BlockContentTypeValidator",
     "BlockPageObjectivesValidator",
     "BlockSourceRefValidator",
+    "_is_deterministic_template_block",
+    "_DETERMINISTIC_TEMPLATE_TYPES",
 ]
