@@ -151,6 +151,61 @@ def test_page_transform_source_links_multi_id_and_dedup():
     assert "doc=ch1&amp;ref=a" in out and "doc=ch2&amp;ref=b" in out
 
 
+def test_page_transform_same_doc_collapses_to_one_link():
+    from gui.services.imscc_service import _sanitize_page
+
+    # Issue I4 (the bug): a grounded block carries MANY distinct chunk-ids that
+    # all resolve to the SAME source doc (no data-dart-pages — the real-corpus
+    # shape). The consolidated transform must emit EXACTLY ONE "View in textbook"
+    # link, not one per chunk-id (the link wall).
+    ids = ", ".join("dart:ch1#b{}".format(i) for i in range(22))
+    out = _sanitize_page(
+        '<div class="worked_example" data-cf-source-ids="{}">'
+        "<p>A worked example.</p></div>".format(ids),
+        slug="my-course",
+    )
+    assert out.count("View in textbook") == 1
+    # The surviving link points at the doc's first anchor.
+    assert "doc=ch1&amp;ref=b0" in out
+
+
+def test_page_transform_caps_links_at_max():
+    from gui.services.imscc_service import _sanitize_page
+    from gui.services.imscc_service import MAX_SOURCE_LINKS
+
+    # Ids spanning MORE than MAX_SOURCE_LINKS distinct docs → at most
+    # MAX_SOURCE_LINKS links survive (no link wall even across many docs).
+    n_docs = MAX_SOURCE_LINKS + 4
+    ids = ", ".join("dart:ch{0}#a{0}".format(i) for i in range(n_docs))
+    out = _sanitize_page(
+        '<div data-cf-source-ids="{}">x</div>'.format(ids),
+        slug="c1",
+    )
+    assert out.count("View in textbook") == MAX_SOURCE_LINKS
+
+
+def test_page_transform_prefers_primary_anchor_for_doc():
+    from gui.services.imscc_service import _sanitize_page
+
+    # Purposeful-link integrity: when many chunk-ids of one doc collapse to a
+    # single link, the surviving anchor PREFERS the wrapper's
+    # data-cf-source-primary token (not merely the first token), and it resolves
+    # through the /source-doc route.
+    out = _sanitize_page(
+        '<div class="worked_example" '
+        'data-cf-source-ids="dart:ch1#b0, dart:ch1#b1, dart:ch1#b2" '
+        'data-cf-source-primary="dart:ch1#b1">'
+        "<p>A worked example.</p></div>",
+        slug="my-course",
+    )
+    assert out.count("View in textbook") == 1
+    # The primary anchor (b1) is the surviving deep link, through /source-doc.
+    assert "/api/courses/my-course/source-doc?doc=ch1&amp;ref=b1" in out
+    assert "#dart-b1" in out
+    # The non-primary first token (b0) is NOT the surviving link.
+    assert "ref=b0" not in out
+
+
 def test_page_transform_no_slug_skips_injection():
     from gui.services.imscc_service import _sanitize_page
 

@@ -274,7 +274,14 @@ def get_endpoints_path() -> Path:
         return Path(env_override)
     home = ed4all_home()
     if home is not None:
-        return home / "config" / "endpoints.yaml"
+        # endpoints.yaml is READ-ONLY config that ships in-tree (unlike the
+        # write-dirs which are created on first use). An ED4ALL_HOME deploy
+        # (e.g. the Docker named volume) that hasn't seeded a per-deploy
+        # override must NOT crash at import time — fall back to the shipped
+        # in-tree copy. A seeded override under ED4ALL_HOME still wins.
+        home_path = home / "config" / "endpoints.yaml"
+        if home_path.exists():
+            return home_path
     return CONFIG_PATH / "endpoints.yaml"
 
 

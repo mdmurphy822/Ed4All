@@ -78,6 +78,12 @@ _PAGE_HEADERS: Dict[str, str] = {
 _CF_SOURCE_ATTR = "data-cf-source-ids"
 _DART_SOURCE_ID_RE = re.compile(r"^dart:(?P<doc>[^#]+)#(?P<anchor>.+)$")
 
+# Cap on "View in textbook" links emitted per block. A grounded block can carry
+# tens of chunk-ids, but they collapse to a handful of distinct source targets
+# (doc + first page); this is the upper bound on the consolidated nav so a block
+# with many distinct docs still doesn't produce a link wall (issue I4).
+MAX_SOURCE_LINKS = 3
+
 # Whitelisted asset extensions → content-type. Archived static assets only;
 # never HTML (pages go through the sanitised page path) and never active types.
 _ASSET_CONTENT_TYPES: Dict[str, str] = {
@@ -560,9 +566,14 @@ def _inject_source_links(soup, slug: str) -> None:  # noqa: ANN001 — bs4 soup
     carries 0 hrefs, so a learner can't reach the passage the block was built
     from. For every such wrapper that does not already carry a source link, append
     a small ``<nav class="cf-source-links">`` of "View in textbook" deep links
-    (one per parseable id) into the served ``/source-doc`` accessible HTML. Ids
-    that don't parse as ``dart:<doc>#<anchor>`` are skipped; a wrapper that already
-    holds a ``.cf-source-links`` nav (idempotent re-serve) is left untouched.
+    (one per distinct source page/doc, capped at ``MAX_SOURCE_LINKS``) into the
+    served ``/source-doc`` accessible HTML. The ids are CONSOLIDATED by their
+    ``(doc, first_page)`` target — a block grounded by N chunk-ids that all resolve
+    to the same source doc yields ONE link, not N (issue I4). The first token per
+    target survives, preferring one carrying ``data-cf-source-primary`` so the
+    surviving link still deep-links purposefully. Ids that don't parse as
+    ``dart:<doc>#<anchor>`` are skipped; a wrapper that already holds a
+    ``.cf-source-links`` nav (idempotent re-serve) is left untouched.
 
     Anchors only — no script, no handlers. The links inherit the same restrictive
     CSP as the rest of the page (``default-src 'none'`` allows same-origin nav).
@@ -605,26 +616,47 @@ def _inject_source_links(soup, slug: str) -> None:  # noqa: ANN001 — bs4 soup
             if el_pages
             else ""
         )
+        # The single primary token DART stamps on the same wrapper (when
+        # present): the surviving link for its (doc, first_page) target prefers
+        # this token so the consolidated link still deep-links purposefully.
+        primary_attr = el.get("data-cf-source-primary")
+        if isinstance(primary_attr, (list, tuple)):
+            primary_attr = " ".join(primary_attr)
+        primary_token = (primary_attr or "").strip()
+        # Consolidate to ONE link per DISTINCT source target — keyed by
+        # (doc, first_page), collapsing to just ``doc`` when page-less (issue
+        # I4). A block grounded by N chunk-ids all resolving to the same doc
+        # yields ONE link, not N. The first token per key survives, but a token
+        # equal to the wrapper's ``data-cf-source-primary`` is PREFERRED so the
+        # surviving anchor is the purposeful one.
         seen: set = set()
-        links = []
+        links_by_key: Dict[Tuple[str, object], object] = {}
         for token in str(raw or "").replace(" ", ",").split(","):
             token = token.strip()
-            if not token or token in seen:
+            if not token:
                 continue
             m = _DART_SOURCE_ID_RE.match(token)
             if not m:
                 continue
-            seen.add(token)
             doc = m.group("doc").strip()
             anchor = m.group("anchor").strip()
             if not doc or not anchor:
                 continue
+            key = (doc, first_page if first_page else None)
+            is_primary = bool(primary_token) and token == primary_token
+            if key in seen and not is_primary:
+                continue  # already have a link for this (doc, page) target
             href = _source_doc_url(slug, doc, anchor, page=first_page)
             a = soup.new_tag("a", href=href)
             a["class"] = ["cf-source-link"]
             a["rel"] = "noopener"
             a.string = "View in textbook{}".format(page_text)
-            links.append(a)
+            # Primary token overrides an already-chosen non-primary link for the
+            # same target; otherwise the first token per key wins.
+            links_by_key[key] = a
+            seen.add(key)
+        # Cap the number of distinct-target links per block (issue I4).
+        links = list(links_by_key.values())[:MAX_SOURCE_LINKS]
         if not links:
             continue
         nav = soup.new_tag("nav")
