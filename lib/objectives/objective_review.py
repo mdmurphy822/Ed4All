@@ -553,6 +553,123 @@ def _statement(obj: Dict[str, Any]) -> str:
     return str(val).strip() if isinstance(val, str) else ""
 
 
+#: Lazy module-level reverse index ``verb (lowercase) -> sorted tuple of the
+#: canonical Bloom levels that verb belongs to``. Built once from
+#: ``BLOOMS_VERBS`` (which carries no verb→level helper). Used by the JOINT
+#: Bloom reconciliation in ``_apply_bloom_fields`` to drive level + verb into
+#: mutual agreement instead of all-or-nothing reverting. The values are sorted
+#: (stable) so a verb valid for multiple levels resolves deterministically.
+_VERB_TO_LEVELS_CACHE: Optional[Dict[str, Tuple[str, ...]]] = None
+
+
+def _verb_to_levels() -> Dict[str, Tuple[str, ...]]:
+    """Return the lazily-built ``verb -> (levels...)`` reverse index.
+
+    Built once from ``BLOOMS_VERBS`` (lowercase-normalized). A verb maps to the
+    sorted tuple of every canonical level whose verb-set contains it (the
+    taxonomy currently has no multi-level verbs, but the reverse index handles
+    that case so reconciliation stays deterministic).
+    """
+    global _VERB_TO_LEVELS_CACHE
+    if _VERB_TO_LEVELS_CACHE is not None:
+        return _VERB_TO_LEVELS_CACHE
+    from lib.ontology.learning_objectives import BLOOMS_VERBS  # noqa: PLC0415
+
+    rev: Dict[str, set] = {}
+    for level, verbs in BLOOMS_VERBS.items():
+        for verb in verbs:
+            rev.setdefault(str(verb).strip().lower(), set()).add(level)
+    _VERB_TO_LEVELS_CACHE = {
+        v: tuple(sorted(levels)) for v, levels in rev.items()
+    }
+    return _VERB_TO_LEVELS_CACHE
+
+
+def _canonical_level(level: Any) -> Optional[str]:
+    """Return the lower-cased level iff it is a key of ``BLOOMS_VERBS``, else None."""
+    from lib.ontology.learning_objectives import BLOOMS_VERBS  # noqa: PLC0415
+
+    if not isinstance(level, str) or not level.strip():
+        return None
+    norm = level.strip().lower()
+    return norm if norm in BLOOMS_VERBS else None
+
+
+def _verb_in_level(verb: Optional[str], level: Optional[str]) -> bool:
+    """True iff ``verb`` (case-insensitive) is canonical for ``level``."""
+    from lib.ontology.learning_objectives import BLOOMS_VERBS  # noqa: PLC0415
+
+    if not verb or not level:
+        return False
+    verbs = BLOOMS_VERBS.get(level)
+    return bool(verbs) and verb.strip().lower() in verbs
+
+
+def _level_for_verb(
+    verb: Optional[str], *, prefer: Optional[str] = None
+) -> Optional[str]:
+    """Resolve the canonical level a verb belongs to.
+
+    A verb valid for MULTIPLE levels resolves to: ``prefer`` when the verb is
+    valid there, else the first (sorted, stable) of its levels. Returns None
+    for an unknown / non-canonical verb (no resolvable level).
+    """
+    if not verb:
+        return None
+    levels = _verb_to_levels().get(verb.strip().lower())
+    if not levels:
+        return None
+    if prefer and prefer in levels:
+        return prefer
+    return levels[0]
+
+
+def _first_verb_for_level(level: str) -> Optional[str]:
+    """Return the FIRST (sorted, stable) canonical verb of ``level``, or None."""
+    from lib.ontology.learning_objectives import BLOOMS_VERBS  # noqa: PLC0415
+
+    verbs = BLOOMS_VERBS.get(level)
+    if not verbs:
+        return None
+    ordered = sorted(verbs)
+    return ordered[0] if ordered else None
+
+
+def _abcd_verb(abcd: Any) -> Optional[str]:
+    """Return ``abcd.behavior.verb`` (stripped, original casing) or None."""
+    if isinstance(abcd, dict):
+        behavior = abcd.get("behavior")
+        if isinstance(behavior, dict):
+            v = behavior.get("verb")
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+    return None
+
+
+def _clone_abcd(abcd: Any) -> Dict[str, Any]:
+    """Deep-ish copy an abcd dict so we don't alias the caller's structure.
+
+    Copies the top-level dict + the nested ``behavior`` sub-dict (the only
+    nested dict we mutate). Non-dict input yields a fresh empty dict.
+    """
+    if not isinstance(abcd, dict):
+        return {}
+    out: Dict[str, Any] = dict(abcd)
+    behavior = out.get("behavior")
+    if isinstance(behavior, dict):
+        out["behavior"] = dict(behavior)
+    return out
+
+
+def _set_abcd_verb(abcd: Dict[str, Any], verb: str) -> None:
+    """Write ``verb`` into ``abcd.behavior.verb`` (creating ``behavior`` as needed)."""
+    behavior = abcd.get("behavior")
+    if not isinstance(behavior, dict):
+        behavior = {}
+        abcd["behavior"] = behavior
+    behavior["verb"] = verb
+
+
 def _bloom_verb_aligned(bloom_level: Any, abcd: Any) -> bool:
     """Return True when ``abcd.behavior.verb`` is in ``BLOOMS_VERBS[bloom_level]``.
 
@@ -671,43 +788,151 @@ def _set_assigned_terminal(co: Dict[str, Any], to_id: str) -> None:
 def _apply_bloom_fields(target: Dict[str, Any], adj: Dict[str, Any]) -> int:
     """Apply bloom_level / bloom_verb / abcd from ``adj`` to ``target`` in place.
 
-    Returns the number of bloom-ish fields that changed. ``statement`` is
-    handled separately by the caller (it carries the cosine guardrail).
-    Always reverts (no-op) when the bloom change misaligns the abcd verb.
-    Returns the count of bloom edits applied.
+    P2(a) JOINT Bloom reconciliation. ``statement`` is handled separately by
+    the caller (it carries the cosine guardrail). Returns the count of
+    bloom-ish fields changed (so the ``bloom_edits_applied`` /
+    ``bloom_edits_rejected`` counters in ``merge_reviewed_objectives`` keep
+    working: a reconciled edit returns > 0; a true no-coherent-pairing revert
+    returns 0).
+
+    Instead of the old all-or-nothing revert (which left the ORIGINAL mismatch
+    in place whenever the reviewer offered a PARTIAL Bloom fix — e.g. a level
+    edit with a stale abcd verb, or a verb edit with a stale level), this
+    drives ``bloom_level`` + ``bloom_verb`` + ``abcd.behavior.verb`` into
+    MUTUAL agreement, preferring the reviewer's intent:
+
+    1. candidate LEVEL = ``adj.bloom_level`` (if a valid canonical level) else
+       ``target.bloom_level``.
+    2. candidate VERB = first present of ``adj.abcd.behavior.verb`` →
+       ``adj.bloom_verb`` → ``target.abcd.behavior.verb`` → ``target.bloom_verb``.
+    3. If the candidate VERB is canonical for the candidate LEVEL → coherent:
+       apply the level + set both ``bloom_verb`` and ``abcd.behavior.verb`` to
+       that verb.
+    4. Else RECONCILE rather than revert:
+       a. The verb has a resolvable level AND the reviewer changed the LEVEL →
+          honor the reviewer's LEVEL, REPLACE the verb with a canonical verb
+          for that level (reuse target/adj's bloom_verb if it is valid there,
+          else the first sorted verb of the level).
+       b. The reviewer only changed the VERB (level unchanged) AND the verb has
+          a resolvable level → drive the LEVEL to that verb's level, adopt the
+          verb.
+       c. Neither yields a coherent (level, verb) — e.g. a non-canonical verb
+          with no resolvable level — keep the ORIGINAL (return 0).
+
+    Anti-fabrication: only verbs from ``BLOOMS_VERBS`` and levels from its keys
+    are ever written; the rest of the abcd object (audience/condition/degree/
+    action_object) is preserved verbatim via a non-aliasing copy.
     """
-    applied = 0
-    new_level = adj.get("bloom_level")
-    new_abcd = adj.get("abcd") if isinstance(adj.get("abcd"), dict) else None
-    # The candidate level used for the alignment check is the new level when
-    # present, else the existing level.
-    candidate_level = (
-        new_level
-        if isinstance(new_level, str) and new_level.strip()
-        else target.get("bloom_level")
+    raw_new_level = adj.get("bloom_level")
+    new_level_canon = _canonical_level(raw_new_level)
+    reviewer_changed_level = (
+        new_level_canon is not None
+        and new_level_canon != _canonical_level(target.get("bloom_level"))
     )
-    candidate_abcd = new_abcd if new_abcd is not None else target.get("abcd")
-    if not _bloom_verb_aligned(candidate_level, candidate_abcd):
-        # Reject the entire bloom/abcd edit — keep original verbatim.
+
+    target_level_canon = _canonical_level(target.get("bloom_level"))
+    candidate_level = new_level_canon or target_level_canon
+
+    # candidate VERB priority: adj.abcd verb → adj.bloom_verb → target.abcd
+    # verb → target.bloom_verb. ``adj``-sourced verbs signal the reviewer
+    # intent; the target-sourced ones are the fallback when the reviewer
+    # offered no verb.
+    adj_abcd_verb = _abcd_verb(adj.get("abcd"))
+    adj_bloom_verb = (
+        adj.get("bloom_verb").strip()
+        if isinstance(adj.get("bloom_verb"), str) and adj.get("bloom_verb").strip()
+        else None
+    )
+    target_abcd_verb = _abcd_verb(target.get("abcd"))
+    target_bloom_verb = (
+        target.get("bloom_verb").strip()
+        if isinstance(target.get("bloom_verb"), str)
+        and target.get("bloom_verb").strip()
+        else None
+    )
+    candidate_verb = (
+        adj_abcd_verb
+        or adj_bloom_verb
+        or target_abcd_verb
+        or target_bloom_verb
+    )
+    reviewer_changed_verb = bool(adj_abcd_verb or adj_bloom_verb)
+
+    final_level: Optional[str] = candidate_level
+    final_verb: Optional[str] = candidate_verb
+
+    if candidate_level is None:
+        # No canonical level to anchor on (neither adj nor target carries one).
+        # If the candidate verb resolves a level, adopt it; else revert.
+        resolved = _level_for_verb(candidate_verb)
+        if resolved is None:
+            return 0
+        final_level = resolved
+        final_verb = candidate_verb
+    elif _verb_in_level(candidate_verb, candidate_level):
+        # (3) coherent as-is.
+        final_level = candidate_level
+        final_verb = candidate_verb
+    else:
+        # (4) reconcile rather than revert.
+        verb_level = _level_for_verb(candidate_verb)
+        if reviewer_changed_level and candidate_level is not None:
+            # (4a) honor the reviewer's LEVEL; replace the verb with one
+            # canonical for that level. Reuse an existing bloom_verb that is
+            # valid there, else the first sorted verb of the level.
+            replacement = None
+            for cand in (target_bloom_verb, adj_bloom_verb, target_abcd_verb):
+                if _verb_in_level(cand, candidate_level):
+                    replacement = cand.strip()
+                    break
+            if replacement is None:
+                replacement = _first_verb_for_level(candidate_level)
+            if replacement is None:
+                return 0
+            final_level = candidate_level
+            final_verb = replacement
+        elif reviewer_changed_verb and verb_level is not None:
+            # (4b) the reviewer changed only the verb → drive the level to the
+            # verb's level, adopt the verb.
+            final_level = verb_level
+            final_verb = candidate_verb
+        elif verb_level is not None:
+            # No explicit reviewer level/verb change but the candidate verb
+            # still resolves a level (e.g. only an abcd dict was offered whose
+            # verb mismatches the original level): drive the level to agree.
+            final_level = verb_level
+            final_verb = candidate_verb
+        else:
+            # (4c) no coherent pairing — keep the original.
+            return 0
+
+    if final_level is None or final_verb is None:
         return 0
-    if (
-        isinstance(new_level, str)
-        and new_level.strip()
-        and new_level.strip() != str(target.get("bloom_level") or "").strip()
-    ):
-        target["bloom_level"] = new_level.strip()
+
+    # Apply the reconciled (level, verb) + abcd into the target in place,
+    # counting each field that actually changed.
+    applied = 0
+    if final_level != target_level_canon:
+        target["bloom_level"] = final_level
         applied += 1
-    new_verb = adj.get("bloom_verb")
-    if (
-        isinstance(new_verb, str)
-        and new_verb.strip()
-        and new_verb.strip() != str(target.get("bloom_verb") or "").strip()
-    ):
-        target["bloom_verb"] = new_verb.strip()
+
+    if final_verb != target_bloom_verb:
+        target["bloom_verb"] = final_verb
         applied += 1
-    if new_abcd is not None and new_abcd != target.get("abcd"):
-        target["abcd"] = new_abcd
-        applied += 1
+
+    # Build the abcd to write: prefer the reviewer's offered abcd (preserving
+    # its audience/condition/degree/action_object), else the target's existing
+    # abcd; then force the behavior verb to the reconciled verb. Copy so we
+    # never alias the caller's nested dicts.
+    offered_abcd = adj.get("abcd") if isinstance(adj.get("abcd"), dict) else None
+    base_abcd = offered_abcd if offered_abcd is not None else target.get("abcd")
+    if isinstance(base_abcd, dict) or offered_abcd is not None:
+        new_abcd = _clone_abcd(base_abcd)
+        _set_abcd_verb(new_abcd, final_verb)
+        if new_abcd != target.get("abcd"):
+            target["abcd"] = new_abcd
+            applied += 1
+
     return applied
 
 

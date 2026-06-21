@@ -537,3 +537,268 @@ def test_distinct_skill_split_off_byte_stable(monkeypatch):
     )
     assert len(result.canonical) == 2
     assert result.clusters_split_for_distinct_skill == 0
+
+
+# ---------------------------------------------------------------------------
+# P1 (clustering rework) — post-cluster GUARD helpers
+# ---------------------------------------------------------------------------
+def _flat(clusters):
+    out = []
+    for c in clusters:
+        out.extend(c)
+    return out
+
+
+def _assert_partition_invariant(new_clusters, original_clusters):
+    """Flattened output indices are a permutation of the flattened input."""
+    assert sorted(_flat(new_clusters)) == sorted(_flat(original_clusters))
+
+
+# A coherent cohort of fraction-skill statements (high token overlap) + ONE
+# semantic outlier (disjoint insurance vocabulary). FakeEmbed = bag-of-words
+# cosine, so the outlier's centroid is far from the cohort's.
+_COHORT_TEXTS = [
+    "add fractions with like denominators",
+    "subtract fractions with like denominators",
+    "add fractions with unlike denominators common denominator",
+    "multiply fractions numerator denominator together",
+    "divide fractions reciprocal numerator denominator",
+]
+_OUTLIER_TEXT = "insurance deductible premium policy payment claim coverage"
+
+
+def test_cluster_centroid_and_cohesion_helpers():
+    vecs = FakeEmbed().encode_batch(_COHORT_TEXTS)
+    assert od._cluster_centroid(vecs, []) == []
+    cent = od._cluster_centroid(vecs, [0, 1])
+    assert len(cent) == len(vecs[0])
+    # Singleton / empty cohesion is 1.0 by convention.
+    assert od._mean_intra_cluster_cosine(vecs, [0]) == 1.0
+    assert od._mean_intra_cluster_cosine(vecs, []) == 1.0
+    # A real multi-member cohesion is a finite cosine in [0, 1].
+    coh = od._mean_intra_cluster_cosine(vecs, [0, 1, 2])
+    assert 0.0 <= coh <= 1.0
+
+
+def test_absorb_outlier_singleton_into_nearest_neighbor():
+    """An outlier singleton with a clear home is absorbed; no CO is lost."""
+    vecs = FakeEmbed().encode_batch(_COHORT_TEXTS + [_OUTLIER_TEXT])
+    clusters = [[0, 1, 2, 3, 4], [5]]  # cohort + outlier singleton
+    # Floor 0.0 → the outlier is folded into whichever neighbor it's closest to.
+    new_clusters, n_absorbed = od.absorb_outlier_clusters(
+        clusters, vecs, min_size=3, absorb_floor=0.0
+    )
+    assert n_absorbed == 1
+    assert len(new_clusters) < len(clusters)
+    _assert_partition_invariant(new_clusters, clusters)
+    # Partition invariant in the explicit form the task asks for.
+    assert set(_flat(new_clusters)) == set(range(6))
+
+
+def test_outlier_with_no_home_remains_standing():
+    """An outlier whose best neighbor is below the floor is NOT absorbed."""
+    vecs = FakeEmbed().encode_batch(_COHORT_TEXTS + [_OUTLIER_TEXT])
+    clusters = [[0, 1, 2, 3, 4], [5]]
+    # A floor of 1.0 means "only absorb a near-identical neighbor" — the
+    # disjoint outlier has no such home, so it stays standing.
+    new_clusters, n_absorbed = od.absorb_outlier_clusters(
+        clusters, vecs, min_size=3, absorb_floor=1.0
+    )
+    assert n_absorbed == 0
+    assert new_clusters == [[0, 1, 2, 3, 4], [5]]
+    _assert_partition_invariant(new_clusters, clusters)
+
+
+def test_merge_undersize_runt_into_nearest_neighbor():
+    """A 2-CO runt cluster merges into its nearest neighbor under min-size=3."""
+    vecs = FakeEmbed().encode_batch(_COHORT_TEXTS)
+    clusters = [[0, 1, 2], [3, 4]]  # a 3-cluster + a 2-CO runt
+    new_clusters, n_merged = od.merge_undersize_clusters(
+        clusters, vecs, min_size=3
+    )
+    assert n_merged == 1
+    assert len(new_clusters) == 1  # runt folded in → one surviving cluster
+    _assert_partition_invariant(new_clusters, clusters)
+    assert set(_flat(new_clusters)) == set(range(5))
+
+
+# Two NEAR-DUPLICATE clusters: both number-line themed with heavy token overlap
+# across the two, plus a distinct area-of-shapes theme that must NOT merge in.
+_NUMBERLINE_A = [
+    "plot points on the number line",
+    "locate integers on the number line",
+]
+_NUMBERLINE_B = [
+    "graph numbers on the number line",
+    "order numbers on the number line",
+]
+_AREA_THEME = [
+    "compute the area of a triangle base height",
+    "compute the area of a rectangle length width",
+]
+
+
+def test_merge_near_duplicate_clusters_collapse_to_one():
+    """Two near-duplicate (centroid cosine >= floor) clusters collapse to one."""
+    texts = _NUMBERLINE_A + _NUMBERLINE_B + _AREA_THEME
+    vecs = FakeEmbed().encode_batch(texts)
+    clusters = [[0, 1], [2, 3], [4, 5]]
+    # Floor 0.5 merges the two number-line clusters (centroid cos ~0.84) but
+    # leaves the distinct area theme separate.
+    new_clusters, n_pairs = od.merge_near_duplicate_clusters(
+        clusters, vecs, merge_floor=0.5
+    )
+    assert n_pairs >= 1
+    assert len(new_clusters) == 2  # number-line collapsed; area survives
+    assert [0, 1, 2, 3] in new_clusters
+    assert [4, 5] in new_clusters
+    _assert_partition_invariant(new_clusters, clusters)
+
+
+def test_merge_near_duplicate_high_floor_is_noop():
+    """A floor near 1.0 merges nothing (no centroids that similar)."""
+    texts = _NUMBERLINE_A + _NUMBERLINE_B + _AREA_THEME
+    vecs = FakeEmbed().encode_batch(texts)
+    clusters = [[0, 1], [2, 3], [4, 5]]
+    new_clusters, n_pairs = od.merge_near_duplicate_clusters(
+        clusters, vecs, merge_floor=0.999
+    )
+    assert n_pairs == 0
+    assert new_clusters == [[0, 1], [2, 3], [4, 5]]
+    _assert_partition_invariant(new_clusters, clusters)
+
+
+def test_apply_cluster_guards_default_is_noop(monkeypatch):
+    """DEFAULT (no env, no kwargs) → input clusters unchanged + zeroed signals."""
+    for var in (
+        "ED4ALL_TO_CLUSTER_GUARDS",
+        "ED4ALL_TO_MERGE_NEAR_DUP",
+        "ED4ALL_TO_OUTLIER_MIN_SIZE",
+        "ED4ALL_TO_OUTLIER_ABSORB_FLOOR",
+        "ED4ALL_TO_MERGE_COSINE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    vecs = FakeEmbed().encode_batch(_COHORT_TEXTS + [_OUTLIER_TEXT])
+    clusters = [[0, 1, 2, 3, 4], [5]]
+    new_clusters, signals = od.apply_cluster_guards(clusters, vecs)
+    # Byte-identical (re-ordered to the contract, which it already satisfies).
+    assert new_clusters == [[0, 1, 2, 3, 4], [5]]
+    assert signals == {
+        "outliers_absorbed": 0,
+        "undersize_merged": 0,
+        "near_dup_clusters_merged": 0,
+        "clusters_before": 2,
+        "clusters_after": 2,
+    }
+
+
+def test_apply_cluster_guards_consolidate_then_merge():
+    """Orchestrator runs consolidate then near-dup merge with signals."""
+    texts = _NUMBERLINE_A + _NUMBERLINE_B + _AREA_THEME + [_OUTLIER_TEXT]
+    vecs = FakeEmbed().encode_batch(texts)
+    # A number-line pair, a near-dup number-line pair, an area pair, and an
+    # outlier singleton.
+    clusters = [[0, 1], [2, 3], [4, 5], [6]]
+    new_clusters, signals = od.apply_cluster_guards(
+        clusters,
+        vecs,
+        enable_consolidate=True,
+        enable_merge=True,
+        min_size=2,
+        merge_floor=0.5,
+        absorb_floor=0.0,
+    )
+    _assert_partition_invariant(new_clusters, clusters)
+    assert set(_flat(new_clusters)) == set(range(7))
+    # The singleton outlier (size 1 < min_size 2) was absorbed.
+    assert signals["outliers_absorbed"] == 1
+    # The two number-line clusters merged on near-dup centroid cosine.
+    assert signals["near_dup_clusters_merged"] >= 1
+    assert signals["clusters_before"] == 4
+    assert signals["clusters_after"] == len(new_clusters)
+
+
+def test_apply_cluster_guards_env_gated(monkeypatch):
+    """The master env gate alone (no kwargs) enables the consolidate pass."""
+    monkeypatch.setenv("ED4ALL_TO_CLUSTER_GUARDS", "true")
+    monkeypatch.setenv("ED4ALL_TO_OUTLIER_MIN_SIZE", "3")
+    monkeypatch.setenv("ED4ALL_TO_OUTLIER_ABSORB_FLOOR", "0.0")
+    monkeypatch.delenv("ED4ALL_TO_MERGE_NEAR_DUP", raising=False)
+    vecs = FakeEmbed().encode_batch(_COHORT_TEXTS + [_OUTLIER_TEXT])
+    clusters = [[0, 1, 2, 3, 4], [5]]
+    new_clusters, signals = od.apply_cluster_guards(clusters, vecs)
+    assert signals["outliers_absorbed"] == 1
+    assert signals["near_dup_clusters_merged"] == 0  # merge gate off
+    _assert_partition_invariant(new_clusters, clusters)
+
+
+def test_resolve_to_cluster_guards_parse_with_fallback(monkeypatch):
+    monkeypatch.delenv("ED4ALL_TO_CLUSTER_GUARDS", raising=False)
+    assert od.resolve_to_cluster_guards() is False  # default OFF
+    monkeypatch.setenv("ED4ALL_TO_CLUSTER_GUARDS", "on")
+    assert od.resolve_to_cluster_guards() is True
+    monkeypatch.setenv("ED4ALL_TO_CLUSTER_GUARDS", "garbage")
+    assert od.resolve_to_cluster_guards() is False  # garbage → default
+    assert od.resolve_to_cluster_guards(True) is True  # explicit arg wins
+
+
+def test_resolve_to_merge_near_dup_parse_with_fallback(monkeypatch):
+    monkeypatch.delenv("ED4ALL_TO_MERGE_NEAR_DUP", raising=False)
+    assert od.resolve_to_merge_near_dup() is False
+    monkeypatch.setenv("ED4ALL_TO_MERGE_NEAR_DUP", "yes")
+    assert od.resolve_to_merge_near_dup() is True
+    monkeypatch.setenv("ED4ALL_TO_MERGE_NEAR_DUP", "nonsense")
+    assert od.resolve_to_merge_near_dup() is False
+
+
+def test_resolve_to_outlier_min_size_parse_with_fallback(monkeypatch):
+    monkeypatch.delenv("ED4ALL_TO_OUTLIER_MIN_SIZE", raising=False)
+    assert od.resolve_to_outlier_min_size() == od._DEFAULT_TO_OUTLIER_MIN_SIZE
+    monkeypatch.setenv("ED4ALL_TO_OUTLIER_MIN_SIZE", "5")
+    assert od.resolve_to_outlier_min_size() == 5
+    monkeypatch.setenv("ED4ALL_TO_OUTLIER_MIN_SIZE", "garbage")
+    assert od.resolve_to_outlier_min_size() == od._DEFAULT_TO_OUTLIER_MIN_SIZE
+    monkeypatch.setenv("ED4ALL_TO_OUTLIER_MIN_SIZE", "-1")
+    assert od.resolve_to_outlier_min_size() == od._DEFAULT_TO_OUTLIER_MIN_SIZE
+    assert od.resolve_to_outlier_min_size(7) == 7
+
+
+def test_resolve_to_outlier_absorb_floor_parse_with_fallback(monkeypatch):
+    monkeypatch.delenv("ED4ALL_TO_OUTLIER_ABSORB_FLOOR", raising=False)
+    assert (
+        od.resolve_to_outlier_absorb_floor()
+        == od._DEFAULT_TO_OUTLIER_ABSORB_FLOOR
+    )
+    monkeypatch.setenv("ED4ALL_TO_OUTLIER_ABSORB_FLOOR", "0.4")
+    assert od.resolve_to_outlier_absorb_floor() == 0.4
+    monkeypatch.setenv("ED4ALL_TO_OUTLIER_ABSORB_FLOOR", "9.0")  # out of range
+    assert (
+        od.resolve_to_outlier_absorb_floor()
+        == od._DEFAULT_TO_OUTLIER_ABSORB_FLOOR
+    )
+    monkeypatch.setenv("ED4ALL_TO_OUTLIER_ABSORB_FLOOR", "garbage")
+    assert (
+        od.resolve_to_outlier_absorb_floor()
+        == od._DEFAULT_TO_OUTLIER_ABSORB_FLOOR
+    )
+
+
+def test_resolve_to_merge_cosine_parse_with_fallback(monkeypatch):
+    monkeypatch.delenv("ED4ALL_TO_MERGE_COSINE", raising=False)
+    assert od.resolve_to_merge_cosine() == od._DEFAULT_TO_MERGE_COSINE
+    monkeypatch.setenv("ED4ALL_TO_MERGE_COSINE", "0.9")
+    assert od.resolve_to_merge_cosine() == 0.9
+    monkeypatch.setenv("ED4ALL_TO_MERGE_COSINE", "5.0")  # out of range
+    assert od.resolve_to_merge_cosine() == od._DEFAULT_TO_MERGE_COSINE
+    monkeypatch.setenv("ED4ALL_TO_MERGE_COSINE", "garbage")
+    assert od.resolve_to_merge_cosine() == od._DEFAULT_TO_MERGE_COSINE
+
+
+def test_guards_single_cluster_and_empty_inputs():
+    """Degenerate partitions are returned unchanged (no crash)."""
+    vecs = FakeEmbed().encode_batch(_COHORT_TEXTS)
+    assert od.merge_near_duplicate_clusters([[0, 1, 2]], vecs) == ([[0, 1, 2]], 0)
+    assert od.consolidate_small_clusters([[0]], vecs, min_size=3)[0] == [[0]]
+    empty, sig = od.apply_cluster_guards([], [], enable_consolidate=True)
+    assert empty == []
+    assert sig["clusters_before"] == 0 and sig["clusters_after"] == 0

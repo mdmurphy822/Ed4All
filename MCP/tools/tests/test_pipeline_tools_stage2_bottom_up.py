@@ -391,3 +391,92 @@ def test_embed_absent_falls_back_to_legacy_reconcile(monkeypatch):
     assert signals.get("to_derivation", "legacy_reconcile") == "legacy_reconcile"
     # WS2 fields still present (backlink ran on the fallback path).
     assert "weak_to_link_rate" in signals
+
+
+# ---------------------------------------------------------------------------
+# P2b — TO child back-annotation (observability: TO->CO->chunk join on disk)
+# ---------------------------------------------------------------------------
+
+
+def test_annotate_terminals_with_children_unions_chunks():
+    """Each TO gets child_co_ids + a source_refs UNION of its child COs' chunks.
+
+    Case-insensitive TO matching (a backlink may lower-case the pointer); chunk
+    ids deduped in course order; a dangling CO->TO pointer is ignored; an orphan
+    TO (no children) keeps its original (empty) source_refs.
+    """
+    tos = [
+        {"id": "TO-01", "statement": "a", "source_refs": []},
+        {"id": "TO-02", "statement": "b", "source_refs": []},
+        {"id": "TO-03", "statement": "c", "source_refs": []},
+    ]
+    cos = [
+        {"id": "CO-01", "terminal_id": "TO-01", "source_chunk_ids": ["c1", "c2"]},
+        {"id": "CO-02", "terminal_id": "to-01", "source_chunk_ids": ["c2", "c3"]},
+        {"id": "CO-03", "parent_to": "TO-02", "source_chunk_ids": ["c9"]},
+        {"id": "CO-04", "terminal_id": "TO-99", "source_chunk_ids": ["x"]},
+    ]
+    counts = pt._annotate_terminals_with_children(tos, cos)
+    assert counts == {"tos_annotated": 2, "cos_mapped": 3, "orphan_tos": 1}
+    assert tos[0]["child_co_ids"] == ["CO-01", "CO-02"]
+    # Union, deduped, course order — never invents a chunk.
+    assert tos[0]["source_refs"] == [
+        {"ref": "TO-01", "chunk_ids": ["c1", "c2", "c3"]}
+    ]
+    assert tos[1]["child_co_ids"] == ["CO-03"]
+    assert tos[1]["source_refs"] == [{"ref": "TO-02", "chunk_ids": ["c9"]}]
+    # Orphan TO keeps its original empty source_refs (no fabricated provenance).
+    assert tos[2]["child_co_ids"] == []
+    assert tos[2]["source_refs"] == []
+
+
+def test_annotate_terminals_no_children_is_byte_stable():
+    """No resolvable child pointers → every TO childless, source_refs untouched."""
+    tos = [{"id": "TO-01", "statement": "a", "source_refs": []}]
+    cos = [{"id": "CO-01", "source_chunk_ids": ["c1"]}]  # no terminal_id at all
+    counts = pt._annotate_terminals_with_children(tos, cos)
+    assert counts == {"tos_annotated": 0, "cos_mapped": 0, "orphan_tos": 1}
+    assert tos[0]["child_co_ids"] == []
+    assert tos[0]["source_refs"] == []
+
+
+def test_co_parent_terminal_id_resolves_any_backpointer_key():
+    assert pt._co_parent_terminal_id({"terminal_id": "TO-05"}) == "TO-05"
+    assert pt._co_parent_terminal_id({"parent_to": "TO-07"}) == "TO-07"
+    assert pt._co_parent_terminal_id({"parent_terminal": "TO-09"}) == "TO-09"
+    assert pt._co_parent_terminal_id({"nope": "x"}) == ""
+
+
+# ---------------------------------------------------------------------------
+# P1 — cluster-guard wiring in _derive_terminals_bottom_up (default no-op)
+# ---------------------------------------------------------------------------
+
+
+def test_cluster_guards_default_off_is_noop_with_signals():
+    """Default (no env, no guard flags) — derivation byte-stable, but the
+    to_guard_* signal keys are surfaced (all-zero) when the guards module is
+    present so an operator can see the guards ran in shadow."""
+    cos = _theme_cos()
+    terminals, signals = pt._derive_terminals_bottom_up(
+        provider=_FakeProvider(),
+        chapter_cos=cos,
+        embed=FakeEmbed(),
+        course_name="MATH_101",
+        mint_lo_id=_mint,
+    )
+    # Still one TO per (post-guard) cluster; every CO keeps a resolvable parent.
+    minted = {t["id"] for t in terminals}
+    assert all(co.get("terminal_id") in minted for co in cos)
+    # When the guards helper exists, default-OFF surfaces zeroed counters.
+    try:
+        from lib.objectives.objective_dedup import (  # noqa: F401
+            apply_cluster_guards,
+        )
+
+        have_guards = True
+    except Exception:  # noqa: BLE001
+        have_guards = False
+    if have_guards:
+        assert signals.get("to_guard_outliers_absorbed", 0) == 0
+        assert signals.get("to_guard_undersize_merged", 0) == 0
+        assert signals.get("to_guard_near_dup_clusters_merged", 0) == 0

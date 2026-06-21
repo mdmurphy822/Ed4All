@@ -94,6 +94,45 @@ ENV_CHUNK_RELEVANCE_FLOOR = "ED4ALL_OBJECTIVE_CHUNK_RELEVANCE_FLOOR"
 _DEFAULT_DISTINCT_SKILL_SPLIT = False
 ENV_DISTINCT_SKILL_SPLIT = "ED4ALL_OBJECTIVE_DISTINCT_SKILL_SPLIT"
 
+#: P1 (clustering rework) — post-cluster GUARDS for bottom-up TO derivation.
+#: ``cluster_to_target_k`` runs Ward at a HARD target K with no guards, which on
+#: a real ~85-CO run produced (1) a semantic-OUTLIER CO getting its OWN
+#: singleton cluster → a wholesale-hallucinated TO; (2) tiny 1-2-CO "runt"
+#: clusters that should fold into a sibling. The CONSOLIDATE pass
+#: (outlier-absorb + undersize-merge) folds every sub-``min_size`` cluster into
+#: its nearest-centroid neighbor. Master gate; default OFF so every current run
+#: stays byte-identical/reproducible — the operator opts in. Mirrors the
+#: ``_DEFAULT_DISTINCT_SKILL_SPLIT`` opt-in posture exactly.
+_DEFAULT_TO_CLUSTER_GUARDS = False
+ENV_TO_CLUSTER_GUARDS = "ED4ALL_TO_CLUSTER_GUARDS"
+
+#: P1 — clusters smaller than this are merge/absorb candidates for the
+#: CONSOLIDATE pass. Env-overridable; default 3. Only consulted when the
+#: consolidation is enabled (``ED4ALL_TO_CLUSTER_GUARDS`` on or kwarg passed).
+_DEFAULT_TO_OUTLIER_MIN_SIZE = 3
+ENV_TO_OUTLIER_MIN_SIZE = "ED4ALL_TO_OUTLIER_MIN_SIZE"
+
+#: P1 — absolute "has a clear home" floor for the OUTLIER-absorb decision. A
+#: sub-``min_size`` cluster is absorbed into its nearest-centroid neighbor only
+#: when that neighbor's centroid cosine is >= this floor; below it the cluster
+#: may remain standing (a genuinely distinct competency with no good home).
+#: Env-overridable; default 0.20 (deliberately low — a tiny cluster that is
+#: closest to SOME sibling almost always belongs there).
+_DEFAULT_TO_OUTLIER_ABSORB_FLOOR = 0.20
+ENV_TO_OUTLIER_ABSORB_FLOOR = "ED4ALL_TO_OUTLIER_ABSORB_FLOOR"
+
+#: P1 — NEAR-DUPLICATE-TO merge. Ward at a hard K over-splits a cosine-dense
+#: theme (e.g. a number-line theme split into 3 TOs whose centroids are ~0.85
+#: similar → near-duplicate TOs). Two clusters whose centroid cosine >= this
+#: floor are UNIONED (transitively, via union-find — like ``cluster_by_cosine``).
+#: This is the DETERMINISTIC post-cluster merge the P1 plan prefers over
+#: non-deterministic silhouette K. Gated behind ``ED4ALL_TO_MERGE_NEAR_DUP``;
+#: default OFF so DEFAULT behavior stays byte-identical/reproducible.
+_DEFAULT_TO_MERGE_NEAR_DUP = False
+ENV_TO_MERGE_NEAR_DUP = "ED4ALL_TO_MERGE_NEAR_DUP"
+_DEFAULT_TO_MERGE_COSINE = 0.85
+ENV_TO_MERGE_COSINE = "ED4ALL_TO_MERGE_COSINE"
+
 
 @dataclass(frozen=True)
 class DedupResult:
@@ -570,6 +609,409 @@ def split_clusters_for_distinct_skills(
     return new_clusters, clusters_split, distinct_skill_count
 
 
+# ---------------------------------------------------------------------------
+# P1 (clustering rework) — post-cluster GUARDS for bottom-up TO derivation.
+# All operate on cluster INDEX-lists + their vectors (PRE-id-mint), so
+# downstream learning_outcome_refs continuity is preserved — they only
+# RE-PARTITION existing CO indices, never add / remove / invent a CO.
+# ---------------------------------------------------------------------------
+
+
+def resolve_to_cluster_guards(enabled: Optional[bool] = None) -> bool:
+    """Resolve the P1 cluster-consolidation master gate: arg → env → default.
+
+    Default OFF (opt-in). Truthy env values (``1``/``true``/``yes``/``on``)
+    enable the outlier-absorb + undersize-merge consolidation; anything else
+    (incl. garbage) → the default. Mirrors :func:`resolve_distinct_skill_split`.
+    """
+    if enabled is not None:
+        return bool(enabled)
+    raw = str(os.environ.get(ENV_TO_CLUSTER_GUARDS, "")).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return _DEFAULT_TO_CLUSTER_GUARDS
+
+
+def resolve_to_outlier_min_size(value: Optional[int] = None) -> int:
+    """Resolve the consolidate min-cluster-size: explicit arg → env → default.
+
+    Garbage / non-positive env values fall back to the default (a misconfigured
+    min-size must never crash or fold everything). Mirrors
+    :func:`resolve_to_cos_per_cluster`'s parse-with-fallback posture.
+    """
+    if value is not None:
+        return max(1, int(value))
+    raw = os.environ.get(ENV_TO_OUTLIER_MIN_SIZE)
+    if raw:
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            return _DEFAULT_TO_OUTLIER_MIN_SIZE
+        if val >= 1:
+            return val
+    return _DEFAULT_TO_OUTLIER_MIN_SIZE
+
+
+def resolve_to_outlier_absorb_floor(floor: Optional[float] = None) -> float:
+    """Resolve the outlier-absorb "has a clear home" floor: arg → env → default.
+
+    Out-of-range / garbage env values fall back to the default. A floor of 0.0
+    absorbs any tiny cluster into its nearest neighbor unconditionally.
+    """
+    if floor is not None:
+        return float(floor)
+    raw = os.environ.get(ENV_TO_OUTLIER_ABSORB_FLOOR)
+    if raw:
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return _DEFAULT_TO_OUTLIER_ABSORB_FLOOR
+        if 0.0 <= val <= 1.0:
+            return val
+    return _DEFAULT_TO_OUTLIER_ABSORB_FLOOR
+
+
+def resolve_to_merge_near_dup(enabled: Optional[bool] = None) -> bool:
+    """Resolve the near-duplicate-TO merge gate: arg → env → default.
+
+    Default OFF (opt-in). Truthy env values (``1``/``true``/``yes``/``on``)
+    enable; anything else (incl. garbage) → the default. Mirrors
+    :func:`resolve_distinct_skill_split`.
+    """
+    if enabled is not None:
+        return bool(enabled)
+    raw = str(os.environ.get(ENV_TO_MERGE_NEAR_DUP, "")).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return _DEFAULT_TO_MERGE_NEAR_DUP
+
+
+def resolve_to_merge_cosine(floor: Optional[float] = None) -> float:
+    """Resolve the near-duplicate-TO centroid-cosine merge floor: arg → env → default.
+
+    Out-of-range / garbage env values fall back to the default (a misconfigured
+    floor must never silently collapse all clusters). Accepts ``0.0 < val <= 1.0``.
+    """
+    if floor is not None:
+        return float(floor)
+    raw = os.environ.get(ENV_TO_MERGE_COSINE)
+    if raw:
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return _DEFAULT_TO_MERGE_COSINE
+        if 0.0 < val <= 1.0:
+            return val
+    return _DEFAULT_TO_MERGE_COSINE
+
+
+def _cluster_centroid(
+    vecs: List[List[float]], member_idxs: List[int]
+) -> List[float]:
+    """Mean of a cluster's member vectors. Empty cluster → ``[]``.
+
+    NumPy-free (pure-Python) so it shares the embedding-optional posture of the
+    rest of the module. Assumes all member vectors share a dimension (they come
+    from one ``encode_batch`` call); a zero-length member list returns ``[]``.
+    """
+    if not member_idxs:
+        return []
+    dim = len(vecs[member_idxs[0]])
+    if dim == 0:
+        return []
+    acc = [0.0] * dim
+    for idx in member_idxs:
+        v = vecs[idx]
+        for d in range(dim):
+            acc[d] += v[d]
+    n = float(len(member_idxs))
+    return [x / n for x in acc]
+
+
+def _mean_intra_cluster_cosine(
+    vecs: List[List[float]], member_idxs: List[int]
+) -> float:
+    """Mean pairwise cosine among a cluster's members (cohesion).
+
+    Singleton / empty cluster → ``1.0`` (perfectly cohesive by convention — a
+    single point has no internal disagreement). Local private re-implementation
+    of the equivalent helper in ``pipeline_tools.py`` (which must NOT be imported
+    cross-module); NumPy-free, O(m²) over the cluster's small membership.
+    """
+    m = len(member_idxs)
+    if m <= 1:
+        return 1.0
+    total = 0.0
+    pairs = 0
+    for i in range(m):
+        for j in range(i + 1, m):
+            total += cosine_similarity(vecs[member_idxs[i]], vecs[member_idxs[j]])
+            pairs += 1
+    return total / pairs if pairs else 1.0
+
+
+def _reorder_clusters(clusters: List[List[int]]) -> List[List[int]]:
+    """Re-impose the deterministic ordering contract on a partition.
+
+    Each (non-empty) member list ascending; clusters ordered by minimum member
+    index — MATCHING :func:`cluster_to_target_k` / :func:`cluster_by_cosine`.
+    Empty clusters are dropped (a merge can empty a source cluster).
+    """
+    cleaned = [sorted(c) for c in clusters if c]
+    cleaned.sort(key=lambda g: min(g))
+    return cleaned
+
+
+def _nearest_centroid_neighbor(
+    target_members: List[int],
+    clusters: List[List[int]],
+    vecs: List[List[float]],
+    *,
+    skip_index: int,
+) -> Tuple[int, float]:
+    """Return ``(index_in_clusters, centroid_cosine)`` of ``target``'s nearest
+    OTHER cluster by centroid cosine, or ``(-1, -1.0)`` when none exists.
+
+    ``skip_index`` is the position of the target cluster itself (never its own
+    neighbor). Deterministic: ties on cosine break to the LOWER cluster index.
+    """
+    target_centroid = _cluster_centroid(vecs, target_members)
+    best_idx = -1
+    best_cos = -1.0
+    for ci, members in enumerate(clusters):
+        if ci == skip_index or not members:
+            continue
+        cos = cosine_similarity(target_centroid, _cluster_centroid(vecs, members))
+        if cos > best_cos:
+            best_cos = cos
+            best_idx = ci
+    return best_idx, best_cos
+
+
+def consolidate_small_clusters(
+    clusters: List[List[int]],
+    vecs: List[List[float]],
+    *,
+    min_size: Optional[int] = None,
+    absorb_floor: Optional[float] = None,
+) -> Tuple[List[List[int]], int, int]:
+    """P1 — fold every sub-``min_size`` cluster into its nearest-centroid neighbor.
+
+    Subsumes BOTH guards from the P1 plan: the OUTLIER guard (a semantic-outlier
+    CO in its own singleton that actually belongs to a sibling) and the
+    MIN-CLUSTER-SIZE merge (1-2-CO runts). A sub-``min_size`` cluster is absorbed
+    into whichever surviving cluster its centroid is closest to, SMALLEST-FIRST,
+    PROVIDED that neighbor's centroid cosine is >= ``absorb_floor`` (it HAS a
+    clear home). A tiny cluster with NO neighbor above the very-low floor REMAINS
+    standing (a genuinely distinct competency). Iterates until all clusters are
+    >= ``min_size`` OR no further absorption is possible (no eligible neighbor /
+    one cluster left).
+
+    Returns ``(new_clusters, outliers_absorbed, undersize_merged)`` where
+    ``outliers_absorbed`` counts absorbed SINGLETONS (the outlier-guard arm) and
+    ``undersize_merged`` counts absorbed multi-member runts (2..min_size-1). Both
+    arms run in the same pass; the split counts let a caller attribute each.
+
+    PARTITION INVARIANT: the flattened output indices are a permutation of the
+    flattened input indices — never drops, adds, or invents a CO.
+    """
+    resolved_min = resolve_to_outlier_min_size(min_size)
+    resolved_floor = resolve_to_outlier_absorb_floor(absorb_floor)
+
+    # Work on a mutable copy of the partition.
+    work: List[List[int]] = [list(c) for c in clusters if c]
+    outliers_absorbed = 0
+    undersize_merged = 0
+
+    while True:
+        if len(work) <= 1:
+            break
+        # Pick the smallest sub-min-size cluster (smallest-first; ties → lowest
+        # min-index for determinism) that HAS an eligible home.
+        candidates = [
+            i for i, c in enumerate(work) if 0 < len(c) < resolved_min
+        ]
+        if not candidates:
+            break
+        candidates.sort(key=lambda i: (len(work[i]), min(work[i])))
+
+        absorbed_any = False
+        for ci in candidates:
+            neighbor_idx, neighbor_cos = _nearest_centroid_neighbor(
+                work[ci], work, vecs, skip_index=ci
+            )
+            if neighbor_idx < 0 or neighbor_cos < resolved_floor:
+                continue  # no clear home → leave this one standing (for now)
+            size_before = len(work[ci])
+            work[neighbor_idx].extend(work[ci])
+            work[ci] = []
+            if size_before <= 1:
+                outliers_absorbed += 1
+            else:
+                undersize_merged += 1
+            # Drop the emptied cluster and restart the scan (indices shift).
+            work = [c for c in work if c]
+            absorbed_any = True
+            break
+        if not absorbed_any:
+            break
+
+    return _reorder_clusters(work), outliers_absorbed, undersize_merged
+
+
+def absorb_outlier_clusters(
+    clusters: List[List[int]],
+    vecs: List[List[float]],
+    *,
+    min_size: Optional[int] = None,
+    absorb_floor: Optional[float] = None,
+) -> Tuple[List[List[int]], int]:
+    """P1 OUTLIER GUARD — absorb sub-``min_size`` clusters into their nearest home.
+
+    Thin wrapper over :func:`consolidate_small_clusters` that reports only the
+    total absorbed count (singletons + runts). A singleton outlier whose best
+    cross-cluster centroid cosine is >= ``absorb_floor`` is folded into that
+    neighbor; an outlier with NO neighbor above the floor remains (a genuinely
+    distinct competency). Returns ``(new_clusters, n_absorbed)``. PARTITION
+    INVARIANT preserved (see :func:`consolidate_small_clusters`).
+    """
+    new_clusters, outliers, runts = consolidate_small_clusters(
+        clusters, vecs, min_size=min_size, absorb_floor=absorb_floor
+    )
+    return new_clusters, outliers + runts
+
+
+def merge_undersize_clusters(
+    clusters: List[List[int]],
+    vecs: List[List[float]],
+    *,
+    min_size: Optional[int] = None,
+) -> Tuple[List[List[int]], int]:
+    """P1 MIN-CLUSTER-SIZE MERGE — fold every sub-``min_size`` runt into a sibling.
+
+    Smallest-first, until all clusters are >= ``min_size`` OR only one cluster
+    remains. Implemented over :func:`consolidate_small_clusters` with the
+    absorb-floor disabled (``0.0``) so EVERY undersize cluster finds a home (the
+    pure runt-merge semantics: there is always a nearest neighbor when >1 cluster
+    remains). Returns ``(new_clusters, n_merged)``. PARTITION INVARIANT preserved.
+    """
+    new_clusters, outliers, runts = consolidate_small_clusters(
+        clusters, vecs, min_size=min_size, absorb_floor=0.0
+    )
+    return new_clusters, outliers + runts
+
+
+def merge_near_duplicate_clusters(
+    clusters: List[List[int]],
+    vecs: List[List[float]],
+    *,
+    merge_floor: Optional[float] = None,
+) -> Tuple[List[List[int]], int]:
+    """P1 NEAR-DUPLICATE-TO MERGE — union clusters with near-identical centroids.
+
+    Ward at a hard K over-splits a cosine-dense theme into 2-3 near-duplicate
+    TOs. Compute each cluster's centroid; any two clusters whose centroid cosine
+    >= ``merge_floor`` are UNIONED (transitively, via union-find over the
+    centroid-cosine graph — exactly like :func:`cluster_by_cosine` does over the
+    point graph). Returns ``(new_clusters, n_merged_pairs)`` where
+    ``n_merged_pairs`` counts the centroid pairs at/above the floor that drove a
+    union (the deterministic "merge edges" count). PARTITION INVARIANT preserved.
+    """
+    resolved_floor = resolve_to_merge_cosine(merge_floor)
+    work = [list(c) for c in clusters if c]
+    nc = len(work)
+    if nc <= 1:
+        return _reorder_clusters(work), 0
+
+    centroids = [_cluster_centroid(vecs, c) for c in work]
+
+    parent = list(range(nc))
+
+    def _find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def _union(a: int, b: int) -> None:
+        ra, rb = _find(a), _find(b)
+        if ra != rb:
+            # Lower index as root → cluster order follows course order.
+            if ra < rb:
+                parent[rb] = ra
+            else:
+                parent[ra] = rb
+
+    merged_pairs = 0
+    for i in range(nc):
+        for j in range(i + 1, nc):
+            cos = cosine_similarity(centroids[i], centroids[j])
+            if cos >= resolved_floor:
+                merged_pairs += 1
+                _union(i, j)
+
+    # Collect merged clusters keyed by root, unioning their member indices.
+    by_root: Dict[int, List[int]] = {}
+    for ci in range(nc):
+        root = _find(ci)
+        by_root.setdefault(root, []).extend(work[ci])
+
+    return _reorder_clusters(list(by_root.values())), merged_pairs
+
+
+def apply_cluster_guards(
+    clusters: List[List[int]],
+    vecs: List[List[float]],
+    *,
+    min_size: Optional[int] = None,
+    merge_floor: Optional[float] = None,
+    absorb_floor: Optional[float] = None,
+    enable_consolidate: Optional[bool] = None,
+    enable_merge: Optional[bool] = None,
+) -> Tuple[List[List[int]], Dict[str, int]]:
+    """P1 ORCHESTRATOR — apply the post-cluster guards (when enabled).
+
+    Runs (when each gate is on): consolidate-small (outlier-absorb +
+    undersize-merge) → near-dup-merge, then re-imposes the deterministic
+    min-index ordering contract :func:`cluster_to_target_k` returns. Returns
+    ``(new_clusters, signals)`` where ``signals`` always carries at least:
+    ``outliers_absorbed``, ``undersize_merged``, ``near_dup_clusters_merged``,
+    ``clusters_before``, ``clusters_after``.
+
+    When ALL gates are OFF (no kwargs, no env) this returns the input clusters
+    UNCHANGED (re-ordered to the contract) and ALL-ZERO signals — the byte-stable
+    default. PARTITION INVARIANT preserved in every branch.
+    """
+    do_consolidate = resolve_to_cluster_guards(enable_consolidate)
+    do_merge = resolve_to_merge_near_dup(enable_merge)
+
+    clusters_before = len([c for c in clusters if c])
+    work = [list(c) for c in clusters if c]
+    outliers_absorbed = 0
+    undersize_merged = 0
+    near_dup_merged = 0
+
+    if do_consolidate:
+        work, outliers_absorbed, undersize_merged = consolidate_small_clusters(
+            work, vecs, min_size=min_size, absorb_floor=absorb_floor
+        )
+
+    if do_merge:
+        work, near_dup_merged = merge_near_duplicate_clusters(
+            work, vecs, merge_floor=merge_floor
+        )
+
+    ordered = _reorder_clusters(work)
+    signals = {
+        "outliers_absorbed": outliers_absorbed,
+        "undersize_merged": undersize_merged,
+        "near_dup_clusters_merged": near_dup_merged,
+        "clusters_before": clusters_before,
+        "clusters_after": len(ordered),
+    }
+    return ordered, signals
+
+
 def _require_strict() -> bool:
     return str(os.environ.get(ENV_REQUIRE_EMBEDDINGS, "")).strip().lower() in {
         "1",
@@ -963,7 +1405,17 @@ __all__ = [
     "cluster_by_cosine",
     "cluster_to_target_k",
     "split_clusters_for_distinct_skills",
+    "consolidate_small_clusters",
+    "absorb_outlier_clusters",
+    "merge_undersize_clusters",
+    "merge_near_duplicate_clusters",
+    "apply_cluster_guards",
     "resolve_distinct_skill_split",
+    "resolve_to_cluster_guards",
+    "resolve_to_outlier_min_size",
+    "resolve_to_outlier_absorb_floor",
+    "resolve_to_merge_near_dup",
+    "resolve_to_merge_cosine",
     "resolve_dedup_threshold",
     "resolve_to_cluster_threshold",
     "resolve_to_cluster_k",
@@ -977,7 +1429,17 @@ __all__ = [
     "_DEFAULT_MAX_CHUNKS_PER_OBJECTIVE",
     "_DEFAULT_CHUNK_RELEVANCE_FLOOR",
     "_DEFAULT_DISTINCT_SKILL_SPLIT",
+    "_DEFAULT_TO_CLUSTER_GUARDS",
+    "_DEFAULT_TO_OUTLIER_MIN_SIZE",
+    "_DEFAULT_TO_OUTLIER_ABSORB_FLOOR",
+    "_DEFAULT_TO_MERGE_NEAR_DUP",
+    "_DEFAULT_TO_MERGE_COSINE",
     "ENV_DISTINCT_SKILL_SPLIT",
+    "ENV_TO_CLUSTER_GUARDS",
+    "ENV_TO_OUTLIER_MIN_SIZE",
+    "ENV_TO_OUTLIER_ABSORB_FLOOR",
+    "ENV_TO_MERGE_NEAR_DUP",
+    "ENV_TO_MERGE_COSINE",
     "ENV_DEDUP_THRESHOLD",
     "ENV_TO_CLUSTER_THRESHOLD",
     "ENV_TO_CLUSTER_K",

@@ -3596,6 +3596,106 @@ def _fallback_terminal_from_cluster(
     }
 
 
+def _co_parent_terminal_id(co: Dict[str, Any]) -> str:
+    """Resolve a CO's parent-terminal id under any back-pointer key.
+
+    Mirrors ``lib/ontology/terminal_coverage._PARENT_TERMINAL_KEYS`` (the same
+    keys ``backlink_cos_to_tos`` / the objective-review remap write) so this
+    reads whatever back-pointer the CO actually carries. Returns the raw id
+    string (casing preserved) or ``""`` when none resolves.
+    """
+    try:
+        from lib.ontology.terminal_coverage import (  # noqa: PLC0415
+            _PARENT_TERMINAL_KEYS,
+        )
+    except Exception:  # noqa: BLE001 — keep serialization resilient
+        _PARENT_TERMINAL_KEYS = (
+            "parent_to",
+            "parent_terminal",
+            "parent_terminal_id",
+            "terminal_id",
+        )
+    for key in _PARENT_TERMINAL_KEYS:
+        val = co.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+def _annotate_terminals_with_children(
+    terminals: List[Dict[str, Any]],
+    chapter_objectives: List[Dict[str, Any]],
+) -> Dict[str, int]:
+    """P2b — back-annotate each TO with its child COs + their chunk provenance.
+
+    The CO→TO backlink (``backlink_cos_to_tos`` / bottom-up clustering) sets a
+    ``terminal_id`` on every CO, but the persisted ``terminal_objectives[]``
+    carried EMPTY ``source_refs`` and no child pointer — so there was no
+    machine-readable TO→CO→chunk edge and an objective-coverage audit had to
+    reconstruct the join by statement matching (the observability gap that made
+    a covered TO look orphaned). This pass populates, per TO, in place:
+
+      * ``child_co_ids`` — the ids of every CO whose parent-terminal resolves to
+        this TO (course order, deduped).
+      * ``source_refs`` — the UNION of those child COs' ``source_chunk_ids``
+        (deduped, course order), shaped ``[{"ref": <to_id>, "chunk_ids": [...]}]``
+        to match the existing CO ``source_refs`` shape. ANTI-FABRICATION: the
+        chunk ids are a strict union of ids the child COs already cite — no
+        chunk is invented, and a TO with no resolvable children keeps its
+        original (empty) ``source_refs``.
+
+    Matching is case-insensitive on the TO id (a backlink / remap may
+    lower-case the written pointer). Returns a small counters dict for logging /
+    decision-capture (``tos_annotated`` / ``cos_mapped`` / ``orphan_tos``).
+    """
+    by_lower: Dict[str, Dict[str, Any]] = {}
+    for to in terminals:
+        if not isinstance(to, dict):
+            continue
+        tid = to.get("id")
+        if isinstance(tid, str) and tid.strip():
+            by_lower[tid.strip().lower()] = to
+
+    child_ids: Dict[str, List[str]] = {k: [] for k in by_lower}
+    child_chunks: Dict[str, List[str]] = {k: [] for k in by_lower}
+    cos_mapped = 0
+    for co in chapter_objectives:
+        if not isinstance(co, dict):
+            continue
+        parent = _co_parent_terminal_id(co).lower()
+        if not parent or parent not in by_lower:
+            continue
+        cos_mapped += 1
+        cid = co.get("id")
+        if isinstance(cid, str) and cid.strip() and cid not in child_ids[parent]:
+            child_ids[parent].append(cid)
+        raw_chunks = co.get("source_chunk_ids")
+        if isinstance(raw_chunks, list):
+            for ch in raw_chunks:
+                ch_s = str(ch)
+                if ch_s and ch_s not in child_chunks[parent]:
+                    child_chunks[parent].append(ch_s)
+
+    tos_annotated = 0
+    orphan_tos = 0
+    for key, to in by_lower.items():
+        cids = child_ids.get(key) or []
+        chunks = child_chunks.get(key) or []
+        to["child_co_ids"] = list(cids)
+        if chunks:
+            tos_annotated += 1
+            to["source_refs"] = [
+                {"ref": str(to.get("id") or ""), "chunk_ids": list(chunks)}
+            ]
+        else:
+            orphan_tos += 1
+    return {
+        "tos_annotated": tos_annotated,
+        "cos_mapped": cos_mapped,
+        "orphan_tos": orphan_tos,
+    }
+
+
 def _derive_terminals_bottom_up(
     *,
     provider: Any,
@@ -3646,6 +3746,27 @@ def _derive_terminals_bottom_up(
     except Exception:  # noqa: BLE001 — sklearn absent → fallback path ran
         to_cluster_linkage = "single_link_fallback"
 
+    # P1 — CLUSTER GUARDS (default-OFF, opt-in). The fixed target-K Ward result
+    # can leave (1) a semantic-OUTLIER CO as its own singleton TO (a wholesale-
+    # hallucinated terminal competency), (2) tiny 1-2-CO runt clusters too thin
+    # to be standalone TOs, and (3) near-duplicate TOs because distinct clusters'
+    # centroids are highly similar (an over-split theme). ``apply_cluster_guards``
+    # consolidates undersize / outlier clusters into their nearest neighbor and
+    # collapses near-duplicate-centroid clusters — ALL pre-id-mint (re-partitions
+    # existing CO indices only; partition invariant preserved → downstream
+    # ``learning_outcome_refs`` continuity holds). Default-OFF → byte-identical
+    # to the prior K-result; the operator opts in via the ED4ALL_TO_* guard
+    # flags. Defensive import so this is a no-op if the helper isn't present.
+    guard_signals: Dict[str, Any] = {}
+    try:
+        from lib.objectives.objective_dedup import (  # noqa: PLC0415
+            apply_cluster_guards,
+        )
+
+        clusters, guard_signals = apply_cluster_guards(clusters, vecs)
+    except Exception:  # noqa: BLE001 — never break TO derivation on the guards
+        guard_signals = {}
+
     terminals: List[Dict[str, Any]] = []
     intra_cosines: List[float] = []
     for c_idx, member_idxs in enumerate(clusters, start=1):
@@ -3675,6 +3796,50 @@ def _derive_terminals_bottom_up(
             round(min(intra_cosines), 6) if intra_cosines else 0.0
         ),
     }
+    # P1 — surface the cluster-guard counters (outliers_absorbed /
+    # undersize_merged / near_dup_clusters_merged / clusters_before /
+    # clusters_after) onto the run's grounding_signals (all-zero when the
+    # guards are OFF, the default). Mirrors how the WS1/WS2 signals are
+    # surfaced for calibration.
+    if guard_signals:
+        for _gk, _gv in guard_signals.items():
+            cluster_signals[f"to_guard_{_gk}"] = _gv
+    if capture is not None and guard_signals and (
+        guard_signals.get("outliers_absorbed")
+        or guard_signals.get("undersize_merged")
+        or guard_signals.get("near_dup_clusters_merged")
+    ):
+        try:
+            capture.log_decision(
+                decision_type="content_selection",
+                decision=(
+                    "to_cluster_guards:"
+                    f"{guard_signals.get('clusters_before', 0)}->"
+                    f"{guard_signals.get('clusters_after', len(clusters))} TOs"
+                ),
+                rationale=(
+                    "P1 cluster-guards consolidated the fixed-K Ward TO "
+                    "clusters (pre-id-mint, partition-preserving): absorbed "
+                    f"{guard_signals.get('outliers_absorbed', 0)} outlier / "
+                    f"merged {guard_signals.get('undersize_merged', 0)} "
+                    "undersize runt cluster(s) into their nearest neighbor and "
+                    "collapsed "
+                    f"{guard_signals.get('near_dup_clusters_merged', 0)} "
+                    "near-duplicate-centroid cluster pair(s), taking the TO "
+                    f"count {guard_signals.get('clusters_before', 0)} -> "
+                    f"{guard_signals.get('clusters_after', len(clusters))} so a "
+                    "hallucinated singleton TO / over-split duplicate theme no "
+                    "longer survives id-minting. Every CO keeps a cluster "
+                    "(never dropped)."
+                ),
+                alternatives_considered=[
+                    "keep the raw fixed-K Ward clusters (singleton outlier "
+                    "becomes a hallucinated TO; runts + duplicate themes "
+                    "survive)",
+                ],
+            )
+        except Exception:  # noqa: BLE001 — capture must not break derivation
+            pass
     return terminals, cluster_signals
 
 
@@ -13529,6 +13694,97 @@ def _build_tool_registry() -> dict:
                         "chapter": f"Week {_w}",
                         "objectives": [dict(_c) for _c in _week_cos],
                     })
+
+            # P2b — OBSERVABILITY: back-annotate each terminal objective with
+            # the COs that roll up to it (``child_co_ids``) and the UNION of
+            # those COs' cited chunks (``source_refs``). The CO→TO ``terminal_id``
+            # backlink already lives on each ``chapter`` CO (set bottom-up in
+            # _derive_terminals_bottom_up / by backlink_cos_to_tos), but the
+            # persisted ``terminal_objectives[]`` carried EMPTY ``source_refs``
+            # and no child pointer — so a TO→CO→chunk join did not exist on disk
+            # and an objective-coverage audit had to reconstruct it by statement
+            # matching (a covered TO then looks orphaned). Mutates ``terminal``
+            # in place; we re-sync the populated fields onto the matching
+            # ``lo_entries`` terminal rows by id so the on-disk
+            # ``learning_outcomes`` array agrees with ``terminal_objectives``.
+            # Anti-fabrication: chunk ids are a strict union of ids the child
+            # COs already cite (no chunk invented); a childless TO keeps its
+            # original empty ``source_refs``.
+            try:
+                _to_annot_counters = _annotate_terminals_with_children(
+                    terminal, chapter
+                )
+                _to_child_by_id = {
+                    str(t.get("id")): t
+                    for t in terminal
+                    if isinstance(t, dict) and t.get("id")
+                }
+                for _e in lo_entries:
+                    if _e.get("hierarchy_level") != "terminal":
+                        continue
+                    _src_to = _to_child_by_id.get(str(_e.get("id")))
+                    if _src_to is None:
+                        continue
+                    if "child_co_ids" in _src_to:
+                        _e["child_co_ids"] = list(_src_to["child_co_ids"])
+                    _src_refs = _src_to.get("source_refs")
+                    if _src_refs:
+                        _e["source_refs"] = [dict(r) for r in _src_refs]
+                logger.info(
+                    "plan_course_structure: TO back-annotation — %d/%d TO(s) "
+                    "got child source_refs (%d CO(s) mapped, %d orphan TO(s)).",
+                    _to_annot_counters.get("tos_annotated", 0),
+                    len(terminal),
+                    _to_annot_counters.get("cos_mapped", 0),
+                    _to_annot_counters.get("orphan_tos", 0),
+                )
+                _to_annot_capture = None
+                try:
+                    from lib.decision_capture import (  # noqa: PLC0415
+                        DecisionCapture as _ToAnnotDecisionCapture,
+                    )
+
+                    _to_annot_capture = _ToAnnotDecisionCapture(
+                        course_code=course_name,
+                        phase="course-outliner",
+                        tool="courseforge",
+                        streaming=True,
+                    )
+                except Exception:  # noqa: BLE001 — capture is observability
+                    _to_annot_capture = None
+                if _to_annot_capture is not None:
+                    try:
+                        _to_annot_capture.log_decision(
+                            decision_type="content_selection",
+                            decision=(
+                                "to_child_backlink:"
+                                f"{_to_annot_counters.get('tos_annotated', 0)}"
+                                f"/{len(terminal)} TOs annotated"
+                            ),
+                            rationale=(
+                                "P2b observability: back-annotated "
+                                f"{_to_annot_counters.get('tos_annotated', 0)} of "
+                                f"{len(terminal)} terminal objective(s) with "
+                                "child_co_ids + a source_refs UNION of their "
+                                "child COs' cited chunks ("
+                                f"{_to_annot_counters.get('cos_mapped', 0)} CO(s) "
+                                "mapped via terminal_id, "
+                                f"{_to_annot_counters.get('orphan_tos', 0)} TO(s) "
+                                "left childless) so the TO->CO->chunk join is "
+                                "machine-readable on disk and a covered TO no "
+                                "longer looks orphaned. Anti-fabrication: chunk "
+                                "ids are a strict union of ids the child COs "
+                                "already cite."
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001 — capture must not break
+                        pass
+            except Exception as _to_annot_exc:  # noqa: BLE001 — never fail phase
+                logger.warning(
+                    "TO child back-annotation raised (%s); terminal "
+                    "objectives keep their original (empty) source_refs.",
+                    _to_annot_exc,
+                )
 
             synthesized = {
                 "course_name": course_name,

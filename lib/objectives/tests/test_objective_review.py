@@ -317,18 +317,25 @@ def test_merge_to_statement_change_adopted_after_bloom_check():
     assert counters["statements_adjusted"] == 1
 
 
-def test_merge_bloom_mismatch_reverted():
-    """(e) A bloom level/verb edit whose abcd verb misaligns → reverted."""
+def test_merge_bloom_partial_fix_level_changed_reconciled():
+    """(e, P2(a) reconciliation) A partial Bloom fix — reviewer corrects the
+    LEVEL to "create" but leaves a stale "create"-invalid verb — is RECONCILED
+    (the verb is driven to a canonical "create" verb), NOT reverted, so the
+    objective no longer ends mismatched.
+
+    Pre-P2(a) this all-or-nothing-reverted, leaving the ORIGINAL "understand"
+    mismatch in place; the joint reconciler instead honors the reviewer's level
+    and repairs the verb.
+    """
+    from lib.ontology.learning_objectives import BLOOMS_VERBS
+
     obj = _make_objectives()
     scorer = _GroundingScorer(_Embed())
-    # Change CO-01 to bloom_level "create" but its abcd verb stays "describe"
-    # which is NOT in BLOOMS_VERBS["create"] → the whole bloom/abcd edit is
-    # rejected.
     adjusted = {
         "CO-01": {
             "bloom_level": "create",
-            "bloom_verb": "describe",
-            # abcd left absent → candidate abcd is the original (verb=describe).
+            "bloom_verb": "describe",  # "describe" ∉ BLOOMS_VERBS["create"]
+            # abcd left absent → candidate abcd verb is the original "describe".
         }
     }
     counters = merge_reviewed_objectives(
@@ -339,8 +346,90 @@ def test_merge_bloom_mismatch_reverted():
         threshold=0.45,
     )
     co1 = obj["chapter_objectives"][0]["objectives"][0]
-    assert co1["bloom_level"] == "understand"  # original, reverted
-    assert co1["bloom_verb"] == "describe"
+    # The reviewer's LEVEL is honored (driven into agreement) — NOT silently
+    # kept at the original "understand".
+    assert co1["bloom_level"] == "create"
+    # The verb is now a valid "create" verb (the first sorted canonical one).
+    assert co1["bloom_verb"] in BLOOMS_VERBS["create"]
+    assert co1["bloom_verb"] == sorted(BLOOMS_VERBS["create"])[0]
+    # The abcd behavior verb is driven into agreement too.
+    assert co1["abcd"]["behavior"]["verb"] in BLOOMS_VERBS["create"]
+    # abcd sub-fields preserved through the reconciliation.
+    assert co1["abcd"]["behavior"]["action_object"] == "pathways"
+    assert co1["abcd"]["condition"] == "given notes"
+    assert co1["abcd"]["degree"] == "completely"
+    assert counters["bloom_edits_applied"] >= 1
+    assert counters["bloom_edits_rejected"] == 0
+
+
+def test_merge_bloom_partial_fix_verb_changed_level_stale_reconciled():
+    """A partial Bloom fix the OTHER way — reviewer changes only the VERB to one
+    that belongs to "understand" while the target level stays "apply" and the
+    reviewer omits bloom_level — drives the LEVEL to "understand"."""
+    from lib.ontology.learning_objectives import BLOOMS_VERBS
+
+    # Pick a verb that is canonical for "understand".
+    understand_verb = sorted(BLOOMS_VERBS["understand"])[0]
+    obj = _make_objectives()
+    # CO-02 starts at "remember"; make the target level "apply" to prove the
+    # verb (an "understand" verb) overrides the stale level.
+    co2 = obj["chapter_objectives"][0]["objectives"][1]
+    co2["bloom_level"] = "apply"
+    scorer = _GroundingScorer(_Embed())
+    adjusted = {
+        "CO-02": {
+            # Only a verb edit — no bloom_level offered.
+            "abcd": {
+                "audience": "students",
+                "behavior": {"verb": understand_verb, "action_object": "stages"},
+                "condition": "from notes",
+                "degree": "in order",
+            }
+        }
+    }
+    counters = merge_reviewed_objectives(
+        terminals=obj["terminals"],
+        chapter_objectives=obj["chapter_objectives"],
+        adjusted=adjusted,
+        scorer=scorer,
+        threshold=0.45,
+    )
+    co2 = obj["chapter_objectives"][0]["objectives"][1]
+    assert co2["bloom_level"] == "understand"  # driven to the verb's level
+    assert co2["abcd"]["behavior"]["verb"] == understand_verb
+    assert co2["bloom_verb"] == understand_verb
+    assert counters["bloom_edits_applied"] >= 1
+    assert counters["bloom_edits_rejected"] == 0
+
+
+def test_merge_bloom_noncanonical_verb_no_level_reverts():
+    """TRUE incoherent: a non-canonical verb with NO resolvable level and no
+    reviewer level change → the conservative revert (returns 0) survives."""
+    obj = _make_objectives()
+    scorer = _GroundingScorer(_Embed())
+    orig_co = copy.deepcopy(obj["chapter_objectives"][0]["objectives"][0])
+    # No bloom_level offered; abcd verb is gibberish that maps to no level.
+    adjusted = {
+        "CO-01": {
+            "abcd": {
+                "audience": "students",
+                "behavior": {"verb": "zzqxnotaverb", "action_object": "x"},
+                "condition": "c",
+                "degree": "d",
+            }
+        }
+    }
+    counters = merge_reviewed_objectives(
+        terminals=obj["terminals"],
+        chapter_objectives=obj["chapter_objectives"],
+        adjusted=adjusted,
+        scorer=scorer,
+        threshold=0.45,
+    )
+    co1 = obj["chapter_objectives"][0]["objectives"][0]
+    assert co1["bloom_level"] == orig_co["bloom_level"]  # original, reverted
+    assert co1["bloom_verb"] == orig_co["bloom_verb"]
+    assert co1["abcd"] == orig_co["abcd"]  # abcd byte-identical
     assert counters["bloom_edits_applied"] == 0
     assert counters["bloom_edits_rejected"] == 1
 
@@ -376,13 +465,23 @@ def test_merge_bloom_change_aligned_applied():
 
 def test_merge_no_embedder_keeps_bloom_guardrail_skips_cosine():
     """No embedder → cosine guardrail off (CO statement edits adopted), but
-    the bloom guardrail still reverts a mismatch."""
+    the bloom guardrail still reverts a TRULY incoherent bloom edit."""
     obj = _make_objectives()
     scorer = _GroundingScorer(None)
     assert scorer.available is False
+    orig_level = obj["chapter_objectives"][0]["objectives"][1]["bloom_level"]
     adjusted = {
         "CO-01": {"statement": "Anything at all, no cosine check applies here"},
-        "CO-02": {"bloom_level": "create", "bloom_verb": "list"},
+        # CO-02: no bloom_level change + a non-canonical verb that resolves to
+        # NO level → incoherent → reverted (the conservative survivor).
+        "CO-02": {
+            "abcd": {
+                "audience": "students",
+                "behavior": {"verb": "zzqxnotaverb", "action_object": "x"},
+                "condition": "c",
+                "degree": "d",
+            }
+        },
     }
     counters = merge_reviewed_objectives(
         terminals=obj["terminals"],
@@ -394,9 +493,9 @@ def test_merge_no_embedder_keeps_bloom_guardrail_skips_cosine():
     co1 = obj["chapter_objectives"][0]["objectives"][0]
     assert co1["statement"] == "Anything at all, no cosine check applies here"
     assert counters["statements_adjusted"] == 1
-    # CO-02 bloom edit: list ∉ BLOOMS_VERBS["create"] → rejected.
+    # CO-02 bloom edit: non-canonical verb, no resolvable level → rejected.
     co2 = obj["chapter_objectives"][0]["objectives"][1]
-    assert co2["bloom_level"] == "remember"
+    assert co2["bloom_level"] == orig_level
     assert counters["bloom_edits_rejected"] == 1
 
 
@@ -1074,3 +1173,160 @@ def test_review_surfaces_chunks_failed_for_fail_closed(monkeypatch):
     )
     assert result["enabled"] is True
     assert result["chunks_failed"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# P2(a) — joint Bloom reconciliation (_apply_bloom_fields direct unit tests).
+#
+# These exercise the merge step directly: instead of all-or-nothing reverting a
+# PARTIAL Bloom fix, it reconciles bloom_level + bloom_verb + abcd.behavior.verb
+# into mutual agreement, preferring the reviewer's intent, and only reverts when
+# NO coherent (level, verb) pairing can be formed. Real verbs are pulled from
+# BLOOMS_VERBS at test time (robust to the actual verb sets).
+# ---------------------------------------------------------------------------
+
+
+from lib.objectives.objective_review import _apply_bloom_fields  # noqa: E402
+from lib.ontology.learning_objectives import BLOOMS_VERBS  # noqa: E402
+
+
+def _abcd(verb: str, *, audience="students", action_object="thing",
+          condition="given context", degree="accurately") -> Dict[str, Any]:
+    return {
+        "audience": audience,
+        "behavior": {"verb": verb, "action_object": action_object},
+        "condition": condition,
+        "degree": degree,
+    }
+
+
+def test_apply_bloom_partial_level_changed_stale_verb_driven_into_agreement():
+    """PARTIAL FIX, level changed, stale verb: target is evaluate + an evaluate
+    verb; reviewer corrects bloom_level→apply but leaves NO new verb → the abcd
+    verb is driven to a valid APPLY verb (NOT silently kept at evaluate)."""
+    eval_verb = sorted(BLOOMS_VERBS["evaluate"])[0]
+    apply_verbs = BLOOMS_VERBS["apply"]
+    target = {
+        "bloom_level": "evaluate",
+        "bloom_verb": eval_verb,
+        "abcd": _abcd(eval_verb),
+    }
+    adj = {"bloom_level": "apply"}  # only the level — stale verb stays
+    applied = _apply_bloom_fields(target, adj)
+    assert applied > 0
+    assert target["bloom_level"] == "apply"
+    # Driven into agreement — the verb is now a valid APPLY verb, NOT evaluate.
+    assert target["abcd"]["behavior"]["verb"] in apply_verbs
+    assert target["abcd"]["behavior"]["verb"] != eval_verb
+    assert target["bloom_verb"] in apply_verbs
+
+
+def test_apply_bloom_partial_verb_changed_level_stale_drives_level():
+    """PARTIAL FIX, verb changed, level stale: reviewer sets a verb that
+    belongs to "understand" while target.bloom_level="apply" and adj omits
+    bloom_level → the level drives to "understand", verbs consistent."""
+    understand_verb = sorted(BLOOMS_VERBS["understand"])[0]
+    apply_verb = sorted(BLOOMS_VERBS["apply"])[0]
+    target = {
+        "bloom_level": "apply",
+        "bloom_verb": apply_verb,
+        "abcd": _abcd(apply_verb),
+    }
+    adj = {"abcd": _abcd(understand_verb)}  # only a verb change
+    applied = _apply_bloom_fields(target, adj)
+    assert applied > 0
+    assert target["bloom_level"] == "understand"  # drove to the verb's level
+    assert target["abcd"]["behavior"]["verb"] == understand_verb
+    assert target["bloom_verb"] == understand_verb
+
+
+def test_apply_bloom_coherent_edit_applied_as_is_abcd_preserved():
+    """COHERENT edit: a verb already valid for the new level is applied as-is,
+    and the rest of the abcd object is preserved verbatim."""
+    apply_verb = sorted(BLOOMS_VERBS["apply"])[0]
+    target = {
+        "bloom_level": "remember",
+        "bloom_verb": sorted(BLOOMS_VERBS["remember"])[0],
+        "abcd": _abcd(sorted(BLOOMS_VERBS["remember"])[0]),
+    }
+    adj = {
+        "bloom_level": "apply",
+        "bloom_verb": apply_verb,
+        "abcd": _abcd(
+            apply_verb,
+            audience="nursing students",
+            action_object="dosage calc",
+            condition="given a chart",
+            degree="with 90% accuracy",
+        ),
+    }
+    applied = _apply_bloom_fields(target, adj)
+    assert applied > 0
+    assert target["bloom_level"] == "apply"
+    assert target["bloom_verb"] == apply_verb
+    assert target["abcd"]["behavior"]["verb"] == apply_verb
+    # The reviewer's abcd sub-fields are preserved verbatim.
+    assert target["abcd"]["audience"] == "nursing students"
+    assert target["abcd"]["behavior"]["action_object"] == "dosage calc"
+    assert target["abcd"]["condition"] == "given a chart"
+    assert target["abcd"]["degree"] == "with 90% accuracy"
+
+
+def test_apply_bloom_true_incoherent_noncanonical_verb_reverts():
+    """TRUE incoherent: a non-canonical verb with NO resolvable level and no
+    reviewer level change → reverts (returns 0), original preserved."""
+    apply_verb = sorted(BLOOMS_VERBS["apply"])[0]
+    target = {
+        "bloom_level": "apply",
+        "bloom_verb": apply_verb,
+        "abcd": _abcd(apply_verb),
+    }
+    original = copy.deepcopy(target)
+    adj = {"abcd": _abcd("zzqxnotaverb")}  # gibberish verb, no level offered
+    applied = _apply_bloom_fields(target, adj)
+    assert applied == 0
+    assert target == original  # byte-identical revert
+
+
+def test_apply_bloom_reconciliation_preserves_abcd_subfields():
+    """abcd audience/condition/degree/action_object survive a reconciliation
+    that only repairs the behavior verb + the level."""
+    eval_verb = sorted(BLOOMS_VERBS["evaluate"])[0]
+    target = {
+        "bloom_level": "evaluate",
+        "bloom_verb": eval_verb,
+        "abcd": _abcd(
+            eval_verb,
+            audience="grad students",
+            action_object="experimental design",
+            condition="given raw data",
+            degree="defensibly",
+        ),
+    }
+    adj = {"bloom_level": "apply"}  # partial fix → reconcile verb to apply
+    applied = _apply_bloom_fields(target, adj)
+    assert applied > 0
+    assert target["bloom_level"] == "apply"
+    assert target["abcd"]["behavior"]["verb"] in BLOOMS_VERBS["apply"]
+    # Every other abcd sub-field is untouched.
+    assert target["abcd"]["audience"] == "grad students"
+    assert target["abcd"]["behavior"]["action_object"] == "experimental design"
+    assert target["abcd"]["condition"] == "given raw data"
+    assert target["abcd"]["degree"] == "defensibly"
+
+
+def test_apply_bloom_does_not_alias_caller_abcd():
+    """The reconciled abcd written to target must NOT alias the adj's nested
+    behavior dict (mutating target afterwards must not leak into adj)."""
+    apply_verb = sorted(BLOOMS_VERBS["apply"])[0]
+    target = {
+        "bloom_level": "remember",
+        "bloom_verb": sorted(BLOOMS_VERBS["remember"])[0],
+        "abcd": _abcd(sorted(BLOOMS_VERBS["remember"])[0]),
+    }
+    adj_abcd = _abcd(apply_verb)
+    adj = {"bloom_level": "apply", "bloom_verb": apply_verb, "abcd": adj_abcd}
+    _apply_bloom_fields(target, adj)
+    # Mutate target's abcd; adj's nested dict must be unaffected (no alias).
+    target["abcd"]["behavior"]["verb"] = "MUTATED"
+    assert adj_abcd["behavior"]["verb"] == apply_verb
