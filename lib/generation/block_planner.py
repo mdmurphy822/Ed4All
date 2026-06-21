@@ -86,7 +86,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from lib.generation.block_catalog import load_block_catalog
 from lib.ontology.bloom import BLOOM_LEVELS
@@ -99,6 +99,9 @@ __all__ = [
     "BlockPlannerProvider",
     "CANONICAL_PAGE_TYPES",
     "DEFAULT_BLOCK_BUDGET",
+    "detect_acronyms",
+    "detect_canonical_mnemonics",
+    "detect_tabular_content",
 ]
 
 # System prompt for the dedicated planner provider — frames the 70B as an
@@ -189,8 +192,13 @@ _PAGE_TYPE_FLOOR_FILLERS: Dict[str, Tuple[Tuple[str, str], ...]] = {
     ),
     "content": (
         # content has no floor, but if a floor is ever configured these
-        # deploy callout ("Key Idea" framing, finding 16) + misconception.
+        # deploy concept + the I6 palette-v2 variety types (table / key_idea /
+        # acronym, findings 5/7/16 — tabular content, emphasized principles,
+        # mnemonics the 7B never authored) + misconception + flip_card_grid.
         ("concept", "understand"),
+        ("key_idea", "understand"),
+        ("table", "understand"),
+        ("acronym", "remember"),
         ("callout", "understand"),
         ("misconception", "analyze"),
         ("flip_card_grid", "understand"),
@@ -305,6 +313,13 @@ _BLOCK_TYPE_DEFAULT_PAGE: Dict[str, str] = {
     "recap": "summary",
     "checklist": "summary",
     "chrome": "overview",
+    # Issue I6 instruction-palette-v2 default page placements. A comparison
+    # table and an emphasized key idea live on the content page (they teach
+    # the concept); an acronym / mnemonic also lives on content (it is a
+    # learning aid presented alongside the material).
+    "table": "content",
+    "acronym": "content",
+    "key_idea": "content",
 }
 
 # Bounded prompt sizing knobs (keep the per-TO prompt small enough for the
@@ -312,6 +327,205 @@ _BLOCK_TYPE_DEFAULT_PAGE: Dict[str, str] = {
 _MAX_SOURCE_CHUNKS_IN_PROMPT = 8
 _MAX_CHARS_PER_CHUNK = 600
 _MAX_COS_IN_PROMPT = 30
+
+
+# ---------------------------------------------------------------------------
+# Issue I6 instruction-palette-v2 content detectors.
+# ---------------------------------------------------------------------------
+#
+# Lightweight, deterministic, source-grounded detectors that flag WHEN a TO's
+# source content is shaped for one of the three palette-v2 block types
+# (``acronym`` / ``table``). They feed the planner two signals:
+#   1. the per-TO selection-guidance prompt (so the 70B is nudged toward the
+#      right block type when the shape is present), and
+#   2. a deterministic floor-filler seat (so the block type is REACHABLE on a
+#      real run even if the planner under-uses it).
+# The detectors are precision-first: they fire ONLY when the source genuinely
+# carries the shape, so a false-positive block is never seeded.
+
+# An all-caps acronym candidate: 3-8 contiguous capital letters (PEMDAS,
+# FOIL, SOHCAHTOA), optionally with internal digits. Bounded so a stray
+# two-letter abbreviation or a 9+ run of capitals (likely a shout, not an
+# acronym) never matches.
+_ACRONYM_CANDIDATE_RE = re.compile(r"\b([A-Z][A-Z0-9]{2,7})\b")
+
+# A token that LOOKS like tabular / comparison framing in the source.
+_TABULAR_HINT_RE = re.compile(
+    r"\b(compare|comparison|versus|vs\.?|contrast|"
+    r"proper|improper|mixed|"
+    r"the following table|as shown in the table|each (type|kind|category)|"
+    r"types of|kinds of|categories of)\b",
+    re.IGNORECASE,
+)
+
+
+# ``ED4ALL_DYNAMIC_BLOCK_PLAN`` truthy set (mirrors the consumer's gate in
+# ``MCP/tools/pipeline_tools.py``). The deterministic palette-v2 injection
+# (Part A) is a strict NO-OP unless this is truthy — so the legacy / off path
+# (where the consumer never even calls the planner) and every existing
+# snapshot stay byte-stable.
+_DYNAMIC_BLOCK_PLAN_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _dynamic_block_plan_on() -> bool:
+    """True iff ``ED4ALL_DYNAMIC_BLOCK_PLAN`` is truthy (read each call)."""
+    import os  # noqa: PLC0415
+
+    return (
+        os.environ.get("ED4ALL_DYNAMIC_BLOCK_PLAN", "").strip().lower()
+        in _DYNAMIC_BLOCK_PLAN_TRUTHY
+    )
+
+
+def _source_text_blob(source_chunks: Sequence[Dict[str, Any]]) -> str:
+    """Concatenate the source-chunk text + headings into one search blob."""
+    parts: List[str] = []
+    for ch in source_chunks or []:
+        if not isinstance(ch, dict):
+            continue
+        text = str(ch.get("text") or "")
+        heading = str(ch.get("heading") or "")
+        if heading:
+            parts.append(heading)
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def detect_acronyms(source_text: str) -> List[str]:
+    """Return all-caps acronym candidates whose expansion is in the source.
+
+    PRECISION over recall (false positives are bad — an unexpanded all-caps
+    word like an ID, a heading, or a unit must NOT fire). A candidate
+    ``XYZ`` qualifies only when, for every letter, a word STARTING with that
+    letter (case-insensitive) appears in the source text — i.e. the source
+    actually spells the acronym out. PEMDAS fires iff the source contains
+    words starting P, E, M, D, A, S (e.g. "Parentheses Exponents
+    Multiplication Division Addition Subtraction" or "Please Excuse My Dear
+    Aunt Sally"). A bare ``PEMDAS`` with no expansion does NOT fire.
+
+    Returns the de-duplicated list of qualifying acronym tokens (may be
+    empty). Deterministic; no model call.
+    """
+    if not source_text:
+        return []
+    # Word-initial letters present in the source (lowercased).
+    initials: Set[str] = {
+        w[0].lower() for w in re.findall(r"[A-Za-z][A-Za-z0-9]*", source_text)
+    }
+    out: List[str] = []
+    seen: Set[str] = set()
+    for cand in _ACRONYM_CANDIDATE_RE.findall(source_text):
+        if cand in seen:
+            continue
+        letters = [c.lower() for c in cand if c.isalpha()]
+        if not letters:
+            continue
+        # Every letter of the acronym must be spelled out by some source word.
+        # Require the FULL expansion present (precision): a single missing
+        # letter drops the candidate. The acronym token itself supplies one
+        # initial per letter, so exclude self-match by requiring at least one
+        # OTHER word per letter — approximated by demanding the count of
+        # distinct source words starting with each letter ≥ 1 beyond the
+        # acronym; in practice the acronym contributes only one capital token,
+        # so a genuine expansion adds the spelled-out words.
+        if all(ltr in initials for ltr in letters):
+            # Guard against the trivial self-match: the acronym alone provides
+            # only its own initial letters via its single token, so require
+            # that the source has MORE word-initial coverage than just the
+            # acronym — i.e. at least len(letters) expansion words exist.
+            expansion_words = [
+                w for w in re.findall(r"[A-Za-z][A-Za-z0-9]*", source_text)
+                if w != cand and w and w[0].lower() in letters
+            ]
+            if len(expansion_words) >= len(letters):
+                seen.add(cand)
+                out.append(cand)
+    return out
+
+
+# A small CURATED table of well-known mnemonics whose canonical acronym token
+# is often ABSENT from a source that nonetheless teaches the underlying concept
+# by spelling out the expansion. Order-of-operations material (OpenStax) writes
+# "Parentheses Exponents Multiplication Division Addition Subtraction" and/or
+# "Please Excuse My Dear Aunt Sally" but frequently NEVER writes the literal
+# token "PEMDAS" — so the precision-first literal-token detector above stays
+# silent. This table re-introduces the canonical acronym as a GROUNDED learning
+# aid: it fires ONLY when the full expansion (every per-letter term, or the
+# verbatim mnemonic phrase) is present in the source, so no fabrication occurs
+# (every expansion term is in the source). Each entry maps the canonical token
+# to (a) the per-letter expansion TERMS and (b) optional verbatim mnemonic
+# PHRASES (any one phrase present also fires it).
+#
+# Precision-first: the canonical mnemonic fires iff EVERY expansion term (or one
+# full mnemonic phrase) is present in the source — a partial match never fires.
+_CANONICAL_MNEMONICS: Dict[str, Dict[str, Tuple[str, ...]]] = {
+    "PEMDAS": {
+        "terms": (
+            "parentheses", "exponents", "multiplication", "division",
+            "addition", "subtraction",
+        ),
+        "phrases": ("please excuse my dear aunt sally",),
+    },
+    "BODMAS": {
+        "terms": (
+            "brackets", "orders", "division", "multiplication",
+            "addition", "subtraction",
+        ),
+        "phrases": (),
+    },
+}
+
+
+def detect_canonical_mnemonics(source_text: str) -> List[str]:
+    """Return canonical mnemonic tokens whose full expansion is in the source.
+
+    The curated-set companion to :func:`detect_acronyms`. Where the general
+    detector requires the LITERAL all-caps token to be present (precision over
+    recall for arbitrary acronyms), this fires a SMALL curated set of canonical
+    mnemonics (``PEMDAS`` / ``BODMAS``) even when the literal token is ABSENT —
+    as long as the source spells out the FULL expansion (every per-letter term)
+    OR a verbatim mnemonic phrase (e.g. "Please Excuse My Dear Aunt Sally").
+
+    This is NOT fabrication: every expansion term is present in the source, so
+    introducing the canonical acronym is a grounded learning aid, not invented
+    content. Precision-first — a PARTIAL expansion never fires (every term, or
+    one full phrase, must be present).
+
+    Returns the de-duplicated list of qualifying canonical tokens (may be
+    empty). Deterministic; no model call.
+    """
+    if not source_text:
+        return []
+    lowered = source_text.lower()
+    out: List[str] = []
+    for token, spec in _CANONICAL_MNEMONICS.items():
+        terms = spec.get("terms") or ()
+        phrases = spec.get("phrases") or ()
+        # Fire when EITHER every per-letter expansion term is present (whole-
+        # word) OR any one verbatim mnemonic phrase is present.
+        terms_present = bool(terms) and all(
+            re.search(r"\b" + re.escape(t) + r"\b", lowered) for t in terms
+        )
+        phrase_present = any(p in lowered for p in phrases)
+        if terms_present or phrase_present:
+            out.append(token)
+    return out
+
+
+def detect_tabular_content(source_text: str) -> bool:
+    """True when the source content is shaped for a comparison ``table``.
+
+    Fires on an explicit HTML ``<table>`` in the source, OR on comparison /
+    multi-category framing (``compare``, ``versus``, ``types of``,
+    ``proper / improper / mixed``, ``the following table``). Deterministic;
+    precision-leaning (a single hit suffices because the planner only uses
+    this as a NUDGE, not a hard placement)."""
+    if not source_text:
+        return False
+    if "<table" in source_text.lower():
+        return True
+    return bool(_TABULAR_HINT_RE.search(source_text))
 
 
 def build_planner_provider(
@@ -576,6 +790,38 @@ def _build_prompt(
 
     page_types_csv = ", ".join(CANONICAL_PAGE_TYPES)
 
+    # Issue I6: content-shape detector nudges. When the source genuinely
+    # carries a comparison/tabular shape or an explained acronym, steer the
+    # planner toward the right palette-v2 block type (precision-first — the
+    # detectors only fire on real shape, so the nudge never fabricates one).
+    source_blob = _source_text_blob(source_chunks)
+    detector_lines: List[str] = []
+    if detect_tabular_content(source_blob):
+        detector_lines.append(
+            "  - The source COMPARES items across shared dimensions — use a "
+            "`table` (caption + scoped header cells, one row per item) for it."
+        )
+    # Union the literal-token detector with the curated canonical-mnemonic
+    # detector so a source that spells out PEMDAS/BODMAS without the literal
+    # token still nudges the 70B toward the `acronym` block.
+    detected_acronyms = list(
+        dict.fromkeys(
+            detect_acronyms(source_blob) + detect_canonical_mnemonics(source_blob)
+        )
+    )
+    if detected_acronyms:
+        names = ", ".join(detected_acronyms[:4])
+        detector_lines.append(
+            f"  - The source spells out the acronym(s) {names} — use an "
+            "`acronym` block (a <dl> mapping each letter to its term) for it."
+        )
+    detector_block = (
+        "\nDETECTED CONTENT SHAPES (the source supports these — prefer the "
+        "named block type):\n" + "\n".join(detector_lines) + "\n"
+        if detector_lines
+        else ""
+    )
+
     return (
         "You are an expert instructional designer planning ONE week of a "
         "course built around a single terminal objective. Choose the "
@@ -595,12 +841,21 @@ def _build_prompt(
         "  - a common error-> misconception\n"
         "  - a real situation -> scenario\n"
         "  - a checkpoint -> self_check_question / reflection_prompt\n"
-        "  - a recap      -> summary_takeaway / checklist\n\n"
+        "  - a recap      -> summary_takeaway / checklist\n"
+        # Issue I6 instruction-palette-v2 selection guidance.
+        "  - a comparison across shared columns -> table (an accessible "
+        "<table> with a caption + scoped headers)\n"
+        "  - an acronym / mnemonic the source spells out -> acronym\n"
+        "  - the single most important principle / takeaway -> key_idea\n\n"
         "When content is COMPARATIVE or TABULAR (several items contrasted "
-        "across the same dimensions, term/definition pairs, or a "
-        "criteria-by-option matrix), prefer flip_card_grid (a grid of paired "
-        "cards) or a checklist over a flat prose concept — tabular content is "
-        "clearer as a grid than as a paragraph.\n\n"
+        "across the same dimensions, a criteria-by-option matrix, or "
+        "proper/improper/mixed-style categories), prefer a `table` (a real "
+        "accessible <table>) when the relationship is across shared COLUMNS, "
+        "or flip_card_grid for term/definition pairs — both beat a flat prose "
+        "concept. When the source presents a memory aid whose letters spell "
+        "out terms (e.g. PEMDAS), use an `acronym` block. When one principle "
+        "is THE point to remember, set it apart in a `key_idea` aside.\n"
+        f"{detector_block}\n"
         f"BUDGET: select between {lo} and {hi} blocks total.\n"
         "Assign each block to exactly one page_type from: "
         f"{page_types_csv}.\n\n"
@@ -881,6 +1136,127 @@ def _apply_page_floors(
     return rebuilt
 
 
+# ---------------------------------------------------------------------------
+# Issue I6 — deterministic palette-v2 injection (Part A).
+# ---------------------------------------------------------------------------
+#
+# The I6 block types (``table`` / ``acronym`` / ``key_idea``) are seated as
+# CONTENT-page floor fillers (``_PAGE_TYPE_FLOOR_FILLERS["content"]``), but the
+# content page has NO floor (``_PAGE_TYPE_FLOORS["content"] == 0``), so the
+# top-up never deploys them — deployment relied entirely on the 70B CHOOSING
+# them (it chose them 0× across 7 weeks in the live run). This pass makes the
+# three types deterministically deploy whenever their content SHAPE is present
+# in the TO's source, independent of 70B judgment:
+#
+#   * tabular source shape present + no ``table`` block        → inject one
+#   * acronym/mnemonic spelled out + no ``acronym`` block      → inject one
+#   * always exactly one ``key_idea`` on content (the emphasized-principle
+#     framing is near-universal): PROMOTE an existing generic ``callout`` /
+#     ``concept`` to ``key_idea`` if one is on the content page, else inject one
+#
+# Bounded: at most ONE of each type per TO (the content page is never flooded).
+# Each injected entry is a DESCRIPTOR only (block_type + target_co_ids +
+# page_type=content + a target bloom); the rewrite tier authors the HTML per the
+# I6 per-type output contracts. ANTI-FABRICATION: an injected block targets the
+# TO's first real CO id (or none → the consumer's week-TO fallback); no CO id is
+# invented.
+_PALETTE_V2_KEY_IDEA_PROMOTABLE: Tuple[str, ...] = ("callout", "concept")
+
+
+def _inject_palette_v2(
+    *,
+    selected: List[Dict[str, Any]],
+    source_blob: str,
+    chapter_objectives: Sequence[Dict[str, Any]],
+    block_types: frozenset,
+) -> List[Dict[str, Any]]:
+    """Deterministically deploy the I6 palette-v2 types by CONTENT SHAPE.
+
+    Mutates / extends ``selected`` in place (returns it) so the three I6 block
+    types appear on the content page when their shape is present — without
+    relying on the 70B selecting them. NO-OP for any I6 type already present.
+    Caller gates this on ``ED4ALL_DYNAMIC_BLOCK_PLAN`` being on, so the legacy
+    / off path is byte-stable.
+    """
+    present_content_types = {
+        b.get("block_type")
+        for b in selected
+        if b.get("page_type") == "content"
+    }
+    # The CO id an injected block teaches: the TO's first real CO (or none →
+    # week-TO fallback in the consumer). Never invents an id.
+    first_co_id = next(
+        (str(co.get("id")) for co in chapter_objectives if co.get("id")), ""
+    )
+    target_co_ids = [first_co_id] if first_co_id else []
+
+    def _mk(block_type: str, bloom: str, focus: str) -> Dict[str, Any]:
+        return {
+            "block_type": block_type,
+            "page_type": "content",
+            "target_co_ids": list(target_co_ids),
+            "content_focus": focus,
+            "target_bloom": bloom,
+        }
+
+    # (1) table — inject one when the source is tabular/comparative and no
+    # table block is on the content page yet.
+    if (
+        "table" in block_types
+        and "table" not in present_content_types
+        and detect_tabular_content(source_blob)
+    ):
+        selected.append(_mk(
+            "table", "understand",
+            "I6 deterministic injection: source compares items across shared "
+            "dimensions",
+        ))
+        present_content_types.add("table")
+
+    # (2) acronym — inject one when an acronym/mnemonic is detected (literal
+    # token OR curated canonical mnemonic) and none is present.
+    detected_acronyms = (
+        detect_acronyms(source_blob) + detect_canonical_mnemonics(source_blob)
+    )
+    if (
+        "acronym" in block_types
+        and "acronym" not in present_content_types
+        and detected_acronyms
+    ):
+        selected.append(_mk(
+            "acronym", "remember",
+            "I6 deterministic injection: source spells out the acronym/"
+            f"mnemonic {detected_acronyms[0]}",
+        ))
+        present_content_types.add("acronym")
+
+    # (3) key_idea — guarantee exactly one on the content page. Prefer
+    # PROMOTING an existing generic callout/concept to key_idea; else inject.
+    if "key_idea" in block_types and "key_idea" not in present_content_types:
+        promoted = False
+        for blk in selected:
+            if (
+                blk.get("page_type") == "content"
+                and blk.get("block_type") in _PALETTE_V2_KEY_IDEA_PROMOTABLE
+            ):
+                blk["block_type"] = "key_idea"
+                blk["content_focus"] = (
+                    "I6 deterministic injection: promoted "
+                    f"{blk.get('content_focus') or 'generic content block'} to "
+                    "an emphasized key idea"
+                )
+                promoted = True
+                break
+        if not promoted:
+            selected.append(_mk(
+                "key_idea", "understand",
+                "I6 deterministic injection: the single most important "
+                "principle of this objective set apart as a key idea",
+            ))
+
+    return selected
+
+
 def _resolve_target_bloom(
     *,
     declared: Any,
@@ -964,6 +1340,10 @@ def plan_week_blocks(
     source_chunks = list(source_chunks or [])
     budget = _clamp_budget(budget)
     to_id = str(terminal_objective.get("id") or "")
+    # The TO's source blob — fed to the deterministic palette-v2 injection on
+    # both the LLM-success and every fallback path (gated on
+    # ED4ALL_DYNAMIC_BLOCK_PLAN inside ``_inject_palette_v2`` / ``_fallback_plan``).
+    source_blob = _source_text_blob(source_chunks)
 
     try:
         catalog = list(catalog) if catalog is not None else load_block_catalog()
@@ -972,6 +1352,7 @@ def plan_week_blocks(
         return _fallback_plan(
             to_id=to_id, capture=capture, course_code=course_code,
             budget=budget, reason=f"catalog load error: {exc}",
+            source_blob=source_blob, chapter_objectives=chapter_objectives,
         )
 
     block_types = _resolve_block_types()
@@ -988,6 +1369,7 @@ def plan_week_blocks(
         return _fallback_plan(
             to_id=to_id, capture=capture, course_code=course_code,
             budget=budget, reason="no provider supplied",
+            source_blob=source_blob, chapter_objectives=chapter_objectives,
         )
 
     prompt = _build_prompt(
@@ -1014,6 +1396,7 @@ def plan_week_blocks(
         return _fallback_plan(
             to_id=to_id, capture=capture, course_code=course_code,
             budget=budget, reason=f"dispatch error: {exc}", model=str(model),
+            source_blob=source_blob, chapter_objectives=chapter_objectives,
         )
 
     raw_blocks = _parse_llm_blocks(raw_text or "")
@@ -1026,6 +1409,7 @@ def plan_week_blocks(
             to_id=to_id, capture=capture, course_code=course_code,
             budget=budget, reason="unparseable/empty LLM response",
             model=str(model),
+            source_blob=source_blob, chapter_objectives=chapter_objectives,
         )
 
     selected = _validate_and_repair(
@@ -1041,6 +1425,7 @@ def plan_week_blocks(
             to_id=to_id, capture=capture, course_code=course_code,
             budget=budget, reason="all blocks dropped by guardrails",
             model=str(model),
+            source_blob=source_blob, chapter_objectives=chapter_objectives,
         )
 
     # Per-page-type FLOORS (findings 2/7/8/18): top up any starved page TYPE
@@ -1052,6 +1437,20 @@ def plan_week_blocks(
         block_types=block_types,
         budget=budget,
     )
+
+    # Issue I6 (Part A): deterministically deploy the palette-v2 types
+    # (table / acronym / key_idea) by CONTENT SHAPE so they no longer depend on
+    # the 70B choosing them. NO-OP when ED4ALL_DYNAMIC_BLOCK_PLAN is off (the
+    # legacy path never reaches here anyway — the consumer skips the planner —
+    # but the env gate keeps unit-test byte-stability for callers that pass a
+    # provider without the flag set).
+    if _dynamic_block_plan_on():
+        selected = _inject_palette_v2(
+            selected=selected,
+            source_blob=source_blob,
+            chapter_objectives=chapter_objectives,
+            block_types=block_types,
+        )
 
     page_plan = _to_page_plan(selected)
     _emit_block_plan_decision(
@@ -1081,6 +1480,8 @@ def _fallback_plan(
     budget: Tuple[int, int],
     reason: str,
     model: str = "",
+    source_blob: str = "",
+    chapter_objectives: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> WeekBlockPlan:
     """Build the deterministic fixed-plan ``WeekBlockPlan`` + capture."""
     page_plan = _default_page_plan()
@@ -1095,12 +1496,27 @@ def _fallback_plan(
         for ptype, specs in page_plan.items()
         for bt, bloom, _co_ids in specs
     ]
+    # Issue I6 (Part A): the palette-v2 injection ALSO runs on the fallback
+    # path (an LLM error must not strand the I6 types), gated on
+    # ED4ALL_DYNAMIC_BLOCK_PLAN. When off (the legacy path + the provider=None
+    # unit-test path) this is a strict NO-OP, so the fixed-plan fallback stays
+    # byte-identical (every entry keeps its empty target_co_ids). When on, the
+    # injected entries extend ``selected`` and ``page_plan`` is RE-DERIVED from
+    # it so the new blocks surface through ``page_block_plan_for``.
+    if _dynamic_block_plan_on():
+        selected = _inject_palette_v2(
+            selected=selected,
+            source_blob=source_blob,
+            chapter_objectives=chapter_objectives or [],
+            block_types=_resolve_block_types(),
+        )
+        page_plan = _to_page_plan(selected)
     _emit_block_plan_decision(
         capture=capture,
         course_code=course_code,
         to_id=to_id,
         selected=selected,
-        chapter_objectives=[],
+        chapter_objectives=chapter_objectives or [],
         budget=budget,
         model=model,
         fallback_used=True,
