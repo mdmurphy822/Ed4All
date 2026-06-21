@@ -54,6 +54,7 @@ _DART_HTML = """<!DOCTYPE html>
 <body onload="boom()">
   <h1>Chapter One</h1>
   <h2>Real Numbers</h2>
+  <h3 id="sec-2570ef19b386cdac">Prime Factorization</h3>
   <ul class="dart-section" data-dart-block-role="list_unordered"
       data-dart-block-id="blk_target" data-dart-pages="4">
     <li>An ordered list block (no id — gets id="dart-blk_target").</li>
@@ -260,6 +261,36 @@ def test_source_doc_absent_page_byte_identical(client, dart_course):
         params={"doc": "chapter-one", "page": "4"},
     ).text
     assert base == with_page
+
+
+def test_source_doc_injects_heading_text_slug_when_hash_id_exists(client, dart_course):
+    # A heading that ALREADY carries a DART hash id (id="sec-<hash>") keeps it,
+    # but the Ask answer-path fragment is the SLUGGED heading text
+    # (grounded_answer._fragment_for). So the text-slug id must ALSO resolve to
+    # this heading — planted as an additional sibling anchor span (never
+    # clobbering the hash id) so "view in textbook" lands on the cited heading
+    # instead of the document top.
+    resp = client.get(
+        f"/api/courses/{dart_course}/source-doc", params={"doc": "chapter-one"}
+    )
+    html = resp.text
+    # Original hash id preserved.
+    assert 'id="sec-2570ef19b386cdac"' in html
+    # Text-slug ("prime-factorization") planted as a sibling anchor so the
+    # heading-slug fragment from the Ask citation resolves.
+    assert '<span class="dart-heading-anchor" id="prime-factorization"></span>' in html
+
+
+def test_source_doc_heading_no_id_still_gets_text_slug_directly(client, dart_course):
+    # The unchanged path: a heading with NO id gets the text-slug AS its id
+    # directly (no extra anchor span needed).
+    resp = client.get(
+        f"/api/courses/{dart_course}/source-doc", params={"doc": "chapter-one"}
+    )
+    html = resp.text
+    assert 'id="real-numbers"' in html
+    # No redundant sibling anchor for the no-id case.
+    assert '<span class="dart-heading-anchor" id="real-numbers">' not in html
 
 
 def test_source_doc_rewrites_figure_src(client, dart_course):

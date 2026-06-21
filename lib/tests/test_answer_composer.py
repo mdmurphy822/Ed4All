@@ -104,7 +104,28 @@ def _passages(n=2):
 # ===========================================================================
 
 def test_prompt_version_pinned():
-    assert ANSWER_PROMPT_VERSION == "ws3.v4"
+    assert ANSWER_PROMPT_VERSION == "ws3.v5"
+
+
+def test_system_prompt_elicits_worked_steps_for_computation():
+    # ws3.v5: a "show your work" / numeric-computation question must elicit the
+    # intermediate worked steps (setup, each operation, result) before the final
+    # value — bounded to the passages' methods/facts so grounding is not loosened
+    # for non-computational claims.
+    assert "show steps" in ANSWER_SYSTEM_PROMPT
+    assert "show your work" in ANSWER_SYSTEM_PROMPT
+    assert "intermediate steps" in ANSWER_SYSTEM_PROMPT
+    assert "numeric computation" in ANSWER_SYSTEM_PROMPT
+    # Grounding stays bounded: only the passages' methods/facts may be applied.
+    assert "ONLY the methods and facts the passages provide" in ANSWER_SYSTEM_PROMPT
+    # The clause must reach the assembled system message verbatim.
+    client = FakeAnswerClient([_envelope("0.42", ["chunk_00000"])])
+    compose_answer(
+        "Subtract 9.58 from 10 showing all steps.", _passages(2), client=client
+    )
+    system_msg = client.calls[0]["messages"][0]
+    assert system_msg["role"] == "system"
+    assert "intermediate steps" in system_msg["content"]
 
 
 def test_system_prompt_requires_multipart_completeness():
@@ -229,7 +250,7 @@ def test_compose_well_formed_envelope_roundtrip():
     assert result.cited_chunk_ids == ["chunk_00000"]
     assert result.not_in_course is False
     assert result.attempts == 1
-    assert result.prompt_version == "ws3.v4"
+    assert result.prompt_version == "ws3.v5"
     assert result.model_id == "qwen2.5:14b-instruct-q4_K_M"
 
 

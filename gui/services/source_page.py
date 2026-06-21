@@ -271,15 +271,28 @@ def _sanitize_and_wrap(
     # 1+2) Drop dangerous elements + scrub active attributes (shared core).
     sanitize_soup(soup)
 
-    # 3) Inject heading ids (only where missing) using the frozen slug.
+    # 3) Inject heading ids using the frozen slug. The Ask answer-citation
+    #    deep-link (grounded_answer._fragment_for) is the SLUGGED section_heading
+    #    text, so that text-slug must resolve to the heading even when the
+    #    heading ALREADY carries a different id (DART stamps hash ids like
+    #    ``sec-<hash>`` on ~all headings — the "lands at document TOP" defect).
+    #    No id → set the text-slug id directly; an existing id that differs from
+    #    the text-slug → plant the text-slug as an additional sibling anchor span
+    #    (never clobbering the original id, never duplicating an id already on
+    #    the page).
     for level in ("h1", "h2", "h3", "h4", "h5", "h6"):
         for heading in soup.find_all(level):
-            if heading.get("id"):
-                continue
             text = heading.get_text(" ", strip=True)
             slug_id = heading_slug(text)
-            if slug_id:
+            if not slug_id:
+                continue
+            existing = heading.get("id")
+            if not existing:
                 heading["id"] = slug_id
+            elif existing != slug_id and not soup.find(id=slug_id):
+                anchor = soup.new_tag("span", id=slug_id)
+                anchor["class"] = ["dart-heading-anchor"]
+                heading.insert(0, anchor)
 
     # 4) Ensure <html lang> present (mark when injected so the gate can tell).
     html_el = soup.find("html")

@@ -405,15 +405,29 @@ def _serve_time_transform(raw_html: str, *, slug: str, doc: str, ref: Optional[s
     # 1) Shared audited active-content scrub.
     sanitize_soup(soup)
 
-    # 2) Heading ids (only where missing) for in-page anchor navigation.
+    # 2) Heading ids for in-page anchor navigation. The Ask answer path builds a
+    #    fragment by slugging the chunk's ``section_heading`` (the
+    #    ``grounded_answer._fragment_for`` heading-slug); that text-slug must
+    #    resolve to the heading even when the heading ALREADY carries a different
+    #    id (DART stamps hash ids like ``sec-<hash>`` on ~all headings, which the
+    #    text-slug fragment would otherwise never match — the "lands at document
+    #    TOP" defect). So: a heading with no id gets the text-slug id directly; a
+    #    heading whose existing id differs from the text-slug gets the text-slug
+    #    planted as an additional sibling anchor span (never clobbering the
+    #    original id — page-anchor / footnote ids stay intact).
     for level in ("h1", "h2", "h3", "h4", "h5", "h6"):
         for heading in soup.find_all(level):
-            if heading.get("id"):
-                continue
             text = heading.get_text(" ", strip=True)
             slug_id = heading_slug(text)
-            if slug_id:
+            if not slug_id:
+                continue
+            existing = heading.get("id")
+            if not existing:
                 heading["id"] = slug_id
+            elif existing != slug_id and not soup.find(id=slug_id):
+                anchor = soup.new_tag("span", id=slug_id)
+                anchor["class"] = ["dart-heading-anchor"]
+                heading.insert(0, anchor)
 
     # 3) Block-anchor injection: every data-dart-block-id element must end up
     #    reachable via the #dart-{block_id} fragment (the citation deep-link

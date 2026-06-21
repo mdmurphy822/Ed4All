@@ -40,7 +40,17 @@ function loadHistory(slug) {
 
 function saveHistory(slug, history) {
   try {
-    const trimmed = history.slice(-HISTORY_CAP);
+    // Drop transient runtime fields (interval ids, live DOM-node refs) keyed by
+    // an underscore prefix — they must never be serialized into sessionStorage
+    // (a DOM node round-trips as `{}` and a stale interval id is meaningless on
+    // resume). Only the durable Q/A state persists.
+    const trimmed = history.slice(-HISTORY_CAP).map((entry) => {
+      const copy = {};
+      for (const k of Object.keys(entry)) {
+        if (!k.startsWith('_')) copy[k] = entry[k];
+      }
+      return copy;
+    });
     sessionStorage.setItem(storageKey(slug), JSON.stringify(trimmed));
   } catch (_) { /* sessionStorage full / disabled — degrade silently */ }
 }
@@ -185,25 +195,62 @@ export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
     });
   }
 
+  function busyLabel(entry) {
+    const queued =
+      typeof entry.queue_position === 'number' && entry.queue_position > 0;
+    return queued ? `Queued (position ${entry.queue_position + 1})` : 'Thinking';
+  }
+
   function busyChip(entry) {
     const chip = el('span', { class: 'ask-busy', 'aria-hidden': 'false' });
-    const queued = typeof entry.queue_position === 'number' && entry.queue_position > 0;
-    const label = queued
-      ? `Queued (position ${entry.queue_position + 1})`
-      : 'Thinking';
-    const timeEl = el('span', { class: 'ask-elapsed', text: '0s' });
-    chip.appendChild(el('span', { class: 'ask-spin', 'aria-hidden': 'true', text: '⏳ ' }));
-    chip.appendChild(el('span', { class: 'ask-busy-label', text: label }));
-    chip.appendChild(document.createTextNode(' · '));
-    chip.appendChild(timeEl);
+    const labelEl = el('span', { class: 'ask-busy-label', text: busyLabel(entry) });
+    // Seed the elapsed clock from the ORIGINAL submit time so a re-render (or a
+    // resume after refresh) shows the true elapsed seconds, never a reset to 0s.
     const startedAt = entry.startedAt || Date.now();
     entry.startedAt = startedAt;
+    const timeEl = el('span', {
+      class: 'ask-elapsed',
+      text: fmtElapsed(Date.now() - startedAt),
+    });
+    chip.appendChild(el('span', { class: 'ask-spin', 'aria-hidden': 'true', text: '⏳ ' }));
+    chip.appendChild(labelEl);
+    chip.appendChild(document.createTextNode(' · '));
+    chip.appendChild(timeEl);
+    // Tick the SAME timer node every second; one interval per in-flight entry.
+    // Clear any prior interval the entry held (defensive — a re-render should no
+    // longer recreate the chip, but resume paths must not leak intervals).
+    if (entry._timer) clearTimer(entry._timer);
     const t = setInterval(() => {
       timeEl.textContent = fmtElapsed(Date.now() - startedAt);
     }, 1000);
     timers.add(t);
-    chip._timer = t;
+    entry._timer = t;
+    // Stash the live nodes so a poll tick can update the queue label in place
+    // WITHOUT a full renderHistory() rebuild (which would reset this clock).
+    entry._busyLabelEl = labelEl;
     return chip;
+  }
+
+  // Update only the in-flight entry's busy chip (queue label) without
+  // rebuilding the history DOM — keeps the elapsed clock + its single interval
+  // alive across poll ticks. Falls back to a full render only if the live node
+  // is gone (e.g. the entry has not been rendered yet).
+  function updateBusyChip(entry) {
+    if (entry._busyLabelEl && entry._busyLabelEl.isConnected) {
+      entry._busyLabelEl.textContent = busyLabel(entry);
+      return;
+    }
+    renderHistory();
+  }
+
+  // Stop an entry's elapsed-timer interval once it settles (done/error) so the
+  // clock stops ticking and the interval doesn't leak past the final render.
+  function stopElapsed(entry) {
+    if (entry._timer) {
+      clearTimer(entry._timer);
+      entry._timer = null;
+    }
+    entry._busyLabelEl = null;
   }
 
   // --- citation interception ---------------------------------------------
@@ -312,11 +359,14 @@ export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
       }
       if (rec.status === 'pending' || rec.status === 'running') {
         entry.queue_position = rec.queue_position;
-        // Re-render only the busy chip label (cheap full re-render is fine).
-        renderHistory();
+        // Update ONLY the busy chip's queue label in place — do NOT call
+        // renderHistory(), which would destroy the chip and reset its elapsed
+        // clock to 0s on every 1.5s tick (the timer-flicker bug).
+        updateBusyChip(entry);
         return;
       }
       clearTimer(t);
+      stopElapsed(entry);
       if (rec.status === 'done') {
         entry.status = 'done';
         entry.html = rec.html;
@@ -337,6 +387,7 @@ export function createAskDrawer({ slug, loadCitation, loadSourceDoc }) {
   }
 
   function finishError(entry, err) {
+    stopElapsed(entry);
     entry.status = 'error';
     entry.error = err instanceof ApiError ? err.error : 'ask_failed';
     entry.html = (err && err.html) || '';

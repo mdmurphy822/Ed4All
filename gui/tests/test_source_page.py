@@ -318,6 +318,26 @@ def test_existing_heading_ids_preserved(libv2_root):
     assert "auto-slug-me" in res.html
 
 
+def test_heading_text_slug_added_when_hash_id_present(libv2_root):
+    # DART stamps hash ids (id="sec-<hash>") on ~every heading. The Ask answer
+    # deep-link fragment is the SLUGGED heading text (grounded_answer.
+    # _fragment_for), so the text-slug must ALSO resolve to the heading — planted
+    # as a sibling anchor span — even though the heading already has a hash id.
+    # Without this the "view in textbook" link lands at document TOP.
+    course_dir = _make_course(libv2_root, "hashids-1", kind="dart")
+    (course_dir / "source" / "html" / "hashed.html").write_text(
+        '<html><body>'
+        '<h2 id="sec-2570ef19b386cdac">Prime Factorization</h2>'
+        "</body></html>",
+        encoding="utf-8",
+    )
+    res = render_source_page("hashids-1", "hashed.html", libv2_root)
+    # Original hash id preserved.
+    assert 'id="sec-2570ef19b386cdac"' in res.html
+    # Text-slug planted as a sibling anchor so the heading-slug fragment resolves.
+    assert '<span class="dart-heading-anchor" id="prime-factorization"></span>' in res.html
+
+
 # --------------------------------------------------------------------------- #
 # Banner / structure
 # --------------------------------------------------------------------------- #

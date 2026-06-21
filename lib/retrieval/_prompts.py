@@ -53,13 +53,16 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, avoids import cycle
 # applied questions the passages substantively support instead of over-refusing
 # on literal-wording mismatches). ws3.v4 ADDS explicit enumerate-then-answer
 # scaffolding so a small (7B) model reliably answers EVERY sub-part of a
-# multi-part question instead of stopping after the first part. The
-# answer-vs-refuse boundary and the refusal NUMERIC pins are UNAFFECTED: the
-# refusal policy is a retrieval-score threshold (lib/retrieval/refusal.py),
-# independent of this prompt. The orchestrator MUST re-measure the gold +
-# refusal-probe suites and re-pin MILESTONE_TARGETS / the refusal policy after
-# this lands; the constants are deliberately left untouched here.
-ANSWER_PROMPT_VERSION = "ws3.v4"
+# multi-part question instead of stopping after the first part. ws3.v5 ADDS a
+# worked-steps clause: for show-your-work / numeric-computation questions, show
+# the intermediate steps (setup, each operation + result) before the final
+# value, applying ONLY the passages' methods/facts. The answer-vs-refuse
+# boundary and the refusal NUMERIC pins are UNAFFECTED: the refusal policy is a
+# retrieval-score threshold (lib/retrieval/refusal.py), independent of this
+# prompt. The orchestrator MUST re-measure the gold + refusal-probe suites and
+# re-pin MILESTONE_TARGETS / the refusal policy after this lands; the constants
+# are deliberately left untouched here.
+ANSWER_PROMPT_VERSION = "ws3.v5"
 
 # Per-passage hard truncation (characters). A 14B-Q4 model loses the
 # trailing JSON directive when the context balloons; capping each
@@ -135,6 +138,11 @@ ANSWER_SYSTEM_PROMPT = (
     "material for an uncovered part. Set \"not_in_course\" to true and leave "
     "\"answer\" empty ONLY when the passages contain no material supporting "
     "the question — not merely when its wording differs from the passages. "
+    "When the question asks to show steps / show your work, or when the "
+    "answer is a numeric computation, present the intermediate steps (the "
+    "setup, each operation, and its result) before the final value, applying "
+    "ONLY the methods and facts the passages provide; do NOT introduce facts "
+    "or methods the passages do not state. "
     "Cite the id of every passage that supports the answer. Output JSON only: "
     '{"answer": "...", "citations": ["<passage_id>", ...], '
     '"not_in_course": false}.'
