@@ -183,6 +183,25 @@ _REWRITE_BLOCK_TYPE_CONTENT_TYPE: Dict[str, str] = {
     "table": "table",
     "acronym": "acronym",
     "key_idea": "key_idea",
+    # Substantive-but-content-type-less block types. Their rewrite contracts
+    # (Courseforge/generators/_rewrite_provider.py::_BLOCK_TYPE_OUTPUT_CONTRACTS)
+    # emit a bare ``<div class="reflection-prompt|discussion-prompt|prereq-card
+    # |misconception-card">`` wrapper carrying source-ids / block-id but NO
+    # data-cf-content-type — yet all four are content-bearing
+    # (manifest_completeness.SUBSTANTIVE_BLOCK_TYPES) so the content_type gate
+    # is NOT in the {objective,chrome,recap} scaffolding skip set and fires
+    # OUTLINE_BLOCK_MISSING_CONTENT_TYPE on every one of them (measured on the
+    # sample-course-a 7B export: reflection_prompt 24, prereq_set 12,
+    # discussion_prompt 5, misconception 2). This backstop stamps a
+    # pedagogically-honest canonical ChunkType: misconception is a learner's
+    # common error → ``common_pitfall``; a prereq_set frames prior-knowledge
+    # scaffolding on the week overview → ``overview``; reflection_prompt /
+    # discussion_prompt are metacognitive / collaborative content types added
+    # additively to the ChunkType taxonomy (``reflection`` / ``discussion``).
+    "misconception": "common_pitfall",
+    "prereq_set": "overview",
+    "reflection_prompt": "reflection",
+    "discussion_prompt": "discussion",
 }
 
 
@@ -7941,6 +7960,216 @@ def remint_blocks_outline_jsonl(
     }
 
 
+def restamp_blocks_final_jsonl(
+    *,
+    blocks_final_path: "Union[str, Path]",
+    course_code: str,
+    libv2_root: "Optional[Union[str, Path]]" = None,
+    in_place: bool = False,
+) -> Dict[str, Any]:
+    """Re-stamp content_type + CURIE anchoring onto a rewrite ``blocks_final.jsonl``.
+
+    Operator-facing reusable entry point that retro-applies the two
+    DETERMINISTIC rewrite-tier backstops to a rewrite-tier
+    ``blocks_final.jsonl`` produced BEFORE the content_type-map +
+    prose-fallback-CURIE-minting fixes landed (so an existing export reaches
+    0 critical ``post_rewrite_validation`` failures without a fresh, slow
+    7B/GPU re-author). CPU-only, no LLM/GPU. The two passes mirror the
+    in-loop rewrite backstops in :func:`_run_content_generation_rewrite`:
+
+    1. **content_type** — for any STR-content block whose ``block_type`` is in
+       :data:`_REWRITE_BLOCK_TYPE_CONTENT_TYPE` and whose HTML carries no
+       ``data-cf-content-type``, inject the canonical ChunkType label onto the
+       first start tag via :func:`_inject_content_type_attr` (idempotent).
+    2. **CURIE anchoring** — for any STR-content shipping block whose
+       HTML-stripped body carries no extractable CURIE, mint a real domain
+       CURIE from the block's OWN published prose against the per-course
+       domain-concept vocabulary (the prose-fallback minter) and append it as a
+       hidden ``<span data-cf-curie>`` whose TEXT content carries the tokens
+       (the only placement the str-path validator can extract). A junk
+       ``data-cf-curie`` span carrying no extractable CURIE is stripped first.
+       Anti-fabrication: no vocabulary / no surface-form match → mint nothing
+       (the block stays curieless and still fails the gate honestly).
+
+    Skips unshipped escalation tombstones (marker + empty content) and
+    deterministic-template (``key_terms``) blocks — exactly the blocks
+    ``BlockCurieAnchoringValidator`` / ``BlockContentTypeValidator`` skip — so
+    the re-stamp universe equals the gate's audit universe.
+
+    ``in_place`` defaults to **False** (dry-run: computes + returns the stats
+    without writing, so a caller can preview before overwriting the real
+    export). Set ``in_place=True`` to write the re-stamped JSONL back.
+
+    Returns ``{total, audited, content_type_stamped, curie_minted,
+    still_curieless, wrote}``.
+    """
+    import dataclasses as _dc_local
+    from Courseforge.router.inter_tier_gates import (
+        _strip_html as _strip_html_fn,
+        _is_unshipped_escalation_tombstone as _is_tombstone_fn,
+        _is_deterministic_template_block as _is_det_template_fn,
+    )
+    from lib.ontology.curie_extraction import extract_curies as _extract_curies_fn
+
+    blocks_path = Path(str(blocks_final_path))
+    if not blocks_path.exists():
+        raise FileNotFoundError(f"blocks_final.jsonl not found: {blocks_path}")
+
+    # Build the per-course minted-CURIE resources ONCE (mirrors the in-loop
+    # rewrite backstop). No vocabulary (RDF / legacy) -> empty -> curie pass
+    # is a complete no-op.
+    minted_by_canonical: Dict[str, str] = {}
+    domain_seeds: list = []
+    kwargs: Dict[str, Any] = {}
+    if libv2_root is not None:
+        kwargs["libv2_root"] = str(libv2_root)
+    try:
+        _vocab_path = _locate_domain_concept_vocabulary(course_code, kwargs)
+        if _vocab_path is not None:
+            _vocabulary = json.loads(_vocab_path.read_text(encoding="utf-8"))
+            from lib.ontology.curie_discovery import (
+                build_minted_curie_map as _build_map_fn,
+                minted_curie_by_canonical as _by_canon_fn,
+            )
+            from Trainforge.process_course import (
+                compile_domain_concept_seeds as _compile_seeds_fn,
+            )
+            _minted_map = _build_map_fn(_vocabulary, course_id=course_code) or {}
+            if _minted_map:
+                minted_by_canonical = _by_canon_fn(_minted_map)
+                _seed_input = [
+                    {"id": c.get("canonical"), "aliases": c.get("aliases") or []}
+                    for c in (_vocabulary.get("concepts") or [])
+                    if isinstance(c, dict) and c.get("canonical")
+                ]
+                domain_seeds = _compile_seeds_fn(_seed_input)
+    except Exception as _exc:  # noqa: BLE001 — best-effort; no-op on fail
+        logger.warning(
+            "restamp_blocks_final_jsonl: domain-CURIE resources unavailable "
+            "(%s); CURIE re-stamp pass is a no-op.", _exc,
+        )
+        minted_by_canonical = {}
+        domain_seeds = []
+
+    def _mint_from_prose(prose: str) -> List[str]:
+        if not domain_seeds or not minted_by_canonical:
+            return []
+        if not isinstance(prose, str) or not prose.strip():
+            return []
+        try:
+            from lib.ontology.concept_tagging import (
+                extract_concept_tags as _tags_fn,
+            )
+            matched = _tags_fn(prose, {}, domain_seeds)
+        except Exception:  # noqa: BLE001
+            return []
+        out: List[str] = []
+        for _canon in matched:
+            _curie = minted_by_canonical.get(_canon)
+            if _curie and _curie not in out:
+                out.append(_curie)
+        return out
+
+    entries: List[Dict[str, Any]] = []
+    with blocks_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            entries.append(json.loads(line))
+
+    total = len(entries)
+    audited = 0
+    content_type_stamped = 0
+    curie_minted = 0
+    still_curieless = 0
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        # Rehydrate ONLY for the tombstone / deterministic-template skip
+        # predicates (block_type / content / template_type / escalation_marker).
+        # ``_block_from_checkpoint_entry`` consumes ``content`` verbatim, so a
+        # str-content entry keeps its HTML string (it does NOT reconstruct the
+        # outline dict shape). The actual re-stamp operates on the raw
+        # ``entry["content"]`` string, not the rehydrated block.
+        block = _block_from_checkpoint_entry(entry)
+        if block is None:
+            continue
+        content = entry.get("content")
+        if not isinstance(content, str):
+            continue
+        # Skip the EXACT blocks the gates skip (tombstone / deterministic
+        # template) so the re-stamp universe == the gate audit universe.
+        if _is_tombstone_fn(block) or _is_det_template_fn(block):
+            continue
+        audited += 1
+        new_content = content
+        block_type = entry.get("block_type")
+
+        # ---- content_type pass ----
+        _ct_label = _REWRITE_BLOCK_TYPE_CONTENT_TYPE.get(block_type)
+        if _ct_label and "data-cf-content-type" not in new_content:
+            new_content = _inject_content_type_attr(new_content, _ct_label)
+            if not entry.get("content_type_label"):
+                entry["content_type_label"] = _ct_label
+            content_type_stamped += 1
+
+        # ---- CURIE anchoring pass ----
+        try:
+            _body_curies = sorted(_extract_curies_fn(_strip_html_fn(new_content)))
+        except Exception:  # noqa: BLE001
+            _body_curies = []
+        if not _body_curies:
+            # Strip a junk data-cf-curie span (carries no extractable CURIE).
+            if "data-cf-curie" in new_content:
+                new_content = _CURIE_SPAN_EL_RE.sub("", new_content)
+            _tokens: List[str] = []
+            try:
+                _prose = _strip_html_fn(new_content)
+            except Exception:  # noqa: BLE001
+                _prose = ""
+            for _minted in _mint_from_prose(_prose):
+                if _minted not in _tokens:
+                    _tokens.append(_minted)
+            if _tokens and "data-cf-curie" not in new_content:
+                _txt = " ".join(_tokens)
+                new_content = (
+                    f"{new_content}"
+                    f'<span hidden data-cf-curie="{_txt}">{_txt}</span>'
+                )
+                curie_minted += 1
+            else:
+                # Recheck after junk-span strip in case the body already
+                # carried a real CURIE the strip exposed.
+                try:
+                    _post = sorted(
+                        _extract_curies_fn(_strip_html_fn(new_content))
+                    )
+                except Exception:  # noqa: BLE001
+                    _post = []
+                if not _post:
+                    still_curieless += 1
+
+        entry["content"] = new_content
+
+    wrote = False
+    if in_place and (content_type_stamped or curie_minted):
+        with blocks_path.open("w", encoding="utf-8") as fh:
+            for entry in entries:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        wrote = True
+
+    return {
+        "total": total,
+        "audited": audited,
+        "content_type_stamped": content_type_stamped,
+        "curie_minted": curie_minted,
+        "still_curieless": still_curieless,
+        "wrote": wrote,
+    }
+
+
 def _emit_curie_minting_capture(
     capture: Any,
     block: Any,
@@ -10593,6 +10822,42 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 out.append(_curie)
         return out
 
+    def _mint_curie_for_str_block_prose(prose_text: str) -> List[str]:
+        """Mint real domain CURIEs for a rewrite STR block from its OWN prose.
+
+        Provenance-aware fallback for the source-chunk minter above: when a
+        block resolves NO grounded source chunks (or its chunk text matches no
+        vocabulary concept), match the block's OWN rewrite-authored,
+        HTML-stripped prose against the compiled domain-concept seeds. This is
+        the SAME anchoring surface ``BlockCurieAnchoringValidator``'s str path
+        would accept via the threaded ``minted_curie_map`` — a concept surface
+        form present in the block's published prose means the block genuinely
+        discusses that concept, so minting its CURIE is honest (NOT a
+        relaxation; identical to the validator's surface-form anchoring
+        contract). No vocabulary / no seeds / no match → empty list (fail
+        closed, never fabricate — a block whose prose names no domain concept
+        mints nothing and still fails the gate honestly).
+        """
+        if not _rewrite_domain_seeds or not _rewrite_minted_by_canonical:
+            return []
+        if not isinstance(prose_text, str) or not prose_text.strip():
+            return []
+        try:
+            from lib.ontology.concept_tagging import (
+                extract_concept_tags as _extract_concept_tags_fn,
+            )
+            matched = _extract_concept_tags_fn(
+                prose_text, {}, _rewrite_domain_seeds,
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        out: List[str] = []
+        for _canon in matched:
+            _curie = _rewrite_minted_by_canonical.get(_canon)
+            if _curie and _curie not in out:
+                out.append(_curie)
+        return out
+
     # Canonical objective id set (from the W2 outline_objectives.json sidecar,
     # a flat list of ``{id, ...}`` entries) so the rewrite_page_objectives
     # backstop can STRIP-UNKNOWN any data-cf-objective-id value the 7B
@@ -10989,6 +11254,26 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             for _minted in _mint_curie_for_str_block(block_chunks_for_refs):
                 if _minted not in _curie_tokens:
                     _curie_tokens.append(_minted)
+            # Prose fallback: when the block resolved no grounded source chunks
+            # (or its chunk text matched no vocabulary concept), mint from the
+            # block's OWN rewrite-authored, HTML-stripped prose. A concept
+            # surface form present in the published prose is the SAME anchoring
+            # surface BlockCurieAnchoringValidator's str path accepts via the
+            # threaded minted_curie_map, so minting its CURIE is honest. Closes
+            # the source-chunk-only gap measured on the sample-course-a 7B export
+            # (249 shipping blocks carried no body CURIE because the
+            # source-chunk match alone never fired for them).
+            if not _curie_tokens:
+                try:
+                    from Courseforge.router.inter_tier_gates import (
+                        _strip_html as _strip_html_for_mint,
+                    )
+                    _prose_for_mint = _strip_html_for_mint(new_content)
+                except Exception:  # noqa: BLE001
+                    _prose_for_mint = ""
+                for _minted in _mint_curie_for_str_block_prose(_prose_for_mint):
+                    if _minted not in _curie_tokens:
+                        _curie_tokens.append(_minted)
 
         # Re-attach the CURIE tokens as the curie-anchoring signal — a hidden
         # span whose TEXT content carries the tokens (the str-path validator

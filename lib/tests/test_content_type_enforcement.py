@@ -138,7 +138,11 @@ def test_get_valid_chunk_types_returns_expected_set():
     additions (checklist, scenario, problem, vocabulary, formula) carry
     the ``data-cf-content-type`` the rewrite tier stamps on the
     corresponding ``Courseforge/scripts/blocks.py::BLOCK_TYPES`` wrappers
-    (checklist, scenario, problem, vocab_card, formula). Total = 18.
+    (checklist, scenario, problem, vocab_card, formula). The reflective /
+    collaborative additions (reflection, discussion) carry the
+    ``data-cf-content-type`` the rewrite content-type backstop stamps on the
+    ``reflection_prompt`` / ``discussion_prompt`` block wrappers (both
+    substantive, no precise pre-existing ChunkType member). Total = 20.
     """
     assert get_valid_chunk_types() == frozenset({
         # Wave 1
@@ -163,6 +167,9 @@ def test_get_valid_chunk_types_returns_expected_set():
         "problem",
         "vocabulary",
         "formula",
+        # Reflective / collaborative block-wrapper additions
+        "reflection",
+        "discussion",
     })
 
 

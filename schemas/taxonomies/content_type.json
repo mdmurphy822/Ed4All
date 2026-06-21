@@ -32,7 +32,7 @@
     },
     "ChunkType": {
       "type": "string",
-      "description": "Content-type labels emitted on Trainforge chunks (chunk_type field). Six legacy values (assessment_item, overview, summary, exercise, explanation, example) lifted from _type_from_resource + _type_from_heading. Four Wave 81 additions (procedure, real_world_scenario, common_pitfall, problem_solution) propagated from Courseforge data-cf-template-type via Trainforge.parsers.html_content_parser when the section carries the attribute. Issue I6 additions (table, acronym, key_idea) carry the content-type label for the three instruction-palette-v2 block types (Courseforge/scripts/blocks.py::BLOCK_TYPES table / acronym / key_idea). Instruction-palette block-wrapper additions (checklist, scenario, problem, vocabulary, formula) carry the data-cf-content-type the NVIDIA rewrite tier stamps on the corresponding Courseforge/scripts/blocks.py::BLOCK_TYPES block wrappers (checklist, scenario, problem, vocab_card, formula) — measured on the sample-course-a 7B export where BlockContentTypeValidator 100%-rejected them before this additive landing.",
+      "description": "Content-type labels emitted on Trainforge chunks (chunk_type field). Six legacy values (assessment_item, overview, summary, exercise, explanation, example) lifted from _type_from_resource + _type_from_heading. Four Wave 81 additions (procedure, real_world_scenario, common_pitfall, problem_solution) propagated from Courseforge data-cf-template-type via Trainforge.parsers.html_content_parser when the section carries the attribute. Issue I6 additions (table, acronym, key_idea) carry the content-type label for the three instruction-palette-v2 block types (Courseforge/scripts/blocks.py::BLOCK_TYPES table / acronym / key_idea). Instruction-palette block-wrapper additions (checklist, scenario, problem, vocabulary, formula) carry the data-cf-content-type the NVIDIA rewrite tier stamps on the corresponding Courseforge/scripts/blocks.py::BLOCK_TYPES block wrappers (checklist, scenario, problem, vocab_card, formula) — measured on the sample-course-a 7B export where BlockContentTypeValidator 100%-rejected them before this additive landing. Reflective/discussion block-wrapper additions (reflection, discussion) carry the data-cf-content-type the rewrite backstop stamps on the Courseforge/scripts/blocks.py::BLOCK_TYPES reflection_prompt / discussion_prompt wrappers — both are substantive (manifest_completeness.SUBSTANTIVE_BLOCK_TYPES) metacognitive/collaborative content types with no precise pre-existing ChunkType member, measured on the sample-course-a 7B export where BlockContentTypeValidator rejected every reflection_prompt (24) + discussion_prompt (5) block for carrying no content-type before this additive landing.",
       "enum": [
         "assessment_item",
         "overview",
@@ -51,7 +51,9 @@
         "scenario",
         "problem",
         "vocabulary",
-        "formula"
+        "formula",
+        "reflection",
+        "discussion"
       ]
     },
     "ContentType": {

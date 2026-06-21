@@ -127,7 +127,8 @@ def test_content_type_schema_accepts_all_canonical_chunk_types():
     """schemas/taxonomies/content_type.json::ChunkType must list every
     canonical value: 6 legacy + 4 Wave 81 + 3 Issue I6 + 5 instruction-
     palette block-wrapper additions (checklist, scenario, problem,
-    vocabulary, formula).
+    vocabulary, formula) + 2 reflective/collaborative additions (reflection,
+    discussion).
     """
     schema_path = PROJECT_ROOT / "schemas" / "taxonomies" / "content_type.json"
     with schema_path.open(encoding="utf-8") as fh:
@@ -156,6 +157,9 @@ def test_content_type_schema_accepts_all_canonical_chunk_types():
         "problem",
         "vocabulary",
         "formula",
+        # Two reflective/collaborative additions
+        "reflection",
+        "discussion",
     }
     assert chunk_types == expected, (
         f"ChunkType enum mismatch: got {sorted(chunk_types)}, "

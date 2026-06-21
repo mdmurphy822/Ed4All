@@ -188,6 +188,42 @@ _HEADING_BLOCK_RE = re.compile(
     r"<h[1-6]\b[^>]*>.*?</h[1-6]\s*>", re.IGNORECASE | re.DOTALL
 )
 
+# Rewrite-template worked-solution structure markers. The rewrite tier emits
+# worked examples whose intermediate steps and final answer live in semantic
+# ``<div class="step-row">`` / ``<div class="solution-line">`` containers
+# rather than the ``<p>`` paragraphs the legacy heuristics count. When such a
+# block carries exactly one trailing recap ``<p>`` and writes its math in
+# prose (no literal ``=`` and none of the result-marker words), every <p>-based
+# / equals / marker heuristic collapses and a fully-worked example is flagged
+# incomplete (measured on the sample-course-a 7B export: 2 false positives, 0
+# genuine stubs). A ``solution-line`` answer container OR more than one
+# ``step-row`` is solution evidence — precise enough that a one-line stub
+# (no answer container, no step rows) still flags honestly.
+_SOLUTION_LINE_RE = re.compile(
+    r'class\s*=\s*["\'][^"\']*\bsolution-line\b', re.IGNORECASE
+)
+_STEP_ROW_RE = re.compile(
+    r'class\s*=\s*["\'][^"\']*\bstep-row\b', re.IGNORECASE
+)
+
+
+def _has_worked_solution_structure(raw: str) -> bool:
+    """Heuristic: the rewrite tier's div-based worked-solution structure.
+
+    Recognizes a worked solution whose steps + answer are emitted in
+    ``<div class="step-row">`` / ``<div class="solution-line">`` containers
+    (the rewrite-template shape the ``<p>``-counting heuristics predate).
+    Solution evidence is present when the block carries an explicit answer
+    container (``solution-line``) OR more than one step row (``step-row``).
+    A bare one-line problem stub has neither, so this branch is purely
+    additive — it never weakens detection of a genuinely incomplete example.
+    """
+    if not raw:
+        return False
+    if _SOLUTION_LINE_RE.search(raw):
+        return True
+    return len(_STEP_ROW_RE.findall(raw)) > 1
+
 
 def _has_final_answer_line(raw: str) -> bool:
     """Heuristic: a final answer line distinct from the problem statement.
@@ -230,7 +266,9 @@ def _assess_example(
       * more than one ``<p>`` in the block HTML, OR
       * an ``=`` sign in the stripped text (a result line), OR
       * a result-marker word ("therefore"/"so"/"thus"/"result"), OR
-      * a final answer line distinct from the leading problem statement.
+      * a final answer line distinct from the leading problem statement, OR
+      * the rewrite tier's div-based worked-solution structure (a
+        ``solution-line`` answer container or >1 ``step-row``).
     """
     raw = _example_body_html(block)
     if raw is None:
@@ -251,6 +289,8 @@ def _assess_example(
     elif _RESULT_MARKER_RE.search(collapsed):
         has_evidence = True
     elif _has_final_answer_line(raw):
+        has_evidence = True
+    elif _has_worked_solution_structure(raw):
         has_evidence = True
 
     return word_count, has_evidence, p_count

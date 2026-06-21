@@ -274,3 +274,67 @@ def test_dict_shape_outline_example_audited():
     result = _validate([_example_block(content)])
     assert result.passed is False
     assert result.action == "regenerate"
+
+
+# ---------------------------------------------------------------------------
+# Rewrite-template div-based worked solution (false-positive fix)
+# ---------------------------------------------------------------------------
+
+
+def test_solution_line_div_is_evidence():
+    """A worked example whose answer lives in a ``<div class="solution-line">``
+    container (with a single trailing recap ``<p>``, no literal ``=``, no
+    result-marker word) is recognized as complete — the false positive
+    measured on the sample-course-a 7B export (week_02_content_01#example_*)."""
+    html = (
+        "<section><h3>Worked Example: Least Common Multiple</h3>"
+        '<div class="step-row"><span class="step-label">Step 1:</span> '
+        "Factor twelve into two times two times three using a factor tree.</div>"
+        '<div class="step-row"><span class="step-label">Step 2:</span> '
+        "Factor eighteen into two times three times three the same way.</div>"
+        '<div class="step-row"><span class="step-label">Step 3:</span> '
+        "Take the highest power of each prime that appears anywhere.</div>"
+        '<div class="solution-line">The least common multiple of twelve and '
+        "eighteen is thirty-six.</div>"
+        "<p>The prime-factorization method generalizes to any pair of whole "
+        "numbers you might encounter in later chapters.</p>"
+        "</section>"
+    )
+    # Guard: the legacy '=' / multi-<p> heuristics must NOT already pass it,
+    # so this test actually exercises the new div-structure branch.
+    import re as _re
+    stripped = _re.sub(r"<[^>]+>", " ", html)
+    assert "=" not in stripped
+    result = _validate([_example_block(html)])
+    assert result.passed is True, [i.code for i in result.issues]
+
+
+def test_two_step_rows_are_evidence():
+    """More than one ``step-row`` (no ``solution-line``) is solution
+    evidence."""
+    html = (
+        "<section><h3>Worked Example: Identifying Coefficients</h3>"
+        '<div class="step-row"><span class="step-label">Step 1:</span> '
+        "Identify the first coefficient as fourteen by reading the term.</div>"
+        '<div class="step-row"><span class="step-label">Step 2:</span> '
+        "Identify the second coefficient as fifteen in the next term too.</div>"
+        "<p>Understanding coefficients is crucial for algebra and shows up "
+        "again when you simplify and combine like terms in later sections.</p>"
+        "</section>"
+    )
+    result = _validate([_example_block(html)])
+    assert result.passed is True, [i.code for i in result.issues]
+
+
+def test_single_step_row_no_answer_still_fails():
+    """The div-structure heuristic is PRECISE: a single ``step-row`` with no
+    ``solution-line`` answer container is NOT solution evidence — a genuine
+    stub still fails closed (no weakening of detection)."""
+    words = " ".join(["alpha"] * 50)
+    html = (
+        "<section><h3>Example</h3>"
+        f'<div class="step-row">{words}</div></section>'
+    )
+    result = _validate([_example_block(html)])
+    assert result.passed is False
+    assert any(i.code == "EXAMPLE_BLOCK_INCOMPLETE" for i in result.issues)
