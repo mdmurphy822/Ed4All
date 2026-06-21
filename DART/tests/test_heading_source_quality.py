@@ -226,3 +226,50 @@ class TestFusedSectionOpenerSplit:
             BlockRole.SECTION_HEADING,
             BlockRole.SUBSECTION_HEADING,
         }
+
+
+# 2026-06-21 — belt-and-suspenders demotion: answer-key noise classified as a
+# heading by ANY rule (regex/font-size/chapter-opener), not just the font-size
+# promotion path, must be demoted to PARAGRAPH. Closes the OpenStax
+# re-conversion gap where "78 41. 900" survived as <article doc-chapter><h2>.
+
+import pytest as _pytest
+from DART.converter.heuristic_classifier import HeuristicClassifier
+from DART.converter.block_roles import BlockRole, ClassifiedBlock, RawBlock
+
+
+@_pytest.mark.parametrize("role", [
+    BlockRole.CHAPTER_OPENER, BlockRole.SECTION_HEADING,
+    BlockRole.SUBSECTION_HEADING, BlockRole.TITLE,
+])
+@_pytest.mark.parametrize("text", [
+    "78 41. 900 42. 800",
+    "986 44. 942 45. 350",
+    "51,493 ⓐ 1, ⓑ 4, ⓒ 9, ⓓ 5, ⓔ 3 2. 87,210",
+    "146,023 13. 5,846,103 14. 1,458,398",
+])
+def test_answer_key_heading_demoted_to_paragraph_any_role(role, text):
+    clf = HeuristicClassifier()
+    cb = ClassifiedBlock(
+        raw=RawBlock(block_id="b", text=text, page=1),
+        role=role, confidence=0.75, attributes={},
+        classifier_source="heuristic",
+    )
+    out = clf._demote_numeric_answer_key_heading(cb)
+    assert out.role == BlockRole.PARAGRAPH
+
+
+@_pytest.mark.parametrize("text", [
+    "1.1 Introduction to Whole Numbers",
+    "Prime Factorization",
+    "Chapter 1 Foundations",
+])
+def test_real_heading_not_demoted(text):
+    clf = HeuristicClassifier()
+    cb = ClassifiedBlock(
+        raw=RawBlock(block_id="b", text=text, page=1),
+        role=BlockRole.SECTION_HEADING, confidence=0.75, attributes={},
+        classifier_source="heuristic",
+    )
+    out = clf._demote_numeric_answer_key_heading(cb)
+    assert out.role == BlockRole.SECTION_HEADING

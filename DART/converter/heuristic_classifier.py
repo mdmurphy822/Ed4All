@@ -730,6 +730,17 @@ class HeuristicClassifier:
             else:
                 results.append(classified)
         results = [self._maybe_promote_by_font_size(r) for r in results]
+        # Course-quality remediation P0 (belt-and-suspenders): demote ANY
+        # block classified as a heading — by ANY rule — whose text is an
+        # answer-key / numeric-exercise run. ``_maybe_promote_by_font_size``
+        # guards only the font-size PROMOTION path and never demotes an
+        # already-heading block, but a regex rule (e.g. the dotted-numeric
+        # heading rule) can classify an answer-key run like
+        # "78 41. 900 42. 800" / "986 44. 942 45. 350" as a SECTION_HEADING
+        # directly, bypassing that guard. This final pass strips such noise
+        # so it never poisons chapter/section grouping, chunk
+        # ``section_heading`` deep-link anchors, or objective synthesis.
+        results = [self._demote_numeric_answer_key_heading(r) for r in results]
         logger.debug("Heuristic classifier produced %d decisions", len(results))
         return results
 
@@ -816,6 +827,40 @@ class HeuristicClassifier:
                 confidence=0.65,
                 attributes=attrs,
                 classifier_source="heuristic",
+            )
+        return classified
+
+    def _demote_numeric_answer_key_heading(
+        self, classified: ClassifiedBlock
+    ) -> ClassifiedBlock:
+        """Demote an answer-key / numeric-run heading to PARAGRAPH.
+
+        Final P0 guard applied to EVERY heading regardless of which rule
+        produced it (regex, font-size, footnote). The font-size promoter
+        rejects such runs from PROMOTION but never demotes a block a regex
+        rule already classified as a heading; this closes that gap so
+        answer-key noise like "78 41. 900 42. 800" never ships as an
+        ``<hN>`` (verified against the OpenStax re-conversion: the noise
+        survived as ``<h2>`` via the dotted-numeric rule).
+        """
+        if classified.role not in (
+            BlockRole.CHAPTER_OPENER,
+            BlockRole.SECTION_HEADING,
+            BlockRole.SUBSECTION_HEADING,
+            BlockRole.TITLE,
+        ):
+            return classified
+        text = (classified.raw.text or "").strip()
+        if _is_numeric_answer_key_heading(text):
+            logger.debug(
+                "heading_demoted_answer_key: '%s...'", text[:60]
+            )
+            return ClassifiedBlock(
+                raw=classified.raw,
+                role=BlockRole.PARAGRAPH,
+                confidence=classified.confidence,
+                attributes=classified.attributes,
+                classifier_source=classified.classifier_source,
             )
         return classified
 
