@@ -6122,10 +6122,18 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
 
     _CURIE_RE = __import__("re").compile(r"^[A-Za-z][A-Za-z0-9_-]*:[A-Za-z0-9_./#:-]+$")
     _LO_REF_RE = __import__("re").compile(r"^[A-Za-z]{2,}-\d{2,}$")
-    _CONTENT_TYPE_ENUM = {
-        "definition", "example", "procedure", "principle",
-        "fact", "concept", "rule", "narrative",
-    }
+    # Canonical content-type enum — sourced from the single canonical taxonomy
+    # (``schemas/taxonomies/content_type.json`` $defs.ChunkType) via
+    # ``lib/validators/content_type.py::get_valid_chunk_types``, the SAME source
+    # ``Courseforge/generators/_outline_provider.py`` and
+    # ``Courseforge/router/inter_tier_gates.py::BlockContentTypeValidator`` use.
+    # A stale hardcoded set here silently DROPPED ``content_type_label`` on any
+    # block carrying a modern taxonomy value (e.g. ``explanation`` / ``key_idea``),
+    # malforming the block and cascading across every post_rewrite gate.
+    from lib.validators.content_type import (
+        get_valid_chunk_types as _get_valid_chunk_types,
+    )
+    _CONTENT_TYPE_ENUM = set(_get_valid_chunk_types())
 
     def _record_metadata_drop(
         field_name: str, reason: str, **fields: Any,

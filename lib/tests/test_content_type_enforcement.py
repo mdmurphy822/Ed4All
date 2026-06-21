@@ -133,7 +133,12 @@ def test_get_valid_chunk_types_returns_expected_set():
     Wave 1 published 6 values; Wave 81 added 4 template-driven values
     (procedure, real_world_scenario, common_pitfall, problem_solution)
     propagated from Courseforge ``data-cf-template-type`` via the Wave 81
-    chunker. Total = 10.
+    chunker. Issue I6 added 3 instruction-palette-v2 block types
+    (table, acronym, key_idea). The instruction-palette block-wrapper
+    additions (checklist, scenario, problem, vocabulary, formula) carry
+    the ``data-cf-content-type`` the rewrite tier stamps on the
+    corresponding ``Courseforge/scripts/blocks.py::BLOCK_TYPES`` wrappers
+    (checklist, scenario, problem, vocab_card, formula). Total = 18.
     """
     assert get_valid_chunk_types() == frozenset({
         # Wave 1
@@ -148,11 +153,25 @@ def test_get_valid_chunk_types_returns_expected_set():
         "real_world_scenario",
         "common_pitfall",
         "problem_solution",
+        # Issue I6 additions
+        "table",
+        "acronym",
+        "key_idea",
+        # Instruction-palette block-wrapper additions
+        "checklist",
+        "scenario",
+        "problem",
+        "vocabulary",
+        "formula",
     })
 
 
 def test_get_valid_section_content_types_returns_expected_set():
-    """SectionContentType enum matches Worker F's Wave 1 taxonomy publication."""
+    """SectionContentType enum matches the canonical taxonomy publication.
+
+    Worker F's Wave 1 published 8 values; Issue I6 added the three
+    instruction-palette section labels (table, acronym, key_idea).
+    """
     assert get_valid_section_content_types() == frozenset({
         "definition",
         "example",
@@ -162,6 +181,9 @@ def test_get_valid_section_content_types_returns_expected_set():
         "overview",
         "summary",
         "explanation",
+        "table",
+        "acronym",
+        "key_idea",
     })
 
 

@@ -123,9 +123,11 @@ def test_pitfall_template_type_propagates_through_subsections():
 # ---------------------------------------------------------------------------
 
 
-def test_content_type_schema_accepts_all_ten_canonical_chunk_types():
-    """schemas/taxonomies/content_type.json::ChunkType must list all ten
-    Wave 81 canonical values.
+def test_content_type_schema_accepts_all_canonical_chunk_types():
+    """schemas/taxonomies/content_type.json::ChunkType must list every
+    canonical value: 6 legacy + 4 Wave 81 + 3 Issue I6 + 5 instruction-
+    palette block-wrapper additions (checklist, scenario, problem,
+    vocabulary, formula).
     """
     schema_path = PROJECT_ROOT / "schemas" / "taxonomies" / "content_type.json"
     with schema_path.open(encoding="utf-8") as fh:
@@ -144,6 +146,16 @@ def test_content_type_schema_accepts_all_ten_canonical_chunk_types():
         "real_world_scenario",
         "common_pitfall",
         "problem_solution",
+        # Three Issue I6 additions
+        "table",
+        "acronym",
+        "key_idea",
+        # Five instruction-palette block-wrapper additions
+        "checklist",
+        "scenario",
+        "problem",
+        "vocabulary",
+        "formula",
     }
     assert chunk_types == expected, (
         f"ChunkType enum mismatch: got {sorted(chunk_types)}, "
