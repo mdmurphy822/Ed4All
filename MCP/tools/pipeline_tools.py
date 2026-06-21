@@ -11516,18 +11516,33 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             _cached_blk = _entry_to_block(_cached_entry)
             if _cached_blk is not None:
                 return _apply_str_backstops(_cached_blk)
-        # Feature I5 — SHORT-CIRCUIT the LLM rewrite for the deterministic
-        # key-terms vocab cards. They were authored grounded + verbatim in the
-        # outline tier (``template_type="key_terms"``, string content already
-        # the final HTML), so re-authoring them with the 7B/cloud model would
-        # discard the verbatim source definition. Pass the content straight
-        # through the same str backstops the LLM path uses.
+        # Feature I5 / P4 — CONDITIONALLY short-circuit the LLM rewrite for the
+        # deterministic key-terms vocab cards. They were authored grounded +
+        # verbatim in the outline tier (``template_type="key_terms"``, string
+        # content already the final HTML). Re-authoring a HIGH-quality card
+        # (curated ``definition_hint`` or a definitional-shape source sentence)
+        # with the 7B/cloud model would discard the verbatim source definition,
+        # so it is passed straight through the same str backstops. A LOW-quality
+        # card (a source sentence that merely MENTIONS the term — weak on the
+        # exercise-dense corpus) is NOT short-circuited: it falls through to the
+        # normal rewrite path so the LLM authors a real definition. Definition
+        # quality is reconstructed from the rendered HTML + grounding presence
+        # (``source_ids`` non-empty ⇒ source-sentence; empty ⇒ definition_hint).
         if (
             getattr(blk, "template_type", None) == _KEY_TERMS_TEMPLATE_TYPE
             and isinstance(blk.content, str)
             and blk.content.strip()
         ):
-            return _apply_str_backstops(blk)
+            from lib.generation import key_terms as _kt_sc  # noqa: PLC0415
+
+            if (
+                _kt_sc.block_definition_quality(
+                    content=blk.content,
+                    has_source_ids=bool(getattr(blk, "source_ids", ()) or ()),
+                )
+                == _kt_sc.DEFINITION_QUALITY_HIGH
+            ):
+                return _apply_str_backstops(blk)
         block_chunks = chunks_lookup.get(blk.block_id, []) if isinstance(
             chunks_lookup, dict
         ) else []

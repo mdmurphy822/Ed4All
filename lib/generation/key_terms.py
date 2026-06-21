@@ -40,6 +40,7 @@ import html as _html_mod
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from lib.ontology.bloom import get_all_verbs
 from lib.ontology.slugs import canonical_slug
 
 # The deterministic-block marker stamped onto ``Block.template_type`` so the
@@ -86,6 +87,68 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 # Strip HTML tags from chunk bodies before sentence scanning (chunk text can
 # carry residual markup).
 _TAG_STRIP_RE = re.compile(r"<[^>]+>")
+
+# P4 leakage filter — reject a source-chunk sentence that is an EXERCISE /
+# HEADING / ANSWER-KEY run rather than a real definition. On the
+# exercise-dense OpenStax corpus the first sentence that merely MENTIONS the
+# term is very often junk ("TRY IT :: 1.35 Evaluate 8x − 3…", "EXAMPLE 1.1 In
+# the number 63,407,218…", "30 Chapter 1 Foundations Multiply.",
+# "Solution ⓐ…"). A candidate matching any of these patterns is NOT a usable
+# definition and the resolver skips it (falling through to the next sentence,
+# then to the curated ``definition_hint``, then to OMISSION).
+_DEF_LEAK_RE = re.compile(
+    r"\bTRY\s+IT\b|\bEXAMPLE\b|\bSolution\b|\bChapter\s+\d|::",
+    re.IGNORECASE,
+)
+# A leading numbered-exercise / answer-key marker: starts with a digit
+# (exercise number / page number), an arithmetic operator, or a circled-letter
+# answer marker (ⓐ-ⓩ, ⒜-⒵). These are answer-key runs, never definitions.
+_DEF_LEAK_LEADING_RE = re.compile(
+    r"^\s*(?:[\d+\-*/=.,]|[ⓐ-ⓩ⒜-⒵])",
+)
+# Stray glyphs to strip from a candidate definition (return-arrow / circled
+# digits / circled letters) before length + shape checks.
+_DEF_STRAY_GLYPH_RE = re.compile(
+    r"[↩①-⓿]",
+)
+
+
+def _is_leaky_definition(sentence: str) -> bool:
+    """True iff ``sentence`` is an exercise / heading / answer-key run.
+
+    Used by :func:`resolve_definition` to REJECT a candidate source sentence
+    that merely mentions the term inside exercise/answer-key prose rather than
+    defining it (P4 — the exercise-dense-corpus leakage fix). Pure-lexical,
+    deterministic, no model.
+    """
+    s = str(sentence)
+    if _DEF_LEAK_RE.search(s):
+        return True
+    if _DEF_LEAK_LEADING_RE.match(s):
+        return True
+    return False
+
+
+def _strip_stray_glyphs(text: str) -> str:
+    """Strip return-arrows / circled digits / circled letters from prose."""
+    return _DEF_STRAY_GLYPH_RE.sub("", str(text))
+
+
+def _bloom_verb_slugs() -> set:
+    """Canonical-slug set of every Bloom verb (P4 term-exclusion).
+
+    A glossary TERM must not be a Bloom verb — ``domain_concept_vocabulary``
+    carries ``evaluate`` / ``simplify`` as canonical concepts that are ALSO
+    Bloom verbs, and they surface-match in chunk text, so without this filter
+    they are emitted as terms. Built once per call from the single source of
+    truth (:func:`lib.ontology.bloom.get_all_verbs`).
+    """
+    out = set()
+    for v in get_all_verbs():
+        slug = canonical_slug(str(v))
+        if slug:
+            out.add(slug)
+    return out
 
 
 def heading_slug(heading: str) -> str:
@@ -161,6 +224,11 @@ def aggregate_terms(
     # sources collapses to one card.
     out: Dict[str, Dict[str, Any]] = {}
 
+    # P4 — a glossary TERM must never be a Bloom verb ("Evaluate" / "Simplify"
+    # exist as vocabulary canonicals AND as Bloom verbs). Excluded by canonical
+    # slug so a display/canonical that normalizes to a Bloom verb is dropped.
+    bloom_verb_slugs = _bloom_verb_slugs()
+
     def _add(raw_name: str, concept: Optional[Dict[str, Any]]) -> None:
         canonical = (
             concept.get("canonical")
@@ -169,6 +237,11 @@ def aggregate_terms(
         )
         slug = canonical_slug(str(canonical))
         if not slug or slug in out:
+            return
+        if slug in bloom_verb_slugs:
+            # P4 — exclude Bloom-verb terms (anti-noise; not a real glossary
+            # entry). A nominalized form (e.g. "simplification") keeps a
+            # DISTINCT slug and survives.
             return
         out[slug] = {
             "slug": slug,
@@ -231,7 +304,14 @@ def resolve_definition(
         _norm_surface(s) for s in surfaces if isinstance(s, str) and s.strip()
     ]
 
-    # 1. A definition SENTENCE from a grounding chunk that mentions the term.
+    # 1. A definitional SENTENCE from a grounding chunk that mentions the term.
+    #    P4 — REJECT exercise / heading / answer-key candidate sentences
+    #    (``_is_leaky_definition``); on the exercise-dense corpus the first
+    #    mention is very often junk ("TRY IT :: …", "EXAMPLE 1.1 …", a leading
+    #    answer-key number / circled-letter run). A leaky candidate is skipped
+    #    so the loop continues to the next sentence, then falls through to the
+    #    curated ``definition_hint``, then to OMISSION — never emitting leakage
+    #    as a definition.
     for chunk in chunks or ():
         if not isinstance(chunk, dict):
             continue
@@ -242,18 +322,113 @@ def resolve_definition(
             s_norm = _norm_surface(sentence)
             if not s_norm:
                 continue
-            if any(sf and sf in s_norm for sf in norm_surfaces):
-                definition = re.sub(r"\s+", " ", sentence).strip()
-                if len(definition) >= 12:
-                    return definition, chunk
+            if not any(sf and sf in s_norm for sf in norm_surfaces):
+                continue
+            if _is_leaky_definition(sentence):
+                continue  # P4 — exercise/heading/answer-key leakage, not a def.
+            definition = re.sub(
+                r"\s+", " ", _strip_stray_glyphs(sentence)
+            ).strip()
+            if len(definition) >= 12:
+                return definition, chunk
 
     # 2. definition_hint fallback.
     hint = term.get("definition_hint")
     if isinstance(hint, str) and hint.strip():
-        return re.sub(r"\s+", " ", hint).strip(), None
+        return re.sub(r"\s+", " ", _strip_stray_glyphs(hint)).strip(), None
 
     # 3. OMIT — never invent a definition.
     return None
+
+
+# P4 — a definitional-SHAPE source sentence carries an explicit defining
+# copula / phrase ("X is …", "is defined as", "refers to", "means", "is a
+# term for", "consists of"). Used by :func:`definition_quality` to tell a
+# genuine definition apart from a sentence that merely mentions the term.
+_DEFINITIONAL_SHAPE_RE = re.compile(
+    r"\b(?:is|are|was|were)\b|"
+    r"\bis\s+defined\s+as\b|\bdefined\s+as\b|\brefers?\s+to\b|"
+    r"\bmeans?\b|\bdenotes?\b|\bconsists?\s+of\b|\bis\s+called\b",
+    re.IGNORECASE,
+)
+
+# Definition-quality tiers (P4). The rewrite-tier short-circuit fires ONLY for
+# ``high`` so a weak deterministic definition is sent through the LLM author.
+DEFINITION_QUALITY_HIGH = "high"
+DEFINITION_QUALITY_LOW = "low"
+
+
+def definition_quality(
+    definition: str,
+    *,
+    source_chunk: Optional[Dict[str, Any]],
+) -> str:
+    """Classify a resolved definition's quality (P4 short-circuit gate).
+
+    Returns :data:`DEFINITION_QUALITY_HIGH` when the definition is
+    high-confidence — it came from the curated ``definition_hint``
+    (``source_chunk is None``) OR from a source sentence with an explicit
+    definitional SHAPE (a copula / "defined as" / "refers to" / "means").
+    Otherwise :data:`DEFINITION_QUALITY_LOW` — a source sentence that merely
+    mentions the term with no defining phrase, which the rewrite tier should
+    author into a real definition rather than ship verbatim.
+
+    Pure-lexical + deterministic (no model). Leaky candidates never reach here
+    — :func:`resolve_definition` already rejects them.
+    """
+    if not isinstance(definition, str) or not definition.strip():
+        return DEFINITION_QUALITY_LOW
+    if source_chunk is None:
+        # Curated definition_hint — a clean, human-authored definition.
+        return DEFINITION_QUALITY_HIGH
+    if _DEFINITIONAL_SHAPE_RE.search(definition):
+        return DEFINITION_QUALITY_HIGH
+    return DEFINITION_QUALITY_LOW
+
+
+def extract_card_definition_html(content: str) -> str:
+    """Extract the definition text from a rendered vocab-card HTML string.
+
+    The card shape (see :func:`render_term_card`) is
+    ``<div …><p><span class="key-term">TERM</span></p><p>DEFINITION</p>…</div>``
+    — the SECOND ``<p>`` is the definition. Returns the un-escaped text of that
+    paragraph (best-effort; empty string if the shape is unrecognised). Pure
+    string ops, deterministic, no parser dependency.
+    """
+    if not isinstance(content, str) or not content:
+        return ""
+    paras = re.findall(r"<p[^>]*>(.*?)</p>", content, flags=re.IGNORECASE | re.S)
+    if len(paras) < 2:
+        return ""
+    # paras[0] is the term span; paras[1] is the definition.
+    return _html_mod.unescape(_strip_tags(paras[1])).strip()
+
+
+def block_definition_quality(
+    *,
+    content: str,
+    has_source_ids: bool,
+) -> str:
+    """Classify a rendered key-terms block's definition quality (P4).
+
+    Used by the rewrite-tier SHORT-CIRCUIT to decide whether the deterministic
+    definition is strong enough to ship verbatim (``high``) or should be routed
+    through the LLM author (``low``). Reconstructs the quality signal from the
+    rendered HTML + grounding presence — without needing the original card dict:
+
+      * NO ``source_ids`` → the definition came from the curated
+        ``definition_hint`` (a source-grounded card always carries its defining
+        chunk's source id) → :data:`DEFINITION_QUALITY_HIGH`.
+      * HAS ``source_ids`` → a source-sentence definition; ``high`` iff it has a
+        definitional SHAPE, else ``low``.
+    """
+    definition = extract_card_definition_html(content)
+    # has_source_ids True ⇒ defining chunk present (source_chunk truthy);
+    # False ⇒ definition_hint fallback (source_chunk is None).
+    return definition_quality(
+        definition,
+        source_chunk={"__present__": True} if has_source_ids else None,
+    )
 
 
 def resolve_source_link(
@@ -344,6 +519,12 @@ def build_key_terms_cards(
             "definition": definition,
             "source_link": link,
             "source_chunk": defining_chunk,
+            # P4 — quality tier gates the rewrite-tier short-circuit. ``high``
+            # (definition_hint or definitional-shape source sentence) ships
+            # verbatim; ``low`` is routed through the LLM author.
+            "definition_quality": definition_quality(
+                definition, source_chunk=defining_chunk
+            ),
         })
     return cards
 

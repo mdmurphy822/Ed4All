@@ -377,6 +377,62 @@ def _dynamic_block_plan_on() -> bool:
     )
 
 
+# P4 pedagogical-depth floors — both DEFAULT OFF (parse-with-fallback) so the
+# planner's output is BYTE-STABLE unless an operator opts in.
+#
+# ``ED4ALL_WORKED_EXAMPLE_FLOOR`` — when truthy, guarantee every PROCEDURAL CO
+#   (a CO whose Bloom level maps to the procedural cognitive domain, i.e.
+#   apply / create) is taught by >= 1 worked ``example`` or ``problem`` block.
+#   Closes the low-worked-example-DENSITY gap (66/495 blocks = 13% on the
+#   reviewed run) without raising the budget.
+# ``ED4ALL_BLOOM_SPREAD_FLOOR`` — when truthy, guarantee at least one
+#   analyze-or-higher block per week (deploying scenario / misconception /
+#   discussion_prompt / table whose catalog ``bloom_fit`` reaches analyze+),
+#   widening the low Bloom spread (apply 64% / analyze 4% / evaluate 4% /
+#   create 0% on the reviewed run).
+_WORKED_EXAMPLE_FLOOR_ENV = "ED4ALL_WORKED_EXAMPLE_FLOOR"
+_BLOOM_SPREAD_FLOOR_ENV = "ED4ALL_BLOOM_SPREAD_FLOOR"
+
+# Block types that count as a worked example for the per-procedural-CO floor.
+_WORKED_EXAMPLE_BLOCK_TYPES: Tuple[str, ...] = ("example", "problem")
+# Analyze-or-higher levels for the Bloom-spread floor.
+_ANALYZE_PLUS_LEVELS: frozenset = frozenset({"analyze", "evaluate", "create"})
+# Ordered candidates for the per-week analyze-or-higher top-up: deploy the
+# block types whose catalog bloom_fit reaches analyze+ (mirrors the
+# _PAGE_TYPE_FLOOR_FILLERS analyze entries). First valid one is used.
+_BLOOM_SPREAD_FILLERS: Tuple[Tuple[str, str, str], ...] = (
+    ("misconception", "analyze", "content"),
+    ("scenario", "analyze", "application"),
+    ("discussion_prompt", "evaluate", "application"),
+    ("table", "analyze", "content"),
+)
+
+
+def _env_floor_on(env_var: str) -> bool:
+    """True iff ``env_var`` is truthy (parse-with-fallback; default off)."""
+    import os  # noqa: PLC0415
+
+    return (
+        os.environ.get(env_var, "").strip().lower()
+        in _DYNAMIC_BLOCK_PLAN_TRUTHY
+    )
+
+
+def _is_procedural_co(co_bloom_level: str) -> bool:
+    """True iff a CO's Bloom level maps to the procedural cognitive domain.
+
+    Reuses the single source of truth (``lib.ontology.bloom``) — apply /
+    create map to the procedural domain. A procedural CO is the one that
+    teaches a step-by-step skill and therefore wants a worked example.
+    """
+    from lib.ontology.bloom import bloom_to_cognitive_domain  # noqa: PLC0415
+
+    level = str(co_bloom_level or "").strip().lower()
+    if level not in BLOOM_LEVELS:
+        return False
+    return bloom_to_cognitive_domain(level) == "procedural"
+
+
 def _source_text_blob(source_chunks: Sequence[Dict[str, Any]]) -> str:
     """Concatenate the source-chunk text + headings into one search blob."""
     parts: List[str] = []
@@ -1030,6 +1086,98 @@ def _next_floor_filler(
     return valid[0]
 
 
+def _apply_worked_example_floor(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    block_types: frozenset,
+) -> List[Dict[str, Any]]:
+    """Guarantee >= 1 worked ``example``/``problem`` block per PROCEDURAL CO.
+
+    P4 worked-example DENSITY floor (gated on ``ED4ALL_WORKED_EXAMPLE_FLOOR``;
+    NO-OP / byte-stable when off). For every procedural CO (Bloom →
+    procedural domain) not already taught by an ``example`` or ``problem``
+    block that targets it, APPEND one ``example`` block targeting that CO on
+    the ``content`` page (the worked-example seat). NEVER invents a CO id —
+    the appended block targets the procedural CO it is for. Block type
+    presence is guarded so a catalog drift can never inject an invalid type.
+    """
+    if not _env_floor_on(_WORKED_EXAMPLE_FLOOR_ENV):
+        return selected
+    we_type = next(
+        (bt for bt in _WORKED_EXAMPLE_BLOCK_TYPES if bt in block_types), None
+    )
+    if we_type is None:
+        return selected
+    # CO ids already covered by a worked-example block (per-CO).
+    covered_by_we: set = set()
+    for blk in selected:
+        if blk.get("block_type") in _WORKED_EXAMPLE_BLOCK_TYPES:
+            covered_by_we.update(
+                str(c) for c in (blk.get("target_co_ids") or [])
+            )
+    appended = list(selected)
+    for co in chapter_objectives or ():
+        if not isinstance(co, dict):
+            continue
+        cid = str(co.get("id") or "")
+        if not cid or cid in covered_by_we:
+            continue
+        if not _is_procedural_co(co.get("bloom_level") or ""):
+            continue
+        appended.append({
+            "block_type": we_type,
+            "page_type": "content",
+            "target_co_ids": [cid],
+            "content_focus": f"P4 worked-example floor (procedural CO {cid})",
+            "target_bloom": "apply",
+        })
+        covered_by_we.add(cid)
+    return appended
+
+
+def _apply_bloom_spread_floor(
+    *,
+    selected: List[Dict[str, Any]],
+    catalog_by_type: Dict[str, Dict[str, Any]],
+    block_types: frozenset,
+) -> List[Dict[str, Any]]:
+    """Guarantee >= 1 analyze-or-higher block per week.
+
+    P4 Bloom-spread floor (gated on ``ED4ALL_BLOOM_SPREAD_FLOOR``; NO-OP /
+    byte-stable when off). If no selected block already carries an
+    analyze-or-higher ``target_bloom``, APPEND one analyze+ block from
+    ``_BLOOM_SPREAD_FILLERS`` (the first whose type is in ``block_types``
+    AND whose catalog ``bloom_fit`` reaches analyze+ — widening the apply-heavy
+    Bloom distribution). NEVER injects an invalid block type.
+    """
+    if not _env_floor_on(_BLOOM_SPREAD_FLOOR_ENV):
+        return selected
+    has_analyze_plus = any(
+        str(b.get("target_bloom") or "") in _ANALYZE_PLUS_LEVELS
+        for b in selected
+    )
+    if has_analyze_plus:
+        return selected
+    for bt, bloom, ptype in _BLOOM_SPREAD_FILLERS:
+        if bt not in block_types:
+            continue
+        # Only deploy a type the catalog agrees can reach analyze+ (a content
+        # shape the source supports), guarding against forcing analyze onto a
+        # block type the catalog caps lower.
+        fit = catalog_by_type.get(bt, {}).get("bloom_fit") or []
+        if not any(lv in _ANALYZE_PLUS_LEVELS for lv in fit):
+            continue
+        return list(selected) + [{
+            "block_type": bt,
+            "page_type": ptype,
+            "target_co_ids": [],
+            "content_focus": "P4 Bloom-spread floor (analyze-or-higher)",
+            "target_bloom": bloom,
+        }]
+    return selected
+
+
 def _apply_page_floors(
     *,
     selected: List[Dict[str, Any]],
@@ -1436,6 +1584,22 @@ def plan_week_blocks(
         selected=selected,
         block_types=block_types,
         budget=budget,
+    )
+
+    # P4 pedagogical-depth floors (both default OFF → byte-stable). The
+    # worked-example floor guarantees every procedural CO gets >= 1
+    # example/problem block (DENSITY); the Bloom-spread floor guarantees >= 1
+    # analyze-or-higher block per week (Bloom VARIETY). Applied after the
+    # per-page floors so they see the post-top-up block set.
+    selected = _apply_worked_example_floor(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        block_types=block_types,
+    )
+    selected = _apply_bloom_spread_floor(
+        selected=selected,
+        catalog_by_type=catalog_by_type,
+        block_types=block_types,
     )
 
     # Issue I6 (Part A): deterministically deploy the palette-v2 types
