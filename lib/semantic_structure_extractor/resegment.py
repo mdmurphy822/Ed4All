@@ -13,10 +13,12 @@ pseudo-chapters (whole numbers / variables / integers / fractions / decimals
 
 Design contract:
 
-* **Trigger only on the collapse signature** — ``len(chapters)==1`` AND that
-  chapter carries more than ``_STRUCTURE_COLLAPSE_SECTION_THRESHOLD`` (40)
-  sections. Otherwise pass-through unchanged (multi-chapter corpora are never
-  touched).
+* **Trigger on the per-chapter collapse signature** — ANY chapter carrying
+  more than ``_STRUCTURE_COLLAPSE_SECTION_THRESHOLD`` (40) sections is
+  re-segmented, whether it is emitted alone (``[141]``) or alongside a tiny
+  front-matter chapter (``[3, 141]``). Well-formed sibling chapters are
+  preserved in place. A structure with no mega-chapter is passed through
+  unchanged (genuinely multi-chapter corpora are never touched).
 * **Contiguity** — the chain-graph connectivity constraint forces each Ward
   cluster to be a contiguous run of sections (document order preserved).
 * **Rides existing order_fallback** — each pseudo-chapter carries
@@ -203,39 +205,30 @@ def _fallback_runs_by_cosine_drops(
     return runs
 
 
-def resegment_collapsed_structure(
-    chapters: List[Dict[str, Any]],
-    *,
-    embed_client: Optional[Any] = None,
-) -> List[Dict[str, Any]]:
-    """Recover pseudo-chapters from a collapsed single mega-chapter.
+def _is_mega_chapter(chapter: Any) -> bool:
+    """The collapse signature: a chapter carrying more than
+    ``_STRUCTURE_COLLAPSE_SECTION_THRESHOLD`` sections — the DART
+    heading-parser dumping ground. Fires regardless of how many *other*
+    chapters exist (the extractor may emit the mega-chapter alone, or
+    alongside a tiny front-matter chapter)."""
+    if not isinstance(chapter, dict):
+        return False
+    return len(chapter.get("sections") or []) > _STRUCTURE_COLLAPSE_SECTION_THRESHOLD
 
-    Args:
-        chapters: the merged chapter dicts (``to_dict()`` shape — camelCase
-            ``headingText`` / ``section_text``).
-        embed_client: optional pre-built embedding client (an object exposing
-            ``encode_batch(List[str]) -> np.ndarray`` of L2-normalized rows).
-            When ``None`` a ``build_embedding_client(offline=True)`` is built
-            lazily. Injected by tests with deterministic vectors.
 
-    Returns:
-        The K pseudo-chapters when re-segmentation fires; ``chapters``
-        unchanged on any non-trigger / graceful-skip path.
+def _resegment_one_chapter(
+    mega: Dict[str, Any],
+    embed_client: Any,
+) -> Optional[List[Dict[str, Any]]]:
+    """Split one collapsed mega-chapter into contiguous pseudo-chapters.
+
+    Returns the list of pseudo-chapter dicts (ids NOT minted — the caller
+    re-mints sequentially across the whole rebuilt structure), or ``None`` on
+    any graceful-skip path (embedding failure / bad shape) so the caller keeps
+    the mega-chapter unchanged.
     """
-    # --- Gate flag -----------------------------------------------------
-    if not _flag_on(_FLAG_RESEGMENT, default=True):
-        return chapters
-
-    # --- Trigger only on the collapse signature -----------------------
-    if not chapters or len(chapters) != 1:
-        return chapters
-    mega = chapters[0]
-    if not isinstance(mega, dict):
-        return chapters
     sections = mega.get("sections") or []
     n = len(sections)
-    if n <= _STRUCTURE_COLLAPSE_SECTION_THRESHOLD:
-        return chapters
 
     # --- Graceful lazy import of the numeric stack --------------------
     try:
@@ -249,14 +242,10 @@ def resegment_collapsed_structure(
             exc,
             n,
         )
-        return chapters
+        return None
 
     # --- Embed each section -------------------------------------------
     try:
-        if embed_client is None:
-            from lib.embedding.providers import build_embedding_client
-
-            embed_client = build_embedding_client(offline=True)
         embed_texts = [_section_embed_text(sec) for sec in sections]
         vecs = embed_client.encode_batch(embed_texts)
         vecs = np.asarray(vecs, dtype=np.float32)
@@ -267,7 +256,7 @@ def resegment_collapsed_structure(
             n,
             exc,
         )
-        return chapters
+        return None
 
     if vecs.ndim != 2 or vecs.shape[0] != n:
         logger.warning(
@@ -276,7 +265,7 @@ def resegment_collapsed_structure(
             getattr(vecs, "shape", None),
             n,
         )
-        return chapters
+        return None
 
     # L2-normalize (defensive — the client already normalizes, but injected
     # test vectors may not).
@@ -333,6 +322,7 @@ def resegment_collapsed_structure(
         pseudo = {
             # Preserve every original chapter-level field except the ones we
             # re-mint / drop (id, sections, chapter_text, source_file, title).
+            # ``id`` is a placeholder — the caller re-mints sequentially.
             "id": f"ch{i}",
             "headingLevel": mega.get("headingLevel", 2),
             "headingText": title,
@@ -354,3 +344,84 @@ def resegment_collapsed_structure(
         k,
     )
     return pseudo_chapters
+
+
+def resegment_collapsed_structure(
+    chapters: List[Dict[str, Any]],
+    *,
+    embed_client: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Recover pseudo-chapters from any collapsed mega-chapter(s).
+
+    The DART heading-parser collapse failure mode dumps most of a textbook
+    into one mega-chapter carrying scores of sections. Historically the
+    extractor emitted that mega-chapter ALONE (``len(chapters)==1``); but a
+    flatter heading shape can make it emit the mega-chapter alongside a tiny
+    front-matter chapter (e.g. ``[3, 141]``), which a strict
+    ``len(chapters)==1`` trigger would silently pass through unsegmented —
+    poisoning every downstream phase with a 141-section pseudo-chapter. So the
+    trigger fires on the *per-chapter* collapse signature: ANY chapter with
+    more than ``_STRUCTURE_COLLAPSE_SECTION_THRESHOLD`` sections is
+    re-segmented; well-formed sibling chapters are preserved in place; ids are
+    re-minted sequentially in document order across the rebuilt structure.
+
+    Args:
+        chapters: the merged chapter dicts (``to_dict()`` shape — camelCase
+            ``headingText`` / ``section_text``).
+        embed_client: optional pre-built embedding client (an object exposing
+            ``encode_batch(List[str]) -> np.ndarray`` of L2-normalized rows).
+            When ``None`` a ``build_embedding_client(offline=True)`` is built
+            lazily. Injected by tests with deterministic vectors.
+
+    Returns:
+        The rebuilt chapter list when re-segmentation fires; ``chapters``
+        unchanged on any non-trigger / graceful-skip path.
+    """
+    # --- Gate flag -----------------------------------------------------
+    if not _flag_on(_FLAG_RESEGMENT, default=True):
+        return chapters
+
+    # --- Trigger on the per-chapter collapse signature ----------------
+    if not chapters or not any(_is_mega_chapter(ch) for ch in chapters):
+        return chapters
+
+    # --- Build the embedding client once (lazy) -----------------------
+    if embed_client is None:
+        try:
+            from lib.embedding.providers import build_embedding_client
+
+            embed_client = build_embedding_client(offline=True)
+        except Exception as exc:  # noqa: BLE001 - never crash extraction
+            logger.warning(
+                "resegment_collapsed_structure: could not build an embedding "
+                "client (%s); passing the collapsed structure through "
+                "unchanged.",
+                exc,
+            )
+            return chapters
+
+    # --- Re-segment each mega-chapter; preserve well-formed siblings --
+    rebuilt: List[Dict[str, Any]] = []
+    any_resegmented = False
+    for ch in chapters:
+        if _is_mega_chapter(ch):
+            pseudos = _resegment_one_chapter(ch, embed_client)
+            if pseudos:
+                rebuilt.extend(pseudos)
+                any_resegmented = True
+            else:
+                # graceful per-chapter skip — keep the mega-chapter as-is.
+                rebuilt.append(ch)
+        else:
+            # Well-formed sibling chapter — preserve (shallow copy so the
+            # id re-mint below never mutates the caller's input dict).
+            rebuilt.append(dict(ch) if isinstance(ch, dict) else ch)
+
+    if not any_resegmented:
+        return chapters
+
+    # --- Re-mint ids sequentially in final document order -------------
+    for i, ch in enumerate(rebuilt, start=1):
+        if isinstance(ch, dict):
+            ch["id"] = f"ch{i}"
+    return rebuilt

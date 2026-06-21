@@ -126,6 +126,51 @@ def test_resegment_splits_collapsed_into_contiguous_chapters():
     assert seen_ids == {f"ch{i}" for i in range(1, 7)}
 
 
+def test_resegment_mega_chapter_among_siblings():
+    """The [3, 141] regression: a tiny front-matter chapter + a 60-section
+    mega-chapter. The strict ``len(chapters)==1`` trigger silently passed this
+    through, poisoning downstream phases. Now the mega-chapter MUST be
+    re-segmented while the small sibling is preserved in place; ids re-mint in
+    document order."""
+    small = {
+        "id": "ch1",
+        "headingLevel": 2,
+        "headingText": "Front Matter",
+        "headingId": "fm",
+        "source_file": "/staging/everything.html",
+        "chapter_text": "preface prose",
+        "sections": [_section(900 + i, f"front {i}", f"preface body {i}") for i in range(3)],
+    }
+    mega = _collapsed_three_topics(60)[0]  # one 60-section mega-chapter
+    chapters = [small, mega]
+
+    result = resegment_collapsed_structure(
+        chapters, embed_client=_StubEmbedClient()
+    )
+
+    # Small sibling preserved as ch1 + 6 pseudo-chapters from the mega = 7.
+    assert len(result) == 7
+    assert result is not chapters
+
+    # ch1 is the preserved front-matter chapter (its 3 sections intact).
+    assert [s["id"] for s in result[0]["sections"]] == [
+        f"orig_s{900 + i}" for i in range(3)
+    ]
+
+    # ids re-minted sequentially in document order across the rebuilt list.
+    assert [ch["id"] for ch in result] == [f"ch{i}" for i in range(1, 8)]
+
+    # The 60 mega sections are covered IN ORDER across pseudo-chapters 2..7,
+    # no drops/dupes.
+    mega_flat = [s["id"] for ch in result[1:] for s in ch["sections"]]
+    assert mega_flat == [f"orig_s{i}" for i in range(60)]
+
+    # Pseudo-chapters carry no source_file (order_fallback); the preserved
+    # sibling keeps its own.
+    assert "source_file" not in result[1]
+    assert result[0].get("source_file") == "/staging/everything.html"
+
+
 def test_resegment_passthrough_multichapter():
     chapters = [
         {"id": "ch1", "headingText": "A", "sections": [_section(0, "x", "y")]},
