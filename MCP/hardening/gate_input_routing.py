@@ -1245,7 +1245,63 @@ def _build_block_curie_anchoring_input(
                     "failed at %s (%s); anchoring over key_claims only.",
                     ocp, exc,
                 )
+    # Objective-refs-concept anchoring: thread the {objective_id: statement}
+    # map from synthesized_objectives.json so the validator can anchor a
+    # minted CURIE via its concept surface form appearing in the statement
+    # of an objective the block DECLARES. Absent/unreadable → no-op
+    # (anchoring runs over key_claims + source_chunk_text only; byte-
+    # identical to the pre-fix contract, including every RDF/legacy run).
+    obj_statements = _resolve_objective_statements_map(
+        phase_outputs, workflow_params
+    )
+    if obj_statements:
+        inputs["objective_statements"] = obj_statements
     return inputs, []
+
+
+def _resolve_objective_statements_map(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> Dict[str, str]:
+    """Load ``{objective_id: statement}`` from synthesized_objectives.json.
+
+    Resolves the canonical objectives path via
+    :func:`_resolve_objectives_path` and flattens terminal + chapter
+    objectives via :func:`lib.validators.abcd_objective._flatten_objectives`
+    (the same loader the statistical-tier input builder uses). Returns an
+    empty map when no objectives file resolves / is unparseable — the
+    objective-refs anchoring surface is then unavailable (graceful).
+    """
+    objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
+    if not objectives_path:
+        return {}
+    try:
+        import json as _json
+        from lib.validators.abcd_objective import _flatten_objectives
+
+        path = Path(objectives_path)
+        if not path.exists():
+            return {}
+        payload = _json.loads(path.read_text(encoding="utf-8"))
+        flat = _flatten_objectives(payload)
+    except (OSError, ValueError, TypeError, ImportError) as exc:
+        logger.debug(
+            "curie-anchoring builder: objective_statements load failed "
+            "from %s (%s); objective-refs anchoring unavailable.",
+            objectives_path, exc,
+        )
+        return {}
+    statements: Dict[str, str] = {}
+    for lo in flat or []:
+        if not isinstance(lo, dict):
+            continue
+        lo_id = lo.get("id") or lo.get("objective_id")
+        if not isinstance(lo_id, str) or not lo_id:
+            continue
+        stmt = lo.get("statement") or lo.get("text")
+        if isinstance(stmt, str) and stmt.strip():
+            statements[lo_id] = stmt.strip()
+    return statements
 
 
 def _build_source_chunks_from_dart_jsonl(

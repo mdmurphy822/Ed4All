@@ -14,7 +14,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 # Add project root to path for imports
 _MCP_DIR = Path(__file__).resolve().parents[1]
@@ -6335,6 +6335,14 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
     if minted_curie_map:
         inputs["minted_curie_map"] = minted_curie_map
 
+    # Objective-refs-concept anchoring: thread the {objective_id: statement}
+    # map so a minted CURIE anchors when its concept surface form appears in
+    # a declared objective's statement. No-op when objectives_path is
+    # absent / unparseable.
+    _obj_statements = _load_objective_statements_from_path(objectives_path)
+    if _obj_statements:
+        inputs["objective_statements"] = _obj_statements
+
     gate_results: list = []
     failing_gate_ids: set = set()
     for gate_id, validator in validators:
@@ -7423,10 +7431,138 @@ def _block_source_chunk_text(
     return "\n".join(parts)
 
 
+def _resolve_objective_statements_for_minting(
+    *,
+    course_code: str,
+    kwargs: Dict[str, Any],
+) -> Dict[str, str]:
+    """Load ``{objective_id: statement}`` from synthesized_objectives.json.
+
+    Used by the outline CURIE minter's objective-refs-concept anchoring
+    surface: when a block's ``key_claims`` + grounded source-chunk text
+    yield no domain CURIE, the minter ALSO matches the vocabulary over the
+    statement text of the objectives the block declares. This loads those
+    statements once.
+
+    Resolves the path via :func:`_resolve_synthesized_objectives_path`
+    (the same locator the rest of pipeline_tools uses). Returns an empty
+    map when no objectives file exists / is unparseable — the
+    objective-statement surface is then simply unavailable (graceful;
+    minting falls back to key_claims + source-chunks only).
+    """
+    try:
+        objectives_path = _resolve_synthesized_objectives_path(
+            course_code=course_code, kwargs=kwargs,
+        )
+    except Exception:  # pragma: no cover — defensive
+        objectives_path = None
+    if not objectives_path:
+        return {}
+    try:
+        from lib.validators.abcd_objective import _flatten_objectives
+        payload = json.loads(Path(objectives_path).read_text(encoding="utf-8"))
+        flat = _flatten_objectives(payload)
+    except (OSError, ValueError, TypeError, ImportError) as exc:
+        logger.debug(
+            "outline minter: failed to load objective statements from "
+            "%s (%s); objective-refs anchoring unavailable.",
+            objectives_path, exc,
+        )
+        return {}
+    statements: Dict[str, str] = {}
+    for lo in flat or []:
+        if not isinstance(lo, dict):
+            continue
+        lo_id = lo.get("id") or lo.get("objective_id")
+        if not isinstance(lo_id, str) or not lo_id:
+            continue
+        stmt = lo.get("statement") or lo.get("text")
+        if isinstance(stmt, str) and stmt.strip():
+            statements[lo_id] = stmt.strip()
+    return statements
+
+
+def _load_objective_statements_from_path(
+    objectives_path: Any,
+) -> Dict[str, str]:
+    """Load ``{objective_id: statement}`` from a synthesized_objectives.json.
+
+    Shared by the inter-tier / post-rewrite validation handlers to thread
+    the objective-refs-concept anchoring surface into
+    ``BlockCurieAnchoringValidator``. Returns an empty map when the path is
+    missing / unparseable (graceful; the objective surface is then
+    unavailable and anchoring runs over key_claims + source-chunks only).
+    """
+    if not objectives_path:
+        return {}
+    try:
+        from lib.validators.abcd_objective import _flatten_objectives
+        path = Path(str(objectives_path))
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        flat = _flatten_objectives(payload)
+    except (OSError, ValueError, TypeError, ImportError) as exc:
+        logger.debug(
+            "validation handler: objective_statements load failed from "
+            "%s (%s); objective-refs anchoring unavailable.",
+            objectives_path, exc,
+        )
+        return {}
+    statements: Dict[str, str] = {}
+    for lo in flat or []:
+        if not isinstance(lo, dict):
+            continue
+        lo_id = lo.get("id") or lo.get("objective_id")
+        if not isinstance(lo_id, str) or not lo_id:
+            continue
+        stmt = lo.get("statement") or lo.get("text")
+        if isinstance(stmt, str) and stmt.strip():
+            statements[lo_id] = stmt.strip()
+    return statements
+
+
+def _block_objective_statement_text(
+    block: Any,
+    objective_statements: Dict[str, str],
+) -> str:
+    """Concatenate the resolved objective-statement text for one block.
+
+    Reads the block's declared objective refs (the structural
+    ``objective_ids`` field PLUS ``content["objective_refs"]`` /
+    ``content["objective_ids"]`` — the 7B outline tier puts its real refs
+    in ``content["objective_refs"]``), resolves each against
+    ``objective_statements``, and concatenates the statements. An id that
+    does not resolve contributes nothing (anti-fabrication).
+    """
+    if not objective_statements:
+        return ""
+    refs: List[str] = []
+    seen: set = set()
+    for oid in getattr(block, "objective_ids", ()) or ():
+        if isinstance(oid, str) and oid and oid not in seen:
+            refs.append(oid)
+            seen.add(oid)
+    content = getattr(block, "content", None)
+    if isinstance(content, dict):
+        for key in ("objective_refs", "objective_ids"):
+            for oid in content.get(key) or []:
+                if isinstance(oid, str) and oid and oid not in seen:
+                    refs.append(oid)
+                    seen.add(oid)
+    parts: List[str] = []
+    for oid in refs:
+        stmt = objective_statements.get(oid)
+        if isinstance(stmt, str) and stmt.strip():
+            parts.append(stmt)
+    return "\n".join(parts)
+
+
 def _build_outline_curie_minter(
     *,
     course_code: str,
     kwargs: Dict[str, Any],
+    objective_statements: Optional[Dict[str, str]] = None,
 ) -> Optional[Any]:
     """Load the domain vocabulary ONCE and return a per-block CURIE minter.
 
@@ -7436,6 +7572,17 @@ def _build_outline_curie_minter(
     :meth:`CourseforgeRouter.route_with_self_consistency` — without
     re-reading ``domain_concept_vocabulary.json`` / re-compiling the
     concept seeds once per candidate.
+
+    ``objective_statements`` (optional) is the ``{objective_id: statement}``
+    map for objective-refs-concept anchoring. When supplied (or
+    auto-loaded here when ``None``), a block whose ``key_claims`` +
+    grounded source-chunk text yield no domain CURIE ALSO has the vocabulary
+    matched over the statement text of the objectives it DECLARES — a block
+    is legitimately about the concepts its objectives name. ANTI-FABRICATION
+    is preserved: only a concept whose vocabulary surface form genuinely
+    appears (word-boundary, via ``extract_concept_tags``) in an objective
+    statement is minted; a block that matches nothing on any surface still
+    mints nothing.
 
     Returns ``None`` when no domain vocabulary exists (RDF / legacy
     corpora) or it is unparseable / empty — the COMPLETE no-op backward-
@@ -7489,6 +7636,17 @@ def _build_outline_curie_minter(
         if isinstance(c, dict) and c.get("canonical")
     ]
     domain_concept_seeds = compile_domain_concept_seeds(seed_input)
+
+    # Objective-refs-concept anchoring surface. When the caller did not
+    # supply the {objective_id: statement} map, auto-load it from
+    # synthesized_objectives.json. Empty map → the objective surface is
+    # simply unavailable (graceful) and minting falls back to key_claims +
+    # source-chunks only, byte-identical to the pre-fix contract.
+    _objective_statements: Dict[str, str] = dict(objective_statements or {})
+    if not _objective_statements:
+        _objective_statements = _resolve_objective_statements_for_minting(
+            course_code=course_code, kwargs=kwargs,
+        )
 
     import dataclasses as _dc
 
@@ -7548,6 +7706,24 @@ def _build_outline_curie_minter(
                     source_text, {}, domain_concept_seeds
                 )
                 matched_surface = "source_chunks"
+        # Final fallback: objective-refs-concept anchoring. When neither
+        # key_claims nor the grounded source-chunk text yields a vocab
+        # concept, match the vocabulary over the STATEMENT text of the
+        # objectives the block DECLARES (``objective_refs``). A block is
+        # legitimately about the concepts its objectives name, so a
+        # concept whose surface form genuinely appears (word-boundary, via
+        # extract_concept_tags) in an objective statement is a legitimate
+        # anchor. ANTI-FABRICATION: still mints nothing when no vocab
+        # surface form appears in any objective statement either.
+        if not matched_canonicals:
+            objective_text = _block_objective_statement_text(
+                block, _objective_statements
+            )
+            if objective_text.strip():
+                matched_canonicals = extract_concept_tags(
+                    objective_text, {}, domain_concept_seeds
+                )
+                matched_surface = "objective_refs"
 
         minted_curies: List[str] = []
         for canonical in matched_canonicals:
@@ -7652,6 +7828,109 @@ def _mint_outline_curies(
             minted_block_count, minted_curie_total,
             len(minter.minted_map),
         )
+
+
+def remint_blocks_outline_jsonl(
+    *,
+    blocks_outline_path: "Union[str, Path]",
+    course_code: str,
+    libv2_root: "Optional[Union[str, Path]]" = None,
+    objectives_path: "Optional[Union[str, Path]]" = None,
+    in_place: bool = True,
+) -> Dict[str, Any]:
+    """Re-mint CURIEs onto an existing ``blocks_outline.jsonl`` IN PLACE.
+
+    Operator-facing reusable entry point for the objective-refs-concept
+    anchoring fix: load the 515-block outline JSONL, run the (now
+    objective-aware) minter over every block whose ``content["curies"]``
+    carries no real domain CURIE, and write the re-minted blocks back to
+    disk (round-tripping the same snake-case JSONL shape the outline tier
+    emits). DETERMINISTIC — CPU-only, no LLM/GPU.
+
+    The minter's objective-refs surface is auto-resolved from
+    ``synthesized_objectives.json`` (sibling ``01_learning_objectives/``
+    by default, or ``objectives_path`` when supplied). ANTI-FABRICATION is
+    fully preserved — a block matching no vocab surface form on key_claims,
+    source-chunks, OR its declared objectives' statements mints nothing.
+
+    Returns a summary dict ``{total, reminted, still_curieless,
+    minted_curie_total}``. When ``in_place`` is False, computes the same
+    stats without writing (dry-run).
+    """
+    blocks_path = Path(str(blocks_outline_path))
+    if not blocks_path.exists():
+        raise FileNotFoundError(f"blocks_outline.jsonl not found: {blocks_path}")
+
+    entries: List[Dict[str, Any]] = []
+    blocks: List[Any] = []
+    with blocks_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            entries.append(entry)
+            blocks.append(_block_from_checkpoint_entry(entry))
+
+    kwargs: Dict[str, Any] = {}
+    if libv2_root is not None:
+        kwargs["libv2_root"] = str(libv2_root)
+
+    objective_statements: Dict[str, str] = {}
+    if objectives_path is not None:
+        objective_statements = _load_objective_statements_from_path(
+            objectives_path
+        )
+    minter = _build_outline_curie_minter(
+        course_code=course_code,
+        kwargs=kwargs,
+        objective_statements=objective_statements or None,
+    )
+    if minter is None:
+        return {
+            "total": len(blocks),
+            "reminted": 0,
+            "still_curieless": sum(
+                1 for b in blocks
+                if isinstance(getattr(b, "content", None), dict)
+                and not (b.content.get("curies") or [])
+            ),
+            "minted_curie_total": 0,
+            "minter": None,
+        }
+
+    reminted = 0
+    minted_curie_total = 0
+    for idx, block in enumerate(blocks):
+        if block is None:
+            continue
+        new_block, meta = minter.mint_block(block, None)
+        if new_block is None or meta is None:
+            continue
+        blocks[idx] = new_block
+        entries[idx] = _block_to_snake_case_entry(new_block)
+        reminted += 1
+        minted_curie_total += len(meta["minted_curies"])
+
+    still_curieless = sum(
+        1 for b in blocks
+        if b is not None
+        and isinstance(getattr(b, "content", None), dict)
+        and not (b.content.get("curies") or [])
+    )
+
+    if in_place and reminted:
+        with blocks_path.open("w", encoding="utf-8") as fh:
+            for entry in entries:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    return {
+        "total": len(blocks),
+        "reminted": reminted,
+        "still_curieless": still_curieless,
+        "minted_curie_total": minted_curie_total,
+        "minter": minter,
+    }
 
 
 def _emit_curie_minting_capture(
@@ -8994,8 +9273,22 @@ async def _run_content_generation_outline(**kwargs) -> str:
     # post-loop ``_mint_outline_curies`` mints too late to prevent it.
     # ``minter is None`` (RDF / legacy corpora, no vocabulary) → no hook
     # is threaded and the route call is byte-identical to the prior path.
+    # Objective-refs-concept anchoring: build the {objective_id: statement}
+    # map from the already-loaded objectives so the minter can match the
+    # vocabulary over a block's declared objectives' statement text when
+    # key_claims + source-chunks miss (no re-read of disk).
+    _objective_statements_for_minting: Dict[str, str] = {}
+    for _o in (terminal_objectives + chapter_objectives):
+        _oid = _o.get("id")
+        _ostmt = _o.get("statement")
+        if (
+            isinstance(_oid, str) and _oid
+            and isinstance(_ostmt, str) and _ostmt.strip()
+        ):
+            _objective_statements_for_minting[_oid] = _ostmt.strip()
     _outline_minter = _build_outline_curie_minter(
         course_code=course_code, kwargs=kwargs,
+        objective_statements=_objective_statements_for_minting,
     )
     _minted_curie_map = (
         _outline_minter.minted_map if _outline_minter is not None else None
@@ -9485,6 +9778,14 @@ async def _run_inter_tier_validation(**kwargs) -> str:
     )
     if minted_curie_map:
         inputs["minted_curie_map"] = minted_curie_map
+
+    # Objective-refs-concept anchoring: thread the {objective_id: statement}
+    # map so a minted CURIE anchors when its concept surface form appears in
+    # a declared objective's statement. No-op when objectives_path is
+    # absent / unparseable.
+    _obj_statements = _load_objective_statements_from_path(objectives_path)
+    if _obj_statements:
+        inputs["objective_statements"] = _obj_statements
 
     gate_results: list = []
     failing_gate_ids: set = set()

@@ -289,6 +289,121 @@ def test_grounded_block_curie_not_in_source_or_claims_fails_closed():
     assert "OUTLINE_BLOCK_CURIE_NOT_ANCHORED" in codes
 
 
+# --------------------------------------------------------------------------- #
+# 1c. Objective-refs-concept anchoring
+# --------------------------------------------------------------------------- #
+
+
+def test_minted_curie_anchored_via_objective_statement():
+    """Objective-refs-concept anchoring: a minted CURIE is anchored when
+    its concept surface form appears in the STATEMENT text of an objective
+    the block DECLARES (``objective_refs``), even when the block's own
+    key_claims prose is abstract and the source chunks are empty.
+
+    This is the exact real-data shape that broke a 515-block course: a
+    legitimately-grounded misconception block whose claim says "the sign of
+    a number" while its declared objectives say "signed numbers /
+    multiplication / division" — the objective statement is the matchable
+    surface."""
+    minted_map = {
+        "introbio101:multiplication": {
+            "canonical": "multiplication",
+            "surface_forms": ["multiplication", "multiply"],
+        },
+    }
+    blocks = [
+        _outline_block(
+            block_id="week_12_content_01#misconception_week12_3",
+            block_type="misconception",
+            curies=("introbio101:multiplication",),
+            # Abstract claim — the concept surface form is NOT here.
+            key_claims=[
+                "Misinterpreting the sign of a number can lead to errors."
+            ],
+            # ...but the declared objective's STATEMENT names it.
+            objective_ids=("TO-01",),
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+        # No source chunks (the block is ungrounded against the chunkset).
+        "source_chunks_by_block_id": {},
+        "objective_statements": {
+            "TO-01": (
+                "Apply rules for operations with signed numbers including "
+                "addition, subtraction, multiplication, and division."
+            ),
+        },
+    })
+    assert result.passed is True
+    assert result.action is None
+
+
+def test_off_topic_block_not_anchored_via_objective_statement():
+    """Anti-fabrication: a block whose declared objective statement does
+    NOT name the minted CURIE's concept — and neither does its key_claims
+    nor its (empty) source chunks — still FAILS. The objective surface
+    NEVER rescues a genuinely off-topic block."""
+    minted_map = {
+        "introbio101:slope": {
+            "canonical": "slope",
+            "surface_forms": ["slope", "gradient"],
+        },
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_z_0",
+            curies=("introbio101:slope",),
+            key_claims=["This block discusses cellular respiration."],
+            objective_ids=("TO-02",),
+        ),
+    ]
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+        "source_chunks_by_block_id": {},
+        # The objective is about an entirely different topic — no "slope"
+        # / "gradient" surface form anywhere.
+        "objective_statements": {
+            "TO-02": "Describe the stages of photosynthesis in plant cells.",
+        },
+    })
+    assert result.passed is False
+    assert result.action == "regenerate"
+    codes = [i.code for i in result.issues if i.severity == "critical"]
+    assert "OUTLINE_BLOCK_CURIE_NOT_ANCHORED" in codes
+
+
+def test_objective_surface_absent_byte_identical_to_pre_fix():
+    """When no objective_statements map is threaded, anchoring is
+    byte-identical to the pre-fix contract: a block whose CURIE surface
+    form is absent from key_claims + source chunks fails closed even though
+    it declares an objective whose statement WOULD have named it."""
+    minted_map = {
+        "introbio101:slope": {
+            "canonical": "slope",
+            "surface_forms": ["slope", "gradient"],
+        },
+    }
+    blocks = [
+        _outline_block(
+            block_id="page_01#concept_w_0",
+            curies=("introbio101:slope",),
+            key_claims=["Abstract prose with no vocabulary term."],
+            objective_ids=("TO-01",),
+        ),
+    ]
+    # No ``objective_statements`` key → the objective surface is unavailable.
+    result = BlockCurieAnchoringValidator().validate({
+        "blocks": blocks,
+        "minted_curie_map": minted_map,
+        "source_chunks_by_block_id": {},
+    })
+    assert result.passed is False
+    assert result.action == "regenerate"
+
+
 def test_rdf_curie_still_uses_literal_check_with_map():
     """A CURIE NOT in the minted map (an RDF CURIE) keeps the legacy
     literal-token anchoring even when a minted_curie_map is supplied."""

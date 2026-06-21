@@ -372,6 +372,46 @@ def _source_chunk_text_for_block(
     return "\n".join(parts)
 
 
+def _objective_statement_text_for_block(
+    block: Block,
+    objective_statements: Optional[Dict[str, Any]],
+) -> str:
+    """Concatenate the resolved objective-STATEMENT text for one block.
+
+    "Objective-refs-concept anchoring": a block is legitimately ABOUT the
+    learning objectives it declares (``content["objective_refs"]`` /
+    ``data-cf-objective-id``). When a minted CURIE's concept surface form
+    appears in one of those objectives' statement text, the block is
+    genuinely discussing that concept — even when the block's own
+    ``key_claims`` prose is abstract (e.g. a misconception block whose
+    claim says "the sign of a number" while its declared objectives say
+    "signed numbers"). The objective statement is therefore a legitimate
+    anchoring surface, NOT a relaxation.
+
+    ``objective_statements`` is the ``{objective_id: statement}`` map
+    threaded into ``inputs`` by the caller (loaded from
+    ``synthesized_objectives.json`` — terminal + chapter objectives). Each
+    of the block's ``objective_refs`` is resolved against it; an id that
+    does not resolve (e.g. a stale ref) contributes nothing.
+
+    Returns an empty string when the block declares no resolvable
+    objective refs — so a block with no objective grounding gains no
+    objective surface and still fails closed when it carries no anchorable
+    CURIE (no fabrication).
+    """
+    if not objective_statements:
+        return ""
+    refs = _extract_objective_refs_from_block(block)
+    if not refs:
+        return ""
+    parts: List[str] = []
+    for oid in refs:
+        stmt = objective_statements.get(oid)
+        if isinstance(stmt, str) and stmt.strip():
+            parts.append(stmt)
+    return "\n".join(parts)
+
+
 def _extract_curies_from_block(block: Block) -> List[str]:
     """Shape-discriminating CURIE extractor for Subtask 6.
 
@@ -575,6 +615,7 @@ def _curie_anchored(
     text_blob: str,
     minted_curie_map: Optional[Dict[str, Any]],
     source_chunk_text: str = "",
+    objective_statement_text: str = "",
 ) -> bool:
     """Return True when ``curie`` is anchored in the block's surface.
 
@@ -592,6 +633,11 @@ def _curie_anchored(
       (its grounded provenance — the source chunks ARE tagged with the
       domain vocabulary, so a concept present there is genuinely the
       block's subject; this is provenance-aware anchoring, NOT a
+      relaxation) OR in the block's ``objective_statement_text`` (the
+      resolved statement text of the objectives the block DECLARES via
+      ``objective_refs`` — a block is legitimately about the concepts its
+      objectives name, so a concept surfacing there is genuinely the
+      block's subject; "objective-refs-concept anchoring", also NOT a
       relaxation). Surface forms that are too short or are common
       English function words are filtered out (see
       :func:`_surface_form_can_anchor`) so a form like ``"ion"`` cannot
@@ -619,8 +665,14 @@ def _curie_anchored(
             return False
         # Provenance-aware anchoring: the concept counts as discussed
         # when its surface form appears in the block's key_claims prose
-        # OR in the block's grounded source-chunk text.
-        blob = "\n".join(b for b in (text_blob, source_chunk_text) if b)
+        # OR in the block's grounded source-chunk text OR in the resolved
+        # statement text of the objectives the block declares
+        # (objective-refs-concept anchoring).
+        blob = "\n".join(
+            b
+            for b in (text_blob, source_chunk_text, objective_statement_text)
+            if b
+        )
         for sf in surface_forms:
             if not _surface_form_can_anchor(sf):
                 continue
@@ -671,6 +723,15 @@ class BlockCurieAnchoringValidator:
         source_chunks_by_block_id = inputs.get("source_chunks_by_block_id")
         if not isinstance(source_chunks_by_block_id, dict):
             source_chunks_by_block_id = None
+        # Objective-refs-concept anchoring: per-objective-id statement text
+        # loaded from synthesized_objectives.json. A minted CURIE whose
+        # concept surface form appears in the statement of an objective the
+        # block DECLARES is legitimately anchored. No-op when absent (legacy
+        # / RDF callers) — anchoring then runs over key_claims +
+        # source_chunk_text only, byte-identical to the pre-fix contract.
+        objective_statements = inputs.get("objective_statements")
+        if not isinstance(objective_statements, dict):
+            objective_statements = None
         blocks, err = _coerce_blocks(inputs)
         if err is not None:
             return GateResult(
@@ -755,12 +816,17 @@ class BlockCurieAnchoringValidator:
             source_chunk_text = _source_chunk_text_for_block(
                 block, source_chunks_by_block_id
             )
+            # Objective-refs-concept anchoring surface (no-op when no
+            # objective_statements map threaded / block declares no refs).
+            objective_statement_text = _objective_statement_text_for_block(
+                block, objective_statements
+            )
             anchored_count = sum(
                 1
                 for c in curies
                 if _curie_anchored(
                     c, surface_curies, text_blob, minted_curie_map,
-                    source_chunk_text,
+                    source_chunk_text, objective_statement_text,
                 )
             )
             anchoring_rate = (
