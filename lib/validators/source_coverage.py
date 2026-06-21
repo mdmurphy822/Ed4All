@@ -72,7 +72,9 @@ References:
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
@@ -113,6 +115,20 @@ _ISSUE_LIST_CAP: int = 50
 
 #: Validator-capture decision_type — NEW enum member (WS6a).
 _DECISION_TYPE: str = "source_coverage_check"
+
+#: I3 — corpus-level uncited content-chunk rate floor above which the chunk arm
+#: emits the aggregate ``SOURCE_CHUNK_COVERAGE_LOW`` warning. DISTINCT from the
+#: section-level ``max_uncovered_rate`` so the (already-passing 135/135)
+#: section arm cannot MASK the chunk-citation gap.
+DEFAULT_MAX_UNCITED_CHUNK_RATE: float = 0.10
+
+#: I3 — content-bearing chunk_types for the chunk arm (mirrors
+#: ``lib/objectives/source_backfill.py``). Exercises / assessment_items /
+#: figures get NO objective so they are NOT audited for citation.
+_CONTENT_BEARING_CHUNK_TYPES = frozenset({"explanation", "concept", "content"})
+
+#: I3 — minimum word_count for a chunk to be content-bearing in the chunk arm.
+_MIN_CONTENT_WORD_COUNT: int = 40
 
 
 def _emit_decision(
@@ -251,6 +267,198 @@ def _embed_text(section: Dict[str, Any]) -> str:
     return combined[:_SECTION_TEXT_TRUNC]
 
 
+def _collect_cited_chunk_ids(objectives: Dict[str, Any]) -> set:
+    """All ``source_chunk_ids`` cited by ANY objective in a synthesized doc.
+
+    Pure set-membership (no embeddings) — drives the I3 chunk arm. Reads the
+    flat ``learning_outcomes`` list plus the ``terminal_objectives`` /
+    ``chapter_objectives`` (tolerating the LibV2 archive aliases). Each
+    objective may carry ``source_chunk_ids`` directly.
+    """
+    cited: set = set()
+
+    def _add(obj: Any) -> None:
+        if not isinstance(obj, dict):
+            return
+        raw = obj.get("source_chunk_ids")
+        if isinstance(raw, list):
+            for cid in raw:
+                if cid:
+                    cited.add(str(cid))
+        # source_refs[].chunk_ids alias.
+        refs = obj.get("source_refs")
+        if isinstance(refs, list):
+            for ref in refs:
+                if isinstance(ref, dict):
+                    rc = ref.get("chunk_ids")
+                    if isinstance(rc, list):
+                        for cid in rc:
+                            if cid:
+                                cited.add(str(cid))
+
+    for obj in objectives.get("learning_outcomes") or []:
+        _add(obj)
+    for to in (
+        objectives.get("terminal_objectives")
+        or objectives.get("terminal_outcomes")
+        or []
+    ):
+        _add(to)
+    for co in flatten_chapter_objectives(
+        objectives.get("chapter_objectives")
+        or objectives.get("component_objectives")
+        or []
+    ):
+        _add(co)
+    return cited
+
+
+def _load_chunks(inputs: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Resolve the DART chunkset for the I3 chunk arm.
+
+    Reads ``inputs["dart_chunks"]`` (in-memory list) first, then
+    ``inputs["dart_chunks_path"]`` (a chunks.jsonl on disk). Returns ``[]`` on
+    absence / parse error (the arm then no-op-passes — it is a measurement
+    guardrail, never blocks on missing chunks).
+    """
+    explicit = inputs.get("dart_chunks")
+    if isinstance(explicit, list):
+        return [c for c in explicit if isinstance(c, dict)]
+    raw_path = inputs.get("dart_chunks_path")
+    if not (isinstance(raw_path, str) and raw_path):
+        return []
+    try:
+        path = Path(raw_path)
+        if not path.exists():
+            return []
+        out: List[Dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict):
+                out.append(rec)
+        return out
+    except Exception as exc:  # noqa: BLE001 — chunk load must not break the gate
+        logger.warning("source_coverage chunk arm: chunk load failed (%s)", exc)
+        return []
+
+
+def _chunk_word_count(rec: Dict[str, Any]) -> int:
+    wc = rec.get("word_count")
+    if isinstance(wc, (int, float)):
+        return int(wc)
+    return len(str(rec.get("text") or rec.get("body") or "").split())
+
+
+def _is_content_bearing_chunk(rec: Dict[str, Any]) -> bool:
+    """Deterministic content-bearing filter (mirrors source_backfill)."""
+    ctype = str(rec.get("chunk_type") or "").strip().lower()
+    if ctype and ctype not in _CONTENT_BEARING_CHUNK_TYPES:
+        return False
+    return _chunk_word_count(rec) >= _MIN_CONTENT_WORD_COUNT
+
+
+def _chunk_id(rec: Dict[str, Any]) -> str:
+    return str(rec.get("id") or rec.get("chunk_id") or "")
+
+
+def run_chunk_coverage_arm(
+    *,
+    objectives: Dict[str, Any],
+    chunks: List[Dict[str, Any]],
+    max_uncited_rate: float,
+    capture: Any = None,
+) -> List[GateIssue]:
+    """I3 chunk-level coverage arm — pure set-membership (no embeddings).
+
+    For every CONTENT-BEARING chunk not cited by any objective's
+    ``source_chunk_ids`` emit ``SOURCE_CHUNK_UNCITED``; when the uncited rate
+    exceeds ``max_uncited_rate`` emit the aggregate ``SOURCE_CHUNK_COVERAGE_LOW``.
+    DISTINCT issue codes so this is NOT masked by the section-level arm. Returns
+    the issue list (all warning-severity day-1).
+    """
+    issues: List[GateIssue] = []
+    cited = _collect_cited_chunk_ids(objectives)
+    content = [c for c in chunks if _is_content_bearing_chunk(c)]
+    if not content:
+        return issues
+
+    uncited = [c for c in content if _chunk_id(c) and _chunk_id(c) not in cited]
+    n_content = len(content)
+    n_uncited = len(uncited)
+
+    for rec in uncited:
+        if len(issues) >= _ISSUE_LIST_CAP:
+            break
+        cid = _chunk_id(rec)
+        issues.append(
+            GateIssue(
+                severity="warning",
+                code="SOURCE_CHUNK_UNCITED",
+                message=(
+                    f"Content-bearing chunk {cid!r} "
+                    f"(type={rec.get('chunk_type', '?')}, "
+                    f"{_chunk_word_count(rec)} words) is cited by NO synthesized "
+                    f"objective's source_chunk_ids. Its teachable content has no "
+                    f"CO/TO — downstream content generation authors no page for "
+                    f"it (the chunk-level citation gap the section-level cosine "
+                    f"arm is blind to)."
+                ),
+                location=f"dart_chunks[chunk_id={cid}]",
+                suggestion=(
+                    "Enable ED4ALL_OBJECTIVE_SOURCE_BACKFILL to promote a "
+                    "dedup-discarded grounded candidate citing this chunk, or "
+                    "confirm the chunk is non-instructional."
+                ),
+            )
+        )
+
+    uncited_rate = (n_uncited / n_content) if n_content else 0.0
+    if n_content and uncited_rate > max_uncited_rate:
+        issues.append(
+            GateIssue(
+                severity="warning",
+                code="SOURCE_CHUNK_COVERAGE_LOW",
+                message=(
+                    f"{n_uncited}/{n_content} content-bearing chunk(s) "
+                    f"({uncited_rate:.2%}) are cited by no synthesized "
+                    f"objective, exceeding the warn floor "
+                    f"{max_uncited_rate:.2%}. Single-link dedup likely chained "
+                    f"distinct skills, discarding their statements and demoting "
+                    f"their chunks to uncited supporting evidence."
+                ),
+                location="dart_chunks",
+            )
+        )
+
+    if capture is not None:
+        try:
+            capture.log_decision(
+                decision_type=_DECISION_TYPE,
+                decision=(
+                    f"chunk_coverage:{n_content - n_uncited}/{n_content} cited"
+                ),
+                rationale=(
+                    f"I3 chunk arm (pure set-membership): "
+                    f"content_bearing_chunks={n_content}, "
+                    f"cited={n_content - n_uncited}, uncited={n_uncited}, "
+                    f"uncited_rate={uncited_rate:.4f}, "
+                    f"max_uncited_rate={max_uncited_rate:.4f}. Distinct from the "
+                    f"section-level cosine arm so the chunk-citation gap is not "
+                    f"masked by section coverage."
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — capture best-effort
+            logger.debug("chunk-arm capture failed (%s); continuing", exc)
+
+    return issues
+
+
 class SourceCoverageValidator:
     """WS6a — Source→objective coverage-audit gate at ``course_planning``.
 
@@ -273,21 +481,27 @@ class SourceCoverageValidator:
         *,
         coverage_floor: float = DEFAULT_COVERAGE_FLOOR,
         max_uncovered_rate: float = DEFAULT_MAX_UNCOVERED_RATE,
+        max_uncited_chunk_rate: float = DEFAULT_MAX_UNCITED_CHUNK_RATE,
         embedder: Optional[SentenceEmbedder] = None,
     ) -> None:
         self._coverage_floor = coverage_floor
         self._max_uncovered_rate = max_uncovered_rate
+        self._max_uncited_chunk_rate = max_uncited_chunk_rate
         # Lazy-load on validate() so test injections take precedence.
         self._embedder_override = embedder
 
-    def _noop_pass(self, gate_id: str) -> GateResult:
+    def _noop_pass(
+        self, gate_id: str, extra_issues: Optional[List[GateIssue]] = None
+    ) -> GateResult:
+        issues = list(extra_issues or [])
+        critical = sum(1 for i in issues if i.severity == "critical")
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
             validator_version=self.version,
-            passed=True,
+            passed=critical == 0,
             score=1.0,
-            issues=[],
+            issues=issues,
         )
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
@@ -298,6 +512,9 @@ class SourceCoverageValidator:
         )
         max_uncovered_rate = float(
             inputs.get("max_uncovered_rate", self._max_uncovered_rate)
+        )
+        max_uncited_chunk_rate = float(
+            inputs.get("max_uncited_chunk_rate", self._max_uncited_chunk_rate)
         )
 
         objectives, obj_err = _coerce_dict(
@@ -312,6 +529,21 @@ class SourceCoverageValidator:
         if obj_err is not None or objectives is None:
             return self._noop_pass(gate_id)
 
+        # ---- I3 CHUNK ARM — pure set-membership, embedding-FREE. ----------
+        # Runs unconditionally (independent of the embedder) so the chunk-level
+        # citation gap is measured even when [embedding] extras are absent. Its
+        # DISTINCT issue codes (SOURCE_CHUNK_UNCITED / SOURCE_CHUNK_COVERAGE_LOW)
+        # are NOT masked by the already-passing section-level cosine arm.
+        chunk_issues: List[GateIssue] = []
+        chunks = _load_chunks(inputs)
+        if chunks:
+            chunk_issues = run_chunk_coverage_arm(
+                objectives=objectives,
+                chunks=chunks,
+                max_uncited_rate=max_uncited_chunk_rate,
+                capture=capture,
+            )
+
         structure, struct_err = _coerce_dict(
             inputs,
             explicit_key="textbook_structure",
@@ -319,14 +551,16 @@ class SourceCoverageValidator:
             code_prefix="SOURCE_COVERAGE_STRUCTURE",
         )
         if struct_err is not None or structure is None:
-            return self._noop_pass(gate_id)
+            # Section arm can't run, but the chunk arm already measured the
+            # citation gap — surface its issues rather than dropping them.
+            return self._noop_pass(gate_id, extra_issues=chunk_issues)
 
         obj_statements = _collect_objective_statements(objectives)
         sections = _iter_content_sections(structure)
 
-        # Nothing to audit → graceful no-op pass.
+        # Nothing to audit → graceful no-op pass (chunk arm issues survive).
         if not obj_statements or not sections:
-            return self._noop_pass(gate_id)
+            return self._noop_pass(gate_id, extra_issues=chunk_issues)
 
         embedder_strict = is_strict_mode()
         embedder = self._embedder_override or try_load_embedder()
@@ -344,33 +578,40 @@ class SourceCoverageValidator:
                     code="EMBEDDING_DEPS_MISSING",
                     embedder_strict=embedder_strict,
                 )
+            # I3 — the chunk arm runs WITHOUT embeddings, so emit its issues
+            # alongside EMBEDDING_DEPS_MISSING. The citation arm keeps running.
+            degrade_issues: List[GateIssue] = [
+                GateIssue(
+                    severity="warning",
+                    code="EMBEDDING_DEPS_MISSING",
+                    message=(
+                        "sentence-transformers extras not installed; "
+                        "WS6a source-coverage SECTION arm skipped. Install via "
+                        "`pip install -e .[embedding]` to enable. (The I3 "
+                        "chunk-citation arm still ran.)"
+                    ),
+                )
+            ]
+            degrade_issues.extend(chunk_issues)
+            critical = sum(1 for i in degrade_issues if i.severity == "critical")
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
                 validator_version=self.version,
-                passed=True,
+                passed=critical == 0,
                 score=1.0,
-                issues=[
-                    GateIssue(
-                        severity="warning",
-                        code="EMBEDDING_DEPS_MISSING",
-                        message=(
-                            "sentence-transformers extras not installed; "
-                            "WS6a source-coverage gate skipped. Install via "
-                            "`pip install -e .[embedding]` to enable."
-                        ),
-                    )
-                ],
+                issues=degrade_issues,
             )
 
         # Encode the objective statements once (batched when supported).
         obj_vecs: List[Any] = self._encode_batch(embedder, obj_statements)
         obj_vecs = [v for v in obj_vecs if v is not None]
         if not obj_vecs:
-            # Every objective encode failed — cannot adjudicate; no-op pass.
-            return self._noop_pass(gate_id)
+            # Every objective encode failed — cannot adjudicate; no-op pass
+            # (chunk arm issues survive).
+            return self._noop_pass(gate_id, extra_issues=chunk_issues)
 
-        issues: List[GateIssue] = []
+        issues: List[GateIssue] = list(chunk_issues)
         audited = 0
         covered_count = 0
         uncovered_count = 0
@@ -504,4 +745,6 @@ __all__ = [
     "SourceCoverageValidator",
     "DEFAULT_COVERAGE_FLOOR",
     "DEFAULT_MAX_UNCOVERED_RATE",
+    "DEFAULT_MAX_UNCITED_CHUNK_RATE",
+    "run_chunk_coverage_arm",
 ]

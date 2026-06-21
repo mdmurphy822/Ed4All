@@ -393,3 +393,145 @@ def test_router_resolves_source_coverage_to_chapter_objective_builder():
         f"silently skip via __no_builder_registered__."
     )
     assert r.builders[dotted] is _build_chapter_objective_coverage_inputs
+
+
+# --------------------------------------------------------------------- #
+# I3 — chunk-level coverage arm (pure set-membership, embedding-free)
+# --------------------------------------------------------------------- #
+
+
+def _chunk(cid, ctype="explanation", words=60, lo_refs=None):
+    return {
+        "id": cid,
+        "chunk_type": ctype,
+        "word_count": words,
+        "text": "word " * words,
+        "learning_outcome_refs": lo_refs or [],
+    }
+
+
+def _objectives_citing(chunk_ids):
+    """A synthesized-objectives doc whose COs cite ``chunk_ids``."""
+    los = [
+        {"id": f"CO-{i:02d}", "statement": f"objective {i}",
+         "source_chunk_ids": [cid]}
+        for i, cid in enumerate(chunk_ids, start=1)
+    ]
+    return {
+        "learning_outcomes": los,
+        "terminal_objectives": [],
+        "chapter_objectives": [{"chapter": "Week 1", "objectives": los}],
+    }
+
+
+def test_chunk_arm_flags_uncited_content_chunks():
+    """57/76 content chunks cited → 19 SOURCE_CHUNK_UNCITED + COVERAGE_LOW."""
+    all_ids = [f"chunk_{i:04d}" for i in range(76)]
+    cited_ids = all_ids[:57]
+    chunks = [_chunk(cid) for cid in all_ids]
+    objectives = _objectives_citing(cited_ids)
+
+    # No structure → section arm no-op-passes; chunk arm still runs.
+    v = SourceCoverageValidator()
+    result = v.validate(
+        {
+            "synthesized_objectives": objectives,
+            "dart_chunks": chunks,
+        }
+    )
+    uncited = [i for i in result.issues if i.code == "SOURCE_CHUNK_UNCITED"]
+    assert len(uncited) == 19
+    assert any(i.code == "SOURCE_CHUNK_COVERAGE_LOW" for i in result.issues)
+    # Day-1 warning-only → still passes.
+    assert result.passed is True
+
+
+def test_chunk_arm_full_coverage_clean():
+    """76/76 content chunks cited → no chunk-arm issues."""
+    all_ids = [f"chunk_{i:04d}" for i in range(76)]
+    chunks = [_chunk(cid) for cid in all_ids]
+    objectives = _objectives_citing(all_ids)
+    v = SourceCoverageValidator()
+    result = v.validate(
+        {"synthesized_objectives": objectives, "dart_chunks": chunks}
+    )
+    assert not any(
+        i.code in ("SOURCE_CHUNK_UNCITED", "SOURCE_CHUNK_COVERAGE_LOW")
+        for i in result.issues
+    )
+
+
+def test_chunk_arm_excludes_non_content_bearing():
+    """Exercises / assessment_items / sub-floor stubs are NOT audited."""
+    chunks = [
+        _chunk("c_expl", ctype="explanation", words=60),   # content-bearing
+        _chunk("c_ex", ctype="exercise", words=200),        # NOT content
+        _chunk("c_as", ctype="assessment_item", words=200), # NOT content
+        _chunk("c_stub", ctype="explanation", words=10),    # below word floor
+    ]
+    # Objectives cite NOTHING.
+    objectives = _objectives_citing([])
+    v = SourceCoverageValidator()
+    result = v.validate(
+        {"synthesized_objectives": objectives, "dart_chunks": chunks}
+    )
+    uncited = [i for i in result.issues if i.code == "SOURCE_CHUNK_UNCITED"]
+    # Only the one content-bearing explanation chunk is flagged.
+    assert len(uncited) == 1
+    assert "c_expl" in uncited[0].message
+
+
+def test_chunk_arm_runs_without_embeddings(monkeypatch):
+    """Chunk arm fires even when the embedder is absent (EMBEDDING_DEPS_MISSING)."""
+    import lib.validators.source_coverage as scmod
+
+    monkeypatch.setattr(scmod, "try_load_embedder", lambda: None)
+    all_ids = [f"chunk_{i:04d}" for i in range(10)]
+    chunks = [_chunk(cid) for cid in all_ids]
+    objectives = _objectives_citing(all_ids[:5])  # 5/10 uncited
+    structure = _structure([_section("SEC alpha", "SEC alpha" + _BODY)])
+    v = SourceCoverageValidator()  # no embedder override → try_load → None
+    result = v.validate(
+        {
+            "synthesized_objectives": objectives,
+            "textbook_structure": structure,
+            "dart_chunks": chunks,
+        }
+    )
+    codes = [i.code for i in result.issues]
+    assert "EMBEDDING_DEPS_MISSING" in codes  # section arm degraded
+    assert "SOURCE_CHUNK_UNCITED" in codes    # chunk arm STILL ran
+    assert result.passed is True
+
+
+def test_chunk_arm_via_dart_chunks_path(tmp_path):
+    """dart_chunks_path (chunks.jsonl on disk) is loaded and audited."""
+    import json
+
+    all_ids = [f"chunk_{i:04d}" for i in range(5)]
+    chunks = [_chunk(cid) for cid in all_ids]
+    p = tmp_path / "chunks.jsonl"
+    p.write_text("\n".join(json.dumps(c) for c in chunks), encoding="utf-8")
+    objectives = _objectives_citing(all_ids[:2])  # 3 uncited
+    v = SourceCoverageValidator()
+    result = v.validate(
+        {"synthesized_objectives": objectives, "dart_chunks_path": str(p)}
+    )
+    uncited = [i for i in result.issues if i.code == "SOURCE_CHUNK_UNCITED"]
+    assert len(uncited) == 3
+
+
+def test_coverage_builder_routes_dart_chunks_path():
+    """I3 — the coverage builder routes dart_chunks_path for the chunk arm."""
+    from MCP.hardening.gate_input_routing import (
+        _build_chapter_objective_coverage_inputs,
+    )
+
+    phase_outputs = {
+        "objective_extraction": {"textbook_structure_path": "/tmp/ts.json"},
+        "course_planning": {"synthesized_objectives_path": "/tmp/obj.json"},
+        "chunking": {"dart_chunks_path": "/tmp/chunks.jsonl"},
+    }
+    inputs, missing = _build_chapter_objective_coverage_inputs(phase_outputs, {})
+    assert inputs.get("dart_chunks_path") == "/tmp/chunks.jsonl"
+    assert missing == []  # all inputs optional from router POV

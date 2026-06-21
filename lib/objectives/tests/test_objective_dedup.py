@@ -418,3 +418,122 @@ def test_embeddings_absent_passthrough():
     assert result.available is False
     assert len(result.canonical) == 2  # no collapse
     assert result.clusters == [[0], [1]]
+
+
+# --------------------------------------------------------------------- #
+# I3 PRONG A — distinct-skill SPLIT
+# --------------------------------------------------------------------- #
+
+
+class _AngleEmbed:
+    """Embed stub returning a FIXED vector per statement tag.
+
+    Each candidate statement starts with a tag (``A:``/``B:``/``C:``); the
+    stub maps the tag to a 3-D unit vector so the test pins cosines EXACTLY
+    (cos(A,B)=0.90, cos(B,C)=0.90, cos(A,C)=0.60) regardless of the bag-of-words
+    content — letting the statement TEXT carry the distinct skill signature
+    independently of the geometry. ``resolved.kind`` is non-"fake" so the
+    anti-poisoning gate passes (allow_fake not required).
+    """
+
+    class _R:
+        kind = "fake-test"
+
+    def __init__(self, tag_vecs):
+        self._tag_vecs = tag_vecs
+        self.resolved = self._R()
+
+    def encode_batch(self, texts):
+        out = []
+        for t in texts:
+            tag = str(t).split(":", 1)[0] + ":"
+            out.append(list(self._tag_vecs.get(tag, [1.0, 0.0, 0.0])))
+        return out
+
+
+def _unit_from_cosines():
+    """Build 3 unit vectors with cos(A,B)=0.90, cos(B,C)=0.90, cos(A,C)=0.60."""
+    import math
+
+    # A = e0. B at angle so A.B = 0.90.
+    A = [1.0, 0.0, 0.0]
+    bx = 0.90
+    by = math.sqrt(1 - bx * bx)
+    B = [bx, by, 0.0]
+    # C: C.A = 0.60, C.B = 0.90. Solve cx=0.60; cx*bx + cy*by = 0.90.
+    cx = 0.60
+    cy = (0.90 - cx * bx) / by
+    cz = math.sqrt(max(0.0, 1 - cx * cx - cy * cy))
+    C = [cx, cy, cz]
+    return A, B, C
+
+
+def test_distinct_skill_split_separates_chained_skills():
+    """cos(A,B)=cos(B,C)=0.90, cos(A,C)=0.60 + distinct sigs → split to ≥2 COs.
+
+    Single-link at threshold 0.85 chains A-B-C into ONE cluster (A,C never
+    directly similar). With the split ON, A (order-of-operations) and C
+    (associative-property) keep their OWN representative statements instead of
+    only the best-grounded one surviving.
+    """
+    A, B, C = _unit_from_cosines()
+    embed = _AngleEmbed({"A:": A, "B:": B, "C:": C})
+    grounded = [
+        _cand("A: apply the order of operations to evaluate", ["c1"], ent=0.95),
+        _cand("B: order of operations and simplify expression", ["c2"], ent=0.80),
+        _cand("C: use the associative property to group terms", ["c3"], ent=0.90),
+    ]
+    # Split OFF (default) → single-link chains all 3 into ONE canonical CO.
+    off = dedup_candidates(grounded, embed=embed, threshold=0.85)
+    assert len(off.canonical) == 1
+    assert off.clusters_split_for_distinct_skill == 0
+
+    # Split ON → ≥2 canonical COs; order-of-operations + associative each kept.
+    on = dedup_candidates(
+        grounded, embed=embed, threshold=0.85, distinct_skill_split=True,
+    )
+    assert len(on.canonical) >= 2
+    assert on.clusters_split_for_distinct_skill == 1
+    assert on.distinct_skill_count >= 2
+    statements = " || ".join(c["statement"].lower() for c in on.canonical)
+    assert "order of operations" in statements
+    assert "associative property" in statements
+
+
+def test_distinct_skill_split_same_signature_still_collapses():
+    """Same-signature restatements at cos≥0.95 still collapse to 1 even split-on.
+
+    Two paraphrases of the SAME skill (order-of-operations) must NOT split — the
+    0.88 same-signature collapse is preserved for exact restatements.
+    """
+    import math
+
+    near = [1.0, 0.0, 0.0]
+    other = [math.cos(0.1), math.sin(0.1), 0.0]  # cos ≈ 0.995
+    embed = _AngleEmbed({"A:": near, "B:": other})
+    grounded = [
+        _cand("A: apply order of operations to evaluate expressions", ["c1"], ent=0.9),
+        _cand("B: use order of operations to evaluate the expression", ["c2"], ent=0.8),
+    ]
+    on = dedup_candidates(
+        grounded, embed=embed, threshold=0.85, distinct_skill_split=True,
+    )
+    assert len(on.canonical) == 1  # same skill → no split
+    assert on.clusters_split_for_distinct_skill == 0
+    # Chunks still union onto the survivor.
+    assert set(on.canonical[0]["source_chunk_ids"]) == {"c1", "c2"}
+
+
+def test_distinct_skill_split_off_byte_stable(monkeypatch):
+    """Flag OFF (env unset) → identical canonical/cluster shape to pre-I3."""
+    monkeypatch.delenv("ED4ALL_OBJECTIVE_DISTINCT_SKILL_SPLIT", raising=False)
+    grounded = [
+        _cand("Define a prime number clearly.", ["c1"], ent=0.95),
+        _cand("Define what a prime number is clearly.", ["c2"], ent=0.80),
+        _cand("Compute the area of a triangle formula.", ["c3"], ent=0.90),
+    ]
+    result = dedup_candidates(
+        grounded, embed=FakeEmbed(), threshold=0.5, allow_fake=True,
+    )
+    assert len(result.canonical) == 2
+    assert result.clusters_split_for_distinct_skill == 0

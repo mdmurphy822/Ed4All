@@ -961,3 +961,116 @@ def test_unparseable_response_keeps_originals(monkeypatch):
         e for e in capture.events if e.get("decision_type") == _DECISION_TYPE
     ]
     assert len(review_events) == 1
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-21 — review must sub-chunk a large pre-week-slicing 'all' group so it
+# does not make one huge call that blows the read timeout, and must surface
+# chunks_failed (the fail-closed signal the _plan_course_structure caller reads
+# to refuse downstream when the review is enabled but incomplete).
+# ---------------------------------------------------------------------------
+
+
+def _single_all_group_objectives(n_cos: int) -> Dict[str, Any]:
+    """``n_cos`` COs in ONE ``'all'`` group (the pre-week-slicing shape the
+    caller actually passes) + one TO they roll up to."""
+    terminals = [
+        {
+            "id": "TO-01",
+            "statement": "Apply arithmetic operations to algebraic expressions",
+            "bloom_level": "apply",
+            "bloom_verb": "apply",
+            "abcd": {
+                "audience": "students",
+                "behavior": {"verb": "apply", "action_object": "operations"},
+                "condition": "given expressions",
+                "degree": "correctly",
+            },
+            "source_refs": [],
+        }
+    ]
+    cos = [
+        {
+            "id": f"CO-{i:02d}",
+            "statement": f"Apply arithmetic operation number {i} to expressions",
+            "bloom_level": "apply",
+            "bloom_verb": "apply",
+            "abcd": {
+                "audience": "students",
+                "behavior": {"verb": "apply", "action_object": f"operation {i}"},
+                "condition": "given expressions",
+                "degree": "correctly",
+            },
+            "source_refs": [{"ref": "ch1", "chunk_ids": [f"chunk_{i:03d}"]}],
+            "terminal_id": "TO-01",
+        }
+        for i in range(1, n_cos + 1)
+    ]
+    return {
+        "terminals": terminals,
+        "chapter_objectives": [{"chapter": "all", "objectives": cos}],
+    }
+
+
+def test_review_subchunks_large_all_group(monkeypatch):
+    """A 25-CO 'all' group is split into ceil(25/12)=3 CO chunks + 1 TO chunk;
+    pre-fix it was ONE 25-CO call (the 97-CO read-timeout root cause)."""
+    from lib.objectives.objective_review import _MAX_COS_PER_REVIEW_CHUNK
+
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_REVIEW_PROVIDER", "nvidia")
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-key-not-real")
+    obj = _single_all_group_objectives(25)
+
+    seen_sizes = []
+
+    def _route(review_ids):
+        # Echo each reviewed id with a benign no-op edit so the chunk parses as
+        # a successful review (an empty adjusted-map is treated as a failure).
+        seen_sizes.append(len(review_ids))
+        return json.dumps(
+            {"adjusted": {i: {"bloom_level": "apply"} for i in review_ids}}
+        )
+
+    _patch_dispatch_per_chunk(monkeypatch, _route)
+    result = review_objectives(
+        terminals=obj["terminals"],
+        chapter_objectives=obj["chapter_objectives"],
+        course_name="ALG_101",
+        capture=_Capture(),
+        embedder=_Embed(),
+        client=object(),
+    )
+    import math
+    expected_co_chunks = math.ceil(25 / _MAX_COS_PER_REVIEW_CHUNK)
+    # Sub-chunking proof: 3 CO sub-chunks (was ONE 25-CO call pre-fix) + 1 TO.
+    assert result["chunks_attempted"] == expected_co_chunks + 1
+    # No CO sub-chunk exceeds the cap.
+    assert seen_sizes and max(seen_sizes) <= _MAX_COS_PER_REVIEW_CHUNK
+
+
+def test_review_surfaces_chunks_failed_for_fail_closed(monkeypatch):
+    """A sub-chunk that fails (after retries) surfaces chunks_failed>0 — the
+    signal the _plan_course_structure caller reads to fail closed instead of
+    shipping a course on partially-reviewed objectives."""
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_REVIEW_PROVIDER", "nvidia")
+    monkeypatch.setenv("NVIDIA_API_KEY", "test-key-not-real")
+    obj = _single_all_group_objectives(20)
+
+    def _route(review_ids):
+        # Fail the chunk that contains CO-01 (simulating a read timeout);
+        # other chunks return clean.
+        if "CO-01" in review_ids:
+            raise RuntimeError("simulated read timeout")
+        return json.dumps({"adjusted": {}})
+
+    _patch_dispatch_per_chunk(monkeypatch, _route)
+    result = review_objectives(
+        terminals=obj["terminals"],
+        chapter_objectives=obj["chapter_objectives"],
+        course_name="ALG_101",
+        capture=_Capture(),
+        embedder=_Embed(),
+        client=object(),
+    )
+    assert result["enabled"] is True
+    assert result["chunks_failed"] >= 1

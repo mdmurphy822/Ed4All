@@ -83,6 +83,17 @@ ENV_MAX_CHUNKS_PER_OBJECTIVE = "ED4ALL_OBJECTIVE_MAX_CHUNKS_PER_OBJECTIVE"
 _DEFAULT_CHUNK_RELEVANCE_FLOOR = 0.30
 ENV_CHUNK_RELEVANCE_FLOOR = "ED4ALL_OBJECTIVE_CHUNK_RELEVANCE_FLOOR"
 
+#: I3 PRONG A — distinct-skill SPLIT. Default OFF (opt-in). When on, a
+#: post-clustering pass re-surfaces a DISTINCT named skill that single-link
+#: transitively chained into a broader cluster (e.g. "order of operations /
+#: PEMDAS" chains into a "simplify expressions" cluster, loses its statement,
+#: and demotes to supporting evidence). The 0.88 same-signature collapse for
+#: exact restatements is preserved; only clusters spanning ≥2 DISTINCT skill
+#: signatures are split. ANTI-FABRICATION: the split only re-surfaces an
+#: already-synthesized, already-grounded candidate statement — never invents one.
+_DEFAULT_DISTINCT_SKILL_SPLIT = False
+ENV_DISTINCT_SKILL_SPLIT = "ED4ALL_OBJECTIVE_DISTINCT_SKILL_SPLIT"
+
 
 @dataclass(frozen=True)
 class DedupResult:
@@ -99,6 +110,12 @@ class DedupResult:
     pruned_chunk_total: int = 0
     #: Fix 1A — the resolved per-objective cap (top-K) used for this run.
     max_chunks_per_objective: int = 0
+    #: I3 PRONG A — number of clusters re-partitioned by the distinct-skill
+    #: split (0 when the split is off or no cluster spanned ≥2 skills).
+    clusters_split_for_distinct_skill: int = 0
+    #: I3 PRONG A — total distinct named-skill groups after the split (== number
+    #: of canonical COs the split produced; == len(clusters) when split off).
+    distinct_skill_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -109,6 +126,10 @@ class DedupResult:
             "available": self.available,
             "pruned_chunk_total": self.pruned_chunk_total,
             "max_chunks_per_objective": self.max_chunks_per_objective,
+            "clusters_split_for_distinct_skill": (
+                self.clusters_split_for_distinct_skill
+            ),
+            "distinct_skill_count": self.distinct_skill_count,
         }
 
 
@@ -382,6 +403,173 @@ def resolve_chunk_relevance_floor(floor: Optional[float] = None) -> float:
     return _DEFAULT_CHUNK_RELEVANCE_FLOOR
 
 
+def resolve_distinct_skill_split(enabled: Optional[bool] = None) -> bool:
+    """Resolve the I3 PRONG-A distinct-skill split toggle: arg → env → default.
+
+    Default OFF (opt-in). Truthy env values (``1``/``true``/``yes``/``on``)
+    enable; anything else (incl. garbage) → the default. Mirrors the
+    parse-with-fallback posture of the other ``resolve_*`` helpers.
+    """
+    if enabled is not None:
+        return bool(enabled)
+    raw = str(os.environ.get(ENV_DISTINCT_SKILL_SPLIT, "")).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return _DEFAULT_DISTINCT_SKILL_SPLIT
+
+
+#: Tokens that carry no teachable-skill signal — stripped from the keyphrase
+#: signature so "simplify expressions" and "simplify the expression" collapse
+#: but "order operations" stays distinct from "simplify expressions".
+_SKILL_STOPWORDS = frozenset(
+    {
+        "the", "a", "an", "of", "to", "and", "or", "in", "on", "for", "with",
+        "by", "from", "as", "at", "is", "are", "be", "that", "this", "these",
+        "those", "it", "its", "their", "your", "you", "we", "they", "given",
+        "using", "use", "able", "students", "student", "will", "can", "each",
+        "into", "out", "up", "down", "than", "then", "when", "which", "what",
+        "how", "why", "where", "expression", "expressions", "problem",
+        "problems", "value", "values", "number", "numbers", "real", "world",
+        "following", "appropriate", "correctly", "clearly", "properly",
+    }
+)
+
+
+def _skill_keyphrase_tokens(statement: str) -> frozenset:
+    """Deterministic content-token signature of a statement's NAMED skill.
+
+    Lowercases, strips punctuation, drops Bloom verbs (the action) + generic
+    stopwords (the scaffolding), and returns the residual content tokens — the
+    skill's *object*. Two statements teaching the SAME skill share most of
+    these tokens; two distinct skills ("order operations" vs "simplify
+    expression" vs "associative property") do not. CHEAP + embedding-OPTIONAL
+    (pure string ops) so the split is never a new fail-closed dependency.
+    """
+    import re as _re
+
+    try:
+        from lib.ontology.bloom import get_all_verbs
+
+        verbs = {v.lower() for v in get_all_verbs()}
+    except Exception:  # noqa: BLE001 — bloom load must never break the split
+        verbs = set()
+
+    toks = _re.findall(r"[a-z]+", str(statement).lower())
+    out = {
+        t
+        for t in toks
+        if len(t) > 2 and t not in _SKILL_STOPWORDS and t not in verbs
+    }
+    return frozenset(out)
+
+
+def _skill_signature(candidate: Dict[str, Any]) -> Optional[frozenset]:
+    """Return a candidate's distinct-skill signature, or None if empty.
+
+    Combines the statement keyphrase tokens with any ``concept_tags`` /
+    ``domain_concept_vocabulary`` the candidate carries (those are explicit
+    named-concept signals). An empty residual → ``None`` (no nameable skill;
+    such a candidate never forces a split).
+    """
+    sig: set = set(_skill_keyphrase_tokens(_statement(candidate)))
+    for key in ("concept_tags", "domain_concepts", "domain_concept_vocabulary"):
+        raw = candidate.get(key)
+        if isinstance(raw, list):
+            for tag in raw:
+                tok = str(tag).strip().lower()
+                if tok:
+                    sig.add(tok)
+    return frozenset(sig) if sig else None
+
+
+def _signatures_distinct(a: frozenset, b: frozenset, *, min_jaccard: float = 0.34) -> bool:
+    """True when two skill signatures name DISTINCT skills.
+
+    Jaccard overlap below ``min_jaccard`` → distinct. Exact restatements share
+    nearly all tokens (Jaccard → 1.0) and stay merged; "order operations" vs
+    "simplify associative property" share ~0 and split. The floor is
+    deliberately low (precision over recall — only split clearly-distinct
+    skills, never near-restatements). Two empty signatures are NOT distinct.
+    """
+    if not a or not b:
+        return False
+    inter = len(a & b)
+    union = len(a | b)
+    if union == 0:
+        return False
+    return (inter / union) < min_jaccard
+
+
+def split_clusters_for_distinct_skills(
+    clusters: List[List[int]],
+    grounded: List[Dict[str, Any]],
+) -> Tuple[List[List[int]], int, int]:
+    """I3 PRONG A — split clusters spanning ≥2 DISTINCT named skills.
+
+    Single-link cosine clustering TRANSITIVELY chains distinct-but-related
+    skills (cos(A,B)≥t ∧ cos(B,C)≥t ⇒ A,B,C one cluster even if cos(A,C) is
+    low + A,C are distinct skills). The best-grounded rep keeps ONE statement;
+    the rest's statements are discarded. This pass re-partitions each cluster
+    by skill signature so every distinct named skill keeps its OWN
+    representative.
+
+    Algorithm (deterministic, embedding-FREE): within a cluster, greedily
+    assign members to skill-groups — a member joins an existing group iff its
+    signature is NOT distinct from the group's seed signature; otherwise it
+    seeds a new group. Members with no nameable signature attach to the first
+    group (they don't force a split). Returns
+    ``(new_clusters, clusters_split, distinct_skill_count)`` where
+    ``new_clusters`` preserves the deterministic min-index ordering contract.
+
+    ANTI-FABRICATION: this only RE-PARTITIONS existing candidate indices — it
+    never adds, removes, or invents a member.
+    """
+    new_clusters: List[List[int]] = []
+    clusters_split = 0
+    distinct_skill_count = 0
+
+    for cluster in clusters:
+        if len(cluster) < 2:
+            new_clusters.append(list(cluster))
+            distinct_skill_count += 1 if cluster else 0
+            continue
+
+        # Build per-member signatures (None = no nameable skill).
+        sigs = {idx: _skill_signature(grounded[idx]) for idx in cluster}
+
+        # Greedy skill-grouping: each group has a seed signature.
+        groups: List[Dict[str, Any]] = []  # {"seed": frozenset, "members": [int]}
+        for idx in cluster:  # cluster is ascending → deterministic
+            sig = sigs[idx]
+            if sig is None:
+                # No nameable skill → attach to the first group (or seed one).
+                if groups:
+                    groups[0]["members"].append(idx)
+                else:
+                    groups.append({"seed": frozenset(), "members": [idx]})
+                continue
+            placed = False
+            for grp in groups:
+                seed = grp["seed"]
+                if seed and not _signatures_distinct(sig, seed):
+                    grp["members"].append(idx)
+                    placed = True
+                    break
+            if not placed:
+                groups.append({"seed": sig, "members": [idx]})
+
+        if len(groups) > 1:
+            clusters_split += 1
+        distinct_skill_count += len(groups)
+
+        for grp in groups:
+            new_clusters.append(sorted(grp["members"]))
+
+    # Re-impose the deterministic ordering contract (by min member index).
+    new_clusters.sort(key=lambda g: min(g) if g else 0)
+    return new_clusters, clusters_split, distinct_skill_count
+
+
 def _require_strict() -> bool:
     return str(os.environ.get(ENV_REQUIRE_EMBEDDINGS, "")).strip().lower() in {
         "1",
@@ -527,6 +715,44 @@ def _emit_prune_capture(
         logger.debug("objective_chunk_prune capture failed (%s); continuing", exc)
 
 
+def _emit_split_capture(
+    capture: Any,
+    *,
+    clusters_split: int,
+    distinct_skill_count: int,
+    pre_split_clusters: int,
+    threshold: float,
+) -> None:
+    """Best-effort ``objective_distinct_skill_split`` capture (never raises)."""
+    try:
+        capture.log_decision(
+            decision_type="objective_distinct_skill_split",
+            decision=(
+                f"split {clusters_split} cluster(s) into {distinct_skill_count} "
+                f"distinct-skill group(s)"
+            ),
+            rationale=(
+                f"I3 PRONG A: single-link cosine clustering at threshold "
+                f"{threshold:.2f} transitively chained distinct named skills "
+                f"into shared clusters ({pre_split_clusters} near-dup pair(s)); "
+                f"re-partitioned {clusters_split} multi-skill cluster(s) by "
+                f"verb-object/keyphrase + concept-tag signature so each distinct "
+                f"named skill keeps its OWN representative statement + grounding "
+                f"(total {distinct_skill_count} distinct skills). "
+                f"Anti-fabrication: re-partition of already-synthesized "
+                f"candidate statements only — no statement invented."
+            ),
+            alternatives_considered=[
+                "keep single-link clusters (discards chained distinct skills' "
+                "statements; their chunks demote to supporting evidence)",
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort
+        logger.debug(
+            "objective_distinct_skill_split capture failed (%s); continuing", exc
+        )
+
+
 def dedup_candidates(
     grounded: List[Dict[str, Any]],
     *,
@@ -536,6 +762,7 @@ def dedup_candidates(
     chunks_by_id: Optional[Dict[str, Any]] = None,
     max_chunks_per_objective: Optional[int] = None,
     chunk_relevance_floor: Optional[float] = None,
+    distinct_skill_split: Optional[bool] = None,
     capture: Optional[Any] = None,
 ) -> DedupResult:
     """Collapse near-duplicate ``grounded`` candidates into a canonical CO set.
@@ -620,6 +847,30 @@ def dedup_candidates(
         vecs, resolved_threshold
     )
 
+    # I3 PRONG A — distinct-skill SPLIT (opt-in). Single-link transitively
+    # chains distinct-but-related skills into one cluster, so the best-grounded
+    # rep keeps ONE statement and the rest's NAMED skills (e.g. "order of
+    # operations") are discarded (their chunks demote to supporting evidence).
+    # Re-partition each cluster by skill signature so every distinct named skill
+    # keeps its OWN representative + grounding. The 0.88 collapse for
+    # same-signature restatements is preserved; ANTI-FABRICATION — the split
+    # only re-partitions existing candidate indices, never invents a statement.
+    split_enabled = resolve_distinct_skill_split(distinct_skill_split)
+    clusters_split = 0
+    distinct_skill_count = len(ordered_clusters)
+    if split_enabled and ordered_clusters:
+        ordered_clusters, clusters_split, distinct_skill_count = (
+            split_clusters_for_distinct_skills(ordered_clusters, grounded)
+        )
+        if clusters_split and capture is not None:
+            _emit_split_capture(
+                capture,
+                clusters_split=clusters_split,
+                distinct_skill_count=distinct_skill_count,
+                pre_split_clusters=near_dup_pairs,
+                threshold=resolved_threshold,
+            )
+
     # Fix 1A — decide ONCE whether the relevance-prune can run. It needs chunk
     # TEXT to embed; absent ``chunks_by_id`` (legacy callers) → graceful degrade
     # to the legacy full-union (logged once, no crash). Mirrors the
@@ -701,6 +952,8 @@ def dedup_candidates(
         available=True,
         pruned_chunk_total=pruned_chunk_total,
         max_chunks_per_objective=resolved_cap,
+        clusters_split_for_distinct_skill=clusters_split,
+        distinct_skill_count=distinct_skill_count,
     )
 
 
@@ -709,6 +962,8 @@ __all__ = [
     "dedup_candidates",
     "cluster_by_cosine",
     "cluster_to_target_k",
+    "split_clusters_for_distinct_skills",
+    "resolve_distinct_skill_split",
     "resolve_dedup_threshold",
     "resolve_to_cluster_threshold",
     "resolve_to_cluster_k",
@@ -721,6 +976,8 @@ __all__ = [
     "_DEFAULT_TO_COS_PER_CLUSTER",
     "_DEFAULT_MAX_CHUNKS_PER_OBJECTIVE",
     "_DEFAULT_CHUNK_RELEVANCE_FLOOR",
+    "_DEFAULT_DISTINCT_SKILL_SPLIT",
+    "ENV_DISTINCT_SKILL_SPLIT",
     "ENV_DEDUP_THRESHOLD",
     "ENV_TO_CLUSTER_THRESHOLD",
     "ENV_TO_CLUSTER_K",

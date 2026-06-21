@@ -138,6 +138,17 @@ _REVIEW_MAX_TOKENS = 24576
 #: path hit.
 _REVIEW_CHUNK_MAX_TOKENS = 24576
 
+#: Max chapter-objectives a SINGLE review call may carry. The chunked path is
+#: sized for small (~6-12 CO) groups, but the call site passes the objectives
+#: as ONE ``'all'`` group BEFORE week-slicing — so a large course (observed
+#: 2026-06-21: 97 COs in one ``'all'`` group after the I3 distinct-skill split
+#: + source backfill) otherwise becomes ONE 97-CO call that blows the read
+#: timeout (3 transport attempts → fail-soft → the whole course gets NO 70B
+#: review). Any group larger than this is sub-chunked into ``<=N``-CO calls so
+#: each call's wall time stays bounded. A group already within the cap makes
+#: exactly one call (byte-stable to the prior per-week behaviour).
+_MAX_COS_PER_REVIEW_CHUNK = 12
+
 #: Default per-request HTTP timeout (seconds) for the review client when
 #: ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` is unset. Mirrors the Courseforge
 #: outline / rewrite providers' generous posture — a single chunk of objective
@@ -1066,22 +1077,36 @@ def review_objectives(
         if not group_cos_view:
             continue
         chapter_label = group.get("chapter")
-        prompt = _render_co_group_prompt(
-            course_name=course_name,
-            chapter_label=chapter_label,
-            group_cos_view=group_cos_view,
-            terminals_view=terminals_view,
-        )
-        chunks.append(
-            (
-                f"co_group:{chapter_label!r}({len(group_cos_view)})",
-                [
-                    {"role": "system",
-                     "content": _system_prompt(len(group_cos_view))},
-                    {"role": "user", "content": prompt},
-                ],
+        # Sub-chunk an oversized group (e.g. the pre-week-slicing ``'all'``
+        # group of 97 COs) into ``<=_MAX_COS_PER_REVIEW_CHUNK``-CO calls so each
+        # call finishes under the read timeout. A within-cap group makes
+        # exactly one call labelled with its plain chapter label (byte-stable
+        # to the prior per-week behaviour); only an oversized group gets the
+        # ``#N`` sub-chunk suffix.
+        n_group = len(group_cos_view)
+        multi = n_group > _MAX_COS_PER_REVIEW_CHUNK
+        for _sub in range(0, n_group, _MAX_COS_PER_REVIEW_CHUNK):
+            sub_cos = group_cos_view[_sub:_sub + _MAX_COS_PER_REVIEW_CHUNK]
+            sub_label = (
+                f"{chapter_label}#{_sub // _MAX_COS_PER_REVIEW_CHUNK + 1}"
+                if multi else chapter_label
             )
-        )
+            prompt = _render_co_group_prompt(
+                course_name=course_name,
+                chapter_label=chapter_label,
+                group_cos_view=sub_cos,
+                terminals_view=terminals_view,
+            )
+            chunks.append(
+                (
+                    f"co_group:{sub_label!r}({len(sub_cos)})",
+                    [
+                        {"role": "system",
+                         "content": _system_prompt(len(sub_cos))},
+                        {"role": "user", "content": prompt},
+                    ],
+                )
+            )
     if terminals_view:
         prompt = _render_terminals_prompt(
             course_name=course_name,
