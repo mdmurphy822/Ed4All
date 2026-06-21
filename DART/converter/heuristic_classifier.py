@@ -71,6 +71,43 @@ _DOTTED_NUMERIC_HEADING = re.compile(
     r"^\s*([A-Z]?\d+(?:\.\d+){1,4})\.?\s+(\S.*)$"
 )
 
+# ---------------------------------------------------------------------------
+# Fused section-opener split (course-quality remediation P0)
+# ---------------------------------------------------------------------------
+#
+# OpenStax (and similar textbooks) emit a section opener whose number +
+# title is fused to its entire Learning-Objectives block onto one long
+# whitespace-collapsed <p>:
+#
+#   "1.1 Introduction to Whole Numbers Learning Objectives By the end of
+#    this section, you will be able to: Identify counting numbers and
+#    whole numbers ..."
+#
+# The dominant span is body-sized (it's a long paragraph), so the
+# font-size promoter never fires, and the standalone-line heading regexes
+# (_PAPER_SECTION_NUMBERED / _DOTTED_NUMERIC_HEADING) require the whole
+# block to BE the heading, so they never match either. The result: the
+# document has no real section headings.
+#
+# This regex extracts the leading "N(.N){0,2} Title" / "Chapter N Title"
+# prefix that precedes a "Learning Objectives" (or "Learning Outcomes")
+# marker, so the classifier can emit a SECTION_HEADING for the title.
+# The title is bounded (1-12 words of title-case-ish prose) so we don't
+# swallow the objectives prose into the heading.
+_FUSED_SECTION_OPENER = re.compile(
+    r"^\s*"
+    # Leading number: "1", "1.1", "1.2.3", or "Chapter 1" / "Section 2".
+    r"(?P<number>(?:(?:Chapter|Section|Unit|Part)\s+)?\d+(?:\.\d+){0,2})"
+    r"\s+"
+    # Title: starts uppercase, up to ~90 chars of title-ish words, then
+    # the Learning-Objectives/Outcomes marker terminates it. Non-greedy
+    # so we stop at the FIRST objectives marker.
+    r"(?P<title>[A-Z][A-Za-z0-9 ,&:'’\-]{2,88}?)"
+    r"\s+"
+    r"Learning\s+(?:Objectives|Outcomes|Goals)\b",
+    re.IGNORECASE,
+)
+
 # Canonical paper / report section keywords. When a standalone block
 # matches one of these (case-insensitive, with optional colon), the
 # classifier promotes it to the corresponding structural role.
@@ -442,6 +479,103 @@ def _is_low_signal_heading(text: str) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Font-size promoter content guard (course-quality remediation P0)
+# ---------------------------------------------------------------------------
+#
+# The font-size heading promoter (``_maybe_promote_by_font_size``) lifts any
+# PARAGRAPH block whose dominant span renders at a heading-sized font ratio.
+# On OpenStax answer-key / exercise pages, numeric runs ("78 41. 900 42.
+# 800", "51,493 ⓐ 1, ⓑ 4 …", "14 < 21 90. 17 < 35") render at a larger or
+# bold font, so they cross the ratio threshold and become spurious <h2>/<h3>.
+# These guards reject such content from font-size promotion.
+
+# Circled-letter answer-key markers (OpenStax sub-part answers).
+_CIRCLED_LETTER_MARKERS = "ⓐⓑⓒⓓⓔ"  # ⓐ ⓑ ⓒ ⓓ ⓔ
+
+# A block whose entire text is digits / arithmetic operators / answer-key
+# punctuation (commas, parens, comparison + arithmetic operators, periods,
+# circled-letter markers, whitespace). Matches numeric answer-key runs.
+_NUMERIC_ANSWER_KEY_RUN = re.compile(
+    rf"^[\d.,()<>≤≥=+\-*/×÷%:;'‘’{_CIRCLED_LETTER_MARKERS}\s]+$"
+)
+
+# Tokens that are "digit-or-operator-shaped" for the density heuristic: a
+# token made entirely of digits / arithmetic / comparison glyphs.
+_DIGIT_OPERATOR_TOKEN = re.compile(
+    rf"^[\d.,()<>≤≥=+\-*/×÷%{_CIRCLED_LETTER_MARKERS}]+$"
+)
+
+
+def _is_low_signal_font_heading(text: str) -> bool:
+    """Low-signal check tuned for the FONT-SIZE promotion path.
+
+    Mirrors :func:`_is_low_signal_heading`'s date / phone / URL / place
+    clauses but DROPS the bare ``upper_only`` clause. A large-font
+    all-caps line ("FOUNDATIONS", "WHOLE NUMBERS") is a legitimate
+    display heading on a textbook — only the regex subheading arm (which
+    has no font signal) needs the all-caps acronym guard. This keeps the
+    font promoter free to lift genuine display headings while still
+    rejecting date stamps, phone numbers, URLs, and place names.
+    """
+    if not text:
+        return True
+    looks_like_place = bool(
+        re.match(r"^[A-Z][a-z]+,\s*[A-Z]{2}$", text)  # "Vancouver, BC"
+    )
+    looks_like_date = bool(
+        re.match(r"^\d{1,2}\s+\w+\s+\d{4}$", text)
+        or re.match(r"^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)", text)
+    )
+    looks_like_phone = bool(re.match(r"^[\d\s\-\+\(\)]+$", text))
+    looks_like_url = "http://" in text.lower() or "www." in text.lower()
+    return looks_like_place or looks_like_date or looks_like_phone or looks_like_url
+
+
+def _is_numeric_answer_key_heading(text: str) -> bool:
+    """Return True when ``text`` looks like an answer-key / numeric run.
+
+    These are the OpenStax exercise-answer artifacts the font-size
+    promoter wrongly lifts into headings. A genuine section title
+    ("1.1 Introduction to Whole Numbers") is title-cased prose and
+    fails every clause below.
+
+    A block is rejected when ANY of:
+
+    * it starts with a digit (after stripping a leading list-style
+      ``N. `` / ``(N) `` marker the answer keys carry) AND carries no
+      run of alphabetic words — i.e. it is digit-led and not a real
+      "N.M Title" heading;
+    * it contains a circled-letter answer marker (ⓐ-ⓔ);
+    * its text is entirely digits / operators / answer-key punctuation;
+    * its digit-or-operator token density exceeds ~0.5.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return False
+
+    # Circled-letter answer markers are an unambiguous answer-key signal.
+    if any(ch in stripped for ch in _CIRCLED_LETTER_MARKERS):
+        return True
+
+    # Pure numeric / operator / answer-key punctuation run.
+    if _NUMERIC_ANSWER_KEY_RUN.match(stripped):
+        return True
+
+    # Digit/operator token density. A heading like "1.1 Introduction to
+    # Whole Numbers" has one numeric token and four word tokens (density
+    # 0.2); an answer run "78 41. 900 42. 800" is ~1.0.
+    tokens = stripped.split()
+    if tokens:
+        digit_op = sum(1 for tok in tokens if _DIGIT_OPERATOR_TOKEN.match(tok))
+        if digit_op / len(tokens) > 0.5:
+            return True
+
+    return False
+
+
 def _keyword_role(text: str) -> BlockRole | None:
     """Return the canonical paper-section role for a keyword line, else None."""
     cleaned = text.strip().rstrip(":").strip().lower()
@@ -616,12 +750,37 @@ class HeuristicClassifier:
           promote to ``SUBSECTION_HEADING``.
         * Dominant-span font ratio >= ``_BOLD_HEADING_RATIO`` AND the
           span is bold → promote to ``SUBSECTION_HEADING``.
+
+        Content guard (course-quality remediation P0): no matter how
+        large the font, a block that fails the heading-shape test is
+        NEVER promoted. OpenStax answer-key / exercise numeric runs
+        ("78 41. 900 42. 800", "51,493 ⓐ 1, ⓑ 4 …", "14 < 21 90.")
+        render at larger/bold fonts but are not headings; promoting
+        them poisons the document's chapter/section structure. The
+        guard rejects numeric/answer-key runs (``_is_numeric_answer_
+        key_heading``) and the existing low-signal-heading shapes
+        (``_is_low_signal_heading`` — date stamps, phone numbers,
+        place names, bare-upper runs).
         """
         if not self._text_spans or not self._median_body_font_size:
             return classified
         # Only act on the fallback paragraph role. Anything else is the
         # regex classifier asserting a stronger role we shouldn't undo.
         if classified.role != BlockRole.PARAGRAPH:
+            return classified
+
+        # Content guard: refuse promotion of answer-key / numeric runs and
+        # other low-signal heading shapes regardless of font size. Uses the
+        # font-tuned low-signal check (keeps large-font all-caps display
+        # headings promotable).
+        guard_text = (classified.raw.text or "").strip()
+        if _is_numeric_answer_key_heading(guard_text) or _is_low_signal_font_heading(
+            guard_text
+        ):
+            logger.debug(
+                "font_size_promotion_rejected: low-signal/answer-key '%s...'",
+                guard_text[:60],
+            )
             return classified
 
         span = _match_block_to_spans(classified.raw, self._text_spans)
@@ -706,6 +865,45 @@ class HeuristicClassifier:
 
         if _EMAIL_HINT.search(text) and len(text) < 200:
             return self._make(block, BlockRole.AUTHOR_AFFILIATION, 0.60)
+
+        # Fused section opener (course-quality remediation P0): a real
+        # section title glued to its Learning-Objectives block on one
+        # long whitespace-collapsed line ("1.1 Introduction to Whole
+        # Numbers Learning Objectives By the end of this section..."). The
+        # font-size promoter can't help (body-sized dominant span) and the
+        # standalone heading regexes require the whole block to BE the
+        # heading. Emit a SECTION_HEADING for the leading "N.M Title"
+        # prefix so the document recovers real section boundaries. Runs
+        # before the chapter/dotted/paper-section rules because those
+        # would otherwise leave the fused block as a naked PARAGRAPH.
+        fused_match = _FUSED_SECTION_OPENER.match(text)
+        if fused_match:
+            number_part = fused_match.group("number").strip()
+            title_part = fused_match.group("title").strip().rstrip(",:;&-")
+            if title_part and not _is_numeric_answer_key_heading(title_part):
+                # Heading level from the dotted depth of the numeric part
+                # (ignore any "Chapter"/"Section" word prefix). "1" / "1.1"
+                # → h2/h3 respectively; a bare chapter number → h2.
+                numeric = re.search(r"\d+(?:\.\d+){0,2}", number_part)
+                dot_count = numeric.group(0).count(".") if numeric else 0
+                level = 2 + dot_count
+                heading_text = f"{number_part} {title_part}".strip()
+                logger.debug(
+                    "fused_section_opener_split: '%s' (number=%s)",
+                    heading_text[:60],
+                    number_part,
+                )
+                return self._make(
+                    block,
+                    BlockRole.SECTION_HEADING,
+                    0.80,
+                    attributes={
+                        "heading_text": heading_text,
+                        "level": level,
+                        "section_number": number_part,
+                        "split_from_fused_opener": True,
+                    },
+                )
 
         # "Chapter 3: Foo", "II. Bar", "11. Behaviorism..."
         chapter_match = _CHAPTER_HEADING.match(text)
@@ -863,7 +1061,15 @@ class HeuristicClassifier:
             # min_repeat_fraction threshold but clearly matching a
             # detected pattern for the page). Falls through to
             # PARAGRAPH when the guard fires.
-            if not self._matches_page_chrome(block, text):
+            # Course-quality remediation P0: an answer-key / numeric run
+            # ("78 41. 900 42. 800", "550 47. 22,335 48. 39,075") trips
+            # the FOOTNOTE marker regex on its leading "N. " token. These
+            # are OpenStax exercise answers, not footnotes — refuse the
+            # promotion so they fall through to PARAGRAPH (and are never
+            # later lifted into a heading either).
+            if not self._matches_page_chrome(
+                block, text
+            ) and not _is_numeric_answer_key_heading(text):
                 return self._make(block, BlockRole.FOOTNOTE, 0.70)
 
         # Title-case short line subheading fallback, after low-signal filter.
