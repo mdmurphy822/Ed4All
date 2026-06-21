@@ -268,7 +268,12 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
     # Activities — instruction set + optional reflection prompt.
     "activity": {
         "key_claims": (1, 4),
-        "section_skeleton": (1, 3),
+        # 2026-06-21 content-gap fix: section_skeleton floor 1 -> 0 (a
+        # section-less activity prompt — e.g. "Evaluate the following
+        # expressions: …" — must SHIP rather than be dropped on the
+        # empty-required-array failure after the regen budget; key_claims
+        # min stays 1, never lowered to 0).
+        "section_skeleton": (0, 3),
         "summary_chars": (80, 400),
     },
     # Misconceptions — the misconception statement + the correction.
@@ -297,7 +302,11 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
     },
     # Summary takeaways — bullet list of synthesised claims.
     "summary_takeaway": {
-        "key_claims": (2, 5),
+        # 2026-06-21 content-gap fix: key_claims floor 2 -> 1 (a single
+        # grounded takeaway must SHIP rather than be dropped after the
+        # regen budget; the retry directive still pushes for richer
+        # output, this only stops dropping a valid block).
+        "key_claims": (1, 5),
         "section_skeleton": (0, 1),
         "summary_chars": (60, 300),
     },
@@ -328,7 +337,11 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
     # Wave-2 block-variety additions.
     # Application / case scenario — short setup + apply prompt.
     "scenario": {
-        "key_claims": (2, 4),
+        # 2026-06-21 content-gap fix: key_claims floor 2 -> 1 (a single
+        # grounded scenario claim must SHIP rather than be dropped after
+        # the regen budget; the retry directive still pushes for richer
+        # output, this only stops dropping a valid block).
+        "key_claims": (1, 4),
         "section_skeleton": (0, 1),
         "summary_chars": (80, 400),
     },
@@ -352,7 +365,11 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
     },
     # Checklist of actionable steps / criteria.
     "checklist": {
-        "key_claims": (2, 6),
+        # 2026-06-21 content-gap fix: key_claims floor 2 -> 1 (a single
+        # grounded checklist item must SHIP rather than be dropped after
+        # the regen budget; the retry directive still pushes for richer
+        # output, this only stops dropping a valid block).
+        "key_claims": (1, 6),
         "section_skeleton": (0, 1),
         "summary_chars": (60, 300),
     },

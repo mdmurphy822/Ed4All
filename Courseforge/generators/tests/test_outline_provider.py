@@ -1844,3 +1844,97 @@ def test_repair_assessment_item_no_answer_key_clamps_out_of_range_index():
     out = _repair_assessment_item_payload(content, block_type="assessment_item")
     assert 0 <= out["correct_answer_index"] < len(out["distractors"])
     assert out["_assessment_item_payload_repair"]["mode"] == "clamp_index_no_answer_key"
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-21 content-gap fix — over-demanding minItems FLOORS dropped valid
+# activity/summary/checklist/scenario blocks after exhausting the outline
+# regen budget. The floors are LOWERED (anti-fabrication: only lowered, never
+# below key_claims=1; maxItems unchanged) so a single grounded claim — or a
+# section-less activity prompt — SHIPS instead of being dropped. These tests
+# assert the now-permitted minimal payloads PASS strict schema validation.
+# ---------------------------------------------------------------------------
+
+
+def _minimal_outline_payload(
+    block_type: str,
+    *,
+    key_claims: List[Dict[str, Any]],
+    section_skeleton: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """A schema-clean minimal outline payload for ``block_type``.
+
+    Mirrors ``_valid_explanation_outline`` but parametrised on block_type and
+    on the two arrays under test, so a single-claim / section-less payload can
+    be validated against the per-type schema directly.
+    """
+    return {
+        "block_id": f"page_01#{block_type}_intro_0",
+        "block_type": block_type,
+        "content_type": sorted(__import__("lib.validators.content_type",
+                                          fromlist=["get_valid_chunk_types"])
+                               .get_valid_chunk_types())[0],
+        "bloom_level": "understand",
+        "objective_refs": ["TO-01"],
+        "curies": [],
+        "key_claims": key_claims,
+        "section_skeleton": section_skeleton,
+        "source_refs": [
+            {"sourceId": "dart:slug#chunk_a", "role": "primary"},
+        ],
+        "structural_warnings": [],
+    }
+
+
+def _one_structured_claim() -> List[Dict[str, Any]]:
+    return [
+        {"claim": "Evaluate the following expressions using order of "
+                  "operations.",
+         "source_chunk_ids": ["chunk_a"]},
+    ]
+
+
+@pytest.mark.parametrize("block_type", ["checklist", "scenario",
+                                        "summary_takeaway"])
+def test_single_key_claim_now_passes_schema(block_type):
+    """2026-06-21 content-gap fix: checklist/scenario/summary_takeaway now
+    accept exactly ONE structured key_claims entry (floor 2 -> 1), so a valid
+    block carrying a single grounded claim is no longer dropped after the
+    regen budget."""
+    lo, _hi = _OUTLINE_KIND_BOUNDS[block_type]["key_claims"]
+    assert lo == 1  # the lowered floor
+    schema = _build_block_outline_schema(block_type)
+    payload = _minimal_outline_payload(
+        block_type,
+        key_claims=_one_structured_claim(),
+        section_skeleton=[{"heading": "Body"}],
+    )
+    jsonschema.Draft202012Validator(schema).validate(payload)  # must not raise
+
+
+def test_section_less_activity_now_passes_schema():
+    """2026-06-21 content-gap fix: ``activity`` section_skeleton floor 1 -> 0,
+    so a section-less activity prompt (empty section_skeleton) ships instead
+    of tripping the empty-required-array failure after the regen budget. Its
+    key_claims floor stays 1 (never lowered to 0)."""
+    sec_lo, _sec_hi = _OUTLINE_KIND_BOUNDS["activity"]["section_skeleton"]
+    kc_lo, _kc_hi = _OUTLINE_KIND_BOUNDS["activity"]["key_claims"]
+    assert sec_lo == 0  # the lowered section floor
+    assert kc_lo == 1   # key_claims floor unchanged (never 0)
+    schema = _build_block_outline_schema("activity")
+    payload = _minimal_outline_payload(
+        "activity",
+        key_claims=_one_structured_claim(),
+        section_skeleton=[],  # the section-less case
+    )
+    jsonschema.Draft202012Validator(schema).validate(payload)  # must not raise
+
+
+def test_content_gap_fix_maxitems_unchanged():
+    """Anti-fabrication guard: only the FLOORS moved; every maxItems is
+    byte-stable for the four touched block types."""
+    assert _OUTLINE_KIND_BOUNDS["checklist"]["key_claims"] == (1, 6)
+    assert _OUTLINE_KIND_BOUNDS["scenario"]["key_claims"] == (1, 4)
+    assert _OUTLINE_KIND_BOUNDS["summary_takeaway"]["key_claims"] == (1, 5)
+    assert _OUTLINE_KIND_BOUNDS["activity"]["section_skeleton"] == (0, 3)
+    assert _OUTLINE_KIND_BOUNDS["activity"]["key_claims"] == (1, 4)
