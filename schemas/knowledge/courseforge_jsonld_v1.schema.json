@@ -280,7 +280,12 @@
       "additionalProperties": false,
       "properties": {
         "term": { "type": "string", "minLength": 1 },
-        "definition": { "type": "string", "minLength": 1 }
+        "definition": { "type": "string", "minLength": 1 },
+        "sourceLink": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Feature I5 (optional, additive): a /api/learn/source/... deep-link to the source chunk that grounds this term's definition. Backward-compatible — absent on legacy emits."
+        }
       }
     },
     "BloomDistribution": {
@@ -466,9 +471,12 @@
             "problem",
             "vocab_card",
             "formula",
-            "checklist"
+            "checklist",
+            "table",
+            "acronym",
+            "key_idea"
           ],
-          "description": "One of the 21 canonical Phase 2 block types (mirror of Courseforge/scripts/blocks.py::BLOCK_TYPES)."
+          "description": "One of the 24 canonical Phase 2 block types (mirror of Courseforge/scripts/blocks.py::BLOCK_TYPES). Issue I6 added table / acronym / key_idea (instruction palette v2)."
         },
         "sequence": {
           "type": "integer",
@@ -560,9 +568,14 @@
           "enum": [
             "outline_budget_exhausted",
             "structural_unfixable",
-            "validator_consensus_fail"
+            "validator_consensus_fail",
+            "outline_dispatch_error",
+            "rewrite_dispatch_error",
+            "per_claim_attribution_unfixable",
+            "block_objective_undelivered",
+            "best_of_n_no_clean_candidate"
           ],
-          "description": "Phase-3 escalation tag; set to a non-null marker when the block was escalated to the rewrite tier."
+          "description": "Phase-3 escalation tag; set to a non-null marker when the block was escalated to the rewrite tier. Enum mirrors Courseforge/scripts/blocks.py::_ESCALATION_MARKERS (the canonical 8-value frozenset). Issue I6 synced the previously-truncated 3-value enum up to the full set."
         },
         "objectiveAlignment": {
           "type": "array",

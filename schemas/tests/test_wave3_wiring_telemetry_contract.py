@@ -848,11 +848,12 @@ def test_5_every_block_type_has_validator_matrix_entry() -> None:
         f"{sorted(canonical_actions)}."
     )
 
-    # Defence-in-depth: BLOCK_TYPES is exactly 21 values per
+    # Defence-in-depth: BLOCK_TYPES is exactly 24 values per
     # ``Courseforge/scripts/blocks.py:77`` (16 Phase-2 + 5 Wave-2
-    # block-variety additions) and the W3.C plan §C2.
-    assert len(BLOCK_TYPES) == 21, (
-        f"BLOCK_TYPES drift: expected 21 canonical block types, got "
+    # block-variety + 3 Issue-I6 instruction-palette-v2 additions) and the
+    # W3.C plan §C2.
+    assert len(BLOCK_TYPES) == 24, (
+        f"BLOCK_TYPES drift: expected 24 canonical block types, got "
         f"{len(BLOCK_TYPES)}: {sorted(BLOCK_TYPES)!r}. If this is an "
         "intentional change, bump the assertion AND audit every "
         "block_type-aware surface (router policy, JSON-LD shape, "

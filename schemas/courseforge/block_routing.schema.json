@@ -27,10 +27,10 @@
     },
     "blocks": {
       "type": "object",
-      "description": "Per-block_type override surface. Keys are the canonical 21-value Courseforge.scripts.blocks.BLOCK_TYPES enum.",
+      "description": "Per-block_type override surface. Keys are the canonical 24-value Courseforge.scripts.blocks.BLOCK_TYPES enum (Issue I6 added table / acronym / key_idea).",
       "additionalProperties": false,
       "patternProperties": {
-        "^(objective|concept|example|assessment_item|explanation|prereq_set|activity|misconception|callout|flip_card_grid|self_check_question|summary_takeaway|reflection_prompt|discussion_prompt|chrome|recap|scenario|problem|vocab_card|formula|checklist)$": {
+        "^(objective|concept|example|assessment_item|explanation|prereq_set|activity|misconception|callout|flip_card_grid|self_check_question|summary_takeaway|reflection_prompt|discussion_prompt|chrome|recap|scenario|problem|vocab_card|formula|checklist|table|acronym|key_idea)$": {
           "type": "object",
           "additionalProperties": false,
           "properties": {

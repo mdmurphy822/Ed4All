@@ -16,7 +16,10 @@
         "exercise",
         "overview",
         "summary",
-        "explanation"
+        "explanation",
+        "table",
+        "acronym",
+        "key_idea"
       ]
     },
     "CalloutContentType": {
@@ -29,7 +32,7 @@
     },
     "ChunkType": {
       "type": "string",
-      "description": "Content-type labels emitted on Trainforge chunks (chunk_type field). Six legacy values (assessment_item, overview, summary, exercise, explanation, example) lifted from _type_from_resource + _type_from_heading. Four Wave 81 additions (procedure, real_world_scenario, common_pitfall, problem_solution) propagated from Courseforge data-cf-template-type via Trainforge.parsers.html_content_parser when the section carries the attribute.",
+      "description": "Content-type labels emitted on Trainforge chunks (chunk_type field). Six legacy values (assessment_item, overview, summary, exercise, explanation, example) lifted from _type_from_resource + _type_from_heading. Four Wave 81 additions (procedure, real_world_scenario, common_pitfall, problem_solution) propagated from Courseforge data-cf-template-type via Trainforge.parsers.html_content_parser when the section carries the attribute. Issue I6 additions (table, acronym, key_idea) carry the content-type label for the three instruction-palette-v2 block types (Courseforge/scripts/blocks.py::BLOCK_TYPES table / acronym / key_idea).",
       "enum": [
         "assessment_item",
         "overview",
@@ -40,7 +43,10 @@
         "procedure",
         "real_world_scenario",
         "common_pitfall",
-        "problem_solution"
+        "problem_solution",
+        "table",
+        "acronym",
+        "key_idea"
       ]
     },
     "ContentType": {
