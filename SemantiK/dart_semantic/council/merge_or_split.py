@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths as _semantik_paths
-from .base import LoRAAdapter, LoRAAdapterSpec
+from .base import LoRAAdapter, LoRAAdapterSpec, load_local_tokenizer
 from .registry import register_adapter
 from .runner import register_runner
 from .structure import batched_cls_pooled
@@ -434,7 +434,7 @@ def run_inputs(adapter: LoRAAdapter, inputs: Any) -> BertOutput:
 
     tok_dir = spec.adapter_path / "tokenizer"
     if tok_dir.exists():
-        tok = AutoTokenizer.from_pretrained(str(tok_dir))
+        tok = load_local_tokenizer(tok_dir, fallback_name=backbone.name)
     else:
         tok = AutoTokenizer.from_pretrained(backbone.name)
 

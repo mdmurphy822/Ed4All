@@ -65,6 +65,134 @@ class LoRAAdapterSpec:
 
 
 # ---------------------------------------------------------------------------
+# Version-tolerant local-tokenizer loader
+# ---------------------------------------------------------------------------
+
+# The council BERT tokenizers under ``models/council/*/.../tokenizer/`` were
+# SAVED by transformers 5.x: their ``tokenizer_config.json`` declares
+# ``"tokenizer_class": "TokenizersBackend"``. transformers 4.x (Ed4All's
+# installed 4.57.x) cannot resolve that class and raises
+# ``ValueError: Tokenizer class TokenizersBackend does not exist ...`` from
+# ``AutoTokenizer.from_pretrained``. Every saved council tokenizer dir also
+# ships the version-independent fast-tokenizer file ``tokenizer.json``, which
+# ``PreTrainedTokenizerFast(tokenizer_file=...)`` loads identically. This
+# helper tries the normal load first and only on the version-skew signature
+# falls back to the fast file (carrying special tokens + model_max_length from
+# ``tokenizer_config.json``). Any unrelated error is re-raised unchanged.
+
+# Substrings in a load error that signal the saved-by-5.x tokenizer_class skew.
+_TOKENIZER_VERSION_SKEW_SIGNATURES = (
+    "TokenizersBackend",
+    "does not exist",
+    "not currently imported",
+)
+
+# Special-token keys carried from tokenizer_config.json onto the fast tokenizer.
+_SPECIAL_TOKEN_KEYS = (
+    "pad_token",
+    "cls_token",
+    "sep_token",
+    "unk_token",
+    "mask_token",
+    "bos_token",
+    "eos_token",
+)
+
+
+def _coerce_special_token(value: Any) -> str | None:
+    """Normalize a tokenizer_config special-token entry to its surface string.
+
+    transformers serializes special tokens either as a bare ``str`` or as an
+    ``AddedToken`` dict ``{"content": "...", ...}``. Return the surface string
+    (or ``None`` when neither shape resolves) so it can be passed to
+    ``PreTrainedTokenizerFast`` as a plain string.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        content = value.get("content")
+        if isinstance(content, str):
+            return content
+    return None
+
+
+def load_local_tokenizer(
+    tok_dir: Any,
+    fallback_name: str | None = None,
+    *,
+    revision: str | None = None,
+) -> Any:
+    """Load a saved council tokenizer, tolerant of a transformers-version skew.
+
+    Tries ``AutoTokenizer.from_pretrained(str(tok_dir))`` first. If that raises
+    the transformers 5.x → 4.x ``tokenizer_class`` skew (see module note
+    above), falls back to ``PreTrainedTokenizerFast(tokenizer_file=...)`` over
+    the dir's ``tokenizer.json``, carrying the special tokens +
+    ``model_max_length`` recorded in ``tokenizer_config.json`` (handling both
+    the bare-``str`` and ``AddedToken`` ``{"content": ...}`` shapes). When the
+    ``tokenizer.json`` is absent and ``fallback_name`` is given, loads the HF
+    backbone tokenizer by name instead. Any error that is NOT the version-skew
+    signature is re-raised unchanged.
+
+    ``revision`` (when given) is threaded onto the first ``AutoTokenizer``
+    attempt — this lets the shared-backbone call site (which loads its
+    tokenizer by hub name + pinned revision) reuse the same skew-tolerant
+    path without dropping its revision pin.
+
+    Dependency-light: only ``transformers`` + ``json`` + ``pathlib``.
+    """
+    import json  # noqa: WPS433 — deferred to keep bare import torch-free
+    from pathlib import Path as _Path  # local alias; Path already imported
+
+    from transformers import (  # noqa: WPS433
+        AutoTokenizer,
+        PreTrainedTokenizerFast,
+    )
+
+    auto_kwargs: dict[str, Any] = {}
+    if revision is not None:
+        auto_kwargs["revision"] = revision
+
+    tok_dir = _Path(tok_dir)
+    try:
+        return AutoTokenizer.from_pretrained(str(tok_dir), **auto_kwargs)
+    except (ValueError, KeyError, OSError) as exc:
+        message = str(exc)
+        if not any(sig in message for sig in _TOKENIZER_VERSION_SKEW_SIGNATURES):
+            raise  # unrelated failure — surface it unchanged
+
+        tokenizer_file = tok_dir / "tokenizer.json"
+        if not tokenizer_file.exists():
+            if fallback_name is not None:
+                return AutoTokenizer.from_pretrained(fallback_name)
+            raise
+
+        # Pull special tokens + model_max_length from the saved config so the
+        # fast tokenizer behaves identically to the original AutoTokenizer.
+        config: dict[str, Any] = {}
+        config_path = tok_dir / "tokenizer_config.json"
+        if config_path.exists():
+            try:
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                config = {}
+
+        kwargs: dict[str, Any] = {}
+        for key in _SPECIAL_TOKEN_KEYS:
+            token = _coerce_special_token(config.get(key))
+            if token is not None:
+                kwargs[key] = token
+        model_max_length = config.get("model_max_length")
+        if isinstance(model_max_length, int) and model_max_length > 0:
+            kwargs["model_max_length"] = model_max_length
+
+        return PreTrainedTokenizerFast(
+            tokenizer_file=str(tokenizer_file),
+            **kwargs,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Concrete shared backbone (process-singleton-per-model-name)
 # ---------------------------------------------------------------------------
 
@@ -160,7 +288,7 @@ class SharedBackbone:
             # Imports deferred until first use. This is what keeps plain
             # ``import dart_semantic.council.base`` torch-free.
             import torch  # noqa: WPS433
-            from transformers import AutoModel, AutoTokenizer  # noqa: WPS433
+            from transformers import AutoModel  # noqa: WPS433
 
             dtype_map = {
                 "bfloat16": torch.bfloat16,
@@ -172,7 +300,12 @@ class SharedBackbone:
             }
             torch_dtype = dtype_map.get(self._dtype_str, torch.bfloat16)
 
-            tokenizer = AutoTokenizer.from_pretrained(
+            # Skew-tolerant: a backbone supplied as a 5.x-saved local dir
+            # (tokenizer_class="TokenizersBackend") would crash a bare
+            # AutoTokenizer on transformers 4.x; the helper recovers via the
+            # colocated tokenizer.json. A normal hub name still loads on the
+            # first AutoTokenizer attempt (revision pin preserved).
+            tokenizer = load_local_tokenizer(
                 self.name, revision=self.revision,
             )
             model = AutoModel.from_pretrained(
