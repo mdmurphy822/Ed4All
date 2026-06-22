@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,126 @@ if TYPE_CHECKING:  # pragma: no cover - type-only
 
 
 logger = logging.getLogger(__name__)
+
+
+# --- Device resolution (R7 VRAM-OOM mitigation) -------------------------------
+#
+# The theta cross-encoder (DeBERTa-v3-small + LoRA head) is small, but placing
+# it on a busy 8 GB GPU was observed to trigger
+# ``torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 9.44 GiB``
+# inside ``peft/tuners/lora/layer.py::forward`` (Stage-12 theta) when the card
+# is shared with the council BERTs / Qwen GGUF specialists. The fix mirrors
+# Ed4All's ``ED4ALL_NLI_DEVICE`` pattern (``lib/classifiers/nli_classifier.py``):
+# default to CPU so the GPU allocation never happens, and only move to CUDA
+# when explicitly requested AND available (fp16-cast to keep the footprint
+# small), with a graceful CPU fallback on a GPU-less box.
+#
+# This SUPERSEDES the legacy ``DART_THETA_DEVICE`` env (which defaulted to
+# ``cpu`` too but did no availability guard / fp16 cast). ``DART_THETA_DEVICE``
+# is still honored for backward compatibility as a lower-precedence fallback.
+
+#: Env var selecting the torch device for the theta cross-encoder. Default
+#: ``"cpu"`` (avoids the GPU alloc entirely — theta is small, CPU only
+#: marginally slows a doc-level score). Accepts ``cpu`` / ``cuda`` /
+#: ``cuda:N``. Mirrors ``ED4ALL_NLI_DEVICE``.
+ENV_THETA_DEVICE = "SEMANTIK_THETA_DEVICE"
+
+#: Legacy env (pre-R7) — honored as a lower-precedence fallback so existing
+#: ``DART_THETA_DEVICE=cuda`` operator setups keep working.
+_LEGACY_ENV_THETA_DEVICE = "DART_THETA_DEVICE"
+
+#: Default device — CPU keeps the model fp32 and CPU-resident with no
+#: ``.to()`` / ``.half()`` GPU allocation, sidestepping the 9.44 GiB theta OOM.
+_DEFAULT_THETA_DEVICE = "cpu"
+
+
+def resolve_theta_device(device: str | None = None) -> str:
+    """Resolve the theta torch device string.
+
+    Resolution chain (mirrors ``ED4ALL_NLI_DEVICE`` / ``resolve_nli_device``):
+    explicit ``device`` arg → ``SEMANTIK_THETA_DEVICE`` env →
+    ``DART_THETA_DEVICE`` legacy env → default ``"cpu"``.
+
+    Returns a normalized device string (``"cpu"`` / ``"cuda"`` / ``"cuda:N"``).
+    The graceful CUDA-unavailable fallback is applied at load time (where
+    ``torch`` is in hand), not here — this resolver only reads config and never
+    imports ``torch``.
+    """
+    resolved = (
+        device
+        or os.environ.get(ENV_THETA_DEVICE)
+        or os.environ.get(_LEGACY_ENV_THETA_DEVICE)
+        or _DEFAULT_THETA_DEVICE
+    )
+    return (resolved or "").strip() or _DEFAULT_THETA_DEVICE
+
+
+def _place_theta_on_device(model: Any, head: Any, torch_module: Any, device: str) -> str:
+    """Move + (on CUDA) fp16-cast the theta model/head. Return the device used.
+
+    Mirrors ``NliClassifier._place_model_on_device``:
+
+    * ``device == "cpu"`` — ``model.to("cpu")`` / ``head.to("cpu")`` (no
+      fp16 cast). Returns ``"cpu"``. This is the default — no GPU alloc.
+    * ``device`` is a CUDA device AND ``torch.cuda.is_available()`` —
+      ``model.to(device).half()`` + ``head.to(device).half()`` (fp16 keeps the
+      VRAM footprint small on a card shared with the council/Qwen weights).
+      Returns ``device``.
+    * CUDA requested but unavailable — log a one-time warning and fall back to
+      CPU (no crash). Returns ``"cpu"``.
+
+    Defensive: any unexpected error during GPU placement (OOM, driver error)
+    is logged and the model is left on CPU rather than crashing the run.
+    """
+    if device == "cpu":
+        model.to("cpu")
+        head.to("cpu")
+        return "cpu"
+
+    try:
+        cuda_available = bool(torch_module.cuda.is_available())
+    except Exception as exc:  # noqa: BLE001 — torch probe is best-effort
+        logger.warning(
+            "Theta could not probe torch.cuda.is_available() (%s); "
+            "falling back to CPU.",
+            exc,
+        )
+        model.to("cpu")
+        head.to("cpu")
+        return "cpu"
+
+    if not cuda_available:
+        logger.warning(
+            "Theta device %r requested but torch.cuda is not available; "
+            "falling back to CPU. Set %s=cpu to silence this.",
+            device, ENV_THETA_DEVICE,
+        )
+        model.to("cpu")
+        head.to("cpu")
+        return "cpu"
+
+    try:
+        # fp16 on CUDA keeps the DeBERTa-v3-small + LoRA head small so it can
+        # coexist with the council/Qwen weights on an 8 GB card. fp16 is
+        # CUDA-only (slow/unsupported on CPU). The cross-encoder forward casts
+        # pooled hidden states to fp32 before the head, so the fp32 linear
+        # head still matches.
+        model.to(device)
+        model.half()
+        head.to(device)
+        head.half()
+    except Exception as exc:  # noqa: BLE001 — OOM, driver error, etc.
+        logger.warning(
+            "Theta failed to move model to %r / cast fp16 (%s); falling "
+            "back to CPU.",
+            device, exc,
+        )
+        model.to("cpu")
+        head.to("cpu")
+        return "cpu"
+
+    logger.info("Theta cross-encoder scoring on %s (fp16).", device)
+    return device
 
 
 # --- Constants (locked at v1) -------------------------------------------------
@@ -256,13 +377,13 @@ def load(model_dir: Path) -> SemanticPreservationModel | None:
     calibration_path = model_dir / "calibration.json"
     isotonic, offset = _load_calibration(calibration_path)
 
-    # Move to device. We pick CPU by default (Phase 4c is integration —
-    # callers can swap by setting DART_THETA_DEVICE=cuda).
-    import os as _os
-    device_pref = _os.environ.get("DART_THETA_DEVICE", "cpu")
-    device = device_pref if device_pref == "cpu" or torch.cuda.is_available() else "cpu"
-    model.to(device)
-    head.to(device)
+    # Move to device. R7 VRAM-OOM mitigation: default CPU (avoids the 9.44 GiB
+    # theta GPU alloc on a shared 8 GB card), mirror the ED4ALL_NLI_DEVICE
+    # pattern — only move to CUDA when SEMANTIK_THETA_DEVICE requests it AND
+    # the GPU is available (fp16-cast), with graceful CPU fallback. The
+    # resolved device is recorded on the bundle (and surfaced onto the theta
+    # report breakdown) for provenance, mirroring nli_device.
+    device = _place_theta_on_device(model, head, torch, resolve_theta_device())
 
     bundle = SemanticPreservationModel(
         tokenizer=tokenizer,
@@ -695,6 +816,7 @@ def score(
         return EMPTY_DOC_SCORE, {
             "method": METHOD_MODEL,
             "model_version": model.version,
+            "theta_device": str(getattr(model, "device", "cpu")),
             "n_regions_scored": 0,
             "n_regions_skipped": 0,
             "weighted_mean": EMPTY_DOC_SCORE,
@@ -770,6 +892,7 @@ def score(
         return EMPTY_DOC_SCORE, {
             "method": METHOD_MODEL,
             "model_version": model.version,
+            "theta_device": str(getattr(model, "device", "cpu")),
             "n_regions_scored": 0,
             "n_regions_skipped": len(skipped),
             "weighted_mean": EMPTY_DOC_SCORE,
@@ -814,6 +937,7 @@ def score(
     breakdown = {
         "method": METHOD_MODEL,
         "model_version": model.version,
+        "theta_device": str(getattr(model, "device", "cpu")),
         "n_regions_scored": len(per_region),
         "n_regions_skipped": len(skipped),
         "weighted_mean": float(weighted_mean),
@@ -887,9 +1011,11 @@ def _source_text_for_region(
 
 
 __all__ = [
+    "ENV_THETA_DEVICE",
     "METHOD_MODEL",
     "METHOD_STUB",
     "SemanticPreservationModel",
     "load",
+    "resolve_theta_device",
     "score",
 ]

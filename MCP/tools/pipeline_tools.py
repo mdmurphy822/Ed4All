@@ -6144,6 +6144,19 @@ def _run_semantik_bridge_subprocess(
             "--runtime",
             runtime,
         ]
+        # R7 VRAM-OOM mitigation: hand the SemantiK runtime subprocess the
+        # CUDA-allocator + theta-device hints so the Stage-12 theta DeBERTa
+        # doesn't OOM the shared 8 GB card. setdefault semantics — an
+        # operator who has already exported either value in this process's
+        # environment keeps their choice (e.g. SEMANTIK_THETA_DEVICE=cuda to
+        # opt the theta head back onto the GPU). PYTORCH_CUDA_ALLOC_CONF is
+        # consumed by torch at import time inside the runner; SEMANTIK_THETA_-
+        # DEVICE is read by dart_semantic.theta.semantic_preservation.load.
+        bridge_env = dict(os.environ)
+        bridge_env.setdefault(
+            "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
+        )
+        bridge_env.setdefault("SEMANTIK_THETA_DEVICE", "cpu")
         try:
             proc = subprocess.run(
                 cmd,
@@ -6151,6 +6164,7 @@ def _run_semantik_bridge_subprocess(
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=bridge_env,
             )
         except subprocess.TimeoutExpired:
             return {

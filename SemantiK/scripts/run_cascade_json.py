@@ -50,6 +50,17 @@ as fail-closed, so either signal is safe.)
 
 from __future__ import annotations
 
+import os
+
+# R7 VRAM-OOM mitigation: tell the CUDA caching allocator to use expandable
+# segments BEFORE torch/transformers/llama-cpp are imported by the cascade.
+# This reduces fragmentation-driven OOMs on the shared 8 GB card (the
+# Stage-12 theta OOM message itself recommends this). ``setdefault`` so an
+# operator-set value is never clobbered. This MUST run before any torch
+# import; the cascade import (which pulls torch) is lazy inside ``main()``,
+# so module-top placement here is well ahead of it.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import argparse
 import json
 import sys

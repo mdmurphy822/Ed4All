@@ -102,7 +102,9 @@ def _mock_subprocess_run(monkeypatch, *, bridge=None, returncode=0, stderr="", r
     """
     def _fake_run(cmd, *args, **kwargs):
         if record is not None:
-            record.append({"cmd": cmd, "cwd": kwargs.get("cwd")})
+            record.append(
+                {"cmd": cmd, "cwd": kwargs.get("cwd"), "env": kwargs.get("env")}
+            )
         # Find --out-json target.
         out_json = None
         for i, tok in enumerate(cmd):
@@ -168,6 +170,40 @@ def test_a_bridge_writes_html_and_returns_keys(monkeypatch, tmp_path):
     assert record[0]["cwd"] == str(tmp_path / "semantik_repo")
     assert "--pdf" in record[0]["cmd"]
     assert "--out-json" in record[0]["cmd"]
+    # R7 VRAM-OOM mitigation: the bridge hands the runtime subprocess the
+    # CUDA-allocator + theta-device hints (default cpu) so Stage-12 theta
+    # doesn't OOM the shared 8 GB card.
+    env = record[0]["env"]
+    assert env is not None, "subprocess.run must receive an explicit env"
+    assert env.get("PYTORCH_CUDA_ALLOC_CONF") == "expandable_segments:True"
+    assert env.get("SEMANTIK_THETA_DEVICE") == "cpu"
+
+
+# ---------------------------------------------------------------------------
+# (a2) R7 setdefault — an operator-set SEMANTIK_THETA_DEVICE / alloc conf is
+#      NOT clobbered by the bridge.
+# ---------------------------------------------------------------------------
+
+
+def test_a2_bridge_env_setdefault_respects_operator(monkeypatch, tmp_path):
+    from MCP.tools.pipeline_tools import _run_semantik_v2_conversion
+
+    monkeypatch.setenv("SEMANTIK_PYTHON", "/fake/venv/python")
+    monkeypatch.setenv("SEMANTIK_RUNTIME_DIR", str(tmp_path / "semantik_repo"))
+    # Operator opts theta back onto the GPU + pins a custom allocator conf.
+    monkeypatch.setenv("SEMANTIK_THETA_DEVICE", "cuda")
+    monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "max_split_size_mb:64")
+    _force_inprocess_import_fail(monkeypatch)
+    record: list = []
+    _mock_subprocess_run(monkeypatch, bridge=_bridge_json(), record=record)
+
+    out = tmp_path / "sample_text_ch1_accessible.html"
+    _run_semantik_v2_conversion("sample_text_ch1.pdf", str(out))
+
+    assert record, "subprocess.run was not called"
+    env = record[0]["env"]
+    assert env.get("SEMANTIK_THETA_DEVICE") == "cuda"
+    assert env.get("PYTORCH_CUDA_ALLOC_CONF") == "max_split_size_mb:64"
 
 
 # ---------------------------------------------------------------------------
