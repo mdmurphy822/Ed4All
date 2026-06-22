@@ -6099,6 +6099,14 @@ class _SemantikBridgeResult:
         self.lane_used = bridge.get("lane_used")
         self.runtime_mode = bridge.get("runtime_mode")
         self.lang = bridge.get("lang") or "en"
+        # Phase 3 item 7 — the doc-level Stage-5d structure-review verdict list
+        # the bridge JSON surfaces at top level (``None`` when the reviewer was
+        # off, ``[]`` when it ran and found nothing to correct). The seam reads
+        # this to emit ONE ``structure_review`` DecisionCapture per doc.
+        sr = bridge.get("structure_review")
+        self.structure_review = (
+            list(sr) if isinstance(sr, (list, tuple)) else None
+        )
 
 
 def _run_semantik_bridge_subprocess(
@@ -6333,6 +6341,142 @@ def _semantik_reuse_existing_artifacts(
     }
 
 
+def _semantik_resolve_structure_review(result: Any) -> Optional[List[Dict[str, Any]]]:
+    """Pull the doc-level Stage-5d ``structure_review`` verdict list off a
+    cascade result, from EITHER seam arm (Phase 3 item 9).
+
+    Resolution order:
+      1. ``result.structure_review`` — the bridge arm
+         (``_SemantikBridgeResult``) surfaces it as a top-level attribute.
+      2. ``result.cascade["conformance_audit"]["structure_review"]`` — the
+         in-process ``PipelineV2Result`` carries it inside the telemetry dict.
+
+    Returns ``None`` when the reviewer did NOT run (flag off / no audit key) so
+    the caller skips the capture cleanly; ``[]`` when it ran and found nothing.
+    """
+    sr = getattr(result, "structure_review", None)
+    if sr is not None:
+        return list(sr) if isinstance(sr, (list, tuple)) else None
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            audit = conformance.get("structure_review")
+            if audit is None:
+                return None
+            return list(audit) if isinstance(audit, (list, tuple)) else None
+    return None
+
+
+def _semantik_structure_review_model() -> str:
+    """The reviewer seat model id for the DecisionCapture rationale.
+
+    Mirrors ``SemantiK ... runtime.resolve_structure_review_model`` precedence
+    (``SEMANTIK_STRUCTURE_REVIEW_MODEL`` > ``SEMANTIK_SPECIALIST_MODEL``)
+    WITHOUT importing the heavy SemantiK runtime (absent from this venv). Used
+    only for replay provenance, never to drive a call.
+    """
+    return (
+        (os.environ.get("SEMANTIK_STRUCTURE_REVIEW_MODEL") or "").strip()
+        or (os.environ.get("SEMANTIK_SPECIALIST_MODEL") or "").strip()
+        or "unspecified"
+    )
+
+
+def _emit_structure_review_capture(
+    verdicts: Optional[List[Dict[str, Any]]],
+    *,
+    canonical_course_code: Optional[str],
+    pdf_stem: str,
+) -> None:
+    """Emit ONE ``structure_review`` DecisionCapture event per converted doc
+    when the Stage-5d 70B reviewer ran (Phase 3 item 9).
+
+    Best-effort by contract: ANY failure (DecisionCapture init, write, schema)
+    logs a warning and returns — it NEVER breaks the conversion. Skips cleanly
+    (no capture) when ``verdicts is None`` (the reviewer was off / provider or
+    flag unset). The rationale is DYNAMIC/replayable per the CLAUDE.md contract:
+    it interpolates blocks_reviewed / corrected / reverted_for_invariant / model
+    so a post-hoc replay can attribute the structure corrections.
+
+    ``decision_type='structure_review'`` is a canonical enum member
+    (``schemas/events/decision_event.schema.json``), added for this seam.
+    """
+    if verdicts is None:
+        return  # reviewer did not run — nothing to capture (skip cleanly)
+    try:
+        from lib.decision_capture import DecisionCapture, normalize_course_code
+
+        blocks_reviewed = len(verdicts)
+        corrected = sum(
+            1
+            for v in verdicts
+            if isinstance(v, dict)
+            and str(v.get("verdict") or "ok") != "ok"
+            and not v.get("reverted_for_invariant")
+        )
+        reverted = sum(
+            1
+            for v in verdicts
+            if isinstance(v, dict) and v.get("reverted_for_invariant")
+        )
+        model = _semantik_structure_review_model()
+        # The SemantiK cascade is the DART-conversion replacement, so the
+        # capture lands under the canonical ``dart`` tool / ``dart-conversion``
+        # phase (the schema enum restricts ``tool`` to dart/courseforge/
+        # trainforge/orchestrator; ``semantik`` is not a member). Course code
+        # falls back to the PDF stem via the shared normalizer.
+        course_code = (
+            (canonical_course_code or "").strip()
+            or normalize_course_code(pdf_stem or "unknown")
+        )
+
+        capture = DecisionCapture(
+            course_code=course_code,
+            phase="dart-conversion",
+            tool="dart",
+        )
+        # DYNAMIC rationale (>=20 chars) — interpolates the per-doc verdict
+        # tallies + the reviewer model so the capture is replayable.
+        rationale = (
+            f"Stage-5d 70B structure reviewer ({model}) reviewed "
+            f"{blocks_reviewed} block(s) on {pdf_stem}: {corrected} structural "
+            f"correction(s) applied (kind/level/role), {reverted} verdict(s) "
+            f"reverted for the structural-only/verbatim invariant. Text-"
+            f"preserving role-only review (no words rewritten)."
+        )
+        capture.log_decision(
+            decision_type="structure_review",
+            decision=(
+                f"applied={corrected} reverted={reverted} "
+                f"reviewed={blocks_reviewed}"
+            ),
+            rationale=rationale,
+            alternatives_considered=[
+                {
+                    "option": "deterministic-detector-only backstop",
+                    "reason_rejected": (
+                        "drop_toc_and_frontmatter is the fail-closed floor but "
+                        "cannot re-role / re-level / promote a heading the way "
+                        "the 70B reviewer does"
+                    ),
+                },
+                {
+                    "option": "no structure review (flag off)",
+                    "reason_rejected": (
+                        "SEMANTIK_STRUCTURE_REVIEW was on; the reviewer ran"
+                    ),
+                },
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+        logger.warning(
+            "structure_review DecisionCapture failed (non-fatal) on %s: %s",
+            pdf_stem,
+            exc,
+        )
+
+
 def _run_semantik_v2_conversion(
     pdf_path: str,
     output_path: str,
@@ -6497,6 +6641,16 @@ def _run_semantik_v2_conversion(
             "output_path": str(out_path),
             "html_path": str(html_path),
         }
+
+    # 2b. Stage-5d structure-review DecisionCapture (Phase 3 item 9). Fires for
+    # BOTH the in-process and bridge arms (the resolver reads either shape);
+    # skips cleanly when the reviewer was off (SEMANTIK_STRUCTURE_REVIEW unset).
+    # Best-effort — a capture failure logs a warning, never breaks conversion.
+    _emit_structure_review_capture(
+        _semantik_resolve_structure_review(result),
+        canonical_course_code=canonical_course_code,
+        pdf_stem=pdf_stem,
+    )
 
     # 3. cascade result → chapters IR → output-contract adapter.
     chapters = build_chapters_ir(result)

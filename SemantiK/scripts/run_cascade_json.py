@@ -34,7 +34,12 @@ On SUCCESS — all JSON-serializable fields the P3a/P3b seam consumes::
       "wcag_status":        <str>,        # "passed" | "failed"
       "flags":              [<str>, ...], # ThetaFlag values
       "lane_used":          <str>,
-      "runtime_mode":       <str>         # "real" | "mock" (R4 mock-trap input)
+      "runtime_mode":       <str>,        # "real" | "mock" (R4 mock-trap input)
+      "structure_review":   [ {block_id, verdict, kind_before, kind_after,
+                               level_before, level_after, review_note,
+                               reverted_for_invariant}, ... ] | null
+                                          # Stage-5d 70B reviewer verdicts; null
+                                          # when SEMANTIK_STRUCTURE_REVIEW is off
     }
 
 On FAILURE — a clear error object (the seam fails closed on this, NEVER a
@@ -141,6 +146,38 @@ def _resolve_runtime_mode(result: Any) -> Optional[str]:
     return str(mode) if mode is not None else None
 
 
+def _resolve_structure_review(result: Any) -> Optional[List[Dict[str, Any]]]:
+    """Pull the doc-level Stage-5d ``structure_review`` audit off the cascade
+    result and promote it to a top-level bridge key (Phase 3 item 7).
+
+    The audit lives at ``result.cascade["conformance_audit"]["structure_review"]``
+    (``SemantiK/dart_semantic/cascade.py`` builds it as a list of
+    ``ReviewVerdict``-as-dicts when the Stage-5d reviewer ran, ``None`` when
+    the reviewer was off). The per-region ``review`` keys already ride through
+    ``_coerce_region_provenance`` verbatim (it copies each region dict); this
+    surfaces the DOCUMENT-level verdict list so the Ed4All seam can emit one
+    ``structure_review`` DecisionCapture event per converted doc.
+
+    The ``None`` (reviewer-did-not-run) vs ``[]`` (ran, found nothing)
+    distinction is preserved — the seam skips the capture cleanly on ``None``.
+    A runtime that pre-dates the audit (no ``conformance_audit`` /
+    ``structure_review`` key) resolves to ``None`` (treated as not-run).
+    """
+    cascade = getattr(result, "cascade", None)
+    audit: Any = None
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            audit = conformance.get("structure_review")
+    if audit is None:
+        return None
+    out: List[Dict[str, Any]] = []
+    for verdict in audit if isinstance(audit, (list, tuple)) else []:
+        if isinstance(verdict, dict):
+            out.append(dict(verdict))
+    return out
+
+
 def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
     """Assemble the JSON-serializable bridge dict from a cascade result."""
     theta = getattr(result, "theta_score", None)
@@ -155,6 +192,10 @@ def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
         "flags": list(getattr(result, "flags", None) or []),
         "lane_used": getattr(result, "lane_used", None),
         "runtime_mode": _resolve_runtime_mode(result),
+        # Phase 3 item 7 — the doc-level Stage-5d structure-review verdict list
+        # (None when the reviewer was off). The per-region ``review`` keys
+        # already ride through ``region_provenance`` verbatim.
+        "structure_review": _resolve_structure_review(result),
     }
 
 

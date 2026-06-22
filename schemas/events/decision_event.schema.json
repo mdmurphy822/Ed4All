@@ -247,6 +247,7 @@
         "statistical_validation_pass",
         "strategy_decision",
         "structure_detection",
+        "structure_review",
         "sub_objective_derivation",
         "synthesis_diversity_check",
         "synthesis_leakage_check",
