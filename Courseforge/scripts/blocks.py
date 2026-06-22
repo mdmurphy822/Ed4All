@@ -30,7 +30,15 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-__all__ = ["Block", "Touch", "BLOCK_TYPES", "_parse_provider_page_html"]
+__all__ = [
+    "Block",
+    "Touch",
+    "QualityScore",
+    "BLOCK_TYPES",
+    "QUALITY_DIMENSIONS",
+    "CORE_QUALITY_DIMENSIONS",
+    "_parse_provider_page_html",
+]
 
 
 # Phase-2 emit flag (mirror of ``generate_course._courseforge_emit_blocks_enabled``;
@@ -131,6 +139,34 @@ BLOCK_TYPES: frozenset = frozenset(
         "key_idea",
     }
 )
+
+
+# IB2.3 — 8-dimension quality-rubric DATA MODEL (empty scaffold). The eight
+# orthogonal quality dimensions the framework scores per block on an anchored
+# 0–3 scale (framework §6.2-6.3). ORDERED tuple — verbatim dimension names.
+# Dims 1,2,7,8 (alignment / cognitive_load / accessibility / coherence) are the
+# "load-bearing core applying to every block" per the framework. This wave
+# stands up the SHAPE only — NO scoring, NO mean/rollup, NO gate (IB6 fills it).
+QUALITY_DIMENSIONS: Tuple[str, ...] = (
+    "alignment",
+    "cognitive_load",
+    "multimedia",
+    "retrieval",
+    "feedback",
+    "engagement",
+    "accessibility",
+    "coherence",
+)
+
+# Framework dims 1,2,7,8 — the load-bearing core that applies to EVERY block
+# (the other four are applicable-when-relevant). Used by IB6's mean = applicable
+# dims; declared here so the constant has one home alongside QUALITY_DIMENSIONS.
+CORE_QUALITY_DIMENSIONS: frozenset = frozenset(
+    {"alignment", "cognitive_load", "accessibility", "coherence"}
+)
+
+# The valid anchored 0–3 scores (plus None = not-yet-scored / not-applicable).
+_QUALITY_SCORE_VALUES: frozenset = frozenset({None, 0, 1, 2, 3})
 
 
 # Phase 3.5 Subtask 14: extend the canonical Touch.tier enum with
@@ -484,6 +520,57 @@ class Touch:
 
 
 @dataclass(frozen=True)
+class QualityScore:
+    """One per-block quality-dimension score (IB2.3 — empty scaffold).
+
+    The typed cell of the 8-dimension anchored 0–3 quality rubric (framework
+    §6.2-6.3). One :class:`QualityScore` per applicable
+    :data:`QUALITY_DIMENSIONS` member; a :class:`Block` carries a tuple of them
+    in ``quality_rubric``. This wave defines the SHAPE only — no code populates
+    it (IB6 scores). ``score is None`` means not-yet-scored / not-applicable;
+    ``applicable=False`` records that the dimension does not apply to the block
+    (so IB6's "mean of applicable dims" excludes it without confusing a
+    None-because-unscored with a None-because-N/A).
+
+    Frozen sibling of :class:`Touch`. Audit/scoring metadata only — the
+    enclosing ``Block.quality_rubric`` field is EXCLUDED from
+    ``compute_content_hash()`` (mirrors ``observed_bloom_level``).
+    """
+
+    dimension: str
+    score: Optional[int] = None
+    applicable: bool = True
+    rationale: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.dimension not in QUALITY_DIMENSIONS:
+            raise ValueError(
+                f"QualityScore.dimension must be one of {QUALITY_DIMENSIONS}; "
+                f"got {self.dimension!r}"
+            )
+        if self.score not in _QUALITY_SCORE_VALUES:
+            raise ValueError(
+                f"QualityScore.score must be None or an anchored 0–3 int; "
+                f"got {self.score!r}"
+            )
+
+    def to_jsonld(self) -> Dict[str, Any]:
+        """Wire shape — keys for the JSON-LD ``qualityRubric`` array entry.
+
+        Omits ``rationale`` when None so a populated-but-rationale-less score
+        stays compact; ``score``/``applicable`` always present.
+        """
+        entry: Dict[str, Any] = {
+            "dimension": self.dimension,
+            "score": self.score,
+            "applicable": self.applicable,
+        }
+        if self.rationale is not None:
+            entry["rationale"] = self.rationale
+        return entry
+
+
+@dataclass(frozen=True)
 class Block:
     """Canonical intermediate block.
 
@@ -581,6 +668,16 @@ class Block:
     interaction: Optional[str] = None
     feedback: Optional[str] = None
     transition: Optional[str] = None
+    # IB2.3 — 8-dimension quality-rubric DATA MODEL (empty scaffold). A tuple of
+    # per-dimension QualityScore cells (alignment / cognitive_load / multimedia /
+    # retrieval / feedback / engagement / accessibility / coherence on an
+    # anchored 0–3 scale; framework §6.2-6.3). ALWAYS ``()`` after this wave — no
+    # code populates it (IB6's scoring pass does). Audit/scoring metadata only —
+    # INTENTIONALLY excluded from compute_content_hash() (a scoring retro-fit
+    # must not drift every existing block hash) and JSON-LD-projected
+    # only-when-non-empty (so emit stays byte-identical until IB6 populates),
+    # mirroring observed_bloom_level / objective_alignment.
+    quality_rubric: Tuple[QualityScore, ...] = ()
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -626,17 +723,30 @@ class Block:
         """
         return dataclasses.replace(self, touched_by=self.touched_by + (touch,))
 
+    def quality_score_for(self, dimension: str) -> Optional[QualityScore]:
+        """Return the :class:`QualityScore` for ``dimension`` if present (IB2.3).
+
+        Reader-only convenience over the ``quality_rubric`` tuple — no scoring
+        (IB6 populates the tuple). Returns ``None`` when no cell for that
+        dimension exists (the always-empty state after this wave).
+        """
+        for qs in self.quality_rubric:
+            if qs.dimension == dimension:
+                return qs
+        return None
+
     def compute_content_hash(self) -> str:
         """SHA-256 hex of the canonical Block payload.
 
         Excludes ``touched_by``, ``sequence``, ``validation_attempts``,
         ``escalation_marker``, ``observed_bloom_level``,
-        ``bloom_alignment``, ``objective_alignment``, ``target_bloom``, and
+        ``bloom_alignment``, ``objective_alignment``, ``target_bloom``,
         the IB1 six-slot anatomy metadata slots ``heading`` / ``purpose_tag``
-        / ``interaction`` / ``feedback`` / ``transition`` so a
+        / ``interaction`` / ``feedback`` / ``transition``, and the IB2.3
+        ``quality_rubric`` audit/scoring tuple so a
         touch-only / budget-only / classifier-retrofit / objective-
-        delivery-retrofit / anatomy-slot-back-derivation revision keeps a
-        stable hash. ``content`` (the BODY slot) IS in the payload; the other
+        delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring
+        revision keeps a stable hash. ``content`` (the BODY slot) IS in the payload; the other
         five anatomy slots are derived-or-authored metadata ABOUT the same
         content, so hashing them would drift every existing block hash on a
         back-derivation retrofit — exactly the failure the
@@ -969,6 +1079,15 @@ class Block:
         # objectiveAlignment + $defs.ObjectiveAlignment.
         if self.objective_alignment:
             entry["objectiveAlignment"] = [dict(a) for a in self.objective_alignment]
+        # IB2.4 — 8-dimension quality rubric (framework §6.2-6.3). Emit a
+        # ``qualityRubric`` array ONLY when non-empty (mirrors the
+        # objectiveAlignment / anatomy only-when-set guards). The field is
+        # ALWAYS ``()`` this wave (nothing populates it — IB6 does), so this
+        # projection NEVER fires on a real run and emit stays byte-identical.
+        # camelCase keys mirror schemas/knowledge/courseforge_jsonld_v1
+        # .schema.json::$defs.QualityScore.
+        if self.quality_rubric:
+            entry["qualityRubric"] = [qs.to_jsonld() for qs in self.quality_rubric]
         # IB1 — six-slot anatomy contract (framework pp.13-17, QA-4). Emit a
         # nested ``anatomy`` sub-object carrying ONLY the non-None slots,
         # DOUBLE-gated: behind BOTH ``_anatomy_emit_enabled()`` (the new

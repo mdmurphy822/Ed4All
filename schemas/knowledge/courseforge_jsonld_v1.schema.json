@@ -476,7 +476,7 @@
             "acronym",
             "key_idea"
           ],
-          "description": "One of the 24 canonical Phase 2 block types (mirror of Courseforge/scripts/blocks.py::BLOCK_TYPES). Issue I6 added table / acronym / key_idea (instruction palette v2)."
+          "description": "One of the 24 canonical Phase 2 block types (mirror of Courseforge/scripts/blocks.py::BLOCK_TYPES). Issue I6 added table / acronym / key_idea (instruction palette v2); each Ed4All type declares its canonical framework B-code parent via the catalog's framework_block field (B01–B15)."
         },
         "sequence": {
           "type": "integer",
@@ -589,6 +589,52 @@
         "anatomy": {
           "$ref": "#/$defs/BlockAnatomy",
           "description": "IB1 six-slot anatomy (framework pp.13-17, QA-4). Optional + additive; emitted only when ED4ALL_BLOCK_ANATOMY is on. The BODY slot is the block's content, NOT repeated here. Excluded from contentHash."
+        },
+        "frameworkBlock": {
+          "type": ["string", "null"],
+          "pattern": "^B(0[1-9]|1[0-5])$",
+          "description": "IB2: the canonical framework B-code parent (B01–B15) this block's type maps onto per the IB2 reconciliation map (Courseforge/config/block_catalog.yaml::framework_block; SoT loader lib/ontology/framework_blocks.py). Optional + additive; null for the non-pedagogical chrome scaffolding. NOT populated this wave (reserved for a future emitter behind COURSEFORGE_EMIT_FRAMEWORK_BLOCK). Excluded from contentHash."
+        },
+        "qualityRubric": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/QualityScore" },
+          "description": "IB2.3 8-dimension quality rubric (framework §6.2-6.3). One QualityScore per applicable quality dimension scored on an anchored 0–3 scale. Optional + additive; emitted only when non-empty. ALWAYS empty after IB2 (the scoring pass lands in IB6). Audit/scoring-only — excluded from contentHash so a scoring retro-fit doesn't drift every existing block hash."
+        }
+      }
+    },
+    "QualityScore": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "IB2.3: one per-block quality-dimension cell of the 8-dimension anchored 0–3 rubric (framework §6.2-6.3). Companion to Courseforge/scripts/blocks.py::QualityScore. score is null when not-yet-scored / not-applicable; applicable records whether the dimension applies to the block (so IB6's mean-of-applicable-dims excludes it). Scaffold only — populated by IB6.",
+      "required": ["dimension", "score", "applicable"],
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "enum": [
+            "alignment",
+            "cognitive_load",
+            "multimedia",
+            "retrieval",
+            "feedback",
+            "engagement",
+            "accessibility",
+            "coherence"
+          ],
+          "description": "One of the eight orthogonal quality dimensions (mirror of Courseforge/scripts/blocks.py::QUALITY_DIMENSIONS). Dims alignment / cognitive_load / accessibility / coherence are the load-bearing core applying to every block."
+        },
+        "score": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 3,
+          "description": "Anchored 0–3 dimension score; null when not-yet-scored or not-applicable."
+        },
+        "applicable": {
+          "type": "boolean",
+          "description": "Whether this dimension applies to the block. False excludes the cell from the block-score mean (IB6)."
+        },
+        "rationale": {
+          "type": ["string", "null"],
+          "description": "Optional human-readable / model rationale for the score."
         }
       }
     },

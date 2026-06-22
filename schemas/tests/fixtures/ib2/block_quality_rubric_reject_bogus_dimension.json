@@ -1,0 +1,8 @@
+{
+  "blockId": "week_01_overview#self_check_question_quiz_0",
+  "blockType": "self_check_question",
+  "sequence": 0,
+  "qualityRubric": [
+    { "dimension": "bogus", "score": 2, "applicable": true }
+  ]
+}

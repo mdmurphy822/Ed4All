@@ -20,6 +20,16 @@
 #   bloom_fit:       list of Bloom levels (remember/understand/apply/
 #                    analyze/evaluate/create) this block naturally serves.
 #   format_summary:  one-line HTML shape.
+#   framework_block: the canonical B01–B15 parent per the IB2
+#                    reconciliation map (the 24 Ed4All types are
+#                    finer-grained instances of the framework's 15
+#                    canonical blocks); ``null`` for the non-pedagogical
+#                    ``chrome`` scaffolding only. SoT loader:
+#                    ``lib/ontology/framework_blocks.py``.
+#   framework_block_secondary: (optional) the secondary B-code when a type
+#                    genuinely straddles two framework parents; key is
+#                    omitted entirely (not ``null``) when there is no
+#                    secondary.
 version: 1
 blocks:
   - block_type: objective
@@ -32,6 +42,7 @@ blocks:
     conveys: The measurable outcome (audience + behavior + condition + degree) the content targets.
     bloom_fit: [remember, understand, apply, analyze, evaluate, create]
     format_summary: "<li data-cf-objective-id> inside an .objectives <section>; JSON-LD learningObjectives entry."
+    framework_block: B01
 
   - block_type: concept
     label: Concept Explanation
@@ -43,6 +54,7 @@ blocks:
     conveys: The definition, properties, and rationale of a domain concept.
     bloom_fit: [remember, understand]
     format_summary: "<section> heading + prose; JSON-LD sections entry with key terms."
+    framework_block: B03
 
   - block_type: example
     label: Worked Example
@@ -54,6 +66,8 @@ blocks:
     conveys: A complete, step-by-step instance of applying a procedure or concept.
     bloom_fit: [understand, apply]
     format_summary: "<section> with an .example-box or multi-step .worked-example."
+    framework_block: B05
+    framework_block_secondary: B03
 
   - block_type: assessment_item
     label: Assessment Item
@@ -65,6 +79,7 @@ blocks:
     conveys: A scored question + misconception-targeted distractors mapped to an objective.
     bloom_fit: [understand, apply, analyze, evaluate]
     format_summary: "<div class=assessment-item> stem + <ol> of <li data-cf-distractor-index>; QTI downstream."
+    framework_block: B14
 
   - block_type: explanation
     label: Extended Explanation
@@ -76,6 +91,7 @@ blocks:
     conveys: Extended, multi-step exposition that develops a concept beyond its bare definition.
     bloom_fit: [understand, apply, analyze]
     format_summary: "<section> heading + several prose paragraphs; JSON-LD sections entry."
+    framework_block: B03
 
   - block_type: prereq_set
     label: Prerequisite Set
@@ -86,6 +102,7 @@ blocks:
     conveys: The earlier skills/topics this content builds on and assumes.
     bloom_fit: [remember, understand]
     format_summary: "<section> heading + <ol> of prior-skill refs."
+    framework_block: B02
 
   - block_type: activity
     label: Practice Activity
@@ -96,6 +113,7 @@ blocks:
     conveys: A guided set of practice items all exercising one named skill.
     bloom_fit: [apply, analyze]
     format_summary: "<div class=activity-card> instruction + practice items."
+    framework_block: B08
 
   - block_type: misconception
     label: Misconception & Correction
@@ -106,6 +124,8 @@ blocks:
     conveys: A named common error plus the correct reasoning that replaces it.
     bloom_fit: [understand, analyze]
     format_summary: "<section>; JSON-LD carries the misconception + correction."
+    framework_block: B03
+    framework_block_secondary: B12
 
   - block_type: callout
     label: Callout / Alert
@@ -116,6 +136,7 @@ blocks:
     conveys: A single most-important alert/tip about the surrounding content.
     bloom_fit: [remember, understand]
     format_summary: "<div class=callout callout-{kind}> with data-cf-content-type=callout."
+    framework_block: B12
 
   - block_type: flip_card_grid
     label: Flip Card Grid
@@ -126,6 +147,8 @@ blocks:
     conveys: A grid of term-front / definition-back vocabulary cards.
     bloom_fit: [remember, understand]
     format_summary: "<div class=flip-card-grid> of per-card <div class=flip-card>."
+    framework_block: B12
+    framework_block_secondary: B03
 
   - block_type: self_check_question
     label: Self-Check Question
@@ -136,6 +159,7 @@ blocks:
     conveys: A single formative question with a reveal answer for self-assessment.
     bloom_fit: [understand, apply]
     format_summary: "<div class=self-check self-check-item> question + <details> reveal."
+    framework_block: B07
 
   - block_type: summary_takeaway
     label: Summary Takeaway
@@ -146,6 +170,7 @@ blocks:
     conveys: A distilled bullet list of the section's most important points.
     bloom_fit: [remember, understand]
     format_summary: "<section> heading + short <ul> with data-cf-content-type=summary."
+    framework_block: B13
 
   - block_type: reflection_prompt
     label: Reflection Prompt
@@ -159,6 +184,7 @@ blocks:
     conveys: An open-ended self-reflection question about the learner's own thinking.
     bloom_fit: [understand, evaluate]
     format_summary: "<section> heading + <p> open-ended self-reflection question(s)."
+    framework_block: B11
 
   - block_type: discussion_prompt
     label: Discussion Prompt
@@ -169,6 +195,7 @@ blocks:
     conveys: An open-ended group-debate question with no single correct answer.
     bloom_fit: [analyze, evaluate]
     format_summary: "<section> heading + <p> open-ended group discussion question(s)."
+    framework_block: B10
 
   - block_type: chrome
     label: Page Chrome
@@ -179,6 +206,7 @@ blocks:
     conveys: Structural page scaffolding (header / footer / nav), not learning content.
     bloom_fit: [remember]
     format_summary: "Template chrome wrapper carrying data-cf-role=template-chrome."
+    framework_block: null
 
   - block_type: recap
     label: Recap
@@ -189,6 +217,7 @@ blocks:
     conveys: A short restatement of previously-taught key terms.
     bloom_fit: [remember, understand]
     format_summary: "<section> heading + short <ul>/prose recap of prior terms."
+    framework_block: B02
 
   - block_type: scenario
     label: Application Scenario
@@ -200,6 +229,7 @@ blocks:
     conveys: A realistic situation grounded in the source plus a prompt to apply the concept to it.
     bloom_fit: [apply, analyze, evaluate]
     format_summary: "<div class=scenario-card> scenario prose + an apply <p> prompt."
+    framework_block: B09
 
   - block_type: problem
     label: Practice Problem
@@ -211,6 +241,7 @@ blocks:
     conveys: One stated practice problem with a reveal-on-demand worked solution.
     bloom_fit: [apply, analyze]
     format_summary: "<div class=problem-card> problem <p> + <details> reveal solution."
+    framework_block: B08
 
   - block_type: vocab_card
     label: Vocabulary Card
@@ -225,6 +256,8 @@ blocks:
     conveys: One domain term and its definition.
     bloom_fit: [remember, understand]
     format_summary: "<div class=vocab-card> term + definition."
+    framework_block: B12
+    framework_block_secondary: B03
 
   - block_type: formula
     label: Formula Card
@@ -236,6 +269,8 @@ blocks:
     conveys: One highlighted formula plus a one-line naming of each variable.
     bloom_fit: [remember, understand, apply]
     format_summary: "<div class=formula-card> centered formula + variable gloss."
+    framework_block: B03
+    framework_block_secondary: B06
 
   - block_type: checklist
     label: Checklist
@@ -247,6 +282,8 @@ blocks:
     conveys: An ordered set of concrete, checkable steps or criteria.
     bloom_fit: [apply, evaluate]
     format_summary: "<ul class=checklist> of <li class=checklist-item> actionable items."
+    framework_block: B08
+    framework_block_secondary: B13
 
   - block_type: table
     label: Comparison Table
@@ -261,6 +298,8 @@ blocks:
     conveys: A row-by-column comparison of several items across shared dimensions.
     bloom_fit: [understand, analyze]
     format_summary: "<table> with <caption>, <thead> <th scope=col>, one <tr> per row."
+    framework_block: B06
+    framework_block_secondary: B03
 
   - block_type: acronym
     label: Acronym / Mnemonic
@@ -274,6 +313,8 @@ blocks:
     conveys: An acronym / mnemonic and the term each letter expands to.
     bloom_fit: [remember, understand]
     format_summary: "<div class=acronym-card> mnemonic + <dl> of paired <dt>letter / <dd>term."
+    framework_block: B06
+    framework_block_secondary: B12
 
   - block_type: key_idea
     label: Key Idea
@@ -287,3 +328,4 @@ blocks:
     conveys: The single most important principle / takeaway, set apart for emphasis.
     bloom_fit: [remember, understand]
     format_summary: "<aside class=key-idea> with a Key Idea framing label + 1-3 sentences."
+    framework_block: B12

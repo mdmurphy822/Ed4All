@@ -76,7 +76,7 @@ def test_new_type_in_block_types(block_type):
     assert block_type in BLOCK_TYPES
 
 
-def test_block_types_count_is_twenty_one():
+def test_block_types_count_is_twenty_four():
     assert len(BLOCK_TYPES) == 24
 
 
@@ -204,3 +204,82 @@ def test_catalog_use_when_and_bloom_fit_valid():
             assert level in _BLOOM_LEVELS, (
                 f"{bt!r} bloom_fit has invalid level {level!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# IB2.1 — every entry declares its canonical framework B-code parent
+# ---------------------------------------------------------------------------
+
+_VALID_FRAMEWORK_CODES = {f"B{i:02d}" for i in range(1, 16)}
+
+
+def test_every_entry_declares_framework_block():
+    """Each catalog entry has a framework_block key in {B01..B15} ∪ {None}."""
+    for entry in load_block_catalog():
+        bt = entry["block_type"]
+        assert "framework_block" in entry, (
+            f"{bt!r} missing framework_block key (IB2.1)"
+        )
+        fb = entry["framework_block"]
+        assert fb is None or fb in _VALID_FRAMEWORK_CODES, (
+            f"{bt!r} framework_block {fb!r} not in {{B01..B15}} ∪ {{None}}"
+        )
+
+
+def test_framework_block_secondary_when_present_is_valid():
+    """When framework_block_secondary is present it is a valid code != primary."""
+    for entry in load_block_catalog():
+        if "framework_block_secondary" not in entry:
+            continue
+        bt = entry["block_type"]
+        sec = entry["framework_block_secondary"]
+        assert sec in _VALID_FRAMEWORK_CODES, (
+            f"{bt!r} framework_block_secondary {sec!r} not in {{B01..B15}}"
+        )
+        assert sec != entry["framework_block"], (
+            f"{bt!r} secondary {sec!r} must differ from primary"
+        )
+
+
+def test_only_chrome_maps_to_null():
+    """chrome is the ONLY entry whose framework_block is None."""
+    nulls = [
+        entry["block_type"]
+        for entry in load_block_catalog()
+        if entry.get("framework_block") is None
+    ]
+    assert nulls == ["chrome"], (
+        f"only chrome may map to null framework_block; got {nulls}"
+    )
+
+
+def test_framework_block_coverage_equals_block_types():
+    """Every BLOCK_TYPES member has a catalog entry carrying framework_block."""
+    covered = {
+        entry["block_type"]
+        for entry in load_block_catalog()
+        if "framework_block" in entry
+    }
+    assert covered == set(BLOCK_TYPES), (
+        "framework_block coverage must equal BLOCK_TYPES — "
+        f"missing: {sorted(set(BLOCK_TYPES) - covered)}"
+    )
+
+
+def test_framework_map_onto_b01_through_b15():
+    """The 24 primaries are ONTO at least most of B01–B15 (excluding the
+    IB5-deferred gaps B04/B15); every primary is a valid code."""
+    primaries = {
+        entry.get("framework_block")
+        for entry in load_block_catalog()
+        if entry.get("framework_block") is not None
+    }
+    assert primaries <= _VALID_FRAMEWORK_CODES
+    # B04 (Multimedia) + B15 (Resources) have no Ed4All primary today
+    # (IB5-deferred gaps); the dedicated B02/B05/B06 first-class types are
+    # also IB5's job. Assert the codes that DO have a primary are exactly the
+    # expected set so a future re-parent is caught.
+    assert primaries == {
+        "B01", "B02", "B03", "B05", "B06", "B07",
+        "B08", "B09", "B10", "B11", "B12", "B13", "B14",
+    }, f"unexpected primary code set: {sorted(primaries)}"

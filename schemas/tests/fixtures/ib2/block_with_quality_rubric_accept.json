@@ -1,0 +1,16 @@
+{
+  "blockId": "week_01_overview#self_check_question_quiz_0",
+  "blockType": "self_check_question",
+  "sequence": 0,
+  "frameworkBlock": "B07",
+  "qualityRubric": [
+    { "dimension": "alignment", "score": 3, "applicable": true, "rationale": "maps to TO-01" },
+    { "dimension": "cognitive_load", "score": 2, "applicable": true },
+    { "dimension": "multimedia", "score": null, "applicable": false },
+    { "dimension": "retrieval", "score": 1, "applicable": true },
+    { "dimension": "feedback", "score": 2, "applicable": true },
+    { "dimension": "engagement", "score": 2, "applicable": true },
+    { "dimension": "accessibility", "score": 3, "applicable": true },
+    { "dimension": "coherence", "score": 3, "applicable": true }
+  ]
+}
