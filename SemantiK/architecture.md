@@ -1,9 +1,16 @@
-# DART / Semantic — Architecture
+# SemantiK — Architecture (the 13-stage v2 cascade)
 
-> Pipeline that turns arbitrary PDFs into WCAG 2.2 AA-conformant accessible
-> HTML, built on the principle: **learned models are narrow candidate
-> generators; deterministic code orchestrates, gates, and assembles.**
-> No external LLMs at runtime. No human in the loop.
+> SemantiK is the **license-clean replacement for DART** — a local-only
+> PDF → WCAG 2.2 AA accessible-HTML pipeline, built on the principle:
+> **learned models are narrow candidate generators; deterministic code
+> orchestrates, gates, and assembles.** No PyMuPDF/AGPL anywhere on the
+> extraction path; no cloud LLM required at runtime (a hosted 70B endpoint
+> is an opt-in seat, not a dependency); no human in the loop. SemantiK keeps
+> DART's `data-dart-*` HTML markers and `dart:{slug}#{block_id}` sourceId
+> **wire contract** stable so Ed4All consumers are unchanged — see §12.
+>
+> This file is the cascade deep-dive. The subsystem guide (`CLAUDE.md`)
+> links here; the wire contract + cross-venv bridge are §12–§14 below.
 
 This document is the canonical reference for the structure of the pipeline.
 For the WCAG / standards mapping that governs each output element, see
@@ -925,6 +932,207 @@ The following are decided. Changes require an explicit revision of this doc.
 
 ---
 
-*Document version: 2026-05-03. Supersedes the "two trained models, Qwen as
-single decision-maker" architecture. WCAG / standards mapping continues to
-live in [`docs/ontology.md`](docs/ontology.md).*
+## 12. The output contract + the cross-venv bridge
+
+SemantiK's whole point is to be a **drop-in replacement for DART** — the
+HTML it emits, and the way Ed4All references blocks inside it, must match
+DART's contract byte-for-byte so nothing downstream (Courseforge staging,
+source-mapping, the chunker, the Ask path) has to change.
+
+### 12.1 The wire contract — `data-dart-*` markers + `dart:{slug}#{block_id}`
+
+The cascade emits HTML; the **adapter seam** (`lib/semantik/adapter.py`,
+`lib/semantik/cascade_ir.py`) normalizes that HTML into Ed4All's chapter IR,
+wrapping each content block in a `<section class="dart-section">` carrying
+the stable DART marker set (`adapter.py::_render_section`):
+
+```html
+<section class="dart-section"
+         aria-labelledby="{sid}"
+         data-dart-block-id="{sid}"          <!-- the sourceId block_id -->
+         data-dart-source="synthesized"      <!-- or "vendor" via vendor_ingest -->
+         data-dart-pages="1,3-5"             <!-- physical PDF pages -->
+         data-dart-page-kind="physical"      <!-- honest; never "printed" -->
+         data-dart-confidence="0.80"         <!-- 5-point band -->
+         data-dart-block-role="section"
+         data-dart-wcag="passed">            <!-- per-region Stage-7 verdict -->
+  <h3 id="{sid}">…</h3>
+  …content…
+</section>
+```
+
+The **sourceId** is `dart:{slug}#{block_id}`:
+
+- `{slug}` = the document slug (file stem, via `dart_slug_from_filename`).
+- `{block_id}` (`sid`) = a **deterministic** block key minted by
+  `adapter.py::_mint_sid`. Default key is the block's **first raw
+  FeatureBlock index** (`b{raw_block_index}`) — never the post-model region
+  order, so the id is stable across re-runs on the same PDF. Under
+  `TRAINFORGE_CONTENT_HASH_IDS=1` it switches to a content hash of the raw
+  text (stable iff the source text is unchanged).
+
+This is the determinism contract DART established and Ed4All depends on:
+**same PDF in → same sourceIds out**, so chunk `learning_outcome_refs[]`,
+`source_module_map.json`, and citation deep-links resolve across re-runs.
+
+Provenance honesty markers worth knowing: `data-dart-mock="true"` (only on
+MockRuntime output — a real run never carries it), `data-dart-cell-roles=
+"qwen-inferred"` (table cell roles guessed by the Qwen specialist, not
+verified by BERT-TableSpecialist), and `data-dart-fabricated="title"` (a
+Stage-9c gap-filled missing title — synthetic, not extracted).
+
+### 12.2 `region_provenance`
+
+The cascade emits a per-region provenance list in document (emission) order
+(`cascade.py::_build_region_provenance`). Each entry records, per region:
+`region_index`, `region_kind`, `role`, `confidence`, `wcag_status`
+(`"passed"` / `"failed"` / `None`), `first_raw_block_index` (the §12.1
+determinism key), `pages` (sorted 1-indexed physical PDF pages),
+`heading_text` + `level` (headings/figures), `figure_alt` (the Stage-6b
+caption), `raw_text` (the deterministic extracted text the sid hashes), and
+an OPTIONAL `review` block (present only when Stage-5d ran and corrected a
+heading: `corrected_from`/`corrected_to`/`level_from`/`level_to`/
+`reason_code`/`reverted`/`note`). The adapter consumes this list to build
+the chapter IR and apply the deterministic phantom-TOC / front-matter filter
+(§14, `lib/semantik/toc_frontmatter_detector.py`) before chapters assemble.
+
+### 12.3 The conformance audit
+
+Alongside the HTML, the cascade emits a machine-readable
+`*.conformance_audit.json` (`conformance_audit.py::build_conformance_audit`,
+schema `conformance-audit/1.0`) recording: the final `exit` action +
+`wcag_status` + lane used; the Stage-7 per-region gate log (per-candidate
+verdicts + **skip counts**); the Stage-10 document axe summary (violations by
+rule id); the `theta` report (`theta_score` + flags); the decision
+`thresholds`; the `assembly` block (heading tree, `region_provenance`,
+Stage-5d verdicts); and `wcag_coverage` (rule id → WCAG SC mapping). **Skips
+are first-class** — a CheckOutcome with `skipped=True` means "no
+measurement", not "verified safe", so a document whose text-preservation gate
+skipped 80% of its regions is visibly different from one fully measured. This
+is the anti-silent-degradation contract on the accessibility surface.
+
+### 12.4 The cross-venv bridge
+
+SemantiK's runtime pulls in **heavy ML deps** (torch, transformers, peft,
+`llama-cpp-python` built against CUDA, sentence-transformers for theta) that
+do NOT belong in Ed4All's MCP/orchestrator venv. So the cascade runs **out
+of process**, in its own venv, behind a JSON bridge:
+
+- `SemantiK/run_cascade_json.py` is the subprocess entry point: it takes a
+  PDF path, runs `run_full_cascade`, and writes the HTML + `region_provenance`
+  + conformance audit as JSON to stdout.
+- `MCP/tools/pipeline_tools.py` invokes it. `SEMANTIK_PYTHON` is the absolute
+  path to the SemantiK venv's python; `SEMANTIK_RUNTIME_DIR` is the SemantiK
+  repo root used as the subprocess `cwd` (so model/cache dirs resolve). When
+  the in-process SemantiK deps are absent and `SEMANTIK_PYTHON` is unset, the
+  bridge **fails closed with operator guidance** (no silent stub).
+- `SEMANTIK_BRIDGE_TIMEOUT_SECONDS` (default 3600s) caps the subprocess;
+  `SEMANTIK_EXPANDABLE_SEGMENTS` opts the subprocess into
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (8 GB OOM mitigation).
+
+The bridge is the seam that lets Ed4All stay lean while SemantiK keeps its
+GPU-heavy ML stack isolated. Everything crossing it is the §12.1 wire
+contract, so the rest of Ed4All cannot tell SemantiK from DART.
+
+---
+
+## 13. Data flow (end to end)
+
+```
+                                  ┌─────────────────────────────────────────┐
+   PDF                            │  SemantiK venv  (SEMANTIK_PYTHON)         │
+    │   MCP/tools/pipeline_tools  │                                           │
+    │   ──────────────────────►   │  run_cascade_json.py → run_full_cascade   │
+    │      JSON bridge            │                                           │
+    │   (SEMANTIK_RUNTIME_DIR cwd)│   1  extract   pikepdf/pypdfium2/         │
+    │                             │                pdfplumber/Tesseract       │
+    │                             │   2  features  font/geometry/columns      │
+    │                             │   3  council   Structure · Semantic ·     │
+    │                             │                MergeOrSplit · Table ·      │
+    │                             │                Math  (LoRA adapter-swap)   │
+    │                             │   4  cross-BERT reranker  (arbitrate)     │
+    │                             │   5  structure_graph  → typed Regions     │
+    │                             │   5b GLM-OCR table enrich (opt-in)        │
+    │                             │   5c figure bbox → PNG bytes              │
+    │                             │   5d 70B structure reviewer (OFF default) │
+    │                             │   6  Qwen specialists  prose/table/math   │
+    │                             │      (local GGUF | hosted 70B endpoint;   │
+    │                             │       batched two-phase, by adapter)      │
+    │                             │   6b figure captioner (SmolVLM2)          │
+    │                             │   7  per-region HARD gate  (axe/html5/    │
+    │                             │      text_preserve/mathml/table/heading)  │
+    │                             │   8  per-region SOFT reranker  (pick top) │
+    │                             │   9  assembler  role→HTML · heading tree ·│
+    │                             │      gap-fill splice  (pass_9a/9b/9c)     │
+    │                             │  10  document HARD gate  (axe/lang/title/ │
+    │                             │      landmark/heading contiguity)         │
+    │                             │  11  document SOFT reranker               │
+    │                             │  12  theta  (DeBERTa-v3-small + LoRA       │
+    │                             │      semantic-preservation cross-encoder) │
+    │                             │  13  exit decider (+ one offline retry)   │
+    │                             └─────────────────────────────────────────┘
+    │                                              │
+    ▼   JSON over the bridge ◄─────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  lib/semantik/adapter.py + cascade_ir.py  (Ed4All venv — pure transform) │
+│   · drop phantom-TOC / front-matter (toc_frontmatter_detector.py)        │
+│   · wrap blocks in <section class="dart-section" data-dart-*=…>          │
+│   · mint sourceIds  dart:{slug}#{block_id}                               │
+└─────────────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+  Accessible HTML  +  region_provenance  +  *.conformance_audit.json
+  (consumed by Courseforge staging / source-mapping / the chunker — unchanged)
+```
+
+---
+
+## 14. Known limitations
+
+Honest constraints an operator should know going in:
+
+- **Council VRAM on 8 GB.** The full cascade is **GPU-flaky on an 8 GB
+  card.** The council BERTs share one ModernBERT-base backbone with a
+  one-resident-LoRA-adapter discipline (§3, §9), and the Qwen specialists
+  are batched **by adapter** rather than fanned out, precisely because
+  parallel adapter contexts + a concurrent Chromium/axe-core process poison
+  CUDA on 8 GB. This is mitigated, not eliminated — long math regions, the
+  figure captioner (SmolVLM2), and theta all want the same card. The Spark
+  deployment target (below) is the real fix; on a dev box, expect to gate
+  GPU-heavy work and accept occasional OOM retries.
+
+- **Structure quality is council-bound.** The block-ID quality of
+  *pedagogical* elements (correctly segmenting a worked example vs. a
+  definition vs. a checkpoint) is only as good as BERT-Structure's
+  `structural_role` / `is_heading` heads. Heading over-detection on
+  TOC/front-matter is a known failure mode; it is patched in **two**
+  defensive layers — the off-by-default Stage-5d 70B reviewer
+  (`SEMANTIK_STRUCTURE_REVIEW`) and the always-on **deterministic**
+  front-matter / phantom-TOC detector at the adapter seam
+  (`lib/semantik/toc_frontmatter_detector.py`, the page-density +
+  monotonic-pagenum-run discriminator). The deterministic detector is the
+  load-bearing one; the 70B reviewer is **conservative and off by default**
+  (it may only correct headings under a strict text-conservation invariant,
+  and fails closed to the unreviewed output on any token mismatch).
+
+- **The structure reviewer is conservative by construction.** Stage-5d never
+  touches text, never re-partitions FeatureBlocks, and reverts the whole
+  region list on any document-level token-conservation violation. It will
+  miss corrections it cannot make safely — that is the intended trade
+  (no fabrication over more aggressive repair).
+
+- **Deployment target is the Spark era.** SemantiK is built to run the local
+  GGUF specialists on a dev box for development and the hosted 70B endpoint
+  seat (`SEMANTIK_SPECIALIST_PROVIDER=nvidia`) for quality, but the intended
+  production home is an NVIDIA DGX Spark-class box where the full council +
+  specialists + theta fit resident without the 8 GB contention dance. Until
+  then, the local lane is functional but VRAM-disciplined.
+
+---
+
+*Document version: 2026-06-22 (SemantiK migration). §1–§11 are the original
+target architecture (version 2026-05-03), superseding the "two trained
+models, Qwen as single decision-maker" design; §12–§14 document the live
+output contract, cross-venv bridge, and honest limitations of the SemantiK
+replacement. WCAG / standards mapping continues to live in
+[`docs/ontology.md`](docs/ontology.md).*
