@@ -221,20 +221,37 @@ def test_corrected_kind_flows_into_provenance():
 
 
 def test_promotion_yields_non_null_heading_text():
-    """A paragraph->heading promotion (C1) yields non-null heading_text."""
-    # Run the real reviewer so the C1 promotion-text logic populates payload.
+    """A paragraph->heading promotion (C1) yields non-null heading_text.
+
+    NOTE (heading-scoping): the driver reviews ONLY heading regions, so a
+    paragraph->heading PROMOTION is no longer driver-reachable (a paragraph is
+    never sent to the 70B). We exercise the C1 promotion-text logic DIRECTLY
+    via ``_apply_verdict`` (mirroring ``test_reviewer.test_promotion_sets_
+    source_text_c1``) and then assert the correction flows into
+    ``_build_region_provenance`` with non-null heading_text.
+    """
+    from dart_semantic.qwen_specialists import reviewer as rv
+
     regions = [_region("paragraph", 0), _region("paragraph", 1)]
     fbs = [_fb("intro para"), _fb("Section Two")]
-    runtime = _ScriptedRuntime([
-        _vjson(0, verdict="ok"),
-        _vjson(1, kind="heading", level=2),
-    ])
-    corrected, verdicts = run_structure_review(regions, fbs, runtime)
+
+    # Apply a paragraph->heading promotion to region 1 directly (the C1 path).
+    obj = {
+        "block_id": 1, "verdict": "corrected", "corrected_kind": "heading",
+        "corrected_level": 2, "corrected_doc_role": None,
+        "review_note": "missed heading",
+    }
+    promoted, verdict1 = rv._apply_verdict(regions[1], 1, obj, fbs)
 
     # The promoted region carries payload['text'] == source (C1).
-    promoted = corrected[1]
     assert promoted.kind == "heading"
     assert (promoted.payload or {}).get("text") == "Section Two"
+
+    verdicts = [
+        ReviewVerdict(0, "ok", "paragraph", "paragraph", None, None, ""),
+        verdict1,
+    ]
+    corrected = [regions[0], promoted]
 
     prov = _build_region_provenance([0, 1], corrected, fbs, {}, review_verdicts=verdicts)
     entry = next(e for e in prov if e["region_index"] == 1)
@@ -363,10 +380,12 @@ def test_seam_helpers_in_cascade_order_flag_on():
     fbs = [_fb("intro"), _fb("Answer Key 3.2"), _fb("real body")]
     pre_review_regions = list(structure_regions)
 
+    # Heading-scoping: ONLY the heading region (index 1) is sent to the 70B,
+    # so the runtime is scripted with exactly one completion whose block_id is
+    # the heading's region index (1). The two paragraphs pass through verbatim
+    # with verdict='ok' and never reach the runtime.
     runtime = _ScriptedRuntime([
-        _vjson(0, verdict="ok"),
         _vjson(1, kind="metadata_drop", verdict="drop_injected_header"),
-        _vjson(2, verdict="ok"),
     ])
     reviewed, verdicts = run_structure_review(structure_regions, fbs, runtime)
 

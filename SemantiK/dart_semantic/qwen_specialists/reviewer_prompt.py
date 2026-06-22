@@ -67,13 +67,25 @@ _SYSTEM_REVIEWER = (
     "touch STRUCTURE and ROLE only; the source words are preserved "
     "verbatim. You do NOT emit HTML. You do NOT produce a fragment.\n"
     "\n"
-    "What you correct (the only three corrections):\n"
-    "  1. A phantom heading — a run of short lines (table-of-contents, "
-    "answer-key, page furniture, noise) that was mis-promoted to a "
-    "heading. Re-role it: kind 'heading' -> 'paragraph' when the words are "
-    "real body content, or kind 'heading' -> 'metadata_drop' when it is "
-    "genuine non-content furniture/answer-key. PREFER 'paragraph' for real "
-    "words; reserve 'metadata_drop' for true furniture.\n"
+    "POSTURE — CONSERVATIVE + ADDITIVE. Your DEFAULT is to KEEP the block "
+    "as-is (verdict \"ok\"). Re-tag a block ONLY when the TEXT ITSELF makes "
+    "clear it is not a real heading. Genuine section / chapter / subsection "
+    "headings are KEPT as headings — front-matter and table-of-contents "
+    "handling is done by a separate DETERMINISTIC pass, NOT by you. When in "
+    "doubt, return \"ok\".\n"
+    "\n"
+    "What you correct (only the clearly-not-a-heading cases):\n"
+    "  1. A block whose TEXT is clearly NOT a real heading — an answer-key "
+    "fragment (e.g. \"3.2: 14, 17, 20\"), a bare page number, an operator- "
+    "or-numeral-led noise string, a running header / page furniture, or other "
+    "obvious non-heading content that was mis-promoted to a heading. Re-role "
+    "it: kind 'heading' -> 'paragraph' when the words are real body content, "
+    "or kind 'heading' -> 'metadata_drop' when the text is genuine "
+    "non-content furniture / answer-key. PREFER 'paragraph' for real words; "
+    "reserve 'metadata_drop' for true furniture. Judge the TEXT, not the "
+    "company it keeps: do NOT demote a heading merely because it sits in a "
+    "run of similar headings; only re-tag when the text itself is clearly "
+    "not heading content.\n"
     "  2. A real heading at the wrong depth — re-level it by setting "
     "corrected_level (an integer 1-6). Express the level ONLY through "
     "corrected_level; the assembler owns final absolute h1..h6 "
@@ -83,10 +95,26 @@ _SYSTEM_REVIEWER = (
     "-> 'heading' and set corrected_level. The block's existing verbatim "
     "text is kept as the heading text; you NEVER invent heading words.\n"
     "\n"
-    "Use the prev/next neighbor snippets to judge document flow: a "
-    "'heading' whose neighbors are all body paragraphs at the same size, "
-    "or a run of short 'headings' that together form a list/TOC/answer "
-    "key, is a phantom heading.\n"
+    "Use the prev/next neighbor snippets to judge document flow, but they are "
+    "context, not a trigger: a heading whose own TEXT is a plausible section "
+    "title stays a heading even when its neighbors look similar.\n"
+    "\n"
+    "STRUCTURAL CLUSTER SIGNALS — INFORMATIONAL CONTEXT ONLY. Each block "
+    "carries four deterministic structural measurements computed over the "
+    "whole document: same_level_run_len (how many consecutive same-level "
+    "headings this heading sits in, with NO body content between them), "
+    "run_position (this heading's place in that run), content_blocks_following "
+    "(how many body blocks — paragraph/list/table — immediately follow this "
+    "heading before the next heading), and trailing_pagenum (whether the text "
+    "ends in a bare page number). These are measurements to inform your read "
+    "of the document — they are NOT a rule. In particular, do NOT demote a "
+    "heading just because it is part of a long same-level run or has "
+    "content_blocks_following == 0; many real chapter / section openers are "
+    "back-to-back in a well-structured document. Re-tag ONLY on the basis of "
+    "the block's OWN text being clearly non-heading content (correction 1 "
+    "above). A trailing_pagenum == true is a hint that the TEXT may be a "
+    "table-of-contents / index line, but confirm against the text itself "
+    "before re-tagging.\n"
     "\n"
     "OUTPUT — JSON ONLY. Return EXACTLY ONE JSON object and nothing else. "
     "NO Markdown, NO code fences, NO commentary, NO surrounding prose. The "
@@ -257,6 +285,28 @@ def _neighbor_obj(neighbor: Region | None) -> dict[str, Any] | None:
     }
 
 
+def _cluster_signal_fields(cluster_signals: Any | None) -> dict[str, Any]:
+    """Project a :class:`ClusterSignals` (duck-typed, or None) into the four
+    input-JSON fields. Accepts the dataclass from ``reviewer.py`` without an
+    import (avoids a circular import); falls back to inert defaults when None.
+    """
+    if cluster_signals is None:
+        return {
+            "same_level_run_len": 0,
+            "run_position": 0,
+            "content_blocks_following": 0,
+            "trailing_pagenum": False,
+        }
+    return {
+        "same_level_run_len": getattr(cluster_signals, "same_level_run_len", 0),
+        "run_position": getattr(cluster_signals, "run_position", 0),
+        "content_blocks_following": getattr(
+            cluster_signals, "content_blocks_following", 0
+        ),
+        "trailing_pagenum": bool(getattr(cluster_signals, "trailing_pagenum", False)),
+    }
+
+
 def build_reviewer_input_json(
     region: Region,
     *,
@@ -264,6 +314,7 @@ def build_reviewer_input_json(
     text: str,
     prev_block: Region | None = None,
     next_block: Region | None = None,
+    cluster_signals: Any | None = None,
 ) -> dict[str, Any]:
     """Assemble the §3 input object for one block.
 
@@ -272,6 +323,13 @@ def build_reviewer_input_json(
     formatter). ``prev_block`` / ``next_block`` are the ±1 neighbor Regions
     (the ±2 window is threaded by the caller passing the right neighbors;
     this object carries the ±1 snippets the design names).
+
+    ``cluster_signals`` carries the four deterministic CLUSTER-LEVEL signals
+    (``same_level_run_len`` / ``run_position`` / ``content_blocks_following``
+    / ``trailing_pagenum``) computed in ``reviewer.py::compute_cluster_signals``
+    so the model can distinguish a phantom-TOC/index cluster from real
+    content. When None (a caller that did not compute them), the four fields
+    are emitted with inert defaults.
     """
     payload = region.payload or {}
     heading_conf = payload.get("confidence")
@@ -285,6 +343,7 @@ def build_reviewer_input_json(
         "prev_block": _neighbor_obj(prev_block),
         "next_block": _neighbor_obj(next_block),
     }
+    obj.update(_cluster_signal_fields(cluster_signals))
     return obj
 
 
@@ -294,6 +353,7 @@ def build_reviewer_request(
     index: int,
     *,
     text: str | None = None,
+    cluster_signals: Any | None = None,
 ) -> str:
     """Emit a ``SYSTEM:\\nUSER:`` reviewer prompt for one block.
 
@@ -315,6 +375,7 @@ def build_reviewer_request(
         text=resolved_text,
         prev_block=prev_block,
         next_block=next_block,
+        cluster_signals=cluster_signals,
     )
     user_json = json.dumps(input_obj, ensure_ascii=False, separators=(",", ":"))
 

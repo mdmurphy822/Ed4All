@@ -181,3 +181,71 @@ def test_explicit_text_override_used_for_m2():
     prompt = build_reviewer_request(region, (None, None), 0, text="resolved verbatim")
     obj = _split_user(prompt)
     assert obj["text"] == "resolved verbatim"
+
+
+# ---------------------------------------------------------------------------
+# Cluster-level signals carried in the input JSON (Phase-4 root-cause fix).
+# ---------------------------------------------------------------------------
+
+
+class _Sigs:
+    """Duck-typed ClusterSignals stand-in (the prompt builder reads by attr)."""
+
+    def __init__(self, run_len, pos, following, pagenum):
+        self.same_level_run_len = run_len
+        self.run_position = pos
+        self.content_blocks_following = following
+        self.trailing_pagenum = pagenum
+
+
+def test_input_json_carries_cluster_signals():
+    region = _heading_region(text="Chapter 5: Polynomials")
+    sigs = _Sigs(8, 3, 0, True)
+    prompt = build_reviewer_request(region, (None, None), 7, cluster_signals=sigs)
+    obj = _split_user(prompt)
+    assert obj["same_level_run_len"] == 8
+    assert obj["run_position"] == 3
+    assert obj["content_blocks_following"] == 0
+    assert obj["trailing_pagenum"] is True
+
+
+def test_input_json_cluster_signal_defaults_when_omitted():
+    # A caller that passes no cluster_signals still gets the four keys (inert).
+    region = _heading_region()
+    prompt = build_reviewer_request(region, (None, None), 0)
+    obj = _split_user(prompt)
+    assert obj["same_level_run_len"] == 0
+    assert obj["run_position"] == 0
+    assert obj["content_blocks_following"] == 0
+    assert obj["trailing_pagenum"] is False
+
+
+def test_system_directive_carries_cluster_signals_as_informational():
+    # The four cluster-signal NAMES are still named in the prompt (they remain
+    # informational input the model can read), but they are framed as context,
+    # NOT an auto-demote rule.
+    prompt = build_reviewer_request(_heading_region(), (None, None), 0)
+    low = prompt.lower()
+    assert "same_level_run_len" in low
+    assert "content_blocks_following" in low
+    assert "run_position" in low
+    assert "trailing_pagenum" in low
+    # The signals are explicitly framed as informational context only.
+    assert "informational context only" in low
+
+
+def test_system_directive_is_conservative_not_mass_demote():
+    # The conservative posture is stated: keep genuine headings even in runs;
+    # re-tag only on the basis of the block's OWN text being non-heading.
+    prompt = build_reviewer_request(_heading_region(), (None, None), 0)
+    low = prompt.lower()
+    # Conservative default is stated.
+    assert "conservative" in low
+    assert "do not demote a heading merely because it sits in a run" in low
+    # The aggressive auto-demote mandate is GONE: the old prompt mandated that
+    # a >=3 same-level run with content_blocks_following == 0 is "almost
+    # certainly" a TOC -> metadata_drop. That sentence must no longer appear.
+    assert "almost certainly a table-of-contents" not in low
+    assert "weigh these structural signals above the local neighbor" not in low
+    # And it must NOT instruct keeping/dropping purely on content_blocks_following.
+    assert "content_blocks_following >= 1 is a real section" not in low

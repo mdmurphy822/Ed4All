@@ -42,6 +42,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
@@ -52,6 +53,255 @@ from dart_semantic.types import FeatureBlock
 from .reviewer_prompt import build_reviewer_request
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Cluster-level structural signals (Phase 4 root-cause fix).
+#
+# The reviewer's per-region ±neighbor window cannot tell a phantom-TOC /
+# chapter-index entry (a "Chapter 5" wedged between "Chapter 3" and
+# "Chapter 7") from a real chapter opener — locally they are identical. The
+# DISCRIMINATOR is cluster-level:
+#   (a) a phantom-TOC/index entry is part of a RUN of consecutive same-level
+#       headings with NO content-bearing region between consecutive entries;
+#   (b) a real section heading is FOLLOWED BY content (paragraph/list/table/…)
+#       before the next heading.
+# We compute four deterministic per-region signals over the FULL ordered
+# region list (cheap, no model) and feed them into the reviewer prompt so the
+# 70B can reason about the cluster, not just the neighbor text.
+#
+# The content-bearing predicate + the trailing-page-number TOC pattern are
+# kept in lock-step with ``lib/semantik/toc_frontmatter_detector.py`` — the
+# deterministic backstop — so prompt-signal and backstop agree on what counts
+# as content / a TOC line.
+# ---------------------------------------------------------------------------
+
+# The only heading kind in REGION_KINDS; isolated as a frozenset so the
+# heading-scoping in run_structure_review and the run computation share one
+# definition (and a future second heading kind is a one-line change).
+HEADING_KINDS: frozenset[str] = frozenset({"heading"})
+
+# Kinds that are NEITHER content-bearing NOR headings — they do not break a
+# same-level heading run (a stray running header / dropped furniture between
+# two index entries keeps the run open), mirroring the detector's treatment
+# of ``heading`` / ``metadata_drop`` / "" in ``_is_content_bearing``.
+_NON_CONTENT_NON_HEADING_KINDS: frozenset[str] = frozenset({"metadata_drop"})
+
+# Trailing bare-page-number pattern (the TOC line shape) — a title with >=1
+# alphabetic word followed by leader (spaces / dots / ellipsis) + a trailing
+# integer. Byte-identical to ``toc_frontmatter_detector._TOC_ENTRY_RE`` so the
+# ``trailing_pagenum`` prompt-signal agrees with the deterministic backstop.
+_TRAILING_PAGENUM_RE = re.compile(
+    r"^\s*(?P<title>.*?[A-Za-z].*?)"  # title with >=1 letter
+    r"[\s\.…]+"                  # leader: spaces / dots / ellipsis
+    r"(?P<page>\d{1,5})\s*$"           # trailing page number
+)
+
+
+def _region_is_content_bearing(region: Region) -> bool:
+    """Whether a region carries real teaching content (paragraph / list /
+    table / code / blockquote / figure / form / math / definition_list).
+
+    A heading or a dropped metadata region is NOT content-bearing. This is the
+    discriminator between a rendered chapter/section INDEX (headings
+    back-to-back with no content between them) and real openers (each followed
+    by content). Mirrors ``toc_frontmatter_detector._is_content_bearing`` —
+    NOT content-bearing iff kind in {heading, metadata_drop, ""}.
+    """
+    kind = str(region.kind or "")
+    if kind in HEADING_KINDS or kind in _NON_CONTENT_NON_HEADING_KINDS or kind == "":
+        return False
+    return True
+
+
+def _region_heading_level(region: Region) -> int | None:
+    """The heading level for a heading region (``payload['level_hint']``)."""
+    if str(region.kind) not in HEADING_KINDS:
+        return None
+    return (region.payload or {}).get("level_hint")
+
+
+def _has_trailing_pagenum(text: str | None) -> bool:
+    """Whether ``text`` ends with a bare page number (the TOC-line shape)."""
+    if not text:
+        return False
+    return _TRAILING_PAGENUM_RE.match(str(text)) is not None
+
+
+@dataclass(frozen=True)
+class ClusterSignals:
+    """The four deterministic cluster-level signals for ONE region.
+
+    Computed over the full ordered region list (see
+    :func:`compute_cluster_signals`). Only meaningful for heading regions;
+    a non-heading region carries the inert defaults
+    (``same_level_run_len=0``, ``run_position=0``, ``trailing_pagenum=False``)
+    and its ``content_blocks_following`` is not consulted by the reviewer.
+    """
+
+    same_level_run_len: int
+    run_position: int
+    content_blocks_following: int
+    trailing_pagenum: bool
+
+
+# Default level used when a heading region carries no/None ``level_hint`` — a
+# deep-but-safe sentinel so a level-less heading is treated as the LOWEST in the
+# hierarchy: it never closes another heading's content scope (only a
+# same-or-higher heading does, and a sentinel-6 heading is same-or-higher only
+# to another sentinel/level-6), and its OWN scope is closed by the very next
+# heading. This is the conservative direction — a level-less heading can never
+# spuriously inflate a neighbor's content_blocks_following.
+_DEFAULT_HEADING_LEVEL = 6
+
+
+def _heading_level_or_default(region: Region) -> int:
+    """The heading region's level, defaulting missing/None to the deep
+    sentinel ``_DEFAULT_HEADING_LEVEL`` (lowest in hierarchy). Only meaningful
+    for heading regions; callers gate on ``kind in HEADING_KINDS`` first."""
+    level = _region_heading_level(region)
+    if level is None:
+        return _DEFAULT_HEADING_LEVEL
+    try:
+        return int(level)
+    except (TypeError, ValueError):
+        return _DEFAULT_HEADING_LEVEL
+
+
+def _content_blocks_following(regions: list[Region], index: int) -> int:
+    """Count content-bearing regions after ``index``, up to the next
+    SAME-OR-HIGHER-level heading.
+
+    A heading whose level number is ``<=`` this heading's level (lower level
+    number = higher in the hierarchy: h1=chapter, h2=section, h3=subsection)
+    CLOSES this heading's content scope. A strictly-LOWER-in-hierarchy
+    sub-heading (a larger level number — e.g. a level-3 "Learning Objectives"
+    nested under a level-2 "1.1" opener) is TRANSPARENT: the content under it
+    counts toward THIS opener.
+
+    This closes the heading-nested under-protection: a real level-2 "1.1"
+    opener whose body is laid out under level-3 sub-headings ("Learning
+    Objectives" / "EXAMPLE" / "Solution") — never a paragraph DIRECTLY beneath
+    it — now sees content_blocks_following >= 1 (PROTECTED), while a phantom
+    level-1 chapter-index entry wedged in a same-level run with no content
+    before the next level-1 entry still scores 0 (flagged phantom).
+
+    A non-heading ``index`` keeps the old neighbor-window semantics: count
+    content-bearing regions up to the next heading of ANY level (it has no
+    level to scope against).
+    """
+    own_kind = str(regions[index].kind)
+    own_is_heading = own_kind in HEADING_KINDS
+    own_level = _heading_level_or_default(regions[index]) if own_is_heading else None
+
+    count = 0
+    for j in range(index + 1, len(regions)):
+        if str(regions[j].kind) in HEADING_KINDS:
+            if not own_is_heading:
+                # Non-heading anchor: the next heading of any level closes it.
+                break
+            other_level = _heading_level_or_default(regions[j])
+            if other_level <= own_level:
+                # Same-or-higher in the hierarchy -> closes this scope.
+                break
+            # Strictly-lower sub-heading -> transparent; keep counting.
+            continue
+        if _region_is_content_bearing(regions[j]):
+            count += 1
+    return count
+
+
+def compute_cluster_signals(regions: list[Region]) -> list[ClusterSignals]:
+    """Compute the four cluster-level signals for every region (model-free).
+
+    Scans the FULL ordered region list (not just heading regions — the runs
+    must be computed correctly across the whole document) and returns one
+    :class:`ClusterSignals` per region, in input order.
+
+    Signals (per region):
+      * ``same_level_run_len`` — length of the maximal contiguous run of
+        same-``level`` heading regions that this heading belongs to, where a
+        run is broken ONLY by a content-bearing region between two consecutive
+        entries (a non-content non-heading region — e.g. metadata_drop — does
+        NOT break the run, mirroring the detector). 0 for a non-heading.
+      * ``run_position`` — this heading's 1-based position within that run.
+        0 for a non-heading.
+      * ``content_blocks_following`` — count of content-bearing regions
+        after this heading, up to the next SAME-OR-HIGHER-level heading (a
+        heading whose level number is ``<=`` this one). A strictly-lower-in-
+        hierarchy sub-heading (larger level number) is TRANSPARENT — content
+        nested under it counts toward this opener (protects a real "1.1"
+        section opener whose body is laid out under level-3 sub-headings,
+        NOT directly under a paragraph).
+      * ``trailing_pagenum`` — does the heading text end with a bare page
+        number (the TOC pattern)?
+    """
+    n = len(regions)
+    signals: list[ClusterSignals] = [
+        ClusterSignals(0, 0, 0, False) for _ in range(n)
+    ]
+    if n == 0:
+        return signals
+    if n == 0:
+        return signals
+
+    # Precompute content_blocks_following + trailing_pagenum for every region.
+    cbf = [_content_blocks_following(regions, i) for i in range(n)]
+    trailing = [
+        _has_trailing_pagenum(_region_payload_text(regions[i]))
+        if str(regions[i].kind) in HEADING_KINDS
+        else False
+        for i in range(n)
+    ]
+
+    # Compute same-level heading runs. Walk the ordered list; a run is a
+    # maximal contiguous sequence of HEADING regions at the SAME level with no
+    # content-bearing region between consecutive entries (non-content
+    # non-heading regions are transparent — they neither extend nor break it).
+    i = 0
+    while i < n:
+        if str(regions[i].kind) not in HEADING_KINDS:
+            i += 1
+            continue
+        run_level = _region_heading_level(regions[i])
+        run_indices = [i]
+        j = i + 1
+        while j < n:
+            kind_j = str(regions[j].kind)
+            if _region_is_content_bearing(regions[j]):
+                break  # real content between entries -> run ends.
+            if kind_j in HEADING_KINDS:
+                if _region_heading_level(regions[j]) == run_level:
+                    run_indices.append(j)
+                    j += 1
+                    continue
+                # A different-level heading breaks this same-level run.
+                break
+            # A non-content non-heading region (metadata_drop) is transparent.
+            j += 1
+        run_len = len(run_indices)
+        for pos, idx in enumerate(run_indices, start=1):
+            signals[idx] = ClusterSignals(
+                same_level_run_len=run_len,
+                run_position=pos,
+                content_blocks_following=cbf[idx],
+                trailing_pagenum=trailing[idx],
+            )
+        i = max(run_indices[-1] + 1, i + 1)
+
+    # Non-heading regions keep their inert default but still carry the
+    # (rarely-consulted) content_blocks_following for completeness.
+    for idx in range(n):
+        if str(regions[idx].kind) not in HEADING_KINDS:
+            signals[idx] = ClusterSignals(0, 0, cbf[idx], False)
+
+    return signals
+
+
+def _region_payload_text(region: Region) -> str:
+    """The heading text from payload (``payload['text']``) for run/pagenum
+    signal computation; empty string when absent."""
+    return str((region.payload or {}).get("text") or "")
 
 
 # ---------------------------------------------------------------------------
@@ -603,9 +853,18 @@ def run_structure_review(
 
     Flow (§3, §4, §6):
 
-      1. Build N reviewer prompts (one per region) via
-         ``build_reviewer_request`` (the m2-resolved text + ±1 neighbors).
-      2. ``runtime.generate_batch(prompts, max_tokens=...)`` -> N strings.
+      0. Compute the four CLUSTER-LEVEL signals over the FULL ordered region
+         list (``compute_cluster_signals`` — model-free) so the reviewer can
+         distinguish a phantom-TOC / chapter-index entry (a RUN of same-level
+         headings with no content between them) from a real section heading
+         (FOLLOWED BY content). These signals are threaded into the prompt.
+      1. Build a reviewer prompt for every HEADING region only (the
+         heading-SCOPING that cuts cost — see below). The cluster pre-pass
+         scanned the full list so the runs are correct, but only headings get
+         a 70B call; every non-heading region passes through UNTOUCHED with
+         ``verdict='ok'`` (indices preserved).
+      2. ``runtime.generate_batch(heading_prompts, max_tokens=...)`` -> M
+         strings (M = number of heading regions, M <= N).
       3. For each completion: TOLERANT extract (fence-strip ->
          first-balanced-{} -> block_id cross-check -> kind-validate). A
          parse miss / out-of-batch block_id / unknown kind soft-falls-back
@@ -618,20 +877,54 @@ def run_structure_review(
     Returns ``(corrected_regions, verdicts)``. ``verdicts`` is one
     :class:`ReviewVerdict` per input region, in input order.
 
+    Heading-scoping (cost)
+    ----------------------
+    Only regions whose ``kind`` is a heading kind (``HEADING_KINDS``) get a
+    70B call — the reviewer's three corrections (phantom-heading demotion,
+    re-level, paragraph->heading promotion) all hinge on a heading's identity,
+    and the phantom-TOC defect lives entirely in the heading stream. A
+    non-heading region cannot become a phantom heading, so reviewing it is
+    pure cost. Non-heading regions pass through verbatim with ``verdict='ok'``
+    and their indices are preserved (the returned ``corrected`` / ``verdicts``
+    lists stay 1:1 with the input). The cluster pre-pass STILL scans the full
+    ordered list so same-level runs are computed correctly.
+
     NO model/GPU is loaded here; ``runtime`` is injected.
     """
     if not regions:
         return regions, []
 
     n = len(regions)
-    block_ids = set(range(n))
 
-    # (1) build prompts.
+    # (0) cluster-level signals over the FULL ordered list (model-free).
+    cluster_signals = compute_cluster_signals(regions)
+
+    # (1) build prompts — HEADING regions only (scoping). Track the mapping
+    # from the dense prompt list back to the sparse region indices.
     prompts: list[str] = []
+    heading_indices: list[int] = []
     for index, region in enumerate(regions):
+        if str(region.kind) not in HEADING_KINDS:
+            continue
         neighbors = _neighbors_for(regions, index)
         text = _resolve_region_text(region, feature_blocks)
-        prompts.append(build_reviewer_request(region, neighbors, index, text=text))
+        prompts.append(
+            build_reviewer_request(
+                region,
+                neighbors,
+                index,
+                text=text,
+                cluster_signals=cluster_signals[index],
+            )
+        )
+        heading_indices.append(index)
+
+    # No headings -> nothing to review; pass everything through as ok.
+    if not prompts:
+        return regions, [
+            _ok_verdict(region, idx, "non-heading; not reviewed")
+            for idx, region in enumerate(regions)
+        ]
 
     # (2) batch — REUSE generate_batch verbatim. A batch-level failure is
     #     NOT swallowed here (the endpoint runtime owns its fail-loud
@@ -639,16 +932,29 @@ def run_structure_review(
     completions = runtime.generate_batch(prompts, max_tokens=max_tokens)
 
     # Defensive: a runtime must return one completion per prompt. Pad/clip
-    # to N so the per-block loop stays addressable (a short batch
+    # to M so the per-block loop stays addressable (a short batch
     # soft-falls-back the missing tail to ok).
-    if len(completions) < n:
-        completions = list(completions) + [""] * (n - len(completions))
+    m = len(prompts)
+    if len(completions) < m:
+        completions = list(completions) + [""] * (m - len(completions))
 
-    # (3)+(4) parse + apply per block.
+    # Map heading region index -> its completion string (non-heading indices
+    # have no completion).
+    completion_by_index: dict[int, str] = {}
+    for prompt_pos, region_index in enumerate(heading_indices):
+        raw = completions[prompt_pos] if prompt_pos < len(completions) else ""
+        completion_by_index[region_index] = raw if isinstance(raw, str) else ""
+
+    # (3)+(4) parse + apply per block. Non-heading regions pass through.
     corrected: list[Region] = []
     verdicts: list[ReviewVerdict] = []
     for index, region in enumerate(regions):
-        raw = completions[index] if index < len(completions) else ""
+        if index not in completion_by_index:
+            # Non-heading region — not reviewed, kept verbatim.
+            corrected.append(region)
+            verdicts.append(_ok_verdict(region, index, "non-heading; not reviewed"))
+            continue
+        raw = completion_by_index[index]
         obj = _extract_verdict_obj(raw if isinstance(raw, str) else "")
         if obj is None:
             # parse miss -> soft fallback ok.
@@ -700,9 +1006,12 @@ def run_structure_review(
 
 
 __all__ = [
+    "ClusterSignals",
+    "HEADING_KINDS",
     "ReviewVerdict",
     "TokenConservationError",
     "assert_token_conservation",
+    "compute_cluster_signals",
     "resolve_structure_review_mode",
     "run_structure_review",
 ]

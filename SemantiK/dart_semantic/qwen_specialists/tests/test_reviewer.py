@@ -168,30 +168,55 @@ def test_level_retag_honored():
 
 # ---------------------------------------------------------------------------
 # paragraph -> heading promotion sets non-null payload['text'] == source (C1).
+#
+# NOTE (heading-scoping): the driver now reviews ONLY heading regions, so a
+# paragraph->heading PROMOTION is no longer driver-reachable (a paragraph is
+# never sent to the 70B). The C1 promotion-text invariant + the level-default
+# mechanics still live in _apply_verdict and are exercised DIRECTLY here so
+# the anti-fabrication contract stays covered.
 # ---------------------------------------------------------------------------
 
 
 def test_promotion_sets_source_text_c1():
+    from dart_semantic.qwen_specialists import reviewer as rv
+
     fbs = [_fb("Methods and Materials")]
-    regions = [Region(kind="paragraph", feature_block_indices=(0,),
-                      payload={"text": "Methods and Materials"})]
-    rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=2, note="missed heading")])
-    out, verdicts = run_structure_review(regions, fbs, rt)
-    assert out[0].kind == "heading"
-    assert out[0].payload["text"] == "Methods and Materials"  # non-null, == source
-    assert out[0].payload["level_hint"] == 2
-    assert not verdicts[0].reverted_for_invariant
-    assert verdicts[0].kind_before == "paragraph"
-    assert verdicts[0].kind_after == "heading"
+    region = Region(kind="paragraph", feature_block_indices=(0,),
+                    payload={"text": "Methods and Materials"})
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "heading",
+           "corrected_level": 2, "corrected_doc_role": None, "review_note": "missed heading"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.kind == "heading"
+    assert out_region.payload["text"] == "Methods and Materials"  # non-null, == source
+    assert out_region.payload["level_hint"] == 2
+    assert not verdict.reverted_for_invariant
+    assert verdict.kind_before == "paragraph"
+    assert verdict.kind_after == "heading"
 
 
 def test_promotion_defaults_level_when_omitted():
+    from dart_semantic.qwen_specialists import reviewer as rv
+
     fbs = [_fb("Introduction")]
-    regions = [Region(kind="paragraph", feature_block_indices=(0,), payload={"text": "Introduction"})]
-    rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=None, note="missed heading")])
-    out, _ = run_structure_review(regions, fbs, rt)
-    assert out[0].kind == "heading"
-    assert out[0].payload["level_hint"] == 2  # default h2 when model omits level
+    region = Region(kind="paragraph", feature_block_indices=(0,), payload={"text": "Introduction"})
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "heading",
+           "corrected_level": None, "corrected_doc_role": None, "review_note": "missed heading"}
+    out_region, _ = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.kind == "heading"
+    assert out_region.payload["level_hint"] == 2  # default h2 when model omits level
+
+
+def test_paragraph_not_reviewed_under_scoping():
+    # End-to-end proof of the heading-scoping: a paragraph the model WOULD
+    # promote is never sent to the runtime, so it passes through verbatim.
+    fbs = [_fb("Methods and Materials")]
+    regions = [Region(kind="paragraph", feature_block_indices=(0,),
+                      payload={"text": "Methods and Materials"})]
+    rt = _ScriptedRuntime([])  # no headings -> no batch fired
+    out, verdicts = run_structure_review(regions, fbs, rt)
+    assert out[0].kind == "paragraph"  # untouched
+    assert verdicts[0].verdict == "ok"
+    assert rt.batch_calls == []  # heading-scoping fired no 70B call
 
 
 # ---------------------------------------------------------------------------
@@ -241,10 +266,12 @@ def test_fb_partition_change_rejected():
 
 
 def test_nonstructural_key_drop_rejected_via_driver():
-    # End-to-end: a non-promotion re-tag keeps non-structural payload keys.
+    # End-to-end: a heading re-tagged to blockquote (a phantom-heading whose
+    # words are a quote) keeps non-structural payload keys. Source is a
+    # HEADING so it is in-scope for the heading-scoped driver.
     fbs = [_fb("Quote text")]
-    regions = [Region(kind="paragraph", feature_block_indices=(0,),
-                      payload={"text": "Quote text", "reason": "x"})]
+    regions = [Region(kind="heading", feature_block_indices=(0,),
+                      payload={"level_hint": 2, "text": "Quote text", "reason": "x"})]
     rt = _ScriptedRuntime([_verdict_json(0, kind="blockquote", note="is a quote")])
     out, verdicts = run_structure_review(regions, fbs, rt)
     assert out[0].kind == "blockquote"
@@ -259,14 +286,19 @@ def test_nonstructural_key_drop_rejected_via_driver():
 
 
 def test_no_source_promotion_rejected():
-    # A region whose FBs resolve to empty text, promoted to heading.
+    # A region whose FBs resolve to empty text, promoted to heading. Exercised
+    # directly via _apply_verdict (promotion is no longer driver-reachable
+    # under heading-scoping, but the anti-fabrication reject path is intact).
+    from dart_semantic.qwen_specialists import reviewer as rv
+
     fbs = [_fb("")]
-    regions = [Region(kind="paragraph", feature_block_indices=(0,), payload={"text": ""})]
-    rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=1, note="fabricated")])
-    out, verdicts = run_structure_review(regions, fbs, rt)
+    region = Region(kind="paragraph", feature_block_indices=(0,), payload={"text": ""})
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "heading",
+           "corrected_level": 1, "corrected_doc_role": None, "review_note": "fabricated"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
     # promotion rejected -> original kept verbatim.
-    assert out[0].kind == "paragraph"
-    assert verdicts[0].reverted_for_invariant is True
+    assert out_region.kind == "paragraph"
+    assert verdict.reverted_for_invariant is True
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +395,8 @@ def test_driver_fails_closed_on_conservation_break(monkeypatch):
     from dart_semantic.qwen_specialists import reviewer as rv
 
     fbs = [_fb("kept text")]
-    regions = [Region(kind="paragraph", feature_block_indices=(0,), payload={"text": "kept text"})]
+    regions = [Region(kind="heading", feature_block_indices=(0,),
+                      payload={"level_hint": 2, "text": "kept text"})]
     rt = _ScriptedRuntime([_verdict_json(0, kind="blockquote")])
 
     def _boom(*a, **k):
@@ -433,14 +466,327 @@ def test_empty_regions_noop():
 
 
 def test_short_batch_soft_falls_back_tail():
+    # Two HEADING regions (both in-scope) but the runtime returns only ONE
+    # completion -> the missing tail soft-falls-back to ok.
     fbs = [_fb("A"), _fb("B")]
     regions = [
-        Region(kind="paragraph", feature_block_indices=(0,), payload={"text": "A"}),
-        Region(kind="paragraph", feature_block_indices=(1,), payload={"text": "B"}),
+        Region(kind="heading", feature_block_indices=(0,), payload={"level_hint": 2, "text": "A"}),
+        Region(kind="heading", feature_block_indices=(1,), payload={"level_hint": 2, "text": "B"}),
     ]
     # runtime returns only ONE completion for two prompts.
     rt = _ScriptedRuntime([_verdict_json(0, kind="blockquote")])
     out, verdicts = run_structure_review(regions, fbs, rt)
     assert out[0].kind == "blockquote"
-    assert out[1].kind == "paragraph"  # missing tail -> soft ok
+    assert out[1].kind == "heading"  # missing tail -> soft ok
     assert verdicts[1].verdict == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Cluster-level signal pre-pass (Phase-4 root-cause fix).
+# ---------------------------------------------------------------------------
+
+
+def _heading(text, level=2):
+    return Region(kind="heading", feature_block_indices=(0,),
+                  payload={"level_hint": level, "text": text})
+
+
+def test_cluster_signals_phantom_run_no_content():
+    # A run of 9 same-level headings with NO content between them = a TOC /
+    # chapter-index cluster: same_level_run_len == 9, content_blocks_following
+    # == 0 for every entry, run_position counts 1..9.
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    fbs = [_fb(f"Chapter {i}: Title") for i in range(1, 10)]
+    regions = [
+        Region(kind="heading", feature_block_indices=(i,),
+               payload={"level_hint": 2, "text": f"Chapter {i+1}: Title"})
+        for i in range(9)
+    ]
+    sigs = compute_cluster_signals(regions)
+    assert all(s.same_level_run_len == 9 for s in sigs)
+    assert [s.run_position for s in sigs] == list(range(1, 10))
+    assert all(s.content_blocks_following == 0 for s in sigs)
+
+
+def test_cluster_signals_real_section_followed_by_content():
+    # A real section heading followed by 3 paragraphs: same_level_run_len == 1
+    # (it is its own run — content breaks it), content_blocks_following == 3.
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    fbs = [_fb("1.1 Whole Numbers"), _fb("p1"), _fb("p2"), _fb("p3")]
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 2, "text": "1.1 Whole Numbers"}),
+        Region(kind="paragraph", feature_block_indices=(1,), payload={"text": "p1"}),
+        Region(kind="paragraph", feature_block_indices=(2,), payload={"text": "p2"}),
+        Region(kind="paragraph", feature_block_indices=(3,), payload={"text": "p3"}),
+    ]
+    sigs = compute_cluster_signals(regions)
+    assert sigs[0].same_level_run_len == 1
+    assert sigs[0].run_position == 1
+    assert sigs[0].content_blocks_following == 3
+    # paragraphs carry inert heading defaults.
+    assert all(sigs[i].same_level_run_len == 0 for i in (1, 2, 3))
+
+
+def test_cluster_signals_mixed_phantom_run_then_real_section():
+    # [9-heading run, no content] + [heading + 3 paragraphs] — the discriminator
+    # fixture from the spec. The 9 phantom headings AND the trailing real
+    # heading are all same-level with NO content BETWEEN consecutive entries,
+    # so they form ONE run of 10 (the run breaks only on content between two
+    # entries). The COMPLEMENTARY discriminator is content_blocks_following:
+    # the 9 phantoms have 0, the real section has 3 — that is the signal the
+    # prompt directive uses to KEEP a run member that is a real section.
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    phantom = [
+        Region(kind="heading", feature_block_indices=(i,),
+               payload={"level_hint": 2, "text": f"Chapter {i+1}: T"})
+        for i in range(9)
+    ]
+    real = [
+        Region(kind="heading", feature_block_indices=(9,),
+               payload={"level_hint": 2, "text": "1.1 Real Section"}),
+        Region(kind="paragraph", feature_block_indices=(10,), payload={"text": "a"}),
+        Region(kind="paragraph", feature_block_indices=(11,), payload={"text": "b"}),
+        Region(kind="paragraph", feature_block_indices=(12,), payload={"text": "c"}),
+    ]
+    regions = phantom + real
+    fbs = [_fb((r.payload or {}).get("text", "")) for r in regions]
+    sigs = compute_cluster_signals(regions)
+    # all 10 same-level headings are one run; phantoms have 0 content following.
+    for i in range(9):
+        assert sigs[i].same_level_run_len == 10
+        assert sigs[i].content_blocks_following == 0
+    # the real section is the LAST member of that run BUT carries 3 content
+    # blocks following — the discriminator that protects it from over-demotion.
+    assert sigs[9].same_level_run_len == 10
+    assert sigs[9].run_position == 10
+    assert sigs[9].content_blocks_following == 3
+
+
+def test_cluster_signals_content_breaks_run_between_entries():
+    # When content DOES sit between two same-level headings, the run breaks —
+    # confirming content_blocks_following and same_level_run_len agree.
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,), payload={"level_hint": 2, "text": "1.1 A"}),
+        Region(kind="paragraph", feature_block_indices=(1,), payload={"text": "body"}),
+        Region(kind="heading", feature_block_indices=(2,), payload={"level_hint": 2, "text": "1.2 B"}),
+    ]
+    fbs = [_fb("x") for _ in regions]
+    sigs = compute_cluster_signals(regions)
+    assert sigs[0].same_level_run_len == 1  # content after it breaks the run
+    assert sigs[0].content_blocks_following == 1
+    assert sigs[2].same_level_run_len == 1
+
+
+def test_cluster_signals_trailing_pagenum():
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    regions = [
+        _heading("Systems of Linear Equations    577"),
+        _heading("Real Heading Without Number"),
+    ]
+    sigs = compute_cluster_signals(regions)
+    assert sigs[0].trailing_pagenum is True
+    assert sigs[1].trailing_pagenum is False
+
+
+def test_cluster_signals_metadata_drop_does_not_break_run():
+    # A stray metadata_drop between two same-level headings keeps the run open
+    # (it is non-content, non-heading -> transparent).
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,), payload={"level_hint": 2, "text": "Chapter 1"}),
+        Region(kind="metadata_drop", feature_block_indices=(1,), payload={"text": "running header"}),
+        Region(kind="heading", feature_block_indices=(2,), payload={"level_hint": 2, "text": "Chapter 2"}),
+    ]
+    sigs = compute_cluster_signals(regions)
+    assert sigs[0].same_level_run_len == 2
+    assert sigs[2].same_level_run_len == 2
+
+
+def test_cluster_signals_different_level_breaks_run():
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,), payload={"level_hint": 1, "text": "A"}),
+        Region(kind="heading", feature_block_indices=(1,), payload={"level_hint": 2, "text": "B"}),
+        Region(kind="heading", feature_block_indices=(2,), payload={"level_hint": 2, "text": "C"}),
+    ]
+    sigs = compute_cluster_signals(regions)
+    assert sigs[0].same_level_run_len == 1  # h1 alone
+    assert sigs[1].same_level_run_len == 2  # h2,h2 run
+    assert sigs[2].same_level_run_len == 2
+
+
+def test_cluster_signals_nested_subheading_content_counts_for_opener():
+    # Residual-fix fixture: a real level-2 "1.1" opener whose body is laid out
+    # under a level-3 "Learning Objectives" sub-heading (never a paragraph
+    # DIRECTLY beneath it), then the next level-2 opener. Under the same-or-
+    # higher-level redefinition, the level-3 sub-heading is TRANSPARENT and its
+    # 2 paragraphs count toward the level-2 opener -> content_blocks_following
+    # >= 1 -> the opener is PROTECTED from over-demotion.
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 2, "text": "1.1 Introduction"}),
+        Region(kind="heading", feature_block_indices=(1,),
+               payload={"level_hint": 3, "text": "Learning Objectives"}),
+        Region(kind="paragraph", feature_block_indices=(2,), payload={"text": "p1"}),
+        Region(kind="paragraph", feature_block_indices=(3,), payload={"text": "p2"}),
+        Region(kind="heading", feature_block_indices=(4,),
+               payload={"level_hint": 2, "text": "1.2 Next Section"}),
+    ]
+    sigs = compute_cluster_signals(regions)
+    # the level-2 opener: the level-3 sub-heading is transparent, its 2 paras
+    # count, the next level-2 heading closes the scope -> 2 content blocks.
+    assert sigs[0].content_blocks_following == 2
+    # the level-3 sub-heading scopes against the next heading of any
+    # same-or-higher level: the next level-2 closes it -> its own 2 paras.
+    assert sigs[1].content_blocks_following == 2
+    # the trailing level-2 opener: no content/headings after -> 0.
+    assert sigs[4].content_blocks_following == 0
+
+
+def test_cluster_signals_phantom_chapter_run_still_flagged_under_levels():
+    # Phantom-detection MUST NOT regress: a run of 8 same-level-1 "Chapter N"
+    # index headings with NO content between consecutive entries. Each entry's
+    # next heading is a same-LEVEL (1 <= 1) heading -> closes scope immediately
+    # -> content_blocks_following == 0 for every entry, same_level_run_len large.
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    regions = [
+        Region(kind="heading", feature_block_indices=(i,),
+               payload={"level_hint": 1, "text": f"Chapter {i+3}"})
+        for i in range(8)
+    ]
+    sigs = compute_cluster_signals(regions)
+    assert all(s.content_blocks_following == 0 for s in sigs)
+    assert all(s.same_level_run_len == 8 for s in sigs)
+    assert [s.run_position for s in sigs] == list(range(1, 9))
+
+
+def test_cluster_signals_level2_sibling_with_content_between():
+    # A level-2 opener directly followed by a level-2 sibling with content
+    # between them -> the opener counts exactly the content before the sibling.
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 2, "text": "1.1 A"}),
+        Region(kind="paragraph", feature_block_indices=(1,), payload={"text": "p1"}),
+        Region(kind="paragraph", feature_block_indices=(2,), payload={"text": "p2"}),
+        Region(kind="heading", feature_block_indices=(3,),
+               payload={"level_hint": 2, "text": "1.2 B"}),
+        Region(kind="paragraph", feature_block_indices=(4,), payload={"text": "p3"}),
+    ]
+    sigs = compute_cluster_signals(regions)
+    assert sigs[0].content_blocks_following == 2  # p1, p2 before the sibling
+    assert sigs[3].content_blocks_following == 1  # p3 after the sibling
+
+
+def test_cluster_signals_level_less_heading_safe_default():
+    # A heading with a missing/None level must not mis-count: it defaults to
+    # the deep sentinel (lowest in hierarchy). A level-2 opener followed by a
+    # level-less heading + 1 paragraph + a level-2 sibling -> the level-less
+    # heading is strictly-lower (transparent), its paragraph counts toward the
+    # opener; the next level-2 closes it.
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 2, "text": "1.1 Opener"}),
+        Region(kind="heading", feature_block_indices=(1,),
+               payload={"text": "Level-less sub"}),  # no level_hint
+        Region(kind="paragraph", feature_block_indices=(2,), payload={"text": "body"}),
+        Region(kind="heading", feature_block_indices=(3,),
+               payload={"level_hint": 2, "text": "1.2 Next"}),
+    ]
+    sigs = compute_cluster_signals(regions)
+    # level-less sub-heading is transparent to the level-2 opener -> 1 content.
+    assert sigs[0].content_blocks_following == 1
+
+
+def test_conservative_no_mass_demote_of_genuine_heading_run():
+    # Conservative posture proof: a RUN of 8 genuine same-level section
+    # headings (back-to-back, content_blocks_following == 0 for every one —
+    # exactly the cluster shape the OLD aggressive directive would mass-demote)
+    # is KEPT when the reviewer returns the conservative all-"ok" verdict set.
+    # No heading is demoted merely for sitting in a run.
+    headings = [f"{i}.{j} Section Title" for i in (1, 2) for j in range(1, 5)]
+    fbs = [_fb(h) for h in headings]
+    regions = [
+        Region(kind="heading", feature_block_indices=(i,),
+               payload={"level_hint": 2, "text": h})
+        for i, h in enumerate(headings)
+    ]
+    # The conservative reviewer reads the run/cbf signals but returns "ok" for
+    # genuine section titles — every block stays a heading.
+    rt = _ScriptedRuntime([_verdict_json(i, verdict="ok") for i in range(len(regions))])
+    out, verdicts = run_structure_review(regions, fbs, rt)
+    assert all(r.kind == "heading" for r in out), "genuine heading run mass-demoted"
+    assert all(v.verdict == "ok" for v in verdicts)
+    assert not any(v.reverted_for_invariant for v in verdicts)
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_conservative_still_retags_clear_answer_key_noise_heading():
+    # The OTHER half of the conservative contract: a CLEARLY-mislabeled
+    # answer-key fragment promoted to a heading IS re-tagged to metadata_drop
+    # (the canonical individual-noise positive). The conservative posture
+    # narrows WHEN we re-tag (block's own text is non-heading) — it does not
+    # disable re-tagging.
+    fbs = [_fb("Real Section Heading"), _fb("3.2: 14, 17, 20, 23"), _fb("Body para.")]
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 2, "text": "Real Section Heading"}),
+        Region(kind="heading", feature_block_indices=(1,),
+               payload={"level_hint": 2, "text": "3.2: 14, 17, 20, 23"}),  # answer-key
+        Region(kind="paragraph", feature_block_indices=(2,), payload={"text": "Body para."}),
+    ]
+    rt = _ScriptedRuntime([
+        _verdict_json(0, verdict="ok"),
+        _verdict_json(1, kind="metadata_drop", verdict="drop_injected_header",
+                      note="answer-key fragment, not a heading"),
+    ])
+    out, verdicts = run_structure_review(regions, fbs, rt)
+    # the genuine heading is KEPT, the answer-key noise heading is dropped.
+    assert out[0].kind == "heading"
+    assert out[1].kind == "metadata_drop"
+    assert out[2].kind == "paragraph"
+    assert verdicts[1].kind_after == "metadata_drop"
+    assert not any(v.reverted_for_invariant for v in verdicts)
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_scoping_reviews_only_heading_kinds():
+    # The driver fires a 70B call for heading regions ONLY; non-heading
+    # regions pass through untouched, indices preserved.
+    fbs = [_fb("Chapter 1"), _fb("body para"), _fb("Chapter 2")]
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,), payload={"level_hint": 2, "text": "Chapter 1"}),
+        Region(kind="paragraph", feature_block_indices=(1,), payload={"text": "body para"}),
+        Region(kind="heading", feature_block_indices=(2,), payload={"level_hint": 2, "text": "Chapter 2"}),
+    ]
+    # Two heading prompts -> two scripted completions (block_id 0 and 2).
+    rt = _ScriptedRuntime([
+        _verdict_json(0, kind="heading", level=1, note="re-level"),
+        _verdict_json(2, kind="metadata_drop", note="phantom"),
+    ])
+    out, verdicts = run_structure_review(regions, fbs, rt)
+    # exactly 2 prompts were sent (the 2 headings, NOT the paragraph).
+    assert len(rt.batch_calls) == 1
+    assert len(rt.batch_calls[0]["prompts"]) == 2
+    # heading 0 re-leveled, heading 2 dropped, paragraph untouched.
+    assert out[0].payload["level_hint"] == 1
+    assert out[1].kind == "paragraph"
+    assert verdicts[1].verdict == "ok"
+    assert "not reviewed" in verdicts[1].review_note
+    assert out[2].kind == "metadata_drop"
+    _assert_coverage_invariant(out, len(fbs))
