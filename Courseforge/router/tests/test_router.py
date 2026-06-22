@@ -427,7 +427,7 @@ def test_capability_tier_chain_honors_env_model_for_local_tiers(monkeypatch):
     chain_default = r._resolve_capability_tier_chain(
         _block(block_type="concept"), "rewrite"
     )
-    assert chain_default[0].model == "qwen2.5:14b-instruct-q4_K_M"
+    assert chain_default[0].model == "qwen2.5:7b-instruct-q4_K_M"
 
 
 def test_license_clean_large_tier_routes_to_nvidia(monkeypatch):

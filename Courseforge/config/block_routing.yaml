@@ -45,12 +45,12 @@ capability_tiers:
     max_tokens: 1200
 
   # Medium tier — pedagogically-rich rewrite of structurally-shaped
-  # outlines. A 14B local model handles most rewrite-tier blocks at
+  # outlines. A 7B local model handles most rewrite-tier blocks at
   # consistently acceptable quality; pedagogy-critical blocks
   # (assessment_item) prefer the large tier below.
   medium:
     provider: local
-    model: qwen2.5:14b-instruct-q4_K_M
+    model: qwen2.5:7b-instruct-q4_K_M
     base_url: http://localhost:11434/v1
     temperature: 0.4
     max_tokens: 2400

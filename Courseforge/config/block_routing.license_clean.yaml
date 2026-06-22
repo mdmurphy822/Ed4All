@@ -77,12 +77,12 @@ capability_tiers:
     temperature: 0.0
     max_tokens: 1200
 
-  # Medium tier — unchanged: 14B local Qwen for rewrite of structurally-
+  # Medium tier — unchanged: 7B local Qwen for rewrite of structurally-
   # simple blocks (concept, example, misconception, summary_takeaway,
   # callout, recap). Apache 2.0; ToS-clean.
   medium:
     provider: local
-    model: qwen2.5:14b-instruct-q4_K_M
+    model: qwen2.5:7b-instruct-q4_K_M
     base_url: http://localhost:11434/v1
     temperature: 0.4
     max_tokens: 2400
@@ -124,7 +124,7 @@ blocks:
   # the canonical Courseforge/config/block_routing.yaml — only the
   # `large` tier definition above changes. The cascading-regen list
   # form on assessment_item still works: `[medium, large]` first tries
-  # the 14B local rewrite, then escalates to the 32B local on per-tier
+  # the 7B local rewrite, then escalates to the 32B local on per-tier
   # sub-budget exhaustion. The cascade SEMANTICS are unchanged from
   # the canonical file; only the model behind `large` differs.
   #
