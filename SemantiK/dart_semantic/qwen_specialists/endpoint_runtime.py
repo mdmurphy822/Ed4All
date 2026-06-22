@@ -68,11 +68,46 @@ logger = logging.getLogger(__name__)
 # objective-review default.
 _DEFAULT_MODEL = "meta/llama-3.3-70b-instruct"
 _DEFAULT_TIMEOUT_SECONDS = 120.0
+# Default number of concurrent in-flight POSTs for generate_batch. The
+# hosted seat tolerates a small fan-out; 8 keeps wall-clock ~one call for a
+# whole region set without hammering the endpoint. Overridable via
+# SEMANTIK_SPECIALIST_CONCURRENCY (parse-with-fallback).
+_DEFAULT_CONCURRENCY = 8
 
 
 class EndpointRuntimeError(RuntimeError):
     """Raised on any endpoint failure (missing key, non-200, timeout,
     malformed response). Fail-loud — there is no silent mock fallback."""
+
+
+class EndpointBatchItemError(EndpointRuntimeError):
+    """Raised when a SINGLE item in a ``generate_batch`` call fails.
+
+    Carries the failing prompt's index so the caller can pin the error to
+    the originating region rather than blaming the whole batch. The batch
+    driver re-raises this (fail-loud) — one bad slot does NOT silently
+    drop or fabricate that region's completion."""
+
+    def __init__(self, index: int, message: str) -> None:
+        self.index = index
+        super().__init__(f"batch item {index}: {message}")
+
+
+def resolve_specialist_concurrency() -> int:
+    """Parse-with-fallback ``SEMANTIK_SPECIALIST_CONCURRENCY`` (default 8).
+
+    Garbage / non-positive values fall back to the default, mirroring the
+    timeout knob. Bounds the ThreadPoolExecutor in :meth:`generate_batch`."""
+    raw = os.environ.get("SEMANTIK_SPECIALIST_CONCURRENCY")
+    if not raw:
+        return _DEFAULT_CONCURRENCY
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_CONCURRENCY
+    if val <= 0:
+        return _DEFAULT_CONCURRENCY
+    return val
 
 
 def _resolve_base_url() -> str | None:
@@ -253,6 +288,93 @@ class OpenAICompatibleRuntime:
             )
         return outputs
 
+    def generate_batch(
+        self,
+        prompts: list[str],
+        *,
+        max_tokens: int,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        seed: int | None = None,
+        repeat_penalty: float = 1.0,
+    ) -> list[str]:
+        """Return one completion per prompt, IN INPUT ORDER, CONCURRENTLY.
+
+        Fires the N POSTs through a :class:`ThreadPoolExecutor` bounded by
+        :func:`resolve_specialist_concurrency`
+        (``SEMANTIK_SPECIALIST_CONCURRENCY``, default 8). Each prompt is
+        one region's request (REUSES the single-call :meth:`_one_completion`
+        path — same headers/body/error handling), so the whole Stage-6
+        region set lands in roughly one call's wall-clock instead of N
+        serial calls.
+
+        Fail-loud, per-item: a slot whose POST fails raises
+        :class:`EndpointBatchItemError` carrying that slot's index — the
+        whole batch is NOT silently failed and NO slot is fabricated or
+        dropped. The FIRST failing index (by input order) is the one
+        re-raised so the error is deterministic.
+
+        Pre-flight key/url checks mirror :meth:`generate` so a
+        misconfiguration fails before any POST is fired."""
+        if not self._api_key:
+            raise EndpointRuntimeError(
+                "OpenAICompatibleRuntime: no API key. Set "
+                "SEMANTIK_SPECIALIST_API_KEY or NVIDIA_API_KEY in the "
+                "environment (never hardcode it). Fail-loud — no silent "
+                "mock fallback (feedback_no_silent_fallbacks.md)."
+            )
+        if not self._base_url:
+            raise EndpointRuntimeError(
+                "OpenAICompatibleRuntime: no base URL. Set "
+                "SEMANTIK_SPECIALIST_BASE_URL or NVIDIA_BASE_URL in the "
+                "environment."
+            )
+        if not prompts:
+            return []
+
+        from concurrent.futures import ThreadPoolExecutor  # noqa: WPS433
+
+        max_workers = min(resolve_specialist_concurrency(), len(prompts))
+
+        def _work(index: int, prompt: str) -> str:
+            system, user = split_specialist_prompt(prompt)
+            try:
+                return self._one_completion(
+                    system=system,
+                    user=user,
+                    temperature=temperature,
+                    top_p=top_p,
+                    max_tokens=max_tokens,
+                    seed=(None if seed is None else int(seed + index)),
+                    repeat_penalty=repeat_penalty,
+                )
+            except EndpointRuntimeError as exc:
+                # Re-wrap with the originating index so the caller can pin
+                # the failure to a region. Fail-loud — no fabricated slot.
+                raise EndpointBatchItemError(index, str(exc)) from exc
+
+        # Pre-size the results list so completion order doesn't matter —
+        # each future writes into its own input slot (order preserved).
+        results: list[str | None] = [None] * len(prompts)
+        errors: dict[int, BaseException] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            future_to_index = {
+                pool.submit(_work, i, prompt): i
+                for i, prompt in enumerate(prompts)
+            }
+            for future in future_to_index:
+                idx = future_to_index[future]
+                try:
+                    results[idx] = future.result()
+                except BaseException as exc:  # noqa: BLE001
+                    errors[idx] = exc
+        if errors:
+            # Deterministic: re-raise the lowest-index failure.
+            first = min(errors)
+            raise errors[first]
+        # All slots resolved; the list is now fully str-typed.
+        return [r if r is not None else "" for r in results]
+
     # -- internals ---------------------------------------------------------
 
     def _one_completion(
@@ -336,7 +458,9 @@ class OpenAICompatibleRuntime:
 
 
 __all__ = [
+    "EndpointBatchItemError",
     "EndpointRuntimeError",
     "OpenAICompatibleRuntime",
+    "resolve_specialist_concurrency",
     "split_specialist_prompt",
 ]

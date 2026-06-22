@@ -137,6 +137,25 @@ class QwenRuntime(Protocol):
         which is also llama-cpp-python's own default, so omitting it
         leaves generation behaviour unchanged."""
 
+    def generate_batch(
+        self,
+        prompts: list[str],
+        *,
+        max_tokens: int,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        seed: int | None = None,
+        repeat_penalty: float = 1.0,
+    ) -> list[str]:
+        """Return one completion per prompt, IN INPUT ORDER.
+
+        Unlike :meth:`generate` (K samples of ONE prompt), this maps N
+        prompts → N completions one-to-one. Used by the Stage-6 two-phase
+        batched driver so a whole adapter group (local) or a whole region
+        set (endpoint) is generated in a single batched pass rather than a
+        per-region swap/POST loop. Implementations MUST return a list the
+        SAME LENGTH as ``prompts`` and in the SAME ORDER."""
+
 
 # ---------------------------------------------------------------------------
 # Mock runtime
@@ -311,6 +330,36 @@ class MockRuntime:
             body = "<p" + _MARK + ">mock paragraph {i}</p>"
         return [body.format(i=i) for i in range(n)]
 
+    def generate_batch(
+        self,
+        prompts: list[str],
+        *,
+        max_tokens: int,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        seed: int | None = None,
+        repeat_penalty: float = 1.0,
+    ) -> list[str]:
+        """One completion per prompt, in order — maps over :meth:`generate`.
+
+        Each prompt is generated with ``n=1`` so the per-kind fragment
+        sniffing in :meth:`generate` still produces kind-appropriate
+        well-formed output. The single completion (index 0) is returned per
+        prompt, preserving input order."""
+        out: list[str] = []
+        for prompt in prompts:
+            res = self.generate(
+                prompt,
+                n=1,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                seed=seed,
+                repeat_penalty=repeat_penalty,
+            )
+            out.append(res[0])
+        return out
+
 
 # ---------------------------------------------------------------------------
 # Real runtime — llama-cpp-python wrapper
@@ -475,6 +524,48 @@ class LlamaCppRuntime:
                 repeat_penalty=repeat_penalty,
             )
             outputs.append(res["choices"][0]["text"])
+        return outputs
+
+    def generate_batch(
+        self,
+        prompts: list[str],
+        *,
+        max_tokens: int,
+        temperature: float = 0.6,
+        top_p: float = 0.95,
+        seed: int | None = None,
+        repeat_penalty: float = 1.0,
+    ) -> list[str]:
+        """One completion per prompt, sequentially, over the LOADED adapter.
+
+        The GPU adapter is already resident (the Stage-6 Phase-1 driver
+        loads the adapter ONCE via :class:`AdapterSwap`, then calls this
+        once for the whole adapter group — no swap inside the batch). We
+        loop ``generate(n=1)`` per prompt so each region gets one draft in
+        input order; the 8 GB card cannot run a true parallel batch under
+        llama-cpp-python, so sequential-over-resident-adapter is the win
+        (one load amortized across the whole group) without a parallel
+        decode the hardware can't support."""
+        if self._handle is None:
+            raise RuntimeError(
+                "LlamaCppRuntime.generate_batch(): no GGUF loaded; call "
+                "load(gguf_path) first"
+            )
+        outputs: list[str] = []
+        for j, prompt in enumerate(prompts):
+            # Per-prompt seed offset keeps drafts reproducible without
+            # collapsing distinct regions onto identical text.
+            this_seed = None if seed is None else int(seed + j)
+            res = self.generate(
+                prompt,
+                n=1,
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                seed=this_seed,
+                repeat_penalty=repeat_penalty,
+            )
+            outputs.append(res[0])
         return outputs
 
 

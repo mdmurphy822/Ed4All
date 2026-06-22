@@ -1,10 +1,25 @@
-"""Stage 6 driver — three-pass region → K-candidate generator.
+"""Stage 6 driver — BATCHED two-phase region → K-candidate generator.
 
-Walks the regions list in three passes (PROSE → TABLE → MATH),
-opening one :class:`AdapterSwap` per pass so the runtime loads the
-adapter exactly once per pass. Within a pass, every region is
-prompted, dispatched to the runtime, and the K completions are wrapped
-as :class:`Candidate`s.
+The driver buckets regions by their routed adapter, then runs up to two
+phases (provider/mode-gated) — replacing the old per-region swap loop:
+
+    Phase 1 (local drafts, batched BY ADAPTER)
+        For each adapter group, ONE :class:`AdapterSwap` load, then a
+        single :meth:`QwenRuntime.generate_batch` over every region in
+        that group (run K times, one per candidate slot). The math
+        adapter loads ONCE for all math regions, etc. — the swap-thrash
+        fix. SKIPPED entirely when the specialist provider is an endpoint
+        (no local adapters to run).
+
+    Phase 2 (70B refine / generate, batched CONCURRENTLY)
+        Gated by ``SEMANTIK_SPECIALIST_PROVIDER`` + ``SEMANTIK_SPECIALIST_REFINE``:
+          * provider=local (default): Phase 1 ONLY. No endpoint calls.
+            Byte-stable behaviour + the swap-thrash win.
+          * provider=<endpoint> (no refine): SKIP Phase 1; build per-region
+            prompts; one concurrent :meth:`generate_batch` over ALL regions.
+          * provider=<endpoint> + REFINE=1 (hybrid): Phase 1 local drafts
+            THEN Phase 2 sends each region's (prompt + local draft) to the
+            70B with a refine directive; the 70B output REPLACES the draft.
 
 Entry point::
 
@@ -16,19 +31,19 @@ Entry point::
     )
 
 The output is a ``dict[int, list[Candidate]]`` keyed by the region's
-**index in the input list**. Keys are a subset of
-``range(len(regions))`` — only regions that successfully produced
-candidates appear (in v1 every routed region produces, but the
-contract leaves room for a runtime exception to skip a region while
-the rest of the document still runs).
+**index in the input list** — the SAME shape the assembler/reranker
+consumes regardless of which phase produced each completion. Only the
+ORDER and BATCHING of generation changed, not the per-region output
+shape. Keys are a subset of ``range(len(regions))`` — only regions that
+successfully produced candidates appear.
 
-Pass ordering rationale (architecture.md §4.2)
-----------------------------------------------
+Adapter-group ordering (architecture.md §4.2)
+---------------------------------------------
 
 PROSE first: the bulk of regions hit this adapter. TABLE next: it
-tends to demand more output tokens per region (cell-level expansion)
-so it benefits from a fresh CUDA context. MATH last: shortest
-outputs, smallest adapter — the leftover headroom is fine.
+tends to demand more output tokens per region. MATH last: shortest
+outputs, smallest adapter. The group order is unchanged from the
+three-pass driver; only the within-group generation is now batched.
 
 Gap-fill (the 4th adapter) is NOT invoked here. It's driven from
 Stage 9 once the assembler has flagged gaps; see architecture.md §4.3.
@@ -37,23 +52,25 @@ Stage 9 once the assembler has flagged gaps; see architecture.md §4.3.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
 
-from .base import AdapterSwap, generate
+from .base import AdapterSwap
 from .prompts import build_math_request, build_prose_request, build_table_request
 from .routing import adapter_for
-from .runtime import QwenRuntime, make_runtime
+from .runtime import QwenRuntime, make_runtime, specialist_provider_is_endpoint
 from .types import AdapterID, Candidate
 
 
 logger = logging.getLogger(__name__)
 
 
-# Pass order is locked: PROSE → TABLE → MATH. See architecture.md §4.2.
+# Adapter-group order is locked: PROSE → TABLE → MATH. See architecture.md §4.2.
 _PASS_ORDER: tuple[AdapterID, ...] = (
     AdapterID.PROSE,
     AdapterID.TABLE,
@@ -61,6 +78,67 @@ _PASS_ORDER: tuple[AdapterID, ...] = (
 )
 
 _DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
+
+# Truthy strings for SEMANTIK_SPECIALIST_REFINE (parse-with-fallback; any
+# other value is falsey/off).
+_REFINE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+# Directive prepended to a region's prompt when the 70B is asked to REFINE
+# an existing local draft (the hybrid Phase 2 flow). Keeps the same bare-
+# fragment output envelope the assembler parses — the endpoint runtime's
+# own _ENVELOPE_DIRECTIVE still applies; this adds the refine instruction
+# into the USER turn so the draft travels with the region.
+_REFINE_DIRECTIVE = (
+    "A draft fragment for this region was produced by a smaller local "
+    "specialist. Improve and COMPLETE it: fix any malformed markup, fill "
+    "gaps, and raise the quality, but keep it grounded in the region "
+    "described above. Emit ONLY the corrected fragment — no commentary, no "
+    "code fences."
+)
+
+
+def resolve_refine_mode() -> bool:
+    """True when ``SEMANTIK_SPECIALIST_REFINE`` opts into the hybrid flow.
+
+    Parse-with-fallback: only the truthy set enables refine; anything else
+    (unset / blank / garbage) is off."""
+    raw = (os.environ.get("SEMANTIK_SPECIALIST_REFINE") or "").strip().lower()
+    return raw in _REFINE_TRUTHY
+
+
+def _refine_prompt(region_prompt: str, draft: str) -> str:
+    """Build the Phase-2 refine prompt = region prompt + draft + directive.
+
+    The local region prompt (a ``SYSTEM: ...\\nUSER: <json>`` string) is
+    kept intact so the endpoint runtime's :func:`split_specialist_prompt`
+    still pulls the specialist role; the local DRAFT and the refine
+    directive are appended to the USER turn so the 70B sees both the region
+    spec and the fragment it must improve."""
+    return (
+        f"{region_prompt}\n\n"
+        f"DRAFT_FRAGMENT:\n{draft}\n\n"
+        f"{_REFINE_DIRECTIVE}"
+    )
+
+
+@dataclass
+class _RegionJob:
+    """Pre-computed per-region generation job.
+
+    Built ONCE up-front (including the token/long-table skip guards) so the
+    two-phase driver can batch by adapter without re-deriving prompts or
+    re-running the guards. ``skip_reason`` is set when the region must NOT
+    be generated (emits an empty Candidate, same as the legacy path)."""
+
+    idx: int
+    adapter: AdapterID
+    request: Any  # SpecialistRequest with request_id set
+    defaults: dict[str, Any]
+    prompt: str
+    skip_reason: str | None = None
+    skip_meta: dict[str, Any] = None  # type: ignore[assignment]
+    # Phase-1 local draft (one per candidate slot); filled when Phase 1 runs.
+    drafts: list[str] = None  # type: ignore[assignment]
 
 
 def _load_sampling(
@@ -126,6 +204,126 @@ def _build_request(
     raise ValueError(f"no prompt builder for adapter {adapter!r}")
 
 
+def _compute_skip_guard(
+    *,
+    idx: int,
+    adapter: AdapterID,
+    request: Any,
+    defaults: dict[str, Any],
+    prompt: str,
+    rt: Any,
+) -> tuple[str | None, dict[str, Any]]:
+    """Return ``(skip_reason, skip_meta)`` for a region, or ``(None, {})``.
+
+    Two-layer context-overflow guard (identical logic to the legacy
+    per-region loop, lifted verbatim so behaviour is byte-stable):
+
+    Layer 1 — build-time char proxy: the table builder flags long tables.
+    Layer 2 — runtime tokenizer count: tokenize the wrapped prompt and skip
+    if prompt + max_new_tokens would exceed n_ctx. Only runs when the
+    runtime exposes ``_ensure_tokenizer`` (LlamaCppRuntime); MockRuntime /
+    endpoint runtimes have no local n_ctx so the check is skipped."""
+    _md = (request.sampling_overrides or {}).get("metadata") or {}
+    skip_reason: str | None = None
+    skip_meta: dict[str, Any] = {}
+
+    if _md.get("skip_qwen_long_table"):
+        skip_reason = "long_table_char_proxy"
+        skip_meta["prompt_char_len"] = _md.get("prompt_char_len")
+
+    if skip_reason is None and hasattr(rt, "_ensure_tokenizer"):
+        try:
+            from .chat_format import wrap_for_qwen  # noqa: WPS433
+
+            if prompt is not None:
+                _tok = rt._ensure_tokenizer()
+                _wrapped = wrap_for_qwen(_tok, prompt, add_generation_prompt=True)
+                _n_prompt = len(_tok.encode(_wrapped, add_special_tokens=False))
+                _N_CTX = 4096
+                _SAFETY = 32
+                _budget = _N_CTX - defaults["max_new_tokens"] - _SAFETY
+                if _n_prompt > _budget:
+                    skip_reason = "prompt_plus_generation_over_ctx"
+                    skip_meta.update(
+                        {
+                            "prompt_token_count": _n_prompt,
+                            "max_new_tokens": defaults["max_new_tokens"],
+                            "n_ctx": _N_CTX,
+                            "budget_tokens": _budget,
+                            "adapter": adapter.value,
+                        }
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Stage6 token-guard failed for r%d (%s): %s — deferring to "
+                "llama-cpp's own n_ctx check",
+                idx,
+                adapter,
+                exc,
+            )
+    return skip_reason, skip_meta
+
+
+def _skip_candidate(job: "_RegionJob", seed: int | None) -> list[Candidate]:
+    """Build the single empty Candidate emitted for a skipped region.
+
+    Identical shape to the legacy skip path so Stage 7 drops it and the
+    pass_9a per-kind fallback fires."""
+    return [
+        Candidate(
+            adapter=job.request.adapter,
+            request_id=job.request.request_id,
+            text="",
+            score=0.0,
+            sampling_seed=seed,
+            finish_reason="skip_long_table",
+            raw_metadata={"skip_reason": job.skip_reason, **(job.skip_meta or {})},
+        )
+    ]
+
+
+def _wrap_candidates(
+    job: "_RegionJob",
+    texts: list[str],
+    *,
+    seed: int | None,
+    adapter_version: str,
+    phase: str,
+    base_idx: int = 0,
+) -> list[Candidate]:
+    """Wrap raw completion strings into typed Candidates for a region.
+
+    Mirrors :func:`base.generate`'s folding (builder metadata + per-
+    candidate index) plus the runner's adapter-version tag, so the
+    per-region completion shape the assembler consumes is IDENTICAL no
+    matter which phase produced ``texts``. ``phase`` is recorded on
+    ``raw_metadata`` for provenance only (assembler ignores it).
+
+    ``base_idx`` offsets ``candidate_idx`` so a caller appending one slot
+    at a time (the Phase-2 per-slot endpoint path) can keep the indices
+    monotonic across calls."""
+    builder_metadata = (job.request.sampling_overrides or {}).get("metadata") or {}
+    out: list[Candidate] = []
+    for i, text in enumerate(texts):
+        cand_idx = base_idx + i
+        out.append(
+            Candidate(
+                adapter=job.request.adapter,
+                request_id=job.request.request_id,
+                text=text,
+                sampling_seed=(seed + i) if seed is not None else None,
+                finish_reason="stop",
+                raw_metadata={
+                    **builder_metadata,
+                    "candidate_idx": cand_idx,
+                    "adapter_version": adapter_version,
+                    "stage6_phase": phase,
+                },
+            )
+        )
+    return out
+
+
 def run_qwen_specialists(
     regions: Sequence[Any],
     feature_blocks: Sequence[Any],
@@ -189,9 +387,40 @@ def run_qwen_specialists(
 
     sampling = _load_sampling(config_path, lane=lane)
 
-    # Bucket regions by adapter so each pass can run as a single
-    # adapter swap. Preserve original input ordering within each pass.
-    buckets: dict[AdapterID, list[tuple[int, Any]]] = {a: [] for a in _PASS_ORDER}
+    # Resolve the runtime once: a single instance threads through both
+    # phases. For provider=local this is the LlamaCppRuntime; for an
+    # endpoint provider make_runtime("real") short-circuits to the
+    # OpenAICompatibleRuntime (see runtime.make_runtime).
+    rt = runtime if runtime is not None else make_runtime(runtime_mode)
+
+    # Provider/mode routing: decide which phase set runs.
+    #   provider_is_endpoint == False -> Phase 1 only (local, batched).
+    #   provider_is_endpoint == True  -> Phase 2 over all regions; Phase 1
+    #                                    runs FIRST only when REFINE is set
+    #                                    (hybrid: local drafts -> 70B refine).
+    provider_is_endpoint = specialist_provider_is_endpoint()
+    refine = resolve_refine_mode()
+    run_phase1 = (not provider_is_endpoint) or refine
+    run_phase2 = provider_is_endpoint
+
+    def _defaults_for(adapter: AdapterID) -> dict[str, Any]:
+        return sampling.get(
+            adapter.value if isinstance(adapter, AdapterID) else str(adapter),
+            {
+                "temperature": 0.6,
+                "top_p": 0.95,
+                "max_new_tokens": 512,
+                "repetition_penalty": 1.0,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Build per-region jobs up-front, bucketed by adapter. The skip-guard
+    # (long-table char proxy + tokenizer n_ctx check) is computed ONCE per
+    # region here — identical logic to the legacy per-region loop (lifted
+    # into _compute_skip_guard), so behaviour is byte-stable.
+    # ------------------------------------------------------------------
+    buckets: dict[AdapterID, list[_RegionJob]] = {a: [] for a in _PASS_ORDER}
     for idx, region in enumerate(regions):
         try:
             adapter = adapter_for(region.kind)
@@ -205,181 +434,207 @@ def run_qwen_specialists(
         if adapter not in buckets:
             # gap_fill or a future adapter — Stage 6 doesn't fire it.
             continue
-        buckets[adapter].append((idx, region))
-
-    # Resolve runtime once: a single instance threads through all 3
-    # passes (with a load/free per swap). This matches the orchestrator
-    # behaviour for the council BERTs.
-    rt = runtime if runtime is not None else make_runtime(runtime_mode)
+        request = _build_request(adapter, region, feature_blocks)
+        # request_id labels candidates back to their region index so
+        # downstream stages can trace candidate -> region.
+        request_with_id = request.__class__(
+            adapter=request.adapter,
+            payload=request.payload,
+            request_id=f"r{idx}",
+            sampling_overrides=request.sampling_overrides,
+        )
+        prompt = (
+            request_with_id.payload.get("prompt")
+            if isinstance(request_with_id.payload, dict)
+            else ""
+        ) or ""
+        defaults = _defaults_for(adapter)
+        skip_reason, skip_meta = _compute_skip_guard(
+            idx=idx,
+            adapter=adapter,
+            request=request_with_id,
+            defaults=defaults,
+            prompt=prompt,
+            rt=rt,
+        )
+        buckets[adapter].append(
+            _RegionJob(
+                idx=idx,
+                adapter=adapter,
+                request=request_with_id,
+                defaults=defaults,
+                prompt=prompt,
+                skip_reason=skip_reason,
+                skip_meta=skip_meta,
+            )
+        )
 
     out: dict[int, list[Candidate]] = {}
 
-    for adapter in _PASS_ORDER:
-        bucket = buckets.get(adapter, [])
-        if not bucket:
-            logger.debug("Stage6 pass %s: no regions, skipping", adapter)
-            continue
-        defaults = sampling.get(
-            adapter.value if isinstance(adapter, AdapterID) else str(adapter),
-            {
-                "temperature": 0.6,
-                "top_p": 0.95,
-                "max_new_tokens": 512,
-                "repetition_penalty": 1.0,
-            },
-        )
-        logger.info(
-            "Stage6 pass %s: %d region(s)",
-            adapter,
-            len(bucket),
-        )
-        with AdapterSwap(adapter, runtime=rt, config_path=config_path):
-            for idx, region in bucket:
-                request = _build_request(adapter, region, feature_blocks)
-                # request_id labels candidates back to their region index
-                # so downstream stages can trace candidate → region.
-                request_with_id = request.__class__(
-                    adapter=request.adapter,
-                    payload=request.payload,
-                    request_id=f"r{idx}",
-                    sampling_overrides=request.sampling_overrides,
-                )
-                # Plans/06 §7 / task #15 + bn34glowl post-mortem (2026-05-30):
-                # Two-layer guard against "Requested tokens exceed context
-                # window" runtime errors.
-                #
-                # Layer 1 (build-time, cheap char proxy):
-                #   build_table_request flags tables whose serialized prompt
-                #   exceeds _LONG_TABLE_CHAR_LIMIT (8.5k chars). See
-                #   prompts.py:_LONG_TABLE_CHAR_LIMIT for the empirical
-                #   density basis.
-                #
-                # Layer 2 (runtime, authoritative tokenizer count):
-                #   The char proxy underestimates dense tabular content
-                #   (2.92 chars/token observed, not 4). For ALL adapters
-                #   (not just table — math/prose can theoretically also
-                #   overflow), tokenize the wrapped prompt with the real
-                #   Qwen tokenizer and skip generation if
-                #   prompt_tokens + max_new_tokens would exceed n_ctx.
-                #
-                # Both paths emit the same empty Candidate so Stage 7 drops
-                # it and pass_9a's per-kind fallback fires — every kind has
-                # a deterministic emitter with no length limit.
-                _md = (request_with_id.sampling_overrides or {}).get("metadata") or {}
-                skip_reason: str | None = None
-                skip_meta: dict[str, Any] = {}
-
-                if _md.get("skip_qwen_long_table"):
-                    skip_reason = "long_table_char_proxy"
-                    skip_meta["prompt_char_len"] = _md.get("prompt_char_len")
-
-                # Layer 2: authoritative token check via the runtime's
-                # already-loaded HF tokenizer. Skipped if the runtime
-                # doesn't expose one (MockRuntime), or if anything in the
-                # check itself raises — in which case llama-cpp will hit
-                # its own n_ctx error and the per-PDF wrapper records it,
-                # same as before this guard (no regression).
-                if skip_reason is None and hasattr(rt, "_ensure_tokenizer"):
-                    try:
-                        from .chat_format import wrap_for_qwen  # noqa: WPS433
-
-                        prompt_str = (
-                            request_with_id.payload.get("prompt")
-                            if isinstance(request_with_id.payload, dict)
-                            else None
+    # ------------------------------------------------------------------
+    # Phase 1 — local drafts, batched BY ADAPTER (the swap-thrash fix).
+    # For each adapter group: ONE AdapterSwap load, then generate_batch
+    # over the whole group, run K times (one batched pass per candidate
+    # slot) so every region still gets K distinct drafts. The math adapter
+    # loads ONCE for all math regions, etc.
+    #
+    # When provider is an endpoint AND refine is off, Phase 1 is SKIPPED
+    # (run_phase1 == False) — there are no local adapters to run.
+    # When refine is on, the drafts are stashed on each job for Phase 2.
+    # ------------------------------------------------------------------
+    if run_phase1:
+        version = getattr(rt, "_adapter_version", "unknown")
+        for adapter in _PASS_ORDER:
+            bucket = buckets.get(adapter, [])
+            if not bucket:
+                logger.debug("Stage6 phase1 %s: no regions, skipping", adapter)
+                continue
+            # Active (non-skipped) jobs are the ones we batch-generate for.
+            active = [j for j in bucket if j.skip_reason is None]
+            logger.info(
+                "Stage6 phase1 %s: %d region(s) (%d active, %d skipped) "
+                "-> 1 adapter load",
+                adapter,
+                len(bucket),
+                len(active),
+                len(bucket) - len(active),
+            )
+            defaults = _defaults_for(adapter)
+            # ONE swap (one load/free) for the whole adapter group.
+            with AdapterSwap(adapter, runtime=rt, config_path=config_path):
+                version = getattr(rt, "_adapter_version", version)
+                # K batched passes — slot j across all active regions.
+                # per_slot[k_idx] is a list aligned to ``active``.
+                per_slot: list[list[str]] = []
+                if active:
+                    prompts = [j.prompt for j in active]
+                    for k_idx in range(k):
+                        slot_seed = None if seed is None else int(seed + k_idx)
+                        texts = rt.generate_batch(
+                            prompts,
+                            max_tokens=defaults["max_new_tokens"],
+                            temperature=defaults["temperature"],
+                            top_p=defaults["top_p"],
+                            seed=slot_seed,
+                            repeat_penalty=defaults.get("repetition_penalty", 1.0),
                         )
-                        if prompt_str is not None:
-                            _tok = rt._ensure_tokenizer()
-                            _wrapped = wrap_for_qwen(
-                                _tok,
-                                prompt_str,
-                                add_generation_prompt=True,
+                        if len(texts) != len(prompts):
+                            raise RuntimeError(
+                                f"Stage6 phase1 {adapter}: generate_batch "
+                                f"returned {len(texts)} != {len(prompts)} prompts"
                             )
-                            _n_prompt = len(
-                                _tok.encode(
-                                    _wrapped,
-                                    add_special_tokens=False,
-                                )
-                            )
-                            # n_ctx=4096 hard-coded in LlamaCppRuntime.load;
-                            # 32-token safety margin covers BOS/EOS quirks.
-                            _N_CTX = 4096
-                            _SAFETY = 32
-                            _budget = _N_CTX - defaults["max_new_tokens"] - _SAFETY
-                            if _n_prompt > _budget:
-                                skip_reason = "prompt_plus_generation_over_ctx"
-                                skip_meta.update(
-                                    {
-                                        "prompt_token_count": _n_prompt,
-                                        "max_new_tokens": defaults["max_new_tokens"],
-                                        "n_ctx": _N_CTX,
-                                        "budget_tokens": _budget,
-                                        "adapter": adapter.value,
-                                    }
-                                )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "Stage6 token-guard failed for r%d (%s): %s — "
-                            "deferring to llama-cpp's own n_ctx check",
-                            idx,
+                        per_slot.append(texts)
+            # Re-assemble per-region: drafts[region] = [slot0, slot1, ...].
+            for a_pos, job in enumerate(active):
+                job.drafts = [per_slot[k_idx][a_pos] for k_idx in range(k)]
+
+            if not run_phase2:
+                # Local-only: Phase 1 produces the final candidates.
+                for job in bucket:
+                    if job.skip_reason is not None:
+                        logger.info(
+                            "Stage6 skip r%d (%s): %s %s",
+                            job.idx,
                             adapter,
-                            exc,
+                            job.skip_reason,
+                            job.skip_meta,
+                        )
+                        out[job.idx] = _skip_candidate(job, seed)
+                    else:
+                        out[job.idx] = _wrap_candidates(
+                            job,
+                            job.drafts or [],
+                            seed=seed,
+                            adapter_version=version,
+                            phase="local",
                         )
 
-                if skip_reason is not None:
-                    logger.info(
-                        "Stage6 skip r%d (%s): %s %s",
-                        idx,
-                        adapter,
-                        skip_reason,
-                        skip_meta,
-                    )
-                    cands = [
-                        Candidate(
-                            adapter=request_with_id.adapter,
-                            request_id=request_with_id.request_id,
-                            text="",
-                            score=0.0,
-                            sampling_seed=seed,
-                            finish_reason="skip_long_table",
-                            raw_metadata={"skip_reason": skip_reason, **skip_meta},
+    # ------------------------------------------------------------------
+    # Phase 2 — 70B refine/generate, batched CONCURRENTLY over ALL regions.
+    # The endpoint runtime's generate_batch fans the per-region POSTs out
+    # through a ThreadPoolExecutor (SEMANTIK_SPECIALIST_CONCURRENCY) and
+    # re-orders results to inputs. Run K times for K candidates per region.
+    #   - no-refine: prompt is the region prompt (endpoint generates fresh).
+    #   - refine:    prompt is (region prompt + Phase-1 draft + directive).
+    # ------------------------------------------------------------------
+    if run_phase2:
+        # Flatten all active jobs across adapters; skipped regions emit the
+        # empty Candidate and never hit the endpoint.
+        all_jobs: list[_RegionJob] = [
+            j for adapter in _PASS_ORDER for j in buckets.get(adapter, [])
+        ]
+        active = [j for j in all_jobs if j.skip_reason is None]
+        for job in all_jobs:
+            if job.skip_reason is not None:
+                logger.info(
+                    "Stage6 skip r%d (%s): %s %s",
+                    job.idx,
+                    job.adapter,
+                    job.skip_reason,
+                    job.skip_meta,
+                )
+                out[job.idx] = _skip_candidate(job, seed)
+
+        if active:
+            # Phase 2 uses one representative sampling profile (prose
+            # defaults) for the shared endpoint; per-region max_new_tokens
+            # stays per-adapter so long tables still get headroom.
+            logger.info(
+                "Stage6 phase2 (endpoint%s): %d region(s) -> concurrent batch x%d",
+                " refine" if refine else "",
+                len(active),
+                k,
+            )
+            # Per-region prompt: refine appends the chosen draft slot.
+            for k_idx in range(k):
+                slot_seed = None if seed is None else int(seed + k_idx)
+                if refine:
+                    prompts = [
+                        _refine_prompt(
+                            j.prompt,
+                            (j.drafts[k_idx] if j.drafts and k_idx < len(j.drafts) else ""),
                         )
+                        for j in active
                     ]
                 else:
-                    cands = generate(
-                        request_with_id,
-                        k=k,
-                        temperature=defaults["temperature"],
-                        top_p=defaults["top_p"],
-                        max_tokens=defaults["max_new_tokens"],
-                        seed=seed,
-                        repeat_penalty=defaults.get("repetition_penalty", 1.0),
+                    prompts = [j.prompt for j in active]
+                # Use each job's own max_new_tokens? generate_batch takes one
+                # max_tokens for the whole call — use the max across the
+                # active set so no region is truncated below its budget.
+                batch_max = max(j.defaults["max_new_tokens"] for j in active)
+                batch_temp = active[0].defaults["temperature"]
+                batch_top_p = active[0].defaults["top_p"]
+                batch_rp = active[0].defaults.get("repetition_penalty", 1.0)
+                texts = rt.generate_batch(
+                    prompts,
+                    max_tokens=batch_max,
+                    temperature=batch_temp,
+                    top_p=batch_top_p,
+                    seed=slot_seed,
+                    repeat_penalty=batch_rp,
+                )
+                if len(texts) != len(active):
+                    raise RuntimeError(
+                        f"Stage6 phase2: generate_batch returned "
+                        f"{len(texts)} != {len(active)} prompts"
                     )
-                # Phase 1.5: tag every Candidate with the adapter
-                # version pulled off the runtime (set in
-                # LlamaCppRuntime.load via sibling .metadata.json).
-                # Backward-compat: missing attr defaults to "unknown".
-                version = getattr(rt, "_adapter_version", "unknown")
-                tagged: list[Candidate] = []
-                for c in cands:
-                    new_meta = dict(c.raw_metadata)
-                    new_meta["adapter_version"] = version
-                    tagged.append(
-                        Candidate(
-                            adapter=c.adapter,
-                            request_id=c.request_id,
-                            text=c.text,
-                            score=c.score,
-                            sampling_seed=c.sampling_seed,
-                            finish_reason=c.finish_reason,
-                            raw_metadata=new_meta,
-                        )
-                    )
-                out[idx] = tagged
+                for a_pos, job in enumerate(active):
+                    bucket_slot = out.setdefault(job.idx, [])
+                    # Build/extend the candidate list slot-by-slot.
+                    cand = _wrap_candidates(
+                        job,
+                        [texts[a_pos]],
+                        seed=slot_seed,
+                        adapter_version="endpoint",
+                        phase="refine" if refine else "endpoint",
+                        base_idx=k_idx,
+                    )[0]
+                    bucket_slot.append(cand)
 
     return out
 
 
 __all__ = [
+    "resolve_refine_mode",
     "run_qwen_specialists",
 ]
