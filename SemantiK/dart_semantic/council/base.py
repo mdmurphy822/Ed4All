@@ -288,7 +288,7 @@ class SharedBackbone:
             # Imports deferred until first use. This is what keeps plain
             # ``import dart_semantic.council.base`` torch-free.
             import torch  # noqa: WPS433
-            from transformers import AutoModel  # noqa: WPS433
+            from transformers import AutoConfig, AutoModel  # noqa: WPS433
 
             dtype_map = {
                 "bfloat16": torch.bfloat16,
@@ -308,10 +308,20 @@ class SharedBackbone:
             tokenizer = load_local_tokenizer(
                 self.name, revision=self.revision,
             )
+            # ModernBERT's reference_compile=True triggers torch.compile/triton
+            # on CUDA; boxes without a working triton build toolchain (e.g. WSL)
+            # cannot build the kernel, so force eager. Harmless on backbones
+            # without the attr.
+            _backbone_cfg = AutoConfig.from_pretrained(
+                self.name, revision=self.revision,
+            )
+            if hasattr(_backbone_cfg, "reference_compile"):
+                _backbone_cfg.reference_compile = False
             model = AutoModel.from_pretrained(
                 self.name,
                 revision=self.revision,
                 dtype=torch_dtype,
+                config=_backbone_cfg,
             )
             if self._device is None:
                 self._device = "cuda" if torch.cuda.is_available() else "cpu"
