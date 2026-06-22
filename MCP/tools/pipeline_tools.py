@@ -6025,6 +6025,180 @@ _REUSE_CONVERSION_TRUTHY = frozenset({"1", "true", "yes", "on"})
 # fake mock HTML never ships as if it were a real conversion.
 _SEMANTIK_REAL_RUNTIME_MODES = frozenset({"real"})
 
+# §5 / Section 8 (M4) — cross-venv subprocess bridge operator env vars. The
+# SemantiK v2 cascade's heavy runtime deps (axe-playwright-python /
+# llama-cpp-CUDA / torch + the 11GB GGUF/council weights) are NOT installed in
+# Ed4All's slim venv. When the in-process ``run_pipeline_v2`` import fails AND
+# these are set, the seam shells out to
+# ``SemantiK/scripts/run_cascade_json.py`` running in the SemantiK runtime
+# venv (it writes a JSON bridge file the seam reads back). NO machine-specific
+# default path lives in tracked code — both default to ``None`` (→ fail-closed
+# clear error telling the operator to set them).
+#   * SEMANTIK_PYTHON      : the SemantiK runtime venv's python interpreter.
+#   * SEMANTIK_RUNTIME_DIR : the SemantiK runtime repo root, used as the
+#                            subprocess ``cwd`` (the cascade resolves its
+#                            model/cache dirs relative to cwd).
+_SEMANTIK_PYTHON_ENV = "SEMANTIK_PYTHON"
+_SEMANTIK_RUNTIME_DIR_ENV = "SEMANTIK_RUNTIME_DIR"
+# Path to the SemantiK-side runner script (vendored under SemantiK/scripts/).
+# Resolved relative to the repo root so no absolute path is hardcoded.
+_SEMANTIK_RUNNER_SCRIPT = (
+    Path(__file__).resolve().parents[2] / "SemantiK" / "scripts" / "run_cascade_json.py"
+)
+# Generous default subprocess timeout (s) — a real cascade run does 11GB of
+# model work; the operator can override with SEMANTIK_BRIDGE_TIMEOUT_SECONDS.
+_SEMANTIK_BRIDGE_TIMEOUT_ENV = "SEMANTIK_BRIDGE_TIMEOUT_SECONDS"
+_SEMANTIK_BRIDGE_TIMEOUT_DEFAULT = 3600.0
+
+
+def _resolve_semantik_bridge_timeout() -> float:
+    """Resolve the subprocess bridge timeout (parse-with-fallback)."""
+    raw = (os.environ.get(_SEMANTIK_BRIDGE_TIMEOUT_ENV) or "").strip()
+    try:
+        val = float(raw)
+        if val > 0:
+            return val
+    except (TypeError, ValueError):
+        pass
+    return _SEMANTIK_BRIDGE_TIMEOUT_DEFAULT
+
+
+class _SemantikBridgeResult:
+    """Duck-typed ``PipelineV2Result`` reconstructed from the bridge JSON.
+
+    Carries exactly the attributes the rest of the seam reads off the
+    cascade result: ``runtime_mode`` (R4 mock-trap), ``region_provenance`` +
+    ``heading_tree`` (consumed by ``build_chapters_ir``), and the doc-level
+    signals the adapter reads (``exit_action`` / ``wcag_status`` /
+    ``theta_score`` / ``flags`` / ``lane_used`` / ``html``). This lets the
+    subprocess path re-join the SAME downstream code as the in-process path
+    (runtime-mode check → IR → adapter) with no branching.
+    """
+
+    def __init__(self, bridge: Dict[str, Any]):
+        self.pdf = bridge.get("pdf")
+        self.html = bridge.get("html") or ""
+        self.region_provenance = list(bridge.get("region_provenance") or [])
+        self.heading_tree = [list(e) for e in (bridge.get("heading_tree") or [])]
+        self.exit_action = bridge.get("exit_action")
+        self.wcag_status = bridge.get("wcag_status")
+        self.theta_score = bridge.get("theta_score")
+        self.flags = list(bridge.get("flags") or [])
+        self.lane_used = bridge.get("lane_used")
+        self.runtime_mode = bridge.get("runtime_mode")
+        self.lang = bridge.get("lang") or "en"
+
+
+def _run_semantik_bridge_subprocess(
+    pdf: str, runtime: str = "auto"
+) -> Dict[str, Any]:
+    """Shell out to the SemantiK runtime venv via the JSON bridge (§5 / M4).
+
+    Resolves ``SEMANTIK_PYTHON`` + ``SEMANTIK_RUNTIME_DIR`` (operator env, NO
+    hardcoded default path). Invokes ``run_cascade_json.py`` with ``cwd`` set
+    to the runtime repo root (the cascade resolves models relative to cwd),
+    reads the JSON bridge file back, and returns it as a plain dict.
+
+    Fail-closed (NO silent DART fallback). Returns a dict carrying ``error``
+    (and never ``region_provenance``) on every failure path:
+      * either env var unset            → ``error`` (operator guidance).
+      * subprocess timeout / OSError    → ``error``.
+      * non-zero exit                   → ``error`` (with stderr tail).
+      * unreadable / non-JSON output    → ``error``.
+      * JSON itself carries ``error``   → propagated (the runner caught an
+                                          import / cascade failure).
+    """
+    import subprocess
+    import tempfile
+
+    semantik_python = (os.environ.get(_SEMANTIK_PYTHON_ENV) or "").strip()
+    runtime_dir = (os.environ.get(_SEMANTIK_RUNTIME_DIR_ENV) or "").strip()
+    if not semantik_python or not runtime_dir:
+        return {
+            "error": (
+                "SemantiK runtime deps absent in this venv and the subprocess "
+                "bridge is not configured: set SEMANTIK_PYTHON=<SemantiK venv "
+                "python> and SEMANTIK_RUNTIME_DIR=<SemantiK repo root> to run "
+                "the cascade out-of-process (no machine path is hardcoded)."
+            )
+        }
+    if not _SEMANTIK_RUNNER_SCRIPT.is_file():
+        return {
+            "error": (
+                f"SemantiK bridge runner script not found at "
+                f"{_SEMANTIK_RUNNER_SCRIPT}; the vendored SemantiK/scripts/ dir "
+                f"is required for the subprocess bridge."
+            )
+        }
+
+    timeout = _resolve_semantik_bridge_timeout()
+    with tempfile.TemporaryDirectory(prefix="semantik_bridge_") as tmpdir:
+        out_json = Path(tmpdir) / "cascade_bridge.json"
+        cmd = [
+            semantik_python,
+            str(_SEMANTIK_RUNNER_SCRIPT),
+            "--pdf",
+            str(pdf),
+            "--out-json",
+            str(out_json),
+            "--runtime",
+            runtime,
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                cwd=runtime_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "error": (
+                    f"SemantiK bridge subprocess timed out after {timeout:.0f}s "
+                    f"on {pdf}; raise {_SEMANTIK_BRIDGE_TIMEOUT_ENV} if the real "
+                    f"cascade legitimately needs longer."
+                )
+            }
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {
+                "error": (
+                    f"SemantiK bridge subprocess could not be launched "
+                    f"({semantik_python}): {exc}"
+                )
+            }
+
+        # The runner writes a structured {"error"} JSON on its own internal
+        # failures even when it exits non-zero — prefer that over the raw
+        # stderr so the operator sees the cascade-side message.
+        bridge: Optional[Dict[str, Any]] = None
+        if out_json.is_file():
+            try:
+                bridge = json.loads(out_json.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                bridge = None
+
+        if isinstance(bridge, dict) and bridge.get("error"):
+            return {"error": f"SemantiK cascade (bridge): {bridge['error']}"}
+
+        if proc.returncode != 0:
+            stderr_tail = (proc.stderr or "").strip()[-2000:]
+            return {
+                "error": (
+                    f"SemantiK bridge subprocess exited {proc.returncode} on "
+                    f"{pdf}: {stderr_tail or '(no stderr)'}"
+                )
+            }
+
+        if not isinstance(bridge, dict):
+            return {
+                "error": (
+                    f"SemantiK bridge wrote no readable JSON to {out_json} "
+                    f"(exit 0 but missing/corrupt output)."
+                )
+            }
+        return bridge
+
 
 def _resolve_reuse_conversion(reuse_conversion: Optional[Any]) -> bool:
     """Resolve the effective `--reuse-conversion` / `ED4ALL_REUSE_CONVERSION`.
@@ -6208,33 +6382,64 @@ def _run_semantik_v2_conversion(
             html_path,
         )
 
-    # Lazy import — keep SemantiK's heavy runtime deps off the module-import
-    # path. A missing dep is a clear error dict, never a silent fallback.
-    try:
-        from SemantiK.dart_semantic.pipeline_v2 import run_pipeline_v2
-        from lib.semantik.cascade_ir import build_chapters_ir
-        from lib.semantik.adapter import normalize_cascade_to_ed4all
-    except ImportError as exc:
-        return {
-            "success": False,
-            "error": f"SemantiK runtime deps not provisioned: {exc}",
-            "method": "semantik_v2",
-            "output_path": str(out_path),
-            "html_path": str(html_path),
-        }
+    # The IR + adapter are always pure-Python (no heavy deps) — import them
+    # up front so both the in-process and subprocess arms share them.
+    from lib.semantik.cascade_ir import build_chapters_ir
+    from lib.semantik.adapter import normalize_cascade_to_ed4all
 
-    # 1. Run the cascade (PDF path in → PipelineV2Result out).
+    # 1. Run the cascade. Resolution order (§5 / Section 8 M4):
+    #   (a) in-process import of run_pipeline_v2 — works iff Ed4All's venv
+    #       ever gets SemantiK's heavy deps;
+    #   (b) on ImportError, the cross-venv subprocess bridge — iff
+    #       SEMANTIK_PYTHON + SEMANTIK_RUNTIME_DIR are set;
+    #   (c) neither → fail-closed clear error (NO silent DART fallback).
+    result: Any
     try:
-        result = run_pipeline_v2(str(pdf))
-    except Exception as exc:  # noqa: BLE001 — cascade error fails closed
-        logger.error("SemantiK cascade raised on %s: %s", pdf, exc)
-        return {
-            "success": False,
-            "error": f"SemantiK cascade failed: {exc}",
-            "method": "semantik_v2",
-            "output_path": str(out_path),
-            "html_path": str(html_path),
-        }
+        from SemantiK.dart_semantic.cascade import run_pipeline_v2
+    except ImportError as imp_exc:
+        # (b) Subprocess bridge — only when the operator wired the env vars.
+        if (os.environ.get(_SEMANTIK_PYTHON_ENV) or "").strip():
+            bridge = _run_semantik_bridge_subprocess(str(pdf))
+            if bridge.get("error"):
+                logger.error(
+                    "SemantiK bridge failed on %s: %s", pdf, bridge["error"]
+                )
+                return {
+                    "success": False,
+                    "error": bridge["error"],
+                    "method": "semantik_v2",
+                    "output_path": str(out_path),
+                    "html_path": str(html_path),
+                }
+            result = _SemantikBridgeResult(bridge)
+        else:
+            # (c) No in-process deps and no bridge env → fail-closed clear.
+            return {
+                "success": False,
+                "error": (
+                    f"SemantiK runtime deps not provisioned: {imp_exc}. Either "
+                    f"install SemantiK's heavy deps into this venv, or set "
+                    f"{_SEMANTIK_PYTHON_ENV}=<SemantiK venv python> + "
+                    f"{_SEMANTIK_RUNTIME_DIR_ENV}=<SemantiK repo root> to run "
+                    f"the cascade out-of-process."
+                ),
+                "method": "semantik_v2",
+                "output_path": str(out_path),
+                "html_path": str(html_path),
+            }
+    else:
+        # (a) In-process cascade (PDF path in → PipelineV2Result out).
+        try:
+            result = run_pipeline_v2(str(pdf))
+        except Exception as exc:  # noqa: BLE001 — cascade error fails closed
+            logger.error("SemantiK cascade raised on %s: %s", pdf, exc)
+            return {
+                "success": False,
+                "error": f"SemantiK cascade failed: {exc}",
+                "method": "semantik_v2",
+                "output_path": str(out_path),
+                "html_path": str(html_path),
+            }
 
     # 2. R4 mock-trap precondition (§3.7 / Section 9): the runtime_mode=='real'
     # assertion is a SEPARATE fail-closed gate, NOT folded into the wcag/exit

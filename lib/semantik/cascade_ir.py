@@ -263,4 +263,40 @@ def build_chapters_ir(result: Any) -> List[_AdapterChapter]:
     return [ch for ch in chapters if ch.blocks]
 
 
-__all__ = ["build_chapters_ir"]
+def from_bridge_json(bridge: Mapping[str, Any]) -> List[_AdapterChapter]:
+    """Build the chapters IR from a cross-venv bridge-JSON dict (§5 / M4).
+
+    The subprocess bridge (``MCP/tools/pipeline_tools.py::
+    _run_semantik_v2_conversion`` shelling out to
+    ``SemantiK/scripts/run_cascade_json.py``) reads a plain JSON dict carrying
+    ``{"region_provenance": [...], "heading_tree": [...]}`` (plus doc-level
+    signals the adapter reads off the result separately). This is a thin,
+    explicit entry point over :func:`build_chapters_ir`: the latter's
+    :func:`_coerce_provenance` / :func:`_coerce_heading_tree` already accept a
+    bare mapping, so the bridge dict feeds straight through — this helper just
+    makes the bridge call site self-documenting and asserts dict shape.
+
+    Parameters
+    ----------
+    bridge
+        The decoded bridge JSON. Only ``region_provenance`` + ``heading_tree``
+        are consumed here (document structure); the doc-level signals
+        (``exit_action`` / ``wcag_status`` / ``theta_score`` / ``flags`` /
+        ``lane_used``) are read by the seam off the same dict when it builds
+        the adapter input, not here.
+
+    Returns
+    -------
+    List[_AdapterChapter]
+        Identical to ``build_chapters_ir(bridge)`` — the same IR the adapter
+        consumes. An empty / structureless bridge yields ``[]`` (fail-closed
+        at the gate downstream, never a silent pass).
+    """
+    if not isinstance(bridge, Mapping):
+        raise TypeError(
+            f"from_bridge_json expects a mapping, got {type(bridge).__name__}"
+        )
+    return build_chapters_ir(bridge)
+
+
+__all__ = ["build_chapters_ir", "from_bridge_json"]
