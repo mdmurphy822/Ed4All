@@ -11,14 +11,14 @@
  ============================================================================
 
   RAW INPUTS                                                    UNIFIED STORE
-  (PDF, DOCX,       DART          Courseforge       Trainforge      LibV2
+  (PDF, DOCX,     SemantiK        Courseforge       Trainforge      LibV2
    textbooks)    (Conversion)    (Course Gen)     (RAG Training)  (Repository)
                                                                   
   +----------+   +----------+   +------------+   +------------+  +-----------+
   |          |   |          |   |            |   |            |  |           |
-  | PDF docs |-->| Multi-   |-->| Staging &  |-->| IMSCC      |->| raw/      |
-  | Office   |   | Source   |   | Objective  |   | Content    |  |   pdf/    |
-  | HTML     |   | Synthesis|   | Extraction |   | Analysis   |  |   html/   |
+  | PDF docs |-->| v2       |-->| Staging &  |-->| IMSCC      |->| raw/      |
+  | Office   |   | Semantic |   | Objective  |   | Content    |  |   pdf/    |
+  | HTML     |   | Cascade  |   | Extraction |   | Analysis   |  |   html/   |
   |          |   |          |   |            |   |            |  |   imscc/  |
   +----------+   +-----+----+   +------+-----+   +------+-----+  |           |
                        |               |                |         | corpus/   |
@@ -32,32 +32,40 @@
 
 ## Component Architecture
 
-### 1. DART (Document Accessibility Remediation Tool)
+### 1. SemantiK (Semantic PDF → Accessible-HTML Conversion)
 
-**Purpose**: Ingest raw PDF/document inputs and convert them to semantically rich, WCAG 2.2 AA compliant HTML.
+**Purpose**: Ingest raw PDF/document inputs and convert them to semantically rich, WCAG 2.2 AA compliant HTML. SemantiK is the **license-clean conversion engine** that replaced the legacy DART converter — its extraction stack carries no PyMuPDF/MuPDF (AGPL-3) or Poppler (GPL-2), so the subsystem ships Apache-2.0. It runs **in-process** within Ed4All (via the `[semantik]` extra) and needs no cloud LLM at runtime; a hosted 70B endpoint is an opt-in quality seat, not a dependency.
 
 **Pipeline Position**: First stage - raw material ingestion and conversion.
 
 ```
-Input Sources               Multi-Source Synthesis              Output
-============               ======================              ======
+Input Sources           13-Stage v2 Semantic Cascade            Output
+============           ===========================            ======
 
-                     +---> pdftotext (content, 99%+) ---+
-PDF / Office Doc --->|---> pdfplumber (structure)  ------+--> Synthesized HTML
-                     +---> OCR (validation)  -----------+    + Quality Report
+                     extract  -> features -> council BERTs ---+
+PDF / Office Doc --->|-> structure-graph -> Qwen specialists  +--> Accessible HTML
+                     |-> hard/soft gates -> assemble -> theta -+    + Quality Report
+                     +-> exit decider (ship / flag / lane) ----+
 ```
 
+**Core principle**: learned models are narrow candidate generators; deterministic code orchestrates, gates, and assembles. BERT specialists classify, Qwen adapters generate, and deterministic code owns composition / hierarchy / ARIA / validation — which is what lets SemantiK make an auditable WCAG conformance claim. The full 13-stage cascade (extraction → feature engineering → BERT council → structure graph → Qwen specialist generation → hard/soft gates → assembly → theta semantic-preservation → exit decider) is documented in **[`SemantiK/architecture.md`](SemantiK/architecture.md)**; this section covers only its pipeline position and wire contract.
+
 **Key Capabilities**:
-- Multi-source synthesis combining pdftotext, pdfplumber, and OCR
+- License-clean local extraction (pikepdf + pypdfium2 + pdfplumber + Tesseract; no AGPL/GPL dependencies)
+- BERT council classification (structure, semantic role, merge/split, table, math) + cross-BERT reranking
+- Qwen specialist HTML generation (prose, table, math) — local GGUF or an opt-in hosted 70B seat
 - Semantic HTML with content-type-specific subclassing (not just generic h1-h6)
-- Section-type detection and specialized rendering per content type
-- WCAG 2.2 AA compliance with skip navigation, ARIA landmarks, focus management
+- WCAG 2.2 AA compliance enforced by eliminating per-region + document-scope hard gates (axe, html5, heading-tree, landmark, lang, title)
 - Dark mode, reduced motion, and responsive design support
-- Quality report generation with confidence scoring
+- Quality report generation with confidence scoring and a per-document exit decision
+
+**Wire contract (preserved from DART)**:
+
+SemantiK is a drop-in for the retired DART converter: it preserves DART's `data-dart-*` HTML markers and the `dart:{slug}#{block_id}` sourceId **wire contract** so every downstream Ed4All consumer (Courseforge staging, source-mapping, the chunker, the Ask path) is unchanged. The `data-dart-*` vocabulary is the **stable source-provenance contract**, not a live "DART runs the conversion" claim.
 
 **Semantic HTML Subclassing**:
 
-DART outputs go beyond generic heading tags. Each content type receives semantic CSS classes that downstream consumers (Courseforge, Trainforge) can use for targeted processing:
+Conversion output goes beyond generic heading tags. Each content type receives semantic CSS classes (part of the preserved wire contract) that downstream consumers (Courseforge, Trainforge) can use for targeted processing:
 
 | Section Type | CSS Class | HTML Pattern | Purpose |
 |---|---|---|---|
@@ -81,23 +89,23 @@ DART outputs go beyond generic heading tags. Each content type receives semantic
 | Learning Obj. | `.dart-objectives` | `<section class="dart-objectives">` | Extracted learning objectives |
 
 **Output Artifacts**:
-- `{name}_synthesized.html` - Semantic, accessible HTML
+- `{name}_synthesized.html` - Semantic, accessible HTML (carrying the `data-dart-*` provenance markers)
 - `{name}.quality.json` - Quality report with confidence score, WCAG results, content profile
 
 **Entry Points**:
-- `DART/multi_source_interpreter.py::convert_single_pdf()` - Single file
-- `DART/multi_source_interpreter.py::batch_synthesize_all()` - Batch processing
+- `SemantiK/dart_semantic/cascade.py::run_full_cascade()` - Full v2 cascade over a single PDF
+- `MCP/tools/pipeline_tools.py::_run_semantik_v2_conversion` - In-process Ed4All bridge seam (the `dart_conversion` phase)
 
 ---
 
 ### 2. Courseforge (Course Generation & Packaging)
 
-**Purpose**: Take DART-processed material and apply digital pedagogy and instructional design to create a complete digital course package (IMSCC).
+**Purpose**: Take the accessible HTML produced by SemantiK and apply digital pedagogy and instructional design to create a complete digital course package (IMSCC).
 
 **Pipeline Position**: Second stage - transforms accessible content into structured courseware.
 
 ```
-DART HTML Output                   Courseforge Pipeline                    IMSCC Package
+SemantiK HTML Output               Courseforge Pipeline                    IMSCC Package
 ================                   ====================                   =============
 
                     +--- exam-research --------+
@@ -134,7 +142,7 @@ Exam Objectives --->|    collector        |    v
 - Multi-LMS IMSCC support (Brightspace, Canvas, Blackboard, Moodle, Sakai)
 
 **Input Sources**:
-- `Courseforge/inputs/textbooks/` - DART HTML output (staged)
+- `Courseforge/inputs/textbooks/` - SemantiK accessible-HTML output (staged)
 - `Courseforge/inputs/exam-objectives/` - Certification exam objectives
 - `Courseforge/inputs/existing-packages/` - IMSCC for intake/remediation
 
@@ -212,7 +220,7 @@ Course Package -->|     (multi-LMS detect)   |
 
 ### 4. LibV2 (Unified Content Repository)
 
-**Purpose**: Store ALL pipeline artifacts together - raw inputs, DART outputs, course packages, and RAG corpus - in a single, indexed, retrievable repository.
+**Purpose**: Store ALL pipeline artifacts together - raw inputs, SemantiK accessible HTML, course packages, and RAG corpus - in a single, indexed, retrievable repository.
 
 **Pipeline Position**: Final stage - unified archival and retrieval.
 
@@ -221,7 +229,7 @@ Pipeline Outputs              LibV2 Storage                     Retrieval
 ================              =============                     =========
 
 Raw PDFs ---------> source/pdf/                    
-DART HTML --------> source/html/           libv2 retrieve "query"
+SemantiK HTML ----> source/html/           libv2 retrieve "query"
 Course IMSCC -----> source/imscc/               --domain physics
 IMSCC Chunks -----> imscc_chunks/chunks.jsonl   --chunk-type example
 Knowledge Graph --> graph/concept_graph.json    --limit 10
@@ -242,7 +250,7 @@ LibV2/courses/{slug}/
   manifest.json              # Unified metadata (classification, provenance, quality)
   source/
     pdf/                     # Original input PDFs (with SHA-256 checksums)
-    html/                    # DART accessible HTML output
+    html/                    # SemantiK accessible HTML output
     imscc/                   # Courseforge IMSCC package
   corpus/
     chunks.jsonl             # RAG corpus (streaming format)
@@ -283,7 +291,7 @@ The primary unified workflow that chains all four components:
 Phase                    Component    Agent(s)                  Output
 =====                    =========    ========                  ======
 
-1. dart_conversion       DART         dart-converter            Accessible HTML + Quality JSON
+1. dart_conversion       SemantiK     dart-converter            Accessible HTML + Quality JSON
        |
        v
 2. staging               Pipeline     textbook-stager           Staged files in Courseforge/inputs/
@@ -310,6 +318,11 @@ Phase                    Component    Agent(s)                  Output
 9. finalization          Pipeline     brightspace-packager      Progress update + export
 ```
 
+> The `dart_conversion` phase name, the `dart-converter` agent, and the
+> `dart_html_paths` / `data-dart-*` identifiers are the **preserved
+> source-provenance wire contract** — SemantiK is the engine that backs them.
+> The names are kept for downstream-consumer continuity, not because DART runs.
+
 ### Inter-Phase Data Routing
 
 Each phase's outputs are automatically routed to the next phase's inputs:
@@ -331,7 +344,7 @@ Each phase's outputs are automatically routed to the next phase's inputs:
 Quality is enforced at critical boundaries between components:
 
 ```
-                        DART                 Courseforge              Trainforge
+                      SemantiK             Courseforge              Trainforge
                      ===========           ==============           ============
 
                      WCAG 2.2 AA           Content Structure        Assessment Quality
@@ -362,7 +375,7 @@ The unified MCP server (`MCP/server.py`) exposes all component tools through a s
 | Category | Tools | Component |
 |---|---|---|
 | **Core File** | `list_directory`, `read_file`, `write_file`, `file_info` | MCP Server |
-| **DART** | `convert_pdf_multi_source`, `batch_convert_multi_source`, `validate_wcag_compliance`, `extract_and_convert_pdf` | DART |
+| **Conversion** | `extract_and_convert_pdf` (registry-only seam → `_run_semantik_v2_conversion`) | SemantiK |
 | **Courseforge** | `create_course_project`, `generate_course_content`, `package_imscc`, `intake_imscc_package`, `remediate_course_content` | Courseforge |
 | **Trainforge** | `analyze_imscc_content`, `generate_assessments`, `validate_assessment`, `export_training_data` | Trainforge |
 | **Pipeline** | `create_textbook_pipeline`, `stage_dart_outputs`, `run_textbook_pipeline`, `get_pipeline_status`, `validate_dart_markers` | Pipeline |
@@ -389,7 +402,7 @@ Every pipeline decision is logged to `training-captures/` in JSONL format for mo
 
 ```
 training-captures/
-  dart/{COURSE_CODE}/
+  dart/{COURSE_CODE}/                 # SemantiK conversion captures (path name preserved)
     decisions_{PDF_NAME}_{TIMESTAMP}.jsonl
   courseforge/{COURSE_CODE}/
     phase_input-research/
@@ -416,7 +429,7 @@ training-captures/
 | `config/workflows.yaml` | Workflow phase definitions, retry policies, validation gates |
 | `config/agents.yaml` | Agent capabilities, tool mappings, project paths |
 | `CLAUDE.md` | Root orchestrator protocol (this overrides all) |
-| `DART/CLAUDE.md` | DART-specific conversion guidance |
+| `SemantiK/CLAUDE.md` | SemantiK conversion-cascade guidance (see also `SemantiK/architecture.md`) |
 | `Courseforge/CLAUDE.md` | Courseforge agent and content guidance |
 | `Trainforge/CLAUDE.md` | Trainforge RAG and assessment guidance |
 | `LibV2/CLAUDE.md` | LibV2 retrieval and storage guidance |
@@ -427,9 +440,10 @@ training-captures/
 
 | Workflow | Pipeline | Max Concurrent |
 |---|---|---|
-| `textbook_to_course` | DART -> Courseforge -> Trainforge -> LibV2 | 10 |
+| `textbook_to_course` | SemantiK -> Courseforge -> Trainforge -> LibV2 | 10 |
 | `course_generation` | Courseforge (from objectives) | 10 |
 | `rag_training` | Trainforge assessment generation | 5 |
+| `trainforge_train` | Train a course-pinned SLM adapter (post-import LibV2 stage) | 1 |
 
 ---
 

@@ -118,52 +118,42 @@ Then add `TOGETHER_API_KEY` to the env. Together AI's ToS explicitly permits usi
 
 The five-env-var recipe above closes the largest training-data exposure paths in the pipeline. The Anthropic-pinned subagent surfaces have all been routed through in-process license-clean providers as of Wave W-D15:
 
-## DART (W-D13) — PDF → HTML conversion now license-clean
+## Conversion (SemantiK) — PDF → HTML license-clean by construction
 
-DART's PDF converter (`DART/pdf_converter/converter.py`) routes through the W-D13 `DART_PROVIDER` + `DART_VISION_PROVIDER` env vars. Default unset → the legacy Anthropic path stays in place (`DART_CLAUDE_MODEL` pinning `claude-sonnet-4-20250514`); set the W-D13 vars to flip the converter onto a license-clean backend. DART HTML output is later ingested as Trainforge training chunks, so closing this seam was the dominant remaining DART training-data exposure.
+The PDF → accessible-HTML conversion stage is **SemantiK**, the license-clean
+replacement for the retired DART converter. There is no longer an Anthropic
+default to flip on the conversion path: SemantiK's extraction stack carries no
+PyMuPDF/MuPDF (AGPL-3) or Poppler (GPL-2) and ships Apache-2.0, and its runtime
+runs **fully offline** by default — the BERT council, OCR, theta, and the
+Stage-6 Qwen specialists are all local. The conversion output (which is later
+ingested as Trainforge training chunks) is therefore license-clean with **no
+operator action required**.
 
-**License-clean DART recipe (W-D13):**
+**Default (fully offline):**
 
 ```bash
-# Text-mode structure detection: route through local Ollama / vLLM.
-export DART_PROVIDER=local
-export LOCAL_SYNTHESIS_MODEL=qwen2.5:14b-instruct-q4_K_M  # Apache 2.0
-
-# Vision-mode alt-text: pick ONE of the three options below.
-
-# (a) Local vision model (cheapest, fully offline; needs ~22 GB VRAM
-# for qwen2.5-vl:32b or ~16 GB for qwen2.5-vl:7b):
-export DART_VISION_PROVIDER=local
-export LOCAL_VISION_CAPABLE=true
-# Operator picks: load a vision model into the local server.
-# The resolver heuristic auto-flips when LOCAL_SYNTHESIS_MODEL contains
-# vision / llava / -vl substrings, so an explicit env opt-in isn't
-# required when the model identifier already names the modality.
-
-# (b) Together AI's Llama-3.2-Vision (cloud OSS, ToS-clean for
-# training-data; needs TOGETHER_API_KEY + ~$0.0006/image at 90B):
-export DART_VISION_PROVIDER=together-vision
-export TOGETHER_API_KEY=sk-...
-# TOGETHER_VISION_MODEL=meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo (default)
-
-# (c) Keep vision on Anthropic for now (text is license-clean; vision
-# is bounded to a per-figure exposure that's smaller than running
-# Sonnet over the full text payload):
-export DART_VISION_PROVIDER=anthropic
+# No env vars needed — SemantiK runs the local GGUF council + Qwen
+# specialists in-process. extraction / OCR / theta are local-only.
+export SEMANTIK_SPECIALIST_PROVIDER=local   # this is already the default
 ```
 
-The CLI flags `--dart-provider` and `--dart-vision-provider` override the env vars per invocation. The `AltTextGenerator` constructor raises `ValueError` IMMEDIATELY when the resolved provider is not vision-capable, so a misconfigured local-server-without-vision fails at startup, not mid-PDF.
+**Optional hosted 70B quality seat.** Stage-6 specialist generation (and the
+off-by-default Stage-5d structure reviewer) can be routed to a hosted 70B
+endpoint for higher quality:
 
-**Calibration risk acknowledgment.** This wave SHIPS the path; the underlying calibration of vision-quality vs the Anthropic baseline (alt-text accuracy on dense scientific figures, OCR-blended diagrams, math-heavy plates) is operator-side follow-up. Recommended calibration loop, mirroring the `assessment_item` recipe under "Calibration prerequisite for `assessment_item`" above:
+```bash
+export SEMANTIK_SPECIALIST_PROVIDER=nvidia   # opt-in quality seat, not a dependency
+export NVIDIA_API_KEY=nvapi-...
+# SEMANTIK_SPECIALIST_MODEL / SEMANTIK_STRUCTURE_REVIEW_MODEL override the model;
+# both resolve through NVIDIA_LARGE_MODEL → meta/llama-3.3-70b-instruct by default.
+```
 
-1. Pick a representative chapter with figure-heavy content (10-20 figures spanning charts / diagrams / photos / equations).
-2. Run DART against the chapter under both routings (license-clean variant vs canonical Anthropic).
-3. Compare the per-figure alt-text outputs against a hand-authored reference: assess accessibility-utility (does a screen-reader user get the figure's purpose?), specificity (does it call out the data being illustrated?), and accuracy (no hallucinated values).
-4. If the local / together-vision variant fails materially more often (e.g. >2× the hand-edit rate of the Anthropic baseline on the same chapter), keep `DART_VISION_PROVIDER=anthropic` and accept the per-figure ToS hit on alt-text only — the text-mode structure detection at `DART_PROVIDER=local` still ships license-clean.
-
-Until that calibration loop closes for a given course family, courses built under the license-clean DART variant should not promote past `non_certified_archive` on the Wave-3 promotion chain (`lib/governance/course_status.py::derive_course_status`) for vision-quality reasons. The text-mode change is structurally sound (Qwen 2.5 14B has been calibrated for the analogous Trainforge synthesis surface) but the vision surface is a fresh seam.
-
-**Workaround if the calibration shows local vision underperforms.** Pre-convert PDFs through DART on a separate machine that has the Anthropic agreement, archive the resulting HTML, and feed the HTML directly into the textbook-to-course pipeline (skipping the `dart_conversion` phase via `--reuse-objectives` once DART has run). The Anthropic exposure is then bounded to the one-time pre-conversion step and does not leak into the synthesis phase. W-D13 makes this workaround optional rather than mandatory: an operator who's run the calibration and accepts the local-vision quality can route everything in-process.
+This hosted seat produces **structured product content** (the accessible HTML),
+not a training-data corpus. The standard content → training-data caveat applies:
+operators who want a fully ToS-clean training corpus should keep
+`SEMANTIK_SPECIALIST_PROVIDER=local` (the default), which leaves the conversion
+path with zero cloud exposure. Full flag detail + the licensing row:
+`SemantiK/CLAUDE.md § Opt-In Behavior Flags` and `docs/LICENSING.md`.
 
 ### Assessment-generator subagent (W-D15) — closed
 
@@ -171,7 +161,7 @@ W-D15 closes the assessment-generator subagent gap. `TRAINFORGE_ASSESSMENT_PROVI
 
 ### Honest scope
 
-This recipe documents a license-clean COURSEWARE / TRAINING-CORPUS run for every dominant code path with the W-D15 wave landed: every Anthropic-defaulted subagent surface that touches training data now has a license-clean provider seam (`COURSEFORGE_PROVIDER` for content-generator, `COURSEPLANNER_PROVIDER` for course-outliner, `TRAINFORGE_ASSESSMENT_PROVIDER` for assessment-generator, `CURRICULUM_ALIGNMENT_PROVIDER` for align_chunks, `DART_PROVIDER` / `DART_VISION_PROVIDER` for DART). Operators training adapters for redistribution should still verify the calibration prerequisites for the affected block-types + DART vision quality and document any per-block Anthropic exposure (e.g. an uncalibrated `assessment_item` block staying on Anthropic per the calibration loop above) in the corpus's audit trail.
+This recipe documents a license-clean COURSEWARE / TRAINING-CORPUS run for every dominant code path with the W-D15 wave landed: every Anthropic-defaulted subagent surface that touches training data now has a license-clean provider seam (`COURSEFORGE_PROVIDER` for content-generator, `COURSEPLANNER_PROVIDER` for course-outliner, `TRAINFORGE_ASSESSMENT_PROVIDER` for assessment-generator, `CURRICULUM_ALIGNMENT_PROVIDER` for align_chunks). The PDF → HTML conversion surface no longer needs a seam at all: SemantiK is license-clean by construction and offline by default (`SEMANTIK_SPECIALIST_PROVIDER=local`). Operators training adapters for redistribution should still verify the calibration prerequisites for the affected block-types and document any per-block Anthropic exposure (e.g. an uncalibrated `assessment_item` block staying on Anthropic per the calibration loop above) in the corpus's audit trail.
 
 ---
 

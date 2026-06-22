@@ -85,7 +85,7 @@ See `gui/README.md` § "Operator auth" for the full route classification.
 
 | Volume | Mount | Holds |
 |--------|-------|-------|
-| `ed4all-data` (named volume) | `/data` (= `ED4ALL_HOME`) | Mutable data: state, Courseforge exports, training captures, DART output, uploads, and the HF embedding cache (`/data/hf-cache`). |
+| `ed4all-data` (named volume) | `/data` (= `ED4ALL_HOME`) | Mutable data: state, Courseforge exports, training captures, conversion (SemantiK) output (`dart-output/`, path name preserved), uploads, and the HF embedding cache (`/data/hf-cache`). |
 | `./LibV2` (repo bind mount) | `/data/libv2` | **The course library.** The repo checkout's LibV2 is one shared store: courses archived by host (non-Docker) runs appear in the containerized Studio, and pipeline runs launched from the container archive back into the same place. |
 | `ollama-models` (named volume) | `/root/.ollama` | Pulled Ollama models (so a restart doesn't re-download multi-GB weights). |
 

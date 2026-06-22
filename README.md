@@ -39,7 +39,7 @@ pip install -e ".[full]"
 ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101
 ```
 
-`[full]` installs the CPU-light surface: DART PDF processing, the MCP server,
+`[full]` installs the CPU-light surface: PDF-to-HTML conversion, the MCP server,
 the dev/test toolchain, and the GUI. It deliberately leaves out the two heavy
 ML extras so a default install never pulls multi-GB GPU wheels:
 
@@ -105,7 +105,7 @@ ed4all list-runs                                      # Show recent runs
 
 Ed4All is organised around four components that each do one job well, plus the glue that orchestrates them:
 
-- **DART** turns PDFs into accessible, semantic HTML using multi-source extraction (text layer, layout analysis, OCR, and optional LLM classification) with per-block source provenance.
+- **SemantiK** turns PDFs into accessible, semantic HTML using a license-clean extraction cascade (text layer, layout analysis, OCR, and learned structure/semantic classification) with per-block source provenance.
 - **Courseforge** generates structured weekly course modules with learning objectives, assessments, interactive components, and rich machine-readable metadata, and packages them as IMSCC.
 - **Trainforge** extracts content from the course package into pedagogically tagged chunks, builds a typed concept graph, and generates Bloom's-aligned assessments.
 - **LibV2** is the archive and retrieval layer: a flat-storage course repository with BM25 retrieval, metadata filters, and cross-course concept indexes.
@@ -115,7 +115,7 @@ Supporting directories: **MCP** hosts the orchestrator and tool server, **cli** 
 ## Going deeper
 
 - Developer guide and orchestration protocol: [`CLAUDE.md`](CLAUDE.md)
-- Component guides: [`DART/CLAUDE.md`](DART/CLAUDE.md), [`Courseforge/CLAUDE.md`](Courseforge/CLAUDE.md), [`Trainforge/CLAUDE.md`](Trainforge/CLAUDE.md), [`LibV2/CLAUDE.md`](LibV2/CLAUDE.md)
+- Component guides: [`SemantiK/CLAUDE.md`](SemantiK/CLAUDE.md), [`Courseforge/CLAUDE.md`](Courseforge/CLAUDE.md), [`Trainforge/CLAUDE.md`](Trainforge/CLAUDE.md), [`LibV2/CLAUDE.md`](LibV2/CLAUDE.md)
 - Ontology and schemas: [`schemas/ONTOLOGY.md`](schemas/ONTOLOGY.md)
 
 ## License

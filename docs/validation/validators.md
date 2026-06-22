@@ -17,7 +17,7 @@ See `docs/validation/gates.md` for the wiring (workflow → phase → gate_id �
 - `lib/validators/content_type.py` — content_type enum enforcement (gated).
 - `lib/validators/evidence.py` — per-rule evidence discriminator loader; strict mode drops FallbackProvenance.
 - `lib/validators/assessment_objective_alignment.py` — fail-loud gate keeping every assessment question's `objective_id` covered by at least one chunk's `learning_outcome_refs`.
-- `lib/validators/source_refs.py` — verifies every emitted Courseforge `sourceId` resolves against the DART staging manifest.
+- `lib/validators/source_refs.py` — verifies every emitted Courseforge `sourceId` resolves against the staging manifest (the SemantiK conversion output staged for Courseforge; `data-dart-*` / `dart:{slug}#{block_id}` provenance preserved).
 - `lib/validators/libv2_manifest.py` — validates LibV2 manifest JSON, scaffold completeness, and on-disk artifact hash/size agreement.
 - `lib/validators/libv2_model.py` — validates emitted `model_card.json` against `schemas/models/model_card.schema.json`. Critical: schema match, weights file presence + size + sha256 agreement, `pedagogy_graph_hash` resolves to extant graph in same course. Warning: missing eval scores, missing license, malformed HF repo regex. Wired as the `libv2_model` gate.
 - `lib/validators/kg_quality.py` — KG-quality report (completeness / consistency / accuracy / coverage); thin wrapper over `Trainforge/rag/kg_quality_report.py::KGQualityReporter`. Thresholds: 0.95 / 0.95 / 0.95 / 0.5.
