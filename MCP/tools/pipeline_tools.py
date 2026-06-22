@@ -6572,6 +6572,15 @@ def _run_semantik_v2_conversion(
     #       SEMANTIK_PYTHON + SEMANTIK_RUNTIME_DIR are set;
     #   (c) neither → fail-closed clear error (NO silent DART fallback).
     result: Any
+    # The SemantiK package uses BARE top-level imports throughout
+    # (``from dart_semantic.assembler.types import ...``), so the
+    # ``dart_semantic`` package must be importable as a TOP-LEVEL name. Put the
+    # ``SemantiK/`` dir on sys.path before the in-process import attempt — this
+    # mirrors ``SemantiK/scripts/run_cascade_json.py`` and lets the bare
+    # ``dart_semantic.*`` re-imports inside ``cascade`` resolve. Idempotent.
+    _semantik_dir = str(PROJECT_ROOT / "SemantiK")
+    if _semantik_dir not in sys.path:
+        sys.path.insert(0, _semantik_dir)
     try:
         from SemantiK.dart_semantic.cascade import run_pipeline_v2
     except ImportError as imp_exc:

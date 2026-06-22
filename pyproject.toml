@@ -170,6 +170,35 @@ gui = [
 #   pip install -e '.[full,embedding]'   # + retrieval / statistical validators
 #   pip install -e '.[full,training]'    # + SLM fine-tuning (GPU)
 full = ["ed4all[dart,server,dev,gui]"]
+# SemantiK in-process conversion cascade (the license-clean DART successor).
+# These are the deps MISSING from a venv that already carries the heavy ML
+# stack (torch>=2.2, transformers>=4.45, peft>=0.10, scikit-learn, scipy,
+# bitsandbytes, beautifulsoup4, lxml, pyyaml, pillow, requests, datasets —
+# all satisfied via [training]/[embedding]/[dart] or the base install, so
+# they are NOT re-pinned here to avoid a resolver conflict). Install with
+# ``pip install -e '.[semantik]'`` into a venv that already has the ML
+# stack. Two deps are HANDLED OUT-OF-BAND (not listed here):
+#   1. llama-cpp-python — needs a CUDA *source* build, NOT the CPU wheel:
+#        CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=86" \
+#          pip install --no-binary llama-cpp-python llama-cpp-python
+#      (Stage-6 specialists can alternatively use the NVIDIA endpoint via
+#      SEMANTIK_SPECIALIST_PROVIDER=nvidia, so local llama is optional for
+#      structure-only conversion — see SemantiK/CLAUDE.md.)
+#   2. playwright's browser binary — after ``pip install``, run
+#        ``playwright install chromium``
+#      to fetch the headless Chromium used by the axe-core a11y audit.
+semantik = [
+    "pypdfium2>=4.30",
+    "pdfplumber>=0.11",
+    "pikepdf>=9.0",
+    "pytesseract>=0.3.10",
+    "axe-playwright-python>=0.1.7",
+    "playwright>=1.40",
+    "lingua-language-detector>=2.0",
+    "einops>=0.8",
+    "timm>=1.0",
+    "num2words>=0.5",
+]
 
 [project.scripts]
 ed4all = "cli.main:main"
