@@ -51,15 +51,30 @@ from MCP.tools.pipeline_tools import (
 
 
 def test_five_canonical_page_types_present():
-    """The plan covers exactly the five Sonnet-baseline page types."""
-    assert set(_PAGE_TYPE_BLOCK_PLAN.keys()) == {
+    """The plan carries the five Sonnet-baseline page types.
+
+    The plan dict MAY also carry the optional ``key_terms`` page type added
+    by the ED4ALL_KEY_TERMS_PAGE (I5) feature — a deterministic vocab page
+    inserted into the week sequence only when that flag is on, so it is a
+    member of ``_PAGE_TYPE_BLOCK_PLAN`` but NOT of the base
+    ``_WEEK_PAGE_TYPES`` emission order. The five canonical types are the
+    invariant this guards; ``key_terms`` is the only permitted extra.
+    """
+    canonical = {
         "overview",
         "content",
         "application",
         "self_check",
         "summary",
     }
-    # Emission order matters (overview first, summary last).
+    keys = set(_PAGE_TYPE_BLOCK_PLAN.keys())
+    assert canonical <= keys, f"missing canonical page types: {canonical - keys}"
+    assert keys - canonical <= {"key_terms"}, (
+        f"unexpected page type(s): {keys - canonical - {'key_terms'}}"
+    )
+    # Base emission order is exactly the five canonical types (overview
+    # first, summary last); key_terms is injected conditionally by the
+    # ED4ALL_KEY_TERMS_PAGE path, not part of this base order.
     assert _WEEK_PAGE_TYPES == (
         "overview",
         "content",
