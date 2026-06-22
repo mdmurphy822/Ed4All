@@ -93,6 +93,36 @@
       "type": ["boolean", "null"],
       "description": "GPT Feedback v2 Wave 1 / W1.A: boolean alignment signal — true iff observed_bloom_level == bloom_level. Optional; null when the classifier didn't run. Carried alongside observed_bloom_level so downstream consumers don't recompute the comparison."
     },
+    "source_block_role": {
+      "type": "string",
+      "description": "SemantiK migration §4 (chunk-accompanying data): the council/Qwen role label of the source SemantiK region this chunk derives from (e.g. 'body' / 'figure' / 'heading'). Harvested from the data-dart-block-role HTML attribute (Trainforge/chunker/helpers.py::_DATA_DART_BLOCK_ROLE_RE) on the same opening tag as data-dart-block-id. Optional; absent on legacy / non-SemantiK corpora whose HTML carries no data-dart-block-role attribute — those chunks validate unchanged (mirrors observed_bloom_level)."
+    },
+    "source_block_confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "SemantiK migration §4: the cascade per-region classification confidence (pinned 5-point band 0.2/0.4/0.6/0.8; 1.0 is omitted by the adapter) of the source SemantiK region. Harvested from the data-dart-confidence HTML attribute. Optional float in [0,1]; absent on legacy corpora and on blocks the adapter emitted at confidence 1.0."
+    },
+    "wcag_block_status": {
+      "type": "string",
+      "enum": ["passed", "flagged", "skipped"],
+      "description": "SemantiK migration §4: the Stage-7 per-region WCAG gate verdict for the source SemantiK region. Harvested from the data-dart-wcag HTML attribute. Optional; absent on legacy corpora whose HTML carries no per-block WCAG status."
+    },
+    "figure_alt": {
+      "type": "string",
+      "description": "SemantiK migration §4: the SmolVLM2-generated alt-text / figcaption for a figure chunk, lifted DOM-side from the chunk's <figcaption>/<img alt> for retrieval-text augmentation + accessibility audit. Optional; emitted only for figure chunks that carried recoverable alt text."
+    },
+    "semantic_preservation_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "SemantiK migration §4: the document-level theta semantic-preservation score from the SemantiK Stage-13 exit. Doc-level signal — the SAME value is stamped on every chunk of a document (mirrors source.source_document_sha256), recovered from the doc-level sidecar / PipelineV2Result, not from the chunk HTML. Optional float in [0,1]; absent on legacy / non-SemantiK corpora."
+    },
+    "certification_status": {
+      "type": "string",
+      "enum": ["certified", "flagged", "non_certified"],
+      "description": "SemantiK migration §4: the SemantiK Stage-13 exit certification mode (ship_with_confidence -> certified, ship_with_flag -> flagged, non_certified_stamp -> non_certified). Doc-level signal — same value across every chunk of a document, recovered from the doc-level sidecar / PipelineV2Result. Optional; absent on legacy corpora. Used for corpus-admission gating + WCAG audit."
+    },
     "bloom_level_source": {
       "type": "string",
       "enum": ["section_jsonld", "page_jsonld", "lo_inherited", "verbs", "default"],

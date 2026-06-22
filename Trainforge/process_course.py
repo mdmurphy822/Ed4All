@@ -1736,6 +1736,7 @@ class CourseProcessor:
         merged_objective_alignment: Optional[List[Dict[str, Any]]] = None,
         curie_anchors: Optional[List[str]] = None,
         forced_curie_anchors: Optional[List[str]] = None,
+        dart_source_refs: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         words = text.split()
         word_count = len(words)
@@ -2208,6 +2209,27 @@ class CourseProcessor:
             if _forced:
                 chunk["forced_curies"] = _forced
 
+        # SemantiK migration §4 — chunk-accompanying provenance enrichment.
+        # Six optional chunk-root fields. All omit-when-absent (no null-filled
+        # fields on legacy corpora — mirrors source_document_sha256 / key_terms):
+        #   * 3 HTML-harvested (block_role / confidence / wcag): from the
+        #     per-chunk ``dart_source_refs`` the chunker resolved off
+        #     data-dart-block-role / data-dart-confidence / data-dart-wcag on
+        #     the SAME element as data-dart-block-id (helpers.py same-element
+        #     pairing). When a chunk spans several DART blocks, the FIRST
+        #     resolved block (document order) supplies the role/confidence/wcag.
+        #   * figure_alt: DOM-side recovery of <figcaption>/<img alt> for a
+        #     figure chunk (retrieval-text augmentation + a11y audit).
+        #   * 2 doc-level (semantic_preservation_score / certification_status):
+        #     the SemantiK Stage-13 theta + exit-mode signals, stamped from the
+        #     CourseProcessor instance (set by the P3 seam from the doc-level
+        #     sidecar / PipelineV2Result), same value across every chunk of a
+        #     doc (mirrors _source_document_sha256).
+        self._stamp_semantik_chunk_enrichment(
+            chunk, dart_source_refs=dart_source_refs, html=html,
+            chunk_type=chunk_type,
+        )
+
         self.stats["total_words"] += word_count
         self.stats["total_tokens_estimate"] += tokens_estimate
         self.stats["chunk_types"][chunk_type] += 1
@@ -2215,6 +2237,105 @@ class CourseProcessor:
         self._all_concept_tags.update(concept_tags)
 
         return chunk
+
+    # SemantiK migration §4 — WCAG block status enum (Stage-7 per-region gate).
+    _SEMANTIK_WCAG_BLOCK_STATUSES = frozenset({"passed", "flagged", "skipped"})
+    # SemantiK migration §4 — Stage-13 exit certification enum.
+    _SEMANTIK_CERTIFICATION_STATUSES = frozenset(
+        {"certified", "flagged", "non_certified"}
+    )
+
+    def _stamp_semantik_chunk_enrichment(
+        self,
+        chunk: Dict[str, Any],
+        *,
+        dart_source_refs: Optional[List[Dict[str, Any]]],
+        html: str,
+        chunk_type: str,
+    ) -> None:
+        """Populate the six SemantiK §4 chunk-accompanying-data fields.
+
+        Omit-when-absent throughout — a legacy / non-SemantiK chunk (no
+        enrichment on its source HTML and no doc-level signals on the
+        instance) is stamped with NONE of these fields and stays
+        byte-identical (back-compat, mirrors ``source_document_sha256``).
+        """
+        # --- 3 HTML-harvested fields (block_role / confidence / wcag) -------
+        # The chunker resolved the DART block(s) overlapping this chunk; the
+        # first (document order) supplies the per-block enrichment.
+        first_ref: Optional[Dict[str, Any]] = None
+        for ref in dart_source_refs or []:
+            if isinstance(ref, dict):
+                first_ref = ref
+                break
+        if first_ref is not None:
+            role = first_ref.get("block_role")
+            if isinstance(role, str) and role.strip():
+                chunk["source_block_role"] = role.strip()
+            conf = first_ref.get("confidence")
+            if isinstance(conf, (int, float)) and not isinstance(conf, bool):
+                conf_f = float(conf)
+                if 0.0 <= conf_f <= 1.0:
+                    chunk["source_block_confidence"] = conf_f
+            wcag = first_ref.get("wcag_status")
+            if (
+                isinstance(wcag, str)
+                and wcag.strip() in self._SEMANTIK_WCAG_BLOCK_STATUSES
+            ):
+                chunk["wcag_block_status"] = wcag.strip()
+
+        # --- figure_alt (DOM-side, figure chunks only) ----------------------
+        if chunk_type == "figure" or (html and "<figure" in html.lower()):
+            alt = self._recover_figure_alt(html)
+            if alt:
+                chunk["figure_alt"] = alt
+
+        # --- 2 doc-level fields (theta + exit certification) ----------------
+        # Stamped from CourseProcessor instance attributes the P3 seam sets
+        # from the doc-level sidecar / PipelineV2Result (same value across
+        # every chunk of a doc). Absent attribute / out-of-range value -> omit.
+        theta = getattr(self, "_semantic_preservation_score", None)
+        if isinstance(theta, (int, float)) and not isinstance(theta, bool):
+            theta_f = float(theta)
+            if 0.0 <= theta_f <= 1.0:
+                chunk["semantic_preservation_score"] = theta_f
+        cert = getattr(self, "_certification_status", None)
+        if (
+            isinstance(cert, str)
+            and cert.strip() in self._SEMANTIK_CERTIFICATION_STATUSES
+        ):
+            chunk["certification_status"] = cert.strip()
+
+    @staticmethod
+    def _recover_figure_alt(html: str) -> Optional[str]:
+        """Best-effort DOM-side recovery of a figure chunk's alt / caption.
+
+        Prefers a ``<figcaption>`` text, falling back to an ``<img alt="...">``
+        value. Returns ``None`` when neither resolves (anti-fabrication —
+        never invents alt text). Pure regex; no bs4 dependency added.
+        """
+        if not html:
+            return None
+        cap = re.search(
+            r"<figcaption\b[^>]*>(.*?)</figcaption>",
+            html,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if cap:
+            text = re.sub(r"<[^>]+>", " ", cap.group(1))
+            text = " ".join(text.split()).strip()
+            if text:
+                return text
+        alt = re.search(
+            r"<img\b[^>]*\balt\s*=\s*([\"'])(.*?)\1",
+            html,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if alt:
+            text = " ".join(alt.group(2).split()).strip()
+            if text:
+                return text
+        return None
 
     def _resolve_chunk_source_references(
         self,

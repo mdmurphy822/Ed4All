@@ -38,6 +38,7 @@ __all__ = [
     "extract_plain_text_with_curies",
     "extract_section_html",
     "harvest_dart_source_refs",
+    "parse_dart_confidence_attr",
     "parse_dart_page_kind_attr",
     "parse_dart_pages_attr",
     "resolve_dart_refs_for_chunk",
@@ -101,6 +102,52 @@ _DATA_DART_PAGE_KIND_RE = re.compile(
 #: normalized to ``"physical"``.
 _DART_PAGE_KINDS = frozenset({"printed", "interpolated", "physical"})
 
+#: ``data-dart-block-role`` attribute value — the SemantiK council/Qwen role
+#: label (e.g. ``body`` / ``figure`` / ``heading``) emitted on the SAME element
+#: as ``data-dart-block-id`` (SemantiK migration §4: chunk-accompanying data).
+#: Harvested additively into the ref dict's ``block_role`` field. ABSENT means
+#: ``None`` (legacy HTML without the attr still chunks — back-compat); the field
+#: is simply OMITTED from the ref dict so existing harvest shapes stay
+#: byte-identical.
+_DATA_DART_BLOCK_ROLE_RE = re.compile(
+    r'data-dart-block-role\s*=\s*(["\'])([^"\']*)\1',
+    re.IGNORECASE,
+)
+
+#: ``data-dart-confidence`` attribute value — the SemantiK per-region cascade
+#: confidence on the pinned 5-point band (``1.0/0.8/0.6/0.4/0.2``; 1.0 is
+#: OMITTED by the adapter), emitted on the SAME element as
+#: ``data-dart-block-id``. Harvested as a float into the ref dict's
+#: ``confidence`` field. ABSENT / unparseable -> field omitted (back-compat).
+_DATA_DART_CONFIDENCE_RE = re.compile(
+    r'data-dart-confidence\s*=\s*(["\'])([^"\']*)\1',
+    re.IGNORECASE,
+)
+
+#: ``data-dart-wcag`` attribute value — the SemantiK Stage-7 per-region WCAG
+#: gate verdict (``passed`` / ``flagged`` / ``skipped``), emitted on the SAME
+#: element as ``data-dart-block-id``. Harvested into the ref dict's
+#: ``wcag_status`` field. ABSENT -> field omitted (back-compat).
+_DATA_DART_WCAG_RE = re.compile(
+    r'data-dart-wcag\s*=\s*(["\'])([^"\']*)\1',
+    re.IGNORECASE,
+)
+
+
+def parse_dart_confidence_attr(value: Optional[str]) -> Optional[float]:
+    """Parse a ``data-dart-confidence`` attribute value into a float.
+
+    Returns ``None`` (=> the consumer omits the field) when the value is
+    absent / empty / unparseable. No band-snapping here — the adapter already
+    emits a banded value; the chunker harvests it verbatim.
+    """
+    if not value:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
 
 def parse_dart_page_kind_attr(value: Optional[str]) -> str:
     """Normalize a ``data-dart-page-kind`` attribute value.
@@ -111,6 +158,40 @@ def parse_dart_page_kind_attr(value: Optional[str]) -> str:
     """
     kind = (value or "").strip().lower()
     return kind if kind in _DART_PAGE_KINDS else "physical"
+
+def _harvest_dart_enrichment(tag: str) -> Dict[str, Any]:
+    """Harvest the optional SemantiK enrichment attrs off a single opening tag.
+
+    Returns a dict carrying only the keys whose attribute is PRESENT on the
+    tag (``block_role`` / ``confidence`` / ``wcag_status``). Absent attributes
+    are OMITTED (not ``None``-filled) so a legacy DART block's harvested ref
+    stays byte-identical to its pre-SemantiK shape — the additive back-compat
+    contract (mirrors how ``data-dart-*`` enrichment never perturbs the
+    existing ``{block_id, pages, pages_kind}`` shape on kind-less corpora).
+
+    All three pair to the SAME element as ``data-dart-block-id`` (the
+    SemantiK adapter stamps them on the section wrapper, §3.2 placement rule),
+    so this is called inside the same-element pairing loop with the matched
+    block tag.
+    """
+    out: Dict[str, Any] = {}
+    role_match = _DATA_DART_BLOCK_ROLE_RE.search(tag)
+    if role_match:
+        role = role_match.group(2).strip()
+        if role:
+            out["block_role"] = role
+    conf_match = _DATA_DART_CONFIDENCE_RE.search(tag)
+    if conf_match:
+        conf = parse_dart_confidence_attr(conf_match.group(2))
+        if conf is not None:
+            out["confidence"] = conf
+    wcag_match = _DATA_DART_WCAG_RE.search(tag)
+    if wcag_match:
+        wcag = wcag_match.group(2).strip()
+        if wcag:
+            out["wcag_status"] = wcag
+    return out
+
 
 #: One full opening tag carrying a ``data-dart-block-id`` — captured so we
 #: can pair each block-id with the ``data-dart-pages`` attribute on the
@@ -215,9 +296,14 @@ def harvest_dart_source_refs(html: str) -> List[Dict[str, Any]]:
         pages_kind = parse_dart_page_kind_attr(
             kind_match.group(2) if kind_match else None
         )
-        refs.append(
-            {"block_id": block_id, "pages": pages, "pages_kind": pages_kind}
-        )
+        ref: Dict[str, Any] = {
+            "block_id": block_id, "pages": pages, "pages_kind": pages_kind
+        }
+        # SemantiK enrichment (block_role / confidence / wcag_status), paired
+        # off the SAME opening tag. Keys present only when their attr is —
+        # legacy DART HTML without them harvests byte-identically.
+        ref.update(_harvest_dart_enrichment(tag))
+        refs.append(ref)
     return refs
 
 
@@ -282,13 +368,12 @@ def _block_element_spans(html: str) -> List[Tuple[int, int, Dict[str, Any]]]:
             kind_match.group(2) if kind_match else None
         )
         next_start = matches[i + 1].start() if i + 1 < len(matches) else len(html)
-        spans.append(
-            (
-                m.start(),
-                next_start,
-                {"block_id": block_id, "pages": pages, "pages_kind": pages_kind},
-            )
-        )
+        ref: Dict[str, Any] = {
+            "block_id": block_id, "pages": pages, "pages_kind": pages_kind
+        }
+        # SemantiK enrichment paired off the SAME opening tag (omit-when-absent).
+        ref.update(_harvest_dart_enrichment(tag))
+        spans.append((m.start(), next_start, ref))
     return spans
 
 
@@ -404,13 +489,17 @@ def resolve_dart_refs_for_chunk(
         if not block_id or block_id in seen:
             continue
         seen.add(block_id)
-        out.append(
-            {
-                "block_id": block_id,
-                "pages": list(ref.get("pages") or []),
-                "pages_kind": ref.get("pages_kind") or "physical",
-            }
-        )
+        resolved: Dict[str, Any] = {
+            "block_id": block_id,
+            "pages": list(ref.get("pages") or []),
+            "pages_kind": ref.get("pages_kind") or "physical",
+        }
+        # Carry the SemantiK enrichment forward (omit-when-absent — these keys
+        # are present on ``ref`` only when the source attr was).
+        for _k in ("block_role", "confidence", "wcag_status"):
+            if _k in ref:
+                resolved[_k] = ref[_k]
+        out.append(resolved)
     return out
 
 
