@@ -36,9 +36,19 @@ memory and is consumed in-process by the seam.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+logger = logging.getLogger(__name__)
+
 from lib.semantik.adapter import _AdapterBlock, _AdapterChapter
+
+# Phantom-TOC + front-matter detector (root-cause fix for a PDF's full-book
+# TOC, printed in front matter, being classified as real chapter headings).
+# Applied to the coerced region_provenance BEFORE chapters are assembled,
+# alongside the existing _is_noncontent_heading filtering. Gated behind
+# SEMANTIK_DROP_FRONTMATTER_TOC (default ON in the IR-builder path).
+from lib.semantik.toc_frontmatter_detector import drop_toc_and_frontmatter
 
 # Reuse the SAME non-content-heading filter the adapter + extractor use so a
 # chapter boundary is never opened on answer-key / numeric / front-matter
@@ -221,6 +231,26 @@ def build_chapters_ir(result: Any) -> List[_AdapterChapter]:
     """
     provenance = _coerce_provenance(result)
     heading_tree = _coerce_heading_tree(result)
+
+    # Root-cause phantom-TOC + front-matter drop. Operates on the coerced
+    # provenance BEFORE chapters are assembled, so a PDF's full-book TOC
+    # printed in the front matter (classified as a run of real chapter
+    # headings — e.g. a phantom "Chapter 5: Systems" in a ch1-3 extract) and
+    # leading front-matter boilerplate (Preface / Copyright / authors / a bare
+    # TOC header) never become fabricated IR chapters. Conservative: drops
+    # only a contiguous, page-number-increasing TOC run + known front-matter
+    # in the zone before the first real chapter; everything after the first
+    # real chapter is protected. Gated by SEMANTIK_DROP_FRONTMATTER_TOC
+    # (default ON; falsey → byte-identical pass-through, no drops).
+    provenance_list = list(provenance)
+    provenance, dropped_count = drop_toc_and_frontmatter(provenance_list)
+    if dropped_count:
+        logger.info(
+            "phantom-TOC/front-matter detector dropped %d region(s) "
+            "(of %d) before chapter assembly",
+            dropped_count,
+            len(provenance_list),
+        )
 
     chapters: List[_AdapterChapter] = []
     current: Optional[_AdapterChapter] = None

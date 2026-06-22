@@ -68,6 +68,14 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Prioritize the VENDORED SemantiK package (this script's repo) over any
+# ``dart_semantic`` an interpreter's venv may have editable-installed (e.g. the
+# Semantic source repo whose venv we borrow for the heavy runtime deps). Only
+# the vendored copy carries the relocatable ``dart_semantic.paths`` resolver
+# (honors SEMANTIK_MODEL_DIR) + the region_provenance surfacing + the R7 theta
+# device knob; the installed copy uses CWD-relative model paths and would break.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 
 def _coerce_region_provenance(result: Any) -> List[Dict[str, Any]]:
     """Pull the JSON-safe ``region_provenance`` list off the cascade result.
