@@ -1,0 +1,17 @@
+{
+  "blockId": "week_01_overview#self_check_question_quiz_0",
+  "blockType": "self_check_question",
+  "sequence": 0,
+  "anatomy": {
+    "heading": "Simplify expressions",
+    "purposeTag": "formative-assessment",
+    "interaction": "self-check",
+    "lifecycle": {
+      "activate": ["heading", "purpose_tag"],
+      "present": ["content"],
+      "apply": ["interaction"],
+      "check": [],
+      "consolidate": []
+    }
+  }
+}

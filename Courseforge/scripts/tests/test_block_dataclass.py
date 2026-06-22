@@ -238,3 +238,157 @@ def test_touch_to_jsonld_camelcase_keys():
     assert out["model"] == "claude-sonnet-4"
     assert out["provider"] == "local"
     assert "decision_capture_id" not in out
+
+
+# ---------------------------------------------------------------------------
+# IB1 — six-slot anatomy contract + five-stage micro-lifecycle
+# ---------------------------------------------------------------------------
+
+from blocks import (  # noqa: E402
+    LIFECYCLE_STAGES,
+    _BODY_SLOT,
+    _STAGE_SLOTS,
+    derive_anatomy_slots,
+    lifecycle_stage_coverage,
+    slots_to_lifecycle,
+)
+
+
+def test_anatomy_slots_default_none():
+    """IB1.1 — a Block built with no slot kwargs has all five slots None."""
+    b = _make_block()
+    assert b.heading is None
+    assert b.purpose_tag is None
+    assert b.interaction is None
+    assert b.feedback is None
+    assert b.transition is None
+
+
+def test_anatomy_slots_settable_and_frozen():
+    """IB1.1 — slots are settable, read back, and immutable (frozen)."""
+    b = _make_block(
+        heading="Simplify",
+        purpose_tag="formative-assessment",
+        interaction="self-check",
+        feedback="Check your work",
+        transition="Up next",
+    )
+    assert b.heading == "Simplify"
+    assert b.purpose_tag == "formative-assessment"
+    assert b.interaction == "self-check"
+    assert b.feedback == "Check your work"
+    assert b.transition == "Up next"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        b.heading = "mutated"  # type: ignore[misc]
+
+
+def test_compute_content_hash_excludes_anatomy_slots():
+    """IB1.3 — the five anatomy slots are excluded from the content hash."""
+    a = _make_block()
+    b = dataclasses.replace(
+        a,
+        heading="H",
+        purpose_tag="P",
+        interaction="I",
+        feedback="F",
+        transition="T",
+    )
+    assert a.compute_content_hash() == b.compute_content_hash()
+
+
+def test_derive_anatomy_slots_heading_from_html():
+    """IB1.5 — heading is parsed from content HTML; feedback/transition None."""
+    b = _make_block(
+        block_type="concept",
+        content="<h2>Simplify</h2><p>Combine like terms.</p>",
+    )
+    out = derive_anatomy_slots(b)
+    assert out.heading == "Simplify"
+    assert out.interaction is None  # concept is non-interactive
+    assert out.feedback is None
+    assert out.transition is None
+
+
+def test_derive_anatomy_slots_interaction_marker():
+    """IB1.5 — interaction-bearing block types get a presence marker."""
+    b = _make_block(block_type="self_check_question", content="What is 2+2?")
+    out = derive_anatomy_slots(b)
+    assert out.interaction == "self-check"
+
+
+def test_derive_anatomy_slots_purpose_tag_from_purpose():
+    """IB1.5 — purpose_tag consolidates purpose / teaching_role."""
+    b = _make_block(block_type="concept", purpose="formative-assessment")
+    out = derive_anatomy_slots(b)
+    assert out.purpose_tag == "formative-assessment"
+
+
+def test_derive_anatomy_slots_returns_new_instance_never_mutates():
+    """IB1.5 — pure: new frozen instance returned, input untouched."""
+    b = _make_block(
+        block_type="self_check_question",
+        content="<h2>Quiz</h2><p>Q?</p>",
+        purpose="formative-assessment",
+    )
+    out = derive_anatomy_slots(b)
+    assert out is not b
+    assert b.heading is None
+    assert b.interaction is None
+    assert b.purpose_tag is None
+    assert out.heading == "Quiz"
+    assert out.interaction == "self-check"
+    assert out.purpose_tag == "formative-assessment"
+
+
+def test_lifecycle_stages_exactly_five_in_order():
+    """IB1.6 — LIFECYCLE_STAGES is exactly the five stages in order."""
+    assert LIFECYCLE_STAGES == (
+        "activate",
+        "present",
+        "apply",
+        "check",
+        "consolidate",
+    )
+
+
+def test_lifecycle_stage_slots_mapping_matches_framework():
+    """IB1.6 — _STAGE_SLOTS keys == stages; values ⊆ the six anatomy slots."""
+    assert tuple(_STAGE_SLOTS.keys()) == LIFECYCLE_STAGES
+    valid = {
+        "heading",
+        "purpose_tag",
+        "content",
+        "interaction",
+        "feedback",
+        "transition",
+    }
+    for slots in _STAGE_SLOTS.values():
+        assert set(slots) <= valid
+    assert _BODY_SLOT == "content"
+
+
+def test_lifecycle_stage_coverage_for_self_check():
+    """IB1.6 — coverage reflects which mapped slots are present."""
+    b = derive_anatomy_slots(
+        _make_block(
+            block_type="self_check_question",
+            content="<h2>Quiz</h2><p>Q?</p>",
+        )
+    )
+    coverage = lifecycle_stage_coverage(b)
+    assert coverage["activate"] is True  # heading derived
+    assert coverage["present"] is True  # content is truthy
+    assert coverage["apply"] is True  # interaction marker derived
+    assert coverage["check"] is False  # feedback never derived
+    assert coverage["consolidate"] is False  # transition never derived
+
+
+def test_slots_to_lifecycle_lists_present_slot_names():
+    """IB1.6 — slots_to_lifecycle reports the present slot names per stage."""
+    b = _make_block(heading="H", interaction="self-check")
+    mapping = slots_to_lifecycle(b)
+    assert mapping["activate"] == ["heading"]
+    assert mapping["present"] == ["content"]  # _make_block content is truthy
+    assert mapping["apply"] == ["interaction"]
+    assert mapping["check"] == []
+    assert mapping["consolidate"] == []

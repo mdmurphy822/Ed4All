@@ -585,6 +585,49 @@
         "synthesisManifestRef": {
           "type": "string",
           "description": "W3: pointer (== blockId) to the sidecar block_synthesis_manifest.jsonl line carrying this block's full provenance manifest. NOT the manifest body — a join key so a JSON-LD consumer can resolve to the canonical 03_content_development/block_synthesis_manifest.jsonl artifact. Schema: schemas/knowledge/block_synthesis_manifest.schema.json."
+        },
+        "anatomy": {
+          "$ref": "#/$defs/BlockAnatomy",
+          "description": "IB1 six-slot anatomy (framework pp.13-17, QA-4). Optional + additive; emitted only when ED4ALL_BLOCK_ANATOMY is on. The BODY slot is the block's content, NOT repeated here. Excluded from contentHash."
+        }
+      }
+    },
+    "BlockAnatomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "IB1 six-slot anatomy contract (framework pp.13-17, QA-4). All slots optional + additive. The BODY slot is the block's content (NOT repeated here); heading + purposeTag → Activate, content(body) → Present, interaction → Apply, feedback → Check, transition → Consolidate (the five-stage micro-lifecycle). Excluded from contentHash. Representation only — the malformed-block slot-presence verdict is a downstream validator.",
+      "properties": {
+        "heading": {
+          "type": "string",
+          "description": "ACTIVATE-stage heading slot (deterministically back-derivable from content HTML)."
+        },
+        "purposeTag": {
+          "type": "string",
+          "description": "ACTIVATE-stage purpose-tag slot (consolidates purpose / teachingRole)."
+        },
+        "interaction": {
+          "type": "string",
+          "description": "APPLY-stage interaction slot. A presence marker (the data-cf-component token) for interaction-bearing block types, not the interaction HTML."
+        },
+        "feedback": {
+          "type": "string",
+          "description": "CHECK-stage feedback slot. Reserved for an authoring wave; never back-derived from prose."
+        },
+        "transition": {
+          "type": "string",
+          "description": "CONSOLIDATE-stage transition slot. Reserved for an authoring wave; never back-derived from prose."
+        },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Five-stage micro-lifecycle (activate→present→apply→check→consolidate) → the present anatomy slot names for this block. Distinct from the five PAGE TYPES (page-file groupings). Representation only.",
+          "properties": {
+            "activate": { "type": "array", "items": { "type": "string" } },
+            "present": { "type": "array", "items": { "type": "string" } },
+            "apply": { "type": "array", "items": { "type": "string" } },
+            "check": { "type": "array", "items": { "type": "string" } },
+            "consolidate": { "type": "array", "items": { "type": "string" } }
+          }
         }
       }
     },

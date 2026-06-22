@@ -50,6 +50,26 @@ def _emit_blocks_enabled() -> bool:
     return os.environ.get(_EMIT_BLOCKS_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
 
 
+# IB1 — six-slot anatomy contract emit flag (framework pp.13-17, QA-4). Default
+# OFF: with this unset the JSON-LD ``blocks[]`` entry carries NO ``anatomy``
+# key, so every existing snapshot / ``contentHash`` stays byte-identical. The
+# five new ``Block`` slot fields, the hash exclusion, the derivation helper, and
+# the lifecycle helpers are all flag-INDEPENDENT (pure additive API surface) —
+# only the JSON-LD *emit* is gated, mirroring the ``COURSEFORGE_EMIT_BLOCKS``
+# posture. Reuses ``_EMIT_BLOCKS_TRUTHY`` for the truthy parse.
+_ANATOMY_EMIT_ENV = "ED4ALL_BLOCK_ANATOMY"
+
+
+def _anatomy_emit_enabled() -> bool:
+    """Read ``ED4ALL_BLOCK_ANATOMY`` each call so tests can toggle it.
+
+    Default off — the IB1 ``anatomy`` JSON-LD sub-object is purely additive
+    and must not break byte-stable emit. Falsey / garbage values → off
+    (parse-with-fallback, mirroring :func:`_emit_blocks_enabled`).
+    """
+    return os.environ.get(_ANATOMY_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
+
+
 def _esc(text: str) -> str:
     """HTML-escape mirroring ``html.escape`` (matches ``html_mod.escape`` in generate_course.py)."""
     return _html_mod.escape(text)
@@ -254,6 +274,169 @@ def _parse_provider_page_html(
     return heading, paragraphs
 
 
+# ---------------------------------------------------------------------------
+# IB1 — six-slot anatomy contract + five-stage micro-lifecycle (framework
+# pp.13-17, QA-4, p.138). Representation only — addressable + validatable; NO
+# behavior change here. The malformed-block (slot-presence) JUDGEMENT is IB6's
+# validator; these helpers expose presence DATA only.
+# ---------------------------------------------------------------------------
+
+# The six anatomy slots. BODY is the existing ``Block.content`` (NOT a new
+# field — IB1.2); the other five are new Optional ``Block`` fields (IB1.1).
+_BODY_SLOT = "content"  # explicit anchor for IB1.2 / tests
+_ANATOMY_SLOTS: Tuple[str, ...] = (
+    "heading",
+    "purpose_tag",
+    _BODY_SLOT,
+    "interaction",
+    "feedback",
+    "transition",
+)
+
+# Five-stage micro-lifecycle (activate→present→apply→check→consolidate;
+# Gagné's Nine Events onto Merrill's First Principles, framework pp.13-17,
+# p.138). DISTINCT from the FIVE PAGE TYPES (overview/content/application/
+# self_check/summary) which are page-FILE groupings (``CANONICAL_PAGE_TYPES``
+# in ``lib/generation/block_planner.py``) — the page types decide which .html
+# file a block lands in; these stages are block-INTERNAL — every block runs
+# the whole cycle on its own slots regardless of which page it sits on. They
+# are NOT the same five and MUST NOT be unified.
+LIFECYCLE_STAGES: Tuple[str, ...] = (
+    "activate",
+    "present",
+    "apply",
+    "check",
+    "consolidate",
+)
+
+# Slot↔stage mapping (gap text: heading+purpose→Activate, body→Present,
+# interaction→Apply, feedback→Check, transition→Consolidate).
+_STAGE_SLOTS: Dict[str, Tuple[str, ...]] = {
+    "activate": ("heading", "purpose_tag"),
+    "present": (_BODY_SLOT,),  # content == body (IB1.2)
+    "apply": ("interaction",),
+    "check": ("feedback",),
+    "consolidate": ("transition",),
+}
+
+
+def _slot_value(block: "Block", slot: str) -> Optional[Any]:
+    """Read an anatomy slot off a Block (``content``/heading/…)."""
+    return getattr(block, slot, None)
+
+
+def _slot_present(block: "Block", slot: str) -> bool:
+    """True iff the slot carries a non-empty value.
+
+    ``content`` (the BODY slot) is present when truthy; the other five
+    string slots are present when non-None and non-empty after strip.
+    """
+    value = _slot_value(block, slot)
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
+
+
+def slots_to_lifecycle(block: "Block") -> Dict[str, List[str]]:
+    """Stage -> [present slot names] for this block (representation only).
+
+    Reports, per lifecycle stage, which of its mapped anatomy slots are
+    present (non-empty). Neither asserts nor gates — IB6 owns the
+    malformed-block verdict. Distinct from the five PAGE TYPES (see
+    :data:`LIFECYCLE_STAGES`).
+    """
+    return {
+        stage: [slot for slot in slots if _slot_present(block, slot)]
+        for stage, slots in _STAGE_SLOTS.items()
+    }
+
+
+def lifecycle_stage_coverage(block: "Block") -> Dict[str, bool]:
+    """Stage -> bool(any mapped slot is non-empty).
+
+    The "malformed if a slot is absent" QA-4 JUDGEMENT is IB6's validator —
+    this is presence DATA only.
+    """
+    return {
+        stage: bool(present)
+        for stage, present in slots_to_lifecycle(block).items()
+    }
+
+
+# Per-block-type interaction presence markers — REUSE of the existing
+# ``data-cf-component`` tokens the attr helpers already compute
+# (``_self_check_question_attrs`` / ``_activity_attrs`` /
+# ``_flip_card_grid_attrs``). The marker signals "this block carries an
+# interaction"; it is NOT the interaction HTML (lossless, deterministic). For
+# block types with no dedicated component token the block_type itself is the
+# marker. Non-interactive types are absent from this map → ``interaction``
+# stays None (IB1.5).
+_INTERACTION_COMPONENT_MARKERS: Dict[str, str] = {
+    "self_check_question": "self-check",
+    "activity": "activity",
+    "flip_card_grid": "flip-card",
+    "discussion_prompt": "discussion_prompt",
+    "reflection_prompt": "reflection_prompt",
+    "problem": "problem",
+    "scenario": "scenario",
+}
+
+
+def derive_anatomy_slots(block: "Block") -> "Block":
+    """Return a NEW block with anatomy slots filled ONLY where deterministic.
+
+    Pure, deterministic, NO-LLM back-derivation (the gap JSON's explicit
+    "derive only where deterministic, leave None otherwise" guardrail):
+
+    * ``heading``: parsed from ``content`` HTML via the existing
+      :func:`_parse_provider_page_html`; or a ``heading``/``title`` key when
+      ``content`` is a dict. Else None.
+    * ``interaction``: a SHORT machine MARKER (the existing ``data-cf-component``
+      token) for the interaction-bearing block types — presence signal, not the
+      interaction HTML. None for non-interactive types.
+    * ``purpose_tag``: ``self.purpose or self.teaching_role`` (the loose-mapping
+      consolidation the gap text calls out). Else None.
+    * ``feedback`` / ``transition``: NEVER back-derived (parsing LLM prose is
+      lossy) — always None from this helper; reserved for an authoring wave.
+
+    NOT called anywhere in the emit path by default (no caller wired in IB1 →
+    zero behavior change). It exists as the API a later wave / the IB1.4 emit
+    test invokes. Always returns a NEW frozen instance; never mutates the input.
+    """
+    updates: Dict[str, Any] = {}
+
+    # heading
+    if block.heading is None:
+        content = block.content
+        derived_heading: Optional[str] = None
+        if isinstance(content, str):
+            derived_heading, _ = _parse_provider_page_html(content)
+        elif isinstance(content, dict):
+            raw = content.get("heading") or content.get("title")
+            if isinstance(raw, str) and raw.strip():
+                derived_heading = raw.strip()
+        if derived_heading:
+            updates["heading"] = derived_heading
+
+    # interaction (presence marker)
+    if block.interaction is None:
+        marker = _INTERACTION_COMPONENT_MARKERS.get(block.block_type)
+        if marker:
+            updates["interaction"] = marker
+
+    # purpose_tag
+    if block.purpose_tag is None:
+        purpose_tag = block.purpose or block.teaching_role
+        if purpose_tag:
+            updates["purpose_tag"] = purpose_tag
+
+    if not updates:
+        return block
+    return dataclasses.replace(block, **updates)
+
+
 @dataclass(frozen=True)
 class Touch:
     """One revision attribution event in a Block's touch chain.
@@ -316,12 +499,22 @@ class Block:
             outline-tier budget and is escalated to the rewrite tier.
     Both stay default (``0`` / ``None``) for blocks emitted by the
     deterministic / Phase-1-provider paths in Phase 2.
+
+    IB1 six-slot anatomy (framework pp.13-17, QA-4): a well-formed block
+    instantiates ``heading + purpose_tag + content(BODY) + interaction +
+    feedback + transition``. ``content`` IS the canonical BODY slot — the
+    other five are the new Optional ``heading``/``purpose_tag``/
+    ``interaction``/``feedback``/``transition`` fields below. No redundant
+    ``body`` field is minted (IB1.2). All five new slots are hash-excluded
+    (IB1.3) and emitted only-when-set behind ``ED4ALL_BLOCK_ANATOMY``.
     """
 
     block_id: str
     block_type: str
     page_id: str
     sequence: int
+    # IB1 — the canonical BODY slot of the six-slot anatomy (framework
+    # pp.13-17). NO separate ``body`` field is minted: ``content`` IS the body.
     content: Union[str, Dict[str, Any]]
     template_type: Optional[str] = None
     key_terms: Tuple[str, ...] = ()
@@ -373,6 +566,21 @@ class Block:
     # for blocks emitted before the diversity fix wires in / by callers
     # that don't carry a target.
     target_bloom: Optional[str] = None
+    # IB1 — six-slot anatomy contract (framework pp.13-17, QA-4). FIVE new
+    # Optional slots; the sixth slot (BODY) is already ``content`` (above) — do
+    # NOT duplicate it. heading/purpose_tag are deterministically back-derivable
+    # (derive_anatomy_slots); interaction/feedback/transition default None and
+    # are populated only where deterministically inferrable or by a later
+    # authoring wave. Representation only — addressable + validatable; NO
+    # behavior change here. INTENTIONALLY excluded from compute_content_hash()
+    # and emitted only-when-set + only-when-flag-on (ED4ALL_BLOCK_ANATOMY) so
+    # existing hashes / snapshots stay byte-identical (mirrors
+    # observed_bloom_level / objective_alignment).
+    heading: Optional[str] = None
+    purpose_tag: Optional[str] = None
+    interaction: Optional[str] = None
+    feedback: Optional[str] = None
+    transition: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -423,9 +631,16 @@ class Block:
 
         Excludes ``touched_by``, ``sequence``, ``validation_attempts``,
         ``escalation_marker``, ``observed_bloom_level``,
-        ``bloom_alignment``, and ``objective_alignment`` so a
+        ``bloom_alignment``, ``objective_alignment``, ``target_bloom``, and
+        the IB1 six-slot anatomy metadata slots ``heading`` / ``purpose_tag``
+        / ``interaction`` / ``feedback`` / ``transition`` so a
         touch-only / budget-only / classifier-retrofit / objective-
-        delivery-retrofit revision keeps a stable hash. The hash exists
+        delivery-retrofit / anatomy-slot-back-derivation revision keeps a
+        stable hash. ``content`` (the BODY slot) IS in the payload; the other
+        five anatomy slots are derived-or-authored metadata ABOUT the same
+        content, so hashing them would drift every existing block hash on a
+        back-derivation retrofit — exactly the failure the
+        ``observed_bloom_level`` exclusion exists to prevent. The hash exists
         for re-execution drift detection — same content → same hash
         regardless of which tier authored it or how many times it was
         retried, and regardless of which audit-only signals were
@@ -754,6 +969,28 @@ class Block:
         # objectiveAlignment + $defs.ObjectiveAlignment.
         if self.objective_alignment:
             entry["objectiveAlignment"] = [dict(a) for a in self.objective_alignment]
+        # IB1 — six-slot anatomy contract (framework pp.13-17, QA-4). Emit a
+        # nested ``anatomy`` sub-object carrying ONLY the non-None slots,
+        # DOUBLE-gated: behind BOTH ``_anatomy_emit_enabled()`` (the new
+        # ED4ALL_BLOCK_ANATOMY flag, default OFF) AND only-when-set. Default-OFF
+        # flag ⇒ no ``anatomy`` key ⇒ byte-identical JSON-LD. The BODY slot is
+        # the block's ``content`` (NOT repeated here). camelCase keys mirror
+        # schemas/knowledge/courseforge_jsonld_v1.schema.json::$defs.BlockAnatomy.
+        if _anatomy_emit_enabled():
+            anatomy: Dict[str, Any] = {}
+            if self.heading is not None:
+                anatomy["heading"] = self.heading
+            if self.purpose_tag is not None:
+                anatomy["purposeTag"] = self.purpose_tag
+            if self.interaction is not None:
+                anatomy["interaction"] = self.interaction
+            if self.feedback is not None:
+                anatomy["feedback"] = self.feedback
+            if self.transition is not None:
+                anatomy["transition"] = self.transition
+            if anatomy:
+                anatomy["lifecycle"] = slots_to_lifecycle(self)
+                entry["anatomy"] = anatomy
         # W3 — optional pointer to the sidecar block_synthesis_manifest.jsonl
         # line keyed on this block_id. We do NOT inline the whole manifest into
         # the JSON-LD (it would bloat the IMSCC payload + duplicate the

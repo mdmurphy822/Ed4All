@@ -433,3 +433,79 @@ def test_render_touched_by_returns_camelcase_dicts() -> None:
     assert len(rendered) == 2
     assert rendered[0]["decisionCaptureId"] == "cap:0"
     assert rendered[1]["tier"] == "validation"
+
+
+# ---------------------------------------------------------------------------
+# IB1 — ED4ALL_BLOCK_ANATOMY emit flag + only-when-set anatomy JSON-LD
+# ---------------------------------------------------------------------------
+
+from blocks import _anatomy_emit_enabled  # noqa: E402
+
+
+def test_anatomy_emit_flag_default_off(monkeypatch) -> None:
+    """IB1.7 — _anatomy_emit_enabled is False unset, True for truthy tokens."""
+    monkeypatch.delenv("ED4ALL_BLOCK_ANATOMY", raising=False)
+    assert _anatomy_emit_enabled() is False
+    for truthy in ("1", "true", "yes", "on", "TRUE", "On"):
+        monkeypatch.setenv("ED4ALL_BLOCK_ANATOMY", truthy)
+        assert _anatomy_emit_enabled() is True
+    for falsey in ("0", "no", "off", "false", "garbage", ""):
+        monkeypatch.setenv("ED4ALL_BLOCK_ANATOMY", falsey)
+        assert _anatomy_emit_enabled() is False
+
+
+def test_minimal_jsonld_no_anatomy_key_when_flag_off(monkeypatch) -> None:
+    """IB1.4 — flag OFF: a slot-bearing block emits NO anatomy key (byte-stable)."""
+    monkeypatch.delenv("ED4ALL_BLOCK_ANATOMY", raising=False)
+    b = Block(
+        block_id="x",
+        block_type="self_check_question",
+        page_id="p",
+        sequence=0,
+        content="Q?",
+        heading="Quiz",
+        interaction="self-check",
+    )
+    entry = b.to_jsonld_entry()
+    assert "anatomy" not in entry
+
+
+def test_minimal_jsonld_emits_anatomy_when_flag_on(monkeypatch) -> None:
+    """IB1.4 — flag ON: only non-None slots emit + the lifecycle map."""
+    monkeypatch.setenv("ED4ALL_BLOCK_ANATOMY", "1")
+    b = Block(
+        block_id="x",
+        block_type="self_check_question",
+        page_id="p",
+        sequence=0,
+        content="Q?",
+        heading="Quiz",
+        interaction="self-check",
+    )
+    entry = b.to_jsonld_entry()
+    assert "anatomy" in entry
+    anatomy = entry["anatomy"]
+    assert anatomy["heading"] == "Quiz"
+    assert anatomy["interaction"] == "self-check"
+    # Unset slots omitted.
+    assert "purposeTag" not in anatomy
+    assert "feedback" not in anatomy
+    assert "transition" not in anatomy
+    # Lifecycle map present and reflects coverage.
+    assert anatomy["lifecycle"]["activate"] == ["heading"]
+    assert anatomy["lifecycle"]["apply"] == ["interaction"]
+    assert anatomy["lifecycle"]["check"] == []
+
+
+def test_minimal_jsonld_no_anatomy_key_when_flag_on_but_no_slots(monkeypatch) -> None:
+    """IB1.4 — flag ON but no slots set: no empty anatomy key emitted."""
+    monkeypatch.setenv("ED4ALL_BLOCK_ANATOMY", "1")
+    b = Block(
+        block_id="x",
+        block_type="recap",
+        page_id="p",
+        sequence=0,
+        content="Recap",
+    )
+    entry = b.to_jsonld_entry()
+    assert "anatomy" not in entry
