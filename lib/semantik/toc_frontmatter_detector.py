@@ -70,11 +70,27 @@ _FLAG_ENV = "SEMANTIK_DROP_FRONTMATTER_TOC"
 # increasing page numbers is unambiguously a printed table of contents.
 _MIN_TOC_RUN = 4
 
+# A chapter-INDEX cluster must be at least this many back-to-back
+# chapter-pattern headings (with only headings/metadata between consecutive
+# entries) to be dropped. Real chapter openers are separated by substantial
+# content (paragraphs / sections), so they never form such a back-to-back run;
+# a rendered chapter index (a page-number-less TOC variant) does. Three in a
+# row with no content between them is unambiguously an index cluster.
+_MIN_CHAPTER_INDEX_RUN = 3
+
 # A real chapter heading shape: "Chapter N[: Title]" or "Chapter N - Title"
 # or "Chapter N Title". The number is the canonical chapter ordinal.
 _CHAPTER_HEADING_RE = re.compile(
     r"^\s*chapter\s+(\d+)\b", re.IGNORECASE
 )
+
+# A bare-ordinal chapter-index shape: "N Title" (e.g. "3 Math Models") — a
+# rendered chapter-index entry that names the chapter by leading ordinal +
+# title WITHOUT the word "Chapter" and WITHOUT a trailing page number. Requires
+# a leading integer then an alphabetic title word. Deliberately does NOT match
+# a "N.M Title" section heading (the dot disqualifies it) nor a bare numeric
+# row (the title must carry a letter).
+_BARE_ORDINAL_HEADING_RE = re.compile(r"^\s*(\d{1,3})\s+(?=[A-Za-z])\S")
 
 # A real section heading shape: "N.M[.K] Title" (e.g. "1.1 Introduction to
 # Whole Numbers"). Must have a leading decimal-numbered prefix.
@@ -265,6 +281,129 @@ def _is_increasing(pages: List[int]) -> bool:
     return non_decreasing >= needed
 
 
+def _chapter_index_ordinal(prov: Mapping[str, Any]) -> int | None:
+    """The chapter ordinal if a region is a chapter-INDEX-pattern heading.
+
+    Matches a heading whose text is ``Chapter N[: Title]`` or a bare-ordinal
+    ``N Title`` (rendered chapter-index entry) and carries NO trailing page
+    number (a trailing page number → a real TOC line, handled by the
+    increasing-page-number TOC-run path, not this one). Returns the leading
+    ordinal ``N`` for cluster grouping, else ``None``.
+
+    Conservative: a ``N.M Title`` section heading is NOT a chapter-index entry
+    (the ``_BARE_ORDINAL_HEADING_RE`` lookahead requires a non-dot first token
+    boundary; a section's dot keeps it out). A plain un-numbered title is also
+    not matched (no leading ordinal).
+    """
+    if str(prov.get("region_kind")) != "heading":
+        return None
+    text = _heading_text_of(prov)
+    if not text:
+        return None
+    # A trailing-page-number TOC line is handled by the TOC-run path, not here.
+    if _toc_entry_page(text) is not None:
+        return None
+    m = _CHAPTER_HEADING_RE.match(text)
+    if m:
+        try:
+            return int(m.group(1))
+        except (TypeError, ValueError):
+            return None
+    # Bare-ordinal "N Title" — but never a "N.M Title" section heading.
+    if _SECTION_HEADING_RE.match(text):
+        return None
+    m2 = _BARE_ORDINAL_HEADING_RE.match(text)
+    if m2:
+        try:
+            return int(m2.group(1))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _is_content_bearing(prov: Mapping[str, Any]) -> bool:
+    """Whether a region carries real teaching content (a paragraph / list /
+    table / code / blockquote — anything that is NOT a heading or a dropped
+    metadata region).
+
+    This is the discriminator between a rendered chapter INDEX (chapter-pattern
+    headings back-to-back, separated only by other headings / metadata) and
+    real chapter OPENERS (each followed by substantial content). A chapter
+    index has NO content-bearing region between consecutive entries; real
+    openers do.
+    """
+    kind = str(prov.get("region_kind") or "")
+    if kind in {"heading", "metadata_drop", ""}:
+        return False
+    return True
+
+
+def _find_chapter_index_clusters(
+    provenance: List[Mapping[str, Any]],
+) -> set[int]:
+    """Indices belonging to a chapter-INDEX cluster (a page-number-less TOC
+    variant) ANYWHERE in the document.
+
+    A chapter-index cluster is a run of ``>= _MIN_CHAPTER_INDEX_RUN``
+    chapter-pattern headings (``Chapter N[: Title]`` / bare-ordinal ``N
+    Title``) with only OTHER headings / metadata between consecutive entries —
+    i.e. NO content-bearing region (paragraph / list / table) separates two
+    consecutive chapter-pattern headings in the run. Real chapter openers are
+    always separated by substantial content, so they never form such a run;
+    the rendered chapter index does.
+
+    Unlike the front-matter TOC-run path, this is NOT zoned to the front matter
+    and NOT gated on trailing page numbers — the real EA2e defect is a cluster
+    of ``Chapter 1: …``, ``Chapter 2: …`` … back-to-back AFTER the first real
+    chapter anchor (so the front-matter zone never reaches it).
+
+    Conservative: only chapter-pattern headings entered the run; any
+    content-bearing region between two candidates BREAKS the run (so a real
+    opener followed by its content is never swept up). Page-number-bearing TOC
+    lines never enter (``_chapter_index_ordinal`` returns ``None`` for them).
+    """
+    dropped: set[int] = set()
+    n = len(provenance)
+    i = 0
+    while i < n:
+        if _chapter_index_ordinal(provenance[i]) is None:
+            i += 1
+            continue
+        # Begin a candidate cluster at i. Walk forward collecting
+        # chapter-pattern headings; skip intervening NON-content headings /
+        # metadata; STOP at the first content-bearing region.
+        run = [i]
+        j = i + 1
+        while j < n:
+            if _is_content_bearing(provenance[j]):
+                break  # real content → not an index; close the run here.
+            if _chapter_index_ordinal(provenance[j]) is not None:
+                run.append(j)
+                j += 1
+                continue
+            # A non-content, non-chapter heading (a stray running header like
+            # "2 Preface") inside the cluster — skip it, keep the run open.
+            j += 1
+        if len(run) >= _MIN_CHAPTER_INDEX_RUN:
+            # Conservative final-entry guard: the last chapter-pattern heading
+            # of the run is a REAL opener (kept) ONLY when content sits
+            # DIRECTLY behind it (the very next region is content-bearing) — a
+            # real "Chapter 1: Foundations\n<intro paragraph>". When the next
+            # region is ANOTHER heading (a section like "1.1 …" or a preface
+            # header), the entry is an index line whose "content" actually
+            # belongs to a following section, so it is dropped with the rest.
+            last = run[-1]
+            keep_last = (
+                last + 1 < n and _is_content_bearing(provenance[last + 1])
+            )
+            to_drop = run[:-1] if keep_last else list(run)
+            dropped.update(to_drop)
+        # Resume scanning after the consumed span (j is the first
+        # content-bearing region or end-of-run).
+        i = max(j, i + 1)
+    return dropped
+
+
 def _is_front_matter_boilerplate(prov: Mapping[str, Any]) -> bool:
     """Whether a region in the front-matter zone is droppable boilerplate.
 
@@ -322,6 +461,16 @@ def drop_toc_and_frontmatter(
 
     # (2) the contiguous, page-increasing TOC run inside the front-matter zone.
     drop_idx = _find_toc_run(provenance, zone_end)
+
+    # (2b) chapter-INDEX clusters ANYWHERE in the document — a page-number-less
+    # TOC variant (a back-to-back run of "Chapter N[: Title]" / bare-ordinal
+    # "N Title" headings with NO content-bearing region between consecutive
+    # entries). NOT zoned to the front matter and NOT gated on trailing page
+    # numbers: the real EA2e defect is a cluster of "Chapter 1: …" … "Chapter
+    # 10: …" rendered AFTER the first real chapter anchor, so the front-matter
+    # zone never reaches it. Real chapter openers (each followed by content)
+    # never form such a run.
+    drop_idx.update(_find_chapter_index_clusters(provenance))
 
     # (3) front-matter boilerplate inside the zone (Preface / Copyright /
     # authors / bare TOC header / donor lists). Reuses tested predicates.

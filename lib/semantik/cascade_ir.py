@@ -37,9 +37,23 @@ memory and is consumed in-process by the seam.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 logger = logging.getLogger(__name__)
+
+# A section heading of the form "N.M[.K] Title" (e.g. "1.1 Introduction to
+# Whole Numbers", "2.3 Solve Equations"). The leading integer ``N`` is the
+# parent chapter ordinal used by the §3.4-B section-number chapter-derivation
+# path. Mirrors ``toc_frontmatter_detector._SECTION_HEADING_RE`` but captures
+# the chapter ordinal.
+_SECTION_NUMBER_RE = re.compile(r"^\s*(\d+)\.(\d+)(?:\.\d+)*\s+(\S.*)$")
+
+# A real chapter-opener heading "Chapter N[: Title]" — used only to COUNT
+# genuine L1 content chapter openers so the section-number derivation path is
+# entered only when the document lacks them (don't regress the synthetic
+# L1-opener fixtures).
+_CHAPTER_OPENER_RE = re.compile(r"^\s*chapter\s+(\d+)\b", re.IGNORECASE)
 
 from lib.semantik.adapter import _AdapterBlock, _AdapterChapter
 
@@ -199,6 +213,168 @@ def _is_chapter_boundary(prov: Mapping[str, Any]) -> bool:
     return lvl <= _CHAPTER_LEVEL_MAX
 
 
+def _section_chapter_ordinal(prov: Mapping[str, Any]) -> Optional[int]:
+    """The parent chapter ordinal ``N`` if a region is an ``N.M Title`` section
+    heading, else ``None``.
+
+    A content-bearing ``N.M`` section heading (not answer-key / numeric noise)
+    is the anchor for the §3.4-B section-number chapter-derivation path. A
+    non-content heading returns ``None`` (it never anchors a chapter).
+    """
+    if str(prov.get("region_kind")) != "heading":
+        return None
+    heading_text = prov.get("heading_text")
+    if not heading_text:
+        return None
+    text = str(heading_text)
+    if _is_noncontent_heading(text):
+        return None
+    m = _SECTION_NUMBER_RE.match(text)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _count_real_l1_openers(provenance: Sequence[Mapping[str, Any]]) -> int:
+    """Count genuine ``Chapter N``-shaped content L1 chapter openers.
+
+    Used to decide whether to take the section-number derivation path: when the
+    surviving content has section headings (``N.M``) but essentially NO real L1
+    chapter openers, sections are grouped by their leading number into chapters.
+    When real L1 openers ARE present, the legacy boundary path is kept (no
+    regression to the synthetic L1-opener fixtures).
+    """
+    count = 0
+    for prov in provenance:
+        if not _is_chapter_boundary(prov):
+            continue
+        text = str(prov.get("heading_text") or "")
+        if _CHAPTER_OPENER_RE.match(text):
+            count += 1
+    return count
+
+
+def _chapter_titles_from_provenance(
+    provenance: Sequence[Mapping[str, Any]],
+) -> Dict[int, str]:
+    """Map chapter ordinal → a real ``Chapter N: Title`` heading text if one
+    was seen ANYWHERE in the surviving provenance.
+
+    Used by the section-number derivation path to reuse a real chapter title
+    (e.g. ``"Chapter 1: Foundations"``) for the synthesized chapter when the
+    document carried the opener text — even if it was a heading with no content
+    behind it — falling back to a generic ``"Chapter N"`` when absent (never
+    fabricating a descriptive title).
+    """
+    titles: Dict[int, str] = {}
+    for prov in provenance:
+        if str(prov.get("region_kind")) != "heading":
+            continue
+        text = str(prov.get("heading_text") or "")
+        m = _CHAPTER_OPENER_RE.match(text)
+        if not m:
+            continue
+        try:
+            ordinal = int(m.group(1))
+        except (TypeError, ValueError):
+            continue
+        # First (document-order) real opener text wins for that ordinal.
+        if ordinal not in titles and not _is_noncontent_heading(text):
+            titles[ordinal] = text
+    return titles
+
+
+def _build_chapters_by_section_number(
+    provenance: Sequence[Mapping[str, Any]],
+    heading_tree: Sequence[Sequence[Any]],
+) -> List[_AdapterChapter]:
+    """§3.4-B — derive chapters by grouping ``N.M`` sections by their leading
+    chapter number ``N``.
+
+    Walks the surviving provenance in document order. A section heading whose
+    leading chapter ordinal ``N`` differs from the current chapter opens a NEW
+    chapter (titled from a real ``Chapter N: Title`` heading if one was seen,
+    else a generic ``"Chapter N"``). Sections and the blocks that follow them
+    attach to the current chapter. Leading blocks that precede the first
+    ``N.M`` section form an implicit leading chapter (titled from the heading
+    tree, mirroring the legacy path).
+
+    The same per-chapter overflow guard applies (a chapter never exceeds
+    ``_MAX_BLOCKS_PER_CHAPTER`` blocks → spills into a ``(cont.)`` continuation),
+    but a correctly section-grouped chapter never trips it.
+    """
+    real_titles = _chapter_titles_from_provenance(provenance)
+    chapters: List[_AdapterChapter] = []
+    current: Optional[_AdapterChapter] = None
+    current_ordinal: Optional[int] = None
+
+    def _open_chapter(title: str) -> _AdapterChapter:
+        ch = _AdapterChapter(title=title, blocks=[])
+        chapters.append(ch)
+        return ch
+
+    def _append_block(block: _AdapterBlock) -> None:
+        nonlocal current
+        if current is None:
+            title = (
+                _chapter_title_from_heading_tree(heading_tree) or "Document"
+            )
+            current = _open_chapter(title)
+        # NO block-count overflow guard on the section-number path: the chapter
+        # boundary is well-defined (the next distinct N.M chapter ordinal), so a
+        # chapter legitimately carries all of its hundreds of content blocks
+        # (paragraphs / worked examples / exercises). The >40 collapse the guard
+        # protects against is measured in SECTION HEADINGS, not blocks — and a
+        # correctly section-grouped chapter carries only ~10 section headings,
+        # well under the threshold. Spilling true content into "(cont.)" chains
+        # is exactly the garbage this fix removes.
+        current.blocks.append(block)
+
+    for prov in provenance:
+        ordinal = _section_chapter_ordinal(prov)
+        if ordinal is not None and ordinal != current_ordinal:
+            # A section whose chapter number differs from the current chapter
+            # opens a new chapter.
+            title = real_titles.get(ordinal, f"Chapter {ordinal}")
+            current = _open_chapter(title)
+            current_ordinal = ordinal
+            # The N.M section heading becomes an in-chapter section block (it is
+            # NOT the chapter title — the chapter title is "Chapter N").
+            _append_block(_block_from_provenance(prov))
+            continue
+        # A real L1 chapter opener that slipped through (rare on this path):
+        # treat it as a boundary so a genuine opener is honored.
+        if _is_chapter_boundary(prov) and _CHAPTER_OPENER_RE.match(
+            str(prov.get("heading_text") or "")
+        ):
+            title = str(prov.get("heading_text") or "Chapter")
+            current = _open_chapter(title)
+            m = _CHAPTER_OPENER_RE.match(title)
+            try:
+                current_ordinal = int(m.group(1)) if m else current_ordinal
+            except (TypeError, ValueError):
+                pass
+            continue
+        _append_block(_block_from_provenance(prov))
+
+    # Drop empty chapters AND content-free chapters: an implicit LEADING chapter
+    # that gathered only dropped front-matter (all metadata_drop / bare heading
+    # blocks, no paragraph / list / table) before the first N.M section is
+    # residual front-matter the TOC detector's zone-anchoring left behind — it
+    # carries no teaching content and must not become a phantom "Document" /
+    # title chapter. A real derived chapter always carries content blocks.
+    def _has_content(ch: _AdapterChapter) -> bool:
+        return any(
+            str(b.region_kind or "") not in {"heading", "metadata_drop", ""}
+            for b in ch.blocks
+        )
+
+    return [ch for ch in chapters if ch.blocks and _has_content(ch)]
+
+
 def build_chapters_ir(result: Any) -> List[_AdapterChapter]:
     """Convert a cascade result into the adapter's chapters IR (§3.4).
 
@@ -251,6 +427,43 @@ def build_chapters_ir(result: Any) -> List[_AdapterChapter]:
             dropped_count,
             len(provenance_list),
         )
+
+    # §3.4-B — section-number chapter derivation. When the surviving content
+    # has ``N.M`` section headings but essentially NO real ``Chapter N`` L1
+    # content openers (the real EA2e case: the only L1 headings were the
+    # chapter INDEX, dropped by Part A; the actual content is all L2/L3
+    # ``N.M`` sections), group sections into chapters by their leading number.
+    # When real L1 openers ARE present, fall through to the legacy boundary
+    # path (so the synthetic L1-opener fixtures never regress).
+    real_l1_openers = _count_real_l1_openers(provenance)
+    section_ordinals = {
+        o
+        for o in (_section_chapter_ordinal(p) for p in provenance)
+        if o is not None
+    }
+    # Trigger when the surviving content has N.M section headings but no/few
+    # real L1 chapter openers — i.e. the chapters must be DERIVED from the
+    # section numbers. Two ways in:
+    #   (a) multiple distinct chapter ordinals (1.x, 2.x, 3.x …) with fewer
+    #       real L1 openers than ordinals (a multi-chapter extract whose L1
+    #       openers were the dropped chapter-INDEX), OR
+    #   (b) at least one N.M chapter ordinal AND essentially ZERO real L1
+    #       openers (the real EA2e ch1-only capture: the only L1 headings were
+    #       the chapter index, dropped by Part A; the content is all N.M
+    #       sections that would otherwise spill into un-headed "(cont.)"
+    #       overflow chapters).
+    derive_by_section = section_ordinals and (
+        (len(section_ordinals) >= 2 and real_l1_openers < len(section_ordinals))
+        or real_l1_openers == 0
+    )
+    if derive_by_section:
+        logger.info(
+            "section-number chapter derivation: %d distinct chapter "
+            "ordinal(s) from N.M sections, %d real L1 opener(s)",
+            len(section_ordinals),
+            real_l1_openers,
+        )
+        return _build_chapters_by_section_number(provenance, heading_tree)
 
     chapters: List[_AdapterChapter] = []
     current: Optional[_AdapterChapter] = None

@@ -344,3 +344,131 @@ def test_d_coercion_from_cascade_dict_and_bare_list():
 def test_d_empty_provenance_yields_empty_ir():
     assert build_chapters_ir([]) == []
     assert build_chapters_ir({"region_provenance": []}) == []
+
+
+# ---------------------------------------------------------------------------
+# (e) Part B — section-number chapter derivation (no L1 openers in content).
+# ---------------------------------------------------------------------------
+
+
+def _h(idx: int, text: str, *, level: int = 2, raw: int = 0) -> dict:
+    return {
+        "region_index": idx,
+        "region_kind": "heading",
+        "role": "heading",
+        "confidence": 0.9,
+        "wcag_status": "passed",
+        "first_raw_block_index": raw,
+        "pages": [max(1, idx)],
+        "heading_text": text,
+        "level": level,
+        "figure_alt": None,
+        "raw_text": text,
+    }
+
+
+def _p(idx: int, text: str, *, raw: int = 0) -> dict:
+    return {
+        "region_index": idx,
+        "region_kind": "paragraph",
+        "role": "body",
+        "confidence": 0.7,
+        "wcag_status": "passed",
+        "first_raw_block_index": raw,
+        "pages": [max(1, idx)],
+        "heading_text": None,
+        "level": None,
+        "figure_alt": None,
+        "raw_text": text,
+    }
+
+
+def test_e_derive_chapters_by_section_number_multi_chapter():
+    """Content with N.M sections across multiple leading numbers but NO real
+    L1 chapter openers groups into one chapter per leading number."""
+    prov = [
+        _h(0, "1.1 Introduction to Whole Numbers", raw=1),
+        _p(1, "Place value tells us the value of a digit.", raw=2),
+        _h(2, "1.2 Use the Language of Algebra", raw=3),
+        _p(3, "A variable is a letter standing for a number.", raw=4),
+        _h(4, "2.1 Solve Equations", raw=5),
+        _p(5, "Isolate the variable.", raw=6),
+        _h(6, "2.2 Multiplication Property", raw=7),
+        _p(7, "Multiply both sides.", raw=8),
+        _h(8, "3.1 Problem-Solving Strategy", raw=9),
+        _p(9, "Read the problem twice.", raw=10),
+    ]
+    chapters = build_chapters_ir(prov)
+    # Three leading numbers → three chapters.
+    assert len(chapters) == 3, [c.title for c in chapters]
+    assert chapters[0].title == "Chapter 1"
+    assert chapters[1].title == "Chapter 2"
+    assert chapters[2].title == "Chapter 3"
+    # Sections + their following prose attach to the right chapter.
+    ch1_headings = [b.heading_text for b in chapters[0].blocks if b.heading_text]
+    assert "1.1 Introduction to Whole Numbers" in ch1_headings
+    assert "1.2 Use the Language of Algebra" in ch1_headings
+
+
+def test_e_section_number_path_reuses_real_chapter_title():
+    """When a real 'Chapter N: Title' heading text appears (even with no content
+    behind it — e.g. the surviving opener of a dropped index), the derived
+    chapter reuses that title for chapter N."""
+    prov = [
+        # A bare opener heading with no content (would be filtered as a boundary
+        # producing an empty chapter on the legacy path); here it only supplies
+        # the title for the section-derived chapter 1.
+        _h(0, "Chapter 1: Foundations", level=1, raw=1),
+        _h(1, "1.1 Whole Numbers", raw=2),
+        _p(2, "Counting numbers and zero.", raw=3),
+        _h(3, "2.1 Solve Equations", raw=4),
+        _p(4, "Isolate x.", raw=5),
+    ]
+    chapters = build_chapters_ir(prov)
+    titles = [c.title for c in chapters]
+    # Chapter 1 reuses the real opener text; chapter 2 falls back to "Chapter 2".
+    assert "Chapter 1: Foundations" in titles
+    assert "Chapter 2" in titles
+
+
+def test_e_l1_openers_present_keeps_legacy_path():
+    """When real L1 chapter openers ARE present in content (each with content),
+    the legacy boundary path is kept — the synthetic two-chapter fixture must
+    not regress onto the section-number path."""
+    chapters = build_chapters_ir(_SyntheticPipelineResult())
+    # Same as test_a — legacy path, two L1-opener chapters.
+    assert [c.title for c in chapters] == [
+        "Chapter 1: Foundations",
+        "Chapter 2: Linear Equations",
+    ]
+
+
+def test_e_leading_frontmatter_only_chapter_dropped():
+    """A leading run of content-free (heading / metadata_drop only) regions
+    before the first N.M section does NOT become a phantom chapter."""
+    meta = {
+        "region_index": 0,
+        "region_kind": "metadata_drop",
+        "role": "metadata_drop",
+        "confidence": None,
+        "wcag_status": "failed",
+        "first_raw_block_index": 1,
+        "pages": [1],
+        "heading_text": None,
+        "level": None,
+        "figure_alt": None,
+        "raw_text": "Running header noise.",
+    }
+    prov = [
+        meta,
+        _h(1, "Preface", level=2, raw=2),  # content-free heading
+        _h(2, "1.1 Whole Numbers", raw=3),
+        _p(3, "Counting numbers.", raw=4),
+        _h(4, "2.1 Solve Equations", raw=5),
+        _p(5, "Isolate x.", raw=6),
+    ]
+    chapters = build_chapters_ir(prov)
+    titles = [c.title for c in chapters]
+    # No leading "Document" / "Preface" content-free chapter.
+    assert all("Document" not in t for t in titles), titles
+    assert titles == ["Chapter 1", "Chapter 2"], titles

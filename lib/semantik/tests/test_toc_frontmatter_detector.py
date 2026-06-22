@@ -252,6 +252,107 @@ def test_real_numbered_headings_never_form_a_run():
 
 
 # ---------------------------------------------------------------------------
+# (2c) Part A — chapter-INDEX cluster (page-number-LESS) dropped; a real
+#      chapter opener followed by content is NOT.
+# ---------------------------------------------------------------------------
+
+
+def test_chapter_index_cluster_without_pagenums_dropped():
+    """A back-to-back run (>=3) of 'Chapter N: Title' headings with NO content
+    between consecutive entries — the real EA2e chapter-index cluster, which
+    carries NO trailing page numbers — is dropped EVEN THOUGH it sits after the
+    first real chapter anchor (so the front-matter TOC-run path never reaches
+    it)."""
+    prov = [
+        # A real chapter opener anchors the front-matter zone end at index 0.
+        _heading(0, "Chapter 1: Foundations", level=1, raw=1),
+        _para(1, "Whole numbers are the counting numbers and zero.", raw=2),
+        # The rendered chapter INDEX cluster — back-to-back, NO content between,
+        # NO trailing page numbers (the page-number-less TOC variant).
+        _heading(2, "Chapter 1: Foundations", level=1, raw=3),
+        _heading(3, "Chapter 2: Solving Linear Equations", level=1, raw=4),
+        _heading(4, "Chapter 3: Math Models", level=1, raw=5),
+        _heading(5, "Chapter 5: Systems of Linear Equations", level=1, raw=6),
+        _heading(6, "Chapter 7: Factoring", level=1, raw=7),
+        _heading(7, "Chapter 10: Quadratic Equations", level=1, raw=8),
+        # Real content resumes.
+        _heading(8, "1.1 Introduction to Whole Numbers", level=2, raw=9),
+        _para(9, "Place value tells us the value of a digit.", raw=10),
+    ]
+    filtered, dropped = drop_toc_and_frontmatter(prov)
+    texts = _text_set(filtered)
+    # The whole index cluster (indices 2..7) is gone.
+    for phantom in (
+        "Chapter 2: Solving Linear Equations",
+        "Chapter 3: Math Models",
+        "Chapter 5: Systems of Linear Equations",
+        "Chapter 7: Factoring",
+        "Chapter 10: Quadratic Equations",
+    ):
+        assert phantom not in texts, f"index-cluster entry survived: {phantom}"
+    # The real opener + content + first section survive.
+    assert "Chapter 1: Foundations" in texts  # the FIRST (real) one stays
+    assert "1.1 Introduction to Whole Numbers" in texts
+    assert "Place value tells us the value of a digit." in texts
+    # 6 cluster entries dropped (indices 2..7).
+    assert dropped == 6, f"expected 6 index-cluster drops, got {dropped}"
+
+
+def test_bare_ordinal_index_cluster_dropped():
+    """A bare-ordinal 'N Title' index cluster (no 'Chapter' word, no page
+    numbers) is also dropped."""
+    prov = [
+        _heading(0, "3 Math Models", level=1, raw=1),
+        _heading(1, "5 Systems of Linear Equations", level=1, raw=2),
+        _heading(2, "7 Factoring", level=1, raw=3),
+        _heading(3, "10 Quadratic Equations", level=1, raw=4),
+        _heading(4, "Chapter 1: Foundations", level=1, raw=5),
+        _para(5, "Content begins.", raw=6),
+    ]
+    filtered, dropped = drop_toc_and_frontmatter(prov)
+    texts = _text_set(filtered)
+    for phantom in ("3 Math Models", "5 Systems of Linear Equations", "7 Factoring"):
+        assert phantom not in texts, f"bare-ordinal index survived: {phantom}"
+    assert "Chapter 1: Foundations" in texts
+    assert dropped == 4
+
+
+def test_real_chapter_openers_with_content_not_a_cluster():
+    """Real chapter openers each followed by SUBSTANTIAL content are NOT an
+    index cluster (the content between consecutive openers breaks the run) —
+    the exact anti-false-positive the spec demands."""
+    prov = [
+        _heading(0, "Chapter 1: Foundations", level=1, raw=1),
+        _para(1, "Whole numbers intro.", raw=2),
+        _heading(2, "1.1 Whole Numbers", level=2, raw=3),
+        _para(3, "Place value.", raw=4),
+        _heading(4, "Chapter 2: Linear Equations", level=1, raw=5),
+        _para(5, "Solve for x.", raw=6),
+        _heading(6, "2.1 Subtraction Property", level=2, raw=7),
+        _para(7, "Add to both sides.", raw=8),
+        _heading(8, "Chapter 3: Math Models", level=1, raw=9),
+        _para(9, "Problem solving.", raw=10),
+    ]
+    filtered, dropped = drop_toc_and_frontmatter(prov)
+    # Nothing dropped — every chapter opener is separated by real content.
+    assert dropped == 0, f"real openers wrongly dropped as a cluster: {dropped}"
+    assert _text_set(filtered) == _text_set(prov)
+
+
+def test_two_chapter_openers_below_index_run_threshold_kept():
+    """Only TWO back-to-back chapter headings (< _MIN_CHAPTER_INDEX_RUN of 3)
+    are NOT treated as an index cluster — too few to be unambiguous."""
+    prov = [
+        _heading(0, "Chapter 1: Foundations", level=1, raw=1),
+        _heading(1, "Chapter 2: Linear Equations", level=1, raw=2),
+        _para(2, "Content.", raw=3),
+    ]
+    filtered, dropped = drop_toc_and_frontmatter(prov)
+    assert dropped == 0, "a 2-entry run must not be dropped as an index cluster"
+    assert len(filtered) == len(prov)
+
+
+# ---------------------------------------------------------------------------
 # (3) Flag OFF → byte-identical pass-through (no drops).
 # ---------------------------------------------------------------------------
 
