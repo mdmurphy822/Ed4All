@@ -105,6 +105,32 @@ def specialist_provider_is_endpoint() -> bool:
     return resolve_specialist_provider() != "local"
 
 
+def resolve_structure_review_model() -> str:
+    """Return the model ID for the Stage-5d structure-REVIEWER seat.
+
+    Mirrors :func:`resolve_specialist_provider`'s parse-with-fallback
+    posture and REUSES the endpoint config (the reviewer rides the same
+    hosted 70B seat as the Stage-6 endpoint specialists). Resolution chain
+    (high -> low):
+
+        SEMANTIK_STRUCTURE_REVIEW_MODEL  (reviewer-specific override)
+        > SEMANTIK_SPECIALIST_MODEL      (shared specialist seat)
+        > NVIDIA_LARGE_MODEL             (NVIDIA seat default)
+        > "meta/llama-3.3-70b-instruct"  (sane literal default)
+
+    The literal default matches the Stage-6 endpoint runtime's
+    ``_DEFAULT_MODEL`` so a reviewer + specialist on the same unconfigured
+    seat resolve to the same 70B. Key is NEVER read here (env-only,
+    resolved at POST time by the endpoint runtime).
+    """
+    return (
+        os.environ.get("SEMANTIK_STRUCTURE_REVIEW_MODEL")
+        or os.environ.get("SEMANTIK_SPECIALIST_MODEL")
+        or os.environ.get("NVIDIA_LARGE_MODEL")
+        or "meta/llama-3.3-70b-instruct"
+    )
+
+
 class QwenRuntime(Protocol):
     """Generic runtime contract Stage 6 dispatches against."""
 
@@ -702,5 +728,6 @@ __all__ = [
     "QwenRuntime",
     "make_runtime",
     "resolve_specialist_provider",
+    "resolve_structure_review_model",
     "specialist_provider_is_endpoint",
 ]
