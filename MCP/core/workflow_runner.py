@@ -129,6 +129,14 @@ _CORPUS_GENERALIZATION_ENV_DEFAULTS: Dict[str, str] = {
     # Corpus-generalization recovery paths (general / non-RDF textbooks)
     "TRAINFORGE_LEXICAL_CONCEPT_SEEDS": "true",
     "TRAINFORGE_OBJECTIVE_QUALITY_GATE": "true",
+    # Defensive heading-sanity filter: repair a chunk's section_heading to its
+    # nearest clean ancestor heading when the upstream heading classifier
+    # mis-tagged answer-key / exercise-prose / numeric noise as a heading. The
+    # original noise text stays in the chunk body. Hardens chunk + retrieval
+    # display quality against residual upstream heading mis-classification
+    # (SemantiK retraining is the upstream root fix). See
+    # lib/chunk_heading_sanity.py. Default-off (byte-stable) outside a run.
+    "TRAINFORGE_HEADING_SANITY_FILTER": "true",
 }
 
 # The env var that selects the three-stage textbook-synthesis provider. It

@@ -1771,6 +1771,38 @@ class CourseProcessor:
                 "item_path=%s, week_num=%s); keeping as-is",
                 normalized_mid, item.get("item_path"), item.get("week_num"),
             )
+        # Defensive heading-sanity filter (TRAINFORGE_HEADING_SANITY_FILTER,
+        # default OFF → byte-identical legacy). Mirrors the inline
+        # _create_chunk in MCP/tools/pipeline_tools.py: a section_heading
+        # detected as upstream heading-classifier noise (answer-key /
+        # exercise-prose / numeric) is repaired to the nearest clean ancestor
+        # heading (merged_headings breadcrumb, then page title); the original
+        # noise text stays in text/html. No clean ancestor → leave as-is +
+        # stamp ``heading_suspect``.
+        _heading_to_stamp = section_heading
+        _heading_suspect_flag = False
+        try:
+            from lib.chunk_heading_sanity import (
+                is_heading_sanity_filter_enabled as _hs_enabled,
+                repair_section_heading as _hs_repair,
+            )
+            if _hs_enabled():
+                _hs = _hs_repair(
+                    section_heading,
+                    item=item,
+                    merged_headings=merged_headings,
+                )
+                _heading_to_stamp = _hs["heading"]
+                _heading_suspect_flag = _hs["suspect"] and not _hs["repaired"]
+        except Exception:  # noqa: BLE001 — sanity filter is best-effort
+            logger.warning(
+                "heading-sanity filter failed for chunk %s; keeping original "
+                "section_heading",
+                chunk_id,
+                exc_info=True,
+            )
+            _heading_to_stamp = section_heading
+            _heading_suspect_flag = False
         source: Dict[str, Any] = {
             "course_id": self.course_code,
             "module_id": normalized_mid,
@@ -1778,9 +1810,11 @@ class CourseProcessor:
             "lesson_id": item["item_id"],
             "lesson_title": item["title"],
             "resource_type": item["resource_type"],
-            "section_heading": section_heading,
+            "section_heading": _heading_to_stamp,
             "position_in_module": position_in_module,
         }
+        if _heading_suspect_flag:
+            source["heading_suspect"] = True
         # Audit-trail provenance (Section 508 / ADA Title II). Every chunk
         # ties back to the source IMSCC HTML element it was derived from.
         # See docs/compliance/audit-trail.md for the round-trip contract.

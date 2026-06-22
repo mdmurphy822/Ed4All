@@ -19441,6 +19441,37 @@ def _build_tool_registry() -> dict:
             words = text.split()
             word_count = len(words)
             tokens_estimate = int(word_count * 1.3)
+            # Defensive heading-sanity filter (TRAINFORGE_HEADING_SANITY_FILTER,
+            # default OFF → byte-identical legacy). When a chunk's
+            # ``section_heading`` is detected as upstream heading-classifier
+            # noise (answer-key/exercise-prose/numeric), repair it to the
+            # nearest clean ancestor heading (merged_headings breadcrumb, then
+            # page title) — the original noise text stays in ``text``/``html``.
+            # No clean ancestor → leave as-is + stamp ``heading_suspect``.
+            _heading_to_stamp = section_heading
+            _heading_suspect_flag = False
+            try:
+                from lib.chunk_heading_sanity import (
+                    is_heading_sanity_filter_enabled as _hs_enabled,
+                    repair_section_heading as _hs_repair,
+                )
+                if _hs_enabled():
+                    _hs = _hs_repair(
+                        section_heading,
+                        item=item,
+                        merged_headings=merged_headings,
+                    )
+                    _heading_to_stamp = _hs["heading"]
+                    _heading_suspect_flag = _hs["suspect"] and not _hs["repaired"]
+            except Exception:  # noqa: BLE001 — sanity filter is best-effort
+                logger.warning(
+                    "heading-sanity filter failed for chunk %s; keeping "
+                    "original section_heading",
+                    chunk_id,
+                    exc_info=True,
+                )
+                _heading_to_stamp = section_heading
+                _heading_suspect_flag = False
             source: Dict[str, Any] = {
                 "course_id": course_code,
                 "module_id": item.get("module_id") or "",
@@ -19448,9 +19479,11 @@ def _build_tool_registry() -> dict:
                 "lesson_id": item.get("item_id") or "",
                 "lesson_title": item.get("title") or "",
                 "resource_type": item.get("resource_type") or "page",
-                "section_heading": section_heading,
+                "section_heading": _heading_to_stamp,
                 "position_in_module": position_in_module,
             }
+            if _heading_suspect_flag:
+                source["heading_suspect"] = True
             if html_xpath:
                 source["html_xpath"] = html_xpath
             if char_span is not None:
@@ -20735,6 +20768,37 @@ def _build_tool_registry() -> dict:
             words = text.split()
             word_count = len(words)
             tokens_estimate = int(word_count * 1.3)
+            # Defensive heading-sanity filter (TRAINFORGE_HEADING_SANITY_FILTER,
+            # default OFF → byte-identical legacy). When a chunk's
+            # ``section_heading`` is detected as upstream heading-classifier
+            # noise (answer-key/exercise-prose/numeric), repair it to the
+            # nearest clean ancestor heading (merged_headings breadcrumb, then
+            # page title) — the original noise text stays in ``text``/``html``.
+            # No clean ancestor → leave as-is + stamp ``heading_suspect``.
+            _heading_to_stamp = section_heading
+            _heading_suspect_flag = False
+            try:
+                from lib.chunk_heading_sanity import (
+                    is_heading_sanity_filter_enabled as _hs_enabled,
+                    repair_section_heading as _hs_repair,
+                )
+                if _hs_enabled():
+                    _hs = _hs_repair(
+                        section_heading,
+                        item=item,
+                        merged_headings=merged_headings,
+                    )
+                    _heading_to_stamp = _hs["heading"]
+                    _heading_suspect_flag = _hs["suspect"] and not _hs["repaired"]
+            except Exception:  # noqa: BLE001 — sanity filter is best-effort
+                logger.warning(
+                    "heading-sanity filter failed for chunk %s; keeping "
+                    "original section_heading",
+                    chunk_id,
+                    exc_info=True,
+                )
+                _heading_to_stamp = section_heading
+                _heading_suspect_flag = False
             source: Dict[str, Any] = {
                 "course_id": course_code,
                 "module_id": item.get("module_id") or "",
@@ -20742,9 +20806,11 @@ def _build_tool_registry() -> dict:
                 "lesson_id": item.get("item_id") or "",
                 "lesson_title": item.get("title") or "",
                 "resource_type": item.get("resource_type") or "page",
-                "section_heading": section_heading,
+                "section_heading": _heading_to_stamp,
                 "position_in_module": position_in_module,
             }
+            if _heading_suspect_flag:
+                source["heading_suspect"] = True
             if html_xpath:
                 source["html_xpath"] = html_xpath
             if char_span is not None:
