@@ -469,7 +469,7 @@ Tool-local; describes the transformation contract used when upgrading older Boot
 **Instance production:** `lib/run_manager.py` (at run initialization; written once, never mutated).
 **Instance consumption:** run discovery, fsck, replay engine.
 
-**Required fields:** `run_id` (`^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$`), `created_at`, `workflow_type ∈ {course_generation, intake_remediation, batch_dart, rag_training, textbook_to_course}`, `config_hashes` (`workflows_yaml`, `agents_yaml`, `schemas` — all `^sha256:[a-f0-9]{64}$`), `immutable` (const `true`).
+**Required fields:** `run_id` (`^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$`), `created_at`, `workflow_type ∈ {course_generation, rag_training, textbook_to_course, trainforge_train}`, `config_hashes` (`workflows_yaml`, `agents_yaml`, `schemas` — all `^sha256:[a-f0-9]{64}$`), `immutable` (const `true`).
 
 **Optional fields:** `git_commit` (40-hex or null), `git_dirty` (bool), `operator`, `goals[]`, `workflow_params`, `environment` (python_version, platform, hostname, etc.), `inputs[]` (`path`, `content_hash`, `hash_algorithm`, `size_bytes`), `schema_version` (default `"1.0.0"`).
 
@@ -809,7 +809,7 @@ trainforge-validation, libv2-retrieval, libv2-indexing, libv2-fusion
 
 Source: `schemas/events/run_manifest.schema.json:40`.
 ```
-course_generation, intake_remediation, batch_dart, rag_training, textbook_to_course
+course_generation, rag_training, textbook_to_course, trainforge_train
 ```
 
 ### Session status / tool / quality-level enums
@@ -1060,7 +1060,6 @@ From root `/CLAUDE.md` § Active Gates:
 | `course_generation` | `imscc_structure` | `IMSCCValidator` |
 | `course_generation` | `wcag_compliance` | `WCAGValidator` (Wave 31 — semantic upgrade) |
 | `course_generation` | `oscqr_score` | `OSCQRValidator` (Wave 31 — real impl) |
-| `batch_dart` | `wcag_aa_compliance` | `WCAGValidator` (Wave 31 — semantic upgrade) |
 | `textbook_to_course` | `content_grounding` | `ContentGroundingValidator` (Wave 31) |
 | `rag_training` | `assessment_quality` | `AssessmentQualityValidator` |
 | `rag_training` | `bloom_alignment` | `BloomAlignmentValidator` |
@@ -1399,7 +1398,7 @@ All loaders read from `schemas/taxonomies/`; single source of truth per domain:
 Two new gates wire into `config/workflows.yaml` (Worker V, Wave 6):
 
 - `page_objectives` on the `packaging` phase of `course_generation` (Wave 2, Worker L).
-- `dart_markers` on the `dart_conversion` phase of `batch_dart` + `textbook_to_course` (REC-CTR-06, Wave 6 Worker V).
+- `dart_markers` on the `dart_conversion` phase of `textbook_to_course` (REC-CTR-06, Wave 6 Worker V).
 
 ### Decision type enum expansion
 

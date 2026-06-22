@@ -121,14 +121,14 @@ def test_explicit_env_is_not_overwritten(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_non_pipeline_workflow_is_noop(monkeypatch: pytest.MonkeyPatch):
-    """A non-pipeline workflow (intake_remediation) -> no-op, returns {}."""
+    """A non-pipeline workflow (rag_training) -> no-op, returns {}."""
     import os
 
     _clear_envs(monkeypatch)
     monkeypatch.setenv("LLM_PROVIDER", "local")
     runner = _make_runner()
 
-    applied = runner._apply_authoring_route_env("intake_remediation", "")
+    applied = runner._apply_authoring_route_env("rag_training", "")
 
     assert applied == {}
     for env_var in AGENT_AUTHORING_PROVIDER_ENV_MAP.values():

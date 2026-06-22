@@ -22,73 +22,6 @@ from typing import Any, Dict, List, Optional
 
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     # =========================================================================
-    # DART TOOLS - Multi-Source Synthesis (5)
-    # =========================================================================
-    "convert_pdf_multi_source": {
-        "required": ["combined_json_path"],
-        "optional": ["output_path", "course_code"],
-        "defaults": {
-            "output_path": None,
-            "course_code": None,
-        },
-        "param_mapping": {
-            "input": "combined_json_path",
-            "combined_json": "combined_json_path",
-            "source": "combined_json_path",
-            "output": "output_path",
-            "output_path": "output_path",
-            "course": "course_code",
-        },
-        "description": "Convert PDF using multi-source synthesis (pdftotext + pdfplumber + OCR)",
-    },
-
-    "batch_convert_multi_source": {
-        "required": ["combined_dir"],
-        "optional": ["output_zip", "output_dir"],
-        "defaults": {
-            "output_zip": None,
-            "output_dir": None,
-        },
-        "param_mapping": {
-            "input": "combined_dir",
-            "source_dir": "combined_dir",
-            "combined": "combined_dir",
-            "output": "output_dir",
-            "zip": "output_zip",
-            "archive": "output_zip",
-        },
-        "description": "Batch convert using multi-source synthesis",
-    },
-
-    "list_available_campuses": {
-        "required": [],
-        "optional": [],
-        "defaults": {},
-        "param_mapping": {},
-        "description": "List available campus combined JSON files for conversion",
-    },
-
-    "validate_wcag_compliance": {
-        "required": ["html_path"],
-        "optional": [],
-        "defaults": {},
-        "param_mapping": {
-            "input": "html_path",
-            "file": "html_path",
-            "path": "html_path",
-        },
-        "description": "Validate HTML file for WCAG 2.2 AA compliance",
-    },
-
-    "get_dart_status": {
-        "required": [],
-        "optional": [],
-        "defaults": {},
-        "param_mapping": {},
-        "description": "Get DART installation status and capabilities",
-    },
-
-    # =========================================================================
     # PIPELINE TOOLS (Textbook-to-Course)
     # =========================================================================
     "stage_dart_outputs": {
@@ -1002,13 +935,6 @@ def validate_tool_params(tool_name: str, params: Dict[str, Any]) -> tuple[bool, 
 # =============================================================================
 
 TOOL_CATEGORIES = {
-    "dart": [
-        "convert_pdf_multi_source",
-        "batch_convert_multi_source",
-        "list_available_campuses",
-        "validate_wcag_compliance",
-        "get_dart_status",
-    ],
     "courseforge": [
         "create_course_project",
         "generate_course_content",

@@ -7,7 +7,7 @@ The canonical ``course_id`` pattern at
 regex. Pre-Wave-22, roughly half of a recent run's decision records
 carried ``course_id`` validation issues as a result.
 
-``MCP.tools.dart_tools.normalize_course_code`` folds any input into
+``lib.decision_capture.normalize_course_code`` folds any input into
 a schema-valid form deterministically — same input always produces
 the same output, so runs are reproducible and captures are joinable.
 """
@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from MCP.tools.dart_tools import normalize_course_code  # noqa: E402
+from lib.decision_capture import normalize_course_code  # noqa: E402
 
 _CANON = re.compile(r"^[A-Z]{2,8}_[0-9]{3}$")
 

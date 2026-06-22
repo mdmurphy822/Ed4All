@@ -2246,7 +2246,7 @@ def default_router() -> GateInputRouter:
         _build_imscc,
     )
     r.register(
-        "DART.pdf_converter.wcag_validator.WCAGValidator",
+        "lib.validators.wcag.WCAGValidator",
         _build_wcag,
     )
     r.register(

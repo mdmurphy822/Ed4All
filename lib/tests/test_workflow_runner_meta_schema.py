@@ -230,8 +230,6 @@ def test_workflow_runner_loads_yaml_config():
     assert "workflows" in cfg
     expected = {
         "course_generation",
-        "intake_remediation",
-        "batch_dart",
         "rag_training",
         "textbook_to_course",
     }
@@ -274,9 +272,9 @@ def test_get_phase_param_routing_fallback_to_legacy_on_missing_yaml():
     """Unannotated phases must fall through to the legacy in-memory dict."""
     from MCP.core.workflow_runner import _get_phase_param_routing
 
-    # `multi_source_synthesis` is in batch_dart but has no legacy routing
-    # and no `inputs_from:` -> expect an empty dict.
-    assert _get_phase_param_routing("multi_source_synthesis") == {}
+    # `validation` is a real phase but has no legacy routing and no
+    # `inputs_from:` -> expect an empty dict.
+    assert _get_phase_param_routing("validation") == {}
 
 
 def test_get_phase_output_keys_unknown_phase_returns_empty():
@@ -378,18 +376,14 @@ def test_dart_markers_validator_path_is_allowlisted():
 # ---------------------------------------------------------------------------
 
 
-def test_dart_markers_gate_wired_to_batch_dart_and_textbook_pipeline(
+def test_dart_markers_gate_wired_to_textbook_pipeline(
     workflows_yaml_data,
 ):
-    """The dart_markers gate must appear in both workflows per REC-CTR-06."""
+    """The dart_markers gate must be wired on the textbook pipeline's
+    DART-producing phase per REC-CTR-06 — this guards the data-dart-*
+    contract validator wiring.
+    """
     wf = workflows_yaml_data["workflows"]
-
-    # batch_dart: gate is on `multi_source_synthesis` (the DART-producing phase)
-    batch_phases = {p["name"]: p for p in wf["batch_dart"]["phases"]}
-    batch_gates = [
-        g["gate_id"] for g in (batch_phases["multi_source_synthesis"].get("validation_gates") or [])
-    ]
-    assert "dart_markers" in batch_gates
 
     # textbook_to_course: gate is on `dart_conversion`
     tbc_phases = {p["name"]: p for p in wf["textbook_to_course"]["phases"]}

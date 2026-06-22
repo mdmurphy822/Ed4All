@@ -24,9 +24,10 @@ Validators covered (8 files / 9 classes):
 - `lib.validators.libv2_packet_integrity.PacketIntegrityValidator` → `libv2_packet_integrity_check`
 - `lib.validators.concept_graph.ConceptGraphValidator` → `concept_graph_check`
 
-The DART `WCAGValidator.wcag_compliance_check` test lives under
-`DART/pdf_converter/tests/test_wcag_capture_wiring.py` (per H3 plan
-§4.1 Correction 1.2 — that directory is created by this wave).
+The `WCAGValidator.wcag_compliance_check` test lives under
+`lib/validators/tests/test_wcag_capture_wiring.py` (the validator was
+relocated to `lib/validators/wcag.py` in the SemantiK migration that
+retired DART).
 """
 
 from __future__ import annotations

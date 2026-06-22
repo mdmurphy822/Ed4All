@@ -111,14 +111,14 @@ logger = logging.getLogger(__name__)
 
 
 # Wave 23 Sub-task B: ``normalize_course_code`` is the shared
-# course-code coercer introduced in Wave 22 DC4. Originally it lived
-# in ``MCP/tools/dart_tools.py`` for DART-specific capture setup.
-# Wave 23 promotes it to the shared decision-capture module so the
-# orchestrator-level ``PipelineOrchestrator._get_executor`` can use
-# the same normalisation without importing from a sibling MCP tool
-# module (avoiding a dependency inversion between ``lib/`` and
-# ``MCP/tools/``).  ``MCP/tools/dart_tools.py`` re-exports this name
-# for backward compat.
+# course-code coercer introduced in Wave 22 DC4. It originally lived in
+# the (now-retired) DART tool module; Wave 23 promoted it to this shared
+# decision-capture module — the canonical home — so the orchestrator-level
+# ``PipelineOrchestrator._get_executor`` can use the same normalisation
+# without importing from a sibling MCP tool module (avoiding a dependency
+# inversion between ``lib/`` and ``MCP/tools/``). The DART tool module's
+# back-compat re-export was removed with the DART subsystem in the
+# SemantiK migration; import this name from ``lib.decision_capture``.
 #
 # Canonical pattern: ``^[A-Z]{2,8}_[0-9]{3}$`` (2-8 uppercase letters,
 # underscore, 3 digits). Raw course-code strings without the required

@@ -57,8 +57,6 @@ logger = logging.getLogger("gui.run_service")
 SUPPORTED_WORKFLOWS = (
     "textbook_to_course",
     "course_generation",
-    "intake_remediation",
-    "batch_dart",
     "rag_training",
     "trainforge_train",
 )

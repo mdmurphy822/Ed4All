@@ -24,45 +24,12 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-# --------------------------------------------------------------------- #
-# (1) DART article nesting end-to-end
-# --------------------------------------------------------------------- #
-
-
-def test_smoke_dart_article_body_nesting_end_to_end():
-    """Rendered HTML puts chapter body INSIDE the article wrapper."""
-    from DART.converter import convert_pdftotext_to_html
-
-    raw = (
-        "Chapter 1: Introduction\n\n"
-        "This is the first paragraph of chapter 1 with real prose "
-        "content that spans multiple sentences about pedagogy.\n\n"
-        "Second paragraph extends the discussion with additional "
-        "detail about teaching strategies and learner engagement.\n\n"
-        "Chapter 2: Advanced Topics\n\n"
-        "Chapter 2 opens with a paragraph about advanced pedagogical "
-        "practices and deeper curriculum design principles.\n"
-    )
-    html = convert_pdftotext_to_html(raw, title="Smoke Test")
-
-    # Find article interiors.
-    import re
-    pat = re.compile(
-        r'(?is)<article\b[^>]*?role\s*=\s*["\']doc-chapter["\'][^>]*>(.*?)</article>'
-    )
-    interiors = [m.group(1) for m in pat.finditer(html)]
-
-    # Should produce ≥ 1 article and each should carry its own body.
-    assert len(interiors) >= 1, f"Expected chapters, got: {html[:500]}"
-
-    total_body_chars = sum(len(i) for i in interiors)
-    # Baseline: pre-Wave-29 the interiors were just ``<header><h2>...</h2></header>``
-    # (≈ 100 chars). With nested body we expect considerably more.
-    assert total_body_chars > 200, (
-        f"Expected paragraphs nested inside articles; "
-        f"total interior char count was {total_body_chars}"
-    )
-
+# NOTE (SemantiK migration): the former smoke (1) "DART article nesting
+# end-to-end" test was retired with the DART converter
+# (``DART.converter.convert_pdftotext_to_html``). The SemantiK output
+# contract has its own nesting tests under ``lib/semantik/tests``. The
+# remaining smoke checks (gate router, CLI exit, decision-capture stderr
+# budget, course-code unification) are provider-agnostic and preserved.
 
 # --------------------------------------------------------------------- #
 # (2) Gate router coverage — all 4 previously-skipped gates resolve

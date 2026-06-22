@@ -31,10 +31,6 @@
 | `course_generation` | `packaging` | `page_objectives_shacl` | PageObjectivesShaclValidator (warning) |
 | `course_generation` | `validation` | `wcag_compliance` | WCAGValidator |
 | `course_generation` | `validation` | `oscqr_score` | OSCQRValidator (warning) |
-| `intake_remediation` | `parsing` | `imscc_parse` | IMSCCParseValidator |
-| `intake_remediation` | `validation` | `wcag_compliance` | WCAGValidator |
-| `batch_dart` | `multi_source_synthesis` | `dart_markers` | DartMarkersValidator |
-| `batch_dart` | `validation` | `wcag_aa_compliance` | WCAGValidator |
 | `textbook_to_course` | `dart_conversion` | `dart_markers` | DartMarkersValidator |
 | `textbook_to_course` | `chunking` | `chunkset_manifest` | ChunksetManifestValidator (warning) |
 | `textbook_to_course` | `objective_extraction` | `textbook_outline_enrichment` | TextbookOutlineValidator (**critical** — three-stage textbook synthesis Stage-1 gate; audits the `semantic_outline` + `draft_terminal_objectives` keys the `TextbookSynthesisProvider` folds into `textbook_structure.json` when `TEXTBOOK_SYNTHESIS_PROVIDER` is set. Floor checks: `semantic_outline.themes[]` non-empty; every theme `chapter_ids[]` resolves against `chapters[].id`; `draft_terminal_objectives[]` non-empty with each draft TO carrying a non-empty `statement` + a valid `bloom_level`. GateIssue codes: `OUTLINE_THEMES_EMPTY`, `OUTLINE_THEME_CHAPTER_UNRESOLVED`, `OUTLINE_DRAFT_TO_EMPTY`, `OUTLINE_DRAFT_TO_MALFORMED`. Skips-with-pass when the enrichment keys are absent — default-off runs (`TEXTBOOK_SYNTHESIS_PROVIDER` unset) are unaffected, mirroring the `ABCD_MISSING` graceful-degrade contract. **2026-06-10 PROMOTED critical** (was warning-severity day-1): the "promote after a clean-corpus calibration run" condition is met — passes on 5 recent clean-corpus calibration runs (2026-06); skip-with-pass keeps synthesis-off/legacy runs unaffected) |

@@ -222,7 +222,7 @@ def test_explicit_legacy_value_is_honored(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "workflow_type", ["intake_remediation", "batch_dart", "rag_training", "trainforge_train"]
+    "workflow_type", ["rag_training", "trainforge_train"]
 )
 def test_non_pipeline_workflow_is_noop(monkeypatch, workflow_type):
     _clear_envs(monkeypatch)

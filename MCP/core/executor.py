@@ -146,7 +146,12 @@ AGENT_TOOL_MAPPING = {
     "requirements-collector": "get_courseforge_status",
     "content-generator": "generate_course_content",
     "brightspace-packager": "package_imscc",
-    "oscqr-course-evaluator": "validate_wcag_compliance",
+    # SemantiK migration: the standalone ``validate_wcag_compliance`` MCP tool
+    # (a DART tool) was retired. WCAG/OSCQR validation now runs as the
+    # ``wcag_compliance`` + OSCQR validation GATES (validators in
+    # ``lib.validators.wcag`` / ``lib.validators.oscqr``), so the evaluator
+    # agent routes to the benign status tool like ``quality-assurance``.
+    "oscqr-course-evaluator": "get_courseforge_status",
     "quality-assurance": "get_courseforge_status",
 
     # -------------------------------------------------------------------------
@@ -173,16 +178,24 @@ AGENT_TOOL_MAPPING = {
     "dart-chunker": "run_dart_chunking",
 
     # -------------------------------------------------------------------------
-    # DART/REMEDIATION AGENTS (Multi-Source Synthesis)
+    # CONVERSION / REMEDIATION AGENTS
     # -------------------------------------------------------------------------
-    "dart-automation-coordinator": "batch_convert_multi_source",
+    # SemantiK migration: ``dart-converter`` backs the surviving
+    # ``dart_conversion`` phase; ``extract_and_convert_pdf`` routes that phase
+    # to the SemantiK v2 cascade seam (the legacy DART converter was retired).
+    # ``dart-automation-coordinator`` (a Courseforge IMSCC-conversion
+    # orchestrator) and ``remediation-validator`` previously bound the retired
+    # ``batch_convert_multi_source`` / ``validate_wcag_compliance`` DART tools;
+    # they now route to ``extract_and_convert_pdf`` / ``get_courseforge_status``
+    # respectively (WCAG validation runs as the ``wcag_compliance`` gate).
+    "dart-automation-coordinator": "extract_and_convert_pdf",
     "dart-converter": "extract_and_convert_pdf",
     "imscc-intake-parser": "intake_imscc_package",
     "content-analyzer": "analyze_imscc_content",
     "accessibility-remediation": "remediate_course_content",
     "content-quality-remediation": "remediate_course_content",
     "intelligent-design-mapper": "remediate_course_content",
-    "remediation-validator": "validate_wcag_compliance",
+    "remediation-validator": "get_courseforge_status",
 
     # -------------------------------------------------------------------------
     # TRAINFORGE AGENTS
@@ -347,7 +360,7 @@ AGENT_PROVIDER_ENV_MAP: Mapping[str, str] = {
 # assessment-extractor, assessment-validator) have NO provider short-circuit
 # in ``_invoke_tool`` — they can ONLY run via Claude-session subagent
 # dispatch. None of them appear in the ``textbook_to_course`` workflow (they
-# belong to ``course_generation`` / ``intake_remediation`` / the
+# belong to ``course_generation`` / the
 # assessment-validation surface), so the blessed textbook authoring route is
 # fully coverable by the four entries below. Agents absent from this map are
 # treated by the guardrail as "session-only" — a run that would dispatch one

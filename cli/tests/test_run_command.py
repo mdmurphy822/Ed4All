@@ -554,14 +554,16 @@ class TestPhase5SupportedWorkflows:
             )
 
     def test_supported_workflows_size_matches_plan(self):
-        """Phase 5 §13 risk note: the set grows from 6 (legacy) +
-        ``trainforge_train`` + ``textbook-to-course`` alias to 11
-        canonical entries with the four new Phase 5 subcommands.
+        """Phase 5 §13 risk note: with the SemantiK migration retiring the
+        ``intake_remediation`` + ``batch_dart`` workflows, the canonical set
+        is 5 surviving (course_generation, rag_training, textbook_to_course,
+        the ``textbook-to-course`` alias, ``trainforge_train``) + 4 new
+        Phase 5 ``courseforge*`` stage subcommands = 9.
         """
         from cli.commands.run import SUPPORTED_WORKFLOWS
 
-        # 7 pre-Phase-5 + 4 new = 11
-        assert len(SUPPORTED_WORKFLOWS) == 11
+        # 5 surviving pre-Phase-5 + 4 new = 9
+        assert len(SUPPORTED_WORKFLOWS) == 9
 
     def test_unknown_workflow_lists_phase5_entries_in_error(self):
         runner = CliRunner()

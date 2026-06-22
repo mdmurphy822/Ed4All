@@ -272,13 +272,13 @@ def test_phase_medians_all_history_source_is_history(state_dir):
     Patch the prior to a single phase so the union of phases == that one phase,
     which has full history -> no prior fallback -> source 'history'.
     """
-    _completed_run("GUI-h-1", "batch_dart", {"staging": 5})
-    _completed_run("GUI-h-2", "batch_dart", {"staging": 7})
+    _completed_run("GUI-h-1", "rag_training", {"staging": 5})
+    _completed_run("GUI-h-2", "rag_training", {"staging": 7})
     original = run_service._PHASE_DURATION_PRIOR.copy()
     try:
         run_service._PHASE_DURATION_PRIOR.clear()
         run_service._PHASE_DURATION_PRIOR["staging"] = 1
-        out = run_service.phase_duration_medians("batch_dart")
+        out = run_service.phase_duration_medians("rag_training")
         assert out["source"] == "history"
         assert out["durations"]["staging"] == {"median_ms": 6, "n": 2}
     finally:

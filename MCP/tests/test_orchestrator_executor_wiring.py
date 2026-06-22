@@ -168,14 +168,6 @@ def test_normalize_course_code_is_importable_from_lib_decision_capture():
     assert callable(normalize_course_code)
 
 
-def test_normalize_course_code_backward_compat_from_dart_tools():
-    """Back-compat: dart_tools.py re-exports normalize_course_code."""
-    from lib.decision_capture import normalize_course_code as lib_norm
-    from MCP.tools.dart_tools import normalize_course_code as dart_norm
-    # Same callable reference (re-export)
-    assert dart_norm is lib_norm
-
-
 def test_workflow_run_emits_phase_start_capture(synthetic_workflow_state, tmp_path):
     """Running a workflow through the orchestrator must emit phase_start captures."""
     run_id, state = synthetic_workflow_state

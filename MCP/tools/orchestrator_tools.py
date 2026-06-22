@@ -143,7 +143,7 @@ def register_orchestrator_tools(mcp):
 
         Args:
             workflow_type: Type of workflow
-                Options: course_generation, intake_remediation, batch_dart, rag_training
+                Options: course_generation, rag_training, textbook_to_course
             params: JSON string with workflow-specific parameters
             priority: Execution priority ("low", "normal", "high")
 

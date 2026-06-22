@@ -10,8 +10,8 @@ removed those predecessors entirely:
     ed4all run <workflow_name> [options]
 
 Workflow names correspond to keys in ``config/workflows.yaml``
-(``textbook_to_course``, ``course_generation``, ``intake_remediation``,
-``batch_dart``, ``rag_training``). The command:
+(``textbook_to_course``, ``course_generation``, ``rag_training``).
+The command:
 
 1. Parses CLI flags into workflow params.
 2. Creates the workflow state (reuses the existing per-workflow creators).
@@ -44,8 +44,6 @@ SUPPORTED_WORKFLOWS = {
     "textbook_to_course",
     "textbook-to-course",  # hyphenated alias
     "course_generation",
-    "intake_remediation",
-    "batch_dart",
     "rag_training",
     # Wave 90 — post-import SLM adapter training stage. Generic
     # workflow path: ``ed4all run trainforge_train --course-name TST_101``
@@ -887,7 +885,7 @@ def run_command(
 
     if (
         not corpus
-        and workflow in {"textbook_to_course", "batch_dart", "rag_training"}
+        and workflow in {"textbook_to_course", "rag_training"}
         and not courseforge_stage
     ):
         click.secho(

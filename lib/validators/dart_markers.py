@@ -30,7 +30,6 @@ to be DART-produced and then omit provenance are blocked. This matches
 the design doc's "promote after Wave 8 emit has settled" note.
 
 Referenced by: config/workflows.yaml
-  - batch_dart.multi_source_synthesis -> dart_markers
   - textbook_to_course.dart_conversion -> dart_markers
 """
 

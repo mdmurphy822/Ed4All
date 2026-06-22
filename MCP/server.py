@@ -527,15 +527,6 @@ _loaded_modules = []
 _failed_modules = []
 
 try:
-    from tools.dart_tools import register_dart_tools
-    register_dart_tools(mcp)
-    logger.info("DART tools registered")
-    _loaded_modules.append("DART")
-except ImportError as e:
-    logger.warning(f"Could not register DART tools: {e}")
-    _failed_modules.append("DART")
-
-try:
     from tools.courseforge_tools import register_courseforge_tools
     register_courseforge_tools(mcp)
     logger.info("Courseforge tools registered")

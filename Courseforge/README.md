@@ -14,7 +14,7 @@ Courseforge turns a set of objectives (and optional DART-processed textbook HTML
 ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101
 ```
 
-Finished packages land under `Courseforge/exports/YYYYMMDD_HHMMSS_coursename/`. For intake/remediation of an existing package, drop the IMSCC into `Courseforge/inputs/existing-packages/` and run the `intake_remediation` workflow.
+Finished packages land under `Courseforge/exports/YYYYMMDD_HHMMSS_coursename/`. For remediation of an existing package, drop the IMSCC into `Courseforge/inputs/existing-packages/`.
 
 ## LMS compatibility
 

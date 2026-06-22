@@ -211,20 +211,13 @@ def test_pipeline_orchestrator_falls_back_without_canonical_code(tmp_path, monke
 # --------------------------------------------------------------------- #
 # Pipeline tools convert helper honours canonical_course_code
 # --------------------------------------------------------------------- #
-
-
-def test_raw_text_to_accessible_html_accepts_canonical_course_code(tmp_path):
-    """The DART converter entry point now accepts a
-    ``canonical_course_code`` kwarg that overrides the PDF-stem-derived
-    code used by the short-lived owned capture."""
-    import inspect
-
-    from MCP.tools.pipeline_tools import _raw_text_to_accessible_html
-
-    sig = inspect.signature(_raw_text_to_accessible_html)
-    assert "canonical_course_code" in sig.parameters, (
-        "Expected canonical_course_code kwarg on _raw_text_to_accessible_html"
-    )
+#
+# NOTE (SemantiK migration): the former
+# ``test_raw_text_to_accessible_html_accepts_canonical_course_code`` test
+# was retired with the legacy DART converter
+# (``_raw_text_to_accessible_html``). The ``canonical_course_code``
+# threading through the surviving ``extract_and_convert_pdf`` registry
+# entry (now routing to SemantiK) is still pinned below.
 
 
 def test_extract_and_convert_pdf_threads_canonical_course_code():

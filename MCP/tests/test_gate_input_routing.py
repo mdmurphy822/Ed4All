@@ -51,7 +51,7 @@ def test_default_router_registers_every_shipping_validator():
         "lib.validators.page_objectives.PageObjectivesValidator",
         "lib.validators.source_refs.PageSourceRefValidator",
         "lib.validators.imscc.IMSCCValidator",
-        "DART.pdf_converter.wcag_validator.WCAGValidator",
+        "lib.validators.wcag.WCAGValidator",
         "lib.validators.oscqr.OSCQRValidator",
         "lib.validators.dart_markers.DartMarkersValidator",
         "lib.validators.assessment.AssessmentQualityValidator",

@@ -19,7 +19,7 @@ Features:
 - Target size validation (2.5.8) - WCAG 2.2
 
 Usage:
-    from pdf_converter.wcag_validator import WCAGValidator, ValidationReport
+    from lib.validators.wcag import WCAGValidator, ValidationReport
 
     validator = WCAGValidator()
     report = validator.validate(html_content)

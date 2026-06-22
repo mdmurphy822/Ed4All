@@ -86,41 +86,42 @@ def test_extract_and_convert_pdf_emits_html_path(tmp_path: Path, monkeypatch):
     ``DartMarkersValidator`` builder doesn't consume — so ``dart_markers``
     gates silently skipped with ``missing inputs: html_path``.
 
-    Hermetic: monkeypatches ``subprocess.run`` so we don't depend on
-    pdftotext being installed on the CI image.
+    SemantiK migration: the legacy pdftotext converter was retired; the
+    live conversion runs the SemantiK v2 cascade on the ``dart_conversion``
+    phase. Hermetic: mocks ``_run_semantik_v2_conversion`` so we don't touch
+    SemantiK's heavy runtime deps.
     """
-    import subprocess as _subprocess_mod
-
     pt = importlib.import_module("MCP.tools.pipeline_tools")
     registry = pt._build_tool_registry()
 
     pdf = tmp_path / "tiny.pdf"
-    pdf.write_bytes(b"%PDF-1.4\n%EOF\n")  # marker; text comes from stub.
-
-    fake_text = (
-        "# Chapter 1\n"
-        + "Knowledge graphs organise information as nodes and edges. "
-        * 10
-    )
-
-    class _FakeCompleted:
-        stdout = fake_text
-        returncode = 0
-
-    def _fake_run(args, **kwargs):  # noqa: ANN001
-        if args and args[0] == "pdftotext":
-            return _FakeCompleted()
-        raise _subprocess_mod.SubprocessError("unexpected subprocess call")
-
-    monkeypatch.setattr(_subprocess_mod, "run", _fake_run)
+    pdf.write_bytes(b"%PDF-1.4\n%EOF\n")  # marker; conversion is mocked.
 
     out_dir = tmp_path / "out"
     out_dir.mkdir()
+
+    def _fake_seam(pdf_path, output_path, **kwargs):  # noqa: ANN001
+        Path(output_path).write_text(
+            "<html><body><main role='main'>x</main></body></html>",
+            encoding="utf-8",
+        )
+        return {
+            "success": True,
+            "output_path": output_path,
+            "output_paths": [output_path],
+            "html_path": output_path,
+            "html_paths": [output_path],
+            "html_length": 42,
+            "method": "semantik_v2",
+        }
+
+    monkeypatch.setattr(pt, "_run_semantik_v2_conversion", _fake_seam)
 
     result_json = asyncio.run(registry["extract_and_convert_pdf"](
         pdf_path=str(pdf),
         output_dir=str(out_dir),
         course_code="DEMO_101",
+        phase="dart_conversion",
     ))
     result = json.loads(result_json)
     assert result.get("success") is True, result

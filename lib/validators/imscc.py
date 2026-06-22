@@ -19,7 +19,7 @@ IMSCCParseValidator:
 - Content inventory complete
 - Source LMS detected
 
-Referenced by: config/workflows.yaml (course_generation, intake_remediation, textbook_to_course)
+Referenced by: config/workflows.yaml (course_generation, textbook_to_course)
 """
 
 import json
@@ -283,8 +283,8 @@ class IMSCCValidator:
         if not blocks_final_raw:
             # Backward compat: no blocks_final_path threaded in →
             # nothing to check. Pre-W5 callers (and the
-            # course_generation / intake_remediation workflows that
-            # don't run the two-pass router) hit this path.
+            # course_generation workflow that does not run the
+            # two-pass router) hit this path.
             return issues
 
         blocks_final_path = Path(blocks_final_raw)

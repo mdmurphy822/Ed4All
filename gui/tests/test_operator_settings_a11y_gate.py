@@ -22,7 +22,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Tuple
 
-from DART.pdf_converter.wcag_validator import IssueSeverity, WCAGValidator
+from lib.validators.wcag import IssueSeverity, WCAGValidator
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STATIC_DIR = REPO_ROOT / "gui" / "static"

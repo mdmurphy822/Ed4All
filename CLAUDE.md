@@ -1,6 +1,6 @@
 # Ed4All Hybrid Orchestrator
 
-Unified orchestration system for DART, Courseforge, Trainforge, and LibV2.
+Unified orchestration system for SemantiK, Courseforge, Trainforge, and LibV2.
 
 ## Quick Start
 
@@ -93,8 +93,6 @@ image shipping `[gui,server,embedding]` on CPU torch): `docs/operations/docker.m
 |----------|-------------|----------------|
 | `textbook_to_course` | Full PDF → Course → Assessments pipeline | 10 |
 | `course_generation` | Generate new course from objectives | 10 |
-| `intake_remediation` | Import and remediate IMSCC | 4 |
-| `batch_dart` | Batch PDF to HTML conversion | 4 |
 | `rag_training` | Trainforge assessment generation | 5 |
 | `trainforge_train` | Train a course-pinned SLM adapter (post-import LibV2 stage) | 1 |
 | `courseforge-outline` | Phase 5 stage subcommand — re-run only the outline tier (`content_generation_outline`) against an existing project export. Pre-Courseforge phases pre-populate from disk via `_synthesize_outline_output`; non-whitelisted two-pass + post-Courseforge phases skip via `courseforge_stage` whitelist. | 10 |
@@ -108,7 +106,7 @@ image shipping `[gui,server,embedding]` on CPU torch): `docs/operations/docker.m
 
 ```
 Ed4All/
-├── DART/                    # PDF to accessible HTML conversion
+├── SemantiK/                # PDF to accessible HTML conversion (license-clean cascade)
 ├── Courseforge/             # Course content generation & packaging
 ├── Trainforge/              # Assessment-based RAG training (incl. canonical chunker)
 ├── LibV2/                   # Course content repository
@@ -175,7 +173,7 @@ Execute via parallel agent dispatch:
 ### Phase 4: Quality Validation
 
 Every artifact validated before finalization:
-- DART: WCAG compliance check
+- SemantiK: WCAG compliance check
 - Courseforge: IMSCC validation
 - Trainforge: Assessment quality scoring
 
@@ -250,7 +248,7 @@ for i in range(50):
 | `write_file` | Write to files (RESTRICTED sandbox: runtime/, state/) |
 | `file_info` | Get file/directory metadata (READ_ONLY sandbox) |
 
-**DART tools** — see `DART/CLAUDE.md § MCP Tools` (includes Source-Provenance Output contract).
+**SemantiK tools** — see `SemantiK/CLAUDE.md` (PDF→accessible-HTML conversion; emits the Source-Provenance `data-dart-*` / `dart:{slug}#{block_id}` contract).
 
 **Courseforge tools** — see `Courseforge/CLAUDE.md § MCP Tools` (includes Metadata Output contract: `data-cf-*` + JSON-LD).
 
@@ -350,7 +348,7 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 
 ### Other workflows
 
-`intake_remediation` (IMSCC parse → remediate → repackage) and `rag_training` (extraction → indexing → assessment_generation → validation) — see `config/workflows.yaml` for canonical phase shapes.
+`rag_training` (extraction → indexing → assessment_generation → validation) — see `config/workflows.yaml` for canonical phase shapes.
 
 ### Textbook-to-Course Workflow
 
@@ -457,12 +455,12 @@ tracker.update_status("content_generator", "IN_PROGRESS",
 | `oscqr-course-evaluator` | OSCQR quality evaluation |
 | `quality-assurance` | Pattern prevention & validation |
 
-### DART / Remediation Agents
+### Conversion / Remediation Agents
 
 | Agent | Purpose |
 |-------|---------|
 | `dart-automation-coordinator` | Orchestrate PDF conversion |
-| `dart-converter` | Multi-source synthesis conversion |
+| `dart-converter` | Drives the SemantiK v2 cascade for the `dart_conversion` phase (PDF → accessible HTML + source provenance) |
 | `imscc-intake-parser` | Extract & inventory IMSCC packages |
 | `content-analyzer` | Detect accessibility & quality gaps |
 | `accessibility-remediation` | WCAG fixes, alt text, headings |
@@ -519,7 +517,7 @@ Precedent call sites + regression tests: `docs/architecture/decision-capture.md`
 - Clear learning objectives per module
 - Consistent formatting
 
-### Conversion Quality (DART)
+### Conversion Quality (SemantiK)
 
 - Semantic HTML structure
 - Alt text for all images
@@ -612,12 +610,10 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
 | `course_generation` | 17 | 9 | 26 |
-| `intake_remediation` | 2 | 0 | 2 |
-| `batch_dart` | 2 | 0 | 2 |
 | `rag_training` | 4 | 3 | 7 |
 | `textbook_to_course` | 39 | 50 | 89 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **66** | **62** | **128** |
+| **Total** | **62** | **62** | **124** |
 
 > W4 SHADOW landing (NLI grounding gates): `rewrite_source_grounding` DEMOTED
 > critical → warning in `course_generation` + `textbook_to_course`
@@ -743,8 +739,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | Prefix | Owner | Flag count |
 |--------|-------|-----------:|
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 48 |
-| `DART_*` | [`DART/CLAUDE.md § Opt-In Behavior Flags`](DART/CLAUDE.md) | 6 |
-| `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter) | [`DART/CLAUDE.md § SemantiK Opt-In Behavior Flags`](DART/CLAUDE.md) | 18 |
+| `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 18 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 25 |
 | `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 52 |
 
@@ -852,11 +847,11 @@ Validators (`lib/validators/`) — wiring in `docs/validation/gates.md`. Load-be
 
 ## Individual Project Guides
 
-- **DART**: `DART/CLAUDE.md`
+- **SemantiK**: `SemantiK/CLAUDE.md`
 - **Courseforge**: `Courseforge/CLAUDE.md`
 - **Trainforge**: `Trainforge/CLAUDE.md`
 - **LibV2**: `LibV2/CLAUDE.md`
-- **Chunker**: `Trainforge/chunker/` — canonical chunker shared by DART, IMSCC, and Trainforge synthesis paths. See `Trainforge/CLAUDE.md` § "Chunking" for the surface contract.
+- **Chunker**: `Trainforge/chunker/` — canonical chunker shared by the conversion (SemantiK), IMSCC, and Trainforge synthesis paths. See `Trainforge/CLAUDE.md` § "Chunking" for the surface contract.
 - **Ontology map + v0.2.0 changes**: `schemas/ONTOLOGY.md`
 
 ---

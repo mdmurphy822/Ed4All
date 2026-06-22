@@ -682,7 +682,7 @@ class TestAccessibilityResults:
                         "wcag_compliance",
                         passed=False,
                         validator_name=(
-                            "DART.pdf_converter.wcag_validator.WCAGValidator"
+                            "lib.validators.wcag.WCAGValidator"
                         ),
                         issues=[
                             {

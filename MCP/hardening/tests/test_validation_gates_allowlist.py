@@ -14,7 +14,6 @@ from MCP.hardening.validation_gates import ValidationGateManager
 REQUIRED_PREFIXES = (
     "lib.validators.",
     "lib.leak_checker",
-    "DART.pdf_converter.",
     "Courseforge.router.",
 )
 

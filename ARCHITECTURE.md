@@ -429,8 +429,6 @@ training-captures/
 |---|---|---|
 | `textbook_to_course` | DART -> Courseforge -> Trainforge -> LibV2 | 10 |
 | `course_generation` | Courseforge (from objectives) | 10 |
-| `intake_remediation` | Import + remediate existing IMSCC | 4 |
-| `batch_dart` | DART batch PDF conversion | 4 |
 | `rag_training` | Trainforge assessment generation | 5 |
 
 ---

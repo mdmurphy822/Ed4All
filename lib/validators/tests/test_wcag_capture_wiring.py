@@ -1,30 +1,16 @@
-"""H3 Wave W6b — DART WCAGValidator decision-capture wiring.
+"""H3 Wave W6b — WCAGValidator decision-capture wiring.
 
-Per `plans/h3-validator-capture-wiring-2026-05.md` §3 W6b the DART
-`WCAGValidator` (lives at `DART/pdf_converter/wcag_validator.py` —
-outside the `lib/validators/` tree but with the same Validator
-protocol) MUST emit one `wcag_compliance_check` decision per
-gate-shape `validate()` call. Per the H3 review §4.1 Correction 1.2
-the validator's home directory had no `tests/` sibling at the time
-of the wave; per the operator's W6b dispatch instruction, the test
-lives here under `lib/validators/tests/` instead of creating the
-new `DART/pdf_converter/tests/` directory.
+Per `plans/h3-validator-capture-wiring-2026-05.md` §3 W6b the
+`WCAGValidator` (relocated to `lib/validators/wcag.py` during the
+SemantiK migration that retired DART) MUST emit one
+`wcag_compliance_check` decision per gate-shape `validate()` call.
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any, List
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-_DART_DIR = _REPO_ROOT / "DART" / "pdf_converter"
-if str(_DART_DIR) not in sys.path:
-    sys.path.insert(0, str(_DART_DIR))
-
-from wcag_validator import WCAGValidator  # noqa: E402
+from lib.validators.wcag import WCAGValidator
 
 
 class _MockCapture:

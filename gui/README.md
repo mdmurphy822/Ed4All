@@ -290,7 +290,7 @@ partial directory.
 | POST | `/api/runs/{run_id}/cancel` | — | `{run_id, status}` (404 if unknown) |
 
 The launchable workflows are `textbook_to_course`, `course_generation`,
-`intake_remediation`, `batch_dart`, `rag_training`, `trainforge_train`, plus the
+`rag_training`, `trainforge_train`, plus the
 Courseforge stage subcommands (`courseforge`, `courseforge_outline`,
 `courseforge_validate`, `courseforge_rewrite`) surfaced as
 `textbook_to_course` aliases.

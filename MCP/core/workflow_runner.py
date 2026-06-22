@@ -796,7 +796,7 @@ def _phase_yaml_block(phase_name: str) -> Optional[Dict[str, Any]]:
 
     Phase names are used as dict keys in the legacy dicts, so callers only
     have a phase name (not workflow+phase). If the same phase name appears in
-    multiple workflows (e.g. `dart_conversion` in `batch_dart`-siblings),
+    multiple workflows (e.g. `dart_conversion` in sibling workflows),
     the first YAML block with an `inputs_from:` or `outputs:` annotation
     wins. This preserves the prior implicit behavior where a phase had a
     single global routing signature.
@@ -2727,9 +2727,8 @@ class WorkflowRunner:
                 # SemantiK migration P3c — the registry tool
                 # ``extract_and_convert_pdf`` flips the LIVE PDF→HTML
                 # conversion to the SemantiK v2 seam ONLY when it sees
-                # ``phase == "dart_conversion"`` (this textbook/course path);
-                # the ``batch_dart`` ``multi_source_synthesis`` phase stays on
-                # the legacy DART path. Forward the seam params so the flipped
+                # ``phase == "dart_conversion"`` (this textbook/course path).
+                # Forward the seam params so the flipped
                 # path threads canonical course code, figures dir, and the
                 # ``--reuse-conversion`` pinned-HTML flag (§3.3a item 2).
                 task_params = {

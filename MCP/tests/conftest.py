@@ -73,12 +73,12 @@ workflows:
         agents: [brightspace-packager]
         timeout_minutes: 30
 
-  batch_dart:
-    description: "Batch PDF conversion"
+  rag_training:
+    description: "Assessment-based RAG training"
     max_concurrent: 4
     phases:
-      - name: conversion
-        agents: [dart-converter]
+      - name: extraction
+        agents: [assessment-extractor]
         timeout_minutes: 60
 """
 
@@ -110,7 +110,7 @@ agents:
 
   dart-converter:
     description: "Converts PDF to accessible HTML"
-    tool: convert_pdf_multi_source
+    tool: extract_and_convert_pdf
     capabilities:
       - pdf_conversion
       - accessibility

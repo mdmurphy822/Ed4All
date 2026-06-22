@@ -7,7 +7,7 @@ each answer-fragment status swapped in (exactly as ``learn.js`` does the swap,
 performed here in Python via bs4), each typed-error fragment, and the
 source-viewer output over the WS1 mini-course fixture (dart + imscc arms).
 
-The validator (``DART/pdf_converter/wcag_validator.py``) is bs4-only (bs4 is a
+The validator (``lib/validators/wcag.py``) is bs4-only (bs4 is a
 base dependency), so this gate runs on a default install with NO fastapi /
 torch / LibV2 / model dependency — it is a pure ``string -> ValidationReport``
 transform over the *real* rendered output of the WS4-owned renderers. The
@@ -36,7 +36,7 @@ from typing import List, Tuple
 
 import pytest
 
-from DART.pdf_converter.wcag_validator import IssueSeverity, WCAGValidator
+from lib.validators.wcag import IssueSeverity, WCAGValidator
 from gui.services.answer_render import (
     ERROR_COPY,
     _WHY_NO_ANSWER_BLOCKED,
