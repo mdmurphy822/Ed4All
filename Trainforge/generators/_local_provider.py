@@ -26,7 +26,7 @@ Differences from the Together provider:
   no key is resolved so reverse-proxies that DO check auth see a
   stable value rather than an unset header. ``LOCAL_SYNTHESIS_API_KEY``
   is still honoured when set.
-- Default model is ``qwen2.5:14b-instruct-q4_K_M`` — a sensible
+- Default model is ``qwen2.5:7b-instruct-q4_K_M`` — a sensible
   out-of-box pick that fits an 8 GB GPU on Ollama.
   ``LOCAL_SYNTHESIS_MODEL`` overrides per server.
 - ``out["provider"]`` is set to ``"local"`` so downstream consumers
@@ -75,7 +75,7 @@ logger = logging.getLogger(__name__)
 # Defaults — kept as module-level constants so callers (and tests) can
 # import them without instantiating the provider.
 DEFAULT_BASE_URL = "http://localhost:11434/v1"
-DEFAULT_SYNTHESIS_MODEL = "qwen2.5:14b-instruct-q4_K_M"
+DEFAULT_SYNTHESIS_MODEL = "qwen2.5:7b-instruct-q4_K_M"
 ENV_BASE_URL = "LOCAL_SYNTHESIS_BASE_URL"
 ENV_MODEL = "LOCAL_SYNTHESIS_MODEL"
 ENV_API_KEY = "LOCAL_SYNTHESIS_API_KEY"

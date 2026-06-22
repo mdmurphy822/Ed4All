@@ -604,7 +604,7 @@ class TestOpenAICompatibleBackend:
         backend = OpenAICompatibleBackend(
             provider_name="local",
             base_url="http://localhost:11434/v1",
-            default_model="qwen2.5:14b-instruct-q4_K_M",
+            default_model="qwen2.5:7b-instruct-q4_K_M",
         )
         assert isinstance(backend, LLMBackend)
 
@@ -629,7 +629,7 @@ class TestOpenAICompatibleBackend:
         backend = OpenAICompatibleBackend(
             provider_name="local",
             base_url="http://localhost:11434/v1",
-            default_model="qwen2.5:14b-instruct-q4_K_M",
+            default_model="qwen2.5:7b-instruct-q4_K_M",
             capture=cap,
         )
         fake = _wire_fake_client(backend, response_text="local says hi")
@@ -658,7 +658,7 @@ class TestOpenAICompatibleBackend:
         # — they land in the decision string per _CaptureMixin contract.
         assert "provider_name=local" in event["decision"]
         assert "base_url=http://localhost:11434" in event["decision"]
-        assert "model=qwen2.5:14b-instruct-q4_K_M" in event["rationale"]
+        assert "model=qwen2.5:7b-instruct-q4_K_M" in event["rationale"]
         assert len(event["rationale"]) >= 20
 
     def test_complete_sync_together(self, monkeypatch):
@@ -785,7 +785,7 @@ class TestProviderRegistry:
 
         backend = resolve_openai_compatible_backend("local")
         assert backend.base_url == "http://localhost:11434/v1"
-        assert backend.default_model == "qwen2.5:14b-instruct-q4_K_M"
+        assert backend.default_model == "qwen2.5:7b-instruct-q4_K_M"
         # Local-style providers ship a placeholder so reverse-proxy
         # auth-checking servers see a stable string.
         assert backend.api_key == "local"

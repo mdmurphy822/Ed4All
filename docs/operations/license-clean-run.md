@@ -21,7 +21,7 @@ Plus the prerequisites the pipeline already documents on the canonical `--provid
 
 - `COURSEFORGE_TWO_PASS=true` — required for `COURSEFORGE_BLOCK_ROUTING_PATH` to take effect.
 - `COURSEFORGE_PROVIDER=local` — routes the legacy single-pass content-generator surface; same env var the canonical `docs/LICENSING.md` recommends.
-- `LOCAL_SYNTHESIS_BASE_URL` (default `http://localhost:11434/v1`) and `LOCAL_SYNTHESIS_MODEL` (default `qwen2.5:14b-instruct-q4_K_M`) — read by every local-OSS provider (synthesis, curriculum-alignment, content-generator, outline, rewrite).
+- `LOCAL_SYNTHESIS_BASE_URL` (default `http://localhost:11434/v1`) and `LOCAL_SYNTHESIS_MODEL` (default `qwen2.5:7b-instruct-q4_K_M`) — read by every local-OSS provider (synthesis, curriculum-alignment, content-generator, outline, rewrite).
 - `CURRICULUM_ALIGNMENT_PROVIDER=local` — routes Trainforge teaching-role classification through the local server.
 
 ---

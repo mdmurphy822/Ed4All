@@ -150,7 +150,7 @@ def test_happy_path_answers_with_resolved_citation(mini_libv2: Path):
     assert cit.link_target["kind"] == "course_page"
     # char_span forwarded only for resolved_exact.
     assert cit.link_target["char_span"] is not None
-    assert result.model_id == "qwen2.5:14b-instruct-q4_K_M"
+    assert result.model_id == "qwen2.5:7b-instruct-q4_K_M"
     assert result.prompt_version == "ws3.v5"
 
 

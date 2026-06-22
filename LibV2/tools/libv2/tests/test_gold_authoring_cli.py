@@ -28,7 +28,7 @@ _TEXT_B = "To add or subtract fractions, they must first share a common denomina
 
 
 class _FakeClient:
-    model = "qwen2.5:14b-instruct-q4_K_M"
+    model = "qwen2.5:7b-instruct-q4_K_M"
 
     def __init__(self, response):
         self._response = response

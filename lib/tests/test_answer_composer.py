@@ -48,7 +48,7 @@ class FakeAnswerClient:
     Records every call's messages + kwargs for assertions.
     """
 
-    def __init__(self, responses, *, model="qwen2.5:14b-instruct-q4_K_M"):
+    def __init__(self, responses, *, model="qwen2.5:7b-instruct-q4_K_M"):
         self._responses = list(responses)
         self.model = model
         self.calls = []
@@ -251,7 +251,7 @@ def test_compose_well_formed_envelope_roundtrip():
     assert result.not_in_course is False
     assert result.attempts == 1
     assert result.prompt_version == "ws3.v5"
-    assert result.model_id == "qwen2.5:14b-instruct-q4_K_M"
+    assert result.model_id == "qwen2.5:7b-instruct-q4_K_M"
 
 
 def test_compose_extracts_json_wrapped_in_prose():
@@ -589,7 +589,7 @@ def test_remediation_directive_restates_full_allowed_set():
 class _UsageFakeClient(FakeAnswerClient):
     """FakeAnswerClient that also reports server-side prompt_tokens usage."""
 
-    def __init__(self, responses, *, model="qwen2.5:14b-instruct-q4_K_M",
+    def __init__(self, responses, *, model="qwen2.5:7b-instruct-q4_K_M",
                  reported_prompt_tokens=None):
         super().__init__(responses, model=model)
         self.last_usage = {}

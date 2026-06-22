@@ -57,7 +57,7 @@ PROVIDERS: List[Dict[str, Any]] = [
         "base_url_env": "LOCAL_SYNTHESIS_BASE_URL",
         "base_url_default": "http://localhost:11434/v1",
         "model_env": "LOCAL_SYNTHESIS_MODEL",
-        "model_default": "qwen2.5:14b-instruct-q4_K_M",
+        "model_default": "qwen2.5:7b-instruct-q4_K_M",
         "api_key_required": False,
         # Registry default is text-only; the operator flips
         # LOCAL_VISION_CAPABLE=true (or loads a model whose name contains
@@ -344,7 +344,7 @@ def _build_catalog() -> List[Dict[str, Any]]:
             "label": "Local Model",
             "category": "local",
             "type": "string",
-            "default": "qwen2.5:14b-instruct-q4_K_M",
+            "default": "qwen2.5:7b-instruct-q4_K_M",
             "help": "Model identifier the local server expects.",
             "applies_to": "local",
         },
@@ -745,7 +745,7 @@ def _build_catalog() -> List[Dict[str, Any]]:
             "help": (
                 "Answer model ID override. Resolution chain: explicit arg "
                 "> ED4ALL_ANSWER_MODEL > LOCAL_SYNTHESIS_MODEL > registry "
-                "default (qwen2.5:14b-instruct-q4_K_M)."
+                "default (qwen2.5:7b-instruct-q4_K_M)."
             ),
             "applies_to": "retrieval",
         },

@@ -3490,7 +3490,7 @@ def build_parser() -> argparse.ArgumentParser:
             "another model — Anthropic's does not. 'local' = a local "
             "OpenAI-compatible model server (Ollama default "
             "http://localhost:11434/v1, override via LOCAL_SYNTHESIS_BASE_URL; "
-            "default model qwen2.5:14b-instruct-q4_K_M, override via "
+            "default model qwen2.5:7b-instruct-q4_K_M, override via "
             "LOCAL_SYNTHESIS_MODEL). API key optional — local servers ignore "
             "auth. Zero cost per call, zero ToS exposure; tradeoff is local "
             "hardware requirement."

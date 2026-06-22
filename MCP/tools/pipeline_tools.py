@@ -5050,7 +5050,7 @@ def register_pipeline_tools(mcp):
                   (Ollama / vLLM / llama.cpp / LM Studio). Default base
                   URL ``http://localhost:11434/v1`` (override via
                   ``LOCAL_SYNTHESIS_BASE_URL``); default model
-                  ``qwen2.5:14b-instruct-q4_K_M`` (override via
+                  ``qwen2.5:7b-instruct-q4_K_M`` (override via
                   ``LOCAL_SYNTHESIS_MODEL``). API key optional. Zero
                   per-call cost, zero ToS exposure (fully offline /
                   air-gapped friendly); tradeoff is local hardware.
@@ -15826,7 +15826,7 @@ def _build_tool_registry() -> dict:
           OpenAI-compatible model server: Ollama / vLLM / llama.cpp /
           LM Studio. Default base URL ``http://localhost:11434/v1``,
           override via ``LOCAL_SYNTHESIS_BASE_URL``; default model
-          ``qwen2.5:14b-instruct-q4_K_M``, override via
+          ``qwen2.5:7b-instruct-q4_K_M``, override via
           ``LOCAL_SYNTHESIS_MODEL``; API key optional). Together's ToS
           permits training-data generation, unlike Anthropic's; the
           local provider is fully offline and ToS-free. When ``None``

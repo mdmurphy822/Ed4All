@@ -87,7 +87,7 @@ def _answered(*, warnings=None) -> GroundedAnswer:
         confidence={"signals": {"top_score": 0.9}, "policy_version": "ws3.v0-uncalibrated"},
         groundedness=None,
         warnings=list(warnings or []),
-        model_id="qwen2.5:14b-instruct-q4_K_M",
+        model_id="qwen2.5:7b-instruct-q4_K_M",
         prompt_version="ws3.v1",
         generated_at="2026-06-09T00:00:00Z",
         latency_ms=42.0,
@@ -142,7 +142,7 @@ def _blocked() -> GroundedAnswer:
         confidence={"signals": {"top_score": 0.8}, "policy_version": "ws3.v0-uncalibrated"},
         groundedness=None,
         warnings=[],
-        model_id="qwen2.5:14b-instruct-q4_K_M",
+        model_id="qwen2.5:7b-instruct-q4_K_M",
         prompt_version="ws3.v1",
         generated_at="2026-06-09T00:00:00Z",
         latency_ms=50.0,
@@ -232,7 +232,7 @@ class TestJson:
         assert doc["answer_text"].startswith("A SHACL NodeShape")
         assert doc["citations"][0]["chunk_id"] == "chunk_001"
         assert doc["citations"][0]["anchor_status"] == "resolved_exact"
-        assert doc["model_id"] == "qwen2.5:14b-instruct-q4_K_M"
+        assert doc["model_id"] == "qwen2.5:7b-instruct-q4_K_M"
         assert doc["prompt_version"] == "ws3.v1"
 
     def test_json_refused(self, monkeypatch, tmp_path):

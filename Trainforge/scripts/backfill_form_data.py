@@ -579,7 +579,7 @@ def _warmup_provider(
     # Strip the OpenAI-compat /v1 suffix to reach Ollama's native API.
     ollama_root = base_url.rstrip("/").removesuffix("/v1")
     model_name = model or os.environ.get(
-        "LOCAL_SYNTHESIS_MODEL", "qwen2.5:14b-instruct-q4_K_M"
+        "LOCAL_SYNTHESIS_MODEL", "qwen2.5:7b-instruct-q4_K_M"
     )
     print_fn(
         f"Pre-warming model {model_name!r} via {ollama_root}/api/generate "

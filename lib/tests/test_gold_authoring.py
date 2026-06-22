@@ -49,7 +49,7 @@ class FakeDraftClient:
     substring marker -> the JSON string to return, OR a single default string.
     """
 
-    def __init__(self, responses, *, model="qwen2.5:14b-instruct-q4_K_M"):
+    def __init__(self, responses, *, model="qwen2.5:7b-instruct-q4_K_M"):
         self._responses = list(responses)
         self.model = model
         self.calls = []
