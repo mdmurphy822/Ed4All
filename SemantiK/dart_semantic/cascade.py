@@ -41,6 +41,7 @@ from .council.cross_reranker import arbitrate
 from .council.orchestrator import run_council
 from .gates import gate_document, gate_per_region, rerank_per_region
 from .qwen_specialists.runner import run_qwen_specialists
+from .qwen_specialists.reviewer import resolve_structure_review_mode
 from .qwen_specialists.runtime import specialist_provider_is_endpoint
 from .soft_reranker import score_document
 from .structure_graph import Region, build_structure_graph
@@ -54,17 +55,96 @@ from .validate import HtmlValidator
 # ---------------------------------------------------------------------------
 
 
-def _cap_regions_per_kind(regions: list[Region], *, cap: int) -> list[Region]:
+def _cap_regions_per_kind(
+    regions: list[Region],
+    *,
+    cap: int,
+    stage5d_metadata_drop_ids: frozenset[int] | None = None,
+) -> list[Region]:
+    """Cap the region list to ``cap`` survivors PER KIND (lossy ``continue``).
+
+    ``stage5d_metadata_drop_ids`` (C2 cap-exemption): the set of POSITIONAL
+    indices into ``regions`` that the Stage-5d reviewer NEWLY re-tagged to
+    ``metadata_drop`` this run. A re-tagged-this-stage ``metadata_drop``
+    region is exempt from counting against ANY bucket's running cap — it
+    emits empty HTML and is filtered out of ``body_html`` downstream, so
+    counting it against a content bucket would needlessly evict real
+    content (a phantom heading re-roled to ``paragraph``/``metadata_drop``
+    must NOT push a real paragraph out of the cap). The region still SURVIVES
+    into the output list (coverage invariant: every FB stays owned); it just
+    does not consume a cap slot.
+
+    When ``stage5d_metadata_drop_ids`` is None/empty (flag OFF, or no drops),
+    this is byte-identical to the historical per-kind cap.
+    """
     if cap <= 0:
         return list(regions)
+    exempt = stage5d_metadata_drop_ids or frozenset()
     counts: Counter[str] = Counter()
     out: list[Region] = []
-    for r in regions:
+    for i, r in enumerate(regions):
+        # A Stage-5d metadata_drop re-tag is cap-exempt: keep it (empty-emit,
+        # dropped from body_html) but never let it consume a bucket slot.
+        if i in exempt:
+            out.append(r)
+            continue
         if counts[r.kind] >= cap:
             continue
         out.append(r)
         counts[r.kind] += 1
     return out
+
+
+def _surviving_fb_indices(regions: list[Region]) -> Counter[int]:
+    """Multiset of FeatureBlock indices owned by the given (surviving) regions.
+
+    A re-role-induced cap eviction silently drops a region AND its
+    FeatureBlocks; comparing this multiset for the flag-ON survivors against
+    the flag-OFF baseline is the C2 / R12 FB-survival check.
+    """
+    owned: Counter[int] = Counter()
+    for r in regions:
+        for idx in (getattr(r, "feature_block_indices", ()) or ()):
+            owned[idx] += 1
+    return owned
+
+
+def _assert_fb_survival_through_cap(
+    baseline_capped: list[Region],
+    reviewed_capped: list[Region],
+) -> None:
+    """C2 / R12 — fail closed if a Stage-5d re-role evicted real content.
+
+    The multiset of FeatureBlock indices that survive the cap with the
+    Stage-5d corrections applied MUST be a superset of (here: equal to) the
+    multiset that survives the cap on the flag-OFF baseline. A real-content
+    FB that the baseline kept but the reviewed run dropped is a re-role-
+    induced eviction — the cap pushing a real paragraph out because N
+    phantom headings re-roled into its bucket. We fail closed (caller
+    reverts the Stage-5d corrections for the run) rather than silently
+    shipping a document with lost content.
+
+    Raises :class:`CapSafetyError` on any baseline FB missing from the
+    reviewed survivors.
+    """
+    baseline_fbs = _surviving_fb_indices(baseline_capped)
+    reviewed_fbs = _surviving_fb_indices(reviewed_capped)
+    missing = baseline_fbs - reviewed_fbs
+    if missing:
+        raise CapSafetyError(
+            "structure-review cap-safety FAILED: "
+            f"{sum(missing.values())} FeatureBlock(s) {sorted(missing)!r} "
+            "survived the per-kind cap at baseline but were EVICTED after the "
+            "Stage-5d re-role (a phantom-heading re-role pushed real content "
+            "past the cap) — failing closed rather than dropping content."
+        )
+
+
+class CapSafetyError(RuntimeError):
+    """Raised when a Stage-5d re-role evicts real content at the per-kind cap.
+
+    Caught by ``run_full_cascade`` to FAIL CLOSED: the Stage-5d corrections
+    are reverted to the flag-OFF region list for the run (C2 / R12)."""
 
 
 def _stage7_violation_distribution(
@@ -261,11 +341,50 @@ def _region_wcag_status(stage7_results: dict[int, list[Any]], region_index: int)
     return "failed"
 
 
+def _review_by_region_index(verdicts: list[Any] | None) -> dict[int, dict[str, Any]]:
+    """Index Stage-5d ReviewVerdicts by their ``block_id`` (region index).
+
+    Returns a terse per-region ``review`` payload (``corrected_from`` /
+    ``corrected_to`` / ``reason_code`` / ``reverted`` / ``note``) keyed on
+    region index, for joining into ``_build_region_provenance``. Only
+    NON-``ok`` (corrected or reverted) verdicts are surfaced — an ``ok``
+    no-op carries no audit signal and would only bloat the provenance.
+    Empty dict when ``verdicts`` is None (flag OFF) so the provenance dict
+    stays byte-stable.
+    """
+    out: dict[int, dict[str, Any]] = {}
+    for v in (verdicts or ()):
+        kind_before = getattr(v, "kind_before", None)
+        kind_after = getattr(v, "kind_after", None)
+        level_before = getattr(v, "level_before", None)
+        level_after = getattr(v, "level_after", None)
+        reverted = bool(getattr(v, "reverted_for_invariant", False))
+        verdict_label = getattr(v, "verdict", "ok")
+        changed = (kind_before != kind_after) or (level_before != level_after)
+        if not changed and not reverted:
+            # Pure no-op ``ok`` — no audit signal to carry.
+            continue
+        bid = getattr(v, "block_id", None)
+        if not isinstance(bid, int):
+            continue
+        out[bid] = {
+            "corrected_from": kind_before,
+            "corrected_to": kind_after,
+            "level_from": level_before,
+            "level_to": level_after,
+            "reason_code": verdict_label,
+            "reverted": reverted,
+            "note": getattr(v, "review_note", "") or "",
+        }
+    return out
+
+
 def _build_region_provenance(
     region_order: list[int],
     regions: list[Region],
     feature_blocks: list[Any],
     stage7_results: dict[int, list[Any]],
+    review_verdicts: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Distill one provenance dict per region in DOCUMENT (emission) order.
 
@@ -292,6 +411,7 @@ def _build_region_provenance(
     """
     provenance: list[dict[str, Any]] = []
     n = len(regions)
+    review_index = _review_by_region_index(review_verdicts)
     for region_index in region_order:
         if not (0 <= region_index < n):
             # Defensive: a provenance index outside the region list is a
@@ -320,21 +440,27 @@ def _build_region_provenance(
         heading_text = payload.get("text") if kind in {"heading", "figure"} else None
         figure_alt = (payload.get("alt_text") or None) if kind == "figure" else None
 
-        provenance.append(
-            {
-                "region_index": region_index,
-                "region_kind": kind,
-                "role": role,
-                "confidence": confidence,
-                "wcag_status": _region_wcag_status(stage7_results, region_index),
-                "first_raw_block_index": int(first_raw),
-                "pages": pages,
-                "heading_text": heading_text,
-                "level": payload.get("level_hint"),
-                "figure_alt": figure_alt,
-                "raw_text": raw_text,
-            }
-        )
+        entry: dict[str, Any] = {
+            "region_index": region_index,
+            "region_kind": kind,
+            "role": role,
+            "confidence": confidence,
+            "wcag_status": _region_wcag_status(stage7_results, region_index),
+            "first_raw_block_index": int(first_raw),
+            "pages": pages,
+            "heading_text": heading_text,
+            "level": payload.get("level_hint"),
+            "figure_alt": figure_alt,
+            "raw_text": raw_text,
+        }
+        # OPTIONAL per-region Stage-5d review key (additive). Present ONLY
+        # when the reviewer ran AND corrected/reverted this region; absent
+        # when the stage is off (review_verdicts is None) or the region was
+        # a pure no-op — keeping the provenance dict byte-stable to baseline.
+        review = review_index.get(region_index)
+        if review is not None:
+            entry["review"] = review
+        provenance.append(entry)
     return provenance
 
 
@@ -418,6 +544,60 @@ def run_full_cascade(
     )
     stages["stage1_5"] = time.perf_counter() - t
 
+    # ------------------------------------------------------------------
+    # Stage 5d — 70B text-preserving STRUCTURE REVIEWER (default OFF).
+    #
+    # Runs AFTER build_structure_graph and STRICTLY BEFORE Stage 5b/5c
+    # enrichment + the per-kind cap, so a 5d re-tag INTO table/figure is
+    # picked up by 5b/5c, and corrected kinds re-route Stage-6 + assembly.
+    # Gated by SEMANTIK_STRUCTURE_REVIEW; OFF -> pure pass-through (the
+    # variables below stay None/empty and every downstream join is a no-op,
+    # byte-identical to a no-Stage-5d run).
+    # ------------------------------------------------------------------
+    review_verdicts: list[Any] | None = None
+    stage5d_metadata_drop_ids: frozenset[int] = frozenset()
+    # Snapshot the pre-review structure regions for the C2 FB-survival
+    # baseline (the flag-OFF region list the cap is compared against).
+    pre_review_regions = list(structure_regions)
+    if resolve_structure_review_mode():
+        from .qwen_specialists.reviewer import run_structure_review
+        from .qwen_specialists.runtime import make_runtime
+
+        log(
+            f"[cascade] running Stage 5d (70B structure review, "
+            f"{len(structure_regions)} regions)"
+        )
+        t = time.perf_counter()
+        # The reviewer rides the SAME hosted-70B endpoint seat as the
+        # Stage-6 endpoint specialists; it only needs generate_batch, which
+        # make_runtime('endpoint') supplies. NO local GGUF / GPU here.
+        review_runtime = make_runtime("endpoint")
+        reviewed_regions, review_verdicts = run_structure_review(
+            structure_regions,
+            feature_blocks,
+            review_runtime,
+        )
+        # Which region indices did THIS stage NEWLY re-tag to metadata_drop?
+        # (a region that was already metadata_drop pre-review is not a
+        # Stage-5d drop and is NOT cap-exempt). These are exempt from the
+        # per-kind cap's content buckets (C2).
+        stage5d_metadata_drop_ids = frozenset(
+            i
+            for i, (before, after) in enumerate(
+                zip(pre_review_regions, reviewed_regions)
+            )
+            if after.kind == "metadata_drop" and before.kind != "metadata_drop"
+        )
+        structure_regions = reviewed_regions
+        stages["stage5d"] = time.perf_counter() - t
+        n_corrected = sum(
+            1
+            for v in (review_verdicts or ())
+            if getattr(v, "kind_before", None) != getattr(v, "kind_after", None)
+            or getattr(v, "level_before", None) != getattr(v, "level_after", None)
+        )
+        log(f"[cascade] Stage 5d corrected {n_corrected} region(s)")
+
     # Stage 5b — optional GLM-OCR table enrichment. Runs ONLY on
     # table regions that the Structure council's table_region head
     # confirmed (cost-savings gate). Cache-only when glm_ocr_runtime
@@ -472,7 +652,34 @@ def run_full_cascade(
     capped = _cap_regions_per_kind(
         structure_regions,
         cap=max_regions_per_kind,
+        stage5d_metadata_drop_ids=stage5d_metadata_drop_ids,
     )
+
+    # C2 / R12 — cap-safety FB-survival assertion. When Stage 5d ran, prove
+    # no real-content FeatureBlock that survived the cap on the flag-OFF
+    # baseline was EVICTED by a re-role pushing it past the cap. Fail closed
+    # (revert the Stage-5d corrections for this run) rather than ship a
+    # document with lost content. Skipped cleanly when the reviewer is off
+    # (review_verdicts is None) or the cap is disabled (cap <= 0).
+    if review_verdicts is not None and max_regions_per_kind > 0:
+        baseline_capped = _cap_regions_per_kind(
+            pre_review_regions,
+            cap=max_regions_per_kind,
+        )
+        try:
+            _assert_fb_survival_through_cap(baseline_capped, capped)
+        except CapSafetyError as exc:
+            log(f"[cascade] Stage 5d cap-safety FAILED, reverting corrections: {exc}")
+            # Fail closed: discard the Stage-5d corrections + verdicts for
+            # this run and re-cap the un-reviewed (flag-OFF) region list.
+            structure_regions = pre_review_regions
+            review_verdicts = None
+            stage5d_metadata_drop_ids = frozenset()
+            capped = _cap_regions_per_kind(
+                structure_regions,
+                cap=max_regions_per_kind,
+            )
+
     region_kinds = dict(Counter(r.kind for r in capped))
     log(f"[cascade] capped region count by kind: {region_kinds}")
 
@@ -656,6 +863,7 @@ def run_full_cascade(
         list(capped),
         feature_blocks,
         chosen["stage7_results"],
+        review_verdicts=review_verdicts,
     )
 
     elapsed_total = time.perf_counter() - t_total
@@ -672,6 +880,16 @@ def run_full_cascade(
     # state; scripts/pdf_to_html.py persists it next to the product.
     from .conformance_audit import build_conformance_audit
     from .gates.wcag_coverage import coverage_map as _coverage_map
+
+    # Stage-5d structure-review audit section — verdicts-as-dicts when the
+    # reviewer ran, None when off (the None-vs-[] reviewer-did-not-run vs
+    # ran-found-nothing distinction). dataclasses.asdict serializes each
+    # frozen ReviewVerdict; build_conformance_audit treats it as OPTIONAL.
+    structure_review_audit = (
+        [dataclasses.asdict(v) for v in review_verdicts]
+        if review_verdicts is not None
+        else None
+    )
 
     conformance_audit = build_conformance_audit(
         pdf_path=str(pdf_path),
@@ -692,6 +910,7 @@ def run_full_cascade(
         theta_report=report,
         assembled=assembled,
         wcag_coverage=_coverage_map(),
+        structure_review=structure_review_audit,
     )
 
     result: dict[str, Any] = {

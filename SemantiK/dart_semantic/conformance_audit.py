@@ -211,6 +211,7 @@ def build_conformance_audit(
     assembled: Any,
     reading_order_at_risk: list[int] | None = None,
     wcag_coverage: list[dict[str, Any]] | None = None,
+    structure_review: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble the audit dict from cascade state.
 
@@ -322,6 +323,12 @@ def build_conformance_audit(
         # Per-SC verdicts (Plan 12 A2). None means the coverage map was
         # not supplied by the caller — distinct from an empty list.
         "wcag_coverage": wcag_coverage,
+        # Stage-5d 70B structure-review verdicts (per-doc audit section).
+        # OPTIONAL — deliberately NOT in AUDIT_REQUIRED_KEYS. None means the
+        # reviewer did NOT run (flag off); an empty list means it ran and
+        # found nothing to correct (mirrors the wcag_coverage None-vs-[]
+        # distinction).
+        "structure_review": structure_review,
     }
     return audit
 
