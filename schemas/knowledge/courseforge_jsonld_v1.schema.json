@@ -599,7 +599,41 @@
           "type": "array",
           "items": { "$ref": "#/$defs/QualityScore" },
           "description": "IB2.3 8-dimension quality rubric (framework §6.2-6.3). One QualityScore per applicable quality dimension scored on an anchored 0–3 scale. Optional + additive; emitted only when non-empty. ALWAYS empty after IB2 (the scoring pass lands in IB6). Audit/scoring-only — excluded from contentHash so a scoring retro-fit doesn't drift every existing block hash."
+        },
+        "anchoredRubric": {
+          "$ref": "#/$defs/AnchoredRubric",
+          "description": "IB3.4 anchored rubric (framework pp.26-33, 5.2, B14, B11). Exemplar-anchored criteria bands published before the task, required for valid scoring of Evaluate/Create work. Optional + additive; emitted only when non-null. Nothing in IB3 sets it (the validator only reads it). Excluded from contentHash so a rubric attach doesn't drift any existing block hash."
         }
+      }
+    },
+    "AnchoredRubric": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "IB3.4: an exemplar-anchored scoring rubric for Evaluate/Create blocks (framework pp.26-33, 5.2, B14, B11). Companion to Courseforge/scripts/blocks.py::Block.anchored_rubric. Each criterion carries >=2 bands; every band carries a non-empty exemplar anchor (bare descriptor scales without exemplars are 'far too ambiguous'). published_before_task records that the rubric was shown before the task (the framework's publication-before-task requirement). Additive — additionalProperties tolerated for forward-compat with band metadata.",
+      "properties": {
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "name": { "type": "string" },
+              "bands": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "level": { "type": ["string", "integer", "null"] },
+                    "descriptor": { "type": "string" },
+                    "exemplar": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "published_before_task": { "type": "boolean" }
       }
     },
     "QualityScore": {

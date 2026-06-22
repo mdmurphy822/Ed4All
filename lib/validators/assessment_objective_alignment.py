@@ -33,7 +33,27 @@ from typing import Any, Dict, List, Optional, Set
 from lib.validators.assessment import _normalize_question_type
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
+# IB3.3 — evidence-form gate. Apply+ objectives must be certified by a
+# performance/scenario/project form, not isolated recall MCQ. Gated behind
+# ED4ALL_ALIGNMENT_VERB_TRIPLE (default OFF) so the critical id-resolution
+# path stays byte-identical when unset.
+from lib.validators.alignment.verb_triple import (
+    alignment_verb_triple_enabled,
+    is_apply_plus,
+)
+
 logger = logging.getLogger(__name__)
+
+# IB3.3 — recall question forms that cannot validly certify an Apply+
+# objective (bare right/wrong scoring). Performance forms (numeric /
+# fill_in_blank solving, or an item explicitly flagged with an Apply+
+# evidence_form) are out of this set and PASS.
+_RECALL_QUESTION_TYPES: frozenset = frozenset({"multiple_choice", "true_false"})
+# IB3.3 — evidence_form markers that satisfy the Apply+ performance bar.
+_PERFORMANCE_EVIDENCE_FORMS: frozenset = frozenset(
+    {"scenario", "performance", "project"}
+)
+_CODE_EVIDENCE_FORM_TOO_LOW: str = "ASSESSMENT_EVIDENCE_FORM_TOO_LOW"
 
 
 def _emit_alignment_decision(
@@ -279,6 +299,18 @@ class AssessmentObjectiveAlignmentValidator:
         # doesn't affect the gate: we compare by normalized form.
         normalized_refs: Set[str] = {r.lower() for r in chunk_refs if r}
 
+        # IB3.3 — evidence-form gate (default OFF). Build the
+        # {lowercased obj_id: bloom_level} map ONCE from the synthesized
+        # objectives so ``is_apply_plus`` is a dict lookup with no second
+        # load. Empty when the flag is off OR no synthesized objectives are
+        # provided — the check then no-ops per the graceful contract.
+        evidence_form_on = alignment_verb_triple_enabled()
+        objective_bloom_map: Dict[str, str] = {}
+        if evidence_form_on and synthesized_path is not None:
+            objective_bloom_map = self._build_objective_bloom_map(
+                synthesized_path
+            )
+
         questions = self._extract_questions(assessments_data)
         if not questions:
             # Empty assessment file → skip with warning, not critical.
@@ -366,6 +398,23 @@ class AssessmentObjectiveAlignmentValidator:
                 ),
                 question_type=q_type,
             )
+
+            # IB3.3 — evidence-form gate (warning-severity, behind the flag).
+            # An Apply+ objective certified by a bare recall MCQ (or carrying
+            # only bare right/wrong feedback) is a construct-irrelevant
+            # certification. ADDITIVE warning — never weakens the critical
+            # id-resolution path above (``passed`` is unaffected by warnings).
+            if evidence_form_on and objective_bloom_map:
+                self._check_evidence_form(
+                    q=q,
+                    q_id=q_id,
+                    q_type=q_type,
+                    q_objectives=q_objectives,
+                    objective_bloom_map=objective_bloom_map,
+                    issues=issues,
+                    location=str(assessments_path),
+                    capture=capture,
+                )
 
         if mismatches:
             # Roll up into a single critical issue with up to 10 samples
@@ -520,6 +569,240 @@ class AssessmentObjectiveAlignmentValidator:
                         refs.add(lo_id)
 
         return refs
+
+    @staticmethod
+    def _build_objective_bloom_map(
+        synthesized_objectives_path: Path,
+    ) -> Dict[str, str]:
+        """Build ``{lowercased obj_id: bloom_level}`` from synthesized objectives.
+
+        IB3.3 — reuses the canonical
+        :func:`lib.validators.abcd_objective._flatten_objectives` loader (both
+        Courseforge synthesized + LibV2 archive forms) and the canonical
+        :func:`lib.validators.abcd_objective._bloom_level` reader so the
+        evidence-form gate's Apply+ test is a dict lookup. Graceful: any
+        parse/load error → empty map (the check no-ops; never crashes the
+        critical id-resolution path).
+        """
+        out: Dict[str, str] = {}
+        try:
+            from lib.validators.abcd_objective import (
+                _bloom_level,
+                _flatten_objectives,
+            )
+
+            payload = json.loads(
+                synthesized_objectives_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, ImportError) as exc:
+            logger.warning(
+                "IB3.3 evidence-form: failed to load %r for the objective "
+                "bloom map: %s",
+                str(synthesized_objectives_path),
+                exc,
+            )
+            return out
+        for lo in _flatten_objectives(payload):
+            lo_id_raw = lo.get("id") or lo.get("objective_id")
+            if not isinstance(lo_id_raw, str) or not lo_id_raw.strip():
+                continue
+            level = _bloom_level(lo)
+            if level:
+                out[lo_id_raw.strip().lower()] = level
+        return out
+
+    @staticmethod
+    def _check_evidence_form(
+        *,
+        q: Dict[str, Any],
+        q_id: str,
+        q_type: str,
+        q_objectives: List[str],
+        objective_bloom_map: Dict[str, str],
+        issues: List[GateIssue],
+        location: str,
+        capture: Any,
+    ) -> None:
+        """IB3.3 — warn when an Apply+ objective is certified by recall.
+
+        For each resolved objective at Apply-and-above, assert the certifying
+        item is a performance form. A recall MCQ (``multiple_choice`` /
+        ``true_false``) — UNLESS the item carries a performance ``evidence_form``
+        — earns the warning; numeric / fill_in_blank solving and explicit
+        performance/scenario/project evidence forms PASS. Bare right/wrong
+        feedback (no per-option / elaborated feedback marker) above Understand
+        reuses the same code with a distinct message.
+
+        Warning-only + ADDITIVE: appends a GateIssue but never mutates
+        ``passed`` (the critical id-resolution path is untouched).
+        """
+        evidence_form = q.get("evidence_form")
+        evidence_form_norm = (
+            evidence_form.strip().lower()
+            if isinstance(evidence_form, str)
+            else ""
+        )
+        # An explicit performance/scenario/project evidence form satisfies the
+        # bar regardless of question_type.
+        if evidence_form_norm in _PERFORMANCE_EVIDENCE_FORMS:
+            return
+
+        for obj_id in q_objectives:
+            level = objective_bloom_map.get(obj_id.strip().lower())
+            if level is None or not is_apply_plus(level):
+                continue
+            # Recall MCQ backing an Apply+ objective.
+            if q_type in _RECALL_QUESTION_TYPES:
+                issues.append(GateIssue(
+                    severity="warning",
+                    code=_CODE_EVIDENCE_FORM_TOO_LOW,
+                    message=(
+                        f"Question {q_id!r} ({q_type!r}) certifies Apply+ "
+                        f"objective {obj_id!r} (bloom={level!r}) with a recall "
+                        f"item form. Performance evidence "
+                        f"(scenario/project/performance, or numeric/"
+                        f"fill_in_blank solving) is reserved for Apply-and-"
+                        f"above; an isolated recall MCQ is out of range for "
+                        f"this objective."
+                    ),
+                    location=location,
+                    suggestion=(
+                        "Re-author as a scenario/performance/project item, or "
+                        "set evidence_form to a performance form, or lower the "
+                        "objective's bloom_level if recall is genuinely the "
+                        "intended demand."
+                    ),
+                ))
+                AssessmentObjectiveAlignmentValidator._emit_evidence_form_decision(
+                    capture,
+                    question_id=q_id,
+                    objective_id=obj_id,
+                    objective_bloom=level,
+                    question_type=q_type,
+                    evidence_form=evidence_form_norm or None,
+                    passed=False,
+                )
+                continue
+            # Bare right/wrong feedback above Understand (no elaborated /
+            # per-option feedback marker).
+            if not AssessmentObjectiveAlignmentValidator._has_elaborated_feedback(
+                q
+            ):
+                issues.append(GateIssue(
+                    severity="warning",
+                    code=_CODE_EVIDENCE_FORM_TOO_LOW,
+                    message=(
+                        f"Question {q_id!r} ({q_type!r}) certifies Apply+ "
+                        f"objective {obj_id!r} (bloom={level!r}) with only "
+                        f"bare right/wrong feedback. Elaborated, "
+                        f"misconception-targeted feedback is required above "
+                        f"Understand."
+                    ),
+                    location=location,
+                    suggestion=(
+                        "Add per-option / elaborated feedback explaining WHY "
+                        "an answer is right or wrong."
+                    ),
+                ))
+                AssessmentObjectiveAlignmentValidator._emit_evidence_form_decision(
+                    capture,
+                    question_id=q_id,
+                    objective_id=obj_id,
+                    objective_bloom=level,
+                    question_type=q_type,
+                    evidence_form=evidence_form_norm or None,
+                    passed=False,
+                )
+
+    @staticmethod
+    def _has_elaborated_feedback(q: Dict[str, Any]) -> bool:
+        """Heuristic: does the question carry elaborated / per-option feedback?
+
+        Looks for any non-empty feedback surface beyond a bare correct/
+        incorrect flag: ``feedback`` / ``rationale`` / ``explanation`` strings,
+        a ``feedback`` dict, or per-option ``feedback`` on ``choices`` /
+        ``options``. Conservative — when no recognizable feedback field is
+        present at all the item is treated as carrying elaborated feedback
+        (the recall-MCQ branch already covers the dominant failure mode; this
+        branch only fires on non-recall Apply+ items that ALSO ship bare
+        feedback, so a missing-field default-pass avoids false positives on
+        thin payloads).
+        """
+        feedback_keys = ("feedback", "rationale", "explanation")
+        has_field = False
+        for key in feedback_keys:
+            val = q.get(key)
+            if isinstance(val, str):
+                has_field = True
+                if val.strip():
+                    return True
+            elif isinstance(val, dict) and val:
+                return True
+        for opt_key in ("choices", "options"):
+            opts = q.get(opt_key)
+            if isinstance(opts, list):
+                for opt in opts:
+                    if isinstance(opt, dict):
+                        fb = opt.get("feedback")
+                        if isinstance(fb, str):
+                            has_field = True
+                            if fb.strip():
+                                return True
+                        elif isinstance(fb, dict) and fb:
+                            return True
+        # If a feedback field existed but was empty → bare; else default-pass.
+        return not has_field
+
+    @staticmethod
+    def _emit_evidence_form_decision(
+        capture: Any,
+        *,
+        question_id: str,
+        objective_id: str,
+        objective_bloom: str,
+        question_type: str,
+        evidence_form: Optional[str],
+        passed: bool,
+    ) -> None:
+        """IB3.3 — emit an ``assessment_objective_alignment_check`` event for
+        the evidence-form finding (reuses the existing enum member per the
+        IB3.8 contract; metrics carry ``evidence_form`` + ``objective_bloom``).
+        """
+        if capture is None:
+            return
+        decision = (
+            "passed" if passed else f"failed:{_CODE_EVIDENCE_FORM_TOO_LOW}"
+        )
+        rationale = (
+            f"IB3.3 evidence-form check on question {question_id!r}: "
+            f"objective_id={objective_id!r}, objective_bloom={objective_bloom!r}, "
+            f"question_type={question_type!r}, "
+            f"evidence_form={evidence_form or 'none'!r}, "
+            f"apply_plus=True, passed={passed}."
+        )
+        metrics: Dict[str, Any] = {
+            "question_id": question_id,
+            "objective_id": objective_id,
+            "objective_bloom": objective_bloom,
+            "question_type": question_type,
+            "evidence_form": evidence_form,
+            "passed": bool(passed),
+            "failure_code": None if passed else _CODE_EVIDENCE_FORM_TOO_LOW,
+        }
+        try:
+            capture.log_decision(
+                decision_type="assessment_objective_alignment_check",
+                decision=decision,
+                rationale=rationale,
+                context=str(metrics),
+                metrics=metrics,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "DecisionCapture.log_decision raised on IB3.3 evidence-form "
+                "check: %s",
+                exc,
+            )
 
     @staticmethod
     def _extract_questions(data: Any) -> List[Dict[str, Any]]:

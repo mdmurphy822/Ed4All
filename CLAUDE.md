@@ -609,11 +609,13 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 17 | 9 | 26 |
+| `course_generation` | 17 | 13 | 30 |
+| `intake_remediation` | 2 | 0 | 2 |
+| `batch_dart` | 2 | 0 | 2 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 39 | 50 | 89 |
+| `textbook_to_course` | 39 | 54 | 93 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **62** | **62** | **124** |
+| **Total** | **66** | **70** | **136** |
 
 > W4 SHADOW landing (NLI grounding gates): `rewrite_source_grounding` DEMOTED
 > critical → warning in `course_generation` + `textbook_to_course`
@@ -709,6 +711,30 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 > the Studio renderers land in sibling waves (Phases 1–6 of the plan); this
 > landing is the workflow + gate wiring (Phase 5) only.
 
+> IB3 landing (constructive-alignment verb-triple keystone): two NEW gates
+> wired at BOTH `inter_tier_validation` + `post_rewrite_validation` in BOTH
+> `course_generation` + `textbook_to_course` (+4 warning each):
+> `outline_anchored_rubric` / `rewrite_anchored_rubric`
+> (`lib.validators.alignment.anchored_rubric.AnchoredRubricValidator`) +
+> `outline_triangle_completeness` / `rewrite_triangle_completeness`
+> (`lib.validators.alignment.triangle_completeness.TriangleCompletenessValidator`).
+> A third behavior — the IB3.2 verb-triple EQUALITY axis
+> (`BLOCK_OBJECTIVE_VERB_TRIPLE_MISMATCH` + the `alignment_cap_at_1` signal) —
+> rides the already-wired `block_objective_delivery` gate rows, and the IB3.3
+> evidence-form check (`ASSESSMENT_EVIDENCE_FORM_TOO_LOW`) rides the existing
+> critical `assessment_objective_alignment` gate rows; both are gated by the
+> default-OFF `ED4ALL_ALIGNMENT_VERB_TRIPLE` flag inside the validators (no new
+> gate row). All five behaviors are **warning day-1** but carry the
+> roadmap-documented **ACCELERATED fast-flip** `# TODO(calibration)` marker:
+> unlike the multi-wave deferral the other gates take, the verb-triple
+> mismatch flips to critical after ONE ≥2-corpus FP measurement clears (a
+> Create objective checked by a recall MCQ is a malformed block, not a style
+> choice — the false-negative cost exceeds the false-positive cost). The flip
+> also waits until IB1's `interaction` slot is populated (else the verb signal
+> is prose-heuristic). The count table above is re-derived from
+> `config/workflows.yaml`: `course_generation` 9→13 warning,
+> `textbook_to_course` 50→54 warning, Total 62→70 warning / 128→136 total.
+
 ---
 
 ## Configuration Files
@@ -752,6 +778,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | `LOCAL_DISPATCHER_ALLOW_STUB` | unset | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` when no `agent_tool` is wired. Tests / dry-run only. |
 | `ED4ALL_AGENT_DISPATCH` | unset | Routes subagent-classified agents through `dispatcher.dispatch_task` instead of in-process tool registry. |
 | `ED4ALL_AGENT_TIMEOUT_SECONDS` | `1800` | Per-task subagent dispatch mailbox timeout. |
+| `ED4ALL_ALIGNMENT_VERB_TRIPLE` | unset (off) | IB3 constructive-alignment keystone. Default OFF → byte-identical: the verb-triple equality axis on `BlockObjectiveDeliveryValidator`, the evidence-form check on `AssessmentObjectiveAlignmentValidator`, the `AnchoredRubricValidator`, and the `TriangleCompletenessValidator` all no-op, and the `Block.anchored_rubric` field stays None + hash-excluded (snapshots unchanged). When truthy (`1`/`true`/`yes`/`on`): enforces `objective-verb = activity-verb = assessment-verb` within the Bloom band (`BLOCK_OBJECTIVE_VERB_TRIPLE_MISMATCH`), records the `alignment_cap_at_1` signal when assessment Bloom < objective Bloom (consumed by the IB6 rollup), bars recall MCQ on Apply+ objectives (`ASSESSMENT_EVIDENCE_FORM_TOO_LOW`), requires an exemplar-anchored published-first rubric on Evaluate/Create scored blocks, and asserts every objective has ≥1 activity + ≥1 band-aligned assessment (triangle completeness). All gates wire warning day-1 with an ACCELERATED fast-flip `# TODO(calibration)` marker (IB3 is the roadmap's documented exception — the keystone validity rule flips critical after ONE ≥2-corpus FP measurement). Reuses `lib/ontology/bloom.py` verb bands; needs IB1 slot-addressability (`interaction`/`feedback` slots). Generated PRODUCT content (course validation), not training data → no `docs/LICENSING.md` row. Falsey / garbage → off (parse-with-fallback). |
 | `ED4ALL_ANSWER_PROVIDER` | `local` | Selects the grounded-answer backend (runtime Q&A inference) from the W-D12 `_OPENAI_COMPATIBLE_PROVIDERS` registry. **Loopback-only:** a resolved non-loopback `base_url` raises `AnswerProviderNotLocal` (Phase IA: no cloud arm on the answer path, ever). No escape-hatch env. Licensing row in `docs/LICENSING.md` § "Grounded-answer provider". |
 | `ED4ALL_ANSWER_MODEL` | per-provider | Model ID override for the answer backend. Resolution chain: explicit arg > `ED4ALL_ANSWER_MODEL` > registry `model_env` (`local` → `LOCAL_SYNTHESIS_MODEL`) > registry default (`qwen2.5:7b-instruct-q4_K_M`, fits common 8GB GPUs fully resident — the canonical `DEFAULT_SYNTHESIS_MODEL` default and the `config/endpoints.yaml` local seat both use 7b). The larger Qwen2.5 sizes (14b/32b) remain valid `LOCAL_SYNTHESIS_MODEL` / `ED4ALL_ANSWER_MODEL` overrides for boxes with more VRAM. See `docs/operations/docker.md`. |
 | `ED4ALL_ANSWER_TIMEOUT_SECONDS` | `120` | Answer-client HTTP timeout (long passages, slow local GPU). Garbage values fall back to the default. |

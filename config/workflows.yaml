@@ -157,6 +157,46 @@ workflows:
             threshold:
               max_critical_issues: 0
 
+          # IB3.4 — anchored-rubric presence on Evaluate/Create scored blocks.
+          # Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
+          # TODO(calibration) — IB3 FAST-FLIP: this is the framework keystone
+          # (the single load-bearing validity rule). Flip
+          # BLOCK_OBJECTIVE_VERB_TRIPLE_MISMATCH (+ this companion alignment
+          # gate) to critical (severity: critical, on_fail: block) after ONE
+          # >=2-corpus FP measurement clears (NOT the multi-wave deferral the
+          # other gates take). A Create objective checked by a recall MCQ is a
+          # malformed block, not a style choice — the cost of a false NEGATIVE
+          # (shipping a mis-aligned block) exceeds the cost of a false positive
+          # here, inverting the usual warning-first conservatism. Evidence
+          # target: verb-triple mismatch-rate measured on >=2 corpora with
+          # manual FP audit; the per-pair verb_triple_status on every alignment
+          # entry makes the audit replayable.
+          - gate_id: outline_anchored_rubric
+            validator: lib.validators.alignment.anchored_rubric.AnchoredRubricValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB3.4 — Evaluate/Create scored blocks must ship an exemplar-anchored rubric published before the task. Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
+
+          # IB3.5 — triangle completeness (every objective has >=1 activity +
+          # >=1 band-aligned assessment). Warning day-1; no-ops when the flag
+          # is unset. TODO(calibration) — IB3 FAST-FLIP: see the
+          # outline_anchored_rubric marker above (the keystone verb-triple gate
+          # flips critical after ONE >=2-corpus FP measurement, not the
+          # multi-wave deferral).
+          - gate_id: outline_triangle_completeness
+            validator: lib.validators.alignment.triangle_completeness.TriangleCompletenessValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB3.5 — every objective has >=1 activity AND >=1 band-aligned assessment (the complete constructive-alignment triangle). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
+
       - name: content_generation_rewrite
         agents: [content-generator]
         # NOTE: parallel/batch_by intentionally disabled. The handler
@@ -364,6 +404,44 @@ workflows:
               CB5a — flag a stub ``example`` block (problem statement, no
               worked solution). SHADOW/warning day-1; flip to
               regenerate/critical after a real-run false-positive measure.
+
+          # IB3.4 — anchored-rubric presence on Evaluate/Create scored blocks
+          # (post-rewrite mirror). Warning day-1; no-ops when
+          # ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
+          # TODO(calibration) — IB3 FAST-FLIP: this is the framework keystone
+          # (the single load-bearing validity rule). Flip
+          # BLOCK_OBJECTIVE_VERB_TRIPLE_MISMATCH (+ this companion alignment
+          # gate) to critical (severity: critical, on_fail: block) after ONE
+          # >=2-corpus FP measurement clears (NOT the multi-wave deferral the
+          # other gates take). A Create objective checked by a recall MCQ is a
+          # malformed block, not a style choice — the false-negative cost
+          # exceeds the false-positive cost, inverting the usual warning-first
+          # conservatism. Evidence target: verb-triple mismatch-rate on >=2
+          # corpora with manual FP audit; per-pair verb_triple_status makes the
+          # audit replayable.
+          - gate_id: rewrite_anchored_rubric
+            validator: lib.validators.alignment.anchored_rubric.AnchoredRubricValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB3.4 — Evaluate/Create scored blocks must ship an exemplar-anchored rubric published before the task (post-rewrite). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
+
+          # IB3.5 — triangle completeness (post-rewrite mirror). Warning day-1;
+          # no-ops when the flag is unset. TODO(calibration) — IB3 FAST-FLIP:
+          # see the rewrite_anchored_rubric marker above (keystone verb-triple
+          # gate flips critical after ONE >=2-corpus FP measurement).
+          - gate_id: rewrite_triangle_completeness
+            validator: lib.validators.alignment.triangle_completeness.TriangleCompletenessValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB3.5 — every objective has >=1 activity AND >=1 band-aligned assessment (post-rewrite). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
 
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Mirror of
@@ -1702,6 +1780,21 @@ workflows:
           # (Wave 3 follow-up). Graceful-degrades to a warning issue
           # ``passed=True`` when the NLI loader (W2.F prerequisite)
           # returns None, so CPU-only dev boxes don't fail closed.
+          # TODO(calibration) — IB3 FAST-FLIP: this validator now carries the
+          # IB3.2 verb-triple EQUALITY axis (BLOCK_OBJECTIVE_VERB_TRIPLE_MISMATCH,
+          # behind ED4ALL_ALIGNMENT_VERB_TRIPLE) — the framework keystone (the
+          # single load-bearing validity rule). Flip
+          # BLOCK_OBJECTIVE_VERB_TRIPLE_MISMATCH to critical (severity: critical,
+          # on_fail: block) after ONE >=2-corpus FP measurement clears (NOT the
+          # multi-wave deferral the other gates take). A Create objective checked
+          # by a recall MCQ is a malformed block, not a style choice — the cost
+          # of a false NEGATIVE (shipping a mis-aligned block) exceeds the cost
+          # of a false positive here, inverting the usual warning-first
+          # conservatism. Evidence target: verb-triple mismatch-rate measured on
+          # >=2 corpora with manual FP audit; the per-pair verb_triple_status on
+          # every alignment entry makes the audit replayable. The fast-flip also
+          # waits until IB1's interaction slot is populated (else the verb signal
+          # is prose-heuristic, not the slot-addressable interaction verb).
           - gate_id: outline_block_objective_delivery
             validator: lib.validators.block_objective_delivery.BlockObjectiveDeliveryValidator
             severity: warning
@@ -1710,7 +1803,7 @@ workflows:
             behavior:
               on_fail: warn
               on_error: warn
-            description: Wave 1.7 W1.7.C — tri-axis (NLI entailment / Bloom-gap≥2 / action-verb synonym) per-block-per-objective delivery check on outline-tier Blocks. Informational; structural gates remain authoritative.
+            description: Wave 1.7 W1.7.C — tri-axis (NLI entailment / Bloom-gap≥2 / action-verb synonym) per-block-per-objective delivery check on outline-tier Blocks; IB3.2 adds the verb-triple EQUALITY axis behind ED4ALL_ALIGNMENT_VERB_TRIPLE. Informational; structural gates remain authoritative.
 
           # GPT-feedback W2-W7 wave: five new gates wired warning-only at
           # both seams (inter_tier + post_rewrite). Promoted to critical
@@ -1818,6 +1911,39 @@ workflows:
               on_fail: warn
               on_error: warn
             description: W6 — deterministic regex-on-stem structural enforcement; assessment_item stems must match the declared bloom_level's clause/verb/marker rules.
+
+          # IB3.4 — anchored-rubric presence on Evaluate/Create scored blocks.
+          # Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
+          # TODO(calibration) — IB3 FAST-FLIP: companion to the keystone
+          # verb-triple gate (see the outline_block_objective_delivery marker
+          # above). Flips critical after ONE >=2-corpus FP measurement, NOT the
+          # multi-wave deferral the other gates take — a Create objective
+          # checked by a recall MCQ is a malformed block, so the false-negative
+          # cost exceeds the false-positive cost.
+          - gate_id: outline_anchored_rubric
+            validator: lib.validators.alignment.anchored_rubric.AnchoredRubricValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB3.4 — Evaluate/Create scored blocks must ship an exemplar-anchored rubric published before the task. Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
+
+          # IB3.5 — triangle completeness (every objective has >=1 activity +
+          # >=1 band-aligned assessment). Warning day-1; no-ops when the flag
+          # is unset. TODO(calibration) — IB3 FAST-FLIP: see the
+          # outline_anchored_rubric marker above (keystone verb-triple gate
+          # flips critical after ONE >=2-corpus FP measurement).
+          - gate_id: outline_triangle_completeness
+            validator: lib.validators.alignment.triangle_completeness.TriangleCompletenessValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB3.5 — every objective has >=1 activity AND >=1 band-aligned assessment (the complete constructive-alignment triangle). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
 
       - name: content_generation_rewrite
         agents: [content-generator]
@@ -2213,6 +2339,18 @@ workflows:
           # will wire the per-axis remediation suffix into the
           # rewrite-tier regen loop so a Wave-1.7 failure on attempt N
           # injects a per-axis directive on attempt N+1.
+          # TODO(calibration) — IB3 FAST-FLIP: this validator now carries the
+          # IB3.2 verb-triple EQUALITY axis (BLOCK_OBJECTIVE_VERB_TRIPLE_MISMATCH,
+          # behind ED4ALL_ALIGNMENT_VERB_TRIPLE) — the framework keystone (the
+          # single load-bearing validity rule). Flip
+          # BLOCK_OBJECTIVE_VERB_TRIPLE_MISMATCH to critical (severity: critical,
+          # on_fail: block) after ONE >=2-corpus FP measurement clears (NOT the
+          # multi-wave deferral the other gates take). A Create objective checked
+          # by a recall MCQ is a malformed block — the false-negative cost
+          # exceeds the false-positive cost, inverting the usual warning-first
+          # conservatism. Per-pair verb_triple_status makes the FP audit
+          # replayable; the flip also waits until IB1's interaction slot is
+          # populated (else the verb signal is prose-heuristic).
           - gate_id: rewrite_block_objective_delivery
             validator: lib.validators.block_objective_delivery.BlockObjectiveDeliveryValidator
             severity: warning
@@ -2221,7 +2359,7 @@ workflows:
             behavior:
               on_fail: warn
               on_error: warn
-            description: Wave 1.7 W1.7.C — tri-axis post-rewrite per-block-per-objective delivery check. Mirrors the outline seam against rewrite-tier Blocks.
+            description: Wave 1.7 W1.7.C — tri-axis post-rewrite per-block-per-objective delivery check; IB3.2 adds the verb-triple EQUALITY axis behind ED4ALL_ALIGNMENT_VERB_TRIPLE. Mirrors the outline seam against rewrite-tier Blocks.
 
           # GPT Feedback v2 Wave 2 W2.F: per-block-per-claim NLI
           # entailment gate. Fans out every key_claims[] entry against
@@ -2397,6 +2535,37 @@ workflows:
               CB5a — flag a stub ``example`` block (problem statement, no
               worked solution). SHADOW/warning day-1; flip to
               regenerate/critical after a real-run false-positive measure.
+
+          # IB3.4 — anchored-rubric presence on Evaluate/Create scored blocks
+          # (post-rewrite mirror). Warning day-1; no-ops when
+          # ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
+          # TODO(calibration) — IB3 FAST-FLIP: companion to the keystone
+          # verb-triple gate (see the rewrite_block_objective_delivery marker
+          # above). Flips critical after ONE >=2-corpus FP measurement, NOT the
+          # multi-wave deferral the other gates take.
+          - gate_id: rewrite_anchored_rubric
+            validator: lib.validators.alignment.anchored_rubric.AnchoredRubricValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB3.4 — Evaluate/Create scored blocks must ship an exemplar-anchored rubric published before the task (post-rewrite). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
+
+          # IB3.5 — triangle completeness (post-rewrite mirror). Warning day-1;
+          # no-ops when the flag is unset. TODO(calibration) — IB3 FAST-FLIP:
+          # see the rewrite_anchored_rubric marker above (keystone verb-triple
+          # gate flips critical after ONE >=2-corpus FP measurement).
+          - gate_id: rewrite_triangle_completeness
+            validator: lib.validators.alignment.triangle_completeness.TriangleCompletenessValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB3.5 — every objective has >=1 activity AND >=1 band-aligned assessment (post-rewrite). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
 
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Reuses

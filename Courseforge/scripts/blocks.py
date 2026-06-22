@@ -678,6 +678,21 @@ class Block:
     # only-when-non-empty (so emit stays byte-identical until IB6 populates),
     # mirroring observed_bloom_level / objective_alignment.
     quality_rubric: Tuple[QualityScore, ...] = ()
+    # IB3.4 — anchored-rubric for Evaluate/Create scored blocks (framework
+    # pp.26-33, 5.2, B14, B11). An exemplar-anchored rubric (criteria bands +
+    # exemplar anchors) published BEFORE the task — required for valid scoring
+    # of the highest-Bloom work. Shape:
+    #   {"criteria": [{"name": str,
+    #                  "bands": [{"level": ..., "descriptor": str,
+    #                             "exemplar": str}, ...]}],
+    #    "published_before_task": bool}
+    # Default ``None`` and INTENTIONALLY excluded from compute_content_hash()
+    # (mirrors objective_alignment / quality_rubric) so a rubric retro-fit does
+    # not drift any existing block hash. JSON-LD-projected as ``anchoredRubric``
+    # only-when-non-None (additive; emit stays byte-identical until a block sets
+    # it under ED4ALL_ALIGNMENT_VERB_TRIPLE). Populated only by an authoring
+    # wave / operator; nothing in IB3 emits it (IB3.4's validator only READS it).
+    anchored_rubric: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -742,11 +757,12 @@ class Block:
         ``escalation_marker``, ``observed_bloom_level``,
         ``bloom_alignment``, ``objective_alignment``, ``target_bloom``,
         the IB1 six-slot anatomy metadata slots ``heading`` / ``purpose_tag``
-        / ``interaction`` / ``feedback`` / ``transition``, and the IB2.3
-        ``quality_rubric`` audit/scoring tuple so a
+        / ``interaction`` / ``feedback`` / ``transition``, the IB2.3
+        ``quality_rubric`` audit/scoring tuple, and the IB3.4
+        ``anchored_rubric`` Evaluate/Create scoring rubric so a
         touch-only / budget-only / classifier-retrofit / objective-
-        delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring
-        revision keeps a stable hash. ``content`` (the BODY slot) IS in the payload; the other
+        delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring /
+        anchored-rubric-attach revision keeps a stable hash. ``content`` (the BODY slot) IS in the payload; the other
         five anatomy slots are derived-or-authored metadata ABOUT the same
         content, so hashing them would drift every existing block hash on a
         back-derivation retrofit — exactly the failure the
@@ -1088,6 +1104,15 @@ class Block:
         # .schema.json::$defs.QualityScore.
         if self.quality_rubric:
             entry["qualityRubric"] = [qs.to_jsonld() for qs in self.quality_rubric]
+        # IB3.4 — anchored rubric (framework pp.26-33, 5.2, B14, B11). Emit the
+        # ``anchoredRubric`` object ONLY when non-None (mirrors the
+        # qualityRubric / objectiveAlignment only-when-set guards). Nothing in
+        # IB3 sets the field (the validator only reads it), so this projection
+        # NEVER fires on a default run and emit stays byte-identical. camelCase
+        # key mirrors schemas/knowledge/courseforge_jsonld_v1.schema.json::
+        # $defs.Block.properties.anchoredRubric.
+        if self.anchored_rubric is not None:
+            entry["anchoredRubric"] = dict(self.anchored_rubric)
         # IB1 — six-slot anatomy contract (framework pp.13-17, QA-4). Emit a
         # nested ``anatomy`` sub-object carrying ONLY the non-None slots,
         # DOUBLE-gated: behind BOTH ``_anatomy_emit_enabled()`` (the new

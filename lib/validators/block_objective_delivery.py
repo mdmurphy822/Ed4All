@@ -107,6 +107,17 @@ from lib.utils.objective_delivery_axes import (
     score_verb_cooccurrence_axis,
 )
 
+# IB3.2 — verb-triple EQUALITY axis (the framework keystone). Reuses the
+# single-source-of-truth verb-band resolver so the objective/interaction/
+# assessment triple is computed ONE way across every IB3 gate.
+from lib.validators.alignment.verb_triple import (
+    alignment_verb_triple_enabled,
+    bloom_below,
+    resolve_block_verb_level,
+    resolve_objective_verb_level,
+    verbs_share_band,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -183,6 +194,22 @@ _CODE_NLI_DEPS_MISSING: str = "BLOCK_OBJECTIVE_NLI_DEPS_MISSING"
 _CODE_OBSERVED_BLOOM_UNAVAILABLE: str = "BLOCK_OBJECTIVE_OBSERVED_BLOOM_UNAVAILABLE"
 _CODE_STATEMENT_UNRESOLVED: str = "BLOCK_OBJECTIVE_STATEMENT_UNRESOLVED"
 _CODE_VERB_AXIS_UNAVAILABLE: str = "BLOCK_OBJECTIVE_VERB_AXIS_UNAVAILABLE"
+# IB3.2 — verb-triple EQUALITY mismatch (the framework keystone). Distinct
+# from _CODE_VERB_ABSENT (axis 3: any band-synonym PRESENT in prose); this
+# fires when the block's RESOLVED verb does not share the OBJECTIVE's Bloom
+# band — verb EQUALITY across the triple, not mere presence. Gated behind
+# ED4ALL_ALIGNMENT_VERB_TRIPLE (default OFF). Warning day-1.
+_CODE_VERB_TRIPLE_MISMATCH: str = "BLOCK_OBJECTIVE_VERB_TRIPLE_MISMATCH"
+
+# IB3.2 — block types whose RESOLVED verb the framework's verb-triple
+# compares against the objective. Interaction/activity types (what the
+# learner practices) + the assessment type (what certifies). assessment_item
+# additionally carries the Alignment-cap-at-1 signal when its Bloom is below
+# the objective's.
+_VERB_TRIPLE_INTERACTION_TYPES: frozenset = frozenset(
+    {"activity", "self_check_question", "scenario", "problem"}
+)
+_VERB_TRIPLE_ASSESSMENT_TYPES: frozenset = frozenset({"assessment_item"})
 
 
 #: Canonical alignment-status enum that lands in
@@ -304,6 +331,10 @@ def _emit_decision(
     nli_loaded: bool,
     status: str,
     failure_codes: List[str],
+    verb_triple_status: Optional[str] = None,
+    objective_verb: Optional[str] = None,
+    block_verb: Optional[str] = None,
+    alignment_cap_at_1: bool = False,
 ) -> None:
     """Emit one ``block_objective_delivery_check`` decision per audited
     (block, objective_id) pair.
@@ -344,6 +375,15 @@ def _emit_decision(
         f"status={status}, "
         f"failure_codes={','.join(failure_codes) or 'none'}."
     )
+    # IB3.2 — append the verb-triple signals to the rationale only when the
+    # axis ran (flag on). Keeps the flag-OFF rationale byte-identical.
+    if verb_triple_status is not None:
+        rationale += (
+            f" verb_triple_status={verb_triple_status}, "
+            f"objective_verb={objective_verb or 'n/a'!r}, "
+            f"block_verb={block_verb or 'n/a'!r}, "
+            f"alignment_cap_at_1={alignment_cap_at_1}."
+        )
     try:
         capture.log_decision(
             decision_type="block_objective_delivery_check",
@@ -455,6 +495,19 @@ class BlockObjectiveDeliveryValidator:
 
         verbs_by_level = get_verbs()  # Dict[str, Set[str]]
 
+        # IB3.2 — the verb-triple equality axis is gated behind
+        # ED4ALL_ALIGNMENT_VERB_TRIPLE (default OFF). When OFF the new axis is
+        # skipped entirely AND scenario/problem stay outside the audited set,
+        # so the three existing axes + the objective_alignment entry shape are
+        # BYTE-IDENTICAL to the pre-IB3 baseline. When ON, scenario/problem
+        # join the audited set so their RESOLVED verb is compared against the
+        # objective's Bloom band.
+        verb_triple_on = alignment_verb_triple_enabled()
+        if verb_triple_on:
+            audited_types = _AUDITED_BLOCK_TYPES | _VERB_TRIPLE_INTERACTION_TYPES
+        else:
+            audited_types = _AUDITED_BLOCK_TYPES
+
         issues: List[GateIssue] = []
         emitted_codes: set[str] = set()
         touched_blocks: List[Any] = []
@@ -490,7 +543,7 @@ class BlockObjectiveDeliveryValidator:
 
         for block in blocks:
             block_type = _block_attr(block, "block_type")
-            if block_type not in _AUDITED_BLOCK_TYPES:
+            if block_type not in audited_types:
                 # Non-audited block_type → silent skip (no event, no
                 # issue). Mirrors the bloom-classifier-disagreement
                 # validator's per-type filter.
@@ -784,6 +837,78 @@ class BlockObjectiveDeliveryValidator:
                         )
                         emitted_codes.add(_CODE_VERB_AXIS_UNAVAILABLE)
 
+                # ---------- Axis 4 (IB3.2): verb-triple EQUALITY ---- #
+                # Gated behind ED4ALL_ALIGNMENT_VERB_TRIPLE. Distinct from
+                # axis 3 (presence of ANY band-synonym): this asserts the
+                # block's RESOLVED verb shares the OBJECTIVE's Bloom band —
+                # objective-verb = activity/assessment-verb. Only fires for
+                # interaction/activity + assessment block types.
+                verb_triple_status: Optional[str] = None
+                obj_verb_for_entry: Optional[str] = None
+                blk_verb_for_entry: Optional[str] = None
+                obj_level_for_entry: Optional[str] = None
+                blk_level_for_entry: Optional[str] = None
+                alignment_cap_at_1 = False
+                if verb_triple_on and (
+                    block_type in _VERB_TRIPLE_INTERACTION_TYPES
+                    or block_type in _VERB_TRIPLE_ASSESSMENT_TYPES
+                ):
+                    obj_verb, obj_level = resolve_objective_verb_level(obj_dict)
+                    blk_verb, blk_level = resolve_block_verb_level(block)
+                    obj_verb_for_entry = obj_verb
+                    blk_verb_for_entry = blk_verb
+                    obj_level_for_entry = obj_level
+                    blk_level_for_entry = blk_level
+                    if obj_level is None or blk_level is None:
+                        verb_triple_status = "unverifiable"
+                    elif verbs_share_band(obj_level, blk_level):
+                        verb_triple_status = "aligned"
+                    else:
+                        verb_triple_status = "mismatch"
+                        if (
+                            _CODE_VERB_TRIPLE_MISMATCH not in emitted_codes
+                            or len(issues) < _ISSUE_LIST_CAP
+                        ):
+                            issues.append(
+                                GateIssue(
+                                    severity="warning",
+                                    code=_CODE_VERB_TRIPLE_MISMATCH,
+                                    message=(
+                                        f"Block {block_id!r} "
+                                        f"(block_type={block_type!r}) "
+                                        f"exercises verb {blk_verb!r} "
+                                        f"(bloom={blk_level!r}) but objective "
+                                        f"{obj_id!r} declares verb {obj_verb!r} "
+                                        f"(bloom={obj_level!r}). The "
+                                        f"constructive-alignment verb-triple "
+                                        f"requires the practiced/certified "
+                                        f"verb to share the objective's Bloom "
+                                        f"band — a "
+                                        f"{obj_level!r} objective checked by a "
+                                        f"{blk_level!r} block is a "
+                                        f"construct-irrelevant mismatch."
+                                    ),
+                                    location=block_id,
+                                    suggestion=(
+                                        f"Re-author the block to exercise a "
+                                        f"{obj_level!r}-band verb (matching "
+                                        f"the objective's {obj_verb!r}), or "
+                                        f"re-route to a block type that can."
+                                    ),
+                                )
+                            )
+                            emitted_codes.add(_CODE_VERB_TRIPLE_MISMATCH)
+                        any_regenerate = True
+                    # Alignment-cap-at-1 signal — assessment Bloom below the
+                    # objective's invalidates certification (IB6 applies the
+                    # cap; IB3 records the signal). Only meaningful for the
+                    # assessment type.
+                    if (
+                        block_type in _VERB_TRIPLE_ASSESSMENT_TYPES
+                        and bloom_below(blk_level, obj_level)
+                    ):
+                        alignment_cap_at_1 = True
+
                 status = _resolve_status(
                     entailment_passed=entailment_passed,
                     bloom_passed=bloom_passed,
@@ -797,36 +922,49 @@ class BlockObjectiveDeliveryValidator:
                     pair_failure_codes.append(_CODE_BLOOM_UNDERMET)
                 if verb_passed is False:
                     pair_failure_codes.append(_CODE_VERB_ABSENT)
+                if verb_triple_status == "mismatch":
+                    pair_failure_codes.append(_CODE_VERB_TRIPLE_MISMATCH)
 
                 if not pair_failure_codes:
                     passed_pairs += 1
 
                 # Persist the per-pair audit entry on the block.
-                alignment_entries.append(
-                    {
-                        "objective_id": obj_id,
-                        "status": status,
-                        "statement_entailment_score": (
-                            entailment_score
-                            if entailment_score is not None
-                            else None
-                        ),
-                        "contradiction_score": (
-                            contradiction_score
-                            if contradiction_score is not None
-                            else None
-                        ),
-                        "bloom_gap": bloom_gap,
-                        "verb_match_count": verb_match_count,
-                        "declared_bloom": declared_bloom,
-                        "observed_bloom": (
-                            observed_bloom.lower()
-                            if isinstance(observed_bloom, str)
-                            else None
-                        ),
-                        "entailment_threshold": entailment_threshold,
-                    }
-                )
+                entry: Dict[str, Any] = {
+                    "objective_id": obj_id,
+                    "status": status,
+                    "statement_entailment_score": (
+                        entailment_score
+                        if entailment_score is not None
+                        else None
+                    ),
+                    "contradiction_score": (
+                        contradiction_score
+                        if contradiction_score is not None
+                        else None
+                    ),
+                    "bloom_gap": bloom_gap,
+                    "verb_match_count": verb_match_count,
+                    "declared_bloom": declared_bloom,
+                    "observed_bloom": (
+                        observed_bloom.lower()
+                        if isinstance(observed_bloom, str)
+                        else None
+                    ),
+                    "entailment_threshold": entailment_threshold,
+                }
+                # IB3.2 — stamp the verb-triple signals ONLY when the flag is
+                # on (and the axis ran). Flag-OFF → no new keys → entry shape
+                # byte-identical to the pre-IB3 baseline. ``alignment_cap_at_1``
+                # is added only when True (the IB6 rollup reads its presence).
+                if verb_triple_status is not None:
+                    entry["verb_triple_status"] = verb_triple_status
+                    entry["objective_verb"] = obj_verb_for_entry
+                    entry["block_verb"] = blk_verb_for_entry
+                    entry["objective_bloom"] = obj_level_for_entry
+                    entry["block_bloom"] = blk_level_for_entry
+                    if alignment_cap_at_1:
+                        entry["alignment_cap_at_1"] = True
+                alignment_entries.append(entry)
 
                 _emit_decision(
                     capture,
@@ -847,6 +985,10 @@ class BlockObjectiveDeliveryValidator:
                     nli_loaded=nli_loaded,
                     status=status,
                     failure_codes=pair_failure_codes,
+                    verb_triple_status=verb_triple_status,
+                    objective_verb=obj_verb_for_entry,
+                    block_verb=blk_verb_for_entry,
+                    alignment_cap_at_1=alignment_cap_at_1,
                 )
 
             # Persist the populated alignment field back onto the block
@@ -912,4 +1054,7 @@ __all__ = [
     "_CODE_OBSERVED_BLOOM_UNAVAILABLE",
     "_CODE_STATEMENT_UNRESOLVED",
     "_CODE_VERB_AXIS_UNAVAILABLE",
+    "_CODE_VERB_TRIPLE_MISMATCH",
+    "_VERB_TRIPLE_INTERACTION_TYPES",
+    "_VERB_TRIPLE_ASSESSMENT_TYPES",
 ]
