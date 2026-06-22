@@ -88,8 +88,37 @@ from lib.semantic_structure_extractor.semantic_structure_extractor import (
 # label: SemantiK's output IS the council-synthesized combination of
 # pypdfium2/pdfplumber/OCR extraction, exactly what ``synthesized`` has
 # always denoted. NEVER empty (``EMPTY_DATA_DART_SOURCE`` is critical).
+#
+# Vendor-ingest discriminator (this session): the publisher-supplied
+# accessible-HTML path (``lib/semantik/vendor_ingest.py``) threads
+# ``source="vendor"`` through ``normalize_cascade_to_ed4all`` so its blocks
+# carry ``data-dart-source="vendor"`` — the AUTHORITATIVE provenance label
+# for already-accessible HTML we did NOT synthesize. Same M6 finding holds:
+# no consumer branches on the VALUE, so adding the ``vendor`` value
+# mis-routes nothing; ``synthesized`` stays the SemantiK default.
 # ---------------------------------------------------------------------------
 _DATA_DART_SOURCE_VALUE = "synthesized"
+
+# Honest provenance labels accepted for the per-document source override.
+# Suggestion-only (the dart_markers validator's allowlist is suggestion text,
+# not a code-enforced enum — see lib/validators/dart_markers.py): an unknown
+# value still passes the markers gate so long as it is non-empty, but we pin
+# the two we emit so a typo (e.g. "vender") is caught at the adapter boundary.
+_KNOWN_DATA_DART_SOURCE_VALUES = frozenset({"synthesized", "vendor"})
+
+
+def _resolve_source_value(source: Optional[str]) -> str:
+    """Resolve the per-document ``data-dart-source`` value (§3.2 + vendor).
+
+    ``None``/empty → the SemantiK default ``synthesized``. A known value
+    (``synthesized``/``vendor``) is honored verbatim. NEVER empty (the
+    ``EMPTY_DATA_DART_SOURCE`` gate is critical), so a blank override falls
+    back to the default rather than stamping ``data-dart-source=""``.
+    """
+    val = (source or "").strip()
+    if not val:
+        return _DATA_DART_SOURCE_VALUE
+    return val
 
 # §3.5 — page-kind is honest physical PDF pages. Semantic v2 resolves only
 # physical PDF pages today; never upgrade physical→printed (RISK-A
@@ -284,19 +313,23 @@ def _esc_text(value: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _render_section(block: _AdapterBlock, sid: str) -> str:
+def _render_section(
+    block: _AdapterBlock, sid: str, *, source_value: str = _DATA_DART_SOURCE_VALUE
+) -> str:
     """Render one ``<section>`` wrapper for a block (§3.1/§3.2/§3.5).
 
     All ``data-dart-*`` attributes land on the SAME opening tag as
     ``data-dart-block-id`` (placement rule — never on leaf nodes; chunker
     same-element pairing requires it). The inner heading carries
     ``id={sid}`` so ``aria-labelledby`` resolves and ``#{sid}`` deep-links.
+    ``source_value`` is the resolved provenance discriminator
+    (``synthesized`` for SemantiK; ``vendor`` for publisher-supplied HTML).
     """
     attrs: List[str] = [
         'class="dart-section"',
         f'aria-labelledby="{_esc_attr(sid)}"',
         f'data-dart-block-id="{_esc_attr(sid)}"',
-        f'data-dart-source="{_DATA_DART_SOURCE_VALUE}"',
+        f'data-dart-source="{_esc_attr(source_value)}"',
     ]
     pages = _format_pages(block.pages)
     if pages:
@@ -335,7 +368,11 @@ def _first_text_line(block: _AdapterBlock) -> str:
     return (first[:80] if len(first) > 80 else first) or f"Block {block.raw_block_index}"
 
 
-def _render_chapters(chapters: Sequence[_AdapterChapter]) -> str:
+def _render_chapters(
+    chapters: Sequence[_AdapterChapter],
+    *,
+    source_value: str = _DATA_DART_SOURCE_VALUE,
+) -> str:
     """Render every chapter as an ``<article role="doc-chapter">`` (§3.4)."""
     parts: List[str] = []
     for ch_idx, chapter in enumerate(chapters, start=1):
@@ -348,7 +385,9 @@ def _render_chapters(chapters: Sequence[_AdapterChapter]) -> str:
             if block.heading_text and _is_noncontent_heading(block.heading_text):
                 continue
             sid = _mint_sid(block)
-            sections_html.append(_render_section(block, sid))
+            sections_html.append(
+                _render_section(block, sid, source_value=source_value)
+            )
         article_id = f"chap-{ch_idx}"
         parts.append(
             f'<article role="doc-chapter" id="{article_id}">\n'
@@ -359,13 +398,19 @@ def _render_chapters(chapters: Sequence[_AdapterChapter]) -> str:
     return "\n".join(parts)
 
 
-def _render_html(chapters: Sequence[_AdapterChapter], *, title: str, lang: str) -> str:
+def _render_html(
+    chapters: Sequence[_AdapterChapter],
+    *,
+    title: str,
+    lang: str,
+    source_value: str = _DATA_DART_SOURCE_VALUE,
+) -> str:
     """Assemble the full normalized document (§3.1 four critical markers).
 
     Keeps the skip-link; adds ``role="main"`` + ``class="dart-document"`` to
     ``<main>``; wraps every block in an aria-labelled ``dart-section``.
     """
-    body = _render_chapters(chapters)
+    body = _render_chapters(chapters, source_value=source_value)
     return (
         "<!DOCTYPE html>\n"
         f'<html lang="{_esc_attr(lang)}">\n'
@@ -394,6 +439,7 @@ def build_synthesized_sidecar(
     title: str,
     source_pdf: Optional[str] = None,
     slug: str,
+    source_value: str = _DATA_DART_SOURCE_VALUE,
 ) -> Dict[str, Any]:
     """Return the canonical ``{stem}_synthesized.json`` sidecar (§3.5b).
 
@@ -401,9 +447,12 @@ def build_synthesized_sidecar(
     ``data-dart-block-id`` stamped in the HTML — both call :func:`_mint_sid`.
     The source_refs gate harvests its valid-ID universe from this sidecar, so
     any divergence trips ``UNRESOLVED_SOURCE_ID`` on every run.
+    ``source_value`` matches the HTML ``data-dart-source`` discriminator so
+    the sidecar provenance agrees with the markup (``vendor`` vs the SemantiK
+    ``synthesized`` default).
     """
     sections: List[Dict[str, Any]] = []
-    extractors_seen = {_DATA_DART_SOURCE_VALUE}
+    extractors_seen = {source_value}
     figures_count = 0
     tables_count = 0
     for chapter in chapters:
@@ -434,8 +483,12 @@ def build_synthesized_sidecar(
                     ),
                     "page_range": _page_range(block.pages),
                     "provenance": {
-                        "sources": [_DATA_DART_SOURCE_VALUE],
-                        "strategy": "semantik_v2",
+                        "sources": [source_value],
+                        "strategy": (
+                            "vendor_ingest"
+                            if source_value == "vendor"
+                            else "semantik_v2"
+                        ),
                         "confidence": round(float(conf), 3),
                     },
                     "data": data,
@@ -575,6 +628,7 @@ def normalize_cascade_to_ed4all(
     pdf_stem: str,
     figures_dir: Optional[str] = None,
     canonical_course_code: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Normalize a Semantic v2 cascade RESULT into Ed4All's DART contract.
 
@@ -608,6 +662,7 @@ def normalize_cascade_to_ed4all(
         ``exit_action`` + ``theta_score`` + ``flags`` + ``certification_status``.
     """
     slug = dart_slug_from_filename(pdf_stem)
+    source_value = _resolve_source_value(source)
 
     exit_action = getattr(cascade_result, "exit_action", None)
     if exit_action is None and isinstance(cascade_result, dict):
@@ -632,7 +687,7 @@ def normalize_cascade_to_ed4all(
     title = chapters[0].title if chapters else pdf_stem
     lang = getattr(cascade_result, "lang", None) or "en"
 
-    html = _render_html(chapters, title=title, lang=lang)
+    html = _render_html(chapters, title=title, lang=lang, source_value=source_value)
     success, certification_status = _resolve_success(exit_action)
 
     synthesized_sidecar = build_synthesized_sidecar(
@@ -640,6 +695,7 @@ def normalize_cascade_to_ed4all(
         title=title,
         source_pdf=pdf_stem,
         slug=slug,
+        source_value=source_value,
     )
     quality_sidecar = build_quality_sidecar(
         html,
@@ -665,6 +721,7 @@ def normalize_cascade_to_ed4all(
         "flags": flags,
         "lane_used": lane_used,
         "certification_status": certification_status,
+        "data_dart_source": source_value,
         "slug": slug,
         "canonical_course_code": canonical_course_code,
         "figures_dir": figures_dir,

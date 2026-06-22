@@ -308,7 +308,7 @@ class DartMarkersValidator:
                 ),
                 suggestion=(
                     "Emit one of the typed extractor enum values: pdftotext, "
-                    "pdfplumber, ocr, synthesized, claude_llm."
+                    "pdfplumber, ocr, synthesized, vendor, claude_llm."
                 ),
             ))
         if empty_block_id_count > 0:
