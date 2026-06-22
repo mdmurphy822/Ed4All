@@ -65,6 +65,13 @@ from lib.semantic_structure_extractor.semantic_structure_extractor import (
 # SemantiK conversion path); set falsey to disable for debugging.
 _FLAG_ENV = "SEMANTIK_DROP_FRONTMATTER_TOC"
 
+# Env gate for the PAGE-DENSITY front-matter-zone pass (the robust positional
+# detector below). Default ON, parse-with-fallback, mirroring
+# ``SEMANTIK_DROP_FRONTMATTER_TOC``. Set falsey (``0`` / ``false`` / ``no`` /
+# ``off``) for byte-identical pass-through of THIS pass only (the TOC-run +
+# chapter-index-cluster + boilerplate passes still run under their own gate).
+_FLAG_ZONE_ENV = "SEMANTIK_DROP_FRONTMATTER_ZONE"
+
 # A TOC run must be at least this many contiguous entries — one or two
 # title+pagenum lines could be a coincidental real heading; four in a row with
 # increasing page numbers is unambiguously a printed table of contents.
@@ -77,6 +84,38 @@ _MIN_TOC_RUN = 4
 # a rendered chapter index (a page-number-less TOC variant) does. Three in a
 # row with no content between them is unambiguously an index cluster.
 _MIN_CHAPTER_INDEX_RUN = 3
+
+# --- PAGE-DENSITY front-matter-zone discriminator (the robust positional fix) -
+#
+# The chapter-index-cluster heuristic above keys on "NO content-bearing region
+# between consecutive entries". A PREFACE chapter-by-chapter SUMMARY defeats it:
+# each "Chapter N: Title" is followed by a real summary paragraph, so content
+# DOES sit between consecutive entries and the run never forms. The reliable
+# signal that survives content-between is PAGE DENSITY: a preface summary /
+# chapter index packs MANY chapter-level headings into a TINY page span (the
+# real EA2e defect — 8 "Chapter N" headings on pages 9-10), whereas the REAL
+# body is page-SPARSE (Chapter 1's body spans many pages before Chapter 2
+# appears). So a run of >= _ZONE_MIN_CHAPTER_CLUSTER chapter-pattern headings
+# whose page span is <= _ZONE_MAX_PAGE_WINDOW pages, located in the early-page
+# front-matter zone (before the body-start page), is a front-matter cluster and
+# is dropped WHOLE — regardless of content between entries or trailing page
+# numbers.
+#
+# K — minimum chapter-pattern headings in the dense cluster.
+_ZONE_MIN_CHAPTER_CLUSTER = 4
+# P — maximum page span (last_page - first_page) the cluster may straddle. A
+# cluster of K chapter headings within P pages is impossibly dense for real
+# body chapters (a real chapter spans many pages of content before the next
+# opener).
+_ZONE_MAX_PAGE_WINDOW = 3
+# The front-matter zone is the maximal early-page prefix BEFORE the body-start
+# page. A dense chapter cluster is only dropped when it lies within this many
+# pages of the document start — guarding the real body (whose first chapter
+# opener sits on a much later page) from ever being mistaken for a front-matter
+# cluster. Generous (front matter — copyright / authors / preface / TOC — can
+# run a dozen+ pages) but bounded so a dense run deep in the body is never
+# swept up.
+_ZONE_MAX_FRONTMATTER_PAGE = 16
 
 # A real chapter heading shape: "Chapter N[: Title]" or "Chapter N - Title"
 # or "Chapter N Title". The number is the canonical chapter ordinal.
@@ -404,6 +443,120 @@ def _find_chapter_index_clusters(
     return dropped
 
 
+def _zone_flag_enabled() -> bool:
+    """Parse-with-fallback, DEFAULT ON, for the page-density front-matter-zone
+    pass. Mirrors :func:`_flag_enabled` but keyed on ``_FLAG_ZONE_ENV`` so the
+    positional pass can be disabled independently of the TOC-run pass."""
+    raw = os.environ.get(_FLAG_ZONE_ENV)
+    if raw is None:
+        return True
+    stripped = raw.strip().lower()
+    if stripped in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _first_page(prov: Mapping[str, Any]) -> int | None:
+    """The smallest positive page number a region appears on, else ``None``.
+
+    ``pages`` is the per-region page list the cascade surfaces (see
+    ``cascade_ir._block_from_provenance``). A region with no positive page is
+    page-unknown and never participates in the page-density rule.
+    """
+    pages = prov.get("pages")
+    if not isinstance(pages, (list, tuple)):
+        return None
+    candidates = [int(p) for p in pages if isinstance(p, int) and p > 0]
+    return min(candidates) if candidates else None
+
+
+def _find_frontmatter_zone_clusters(
+    provenance: List[Mapping[str, Any]],
+) -> set[int]:
+    """Indices of dense chapter-heading clusters in the early-page front-matter
+    zone (the robust page-density discriminator).
+
+    A cluster is a maximal contiguous run (in document order, skipping
+    intervening non-chapter regions) of ``>= _ZONE_MIN_CHAPTER_CLUSTER``
+    chapter-pattern headings (``Chapter N[: Title]`` / bare-ordinal ``N Title``)
+    whose page span ``last_page - first_page <= _ZONE_MAX_PAGE_WINDOW`` AND
+    whose first heading sits on a page ``<= _ZONE_MAX_FRONTMATTER_PAGE`` (the
+    early front-matter zone). Such a run is a preface chapter-summary / chapter
+    index — many chapter-level headings packed into a tiny page span in the
+    front matter — and is dropped WHOLE.
+
+    Crucially this fires WHETHER OR NOT content sits between consecutive
+    entries (a preface summary has a paragraph after each "Chapter N") and
+    WHETHER OR NOT they carry trailing page numbers — the two cases the
+    existing TOC-run / index-cluster passes miss.
+
+    Anti-false-positive (the core contract):
+      * page-span guard — a real body chapter span is MANY pages
+        (``Chapter 1`` body runs long before ``Chapter 2`` appears), so K real
+        openers never fit inside ``_ZONE_MAX_PAGE_WINDOW`` pages;
+      * front-matter-zone guard — the first chapter of the run must sit on an
+        early page (``<= _ZONE_MAX_FRONTMATTER_PAGE``), so a dense run DEEP in
+        the body is never swept up;
+      * page-unknown regions never enter a cluster (no page → can't be dense).
+
+    Only the chapter-pattern HEADINGS of the cluster are returned for drop;
+    intervening content (a preface summary paragraph) is NOT dropped here — the
+    zone-boilerplate pass and the re-anchored zone handle residue. Removing the
+    phantom HEADINGS is what stops them opening chapters, which is the defect.
+    """
+    dropped: set[int] = set()
+    n = len(provenance)
+    i = 0
+    while i < n:
+        ordinal = _chapter_index_ordinal(provenance[i])
+        first_pg = _first_page(provenance[i]) if ordinal is not None else None
+        if ordinal is None or first_pg is None:
+            i += 1
+            continue
+        # Begin a candidate cluster: collect contiguous chapter-pattern headings
+        # (skipping intervening non-chapter regions — paragraphs / other
+        # headings / metadata) as long as each chapter heading stays inside the
+        # page window measured from the cluster's first page.
+        run: List[int] = [i]
+        run_first_page = first_pg
+        run_last_page = first_pg
+        j = i + 1
+        last_chapter_pos = i
+        while j < n:
+            o2 = _chapter_index_ordinal(provenance[j])
+            if o2 is None:
+                # A non-chapter region (content / other heading) — keep scanning;
+                # the page-density rule tolerates content between entries.
+                j += 1
+                continue
+            pg2 = _first_page(provenance[j])
+            if pg2 is None:
+                j += 1
+                continue
+            # A chapter heading that breaks out of the page window CLOSES the
+            # cluster — this is the body-start: a chapter opener many pages
+            # after the cluster is the real body, not part of the dense run.
+            if pg2 - run_first_page > _ZONE_MAX_PAGE_WINDOW:
+                break
+            run.append(j)
+            run_last_page = max(run_last_page, pg2)
+            last_chapter_pos = j
+            j += 1
+        span = run_last_page - run_first_page
+        if (
+            len(run) >= _ZONE_MIN_CHAPTER_CLUSTER
+            and span <= _ZONE_MAX_PAGE_WINDOW
+            and run_first_page <= _ZONE_MAX_FRONTMATTER_PAGE
+        ):
+            dropped.update(run)
+        # Resume after the last chapter heading we considered for this cluster
+        # (do not re-scan its members; the body-start chapter that broke the
+        # window is reconsidered as a fresh cluster start, and being page-sparse
+        # it will never form a dense run).
+        i = max(last_chapter_pos + 1, i + 1)
+    return dropped
+
+
 def _is_front_matter_boilerplate(prov: Mapping[str, Any]) -> bool:
     """Whether a region in the front-matter zone is droppable boilerplate.
 
@@ -430,6 +583,7 @@ def _is_front_matter_boilerplate(prov: Mapping[str, Any]) -> bool:
 
 def drop_toc_and_frontmatter(
     provenance: List[Mapping[str, Any]],
+    diagnostics: dict | None = None,
 ) -> Tuple[List[Mapping[str, Any]], int]:
     """Drop the phantom-TOC run + leading front-matter boilerplate.
 
@@ -437,6 +591,13 @@ def drop_toc_and_frontmatter(
     ----------
     provenance
         The ordered ``region_provenance`` list (document order).
+    diagnostics
+        Optional out-param dict. When provided it is populated with per-pass
+        drop counts for audit (mirroring the resegment / structure
+        diagnostics): ``frontmatter_zone_dropped`` (the page-density cluster
+        count) and ``total_dropped``. Left untouched when the detector is
+        disabled or no drops occur (the keys are always set to ``0`` when the
+        function runs, so a caller can stamp the diagnostic unconditionally).
 
     Returns
     -------
@@ -450,8 +611,12 @@ def drop_toc_and_frontmatter(
     Conservative contract — NEVER drops:
       * anything at/after the first real chapter/section heading,
       * a single real chapter heading that is not part of a TOC run,
-      * a run of plain titles WITHOUT trailing increasing page numbers.
+      * a run of plain titles WITHOUT trailing increasing page numbers,
+      * a page-SPARSE real body chapter cluster (the page-density guard).
     """
+    if diagnostics is not None:
+        diagnostics.setdefault("frontmatter_zone_dropped", 0)
+        diagnostics.setdefault("total_dropped", 0)
     if not _flag_enabled():
         return list(provenance), 0
     if not provenance:
@@ -472,6 +637,25 @@ def drop_toc_and_frontmatter(
     # never form such a run.
     drop_idx.update(_find_chapter_index_clusters(provenance))
 
+    # (2c) PAGE-DENSITY front-matter-zone clusters — the robust positional fix.
+    # A preface chapter-by-chapter SUMMARY (each "Chapter N: Title" followed by
+    # a real summary paragraph) packs MANY chapter-level headings into a TINY
+    # page span in the front matter; the index-cluster pass (2b) misses it
+    # because content sits BETWEEN consecutive entries. The page-density rule
+    # catches it: >= _ZONE_MIN_CHAPTER_CLUSTER chapter headings inside a
+    # <= _ZONE_MAX_PAGE_WINDOW page span on an early front-matter page is a
+    # cluster → drop the phantom HEADINGS (so they never open chapters). Real
+    # body chapters are page-SPARSE (a chapter spans many pages before the next
+    # opener), so they can never satisfy the density window. Independently gated
+    # by SEMANTIK_DROP_FRONTMATTER_ZONE (default ON).
+    if _zone_flag_enabled():
+        zone_dropped = _find_frontmatter_zone_clusters(provenance)
+    else:
+        zone_dropped = set()
+    drop_idx.update(zone_dropped)
+    if diagnostics is not None:
+        diagnostics["frontmatter_zone_dropped"] = len(zone_dropped)
+
     # (3) front-matter boilerplate inside the zone (Preface / Copyright /
     # authors / bare TOC header / donor lists). Reuses tested predicates.
     for idx in range(zone_end):
@@ -480,6 +664,9 @@ def drop_toc_and_frontmatter(
 
     if not drop_idx:
         return list(provenance), 0
+
+    if diagnostics is not None:
+        diagnostics["total_dropped"] = len(drop_idx)
 
     filtered = [
         prov for idx, prov in enumerate(provenance) if idx not in drop_idx

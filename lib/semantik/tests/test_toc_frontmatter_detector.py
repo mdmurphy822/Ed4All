@@ -257,12 +257,20 @@ def test_real_numbered_headings_never_form_a_run():
 # ---------------------------------------------------------------------------
 
 
-def test_chapter_index_cluster_without_pagenums_dropped():
+def test_chapter_index_cluster_without_pagenums_dropped(monkeypatch):
     """A back-to-back run (>=3) of 'Chapter N: Title' headings with NO content
     between consecutive entries — the real EA2e chapter-index cluster, which
     carries NO trailing page numbers — is dropped EVEN THOUGH it sits after the
     first real chapter anchor (so the front-matter TOC-run path never reaches
-    it)."""
+    it).
+
+    Scoped to the index-cluster pass (zone pass OFF): the default page builder
+    keys page off the region index, so the real opener at index 0 is
+    artificially page-ADJACENT to the cluster — a layout the page-density zone
+    pass (which assumes a real opener is page-SPARSE / page-DISTANT) does not
+    model. The zone pass's own realistic-page coverage lives in the (2d)
+    suite; here we isolate the index-cluster mechanism."""
+    monkeypatch.setenv("SEMANTIK_DROP_FRONTMATTER_ZONE", "off")
     prov = [
         # A real chapter opener anchors the front-matter zone end at index 0.
         _heading(0, "Chapter 1: Foundations", level=1, raw=1),
@@ -298,9 +306,14 @@ def test_chapter_index_cluster_without_pagenums_dropped():
     assert dropped == 6, f"expected 6 index-cluster drops, got {dropped}"
 
 
-def test_bare_ordinal_index_cluster_dropped():
+def test_bare_ordinal_index_cluster_dropped(monkeypatch):
     """A bare-ordinal 'N Title' index cluster (no 'Chapter' word, no page
-    numbers) is also dropped."""
+    numbers) is also dropped.
+
+    Scoped to the index-cluster pass (zone pass OFF) for the same
+    page-adjacency reason as the test above — the page-density zone pass has
+    its own realistic-page coverage in the (2d) suite."""
+    monkeypatch.setenv("SEMANTIK_DROP_FRONTMATTER_ZONE", "off")
     prov = [
         _heading(0, "3 Math Models", level=1, raw=1),
         _heading(1, "5 Systems of Linear Equations", level=1, raw=2),
@@ -379,6 +392,193 @@ def test_flag_on_and_garbage_enables(monkeypatch, on_value):
     prov = _ea2e_case()
     _filtered, dropped = drop_toc_and_frontmatter(prov)
     assert dropped == 8, "truthy / garbage values must keep detector ON"
+
+
+# ---------------------------------------------------------------------------
+# (2d) PAGE-DENSITY front-matter-zone pass — the robust positional fix. The
+#      discriminator is page DENSITY, not "no content between entries", so it
+#      catches the preface chapter-SUMMARY (each "Chapter N" followed by a real
+#      summary paragraph) that the index-cluster pass (2c) misses.
+# ---------------------------------------------------------------------------
+
+
+def _hp(idx: int, text: str, page: int, *, level: int = 1, raw: int = 0) -> dict:
+    """A heading on an EXPLICIT page (the page-density tests need page control,
+    unlike the default builders that key page off the region index)."""
+    h = _heading(idx, text, level=level, raw=raw)
+    h["pages"] = [page]
+    return h
+
+
+def _pp(idx: int, text: str, page: int, *, raw: int = 0) -> dict:
+    """A paragraph on an EXPLICIT page."""
+    p = _para(idx, text, raw=raw)
+    p["pages"] = [page]
+    return p
+
+
+def _preface_summary_case() -> list[dict]:
+    """Mirrors the REAL EA2e defect the index-cluster pass MISSES: a preface
+    chapter-by-chapter SUMMARY — each "Chapter N: Title" FOLLOWED BY a real
+    summary paragraph (content BETWEEN consecutive entries) — densely packed on
+    pages 9-10, then the page-SPARSE real body starting page 13."""
+    return [
+        # Dense preface chapter-summary cluster on pages 9-10 (K=4 within P<=3).
+        _hp(0, "Chapter 1: Foundations", 9, raw=1),
+        _pp(1, "This chapter reviews whole numbers and integers.", 9, raw=2),
+        _hp(2, "Chapter 2: Solving Linear Equations", 9, raw=3),
+        _pp(3, "Here we develop the algebra of solving equations.", 9, raw=4),
+        _hp(4, "Chapter 3: Math Models", 10, raw=5),
+        _pp(5, "We apply algebra to real-world models and percents.", 10, raw=6),
+        _hp(6, "Chapter 5: Systems of Linear Equations", 10, raw=7),
+        _pp(7, "Systems are solved by graphing, substitution, elimination.", 10, raw=8),
+        # The page-SPARSE, content-rich REAL body — page 13+.
+        _hp(8, "Chapter Outline", 13, level=3, raw=9),
+        _hp(9, "1.1 Introduction to Whole Numbers", 13, level=2, raw=10),
+        _pp(10, "Place value tells us the value of a digit.", 13, raw=11),
+        _pp(11, "Whole numbers are the counting numbers and zero.", 14, raw=12),
+        _pp(12, "We can round whole numbers to a given place.", 16, raw=13),
+    ]
+
+
+def test_page_density_cluster_with_content_between_dropped():
+    """The keystone case: a dense chapter cluster WITH summary paragraphs
+    between consecutive entries — which the back-to-back index-cluster pass
+    misses — IS dropped by the page-density zone pass; the page-sparse real
+    body section survives."""
+    prov = _preface_summary_case()
+    filtered, dropped = drop_toc_and_frontmatter(prov)
+    texts = _text_set(filtered)
+    # Every phantom preface "Chapter N" heading is gone.
+    for phantom in (
+        "Chapter 1: Foundations",
+        "Chapter 2: Solving Linear Equations",
+        "Chapter 3: Math Models",
+        "Chapter 5: Systems of Linear Equations",
+    ):
+        assert phantom not in texts, f"phantom preface-summary survived: {phantom}"
+    # The page-sparse REAL body section is kept.
+    assert "1.1 Introduction to Whole Numbers" in texts
+    assert "Place value tells us the value of a digit." in texts
+    assert dropped >= 4, f"expected >=4 cluster drops, got {dropped}"
+
+
+def test_page_density_index_cluster_pass_alone_misses_it():
+    """Documents the gap the zone pass closes: the index-cluster pass (which
+    keys on NO-content-between) returns EMPTY for the content-between preface
+    summary, but the zone pass (page-density) catches all four phantoms."""
+    from lib.semantik.toc_frontmatter_detector import (
+        _find_chapter_index_clusters,
+        _find_frontmatter_zone_clusters,
+    )
+
+    prov = _preface_summary_case()
+    idx_hits = _find_chapter_index_clusters(prov)
+    zone_hits = _find_frontmatter_zone_clusters(prov)
+    assert idx_hits == set(), (
+        "index-cluster pass should MISS the content-between summary "
+        f"(got {idx_hits})"
+    )
+    dropped_ris = {prov[i]["region_index"] for i in zone_hits}
+    assert {0, 2, 4, 6} <= dropped_ris, (
+        f"zone pass must catch the 4 phantom chapter headings, got {dropped_ris}"
+    )
+
+
+def test_page_density_sparse_real_body_not_dropped():
+    """ANTI-FALSE-POSITIVE: page-SPARSE real body chapters (each spanning many
+    pages of content before the next opener) NEVER satisfy the density window,
+    so they are not dropped — even though they sit on early pages."""
+    from lib.semantik.toc_frontmatter_detector import (
+        _find_frontmatter_zone_clusters,
+    )
+
+    prov = [
+        _hp(0, "Chapter 1: Foundations", 3, raw=1),
+        _pp(1, "intro", 4, raw=2),
+        _pp(2, "more", 6, raw=3),
+        _pp(3, "more", 10, raw=4),
+        _hp(4, "Chapter 2: Linear Equations", 14, raw=5),
+        _pp(5, "solve", 15, raw=6),
+        _hp(6, "Chapter 3: Math Models", 30, raw=7),
+        _pp(7, "models", 31, raw=8),
+    ]
+    assert _find_frontmatter_zone_clusters(prov) == set()
+    filtered, dropped = drop_toc_and_frontmatter(prov)
+    assert dropped == 0, f"page-sparse real body wrongly dropped: {dropped}"
+    assert _text_set(filtered) == _text_set(prov)
+
+
+def test_page_density_dense_cluster_deep_in_body_not_dropped():
+    """ANTI-FALSE-POSITIVE (front-matter-zone guard): a dense chapter cluster
+    DEEP in the body (first page beyond _ZONE_MAX_FRONTMATTER_PAGE) is NOT a
+    front-matter cluster and is not dropped by the zone pass."""
+    from lib.semantik.toc_frontmatter_detector import (
+        _find_frontmatter_zone_clusters,
+    )
+
+    prov = [
+        _hp(0, "Chapter 1: A", 50, raw=1),
+        _hp(1, "Chapter 2: B", 50, raw=2),
+        _hp(2, "Chapter 3: C", 51, raw=3),
+        _hp(3, "Chapter 4: D", 52, raw=4),
+        _pp(4, "content", 52, raw=5),
+    ]
+    assert _find_frontmatter_zone_clusters(prov) == set()
+
+
+def test_page_density_below_k_threshold_not_dropped():
+    """Fewer than _ZONE_MIN_CHAPTER_CLUSTER (4) dense headings → not a cluster."""
+    from lib.semantik.toc_frontmatter_detector import (
+        _find_frontmatter_zone_clusters,
+    )
+
+    prov = [
+        _hp(0, "Chapter 1: A", 9, raw=1),
+        _pp(1, "x", 9, raw=2),
+        _hp(2, "Chapter 2: B", 9, raw=3),
+        _pp(3, "x", 9, raw=4),
+        _hp(4, "Chapter 3: C", 10, raw=5),
+        _pp(5, "x", 10, raw=6),
+        # Body-start far away so the 3-run can't extend.
+        _hp(6, "Chapter 4: D", 40, raw=7),
+        _pp(7, "x", 40, raw=8),
+    ]
+    assert _find_frontmatter_zone_clusters(prov) == set()
+
+
+def test_page_density_diagnostics_stamped():
+    """The page-density drop count is surfaced on the optional diagnostics
+    out-param (the audit stamp mirroring resegment / TOC diagnostics)."""
+    prov = _preface_summary_case()
+    diag: dict = {}
+    _filtered, _dropped = drop_toc_and_frontmatter(prov, diagnostics=diag)
+    assert diag["frontmatter_zone_dropped"] >= 4
+    assert diag["total_dropped"] >= diag["frontmatter_zone_dropped"]
+
+
+@pytest.mark.parametrize("off_value", ["0", "false", "no", "off", "OFF"])
+def test_zone_flag_off_no_density_drops(monkeypatch, off_value):
+    """SEMANTIK_DROP_FRONTMATTER_ZONE off → the page-density pass does NOT
+    fire (its drops are absent); the other passes are unaffected. On the
+    content-between summary case (which ONLY the zone pass catches) this means
+    the cluster survives, proving the gate governs exactly this pass."""
+    monkeypatch.setenv("SEMANTIK_DROP_FRONTMATTER_ZONE", off_value)
+    prov = _preface_summary_case()
+    diag: dict = {}
+    filtered, _dropped = drop_toc_and_frontmatter(prov, diagnostics=diag)
+    assert diag["frontmatter_zone_dropped"] == 0
+    # With the zone pass off, the content-between preface summary survives
+    # (the index-cluster pass misses it) — proving the gate's effect.
+    assert "Chapter 3: Math Models" in _text_set(filtered)
+
+
+def test_zone_flag_default_on_when_unset(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_DROP_FRONTMATTER_ZONE", raising=False)
+    prov = _preface_summary_case()
+    diag: dict = {}
+    drop_toc_and_frontmatter(prov, diagnostics=diag)
+    assert diag["frontmatter_zone_dropped"] >= 4, "zone pass must default ON"
 
 
 # ---------------------------------------------------------------------------

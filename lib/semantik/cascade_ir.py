@@ -419,14 +419,41 @@ def build_chapters_ir(result: Any) -> List[_AdapterChapter]:
     # real chapter is protected. Gated by SEMANTIK_DROP_FRONTMATTER_TOC
     # (default ON; falsey → byte-identical pass-through, no drops).
     provenance_list = list(provenance)
-    provenance, dropped_count = drop_toc_and_frontmatter(provenance_list)
+    fm_diagnostics: Dict[str, Any] = {}
+    provenance, dropped_count = drop_toc_and_frontmatter(
+        provenance_list, diagnostics=fm_diagnostics
+    )
     if dropped_count:
         logger.info(
             "phantom-TOC/front-matter detector dropped %d region(s) "
-            "(of %d) before chapter assembly",
+            "(of %d) before chapter assembly (frontmatter_zone_dropped=%d)",
             dropped_count,
             len(provenance_list),
+            fm_diagnostics.get("frontmatter_zone_dropped", 0),
         )
+    # Audit diagnostic, mirroring the resegment / TOC structureDiagnostics. The
+    # IR builder returns a bare chapter list, so the page-density drop count is
+    # surfaced on the result object (when it can hold an attribute) under
+    # ``structureDiagnostics`` for downstream audit; a bare-mapping / immutable
+    # result silently skips (best-effort, never crashes the build).
+    if fm_diagnostics:
+        try:
+            existing = getattr(result, "structureDiagnostics", None)
+            if not isinstance(existing, dict):
+                existing = {}
+            existing.update(
+                {
+                    "frontmatter_zone_dropped": fm_diagnostics.get(
+                        "frontmatter_zone_dropped", 0
+                    ),
+                    "frontmatter_total_dropped": fm_diagnostics.get(
+                        "total_dropped", 0
+                    ),
+                }
+            )
+            setattr(result, "structureDiagnostics", existing)
+        except (AttributeError, TypeError):
+            pass
 
     # §3.4-B — section-number chapter derivation. When the surviving content
     # has ``N.M`` section headings but essentially NO real ``Chapter N`` L1
