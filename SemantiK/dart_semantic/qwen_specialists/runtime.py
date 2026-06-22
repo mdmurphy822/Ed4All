@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re as _re_mod
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -62,6 +63,46 @@ from typing import Any, Literal, Protocol
 from .. import paths as _semantik_paths
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Specialist-provider selector
+# ---------------------------------------------------------------------------
+#
+# ``SEMANTIK_SPECIALIST_PROVIDER`` chooses WHERE the HEAVY Stage-6
+# specialist generation runs. Only the qwen specialists are affected — the
+# council/structure BERTs, region detection, and theta stay local.
+#
+#   unset / "local"                       -> local GGUF (LlamaCppRuntime),
+#                                            current behaviour, byte-stable.
+#   "nvidia" / "local-openai" / "endpoint"
+#   / any other non-"local" value         -> hosted endpoint
+#                                            (OpenAICompatibleRuntime).
+#
+# Parse-with-fallback: a blank / "local" value is the local arm; ANY other
+# non-empty value selects the endpoint arm (mirrors the ED4ALL_ANSWER_PROVIDER
+# registry posture — an opt-in provider string flips the backend).
+
+# Provider values that explicitly mean "stay local on the GGUF".
+_LOCAL_PROVIDER_VALUES = frozenset({"", "local", "gguf", "llama_cpp", "llamacpp"})
+
+
+def resolve_specialist_provider() -> str:
+    """Return the normalized specialist provider string.
+
+    ``"local"`` when ``SEMANTIK_SPECIALIST_PROVIDER`` is unset / blank /
+    ``"local"`` (and aliases); otherwise the lower-cased provider value
+    (e.g. ``"nvidia"``, ``"local-openai"``, ``"endpoint"``).
+    """
+    raw = (os.environ.get("SEMANTIK_SPECIALIST_PROVIDER") or "").strip().lower()
+    if raw in _LOCAL_PROVIDER_VALUES:
+        return "local"
+    return raw
+
+
+def specialist_provider_is_endpoint() -> bool:
+    """True when an endpoint provider is selected (NOT the local GGUF arm)."""
+    return resolve_specialist_provider() != "local"
 
 
 class QwenRuntime(Protocol):
@@ -488,7 +529,7 @@ def _scan_adapter_artifacts(
 
 
 def make_runtime(
-    mode: Literal["mock", "real"],
+    mode: Literal["mock", "real", "endpoint"],
     *,
     config_path: Path | None = None,
 ) -> QwenRuntime:
@@ -498,15 +539,36 @@ def make_runtime(
     here means callers (the Stage 6 runner; future Stage 9 gap-fill)
     don't need to know the backend class names.
 
-    **Strict-by-default for ``mode="real"``.** If ``config.yaml`` has
-    no adapter pointing at an on-disk GGUF, ``make_runtime("real")``
-    raises ``RuntimeError`` with build-it / opt-back-to-mock guidance.
-    Silent fall-back to :class:`MockRuntime` is forbidden — see
-    feedback_no_silent_fallbacks.md ("do NOT silently fall back to mock
-    when real adapters are missing — let the runtime constructor fail").
+    **Endpoint provider short-circuit.** When the operator has opted into
+    a hosted specialist endpoint (``SEMANTIK_SPECIALIST_PROVIDER`` set to
+    a non-``local`` value), ``mode="real"`` (or explicit ``"endpoint"``)
+    returns an :class:`~.endpoint_runtime.OpenAICompatibleRuntime` and the
+    local-GGUF presence check is SKIPPED — there are no local weights to
+    require. The strict-by-default GGUF check below applies ONLY to the
+    local arm.
+
+    **Strict-by-default for the LOCAL ``mode="real"`` arm.** If
+    ``config.yaml`` has no adapter pointing at an on-disk GGUF,
+    ``make_runtime("real")`` raises ``RuntimeError`` with build-it /
+    opt-back-to-mock guidance. Silent fall-back to :class:`MockRuntime` is
+    forbidden — see feedback_no_silent_fallbacks.md ("do NOT silently fall
+    back to mock when real adapters are missing — let the runtime
+    constructor fail").
     """
     if mode == "mock":
         return MockRuntime()
+    # Endpoint arm: explicit "endpoint" mode, OR "real" mode while an
+    # endpoint provider is selected. No local GGUF is needed or checked.
+    if mode == "endpoint" or (mode == "real" and specialist_provider_is_endpoint()):
+        from .endpoint_runtime import OpenAICompatibleRuntime  # noqa: WPS433
+
+        logger.info(
+            "make_runtime(%r): routing Stage-6 specialists to hosted "
+            "endpoint (provider=%s); local GGUF skipped",
+            mode,
+            resolve_specialist_provider(),
+        )
+        return OpenAICompatibleRuntime()
     if mode == "real":
         cfg_path = Path(config_path) if config_path else _DEFAULT_QWEN_CONFIG_PATH
         paths, present = _scan_adapter_artifacts(cfg_path)
@@ -538,7 +600,9 @@ def make_runtime(
                 "pass runtime_mode='mock' (the assembler / Stage 6 runner default)."
             )
         return LlamaCppRuntime()
-    raise ValueError(f"unknown runtime mode: {mode!r} (expected 'mock' | 'real')")
+    raise ValueError(
+        f"unknown runtime mode: {mode!r} (expected 'mock' | 'real' | 'endpoint')"
+    )
 
 
 __all__ = [
@@ -546,4 +610,6 @@ __all__ = [
     "MockRuntime",
     "QwenRuntime",
     "make_runtime",
+    "resolve_specialist_provider",
+    "specialist_provider_is_endpoint",
 ]
