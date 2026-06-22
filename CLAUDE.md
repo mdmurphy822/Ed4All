@@ -610,13 +610,11 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 17 | 27 | 44 |
-| `intake_remediation` | 2 | 0 | 2 |
-| `batch_dart` | 2 | 0 | 2 |
+| `course_generation` | 17 | 29 | 46 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 39 | 71 | 110 |
+| `textbook_to_course` | 39 | 73 | 112 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **66** | **101** | **167** |
+| **Total** | **62** | **105** | **167** |
 
 > IB6 landing (eight-dimension quality-rubric scoring capstone): five new
 > block-quality gates added in **warning** at BOTH `inter_tier_validation` and
