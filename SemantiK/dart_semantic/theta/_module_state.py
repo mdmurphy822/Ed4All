@@ -1,8 +1,12 @@
 """Module-level cached load of the semantic-preservation cross-encoder.
 
-Phase 4c: lazy-loaded once per process. The cache key is the env var
-``DART_SEMANTIC_MODEL_DIR`` (defaults to
-``models/theta/semantic_preservation/v1``) — the loader is one-shot
+Phase 4c: lazy-loaded once per process. The theta artifact dir is
+resolved through the single env-aware resolver
+``paths.resolve_model("theta/semantic_preservation/v8")`` when no
+override is set (SEMANTIK_MODEL_DIR / SEMANTIK_HOME / package-relative
+honored there) — NOT a CWD-relative literal. The legacy theta-specific
+override ``DART_SEMANTIC_MODEL_DIR`` still wins (highest precedence) but
+now also flows through ``paths.resolve_model``. The loader is one-shot
 and caches ``None`` (stub mode) on the first failed load when stub
 mode is allowed, so every subsequent ``evaluate()`` call short-circuits
 without re-attempting the heavy load.
@@ -50,9 +54,26 @@ _cached: dict[str, "SemanticPreservationModel | None"] = {}
 
 
 def _model_dir() -> Path:
+    """Resolve the theta artifact dir through the SINGLE env-aware resolver.
+
+    There is now ONE resolution path — ``paths.resolve_model`` — with
+    precedence (high → low):
+      ``DART_SEMANTIC_MODEL_DIR`` (legacy theta-specific override)
+        > ``SEMANTIK_MODEL_DIR`` > ``SEMANTIK_HOME`` > package-relative.
+
+    All four flow through ``paths.py``. The legacy override is treated as
+    an absolute-or-cwd-relative theta artifact dir and routed through
+    ``resolve_model`` (which returns an absolute path unchanged and joins
+    a relative one onto ``model_dir()`` — so an absolute legacy override
+    stays byte-stable while a bare relative one now resolves under the
+    SEMANTIK_MODEL_DIR root instead of CWD, which is strictly more
+    correct). When no override is set, returns
+    ``resolve_model(_DEFAULT_MODEL_DIR)`` (byte-stable to the
+    package-relative default).
+    """
     override = os.environ.get("DART_SEMANTIC_MODEL_DIR", "").strip()
     if override:
-        return Path(override)
+        return _semantik_paths.resolve_model(override)
     return _semantik_paths.resolve_model(_DEFAULT_MODEL_DIR)
 
 

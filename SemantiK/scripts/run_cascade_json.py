@@ -52,14 +52,36 @@ from __future__ import annotations
 
 import os
 
-# R7 VRAM-OOM mitigation: tell the CUDA caching allocator to use expandable
-# segments BEFORE torch/transformers/llama-cpp are imported by the cascade.
-# This reduces fragmentation-driven OOMs on the shared 8 GB card (the
-# Stage-12 theta OOM message itself recommends this). ``setdefault`` so an
-# operator-set value is never clobbered. This MUST run before any torch
-# import; the cascade import (which pulls torch) is lazy inside ``main()``,
-# so module-top placement here is well ahead of it.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# R7 VRAM-OOM mitigation. The PRIMARY mitigation is theta->CPU
+# (``SEMANTIK_THETA_DEVICE=cpu``, the default the seam applies) — that is the
+# real OOM fix on the shared 8 GB card.
+#
+# ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`` was a SECONDARY measure
+# that BACKFIRED: it can trigger a CUDACachingAllocator INTERNAL ASSERT
+# (``!handles_.at(i)`` in CUDACachingAllocator.cpp) inside a council BERT peft
+# lora forward under some driver/torch combos. It is therefore now OPT-IN via
+# ``SEMANTIK_EXPANDABLE_SEGMENTS`` and OFF by default — by default this script
+# does NOT touch ``PYTORCH_CUDA_ALLOC_CONF`` at all. When opted in, ``setdefault``
+# still means an operator's explicit ``PYTORCH_CUDA_ALLOC_CONF`` is never
+# clobbered. This MUST run before any torch import; the cascade import (which
+# pulls torch) is lazy inside ``main()``, so module-top placement is well ahead.
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _truthy(name: str) -> bool:
+    """True iff env var ``name`` holds a truthy value (1/true/yes/on)."""
+    return os.environ.get(name, "").strip().lower() in _TRUTHY
+
+
+def _maybe_set_alloc_conf() -> None:
+    """Gated opt-in: set the expandable-segments allocator conf ONLY when
+    ``SEMANTIK_EXPANDABLE_SEGMENTS`` is truthy. ``setdefault`` so an operator's
+    explicit ``PYTORCH_CUDA_ALLOC_CONF`` is never clobbered."""
+    if _truthy("SEMANTIK_EXPANDABLE_SEGMENTS"):
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+
+_maybe_set_alloc_conf()
 
 import argparse
 import json

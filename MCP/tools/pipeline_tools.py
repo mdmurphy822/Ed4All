@@ -6050,6 +6050,18 @@ _SEMANTIK_RUNNER_SCRIPT = (
 _SEMANTIK_BRIDGE_TIMEOUT_ENV = "SEMANTIK_BRIDGE_TIMEOUT_SECONDS"
 _SEMANTIK_BRIDGE_TIMEOUT_DEFAULT = 3600.0
 
+# Opt-in gate for the expandable-segments CUDA allocator conf (see the R7 note
+# at the bridge_env block). Mirrors the per-flag frozenset pattern used above.
+_SEMANTIK_EXPANDABLE_SEGMENTS_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _semantik_expandable_segments_enabled() -> bool:
+    """True iff SEMANTIK_EXPANDABLE_SEGMENTS is truthy (1/true/yes/on)."""
+    return (
+        (os.environ.get("SEMANTIK_EXPANDABLE_SEGMENTS") or "").strip().lower()
+        in _SEMANTIK_EXPANDABLE_SEGMENTS_TRUTHY
+    )
+
 
 def _resolve_semantik_bridge_timeout() -> float:
     """Resolve the subprocess bridge timeout (parse-with-fallback)."""
@@ -6145,18 +6157,26 @@ def _run_semantik_bridge_subprocess(
             runtime,
         ]
         # R7 VRAM-OOM mitigation: hand the SemantiK runtime subprocess the
-        # CUDA-allocator + theta-device hints so the Stage-12 theta DeBERTa
-        # doesn't OOM the shared 8 GB card. setdefault semantics — an
-        # operator who has already exported either value in this process's
-        # environment keeps their choice (e.g. SEMANTIK_THETA_DEVICE=cuda to
-        # opt the theta head back onto the GPU). PYTORCH_CUDA_ALLOC_CONF is
-        # consumed by torch at import time inside the runner; SEMANTIK_THETA_-
-        # DEVICE is read by dart_semantic.theta.semantic_preservation.load.
+        # theta-device hint so the Stage-12 theta DeBERTa doesn't OOM the
+        # shared 8 GB card. theta->CPU (SEMANTIK_THETA_DEVICE=cpu) is the
+        # PRIMARY OOM fix and is ALWAYS applied (setdefault — an operator who
+        # exported SEMANTIK_THETA_DEVICE=cuda to opt the theta head back onto
+        # the GPU keeps their choice). SEMANTIK_THETA_DEVICE is read by
+        # dart_semantic.theta.semantic_preservation.load.
+        #
+        # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True is OPT-IN via
+        # SEMANTIK_EXPANDABLE_SEGMENTS because it can trigger a
+        # CUDACachingAllocator INTERNAL ASSERT (!handles_.at(i)) in a council
+        # BERT under some driver/torch combos. By default we do NOT touch
+        # PYTORCH_CUDA_ALLOC_CONF at all (so the bridge env only carries it if
+        # the operator already had it in os.environ). When opted in, setdefault
+        # still means an operator's explicit value is never clobbered.
         bridge_env = dict(os.environ)
-        bridge_env.setdefault(
-            "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
-        )
         bridge_env.setdefault("SEMANTIK_THETA_DEVICE", "cpu")
+        if _semantik_expandable_segments_enabled():
+            bridge_env.setdefault(
+                "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
+            )
         try:
             proc = subprocess.run(
                 cmd,

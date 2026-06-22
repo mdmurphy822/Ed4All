@@ -143,6 +143,10 @@ def test_a_bridge_writes_html_and_returns_keys(monkeypatch, tmp_path):
 
     monkeypatch.setenv("SEMANTIK_PYTHON", "/fake/venv/python")
     monkeypatch.setenv("SEMANTIK_RUNTIME_DIR", str(tmp_path / "semantik_repo"))
+    # Default posture: expandable-segments opt-in is OFF and no operator-set
+    # alloc conf leaks into the process env (so the not-set assertion is honest).
+    monkeypatch.delenv("SEMANTIK_EXPANDABLE_SEGMENTS", raising=False)
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
     _force_inprocess_import_fail(monkeypatch)
     record: list = []
     _mock_subprocess_run(monkeypatch, bridge=_bridge_json(), record=record)
@@ -170,11 +174,38 @@ def test_a_bridge_writes_html_and_returns_keys(monkeypatch, tmp_path):
     assert record[0]["cwd"] == str(tmp_path / "semantik_repo")
     assert "--pdf" in record[0]["cmd"]
     assert "--out-json" in record[0]["cmd"]
-    # R7 VRAM-OOM mitigation: the bridge hands the runtime subprocess the
-    # CUDA-allocator + theta-device hints (default cpu) so Stage-12 theta
-    # doesn't OOM the shared 8 GB card.
+    # R7 VRAM-OOM mitigation: theta->CPU (SEMANTIK_THETA_DEVICE=cpu) is the
+    # PRIMARY fix and is ALWAYS applied. expandable_segments is OPT-IN via
+    # SEMANTIK_EXPANDABLE_SEGMENTS (allocator INTERNAL-ASSERT risk), so by
+    # DEFAULT the bridge env carries NO PYTORCH_CUDA_ALLOC_CONF.
     env = record[0]["env"]
     assert env is not None, "subprocess.run must receive an explicit env"
+    assert "PYTORCH_CUDA_ALLOC_CONF" not in env
+    assert env.get("SEMANTIK_THETA_DEVICE") == "cpu"
+
+
+# ---------------------------------------------------------------------------
+# (a3) expandable_segments opt-in — SEMANTIK_EXPANDABLE_SEGMENTS=1 injects the
+#      allocator conf (theta->CPU still applied).
+# ---------------------------------------------------------------------------
+
+
+def test_a3_bridge_expandable_segments_opt_in(monkeypatch, tmp_path):
+    from MCP.tools.pipeline_tools import _run_semantik_v2_conversion
+
+    monkeypatch.setenv("SEMANTIK_PYTHON", "/fake/venv/python")
+    monkeypatch.setenv("SEMANTIK_RUNTIME_DIR", str(tmp_path / "semantik_repo"))
+    monkeypatch.setenv("SEMANTIK_EXPANDABLE_SEGMENTS", "1")
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    _force_inprocess_import_fail(monkeypatch)
+    record: list = []
+    _mock_subprocess_run(monkeypatch, bridge=_bridge_json(), record=record)
+
+    out = tmp_path / "sample_text_ch1_accessible.html"
+    _run_semantik_v2_conversion("sample_text_ch1.pdf", str(out))
+
+    assert record, "subprocess.run was not called"
+    env = record[0]["env"]
     assert env.get("PYTORCH_CUDA_ALLOC_CONF") == "expandable_segments:True"
     assert env.get("SEMANTIK_THETA_DEVICE") == "cpu"
 

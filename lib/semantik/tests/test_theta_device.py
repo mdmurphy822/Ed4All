@@ -70,6 +70,100 @@ def _load_sp():
 sp = _load_sp()
 
 
+_PATHS_PATH = _REPO_ROOT / "SemantiK" / "dart_semantic" / "paths.py"
+_MODULE_STATE_PATH = _SEMANTIK_THETA / "_module_state.py"
+
+
+def _load_module_state():
+    """Import dart_semantic.theta._module_state in isolation (Bug-1 proof).
+
+    Mirrors :func:`_load_sp`: reuses the same empty namespace-package shims for
+    ``dart_semantic`` + ``dart_semantic.theta`` (no heavy ``__init__``), but
+    ALSO loads ``dart_semantic.paths`` from the real file (it imports only
+    os+pathlib) so ``_module_state._model_dir`` can route through the single
+    env-aware resolver. Always re-execs ``_module_state`` so a fresh module is
+    returned per call (the env-sensitive ``_model_dir`` reads os.environ at
+    call time, so re-exec is not strictly required, but it keeps the loader
+    self-contained and side-effect-light).
+    """
+    for name, path in (
+        ("dart_semantic", _REPO_ROOT / "SemantiK" / "dart_semantic"),
+        ("dart_semantic.theta", _SEMANTIK_THETA),
+    ):
+        if name not in sys.modules:
+            pkg = types.ModuleType(name)
+            pkg.__path__ = [str(path)]  # type: ignore[attr-defined]
+            pkg.__package__ = name
+            sys.modules[name] = pkg
+
+    if "dart_semantic.paths" not in sys.modules:
+        pspec = importlib.util.spec_from_file_location(
+            "dart_semantic.paths", str(_PATHS_PATH)
+        )
+        assert pspec and pspec.loader
+        pmod = importlib.util.module_from_spec(pspec)
+        sys.modules[pspec.name] = pmod
+        pspec.loader.exec_module(pmod)
+
+    spec = importlib.util.spec_from_file_location(
+        "dart_semantic.theta._module_state", str(_MODULE_STATE_PATH)
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# ---------------------------------------------------------------------------
+# Bug 1 — _model_dir() resolves through the SINGLE env-aware paths.resolve_model
+# resolver (precedence DART_SEMANTIC_MODEL_DIR > SEMANTIK_MODEL_DIR >
+# SEMANTIK_HOME > package-relative). Regression-proof for the real-run bug
+# where SEMANTIK_MODEL_DIR was ignored by the theta loader.
+# ---------------------------------------------------------------------------
+
+_SEMANTIK_PKG_ROOT = _REPO_ROOT / "SemantiK"
+
+
+class TestModuleStateModelDir:
+    def _clean_env(self, monkeypatch):
+        monkeypatch.delenv("DART_SEMANTIC_MODEL_DIR", raising=False)
+        monkeypatch.delenv("SEMANTIK_MODEL_DIR", raising=False)
+        monkeypatch.delenv("SEMANTIK_HOME", raising=False)
+
+    def test_no_env_package_relative_default(self, monkeypatch):
+        """No env set → package-relative default (byte-stable)."""
+        self._clean_env(monkeypatch)
+        ms = _load_module_state()
+        assert ms._model_dir() == (
+            _SEMANTIK_PKG_ROOT / "models" / "theta" / "semantic_preservation" / "v8"
+        )
+
+    def test_semantik_model_dir_honored(self, monkeypatch):
+        """SEMANTIK_MODEL_DIR honored — the real-run regression proof."""
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("SEMANTIK_MODEL_DIR", "/some/abs")
+        ms = _load_module_state()
+        assert ms._model_dir() == Path(
+            "/some/abs/theta/semantic_preservation/v8"
+        )
+
+    def test_legacy_absolute_override_wins_verbatim(self, monkeypatch):
+        """Absolute DART_SEMANTIC_MODEL_DIR still returned unchanged."""
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("DART_SEMANTIC_MODEL_DIR", "/abs/legacy/dir")
+        ms = _load_module_state()
+        assert ms._model_dir() == Path("/abs/legacy/dir")
+
+    def test_legacy_override_wins_over_semantik_model_dir(self, monkeypatch):
+        """Legacy precedence preserved: DART_SEMANTIC_MODEL_DIR > SEMANTIK_MODEL_DIR."""
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("SEMANTIK_MODEL_DIR", "/some/abs")
+        monkeypatch.setenv("DART_SEMANTIC_MODEL_DIR", "/abs/legacy/dir")
+        ms = _load_module_state()
+        assert ms._model_dir() == Path("/abs/legacy/dir")
+
+
 # ---------------------------------------------------------------------------
 # Fakes — a minimal torch + a model/head recording .to()/.half() calls.
 # ---------------------------------------------------------------------------

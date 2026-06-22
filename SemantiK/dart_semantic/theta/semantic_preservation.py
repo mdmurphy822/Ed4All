@@ -1,8 +1,12 @@
 """Theta dimension #1 — semantic-preservation cross-encoder runtime.
 
-Wraps the Phase 4b artifact at ``models/theta/semantic_preservation/v1/``
+Wraps the Phase 4b artifact at ``theta/semantic_preservation/v8/``
 (DeBERTa-v3-small + LoRA + linear(768->1) head with optional isotonic
-calibration). The runtime is import-light: nothing in this module's
+calibration). The artifact dir is resolved by the CALLER
+(:mod:`dart_semantic.theta._module_state` via ``paths.resolve_model``,
+SEMANTIK_MODEL_DIR-honoring) and passed to :func:`load` as ``model_dir``
+— it is NOT a CWD-relative literal built here. The runtime is
+import-light: nothing in this module's
 top-level scope imports torch / transformers / peft / sklearn, so the
 ``stub_v1`` fallback path in :mod:`dart_semantic.theta.evaluator` does
 not pull in any heavy GPU libraries.
