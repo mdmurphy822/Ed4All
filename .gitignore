@@ -269,7 +269,19 @@ SemantiK/inputs/*
 !SemantiK/inputs/.gitkeep
 SemantiK/semantic.egg-info/
 SemantiK/**/__pycache__/
+SemantiK/.pytest_cache/
+SemantiK/.ruff_cache/
+# All corpus/cache/dataset content under data/ stays local-only. Specific
+# tracked manifests (eval_corpus, figure_labels, seeds) can be re-added with a
+# !-allow below if/when curated for tracking; nothing under data/ is tracked today.
+SemantiK/data/
 # extension belt-and-suspenders (model artifact zoo)
+SemantiK/**/*.gguf
+SemantiK/**/*.pt
+SemantiK/**/*.pth
+SemantiK/**/*.bin
+SemantiK/**/*.safetensors
+SemantiK/**/*.ckpt
 SemantiK/**/*.bak
 SemantiK/**/*.joblib
 SemantiK/**/*.onnx
@@ -278,3 +290,16 @@ SemantiK/**/*.npz
 SemantiK/**/*.model
 SemantiK/**/training_args.bin
 # tracked: SemantiK/data/eval/, eval_corpus manifests, figure_labels, seeds
+
+# -----------------------------------------------------------------------------
+# Training-data DOWNLOAD / corpus-fetch / training-pair-generation scripts.
+# Migration policy: only inference/cascade pipeline CODE ships. Scripts that
+# fetch corpora over the network or generate training-data pairs are part of
+# the local data-acquisition surface (alongside models/ + data/) and never
+# land on GitHub. Inference/codegen scripts (e.g. gen_wcag_coverage_doc.py,
+# infer_pdf.py, run_cascade_json.py) stay tracked.
+SemantiK/scripts/fetch_*.py
+SemantiK/scripts/crawl_*.py
+SemantiK/scripts/pair_from_*.py
+SemantiK/scripts/gen_synthetic_forms.py
+SemantiK/scripts/mine_figure_labels.py
