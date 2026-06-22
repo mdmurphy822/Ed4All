@@ -6561,6 +6561,316 @@ def _run_semantik_v2_conversion(
     }
 
 
+# ---------------------------------------------------------------------------
+# Vendor-ingest conversion seam (publisher-supplied accessible HTML).
+# ---------------------------------------------------------------------------
+# The DUAL-SOURCE companion to ``_run_semantik_v2_conversion``. SemantiK
+# synthesizes accessible HTML *from a PDF*; some publishers (e.g. OpenStax
+# under CC-BY) already ship CLEAN accessible HTML, for which there is nothing
+# to synthesize — only NORMALIZE the existing markup into the Ed4All output
+# contract via ``lib.semantik.vendor_ingest.ingest_vendor_html`` (which reuses
+# the SAME ``normalize_cascade_to_ed4all`` adapter, tagged source="vendor").
+#
+# This seam MIRRORS ``_run_semantik_v2_conversion``'s output handling exactly:
+# it writes ``{stem}_accessible.html`` + the ``{stem}_synthesized.json`` /
+# ``{stem}.quality.json`` sidecars and returns the SAME Ed4All tool JSON
+# contract (the ``config/workflows.yaml:898`` required keys + provenance), so
+# staging / source_refs / the inline ``_run_dart_chunking`` quality-sidecar
+# read all see byte-identical artifacts to the PDF path.
+
+# Recognized HTML file extensions for input-type detection.
+_VENDOR_HTML_SUFFIXES = frozenset({".html", ".htm"})
+# PDF input extension (kept explicit for the detection rule).
+_PDF_SUFFIXES = frozenset({".pdf"})
+
+
+def _vendor_collect_html_files(input_path: Path) -> List[Path]:
+    """Collect the vendor HTML files for a corpus input (sorted, deterministic).
+
+    A single ``.html``/``.htm`` file → ``[that file]``. A directory → every
+    ``*.html``/``*.htm`` under it (recursive ``rglob``), filtering out the
+    ``*_synthesized.json`` / ``*.quality.json`` sidecars (those are not HTML
+    so ``rglob`` already excludes them) AND any ``*_accessible.html`` we may
+    have previously emitted INTO the same directory (avoid re-ingesting our
+    own output on a re-run). Sorted by path for §3.3a determinism (the
+    assembled document's chapter order is the sorted page order).
+    """
+    if input_path.is_file():
+        return [input_path]
+    if input_path.is_dir():
+        out: List[Path] = []
+        for p in sorted(input_path.rglob("*")):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in _VENDOR_HTML_SUFFIXES:
+                continue
+            if p.name.endswith("_accessible.html"):
+                continue  # our own prior output — never re-ingest
+            out.append(p)
+        return out
+    return []
+
+
+def _detect_conversion_input_type(input_path: Path) -> str:
+    """Classify a conversion-phase corpus input as ``"pdf"`` / ``"vendor"``.
+
+    DETECTION RULE (documented contract):
+
+    * A ``.pdf`` FILE → ``"pdf"`` (route to the SemantiK cascade seam).
+    * A ``.html``/``.htm`` FILE → ``"vendor"`` (route to vendor-ingest).
+    * A DIRECTORY → inspect its contents: if it contains ANY ``.pdf`` file
+      it is a PDF corpus (``"pdf"``); else if it contains ≥1 ``.html``/``.htm``
+      file (excluding our own ``*_accessible.html`` output) it is a vendor
+      corpus (``"vendor"``); an empty / unrecognized directory → ``"unknown"``.
+    * A path that does NOT exist on disk is classified by SUFFIX ALONE
+      (``.pdf`` → ``"pdf"``, ``.html``/``.htm`` → ``"vendor"``, else
+      ``"unknown"``) — this preserves the pre-vendor-ingest contract where a
+      bare ``pdf_path="foo.pdf"`` (the SemantiK seam resolves the real PDF
+      itself) routes to the cascade without the file being present yet.
+    * Anything else (existing non-pdf/non-html file) → ``"unknown"``.
+
+    PDF wins a mixed directory (the SemantiK cascade is the authoritative
+    converter when a real PDF is present; vendor-ingest is the
+    already-accessible-HTML fast path only).
+    """
+    if input_path.is_dir():
+        has_pdf = False
+        has_html = False
+        for p in input_path.rglob("*"):
+            if not p.is_file():
+                continue
+            suffix = p.suffix.lower()
+            if suffix in _PDF_SUFFIXES:
+                has_pdf = True
+                break  # PDF wins a mixed dir; stop early
+            if suffix in _VENDOR_HTML_SUFFIXES and not p.name.endswith(
+                "_accessible.html"
+            ):
+                has_html = True
+        if has_pdf:
+            return "pdf"
+        if has_html:
+            return "vendor"
+        return "unknown"
+    # A file (existing or not) is classified by suffix. Existing-file and
+    # not-yet-on-disk paths take the SAME suffix path: the PDF seam already
+    # accepts a bare pdf_path it resolves itself, so a missing .pdf must
+    # still route "pdf" (back-compat with the P3c dispatch-flip contract).
+    suffix = input_path.suffix.lower()
+    if suffix in _PDF_SUFFIXES:
+        return "pdf"
+    if suffix in _VENDOR_HTML_SUFFIXES:
+        return "vendor"
+    return "unknown"
+
+
+def _run_vendor_ingest_conversion(
+    html_path_or_dir: str,
+    output_path: str,
+    *,
+    doc_title: Optional[str] = None,
+    capture: Optional[object] = None,
+    canonical_course_code: Optional[str] = None,
+    reuse_conversion: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Ingest publisher-supplied accessible HTML → write outputs (vendor seam).
+
+    The vendor companion to :func:`_run_semantik_v2_conversion`. Resolves the
+    input HTML (single file OR directory of per-page HTML files assembled in
+    sorted order), runs ``ingest_vendor_html`` (which reuses the SAME
+    ``normalize_cascade_to_ed4all`` adapter tagged ``source="vendor"``), then
+    writes ``{stem}_accessible.html`` + the two sidecars and returns the SAME
+    Ed4All tool JSON contract the PDF seam returns.
+
+    Parameters
+    ----------
+    html_path_or_dir
+        Single ``.html``/``.htm`` file OR a directory of per-page HTML files
+        (assembled in sorted-path order into one document).
+    output_path
+        Destination for ``{stem}_accessible.html`` (sidecars are siblings),
+        resolved exactly as the PDF seam resolves it.
+    doc_title
+        Optional document title (defaults to the input stem, prettified).
+    capture
+        Optional decision-capture handle (recorded; not required here).
+    canonical_course_code
+        Optional course code threaded onto the adapter for provenance.
+    reuse_conversion
+        Optional ``--reuse-conversion`` flag; when truthy and prior artifacts
+        exist they are reused (cascade-equivalent skip).
+
+    Fail-closed-clear: an unreadable / empty input returns ``success=False``
+    with a clear reason (never a silent empty-HTML ship).
+    """
+    in_path = Path(html_path_or_dir)
+    out_path = Path(output_path)
+
+    # Resolve the canonical {stem}_accessible.html path exactly as the PDF
+    # seam does — derive the stem from the INPUT (a directory uses its name,
+    # a file uses its stem) so multi-PDF/-doc corpora don't collide.
+    if in_path.is_dir():
+        in_stem = in_path.name
+    else:
+        in_stem = in_path.stem
+    in_stem = in_stem or "vendor"
+
+    if out_path.name.endswith("_accessible.html"):
+        html_path = out_path
+    elif out_path.suffix == ".html":
+        html_path = out_path
+    else:
+        html_path = out_path / f"{in_stem}_accessible.html"
+        out_path = html_path
+
+    # §3.3a item 2 — reuse path (same governor as the PDF seam).
+    if _resolve_reuse_conversion(reuse_conversion):
+        reused = _semantik_reuse_existing_artifacts(out_path, html_path)
+        if reused is not None:
+            logger.info(
+                "vendor-ingest: reuse-conversion ON; reusing prior %s + "
+                "sidecars (ingest skipped)",
+                html_path,
+            )
+            reused["method"] = "vendor_ingest"
+            return reused
+        logger.info(
+            "vendor-ingest: reuse-conversion ON but no prior %s; ingesting",
+            html_path,
+        )
+
+    # Lazy import (mirror the PDF seam's lazy-import posture — keep
+    # pipeline_tools importable without BeautifulSoup until this seam runs).
+    from lib.semantik.vendor_ingest import ingest_vendor_html
+
+    # 1. Collect + read the vendor HTML page(s).
+    html_files = _vendor_collect_html_files(in_path)
+    if not html_files:
+        return {
+            "success": False,
+            "error": (
+                f"vendor-ingest: no readable HTML found at {in_path} "
+                "(expected a .html/.htm file or a directory of HTML pages)."
+            ),
+            "method": "vendor_ingest",
+            "output_path": str(out_path),
+            "html_path": str(html_path),
+        }
+
+    pages: List[Dict[str, Any]] = []
+    for hf in html_files:
+        try:
+            page_html = hf.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return {
+                "success": False,
+                "error": f"vendor-ingest: unreadable HTML file {hf}: {exc}",
+                "method": "vendor_ingest",
+                "output_path": str(out_path),
+                "html_path": str(html_path),
+            }
+        if not page_html.strip():
+            continue
+        # Per-page title from the file stem (prettified) so per-page structure
+        # survives even when a page has no top-level heading.
+        page_title = hf.stem.replace("-", " ").replace("_", " ").strip()
+        pages.append({"output_html": page_html, "title": page_title, "page": hf.stem})
+
+    if not pages:
+        return {
+            "success": False,
+            "error": (
+                f"vendor-ingest: every HTML file under {in_path} was empty."
+            ),
+            "method": "vendor_ingest",
+            "output_path": str(out_path),
+            "html_path": str(html_path),
+        }
+
+    resolved_title = (doc_title or in_stem.replace("-", " ").replace("_", " ")).strip()
+
+    # 2. Single file → pass the assembled HTML string; multi-page → pass the
+    # page-sequence so vendor_ingest synthesizes per-page chapter boundaries.
+    try:
+        if len(pages) == 1:
+            adapter_out = ingest_vendor_html(
+                pages[0]["output_html"],
+                pdf_stem=in_stem,
+                doc_title=resolved_title,
+                source="vendor",
+                canonical_course_code=canonical_course_code,
+            )
+        else:
+            adapter_out = ingest_vendor_html(
+                pages,
+                pdf_stem=in_stem,
+                doc_title=resolved_title,
+                source="vendor",
+                canonical_course_code=canonical_course_code,
+            )
+    except Exception as exc:  # noqa: BLE001 — ingest error fails closed
+        logger.error("vendor-ingest raised on %s: %s", in_path, exc)
+        return {
+            "success": False,
+            "error": f"vendor-ingest failed: {exc}",
+            "method": "vendor_ingest",
+            "output_path": str(out_path),
+            "html_path": str(html_path),
+        }
+
+    html = adapter_out["html"]
+
+    # 3. Write the normalized HTML + the two sidecars (mirror the PDF seam).
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(html, encoding="utf-8")
+
+    base = html_path.with_suffix("")
+    synth_path = base.parent / f"{base.name}_synthesized.json"
+    quality_path = html_path.with_suffix(".quality.json")
+    try:
+        synth_path.write_text(
+            json.dumps(
+                adapter_out["synthesized_sidecar"], ensure_ascii=False, indent=2
+            ),
+            encoding="utf-8",
+        )
+        quality_path.write_text(
+            json.dumps(
+                adapter_out["quality_sidecar"], ensure_ascii=False, indent=2
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("vendor-ingest sidecar write failed (non-fatal): %s", exc)
+
+    # 4. Assemble the Ed4All tool JSON contract (same keys as the PDF seam;
+    # ``method=vendor_ingest`` + ``runtime_mode=real`` — vendor HTML is real
+    # publisher markup, never a mock).
+    return {
+        "success": bool(adapter_out["success"]),
+        "output_path": str(html_path),
+        "output_paths": [str(html_path)],
+        "html_path": str(html_path),
+        "html_paths": [str(html_path)],
+        "html_length": int(adapter_out["html_length"]),
+        "html": html,
+        "word_count": int(adapter_out["word_count"]),
+        "method": "vendor_ingest",
+        "runtime_mode": "real",
+        "wcag_status": adapter_out.get("wcag_status"),
+        "exit_action": adapter_out.get("exit_action"),
+        "theta_score": adapter_out.get("theta_score"),
+        "flags": list(adapter_out.get("flags") or []),
+        "lane_used": adapter_out.get("lane_used"),
+        "certification_status": adapter_out.get("certification_status"),
+        "data_dart_source": adapter_out.get("data_dart_source"),
+        "synthesized_sidecar_path": str(synth_path),
+        "quality_sidecar_path": str(quality_path),
+        "semantic_preservation_score": adapter_out.get("theta_score"),
+        "vendor_html_file_count": len(pages),
+    }
+
+
 # Phase 3 Subtask 6: Courseforge two-pass-router enable flag. Mirror
 # of ``Courseforge/scripts/blocks.py::_emit_blocks_enabled`` (the
 # Phase 2 emit-blocks toggle) — same truthy set, same case-insensitive
@@ -12731,6 +13041,62 @@ def _build_tool_registry() -> dict:
         # with a clear SemantiK reason when the cascade is unprovisioned —
         # NEVER a silent fall-through to ``_raw_text_to_accessible_html``.
         if kwargs.get("phase") == "dart_conversion":
+            # SemantiK migration P3d — INPUT-TYPE detection at the conversion
+            # phase. A PDF input routes to the SemantiK cascade seam; an
+            # already-accessible publisher HTML input (single .html/.htm file
+            # OR a directory of HTML pages with no PDF) routes to the
+            # vendor-ingest seam (``_run_vendor_ingest_conversion``), which
+            # produces the SAME Ed4All output contract (same
+            # {stem}_accessible.html + sidecars, same JSON keys) so staging /
+            # source_refs / chunking see byte-identical artifacts. Detection
+            # rule: see ``_detect_conversion_input_type`` — PDF wins a mixed
+            # directory; an unknown input fails closed clear (no silent ship).
+            input_type = _detect_conversion_input_type(pdf)
+            if input_type == "vendor":
+                # Derive the canonical stem from the input (dir name or file
+                # stem) so the vendor seam writes {stem}_accessible.html into
+                # the conversion output dir, exactly as the PDF seam does.
+                vendor_stem = pdf.name if pdf.is_dir() else pdf.stem
+                vendor_stem = vendor_stem or "vendor"
+                html_output = out_dir / f"{vendor_stem}_accessible.html"
+                ven_result = _run_vendor_ingest_conversion(
+                    str(pdf),
+                    str(html_output),
+                    doc_title=kwargs.get("doc_title"),
+                    capture=kwargs.get("capture"),
+                    canonical_course_code=kwargs.get("canonical_course_code"),
+                    reuse_conversion=kwargs.get("reuse_conversion"),
+                )
+                if not ven_result.get("success"):
+                    return json.dumps({
+                        "success": False,
+                        "error": ven_result.get(
+                            "error", "vendor-ingest conversion failed"
+                        ),
+                        "method": ven_result.get("method", "vendor_ingest"),
+                        "output_path": ven_result.get(
+                            "output_path", str(html_output)
+                        ),
+                        "html_path": ven_result.get(
+                            "html_path", str(html_output)
+                        ),
+                    })
+                return json.dumps(ven_result)
+            if input_type == "unknown":
+                # Fail-closed-clear: neither a PDF nor a vendor-HTML input.
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"dart_conversion: unrecognized input {pdf} — expected "
+                        "a .pdf file, a .html/.htm file, or a directory "
+                        "containing PDFs or accessible HTML pages."
+                    ),
+                    "method": "unknown",
+                    "output_path": str(pdf),
+                    "html_path": str(pdf),
+                })
+
+            # PDF input → SemantiK cascade seam (the existing P3c path).
             out_stem = pdf.stem
             html_output = out_dir / f"{out_stem}_accessible.html"
             sem_result = _run_semantik_v2_conversion(

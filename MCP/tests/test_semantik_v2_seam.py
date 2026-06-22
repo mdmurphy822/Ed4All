@@ -83,8 +83,10 @@ class _MockPipelineResult:
 
 
 def _install_mock_cascade(monkeypatch, *, result=None, recorder=None):
-    """Inject a fake ``SemantiK.dart_semantic.pipeline_v2`` carrying a
-    mocked ``run_pipeline_v2`` so the seam's lazy import resolves to it."""
+    """Inject a fake ``SemantiK.dart_semantic.cascade`` carrying a mocked
+    ``run_pipeline_v2`` so the seam's lazy import resolves to it. (The seam's
+    in-process import is ``from SemantiK.dart_semantic.cascade import
+    run_pipeline_v2`` — run_pipeline_v2 lives in cascade.py, not pipeline_v2.py.)"""
     res = result if result is not None else _MockPipelineResult()
 
     def _fake_run_pipeline_v2(pdf_path, *args, **kwargs):
@@ -96,11 +98,11 @@ def _install_mock_cascade(monkeypatch, *, result=None, recorder=None):
     pkg.__path__ = []  # mark as package
     sub = types.ModuleType("SemantiK.dart_semantic")
     sub.__path__ = []
-    mod = types.ModuleType("SemantiK.dart_semantic.pipeline_v2")
+    mod = types.ModuleType("SemantiK.dart_semantic.cascade")
     mod.run_pipeline_v2 = _fake_run_pipeline_v2
     monkeypatch.setitem(sys.modules, "SemantiK", pkg)
     monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic", sub)
-    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic.pipeline_v2", mod)
+    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic.cascade", mod)
     return res
 
 
