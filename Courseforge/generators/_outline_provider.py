@@ -394,6 +394,35 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "section_skeleton": (0, 0),
         "summary_chars": (40, 240),
     },
+    # IB5 framework-aligned pedagogical block types.
+    # Hook / activation — an attention prompt + forward transition; no new
+    # content (a single activation claim), atomic.
+    "hook": {
+        "key_claims": (1, 2),
+        "section_skeleton": (0, 0),
+        "summary_chars": (40, 240),
+    },
+    # Multimedia — a time-based artifact + its a11y stack; one claim per
+    # key segment the media teaches.
+    "multimedia": {
+        "key_claims": (1, 4),
+        "section_skeleton": (0, 1),
+        "summary_chars": (60, 300),
+    },
+    # Worked example (faded) — a fully-worked procedure: one claim per
+    # subgoal/step plus problem + answer; section_skeleton holds the steps.
+    "worked_example": {
+        "key_claims": (2, 6),
+        "section_skeleton": (1, 3),
+        "summary_chars": (80, 400),
+    },
+    # Diagram / visual model — one claim per relationship the diagram
+    # dual-codes; the data-table rows are the structure (no sub-sections).
+    "diagram": {
+        "key_claims": (2, 6),
+        "section_skeleton": (0, 1),
+        "summary_chars": (60, 300),
+    },
 }
 # Terse outline-tier system prompt. Kept ≤80 words on purpose — the
 # 7B-class default model has a small effective instruction-following

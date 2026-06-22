@@ -189,6 +189,15 @@ REQUIRED_ATTRS: Dict[str, Tuple[str, ...]] = {
     "table": ("data-cf-block-id", "data-cf-content-type"),
     "acronym": ("data-cf-block-id",),
     "key_idea": ("data-cf-block-id", "data-cf-content-type"),
+    # IB5 framework-aligned pedagogical block types. Wrapper-only at the attr
+    # surface (the a11y / shape richness is enforced by the IB5 arms in
+    # _check_ib5_a11y_shape, not by data-cf-* attrs) — only the universal
+    # block_id is required; diagram additionally carries the content-type
+    # attribute the rewrite contract stamps.
+    "hook": ("data-cf-block-id",),
+    "multimedia": ("data-cf-block-id",),
+    "worked_example": ("data-cf-block-id",),
+    "diagram": ("data-cf-block-id",),
 }
 
 # Block types where the body-tag check is relaxed because the canonical
@@ -251,6 +260,14 @@ class _ShapeParser(HTMLParser):
         # B04 multimedia (IB5 lands the block; the contract ships dormant here).
         self.media_track: bool = False
         self.media_transcript: bool = False
+        # IB5 — additional B04/B06 shape flags activated by the IB5 a11y arms.
+        # media controls (learner pause/segment) + a media element present.
+        self.media_controls: bool = False
+        self.saw_media_element: bool = False
+        # B06 diagram: a long-description <details> (or aria-describedby target)
+        # AND a <table> data-equivalent.
+        self.saw_long_desc_details: bool = False
+        self.saw_data_table: bool = False
 
     def _track_palette_v2(
         self, tag: str, attrs: List[Tuple[str, Optional[str]]]
@@ -328,6 +345,20 @@ class _ShapeParser(HTMLParser):
                 self.media_track = True
         if "data-cf-transcript" in attr_map:
             self.media_transcript = True
+        # IB5 B04 — media element + controls (learner pause/segment, 1.4.2/etc).
+        if tag in ("video", "audio"):
+            self.saw_media_element = True
+            if "controls" in attr_map:
+                self.media_controls = True
+        # IB5 B06 — long-description <details> + a <table> data-equivalent. A
+        # <details> anywhere in a diagram body satisfies the long-desc reveal;
+        # an aria-describedby on any element is the alternate long-desc target.
+        if tag == "details":
+            self.saw_long_desc_details = True
+        if "aria-describedby" in attr_map:
+            self.saw_long_desc_details = True
+        if tag == "table":
+            self.saw_data_table = True
 
         if tag == "a" and "href" in attr_map:
             # Begin accumulating this anchor's visible text for the 2.4.4 check.
@@ -601,6 +632,56 @@ def _check_block_a11y_contract(
     return None
 
 
+def _check_ib5_a11y_shape(
+    block_type: str, parser: "_ShapeParser"
+) -> Optional[str]:
+    """Return an IB5 B04/B06 a11y-shape failure reason, or None (warning-day-1).
+
+    IB5.7 — the type-specific a11y contracts for the two NEW types that carry a
+    structural a11y obligation:
+
+    * ``multimedia`` (B04): the MANDATORY time-based-media stack — a media
+      element with ``controls`` AND a ``<track kind="captions">`` AND a
+      transcript affordance (``<details data-cf-transcript>``). (1.2.2 / 1.2.4 /
+      1.2.5 + transcript + learner controls.)
+    * ``diagram`` (B06): a structured long-description (``<details>`` reveal or
+      an ``aria-describedby`` target) AND a ``<table>`` data-equivalent so the
+      spatial relationships are available non-visually.
+
+    Returns ``None`` when the block_type is not an IB5 structural type or its
+    contract is satisfied; otherwise a short human-readable failure reason
+    naming the missing piece. This is the WARNING-severity surface the caller
+    rides on the existing gate (NOT a critical parse-fail). ``# TODO(calibration)``
+    — flip to critical only after a ≥2-corpus FP measurement.
+    """
+    if block_type == "multimedia":
+        missing: List[str] = []
+        if not parser.media_controls:
+            missing.append("controls on the media element")
+        if not parser.media_track:
+            missing.append('<track kind="captions">')
+        if not parser.media_transcript:
+            missing.append("a transcript affordance (<details data-cf-transcript>)")
+        if missing:
+            return (
+                "time-based media missing its mandatory a11y stack: "
+                + ", ".join(missing)
+            )
+        return None
+    if block_type == "diagram":
+        missing_d: List[str] = []
+        if not parser.saw_long_desc_details:
+            missing_d.append(
+                "a structured long-description (<details> or aria-describedby)"
+            )
+        if not parser.saw_data_table:
+            missing_d.append("a <table> data-equivalent")
+        if missing_d:
+            return "diagram missing " + " and ".join(missing_d)
+        return None
+    return None
+
+
 def _emit_a11y_decision(
     capture: Any,
     block: Block,
@@ -721,6 +802,12 @@ class RewriteHtmlShapeValidator:
         # the sub-check is a complete no-op so every existing snapshot / pass
         # is byte-identical.
         block_a11y_enabled = bool(inputs.get("block_a11y_enabled"))
+        # IB5.7 — per-block B04/B06 a11y-shape arms. Gated on the
+        # new_block_types_enabled input the env resolver threads in (IB5.8); off
+        # → the IB5 arms are a complete no-op so every existing snapshot / pass
+        # is byte-identical. The four IB5 types are never even constructed on a
+        # flag-off run, so these arms are dead there.
+        new_block_types_enabled = bool(inputs.get("new_block_types_enabled"))
 
         blocks, err = _coerce_blocks(inputs)
         if err is not None:
@@ -1016,6 +1103,35 @@ class RewriteHtmlShapeValidator:
                     interactive_role=parser.interactive_role,
                     link_text_flagged=link_flagged,
                 )
+
+            # 2d. IB5.7 — per-block B04/B06 a11y-shape contracts (multimedia
+            # captions/AD/transcript/controls stack + diagram long-desc /
+            # data-table). WARNING severity (does NOT promote the critical
+            # REWRITE_BLOCK_SHAPE_INVALID path) and NON-terminal (no `continue`)
+            # — honors §3.3 warning-day-1 for NEW checks without demoting the
+            # existing critical I6 / parse-fail behavior. A complete no-op when
+            # new_block_types_enabled is False (byte-stable). Emits a
+            # rewrite_html_shape_check decision (reuses the existing event; no
+            # NEW call site). # TODO(calibration): flip to critical after a
+            # ≥2-corpus FP measurement.
+            if new_block_types_enabled:
+                ib5_reason = _check_ib5_a11y_shape(block.block_type, parser)
+                if ib5_reason is not None and len(issues) < _ISSUE_LIST_CAP:
+                    issues.append(GateIssue(
+                        severity="warning",
+                        code="REWRITE_IB5_A11Y_CONTRACT",
+                        message=(
+                            f"Rewrite-tier Block {block.block_id!r} (block_type="
+                            f"{block.block_type!r}) failed its IB5 a11y-shape "
+                            f"contract: {ib5_reason}."
+                        ),
+                        location=block.block_id,
+                    ))
+                    _emit_decision(
+                        capture, block,
+                        passed=False, code="REWRITE_IB5_A11Y_CONTRACT",
+                        content_length=content_length, tags_seen=parser.tags_seen,
+                    )
 
             # 3. Required data-cf-* attributes per block_type. Missing
             # ANY required attr fails the gate.

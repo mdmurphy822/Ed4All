@@ -102,6 +102,9 @@ __all__ = [
     "detect_acronyms",
     "detect_canonical_mnemonics",
     "detect_tabular_content",
+    "detect_procedure",
+    "detect_media_reference",
+    "detect_diagram_reference",
 ]
 
 # System prompt for the dedicated planner provider — frames the 70B as an
@@ -377,6 +380,18 @@ def _dynamic_block_plan_on() -> bool:
     )
 
 
+def _new_block_types_on() -> bool:
+    """True iff ``ED4ALL_NEW_BLOCK_TYPES`` is truthy (IB5; read each call).
+
+    Gates the IB5 prompt nudges + deterministic injection of the four
+    framework-aligned types so the planner prompt is byte-identical when off
+    (mirrors :func:`_dynamic_block_plan_on`). Delegates to the canonical
+    resolver so there is one truth for the flag."""
+    from lib.generation.new_block_types import resolve_new_block_types  # noqa: PLC0415
+
+    return resolve_new_block_types()
+
+
 # P4 pedagogical-depth floors — both DEFAULT OFF (parse-with-fallback) so the
 # planner's output is BYTE-STABLE unless an operator opts in.
 #
@@ -582,6 +597,65 @@ def detect_tabular_content(source_text: str) -> bool:
     if "<table" in source_text.lower():
         return True
     return bool(_TABULAR_HINT_RE.search(source_text))
+
+
+# IB5 content-shape detectors (deterministic, precision-leaning — a single hit
+# suffices because the planner only uses these as NUDGES, never a hard
+# placement). Mirror the detect_tabular_content / detect_acronyms posture; each
+# is GATED behind ED4ALL_NEW_BLOCK_TYPES at the call site so the prompt is
+# byte-identical when off.
+_PROCEDURE_HINT_RE = re.compile(
+    r"(?is)\b("
+    r"step\s*\d|step[\s-]by[\s-]step|first,?\s+(then|next)|"
+    r"follow\s+these\s+steps|the\s+following\s+steps|to\s+solve|"
+    r"worked\s+example|procedure\s+(for|to)|algorithm|"
+    r"\d+\.\s+\w+.{0,80}?\n\s*\d+\.\s+\w+"  # an enumerated 1. … 2. … list
+    r")\b"
+)
+_MEDIA_HINT_RE = re.compile(
+    r"(?is)\b("
+    r"watch\s+(the\s+)?video|video|audio|podcast|"
+    r"listen\s+to|play\s+the|recording|webcast|lecture\s+capture"
+    r")\b|<(?:video|audio|iframe)[\s>]|https?://[^\s\"']*\.(?:mp4|mov|webm|mp3|wav|m4a)"
+)
+_DIAGRAM_HINT_RE = re.compile(
+    r"(?is)\b("
+    r"figure\s*\d|diagram|flowchart|flow\s+chart|"
+    r"schematic|the\s+graph\s+(below|above|shows)|"
+    r"as\s+shown\s+in\s+the\s+figure|see\s+figure|"
+    r"tree\s+diagram|venn\s+diagram|concept\s+map|process\s+flow"
+    r")\b|<svg[\s>]"
+)
+
+
+def detect_procedure(source_text: str) -> bool:
+    """True when the source describes a step-by-step PROCEDURE (IB5 B05 nudge).
+
+    Fires on enumerated steps / step-by-step framing / "to solve" / an explicit
+    worked-example reference. Deterministic; precision-leaning."""
+    if not source_text:
+        return False
+    return bool(_PROCEDURE_HINT_RE.search(source_text))
+
+
+def detect_media_reference(source_text: str) -> bool:
+    """True when the source references a time-based audio/video artifact (B04).
+
+    Fires on watch/video/audio framing, an embedded <video>/<audio>/<iframe>,
+    or a media-file URL. Deterministic; precision-leaning."""
+    if not source_text:
+        return False
+    return bool(_MEDIA_HINT_RE.search(source_text))
+
+
+def detect_diagram_reference(source_text: str) -> bool:
+    """True when the source references a spatial/diagram artifact (B06).
+
+    Fires on figure/diagram/flowchart/schematic framing or an inline <svg>.
+    Deterministic; precision-leaning."""
+    if not source_text:
+        return False
+    return bool(_DIAGRAM_HINT_RE.search(source_text))
 
 
 def build_planner_provider(
@@ -870,6 +944,36 @@ def _build_prompt(
         detector_lines.append(
             f"  - The source spells out the acronym(s) {names} — use an "
             "`acronym` block (a <dl> mapping each letter to its term) for it."
+        )
+    # IB5 content-shape nudges (GATED behind ED4ALL_NEW_BLOCK_TYPES so the
+    # prompt is byte-identical when off). procedure -> worked_example;
+    # media reference -> multimedia; spatial/figure -> diagram. The hook nudge
+    # (open every TO with an activation block) is unconditional once the flag is
+    # on — full lifecycle-aware opener placement is IB7's scope; IB5 only makes
+    # `hook` SELECTABLE.
+    if _new_block_types_on():
+        if detect_procedure(source_blob):
+            detector_lines.append(
+                "  - The source describes a step-by-step PROCEDURE — use a "
+                "`worked_example` (subgoal-labeled steps, a per-step Why, and a "
+                "fade-state) so the learner can fade toward independent practice."
+            )
+        if detect_media_reference(source_blob):
+            detector_lines.append(
+                "  - The source references a time-based audio/video artifact — "
+                "use a `multimedia` block (it carries the mandatory captions / "
+                "audio-description / transcript / controls a11y stack)."
+            )
+        if detect_diagram_reference(source_blob):
+            detector_lines.append(
+                "  - The source references a spatial/diagram artifact "
+                "(figure / flowchart / schematic) — use a `diagram` block "
+                "(a structured long-description + a data-table equivalent)."
+            )
+        detector_lines.append(
+            "  - OPEN this objective with a `hook` block — a short activation / "
+            "predict prompt that surfaces the learner's prior knowledge BEFORE "
+            "any new content (no new teaching content in the hook itself)."
         )
     detector_block = (
         "\nDETECTED CONTENT SHAPES (the source supports these — prefer the "
@@ -1405,6 +1509,94 @@ def _inject_palette_v2(
     return selected
 
 
+def _inject_ib5_types(
+    *,
+    selected: List[Dict[str, Any]],
+    source_blob: str,
+    chapter_objectives: Sequence[Dict[str, Any]],
+    block_types: frozenset,
+) -> List[Dict[str, Any]]:
+    """Deterministically deploy the IB5 framework types by CONTENT SHAPE.
+
+    Mirrors :func:`_inject_palette_v2`. Mutates / extends ``selected`` in place
+    (returns it) so the four IB5 types appear when their shape is present —
+    without relying on the 70B selecting them. NO-OP for any IB5 type already
+    present. Caller gates this on ``ED4ALL_NEW_BLOCK_TYPES`` being on, so the
+    legacy / off path is byte-stable.
+
+    Bounded: at most ONE of each type per TO. Each injected entry is a
+    DESCRIPTOR only (block_type + target_co_ids + page_type + target bloom); the
+    rewrite tier authors the HTML per the IB5 per-type output contracts.
+    ANTI-FABRICATION: an injected block targets the TO's first real CO id (or
+    none → the consumer's week-TO fallback); no CO id is invented.
+    """
+    present_types = {b.get("block_type") for b in selected}
+    first_co_id = next(
+        (str(co.get("id")) for co in chapter_objectives if co.get("id")), ""
+    )
+    target_co_ids = [first_co_id] if first_co_id else []
+
+    def _mk(block_type: str, bloom: str, page_type: str, focus: str) -> Dict[str, Any]:
+        return {
+            "block_type": block_type,
+            "page_type": page_type,
+            "target_co_ids": list(target_co_ids),
+            "content_focus": focus,
+            "target_bloom": bloom,
+        }
+
+    # hook — always open the TO with an activation block (an Activate-stage
+    # opener; full lifecycle placement is IB7). Inserted FIRST.
+    if "hook" in block_types and "hook" not in present_types:
+        selected.insert(0, _mk(
+            "hook", "understand", "overview",
+            "IB5 deterministic injection: open the objective with an "
+            "activation/predict prompt surfacing prior knowledge",
+        ))
+        present_types.add("hook")
+
+    # worked_example — inject one when the source describes a procedure.
+    if (
+        "worked_example" in block_types
+        and "worked_example" not in present_types
+        and detect_procedure(source_blob)
+    ):
+        selected.append(_mk(
+            "worked_example", "apply", "application",
+            "IB5 deterministic injection: source describes a step-by-step "
+            "procedure (subgoal-labeled, faded worked example)",
+        ))
+        present_types.add("worked_example")
+
+    # multimedia — inject one when the source references a time-based artifact.
+    if (
+        "multimedia" in block_types
+        and "multimedia" not in present_types
+        and detect_media_reference(source_blob)
+    ):
+        selected.append(_mk(
+            "multimedia", "understand", "content",
+            "IB5 deterministic injection: source references a time-based "
+            "audio/video artifact",
+        ))
+        present_types.add("multimedia")
+
+    # diagram — inject one when the source references a spatial artifact.
+    if (
+        "diagram" in block_types
+        and "diagram" not in present_types
+        and detect_diagram_reference(source_blob)
+    ):
+        selected.append(_mk(
+            "diagram", "understand", "content",
+            "IB5 deterministic injection: source references a spatial/diagram "
+            "artifact (figure / flowchart / schematic)",
+        ))
+        present_types.add("diagram")
+
+    return selected
+
+
 def _resolve_target_bloom(
     *,
     declared: Any,
@@ -1616,6 +1808,19 @@ def plan_week_blocks(
             block_types=block_types,
         )
 
+    # IB5 (mirrors the palette-v2 injection): deterministically deploy the four
+    # framework-aligned types (hook / multimedia / worked_example / diagram) by
+    # CONTENT SHAPE so they no longer depend on the 70B selecting them. Gated on
+    # ED4ALL_NEW_BLOCK_TYPES — a strict NO-OP when off so the byte-stability
+    # guard holds (the four types are never selected on a legacy run).
+    if _new_block_types_on():
+        selected = _inject_ib5_types(
+            selected=selected,
+            source_blob=source_blob,
+            chapter_objectives=chapter_objectives,
+            block_types=block_types,
+        )
+
     page_plan = _to_page_plan(selected)
     _emit_block_plan_decision(
         capture=capture,
@@ -1669,6 +1874,17 @@ def _fallback_plan(
     # it so the new blocks surface through ``page_block_plan_for``.
     if _dynamic_block_plan_on():
         selected = _inject_palette_v2(
+            selected=selected,
+            source_blob=source_blob,
+            chapter_objectives=chapter_objectives or [],
+            block_types=_resolve_block_types(),
+        )
+        page_plan = _to_page_plan(selected)
+    # IB5 injection ALSO runs on the fallback path (gated on
+    # ED4ALL_NEW_BLOCK_TYPES) so an LLM error does not strand the four types;
+    # strict NO-OP when off so the fixed-plan fallback stays byte-identical.
+    if _new_block_types_on():
+        selected = _inject_ib5_types(
             selected=selected,
             source_blob=source_blob,
             chapter_objectives=chapter_objectives or [],

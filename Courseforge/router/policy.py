@@ -220,6 +220,30 @@ DEFAULT_BLOCK_ROUTING: Dict[str, Dict[str, Any]] = {
         "optional": [],
         "fail_action": "regenerate",
     },
+    # IB5 framework-aligned pedagogical block types. Hook is wrapper-only
+    # (source attribution only); multimedia / worked_example / diagram carry a
+    # grounded body so they require source_ref, with the type-specific a11y /
+    # shape contract enforced by rewrite_html_shape's IB5 arms (warning-day-1).
+    "hook": {
+        "required": ["source_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "multimedia": {
+        "required": ["source_ref"],
+        "optional": ["accessibility"],
+        "fail_action": "regenerate",
+    },
+    "worked_example": {
+        "required": ["source_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "diagram": {
+        "required": ["source_ref", "content_type"],
+        "optional": ["accessibility"],
+        "fail_action": "regenerate",
+    },
 }
 
 

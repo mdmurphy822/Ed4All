@@ -76,8 +76,10 @@ def test_new_type_in_block_types(block_type):
     assert block_type in BLOCK_TYPES
 
 
-def test_block_types_count_is_twenty_four():
-    assert len(BLOCK_TYPES) == 24
+def test_block_types_count_is_twenty_eight():
+    # IB5 added 4 framework-aligned types (hook / multimedia / worked_example /
+    # diagram) to the 24-member palette.
+    assert len(BLOCK_TYPES) == 28
 
 
 # ---------------------------------------------------------------------------
@@ -267,19 +269,21 @@ def test_framework_block_coverage_equals_block_types():
 
 
 def test_framework_map_onto_b01_through_b15():
-    """The 24 primaries are ONTO at least most of B01–B15 (excluding the
-    IB5-deferred gaps B04/B15); every primary is a valid code."""
+    """The 28 primaries are ONTO B01–B14; only B15 (Resources) lacks a
+    primary; every primary is a valid code.
+
+    IB5 landed the dedicated B02 (hook), B04 (multimedia), B05 (worked_example),
+    and B06 (diagram) first-class types, so B04 now HAS an Ed4All primary; only
+    B15 (Resources) remains without one."""
     primaries = {
         entry.get("framework_block")
         for entry in load_block_catalog()
         if entry.get("framework_block") is not None
     }
     assert primaries <= _VALID_FRAMEWORK_CODES
-    # B04 (Multimedia) + B15 (Resources) have no Ed4All primary today
-    # (IB5-deferred gaps); the dedicated B02/B05/B06 first-class types are
-    # also IB5's job. Assert the codes that DO have a primary are exactly the
-    # expected set so a future re-parent is caught.
+    # Only B15 (Resources) has no Ed4All primary today. Assert the codes that
+    # DO have a primary are exactly B01–B14 so a future re-parent is caught.
     assert primaries == {
-        "B01", "B02", "B03", "B05", "B06", "B07",
+        "B01", "B02", "B03", "B04", "B05", "B06", "B07",
         "B08", "B09", "B10", "B11", "B12", "B13", "B14",
     }, f"unexpected primary code set: {sorted(primaries)}"

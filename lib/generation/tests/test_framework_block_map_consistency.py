@@ -39,6 +39,11 @@ _EXPECTED_PRIMARY = {
     "flip_card_grid": "B12",
     "summary_takeaway": "B13",
     "chrome": None,
+    # IB5 framework-aligned pedagogical block types.
+    "hook": "B02",
+    "multimedia": "B04",
+    "worked_example": "B05",
+    "diagram": "B06",
 }
 
 # Expected secondary B-code (only for the types that straddle two parents).
@@ -51,6 +56,9 @@ _EXPECTED_SECONDARY = {
     "checklist": "B13",
     "vocab_card": "B03",
     "flip_card_grid": "B03",
+    # IB5 framework-aligned pedagogical block types that straddle two parents.
+    "worked_example": "B08",
+    "diagram": "B03",
 }
 
 

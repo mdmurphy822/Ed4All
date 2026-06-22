@@ -98,6 +98,27 @@ def _block_a11y_emit_enabled() -> bool:
     return os.environ.get(_BLOCK_A11Y_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
 
 
+# IB5 — new-block-types emit flag (ED4ALL_NEW_BLOCK_TYPES). Default OFF: with
+# this unset the IB5 type-specific fields (``fade_state`` / ``long_description``
+# / ``media_a11y``) are NOT projected to HTML / JSON-LD (byte-stable). The four
+# new tokens are unconditionally valid BLOCK_TYPES members (the dataclass stays
+# permissive — gating lives in the planner / renderer / emit), mirroring the I6
+# table/acronym/key_idea posture. Canonical resolver: lib/generation/
+# new_block_types.py; this module-level reader keeps blocks.py dependency-light.
+_NEW_BLOCK_TYPES_EMIT_ENV = "ED4ALL_NEW_BLOCK_TYPES"
+
+
+def _new_block_types_emit_enabled() -> bool:
+    """Read ``ED4ALL_NEW_BLOCK_TYPES`` each call so tests can toggle it.
+
+    Default off — the IB5 type-specific fields (``fade_state`` /
+    ``long_description`` / ``media_a11y``) are purely additive and must not break
+    byte-stable emit. Falsey / garbage values → off (parse-with-fallback,
+    mirroring :func:`_block_a11y_emit_enabled`).
+    """
+    return os.environ.get(_NEW_BLOCK_TYPES_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
+
+
 def _esc(text: str) -> str:
     """HTML-escape mirroring ``html.escape`` (matches ``html_mod.escape`` in generate_course.py)."""
     return _html_mod.escape(text)
@@ -157,6 +178,23 @@ BLOCK_TYPES: frozenset = frozenset(
         "table",
         "acronym",
         "key_idea",
+        # IB5 framework-aligned pedagogical block types (snake_case canonical
+        # tokens). The four genuine catalog gaps the framework reserves:
+        # ``hook`` (B02 activation — gain attention / surface prior knowledge),
+        # ``multimedia`` (B04 — the ONLY time-based block carrying the full
+        # caption / audio-description / transcript / controls a11y stack),
+        # ``worked_example`` (B05 — subgoal labels + per-step Why + fade-state;
+        # DISTINCT from ``example``, a single un-labeled instance, which is NOT
+        # renamed or removed), and ``diagram`` (B06 — a dual-coded spatial
+        # artifact with a structured long-description + a data-table
+        # equivalent). Emitted ONLY via the dynamic block planner path behind
+        # ``ED4ALL_NEW_BLOCK_TYPES`` (default OFF); the fixed-plan / legacy
+        # paths never select them, so every existing snapshot stays
+        # byte-stable (mirrors the I6 table/acronym/key_idea posture).
+        "hook",
+        "multimedia",
+        "worked_example",
+        "diagram",
     }
 )
 
@@ -824,6 +862,17 @@ class Block:
     n_representations: int = 0          # count of distinct representation modes (prose, table, image, formula, list, ...)
     response_formats: Tuple[str, ...] = ()   # learner action/expression modes the block affords (recall, construct, select, reflect, discuss, ...)
     engagement_affordance: Optional[str] = None  # autonomy/engagement hook (choice, real_world, self_pace, reflection, tiered_resource)
+    # IB5 — type-specific fields for the four framework-aligned pedagogical
+    # block types (hook / multimedia / worked_example / diagram). All three are
+    # additive Optional/empty defaults and INTENTIONALLY excluded from
+    # compute_content_hash() (mirrors target_bloom / n_representations) so a
+    # retro-fit never drifts an existing block hash; empty defaults => legacy /
+    # flag-off blocks are byte-identical. Emitted to HTML/JSON-LD only when
+    # ED4ALL_NEW_BLOCK_TYPES is set (default OFF). Reused (NOT redeclared): the
+    # IB4 UDL fields above carry the multiple-means coverage for the new types.
+    fade_state: Optional[str] = None     # B05 worked_example fade stage: worked | completion | independent
+    long_description: Optional[str] = None  # B06 diagram structured long-description text
+    media_a11y: Tuple[str, ...] = ()     # B04 present time-based-media track tokens (captions, audio_description, transcript, controls)
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -890,12 +939,14 @@ class Block:
         the IB1 six-slot anatomy metadata slots ``heading`` / ``purpose_tag``
         / ``interaction`` / ``feedback`` / ``transition``, the IB2.3
         ``quality_rubric`` audit/scoring tuple, the IB3.4
-        ``anchored_rubric`` Evaluate/Create scoring rubric, and the IB4 UDL
+        ``anchored_rubric`` Evaluate/Create scoring rubric, the IB4 UDL
         coverage fields ``n_representations`` / ``response_formats`` /
-        ``engagement_affordance`` so a
+        ``engagement_affordance``, and the IB5 type-specific fields
+        ``fade_state`` / ``long_description`` / ``media_a11y`` so a
         touch-only / budget-only / classifier-retrofit / objective-
         delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring /
-        anchored-rubric-attach / udl-coverage-retrofit revision keeps a stable hash. ``content`` (the BODY slot) IS in the payload; the other
+        anchored-rubric-attach / udl-coverage-retrofit / ib5-field-attach
+        revision keeps a stable hash. ``content`` (the BODY slot) IS in the payload; the other
         five anatomy slots are derived-or-authored metadata ABOUT the same
         content, so hashing them would drift every existing block hash on a
         back-derivation retrofit — exactly the failure the
@@ -980,10 +1031,32 @@ class Block:
             "table",
             "acronym",
             "key_idea",
+            # IB5 framework-aligned types: hook (B02) / worked_example (B05) are
+            # heading content-section-ish wrappers; multimedia (B04) / diagram
+            # (B06) carry their a11y richness in the rendered HTML body
+            # (validated by rewrite_html_shape's IB5 arms), not in data-cf-*
+            # attrs. All four are wrapper-only at the attr surface — source-id
+            # attrs + the gated block-id (mirrors the I6 posture). Only
+            # selectable / constructed on the dynamic path under
+            # ED4ALL_NEW_BLOCK_TYPES, so these arms are dead on legacy runs.
+            "hook",
+            "multimedia",
+            "worked_example",
+            "diagram",
         }:
             # Wrapper-only blocks (the inline `<section>` wrappers in
             # `generate_week`). Source-id attrs only.
             attrs = _source_attr_string(self.source_ids, self.source_primary)
+            # IB5 — worked_example carries an additional data-cf-fade-state attr
+            # when the fade stage is set. DOUBLE-gated behind
+            # ED4ALL_NEW_BLOCK_TYPES (default OFF) AND only-when-set, so default-
+            # off emit is byte-identical (mirrors the IB4 UDL attr posture).
+            if (
+                block_type == "worked_example"
+                and self.fade_state
+                and _new_block_types_emit_enabled()
+            ):
+                attrs += f' data-cf-fade-state="{_esc(self.fade_state)}"'
         elif block_type == "misconception":
             # Misconceptions today emit only via JSON-LD (no data-cf-*
             # attribute on the rendered HTML). Emit empty so the only
@@ -1297,6 +1370,19 @@ class Block:
                 udl["engagementAffordance"] = self.engagement_affordance
             if udl:
                 entry["udlCoverage"] = udl
+        # IB5 — type-specific fields for the four framework-aligned pedagogical
+        # block types (worked_example fadeState / diagram longDescription).
+        # DOUBLE-gated: behind BOTH ``_new_block_types_emit_enabled()`` (the new
+        # ED4ALL_NEW_BLOCK_TYPES flag, default OFF) AND only-when-set. Default-
+        # OFF flag ⇒ no key ⇒ byte-identical JSON-LD (the four types are never
+        # even constructed on a legacy run). camelCase keys; additive.
+        if _new_block_types_emit_enabled():
+            if self.block_type == "worked_example" and self.fade_state:
+                entry["fadeState"] = self.fade_state
+            if self.block_type == "diagram" and self.long_description:
+                entry["longDescription"] = self.long_description
+            if self.block_type == "multimedia" and self.media_a11y:
+                entry["mediaA11y"] = list(self.media_a11y)
         # W3 — optional pointer to the sidecar block_synthesis_manifest.jsonl
         # line keyed on this block_id. We do NOT inline the whole manifest into
         # the JSON-LD (it would bloat the IMSCC payload + duplicate the

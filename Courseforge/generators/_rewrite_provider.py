@@ -1060,6 +1060,55 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
         "step-by-step worked solutions. Keep it grounded in the source (no "
         "fabricated rules)."
     ),
+    # IB5 framework-aligned pedagogical block types.
+    "hook": (
+        "Emit a `<section class=\"hook\" data-cf-source-ids=...>` that OPENS "
+        "the topic by gaining attention and surfacing the learner's PRIOR "
+        "knowledge BEFORE any new content. Write a `<p>` activation / predict "
+        "prompt (\"What do you already know about …?\", \"Predict the result "
+        "before you read on …\") then a `<p>` forward-transition into what the "
+        "section will teach. Carry NO new teaching content / definitions — a "
+        "hook ACTIVATES; the exposition blocks teach. Keep it 2-3 short "
+        "sentences total, grounded in the source topic."
+    ),
+    "multimedia": (
+        "Emit a `<figure class=\"multimedia\" data-cf-source-ids=...>` for a "
+        "time-based audio / video artifact. It MUST carry the FULL time-based-"
+        "media accessibility stack: a media element with the `controls` "
+        "attribute (`<video controls>` or `<audio controls>`), a "
+        "`<track kind=\"captions\">` child for synchronized captions, a "
+        "downloadable / inline transcript in a `<details data-cf-transcript>` "
+        "(a `<summary>` reading \"Transcript\" + the transcript text), and a "
+        "note describing the audio-described visual content. When the source "
+        "supplies no media URL, emit the a11y-contract SKELETON + a "
+        "\"media pending\" note rather than nothing (ship the structure even "
+        "when unpopulated). Use ONLY content the source supplies for the "
+        "transcript / description — never fabricate a narration."
+    ),
+    "worked_example": (
+        "Emit a `<section class=\"worked-example\" data-cf-source-ids=...>` "
+        "carrying `data-cf-fade-state` (one of `worked` / `completion` / "
+        "`independent`). State the problem in a leading `<p>`, then an ordered "
+        "`<ol>` whose `<li>` steps EACH carry a SUBGOAL LABEL "
+        "(`<span class=\"subgoal-label\">…</span>`) naming the sub-goal that "
+        "step achieves, the step body, and a per-step \"Why\" gloss "
+        "(`<span class=\"why\">Why: …</span>`) justifying the step. Use ONLY "
+        "the procedure the source supplies — never invent a step. A "
+        "worked_example is the SCAFFOLDED, fade-able instance the framework "
+        "reserves; it is richer than a single un-labeled `example`."
+    ),
+    "diagram": (
+        "Emit a `<figure class=\"diagram\" data-cf-source-ids=...>` for a "
+        "spatial / relational artifact (process flow, hierarchy, mapping). It "
+        "MUST carry an image / inline-svg slot (or a \"diagram pending\" note "
+        "when the source supplies no image), a short `<figcaption>`, a "
+        "STRUCTURED long-description in a `<details>` (a `<summary>` reading "
+        "\"Long description\" + prose walking the relationships in reading "
+        "order), AND a `<table>` data-table EQUIVALENT carrying the same "
+        "nodes / edges / values so the spatial relationships are available "
+        "non-visually (caption + scoped `<th>` headers). Use ONLY the "
+        "relationships the source supplies — never invent a node or edge."
+    ),
 }
 
 

@@ -170,6 +170,8 @@ def test_get_valid_chunk_types_returns_expected_set():
         # Reflective / collaborative block-wrapper additions
         "reflection",
         "discussion",
+        # IB5 — diagram (B06) carries data-cf-content-type="diagram".
+        "diagram",
     })
 
 
@@ -191,6 +193,8 @@ def test_get_valid_section_content_types_returns_expected_set():
         "table",
         "acronym",
         "key_idea",
+        # IB5 — diagram (B06) carries data-cf-content-type="diagram".
+        "diagram",
     })
 
 

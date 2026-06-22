@@ -19,7 +19,8 @@
         "explanation",
         "table",
         "acronym",
-        "key_idea"
+        "key_idea",
+        "diagram"
       ]
     },
     "CalloutContentType": {
@@ -53,7 +54,8 @@
         "vocabulary",
         "formula",
         "reflection",
-        "discussion"
+        "discussion",
+        "diagram"
       ]
     },
     "ContentType": {

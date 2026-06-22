@@ -121,6 +121,8 @@ SECTION_CONTENT_TYPE_ENUM: FrozenSet[str] = frozenset({
     "table",
     "acronym",
     "key_idea",
+    # IB5 — diagram (B06) carries data-cf-content-type="diagram".
+    "diagram",
 })
 
 # Hardcoded mirror of schemas/taxonomies/content_type.json::$defs.CalloutContentType.
@@ -1358,6 +1360,236 @@ def _render_key_terms_section(
         '    <section class="key-terms" data-cf-content-type="key-terms">\n'
         '    ' + "\n    ".join(cards) + '\n    </section>'
     )
+
+
+# ---------------------------------------------------------------------------
+# IB5 — deterministic renderers for the four framework-aligned pedagogical
+# block types (hook B02 / multimedia B04 / worked_example B05 / diagram B06).
+# Each follows the ``_render_key_terms_section`` precedent: deterministic HTML
+# assembly from a Block, no LLM. They are reached ONLY on the dynamic-planner
+# path under ED4ALL_NEW_BLOCK_TYPES (the renderer dispatch is gated, IB5.5), so
+# every legacy flag-off run is byte-identical. Each ships its a11y contract
+# from birth (the multimedia time-based-media stack + the diagram long-desc /
+# data-table) so rewrite_html_shape's IB5 arms PASS on this deterministic
+# output even when the corpus supplies no media (curie-minting backward-compat
+# posture: ship the structure even when unpopulated).
+# ---------------------------------------------------------------------------
+
+
+def _render_hook_section(block: "Block") -> str:
+    """IB5 — render a B02 hook/activation section (deterministic).
+
+    Emits a ``<section class="hook">`` carrying the activation / predict prompt
+    ``<p>`` and the forward-transition ``<p>``. Reads
+    ``content = {"prompt": str, "transition": str}`` (dict) or a bare prompt
+    string. NO new exposition — a hook activates, it does not teach.
+    """
+    content = block.content
+    if isinstance(content, dict):
+        prompt = str(content.get("prompt") or content.get("activation") or "")
+        transition = str(content.get("transition") or "")
+    else:
+        prompt = str(content or "")
+        transition = ""
+    block_attrs = block.to_html_attrs()
+    parts = [
+        f'    <section class="hook"{block_attrs}>',
+        f'      <p class="hook-prompt">{html_mod.escape(prompt)}</p>',
+    ]
+    if transition:
+        parts.append(
+            f'      <p class="hook-transition">{html_mod.escape(transition)}</p>'
+        )
+    parts.append('    </section>')
+    return "\n".join(parts)
+
+
+def _render_worked_example_section(block: "Block") -> str:
+    """IB5 — render a B05 worked_example section (deterministic).
+
+    Emits ``<section class="worked-example" data-cf-fade-state="…">`` with an
+    ordered list whose steps each carry a subgoal label + a per-step "Why"
+    gloss. Reads ``content = {"problem": str, "steps": [{"subgoal", "body",
+    "why"}, ...]}``. The ``data-cf-fade-state`` attr is sourced from
+    ``block.fade_state`` (default ``worked``).
+    """
+    content = block.content if isinstance(block.content, dict) else {}
+    problem = str(content.get("problem") or "")
+    raw_steps = content.get("steps") or []
+    fade_state = block.fade_state or "worked"
+    block_attrs = block.to_html_attrs()
+    parts = [
+        f'    <section class="worked-example" '
+        f'data-cf-fade-state="{html_mod.escape(fade_state)}"{block_attrs}>',
+    ]
+    if problem:
+        parts.append(
+            f'      <p class="worked-example-problem">'
+            f'{html_mod.escape(problem)}</p>'
+        )
+    parts.append('      <ol class="worked-example-steps">')
+    for step in raw_steps:
+        if isinstance(step, dict):
+            subgoal = str(step.get("subgoal") or step.get("label") or "")
+            body = str(step.get("body") or step.get("step") or "")
+            why = str(step.get("why") or "")
+        else:
+            subgoal = ""
+            body = str(step or "")
+            why = ""
+        li_parts = ['        <li>']
+        if subgoal:
+            li_parts.append(
+                f'<span class="subgoal-label">{html_mod.escape(subgoal)}</span> '
+            )
+        li_parts.append(html_mod.escape(body))
+        if why:
+            li_parts.append(
+                f' <span class="why">Why: {html_mod.escape(why)}</span>'
+            )
+        li_parts.append('</li>')
+        parts.append("".join(li_parts))
+    parts.append('      </ol>')
+    parts.append('    </section>')
+    return "\n".join(parts)
+
+
+def _render_multimedia_section(block: "Block") -> str:
+    """IB5 — render a B04 multimedia section with the MANDATORY a11y stack.
+
+    Emits ``<figure class="multimedia">`` carrying ``<video controls>`` (or a
+    "media pending" note when the corpus supplies no URL), a
+    ``<track kind="captions">``, an inline/downloadable transcript
+    ``<details data-cf-transcript>``, and an audio-description note. The
+    skeleton ALWAYS satisfies the IB5.7 media-stack contract (captions track +
+    transcript + controls present) even when unpopulated — ship the structure.
+    Reads ``content = {"media_url", "captions_url", "transcript", "audio_desc",
+    "caption"}``.
+    """
+    content = block.content if isinstance(block.content, dict) else {}
+    media_url = str(content.get("media_url") or "")
+    captions_url = str(content.get("captions_url") or "")
+    transcript = str(content.get("transcript") or "Transcript pending.")
+    audio_desc = str(
+        content.get("audio_desc")
+        or content.get("audio_description")
+        or "Audio description pending."
+    )
+    caption = str(content.get("caption") or "")
+    block_attrs = block.to_html_attrs()
+    parts = [f'    <figure class="multimedia"{block_attrs}>']
+    if media_url:
+        # controls attr is the keyboard/learner-pause contract (mandatory).
+        track = (
+            f'<track kind="captions" src="{html_mod.escape(captions_url)}" '
+            f'srclang="en" label="English captions">'
+            if captions_url
+            else '<track kind="captions" srclang="en" label="Captions pending">'
+        )
+        parts.append(
+            f'      <video controls src="{html_mod.escape(media_url)}">'
+            f'{track}</video>'
+        )
+    else:
+        # Media-pending skeleton — still carries the full a11y-stack markers so
+        # the IB5.7 contract passes (captions track + transcript + controls).
+        parts.append(
+            '      <p class="media-pending">Media pending — the time-based '
+            'artifact is not yet available.</p>'
+        )
+        parts.append(
+            '      <video controls>'
+            '<track kind="captions" srclang="en" label="Captions pending">'
+            '</video>'
+        )
+    parts.append(
+        f'      <details data-cf-transcript>'
+        f'<summary>Transcript</summary>'
+        f'<p>{html_mod.escape(transcript)}</p></details>'
+    )
+    parts.append(
+        f'      <p class="audio-description">Audio description: '
+        f'{html_mod.escape(audio_desc)}</p>'
+    )
+    if caption:
+        parts.append(f'      <figcaption>{html_mod.escape(caption)}</figcaption>')
+    parts.append('    </figure>')
+    return "\n".join(parts)
+
+
+def _render_diagram_section(block: "Block") -> str:
+    """IB5 — render a B06 diagram/visual-model section (deterministic).
+
+    Emits ``<figure class="diagram">`` with an image/svg slot (or a
+    "diagram pending" note), a short ``<figcaption>``, a structured
+    long-description ``<details>`` (from ``block.long_description`` or
+    ``content["long_description"]``), and a ``<table>`` data-equivalent so the
+    spatial relationships are available non-visually. Reads ``content =
+    {"image_url", "caption", "long_description", "rows": [[...], ...],
+    "headers": [...]}``.
+    """
+    content = block.content if isinstance(block.content, dict) else {}
+    image_url = str(content.get("image_url") or "")
+    caption = str(content.get("caption") or "Diagram")
+    long_desc = str(
+        block.long_description
+        or content.get("long_description")
+        or "Long description pending."
+    )
+    headers = content.get("headers") or []
+    rows = content.get("rows") or []
+    block_attrs = block.to_html_attrs()
+    parts = [
+        f'    <figure class="diagram" data-cf-content-type="diagram"{block_attrs}>'
+    ]
+    if image_url:
+        parts.append(
+            f'      <img src="{html_mod.escape(image_url)}" '
+            f'alt="{html_mod.escape(caption)}">'
+        )
+    else:
+        parts.append(
+            '      <p class="diagram-pending">Diagram pending — the visual '
+            'artifact is not yet available; the data table below carries the '
+            'same relationships.</p>'
+        )
+    parts.append(f'      <figcaption>{html_mod.escape(caption)}</figcaption>')
+    parts.append(
+        f'      <details class="diagram-longdesc">'
+        f'<summary>Long description</summary>'
+        f'<p>{html_mod.escape(long_desc)}</p></details>'
+    )
+    # Data-table equivalent (always present — the non-visual contract).
+    table_parts = [
+        '      <table>',
+        f'        <caption>{html_mod.escape(caption)} — data equivalent</caption>',
+    ]
+    if headers:
+        table_parts.append('        <thead><tr>')
+        for h in headers:
+            table_parts.append(
+                f'<th scope="col">{html_mod.escape(str(h))}</th>'
+            )
+        table_parts.append('</tr></thead>')
+    table_parts.append('        <tbody>')
+    if rows:
+        for row in rows:
+            cells = row if isinstance(row, (list, tuple)) else [row]
+            tr = ['          <tr>']
+            tr.extend(
+                f'<td>{html_mod.escape(str(c))}</td>' for c in cells
+            )
+            tr.append('</tr>')
+            table_parts.append("".join(tr))
+    else:
+        table_parts.append(
+            '          <tr><td>Diagram data pending.</td></tr>'
+        )
+    table_parts.append('        </tbody>')
+    table_parts.append('      </table>')
+    parts.extend(table_parts)
+    parts.append('    </figure>')
+    return "\n".join(parts)
 
 
 def _render_self_check(

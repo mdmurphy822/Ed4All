@@ -51,8 +51,9 @@ def test_new_type_registered(block_type):
     assert block_type in BLOCK_TYPES
 
 
-def test_block_types_count_is_twenty_four():
-    assert len(BLOCK_TYPES) == 24
+def test_block_types_count_is_twenty_eight():
+    # IB5 added 4 framework-aligned types to the 24-member palette.
+    assert len(BLOCK_TYPES) == 28
 
 
 # --------------------------------------------------------------------------- #

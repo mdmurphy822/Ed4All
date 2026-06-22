@@ -207,9 +207,9 @@ def test_block_sequence_non_negative_validates():
         )
 
 
-def test_block_types_count_is_sixteen():
-    """Canonical 24-type set (16 Phase-2 + 5 Wave-2 + 3 I6 palette-v2)."""
-    assert len(BLOCK_TYPES) == 24
+def test_block_types_count_is_twenty_eight():
+    """Canonical 28-type set (16 Phase-2 + 5 Wave-2 + 3 I6 palette-v2 + 4 IB5)."""
+    assert len(BLOCK_TYPES) == 28
     for required in (
         "objective",
         "concept",
@@ -227,6 +227,11 @@ def test_block_types_count_is_sixteen():
         "discussion_prompt",
         "chrome",
         "recap",
+        # IB5 framework-aligned pedagogical block types.
+        "hook",
+        "multimedia",
+        "worked_example",
+        "diagram",
     ):
         assert required in BLOCK_TYPES
 

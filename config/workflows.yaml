@@ -299,6 +299,14 @@ workflows:
           # Followup §3.2: HTML-shape sentinel mirrored from
           # textbook_to_course::post_rewrite_validation. Closes the
           # JSON-wrapped-emit regression class.
+          # IB5.7: this gate ALSO carries the per-block B04/B06 a11y-shape arms
+          # (multimedia captions/AD/transcript/controls stack + diagram
+          # long-desc/data-table), gated in-validator on new_block_types_enabled
+          # (ED4ALL_NEW_BLOCK_TYPES) and emitted at WARNING severity
+          # (REWRITE_IB5_A11Y_CONTRACT) so the existing critical parse-fail /
+          # I6 behavior is untouched. TODO(calibration) — flip the IB5
+          # multimedia/diagram contracts to critical after a >=2-corpus FP
+          # measurement (see _check_ib5_a11y_shape in the validator).
           - gate_id: rewrite_html_shape
             validator: lib.validators.rewrite_html_shape.RewriteHtmlShapeValidator
             severity: critical
@@ -2223,6 +2231,14 @@ workflows:
           # (the packager ship-exclusion predicate), so escalated EMPTY
           # blocks no longer trip the shape sentinel; a marker + content
           # salvaged bare-<li> block is still audited.
+          # IB5.7: this gate ALSO carries the per-block B04/B06 a11y-shape arms
+          # (multimedia captions/AD/transcript/controls stack + diagram
+          # long-desc/data-table), gated in-validator on new_block_types_enabled
+          # (ED4ALL_NEW_BLOCK_TYPES) and emitted at WARNING severity
+          # (REWRITE_IB5_A11Y_CONTRACT) so the existing critical parse-fail /
+          # I6 behavior is untouched. TODO(calibration) — flip the IB5
+          # multimedia/diagram contracts to critical after a >=2-corpus FP
+          # measurement (see _check_ib5_a11y_shape in the validator).
           - gate_id: rewrite_html_shape
             validator: lib.validators.rewrite_html_shape.RewriteHtmlShapeValidator
             severity: critical

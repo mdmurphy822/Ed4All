@@ -1117,6 +1117,17 @@ def _build_block_input(
     except Exception:  # noqa: BLE001 — never let the resolver import break routing
         inputs["block_a11y_enabled"] = False
 
+    # IB5.8 — thread the ED4ALL_NEW_BLOCK_TYPES resolution into the Block-input
+    # surface so RewriteHtmlShapeValidator's IB5 B04/B06 a11y-shape arms (IB5.7)
+    # fire only when the flag is on. Harmless for the other Block*Validators
+    # sharing this builder — they ignore the key. Default OFF → byte-stable.
+    try:
+        from lib.generation.new_block_types import resolve_new_block_types
+
+        inputs["new_block_types_enabled"] = resolve_new_block_types()
+    except Exception:  # noqa: BLE001 — never let the resolver import break routing
+        inputs["new_block_types_enabled"] = False
+
     objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
     if objectives_path:
         inputs["objectives_path"] = objectives_path

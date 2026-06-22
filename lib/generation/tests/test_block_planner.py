@@ -609,5 +609,128 @@ def test_prompt_steers_comparative_content_to_grid():
     assert "flip_card_grid" in prompt
 
 
+# --------------------------------------------------------------------------- #
+# IB5 — planner selection of the four framework-aligned types (gated).
+# --------------------------------------------------------------------------- #
+def _build_ib5_prompt(source_chunks):
+    from lib.generation.block_planner import _build_prompt
+    from lib.generation.block_catalog import load_block_catalog
+
+    return _build_prompt(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        source_chunks=source_chunks,
+        catalog=load_block_catalog(),
+        budget=(5, 24),
+    )
+
+
+def test_ib5_nudges_absent_when_flag_off(monkeypatch):
+    """The byte-stability guard: flag off → no IB5 content-shape NUDGE lines.
+
+    The catalog MENU lists the four new types unconditionally once IB5.2 lands
+    (it iterates the catalog) — exactly the I6 precedent — so the menu naming
+    them flag-off is expected. What MUST be gated is the IB5 nudge lines: with
+    the flag off the planner never appends a worked_example / multimedia /
+    diagram / hook nudge, so the DETECTED CONTENT SHAPES section carries no IB5
+    steering even on a procedure-shaped source."""
+    from lib.generation.new_block_types import ENV_NEW_BLOCK_TYPES
+
+    procedure_src = [{"text": "Step 1: do X. Step 2: do Y. Step 3: solve for z."}]
+    monkeypatch.delenv(ENV_NEW_BLOCK_TYPES, raising=False)
+    prompt_off = _build_ib5_prompt(procedure_src)
+    # The IB5 nudge phrasings are absent (these strings appear ONLY in the
+    # gated DETECTED CONTENT SHAPES nudge lines, never in the catalog menu).
+    assert "describes a step-by-step PROCEDURE" not in prompt_off
+    assert "mandatory captions / audio-description" not in prompt_off
+    assert "OPEN this objective with a `hook`" not in prompt_off
+    # On a procedure source with the flag ON, the worked_example nudge appears.
+    monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "1")
+    prompt_on = _build_ib5_prompt(procedure_src)
+    assert "describes a step-by-step PROCEDURE" in prompt_on
+
+
+def test_ib5_procedure_nudges_worked_example_when_on(monkeypatch):
+    from lib.generation.new_block_types import ENV_NEW_BLOCK_TYPES
+
+    monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "1")
+    prompt = _build_ib5_prompt(
+        [{"text": "Follow these steps: Step 1: isolate. Step 2: divide."}]
+    )
+    assert "worked_example" in prompt
+
+
+def test_ib5_media_nudges_multimedia_when_on(monkeypatch):
+    from lib.generation.new_block_types import ENV_NEW_BLOCK_TYPES
+
+    monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "1")
+    prompt = _build_ib5_prompt([{"text": "Watch the video explaining factoring."}])
+    assert "multimedia" in prompt
+
+
+def test_ib5_diagram_nudges_diagram_when_on(monkeypatch):
+    from lib.generation.new_block_types import ENV_NEW_BLOCK_TYPES
+
+    monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "1")
+    prompt = _build_ib5_prompt([{"text": "As shown in the flowchart, the figure maps each step."}])
+    assert "diagram" in prompt
+
+
+def test_ib5_hook_nudge_always_present_when_on(monkeypatch):
+    from lib.generation.new_block_types import ENV_NEW_BLOCK_TYPES
+
+    monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "1")
+    prompt = _build_ib5_prompt([{"text": "plain prose about fractions"}])
+    assert "hook" in prompt
+
+
+def test_ib5_detectors_precision():
+    from lib.generation.block_planner import (
+        detect_procedure,
+        detect_media_reference,
+        detect_diagram_reference,
+    )
+
+    assert detect_procedure("Step 1: do X. Step 2: do Y.")
+    assert not detect_procedure("A flat prose paragraph about numbers.")
+    assert detect_media_reference("Watch the video below.")
+    assert detect_media_reference("see https://x.test/clip.mp4")
+    assert not detect_media_reference("read the textbook chapter")
+    assert detect_diagram_reference("see Figure 3 below")
+    assert detect_diagram_reference("the flowchart shows the process")
+    assert not detect_diagram_reference("a list of vocabulary terms")
+
+
+def test_ib5_injection_deploys_types_when_flag_on(monkeypatch):
+    """Flag on + a procedure source → worked_example reaches the page plan."""
+    from lib.generation.new_block_types import ENV_NEW_BLOCK_TYPES
+
+    monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "1")
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        source_chunks=[{"text": "Step 1: isolate the variable. Step 2: divide both sides."}],
+        provider=None,  # fixed-plan fallback path; injection still runs
+    )
+    deployed = {b["block_type"] for b in plan.selected}
+    assert "hook" in deployed
+    assert "worked_example" in deployed
+
+
+def test_ib5_injection_noop_when_flag_off(monkeypatch):
+    """Flag off → none of the four IB5 types are injected (byte-stability)."""
+    from lib.generation.new_block_types import ENV_NEW_BLOCK_TYPES
+
+    monkeypatch.delenv(ENV_NEW_BLOCK_TYPES, raising=False)
+    plan = plan_week_blocks(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        source_chunks=[{"text": "Step 1: isolate the variable. Step 2: divide both sides."}],
+        provider=None,
+    )
+    deployed = {b["block_type"] for b in plan.selected}
+    assert not ({"hook", "multimedia", "worked_example", "diagram"} & deployed)
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

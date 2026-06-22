@@ -1,7 +1,7 @@
 # Courseforge block catalog (Wave-2 block-variety redesign, Part 1).
 #
 # Machine-readable catalog of every canonical block type in
-# ``Courseforge/scripts/blocks.py::BLOCK_TYPES`` (all 24). A large-model
+# ``Courseforge/scripts/blocks.py::BLOCK_TYPES`` (all 28). A large-model
 # planner (70B+) reads the ``use_when`` discriminators to pick the RIGHT
 # block for a given content / objective shape instead of defaulting to a
 # bare ``concept`` / ``explanation`` everywhere.
@@ -329,3 +329,66 @@ blocks:
     bloom_fit: [remember, understand]
     format_summary: "<aside class=key-idea> with a Key Idea framing label + 1-3 sentences."
     framework_block: B12
+
+  # IB5 framework-aligned pedagogical block types (the four genuine catalog
+  # gaps: B02 Hook, B04 Multimedia, B05 Worked Example, B06 Visual
+  # Model/Diagram). Emitted ONLY via the dynamic block planner path behind
+  # ED4ALL_NEW_BLOCK_TYPES (default OFF) so legacy snapshots stay byte-stable.
+  - block_type: hook
+    label: Hook / Activation
+    use_when: >-
+      Use to OPEN a terminal objective / week — gain attention and surface the
+      learner's PRIOR knowledge BEFORE any new content. A retrieval / predict
+      prompt ("what do you already know about X?", "predict the result before
+      reading") plus a forward transition into the exposition. Carries NO new
+      teaching content (choose concept / explanation for that); it activates
+      what the learner already has and primes them for what follows.
+    conveys: An attention-gaining activation prompt that surfaces prior knowledge before content.
+    bloom_fit: [remember, understand]
+    format_summary: "<section class=hook> activation prompt <p> + forward-transition <p>."
+    framework_block: B02
+
+  - block_type: multimedia
+    label: Multimedia
+    use_when: >-
+      The source supplies (or the course will supply) a time-based audio /
+      video artifact the learner watches or listens to. The ONLY block carrying
+      the FULL time-based-media accessibility stack — synchronized captions
+      (1.2.2), audio description (1.2.5), a downloadable transcript, and learner
+      pause / segment controls — which is MANDATORY for this type. Choose when
+      the content is genuinely audiovisual, not for a static figure (use
+      diagram) or prose (use explanation).
+    conveys: A time-based audio/video artifact with its full caption/AD/transcript/controls a11y stack.
+    bloom_fit: [understand, apply]
+    format_summary: "<figure class=multimedia> <video controls> + <track kind=captions> + transcript <details> + audio-description note."
+    framework_block: B04
+
+  - block_type: worked_example
+    label: Worked Example (Faded)
+    use_when: >-
+      A PROCEDURE needs a fully-worked instance carrying SUBGOAL LABELS, a
+      per-step "Why" gloss, and an explicit FADE-STATE (worked -> completion ->
+      independent). Choose this over `example` (a single un-labeled instance)
+      when the learner needs scaffolded sub-goal structure they can fade toward
+      independent practice. The distinct B05 block the framework reserves;
+      `example` is NOT renamed or removed.
+    conveys: A subgoal-labeled, per-step-justified worked procedure with an explicit fade stage.
+    bloom_fit: [understand, apply]
+    format_summary: "<section class=worked-example> ordered <li> steps each with a subgoal label + a why gloss; data-cf-fade-state."
+    framework_block: B05
+    framework_block_secondary: B08
+
+  - block_type: diagram
+    label: Visual Model / Diagram
+    use_when: >-
+      A spatial / relational artifact (a process flow, a hierarchy, a mapping)
+      dual-codes a concept the learner reasons about visually. MUST ship a
+      structured long-description AND a data-table equivalent so the spatial
+      relationships are available non-visually. Choose over a prose concept when
+      the salient meaning is the SHAPE of the relationships, and over a
+      multimedia block when the artifact is static (not time-based).
+    conveys: A dual-coded spatial/relational artifact with a structured long-description + data-table equivalent.
+    bloom_fit: [understand, analyze]
+    format_summary: "<figure class=diagram> image/svg + <figcaption> short + long-desc <details> + a <table> data equivalent."
+    framework_block: B06
+    framework_block_secondary: B03

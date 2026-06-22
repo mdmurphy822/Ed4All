@@ -334,3 +334,97 @@ def test_no_marker_audited_as_always() -> None:
     assert result.passed is False
     codes = [i.code for i in result.issues if i.severity == "critical"]
     assert "REWRITE_NOT_HTML_BODY_FRAGMENT" in codes
+
+
+# ---------------------------------------------------------------------- #
+# IB5.7 — B04 multimedia + B06 diagram a11y-shape arms (warning-day-1).
+# ---------------------------------------------------------------------- #
+
+_MM_COMPLETE = (
+    '<figure class="multimedia" data-cf-block-id="page_01#multimedia_x_0">'
+    '<video controls><track kind="captions" srclang="en"></video>'
+    '<details data-cf-transcript><summary>Transcript</summary><p>t</p></details>'
+    '<p class="audio-description">Audio description: …</p></figure>'
+)
+_MM_NO_TRACK = (
+    '<figure class="multimedia" data-cf-block-id="page_01#multimedia_x_0">'
+    '<video controls></video>'
+    '<details data-cf-transcript><summary>Transcript</summary><p>t</p></details>'
+    '</figure>'
+)
+_DG_COMPLETE = (
+    '<figure class="diagram" data-cf-content-type="diagram" '
+    'data-cf-block-id="page_01#diagram_x_0">'
+    '<figcaption>Flow</figcaption>'
+    '<details><summary>Long description</summary><p>desc</p></details>'
+    '<table><caption>Flow — data</caption><thead><tr>'
+    '<th scope="col">Node</th></tr></thead><tbody><tr><td>A</td></tr></tbody>'
+    '</table></figure>'
+)
+_DG_NO_TABLE = (
+    '<figure class="diagram" data-cf-content-type="diagram" '
+    'data-cf-block-id="page_01#diagram_x_0">'
+    '<figcaption>Flow</figcaption>'
+    '<details><summary>Long description</summary><p>desc</p></details>'
+    '</figure>'
+)
+
+
+def _validate_ib5(blocks, *, enabled=True):
+    return RewriteHtmlShapeValidator().validate(
+        {"blocks": blocks, "new_block_types_enabled": enabled}
+    )
+
+
+def test_ib5_multimedia_complete_stack_passes() -> None:
+    block = _make_block(_MM_COMPLETE, block_type="multimedia")
+    result = _validate_ib5([block])
+    assert result.passed is True
+    assert not [i for i in result.issues if i.code == "REWRITE_IB5_A11Y_CONTRACT"]
+
+
+def test_ib5_multimedia_missing_track_warns_not_blocks() -> None:
+    block = _make_block(_MM_NO_TRACK, block_type="multimedia")
+    result = _validate_ib5([block])
+    warnings = [i for i in result.issues if i.code == "REWRITE_IB5_A11Y_CONTRACT"]
+    assert len(warnings) == 1
+    assert warnings[0].severity == "warning"
+    # Warning-day-1: the gate still passes (no critical issue).
+    assert result.passed is True
+    assert not [i for i in result.issues if i.severity == "critical"]
+
+
+def test_ib5_diagram_complete_passes() -> None:
+    block = _make_block(_DG_COMPLETE, block_type="diagram")
+    result = _validate_ib5([block])
+    assert result.passed is True
+    assert not [i for i in result.issues if i.code == "REWRITE_IB5_A11Y_CONTRACT"]
+
+
+def test_ib5_diagram_missing_table_warns() -> None:
+    block = _make_block(_DG_NO_TABLE, block_type="diagram")
+    result = _validate_ib5([block])
+    warnings = [i for i in result.issues if i.code == "REWRITE_IB5_A11Y_CONTRACT"]
+    assert len(warnings) == 1
+    assert warnings[0].severity == "warning"
+    assert result.passed is True
+
+
+def test_ib5_arm_noop_when_flag_off() -> None:
+    """Flag off → the IB5 arm is a complete no-op (no warning even on a miss)."""
+    block = _make_block(_MM_NO_TRACK, block_type="multimedia")
+    result = _validate_ib5([block], enabled=False)
+    assert not [i for i in result.issues if i.code == "REWRITE_IB5_A11Y_CONTRACT"]
+
+
+def test_ib5_i6_outcome_unchanged_regression() -> None:
+    """An existing key_idea block is regression-identical with the IB5 input."""
+    aside = (
+        '<aside class="key-idea" data-cf-content-type="key_idea" '
+        'data-cf-block-id="page_01#key_idea_x_0"><strong>Key Idea</strong> '
+        '<p>The principle.</p></aside>'
+    )
+    block = _make_block(aside, block_type="key_idea")
+    with_ib5 = _validate_ib5([block])
+    without = RewriteHtmlShapeValidator().validate({"blocks": [block]})
+    assert with_ib5.passed == without.passed is True
