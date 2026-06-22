@@ -30,6 +30,15 @@
 #                    genuinely straddles two framework parents; key is
 #                    omitted entirely (not ``null``) when there is no
 #                    secondary.
+#   bloom_ceiling:   (IB7.6 — OPTIONAL) the framework stretch LIMIT for this
+#                    type's primary Bloom range (pp.26-33, p.138 Step 2). A
+#                    block whose target Bloom EXCEEDS this ceiling is
+#                    re-routed (planner ED4ALL_PLANNER_BLOOM_CEILING) to a
+#                    higher-order type / flagged (bloom_type_range validator):
+#                    no "everything block". ABSENCE => the existing advisory
+#                    bloom_fit behaviour (back-compat; the type is uncapped).
+#                    Must be a valid Bloom level >= the entry's bloom_fit
+#                    floor (asserted by lib/generation/tests/test_block_planner.py).
 version: 1
 blocks:
   - block_type: objective
@@ -53,6 +62,7 @@ blocks:
       not a worked instance.
     conveys: The definition, properties, and rationale of a domain concept.
     bloom_fit: [remember, understand]
+    bloom_ceiling: apply
     format_summary: "<section> heading + prose; JSON-LD sections entry with key terms."
     framework_block: B03
 
@@ -78,6 +88,7 @@ blocks:
       self-check.
     conveys: A scored question + misconception-targeted distractors mapped to an objective.
     bloom_fit: [understand, apply, analyze, evaluate]
+    bloom_ceiling: create
     format_summary: "<div class=assessment-item> stem + <ol> of <li data-cf-distractor-index>; QTI downstream."
     framework_block: B14
 
@@ -90,6 +101,7 @@ blocks:
       idea usable.
     conveys: Extended, multi-step exposition that develops a concept beyond its bare definition.
     bloom_fit: [understand, apply, analyze]
+    bloom_ceiling: apply
     format_summary: "<section> heading + several prose paragraphs; JSON-LD sections entry."
     framework_block: B03
 
@@ -112,6 +124,7 @@ blocks:
       objective is procedural and repetition builds fluency.
     conveys: A guided set of practice items all exercising one named skill.
     bloom_fit: [apply, analyze]
+    bloom_ceiling: analyze
     format_summary: "<div class=activity-card> instruction + practice items."
     framework_block: B08
 
@@ -158,6 +171,7 @@ blocks:
       over assessment_item when no grade is recorded.
     conveys: A single formative question with a reveal answer for self-assessment.
     bloom_fit: [understand, apply]
+    bloom_ceiling: apply
     format_summary: "<div class=self-check self-check-item> question + <details> reveal."
     framework_block: B07
 
@@ -228,6 +242,7 @@ blocks:
       situation, not just read a worked solution.
     conveys: A realistic situation grounded in the source plus a prompt to apply the concept to it.
     bloom_fit: [apply, analyze, evaluate]
+    bloom_ceiling: evaluate
     format_summary: "<div class=scenario-card> scenario prose + an apply <p> prompt."
     framework_block: B09
 
@@ -240,6 +255,7 @@ blocks:
       is the goal.
     conveys: One stated practice problem with a reveal-on-demand worked solution.
     bloom_fit: [apply, analyze]
+    bloom_ceiling: analyze
     format_summary: "<div class=problem-card> problem <p> + <details> reveal solution."
     framework_block: B08
 

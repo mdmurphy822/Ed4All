@@ -408,6 +408,124 @@ def _new_block_types_on() -> bool:
 _WORKED_EXAMPLE_FLOOR_ENV = "ED4ALL_WORKED_EXAMPLE_FLOOR"
 _BLOOM_SPREAD_FLOOR_ENV = "ED4ALL_BLOOM_SPREAD_FLOOR"
 
+# IB7 planner-pedagogy flags — ALL default OFF (parse-with-fallback) so the
+# planner's output is BYTE-STABLE unless an operator opts in. Each gates a pure
+# post-pass that returns identity when off (mirrors the P4 floors above):
+#   ED4ALL_PLANNER_BLOOM_CLIMB   — IB7.3 programmatic Bloom-climb re-sort onto
+#       the canonical activation→exposition→worked-example→case→check→summary
+#       template (pretraining/vocab before exposition; within-tier Bloom
+#       monotonic).
+#   ED4ALL_PLANNER_LIFECYCLE     — IB7.4 lifecycle open/close guarantee (an
+#       Activate-stage opener + a Consolidate-stage closer per TO) + slot-edit
+#       escalation (stamp anatomy_slot_weights before a type swap).
+#   ED4ALL_PLANNER_SPACING       — IB7.5a within-module temporal spacing
+#       (separate a check/reflection from the exposition that taught its CO).
+#   ED4ALL_PLANNER_BLOOM_CEILING — IB7.6b per-type Bloom-range ceiling re-route
+#       (an over-escalated block routes to a higher-order type after a slot
+#       edit; catalog ``bloom_ceiling`` becomes a planner gate).
+_BLOOM_CLIMB_ENV = "ED4ALL_PLANNER_BLOOM_CLIMB"
+_LIFECYCLE_ENV = "ED4ALL_PLANNER_LIFECYCLE"
+_SPACING_ENV = "ED4ALL_PLANNER_SPACING"
+_BLOOM_CEILING_ENV = "ED4ALL_PLANNER_BLOOM_CEILING"
+_IB7_FLAG_ENVS: Tuple[str, ...] = (
+    _BLOOM_CLIMB_ENV, _LIFECYCLE_ENV, _SPACING_ENV, _BLOOM_CEILING_ENV,
+)
+
+
+def _any_ib7_flag_on() -> bool:
+    """True iff ANY IB7 planner-pedagogy flag is truthy (read each call)."""
+    return any(_env_floor_on(env) for env in _IB7_FLAG_ENVS)
+
+# IB7.3 canonical lifecycle-phase TEMPLATE order (the 100%-frequency
+# objectives→activation→exposition→worked-example→case→check→summary template,
+# framework pp.13-17 / p.138 Step 2). The Bloom-climb re-sort buckets every
+# block into one of these tiers and emits the tiers in this order. NOTE: this
+# is the cross-block TEACHING-SEQUENCE order — DISTINCT from both the five PAGE
+# TYPES (page-file grouping) and the five block-INTERNAL lifecycle STAGES
+# (Courseforge.scripts.blocks.LIFECYCLE_STAGES). Index 0 sorts first.
+_CLIMB_TIERS: Tuple[str, ...] = (
+    "activation",
+    "exposition",
+    "worked_example",
+    "case",
+    "check",
+    "summary",
+)
+
+# Block TYPE -> canonical climb tier. A type absent here falls back to a tier
+# derived from its default page (``_BLOCK_TYPE_DEFAULT_PAGE``) via
+# ``_PAGE_TO_CLIMB_TIER``. Vocabulary / pretraining types sort FIRST within the
+# exposition tier (see ``_VOCAB_PRETRAINING_TYPES``).
+_BLOCK_TYPE_CLIMB_TIER: Dict[str, str] = {
+    # activation — open the objective (hook / activation / objective / prereq).
+    "hook": "activation",
+    "objective": "activation",
+    "prereq_set": "activation",
+    "recap": "activation",
+    # exposition — teach the concept (vocab/pretraining sort first within tier).
+    "vocab_card": "exposition",
+    "acronym": "exposition",
+    "flip_card_grid": "exposition",
+    "concept": "exposition",
+    "explanation": "exposition",
+    "key_idea": "exposition",
+    "callout": "exposition",
+    "misconception": "exposition",
+    "table": "exposition",
+    "formula": "exposition",
+    "multimedia": "exposition",
+    "diagram": "exposition",
+    # worked_example — show the procedure applied.
+    "example": "worked_example",
+    "worked_example": "worked_example",
+    "problem": "worked_example",
+    # case — apply to a realistic situation / collaborate.
+    "scenario": "case",
+    "activity": "case",
+    "discussion_prompt": "case",
+    # check — formative checkpoints.
+    "self_check_question": "check",
+    "reflection_prompt": "check",
+    "assessment_item": "check",
+    # summary — consolidate.
+    "summary_takeaway": "summary",
+    "checklist": "summary",
+    "chrome": "summary",
+}
+
+# Fallback: page TYPE -> climb tier (used when a block type is not in
+# ``_BLOCK_TYPE_CLIMB_TIER``, e.g. a catalog-drift new type).
+_PAGE_TO_CLIMB_TIER: Dict[str, str] = {
+    "overview": "activation",
+    "content": "exposition",
+    "application": "case",
+    "self_check": "check",
+    "summary": "summary",
+}
+
+# Vocabulary / pretraining types that must sort AHEAD of technical exposition
+# within the exposition tier (framework: pretraining/vocabulary precedes
+# technical exposition).
+_VOCAB_PRETRAINING_TYPES: frozenset = frozenset(
+    {"vocab_card", "acronym", "flip_card_grid"}
+)
+
+# IB7.4 — Activate-stage opener candidate types (the first present one opens a
+# TO that lacks an opener). Consolidate-stage closer candidates likewise.
+_ACTIVATION_OPENER_TYPES: Tuple[str, ...] = (
+    "hook", "objective", "prereq_set",
+)
+_CONSOLIDATE_CLOSER_TYPES: Tuple[str, ...] = (
+    "summary_takeaway", "recap", "checklist", "reflection_prompt",
+)
+
+# IB7.6 — ordered higher-order re-route targets for an over-ceiling block. The
+# first whose catalog bloom_ceiling admits the demanded level (and whose type is
+# in BLOCK_TYPES) wins. No "everything block": exposition Analyze+ routes OUT.
+_BLOOM_REROUTE_TARGETS: Tuple[str, ...] = (
+    "scenario", "problem", "assessment_item",
+)
+
 # Block types that count as a worked example for the per-procedural-CO floor.
 _WORKED_EXAMPLE_BLOCK_TYPES: Tuple[str, ...] = ("example", "problem")
 # Analyze-or-higher levels for the Bloom-spread floor.
@@ -721,8 +839,22 @@ def _resolve_planner_model(provider: Optional[str]) -> Optional[str]:
     explicit = os.environ.get("ED4ALL_DYNAMIC_BLOCK_PLAN_MODEL")
     if explicit and explicit.strip():
         return explicit.strip()
-    if (provider or "").lower() == "nvidia":
+    prov = (provider or "").lower()
+    if prov == "nvidia":
         return os.environ.get("NVIDIA_LARGE_MODEL") or _PLANNER_70B_NVIDIA_MODEL
+    if prov == "local":
+        # IB7.2 — license-clean local Qwen seat. Reuse the shared base's
+        # ``local`` registry default (LOCAL_SYNTHESIS_MODEL → the Apache-2.0
+        # Qwen2.5 registry default) when no env override is set; returning the
+        # resolved id keeps the seat reachable WITHOUT an NVIDIA key.
+        env_local = os.environ.get("LOCAL_SYNTHESIS_MODEL")
+        if env_local and env_local.strip():
+            return env_local.strip()
+        try:  # registry default (e.g. qwen2.5:7b-instruct-q4_K_M)
+            from Courseforge.generators._base import LOCAL_DEFAULT_MODEL
+            return LOCAL_DEFAULT_MODEL
+        except Exception:  # noqa: BLE001 — let the base resolve its own default
+            return None
     return None
 
 
@@ -1597,6 +1729,385 @@ def _inject_ib5_types(
     return selected
 
 
+# ---------------------------------------------------------------------------
+# IB7 — planner-pedagogy passes (Bloom-climb / lifecycle / spacing / ceiling).
+# Each is a PURE function gated by its own env flag; default-off ⇒ identity, so
+# the planner's output is byte-stable unless an operator opts in. They run AFTER
+# the page/P4 floors + palette-v2 + IB5 injection (they see the FINAL block set)
+# and BEFORE ``_to_page_plan``, in the order climb → lifecycle → spacing →
+# ceiling (the plan's internal dependency order).
+# ---------------------------------------------------------------------------
+
+
+def _block_climb_tier(blk: Dict[str, Any]) -> str:
+    """Map a selected block to its canonical climb tier (IB7.3)."""
+    bt = str(blk.get("block_type") or "")
+    tier = _BLOCK_TYPE_CLIMB_TIER.get(bt)
+    if tier:
+        return tier
+    page_type = str(blk.get("page_type") or "")
+    return _PAGE_TO_CLIMB_TIER.get(page_type, "exposition")
+
+
+def _apply_bloom_climb(
+    *, selected: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Re-sort ``selected`` onto the canonical Bloom-climb template (IB7.3).
+
+    Gated on ``ED4ALL_PLANNER_BLOOM_CLIMB``; NO-OP / byte-stable when off.
+    Two-level STABLE sort (preserves planner relative order within an equal
+    key):
+      1. by canonical lifecycle-phase tier (activation → exposition →
+         worked_example → case → check → summary — the 100%-frequency
+         template), and WITHIN the exposition tier vocabulary / pretraining
+         types sort ahead of technical exposition;
+      2. within a tier, ascending ``target_bloom`` so lower-order scaffolds
+         precede higher-order blocks (the Bloom climb UP the pyramid).
+    The climb is the FINAL ordering authority — it runs after the page-emit
+    re-flatten in ``_apply_page_floors`` so there is no double-reorder
+    conflict. Returns a NEW list; never mutates the input blocks.
+    """
+    if not _env_floor_on(_BLOOM_CLIMB_ENV):
+        return selected
+
+    def _bloom_index(blk: Dict[str, Any]) -> int:
+        b = str(blk.get("target_bloom") or "")
+        return BLOOM_LEVELS.index(b) if b in BLOOM_LEVELS else 0
+
+    def _sort_key(item: Tuple[int, Dict[str, Any]]) -> Tuple[int, int, int]:
+        idx, blk = item
+        tier = _block_climb_tier(blk)
+        tier_rank = (
+            _CLIMB_TIERS.index(tier) if tier in _CLIMB_TIERS else len(_CLIMB_TIERS)
+        )
+        # Within exposition, vocabulary / pretraining sort FIRST (sub-rank 0).
+        vocab_rank = (
+            0
+            if (
+                tier == "exposition"
+                and str(blk.get("block_type") or "") in _VOCAB_PRETRAINING_TYPES
+            )
+            else 1
+        )
+        return (tier_rank, vocab_rank, _bloom_index(blk))
+
+    # Python's sort is stable, so equal-key blocks keep their planner order.
+    indexed = list(enumerate(selected))
+    indexed.sort(key=_sort_key)
+    return [blk for _idx, blk in indexed]
+
+
+def _ensure_lifecycle_endpoints(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    catalog_by_type: Dict[str, Dict[str, Any]],
+    block_types: frozenset,
+) -> List[Dict[str, Any]]:
+    """Guarantee an Activate-stage opener + Consolidate-stage closer (IB7.4).
+
+    Gated on ``ED4ALL_PLANNER_LIFECYCLE``; NO-OP / byte-stable when off.
+
+    1. If no Activate-stage block (hook / objective / prereq_set) is present,
+       PREPEND a deterministic activation opener on ``overview`` (the first
+       opener type available in ``BLOCK_TYPES``).
+    2. If no Consolidate-stage block (summary_takeaway / recap / checklist /
+       reflection_prompt) is present, APPEND one on ``summary``.
+    3. Slot-edit escalation: for any block whose ``target_bloom`` exceeds its
+       catalog ``bloom_ceiling``, FIRST stamp a heavier interaction/feedback
+       weight on its ``anatomy_slot_weights`` annotation (additive,
+       hash-excluded) rather than swapping the type — only IB7.6's ceiling
+       re-route swaps the type when the slot edit cannot carry the demand.
+
+    ANTI-FABRICATION: an injected opener/closer targets the TO's first real CO
+    id (mirrors ``_inject_palette_v2``); no CO id is invented. Returns a NEW
+    list.
+    """
+    if not _env_floor_on(_LIFECYCLE_ENV):
+        return selected
+
+    out = list(selected)
+    first_co_id = next(
+        (str(co.get("id")) for co in chapter_objectives if co.get("id")), ""
+    )
+    target_co_ids = [first_co_id] if first_co_id else []
+
+    # (1) activation opener.
+    has_opener = any(
+        str(b.get("block_type") or "") in _ACTIVATION_OPENER_TYPES for b in out
+    )
+    if not has_opener:
+        opener_bt = next(
+            (bt for bt in _ACTIVATION_OPENER_TYPES if bt in block_types), None
+        )
+        if opener_bt is not None:
+            out.insert(0, {
+                "block_type": opener_bt,
+                "page_type": "overview",
+                "target_co_ids": list(target_co_ids),
+                "content_focus": (
+                    "IB7.4 lifecycle: Activate-stage opener (no activation "
+                    "block opened this objective)"
+                ),
+                "target_bloom": "understand",
+            })
+
+    # (2) consolidate closer.
+    has_closer = any(
+        str(b.get("block_type") or "") in _CONSOLIDATE_CLOSER_TYPES for b in out
+    )
+    if not has_closer:
+        closer_bt = next(
+            (bt for bt in _CONSOLIDATE_CLOSER_TYPES if bt in block_types), None
+        )
+        if closer_bt is not None:
+            out.append({
+                "block_type": closer_bt,
+                "page_type": "summary",
+                "target_co_ids": list(target_co_ids),
+                "content_focus": (
+                    "IB7.4 lifecycle: Consolidate-stage closer (no summary "
+                    "block closed this objective)"
+                ),
+                "target_bloom": "understand",
+            })
+
+    # (3) slot-edit escalation BEFORE any type re-route (IB7.6 swaps the type).
+    for blk in out:
+        if _bloom_over_ceiling(blk, catalog_by_type):
+            weights = blk.get("anatomy_slot_weights")
+            if not isinstance(weights, dict):
+                weights = {}
+            # Heavier interaction + feedback demand carries the higher Bloom
+            # work without changing the block type (framework p.139 Step 4).
+            weights.setdefault("interaction", "heavy")
+            weights.setdefault("feedback", "heavy")
+            blk["anatomy_slot_weights"] = weights
+
+    return out
+
+
+def _apply_spacing(
+    *, selected: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Separate a check/reflection from the exposition that taught its CO (IB7.5a).
+
+    Gated on ``ED4ALL_PLANNER_SPACING``; NO-OP / byte-stable when off.
+    Deterministic, bounded, ADDS NO blocks. For each CO, if its first
+    check/reflection block sits IMMEDIATELY AFTER an exposition block teaching
+    the SAME CO (massed, back-to-back), move the check one position LATER past
+    the next intervening non-same-CO block so a checkpoint follows intervening
+    material rather than the exposition it checks (spacing axis 3 / QA-15 /
+    p.140). A single bounded pass; returns a NEW list.
+    """
+    if not _env_floor_on(_SPACING_ENV):
+        return selected
+
+    _CHECK_TYPES = {"self_check_question", "reflection_prompt", "assessment_item"}
+    _EXPO_TIER = "exposition"
+    out = list(selected)
+    n = len(out)
+    i = 1
+    while i < n:
+        blk = out[i]
+        if str(blk.get("block_type") or "") not in _CHECK_TYPES:
+            i += 1
+            continue
+        co_ids = set(str(c) for c in (blk.get("target_co_ids") or []))
+        if not co_ids:
+            i += 1
+            continue
+        prev = out[i - 1]
+        prev_is_same_co_expo = (
+            _block_climb_tier(prev) == _EXPO_TIER
+            and bool(set(str(c) for c in (prev.get("target_co_ids") or [])) & co_ids)
+        )
+        if not prev_is_same_co_expo:
+            i += 1
+            continue
+        # Find the next intervening block that does NOT teach the same CO and
+        # is NOT itself a check — move the check to sit AFTER it.
+        j = i + 1
+        target = -1
+        while j < n:
+            cand = out[j]
+            cand_cos = set(str(c) for c in (cand.get("target_co_ids") or []))
+            if (
+                str(cand.get("block_type") or "") not in _CHECK_TYPES
+                and not (cand_cos & co_ids)
+            ):
+                target = j
+                break
+            j += 1
+        if target == -1:
+            i += 1
+            continue
+        moved = out.pop(i)
+        out.insert(target, moved)  # target index shifts left by 1 after pop
+        i += 1
+    return out
+
+
+def _catalog_bloom_ceiling(
+    block_type: str, catalog_by_type: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    """Return a type's catalog ``bloom_ceiling`` (None ⇒ uncapped/advisory)."""
+    entry = catalog_by_type.get(block_type) or {}
+    ceiling = entry.get("bloom_ceiling")
+    if isinstance(ceiling, str) and ceiling in BLOOM_LEVELS:
+        return ceiling
+    return None
+
+
+def _bloom_over_ceiling(
+    blk: Dict[str, Any], catalog_by_type: Dict[str, Dict[str, Any]],
+) -> bool:
+    """True iff a block's ``target_bloom`` exceeds its type's catalog ceiling."""
+    bt = str(blk.get("block_type") or "")
+    ceiling = _catalog_bloom_ceiling(bt, catalog_by_type)
+    if ceiling is None:
+        return False
+    bloom = str(blk.get("target_bloom") or "")
+    if bloom not in BLOOM_LEVELS:
+        return False
+    return BLOOM_LEVELS.index(bloom) > BLOOM_LEVELS.index(ceiling)
+
+
+def _apply_bloom_ceilings(
+    *,
+    selected: List[Dict[str, Any]],
+    catalog_by_type: Dict[str, Dict[str, Any]],
+    block_types: frozenset,
+) -> List[Dict[str, Any]]:
+    """Re-route an over-ceiling block to a higher-order type (IB7.6b).
+
+    Gated on ``ED4ALL_PLANNER_BLOOM_CEILING``; NO-OP / byte-stable when off.
+    For any block whose ``target_bloom`` exceeds its type's catalog
+    ``bloom_ceiling`` (the advisory ``bloom_fit`` becomes a gate): IB7.4's
+    slot-edit has already fired (heavier slot weights stamped); if the demand
+    STILL exceeds the type, RE-ROUTE the block to the first higher-order target
+    (``scenario`` / ``problem`` / ``assessment_item``) whose own ceiling admits
+    the demanded level — no "everything block". Re-route changes
+    ``block_type`` / ``page_type`` only; ``target_co_ids`` are PRESERVED
+    (anti-fabrication: never invents a CO id). Returns a NEW list.
+    """
+    if not _env_floor_on(_BLOOM_CEILING_ENV):
+        return selected
+
+    out = list(selected)
+    for blk in out:
+        if not _bloom_over_ceiling(blk, catalog_by_type):
+            continue
+        bloom = str(blk.get("target_bloom") or "")
+        demand = BLOOM_LEVELS.index(bloom) if bloom in BLOOM_LEVELS else 0
+        reroute_to = None
+        for cand in _BLOOM_REROUTE_TARGETS:
+            if cand not in block_types:
+                continue
+            cand_ceiling = _catalog_bloom_ceiling(cand, catalog_by_type)
+            # The target must admit the demanded level (ceiling None ⇒ uncapped,
+            # admits anything; else ceiling index >= demand).
+            if cand_ceiling is None or BLOOM_LEVELS.index(cand_ceiling) >= demand:
+                reroute_to = cand
+                break
+        if reroute_to is None:
+            continue
+        original_type = str(blk.get("block_type") or "")
+        blk["block_type"] = reroute_to
+        blk["page_type"] = _BLOCK_TYPE_DEFAULT_PAGE.get(reroute_to, "application")
+        focus = str(blk.get("content_focus") or "")
+        blk["content_focus"] = (
+            f"IB7.6 ceiling re-route: {original_type}@{bloom} exceeded its "
+            f"type ceiling — routed to {reroute_to}"
+            + (f" ({focus})" if focus else "")
+        )
+    return out
+
+
+def _apply_ib7_passes(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    catalog_by_type: Dict[str, Dict[str, Any]],
+    block_types: frozenset,
+    signals: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Run the four IB7 planner-pedagogy passes in dependency order.
+
+    climb → lifecycle (open/close + slot-edit escalation) → spacing → ceiling
+    re-route. Each pass is a strict identity no-op when its env flag is off, so
+    a default-off run returns ``selected`` byte-identical. Records per-pass
+    SIGNALS into ``signals`` (consumed by the ``block_plan`` decision capture):
+    ``bloom_climb_applied`` / ``lifecycle_opened`` / ``lifecycle_closed`` /
+    ``spacing_moves`` / ``bloom_ceiling_reroutes`` / ``slot_weight_edits``.
+    """
+    # Climb.
+    climb_on = _env_floor_on(_BLOOM_CLIMB_ENV)
+    selected = _apply_bloom_climb(selected=selected)
+    signals["bloom_climb_applied"] = climb_on
+
+    # Lifecycle open/close + slot-edit escalation.
+    lifecycle_on = _env_floor_on(_LIFECYCLE_ENV)
+    n_before = len(selected)
+    opener_types_before = any(
+        str(b.get("block_type") or "") in _ACTIVATION_OPENER_TYPES
+        for b in selected
+    )
+    closer_types_before = any(
+        str(b.get("block_type") or "") in _CONSOLIDATE_CLOSER_TYPES
+        for b in selected
+    )
+    selected = _ensure_lifecycle_endpoints(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        catalog_by_type=catalog_by_type,
+        block_types=block_types,
+    )
+    signals["lifecycle_opened"] = bool(
+        lifecycle_on and not opener_types_before
+        and any(
+            str(b.get("block_type") or "") in _ACTIVATION_OPENER_TYPES
+            for b in selected
+        )
+    )
+    signals["lifecycle_closed"] = bool(
+        lifecycle_on and not closer_types_before
+        and any(
+            str(b.get("block_type") or "") in _CONSOLIDATE_CLOSER_TYPES
+            for b in selected
+        )
+    )
+    signals["slot_weight_edits"] = sum(
+        1 for b in selected if isinstance(b.get("anatomy_slot_weights"), dict)
+    ) if lifecycle_on else 0
+
+    # Spacing.
+    spacing_on = _env_floor_on(_SPACING_ENV)
+    order_before = [id(b) for b in selected]
+    selected = _apply_spacing(selected=selected)
+    signals["spacing_moves"] = (
+        sum(1 for a, b in zip(order_before, [id(x) for x in selected]) if a != b)
+        if spacing_on else 0
+    )
+
+    # Ceiling re-route.
+    ceiling_on = _env_floor_on(_BLOOM_CEILING_ENV)
+    types_before = [b.get("block_type") for b in selected]
+    selected = _apply_bloom_ceilings(
+        selected=selected,
+        catalog_by_type=catalog_by_type,
+        block_types=block_types,
+    )
+    signals["bloom_ceiling_reroutes"] = (
+        sum(
+            1 for a, b in zip(types_before, [x.get("block_type") for x in selected])
+            if a != b
+        )
+        if ceiling_on else 0
+    )
+    return selected
+
+
 def _resolve_target_bloom(
     *,
     declared: Any,
@@ -1680,6 +2191,17 @@ def plan_week_blocks(
     source_chunks = list(source_chunks or [])
     budget = _clamp_budget(budget)
     to_id = str(terminal_objective.get("id") or "")
+    # IB7.1 signal: did ANY source chunk carry a non-empty structural heading?
+    source_headings_present = any(
+        isinstance(ch, dict) and str(ch.get("heading") or "").strip()
+        for ch in source_chunks
+    )
+    # IB7.2 signal: which planner seat is in use (nvidia | local | …)?
+    planner_seat = str(
+        getattr(provider, "_provider", "")
+        or getattr(provider, "provider", "")
+        or ""
+    )
     # The TO's source blob — fed to the deterministic palette-v2 injection on
     # both the LLM-success and every fallback path (gated on
     # ED4ALL_DYNAMIC_BLOCK_PLAN inside ``_inject_palette_v2`` / ``_fallback_plan``).
@@ -1821,6 +2343,18 @@ def plan_week_blocks(
             block_types=block_types,
         )
 
+    # IB7 planner-pedagogy passes (each gated by its own flag; default-off ⇒
+    # identity, so the planner output is byte-stable). Order: climb → lifecycle
+    # → spacing → ceiling re-route (the plan's internal dependency order).
+    ib7_signals: Dict[str, Any] = {}
+    selected = _apply_ib7_passes(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        catalog_by_type=catalog_by_type,
+        block_types=block_types,
+        signals=ib7_signals,
+    )
+
     page_plan = _to_page_plan(selected)
     _emit_block_plan_decision(
         capture=capture,
@@ -1831,6 +2365,9 @@ def plan_week_blocks(
         budget=budget,
         model=str(model),
         fallback_used=False,
+        ib7_signals=ib7_signals,
+        planner_seat=planner_seat,
+        source_headings_present=source_headings_present,
     )
     return WeekBlockPlan(
         page_plan=page_plan,
@@ -1891,6 +2428,26 @@ def _fallback_plan(
             block_types=_resolve_block_types(),
         )
         page_plan = _to_page_plan(selected)
+    # IB7 passes ALSO run on the fallback path (each gated by its own flag; a
+    # strict NO-OP when off so the fixed-plan fallback stays byte-identical).
+    # When any IB7 flag is on the injected/reordered entries re-derive page_plan.
+    ib7_signals: Dict[str, Any] = {}
+    if _any_ib7_flag_on():
+        try:
+            _catalog_by_type = {
+                str(e.get("block_type")): e
+                for e in load_block_catalog() if e.get("block_type")
+            }
+        except Exception:  # noqa: BLE001 — never break the fallback
+            _catalog_by_type = {}
+        selected = _apply_ib7_passes(
+            selected=selected,
+            chapter_objectives=chapter_objectives or [],
+            catalog_by_type=_catalog_by_type,
+            block_types=_resolve_block_types(),
+            signals=ib7_signals,
+        )
+        page_plan = _to_page_plan(selected)
     _emit_block_plan_decision(
         capture=capture,
         course_code=course_code,
@@ -1901,6 +2458,7 @@ def _fallback_plan(
         model=model,
         fallback_used=True,
         reason=reason,
+        ib7_signals=ib7_signals,
     )
     return WeekBlockPlan(
         page_plan=page_plan,
@@ -1922,10 +2480,22 @@ def _emit_block_plan_decision(
     model: str,
     fallback_used: bool,
     reason: str = "",
+    ib7_signals: Optional[Dict[str, Any]] = None,
+    planner_seat: str = "",
+    source_headings_present: Optional[bool] = None,
 ) -> None:
-    """Emit one ``block_plan`` decision event per TO (replayable rationale)."""
+    """Emit one ``block_plan`` decision event per TO (replayable rationale).
+
+    IB7.7: EXTENDS the single ``block_plan`` event (no second event) with the
+    IB7 planner-pedagogy signals (``bloom_climb_applied`` / ``lifecycle_opened``
+    / ``lifecycle_closed`` / ``spacing_moves`` / ``bloom_ceiling_reroutes`` /
+    ``slot_weight_edits`` / ``planner_seat`` / ``source_headings_present``); the
+    rationale interpolates them so a replay reconstructs the ordering/lifecycle
+    decisions without re-running the planner.
+    """
     if capture is None:
         return
+    ib7 = ib7_signals or {}
     chosen_types = [b["block_type"] for b in selected]
     type_counts: Dict[str, int] = {}
     for bt in chosen_types:
@@ -1941,22 +2511,33 @@ def _emit_block_plan_decision(
         f"Planned {len(selected)} block(s) for {to_id or 'TO'}: "
         + ", ".join(f"{t}×{n}" for t, n in sorted(type_counts.items()))
     )
+    # IB7 signal summary string interpolated into BOTH rationale branches.
+    ib7_summary = (
+        f"IB7 [seat={planner_seat or 'n/a'}, "
+        f"climb={bool(ib7.get('bloom_climb_applied'))}, "
+        f"lifecycle_open={bool(ib7.get('lifecycle_opened'))}, "
+        f"lifecycle_close={bool(ib7.get('lifecycle_closed'))}, "
+        f"spacing_moves={int(ib7.get('spacing_moves') or 0)}, "
+        f"ceiling_reroutes={int(ib7.get('bloom_ceiling_reroutes') or 0)}, "
+        f"slot_edits={int(ib7.get('slot_weight_edits') or 0)}, "
+        f"headings={source_headings_present}]"
+    )
     if fallback_used:
         rationale = (
             f"Fixed-plan FALLBACK fired for {to_id or 'TO'} ({reason}); used "
             f"the deterministic _PAGE_TYPE_BLOCK_PLAN template "
             f"({len(selected)} blocks across {len(_DEFAULT_PAGE_PLAN)} page "
             f"types). Budget was {budget[0]}-{budget[1]}; model='{model or 'n/a'}'. "
-            f"The build is never broken by a planner failure."
+            f"The build is never broken by a planner failure. {ib7_summary}"
         )
     else:
         rationale = (
-            f"70B content-aware planner selected {len(selected)} blocks for "
-            f"{to_id or 'TO'} within budget {budget[0]}-{budget[1]} "
-            f"(model='{model or 'n/a'}'); block-type mix "
+            f"{planner_seat or '70B'} content-aware planner selected "
+            f"{len(selected)} blocks for {to_id or 'TO'} within budget "
+            f"{budget[0]}-{budget[1]} (model='{model or 'n/a'}'); block-type mix "
             f"{dict(sorted(type_counts.items()))}; CO coverage {coverage}. "
             f"Each block was chosen for its content shape rather than a fixed "
-            f"per-week template, so the week is content-shaped."
+            f"per-week template, so the week is content-shaped. {ib7_summary}"
         )
     try:
         capture.log_decision(
@@ -1972,6 +2553,17 @@ def _emit_block_plan_decision(
                 "co_coverage": coverage,
                 "fallback_used": fallback_used,
                 "model": model,
+                # IB7.7 planner-pedagogy signals (single event extension).
+                "bloom_climb_applied": bool(ib7.get("bloom_climb_applied")),
+                "lifecycle_opened": bool(ib7.get("lifecycle_opened")),
+                "lifecycle_closed": bool(ib7.get("lifecycle_closed")),
+                "spacing_moves": int(ib7.get("spacing_moves") or 0),
+                "bloom_ceiling_reroutes": int(
+                    ib7.get("bloom_ceiling_reroutes") or 0
+                ),
+                "slot_weight_edits": int(ib7.get("slot_weight_edits") or 0),
+                "planner_seat": planner_seat,
+                "source_headings_present": source_headings_present,
             },
         )
     except Exception as exc:  # noqa: BLE001 — capture must never break a run

@@ -732,5 +732,321 @@ def test_ib5_injection_noop_when_flag_off(monkeypatch):
     assert not ({"hook", "multimedia", "worked_example", "diagram"} & deployed)
 
 
+# --------------------------------------------------------------------------- #
+# IB7 — planner pedagogy (Bloom-climb / lifecycle / spacing / ceiling / heading
+# / local seat / decision-capture). Each new pass is default-OFF → identity, so
+# the byte-stability assertions below guard the off path.
+# --------------------------------------------------------------------------- #
+
+from lib.generation.block_planner import (  # noqa: E402
+    _BLOOM_CEILING_ENV,
+    _BLOOM_CLIMB_ENV,
+    _LIFECYCLE_ENV,
+    _SPACING_ENV,
+    _apply_bloom_ceilings,
+    _apply_bloom_climb,
+    _apply_spacing,
+    _build_prompt,
+    _ensure_lifecycle_endpoints,
+    _resolve_planner_model,
+    _source_text_blob,
+    build_planner_provider,
+)
+from lib.generation.block_catalog import load_block_catalog  # noqa: E402
+from lib.ontology.bloom import BLOOM_LEVELS  # noqa: E402
+
+
+def _all_ib7_off(monkeypatch):
+    for env in (_BLOOM_CLIMB_ENV, _LIFECYCLE_ENV, _SPACING_ENV, _BLOOM_CEILING_ENV):
+        monkeypatch.delenv(env, raising=False)
+
+
+def _ib7_catalog_by_type():
+    return {
+        str(e.get("block_type")): e
+        for e in load_block_catalog() if e.get("block_type")
+    }
+
+
+def _block_types():
+    return __import__(
+        "Courseforge.scripts.blocks", fromlist=["BLOCK_TYPES"]
+    ).BLOCK_TYPES
+
+
+# ---- IB7.1 — source-chunk heading threaded into the digest ---------------- #
+def test_ib7_heading_in_prompt_and_blob():
+    chunks = [{"id": "c1", "text": "Compare proper and improper fractions.",
+               "heading": "Types of Fractions"}]
+    prompt = _build_prompt(
+        terminal_objective=_TO,
+        chapter_objectives=_COS,
+        source_chunks=chunks,
+        catalog=load_block_catalog(),
+        budget=(5, 24),
+    )
+    assert "[Types of Fractions] " in prompt
+    blob = _source_text_blob(chunks)
+    assert "Types of Fractions" in blob
+
+
+# ---- IB7.2 — license-clean local planner seat ----------------------------- #
+def test_ib7_local_seat_model_resolution(monkeypatch):
+    monkeypatch.delenv("ED4ALL_DYNAMIC_BLOCK_PLAN_MODEL", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_MODEL", "qwen2.5:14b-instruct-q4_K_M")
+    assert _resolve_planner_model("local") == "qwen2.5:14b-instruct-q4_K_M"
+    monkeypatch.setenv("ED4ALL_DYNAMIC_BLOCK_PLAN_MODEL", "qwen2.5:32b")
+    assert _resolve_planner_model("local") == "qwen2.5:32b"
+
+
+def test_ib7_local_seat_constructs_without_nvidia_key(monkeypatch):
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("ED4ALL_DYNAMIC_BLOCK_PLAN_MODEL", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_MODEL", "qwen2.5:14b-instruct-q4_K_M")
+    prov = build_planner_provider(provider="local")
+    assert prov is not None
+    assert getattr(prov, "_provider", "") == "local"
+
+
+# ---- IB7.3 — programmatic Bloom-climb re-sort ----------------------------- #
+def test_ib7_bloom_climb_resort(monkeypatch):
+    monkeypatch.setenv(_BLOOM_CLIMB_ENV, "1")
+    selected = [
+        {"block_type": "summary_takeaway", "page_type": "summary",
+         "target_co_ids": [], "target_bloom": "understand"},
+        {"block_type": "self_check_question", "page_type": "self_check",
+         "target_co_ids": ["CO-01"], "target_bloom": "apply"},
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-02"], "target_bloom": "analyze"},
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-03"], "target_bloom": "understand"},
+        {"block_type": "vocab_card", "page_type": "content",
+         "target_co_ids": ["CO-01"], "target_bloom": "remember"},
+        {"block_type": "hook", "page_type": "overview",
+         "target_co_ids": ["CO-01"], "target_bloom": "understand"},
+        {"block_type": "example", "page_type": "content",
+         "target_co_ids": ["CO-01"], "target_bloom": "apply"},
+        {"block_type": "scenario", "page_type": "application",
+         "target_co_ids": ["CO-02"], "target_bloom": "analyze"},
+    ]
+    out = _apply_bloom_climb(selected=selected)
+    types = [b["block_type"] for b in out]
+    assert types[0] == "hook"
+    assert types[-1] == "summary_takeaway"
+    assert types.index("vocab_card") < types.index("concept")
+    concept_blooms = [
+        b["target_bloom"] for b in out if b["block_type"] == "concept"
+    ]
+    idxs = [BLOOM_LEVELS.index(x) for x in concept_blooms]
+    assert idxs == sorted(idxs)
+    assert types.index("example") < types.index("scenario")
+    assert types.index("scenario") < types.index("self_check_question")
+
+
+def test_ib7_bloom_climb_identity_when_off(monkeypatch):
+    monkeypatch.delenv(_BLOOM_CLIMB_ENV, raising=False)
+    selected = [
+        {"block_type": "summary_takeaway", "page_type": "summary",
+         "target_co_ids": [], "target_bloom": "understand"},
+        {"block_type": "hook", "page_type": "overview",
+         "target_co_ids": [], "target_bloom": "understand"},
+    ]
+    out = _apply_bloom_climb(selected=selected)
+    assert [b["block_type"] for b in out] == ["summary_takeaway", "hook"]
+
+
+# ---- IB7.4 — lifecycle open/close + slot-edit escalation ------------------ #
+def test_ib7_lifecycle_opens_and_closes(monkeypatch):
+    monkeypatch.setenv(_LIFECYCLE_ENV, "1")
+    selected = [
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-01"], "target_bloom": "understand"},
+        {"block_type": "example", "page_type": "content",
+         "target_co_ids": ["CO-02"], "target_bloom": "apply"},
+    ]
+    out = _ensure_lifecycle_endpoints(
+        selected=selected, chapter_objectives=_COS,
+        catalog_by_type=_ib7_catalog_by_type(), block_types=_block_types(),
+    )
+    types = [b["block_type"] for b in out]
+    assert types[0] in {"hook", "objective", "prereq_set"}
+    assert types[-1] in {"summary_takeaway", "recap", "checklist",
+                         "reflection_prompt"}
+    assert out[0]["target_co_ids"] == ["CO-01"]
+
+
+def test_ib7_lifecycle_slot_edit_before_type_swap(monkeypatch):
+    monkeypatch.setenv(_LIFECYCLE_ENV, "1")
+    selected = [
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-01"], "target_bloom": "analyze"},
+        {"block_type": "objective", "page_type": "overview",
+         "target_co_ids": ["CO-01"], "target_bloom": "understand"},
+        {"block_type": "summary_takeaway", "page_type": "summary",
+         "target_co_ids": ["CO-01"], "target_bloom": "understand"},
+    ]
+    out = _ensure_lifecycle_endpoints(
+        selected=selected, chapter_objectives=_COS,
+        catalog_by_type=_ib7_catalog_by_type(), block_types=_block_types(),
+    )
+    over = next(b for b in out if b["block_type"] == "concept")
+    assert over["block_type"] == "concept"
+    assert isinstance(over.get("anatomy_slot_weights"), dict)
+    assert over["anatomy_slot_weights"].get("interaction") == "heavy"
+
+
+def test_ib7_lifecycle_identity_when_off(monkeypatch):
+    monkeypatch.delenv(_LIFECYCLE_ENV, raising=False)
+    selected = [{"block_type": "concept", "page_type": "content",
+                 "target_co_ids": ["CO-01"], "target_bloom": "understand"}]
+    out = _ensure_lifecycle_endpoints(
+        selected=selected, chapter_objectives=_COS,
+        catalog_by_type=_ib7_catalog_by_type(), block_types=_block_types(),
+    )
+    assert out == selected
+
+
+# ---- IB7.5a — within-module temporal spacing ------------------------------ #
+def test_ib7_spacing_moves_adjacent_check(monkeypatch):
+    monkeypatch.setenv(_SPACING_ENV, "1")
+    selected = [
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-01"], "target_bloom": "understand"},
+        {"block_type": "self_check_question", "page_type": "self_check",
+         "target_co_ids": ["CO-01"], "target_bloom": "apply"},
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-02"], "target_bloom": "understand"},
+    ]
+    out = _apply_spacing(selected=selected)
+    types = [b["block_type"] for b in out]
+    chk = types.index("self_check_question")
+    assert not (
+        out[chk - 1]["block_type"] == "concept"
+        and set(out[chk - 1].get("target_co_ids") or []) == {"CO-01"}
+    )
+
+
+def test_ib7_spacing_identity_when_off(monkeypatch):
+    monkeypatch.delenv(_SPACING_ENV, raising=False)
+    selected = [
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-01"], "target_bloom": "understand"},
+        {"block_type": "self_check_question", "page_type": "self_check",
+         "target_co_ids": ["CO-01"], "target_bloom": "apply"},
+    ]
+    out = _apply_spacing(selected=selected)
+    assert [b["block_type"] for b in out] == ["concept", "self_check_question"]
+
+
+# ---- IB7.6 — per-type Bloom-range ceiling re-route ------------------------ #
+def test_ib7_bloom_ceiling_reroute(monkeypatch):
+    monkeypatch.setenv(_BLOOM_CEILING_ENV, "1")
+    selected = [
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-01"], "target_bloom": "analyze"},
+    ]
+    out = _apply_bloom_ceilings(
+        selected=selected, catalog_by_type=_ib7_catalog_by_type(),
+        block_types=_block_types(),
+    )
+    assert out[0]["block_type"] in {"scenario", "problem", "assessment_item"}
+    assert out[0]["target_co_ids"] == ["CO-01"]
+
+
+def test_ib7_bloom_ceiling_in_range_kept(monkeypatch):
+    monkeypatch.setenv(_BLOOM_CEILING_ENV, "1")
+    selected = [
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-01"], "target_bloom": "understand"},
+    ]
+    out = _apply_bloom_ceilings(
+        selected=selected, catalog_by_type=_ib7_catalog_by_type(),
+        block_types=_block_types(),
+    )
+    assert out[0]["block_type"] == "concept"
+
+
+def test_ib7_bloom_ceiling_identity_when_off(monkeypatch):
+    monkeypatch.delenv(_BLOOM_CEILING_ENV, raising=False)
+    selected = [
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-01"], "target_bloom": "analyze"},
+    ]
+    out = _apply_bloom_ceilings(
+        selected=selected, catalog_by_type=_ib7_catalog_by_type(),
+        block_types=_block_types(),
+    )
+    assert out[0]["block_type"] == "concept"
+
+
+# ---- IB7.9 — DecisionCapture fires (success + fallback) ------------------- #
+def test_ib7_decision_capture_fires_success(monkeypatch):
+    monkeypatch.setenv(_BLOOM_CLIMB_ENV, "1")
+    monkeypatch.setenv(_LIFECYCLE_ENV, "1")
+    cap = _RecordingCapture()
+    payload = _plan_payload([
+        {"block_type": "concept", "target_co_ids": ["CO-01"],
+         "page_type": "content", "content_focus": "x"},
+        {"block_type": "example", "target_co_ids": ["CO-02"],
+         "page_type": "content", "content_focus": "y"},
+        {"block_type": "scenario", "target_co_ids": ["CO-03"],
+         "page_type": "application", "content_focus": "z"},
+    ])
+    plan = plan_week_blocks(
+        terminal_objective=_TO, chapter_objectives=_COS,
+        provider=_MockProvider(payload), capture=cap,
+    )
+    assert plan.fallback_used is False
+    events = [e for e in cap.events if e.get("decision_type") == "block_plan"]
+    assert len(events) == 1
+    ev = events[0]
+    assert len(ev["rationale"]) >= 20
+    assert "TO-01" in ev["rationale"]
+    assert "climb=" in ev["rationale"]
+    feats = ev["ml_features"]
+    assert feats["terminal_objective_id"] == "TO-01"
+    assert "n_blocks" in feats
+    for key in (
+        "bloom_climb_applied", "lifecycle_opened", "lifecycle_closed",
+        "spacing_moves", "bloom_ceiling_reroutes", "slot_weight_edits",
+        "planner_seat", "source_headings_present",
+    ):
+        assert key in feats
+    assert feats["bloom_climb_applied"] is True
+
+
+def test_ib7_decision_capture_fires_on_fallback():
+    cap = _RecordingCapture()
+    plan = plan_week_blocks(
+        terminal_objective=_TO, chapter_objectives=_COS,
+        provider=None, capture=cap,
+    )
+    assert plan.fallback_used is True
+    events = [e for e in cap.events if e.get("decision_type") == "block_plan"]
+    assert len(events) == 1
+    assert len(events[0]["rationale"]) >= 20
+    assert "IB7" in events[0]["rationale"]
+
+
+def test_ib7_all_passes_identity_when_all_flags_off(monkeypatch):
+    _all_ib7_off(monkeypatch)
+    payload = _plan_payload([
+        {"block_type": "summary_takeaway", "target_co_ids": ["CO-01"],
+         "page_type": "summary", "content_focus": "a"},
+        {"block_type": "concept", "target_co_ids": ["CO-02"],
+         "page_type": "content", "content_focus": "b"},
+        {"block_type": "self_check_question", "target_co_ids": ["CO-03"],
+         "page_type": "self_check", "content_focus": "c"},
+    ])
+    plan = plan_week_blocks(
+        terminal_objective=_TO, chapter_objectives=_COS,
+        provider=_MockProvider(payload),
+    )
+    types = [b["block_type"] for b in plan.selected]
+    assert all(b.get("anatomy_slot_weights") is None for b in plan.selected)
+    assert types
+    assert set(plan.page_plan) == set(CANONICAL_PAGE_TYPES)
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

@@ -6752,10 +6752,18 @@ def _build_block_planner_provider(capture=None):
     try:
         from lib.generation.block_planner import build_planner_provider
 
-        return build_planner_provider(provider="nvidia", capture=capture)
+        # IB7.2 — the planner SEAT is operator-selectable so the
+        # framework-aligned path is reachable without the NVIDIA 70B key. The
+        # default stays "nvidia" (byte-stable); ED4ALL_DYNAMIC_BLOCK_PLAN_PROVIDER
+        # can pick the license-clean local Qwen seat (LOCAL_SYNTHESIS_*).
+        seat = (
+            os.environ.get("ED4ALL_DYNAMIC_BLOCK_PLAN_PROVIDER", "nvidia").strip()
+            or "nvidia"
+        )
+        return build_planner_provider(provider=seat, capture=capture)
     except Exception as exc:  # noqa: BLE001 — fail-safe to fixed plan
         logger.warning(
-            "dynamic block planner: NVIDIA provider construction failed "
+            "dynamic block planner: provider construction failed "
             "(%s); the week planner will fall back to the fixed plan.",
             exc,
         )
@@ -9815,8 +9823,22 @@ async def _run_content_generation_outline(**kwargs) -> str:
     block_planner_provider = None
     n_weeks_planner_used = 0
     n_weeks_planner_fallback = 0
+    # IB7.1 — thread the source-chunk HEADING into the planner digest. The
+    # text-only ``chunk_text_map`` starves the planner prompt's ``[{heading}] ``
+    # prefix + the content-shape detectors of the structural heading signal.
+    # Load the richer per-chunk detail map (``{text, item_path, heading,
+    # concept_tags}``) ONLY when the planner runs, so a non-dynamic run is
+    # byte-identical (the detail map is otherwise loaded only under the
+    # key-terms flag). Reuse ``_chunk_detail_map`` if the key-terms flag already
+    # populated it.
+    _planner_detail_map: Dict[str, Dict[str, Any]] = {}
     if dynamic_block_plan:
         block_planner_provider = _build_block_planner_provider(capture=capture)
+        _planner_detail_map = (
+            _chunk_detail_map
+            if _chunk_detail_map
+            else _load_dart_chunkset_detail_map(chunkset_path)
+        )
 
     for week_num in range(1, duration_weeks + 1):
         week_topics = (
@@ -9890,8 +9912,16 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 for _cid in _week_cids:
                     _body = chunk_text_map.get(_cid)
                     if _body:
+                        # IB7.1 — populate the heading from the provenance detail
+                        # map (fall back to "" when absent), so the planner
+                        # prompt + content-shape detectors see the structural
+                        # heading signal.
+                        _heading = str(
+                            (_planner_detail_map.get(_cid) or {}).get("heading")
+                            or ""
+                        )
                         _week_chunks.append({"id": _cid, "text": _body,
-                                             "heading": ""})
+                                             "heading": _heading})
             week_block_plan = plan_week_blocks(
                 terminal_objective=_week_to,
                 chapter_objectives=_week_cos,

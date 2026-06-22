@@ -269,6 +269,42 @@ workflows:
               on_error: warn
             description: IB6.7 — 15-point per-block QA checklist (composes IB1-IB6.6 + QA-9/13/15 net-new). Warning day-1; TODO(calibration).
 
+          # IB7.5b — spacing-aware retrieval-presence floor: every
+          # content-bearing module must carry >=1 low-stakes retrieval block
+          # (self_check_question / reflection_prompt) SPACED from (not the
+          # first block on) the content page. Pure block-type / page-grouping,
+          # NO embeddings. action=regenerate on miss.
+          # TODO(calibration) — flip MODULE_NO_RETRIEVAL / RETRIEVAL_UNSPACED to
+          # critical after a >=2-corpus FP measurement (WS3/W4 deferred-flip
+          # pattern; IB3 is the single documented fastest-flip exception, this
+          # is NOT IB3).
+          - gate_id: retrieval_presence
+            validator: lib.validators.retrieval_presence.RetrievalPresenceValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB7.5b — >=1 spaced low-stakes retrieval block per content-bearing module. Warning day-1; deferred critical-flip.
+
+          # IB7.6c — per-type Bloom-range ceiling enforcement (advisory->gate
+          # promotion of block_catalog.yaml's bloom_ceiling). Flags a block
+          # whose declared/observed target Bloom exceeds its type's stretch
+          # ceiling. action=regenerate on miss.
+          # TODO(calibration) — flip BLOCK_BLOOM_OVER_CEILING to critical after
+          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is
+          # the single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: bloom_type_range
+            validator: lib.validators.bloom_type_range.BloomTypeRangeValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB7.6c — per-type Bloom-range ceiling (block Bloom <= type bloom_ceiling). Warning day-1; deferred critical-flip.
+
       - name: content_generation_rewrite
         agents: [content-generator]
         # NOTE: parallel/batch_by intentionally disabled. The handler
@@ -593,6 +629,42 @@ workflows:
               on_fail: warn
               on_error: warn
             description: IB6.7 — 15-point per-block QA checklist (composes IB1-IB6.6 + QA-9/13/15 net-new). Warning day-1; TODO(calibration).
+
+          # IB7.5b — spacing-aware retrieval-presence floor: every
+          # content-bearing module must carry >=1 low-stakes retrieval block
+          # (self_check_question / reflection_prompt) SPACED from (not the
+          # first block on) the content page. Pure block-type / page-grouping,
+          # NO embeddings. action=regenerate on miss.
+          # TODO(calibration) — flip MODULE_NO_RETRIEVAL / RETRIEVAL_UNSPACED to
+          # critical after a >=2-corpus FP measurement (WS3/W4 deferred-flip
+          # pattern; IB3 is the single documented fastest-flip exception, this
+          # is NOT IB3).
+          - gate_id: retrieval_presence
+            validator: lib.validators.retrieval_presence.RetrievalPresenceValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB7.5b — >=1 spaced low-stakes retrieval block per content-bearing module. Warning day-1; deferred critical-flip.
+
+          # IB7.6c — per-type Bloom-range ceiling enforcement (advisory->gate
+          # promotion of block_catalog.yaml's bloom_ceiling). Flags a block
+          # whose declared/observed target Bloom exceeds its type's stretch
+          # ceiling. action=regenerate on miss.
+          # TODO(calibration) — flip BLOCK_BLOOM_OVER_CEILING to critical after
+          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is
+          # the single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: bloom_type_range
+            validator: lib.validators.bloom_type_range.BloomTypeRangeValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB7.6c — per-type Bloom-range ceiling (block Bloom <= type bloom_ceiling). Warning day-1; deferred critical-flip.
 
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Mirror of
@@ -2183,6 +2255,42 @@ workflows:
               on_error: warn
             description: IB6.7 — 15-point per-block QA checklist (composes IB1-IB6.6 + QA-9/13/15 net-new). Warning day-1; TODO(calibration).
 
+          # IB7.5b — spacing-aware retrieval-presence floor: every
+          # content-bearing module must carry >=1 low-stakes retrieval block
+          # (self_check_question / reflection_prompt) SPACED from (not the
+          # first block on) the content page. Pure block-type / page-grouping,
+          # NO embeddings. action=regenerate on miss.
+          # TODO(calibration) — flip MODULE_NO_RETRIEVAL / RETRIEVAL_UNSPACED to
+          # critical after a >=2-corpus FP measurement (WS3/W4 deferred-flip
+          # pattern; IB3 is the single documented fastest-flip exception, this
+          # is NOT IB3).
+          - gate_id: retrieval_presence
+            validator: lib.validators.retrieval_presence.RetrievalPresenceValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB7.5b — >=1 spaced low-stakes retrieval block per content-bearing module. Warning day-1; deferred critical-flip.
+
+          # IB7.6c — per-type Bloom-range ceiling enforcement (advisory->gate
+          # promotion of block_catalog.yaml's bloom_ceiling). Flags a block
+          # whose declared/observed target Bloom exceeds its type's stretch
+          # ceiling. action=regenerate on miss.
+          # TODO(calibration) — flip BLOCK_BLOOM_OVER_CEILING to critical after
+          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is
+          # the single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: bloom_type_range
+            validator: lib.validators.bloom_type_range.BloomTypeRangeValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB7.6c — per-type Bloom-range ceiling (block Bloom <= type bloom_ceiling). Warning day-1; deferred critical-flip.
+
       - name: content_generation_rewrite
         agents: [content-generator]
         # NOTE: parallel/batch_by intentionally disabled. The handler
@@ -2883,6 +2991,42 @@ workflows:
               on_fail: warn
               on_error: warn
             description: IB6.7 — 15-point per-block QA checklist (composes IB1-IB6.6 + QA-9/13/15 net-new). Warning day-1; TODO(calibration).
+
+          # IB7.5b — spacing-aware retrieval-presence floor: every
+          # content-bearing module must carry >=1 low-stakes retrieval block
+          # (self_check_question / reflection_prompt) SPACED from (not the
+          # first block on) the content page. Pure block-type / page-grouping,
+          # NO embeddings. action=regenerate on miss.
+          # TODO(calibration) — flip MODULE_NO_RETRIEVAL / RETRIEVAL_UNSPACED to
+          # critical after a >=2-corpus FP measurement (WS3/W4 deferred-flip
+          # pattern; IB3 is the single documented fastest-flip exception, this
+          # is NOT IB3).
+          - gate_id: retrieval_presence
+            validator: lib.validators.retrieval_presence.RetrievalPresenceValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB7.5b — >=1 spaced low-stakes retrieval block per content-bearing module. Warning day-1; deferred critical-flip.
+
+          # IB7.6c — per-type Bloom-range ceiling enforcement (advisory->gate
+          # promotion of block_catalog.yaml's bloom_ceiling). Flags a block
+          # whose declared/observed target Bloom exceeds its type's stretch
+          # ceiling. action=regenerate on miss.
+          # TODO(calibration) — flip BLOCK_BLOOM_OVER_CEILING to critical after
+          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is
+          # the single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: bloom_type_range
+            validator: lib.validators.bloom_type_range.BloomTypeRangeValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB7.6c — per-type Bloom-range ceiling (block Bloom <= type bloom_ceiling). Warning day-1; deferred critical-flip.
 
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Reuses

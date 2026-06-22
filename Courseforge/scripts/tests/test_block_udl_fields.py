@@ -52,6 +52,23 @@ def test_content_hash_byte_identical_with_udl_fields() -> None:
     assert base.compute_content_hash() == enriched.compute_content_hash()
 
 
+def test_content_hash_byte_identical_with_anatomy_slot_weights() -> None:
+    """IB7.4 — the slot-edit escalation annotation is hash-excluded.
+
+    Two blocks differing ONLY in ``anatomy_slot_weights`` must hash identically
+    (a slot-weight retro-fit must not drift any existing block hash)."""
+    base = _block("<p>same content</p>")
+    enriched = _block(
+        "<p>same content</p>",
+        anatomy_slot_weights={"interaction": "heavy", "feedback": "heavy"},
+    )
+    assert enriched.anatomy_slot_weights == {
+        "interaction": "heavy", "feedback": "heavy",
+    }
+    assert base.anatomy_slot_weights is None
+    assert base.compute_content_hash() == enriched.compute_content_hash()
+
+
 def test_derive_counts_distinct_representations() -> None:
     b = _block("<p>prose</p><table></table><img alt='y'>")
     n, rf, ea = _derive_udl_coverage(b)

@@ -897,6 +897,16 @@ class Block:
     fade_state: Optional[str] = None     # B05 worked_example fade stage: worked | completion | independent
     long_description: Optional[str] = None  # B06 diagram structured long-description text
     media_a11y: Tuple[str, ...] = ()     # B04 present time-based-media track tokens (captions, audio_description, transcript, controls)
+    # IB7.4 — slot-edit escalation annotation (framework p.139 Step 4: differentiate
+    # by DEMAND — change slot weights / verb — NOT by ornament / type-swap). When the
+    # planner's lifecycle pass faces an over-escalated block it FIRST stamps a heavier
+    # interaction/feedback slot weight here (e.g. {"interaction": "heavy"}) before any
+    # IB7.6 type re-route. Additive Optional/None default and INTENTIONALLY excluded
+    # from compute_content_hash() (mirrors target_bloom / quality_rubric / the IB5
+    # fields) so a slot-weight retro-fit never drifts an existing block hash; the
+    # default-None state keeps legacy / flag-off blocks byte-identical. Read by the
+    # planner reasoning only; not projected to HTML/JSON-LD.
+    anatomy_slot_weights: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:

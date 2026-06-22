@@ -208,6 +208,26 @@ def test_catalog_use_when_and_bloom_fit_valid():
             )
 
 
+def test_catalog_bloom_ceiling_when_present_is_valid():
+    """IB7.6 — an OPTIONAL ``bloom_ceiling`` must be a valid Bloom level >= the
+    entry's bloom_fit floor. Absence is allowed (advisory back-compat)."""
+    for entry in load_block_catalog():
+        bt = entry["block_type"]
+        ceiling = entry.get("bloom_ceiling")
+        if ceiling is None:
+            continue
+        from lib.ontology.bloom import BLOOM_LEVELS as _ORDERED_BLOOM
+        assert ceiling in _BLOOM_LEVELS, (
+            f"{bt!r} bloom_ceiling {ceiling!r} not a valid Bloom level"
+        )
+        bloom_fit = [b for b in entry["bloom_fit"] if b in _BLOOM_LEVELS]
+        floor = min(bloom_fit, key=_ORDERED_BLOOM.index)
+        assert _ORDERED_BLOOM.index(ceiling) >= _ORDERED_BLOOM.index(floor), (
+            f"{bt!r} bloom_ceiling {ceiling!r} is below its bloom_fit floor "
+            f"{floor!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # IB2.1 — every entry declares its canonical framework B-code parent
 # ---------------------------------------------------------------------------
