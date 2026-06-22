@@ -271,10 +271,16 @@ SemantiK/semantic.egg-info/
 SemantiK/**/__pycache__/
 SemantiK/.pytest_cache/
 SemantiK/.ruff_cache/
-# All corpus/cache/dataset content under data/ stays local-only. Specific
-# tracked manifests (eval_corpus, figure_labels, seeds) can be re-added with a
-# !-allow below if/when curated for tracking; nothing under data/ is tracked today.
-SemantiK/data/
+# All corpus/cache/dataset content under data/ stays local-only, EXCEPT the
+# dataset-builder CODE (build_*.py + helpers), which the runtime council heads
+# pin their label vocabularies to (training-pipeline code, not data). Use data/*
+# (not data/) so git descends to honor the !-allow re-includes below.
+SemantiK/data/*
+!SemantiK/data/build_*.py
+!SemantiK/data/_splits.py
+!SemantiK/data/balance.py
+!SemantiK/data/jats_tables.py
+!SemantiK/data/gpotable_tables.py
 # extension belt-and-suspenders (model artifact zoo)
 SemantiK/**/*.gguf
 SemantiK/**/*.pt
@@ -303,3 +309,20 @@ SemantiK/scripts/crawl_*.py
 SemantiK/scripts/pair_from_*.py
 SemantiK/scripts/gen_synthetic_forms.py
 SemantiK/scripts/mine_figure_labels.py
+
+# SemantiK internal dev-planning docs (stale machine paths, not product)
+SemantiK/Plans/
+
+# SemantiK running-tally manifest (working doc, not product)
+SemantiK/MANIFEST.md
+
+# SemantiK training-corpus parsers / fetch helpers (data-download — NOT cascade runtime)
+SemantiK/dart_semantic/parse_pdf_form.py
+SemantiK/dart_semantic/parse_ar5iv.py
+SemantiK/dart_semantic/parse_cfr.py
+SemantiK/dart_semantic/parse_federal_register.py
+SemantiK/dart_semantic/parse_gutenberg.py
+SemantiK/dart_semantic/parse_wikipedia.py
+SemantiK/dart_semantic/arxiv_license.py
+SemantiK/dart_semantic/arxiv_sections.py
+SemantiK/scripts/_figure_fetch_lib.py
