@@ -1696,6 +1696,20 @@ class WorkflowRunner:
             phase_outputs=phase_outputs,
         )
 
+        # IB6.6: post-loop block-quality rollup aggregator. Reads the
+        # ``block_quality_rubric`` GateResult metadata stashed in the
+        # post_rewrite_validation / inter_tier_validation ``_gate_results``
+        # chain, rolls the per-block 8-dim 0-3 scores up to module + course
+        # tiers (BOTH mean and per-dim minimum-floor paths + the 3 hard gates),
+        # and writes ``<libv2_course>/block_quality_rollup_report.json``. Only
+        # runs when ED4ALL_BLOCK_QUALITY_RUBRIC is on; best-effort — aggregator
+        # failure does NOT alter ``final_status``.
+        block_quality_rollup_path = self._maybe_write_block_quality_rollup(
+            workflow_id=workflow_id,
+            workflow_params=workflow_params,
+            phase_outputs=phase_outputs,
+        )
+
         # NVIDIA-KG item 3 (GPT-fb-12-may item 2 mirror): post-loop
         # edge-consensus aggregator. The ``concept_extraction`` phase
         # stamps ``edge_status`` + ``consensus_signals[]`` at authoring
@@ -1753,6 +1767,11 @@ class WorkflowRunner:
             ),
             "coverage_map_path": (
                 str(coverage_map_path) if coverage_map_path else None
+            ),
+            "block_quality_rollup_report_path": (
+                str(block_quality_rollup_path)
+                if block_quality_rollup_path
+                else None
             ),
             "edge_consensus_report_paths": (
                 [str(p) for p in edge_consensus_report_paths]
@@ -2263,6 +2282,81 @@ class WorkflowRunner:
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning(
                 "trainforge_assessment_quality_report aggregator failed "
+                "(non-fatal, run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return None
+
+    def _maybe_write_block_quality_rollup(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Path]:
+        """IB6.6 helper — write block_quality_rollup_report.json if possible.
+
+        Only runs when ``ED4ALL_BLOCK_QUALITY_RUBRIC`` is on (the IB6 keystone
+        flag); default-off runs skip entirely (byte-stable). Resolves per-block
+        8-dim scores from the ``block_quality_rubric`` GateResult metadata
+        stashed in the validation-phase ``_gate_results`` chain. Output root:
+        the LibV2 course dir, else the Courseforge project path. Best-effort —
+        any failure logs a warning and never alters ``final_status``.
+        """
+        try:
+            from lib.validators._block_rubric_helpers import (
+                block_quality_rubric_enabled,
+            )
+
+            if not block_quality_rubric_enabled():
+                return None
+
+            from lib.aggregators.block_quality_rollup import (
+                BlockQualityRollupAggregator,
+            )
+
+            output_root: Optional[Path] = None
+            archival = phase_outputs.get("libv2_archival") or {}
+            course_dir = archival.get("course_dir")
+            if course_dir:
+                output_root = Path(course_dir)
+            if output_root is None:
+                project_path = self._resolve_courseforge_project_path(
+                    phase_outputs
+                )
+                if project_path is not None:
+                    output_root = Path(project_path)
+            if output_root is None:
+                logger.debug(
+                    "block_quality_rollup: no libv2 course / project path "
+                    "resolvable; skipping aggregator (run_id=%s)",
+                    workflow_id,
+                )
+                return None
+
+            course_code = (workflow_params or {}).get("course_name") or ""
+            aggregator = BlockQualityRollupAggregator(
+                phase_outputs=phase_outputs,
+                course_code=course_code,
+                run_id=workflow_id,
+            )
+            if not aggregator.blocks:
+                logger.debug(
+                    "block_quality_rollup: no block_quality_rubric gate "
+                    "result found; skipping aggregator (run_id=%s)",
+                    workflow_id,
+                )
+                return None
+            output_path = output_root / "block_quality_rollup_report.json"
+            aggregator.write(output_path)
+            logger.info(
+                "block_quality_rollup: wrote %s (run_id=%s, course_code=%s)",
+                output_path, workflow_id, course_code,
+            )
+            return output_path
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "block_quality_rollup aggregator failed "
                 "(non-fatal, run_id=%s): %s",
                 workflow_id, exc,
             )

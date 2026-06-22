@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/aggregators/v1/block_quality_rollup.schema.json",
+  "title": "Ed4All block_quality_rollup_report.json",
+  "description": "IB6.6 — block->module->course eight-dimension quality rollup. Built by lib/aggregators/block_quality_rollup.py::BlockQualityRollupAggregator post-workflow and emitted at <libv2_course>/block_quality_rollup_report.json (or <project_path>/... when archival hasn't run). Rolls per-block anchored 0-3 scores up using BOTH a mean averaging path AND a per-dimension minimum-floor path, plus the three hard gates (Accessibility=0 fails outright; assessment Bloom<objective caps Alignment at 1; interaction-without-feedback caps Feedback+Coherence at 1). Only emitted when ED4ALL_BLOCK_QUALITY_RUBRIC is on.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "course_code",
+    "run_id",
+    "generated_at",
+    "summary",
+    "per_module",
+    "per_block"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version. 1.0 == IB6.6 land."
+    },
+    "course_code": {
+      "type": "string",
+      "description": "Operator-facing course code so cross-run diffs key cleanly."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Workflow ID."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp of the build call."
+    },
+    "summary": { "$ref": "#/$defs/CourseSummary" },
+    "per_module": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ModuleRow" },
+      "description": "Per-module (week / page group) rollup rows."
+    },
+    "per_block": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/BlockRow" },
+      "description": "Per-block score rows, sorted by (module, block_id)."
+    }
+  },
+  "$defs": {
+    "Dimension": {
+      "type": "string",
+      "enum": [
+        "alignment",
+        "cognitive_load",
+        "multimedia",
+        "retrieval",
+        "feedback",
+        "engagement",
+        "accessibility",
+        "coherence"
+      ]
+    },
+    "DimScore": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 3,
+      "description": "Anchored 0-3 score, or null when the dimension does not apply / was not scored."
+    },
+    "DimMinimums": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/DimScore" },
+      "description": "Per-dimension minimum across the tier's blocks (the no-weak-block-hides path). null = no block carried the dimension."
+    },
+    "CourseSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_blocks",
+        "blocks_pass",
+        "total_modules",
+        "modules_pass",
+        "accessibility_gate_failures",
+        "alignment_orphan_blocks",
+        "course_dim_minimums",
+        "course_pass",
+        "quality_decision"
+      ],
+      "properties": {
+        "total_blocks": { "type": "integer", "minimum": 0 },
+        "blocks_pass": { "type": "integer", "minimum": 0 },
+        "total_modules": { "type": "integer", "minimum": 0 },
+        "modules_pass": { "type": "integer", "minimum": 0 },
+        "accessibility_gate_failures": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of blocks scoring Accessibility==0 (hard gate 1)."
+        },
+        "alignment_orphan_blocks": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of blocks scoring Alignment==0 (alignment-coverage gap)."
+        },
+        "course_dim_minimums": { "$ref": "#/$defs/DimMinimums" },
+        "course_pass": {
+          "type": "boolean",
+          "description": "zero a11y-gate failures AND 100% alignment coverage."
+        },
+        "quality_decision": {
+          "type": "string",
+          "enum": [
+            "failed",
+            "non_certified_archive",
+            "certified_accessible",
+            "certified_instructional",
+            "certified_trainable"
+          ],
+          "description": "Quality decision enum aligned to the course_status 5-value enum where it overlaps."
+        }
+      }
+    },
+    "ModuleRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module",
+        "block_count",
+        "module_mean",
+        "module_dim_minimums",
+        "required_dim_minimum_ok",
+        "accessibility_gate_failures",
+        "module_pass",
+        "blocks_pass"
+      ],
+      "properties": {
+        "module": { "type": "string" },
+        "block_count": { "type": "integer", "minimum": 0 },
+        "module_mean": { "type": "number" },
+        "module_dim_minimums": { "$ref": "#/$defs/DimMinimums" },
+        "required_dim_minimum_ok": { "type": "boolean" },
+        "accessibility_gate_failures": { "type": "integer", "minimum": 0 },
+        "module_pass": {
+          "type": "boolean",
+          "description": "module_mean >= 2.0 AND every required (core) dim minimum >= 2.0."
+        },
+        "blocks_pass": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "BlockRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "block_id",
+        "module",
+        "scores",
+        "applicable_dims",
+        "mean",
+        "core_ok",
+        "accessibility_gate_fail",
+        "block_pass"
+      ],
+      "properties": {
+        "block_id": { "type": "string" },
+        "module": { "type": "string" },
+        "framework_block": { "type": ["string", "null"] },
+        "scores": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/DimScore" }
+        },
+        "applicable_dims": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Dimension" }
+        },
+        "mean": { "type": "number" },
+        "core_ok": { "type": "boolean" },
+        "accessibility_gate_fail": { "type": "boolean" },
+        "alignment": { "$ref": "#/$defs/DimScore" },
+        "block_pass": { "type": "boolean" },
+        "weakest_dim": {
+          "oneOf": [
+            { "$ref": "#/$defs/Dimension" },
+            { "type": "null" }
+          ]
+        }
+      }
+    }
+  }
+}

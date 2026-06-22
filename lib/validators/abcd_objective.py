@@ -84,7 +84,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+from lib.ontology.bloom import COGNITIVE_DOMAINS
 from lib.ontology.learning_objectives import BLOOMS_VERBS
+from lib.validators._block_rubric_helpers import block_quality_rubric_enabled as _block_quality_rubric_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +119,26 @@ def _bloom_level(lo: Mapping[str, Any]) -> Optional[str]:
         return None
     s = raw.strip().lower()
     return s if s else None
+
+
+def _knowledge_type_of(lo: Mapping[str, Any]) -> Optional[str]:
+    """Return the LO's canonical knowledge-type axis (IB6.5), or ``None``.
+
+    The framework's 2nd axis ∈ {factual, conceptual, procedural,
+    metacognitive}. Tolerates ``cognitive_domain`` (snake_case) and
+    ``cognitiveDomain`` (camelCase JSON-LD). Returns ``None`` when neither key
+    is present or the value is not one of the canonical four — so a B01
+    objective that lacks an authored knowledge-type is flagged rather than
+    silently passed (the both-axes assertion). NO bloom-derived fallback here:
+    the framework wants the objective to DECLARE both axes explicitly.
+    """
+    raw = lo.get("cognitive_domain")
+    if not isinstance(raw, str) or not raw.strip():
+        raw = lo.get("cognitiveDomain")
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip().lower()
+    return s if s in COGNITIVE_DOMAINS else None
 
 
 def _lo_id(lo: Mapping[str, Any]) -> str:
@@ -510,6 +532,38 @@ class AbcdObjectiveValidator:
                     ),
                 )
                 continue
+
+            # 4b. IB6.5 — B01 both-axes (cognitive-process × knowledge-type)
+            # assertion. The framework requires a B01 objective to declare
+            # BOTH the cognitive-process verb-level AND a knowledge-type ∈
+            # {factual, conceptual, procedural, metacognitive} — a (verb ·
+            # level · knowledge-type) TRIPLE, not a level alone. Gated behind
+            # the IB6 keystone flag (default off → legacy LOs missing
+            # cognitive_domain are unaffected, mirroring the ABCD_MISSING
+            # warning-skip posture). Warning-day-1.
+            if _block_quality_rubric_enabled():
+                ktype = _knowledge_type_of(lo)
+                if ktype is None:
+                    if len(issues) < _ISSUE_LIST_CAP:
+                        issues.append(
+                            GateIssue(
+                                severity="warning",
+                                code="OBJECTIVE_KNOWLEDGE_TYPE_MISSING",
+                                message=(
+                                    f"LO {lo_id!r} declares a Bloom level "
+                                    f"({level!r}) but no knowledge-type axis "
+                                    f"(cognitive_domain ∈ {{factual, "
+                                    f"conceptual, procedural, metacognitive}}). "
+                                    f"The framework requires a (verb · level · "
+                                    f"knowledge-type) TRIPLE for B01 objectives."
+                                ),
+                                location=lo_id,
+                                suggestion=(
+                                    "Emit ``cognitive_domain`` on the objective "
+                                    "(both axes of the Unified Model)."
+                                ),
+                            )
+                        )
 
             # 5. Pass path — emit the positive-path decision event.
             passed_count += 1

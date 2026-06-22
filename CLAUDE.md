@@ -572,6 +572,7 @@ Top-level workflow aggregators run post-loop in `WorkflowRunner.run_workflow` an
 | `CoverageMapAggregator` | `<libv2_course>/coverage_map.json` | `schemas/aggregators/coverage_map.schema.json` |
 | `EdgeConsensusAggregator` (GPT-fb-12-may item 2) | `<libv2_course>/graph/edge_consensus_report.json` (sibling of `concept_graph_semantic.json`); also stamps per-edge `edge_status` + `consensus_signals[]` on the semantic graph via `apply_to_graph`. Attenuates `kg_quality.consistency` by `(1 - contradiction_rate)` inside `KGQualityValidator.validate`. | (helper, no separate file; surfaces in `schemas/knowledge/concept_graph_semantic.schema.json`) |
 | `PromotionChainAggregator` (W3.G master) | `<libv2_course>/courseforge_promotion_chain_report.json` | `schemas/governance/promotion_chain.schema.json` |
+| `BlockQualityRollupAggregator` (IB6.6) | `<libv2_course>/block_quality_rollup_report.json` (falls back to `<project_path>/...`) — block→module→course 8-dim quality rollup (BOTH mean ≥2.0 AND per-dimension minimum-floor paths + the 3 hard gates: Accessibility=0 block-fail, assessment-Bloom<objective Alignment-cap-1, interaction-without-feedback Feedback+Coherence-cap-1). Only runs when `ED4ALL_BLOCK_QUALITY_RUBRIC` is on. Emits `block_quality_rollup_aggregated`. | `schemas/aggregators/block_quality_rollup.schema.json` |
 | `lib/governance/course_status.py::derive_course_status` | composes `course_status` enum on chain report | (helper, no separate file) |
 
 `PromotionChainAggregator` supersedes the per-aggregator `final_promotion_decision` heuristics. `derive_course_status` returns the canonical 5-value enum (`failed | non_certified_archive | certified_accessible | certified_instructional | certified_trainable`); a missing per-stage report shorts to `course_status: failed` (anti-silent-degradation contract).
@@ -609,13 +610,31 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 17 | 15 | 32 |
+| `course_generation` | 17 | 25 | 42 |
 | `intake_remediation` | 2 | 0 | 2 |
 | `batch_dart` | 2 | 0 | 2 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 39 | 59 | 98 |
+| `textbook_to_course` | 39 | 69 | 108 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **66** | **77** | **143** |
+| **Total** | **66** | **97** | **163** |
+
+> IB6 landing (eight-dimension quality-rubric scoring capstone): five new
+> block-quality gates added in **warning** at BOTH `inter_tier_validation` and
+> `post_rewrite_validation` in `course_generation` + `textbook_to_course`
+> (+10 warning each) — `block_cognitive_load` (IB6.4 per-block <=~200-char body
+> ceiling), `anatomy_slot_presence` (IB6.2 six-slot presence), `interaction_
+> feedback` (IB6.3 universal feedback presence/elaboration), `block_quality_
+> rubric` (IB6.1 the 8-dim 0-3 scorer), `qa_checklist` (IB6.7 15-point QA).
+> Each gate's validator no-ops (`passed=True` + info issue) when the keystone
+> flag `ED4ALL_BLOCK_QUALITY_RUBRIC` is unset, so default-off runs are
+> byte-stable even with the gates wired. The IB6.5 B01 both-axes
+> (cognitive-process × knowledge-type) check rides on the existing
+> `abcd_verb_alignment` gate at `course_planning` (no new gate). The hard-gate
+> critical flip (mean>=2.0 floors + Accessibility=0 block-fail) is DEFERRED
+> behind `# TODO(calibration)` markers until the anchored 0-3 scale is
+> calibrated on >=2 corpora. Counts re-derived from `config/workflows.yaml`:
+> `course_generation` 15→25 warning, `textbook_to_course` 59→69 warning,
+> Total 77→97 warning / 143→163 total.
 
 > W4 SHADOW landing (NLI grounding gates): `rewrite_source_grounding` DEMOTED
 > critical → warning in `course_generation` + `textbook_to_course`
@@ -800,6 +819,8 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `DECISION_VALIDATION_STRICT` | unset | Fails closed on unknown `decision_type` values in decision captures. |
+| `ED4ALL_BLOCK_QUALITY_RUBRIC` | unset (off) | IB6 keystone — gates the eight-dimension 0-3 block-quality scoring pass (`lib/validators/block_quality_rubric.py::BlockQualityRubricValidator`), the anatomy slot-presence (`lib/validators/anatomy_slot_presence.py`) + interaction-feedback (`lib/validators/interaction_feedback.py`) + cognitive-load (`lib/validators/content.py::BlockCognitiveLoadValidator`) + QA-checklist (`lib/validators/qa_checklist.py`) validators, the universal `(verb·level·knowledge-type)` chip render (`Courseforge/scripts/blocks.py::_block_quality_rubric_emit_enabled` → `_bloom_triple_attrs`), the B01 both-axes assertion in `AbcdObjectiveValidator`, and the block→module→course rollup aggregator (`lib/aggregators/block_quality_rollup.py::BlockQualityRollupAggregator`). Default OFF → no rubric field written, no chip emitted, the B01 knowledge-type check is skipped, every scoring/rollup validator no-ops with `passed=True` + an info issue, no rollup file, snapshots byte-identical. When truthy (`1`/`true`/`yes`/`on`), the scoring pass COMPOSES already-computed validator signals (`objective_assessment_similarity`→Alignment, `instructional_depth`/200-char→Cognitive-load, `block_prose_entailment`→Coherence, IB4 WCAG/UDL→Accessibility/Engagement, IB3 verb-triple→Alignment, distractor cluster + IB6.3 feedback→Feedback) into the IB2 rubric container (NO new model load — reads upstream `GateResult` metadata), applies the three hard gates (Accessibility=0→block fail at rollup; assessment Bloom<objective→Alignment cap 1; interaction-without-feedback→Feedback+Coherence cap 1), and rolls up with BOTH mean (≥2.0) AND per-dimension-minimum-floor (≥2.0 on every required core dim). Gates wire warning-day-1 at `inter_tier_validation` + `post_rewrite_validation` with `# TODO(calibration)` markers; the hard-gate critical flip is DEFERRED until the anchored 0-3 scale is calibrated against ≥2 corpora. Generated PRODUCT-quality scoring, not training data → no `docs/LICENSING.md` row. Falsey / garbage → off (parse-with-fallback). Active only on the two-pass surface (`COURSEFORGE_TWO_PASS=true`). |
+| `ED4ALL_BLOCK_BODY_CHAR_CEILING` | `200` | IB6.4 per-block D2 cognitive-load body ceiling (`lib/validators/content.py::BlockCognitiveLoadValidator`; resolver `lib/validators/_block_rubric_helpers.py::resolve_body_char_ceiling`). The framework's "~200char single-idea" soft target; the `BLOCK_BODY_OVERFLOW` ("everything-block anti-pattern") check fires only above it (OR above the >4-idea-chunk ceiling). Drives the D2 dimension score in the rubric. `chrome`/`objective`/`summary_takeaway` exempt (structural, not single-idea bodies). Garbage / non-positive → `200` (parse-with-fallback, mirroring `ED4ALL_ANSWER_NUM_CTX`). Selects no provider/model → no `docs/LICENSING.md` row. No-op when `ED4ALL_BLOCK_QUALITY_RUBRIC` is off. |
 | `MCP_ORCHESTRATOR_LLM_MODEL` | `claude-opus-4-7` | Pins the Anthropic model ID used by `MCP/orchestrator/llm_backend.py::DEFAULT_ANTHROPIC_MODEL`; per-run `LLM_MODEL` keeps higher precedence. |
 | `LOCAL_DISPATCHER_ALLOW_STUB` | unset | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` when no `agent_tool` is wired. Tests / dry-run only. |
 | `ED4ALL_AGENT_DISPATCH` | unset | Routes subagent-classified agents through `dispatcher.dispatch_task` instead of in-process tool registry. |

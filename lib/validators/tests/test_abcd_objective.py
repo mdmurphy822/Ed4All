@@ -538,3 +538,52 @@ def test_decision_capture_failure_does_not_break_gate():
     # Gate still passes despite the capture error.
     assert result.passed is True
     assert result.action is None
+
+
+# --------------------------------------------------------------------- #
+# IB6.5 — B01 both-axes (cognitive-process × knowledge-type) assertion.
+# Gated behind ED4ALL_BLOCK_QUALITY_RUBRIC; default-off byte-stable.
+# --------------------------------------------------------------------- #
+
+
+def test_ib6_knowledge_type_missing_flagged_when_flag_on(monkeypatch):
+    monkeypatch.setenv("ED4ALL_BLOCK_QUALITY_RUBRIC", "1")
+    validator = AbcdObjectiveValidator()
+    lo = _make_lo(verb=_pick_verb("remember"))  # no cognitive_domain
+    result = validator.validate({"objectives": [lo]})
+    codes = [i.code for i in result.issues]
+    assert "OBJECTIVE_KNOWLEDGE_TYPE_MISSING" in codes
+    # warning-day-1: still passes.
+    assert result.passed is True
+
+
+def test_ib6_both_axes_present_passes(monkeypatch):
+    monkeypatch.setenv("ED4ALL_BLOCK_QUALITY_RUBRIC", "1")
+    validator = AbcdObjectiveValidator()
+    lo = _make_lo(verb=_pick_verb("remember"))
+    lo["cognitive_domain"] = "factual"
+    result = validator.validate({"objectives": [lo]})
+    codes = [i.code for i in result.issues]
+    assert "OBJECTIVE_KNOWLEDGE_TYPE_MISSING" not in codes
+    assert result.passed is True
+
+
+def test_ib6_knowledge_type_check_off_by_default(monkeypatch):
+    monkeypatch.delenv("ED4ALL_BLOCK_QUALITY_RUBRIC", raising=False)
+    validator = AbcdObjectiveValidator()
+    lo = _make_lo(verb=_pick_verb("remember"))  # no cognitive_domain
+    result = validator.validate({"objectives": [lo]})
+    codes = [i.code for i in result.issues]
+    # default-off: no knowledge-type flag, byte-stable with the legacy path.
+    assert "OBJECTIVE_KNOWLEDGE_TYPE_MISSING" not in codes
+    assert result.issues == []
+
+
+def test_ib6_camelcase_cognitive_domain_accepted(monkeypatch):
+    monkeypatch.setenv("ED4ALL_BLOCK_QUALITY_RUBRIC", "1")
+    validator = AbcdObjectiveValidator()
+    lo = _make_lo(verb=_pick_verb("understand"), bloom_level="understand")
+    lo["cognitiveDomain"] = "conceptual"
+    result = validator.validate({"objectives": [lo]})
+    codes = [i.code for i in result.issues]
+    assert "OBJECTIVE_KNOWLEDGE_TYPE_MISSING" not in codes

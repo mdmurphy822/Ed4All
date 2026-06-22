@@ -119,6 +119,30 @@ def _new_block_types_emit_enabled() -> bool:
     return os.environ.get(_NEW_BLOCK_TYPES_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
 
 
+# IB6.5 — universal (verb · level · knowledge-type) triple chip emit flag
+# (ED4ALL_BLOCK_QUALITY_RUBRIC, the IB6 keystone). Default OFF: with this unset
+# the cognitive-domain chip stays objectives-only (``_objective_attrs``) and no
+# ``data-cf-bloom-triple`` attr is emitted, so every existing snapshot stays
+# byte-identical. When on, every pedagogical block that carries a resolvable
+# (verb, level, knowledge-type) triple emits a universal ``data-cf-cognitive-
+# domain`` + a combined ``data-cf-bloom-triple`` chip (additive — the existing
+# three separate objective attrs are unchanged). Reuses ``_EMIT_BLOCKS_TRUTHY``.
+_BLOCK_QUALITY_RUBRIC_EMIT_ENV = "ED4ALL_BLOCK_QUALITY_RUBRIC"
+
+
+def _block_quality_rubric_emit_enabled() -> bool:
+    """Read ``ED4ALL_BLOCK_QUALITY_RUBRIC`` each call so tests can toggle it.
+
+    Default off — the IB6.5 universal cognitive-domain + bloom-triple chips are
+    purely additive and must not break byte-stable emit. Falsey / garbage →
+    off (parse-with-fallback, mirroring :func:`_new_block_types_emit_enabled`).
+    """
+    return (
+        os.environ.get(_BLOCK_QUALITY_RUBRIC_EMIT_ENV, "").strip().lower()
+        in _EMIT_BLOCKS_TRUTHY
+    )
+
+
 def _esc(text: str) -> str:
     """HTML-escape mirroring ``html.escape`` (matches ``html_mod.escape`` in generate_course.py)."""
     return _html_mod.escape(text)
@@ -1085,7 +1109,65 @@ class Block:
                 attrs += (
                     f' data-cf-udl-engagement="{_esc(self.engagement_affordance)}"'
                 )
+        # IB6.5 — universal (verb · level · knowledge-type) triple chip. Behind
+        # ED4ALL_BLOCK_QUALITY_RUBRIC (default OFF) so legacy snapshots stay
+        # byte-identical. Only emitted on pedagogical blocks (chrome has no
+        # framework B-code) and only-when the triple resolves. The existing
+        # objective-only ``data-cf-cognitive-domain`` (``_objective_attrs``) is
+        # unchanged; this promotes it to every block + adds the combined chip.
+        if _block_quality_rubric_emit_enabled():
+            attrs += self._bloom_triple_attrs()
         return attrs
+
+    def _knowledge_type(self) -> Optional[str]:
+        """Resolve the block's knowledge-type axis (the framework's 2nd axis).
+
+        Prefers the authored ``cognitive_domain`` field (factual / conceptual /
+        procedural / metacognitive). Falls back to deriving it from
+        ``bloom_level`` via :func:`lib.ontology.bloom.bloom_to_cognitive_domain`
+        so a block carrying only a Bloom level still resolves a triple. Returns
+        ``None`` when neither resolves.
+        """
+        if isinstance(self.cognitive_domain, str) and self.cognitive_domain.strip():
+            return self.cognitive_domain.strip().lower()
+        if isinstance(self.bloom_level, str) and self.bloom_level.strip():
+            try:
+                from lib.ontology.bloom import bloom_to_cognitive_domain
+
+                derived = bloom_to_cognitive_domain(self.bloom_level.strip().lower())
+                if isinstance(derived, str) and derived.strip():
+                    return derived.strip().lower()
+            except Exception:  # noqa: BLE001 — fall through to None
+                return None
+        return None
+
+    def _bloom_triple_attrs(self) -> str:
+        """IB6.5 universal chip attrs: cognitive-domain + the combined triple.
+
+        ``chrome`` (no framework B-code) and blocks with no resolvable
+        knowledge-type emit nothing. The combined ``data-cf-bloom-triple`` only
+        fires when ALL three axes (verb, level, knowledge-type) resolve — a
+        machine-checkable single chip. The standalone ``data-cf-cognitive-
+        domain`` fires whenever the knowledge-type resolves (so a level-only
+        block still carries the 2nd axis universally).
+        """
+        from lib.ontology.framework_blocks import framework_block_for
+
+        if framework_block_for(self.block_type) is None:
+            return ""
+        ktype = self._knowledge_type()
+        if not ktype:
+            return ""
+        out = ""
+        # Promote cognitive-domain to a universal chip (objectives already
+        # carry it via _objective_attrs; avoid a duplicate attr on objectives).
+        if self.block_type != "objective":
+            out += f' data-cf-cognitive-domain="{_esc(ktype)}"'
+        verb = self.bloom_verb.strip().lower() if isinstance(self.bloom_verb, str) and self.bloom_verb.strip() else None
+        level = self.bloom_level.strip().lower() if isinstance(self.bloom_level, str) and self.bloom_level.strip() else None
+        if verb and level:
+            out += f' data-cf-bloom-triple="{_esc(verb)}.{_esc(level)}.{_esc(ktype)}"'
+        return out
 
     # --- per-block-type helpers (kept private to make dispatch readable) ---
 

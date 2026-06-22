@@ -312,3 +312,176 @@ class ContentStructureValidator:
                 )
             ]
         return []
+
+
+# ---------------------------------------------------------------------------
+# IB6.4 — per-block D2 cognitive-load body ceiling
+# ---------------------------------------------------------------------------
+
+# The framework's D2 cognitive-load fit dimension caps a single block's body at
+# "~4 chunks / ~200 characters" — overflow spawns a NEW block, never a denser
+# one (the "everything-block" is a named anti-pattern). ``ContentStructureValidator``
+# (above) checks PAGE-level length floors; this is the per-BLOCK ceiling that
+# feeds the D2 dimension score in the IB6.1 rubric scorer. Sibling class (not an
+# edit to ``ContentStructureValidator``) so the existing page-grouping contract
+# stays byte-stable.
+
+# Idea-chunk ceiling (the "~4 chunks" axis). Paired with the char ceiling.
+_BLOCK_IDEA_CHUNK_CEILING = 4
+
+# Structural / multi-idea block types exempt from the single-idea ceiling — a
+# chrome scaffold, an objective list, and a summary takeaway are NOT single-idea
+# bodies by construction (the framework's anatomy treats them as containers /
+# roll-ups, not exposition chunks).
+_COGNITIVE_LOAD_EXEMPT_TYPES = frozenset(
+    {"chrome", "objective", "summary_takeaway"}
+)
+
+
+class BlockCognitiveLoadValidator:
+    """IB6.4 — per-block ≤~200-char / ≤4-idea-chunk body ceiling (D2).
+
+    Reads ``inputs["blocks"]`` (the canonical ``Block`` list threaded into the
+    inter/post-rewrite phases). For every non-exempt block, strips its BODY
+    slot to visible text and flags ``BLOCK_BODY_OVERFLOW`` when the visible
+    character count exceeds ``ED4ALL_BLOCK_BODY_CHAR_CEILING`` (default 200) OR
+    the idea-chunk count exceeds 4 — the framework's "everything-block"
+    anti-pattern, whose remedy is a NEW block, not a denser one.
+
+    Warning-day-1: every issue is warning severity (``passed`` is True even on
+    overflow). The IB6.1 scorer maps the overflow signal onto the D2 dimension
+    score. Default-off byte-stability: when ``ED4ALL_BLOCK_QUALITY_RUBRIC`` is
+    unset the validator is a no-op pass (``passed=True``, info issue) so it is
+    inert on legacy runs even when wired into a phase.
+    """
+
+    name = "block_cognitive_load"
+    version = "1.0.0"
+
+    def validate(self, inputs: Dict[str, Any]) -> GateResult:
+        from lib.validators._block_rubric_helpers import (
+            block_quality_rubric_enabled,
+            block_type_of,
+            body_text_of,
+            count_idea_chunks,
+            resolve_body_char_ceiling,
+        )
+
+        gate_id = inputs.get("gate_id", self.name)
+        capture = inputs.get("decision_capture") or inputs.get("capture")
+
+        # Default-off byte-stable no-op (unless explicitly forced on for tests).
+        enabled = inputs.get("rubric_enabled")
+        if enabled is None:
+            enabled = block_quality_rubric_enabled()
+        if not enabled:
+            return GateResult(
+                gate_id=gate_id,
+                validator_name=self.name,
+                validator_version=self.version,
+                passed=True,
+                issues=[
+                    GateIssue(
+                        severity="info",
+                        code="COGNITIVE_LOAD_DISABLED",
+                        message=(
+                            "ED4ALL_BLOCK_QUALITY_RUBRIC unset — per-block "
+                            "cognitive-load ceiling skipped (byte-stable)."
+                        ),
+                    )
+                ],
+                action=None,
+                metadata={"block_cognitive_load": {"enabled": False}},
+            )
+
+        ceiling = resolve_body_char_ceiling(inputs.get("body_char_ceiling"))
+        blocks = inputs.get("blocks") or []
+        issues: List[GateIssue] = []
+        audited = 0
+        overflow = 0
+        # Per-block char/chunk signal for the IB6.1 scorer (block_id -> dict).
+        per_block: Dict[str, Dict[str, Any]] = {}
+
+        for block in blocks:
+            bt = block_type_of(block)
+            if not bt or bt in _COGNITIVE_LOAD_EXEMPT_TYPES:
+                continue
+            audited += 1
+            text = body_text_of(block)
+            char_count = len(text)
+            chunks = count_idea_chunks(block)
+            from lib.validators._block_rubric_helpers import block_attr
+
+            block_id = str(block_attr(block, "block_id") or f"block-{audited}")
+            is_overflow = char_count > ceiling or chunks > _BLOCK_IDEA_CHUNK_CEILING
+            per_block[block_id] = {
+                "char_count": char_count,
+                "idea_chunks": chunks,
+                "ceiling": ceiling,
+                "overflow": is_overflow,
+            }
+            if is_overflow:
+                overflow += 1
+                if len(issues) < 50:
+                    issues.append(
+                        GateIssue(
+                            severity="warning",
+                            code="BLOCK_BODY_OVERFLOW",
+                            message=(
+                                f"Block {block_id!r} ({bt}) body is "
+                                f"{char_count} chars / {chunks} idea-chunks, "
+                                f"over the D2 ceiling ({ceiling} chars / "
+                                f"{_BLOCK_IDEA_CHUNK_CEILING} chunks). The "
+                                f"'everything-block' anti-pattern — overflow "
+                                f"should spawn a NEW block, not a denser one."
+                            ),
+                            location=block_id,
+                            suggestion=(
+                                "Split the block so each carries a single idea "
+                                "within the ~200-char / ~4-chunk budget."
+                            ),
+                        )
+                    )
+
+        self._emit_decision(capture, audited=audited, overflow=overflow, ceiling=ceiling)
+
+        return GateResult(
+            gate_id=gate_id,
+            validator_name=self.name,
+            validator_version=self.version,
+            passed=True,  # warning-day-1: never blocks
+            score=(round(1.0 - overflow / audited, 4) if audited else 1.0),
+            issues=issues,
+            action=None,
+            metadata={
+                "block_cognitive_load": {
+                    "enabled": True,
+                    "blocks_audited": audited,
+                    "blocks_overflow": overflow,
+                    "char_ceiling": ceiling,
+                    "idea_chunk_ceiling": _BLOCK_IDEA_CHUNK_CEILING,
+                    "per_block": per_block,
+                }
+            },
+        )
+
+    @staticmethod
+    def _emit_decision(capture: Any, *, audited: int, overflow: int, ceiling: int) -> None:
+        if capture is None:
+            return
+        try:
+            capture.log_decision(
+                decision_type="content_structure_check",
+                decision=f"cognitive_load_overflow={overflow}/{audited}",
+                rationale=(
+                    f"IB6.4 per-block D2 cognitive-load ceiling: audited "
+                    f"{audited} non-exempt blocks against the {ceiling}-char / "
+                    f"{_BLOCK_IDEA_CHUNK_CEILING}-idea-chunk budget; "
+                    f"{overflow} exceeded it (everything-block anti-pattern)."
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.debug(
+                "DecisionCapture.log_decision raised on block_cognitive_load: %s",
+                exc,
+            )
