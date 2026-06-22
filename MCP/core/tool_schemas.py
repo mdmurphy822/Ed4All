@@ -109,8 +109,19 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
 
     "extract_and_convert_pdf": {
+        # SemantiK migration P3c — ``phase`` scopes the conversion-engine
+        # flip (``dart_conversion`` → SemantiK v2 seam; everything else →
+        # legacy DART). ``canonical_course_code`` + ``reuse_conversion`` are
+        # the SemantiK seam params threaded from the workflow params.
         "required": ["pdf_path"],
-        "optional": ["course_code", "output_dir", "figures_dir"],
+        "optional": [
+            "course_code",
+            "output_dir",
+            "figures_dir",
+            "phase",
+            "canonical_course_code",
+            "reuse_conversion",
+        ],
         "defaults": {
             "course_code": None,
             "output_dir": None,
@@ -125,7 +136,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "output": "output_dir",
             "figures": "figures_dir",
         },
-        "description": "Extract sources from PDF and convert to accessible HTML via DART",
+        "description": "Extract sources from PDF and convert to accessible HTML (SemantiK v2 for the dart_conversion phase; legacy DART otherwise)",
     },
 
     # =========================================================================

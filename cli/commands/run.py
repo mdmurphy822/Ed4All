@@ -172,6 +172,7 @@ def _build_workflow_params(
     skip_dart: bool = False,
     dart_output_dir: Optional[str] = None,
     reuse_objectives: Optional[str] = None,
+    reuse_conversion: bool = False,
     target_block_ids: Optional[List[str]] = None,
     force_rerun: bool = False,
     courseforge_stage: Optional[str] = None,
@@ -227,6 +228,15 @@ def _build_workflow_params(
     # course_planning phase output directly (Wave 74 --skip-dart pattern).
     if reuse_objectives:
         params["reuse_objectives_path"] = reuse_objectives
+
+    # SemantiK §3.3a item 2: --reuse-conversion reuses a prior PDF→HTML
+    # conversion instead of re-running the model-nondeterministic SemantiK v2
+    # cascade (analogous to --reuse-objectives). The seam
+    # ``_run_semantik_v2_conversion`` reads this (or ``ED4ALL_REUSE_CONVERSION``)
+    # and, when prior ``{stem}_accessible.html`` + sidecars exist, skips the
+    # cascade. Threaded as a bool param so the conversion phase honours it.
+    if reuse_conversion:
+        params["reuse_conversion"] = True
 
     # Phase 5 ST 1: --blocks plumbing. The CLI parses the comma-separated
     # block-type tokens via _parse_blocks_filter and threads them into
@@ -459,6 +469,7 @@ async def _create_textbook_workflow(
         skip_dart=bool(params.get("skip_dart", False)),
         dart_output_dir=params.get("dart_output_dir"),
         reuse_objectives_path=params.get("reuse_objectives_path"),
+        reuse_conversion=bool(params.get("reuse_conversion", False)),
         courseforge_stage=params.get("courseforge_stage"),
         force_rerun=bool(params.get("force_rerun", False)),
         skip_training=bool(params.get("skip_training", False)),
@@ -624,6 +635,21 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--reuse-conversion",
+    "reuse_conversion",
+    is_flag=True,
+    default=False,
+    help=(
+        "SemantiK §3.3a — reuse a prior PDF→accessible-HTML conversion "
+        "instead of re-running the (model-nondeterministic) SemantiK v2 "
+        "cascade. When set AND prior ``{stem}_accessible.html`` + sidecars "
+        "exist at the conversion output path, the cascade is skipped and the "
+        "prior artifacts are reused (the model-nondeterminism guarantee on "
+        "re-runs, analogous to --reuse-objectives). Mirrors the "
+        "``ED4ALL_REUSE_CONVERSION`` env var (flag wins when both are set)."
+    ),
+)
+@click.option(
     "--blocks",
     "blocks_filter",
     default=None,
@@ -712,6 +738,7 @@ def run_command(
     skip_dart: bool,
     dart_output_dir: Optional[str],
     reuse_objectives: Optional[str],
+    reuse_conversion: bool,
     blocks_filter: Optional[str],
     force_rerun: bool,
     libv2_root: Optional[str],
@@ -817,6 +844,7 @@ def run_command(
         skip_dart=skip_dart,
         dart_output_dir=effective_dart_output_dir,
         reuse_objectives=reuse_objectives,
+        reuse_conversion=reuse_conversion,
         target_block_ids=target_block_ids,
         force_rerun=force_rerun,
         courseforge_stage=courseforge_stage,

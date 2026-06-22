@@ -3152,6 +3152,47 @@ from lib.validators.source_refs import (
 )
 
 
+# SemantiK migration §4 — enrichment enums + figure-alt recovery for the
+# INLINE chunk emitters (``_run_dart_chunking`` / the IMSCC sibling). These
+# mirror the canonical P2b ``CourseProcessor`` constants + ``_recover_figure_alt``
+# so the inline chunk path stamps the SAME 6 chunk-root fields. Kept here (not
+# imported from process_course) so the inline path has no CourseProcessor
+# instance dependency.
+_SEMANTIK_WCAG_BLOCK_STATUSES = frozenset({"passed", "flagged", "skipped"})
+
+
+def _recover_figure_alt(html: str) -> Optional[str]:
+    """Best-effort DOM-side recovery of a figure chunk's alt / caption (§4).
+
+    Prefers a ``<figcaption>`` text, falling back to an ``<img alt="...">``
+    value. Returns ``None`` when neither resolves (anti-fabrication — never
+    invents alt text). Pure regex; no bs4 dependency added. Byte-identical to
+    ``Trainforge.process_course.CourseProcessor._recover_figure_alt``.
+    """
+    if not html:
+        return None
+    cap = re.search(
+        r"<figcaption\b[^>]*>(.*?)</figcaption>",
+        html,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if cap:
+        text = re.sub(r"<[^>]+>", " ", cap.group(1))
+        text = " ".join(text.split()).strip()
+        if text:
+            return text
+    alt = re.search(
+        r"<img\b[^>]*\balt\s*=\s*([\"'])(.*?)\1",
+        html,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if alt:
+        text = " ".join(alt.group(2).split()).strip()
+        if text:
+            return text
+    return None
+
+
 def _dart_block_source_references(
     dart_source_refs: Optional[List[Dict[str, Any]]],
     slug: str,
@@ -4465,6 +4506,7 @@ async def create_textbook_pipeline(
     skip_dart: bool = False,
     dart_output_dir: Optional[str] = None,
     reuse_objectives_path: Optional[str] = None,
+    reuse_conversion: bool = False,
     courseforge_stage: Optional[str] = None,
     force_rerun: bool = False,
     skip_training: bool = False,
@@ -4589,6 +4631,15 @@ async def create_textbook_pipeline(
             params["reuse_objectives_path"] = str(
                 Path(reuse_objectives_path).resolve()
             )
+
+        # SemantiK §3.3a item 2: forward --reuse-conversion so the SemantiK v2
+        # conversion seam (``_run_semantik_v2_conversion``) reuses prior
+        # ``{stem}_accessible.html`` + sidecars instead of re-running the
+        # model-nondeterministic cascade on a re-run. Mirrors
+        # ``ED4ALL_REUSE_CONVERSION``; the dispatch is still P3c (this only
+        # carries the flag onto the workflow params).
+        if reuse_conversion:
+            params["reuse_conversion"] = True
 
         # Phase 5 operator stage subcommands: restrict execution to the
         # named Courseforge stage whitelist, optionally force re-run of
@@ -5944,6 +5995,331 @@ def _emit_dart_sidecars_if_requested(
         )
 
 
+# ---------------------------------------------------------------------------
+# SemantiK v2 conversion seam (Phase P3b).
+#
+# The chokepoint that runs the SemantiK v2 cascade → chapters-IR →
+# output-contract adapter → writes the normalized `{stem}_accessible.html`
+# + `{stem}_synthesized.json` + `{stem}.quality.json` sidecars and returns
+# the existing Ed4All tool JSON contract (config/workflows.yaml:898 required
+# keys + the new SemantiK provenance keys).
+#
+# Migration plan plans/finegrain/semantic-v2-dart-migration-2026-06-21.md §5
+# step 1 pins the signature; §3.7 pins the exit_action→success mapping + the
+# required output keys; §3.3a item 2 the `--reuse-conversion` reuse mechanism.
+#
+# This function does NOT flip the live `extract_and_convert_pdf` dispatch
+# (that is P3c). It is unit-tested with a MOCKED cascade (no models/GPU).
+# ---------------------------------------------------------------------------
+
+# §3.3a item 2 — `--reuse-conversion` env mirror (analogous to the
+# `--reuse-objectives` plumbing). When truthy AND prior artifacts exist at the
+# output path, the cascade is skipped and the prior HTML + sidecars are reused
+# (model-nondeterminism guarantee on re-runs). Parse-with-fallback truthy set
+# (mirrors COURSEFORGE_TWO_PASS / the answer-path knobs).
+_REUSE_CONVERSION_ENV = "ED4ALL_REUSE_CONVERSION"
+_REUSE_CONVERSION_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+# §3.7 / Section 9 mock trap — the runtime_mode values that count as a REAL
+# cascade run. Anything else (mock / unset) fails closed (R4) so plausible-but-
+# fake mock HTML never ships as if it were a real conversion.
+_SEMANTIK_REAL_RUNTIME_MODES = frozenset({"real"})
+
+
+def _resolve_reuse_conversion(reuse_conversion: Optional[Any]) -> bool:
+    """Resolve the effective `--reuse-conversion` / `ED4ALL_REUSE_CONVERSION`.
+
+    Precedence: an explicit truthy ``reuse_conversion`` arg (a CLI flag value
+    threaded through) > the ``ED4ALL_REUSE_CONVERSION`` env var. Parse-with-
+    fallback: any non-truthy / garbage value resolves to ``False``.
+    """
+    if reuse_conversion is not None:
+        if isinstance(reuse_conversion, bool):
+            if reuse_conversion:
+                return True
+        else:
+            if str(reuse_conversion).strip().lower() in _REUSE_CONVERSION_TRUTHY:
+                return True
+    env_val = (os.environ.get(_REUSE_CONVERSION_ENV) or "").strip().lower()
+    return env_val in _REUSE_CONVERSION_TRUTHY
+
+
+def _semantik_resolve_runtime_mode(cascade_result: Any) -> Optional[str]:
+    """Pull the cascade ``runtime_mode`` off the result (R4 mock-trap input).
+
+    SemantiK auto-derives ``real`` iff the Qwen specialists are loaded; it
+    defaults to ``mock`` when GGUFs are absent (the wiring trap, cascade.py).
+    The real ``PipelineV2Result.cascade`` carries the resolved mode; we accept
+    it from ``.runtime_mode`` directly, from ``.cascade`` (dict or object), or
+    from a bare mapping, returning ``None`` when nothing resolves (treated as
+    NOT real → fail closed).
+    """
+    mode = getattr(cascade_result, "runtime_mode", None)
+    if mode is None:
+        cascade = getattr(cascade_result, "cascade", None)
+        if isinstance(cascade, dict):
+            mode = cascade.get("runtime_mode")
+        elif cascade is not None:
+            mode = getattr(cascade, "runtime_mode", None)
+    if mode is None and isinstance(cascade_result, dict):
+        mode = cascade_result.get("runtime_mode")
+    return str(mode) if mode is not None else None
+
+
+def _semantik_reuse_existing_artifacts(
+    output_path: Path, html_path: Path
+) -> Optional[Dict[str, Any]]:
+    """Build a reuse return dict from prior on-disk artifacts (§3.3a item 2).
+
+    Returns the same tool JSON contract a fresh conversion would, sourced from
+    the prior ``{stem}_accessible.html`` + ``{stem}.quality.json`` sidecar
+    (success / certification / theta read back from the quality sidecar so a
+    reused flagged/non-certified doc keeps its provenance). Returns ``None``
+    when the prior HTML is missing — the caller then runs the cascade.
+    """
+    if not html_path.is_file():
+        return None
+    try:
+        html = html_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    quality_path = output_path.with_suffix(".quality.json")
+    synth_path = output_path.parent / f"{output_path.with_suffix('').name}_synthesized.json"
+    quality: Dict[str, Any] = {}
+    if quality_path.is_file():
+        try:
+            quality = json.loads(quality_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            quality = {}
+    exit_action = quality.get("exit_action")
+    # Mirror the adapter's exit_action→success mapping so reuse is consistent
+    # with a fresh run (a reused ship_with_flag stays success=True, flagged).
+    from lib.semantik.adapter import _resolve_success as _semantik_resolve_success
+
+    success, certification_status = _semantik_resolve_success(exit_action)
+    # A reused doc whose quality sidecar predates the exit-action enrichment
+    # (legacy) still counts as a successful reuse when WCAG passed.
+    if exit_action is None:
+        success = bool(quality.get("compliant", True))
+        certification_status = quality.get("certification_status") or (
+            "certified" if success else "error"
+        )
+    return {
+        "success": success,
+        "output_path": str(output_path),
+        "output_paths": [str(output_path)],
+        "html_path": str(html_path),
+        "html_paths": [str(html_path)],
+        "html_length": len(html),
+        "html": html,
+        "word_count": len(re.sub(r"<[^>]+>", " ", html).split()),
+        "method": "semantik_v2",
+        "reused_conversion": True,
+        "wcag_status": quality.get("wcag_status"),
+        "exit_action": exit_action,
+        "theta_score": quality.get("theta_score"),
+        "flags": list(quality.get("flags") or []),
+        "certification_status": certification_status,
+        "synthesized_sidecar_path": str(synth_path) if synth_path.is_file() else None,
+        "quality_sidecar_path": str(quality_path) if quality_path.is_file() else None,
+    }
+
+
+def _run_semantik_v2_conversion(
+    pdf_path: str,
+    output_path: str,
+    *,
+    figures_dir: Optional[str] = None,
+    capture: Optional[object] = None,
+    canonical_course_code: Optional[str] = None,
+    reuse_conversion: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Run the SemantiK v2 cascade → adapter → write outputs (Phase P3b seam).
+
+    The single chokepoint: ``run_pipeline_v2(pdf) → build_chapters_ir(result)
+    → normalize_cascade_to_ed4all(result_with_chapters)`` → write the
+    normalized ``{stem}_accessible.html`` + the two sidecars → return the
+    Ed4All tool JSON contract (``output_path`` / ``output_paths`` /
+    ``html_path`` / ``html_paths`` / ``success`` / ``html_length`` per
+    ``config/workflows.yaml:898``, plus the SemantiK provenance keys).
+
+    Fail-closed contracts:
+
+    * **Lazy import (no module-top SemantiK reach):** ``run_pipeline_v2`` +
+      ``build_chapters_ir`` + ``normalize_cascade_to_ed4all`` are imported
+      INSIDE this body so ``pipeline_tools.py`` still imports when SemantiK's
+      heavy runtime deps (axe_playwright_python / llama_cpp / torch) are
+      absent. A missing-dep ``ImportError`` returns a clear error dict, never
+      a silent fallback.
+    * **R4 mock trap (§3.7 / Section 9):** when the cascade ran in a non-real
+      runtime mode (mock / GGUFs absent), return ``success=False`` with a
+      clear reason — mock HTML is never shipped as if real.
+    * **§3.7 exit_action→success mapping:** ``ship_with_flag`` /
+      ``non_certified_stamp`` are ``success=True`` (with the right
+      ``certification_status``), NOT failures — corpus admission is gated
+      downstream, not by failing the converter.
+
+    Parameters
+    ----------
+    pdf_path
+        The PDF to convert. SemantiK takes the PDF path directly (it runs its
+        own pypdfium2/pdfplumber extraction internally).
+    output_path
+        Destination for ``{stem}_accessible.html``. The two sidecars are
+        emitted as siblings (``{stem}_synthesized.json`` / ``{stem}.quality.json``).
+    figures_dir
+        Optional figures directory (recorded; figure copy is out of scope here).
+    capture
+        Optional decision-capture handle (recorded; the cascade owns its own).
+    canonical_course_code
+        Optional course code, threaded onto the adapter for provenance.
+    reuse_conversion
+        Optional ``--reuse-conversion`` flag value (§3.3a item 2). When truthy
+        (or ``ED4ALL_REUSE_CONVERSION`` is set) AND prior artifacts exist at
+        ``output_path``, the cascade is SKIPPED and the prior HTML + sidecars
+        are reused.
+    """
+    out_path = Path(output_path)
+    pdf = Path(pdf_path)
+    pdf_stem = pdf.stem
+    # The accessible-HTML filename the --skip-dart synthesizer globs
+    # (``*_accessible.html``, run.py:289). When the caller hands a directory or
+    # a non-accessible path, derive the canonical sibling.
+    if out_path.name.endswith("_accessible.html"):
+        html_path = out_path
+    elif out_path.suffix == ".html":
+        html_path = out_path
+    else:
+        html_path = out_path / f"{pdf_stem}_accessible.html"
+        out_path = html_path
+
+    # §3.3a item 2 — reuse path. Skip the (model-nondeterministic) cascade.
+    if _resolve_reuse_conversion(reuse_conversion):
+        reused = _semantik_reuse_existing_artifacts(out_path, html_path)
+        if reused is not None:
+            logger.info(
+                "SemantiK: reuse-conversion ON; reusing prior %s + sidecars "
+                "(cascade skipped)",
+                html_path,
+            )
+            return reused
+        logger.info(
+            "SemantiK: reuse-conversion ON but no prior %s; running cascade",
+            html_path,
+        )
+
+    # Lazy import — keep SemantiK's heavy runtime deps off the module-import
+    # path. A missing dep is a clear error dict, never a silent fallback.
+    try:
+        from SemantiK.dart_semantic.pipeline_v2 import run_pipeline_v2
+        from lib.semantik.cascade_ir import build_chapters_ir
+        from lib.semantik.adapter import normalize_cascade_to_ed4all
+    except ImportError as exc:
+        return {
+            "success": False,
+            "error": f"SemantiK runtime deps not provisioned: {exc}",
+            "method": "semantik_v2",
+            "output_path": str(out_path),
+            "html_path": str(html_path),
+        }
+
+    # 1. Run the cascade (PDF path in → PipelineV2Result out).
+    try:
+        result = run_pipeline_v2(str(pdf))
+    except Exception as exc:  # noqa: BLE001 — cascade error fails closed
+        logger.error("SemantiK cascade raised on %s: %s", pdf, exc)
+        return {
+            "success": False,
+            "error": f"SemantiK cascade failed: {exc}",
+            "method": "semantik_v2",
+            "output_path": str(out_path),
+            "html_path": str(html_path),
+        }
+
+    # 2. R4 mock-trap precondition (§3.7 / Section 9): the runtime_mode=='real'
+    # assertion is a SEPARATE fail-closed gate, NOT folded into the wcag/exit
+    # check. A mock-runtime (GGUFs absent) result never ships flagged-as-real.
+    runtime_mode = _semantik_resolve_runtime_mode(result)
+    if runtime_mode not in _SEMANTIK_REAL_RUNTIME_MODES:
+        logger.error(
+            "SemantiK ran in runtime_mode=%r (not 'real') on %s; failing "
+            "closed (mock HTML must never ship as if real).",
+            runtime_mode, pdf,
+        )
+        return {
+            "success": False,
+            "error": (
+                "SemantiK cascade did not run in real mode "
+                f"(runtime_mode={runtime_mode!r}); refusing to ship mock HTML. "
+                "Provision the Qwen specialist GGUFs + council weights."
+            ),
+            "method": "semantik_v2",
+            "runtime_mode": runtime_mode,
+            "output_path": str(out_path),
+            "html_path": str(html_path),
+        }
+
+    # 3. cascade result → chapters IR → output-contract adapter.
+    chapters = build_chapters_ir(result)
+    setattr(result, "chapters", chapters)
+    adapter_out = normalize_cascade_to_ed4all(
+        result,
+        pdf_stem=pdf_stem,
+        figures_dir=figures_dir,
+        canonical_course_code=canonical_course_code,
+    )
+
+    html = adapter_out["html"]
+
+    # 4. Write the normalized HTML + the two sidecars (reuse the canonical
+    # quality/synthesized sidecar SHAPES the adapter built; the adapter's
+    # builders are the SemantiK-self-contained ports of the DART emitters).
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(html, encoding="utf-8")
+
+    base = html_path.with_suffix("")
+    synth_path = base.parent / f"{base.name}_synthesized.json"
+    quality_path = html_path.with_suffix(".quality.json")
+    try:
+        synth_path.write_text(
+            json.dumps(
+                adapter_out["synthesized_sidecar"], ensure_ascii=False, indent=2
+            ),
+            encoding="utf-8",
+        )
+        quality_path.write_text(
+            json.dumps(
+                adapter_out["quality_sidecar"], ensure_ascii=False, indent=2
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("SemantiK sidecar write failed (non-fatal): %s", exc)
+
+    # 5. Assemble the Ed4All tool JSON contract (workflows.yaml:898 required
+    # keys + SemantiK provenance). The adapter already mapped exit_action →
+    # success / certification_status (§3.7); we do NOT re-derive it here.
+    return {
+        "success": bool(adapter_out["success"]),
+        "output_path": str(html_path),
+        "output_paths": [str(html_path)],
+        "html_path": str(html_path),
+        "html_paths": [str(html_path)],
+        "html_length": int(adapter_out["html_length"]),
+        "html": html,
+        "word_count": int(adapter_out["word_count"]),
+        "method": "semantik_v2",
+        "runtime_mode": runtime_mode,
+        "wcag_status": adapter_out.get("wcag_status"),
+        "exit_action": adapter_out.get("exit_action"),
+        "theta_score": adapter_out.get("theta_score"),
+        "flags": list(adapter_out.get("flags") or []),
+        "lane_used": adapter_out.get("lane_used"),
+        "certification_status": adapter_out.get("certification_status"),
+        "synthesized_sidecar_path": str(synth_path),
+        "quality_sidecar_path": str(quality_path),
+        "semantic_preservation_score": adapter_out.get("theta_score"),
+    }
 
 
 # Phase 3 Subtask 6: Courseforge two-pass-router enable flag. Mirror
@@ -12101,6 +12477,45 @@ def _build_tool_registry() -> dict:
         pdf = Path(pdf_path)
         out_dir = Path(output_dir_str) if output_dir_str else DART_PATH / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
+
+        # SemantiK migration P3c — flip the LIVE textbook/course PDF→HTML
+        # conversion dispatch to the P3b seam ``_run_semantik_v2_conversion``.
+        # SCOPED by phase name: only the ``dart_conversion`` phase
+        # (``textbook_to_course`` / ``course_generation``'s PDF-ingest path,
+        # built one-task-per-PDF in ``workflow_runner._create_phase_tasks``)
+        # flips. The ``batch_dart`` ``multi_source_synthesis`` phase and any
+        # direct DART-carryover caller (intake/remediation never reaches this
+        # tool) keep the legacy ``_raw_text_to_accessible_html`` path so the
+        # preserved DART subsystem (plan §2.5) stays byte-stable.
+        #
+        # Wholesale swap (git-revert is rollback; no A/B flag). Fails CLOSED
+        # with a clear SemantiK reason when the cascade is unprovisioned —
+        # NEVER a silent fall-through to ``_raw_text_to_accessible_html``.
+        if kwargs.get("phase") == "dart_conversion":
+            out_stem = pdf.stem
+            html_output = out_dir / f"{out_stem}_accessible.html"
+            sem_result = _run_semantik_v2_conversion(
+                str(pdf),
+                str(html_output),
+                figures_dir=kwargs.get("figures_dir"),
+                capture=kwargs.get("capture"),
+                canonical_course_code=kwargs.get("canonical_course_code"),
+                reuse_conversion=kwargs.get("reuse_conversion"),
+            )
+            if not sem_result.get("success"):
+                # Fail-closed-clear: surface the SemantiK reason as the
+                # conversion failure. No silent DART fallback.
+                return json.dumps({
+                    "success": False,
+                    "error": sem_result.get(
+                        "error", "SemantiK v2 conversion failed"
+                    ),
+                    "method": sem_result.get("method", "semantik_v2"),
+                    "runtime_mode": sem_result.get("runtime_mode"),
+                    "output_path": sem_result.get("output_path", str(html_output)),
+                    "html_path": sem_result.get("html_path", str(html_output)),
+                })
+            return json.dumps(sem_result)
         # Output filename is keyed on the PDF basename so multi-PDF corpora
         # don't collide on a shared `course_code`. `code` is retained for
         # combined-JSON lookups + HTML title below.
@@ -18551,6 +18966,55 @@ def _build_tool_registry() -> dict:
             # pre-staging dry-run still emit a manifest.
             source_dart_html_sha256 = _hashlib.sha256(b"").hexdigest()
 
+        # SemantiK migration §4 — doc-level conversion signals threaded into
+        # the inline chunk emit. Mirrors the P2b
+        # ``CourseProcessor._stamp_semantik_chunk_enrichment`` doc-level arm
+        # (theta semantic_preservation_score + Stage-13 certification_status),
+        # which reads them off instance attributes set by the seam. The inline
+        # ``_run_dart_chunking`` path has no CourseProcessor instance, so we
+        # read the signals here from the SemantiK ``{stem}.quality.json``
+        # sidecar that sits next to each staged DART HTML file (the seam's
+        # ``_run_semantik_v2_conversion`` writes it) and thread the SAME value
+        # onto every chunk (same-per-doc, mirrors ``source_document_sha256``).
+        # Omit-when-absent: a legacy / non-SemantiK corpus has no quality
+        # sidecar → both stay unset → chunks byte-identical (back-compat). When
+        # multiple staged HTML files carry quality sidecars we take the FIRST
+        # resolvable pair (a single chunking phase covers one converted doc in
+        # the common case; conflicting sidecars keep the first seen).
+        _doc_semantic_preservation_score: Optional[float] = None
+        _doc_certification_status: Optional[str] = None
+        _SEMANTIK_CERT_STATUSES = frozenset(
+            {"certified", "flagged", "non_certified"}
+        )
+        for _hf in html_files:
+            _q_path = _hf.with_suffix(".quality.json")
+            if not _q_path.is_file():
+                continue
+            try:
+                _q = json.loads(_q_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if _doc_semantic_preservation_score is None:
+                _theta = _q.get("theta_score")
+                if isinstance(_theta, (int, float)) and not isinstance(
+                    _theta, bool
+                ):
+                    _theta_f = float(_theta)
+                    if 0.0 <= _theta_f <= 1.0:
+                        _doc_semantic_preservation_score = _theta_f
+            if _doc_certification_status is None:
+                _cert = _q.get("certification_status")
+                if (
+                    isinstance(_cert, str)
+                    and _cert.strip() in _SEMANTIK_CERT_STATUSES
+                ):
+                    _doc_certification_status = _cert.strip()
+            if (
+                _doc_semantic_preservation_score is not None
+                and _doc_certification_status is not None
+            ):
+                break
+
         # Parse DART HTML into ContentSection-bearing parsed_items.
         # Trainforge's HTMLContentParser produces the duck-typed
         # ContentSection objects ``Trainforge.chunker.chunk_content`` walks
@@ -18885,6 +19349,58 @@ def _build_tool_registry() -> dict:
             # provenance tag on low-confidence sources (verbs / default).
             if bloom_source in ("verbs", "default"):
                 chunk["bloom_level_source"] = bloom_source
+
+            # SemantiK migration §4 — chunk-accompanying provenance enrichment.
+            # The INLINE mirror of the P2b
+            # ``CourseProcessor._stamp_semantik_chunk_enrichment`` 6-field
+            # stamp. All omit-when-absent (no null-filled fields on legacy
+            # corpora — mirrors source_document_sha256):
+            #   * 3 HTML-harvested (source_block_role / -confidence /
+            #     wcag_block_status): from this chunk's resolved
+            #     ``dart_source_refs`` (the harvest helpers in
+            #     ``Trainforge/chunker/helpers.py`` already pair block_role /
+            #     confidence / wcag_status off the SAME element as
+            #     data-dart-block-id). When a chunk spans several DART blocks
+            #     the FIRST (document order) supplies the values.
+            #   * figure_alt: DOM-side recovery of <figcaption>/<img alt>.
+            #   * 2 doc-level (semantic_preservation_score /
+            #     certification_status): the SemantiK theta + exit signals read
+            #     once per chunking phase from the {stem}.quality.json sidecar
+            #     and threaded in via closure (same value across every chunk of
+            #     a doc, mirrors source_document_sha256).
+            _first_ref: Optional[Dict[str, Any]] = None
+            for _ref in dart_source_refs or []:
+                if isinstance(_ref, dict):
+                    _first_ref = _ref
+                    break
+            if _first_ref is not None:
+                _role = _first_ref.get("block_role")
+                if isinstance(_role, str) and _role.strip():
+                    chunk["source_block_role"] = _role.strip()
+                _conf = _first_ref.get("confidence")
+                if isinstance(_conf, (int, float)) and not isinstance(
+                    _conf, bool
+                ):
+                    _conf_f = float(_conf)
+                    if 0.0 <= _conf_f <= 1.0:
+                        chunk["source_block_confidence"] = _conf_f
+                _wcag = _first_ref.get("wcag_status")
+                if (
+                    isinstance(_wcag, str)
+                    and _wcag.strip() in _SEMANTIK_WCAG_BLOCK_STATUSES
+                ):
+                    chunk["wcag_block_status"] = _wcag.strip()
+            if chunk_type == "figure" or (html and "<figure" in html.lower()):
+                _alt = _recover_figure_alt(html)
+                if _alt:
+                    chunk["figure_alt"] = _alt
+            if _doc_semantic_preservation_score is not None:
+                chunk["semantic_preservation_score"] = (
+                    _doc_semantic_preservation_score
+                )
+            if _doc_certification_status is not None:
+                chunk["certification_status"] = _doc_certification_status
+
             return chunk
 
         # W3.H sub-task H1: count blocks_seen + per-reason drops BEFORE

@@ -208,6 +208,136 @@ def _stage10_axe_summary(gate_result: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# P3a — per-region provenance distillation (SemantiK migration §3.3a/§3.5).
+#
+# ``run_full_cascade`` computes everything the Ed4All adapter IR needs
+# (regions = ``capped``, ``feature_blocks``, per-region Stage-7 gate
+# results) but historically dropped it from the result. This helper
+# distills a STABLE, in-memory per-region provenance list in DOCUMENT
+# order so the in-process seam (``lib/semantik/cascade_ir.py``) can build
+# the adapter's chapters IR without re-running models. No cascade LOGIC
+# changes — capture-and-expose only. Every field guards for absence so a
+# mock run (empty payloads / partial feature blocks) never raises.
+# ---------------------------------------------------------------------------
+
+
+def _fb_page(feature_blocks: list[Any], fb_idx: int) -> int | None:
+    """1-indexed physical page of a feature block, or ``None`` if absent."""
+    if not (0 <= fb_idx < len(feature_blocks)):
+        return None
+    fb = feature_blocks[fb_idx]
+    raw = getattr(fb, "raw", None)
+    page = getattr(raw, "page", None)
+    try:
+        p = int(page)
+    except (TypeError, ValueError):
+        return None
+    return p if p > 0 else None
+
+
+def _fb_text(feature_blocks: list[Any], fb_idx: int) -> str:
+    """Deterministic extracted text of a feature block (``""`` if absent)."""
+    if not (0 <= fb_idx < len(feature_blocks)):
+        return ""
+    fb = feature_blocks[fb_idx]
+    raw = getattr(fb, "raw", None)
+    return (getattr(raw, "text", None) or "") if raw is not None else ""
+
+
+def _region_wcag_status(stage7_results: dict[int, list[Any]], region_index: int) -> str | None:
+    """Per-region WCAG verdict distilled from the Stage-7 candidate gate.
+
+    ``"passed"`` iff at least one candidate survived (matches the Stage-7
+    survivor semantics in :func:`build_region_gate_log`); ``"failed"`` when
+    every candidate died; ``None`` when the region was never gated (no
+    entry — e.g. a passthrough region).
+    """
+    cands = stage7_results.get(region_index)
+    if cands is None:
+        return None
+    if any(getattr(gr, "passed", False) for gr in cands):
+        return "passed"
+    return "failed"
+
+
+def _build_region_provenance(
+    region_order: list[int],
+    regions: list[Region],
+    feature_blocks: list[Any],
+    stage7_results: dict[int, list[Any]],
+) -> list[dict[str, Any]]:
+    """Distill one provenance dict per region in DOCUMENT (emission) order.
+
+    ``region_order`` is ``AssembledDoc.region_provenance`` — for each
+    emitted block, the index into ``regions`` (= ``capped``). The assembler
+    emits regions in reading order, so iterating it yields document order.
+
+    Each dict carries the §3.3a/§3.5 fields the adapter IR consumes:
+
+    - ``region_index``        : index into ``regions`` (= ``capped``)
+    - ``region_kind``         : the typed RegionKind
+    - ``role``                : Semantic ``doc_role`` payload label (or kind)
+    - ``confidence``          : per-region cascade confidence (payload)
+    - ``wcag_status``         : per-region Stage-7 verdict (passed/failed/None)
+    - ``first_raw_block_index``: §3.3a determinism key — the SMALLEST raw
+      feature-block index the region claims (stable under merge/split)
+    - ``pages``               : sorted 1-indexed physical pages the region
+      spans (from each claimed FB's ``raw.page``)
+    - ``heading_text``        : heading/figure label (payload ``text``)
+    - ``level``               : heading level hint (payload ``level_hint``)
+    - ``figure_alt``          : Stage-6b caption for figure regions
+    - ``raw_text``            : concatenated deterministic extracted text
+      (hash basis for content-hash sids; never post-model HTML)
+    """
+    provenance: list[dict[str, Any]] = []
+    n = len(regions)
+    for region_index in region_order:
+        if not (0 <= region_index < n):
+            # Defensive: a provenance index outside the region list is a
+            # bug upstream; skip rather than raise so a mock run survives.
+            continue
+        region = regions[region_index]
+        fb_indices = list(getattr(region, "feature_block_indices", ()) or ())
+        payload = getattr(region, "payload", {}) or {}
+
+        first_raw = min(fb_indices) if fb_indices else region_index
+        pages = sorted(
+            {p for fb in fb_indices if (p := _fb_page(feature_blocks, fb)) is not None}
+        )
+        raw_text = " ".join(
+            t for fb in sorted(fb_indices) if (t := _fb_text(feature_blocks, fb).strip())
+        )
+
+        kind = getattr(region, "kind", "paragraph")
+        role = payload.get("doc_role") or kind
+        confidence = payload.get("confidence")
+        try:
+            confidence = float(confidence) if confidence is not None else None
+        except (TypeError, ValueError):
+            confidence = None
+
+        heading_text = payload.get("text") if kind in {"heading", "figure"} else None
+        figure_alt = (payload.get("alt_text") or None) if kind == "figure" else None
+
+        provenance.append(
+            {
+                "region_index": region_index,
+                "region_kind": kind,
+                "role": role,
+                "confidence": confidence,
+                "wcag_status": _region_wcag_status(stage7_results, region_index),
+                "first_raw_block_index": int(first_raw),
+                "pages": pages,
+                "heading_text": heading_text,
+                "level": payload.get("level_hint"),
+                "figure_alt": figure_alt,
+                "raw_text": raw_text,
+            }
+        )
+    return provenance
+
+
+# ---------------------------------------------------------------------------
 # The cascade
 # ---------------------------------------------------------------------------
 
@@ -512,6 +642,21 @@ def run_full_cascade(
     stage10_axe = chosen["stage10_axe"]
     wcag_status = chosen["wcag_status"]
 
+    # P3a (SemantiK migration §3.3a/§3.5) — distill the already-computed
+    # per-region provenance the Ed4All adapter IR needs. ``region_order``
+    # is the assembler's ``region_provenance`` (emitted-block → capped-
+    # region index, in document order); fall back to the natural region
+    # order when the assembler did not surface it (mock / partial runs).
+    region_order = list(getattr(assembled, "region_provenance", None) or [])
+    if not region_order:
+        region_order = list(range(len(capped)))
+    region_provenance = _build_region_provenance(
+        region_order,
+        list(capped),
+        feature_blocks,
+        chosen["stage7_results"],
+    )
+
     elapsed_total = time.perf_counter() - t_total
 
     theta_payload = dataclasses.asdict(report)
@@ -566,6 +711,10 @@ def run_full_cascade(
         "wcag_status_under_mock": wcag_status,
         "heading_tree": [list(t) for t in assembled.heading_tree],
         "landmarks": dict(assembled.landmarks),
+        # P3a — distilled per-region provenance in document order (the
+        # adapter-IR source). Stable, JSON-safe; consumed in-process by
+        # ``lib/semantik/cascade_ir.py::build_chapters_ir``.
+        "region_provenance": region_provenance,
         "html_length": len(assembled.html),
         "theta": theta_payload,
         "council_signal_coverage": council_signal_coverage,
@@ -609,6 +758,11 @@ class PipelineV2Result:
     lane_used: str
     theta_report: dict  # ThetaReport, dataclass-as-dict
     cascade: dict  # full run_full_cascade result dict
+    # P3a — distilled per-region provenance in document order (mirrors
+    # ``cascade["region_provenance"]``; promoted to a top-level field so the
+    # Ed4All seam consumes it without reaching into the telemetry dict).
+    region_provenance: list[dict] = dataclasses.field(default_factory=list)
+    heading_tree: list[tuple[int, str]] = dataclasses.field(default_factory=list)
 
 
 def _enum_value(obj: Any) -> Any:
@@ -696,6 +850,8 @@ def run_pipeline_v2(
         lane_used=result["lane_used"],
         theta_report=theta,
         cascade=result,
+        region_provenance=list(result.get("region_provenance") or []),
+        heading_tree=[tuple(t) for t in (result.get("heading_tree") or [])],
     )
 
 

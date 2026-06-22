@@ -2716,15 +2716,30 @@ class WorkflowRunner:
                 pdf_paths = [p.strip() for p in pdf_paths.split(",")]
             for i, pdf_path in enumerate(pdf_paths):
                 task_id = f"T-{phase.name}-{i}-{timestamp}"
+                # SemantiK migration P3c — the registry tool
+                # ``extract_and_convert_pdf`` flips the LIVE PDF→HTML
+                # conversion to the SemantiK v2 seam ONLY when it sees
+                # ``phase == "dart_conversion"`` (this textbook/course path);
+                # the ``batch_dart`` ``multi_source_synthesis`` phase stays on
+                # the legacy DART path. Forward the seam params so the flipped
+                # path threads canonical course code, figures dir, and the
+                # ``--reuse-conversion`` pinned-HTML flag (§3.3a item 2).
+                task_params = {
+                    "pdf_path": pdf_path,
+                    "course_code": workflow_params.get("course_name", ""),
+                    "phase": phase.name,
+                    "canonical_course_code": workflow_params.get(
+                        "canonical_course_code"
+                    ),
+                }
+                if workflow_params.get("reuse_conversion"):
+                    task_params["reuse_conversion"] = True
                 task = {
                     "id": task_id,
                     "agent_type": phase.agents[0],
                     "phase": phase.name,
                     "status": "PENDING",
-                    "params": {
-                        "pdf_path": pdf_path,
-                        "course_code": workflow_params.get("course_name", ""),
-                    },
+                    "params": task_params,
                     "created_at": datetime.now().isoformat(),
                     "dependencies": [],
                 }
