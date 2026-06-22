@@ -78,6 +78,26 @@ def _anatomy_emit_enabled() -> bool:
     return os.environ.get(_ANATOMY_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
 
 
+# IB4 — per-block WCAG 2.2 AA + UDL emit flag (ED4ALL_BLOCK_A11Y). Default OFF:
+# with this unset the UDL coverage fields are NOT emitted to HTML / JSON-LD
+# (byte-stable) and the per-block a11y sub-check in RewriteHtmlShapeValidator is
+# a no-op. The canonical resolver lives in lib/generation/block_a11y.py; this
+# module-level reader keeps blocks.py dependency-light (the emit gate needs no
+# import of the larger generation package at module load).
+_BLOCK_A11Y_EMIT_ENV = "ED4ALL_BLOCK_A11Y"
+
+
+def _block_a11y_emit_enabled() -> bool:
+    """Read ``ED4ALL_BLOCK_A11Y`` each call so tests can toggle it.
+
+    Default off — the IB4 UDL fields (``n_representations`` /
+    ``response_formats`` / ``engagement_affordance``) are purely additive and
+    must not break byte-stable emit. Falsey / garbage values → off
+    (parse-with-fallback, mirroring :func:`_anatomy_emit_enabled`).
+    """
+    return os.environ.get(_BLOCK_A11Y_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
+
+
 def _esc(text: str) -> str:
     """HTML-escape mirroring ``html.escape`` (matches ``html_mod.escape`` in generate_course.py)."""
     return _html_mod.escape(text)
@@ -473,6 +493,107 @@ def derive_anatomy_slots(block: "Block") -> "Block":
     return dataclasses.replace(block, **updates)
 
 
+# ---------------------------------------------------------------------------
+# IB4 — UDL multiple-means coverage detector (QA-13 / D7). DETERMINISTIC,
+# pure string/HTML inspection — NO LLM, NO embeddings. Anti-fabrication: derive
+# only from what is present; leave empty / None when nothing resolves. Feeds
+# IB4.5's UdlCoverageValidator (which derives on read when these fields are
+# empty) and IB6's Engagement + Accessibility/UDL quality dimensions.
+# ---------------------------------------------------------------------------
+
+# Representation-mode HTML markers (count of DISTINCT modes present). REUSE of
+# the existing body-tag vocabulary — prose <p>, tabular <table>, figure
+# <img>/<figure>, formula <math> (or a data-cf-content-type="formula"
+# wrapper / a <span class="math"> token), list <ul>/<ol>, reveal <details>.
+_UDL_REPRESENTATION_PATTERNS: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
+    ("prose", re.compile(r"(?is)<p[\s>]")),
+    ("table", re.compile(r"(?is)<table[\s>]")),
+    ("image", re.compile(r"(?is)<(?:img|figure)[\s>]")),
+    ("formula", re.compile(r"(?is)<math[\s>]|class=\"[^\"]*\bmath\b|data-cf-content-type=\"formula\"")),
+    ("list", re.compile(r"(?is)<(?:ul|ol)[\s>]")),
+    ("reveal", re.compile(r"(?is)<details[\s>]")),
+)
+
+# block_type -> learner response/expression mode (Action/Expression network).
+_UDL_RESPONSE_BY_BLOCK_TYPE: Dict[str, str] = {
+    "self_check_question": "select",
+    "assessment_item": "select",
+    "activity": "construct",
+    "problem": "construct",
+    "reflection_prompt": "reflect",
+    "discussion_prompt": "discuss",
+    "flip_card_grid": "recall",
+}
+
+# Deterministic real-world / scenario phrase markers for the engagement /
+# autonomy affordance (Engagement/Affective network). Lower-cased substring
+# match over the rendered content text.
+_UDL_REAL_WORLD_MARKERS: Tuple[str, ...] = (
+    "real-world", "real world", "in practice", "everyday", "scenario",
+    "imagine", "suppose you", "consider a situation",
+)
+
+
+def _udl_content_text(block: "Block") -> str:
+    """Return the inspectable HTML/text body of a block for UDL detection."""
+    content = block.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        parts: List[str] = []
+        for value in content.values():
+            if isinstance(value, str):
+                parts.append(value)
+        return " ".join(parts)
+    return ""
+
+
+def _derive_udl_coverage(
+    block: "Block",
+) -> "Tuple[int, Tuple[str, ...], Optional[str]]":
+    """Deterministically derive ``(n_representations, response_formats, engagement_affordance)``.
+
+    Pure string/HTML inspection — NO LLM, NO embeddings. Anti-fabrication:
+    derive only from what is present; leave 0 / () / None when nothing
+    resolves.
+
+    * ``n_representations`` = count of DISTINCT present representation modes
+      (prose / table / image / formula / list / reveal).
+    * ``response_formats`` = the block_type's learner action/expression mode
+      (single-element tuple) when one is mapped; () otherwise.
+    * ``engagement_affordance`` = a deterministic autonomy hook:
+      ``reflection`` for reflection_prompt; ``tiered_resource`` for a
+      prereq_set / tiered block; ``real_world`` when a real-world/scenario
+      phrase is present; None otherwise.
+    """
+    text = _udl_content_text(block)
+
+    n_representations = 0
+    for _mode, pattern in _UDL_REPRESENTATION_PATTERNS:
+        if pattern.search(text):
+            n_representations += 1
+
+    response_formats: Tuple[str, ...] = ()
+    rf = _UDL_RESPONSE_BY_BLOCK_TYPE.get(block.block_type)
+    if rf:
+        response_formats = (rf,)
+
+    engagement_affordance: Optional[str] = None
+    bt = block.block_type
+    if bt == "reflection_prompt":
+        engagement_affordance = "reflection"
+    elif bt in ("prereq_set",):
+        engagement_affordance = "tiered_resource"
+    elif bt == "scenario":
+        engagement_affordance = "real_world"
+    else:
+        lowered = text.lower()
+        if any(marker in lowered for marker in _UDL_REAL_WORLD_MARKERS):
+            engagement_affordance = "real_world"
+
+    return n_representations, response_formats, engagement_affordance
+
+
 @dataclass(frozen=True)
 class Touch:
     """One revision attribution event in a Block's touch chain.
@@ -693,6 +814,16 @@ class Block:
     # it under ED4ALL_ALIGNMENT_VERB_TRIPLE). Populated only by an authoring
     # wave / operator; nothing in IB3 emits it (IB3.4's validator only READS it).
     anchored_rubric: Optional[Dict[str, Any]] = None
+    # IB4 — UDL multiple-means coverage (QA-13 / D7). Audit-only, populated by
+    # the deterministic UDL detector (see :func:`_derive_udl_coverage`);
+    # EXCLUDED from compute_content_hash() (mirrors target_bloom / quality_rubric)
+    # so a retro-fit never drifts an existing block hash. Empty defaults =>
+    # legacy / flag-off blocks are byte-identical. Emitted to HTML/JSON-LD only
+    # when ED4ALL_BLOCK_A11Y is set (default OFF). Feeds IB6's Engagement +
+    # Accessibility/UDL quality dimensions.
+    n_representations: int = 0          # count of distinct representation modes (prose, table, image, formula, list, ...)
+    response_formats: Tuple[str, ...] = ()   # learner action/expression modes the block affords (recall, construct, select, reflect, discuss, ...)
+    engagement_affordance: Optional[str] = None  # autonomy/engagement hook (choice, real_world, self_pace, reflection, tiered_resource)
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -758,11 +889,13 @@ class Block:
         ``bloom_alignment``, ``objective_alignment``, ``target_bloom``,
         the IB1 six-slot anatomy metadata slots ``heading`` / ``purpose_tag``
         / ``interaction`` / ``feedback`` / ``transition``, the IB2.3
-        ``quality_rubric`` audit/scoring tuple, and the IB3.4
-        ``anchored_rubric`` Evaluate/Create scoring rubric so a
+        ``quality_rubric`` audit/scoring tuple, the IB3.4
+        ``anchored_rubric`` Evaluate/Create scoring rubric, and the IB4 UDL
+        coverage fields ``n_representations`` / ``response_formats`` /
+        ``engagement_affordance`` so a
         touch-only / budget-only / classifier-retrofit / objective-
         delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring /
-        anchored-rubric-attach revision keeps a stable hash. ``content`` (the BODY slot) IS in the payload; the other
+        anchored-rubric-attach / udl-coverage-retrofit revision keeps a stable hash. ``content`` (the BODY slot) IS in the payload; the other
         five anatomy slots are derived-or-authored metadata ABOUT the same
         content, so hashing them would drift every existing block hash on a
         back-derivation retrofit — exactly the failure the
@@ -865,6 +998,20 @@ class Block:
 
         if _emit_blocks_enabled() and self.block_id:
             attrs += f' data-cf-block-id="{_esc(self.block_id)}"'
+        # IB4 — UDL multiple-means coverage attrs. DOUBLE-gated: behind
+        # ED4ALL_BLOCK_A11Y (default OFF) AND only-when-set, so default-off emit
+        # is byte-identical. Mirrors the anatomy / observed-bloom emit posture.
+        if _block_a11y_emit_enabled():
+            if self.n_representations:
+                attrs += f' data-cf-udl-representations="{int(self.n_representations)}"'
+            if self.response_formats:
+                joined = ",".join(_esc(rf) for rf in self.response_formats if rf)
+                if joined:
+                    attrs += f' data-cf-udl-response-formats="{joined}"'
+            if self.engagement_affordance:
+                attrs += (
+                    f' data-cf-udl-engagement="{_esc(self.engagement_affordance)}"'
+                )
         return attrs
 
     # --- per-block-type helpers (kept private to make dispatch readable) ---
@@ -1135,6 +1282,21 @@ class Block:
             if anatomy:
                 anatomy["lifecycle"] = slots_to_lifecycle(self)
                 entry["anatomy"] = anatomy
+        # IB4 — UDL multiple-means coverage (QA-13 / D7). Emit a ``udlCoverage``
+        # sub-object DOUBLE-gated: behind BOTH ``_block_a11y_emit_enabled()``
+        # (the new ED4ALL_BLOCK_A11Y flag, default OFF) AND only-when-set.
+        # Default-OFF flag ⇒ no ``udlCoverage`` key ⇒ byte-identical JSON-LD.
+        # camelCase keys; feeds IB6's Engagement + Accessibility/UDL dimensions.
+        if _block_a11y_emit_enabled():
+            udl: Dict[str, Any] = {}
+            if self.n_representations:
+                udl["nRepresentations"] = int(self.n_representations)
+            if self.response_formats:
+                udl["responseFormats"] = list(self.response_formats)
+            if self.engagement_affordance is not None:
+                udl["engagementAffordance"] = self.engagement_affordance
+            if udl:
+                entry["udlCoverage"] = udl
         # W3 — optional pointer to the sidecar block_synthesis_manifest.jsonl
         # line keyed on this block_id. We do NOT inline the whole manifest into
         # the JSON-LD (it would bloat the IMSCC payload + duplicate the

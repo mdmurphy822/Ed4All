@@ -1106,6 +1106,17 @@ def _build_block_input(
 
     inputs: Dict[str, Any] = {"blocks": blocks}
 
+    # IB4.6 — thread the ED4ALL_BLOCK_A11Y resolution into the Block-input
+    # surface so RewriteHtmlShapeValidator's per-block a11y sub-check (IB4.1)
+    # fires only when the flag is on. Harmless for the other Block*Validators
+    # sharing this builder — they ignore the key. Default OFF → byte-stable.
+    try:
+        from lib.generation.block_a11y import resolve_block_a11y
+
+        inputs["block_a11y_enabled"] = resolve_block_a11y()
+    except Exception:  # noqa: BLE001 — never let the resolver import break routing
+        inputs["block_a11y_enabled"] = False
+
     objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
     if objectives_path:
         inputs["objectives_path"] = objectives_path
@@ -1650,6 +1661,42 @@ def _build_chunkset_manifest_inputs(
         return {}, ["chunkset_manifest_path"]
 
     return {"chunkset_manifest_path": manifest_path}, []
+
+
+def _build_chunk_wcag_status(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """IB4.2 — input builder for ChunkWcagStatusValidator.
+
+    Surfaces the chunkset JSONL path so the validator can audit the data-only
+    ``wcag_block_status`` / ``figure_alt`` chunk fields. Fires symmetrically at
+    two phases:
+
+    * ``chunking`` (DART) — emits ``dart_chunks_path``.
+    * ``imscc_chunking`` (IMSCC) — emits ``imscc_chunks_path``.
+
+    Input-starved (no path resolved) is NOT a missing-input failure: the
+    validator's own ``WCAG_FIELDS_ABSENT`` arm warns + passes (warning-day-1,
+    can't break a run), so we surface whatever resolves and never return a
+    missing-input list that would mark the gate failed.
+    """
+    chunking = phase_outputs.get("chunking") or {}
+    imscc_chunking = phase_outputs.get("imscc_chunking") or {}
+
+    inputs: Dict[str, Any] = {}
+    dart_path = chunking.get("dart_chunks_path") or _locate(
+        phase_outputs, "dart_chunks_path"
+    )
+    if isinstance(dart_path, str) and dart_path:
+        inputs["dart_chunks_path"] = dart_path
+    imscc_path = imscc_chunking.get("imscc_chunks_path") or _locate(
+        phase_outputs, "imscc_chunks_path"
+    )
+    if isinstance(imscc_path, str) and imscc_path:
+        inputs["imscc_chunks_path"] = imscc_path
+
+    return inputs, []
 
 
 def _build_qti_well_formed(
@@ -2431,6 +2478,14 @@ def default_router() -> GateInputRouter:
         "lib.validators.rewrite_html_shape.RewriteHtmlShapeValidator",
         _build_block_input_rewrite,
     )
+    # IB4.5 — UdlCoverageValidator audits the UDL multiple-means coverage of the
+    # Block batch (derives on read). Consumes only ``inputs['blocks']`` so it
+    # reuses the rewrite-tier Block surface (falls through to outline-tier
+    # inside _build_block_input when only blocks_outline_path is present).
+    r.register(
+        "lib.validators.udl_coverage.UdlCoverageValidator",
+        _build_block_input_rewrite,
+    )
     r.register(
         "lib.validators.rewrite_source_grounding.RewriteSourceGroundingValidator",
         _build_rewrite_block_input,
@@ -2582,6 +2637,13 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.chunkset_manifest.ChunksetManifestValidator",
         _build_chunkset_manifest_inputs,
+    )
+    # IB4.2 — ChunkWcagStatusValidator gates the data-only chunk WCAG fields
+    # (wcag_block_status / figure_alt) at chunking (DART) + imscc_chunking
+    # (IMSCC). Needs the chunkset JSONL path; warning-day-1.
+    r.register(
+        "lib.validators.chunk_wcag_status.ChunkWcagStatusValidator",
+        _build_chunk_wcag_status,
     )
     # W10 §7 — QtiWellFormedValidator fires at the ``assessment_synthesis``
     # phase and needs ``inputs["qti_dir"] = <export>/06_assessments``. The

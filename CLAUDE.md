@@ -609,13 +609,13 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 17 | 13 | 30 |
+| `course_generation` | 17 | 15 | 32 |
 | `intake_remediation` | 2 | 0 | 2 |
 | `batch_dart` | 2 | 0 | 2 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 39 | 54 | 93 |
+| `textbook_to_course` | 39 | 59 | 98 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **66** | **70** | **136** |
+| **Total** | **66** | **77** | **143** |
 
 > W4 SHADOW landing (NLI grounding gates): `rewrite_source_grounding` DEMOTED
 > critical → warning in `course_generation` + `textbook_to_course`
@@ -735,6 +735,32 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 > `config/workflows.yaml`: `course_generation` 9→13 warning,
 > `textbook_to_course` 50→54 warning, Total 62→70 warning / 128→136 total.
 
+> IB4 landing (per-block WCAG 2.2 AA + UDL multiple-means contracts): moves
+> WCAG 2.2 AA from a page-level retrofit to per-block-type contracts, gates the
+> data-only chunk WCAG fields, closes the missing `textbook_to_course`
+> packaging WCAG gate, and adds UDL multiple-means coverage fields + a
+> validator. THREE new gates wired (all **warning day-1** with a deferred
+> `# TODO(calibration)` critical-flip marker): `udl_coverage`
+> (`lib.validators.udl_coverage.UdlCoverageValidator`) at
+> `inter_tier_validation` + `post_rewrite_validation` in BOTH
+> `course_generation` (+2 warning) and `textbook_to_course` (+2 warning);
+> `chunk_wcag_status` (`lib.validators.chunk_wcag_status.ChunkWcagStatusValidator`)
+> at `chunking` + `imscc_chunking` in `textbook_to_course` (+2 warning); and
+> `wcag_compliance` (`DART.pdf_converter.wcag_validator.WCAGValidator`, reused
+> as-is) at `textbook_to_course` `packaging` (+1 warning). The IB4.1 per-block
+> WCAG sub-check (`REWRITE_BLOCK_A11Y_CONTRACT`) is a WARNING sub-issue of the
+> existing critical `rewrite_html_shape` gate (NOT a new gate → no count
+> change) and no-ops when `ED4ALL_BLOCK_A11Y` is unset; the per-block
+> `Accessibility=0` hard-fail rollup (framework 6.4) is DEFERRED to IB6. The
+> three new `Block` UDL fields (`n_representations` / `response_formats` /
+> `engagement_affordance`) are Optional, hash-EXCLUDED, and emitted to
+> HTML/JSON-LD only behind the default-OFF `ED4ALL_BLOCK_A11Y` flag (byte-stable
+> when off, mirroring the IB1 anatomy posture). UNLIKE IB3, IB4 takes the
+> standard multi-wave deferred-flip (IB3 is the roadmap's single documented
+> fastest-flip exception). The count table above is re-derived from
+> `config/workflows.yaml`: `course_generation` 13→15 warning,
+> `textbook_to_course` 54→59 warning, Total 70→77 warning / 136→143 total.
+
 ---
 
 ## Configuration Files
@@ -789,6 +815,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix):
 | `ED4ALL_ANSWER_NLI_ADD` | `off` | Three-valued (`off` / `shadow` / `on`) governor of the **NLI-based citation-ADD** arm (`citation_attribution.resolve_nli_add_mode`; hooked in `grounded_answer.answer_course_question` strictly AFTER the lexical prune+add pass, step 7b). The entailment-driven successor to the shingle ADD arm, which the 2026-06-12 under-citing investigation measured unsalvageable (paraphrase answers never quote; median cited shingle 0.000 → zero adds even at bar 0.10). REUSES the groundedness scorer's per-claim NLI verdicts (never runs NLI twice; needs `with_groundedness`). Credits an uncited gate-eligible supporter only under a COMPOSITE criterion: NLI entailment ≥ 0.70 (windowed, scorer-v2) AND claim↔chunk content-token coverage ≥ 0.80 AND every numeric literal in the claim text present in the chunk (NLI is number-blind) AND the chunk anchors/resolves AND ≤ 2 adds/answer. **Default `off`** — unlike the lexical arm's `shadow` default, the NLI model is a ~750 MB lazy load that must NOT touch the default answer path. `shadow`: compute would-adds, emit the `grounded_answer_nli_citation_add` capture + the additive `nli_citation_add` diagnostics block (eval aggregates `shadow_nli_add`) + warnings, mutate NOTHING. `on`: actually add (anchor-resolved, sorted after existing citations, cap 2); ships dark. NEVER changes an answer verdict in any mode. The Docker compose stack sets this `shadow`. Garbage values fall back to `off`. No licensing row (no provider/model). |
 | `ED4ALL_ANSWER_COMPLETENESS_RECHECK` | `on` | Governs the post-generation **completeness recheck** (`grounded_answer._resolve_completeness_recheck`; hooked in `answer_course_question` step 4b, BEFORE the citation gate). A small (7B-Q4) model non-deterministically drops a sub-question of a MULTI-part question even when the grounding is its top passage (observed 2026-06-18: "perimeter of a rectangle? circumference of a circle?" → only the rectangle half answered). When on (default), the answer is split into sub-questions (`lib/retrieval/answer_completeness.py`, pure-lexical — NO model load), and any part that is unaddressed by the answer BUT grounded in a retrieved passage triggers ONE bounded re-ask through the composer with the additive `COMPLETENESS_REMEDIATION_DIRECTIVE`; the re-ask's missing-part prose + citations are MERGED onto the original (the re-ask is itself not rechecked — single retry, no recursion). **Never regresses** — a re-ask that refuses / returns no citations / errors keeps the original answered response, and the answered-family verdict never becomes a refusal/block. Detection is deliberately UNDER-split + recall-leaning (a no-`?` search/statement query is single-part by construction; the grounding gate holds the precise 0.80 token-coverage floor so a re-ask only fires on a sub-question the corpus can answer). Emits the `grounded_answer_completeness_recheck` decision capture (dynamic, replayable rationale) every call. Falsey values (`0`/`false`/`no`/`off`) disable (parse-with-fallback, mirroring the other answer-path knobs). Selects no provider/model → no `docs/LICENSING.md` row. |
 | `ED4ALL_BLOCK_ANATOMY` | unset (off) | IB1 six-slot anatomy contract emit gate (`Courseforge/scripts/blocks.py::_anatomy_emit_enabled`, consumed in `Block._minimal_block_jsonld`). Default OFF → no `anatomy` key in the JSON-LD `blocks[]` entry; every existing snapshot / `contentHash` stays byte-identical (the five new `Block` slot fields `heading`/`purpose_tag`/`interaction`/`feedback`/`transition` are Optional-default-None, hash-EXCLUDED, and the BODY slot is the existing `content`). When truthy (`1`/`true`/`yes`/`on`) AND `COURSEFORGE_EMIT_BLOCKS` is on, the entry gains a nested `anatomy` object carrying only the non-None slots plus the slot→stage `lifecycle` map (`activate→present→apply→check→consolidate`). Representation only — NO gate (IB6 owns the anatomy slot-presence validator), NO new `data-cf-*` HTML attr, NO LLM call. Generates PRODUCT metadata, not training data → no `docs/LICENSING.md` row. Falsey / garbage → off (parse-with-fallback, mirroring `COURSEFORGE_EMIT_BLOCKS`). |
+| `ED4ALL_BLOCK_A11Y` | unset (off) | IB4 per-block WCAG 2.2 AA + UDL emit gate (`lib/generation/block_a11y.py::resolve_block_a11y`; emit reader `Courseforge/scripts/blocks.py::_block_a11y_emit_enabled`; threaded into the `rewrite_html_shape` + `udl_coverage` Block inputs by `MCP/hardening/gate_input_routing.py`). Default OFF → `Block`'s UDL fields (`n_representations`/`response_formats`/`engagement_affordance`) are NOT emitted to HTML/JSON-LD (Optional-default-empty, hash-EXCLUDED) and the per-block a11y sub-check in `RewriteHtmlShapeValidator._check_block_a11y_contract` is a no-op, so every existing snapshot stays byte-identical. When truthy (`1`/`true`/`yes`/`on`), the deterministic `_derive_udl_coverage` UDL fields are stamped (`data-cf-udl-*` HTML attrs + a `udlCoverage` JSON-LD sub-object) and the per-block-type WCAG contract (alt text 1.1.1 / keyboard-operable interaction + name/role/value 2.1.1+4.1.2 / descriptive link text 2.4.4 / captions+transcript for B04) is enforced as a WARNING (`REWRITE_BLOCK_A11Y_CONTRACT`) at `inter_tier_validation` + `post_rewrite_validation`. The `chunk_wcag_status` chunk-field gate, the `textbook_to_course` packaging `wcag_compliance` gate, and the `udl_coverage` validator run warning-day-1 regardless of this flag (they read existing data / reuse `WCAGValidator` / derive UDL on read). Falsey / garbage → off (parse-with-fallback). Generates PRODUCT content (course-page a11y attrs), not training data → no `docs/LICENSING.md` row. |
 | `ED4ALL_COS_PER_WEEK_CAP` | `0` (auto) | WS5 §2.2 per-week chapter-objective placement cap for the single-sourced slicer `Courseforge/scripts/generate_course.py::_slice_cos_for_week` — consumed by BOTH the emit-side per-week slicer (`MCP/tools/pipeline_tools.py::_generate_course_content`) and the validator's allowed-set builder (`_slice_chapter_objectives_by_week` + `_plan_course_structure`'s §2.4(A) `"Week N"` group persistence), so emit-week-N ids == validator-allowed-week-N ids by construction. The slicer uses a CEIL stride `step = max(1, ceil(len(COs)/weeks))` (was the floor `len(COs)//weeks` + `[:2]` truncation that silently dropped grounded COs at any `duration_weeks < len(COs)`); each week claims `COs[(w-1)*step : w*step][:cap]`. Default `0` = auto = `step` (no truncation — every CO in the ceil-stride slice is placed, guaranteeing zero-drop coverage). A positive int pins a hard per-week ceiling (e.g. `3` to thin dense weeks). The cap-lift is UNCONDITIONAL — it applies even on an explicit `--weeks N` so a short course still places all COs (only the WS5 §3.2 TO-rescale is behind the override guards). Garbage / non-positive values fall back to `0`/auto (parse-with-fallback, mirroring `ED4ALL_ANSWER_NUM_CTX`). Selects no provider/model → no `docs/LICENSING.md` row. |
 | `ED4ALL_EMBEDDING_PROVIDER` | `st` | Selects the retrieval-index embedding backend from `lib/embedding/providers.py::_EMBEDDING_PROVIDERS` (`st` in-process sentence-transformers / `local-openai` local `/v1/embeddings` server / `fake` deterministic test vectors). Registry entries, NOT subclasses. Not training-data synthesis; licensing row in `docs/LICENSING.md` § "Embedding providers". |
 | `ED4ALL_EMBEDDING_MODEL` | per-provider | Model ID override for the embedding provider (e.g. `BAAI/bge-large-en-v1.5`). Resolution chain: explicit arg > env var > registry default. |

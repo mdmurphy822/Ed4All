@@ -197,6 +197,24 @@ workflows:
               on_error: warn
             description: IB3.5 — every objective has >=1 activity AND >=1 band-aligned assessment (the complete constructive-alignment triangle). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
 
+          # IB4.5 — UDL multiple-means coverage (>=2 representations per
+          # content-bearing block + a per-week engagement/autonomy floor;
+          # QA-13 / D7). Deterministic (derives on read); runs warning-day-1
+          # regardless of ED4ALL_BLOCK_A11Y. Feeds IB6's Engagement +
+          # Accessibility/UDL quality dimensions.
+          # TODO(calibration) — flip UDL_SINGLE_REPRESENTATION to critical after
+          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
+          # single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: udl_coverage
+            validator: lib.validators.udl_coverage.UdlCoverageValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB4.5 — UDL >=2-representations + per-week autonomy floor. Warning day-1; deferred critical-flip.
+
       - name: content_generation_rewrite
         agents: [content-generator]
         # NOTE: parallel/batch_by intentionally disabled. The handler
@@ -442,6 +460,23 @@ workflows:
               on_fail: warn
               on_error: warn
             description: IB3.5 — every objective has >=1 activity AND >=1 band-aligned assessment (post-rewrite). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
+
+          # IB4.5 — UDL multiple-means coverage (>=2 representations per
+          # content-bearing block + a per-week engagement/autonomy floor;
+          # QA-13 / D7) on the rewrite-tier Block batch. Deterministic (derives
+          # on read); runs warning-day-1 regardless of ED4ALL_BLOCK_A11Y.
+          # TODO(calibration) — flip UDL_SINGLE_REPRESENTATION to critical after
+          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
+          # single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: udl_coverage
+            validator: lib.validators.udl_coverage.UdlCoverageValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB4.5 — UDL >=2-representations + per-week autonomy floor (post-rewrite). Warning day-1; deferred critical-flip.
 
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Mirror of
@@ -924,6 +959,21 @@ workflows:
             behavior:
               on_fail: warn
               on_error: warn
+
+          # IB4.2 — gate the data-only chunk WCAG fields (wcag_block_status /
+          # figure_alt) on the DART chunkset. Warning day-1; legacy corpora
+          # (fields absent) pass clean via WCAG_FIELDS_ABSENT.
+          # TODO(calibration) — flip to critical once a >=2-corpus measurement
+          # shows the `flagged`-rate is a true defect signal, not SemantiK-noise.
+          - gate_id: chunk_wcag_status
+            validator: lib.validators.chunk_wcag_status.ChunkWcagStatusValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB4.2 — DART-chunkset WCAG-field gate (no flagged chunk; figure chunks carry figure_alt). Warning day-1; deferred critical-flip.
 
       - name: objective_extraction
         agents: [textbook-ingestor]
@@ -1945,6 +1995,24 @@ workflows:
               on_error: warn
             description: IB3.5 — every objective has >=1 activity AND >=1 band-aligned assessment (the complete constructive-alignment triangle). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
 
+          # IB4.5 — UDL multiple-means coverage (>=2 representations per
+          # content-bearing block + a per-week engagement/autonomy floor;
+          # QA-13 / D7). Deterministic (derives on read); runs warning-day-1
+          # regardless of ED4ALL_BLOCK_A11Y. Feeds IB6's Engagement +
+          # Accessibility/UDL quality dimensions.
+          # TODO(calibration) — flip UDL_SINGLE_REPRESENTATION to critical after
+          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
+          # single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: udl_coverage
+            validator: lib.validators.udl_coverage.UdlCoverageValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB4.5 — UDL >=2-representations + per-week autonomy floor. Warning day-1; deferred critical-flip.
+
       - name: content_generation_rewrite
         agents: [content-generator]
         # NOTE: parallel/batch_by intentionally disabled. The handler
@@ -2567,6 +2635,23 @@ workflows:
               on_error: warn
             description: IB3.5 — every objective has >=1 activity AND >=1 band-aligned assessment (post-rewrite). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
 
+          # IB4.5 — UDL multiple-means coverage (>=2 representations per
+          # content-bearing block + a per-week engagement/autonomy floor;
+          # QA-13 / D7) on the rewrite-tier Block batch. Deterministic (derives
+          # on read); runs warning-day-1 regardless of ED4ALL_BLOCK_A11Y.
+          # TODO(calibration) — flip UDL_SINGLE_REPRESENTATION to critical after
+          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
+          # single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: udl_coverage
+            validator: lib.validators.udl_coverage.UdlCoverageValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB4.5 — UDL >=2-representations + per-week autonomy floor (post-rewrite). Warning day-1; deferred critical-flip.
+
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Reuses
       # the Trainforge AssessmentGenerator + the license-clean provider seat
@@ -2777,6 +2862,26 @@ workflows:
               on_error: warn
             description: "Phase 4 PoC SHACL parallel of page_objectives. Informational; Python gate remains authoritative."
 
+          # IB4.3 — close the missing textbook_to_course packaging WCAG gate.
+          # Reuses DART's page-level WCAGValidator exactly as
+          # course_generation packaging wires it; the gate input router feeds
+          # it html_path per packaged page (via _build_wcag). Warning day-1:
+          # this path currently passes silently on real corpora, so per the
+          # roadmap "measure before block" risk note it lands warning.
+          # TODO(calibration) — flip to severity: critical / on_fail: block /
+          # on_error: fail_closed (matching course_generation packaging's
+          # min_score: 0.9) after a >=2-corpus FP measurement confirms the
+          # textbook-staged HTML passes clean.
+          - gate_id: wcag_compliance
+            validator: DART.pdf_converter.wcag_validator.WCAGValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB4.3 — per-page WCAG 2.2 AA compliance on the packaged textbook_to_course pages. Warning day-1; deferred critical-flip after a >=2-corpus FP measurement.
+
       # Phase 7c ST 16: post-packaging IMSCC chunkset emit. Runs the
       # canonical ``Trainforge.chunker.chunk_content`` over the HTML files
       # extracted from the packaged ``.imscc`` zip and persists the
@@ -2835,6 +2940,21 @@ workflows:
             behavior:
               on_fail: warn
               on_error: warn
+
+          # IB4.2 — gate the data-only chunk WCAG fields (wcag_block_status /
+          # figure_alt) on the IMSCC chunkset, symmetric with the DART side.
+          # Warning day-1; legacy corpora pass clean via WCAG_FIELDS_ABSENT.
+          # TODO(calibration) — flip to critical once a >=2-corpus measurement
+          # shows the `flagged`-rate is a true defect signal, not SemantiK-noise.
+          - gate_id: chunk_wcag_status
+            validator: lib.validators.chunk_wcag_status.ChunkWcagStatusValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB4.2 — IMSCC-chunkset WCAG-field gate (no flagged chunk; figure chunks carry figure_alt). Warning day-1; deferred critical-flip.
 
       - name: trainforge_assessment
         agents: [assessment-generator]
