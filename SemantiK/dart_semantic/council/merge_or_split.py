@@ -30,6 +30,7 @@ from .. import paths as _semantik_paths
 from .base import LoRAAdapter, LoRAAdapterSpec
 from .registry import register_adapter
 from .runner import register_runner
+from .structure import batched_cls_pooled
 from .types import BertOutput, TypedSignal
 
 
@@ -511,13 +512,11 @@ def run_inputs(adapter: LoRAAdapter, inputs: Any) -> BertOutput:
             adapter_version=f"{name}@{spec.adapter_path}",
         )
 
-    enc = tok(pair_texts, padding=True, truncation=True, max_length=192,
-              return_tensors="pt").to(device)
+    # Backbone forward in VRAM-bounded batches (SEMANTIK_COUNCIL_BATCH_SIZE);
+    # CLS-pooled output is identical to the un-chunked path.
+    pooled = batched_cls_pooled(peft_model, tok, pair_texts, device)
     layout_t = torch.tensor(pair_layouts, dtype=torch.float32, device=device)
     with torch.no_grad():
-        out = peft_model(input_ids=enc["input_ids"],
-                         attention_mask=enc["attention_mask"])
-        pooled = out.last_hidden_state[:, 0, :].float()
         layout_h = layout_mlp(layout_norm(layout_t))
         h = torch.cat([pooled, layout_h], dim=-1)
         logits_same = head_same(h)

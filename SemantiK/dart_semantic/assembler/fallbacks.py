@@ -47,8 +47,29 @@ def _source_text(region: Region, feature_blocks: Sequence[FeatureBlock]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _css_class_attr(region: Region) -> str:
+    """`` class="…"`` for a region carrying a ``payload['css_class']`` hint.
+
+    The deterministic structure-correction pass stamps a semantic class hint
+    (e.g. ``"pedagogy-example"``) on pedagogical headings it demotes to
+    paragraphs, so the worked-example / solution semantics survive the
+    demotion. When present, the assembler emits ``<p class="…">``; when absent
+    (every non-demoted paragraph), this returns the empty string so the emit
+    is byte-identical to the prior plain-``<p>`` behaviour. A class attr on
+    ``<p>`` is valid HTML5 and WCAG-neutral.
+    """
+    payload = region.payload or {}
+    css_class = payload.get("css_class")
+    if isinstance(css_class, str) and css_class.strip():
+        return f' class="{escape(css_class.strip(), quote=True)}"'
+    return ""
+
+
 def fallback_paragraph(region: Region, feature_blocks: Sequence[FeatureBlock]) -> str:
-    return f"<p>{escape(_source_text(region, feature_blocks))}</p>"
+    return (
+        f"<p{_css_class_attr(region)}>"
+        f"{escape(_source_text(region, feature_blocks))}</p>"
+    )
 
 
 def fallback_heading(region: Region, feature_blocks: Sequence[FeatureBlock]) -> str:

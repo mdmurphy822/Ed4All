@@ -103,6 +103,96 @@ _LAYOUT_FS_CLAMP = 200.0
 _LAYOUT_OUTPUT_CLAMP = 10.0
 
 
+# ---------------------------------------------------------------------------
+# Council backbone batching (VRAM bound for 8GB cards).
+#
+# Each council forward (structure / semantic / merge_or_split) historically ran
+# the backbone over ALL spans in a SINGLE un-chunked forward, which OOMs an 8GB
+# GPU on a full textbook (thousands of spans). These two helpers chunk the
+# backbone forward into slices of ``SEMANTIK_COUNCIL_BATCH_SIZE`` and
+# concatenate the CLS-pooled outputs — numerically identical to the un-chunked
+# path (CLS-token pooling with a correct attention mask is padding-length
+# invariant, so a span's pooled vector is the same whether it is padded to the
+# batch max or the document max). Intermediate per-batch tensors are freed
+# between slices to bound peak VRAM.
+# ---------------------------------------------------------------------------
+
+_COUNCIL_BATCH_SIZE_ENV = "SEMANTIK_COUNCIL_BATCH_SIZE"
+_DEFAULT_COUNCIL_BATCH_SIZE = 32
+
+
+def resolve_council_batch_size() -> int:
+    """The council backbone-forward batch size (parse-with-fallback).
+
+    Reads ``SEMANTIK_COUNCIL_BATCH_SIZE`` (default 32). A non-positive /
+    non-integer / garbage value falls back to the default — mirroring the
+    other ``SEMANTIK_*`` knobs. Returned value is always ``>= 1``.
+    """
+    raw = os.environ.get(_COUNCIL_BATCH_SIZE_ENV)
+    if raw is None or not str(raw).strip():
+        return _DEFAULT_COUNCIL_BATCH_SIZE
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_COUNCIL_BATCH_SIZE
+    if val < 1:
+        return _DEFAULT_COUNCIL_BATCH_SIZE
+    return val
+
+
+def batched_cls_pooled(
+    peft_model: Any,
+    tok: Any,
+    texts: list[str],
+    device: Any,
+    *,
+    batch_size: int | None = None,
+    max_length: int = 192,
+) -> Any:
+    """Run the backbone over ``texts`` in batches; return the CLS-pooled tensor.
+
+    Tokenizes + forwards each ``batch_size`` slice independently and
+    concatenates the per-slice CLS vectors (``last_hidden_state[:, 0, :]``) into
+    one ``[len(texts), hidden]`` float tensor — byte-for-byte equivalent (modulo
+    float non-associativity that does not exist here, since each row is computed
+    independently) to a single un-chunked forward, because per-batch padding
+    only affects the masked-out trailing positions, never the CLS position.
+
+    Runs under ``torch.no_grad``; frees the per-batch encoding + hidden-state
+    tensors between slices so peak VRAM is bounded by ``batch_size`` rather than
+    ``len(texts)``.
+    """
+    import torch  # noqa: WPS433
+
+    if batch_size is None:
+        batch_size = resolve_council_batch_size()
+    batch_size = max(1, int(batch_size))
+
+    pooled_chunks: list[Any] = []
+    with torch.no_grad():
+        for start in range(0, len(texts), batch_size):
+            slice_texts = texts[start : start + batch_size]
+            enc = tok(
+                slice_texts,
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+            ).to(device)
+            out = peft_model(
+                input_ids=enc["input_ids"],
+                attention_mask=enc["attention_mask"],
+            )
+            pooled_chunks.append(out.last_hidden_state[:, 0, :].float())
+            # Free intermediates before the next slice (bounds peak VRAM).
+            del enc, out
+    if not pooled_chunks:
+        # Empty input — return a zero-row tensor so callers can index safely.
+        # (callers already guard the empty-spans case before reaching here.)
+        return torch.empty((0, 0))
+    return torch.cat(pooled_chunks, dim=0)
+
+
 def _safe_coord(v: Any) -> float:
     try:
         f = float(v)
@@ -497,13 +587,11 @@ def run_inputs(
             span_texts[i] = text
             span_layouts[i] = layout_vec
 
-    enc = tok(span_texts, padding=True, truncation=True, max_length=192, return_tensors="pt").to(
-        device
-    )
+    # Backbone forward in VRAM-bounded batches (SEMANTIK_COUNCIL_BATCH_SIZE);
+    # CLS-pooled output is identical to the un-chunked path.
+    pooled = batched_cls_pooled(peft_model, tok, span_texts, device)
     layout_t = torch.tensor(span_layouts, dtype=torch.float32, device=device)
     with torch.no_grad():
-        out = peft_model(input_ids=enc["input_ids"], attention_mask=enc["attention_mask"])
-        pooled = out.last_hidden_state[:, 0, :].float()
         layout_h = layout_mlp(layout_norm(layout_t))
         h = torch.cat([pooled, layout_h], dim=-1)
         logits_role = head_role(h)

@@ -55,6 +55,7 @@ from .structure import (
     _compute_span_layout,
     _group_by_page,
     _page_medians,
+    batched_cls_pooled,
 )
 from .types import BertOutput, TypedSignal
 
@@ -375,13 +376,11 @@ def run_inputs(adapter: LoRAAdapter, inputs: Any) -> BertOutput:
         in zip(span_layouts, cascades, positionals)
     ]
 
-    enc = tok(span_texts, padding=True, truncation=True, max_length=192,
-              return_tensors="pt").to(device)
+    # Backbone forward in VRAM-bounded batches (SEMANTIK_COUNCIL_BATCH_SIZE);
+    # CLS-pooled output is identical to the un-chunked path.
+    pooled = batched_cls_pooled(peft_model, tok, span_texts, device)
     side_t = torch.tensor(side_channel, dtype=torch.float32, device=device)
     with torch.no_grad():
-        out = peft_model(input_ids=enc["input_ids"],
-                         attention_mask=enc["attention_mask"])
-        pooled = out.last_hidden_state[:, 0, :].float()
         side_h = side_mlp(side_norm(side_t))
         h = torch.cat([pooled, side_h], dim=-1)
         logits_dr = head_doc_role(h)

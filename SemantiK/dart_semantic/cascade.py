@@ -408,6 +408,10 @@ def _build_region_provenance(
     - ``figure_alt``          : Stage-6b caption for figure regions
     - ``raw_text``            : concatenated deterministic extracted text
       (hash basis for content-hash sids; never post-model HTML)
+    - ``pedagogy_class``      : OPTIONAL — the semantic class hint
+      (``"pedagogy-example"`` / ``"pedagogy-solution"`` / …) stamped by the
+      deterministic structure-correction pass on a demoted pedagogical
+      paragraph; present only when set (byte-stable to baseline when absent)
     """
     provenance: list[dict[str, Any]] = []
     n = len(regions)
@@ -460,6 +464,16 @@ def _build_region_provenance(
         review = review_index.get(region_index)
         if review is not None:
             entry["review"] = review
+        # OPTIONAL pedagogy-class hint (additive). The deterministic
+        # structure-correction pass stamps ``payload['css_class']`` on
+        # pedagogical headings it demotes to paragraphs (EXAMPLE / Solution /
+        # Step / …); surface it here as ``pedagogy_class`` so the Ed4All
+        # chunker / retrieval can identify the demoted pedagogical blocks.
+        # Present ONLY when the hint is set — byte-stable to baseline when
+        # absent (every non-demoted region).
+        css_class = payload.get("css_class")
+        if isinstance(css_class, str) and css_class.strip():
+            entry["pedagogy_class"] = css_class.strip()
         provenance.append(entry)
     return provenance
 
@@ -556,8 +570,48 @@ def run_full_cascade(
     # ------------------------------------------------------------------
     review_verdicts: list[Any] | None = None
     stage5d_metadata_drop_ids: frozenset[int] = frozenset()
-    # Snapshot the pre-review structure regions for the C2 FB-survival
-    # baseline (the flag-OFF region list the cap is compared against).
+
+    # ------------------------------------------------------------------
+    # Stage 5d-det — DETERMINISTIC structure correction (default ON).
+    #
+    # Runs BEFORE the 70B Stage-5d reviewer (and before the cap + assembly),
+    # so BOTH assembled.html and region_provenance pick up the corrected
+    # regions (they derive from this same list). Fixes the front-matter /
+    # phantom-TOC / OCR-noise drops + the pedagogical-label heading
+    # over-nesting the 70B reviewer's prompt explicitly defers to "a separate
+    # DETERMINISTIC pass". Gated by SEMANTIK_STRUCTURE_CLEAN; OFF -> byte-
+    # identical pass-through. Reuses the reviewer's invariant harness
+    # (FB-partition-immutable re-tag + token-conservation + fail-closed).
+    # ------------------------------------------------------------------
+    from .qwen_specialists.deterministic_structure import (
+        clean_structure,
+        resolve_structure_clean_mode,
+    )
+
+    if resolve_structure_clean_mode():
+        t = time.perf_counter()
+        structure_regions, structure_clean_diag = clean_structure(
+            structure_regions,
+            feature_blocks,
+        )
+        stages["stage5d_det"] = time.perf_counter() - t
+        log(
+            "[cascade] Stage 5d-det (deterministic structure correction): "
+            f"front_matter_dropped={structure_clean_diag.get('front_matter_dropped')}, "
+            f"pedagogical_demoted={structure_clean_diag.get('pedagogical_demoted')}, "
+            f"headings {structure_clean_diag.get('headings_before')} -> "
+            f"{structure_clean_diag.get('headings_after')}"
+            + (
+                " (REVERTED: token-conservation)"
+                if structure_clean_diag.get("reverted_for_invariant")
+                else ""
+            )
+        )
+
+    # Snapshot the (possibly det-corrected) structure regions for the C2
+    # FB-survival baseline (the flag-OFF region list the cap is compared
+    # against). Captured AFTER the deterministic pass so the 70B reviewer's
+    # baseline reflects the corrected region list.
     pre_review_regions = list(structure_regions)
     if resolve_structure_review_mode():
         from .qwen_specialists.reviewer import run_structure_review
