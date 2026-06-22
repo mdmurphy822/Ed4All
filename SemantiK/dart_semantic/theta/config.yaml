@@ -1,0 +1,46 @@
+# Theta configuration — versioned weights + thresholds.
+# Locked at model-release time per Plans/03_theta_investigation.md §7.3.
+# theta-config-2.0: weights, taus and floors are CALIBRATED by
+# scripts/calibrate_theta.py (Plan 12 A3) — see the calibration block
+# below for dataset provenance. Do not hand-edit the numbers; re-run
+# the harness with --write-config instead.
+
+version: theta-config-2.0
+
+weights:
+  semantic_preservation: 0.0612
+  structural_coherence: 0.0514
+  navigation_clarity: 0.114
+  context_continuity: 0.1774
+  reference_integrity: 0.2359
+  cognitive_load_reduction: 0.0228
+  fragmentation_penalty: 0.1319
+  hallucinated_structure_penalty: 0.2054
+
+tau_theta_ship: 0.85
+tau_theta_retry: 0.75
+delta_theta_improve: 0.05
+
+floor_reference_integrity: 0.8
+floor_hallucinated_structure: 0.85
+floor_semantic_preservation: 0.6
+
+semantic_model_version: theta-semantic-deberta-1.0
+
+cognitive_load_calibration:
+  para_p99_ceiling: 600
+  para_p99_clip_range: 1200
+  heading_density_target: 0.1
+  list_coverage_target: 0.2
+  runlength_cv_target: 0.6
+
+# Provenance of the calibrated values above (Plan 12 A3).
+calibration:
+  report: "data/eval_reports/theta_calibration_v1.json"
+  date: "2026-06-11"
+  n_docs: 40
+  n_variants: 520
+  seed: 12
+  git_sha: "125cb30fdb488612177307d4ea8faab9cff84e7f"
+  auc_uniform: 0.8341
+  auc_fitted: 0.8489

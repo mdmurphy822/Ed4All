@@ -1,0 +1,345 @@
+"""Stage 2: Feature normalization. Deterministic. No model.
+
+Contract:
+    featurize(raw_blocks: list[RawBlock]) -> list[FeatureBlock]
+
+Takes the raw-block stream from stage 1 and attaches normalized layout
+features:
+    size_bucket             font size relative to page median: xl/lg/md/sm
+    gap_above               "lg" if vertical gap above is >= 2x page-median
+                            line spacing, else None
+    is_top_of_page          bbox top < 15% of page height
+    is_centered             line is both short AND mid-x near page center
+    caps                    "all"/"title"/None from text capitalization
+    indent_bucket           left-edge quantized to 10 buckets 0..9
+    relative_font_ratio     font_size / page_median_font_size (exact float)
+    prev/next_size_bucket   contextual hints for rules and classifier
+
+Still emits a serialized "flat" representation via features_to_prompt()
+so scripts that feed a model a single string keep working.
+
+This stage is unit-testable with hand-crafted RawBlock input — no files,
+no network, no side effects.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from .extract import blocks_from_shared, extract_blocks
+from .extract_shared import extract_shared
+from .region_detection import (
+    detect_math_region_candidates,
+    detect_table_region_candidates,
+)
+from .types import FeatureBlock, FeatureSet, RawBlock
+
+# Note: we deliberately do NOT import pypdfium2 or pytesseract here —
+# PDF I/O lives entirely in dart_semantic/extract{,_shared}.py. This
+# module's only job is feature derivation from already-extracted blocks.
+
+
+def featurize(raw_blocks: list[RawBlock]) -> list[FeatureBlock]:
+    """Group blocks by page, compute per-page medians, emit FeatureBlocks."""
+    if not raw_blocks:
+        return []
+
+    # Bucket by page to compute per-page medians.
+    by_page: dict[int, list[RawBlock]] = {}
+    for b in raw_blocks:
+        by_page.setdefault(b.page, []).append(b)
+
+    out: list[FeatureBlock] = []
+    for page_num in sorted(by_page.keys()):
+        page_blocks = by_page[page_num]
+        page_blocks = sorted(page_blocks, key=lambda b: (b.bbox[1], b.bbox[0]))
+
+        sizes = [b.font_size or 1.0 for b in page_blocks if b.font_size]
+        page_median_size = _median(sizes) if sizes else 1.0
+        # Gaps between consecutive blocks (vertical).
+        gaps = [0.0]
+        for prev, cur in zip(page_blocks, page_blocks[1:]):
+            gaps.append(max(0.0, cur.bbox[1] - prev.bbox[3]))
+        positive_gaps = [g for g in gaps if g > 0]
+        page_median_gap = _median(positive_gaps) if positive_gaps else page_median_size
+
+        for i, b in enumerate(page_blocks):
+            fb = _featurize_one(
+                b, gap_above=gaps[i],
+                page_median_size=page_median_size,
+                page_median_gap=page_median_gap,
+            )
+            out.append(fb)
+
+    _attach_neighbor_hints(out)
+    return out
+
+
+def featurize_pdf(pdf_path: Path) -> list[FeatureBlock]:
+    """Convenience: stage 1 + stage 2 in one call."""
+    return featurize(extract_blocks(pdf_path))
+
+
+def featurize_from_shared(shared: dict) -> list[FeatureBlock]:
+    """Build FeatureBlocks that carry the multi-extractor layout flags
+    (in_table, in_header_row, in_widget, widget_kind, provenance).
+
+    Uses the per-page `merged` blocks as the text stream (same as
+    blocks_from_shared → extract_blocks), then enriches each block with
+    pdfplumber's table bboxes and pikepdf's widget rects.
+    """
+    raw_blocks = blocks_from_shared(shared)
+    feature_blocks = featurize(raw_blocks)
+
+    # Build a quick lookup of tables + widgets per page.
+    pages_by_num: dict[int, dict] = {p["page_num"]: p for p in shared.get("pages", [])}
+
+    for fb in feature_blocks:
+        page = pages_by_num.get(fb.raw.page)
+        if page is None:
+            continue
+        x0, y0, x1, y1 = fb.raw.bbox
+        mid_x = (x0 + x1) / 2
+        mid_y = (y0 + y1) / 2
+
+        # in_table + in_header_row via pdfplumber tables.
+        for t in page.get("pdfplumber", {}).get("tables", []):
+            tb = t.get("bbox") or []
+            if len(tb) == 4 and tb[0] <= mid_x <= tb[2] and tb[1] <= mid_y <= tb[3]:
+                fb.in_table = True
+                if tb[3] != tb[1]:
+                    if (mid_y - tb[1]) / (tb[3] - tb[1]) < 0.25:
+                        fb.in_header_row = True
+                break
+
+        # in_widget + widget_kind via pikepdf widgets.
+        for w in page.get("pikepdf", {}).get("widgets", []):
+            wb = w.get("bbox") or []
+            if len(wb) == 4 and wb[0] <= mid_x <= wb[2] and wb[1] <= mid_y <= wb[3]:
+                fb.in_widget = True
+                ft = (w.get("field_type") or "").lstrip("/")
+                if ft == "Tx":
+                    fb.widget_kind = "text"
+                elif ft == "Btn":
+                    fb.widget_kind = "button"
+                elif ft == "Ch":
+                    fb.widget_kind = "select"
+                elif ft == "Sig":
+                    fb.widget_kind = "signature"
+                break
+
+        # provenance is stored on RawBlock.source; mirror it onto the feature block
+        # for callers that consume FeatureBlock without reaching through to raw.
+        fb.provenance = fb.raw.source
+
+    return feature_blocks
+
+
+def featurize_with_regions(shared: dict) -> FeatureSet:
+    """Phase 1 entry point: emit a FeatureSet with the flat FeatureBlock
+    stream PLUS typed table/math region candidates.
+
+    The FeatureBlock list is identical to what `featurize_from_shared`
+    returns (calls into it directly — no re-implementation of layout
+    feature extraction).
+
+    Region candidates are derived from the same shared-extract JSON;
+    pdfplumber output is reused, never re-run. `member_block_indices`
+    on each candidate maps back into `feature_blocks`.
+
+    v1 callers continue to use `featurize_from_shared` and get exactly
+    the same FeatureBlock list they always did. This function is
+    additive — never call it from the v1 path.
+    """
+    feature_blocks = featurize_from_shared(shared)
+    table_candidates = detect_table_region_candidates(
+        shared, feature_blocks=feature_blocks)
+    math_candidates = detect_math_region_candidates(
+        shared, feature_blocks=feature_blocks)
+    return FeatureSet(
+        feature_blocks=feature_blocks,
+        table_candidates=table_candidates,
+        math_candidates=math_candidates,
+    )
+
+
+# ---------- per-block feature assignment ----------
+
+def _featurize_one(b: RawBlock, *, gap_above: float,
+                   page_median_size: float, page_median_gap: float) -> FeatureBlock:
+    fs = b.font_size or page_median_size
+    ratio = fs / page_median_size if page_median_size else 1.0
+    if ratio >= 1.8:
+        size_bucket = "xl"
+    elif ratio >= 1.3:
+        size_bucket = "lg"
+    elif ratio < 0.8:
+        size_bucket = "sm"
+    else:
+        size_bucket = "md"
+
+    gap_flag = "lg" if page_median_gap and gap_above >= 2 * page_median_gap else None
+
+    is_top = b.bbox[1] < 0.15 * b.page_height
+
+    line_w = b.bbox[2] - b.bbox[0]
+    mid = (b.bbox[0] + b.bbox[2]) / 2
+    is_centered = (line_w < 0.5 * b.page_width
+                   and abs(mid - b.page_width / 2) < 0.05 * b.page_width)
+
+    caps = _caps_pattern(b.text)
+    indent_bucket = int(min(9, max(0, b.bbox[0] / b.page_width * 10)))
+
+    return FeatureBlock(
+        raw=b,
+        size_bucket=size_bucket,
+        gap_above=gap_flag,
+        is_top_of_page=is_top,
+        is_centered=is_centered,
+        caps=caps,
+        indent_bucket=indent_bucket,
+        relative_font_ratio=ratio,
+    )
+
+
+def _attach_neighbor_hints(fbs: list[FeatureBlock]) -> None:
+    for i, fb in enumerate(fbs):
+        fb.prev_size_bucket = fbs[i - 1].size_bucket if i > 0 else None
+        fb.next_size_bucket = fbs[i + 1].size_bucket if i + 1 < len(fbs) else None
+
+
+def _caps_pattern(text: str) -> str | None:
+    alnum = [c for c in text if c.isalpha()]
+    if len(alnum) < 3:
+        return None
+    if all(c.isupper() for c in alnum):
+        return "all"
+    if _is_title_case(text):
+        return "title"
+    return None
+
+
+def _is_title_case(text: str) -> bool:
+    words = [w for w in text.split() if any(c.isalpha() for c in w)]
+    if len(words) < 3:
+        return False
+    minor = {"a", "an", "the", "and", "or", "but", "of",
+             "in", "on", "at", "to", "for"}
+    for w in words:
+        core = "".join(c for c in w if c.isalpha())
+        if not core or core.lower() in minor:
+            continue
+        if not core[0].isupper():
+            return False
+    return True
+
+
+def _median(xs):
+    if not xs:
+        return 0.0
+    s = sorted(xs)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+# ---------- classifier input string ----------
+
+# Provenance combinations that are too common to be worth tokens — treat as
+# "default" and omit from the serialized flag string. Saves ~3 tokens/block
+# on typical documents.
+DEFAULT_PROVENANCE = {
+    None, "pypdfium2", "pypdfium2+pdfplumber", "pdfplumber+pypdfium2",
+}
+
+
+def feature_block_to_classifier_input(fb: FeatureBlock) -> str:
+    """Serialize one FeatureBlock into the classifier's input string.
+
+    SINGLE SOURCE OF TRUTH for the format used at both training time
+    (data/build_classifier_data_v2.py) and inference time
+    (dart_semantic/classify.py). Keep these in lockstep — silent format
+    drift between them would be a silent accuracy hit.
+    """
+    chunks: list[str] = []
+    if fb.size_bucket != "md":
+        chunks.append(f"size={fb.size_bucket}")
+    if fb.gap_above == "lg":
+        chunks.append("gap=lg")
+    if fb.is_top_of_page:
+        chunks.append("top")
+    if fb.is_centered:
+        chunks.append("centered")
+    if fb.caps in ("all", "title"):
+        chunks.append(f"caps={fb.caps}")
+    if fb.in_table:
+        chunks.append("in_table")
+        if fb.in_header_row:
+            chunks.append("header_row")
+    if fb.in_widget:
+        chunks.append("in_widget")
+        if fb.widget_kind:
+            chunks.append(f"widget={fb.widget_kind}")
+    if fb.provenance not in DEFAULT_PROVENANCE:
+        chunks.append(f"prov={fb.provenance}")
+    if chunks:
+        return f"[{' '.join(chunks)}] {fb.raw.text}"
+    return fb.raw.text
+
+
+# ---------- flat-string serialization (legacy path) ----------
+
+def features_to_prompt(fbs: list[FeatureBlock]) -> str:
+    """Emit the same PAGE N / [flags] text format used by older callers.
+
+    Kept for backward compatibility with scripts that feed a single string
+    to the model. New callers should consume FeatureBlock objects directly.
+    """
+    out: list[str] = []
+    cur_page = -1
+    for fb in fbs:
+        if fb.raw.page != cur_page:
+            out.append(f"PAGE {fb.raw.page}")
+            cur_page = fb.raw.page
+        flags = []
+        if fb.size_bucket != "md":
+            flags.append(f"size={fb.size_bucket}")
+        if fb.gap_above:
+            flags.append(f"gap={fb.gap_above}")
+        if fb.is_top_of_page:
+            flags.append("top")
+        if fb.is_centered:
+            flags.append("centered")
+        if fb.caps:
+            flags.append(f"caps={fb.caps}")
+        prefix = f"[{' '.join(flags)}] " if flags else ""
+        out.append(f"{prefix}{fb.raw.text}")
+    return "\n".join(out)
+
+
+# ---------- legacy compatibility: pdf_to_ocr_text ----------
+
+def pdf_to_ocr_text(pdf_path: Path, *, page_range=None) -> str:
+    """Legacy entry point: PDF -> flat layout-annotated string.
+
+    Wraps the new featurize_pdf + features_to_prompt. Accepts an optional
+    (start, end) page range for partial extraction; other modules rely on
+    this signature.
+    """
+    fbs = featurize_pdf(pdf_path)
+    if page_range is not None:
+        start, end = page_range
+        # page indices are 1-based here since RawBlock.page is 1-indexed
+        start_p = start + 1
+        end_p = end
+        fbs = [fb for fb in fbs if start_p <= fb.raw.page <= end_p]
+    return features_to_prompt(fbs)
+
+
+# ---------- deprecated: left in place for any remaining callers ----------
+
+def render_to_pdf(*args, **kwargs):
+    """Deprecated. Moved responsibility into HtmlValidator.render_pdf."""
+    from .validate import HtmlValidator
+    raise RuntimeError(
+        "features.render_to_pdf was removed. Use HtmlValidator.render_pdf "
+        "inside a `with HtmlValidator()` block."
+    )

@@ -246,3 +246,35 @@ plans/
 # Local-only generated index maintained by the recurring review loop
 docs/MANIFEST.md
 docker-compose.override.yml
+
+# =============================================================================
+# SemantiK (Semantic v2 DART) — runtime artifacts never ship
+# =============================================================================
+SemantiK/models/
+SemantiK/data/extract_cache/
+SemantiK/data/glm_ocr_cache/
+SemantiK/data/prerender_cache/
+SemantiK/data/*_dataset/
+SemantiK/data/*_dataset_*/
+SemantiK/data/eval_reports/
+SemantiK/data/figure_images/
+SemantiK/data/figure_embeddings/
+SemantiK/data/logs/
+SemantiK/logs/
+SemantiK/output/*
+!SemantiK/output/.gitkeep
+SemantiK/outputs/*
+!SemantiK/outputs/.gitkeep
+SemantiK/inputs/*
+!SemantiK/inputs/.gitkeep
+SemantiK/semantic.egg-info/
+SemantiK/**/__pycache__/
+# extension belt-and-suspenders (model artifact zoo)
+SemantiK/**/*.bak
+SemantiK/**/*.joblib
+SemantiK/**/*.onnx
+SemantiK/**/*.npy
+SemantiK/**/*.npz
+SemantiK/**/*.model
+SemantiK/**/training_args.bin
+# tracked: SemantiK/data/eval/, eval_corpus manifests, figure_labels, seeds

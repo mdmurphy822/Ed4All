@@ -1,0 +1,65 @@
+version: qwen-specialists-config-1.0
+base_model:
+  hf_name: Qwen/Qwen3-4B-Instruct-2507
+  revision: main
+  dtype: bf16
+  load_in_4bit: true
+adapters:
+  prose:
+    adapter_path: models/qwen_specialists/prose/v1/prose.q4_k_m.gguf
+    temperature: 0.6
+    top_p: 0.95
+    top_k: 50
+    repetition_penalty: 1.05
+    max_new_tokens: 512
+    candidates_k: 4
+    offline_overrides:
+      temperature: 0.9
+      candidates_k: 8
+      max_new_tokens: 768
+  table:
+    adapter_path: models/qwen_specialists/table/v1/table.q4_k_m.gguf
+    temperature: 0.4
+    top_p: 0.9
+    top_k: 40
+    repetition_penalty: 1.0
+    # Table targets reach ~780 tokens; the v1 adapter was VALIDATED at 1024
+    # (axe 1.0, 0 truncation) and 512 truncated ~12% of tables. The cap must
+    # clear the distribution (memory: qwen_runtime_output_caps) — 1024, not 512.
+    max_new_tokens: 1024
+    candidates_k: 4
+    offline_overrides:
+      temperature: 0.7
+      candidates_k: 8
+      max_new_tokens: 1024
+  math:
+    adapter_path: models/qwen_specialists/math/v1/math.q4_k_m.gguf
+    temperature: 0.3
+    top_p: 0.9
+    top_k: 30
+    # LIVE plumbing (runner -> base.generate -> LlamaCppRuntime repeat_penalty).
+    # 1.0 == no penalty == llama-cpp default (behaviour unchanged); 1.05 is the
+    # designated A/B arm for long-target overshoot. See eval_qwen_math_adapter.py --repeat-penalty.
+    repetition_penalty: 1.0
+    # Real MathML targets reach ~919 tokens (median 453, p99 914); the v1
+    # adapter was evaluated at 960 (id_stripped_sim 0.909, 3.3% truncation).
+    # A lower cap would truncate display/numbered/multiline equations the
+    # eval counted as complete, so the shipped cap must match the eval.
+    max_new_tokens: 960
+    candidates_k: 4
+    offline_overrides:
+      temperature: 0.5
+      candidates_k: 8
+      max_new_tokens: 1024
+  gap_fill:
+    adapter_path: models/qwen_specialists/gap_fill/v1/gap_fill.q4_k_m.gguf
+    temperature: 0.8
+    top_p: 0.95
+    top_k: 60
+    repetition_penalty: 1.05
+    max_new_tokens: 256
+    candidates_k: 8
+    offline_overrides:
+      temperature: 1.0
+      candidates_k: 12
+      max_new_tokens: 384
