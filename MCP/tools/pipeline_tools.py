@@ -5602,6 +5602,14 @@ class _SemantikBridgeResult:
         self.structure_review = (
             list(sr) if isinstance(sr, (list, tuple)) else None
         )
+        # SEMANTIK_BLOCK_RESEGMENT audit — the doc-level list of block
+        # merge/split ops the cascade surfaces at top level (``None`` when the
+        # re-segmenter was off, ``[]`` when it ran and made no edits). The seam
+        # reads this to emit ONE ``block_resegment`` DecisionCapture per doc.
+        br = bridge.get("block_resegment")
+        self.block_resegment = (
+            list(br) if isinstance(br, (list, tuple)) else None
+        )
 
 
 def _run_semantik_bridge_subprocess(
@@ -5972,6 +5980,138 @@ def _emit_structure_review_capture(
         )
 
 
+def _semantik_resolve_block_resegment(result: Any) -> Optional[List[Dict[str, Any]]]:
+    """Pull the doc-level ``block_resegment`` op list off a cascade result,
+    from EITHER seam arm (mirrors ``_semantik_resolve_structure_review``).
+
+    Resolution order:
+      1. ``result.block_resegment`` — the bridge arm
+         (``_SemantikBridgeResult``) surfaces it as a top-level attribute.
+      2. ``result.cascade["conformance_audit"]["block_resegment"]`` — the
+         in-process ``PipelineV2Result`` carries it inside the telemetry dict.
+
+    Returns ``None`` when the re-segmenter did NOT run (``SEMANTIK_BLOCK_RESEGMENT``
+    off / no audit key) so the caller skips the capture cleanly; ``[]`` when it
+    ran and made no edits.
+    """
+    br = getattr(result, "block_resegment", None)
+    if br is not None:
+        return list(br) if isinstance(br, (list, tuple)) else None
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            audit = conformance.get("block_resegment")
+            if audit is None:
+                return None
+            return list(audit) if isinstance(audit, (list, tuple)) else None
+    return None
+
+
+def _emit_block_resegment_capture(
+    ops: Optional[List[Dict[str, Any]]],
+    *,
+    canonical_course_code: Optional[str],
+    pdf_stem: str,
+) -> None:
+    """Emit ONE ``block_resegment`` DecisionCapture event per converted doc
+    when the ``SEMANTIK_BLOCK_RESEGMENT`` re-segmenter ran.
+
+    Best-effort by contract: ANY failure (DecisionCapture init, write, schema)
+    logs a warning and returns — it NEVER breaks the conversion. Skips cleanly
+    (no capture) when ``ops is None`` (the re-segmenter was off / flag unset).
+    The rationale is DYNAMIC/replayable per the CLAUDE.md contract: it
+    interpolates per-op merge/split counts + total regions touched +
+    conservation_verified so a post-hoc replay can attribute the block
+    re-segmentation.
+
+    ``decision_type='block_resegment'`` is a canonical enum member
+    (``schemas/events/decision_event.schema.json``), added for this seam.
+    """
+    if ops is None:
+        return  # re-segmenter did not run — nothing to capture (skip cleanly)
+    try:
+        from lib.decision_capture import DecisionCapture, normalize_course_code
+
+        total_ops = len(ops)
+        merges = sum(
+            1
+            for o in ops
+            if isinstance(o, dict) and str(o.get("op") or "") == "merge"
+        )
+        splits = sum(
+            1
+            for o in ops
+            if isinstance(o, dict) and str(o.get("op") or "") == "split"
+        )
+        # Count the distinct regions/blocks each op touched (merge folds N
+        # regions; split fans one region into N) for the audit signal.
+        regions_touched = 0
+        for o in ops:
+            if not isinstance(o, dict):
+                continue
+            for key in ("region_indices", "block_indices", "regions", "blocks"):
+                val = o.get(key)
+                if isinstance(val, (list, tuple)):
+                    regions_touched += len(val)
+                    break
+            else:
+                regions_touched += 1
+        # conservation_verified: the cascade may stamp it per-op or doc-level;
+        # the audit is "verified" iff every op that carries the flag is True.
+        flagged = [
+            bool(o.get("conservation_verified"))
+            for o in ops
+            if isinstance(o, dict) and "conservation_verified" in o
+        ]
+        conservation_verified = all(flagged) if flagged else None
+        # The SemantiK cascade is the DART-conversion replacement, so the
+        # capture lands under the canonical ``dart`` tool / ``dart-conversion``
+        # phase. Course code falls back to the PDF stem via the shared
+        # normalizer.
+        course_code = (
+            (canonical_course_code or "").strip()
+            or normalize_course_code(pdf_stem or "unknown")
+        )
+
+        capture = DecisionCapture(
+            course_code=course_code,
+            phase="dart-conversion",
+            tool="dart",
+        )
+        # DYNAMIC rationale (>=20 chars) — interpolates the per-doc op tallies
+        # so the capture is replayable.
+        rationale = (
+            f"SEMANTIK_BLOCK_RESEGMENT applied {total_ops} block re-segmentation "
+            f"op(s) on {pdf_stem}: {merges} merge(s) / {splits} split(s) touching "
+            f"{regions_touched} region(s); conservation_verified="
+            f"{conservation_verified}. Structure-only block boundary edits "
+            f"(no text rewritten)."
+        )
+        capture.log_decision(
+            decision_type="block_resegment",
+            decision=(
+                f"ops={total_ops} merges={merges} splits={splits} "
+                f"regions_touched={regions_touched}"
+            ),
+            rationale=rationale,
+            alternatives_considered=[
+                {
+                    "option": "no block re-segmentation (flag off)",
+                    "reason_rejected": (
+                        "SEMANTIK_BLOCK_RESEGMENT was on; the re-segmenter ran"
+                    ),
+                },
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+        logger.warning(
+            "block_resegment DecisionCapture failed (non-fatal) on %s: %s",
+            pdf_stem,
+            exc,
+        )
+
+
 def _run_semantik_v2_conversion(
     pdf_path: str,
     output_path: str,
@@ -6111,8 +6251,35 @@ def _run_semantik_v2_conversion(
             }
     else:
         # (a) In-process cascade (PDF path in → PipelineV2Result out).
+        #
+        # LOCAL-real wiring: ``run_pipeline_v2`` auto-derives ``runtime_mode``
+        # from the config's ``is_qwen_specialist_loaded()``. The all-None
+        # ``DEFAULT_V2_CONFIG`` makes it default to ``"mock"`` even when the
+        # vendored Qwen GGUFs + council weights are on disk — which the R4
+        # mock-trap (step 2 below) then refuses to ship. ``resolve_local_v2_config``
+        # builds a config populated from the on-disk vendored weights (via
+        # ``dart_semantic.paths.model_dir`` → honors SEMANTIK_MODEL_DIR /
+        # SEMANTIK_HOME), flipping the gate to ``"real"`` for the local arm.
+        # Each slot is None when its artifact is absent, so a partial install
+        # degrades gracefully (it does not fabricate a path). Endpoint mode is
+        # unaffected — ``specialist_provider_is_endpoint()`` already forces
+        # ``"real"`` regardless of the local config.
         try:
-            result = run_pipeline_v2(str(pdf))
+            from SemantiK.dart_semantic.v2_config import resolve_local_v2_config
+
+            _semantik_config = resolve_local_v2_config()
+        except Exception as cfg_exc:  # noqa: BLE001 — config resolution must never crash the seam
+            logger.warning(
+                "SemantiK local v2-config resolution failed (%s); falling back "
+                "to the default config (runtime_mode may resolve to mock).",
+                cfg_exc,
+            )
+            _semantik_config = None
+        try:
+            if _semantik_config is not None:
+                result = run_pipeline_v2(str(pdf), config=_semantik_config)
+            else:
+                result = run_pipeline_v2(str(pdf))
         except Exception as exc:  # noqa: BLE001 — cascade error fails closed
             logger.error("SemantiK cascade raised on %s: %s", pdf, exc)
             return {
@@ -6155,6 +6322,22 @@ def _run_semantik_v2_conversion(
         canonical_course_code=canonical_course_code,
         pdf_stem=pdf_stem,
     )
+
+    # 2c. SEMANTIK_BLOCK_RESEGMENT block-resegment DecisionCapture. Fires for
+    # BOTH the in-process and bridge arms (the resolver reads either shape);
+    # skips cleanly when the re-segmenter was off (SEMANTIK_BLOCK_RESEGMENT
+    # unset). Best-effort — a capture failure logs a warning, never breaks
+    # conversion.
+    try:
+        _emit_block_resegment_capture(
+            _semantik_resolve_block_resegment(result),
+            canonical_course_code=canonical_course_code,
+            pdf_stem=pdf_stem,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+        logger.warning(
+            "block_resegment DecisionCapture failed (non-fatal): %s", exc
+        )
 
     # 3. cascade result → chapters IR → output-contract adapter.
     chapters = build_chapters_ir(result)

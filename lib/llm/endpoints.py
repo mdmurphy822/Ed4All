@@ -117,6 +117,15 @@ class ResolvedEndpoint:
     loopback_only: bool
     provenance_provider: str
     vision_capable: bool
+    # OPTIONAL per-endpoint request-body extras (e.g.
+    # ``{"chat_template_kwargs": {"thinking": false}}`` for a reasoning
+    # model that must suppress chain-of-thought). Absent on the row →
+    # ``None`` → byte-stable (no extras forwarded). A consumer forwards
+    # this verbatim as the ``OpenAICompatibleClient``'s per-call
+    # ``extra_payload`` so the keys land at the top level of the request
+    # body. Schema field: ``schemas/config/endpoints.schema.json::
+    # properties.extra_body``.
+    extra_body: Optional[Dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +256,12 @@ def openai_compatible_legacy_registry() -> Dict[str, Dict[str, Any]]:
             entry["vision_capable_env"] = row.get("vision_capable_env")
         if "unverified" in row:
             entry["unverified"] = bool(row.get("unverified", False))
+        # OPTIONAL per-endpoint request-body extras (e.g. a reasoning
+        # model's ``chat_template_kwargs:{thinking:false}``). Surfaced
+        # only when present + a mapping so the projection stays byte-equal
+        # to the historical literal for rows that never declared it.
+        if isinstance(row.get("extra_body"), dict):
+            entry["extra_body"] = dict(row["extra_body"])
         out[name] = entry
     return out
 
@@ -359,6 +374,13 @@ def resolve_endpoint(
     if vision_env is not None:
         vision = vision_env
 
+    # --- extra_body -----------------------------------------------------
+    # OPTIONAL request-body extras. Surfaced verbatim from the row when
+    # present and a mapping; otherwise ``None`` (byte-stable — no extras).
+    # Copied so a caller mutating the resolved view can't poison the row.
+    raw_extra_body = row.get("extra_body")
+    extra_body = dict(raw_extra_body) if isinstance(raw_extra_body, dict) else None
+
     return ResolvedEndpoint(
         name=name,
         kind=kind,
@@ -369,6 +391,7 @@ def resolve_endpoint(
         loopback_only=bool(row.get("loopback_only", False)),
         provenance_provider=str(row["provenance_provider"]),
         vision_capable=vision,
+        extra_body=extra_body,
     )
 
 

@@ -465,3 +465,145 @@ async def test_f_inline_chunk_omits_fields_without_enrichment(
             "certification_status",
         ):
             assert field not in c, f"unexpected {field} on legacy chunk"
+
+
+# ---------------------------------------------------------------------------
+# (g) LOCAL-real wiring — the seam builds a POPULATED V2Config from the
+#     on-disk vendored weights and passes it into run_pipeline_v2 so the
+#     cascade auto-derives runtime_mode="real" (not the all-None default that
+#     silently resolves to "mock"). Regression for the local-real gap: the
+#     in-process LOCAL path previously called run_pipeline_v2(pdf) with no
+#     config → DEFAULT_V2_CONFIG (all None) → is_qwen_specialist_loaded()
+#     False → runtime_mode="mock" → R4 mock-trap refuses to ship.
+#
+#     The heavy GGUF/council loads are NOT exercised here (CI has no GPU): the
+#     resolver is unit-tested against a fake on-disk model dir, and the seam
+#     test asserts the resolved config is THREADED THROUGH to run_pipeline_v2.
+# ---------------------------------------------------------------------------
+
+
+def test_g_resolver_populates_from_on_disk_weights(tmp_path):
+    """V2Config.from_model_dir / resolve_local_v2_config flips the
+    runtime_mode gate ONLY when the artifacts exist on disk."""
+    from SemantiK.dart_semantic.v2_config import (
+        DEFAULT_V2_CONFIG,
+        V2Config,
+        resolve_local_v2_config,
+    )
+
+    # Empty model dir → every slot None → gate stays mock (graceful partial).
+    empty = tmp_path / "empty_models"
+    empty.mkdir()
+    cfg_empty = V2Config.from_model_dir(empty)
+    assert cfg_empty.is_qwen_specialist_loaded() is False
+    assert cfg_empty.is_council_loaded() is False
+    assert cfg_empty.theta_semantic_scorer_path is None
+
+    # Control: the all-None default never flips the gate.
+    assert DEFAULT_V2_CONFIG.is_qwen_specialist_loaded() is False
+
+    # Fabricate the canonical vendored layout: one council adapter dir, one
+    # Qwen GGUF (named per the real config.yaml), and the theta head dir.
+    models = tmp_path / "models"
+    (models / "council" / "semantic" / "final").mkdir(parents=True)
+    (models / "theta" / "semantic_preservation" / "v8").mkdir(parents=True)
+    prose_dir = models / "qwen_specialists" / "prose" / "v1"
+    prose_dir.mkdir(parents=True)
+    (prose_dir / "prose.q4_k_m.gguf").write_bytes(b"\x00")  # presence only
+
+    cfg = V2Config.from_model_dir(models)
+    # The real config.yaml's prose adapter_path resolves under this root.
+    assert cfg.qwen_prose_adapter is not None
+    assert cfg.qwen_prose_adapter.exists()
+    assert cfg.is_qwen_specialist_loaded() is True  # <-- flips runtime_mode→real
+    assert cfg.council_semantic_adapter is not None
+    assert cfg.is_council_loaded() is True
+    assert cfg.theta_semantic_scorer_path is not None
+    # A specialist whose GGUF is absent on disk stays None (partial install).
+    assert cfg.qwen_table_adapter is None
+
+    # resolve_local_v2_config(model_dir) is the same builder.
+    assert resolve_local_v2_config(models).is_qwen_specialist_loaded() is True
+
+
+def _install_mock_cascade_with_config(monkeypatch, *, captured, runtime_mode="real"):
+    """Like _install_mock_cascade, but the synthetic SemantiK.dart_semantic
+    subpackage ALSO carries a v2_config module exposing a recording
+    resolve_local_v2_config, and the fake run_pipeline_v2 records the
+    ``config`` kwarg the seam passes. Proves the seam (a) imports the resolver
+    and (b) threads its output into the cascade call."""
+    res = _MockPipelineResult(runtime_mode=runtime_mode)
+
+    # A sentinel "populated" config object the recorder can identify.
+    class _SentinelConfig:
+        def is_qwen_specialist_loaded(self):  # parity with the real API
+            return True
+
+    sentinel = _SentinelConfig()
+
+    def _fake_run_pipeline_v2(pdf_path, *args, config=None, **kwargs):
+        captured["pdf"] = pdf_path
+        captured["config"] = config
+        return res
+
+    def _fake_resolve_local_v2_config(model_dir=None):
+        captured["resolver_called"] = True
+        return sentinel
+
+    pkg = types.ModuleType("SemantiK")
+    pkg.__path__ = []
+    sub = types.ModuleType("SemantiK.dart_semantic")
+    sub.__path__ = []
+    casc = types.ModuleType("SemantiK.dart_semantic.cascade")
+    casc.run_pipeline_v2 = _fake_run_pipeline_v2
+    vcfg = types.ModuleType("SemantiK.dart_semantic.v2_config")
+    vcfg.resolve_local_v2_config = _fake_resolve_local_v2_config
+    monkeypatch.setitem(sys.modules, "SemantiK", pkg)
+    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic", sub)
+    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic.cascade", casc)
+    monkeypatch.setitem(sys.modules, "SemantiK.dart_semantic.v2_config", vcfg)
+    return sentinel
+
+
+def test_g_seam_threads_local_config_into_cascade(monkeypatch, tmp_path):
+    """The in-process seam arm passes the resolved local V2Config to
+    run_pipeline_v2 (not the bare no-config call)."""
+    from MCP.tools.pipeline_tools import _run_semantik_v2_conversion
+
+    captured: dict = {}
+    sentinel = _install_mock_cascade_with_config(monkeypatch, captured=captured)
+    out = tmp_path / "doc_accessible.html"
+    result = _run_semantik_v2_conversion("doc.pdf", str(out))
+
+    assert result["success"] is True
+    assert captured.get("resolver_called") is True, "resolver must be invoked"
+    assert captured.get("config") is sentinel, (
+        "seam must thread the resolved local config into run_pipeline_v2 "
+        "(else runtime_mode silently resolves to mock)"
+    )
+
+
+def test_g_seam_degrades_when_resolver_raises(monkeypatch, tmp_path):
+    """A resolver failure never crashes the seam — it falls back to the
+    no-config call (run still completes; runtime_mode may then be mock, which
+    the R4 trap handles separately)."""
+    from MCP.tools.pipeline_tools import _run_semantik_v2_conversion
+
+    captured: dict = {}
+    _install_mock_cascade_with_config(monkeypatch, captured=captured)
+
+    # Replace the resolver with one that raises.
+    def _boom(model_dir=None):
+        raise RuntimeError("simulated resolver failure")
+
+    monkeypatch.setitem(
+        sys.modules["SemantiK.dart_semantic.v2_config"].__dict__,
+        "resolve_local_v2_config",
+        _boom,
+    )
+    out = tmp_path / "doc_accessible.html"
+    result = _run_semantik_v2_conversion("doc.pdf", str(out))
+
+    # Cascade still ran (with config=None) and the mocked real result shipped.
+    assert "config" in captured and captured["config"] is None
+    assert result["success"] is True

@@ -2648,9 +2648,12 @@ class CourseforgeRouter:
         block-type validator matrices + routing are honored (validators run
         per-block post-parse).
         """
+        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
         from Courseforge.generators._rewrite_batch import (  # noqa: PLC0415
             pack_rewrite_batches,
             resolve_rewrite_batch_size,
+            resolve_rewrite_batched_concurrency,
         )
         from Courseforge.router.remediation import (  # noqa: PLC0415
             _append_remediation_for_gates,
@@ -2689,6 +2692,17 @@ class CourseforgeRouter:
             block_list[0], regen_budget
         )
         batch_size = resolve_rewrite_batch_size()
+        # Within-round batch fan-out width. A round is a BARRIER (all batch
+        # POSTs collected before any per-block validation / re-batch decision),
+        # so the batches can dispatch CONCURRENTLY across a bounded pool — the
+        # per-batch ``generate_rewrite_batch`` POST is I/O-bound (one hosted
+        # endpoint call) and parallelizes well. Concurrency 1 → a 1-worker pool
+        # that preserves submit order, byte-identical to the prior sequential
+        # path. The shared GPU singletons (NLI/embedder via best-of-N scoring)
+        # and the shared DecisionCapture are already serialized by the module-
+        # level ``_NLI_SCORE_LOCK`` + the capture's internal RLock, so the
+        # post-collection validator chain needs no extra lock here.
+        batched_concurrency = max(1, resolve_rewrite_batched_concurrency())
 
         results: Dict[str, Block] = {}
 
@@ -2709,13 +2723,24 @@ class CourseforgeRouter:
                     remaining, batch_size=batch_size,
                 )
                 next_remaining: List[Block] = []
-                for batch in batches:
+
+                # --- Concurrent WITHIN-round dispatch (round barrier) -------
+                # Fan each batch's ``generate_rewrite_batch`` POST out across a
+                # bounded pool; collect into a batch-index-keyed dict so the
+                # per-block validation below walks batches in the ORIGINAL
+                # order (output is identical regardless of which POST finishes
+                # first). A batch whose dispatch raises maps every one of its
+                # blocks to ``None`` — the EXACT fail-soft path as before,
+                # isolated to that batch (siblings proceed).
+                def _dispatch_batch(
+                    batch: List[Block],
+                ) -> Dict[str, Optional[Block]]:
                     batch_chunks = {
                         b.block_id: chunks_by_id.get(b.block_id, [])
                         for b in batch
                     }
                     try:
-                        parsed = provider_instance.generate_rewrite_batch(
+                        return provider_instance.generate_rewrite_batch(
                             batch,
                             source_chunks_by_id=batch_chunks,
                             objectives=objectives,
@@ -2731,8 +2756,44 @@ class CourseforgeRouter:
                             "%d block(s): %s — re-queuing for next round",
                             len(batch), exc,
                         )
-                        parsed = {b.block_id: None for b in batch}
+                        return {b.block_id: None for b in batch}
 
+                parsed_by_batch_idx: Dict[int, Dict[str, Optional[Block]]] = {}
+                pool_size = min(batched_concurrency, len(batches)) or 1
+                if pool_size <= 1:
+                    # Concurrency 1 → strict in-order dispatch (no pool
+                    # constructed), byte-identical to the legacy sequential
+                    # path.
+                    for _bidx, batch in enumerate(batches):
+                        parsed_by_batch_idx[_bidx] = _dispatch_batch(batch)
+                else:
+                    with ThreadPoolExecutor(max_workers=pool_size) as _pool:
+                        _futs = {
+                            _pool.submit(_dispatch_batch, batch): _bidx
+                            for _bidx, batch in enumerate(batches)
+                        }
+                        for _fut in _futs:
+                            _bidx = _futs[_fut]
+                            try:
+                                parsed_by_batch_idx[_bidx] = _fut.result()
+                            except Exception as exc:  # noqa: BLE001
+                                # Defensive: _dispatch_batch already fail-softs,
+                                # but an unexpected raise must isolate to its
+                                # batch (all its blocks → None / re-batch).
+                                logger.warning(
+                                    "route_rewrite_batch: concurrent batch "
+                                    "worker raised (idx=%s): %s",
+                                    _bidx, exc,
+                                )
+                                parsed_by_batch_idx[_bidx] = {
+                                    b.block_id: None for b in batches[_bidx]
+                                }
+
+                # --- Serial per-block validation (batches in original order) -
+                for _bidx, batch in enumerate(batches):
+                    parsed = parsed_by_batch_idx.get(
+                        _bidx, {b.block_id: None for b in batch},
+                    )
                     for block in batch:
                         candidate = parsed.get(block.block_id)
                         if candidate is None:

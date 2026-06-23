@@ -910,6 +910,7 @@ class OpenAICompatibleBackend(_CaptureMixin):
         capture: Optional[Any] = None,
         request_timeout: float = 120.0,
         vision_capable: bool = False,
+        extra_body: Optional[Dict[str, Any]] = None,
     ):
         if not provider_name:
             raise ValueError("OpenAICompatibleBackend requires a provider_name")
@@ -934,6 +935,17 @@ class OpenAICompatibleBackend(_CaptureMixin):
         # a backend with ``vision_capable=False`` raises before the
         # wire round-trip.
         self.vision_capable = bool(vision_capable)
+        # OPTIONAL per-endpoint request-body extras (e.g. a reasoning
+        # model's ``chat_template_kwargs:{thinking:false}``). Forwarded
+        # as the underlying client's per-call ``extra_payload`` on EVERY
+        # chat call so non-SemantiK consumers of a reasoning endpoint
+        # automatically suppress chain-of-thought. ``None`` →
+        # byte-identical legacy behaviour (no extra key in the body).
+        # Generic: ANY endpoint row carrying ``extra_body`` flows here —
+        # nothing is hardcoded to a provider name.
+        self.extra_body: Optional[Dict[str, Any]] = (
+            dict(extra_body) if isinstance(extra_body, dict) and extra_body else None
+        )
         self._client = None  # lazy
         self._set_capture(capture)
 
@@ -986,6 +998,7 @@ class OpenAICompatibleBackend(_CaptureMixin):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         images: Optional[List[Dict[str, Any]]] = None,
+        extra_payload: Optional[Dict[str, Any]] = None,
     ) -> str:
         # W-D13: vision-capability gate. Fail loudly BEFORE the wire
         # round-trip if the operator routed an image-bearing call
@@ -1002,6 +1015,18 @@ class OpenAICompatibleBackend(_CaptureMixin):
 
         resolved_model = model or self.default_model
         messages = self._build_messages(system, user)
+        # Merge the per-endpoint ``extra_body`` (e.g.
+        # ``chat_template_kwargs:{thinking:false}``) with any per-call
+        # ``extra_payload``. Caller-supplied keys WIN on conflict — the
+        # endpoint default is the floor, the caller can override it.
+        # ``None`` when neither is present → byte-identical legacy body.
+        merged_extra_payload: Optional[Dict[str, Any]] = None
+        if self.extra_body or extra_payload:
+            merged_extra_payload = {}
+            if self.extra_body:
+                merged_extra_payload.update(self.extra_body)
+            if extra_payload:
+                merged_extra_payload.update(extra_payload)
         client = self.client
         # If the caller overrides the default model, swap the inner
         # client's model field for this call only.
@@ -1018,6 +1043,7 @@ class OpenAICompatibleBackend(_CaptureMixin):
                 max_tokens=int(max_tokens),
                 temperature=float(temperature),
                 images=images,
+                extra_payload=merged_extra_payload,
             )
             return text
         finally:
@@ -1053,6 +1079,7 @@ class OpenAICompatibleBackend(_CaptureMixin):
         temperature: float = 0.7,
         stream: bool = False,
         images: Optional[List[Dict[str, Any]]] = None,
+        extra_payload: Optional[Dict[str, Any]] = None,
     ) -> Union[str, AsyncIterator[str]]:
         if stream:
             raise NotImplementedError(
@@ -1072,6 +1099,7 @@ class OpenAICompatibleBackend(_CaptureMixin):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 images=images,
+                extra_payload=extra_payload,
             ),
         )
 
@@ -1167,6 +1195,14 @@ def resolve_openai_compatible_backend(
         if any(token in model_lower for token in ("vision", "llava", "-vl")):
             vision_capable = True
 
+    # OPTIONAL per-endpoint request-body extras (e.g. a reasoning model's
+    # ``chat_template_kwargs:{thinking:false}``). Forwarded as the
+    # client's per-call ``extra_payload`` on every chat call. Generic —
+    # ANY registry entry carrying ``extra_body`` flows through; an entry
+    # without it resolves to ``None`` → byte-identical legacy body.
+    raw_extra_body = entry.get("extra_body")
+    extra_body = dict(raw_extra_body) if isinstance(raw_extra_body, dict) else None
+
     return OpenAICompatibleBackend(
         provider_name=provider_name,
         base_url=base_url,
@@ -1175,6 +1211,7 @@ def resolve_openai_compatible_backend(
         capture=capture,
         request_timeout=request_timeout,
         vision_capable=vision_capable,
+        extra_body=extra_body,
     )
 
 

@@ -577,6 +577,10 @@ def run_full_cascade(
     review_verdicts: list[Any] | None = None
     stage5d_metadata_drop_ids: frozenset[int] = frozenset()
 
+    # Stage-5e block JOIN/SPLIT audit — list of applied-op dicts when the pass
+    # ran (default OFF -> stays None, so the audit section is byte-stable).
+    resegment_ops_audit: list[dict[str, Any]] | None = None
+
     # ------------------------------------------------------------------
     # Stage 5d-det — DETERMINISTIC structure correction (default ON).
     #
@@ -657,6 +661,71 @@ def run_full_cascade(
             or getattr(v, "level_before", None) != getattr(v, "level_after", None)
         )
         log(f"[cascade] Stage 5d corrected {n_corrected} region(s)")
+
+    # ------------------------------------------------------------------
+    # Stage 5e — block JOIN / SPLIT (FB-boundary re-partition; default OFF).
+    #
+    # Runs AFTER both the deterministic (5d-det) + 70B (5d) re-tag passes and
+    # STRICTLY BEFORE Stage 5b/5c enrichment + the per-kind cap, so a merged /
+    # split region is picked up by 5b/5c and re-routes Stage-6 + assembly.
+    # Gated by SEMANTIK_BLOCK_RESEGMENT; OFF -> pure pass-through (byte-
+    # identical to a no-Stage-5e run). Deterministic-first: the council
+    # MergeOrSplit head + the pedagogical-label regex + the cross-page
+    # continuation cue are load-bearing; the optional 70B layer
+    # (SEMANTIK_BLOCK_RESEGMENT_LLM) proposes EXTRA ops re-validated by the
+    # same R-PART + token-conservation gates. Fails closed to the input list.
+    # ------------------------------------------------------------------
+    from .qwen_specialists.block_resegment import (
+        resegment_blocks,
+        resolve_block_resegment_llm_mode,
+        resolve_block_resegment_mode,
+    )
+
+    if resolve_block_resegment_mode():
+        t = time.perf_counter()
+        # The LLM layer rides the SAME hosted-70B endpoint seat as Stage-5d /
+        # Stage-6; it only needs generate_batch. NO local GGUF / GPU here. The
+        # runtime is built ONLY when the LLM layer is on (deterministic-only
+        # runs never touch the endpoint).
+        resegment_runtime = None
+        if resolve_block_resegment_llm_mode():
+            from .qwen_specialists.runtime import make_runtime
+
+            resegment_runtime = make_runtime("endpoint")
+        log(
+            f"[cascade] running Stage 5e (block join/split, "
+            f"{len(structure_regions)} regions, "
+            f"llm={'on' if resegment_runtime is not None else 'off'})"
+        )
+        resegmented_regions, resegment_ops = resegment_blocks(
+            structure_regions,
+            feature_blocks,
+            state,
+            runtime=resegment_runtime,
+        )
+        structure_regions = resegmented_regions
+        # Audit section — the op list (op type, source ids, conservation flag).
+        # Parallel to the structure_review audit (~L948). Stays None when off.
+        resegment_ops_audit = [
+            {
+                "op": op.op,
+                "source_ids": list(op.source_ids),
+                "origin": op.origin,
+                "conservation_verified": True,
+            }
+            for op in resegment_ops
+        ]
+        # TODO(decision-capture): emit block_resegment event from the bridge
+        # (MCP/tools/pipeline_tools.py) off conformance_audit["block_resegment"]
+        # — one DecisionCapture row per converted document, mirroring the
+        # structure_review emit. Owned by the parent; do NOT wire it here.
+        stages["stage5e"] = time.perf_counter() - t
+        n_merges = sum(1 for o in resegment_ops if o.op == "merge")
+        n_splits = sum(1 for o in resegment_ops if o.op == "split")
+        log(
+            f"[cascade] Stage 5e applied {n_merges} merge(s), "
+            f"{n_splits} split(s)"
+        )
 
     # Stage 5b — optional GLM-OCR table enrichment. Runs ONLY on
     # table regions that the Structure council's table_region head
@@ -1008,6 +1077,11 @@ def run_full_cascade(
         "offline_retry_fired": offline_retry_fired,
         "offline_retry_won": offline_retry_fired and lane_used == "offline",
     }
+    # Stage-5e block join/split audit section — emitted ONLY when the pass
+    # ran (default OFF -> the key is absent, so the result dict is byte-stable
+    # to a no-Stage-5e run). Parallel to the structure_review audit.
+    if resegment_ops_audit is not None:
+        result["block_resegment"] = resegment_ops_audit
     if return_html:
         result["html"] = assembled.html
     return result

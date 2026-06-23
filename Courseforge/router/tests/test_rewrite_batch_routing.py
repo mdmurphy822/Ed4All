@@ -233,6 +233,100 @@ def test_per_block_type_validator_isolation_within_batch(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Within-round CONCURRENT batch dispatch (bounded pool)
+# ---------------------------------------------------------------------------
+
+
+class _RaisingBatchProvider(_RecordingBatchProvider):
+    """Provider whose batch dispatch RAISES for any batch containing a
+    block_id in ``raise_ids`` (simulating an endpoint/network error on one
+    batch within a concurrently-dispatched round)."""
+
+    def __init__(self, *, raise_ids: Optional[set] = None) -> None:
+        super().__init__()
+        self._raise_ids = raise_ids or set()
+
+    def generate_rewrite_batch(self, blocks, **kwargs):  # type: ignore[override]
+        if any(b.block_id in self._raise_ids for b in blocks):
+            self.batch_calls.append([b.block_id for b in blocks])
+            raise RuntimeError("simulated endpoint failure")
+        return super().generate_rewrite_batch(blocks, **kwargs)
+
+
+def test_concurrent_round_one_batch_raises_other_assembles(monkeypatch):
+    """Two batches in a single round dispatched concurrently; one batch RAISES.
+    The other batch's blocks still assemble; the failed batch's block degrades
+    to the re-batch path and (here, never converging) exhausts the budget."""
+    _force_cloud_spec(monkeypatch)
+    # batch_size=1 → each block is its OWN batch → two batches in round 1.
+    monkeypatch.setenv("COURSEFORGE_REWRITE_BATCH_SIZE", "1")
+    monkeypatch.setenv("COURSEFORGE_REWRITE_CONCURRENCY", "2")
+    provider = _RaisingBatchProvider(raise_ids={"bad"})
+    router = _cloud_router(provider)
+    blocks = [_block("good"), _block("bad")]
+
+    results = router.route_rewrite_batch(
+        blocks, validators=[], regen_budget=2,
+    )
+
+    # The healthy batch's block assembled (str content, no marker).
+    assert isinstance(results["good"].content, str)
+    assert results["good"].escalation_marker is None
+    # The raising batch's block degrades exactly as a None slot would:
+    # re-batched each round, then consensus-fail stamped at budget exhaustion.
+    assert results["bad"].escalation_marker == "validator_consensus_fail"
+    # "good" dispatched exactly once (finalized round 1, never re-batched).
+    good_calls = sum(1 for c in provider.batch_calls if "good" in c)
+    assert good_calls == 1
+
+
+def test_concurrent_output_identical_to_sequential(monkeypatch):
+    """Determinism guard: the result map (ids, content, markers) is identical
+    whether concurrency is 1 or >1 — reassembly is by block_id / batch index,
+    not completion order."""
+    _force_cloud_spec(monkeypatch)
+    monkeypatch.setenv("COURSEFORGE_REWRITE_BATCH_SIZE", "1")
+
+    def _run(concurrency: str) -> Dict[str, Any]:
+        monkeypatch.setenv("COURSEFORGE_REWRITE_CONCURRENCY", concurrency)
+        provider = _RecordingBatchProvider()
+        router = _cloud_router(provider)
+        # "b" fails round 1 only → exercises the re-batch path under both.
+        validator = _SelectiveValidator(fail_ids={"b"}, fail_rounds=1)
+        blocks = [_block("a"), _block("b"), _block("c")]
+        results = router.route_rewrite_batch(
+            blocks, validators=[validator], regen_budget=5,
+        )
+        return {
+            bid: (results[bid].content, results[bid].escalation_marker)
+            for bid in sorted(results)
+        }
+
+    seq = _run("1")
+    conc = _run("4")
+    assert seq == conc
+    # Every block finalized as passing str content under both runs.
+    assert set(seq) == {"a", "b", "c"}
+    assert all(isinstance(v[0], str) and v[1] is None for v in seq.values())
+
+
+def test_within_round_concurrency_resolves_from_knob(monkeypatch):
+    """The within-round pool width comes from
+    resolve_rewrite_batched_concurrency() (the COURSEFORGE_REWRITE_CONCURRENCY
+    override, else the low cloud default of 2)."""
+    from Courseforge.generators._rewrite_batch import (
+        resolve_rewrite_batched_concurrency,
+    )
+
+    monkeypatch.delenv("COURSEFORGE_REWRITE_CONCURRENCY", raising=False)
+    assert resolve_rewrite_batched_concurrency() == 2  # low cloud default
+    monkeypatch.setenv("COURSEFORGE_REWRITE_CONCURRENCY", "5")
+    assert resolve_rewrite_batched_concurrency() == 5
+    monkeypatch.setenv("COURSEFORGE_REWRITE_CONCURRENCY", "garbage")
+    assert resolve_rewrite_batched_concurrency() == 2  # parse-with-fallback
+
+
+# ---------------------------------------------------------------------------
 # Cloud-lane top-1 clamp on route_rewrite_with_remediation
 # ---------------------------------------------------------------------------
 

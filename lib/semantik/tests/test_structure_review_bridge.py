@@ -420,6 +420,162 @@ def test_decision_capture_is_best_effort(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 3c. A block_resegment DecisionCapture JSONL row is emitted (dynamic >=20),
+#     skips cleanly when the re-segmenter is off, and is best-effort.
+# ---------------------------------------------------------------------------
+
+
+def _block_resegment_audit() -> list[dict]:
+    """The doc-level block_resegment op list the SEMANTIK_BLOCK_RESEGMENT pass
+    surfaces (merge folds N regions into one; split fans one into N)."""
+    return [
+        {
+            "op": "merge",
+            "region_indices": [3, 4],
+            "conservation_verified": True,
+            "note": "continuation fragment folded into preceding paragraph",
+        },
+        {
+            "op": "split",
+            "region_indices": [7],
+            "conservation_verified": True,
+            "note": "two stacked list items split into separate blocks",
+        },
+    ]
+
+
+def test_block_resegment_capture_row_emitted_dynamic_rationale(monkeypatch):
+    monkeypatch.setenv("VALIDATE_DECISIONS", "true")
+    # Strict mode: a non-canonical decision_type / tool would RAISE — this also
+    # proves the schema enum carries ``block_resegment``.
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+
+    from lib.paths import get_training_captures_dir
+
+    captures_root = get_training_captures_dir()
+
+    from MCP.tools.pipeline_tools import _emit_block_resegment_capture
+
+    _emit_block_resegment_capture(
+        _block_resegment_audit(),
+        canonical_course_code="BRESEG_CAP_101",
+        pdf_stem="mybook",
+    )
+
+    rows = []
+    for jsonl in Path(captures_root).rglob("*.jsonl"):
+        for line in jsonl.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    br_rows = [
+        r
+        for r in rows
+        if r.get("decision_type") == "block_resegment"
+        and r.get("course_id") in {"BRESEG_CAP_101", "BRESEG-CAP-101"}
+    ]
+    assert br_rows, "expected a block_resegment capture row"
+    row = br_rows[0]
+
+    # Canonical decision_type.
+    assert row["decision_type"] == "block_resegment"
+    # Dynamic, replayable rationale >= 20 chars interpolating the op tallies.
+    assert len(row["rationale"]) >= 20
+    assert "1 merge" in row["rationale"]
+    assert "1 split" in row["rationale"]
+    assert "conservation_verified=True" in row["rationale"]
+    # Decision string carries the op counts.
+    assert "merges=1" in row["decision"]
+    assert "splits=1" in row["decision"]
+    assert "ops=2" in row["decision"]
+
+
+def test_block_resegment_capture_skips_cleanly_when_off():
+    from lib.paths import get_training_captures_dir
+    from MCP.tools.pipeline_tools import _emit_block_resegment_capture
+
+    captures_root = Path(get_training_captures_dir())
+
+    def _count_for(course: str) -> int:
+        n = 0
+        for jsonl in captures_root.rglob("*.jsonl"):
+            for line in jsonl.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("decision_type") == "block_resegment" and row.get(
+                    "course_id"
+                ) in {course, course.replace("_", "-")}:
+                    n += 1
+        return n
+
+    before = _count_for("BRESEG_OFF_101")
+    # ops=None => re-segmenter did NOT run => NO capture, NO exception.
+    _emit_block_resegment_capture(
+        None, canonical_course_code="BRESEG_OFF_101", pdf_stem="mybook"
+    )
+    assert _count_for("BRESEG_OFF_101") == before, (
+        "no block_resegment capture should be written when the re-segmenter is off"
+    )
+
+
+def test_block_resegment_capture_is_best_effort(monkeypatch):
+    """A DecisionCapture failure must NOT raise out of the seam (best-effort)."""
+    import MCP.tools.pipeline_tools as pt
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("simulated capture init failure")
+
+    monkeypatch.setattr(
+        "lib.decision_capture.DecisionCapture", _Boom, raising=True
+    )
+    assert (
+        pt._emit_block_resegment_capture(
+            _block_resegment_audit(),
+            canonical_course_code="X",
+            pdf_stem="y",
+        )
+        is None
+    )
+
+
+def test_block_resegment_resolver_reads_both_arms():
+    """The seam resolver reads block_resegment off the bridge attribute AND the
+    in-process conformance_audit, and returns None when neither carries it."""
+    from MCP.tools.pipeline_tools import (
+        _SemantikBridgeResult,
+        _semantik_resolve_block_resegment,
+    )
+
+    # Bridge arm — top-level attribute.
+    bridge = _SemantikBridgeResult(
+        {"pdf": "x.pdf", "block_resegment": _block_resegment_audit()}
+    )
+    resolved = _semantik_resolve_block_resegment(bridge)
+    assert resolved is not None and resolved[0]["op"] == "merge"
+
+    # In-process arm — cascade["conformance_audit"]["block_resegment"].
+    inproc = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    inproc.block_resegment = None  # in-process result has no bridge attribute
+    inproc.cascade["conformance_audit"]["block_resegment"] = (
+        _block_resegment_audit()
+    )
+    resolved2 = _semantik_resolve_block_resegment(inproc)
+    assert resolved2 is not None and resolved2[1]["op"] == "split"
+
+    # Neither arm carries it => None (clean skip).
+    off = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    off.block_resegment = None
+    assert _semantik_resolve_block_resegment(off) is None
+
+
+# ---------------------------------------------------------------------------
 # 4. A re-roled-to-paragraph block does NOT leave a lowercase orphan / bogus
 #    chapter (M2 scope check).
 # ---------------------------------------------------------------------------

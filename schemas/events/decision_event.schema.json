@@ -100,6 +100,7 @@
         "block_plan",
         "block_prose_entailment_check",
         "block_quality_rollup_aggregated",
+        "block_resegment",
         "block_rewrite_call",
         "block_source_ref_check",
         "block_template_fallback",
