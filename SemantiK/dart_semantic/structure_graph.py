@@ -718,19 +718,36 @@ def _find_caption_neighbor(
     members = sorted(int(i) for i in (tc.member_block_indices or []))
     if not members:
         return None
-    candidates: list[int] = []
+    member_set = set(members)
     first, last = members[0], members[-1]
-    if first - 1 >= 0:
-        candidates.append(first - 1)
-    if last + 1 < len(feature_blocks):
-        candidates.append(last + 1)
-    for idx in candidates:
-        if idx < 0 or idx >= len(feature_blocks):
+
+    # WCAG 1.3.1 table-caption resolution. A "Table N" label is frequently
+    # separated from the table body by a blank / spacer / page-furniture FB
+    # (header band, rule line), so the immediate ``first-1`` / ``last+1``
+    # neighbour misses it and the table ships with no accessible name. Scan a
+    # small window before ``first`` and after ``last`` (closest-out) for an
+    # explicit "Table N" / "Figure N" label — the canonical, NON-fabricated
+    # accessible name. The wider window only ever LINKS an existing label FB;
+    # it never invents caption text (anti-fabrication).
+    window = 3
+    scan: list[int] = []
+    for d in range(1, window + 1):
+        scan.append(first - d)
+        scan.append(last + d)
+    label_re = re.compile(r"^(Table|Figure)\s+\d", flags=re.IGNORECASE)
+    for idx in scan:
+        if idx < 0 or idx >= len(feature_blocks) or idx in member_set:
             continue
-        fb = feature_blocks[idx]
-        text = (getattr(getattr(fb, "raw", None), "text", "") or "").strip()
-        if re.match(r"^(Table|Figure)\s+\d", text, flags=re.IGNORECASE):
+        text = (getattr(getattr(feature_blocks[idx], "raw", None), "text", "") or "").strip()
+        if label_re.match(text):
             return idx
+
+    # Secondary signal — a high-confidence Semantic ``doc_role == "caption"``
+    # on the IMMEDIATE neighbour (kept narrow: a model "caption" verdict three
+    # FBs away is too weak to trust without an explicit label).
+    for idx in (first - 1, last + 1):
+        if idx < 0 or idx >= len(feature_blocks) or idx in member_set:
+            continue
         sig = _get_signal(state, "semantic", "doc_role", idx)
         label, conf = _top1(sig)
         if label == "caption" and conf >= doc_role_threshold:

@@ -728,3 +728,94 @@ def test_i_seam_handles_frozen_pipeline_result(monkeypatch, tmp_path):
     result = _run_semantik_v2_conversion("doc.pdf", str(out))
     assert result["success"] is True, result.get("error")
     assert out.is_file()
+
+
+# ---------------------------------------------------------------------------
+# GAP A — figure-sidecar relocation (`_relocate_figure_sidecars`).
+#
+# The cascade writes `{pdf_stem}_figures/` next to the SOURCE PDF and stamps
+# each `<img src>` as `./{pdf_stem}_figures/fig-N.png`. When the HTML lands in
+# a DIFFERENT directory (staging / convert-slice), that relative `src` would
+# dangle. The seam relocates the dir to `{html_stem}_figures/` next to the
+# HTML and rewrites the `src` so the written dir == the emitted src.
+# ---------------------------------------------------------------------------
+def _write_fig_dir(base, dirname, names):
+    d = base / dirname
+    d.mkdir(parents=True, exist_ok=True)
+    for n in names:
+        (d / n).write_bytes(b"\x89PNG\r\n\x1a\n" + n.encode())
+    return d
+
+
+def test_gap_a_relocates_figures_and_rewrites_src(tmp_path):
+    from MCP.tools.pipeline_tools import _relocate_figure_sidecars
+    from pathlib import Path
+
+    # PDF under inputs/, HTML under inputs/slice-out/ — the divergent case.
+    pdf_dir = tmp_path / "inputs"
+    html_dir = pdf_dir / "slice-out"
+    pdf_dir.mkdir(parents=True)
+    html_dir.mkdir(parents=True)
+    pdf = pdf_dir / "slice-mini.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    html_path = html_dir / "mini.html"
+
+    # Cascade wrote the PNGs next to the PDF, stem = pdf stem.
+    src_dir = _write_fig_dir(pdf_dir, "slice-mini_figures", ["fig-1.png", "fig-17.png"])
+
+    html = (
+        '<figure><img alt="Figure." src="./slice-mini_figures/fig-1.png"></figure>'
+        '<figure><img alt="Figure." src="./slice-mini_figures/fig-17.png"></figure>'
+    )
+    out = _relocate_figure_sidecars(html, pdf_path=pdf, html_path=html_path)
+
+    # Dir relocated to {html_stem}_figures next to the HTML; source removed.
+    dst_dir = html_dir / "mini_figures"
+    assert dst_dir.is_dir()
+    assert (dst_dir / "fig-1.png").is_file()
+    assert (dst_dir / "fig-17.png").is_file()
+    assert not src_dir.exists()
+
+    # src rewritten to the HTML-relative dir.
+    assert "./mini_figures/fig-1.png" in out
+    assert "./mini_figures/fig-17.png" in out
+    assert "slice-mini_figures" not in out
+
+    # Every <img src> resolves to a written file (relative to the HTML dir).
+    import re as _re
+    for m in _re.finditer(r'src="\./([^"]+)"', out):
+        assert (html_dir / m.group(1)).is_file()
+
+
+def test_gap_a_noop_when_pdf_and_html_colocated_same_stem(tmp_path):
+    """Standalone run: PDF + HTML co-located with the same stem → no move."""
+    from MCP.tools.pipeline_tools import _relocate_figure_sidecars
+
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    html_path = tmp_path / "doc.html"  # same stem, same dir
+    src_dir = _write_fig_dir(tmp_path, "doc_figures", ["fig-2.png"])
+
+    html = '<figure><img src="./doc_figures/fig-2.png"></figure>'
+    out = _relocate_figure_sidecars(html, pdf_path=pdf, html_path=html_path)
+
+    # Untouched: dir stays put, src unchanged.
+    assert src_dir.is_dir()
+    assert (src_dir / "fig-2.png").is_file()
+    assert out == html
+
+
+def test_gap_a_noop_when_no_figures_written(tmp_path):
+    """Figure path off / no figures → source dir absent → HTML unchanged."""
+    from MCP.tools.pipeline_tools import _relocate_figure_sidecars
+
+    pdf = (tmp_path / "inputs"); pdf.mkdir()
+    pdf_file = pdf / "slice.pdf"
+    pdf_file.write_bytes(b"%PDF-1.4")
+    html_path = pdf / "out" / "slice.html"
+    html_path.parent.mkdir(parents=True)
+
+    html = "<p>no figures here</p>"
+    out = _relocate_figure_sidecars(html, pdf_path=pdf_file, html_path=html_path)
+    assert out == html
+    assert not (html_path.parent / "slice_figures").exists()

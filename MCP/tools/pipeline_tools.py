@@ -6130,6 +6130,88 @@ def _emit_block_resegment_capture(
         )
 
 
+def _relocate_figure_sidecars(
+    html: str,
+    *,
+    pdf_path: Path,
+    html_path: Path,
+) -> str:
+    """Move the cascade-written figure sidecar PNGs next to the HTML output.
+
+    GAP A — Stage F (``cascade._write_figure_sidecars``) writes the PNGs to
+    ``{pdf_stem}_figures/`` next to the SOURCE PDF and stamps each
+    ``<img src>`` as the cascade-relative ``./{pdf_stem}_figures/fig-N.png``.
+    When the HTML is written to a DIFFERENT directory (the staging /
+    convert-slice case: PDF under ``inputs/...`` but HTML under
+    ``inputs/.../slice-out/``), that relative ``src`` resolves against the
+    HTML's directory and dangles — the PNG dir is one level away and uses the
+    PDF stem, not the HTML stem.
+
+    This relocates the dir to ``{html_stem}_figures/`` next to the HTML (the
+    canonical location the staging seam reads — ``stage_dart_outputs`` globs
+    ``html_path.parent / f"{html_path.stem}_figures"``) and rewrites every
+    ``src`` reference in the HTML so the written dir == the emitted ``src``.
+
+    No-op (HTML returned unchanged) when:
+      * the cascade wrote no figures (source dir absent), or
+      * the source dir is ALREADY the destination (PDF + HTML share a dir AND
+        stem — e.g. the standalone ``run_full_cascade`` case).
+
+    Fail-soft: any IO error logs a warning and leaves the HTML untouched
+    (a dangling ``<img>`` is no worse than the pre-fix state and the document
+    still ships).
+    """
+    src_dirname = f"{pdf_path.stem}_figures"
+    dst_dirname = f"{html_path.stem}_figures"
+    src_dir = pdf_path.parent / src_dirname
+    dst_dir = html_path.parent / dst_dirname
+
+    if not src_dir.is_dir():
+        # No figures written (figure path off, or no figures detected).
+        return html
+    if src_dir.resolve() == dst_dir.resolve():
+        # Already in place (standalone run: PDF + HTML co-located, same stem).
+        return html
+
+    try:
+        dst_dir.parent.mkdir(parents=True, exist_ok=True)
+        # Merge into an existing dst (a prior partial run): copy file-by-file,
+        # then drop the source dir. shutil.move onto an existing dir nests it,
+        # so we copy explicitly.
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        n_moved = 0
+        for png in src_dir.iterdir():
+            if png.is_file():
+                shutil.copy2(png, dst_dir / png.name)
+                n_moved += 1
+        # Remove the source dir only after a successful copy.
+        shutil.rmtree(src_dir, ignore_errors=True)
+        logger.info(
+            "SemantiK: relocated %d figure sidecar(s) %s -> %s",
+            n_moved,
+            src_dir,
+            dst_dir,
+        )
+    except OSError as exc:
+        logger.warning(
+            "SemantiK figure-sidecar relocation failed (non-fatal): %s", exc
+        )
+        return html
+
+    # Rewrite the cascade-relative ``./{pdf_stem}_figures/`` src prefix to the
+    # HTML-relative ``./{html_stem}_figures/`` one. The cascade emits a
+    # deterministic ``./{pdf_stem}_figures/fig-N.png`` (see
+    # ``cascade._write_figure_sidecars``), so a targeted prefix replace is
+    # well-defined — both quoted forms are covered.
+    if src_dirname != dst_dirname:
+        html = html.replace(
+            f"./{src_dirname}/", f"./{dst_dirname}/"
+        ).replace(
+            f'"{src_dirname}/', f'"{dst_dirname}/'
+        )
+    return html
+
+
 def _run_semantik_v2_conversion(
     pdf_path: str,
     output_path: str,
@@ -6380,6 +6462,14 @@ def _run_semantik_v2_conversion(
     )
 
     html = adapter_out["html"]
+
+    # 3b. GAP A — relocate the cascade-written figure sidecar PNGs next to the
+    # HTML output (and rewrite the ``<img src>`` to match) so the written dir
+    # == the emitted ``src``. The cascade writes ``{pdf_stem}_figures/`` next
+    # to the SOURCE PDF; when the HTML lands in a different dir (staging /
+    # convert-slice), the relative ``src`` would otherwise dangle. No-op when
+    # the figure path is off or PDF + HTML are co-located with the same stem.
+    html = _relocate_figure_sidecars(html, pdf_path=pdf, html_path=html_path)
 
     # 4. Write the normalized HTML + the two sidecars (reuse the canonical
     # quality/synthesized sidecar SHAPES the adapter built; the adapter's
