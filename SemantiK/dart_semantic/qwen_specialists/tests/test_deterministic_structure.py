@@ -371,6 +371,126 @@ def test_real_body_chapter_not_dropped():
 
 
 # ---------------------------------------------------------------------------
+# (A') Fused-TOC heading drop + (B') bullet/list-item heading demote.
+# ---------------------------------------------------------------------------
+
+
+_FUSED_TOC_TEXT = (
+    "1.1 Introduction to Whole Numbers 1.2 Use the Language of Algebra "
+    "1.3 Add and Subtract Integers 1.4 Multiply and Divide Integers"
+)
+_BULLET_TEXT = (
+    "◦ Yes–add 1 to the digit in the given place value. "
+    "◦ No–do not change the digit in the given place value."
+)
+
+
+def test_fused_toc_heading_dropped():
+    # A heading carrying >=2 "N.M" tokens is a fused TOC run -> metadata_drop.
+    regions, fbs = _build([
+        ("heading", _FUSED_TOC_TEXT, 6, 2),
+        ("heading", "1.1 Real Body Section", 30, 2),
+        ("paragraph", "content", 30),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[0].kind == "metadata_drop"
+    assert out[1].kind == "heading"          # real single-N.M section kept
+    assert diag["fused_toc_dropped"] == 1
+    # text preserved verbatim on the dropped region.
+    assert out[0].payload["text"] == _FUSED_TOC_TEXT
+
+
+def test_single_section_number_heading_not_fused_toc():
+    # Exactly ONE "N.M" -> a legitimate section heading, never demoted/dropped.
+    regions, fbs = _build([
+        ("heading", "1.1 Anchor Section", 30, 2),
+        ("heading", "1.2 Use the Language of Algebra", 35, 2),
+        ("paragraph", "content", 35),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[0].kind == "heading"
+    assert out[1].kind == "heading"
+    assert diag["fused_toc_dropped"] == 0
+
+
+def test_bullet_heading_demoted():
+    # A bullet/list-item heading -> paragraph (NOT a heading), text verbatim.
+    regions, fbs = _build([
+        ("heading", "1.1 Anchor Section", 30, 2),
+        ("heading", _BULLET_TEXT, 31, 4),
+        ("paragraph", "body", 31),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[1].kind == "paragraph"
+    assert out[0].kind == "heading"          # real section kept
+    assert diag["list_item_demoted"] == 1
+    assert out[1].payload["text"] == _BULLET_TEXT
+    # not a pedagogical demote -> no css_class hint.
+    assert "css_class" not in (out[1].payload or {})
+
+
+@pytest.mark.parametrize(
+    "bullet_text",
+    [
+        "• a single top-level bullet item here",
+        "‣ triangle-bullet list content here",
+        "▪ square-bullet list content here",
+        "– en-dash bullet item content here",
+        "- hyphen bullet item content here",
+    ],
+)
+def test_various_bullet_markers_demoted(bullet_text):
+    regions, fbs = _build([
+        ("heading", "1.1 Anchor Section", 30, 2),
+        ("heading", bullet_text, 31, 4),
+        ("paragraph", "body", 31),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[1].kind == "paragraph"
+    assert diag["list_item_demoted"] == 1
+
+
+def test_hyphen_hugging_operand_not_a_bullet():
+    # "-40 below zero" is a minus hugging its operand, NOT a list bullet
+    # (no space after the dash) -> the heading is untouched by the bullet rule.
+    regions, fbs = _build([
+        ("heading", "1.1 Anchor Section", 30, 2),
+        ("heading", "-40 degrees and falling", 35, 2),
+        ("paragraph", "content", 35),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[1].kind == "heading"
+    assert diag["list_item_demoted"] == 0
+
+
+def test_real_heading_not_fused_or_bullet_demoted():
+    # A plain real heading trips neither new rule.
+    regions, fbs = _build([
+        ("heading", "1.1 Anchor Section", 30, 2),
+        ("heading", "Chapter 2: Solving Equations", 80, 1),
+        ("paragraph", "content", 80),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[1].kind == "heading"
+    assert diag["fused_toc_dropped"] == 0
+    assert diag["list_item_demoted"] == 0
+
+
+def test_new_detectors_byte_stable_when_off(monkeypatch):
+    # Flag off -> fused-TOC + bullet headings are byte-identical pass-through.
+    monkeypatch.setenv("SEMANTIK_STRUCTURE_CLEAN", "off")
+    regions, fbs = _build([
+        ("heading", _FUSED_TOC_TEXT, 6, 2),
+        ("heading", _BULLET_TEXT, 31, 4),
+        ("paragraph", "body", 31),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out == regions
+    assert diag["fused_toc_dropped"] == 0
+    assert diag["list_item_demoted"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Invariants — verbatim text, FB partition, token-conservation, audit.
 # ---------------------------------------------------------------------------
 

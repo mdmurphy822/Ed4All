@@ -55,7 +55,7 @@ _SECTION_NUMBER_RE = re.compile(r"^\s*(\d+)\.(\d+)(?:\.\d+)*\s+(\S.*)$")
 # L1-opener fixtures).
 _CHAPTER_OPENER_RE = re.compile(r"^\s*chapter\s+(\d+)\b", re.IGNORECASE)
 
-from lib.semantik.adapter import _AdapterBlock, _AdapterChapter
+from lib.semantik.adapter import _AdapterBlock, _AdapterChapter, _esc_text
 
 # Phantom-TOC + front-matter detector (root-cause fix for a PDF's full-book
 # TOC, printed in front matter, being classified as real chapter headings).
@@ -145,15 +145,106 @@ def _chapter_title_from_heading_tree(
     return None
 
 
+# Inline bullet / list-item markers the council leaves embedded in a
+# ``list``-kind region's deterministic ``raw_text`` (the structure graph
+# types the region but the provenance carries only the flattened text). A run
+# of ≥2 of these markers is the deterministic signal that the region is a
+# genuine bullet list we can render as ``<ul><li>`` rather than flatten to a
+# single ``<p>`` (the adapter's historical behaviour). ``◦``/``▪``/``‣`` are
+# OpenStax's nested-bullet glyphs; ``•``/``·`` the top-level bullet.
+_BULLET_SPLIT_RE = re.compile(r"\s*[•◦▪‣·]\s+")
+
+# A ``definition_list``-kind region whose raw_text carries "term – definition"
+# / "term: definition" pairs renders as ``<dl>``; we keep this conservative
+# (only the explicit em-dash / colon term separator one-per-line shape) and
+# otherwise fall back to ``<p>`` so we never fabricate a malformed ``<dl>``.
+
+
+def _render_list_html(raw_text: str) -> Optional[str]:
+    """Render a council ``list``-kind region's flattened ``raw_text`` as a
+    semantic ``<ul>`` IFF it carries ≥2 inline bullet markers.
+
+    Returns ``None`` when the text is NOT a genuine multi-item bullet list
+    (the council's ``list`` head is noisy — most ``list``-typed regions on the
+    real corpus are mis-typed headings / numbered exercise answers / single
+    sentences with no bullet glyph). The caller then falls back to ``<p>`` so
+    a mis-typed region degrades gracefully rather than producing a one-``<li>``
+    pseudo-list. Anti-fabrication: items are SPLIT from the existing text only;
+    no content is invented or dropped.
+    """
+    text = (raw_text or "").strip()
+    if not text:
+        return None
+    # Strip a leading bullet so the first split segment is not empty.
+    parts = [p.strip() for p in _BULLET_SPLIT_RE.split(text) if p.strip()]
+    if len(parts) < 2:
+        return None
+    items = "".join(f"<li>{_esc_text(p)}</li>" for p in parts)
+    return f"<ul>{items}</ul>"
+
+
+def _render_figure_html(raw_text: str, figure_alt: Optional[str]) -> str:
+    """Render a council ``figure``-kind region as a text-only ``<figure>``.
+
+    Mirrors the SemantiK emitter's anti-broken-``<img>`` contract
+    (``emit_html.py::_emit_image_or_figure``): the region_provenance carries
+    NO image ``src`` (the figure PNG copy is the P3 seam's job, and most
+    figures resolve no URL), so we emit a ``<figure>`` with the SmolVLM2
+    caption as ``<figcaption>`` and NEVER a broken ``<img src="">``. The alt
+    text also rides into the sidecar via ``_AdapterBlock.figure_alt``.
+    """
+    caption = (figure_alt or raw_text or "").strip()
+    if caption:
+        return f"<figure><figcaption>{_esc_text(caption)}</figcaption></figure>"
+    return "<figure></figure>"
+
+
+def _block_html_for_kind(
+    region_kind: str, raw_text: str, figure_alt: Optional[str]
+) -> str:
+    """Deterministically render the inner HTML for a region by its kind.
+
+    The region_provenance carries only the flattened ``raw_text`` (NOT the
+    cascade's rich assembled HTML — see the module docstring; the cascade's
+    ``emit_html`` structured IR is not surfaced per-region in the provenance
+    list), so this reconstructs the best available semantics deterministically
+    from that text:
+
+    * ``list`` / ``definition_list`` → ``<ul>`` when ≥2 bullet markers are
+      present, else ``<p>`` (the council ``list`` head is noisy).
+    * ``figure`` → text-only ``<figure><figcaption>`` (anti-broken-``<img>``).
+    * everything else (``paragraph`` / ``table`` / ``math`` / …) → ``<p>``.
+
+    NOTE (upstream-council limit, NOT adapter-fixable here): ``table`` and
+    image ``figure`` regions are rendered as ``<p>`` / text-only ``<figure>``
+    because the council does NOT emit ``table``/image-``figure`` regions on the
+    real corpus (measured 0 of each on the §1.1 slice despite 8 tables / 39
+    images in source). With no typed table region in the provenance there is
+    no structured cell data to render a ``<table>`` from. See the report.
+    """
+    text = (raw_text or "").strip()
+    if region_kind == "figure":
+        return _render_figure_html(text, figure_alt)
+    if region_kind in {"list", "definition_list"}:
+        ul = _render_list_html(text)
+        if ul is not None:
+            return ul
+    if not text:
+        return ""
+    return f"<p>{_esc_text(text)}</p>"
+
+
 def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
     """Map one ``region_provenance`` dict onto an :class:`_AdapterBlock`.
 
     The §3.3a determinism anchor (``first_raw_block_index``) is carried
     verbatim; pages / confidence / role / WCAG / figure-alt ride along. The
-    block's ``html`` is left as the deterministic raw text wrapped in a
-    paragraph for headingless prose, or empty for headings (the adapter's
-    renderer supplies the heading element). The rewrite tier (P-later) owns
-    real prose; P3a carries grounded structure + provenance only.
+    block's ``html`` is rendered deterministically by region kind
+    (:func:`_block_html_for_kind`) — a genuine bullet ``list`` becomes
+    ``<ul>``, a ``figure`` a text-only ``<figure>``, everything else a ``<p>``;
+    a heading region carries empty ``html`` (the adapter renders the heading
+    element). The rewrite tier (P-later) owns real prose; P3a carries grounded
+    structure + provenance only.
     """
     region_kind = str(prov.get("region_kind") or "paragraph")
     raw_text = str(prov.get("raw_text") or "")
@@ -176,8 +267,16 @@ def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
     figure_alt = prov.get("figure_alt")
     figure_alt = str(figure_alt) if figure_alt else None
 
+    # A heading region carries no inner body HTML (the adapter renders the
+    # heading element from heading_text); content regions render their kind.
+    inner_html = (
+        ""
+        if region_kind == "heading"
+        else _block_html_for_kind(region_kind, raw_text, figure_alt)
+    )
+
     return _AdapterBlock(
-        html=f"<p>{raw_text}</p>" if raw_text else "",
+        html=inner_html,
         region_kind=region_kind,
         raw_block_index=int(prov.get("first_raw_block_index") or 0),
         raw_text=raw_text,

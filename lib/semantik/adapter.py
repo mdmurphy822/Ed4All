@@ -313,6 +313,28 @@ def _esc_text(value: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Region kinds that carry a GENUINE document heading (the SemantiK structure
+# graph's only heading kind is ``"heading"`` — see
+# ``SemantiK/dart_semantic/structure_graph.py::REGION_KINDS``). Only a block
+# of one of these kinds, AND carrying real ``heading_text``, gets a VISIBLE
+# ``<h3>``; every other block satisfies the aria-labelledby contract with a
+# visually-hidden label so we never fabricate a visible heading (the
+# duplication / spurious-h3 defect).
+_HEADING_REGION_KINDS = frozenset({"heading"})
+
+
+def _is_heading_block(block: _AdapterBlock) -> bool:
+    """Whether a block is a GENUINE heading (visible ``<h3>``) vs a content
+    block that gets only a visually-hidden aria-labelledby label.
+
+    True iff the block's region is a heading kind AND it carries non-empty
+    ``heading_text``. A content/list/table/figure block — even one the cascade
+    happened to stamp ``heading_text`` on — is NOT a visible heading, so its
+    body is never duplicated into a fabricated ``<h3>``.
+    """
+    return bool(block.heading_text) and block.region_kind in _HEADING_REGION_KINDS
+
+
 def _render_section(
     block: _AdapterBlock, sid: str, *, source_value: str = _DATA_DART_SOURCE_VALUE
 ) -> str:
@@ -320,10 +342,13 @@ def _render_section(
 
     All ``data-dart-*`` attributes land on the SAME opening tag as
     ``data-dart-block-id`` (placement rule — never on leaf nodes; chunker
-    same-element pairing requires it). The inner heading carries
-    ``id={sid}`` so ``aria-labelledby`` resolves and ``#{sid}`` deep-links.
-    ``source_value`` is the resolved provenance discriminator
-    (``synthesized`` for SemantiK; ``vendor`` for publisher-supplied HTML).
+    same-element pairing requires it). The aria-labelledby target (``id={sid}``)
+    is EITHER a visible ``<h3>`` (genuine heading blocks) OR a visually-hidden
+    ``<p class="sr-only">`` label (content/list/figure blocks) — so a
+    headingless block never gets a fabricated ``<h3>`` duplicating its body and
+    ``#{sid}`` still deep-links. ``source_value`` is the resolved provenance
+    discriminator (``synthesized`` for SemantiK; ``vendor`` for
+    publisher-supplied HTML).
     """
     attrs: List[str] = [
         'class="dart-section"',
@@ -343,20 +368,41 @@ def _render_section(
     if block.wcag_status:
         attrs.append(f'data-dart-wcag="{_esc_attr(block.wcag_status)}"')
 
-    # The heading (id={sid}) is the aria-labelledby target. Headingless
-    # blocks still need a labelledby target → emit a visually-hidden
-    # heading carrying the sid so the contract holds.
-    heading_text = block.heading_text or _first_text_line(block)
-    heading_html = (
-        f'<h3 id="{_esc_attr(sid)}">{_esc_text(heading_text)}</h3>'
-    )
+    if _is_heading_block(block):
+        # Genuine heading region → a VISIBLE <h3> is the aria-labelledby
+        # target. Its body html (if any) follows.
+        label_html = (
+            f'<h3 id="{_esc_attr(sid)}">{_esc_text(block.heading_text)}</h3>'
+        )
+    else:
+        # Content / list / figure block → a VISUALLY-HIDDEN label carries the
+        # sid so aria-labelledby resolves WITHOUT a fabricated visible heading
+        # that duplicates the body (the §1.1 duplication defect). The label
+        # text is a terse machine handle, NOT the block body, so it cannot
+        # duplicate the prose. The body html is the real, semantic content.
+        label_html = (
+            f'<p id="{_esc_attr(sid)}" class="sr-only" hidden>'
+            f"{_esc_text(_section_label(block))}</p>"
+        )
     inner = block.html or ""
     return (
         f"<section {' '.join(attrs)}>\n"
-        f"{heading_html}\n"
+        f"{label_html}\n"
         f"{inner}\n"
         f"</section>"
     )
+
+
+def _section_label(block: _AdapterBlock) -> str:
+    """Terse machine label for a content block's visually-hidden a11y target.
+
+    Deliberately NOT the block body (that would re-introduce the duplication
+    defect). A short kind-qualified handle keyed to the deterministic
+    block id, so screen readers announce a meaningful section name without
+    echoing the prose that follows it.
+    """
+    kind = (block.region_kind or "content").replace("_", " ").strip() or "content"
+    return f"{kind.capitalize()} block"
 
 
 def _first_text_line(block: _AdapterBlock) -> str:
@@ -411,6 +457,13 @@ def _render_html(
     ``<main>``; wraps every block in an aria-labelled ``dart-section``.
     """
     body = _render_chapters(chapters, source_value=source_value)
+    # §3.1 WCAG 2.4.6 — a single document-title <h1> at the top of <main>,
+    # from the SAME source as <title>. Chapters stay at <h2> and sections at
+    # <h3>, giving proper h1 > h2 > h3 nesting. ADDITIVE: it does NOT renumber
+    # existing headings, so downstream Courseforge-staging / chunker that read
+    # the h2/h3 section structure are unaffected (they key off <article
+    # role="doc-chapter"> <h2> and <section> blocks, not the new <h1>).
+    h1_html = f"<h1>{_esc_text(title)}</h1>"
     return (
         "<!DOCTYPE html>\n"
         f'<html lang="{_esc_attr(lang)}">\n'
@@ -421,6 +474,7 @@ def _render_html(
         "<body>\n"
         '<a class="skip-link" href="#main-content">Skip to main content</a>\n'
         '<main id="main-content" role="main" class="dart-document">\n'
+        f"{h1_html}\n"
         f"{body}\n"
         "</main>\n"
         "</body>\n"

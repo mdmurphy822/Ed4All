@@ -274,6 +274,7 @@ class WCAGValidator:
         self._check_empty_doc_chapters(soup)  # SC 1.3.1
         self._check_toc_anchor_resolution(soup)  # SC 2.4.1 / 2.4.5
         self._check_pdf_artifact_headings(soup)  # SC 2.4.6
+        self._check_misclassified_headings(soup)  # SC 1.3.1 / 2.4.6
 
         # Generate report
         return self._generate_report(file_path)
@@ -1235,6 +1236,69 @@ class WCAGValidator:
                     message=f"Heading looks like PDF-extraction artifact: {text!r}",
                     suggestion="Strip trailing page numbers from heading text."
                 ))
+
+    def _check_misclassified_headings(self, soup: BeautifulSoup) -> None:
+        """SC 1.3.1 / 2.4.6 — flag content the converter mis-typed as a heading.
+
+        Two deterministic mis-classification shapes that the SemantiK
+        ``clean_structure`` pass (``deterministic_structure.py``) demotes
+        upstream; this is the validation-time SECOND LINE that catches an edge
+        case the demote missed:
+
+          1. FUSED-TOC heading — a heading carrying >=2 "N.M" section-number
+             tokens (a run of table-of-contents entries concatenated into one
+             heading, e.g. "1.1 Introduction to Whole Numbers 1.2 Use the
+             Language of Algebra 1.3 …"). A real heading is a SINGLE title
+             (exactly one "N.M"); >=2 means TOC entries fused. Anti-FP: a
+             legitimate "1.1 Title" single heading has ONE "N.M" and never fires.
+          2. BULLET / list-item heading — a heading whose text opens with a list
+             marker (``◦ • ‣ ▪ ·`` or a dash/hyphen bullet "– "/"- " followed by
+             a space) — a list item mis-typed as a heading. Anti-FP: a hyphen
+             hugging its operand ("-40") never matches (the dash-bullet pattern
+             requires a SPACE after the dash).
+        """
+        fused_toc_re = re.compile(r'\b\d+\.\d+\b.*\b\d+\.\d+\b')
+        leading_marker_re = re.compile(r'^\s*[◦•‣▪·]\s+\S')
+        leading_dash_bullet_re = re.compile(r'^\s*[–-]\s+\S')
+        fused_flagged = 0
+        bullet_flagged = 0
+        for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+            text = heading.get_text(strip=True)
+            if not text:
+                continue
+            if fused_toc_re.search(text):
+                fused_flagged += 1
+                if fused_flagged <= 3:
+                    self.issues.append(WCAGIssue(
+                        criterion=WCAGCriterion.SC_2_4_6.value,
+                        severity=IssueSeverity.MEDIUM,
+                        element=f'<{heading.name}>',
+                        message=(
+                            "Heading looks like a fused table-of-contents run "
+                            f"(>=2 'N.M' section numbers): {text[:80]!r}"
+                        ),
+                        suggestion=(
+                            "Split into separate section headings or demote the "
+                            "TOC run out of the heading outline."
+                        )
+                    ))
+                continue
+            if leading_marker_re.match(text) or leading_dash_bullet_re.match(text):
+                bullet_flagged += 1
+                if bullet_flagged <= 3:
+                    self.issues.append(WCAGIssue(
+                        criterion=WCAGCriterion.SC_1_3_1.value,
+                        severity=IssueSeverity.MEDIUM,
+                        element=f'<{heading.name}>',
+                        message=(
+                            "Heading opens with a list-item bullet marker "
+                            f"(list content mis-typed as a heading): {text[:80]!r}"
+                        ),
+                        suggestion=(
+                            "Demote the bullet/list content to a list item or "
+                            "paragraph, not a heading."
+                        )
+                    ))
 
     # ------------------------------------------------------------------ #
     # Report generation

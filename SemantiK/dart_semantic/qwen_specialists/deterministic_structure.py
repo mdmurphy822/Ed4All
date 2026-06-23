@@ -144,6 +144,24 @@ _CHAPTER_HEADING_RE = re.compile(r"^\s*chapter\s+(\d+)\b", re.IGNORECASE)
 _BARE_ORDINAL_HEADING_RE = re.compile(r"^\s*(\d{1,3})\s+(?=[A-Za-z])\S")
 # A real section heading shape: "N.M[.K] Title".
 _SECTION_HEADING_RE = re.compile(r"^\s*\d+\.\d+(?:\.\d+)*\s+\S")
+# A FUSED-TOC heading shape: a run carrying >=2 "N.M" section-number tokens
+# (e.g. "1.1 Introduction to Whole Numbers 1.2 Use the Language of Algebra
+# 1.3 …"). A real section heading is a SINGLE numbered title (exactly one
+# "N.M"); >=2 "N.M" tokens means several TOC entries were concatenated into one
+# region. Anti-FP: ONE "N.M" never matches (the second match is required).
+_FUSED_TOC_HEADING_RE = re.compile(r"\b\d+\.\d+\b.*\b\d+\.\d+\b")
+# Bullet / list-marker glyphs that prefix a list ITEM the council mis-typed as a
+# heading ("◦ Yes–add 1 …", "• …", "‣ …", "▪ …", "– …"/"- …"). A real heading
+# never opens with one of these markers.
+_LIST_MARKER_CHARS = "◦•‣▪·"
+_LEADING_LIST_MARKER_RE = re.compile(r"^\s*[◦•‣▪·]\s+\S")
+# A leading dash/hyphen BULLET ("– text" / "- text") — only when followed by a
+# space + word (an em/en/hyphen used as a list marker, NOT a hyphenated word
+# like "-40" or a minus sign hugging its operand).
+_LEADING_DASH_BULLET_RE = re.compile(r"^\s*[–-]\s+\S")
+# The repeated-bullet shape ("◦ … ◦ …"): >=2 of the same bullet glyph inside the
+# text means the region is a flattened bullet LIST, not a heading.
+_REPEATED_BULLET_RE = re.compile(r"[◦•‣▪]\s+\S.*[◦•‣▪]\s+\S")
 # A TOC-entry shape: title (>=1 letter) + leader + trailing page number.
 _TOC_ENTRY_RE = re.compile(
     r"^\s*(?P<title>.*?[A-Za-z].*?)"
@@ -235,6 +253,43 @@ def _is_real_chapter_or_section(region: Region) -> bool:
     return bool(
         _CHAPTER_HEADING_RE.match(text) or _SECTION_HEADING_RE.match(text)
     )
+
+
+def _is_fused_toc_heading(text: str) -> bool:
+    """Whether ``text`` is a FUSED run of >=2 "N.M Title" TOC entries.
+
+    A real section heading is a SINGLE numbered title (exactly one "N.M"
+    section-number token). When the council fuses several contiguous
+    table-of-contents entries into one region ("1.1 Introduction to Whole
+    Numbers 1.2 Use the Language of Algebra 1.3 Add and Subtract Integers …"),
+    the text carries >=2 "N.M" tokens. Anti-FP: a legitimate "Section 1.1
+    Title" single heading has exactly ONE "N.M" and never matches (the regex
+    requires a second "N.M" token).
+    """
+    if not text:
+        return False
+    return bool(_FUSED_TOC_HEADING_RE.search(text))
+
+
+def _is_list_item_heading(text: str) -> bool:
+    """Whether ``text`` is a bullet / list ITEM the council mis-typed as a heading.
+
+    Fires when the text (1) STARTS with a list-marker glyph (``◦ • ‣ ▪ ·`` or a
+    dash/hyphen bullet "– "/"- " followed by a space + word), or (2) carries the
+    repeated-bullet "◦ … ◦ …" shape (a flattened bullet LIST). A real heading
+    never opens with a bullet marker. Anti-FP: a hyphen hugging its operand
+    ("-40", "minus-sign") never matches the dash-bullet rule (it requires a
+    SPACE after the dash).
+    """
+    if not text:
+        return False
+    if _LEADING_LIST_MARKER_RE.match(text):
+        return True
+    if _LEADING_DASH_BULLET_RE.match(text):
+        return True
+    if _REPEATED_BULLET_RE.search(text):
+        return True
+    return False
 
 
 def _is_ocr_titlepage_noise(text: str) -> bool:
@@ -439,6 +494,36 @@ _PEDAGOGICAL_LABEL_CLASSES: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+def _is_fused_toc_region(region: Region) -> bool:
+    """Whether a HEADING region's text is a fused run of >=2 "N.M" TOC entries.
+
+    A real single numbered section heading ("1.1 Introduction…", with exactly
+    one "N.M") is explicitly NOT a fused-TOC region — only >=2 "N.M" tokens
+    trip it. Non-heading regions are never fused-TOC.
+    """
+    if not _is_heading(region):
+        return False
+    return _is_fused_toc_heading(_region_text(region))
+
+
+def _is_list_item_region(region: Region) -> bool:
+    """Whether a HEADING region's text is a bullet / list ITEM mis-typed as a heading.
+
+    A real numbered chapter/section heading ("Chapter 1", "1.1 Title") never
+    opens with a bullet marker, so this can never demote one. Non-heading
+    regions are never list-item headings.
+    """
+    if not _is_heading(region):
+        return False
+    text = _region_text(region)
+    if not text:
+        return False
+    # Never demote a real numbered chapter/section heading.
+    if _CHAPTER_HEADING_RE.match(text) or _SECTION_HEADING_RE.match(text):
+        return False
+    return _is_list_item_heading(text)
+
+
 def _pedagogical_class_for(text: str) -> str | None:
     """The semantic CSS class hint for a pedagogical-label ``text``, or None.
 
@@ -528,6 +613,8 @@ def clean_structure(
     diagnostics: dict[str, Any] = {
         "enabled": resolve_structure_clean_mode(),
         "front_matter_dropped": 0,
+        "fused_toc_dropped": 0,
+        "list_item_demoted": 0,
         "pedagogical_demoted": 0,
         "pedagogical_classed": 0,
         "pedagogical_class_counts": {},
@@ -546,12 +633,36 @@ def clean_structure(
     # (A) Front-matter / phantom-TOC / OCR-noise -> metadata_drop.
     fm_drops = _detect_front_matter_drops(regions, feature_blocks, cluster_signals)
 
+    # (A') Fused-TOC headings (>=2 "N.M" entries concatenated into one region)
+    # -> metadata_drop. A run of TOC entries is front-matter, not a real
+    # heading; mirror the (A) TOC-run drop convention. Anywhere in the doc (a
+    # fused TOC run is unambiguous regardless of page zone). A single-"N.M"
+    # real section heading is never matched.
+    fused_toc_drops = {
+        i
+        for i, region in enumerate(regions)
+        if i not in fm_drops and _is_fused_toc_region(region)
+    }
+    fm_drops |= fused_toc_drops
+
     # (B) Pedagogical-label headings -> paragraph (only those NOT already
     # being dropped in (A) — a dropped phantom never needs demoting).
     peda_demote = {
         i
         for i, region in enumerate(regions)
         if i not in fm_drops and _is_pedagogical_label(region)
+    }
+
+    # (B') Bullet / list-item headings -> paragraph. A list item the council
+    # mis-typed as a heading ("◦ Yes–add 1 …") is demoted to a non-heading
+    # kind (paragraph). Not front-matter (real body content), so a plain
+    # demote rather than a drop; excludes anything already dropped/demoted.
+    list_item_demote = {
+        i
+        for i, region in enumerate(regions)
+        if i not in fm_drops
+        and i not in peda_demote
+        and _is_list_item_region(region)
     }
 
     corrected: list[Region] = []
@@ -569,6 +680,10 @@ def clean_structure(
                 pedagogical_class_counts[css_class] = (
                     pedagogical_class_counts.get(css_class, 0) + 1
                 )
+        elif i in list_item_demote:
+            # A bullet/list-item heading -> paragraph (a list/non-heading kind);
+            # text preserved verbatim, no pedagogical class hint.
+            corrected.append(_retag(region, "paragraph"))
         else:
             corrected.append(region)
 
@@ -584,6 +699,8 @@ def clean_structure(
 
     headings_after = _heading_level_histogram(corrected)
     diagnostics["front_matter_dropped"] = len(fm_drops)
+    diagnostics["fused_toc_dropped"] = len(fused_toc_drops)
+    diagnostics["list_item_demoted"] = len(list_item_demote)
     diagnostics["pedagogical_demoted"] = len(peda_demote)
     diagnostics["pedagogical_classed"] = sum(pedagogical_class_counts.values())
     diagnostics["pedagogical_class_counts"] = pedagogical_class_counts
@@ -632,4 +749,6 @@ __all__ = [
     "clean_structure",
     "resolve_structure_clean_mode",
     "_pedagogical_class_for",
+    "_is_fused_toc_heading",
+    "_is_list_item_heading",
 ]

@@ -84,8 +84,22 @@ def _region_provenance() -> list[dict]:
             "figure_alt": None,
             "raw_text": "The order of operations is PEMDAS.",
         },
+        # A genuine bullet list (≥2 markers) → <ul><li> deterministic render.
         {
             "region_index": 3,
+            "region_kind": "list",
+            "role": "list",
+            "confidence": 0.7,
+            "wcag_status": "passed",
+            "first_raw_block_index": 3,
+            "pages": [2],
+            "heading_text": None,
+            "level": None,
+            "figure_alt": None,
+            "raw_text": "• Add integers. • Subtract integers. • Multiply integers.",
+        },
+        {
+            "region_index": 4,
             "region_kind": "figure",
             "role": "figure",
             "confidence": 1.0,  # bands to omitted (§3.6)
@@ -100,7 +114,7 @@ def _region_provenance() -> list[dict]:
         # An answer-key NON-CONTENT heading — must NOT open a chapter and
         # must be filtered out of the rendered sections (§3.4).
         {
-            "region_index": 4,
+            "region_index": 5,
             "region_kind": "heading",
             "role": "heading",
             "confidence": 0.4,
@@ -114,7 +128,7 @@ def _region_provenance() -> list[dict]:
         },
         # --- Chapter 2 boundary (content-bearing level-1 heading) ---------
         {
-            "region_index": 5,
+            "region_index": 6,
             "region_kind": "heading",
             "role": "heading",
             "confidence": 0.9,
@@ -127,7 +141,7 @@ def _region_provenance() -> list[dict]:
             "raw_text": "Chapter 2: Linear Equations",
         },
         {
-            "region_index": 6,
+            "region_index": 7,
             "region_kind": "paragraph",
             "role": "body",
             "confidence": 0.79,
@@ -140,7 +154,7 @@ def _region_provenance() -> list[dict]:
             "raw_text": "Solve for x in 2x + 3 = 7.",
         },
         {
-            "region_index": 7,
+            "region_index": 8,
             "region_kind": "paragraph",
             "role": "body",
             "confidence": 0.6,
@@ -472,3 +486,64 @@ def test_e_leading_frontmatter_only_chapter_dropped():
     # No leading "Document" / "Preface" content-free chapter.
     assert all("Document" not in t for t in titles), titles
     assert titles == ["Chapter 1", "Chapter 2"], titles
+
+
+# ---------------------------------------------------------------------------
+# (f) Deterministic per-kind inner-HTML rendering (lists / figures / prose).
+# ---------------------------------------------------------------------------
+
+
+def test_f_list_region_renders_ul():
+    """A council ``list``-kind region with >=2 bullet markers renders <ul>."""
+    from lib.semantik.cascade_ir import _block_html_for_kind
+
+    html = _block_html_for_kind(
+        "list", "• Add integers. • Subtract integers. • Multiply integers.", None
+    )
+    assert html.startswith("<ul>") and html.endswith("</ul>")
+    assert html.count("<li>") == 3
+    assert "<li>Add integers.</li>" in html
+
+
+def test_f_noisy_list_region_falls_back_to_paragraph():
+    """A ``list``-typed region with <2 bullet markers (council mis-type) is
+    rendered as a <p>, NOT a one-item pseudo-list."""
+    from lib.semantik.cascade_ir import _block_html_for_kind
+
+    # No bullet glyphs at all (a mis-typed heading / single sentence).
+    html = _block_html_for_kind("list", "Match primes vertically when possible.", None)
+    assert html == "<p>Match primes vertically when possible.</p>"
+    # A single leading bullet only → still one item → fall back to <p>.
+    html2 = _block_html_for_kind("list", "• Only one bullet here.", None)
+    assert html2.startswith("<p>")
+
+
+def test_f_figure_region_renders_text_only_figure():
+    """A ``figure``-kind region renders <figure><figcaption> with the alt
+    caption and NEVER a broken <img src="">."""
+    from lib.semantik.cascade_ir import _block_html_for_kind
+
+    html = _block_html_for_kind(
+        "figure", "Figure 1.1 A number line.", "A number line from -5 to 5."
+    )
+    assert html.startswith("<figure>") and html.endswith("</figure>")
+    assert "<figcaption>A number line from -5 to 5.</figcaption>" in html
+    assert "<img" not in html
+
+
+def test_f_paragraph_and_table_render_as_paragraph():
+    """Prose renders <p>; a ``table``-kind region (no upstream typed table on
+    the real corpus) degrades to <p> (documented upstream-council limit)."""
+    from lib.semantik.cascade_ir import _block_html_for_kind
+
+    assert _block_html_for_kind("paragraph", "Plain prose.", None) == "<p>Plain prose.</p>"
+    assert _block_html_for_kind("table", "Col A Col B 1 2", None) == "<p>Col A Col B 1 2</p>"
+
+
+def test_f_list_items_are_escaped():
+    """List item text is HTML-escaped (no raw < > & injection)."""
+    from lib.semantik.cascade_ir import _block_html_for_kind
+
+    html = _block_html_for_kind("list", "• a < b • c & d", None)
+    assert "&lt;" in html and "&amp;" in html
+    assert "<li>a &lt; b</li>" in html
