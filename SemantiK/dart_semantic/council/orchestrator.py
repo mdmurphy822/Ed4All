@@ -49,6 +49,7 @@ from .structure import IS_HEADING_LABELS, ROLE_NAMES, TABLE_REGION_LABELS
 from .types import (
     BertOutput,
     CouncilState,
+    ImageCandidate,
     MathCandidate,
     RegionCandidate,
     TableCandidate,
@@ -262,12 +263,18 @@ def run_council(
     spans: list[Any] = list(feature_set.feature_blocks)
     table_candidates: list[TableCandidate] = list(feature_set.table_candidates)
     math_candidates: list[MathCandidate] = list(feature_set.math_candidates)
-    regions: list[RegionCandidate] = list(table_candidates) + list(math_candidates)
+    image_candidates: list[ImageCandidate] = list(feature_set.image_candidates)
+    # Part F — figures append after tables + math. Empty unless
+    # SEMANTIK_DETECT_FIGURES is on (byte-stable ordering when off).
+    regions: list[RegionCandidate] = (
+        list(table_candidates) + list(math_candidates) + list(image_candidates)
+    )
 
     _log(
         f"feature_blocks={len(spans)}  "
         f"table_candidates={len(table_candidates)}  "
-        f"math_candidates={len(math_candidates)}"
+        f"math_candidates={len(math_candidates)}  "
+        f"image_candidates={len(image_candidates)}"
     )
 
     if not spans:

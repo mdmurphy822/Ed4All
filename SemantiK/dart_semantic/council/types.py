@@ -76,7 +76,22 @@ class CouncilState:
 # evidence_features, member_block_indices) along with TableCandidate and
 # MathCandidate subclasses carrying cell-grids and glyph-density features.
 # That is now the single source of truth.
-from dart_semantic.region_detection import (  # noqa: E402
+# RELATIVE imports (``..`` = the ``dart_semantic`` package) so the
+# typed-candidate classes bind to the SAME module object the rest of the
+# cascade builds candidates from. The cascade is importable under TWO
+# top-level names — bare ``dart_semantic`` (the canonical
+# ``run_cascade_json.py`` / ``SemantiK/`` on sys.path route) AND the
+# package-prefixed ``SemantiK.dart_semantic`` (the in-process MCP seam
+# ``_run_semantik_v2_conversion`` route). An ABSOLUTE ``from
+# dart_semantic.region_detection import ...`` here would always bind the
+# bare module, while ``cascade``/``features`` (loaded via relative imports
+# under whichever top-level name) build candidates from the package-local
+# module — splitting class identity so ``isinstance(region, TableCandidate)``
+# / ``ImageCandidate`` in the cross-reranker returned False and EVERY table /
+# figure candidate fell through to the prose route (the 0-tables / 0-figures
+# regression). Relative imports bind the package-local module either way.
+from ..region_detection import (  # noqa: E402
+    ImageCandidate,
     MathCandidate,
     RegionCandidate,
     TableCandidate,
@@ -84,7 +99,7 @@ from dart_semantic.region_detection import (  # noqa: E402
 # Stage-5 typed region (deterministic structure-graph candidate). Re-
 # exported here so council consumers can pull the post-arbitration
 # Region type without reaching into the dart_semantic package root.
-from dart_semantic.structure_graph import Region  # noqa: E402
+from ..structure_graph import Region  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -109,6 +124,12 @@ class RoutingDecision:
     * ``"table"``  — confirmed table; cells already parsed by
                      :class:`TableSpecialist` upstream.
     * ``"math"``   — confirmed math; consumed by the math specialist.
+    * ``"figure"`` — DETERMINISTIC image-candidate route (an
+                     :class:`ImageCandidate` extracted from a PDF IMAGE
+                     page-object). The deterministic detector is
+                     LOAD-BEARING here — Structure's ``is_image_block``
+                     head is a secondary/confirmation strength flag, not
+                     the trigger. Gated by ``SEMANTIK_DETECT_FIGURES``.
     * ``"drop"``   — region demoted out of the structure stream entirely
                      (header/footer artefact, page-number, etc.). v1
                      never emits ``drop`` from the rule arbiter; the
@@ -135,7 +156,7 @@ class RoutingDecision:
         ``"detector_signal_missing"``         detector should have run but didn't
     """
     region_id: int
-    route: Literal["prose", "table", "math", "drop"]
+    route: Literal["prose", "table", "math", "figure", "drop"]
     final_role: str | None = None
     flags: tuple[str, ...] = ()
 
@@ -148,5 +169,6 @@ __all__ = [
     "RegionCandidate",
     "TableCandidate",
     "MathCandidate",
+    "ImageCandidate",
     "Region",
 ]

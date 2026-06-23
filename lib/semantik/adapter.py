@@ -195,6 +195,7 @@ class _AdapterBlock:
     block_role: Optional[str] = None  # council/Qwen role label (§4)
     wcag_status: Optional[str] = None  # per-region gate (passed/flagged/...)
     figure_alt: Optional[str] = None  # SmolVLM2 caption (figure blocks)
+    image_src: Optional[str] = None  # Part F — relative sidecar PNG path (figures)
 
 
 @dataclass

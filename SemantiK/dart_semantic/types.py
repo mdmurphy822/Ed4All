@@ -65,6 +65,11 @@ class FeatureBlock:
     in_widget: bool = False                     # pikepdf AcroForm widget overlaps this bbox
     widget_kind: str | None = None              # "text" | "button" | "select" | "signature"
     provenance: str | None = None               # "pypdfium2" | "pdfplumber+pypdfium2" | "tesseract" | ...
+    # Part F — True for a SYNTHETIC image FeatureBlock (no text; an IMAGE
+    # page-object interleaved into the FB stream so figure regions can
+    # claim it under the Stage-5 coverage invariant). Default False keeps
+    # every text FB byte-stable.
+    is_image: bool = False
 
 
 @dataclass
@@ -116,6 +121,7 @@ class Enrichment:
 #   from dart_semantic.types import FeatureSet, TableCandidate, MathCandidate
 # without reaching into region_detection.py.
 from .region_detection import (  # noqa: E402  (re-export at module bottom)
+    ImageCandidate,
     MathCandidate,
     RegionCandidate,
     TableCandidate,
@@ -139,6 +145,11 @@ class FeatureSet:
     feature_blocks: list[FeatureBlock] = field(default_factory=list)
     table_candidates: list[TableCandidate] = field(default_factory=list)
     math_candidates: list[MathCandidate] = field(default_factory=list)
+    # Part F — image (figure) region candidates. Each one's
+    # ``member_block_indices`` points at a SYNTHETIC image FeatureBlock
+    # interleaved into ``feature_blocks`` in reading order. Empty unless
+    # SEMANTIK_DETECT_FIGURES is on.
+    image_candidates: list[ImageCandidate] = field(default_factory=list)
 
 
 __all__ = [
@@ -151,4 +162,5 @@ __all__ = [
     "RegionCandidate",
     "TableCandidate",
     "MathCandidate",
+    "ImageCandidate",
 ]

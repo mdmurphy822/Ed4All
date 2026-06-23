@@ -43,6 +43,7 @@ def render_figure_regions_to_bytes(
     pdf_path: Path,
     *,
     render_dpi: int = 144,
+    fail_soft: bool = False,
 ) -> list[Any]:
     """Stage 5c — attach ``image_png_bytes`` to every figure Region.
 
@@ -65,6 +66,13 @@ def render_figure_regions_to_bytes(
     render_dpi
         Render resolution. 144 trades off chart legibility vs payload size
         (~1.5× a 96 DPI screen capture).
+    fail_soft
+        Part F — when True, a per-region render failure (bad bbox, decode
+        error) is SKIPPED (the region passes through without
+        ``image_png_bytes``) instead of aborting the whole document, so
+        one bad bbox on a 39-image page does not lose the other 38. The
+        legacy default (False) keeps the loud no-silent-fallback path for
+        the legacy ``image_block_demoted`` figures.
 
     Returns
     -------
@@ -129,6 +137,10 @@ def render_figure_regions_to_bytes(
                 if not png_bytes:
                     raise ValueError("empty PNG bytes")
             except Exception as exc:  # noqa: BLE001 — surface, don't swallow
+                if fail_soft:
+                    # Part F — degrade this ONE region; keep the rest.
+                    out.append(region)
+                    continue
                 raise FigureRenderError(
                     f"failed to render figure region {i} "
                     f"(fb={region.feature_block_indices!r}) from "

@@ -31,6 +31,7 @@ resources; see ``feedback_qwen_build_serial``.
 from __future__ import annotations
 
 import dataclasses
+import os
 import time
 from collections import Counter
 from pathlib import Path
@@ -48,6 +49,63 @@ from .structure_graph import Region, build_structure_graph
 from .theta import decide_exit, evaluate, maybe_offline_retry
 from .v2_config import DEFAULT_V2_CONFIG, V2Config
 from .validate import HtmlValidator
+
+
+# ---------------------------------------------------------------------------
+# Part F — figure-detection flags
+# ---------------------------------------------------------------------------
+
+_DETECT_FIGURES_ENV = "SEMANTIK_DETECT_FIGURES"
+_FIGURE_CAPTION_ENV = "SEMANTIK_FIGURE_CAPTION"
+_FIG_TRUTHY = {"1", "true", "yes", "on"}
+_FIG_FALSEY = {"0", "false", "no", "off"}
+
+
+def resolve_detect_figures() -> bool:
+    """Whether the Part F figure-detection path (Stages A-D) runs.
+
+    Reads ``SEMANTIK_DETECT_FIGURES``, DEFAULT OFF (byte-stable).
+    Parse-with-fallback: truthy (``1``/``true``/``yes``/``on``) → on;
+    unset / falsey / garbage → off. Resolver of record; the extract-side
+    mirror ``extract_shared._detect_figures_enabled`` reads the same env
+    (extract runs inside the council orchestrator, off the cascade's
+    thread). Mirrors ``ED4ALL_BLOCK_ANATOMY``'s default-off posture.
+    """
+    return os.environ.get(_DETECT_FIGURES_ENV, "").strip().lower() in _FIG_TRUTHY
+
+
+def resolve_figure_caption_mode() -> str:
+    """Tri-state caption mode: ``"on"`` / ``"off"`` / ``"auto"`` (default).
+
+    Reads ``SEMANTIK_FIGURE_CAPTION``. ``auto`` (unset / "auto" / garbage)
+    captions when CUDA is present AND the flag is not explicitly off; an
+    explicit truthy forces on; an explicit falsey defers captioning (the
+    figure ships the honest type-level ``"Figure."`` alt). Only consulted
+    when ``resolve_detect_figures`` is on.
+    """
+    raw = os.environ.get(_FIGURE_CAPTION_ENV, "").strip().lower()
+    if raw in _FIG_TRUTHY:
+        return "on"
+    if raw in _FIG_FALSEY:
+        return "off"
+    return "auto"
+
+
+def _figure_captioning_active() -> bool:
+    """Resolve the tri-state caption mode to a concrete on/off decision."""
+    mode = resolve_figure_caption_mode()
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    # auto — caption only when a CUDA device is available (the SmolVLM2
+    # captioner is too slow CPU-only; defer to the type-level alt).
+    try:
+        import torch  # type: ignore
+
+        return bool(torch.cuda.is_available())
+    except Exception:  # noqa: BLE001 — no torch / no cuda → defer
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +443,62 @@ def _review_by_region_index(verdicts: list[Any] | None) -> dict[int, dict[str, A
     return out
 
 
+def _write_figure_sidecars(
+    regions: list[Region],
+    pdf_path: Path,
+    *,
+    log: Callable[[str], None] = lambda _msg: None,
+) -> list[Region]:
+    """Stage F — write each figure region's PNG to a deterministic sidecar
+    and stamp ``payload["image_src"]``; strip the raw bytes.
+
+    Sidecar layout: ``{pdf_stem}_figures/fig-{first_fb_index}.png`` next to
+    the source PDF. ``image_src`` is the RELATIVE path
+    ``./{pdf_stem}_figures/fig-N.png`` (the emitters resolve it against the
+    written HTML location). The raw ``image_png_bytes`` is removed from the
+    payload after the write so it never reaches the JSON bridge (only
+    ``image_src`` + ``figure_alt`` travel). Per-region fail-soft: a write
+    failure leaves that figure with no ``image_src`` (its emitter falls
+    back to the text-only ``<figure>``) but never aborts the document.
+
+    The Region dataclass is frozen, so each touched region is replaced.
+    """
+    from dataclasses import replace as _dc_replace
+
+    stem = pdf_path.stem
+    figures_dirname = f"{stem}_figures"
+    figures_dir = pdf_path.parent / figures_dirname
+    out: list[Region] = []
+    n_written = 0
+    dir_made = False
+    for region in regions:
+        if getattr(region, "kind", None) != "figure":
+            out.append(region)
+            continue
+        payload = dict(region.payload or {})
+        png_bytes = payload.pop("image_png_bytes", None)
+        if not png_bytes:
+            # No pixels (deferred render / failed bbox) — text-only figure.
+            out.append(_dc_replace(region, payload=payload))
+            continue
+        fb_indices = getattr(region, "feature_block_indices", ()) or ()
+        first_fb = min(fb_indices) if fb_indices else 0
+        fname = f"fig-{first_fb}.png"
+        try:
+            if not dir_made:
+                figures_dir.mkdir(parents=True, exist_ok=True)
+                dir_made = True
+            (figures_dir / fname).write_bytes(png_bytes)
+            payload["image_src"] = f"./{figures_dirname}/{fname}"
+            n_written += 1
+        except Exception as exc:  # noqa: BLE001 — degrade one figure
+            log(f"[cascade] Stage F sidecar write failed for fb={first_fb}: {exc}")
+            # image_png_bytes already popped; no src → text-only figure.
+        out.append(_dc_replace(region, payload=payload))
+    log(f"[cascade] Stage F wrote {n_written} figure sidecar PNG(s) to {figures_dir}")
+    return out
+
+
 def _build_region_provenance(
     region_order: list[int],
     regions: list[Region],
@@ -449,6 +563,27 @@ def _build_region_provenance(
 
         heading_text = payload.get("text") if kind in {"heading", "figure"} else None
         figure_alt = (payload.get("alt_text") or None) if kind == "figure" else None
+        # Part F — relative ``<img src>`` to the figure sidecar PNG. Set by
+        # the Stage-6b/F sidecar-write pass on the region payload; absent
+        # (None) for every non-figure region and byte-stable when the
+        # figure path is off.
+        image_src = (payload.get("image_src") or None) if kind == "figure" else None
+
+        # Resolve the figure/table CAPTION text from ``caption_fb_index`` (the
+        # structure-graph caption-neighbor pass stamps the index of the
+        # "Figure N:" / "Table N:" FB on the payload, NOT the text). Carrying
+        # the resolved text here is the only place the cascade_ir adapter — which
+        # consumes ONLY the distilled provenance list, never the rich assembled
+        # HTML — can read a figure's caption (a synthetic image FB has empty
+        # ``raw_text``, so without this a figure provenance entry has no
+        # accessible name and the adapter emitted an empty ``<figure></figure>``).
+        caption_text: str | None = None
+        if kind in {"figure", "table"}:
+            cap_idx = payload.get("caption_fb_index")
+            if isinstance(cap_idx, int):
+                cap = _fb_text(feature_blocks, cap_idx).strip()
+                if cap:
+                    caption_text = cap
 
         entry: dict[str, Any] = {
             "region_index": region_index,
@@ -463,6 +598,36 @@ def _build_region_provenance(
             "figure_alt": figure_alt,
             "raw_text": raw_text,
         }
+        # OPTIONAL ``image_src`` key (additive). Present only for a figure
+        # region with a written sidecar PNG — byte-stable to baseline (the
+        # key is simply absent) for every non-figure region and for runs
+        # with the figure path off.
+        if image_src is not None:
+            entry["image_src"] = image_src
+        # OPTIONAL caption text (additive). Present only for a figure/table
+        # region whose ``caption_fb_index`` resolved to non-empty text;
+        # absent for every other region (byte-stable to baseline). The adapter
+        # renders it into ``<figcaption>`` / table ``<caption>`` and uses it as
+        # the figure's caption-first accessible name.
+        if caption_text is not None:
+            entry["caption_text"] = caption_text
+        # OPTIONAL structured table grid (additive). The cascade_ir adapter
+        # consumes ONLY the distilled provenance list (never the assembler's
+        # rich ``<table>`` HTML), so without the grid here a typed ``table``
+        # region degraded to a flat ``<p>``. Carry the deterministic cell grid
+        # + header/role hints so the adapter can reconstruct a real
+        # accessible ``<table>``. Present only for table regions carrying a
+        # grid; absent (byte-stable) for every other region.
+        if kind == "table":
+            grid = payload.get("cell_grid")
+            if isinstance(grid, list) and grid:
+                entry["cell_grid"] = [list(row or []) for row in grid]
+                hdr = payload.get("header_row_indices")
+                if isinstance(hdr, (list, tuple)) and hdr:
+                    entry["header_row_indices"] = [int(i) for i in hdr]
+                cell_roles = payload.get("cell_roles")
+                if isinstance(cell_roles, list) and cell_roles:
+                    entry["cell_roles"] = [list(r or []) for r in cell_roles]
         # OPTIONAL per-region Stage-5d review key (additive). Present ONLY
         # when the reviewer ran AND corrected/reverted this region; absent
         # when the stage is off (review_verdicts is None) or the region was
@@ -765,16 +930,21 @@ def run_full_cascade(
     # Stage 5c — render figure Region bboxes to PNG bytes (Plans/09 §1).
     # Auto no-op when no figure Regions are present. Without pixels, Stage 6's
     # captioner has nothing to look at, so unlike Stage 5b this isn't opt-in.
+    detect_figures = resolve_detect_figures()
     n_figs_before = sum(1 for r in structure_regions if r.kind == "figure")
     if n_figs_before:
         log(f"[cascade] running Stage 5c (figure-bbox PNG rendering, n_figures={n_figs_before})")
         t = time.perf_counter()
         from .image_extract import render_figure_regions_to_bytes
 
+        # Part F — fail-soft per-region when the figure path is on (one
+        # bad bbox on a 39-image page must not abort the doc); the legacy
+        # demote path stays loud (fail_soft=False).
         structure_regions = render_figure_regions_to_bytes(
             structure_regions,
             feature_blocks,
             pdf_path,
+            fail_soft=detect_figures,
         )
         stages["stage5c"] = time.perf_counter() - t
 
@@ -817,13 +987,40 @@ def run_full_cascade(
     # from Stage 5c and attaches alt_text + extended_description for the
     # assembler. Auto no-op when no figure Regions are present.
     n_figs_capped = sum(1 for r in capped if r.kind == "figure")
-    if n_figs_capped:
+    # Part F — caption deferral. When the figure path is on and captioning
+    # is deferred (auto with no CUDA, or explicit off), SKIP Stage 6b so
+    # the figure ships the honest type-level ``"Figure."`` alt (via the
+    # assembler's guard_figure_alt) instead of loading SmolVLM2. The legacy
+    # demote-figure path (figure flag off) always captions, as before.
+    caption_figures = (not detect_figures) or _figure_captioning_active()
+    if n_figs_capped and caption_figures:
         log(f"[cascade] running Stage 6b (figure captioner, n_figures={n_figs_capped})")
         t = time.perf_counter()
         from .figure_captioner import caption_figure_regions
 
         capped = caption_figure_regions(capped)
         stages["stage6b"] = time.perf_counter() - t
+    elif n_figs_capped:
+        log(
+            f"[cascade] Stage 6b DEFERRED (figure captioning off; "
+            f"n_figures={n_figs_capped} ship type-level alt)"
+        )
+
+    # ------------------------------------------------------------------
+    # Stage F — figure sidecar write + ``image_src`` wiring (Part F).
+    # After captioning, write each figure region's ``image_png_bytes`` to
+    # a deterministic sidecar PNG (``{stem}_figures/fig-{first_fb}.png``)
+    # and stamp ``payload["image_src"]`` = ``./{stem}_figures/fig-N.png``
+    # so the emitters fill the previously-empty ``<img src="">``. Only the
+    # ``image_src`` + ``figure_alt`` travel onward; the raw PNG bytes are
+    # written to disk and STRIPPED before the JSON bridge. Per-region
+    # fail-soft (a write failure degrades that one figure to no src).
+    # No-op when the figure path is off (byte-stable).
+    # ------------------------------------------------------------------
+    if detect_figures and n_figs_capped:
+        t = time.perf_counter()
+        capped = _write_figure_sidecars(capped, pdf_path, log=log)
+        stages["stage_f_sidecar"] = time.perf_counter() - t
 
     # Evict the council BERTs from the GPU before Stage 6 loads the Qwen GGUF.
     # Stages 6-12 don't use the shared backbone (Qwen is llama-cpp, theta is its

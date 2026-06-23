@@ -297,6 +297,12 @@ def fallback_figure(region: Region, feature_blocks: Sequence[FeatureBlock]) -> s
         alt = guard_figure_alt(alt, cap)
     # The extended description is always numeric-guarded against the caption.
     ext = strip_numeric_hallucinations(ext, cap)
+    # Part F — the Stage-F sidecar-write pass stamps ``image_src`` (relative
+    # path to the written figure PNG) on the payload. Fill the previously-
+    # empty ``src=""``. When no src resolved (figure path off, deferred, or
+    # write failed), keep the historic empty-src behaviour byte-for-byte.
+    image_src = (payload.get("image_src") or "").strip()
+    src_attr = escape(image_src)
     if ext:
         # Deterministic id from the region's first FB index so the splice is
         # stable across runs and unique within the document.
@@ -305,12 +311,12 @@ def fallback_figure(region: Region, feature_blocks: Sequence[FeatureBlock]) -> s
             if region.feature_block_indices else 0
         )
         desc_id = f"dart-figdesc-{first_fb}"
-        img = f'<img src="" alt="{escape(alt)}" aria-describedby="{desc_id}">'
+        img = f'<img src="{src_attr}" alt="{escape(alt)}" aria-describedby="{desc_id}">'
         desc = (
             f'<p id="{desc_id}" class="dart-figure-desc">{escape(ext)}</p>'
         )
         return f"<figure>{img}{figcap}{desc}</figure>"
-    return f'<figure><img src="" alt="{escape(alt)}">{figcap}</figure>'
+    return f'<figure><img src="{src_attr}" alt="{escape(alt)}">{figcap}</figure>'
 
 
 def fallback_form(region: Region, feature_blocks: Sequence[FeatureBlock]) -> str:

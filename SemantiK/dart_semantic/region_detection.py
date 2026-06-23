@@ -251,6 +251,32 @@ class TableCandidate(RegionCandidate):
 
 
 @dataclass
+class ImageCandidate(RegionCandidate):
+    """An image (figure) region candidate.
+
+    Part F — emitted from PDF IMAGE page-objects extracted by
+    :func:`~dart_semantic.extract_shared._pypdfium2_page_images` (carried
+    on each page dict's ``images`` list). The deterministic geometric
+    detector is LOAD-BEARING: every non-spacer image becomes a candidate
+    and the cross-reranker routes it to the figure track unconditionally
+    (Structure's ``is_image_block`` head is a secondary confirmation
+    signal only).
+
+    ``px_size`` is the source image's pixel ``(width, height)`` as
+    reported by pypdfium2's ``PdfImage.get_px_size()`` — used by the
+    spacer/rule filter (a 1×N or hairline image is page furniture, not a
+    figure). ``image_index`` is the page-local enumeration order from
+    ``page.get_objects(...)``.
+    """
+    px_size: tuple[int, int] = (0, 0)
+    image_index: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.kind:
+            self.kind = "figure"
+
+
+@dataclass
 class MathCandidate(RegionCandidate):
     """A math region candidate (typically a displayed equation).
 
@@ -429,6 +455,101 @@ def detect_table_region_candidates(
     return out
 
 
+# Minimum image footprint to be a figure candidate. Smaller images are
+# spacers / hairline rules / bullet glyphs — page furniture, not figures.
+# Both a pixel-dimension floor (a 1×N spacer or hairline) and a rendered-
+# area floor (a tiny inline icon) reject furniture without dropping real
+# small charts.
+_IMAGE_MIN_PX_DIM = 8          # px on the smaller image axis
+_IMAGE_MIN_PX_AREA = 256       # px*px source area
+_IMAGE_MIN_BBOX_AREA = 144.0   # pdf-point*point rendered area (~12x12pt)
+
+
+def _is_spacer_image(px_size: tuple[int, int],
+                     bbox: tuple[float, float, float, float]) -> bool:
+    """True for an image too small/thin to be a real figure (spacer/rule)."""
+    try:
+        pw, ph = int(px_size[0]), int(px_size[1])
+    except (TypeError, ValueError, IndexError):
+        pw = ph = 0
+    if pw <= 0 or ph <= 0:
+        # Unknown pixel size — fall back to the rendered-area floor only.
+        pass
+    else:
+        if min(pw, ph) < _IMAGE_MIN_PX_DIM:
+            return True
+        if pw * ph < _IMAGE_MIN_PX_AREA:
+            return True
+    bw = max(0.0, float(bbox[2]) - float(bbox[0]))
+    bh = max(0.0, float(bbox[3]) - float(bbox[1]))
+    if bw <= 0.0 or bh <= 0.0:
+        return True
+    if bw * bh < _IMAGE_MIN_BBOX_AREA:
+        return True
+    return False
+
+
+def detect_image_region_candidates(
+    shared: dict,
+    *,
+    feature_blocks: list | None = None,
+) -> list[ImageCandidate]:
+    """Walk every page in ``shared`` and emit one ImageCandidate per
+    real (non-spacer) PDF IMAGE page-object.
+
+    Part F Stage B — mirrors :func:`detect_table_region_candidates`.
+    Reads each page dict's ``images`` list (populated by
+    :func:`~dart_semantic.extract_shared._pypdfium2_page_images` only when
+    ``SEMANTIK_DETECT_FIGURES`` is on; absent / empty otherwise → this
+    returns ``[]`` and the cascade is byte-stable). Each image dict
+    carries ``{bbox: [x0,y0,x1,y1] top-left, px_size: [w,h], index}``.
+
+    Spacer / hairline-rule images (tiny ``px_size`` or rendered area) are
+    filtered (:func:`_is_spacer_image`) so page furniture never becomes a
+    figure. ``member_block_indices`` is populated when ``feature_blocks``
+    is provided — but image candidates rarely overlap text FBs, so it is
+    usually empty here; Stage C synthesizes a dedicated image FB and
+    re-points ``member_block_indices`` at it.
+    """
+    by_page = _index_feature_blocks_by_page(feature_blocks or [])
+    out: list[ImageCandidate] = []
+    for page in shared.get("pages", []) or []:
+        page_num = int(page.get("page_num") or 0)
+        for img in page.get("images", []) or []:
+            bbox_raw = img.get("bbox") or []
+            if len(bbox_raw) != 4:
+                continue
+            bbox = tuple(float(x) for x in bbox_raw)
+            if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+                continue
+            px_raw = img.get("px_size") or [0, 0]
+            try:
+                px_size = (int(px_raw[0]), int(px_raw[1]))
+            except (TypeError, ValueError, IndexError):
+                px_size = (0, 0)
+            if _is_spacer_image(px_size, bbox):
+                continue
+            evidence: dict[str, Any] = {
+                "px_w": px_size[0],
+                "px_h": px_size[1],
+                "bbox_area": (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]),
+                "image_index": int(img.get("index", 0) or 0),
+            }
+            members = _members_for_region(page_num, bbox, by_page)
+            out.append(
+                ImageCandidate(
+                    kind="figure",
+                    bbox=bbox,
+                    pages=[page_num],
+                    evidence_features=evidence,
+                    member_block_indices=members,
+                    px_size=px_size,
+                    image_index=int(img.get("index", 0) or 0),
+                )
+            )
+    return out
+
+
 def detect_math_region_candidates(
     shared: dict,
     *,
@@ -480,11 +601,13 @@ __all__ = [
     "RegionCandidate",
     "TableCandidate",
     "MathCandidate",
+    "ImageCandidate",
     "detect_math_regions",
     "detect_table_regions",
     "detect_low_conf_tesseract_regions",
     "detect_table_region_candidates",
     "detect_math_region_candidates",
+    "detect_image_region_candidates",
     "DEFAULT_TESSERACT_CONF_THRESHOLD",
     "MATH_FONT_TOKENS",
     "PURE_MATH_FONTS",

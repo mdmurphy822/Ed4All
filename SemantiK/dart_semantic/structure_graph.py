@@ -83,12 +83,23 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from dart_semantic.region_detection import (
+# RELATIVE imports (``.`` = the ``dart_semantic`` package) so the typed
+# candidate classes bind to the SAME module object ``features`` /
+# ``orchestrator`` build candidates from and ``cross_reranker`` routes
+# against. The cascade is importable under both bare ``dart_semantic`` and
+# package-prefixed ``SemantiK.dart_semantic``; an ABSOLUTE ``from
+# dart_semantic.region_detection import ...`` here would bind the bare
+# module even when the cascade was loaded as ``SemantiK.dart_semantic``,
+# splitting class identity so Pass-3 / Pass-3a ``isinstance(cand,
+# TableCandidate)`` / ``ImageCandidate`` returned False and no table /
+# figure region ever formed. See the matching note in ``council/types.py``.
+from .region_detection import (
+    ImageCandidate,
     MathCandidate,
     RegionCandidate,
     TableCandidate,
 )
-from dart_semantic.types import FeatureBlock
+from .types import FeatureBlock
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +738,41 @@ def _find_caption_neighbor(
     return None
 
 
+def _find_figure_caption_below(
+    image_fb_idx: int,
+    feature_blocks: list[FeatureBlock],
+    *,
+    max_lookahead: int = 4,
+) -> int | None:
+    """Nearest ``"Figure N..."`` text FB below the image on the SAME page.
+
+    Part F — scans up to ``max_lookahead`` FBs after the image FB on the
+    same physical page; returns the first whose text opens with
+    ``"Figure N"`` (the conventional below-image caption). Returns
+    ``None`` if none qualifies (the figure ships with the type-level alt).
+    The caption FB is NOT claimed here — it stays a normal paragraph so
+    its prose is not lost; the figure region only RECORDS its index for
+    the assembler to render a ``<figcaption>``.
+    """
+    if image_fb_idx < 0 or image_fb_idx >= len(feature_blocks):
+        return None
+    img_raw = getattr(feature_blocks[image_fb_idx], "raw", None)
+    img_page = int(getattr(img_raw, "page", -1)) if img_raw is not None else -1
+    seen = 0
+    j = image_fb_idx + 1
+    while j < len(feature_blocks) and seen < max_lookahead:
+        raw = getattr(feature_blocks[j], "raw", None)
+        page = int(getattr(raw, "page", -2)) if raw is not None else -2
+        if page != img_page:
+            break
+        text = (getattr(raw, "text", "") or "").strip()
+        if re.match(r"^Figure\s+\d", text, flags=re.IGNORECASE):
+            return j
+        seen += 1
+        j += 1
+    return None
+
+
 def _iter_runs(
     predicate: Callable[[int], bool],
     feature_blocks: list[FeatureBlock],
@@ -924,6 +970,10 @@ def build_structure_graph(
     for i in sorted(running_header_idx):
         if i in claimed:
             continue
+        # Part F — never drop a synthetic image FB as a running header
+        # (empty text would recur across pages); it is the figure pass's.
+        if getattr(feature_blocks[i], "is_image", False):
+            continue
         fb = feature_blocks[i]
         regions_out.append(
             Region(
@@ -944,6 +994,12 @@ def build_structure_graph(
     # so they stop shattering paragraph runs.
     for i in range(len(feature_blocks)):
         if i in claimed:
+            continue
+        # Part F — a SYNTHETIC image FeatureBlock carries empty text (it is
+        # a figure placeholder, not OCR noise); it is claimed by the
+        # figure-formation Pass-3a. Skip it here so it is not dropped as
+        # noise before the figure region can claim it.
+        if getattr(feature_blocks[i], "is_image", False):
             continue
         if _is_noise_block(_fb_text(feature_blocks, i)):
             regions_out.append(
@@ -1301,6 +1357,53 @@ def build_structure_graph(
             for fb_idx in all_member_idx:
                 if fb_idx not in emitted_passthrough:
                     claimed.discard(fb_idx)
+
+    # ------------------------------------------------------------------
+    # Pass 3a — Figure formation from ImageCandidates (LOAD-BEARING).
+    # An ImageCandidate routed to "figure" by the deterministic arbiter
+    # (Part F) is a real PDF IMAGE page-object. The geometric detector is
+    # load-bearing here: we emit ONE figure Region per candidate, claiming
+    # its synthetic image FeatureBlock, BEFORE the legacy is_image_block
+    # demote pass (Pass-3b) and BEFORE the prose passes so the image FB
+    # never leaks into a paragraph. The legacy Pass-3b stays as the
+    # secondary path (the ``claimed`` set prevents double-emit). Records
+    # the nearest "Figure N:" caption FB below for the assembler.
+    # ------------------------------------------------------------------
+    for region_idx, decision in enumerate(decisions):
+        route = getattr(decision, "route", None)
+        if route != "figure":
+            continue
+        cand = regions[region_idx]
+        if not isinstance(cand, ImageCandidate):
+            continue
+        members = [int(i) for i in (cand.member_block_indices or [])]
+        if not members:
+            # No claimable synthetic FB (degenerate bbox) — skip rather
+            # than emit a figure with no FB (would break the invariant).
+            continue
+        image_fb = members[0]
+        if image_fb in claimed:
+            continue
+        caption_idx = _find_figure_caption_below(image_fb, feature_blocks)
+        regions_out.append(
+            Region(
+                kind="figure",
+                feature_block_indices=(image_fb,),
+                payload={
+                    "alt_hint": None,
+                    "caption_fb_index": caption_idx,
+                    "px_size": tuple(getattr(cand, "px_size", (0, 0))),
+                },
+                provenance={
+                    "pass": "figure_image_candidate",
+                    "decision_flags": tuple(
+                        getattr(decision, "flags", ()) or ()
+                    ),
+                },
+                source_region_id=region_idx,
+            )
+        )
+        claimed.add(image_fb)
 
     # ------------------------------------------------------------------
     # Pass 3b — Figure (image_block_demoted from Stage 4).

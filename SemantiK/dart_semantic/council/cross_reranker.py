@@ -55,6 +55,7 @@ Rules (architecture.md §3.2)
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from collections.abc import Sequence
 from typing import Any
@@ -62,6 +63,7 @@ from typing import Any
 from .types import (
     BertOutput,
     CouncilState,
+    ImageCandidate,
     MathCandidate,
     RegionCandidate,
     RoutingDecision,
@@ -78,6 +80,75 @@ from .types import (
 # candidate is "confirmed" if the mean P(table_region=1) over its
 # members exceeds this threshold.
 _TABLE_CONFIRM_THRESHOLD = 0.5
+
+# Structural-confidence flag (default ON). When on, a pdfplumber table
+# that is STRUCTURALLY confident (a real grid: >=2 rows AND >=2 cols, OR
+# explicit ruling-line/bordered evidence) is confirmed REGARDLESS of the
+# Structure ``table_region`` BERT head — the deterministic geometric
+# detector is load-bearing and the BERT becomes a SECONDARY signal that
+# can only confirm a structurally-weak candidate (it can no longer drop a
+# structurally-strong one). This fixes the 0-tables regression where the
+# BERT head fires <0.5 on every real pdfplumber table and drops all of
+# them. Mirrors the front-matter detector being load-bearing vs the 70B
+# reviewer being secondary. Default-ON parse semantics (explicit falsey →
+# off; unset / truthy / garbage → on) match
+# ``deterministic_structure.resolve_structure_clean_mode``.
+_TABLE_STRUCTURAL_CONFIDENCE_ENV = "SEMANTIK_TABLE_STRUCTURAL_CONFIRM"
+_FALSEY = {"0", "false", "no", "off"}
+
+# A structurally-confident grid needs at least this many rows AND cols.
+_TABLE_MIN_ROWS = 2
+_TABLE_MIN_COLS = 2
+
+
+def resolve_table_structural_confirm() -> bool:
+    """Whether a structurally-confident pdfplumber table is load-bearing.
+
+    Reads ``SEMANTIK_TABLE_STRUCTURAL_CONFIRM``, DEFAULT ON
+    (parse-with-fallback). Only an explicit falsey value (``0`` / ``false``
+    / ``no`` / ``off``, case-insensitive) reverts to the legacy
+    BERT-gated-only behaviour; unset / truthy / garbage keeps it on (the
+    0-tables regression is a clear defect). Mirrors
+    ``deterministic_structure.resolve_structure_clean_mode``.
+    """
+    raw = os.environ.get(_TABLE_STRUCTURAL_CONFIDENCE_ENV)
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in _FALSEY
+
+
+def _structurally_confident_table(cand: TableCandidate) -> bool:
+    """Deterministic structural-confidence guard for a pdfplumber table.
+
+    A candidate is structurally confident when it is a real grid — at
+    least :data:`_TABLE_MIN_ROWS` rows AND :data:`_TABLE_MIN_COLS`
+    columns — OR pdfplumber found explicit ruling-line / bordered
+    evidence (a high-confidence positive even when one axis is thin, e.g.
+    a 2-row key/value box). The guard deliberately REJECTS page-layout
+    false-positives (a 1×N or borderless single-cell "table") so the
+    structural arm never over-confirms.
+
+    Reads the row/col counts pdfplumber forwarded onto the candidate at
+    detection time (``region_detection.detect_table_region_candidates``
+    stamps ``evidence_features['n_rows'/'n_cols'/'bordered']`` and the
+    ``bordered`` field).
+    """
+    if not isinstance(cand, TableCandidate):
+        return False
+    evidence = cand.evidence_features or {}
+    try:
+        n_rows = int(evidence.get("n_rows", 0) or 0)
+        n_cols = int(evidence.get("n_cols", 0) or 0)
+    except (TypeError, ValueError):
+        n_rows = n_cols = 0
+    if n_rows >= _TABLE_MIN_ROWS and n_cols >= _TABLE_MIN_COLS:
+        return True
+    # Ruling-line / bordered evidence is itself a strong positive.
+    bordered = bool(getattr(cand, "bordered", False)
+                    or evidence.get("bordered", False))
+    if bordered and n_rows >= _TABLE_MIN_ROWS:
+        return True
+    return False
 
 # Math stand-in detector — see _math_candidate_confirmed and
 # :class:`MathThresholds`. The dataclass defaults below match the
@@ -194,18 +265,40 @@ def _table_confirmed(
     state: CouncilState,
     *,
     threshold: float = _TABLE_CONFIRM_THRESHOLD,
+    structural_confirm: bool | None = None,
 ) -> tuple[bool, bool]:
     """Aggregate Structure's ``table_region`` over the candidate's member spans.
 
     Returns ``(confirmed, signal_present)``. ``signal_present`` is False
     iff Structure's table_region signals are entirely absent for this
     candidate's members (orchestrator partial-failure path).
+
+    Load-bearing geometric detector (default ON, see
+    :func:`resolve_table_structural_confirm`): a STRUCTURALLY-CONFIDENT
+    pdfplumber table (:func:`_structurally_confident_table`) is confirmed
+    EITHER way — ``confirmed=True`` is returned regardless of the BERT
+    head, and ``signal_present`` is reported True so the arbiter routes it
+    to the table track even when the head is absent or fires low. The BERT
+    can then only ADD confirmations (a structurally-weak candidate it
+    rates >= threshold) — it can never DROP a structurally-strong one.
+    Pass ``structural_confirm=False`` to force the legacy BERT-gated-only
+    behaviour (used by the byte-stability test).
     """
+    if structural_confirm is None:
+        structural_confirm = resolve_table_structural_confirm()
+
+    structurally_strong = bool(
+        structural_confirm and _structurally_confident_table(cand)
+    )
+
     member_idx = list(cand.member_block_indices or [])
     if not member_idx:
-        # No members → can't aggregate. Treat as "signal missing"; the
-        # arbiter will route to prose with the detector_signal_missing
-        # flag rather than incorrectly confirming.
+        # No members → can't aggregate the BERT. A structurally-confident
+        # grid is still load-bearing (the deterministic detector owns the
+        # decision); report signal_present=True so the arbiter routes it
+        # to the table track. Otherwise treat as "signal missing".
+        if structurally_strong:
+            return (True, True)
         return (False, False)
     probs: list[float] = []
     for idx in member_idx:
@@ -222,9 +315,13 @@ def _table_confirmed(
         else:
             probs.append(1.0 - conf)
     if not probs:
+        # BERT silent. The structural guard is the load-bearing signal.
+        if structurally_strong:
+            return (True, True)
         return (False, False)
     mean_p = sum(probs) / len(probs)
-    return (mean_p >= threshold, True)
+    bert_confirms = mean_p >= threshold
+    return (bert_confirms or structurally_strong, True)
 
 
 def confirm_table_candidates(
@@ -460,6 +557,24 @@ def arbitrate(
                     route = "table"
                     final_role = "table"
 
+        elif isinstance(region, ImageCandidate):
+            # Part F — DETERMINISTIC figure route. An ImageCandidate is a
+            # real PDF IMAGE page-object the deterministic extractor found;
+            # the geometric detector is load-bearing, so we route to the
+            # figure track unconditionally. Structure's ``is_image_block``
+            # head (aggregated below for prose-routed regions) is NOT the
+            # trigger — it is only a secondary strength flag. Mirrors the
+            # table structural-confidence posture and the front-matter
+            # detector being load-bearing vs the 70B reviewer.
+            route = "figure"
+            final_role = "figure"
+            img_p = _aggregate_image_block(region, state)
+            if img_p >= _IMAGE_BLOCK_CONFIRM_THRESHOLD:
+                # Secondary confirmation: the BERT agrees. Recorded for
+                # audit; it does not change the (already deterministic)
+                # route.
+                flags.append("image_block_confirmed")
+
         elif isinstance(region, MathCandidate):
             # Rule 1 (math variant): stand-in detector gates specialist.
             if _math_candidate_confirmed(region, math_thresholds):
@@ -532,4 +647,6 @@ def arbitrate(
 __all__ = [
     "MathThresholds",
     "arbitrate",
+    "confirm_table_candidates",
+    "resolve_table_structural_confirm",
 ]

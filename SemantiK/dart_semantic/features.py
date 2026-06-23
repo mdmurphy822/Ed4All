@@ -28,6 +28,7 @@ from pathlib import Path
 from .extract import blocks_from_shared, extract_blocks
 from .extract_shared import extract_shared
 from .region_detection import (
+    detect_image_region_candidates,
     detect_math_region_candidates,
     detect_table_region_candidates,
 )
@@ -149,8 +150,30 @@ def featurize_with_regions(shared: dict) -> FeatureSet:
     v1 callers continue to use `featurize_from_shared` and get exactly
     the same FeatureBlock list they always did. This function is
     additive — never call it from the v1 path.
+
+    Part F — when SEMANTIK_DETECT_FIGURES is on, image candidates
+    (extracted PDF IMAGE page-objects) are detected and one SYNTHETIC
+    image FeatureBlock per candidate is INTERLEAVED into the FeatureBlock
+    stream in reading order (page, y0, x0). The candidate's
+    `member_block_indices` then points at its synthetic FB so the
+    Stage-5 coverage invariant (every FB index claimed by exactly one
+    region) holds — the figure region claims its image FB. When the flag
+    is off, `detect_image_region_candidates` returns `[]` (no `images`
+    key on the shared pages) and the stream is byte-identical.
     """
     feature_blocks = featurize_from_shared(shared)
+
+    # Detect image candidates FIRST (off the shared `images` lists), then
+    # synthesize one image FB per candidate and merge into the stream in
+    # reading order so downstream FB indices are stable. Done BEFORE the
+    # table/math member-index pass so ALL candidates are indexed against
+    # the FINAL (post-interleave) feature-block stream.
+    image_candidates = detect_image_region_candidates(shared)
+    if image_candidates:
+        feature_blocks = _interleave_image_feature_blocks(
+            feature_blocks, image_candidates
+        )
+
     table_candidates = detect_table_region_candidates(
         shared, feature_blocks=feature_blocks)
     math_candidates = detect_math_region_candidates(
@@ -159,7 +182,101 @@ def featurize_with_regions(shared: dict) -> FeatureSet:
         feature_blocks=feature_blocks,
         table_candidates=table_candidates,
         math_candidates=math_candidates,
+        image_candidates=image_candidates,
     )
+
+
+def _interleave_image_feature_blocks(
+    feature_blocks: list[FeatureBlock],
+    image_candidates: list,
+) -> list[FeatureBlock]:
+    """Synthesize one image FeatureBlock per image candidate and merge it
+    into ``feature_blocks`` in reading order (page, y0, x0).
+
+    Each synthetic FB carries empty text, the image bbox (top-left origin,
+    same convention as text FBs), the page dims, ``source="pypdfium2:image"``
+    and ``is_image=True``. After the merge, each candidate's
+    ``member_block_indices`` is set to ``[that synthetic FB's index]`` so
+    the figure region (Stage D) claims exactly that FB and the Stage-5
+    coverage invariant holds.
+
+    Image candidates with a degenerate bbox are skipped (their
+    ``member_block_indices`` is left empty — they will be dropped by Stage
+    D, which requires a claimable member FB).
+    """
+    # Resolve per-page dims from existing text FBs (fall back to LETTER).
+    page_dims: dict[int, tuple[float, float]] = {}
+    for fb in feature_blocks:
+        raw = getattr(fb, "raw", None)
+        if raw is None:
+            continue
+        page_dims.setdefault(
+            int(raw.page),
+            (float(raw.page_width), float(raw.page_height)),
+        )
+
+    # Build (sort_key, kind, payload) tuples for a single stable sort. Text
+    # FBs keep their existing relative order via an enumerate tiebreak.
+    entries: list[tuple] = []
+    for orig_idx, fb in enumerate(feature_blocks):
+        raw = getattr(fb, "raw", None)
+        page = int(raw.page) if raw is not None else 0
+        y0 = float(raw.bbox[1]) if raw is not None else 0.0
+        x0 = float(raw.bbox[0]) if raw is not None else 0.0
+        # (page, y0, x0, is_image=0 so text sorts before an image at the
+        # same coordinate, original-index tiebreak to keep text order)
+        entries.append(((page, y0, x0, 0, orig_idx), "text", fb))
+
+    synth_for_cand: dict[int, FeatureBlock] = {}
+    for ci, cand in enumerate(image_candidates):
+        bbox = tuple(float(x) for x in (cand.bbox or ()))
+        if len(bbox) != 4 or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+            continue
+        page = int(cand.pages[0]) if cand.pages else 0
+        pw, ph = page_dims.get(page, (612.0, 792.0))
+        synth_raw = RawBlock(
+            text="",
+            page=page,
+            bbox=bbox,
+            page_width=pw,
+            page_height=ph,
+            source="pypdfium2:image",
+        )
+        synth_fb = FeatureBlock(
+            raw=synth_raw,
+            size_bucket="md",
+            gap_above=None,
+            is_top_of_page=False,
+            is_centered=False,
+            caps=None,
+            indent_bucket=0,
+            relative_font_ratio=1.0,
+            provenance="pypdfium2:image",
+            is_image=True,
+        )
+        synth_for_cand[ci] = synth_fb
+        # is_image sorts AFTER text at the same coordinate (4th key=1).
+        entries.append(((page, bbox[1], bbox[0], 1, ci), "image", synth_fb))
+
+    entries.sort(key=lambda e: e[0])
+
+    merged: list[FeatureBlock] = []
+    fb_index_for_cand: dict[int, int] = {}
+    for new_idx, (_key, kind, fb) in enumerate(entries):
+        merged.append(fb)
+        if kind == "image":
+            # The 5th element of the sort key is the candidate index.
+            ci = _key[4]
+            fb_index_for_cand[ci] = new_idx
+
+    # Re-point each surviving image candidate at its synthetic FB index.
+    for ci, cand in enumerate(image_candidates):
+        if ci in fb_index_for_cand:
+            cand.member_block_indices = [fb_index_for_cand[ci]]
+        else:
+            cand.member_block_indices = []
+
+    return merged
 
 
 # ---------- per-block feature assignment ----------

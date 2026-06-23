@@ -183,48 +183,205 @@ def _render_list_html(raw_text: str) -> Optional[str]:
     return f"<ul>{items}</ul>"
 
 
-def _render_figure_html(raw_text: str, figure_alt: Optional[str]) -> str:
-    """Render a council ``figure``-kind region as a text-only ``<figure>``.
+def _esc_attr(value: str) -> str:
+    """Escape a string for use inside a double-quoted HTML attribute."""
+    return (
+        (value or "")
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
 
-    Mirrors the SemantiK emitter's anti-broken-``<img>`` contract
-    (``emit_html.py::_emit_image_or_figure``): the region_provenance carries
-    NO image ``src`` (the figure PNG copy is the P3 seam's job, and most
-    figures resolve no URL), so we emit a ``<figure>`` with the SmolVLM2
-    caption as ``<figcaption>`` and NEVER a broken ``<img src="">``. The alt
-    text also rides into the sidecar via ``_AdapterBlock.figure_alt``.
+
+# Honest type-level accessible name for a figure with no resolvable caption /
+# model alt. Byte-frozen to the assembler's
+# ``figure_captioner.TYPE_LEVEL_ALT`` so the cascade_ir adapter path and the
+# Stage-9 assembler path agree on the screen-reader name.
+_TYPE_LEVEL_ALT = "Figure."
+
+
+def _render_figure_html(
+    raw_text: str,
+    figure_alt: Optional[str],
+    image_src: Optional[str] = None,
+    caption_text: Optional[str] = None,
+) -> str:
+    """Render a council ``figure``-kind region.
+
+    Part F — when ``image_src`` is present (the Stage-F sidecar PNG was
+    written), emit a real ``<figure><img src=… alt=…>`` with the SmolVLM2
+    caption (or honest type-level alt) as the accessible name, plus a
+    ``<figcaption>`` when a caption resolved. When NO ``image_src`` resolved
+    (figure path off, render deferred, or write failed), keep the historic
+    anti-broken-``<img>`` contract: a text-only ``<figure>`` with the caption
+    as ``<figcaption>`` and NEVER a broken ``<img src="">``.
+
+    A synthetic image FB carries empty ``raw_text``, so the caption is sourced
+    in priority order: the SmolVLM2 ``figure_alt`` → the resolved neighbor
+    ``caption_text`` (the "Figure N:" FB the structure graph linked) →
+    ``raw_text``. A figure region NEVER degrades to an empty ``<figure></figure>``
+    — when nothing resolves it still ships ``<figure><figcaption>`` with the
+    honest type-level ``"Figure."`` accessible name, so the figure remains
+    visible and labelled to a screen reader (the drop this fix closes).
     """
-    caption = (figure_alt or raw_text or "").strip()
+    caption = (figure_alt or caption_text or raw_text or "").strip()
+    if image_src:
+        alt = caption or _TYPE_LEVEL_ALT
+        # The visible <figcaption> and the <img alt> may carry the same
+        # text (one is the visible caption, the other the accessible name);
+        # rendering both is standard and not a WCAG duplication issue. Emit
+        # the figcaption whenever a caption resolved.
+        figcap = (
+            f"<figcaption>{_esc_text(caption)}</figcaption>" if caption else ""
+        )
+        return (
+            f'<figure><img src="{_esc_attr(image_src)}" '
+            f'alt="{_esc_attr(alt)}">{figcap}</figure>'
+        )
+    # No image src: a text-only <figure>. Carry the caption as the visible
+    # <figcaption>; when no caption resolved, the type-level alt is the honest
+    # accessible name so the figure is never a silent empty element.
+    figcap = (
+        f"<figcaption>{_esc_text(caption)}</figcaption>"
+        if caption
+        else f"<figcaption>{_esc_text(_TYPE_LEVEL_ALT)}</figcaption>"
+    )
+    return f"<figure>{figcap}</figure>"
+
+
+def _render_table_html(
+    raw_text: str,
+    cell_grid: Optional[Sequence[Sequence[Any]]],
+    header_row_indices: Optional[Sequence[int]] = None,
+    cell_roles: Optional[Sequence[Sequence[str]]] = None,
+    caption_text: Optional[str] = None,
+) -> Optional[str]:
+    """Render a council ``table``-kind region as an accessible ``<table>``.
+
+    Reconstructs a WCAG ``<table>`` from the deterministic ``cell_grid`` the
+    structure graph carries (the assembler's ``fallback_table`` does the same
+    on its own path; this is the cascade_ir-side mirror so the Ed4All adapter —
+    which consumes ONLY the distilled provenance, never the assembler HTML —
+    can emit a real table instead of flattening the cells to a ``<p>``).
+
+    Per-cell ``cell_roles`` (4-class ``data | header_col | header_row | span``
+    from BERT-TableSpecialist), when present AND shape-matched, drives
+    ``<th scope=>`` emission; otherwise the first row (or ``header_row_indices``)
+    is the header. Returns ``None`` when no grid is available so the caller can
+    fall back to the flat-text ``<p>`` (anti-fabrication: never invent a grid).
+    """
+    grid = [list(row or []) for row in (cell_grid or [])]
+    if not grid:
+        return None
+
+    use_roles = (
+        cell_roles is not None
+        and len(cell_roles) == len(grid)
+        and all(
+            len(cell_roles[i] or []) == len(grid[i] or [])
+            for i in range(len(grid))
+        )
+    )
+    if use_roles:
+        header_rows = {
+            i
+            for i, rr in enumerate(cell_roles)
+            if rr and sum(1 for r in rr if r == "header_col") * 2 >= len(rr)
+        }
+    else:
+        header_rows = {int(i) for i in (header_row_indices or [])}
+    if not header_rows:
+        header_rows = {0}
+
+    def _cell(role: Optional[str], text: str, *, in_thead: bool) -> str:
+        s = _esc_text(str(text or ""))
+        if role == "header_row":
+            return f'<th scope="row">{s}</th>'
+        if role == "header_col":
+            return f'<th scope="col">{s}</th>'
+        if in_thead:
+            return f'<th scope="col">{s}</th>'
+        return f"<td>{s}</td>"
+
+    parts: List[str] = ["<table>"]
+    caption = (caption_text or "").strip()
     if caption:
-        return f"<figure><figcaption>{_esc_text(caption)}</figcaption></figure>"
-    return "<figure></figure>"
+        parts.append(f"<caption>{_esc_text(caption)}</caption>")
+    parts.append("<thead>")
+    for i in sorted(header_rows):
+        if i >= len(grid):
+            continue
+        row = grid[i] or []
+        roles = cell_roles[i] if use_roles else [None] * len(row)
+        parts.append(
+            "<tr>"
+            + "".join(
+                _cell(role, c, in_thead=True) for c, role in zip(row, roles)
+            )
+            + "</tr>"
+        )
+    parts.append("</thead><tbody>")
+    body_emitted = False
+    for i, row in enumerate(grid):
+        if i in header_rows:
+            continue
+        body_emitted = True
+        row = row or []
+        roles = cell_roles[i] if use_roles else [None] * len(row)
+        parts.append(
+            "<tr>"
+            + "".join(
+                _cell(role, c, in_thead=False) for c, role in zip(row, roles)
+            )
+            + "</tr>"
+        )
+    if not body_emitted:
+        parts.append("<tr><td></td></tr>")
+    parts.append("</tbody></table>")
+    return "".join(parts)
 
 
 def _block_html_for_kind(
-    region_kind: str, raw_text: str, figure_alt: Optional[str]
+    region_kind: str,
+    raw_text: str,
+    figure_alt: Optional[str],
+    image_src: Optional[str] = None,
+    caption_text: Optional[str] = None,
+    cell_grid: Optional[Sequence[Sequence[Any]]] = None,
+    header_row_indices: Optional[Sequence[int]] = None,
+    cell_roles: Optional[Sequence[Sequence[str]]] = None,
 ) -> str:
     """Deterministically render the inner HTML for a region by its kind.
 
-    The region_provenance carries only the flattened ``raw_text`` (NOT the
-    cascade's rich assembled HTML — see the module docstring; the cascade's
-    ``emit_html`` structured IR is not surfaced per-region in the provenance
-    list), so this reconstructs the best available semantics deterministically
-    from that text:
+    The region_provenance carries the flattened ``raw_text`` PLUS the
+    structured rendering data the cascade now distils onto a figure/table
+    region (``caption_text`` resolved from the caption-neighbor FB; the
+    deterministic ``cell_grid`` + header/role hints for tables — see
+    ``cascade.py::_build_region_provenance``). This reconstructs the best
+    available semantics deterministically:
 
+    * ``figure`` → ``<figure><img>`` when an ``image_src`` resolved, else a
+      text-only ``<figure><figcaption>``; NEVER an empty ``<figure></figure>``
+      (the type-level ``"Figure."`` accessible name is the floor).
+    * ``table`` → a real accessible ``<table>`` from ``cell_grid`` (with
+      ``<th scope=>`` from ``cell_roles`` / ``header_row_indices``); falls back
+      to ``<p>`` only when the grid is absent (anti-fabrication).
     * ``list`` / ``definition_list`` → ``<ul>`` when ≥2 bullet markers are
       present, else ``<p>`` (the council ``list`` head is noisy).
-    * ``figure`` → text-only ``<figure><figcaption>`` (anti-broken-``<img>``).
-    * everything else (``paragraph`` / ``table`` / ``math`` / …) → ``<p>``.
-
-    NOTE (upstream-council limit, NOT adapter-fixable here): ``table`` and
-    image ``figure`` regions are rendered as ``<p>`` / text-only ``<figure>``
-    because the council does NOT emit ``table``/image-``figure`` regions on the
-    real corpus (measured 0 of each on the §1.1 slice despite 8 tables / 39
-    images in source). With no typed table region in the provenance there is
-    no structured cell data to render a ``<table>`` from. See the report.
+    * everything else (``paragraph`` / ``math`` / …) → ``<p>``.
     """
     text = (raw_text or "").strip()
     if region_kind == "figure":
-        return _render_figure_html(text, figure_alt)
+        return _render_figure_html(text, figure_alt, image_src, caption_text)
+    if region_kind == "table":
+        table_html = _render_table_html(
+            text, cell_grid, header_row_indices, cell_roles, caption_text
+        )
+        if table_html is not None:
+            return table_html
+        # No structured grid carried → fall through to the flat-text <p>
+        # (a table region whose cells the structure graph didn't capture).
     if region_kind in {"list", "definition_list"}:
         ul = _render_list_html(text)
         if ul is not None:
@@ -266,13 +423,42 @@ def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
     wcag_status = str(wcag_status) if wcag_status else None
     figure_alt = prov.get("figure_alt")
     figure_alt = str(figure_alt) if figure_alt else None
+    # Part F — relative sidecar PNG path (present only on figure regions
+    # with a written sidecar). Absent → text-only figure (byte-stable).
+    image_src = prov.get("image_src")
+    image_src = str(image_src) if image_src else None
+    # Resolved figure/table caption text (the "Figure N:" / "Table N:" neighbor
+    # FB the structure graph linked). Absent → no <figcaption> / <caption>.
+    caption_text = prov.get("caption_text")
+    caption_text = str(caption_text) if caption_text else None
+    # Structured table grid (table regions only). Absent → the table flattens
+    # to <p> (anti-fabrication; never invent a grid).
+    cell_grid = prov.get("cell_grid")
+    cell_grid = cell_grid if isinstance(cell_grid, list) and cell_grid else None
+    header_row_indices = prov.get("header_row_indices")
+    header_row_indices = (
+        header_row_indices
+        if isinstance(header_row_indices, (list, tuple))
+        else None
+    )
+    cell_roles = prov.get("cell_roles")
+    cell_roles = cell_roles if isinstance(cell_roles, list) and cell_roles else None
 
     # A heading region carries no inner body HTML (the adapter renders the
     # heading element from heading_text); content regions render their kind.
     inner_html = (
         ""
         if region_kind == "heading"
-        else _block_html_for_kind(region_kind, raw_text, figure_alt)
+        else _block_html_for_kind(
+            region_kind,
+            raw_text,
+            figure_alt,
+            image_src,
+            caption_text=caption_text,
+            cell_grid=cell_grid,
+            header_row_indices=header_row_indices,
+            cell_roles=cell_roles,
+        )
     )
 
     return _AdapterBlock(
@@ -286,6 +472,7 @@ def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
         block_role=role,
         wcag_status=wcag_status,
         figure_alt=figure_alt,
+        image_src=image_src,
     )
 
 

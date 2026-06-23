@@ -47,6 +47,7 @@ e.g. ["pypdfium2", "pdfplumber"] if both agreed on the line, or
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,24 @@ from typing import Any
 from . import paths as _semantik_paths
 
 logger = logging.getLogger(__name__)
+
+
+# ---------- figure detection gate (Part F) ----------
+
+# Default OFF — byte-stable. When on, every extracted page gains an
+# ``images`` list (PDF IMAGE page-objects, top-left bbox + px_size) that
+# ``region_detection.detect_image_region_candidates`` consumes. The full
+# resolver of record is ``cascade.resolve_detect_figures``; this is the
+# extract-side mirror (extract runs inside the council orchestrator, which
+# does not get the flag threaded). Parse-with-fallback: truthy
+# (``1``/``true``/``yes``/``on``) → on; unset / falsey / garbage → off.
+_DETECT_FIGURES_ENV = "SEMANTIK_DETECT_FIGURES"
+_FIG_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _detect_figures_enabled() -> bool:
+    """Whether per-page IMAGE page-object extraction runs (default OFF)."""
+    return os.environ.get(_DETECT_FIGURES_ENV, "").strip().lower() in _FIG_TRUTHY
 
 
 # Minimum text-layer chars below which we assume the page is scanned.
@@ -133,7 +152,15 @@ def extract_shared_cached(pdf_path: Path, cache_dir: Path | str | None = None) -
 
     try:
         st = pdf_path.stat()
-        key_raw = f"v{EXTRACT_CACHE_VERSION}|{pdf_path.resolve()}|{st.st_size}|{int(st.st_mtime)}"
+        # Part F — the figures flag changes the extracted shape (adds the
+        # per-page ``images`` list), so it MUST be part of the cache key,
+        # else flipping the flag would silently read a stale flag-off cache
+        # with no images. Byte-stable to the historic key when off ("fig0").
+        fig_key = "fig1" if _detect_figures_enabled() else "fig0"
+        key_raw = (
+            f"v{EXTRACT_CACHE_VERSION}|{fig_key}|{pdf_path.resolve()}|"
+            f"{st.st_size}|{int(st.st_mtime)}"
+        )
         key = hashlib.sha256(key_raw.encode()).hexdigest()[:24]
     except OSError:
         # If we can't stat the file, skip the cache — let extract_shared
@@ -380,6 +407,78 @@ def _pypdfium2_page_blocks(pdf_path: Path, page_num: int) -> tuple[dict, float, 
                     }
                 )
         return {"text_blocks": blocks}, page_w, page_h
+    finally:
+        pdf.close()
+
+
+def _image_bbox_top_left(
+    bounds_bl: tuple[float, float, float, float],
+    page_height: float,
+) -> list[float]:
+    """Convert pypdfium2 ``PdfImage.get_bounds()`` PDF bottom-left
+    ``(L, B, R, T)`` to the cascade's top-left ``[x0, y0, x1, y1]``.
+
+    Y-flip: ``y0 = H - T`` (top edge), ``y1 = H - B`` (bottom edge),
+    matching ``_pypdfium2_page_blocks`` (``page_h - T`` / ``page_h - B``)
+    and what ``image_extract.py`` consumes. Pure (no PDF IO) so the Y-flip
+    is unit-testable without pypdfium2.
+    """
+    left, bottom, right, top = (float(x) for x in bounds_bl)
+    return [left, page_height - top, right, page_height - bottom]
+
+
+def _pypdfium2_page_images(pdf_path: Path, page_num: int) -> list[dict]:
+    """Return IMAGE page-objects on this page as
+    ``[{bbox:[x0,y0,x1,y1] top-left, px_size:[w,h], index:int}, ...]``.
+
+    Part F Stage A — mirrors :func:`_pypdfium2_page_blocks`. Enumerates
+    every IMAGE page-object via ``page.get_objects`` filtered to
+    ``raw.FPDF_PAGEOBJ_IMAGE`` and reads each one's bounds. pypdfium2's
+    ``PdfImage.get_bounds()`` returns PDF bottom-left ``(L, B, R, T)``; we
+    Y-FLIP to the top-left convention the rest of the cascade uses (and
+    that :func:`_pypdfium2_page_blocks` produces) as
+    ``(L, H - T, R, H - B)``. ``get_px_size()`` is captured so the
+    spacer/rule filter can reject hairline page furniture.
+
+    Fail-soft: any per-object error is skipped (one bad image must not
+    abort a 39-image page); a page-level failure returns ``[]``.
+    """
+    import pypdfium2 as pdfium  # type: ignore
+    import pypdfium2.raw as pdfium_raw  # type: ignore
+
+    out: list[dict] = []
+    pdf = pdfium.PdfDocument(str(pdf_path))
+    try:
+        page = pdf[page_num - 1]
+        page_h = float(page.get_size()[1])
+        try:
+            objs = page.get_objects(filter=(pdfium_raw.FPDF_PAGEOBJ_IMAGE,))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"pypdfium2 get_objects page {page_num}: {exc}")
+            return out
+        for idx, obj in enumerate(objs):
+            try:
+                # PdfImage.get_bounds() → (left, bottom, right, top) in PDF
+                # points with a bottom-left origin. Y-flip to top-left.
+                bbox = _image_bbox_top_left(obj.get_bounds(), page_h)
+                try:
+                    px_w, px_h = obj.get_px_size()
+                    px_size = [int(px_w), int(px_h)]
+                except Exception:
+                    px_size = [0, 0]
+                out.append(
+                    {
+                        "bbox": bbox,
+                        "px_size": px_size,
+                        "index": idx,
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 — skip one bad object
+                logger.debug(
+                    f"pypdfium2 image obj {idx} page {page_num}: {exc}"
+                )
+                continue
+        return out
     finally:
         pdf.close()
 
@@ -634,6 +733,18 @@ def _extract_page(pdf_path: Path, page_num: int, meta: dict) -> dict:
             page["sources_used"].append("tesseract")
         except Exception as exc:
             page["tesseract"] = {"text_blocks": [], "error": str(exc)}
+
+    # Image page-objects (Part F) — only when SEMANTIK_DETECT_FIGURES is on.
+    # Fail-soft: a per-page extraction failure leaves an empty list so a
+    # figure-bearing document never aborts conversion. Absent / empty when
+    # the flag is off → byte-stable (no ``images`` key downstream consumers
+    # read).
+    if _detect_figures_enabled():
+        try:
+            page["images"] = _pypdfium2_page_images(pdf_path, page_num)
+        except Exception as exc:  # noqa: BLE001 — surface nothing, degrade
+            logger.debug(f"image extraction page {page_num}: {exc}")
+            page["images"] = []
 
     # pikepdf: widgets + structure nodes (always check for widgets; cheap).
     try:
