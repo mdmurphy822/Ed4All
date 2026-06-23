@@ -2431,6 +2431,16 @@ def default_router() -> GateInputRouter:
         "lib.validators.example_completeness.ExampleCompletenessValidator",
         _build_block_input_rewrite,
     )
+    # IB6.6 — block->module->course quality-rollup GATE (FR-07/13, framework
+    # §6.5). Self-sufficient: it scores the rewrite-tier ``blocks`` surface
+    # with the canonical IB6.1 rubric scorer and rolls the scores up via the
+    # BlockQualityRollupAggregator, returning passed iff course_pass. Reuses
+    # the same rewrite-tier Block-input shim as the rubric gate above; no-ops
+    # byte-stable when ED4ALL_BLOCK_QUALITY_RUBRIC is unset.
+    r.register(
+        "lib.validators.block_quality_rollup.BlockQualityRollupValidator",
+        _build_block_input_rewrite,
+    )
     # Worker W7: assessment_item payload-shape gate. Same Block-input
     # surface as the four Block*Validators above (filters to
     # block_type == "assessment_item" internally), so it reuses the

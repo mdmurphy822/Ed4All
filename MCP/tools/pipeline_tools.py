@@ -7267,6 +7267,7 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
             "component", "source_ids", "source_primary",
             "source_references", "content_hash",
             "validation_attempts", "escalation_marker",
+            "anchored_rubric",
         }
         block_id_for_log = (entry or {}).get("block_id") or "<unknown>"
         kwargs_clean: dict = {}
@@ -7627,6 +7628,13 @@ def _block_to_snake_case_entry(block: Any) -> Dict[str, Any]:
         ]
     if getattr(block, "validation_attempts", 0):
         entry["validation_attempts"] = int(block.validation_attempts)
+    # FR-11 anchored-rubric producer output: emit ONLY when present so the
+    # serializer is byte-stable when ED4ALL_ALIGNMENT_VERB_TRIPLE is off (the
+    # producer leaves the field None). Survives outline-JSONL → rewrite
+    # rehydration so AnchoredRubricValidator reads it at post_rewrite_validation.
+    anchored_rubric = getattr(block, "anchored_rubric", None)
+    if anchored_rubric is not None:
+        entry["anchored_rubric"] = anchored_rubric
     # Preserve the immutable touch-chain audit trail (snake_case dict per
     # Touch, round-tripping through ``_touches_from_entry`` → ``Touch(**d)``).
     # Without this, a resume run that rehydrates blocks from blocks_final.jsonl
@@ -7823,6 +7831,7 @@ def _block_from_checkpoint_entry(entry: Dict[str, Any]) -> Optional[Any]:
         "component", "source_ids", "source_primary",
         "source_references", "content_hash",
         "validation_attempts", "escalation_marker",
+        "anchored_rubric",
     }
     tuple_fields = {
         "key_terms", "objective_ids", "bloom_levels", "bloom_verbs",
@@ -10825,6 +10834,28 @@ async def _run_content_generation_outline(**kwargs) -> str:
         capture=capture,
     )
 
+    # FR-11 — anchored-rubric PRODUCER hook. Blocks now carry their final
+    # ``objective_ids`` (the alignment pass above) and the objective dicts
+    # (terminal_objectives + chapter_objectives) are in ``objectives_payload``.
+    # Authors ``Block.anchored_rubric`` for Evaluate/Create scored blocks so
+    # the IB3.4 AnchoredRubricValidator (a consumer with no producer) reads a
+    # grounded rubric at post_rewrite_validation. Strict no-op when
+    # ED4ALL_ALIGNMENT_VERB_TRIPLE is off (byte-stable). Best-effort: any
+    # failure logs a warning and leaves the blocks unchanged — never aborts.
+    try:
+        from lib.generation.anchored_rubric import attach_anchored_rubrics
+        outline_blocks = attach_anchored_rubrics(
+            blocks=outline_blocks,
+            objectives_payload=objectives_payload,
+            capture=capture,
+            course_code=course_code,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never abort the phase
+        logger.warning(
+            "outline phase: anchored-rubric producer failed (%s); "
+            "leaving outline blocks unchanged.", exc,
+        )
+
     # Persist outline blocks to JSONL (one entry per Block via
     # to_jsonld_entry — same shape post_rewrite_validation consumes).
     blocks_outline_path = out_dir / "blocks_outline.jsonl"
@@ -10989,6 +11020,7 @@ async def _run_inter_tier_validation(**kwargs) -> str:
             "component", "source_ids", "source_primary",
             "source_references", "content_hash",
             "validation_attempts", "escalation_marker",
+            "anchored_rubric",
         }
         kwargs_clean: dict = {}
         for k, v in (entry or {}).items():
@@ -11633,6 +11665,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             "component", "source_ids", "source_primary",
             "source_references", "content_hash",
             "validation_attempts", "escalation_marker",
+            "anchored_rubric",
         }
         kwargs_clean: dict = {}
         for k, v in (entry or {}).items():

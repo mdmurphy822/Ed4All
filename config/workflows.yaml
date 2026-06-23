@@ -685,6 +685,33 @@ workflows:
               on_error: warn
             description: B15 — WCAG 2.4.4 descriptive-link-text on resources blocks. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
 
+          # IB6.6 — block->module->course quality-rollup GATE (framework
+          # FR-07/13, §6.5). Surfaces the BlockQualityRollupAggregator's
+          # course_pass / per-block-fail signal (the 3 hard gates: Accessibility
+          # ==0 -> block fail; assessment-Bloom<objective -> Alignment cap 1;
+          # interaction-without-feedback -> Feedback+Coherence cap 1; plus
+          # mean>=2.0 AND per-dimension min-floor) as a GateResult so the
+          # rollup actually GATES instead of only writing an ignored report.
+          # Self-sufficient: scores the rewrite-tier blocks with the canonical
+          # IB6.1 rubric scorer then rolls up via the aggregator. No-op +
+          # byte-stable when ED4ALL_BLOCK_QUALITY_RUBRIC is unset (the rubric
+          # scorer no-ops, so there is nothing to roll up).
+          # TODO(calibration) — flip COURSE_QUALITY_ROLLUP_FAIL to critical
+          # (severity: critical + on_fail: block, and set passed=course_pass in
+          # the validator) so a failing rollup BLOCKS promotion (FR-07/13),
+          # AFTER scripts/calibration_harness.py confirms the rubric gates' FP
+          # rate on >=2 corpora (the anchored 0-3 scale must be calibrated
+          # before the mean/min-floor hard gates can block early runs).
+          - gate_id: block_quality_rollup
+            validator: lib.validators.block_quality_rollup.BlockQualityRollupValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB6.6 — block->module->course quality rollup gate (course_pass / FR-07/13). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
+
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Mirror of
       # the textbook_to_course phase, adapted to course_generation's leaner
@@ -3065,6 +3092,33 @@ workflows:
               on_fail: warn
               on_error: warn
             description: B15 — WCAG 2.4.4 descriptive-link-text on resources blocks. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
+
+          # IB6.6 — block->module->course quality-rollup GATE (framework
+          # FR-07/13, §6.5). Surfaces the BlockQualityRollupAggregator's
+          # course_pass / per-block-fail signal (the 3 hard gates: Accessibility
+          # ==0 -> block fail; assessment-Bloom<objective -> Alignment cap 1;
+          # interaction-without-feedback -> Feedback+Coherence cap 1; plus
+          # mean>=2.0 AND per-dimension min-floor) as a GateResult so the
+          # rollup actually GATES instead of only writing an ignored report.
+          # Self-sufficient: scores the rewrite-tier blocks with the canonical
+          # IB6.1 rubric scorer then rolls up via the aggregator. No-op +
+          # byte-stable when ED4ALL_BLOCK_QUALITY_RUBRIC is unset (the rubric
+          # scorer no-ops, so there is nothing to roll up).
+          # TODO(calibration) — flip COURSE_QUALITY_ROLLUP_FAIL to critical
+          # (severity: critical + on_fail: block, and set passed=course_pass in
+          # the validator) so a failing rollup BLOCKS promotion (FR-07/13),
+          # AFTER scripts/calibration_harness.py confirms the rubric gates' FP
+          # rate on >=2 corpora (the anchored 0-3 scale must be calibrated
+          # before the mean/min-floor hard gates can block early runs).
+          - gate_id: block_quality_rollup
+            validator: lib.validators.block_quality_rollup.BlockQualityRollupValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: IB6.6 — block->module->course quality rollup gate (course_pass / FR-07/13). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
 
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Reuses

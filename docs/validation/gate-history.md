@@ -222,3 +222,40 @@ focused on the current authoritative counts.
 > NOT IB3). The count table is re-derived from `config/workflows.yaml`:
 > `course_generation` 29→30 warning, `textbook_to_course` 73→74 warning, Total
 > 105→107 warning / 167→169 total.
+
+> IB6.6 rollup-GATE landing (framework FR-07/13, §6.5 — the block→module→course
+> quality rollup finally GATES): the `BlockQualityRollupAggregator` already
+> computed `course_pass` / per-block-fails (the 3 hard gates — Accessibility=0→
+> block fail, assessment-Bloom<objective→Alignment cap-1, interaction-without-
+> feedback→Feedback+Coherence cap-1 — plus the mean≥2.0 AND per-dimension
+> min-floor paths) but ran ONLY as a best-effort post-loop aggregator that wrote
+> `block_quality_rollup_report.json` and never touched `final_status`. ONE new
+> gate wired in **warning** at `post_rewrite_validation` (two-pass) in BOTH
+> `course_generation` (+1 warning) and `textbook_to_course` (+1 warning):
+> `block_quality_rollup`
+> (`lib.validators.block_quality_rollup.BlockQualityRollupValidator`). The gate
+> is SELF-SUFFICIENT — within a single phase the in-flight sibling
+> `block_quality_rubric` GateResult is not yet visible through `phase_outputs`
+> (the `_gate_results` chain is stashed only AFTER the phase completes), so the
+> gate scores the rewrite-tier `blocks` itself by delegating to the canonical
+> IB6.1 `BlockQualityRubricValidator` (the single owner of the anchored 0-3
+> scoring logic — no second scorer), then feeds the scored rows to the
+> `BlockQualityRollupAggregator` (the single owner of the rollup math) and
+> returns a GateResult enumerating `COURSE_QUALITY_ROLLUP_FAIL` /
+> `BLOCK_ACCESSIBILITY_GATE_FAIL` / `BLOCK_QUALITY_ROLLUP_BELOW_FLOOR` /
+> `MODULE_QUALITY_ROLLUP_FAIL`. The builder reuses the rewrite-tier
+> `_build_block_input_rewrite` shim (`MCP/hardening/gate_input_routing.py`). The
+> whole path no-ops (`passed=True` + a `RUBRIC_DISABLED` info issue, no scoring,
+> no rollup) when the keystone `ED4ALL_BLOCK_QUALITY_RUBRIC` flag is unset →
+> default-off runs are byte-identical. **Warning-day-1**: the gate computes
+> `course_pass` but returns `passed=True` unconditionally so it does NOT yet
+> change `final_status`; the `# TODO(calibration)` critical-flip (flip the YAML
+> row to `severity: critical` + `behavior.on_fail: block` AND set
+> `passed=course_pass` in the validator so a failing rollup BLOCKS promotion,
+> FR-07/13) is DEFERRED until `scripts/calibration_harness.py` confirms the
+> rubric gates' FP rate on ≥2 corpora (the anchored 0-3 scale must be calibrated
+> before the mean/min-floor hard gates can block early runs; standard multi-wave
+> deferred-flip — IB3 is the roadmap's single documented fastest-flip exception,
+> this is NOT IB3). The count table is re-derived from `config/workflows.yaml`:
+> `course_generation` 30→31 warning, `textbook_to_course` 74→75 warning, Total
+> 107→109 warning / 169→171 total.
