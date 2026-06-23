@@ -5774,14 +5774,32 @@ def _semantik_resolve_runtime_mode(cascade_result: Any) -> Optional[str]:
     NOT real → fail closed).
     """
     mode = getattr(cascade_result, "runtime_mode", None)
+    cascade = getattr(cascade_result, "cascade", None)
     if mode is None:
-        cascade = getattr(cascade_result, "cascade", None)
         if isinstance(cascade, dict):
             mode = cascade.get("runtime_mode")
         elif cascade is not None:
             mode = getattr(cascade, "runtime_mode", None)
     if mode is None and isinstance(cascade_result, dict):
         mode = cascade_result.get("runtime_mode")
+    # In-process arm fallback: ``run_full_cascade`` does NOT promote
+    # ``runtime_mode`` to a top-level key of its result dict — only the
+    # cross-venv bridge (``run_cascade_json.py``) does that. The canonical
+    # in-process location is the conformance-audit provenance block
+    # (``cascade["conformance_audit"]["provenance"]["runtime_mode"]``). Read it
+    # as a fallback so a REAL in-process run is recognized as real; otherwise
+    # the R4 mock-trap below fails closed on EVERY in-process conversion even
+    # when the council + Qwen specialists generated for real.
+    if mode is None:
+        audit = None
+        if isinstance(cascade, dict):
+            audit = cascade.get("conformance_audit")
+        elif isinstance(cascade_result, dict):
+            audit = cascade_result.get("conformance_audit")
+        if isinstance(audit, dict):
+            provenance = audit.get("provenance")
+            if isinstance(provenance, dict):
+                mode = provenance.get("runtime_mode")
     return str(mode) if mode is not None else None
 
 
@@ -6340,8 +6358,20 @@ def _run_semantik_v2_conversion(
         )
 
     # 3. cascade result → chapters IR → output-contract adapter.
+    # The adapter reads the chapters IR via ``getattr(result, "chapters", ...)``.
+    # The in-process ``PipelineV2Result`` is a FROZEN dataclass, so a plain
+    # ``setattr`` raises ``FrozenInstanceError`` — stamp the derived attr with
+    # ``object.__setattr__`` (the standard frozen-dataclass escape hatch for a
+    # caller-owned instance) so BOTH the frozen in-process result and the
+    # mutable bridge ``_SemantikBridgeResult`` accept it. ``object.__setattr__``
+    # works on any object, so no branching on the result type is needed.
     chapters = build_chapters_ir(result)
-    setattr(result, "chapters", chapters)
+    try:
+        object.__setattr__(result, "chapters", chapters)
+    except (AttributeError, TypeError):
+        # Slotted / setattr-hostile result (no known case today) — fall back to
+        # the plain setattr so a mutable object still gets the attribute.
+        setattr(result, "chapters", chapters)
     adapter_out = normalize_cascade_to_ed4all(
         result,
         pdf_stem=pdf_stem,

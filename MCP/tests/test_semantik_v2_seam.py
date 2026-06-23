@@ -607,3 +607,124 @@ def test_g_seam_degrades_when_resolver_raises(monkeypatch, tmp_path):
     # Cascade still ran (with config=None) and the mocked real result shipped.
     assert "config" in captured and captured["config"] is None
     assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# (h) In-process runtime_mode resolution — run_full_cascade does NOT put a
+#     top-level "runtime_mode" key on its result dict (only the cross-venv
+#     bridge does). The canonical in-process location is
+#     cascade["conformance_audit"]["provenance"]["runtime_mode"]. The seam's
+#     resolver must read it there, else a REAL in-process run trips the R4
+#     mock-trap and fails closed. Regression for the second local-real gap.
+# ---------------------------------------------------------------------------
+
+
+def test_h_runtime_mode_from_conformance_audit_provenance():
+    """The seam resolves runtime_mode from the conformance-audit provenance
+    block (the real in-process PipelineV2Result shape)."""
+    from MCP.tools.pipeline_tools import (
+        _semantik_resolve_runtime_mode,
+        _SEMANTIK_REAL_RUNTIME_MODES,
+    )
+
+    class _RealResult:
+        # No top-level .runtime_mode (matches the real PipelineV2Result).
+        runtime_mode = None
+        cascade = {
+            # No top-level "runtime_mode" key (matches run_full_cascade's
+            # result dict) — only the nested provenance block carries it.
+            "conformance_audit": {"provenance": {"runtime_mode": "real"}},
+        }
+
+    resolved = _semantik_resolve_runtime_mode(_RealResult())
+    assert resolved == "real"
+    assert resolved in _SEMANTIK_REAL_RUNTIME_MODES
+
+    # A mock in-process run is still caught (provenance says mock).
+    class _MockResult:
+        runtime_mode = None
+        cascade = {"conformance_audit": {"provenance": {"runtime_mode": "mock"}}}
+
+    assert _semantik_resolve_runtime_mode(_MockResult()) == "mock"
+
+    # Top-level key still wins when present (the bridge arm's shape).
+    class _BridgeResult:
+        runtime_mode = None
+        cascade = {"runtime_mode": "real", "conformance_audit": {}}
+
+    assert _semantik_resolve_runtime_mode(_BridgeResult()) == "real"
+
+
+def test_h_seam_ships_real_in_process_result(monkeypatch, tmp_path):
+    """End-to-end seam: a real in-process result whose runtime_mode lives ONLY
+    in the conformance-audit provenance block ships success=True (does not trip
+    the mock-trap)."""
+    from MCP.tools.pipeline_tools import _run_semantik_v2_conversion
+
+    res = _MockPipelineResult(runtime_mode="real")
+    # Strip the convenience top-level attr so resolution MUST come from the
+    # conformance-audit provenance block (the real in-process shape).
+    delattr(res, "runtime_mode")
+    res.cascade = {
+        "conformance_audit": {"provenance": {"runtime_mode": "real"}},
+    }
+
+    captured: dict = {}
+    _install_mock_cascade_with_config(monkeypatch, captured=captured)
+    # Point the fake run_pipeline_v2 at our provenance-shaped result.
+    sys.modules["SemantiK.dart_semantic.cascade"].run_pipeline_v2 = (
+        lambda pdf_path, *a, **k: res
+    )
+
+    out = tmp_path / "doc_accessible.html"
+    result = _run_semantik_v2_conversion("doc.pdf", str(out))
+    assert result["success"] is True, result.get("error")
+    assert out.is_file()
+
+
+# ---------------------------------------------------------------------------
+# (i) Frozen-result tolerance — the in-process PipelineV2Result is a FROZEN
+#     dataclass, so the seam's chapters-IR stamp must use object.__setattr__
+#     (a plain setattr raises FrozenInstanceError and aborts a real run AFTER
+#     the mock-trap). Regression for the third local-real gap.
+# ---------------------------------------------------------------------------
+
+
+def test_i_seam_handles_frozen_pipeline_result(monkeypatch, tmp_path):
+    """A frozen-dataclass cascade result (the real in-process shape) does not
+    raise FrozenInstanceError on the chapters-IR stamp."""
+    import dataclasses
+
+    from MCP.tools.pipeline_tools import _run_semantik_v2_conversion
+
+    @dataclasses.dataclass(frozen=True)
+    class _FrozenResult:
+        pdf: str = "doc.pdf"
+        html: str = "<p>x</p>"
+        wcag_status: str = "passed"
+        exit_action: str = "ship_with_confidence"
+        theta_score: float = 0.9
+        flags: tuple = ()
+        lane_used: str = "fast-lane"
+        lang: str = "en"
+        runtime_mode: str = "real"
+        region_provenance: tuple = ()
+        heading_tree: tuple = ()
+
+    frozen = _FrozenResult(region_provenance=tuple(_region_provenance()))
+
+    # Sanity: a plain setattr on this instance WOULD raise (proves the test
+    # exercises the frozen path the fix guards).
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        frozen.chapters = []  # type: ignore[attr-defined]
+
+    captured: dict = {}
+    _install_mock_cascade_with_config(monkeypatch, captured=captured)
+    sys.modules["SemantiK.dart_semantic.cascade"].run_pipeline_v2 = (
+        lambda pdf_path, *a, **k: frozen
+    )
+
+    out = tmp_path / "doc_accessible.html"
+    result = _run_semantik_v2_conversion("doc.pdf", str(out))
+    assert result["success"] is True, result.get("error")
+    assert out.is_file()
