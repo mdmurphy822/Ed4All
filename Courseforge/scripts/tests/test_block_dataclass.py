@@ -208,8 +208,9 @@ def test_block_sequence_non_negative_validates():
 
 
 def test_block_types_count_is_twenty_eight():
-    """Canonical 28-type set (16 Phase-2 + 5 Wave-2 + 3 I6 palette-v2 + 4 IB5)."""
-    assert len(BLOCK_TYPES) == 28
+    """Canonical 29-type set (16 Phase-2 + 5 Wave-2 + 3 I6 palette-v2 + 4 IB5 +
+    1 B15 `resources`)."""
+    assert len(BLOCK_TYPES) == 29
     for required in (
         "objective",
         "concept",

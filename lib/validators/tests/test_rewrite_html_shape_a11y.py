@@ -254,3 +254,257 @@ def test_a11y_decision_type_accepted_by_schema() -> None:
     schema = json.loads(schema_path.read_text())
     enum = schema["properties"]["decision_type"]["enum"]
     assert "rewrite_block_a11y_check" in enum
+
+
+# --------------------------------------------------------------------------- #
+# Keyboard operability (WCAG 2.1.1) — BLOCK_KEYBOARD_OPERABLE
+# --------------------------------------------------------------------------- #
+
+
+def test_clickonly_div_with_role_warns_keyboard_operable() -> None:
+    """A click-only custom control with role+tabindex+name is FOCUSABLE but not
+    OPERABLE (no native semantics, no key handler) → BLOCK_KEYBOARD_OPERABLE."""
+    html = (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        '<div role="button" tabindex="0" aria-label="Reveal" '
+        'onclick="reveal()">Reveal</div></section>'
+    )
+    block = _block(html)
+    result = _validate([block], a11y=True)
+    assert "BLOCK_KEYBOARD_OPERABLE" in _codes(result)
+    assert result.passed is True  # warning-day-1
+    assert _critical(result) == []
+
+
+def test_clickonly_div_with_keydown_handler_is_clean() -> None:
+    html = (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        '<div role="button" tabindex="0" aria-label="Reveal" '
+        'onclick="reveal()" onkeydown="reveal(event)">Reveal</div></section>'
+    )
+    block = _block(html)
+    result = _validate([block], a11y=True)
+    assert "BLOCK_KEYBOARD_OPERABLE" not in _codes(result)
+
+
+def test_clickonly_div_with_data_cf_keys_marker_is_clean() -> None:
+    html = (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        '<div role="button" tabindex="0" aria-label="Reveal" '
+        'onclick="reveal()" data-cf-keys="Enter Space">Reveal</div></section>'
+    )
+    block = _block(html)
+    result = _validate([block], a11y=True)
+    assert "BLOCK_KEYBOARD_OPERABLE" not in _codes(result)
+
+
+def test_native_button_is_clean() -> None:
+    html = (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        '<button onclick="reveal()">Reveal</button></section>'
+    )
+    block = _block(html)
+    result = _validate([block], a11y=True)
+    assert "BLOCK_KEYBOARD_OPERABLE" not in _codes(result)
+
+
+def test_clickonly_div_rescued_by_details_summary_in_block() -> None:
+    html = (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        '<div data-cf-component="reveal" onclick="x()">click</div>'
+        '<details><summary>More</summary><p>body</p></details></section>'
+    )
+    block = _block(html)
+    result = _validate([block], a11y=True)
+    assert "BLOCK_KEYBOARD_OPERABLE" not in _codes(result)
+
+
+def test_keyboard_operable_noop_when_flag_off() -> None:
+    html = (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        '<div role="button" tabindex="0" aria-label="r" onclick="x()">r</div>'
+        '</section>'
+    )
+    block = _block(html)
+    result = _validate([block], a11y=False)
+    assert "BLOCK_KEYBOARD_OPERABLE" not in _codes(result)
+    assert result.passed is True
+
+
+# --------------------------------------------------------------------------- #
+# Visible focus (WCAG 2.4.7) — BLOCK_FOCUS_VISIBLE
+# --------------------------------------------------------------------------- #
+
+
+def test_outline_none_on_button_warns_focus_visible() -> None:
+    html = (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        '<button style="outline:none">Go</button></section>'
+    )
+    block = _block(html)
+    result = _validate([block], a11y=True)
+    assert "BLOCK_FOCUS_VISIBLE" in _codes(result)
+    assert result.passed is True
+    assert _critical(result) == []
+
+
+def test_outline_zero_on_link_warns_focus_visible() -> None:
+    html = (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        '<a href="/x" style="color:red; outline: 0;">deep dive</a></section>'
+    )
+    block = _block(html)
+    result = _validate([block], a11y=True)
+    assert "BLOCK_FOCUS_VISIBLE" in _codes(result)
+
+
+def test_outline_none_with_boxshadow_replacement_is_clean() -> None:
+    html = (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        '<button style="outline:none; box-shadow:0 0 0 2px blue">Go</button>'
+        '</section>'
+    )
+    block = _block(html)
+    result = _validate([block], a11y=True)
+    assert "BLOCK_FOCUS_VISIBLE" not in _codes(result)
+
+
+def test_outline_none_on_non_interactive_element_is_clean() -> None:
+    # A bare <p> is not interactive; outline:none on it is harmless.
+    html = (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        '<p style="outline:none">prose</p></section>'
+    )
+    block = _block(html)
+    result = _validate([block], a11y=True)
+    assert "BLOCK_FOCUS_VISIBLE" not in _codes(result)
+
+
+def test_focus_visible_noop_when_flag_off() -> None:
+    html = (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        '<button style="outline:none">Go</button></section>'
+    )
+    block = _block(html)
+    result = _validate([block], a11y=False)
+    assert "BLOCK_FOCUS_VISIBLE" not in _codes(result)
+
+
+# --------------------------------------------------------------------------- #
+# B04 time-based media per-piece codes (rides ED4ALL_NEW_BLOCK_TYPES)
+# --------------------------------------------------------------------------- #
+
+
+def _mm_block(html):
+    return _block(
+        html, block_type="multimedia",
+        block_id="page_01#multimedia_x_0",
+    )
+
+
+def _validate_mm(blocks, *, enabled=True):
+    return RewriteHtmlShapeValidator().validate(
+        {"blocks": blocks, "new_block_types_enabled": enabled}
+    )
+
+
+_MM_FULL = (
+    '<figure class="multimedia" data-cf-block-id="page_01#multimedia_x_0">'
+    '<video controls><track kind="captions" srclang="en">'
+    '<track kind="descriptions" srclang="en"></video>'
+    '<details data-cf-transcript><summary>Transcript</summary><p>t</p></details>'
+    '</figure>'
+)
+
+
+def test_mm_full_stack_passes_all_pieces() -> None:
+    result = _validate_mm([_mm_block(_MM_FULL)])
+    for code in (
+        "MULTIMEDIA_CAPTIONS_MISSING", "MULTIMEDIA_AUDIO_DESC_MISSING",
+        "MULTIMEDIA_TRANSCRIPT_MISSING", "MULTIMEDIA_CONTROLS_MISSING",
+    ):
+        assert code not in _codes(result)
+    assert result.passed is True
+
+
+def test_mm_missing_captions_flags_captions_only() -> None:
+    html = _MM_FULL.replace('<track kind="captions" srclang="en">', "")
+    result = _validate_mm([_mm_block(html)])
+    assert "MULTIMEDIA_CAPTIONS_MISSING" in _codes(result)
+    assert "MULTIMEDIA_AUDIO_DESC_MISSING" not in _codes(result)
+    assert result.passed is True
+
+
+def test_mm_missing_audio_desc_flags_audio_desc_only() -> None:
+    html = _MM_FULL.replace('<track kind="descriptions" srclang="en">', "")
+    result = _validate_mm([_mm_block(html)])
+    assert "MULTIMEDIA_AUDIO_DESC_MISSING" in _codes(result)
+    assert "MULTIMEDIA_CAPTIONS_MISSING" not in _codes(result)
+
+
+def test_mm_audio_desc_via_class_marker_is_clean() -> None:
+    # Matches the actual renderer skeleton: <p class="audio-description">.
+    html = _MM_FULL.replace(
+        '<track kind="descriptions" srclang="en">', ""
+    ).replace(
+        "</figure>",
+        '<p class="audio-description">Audio description: …</p></figure>',
+    )
+    result = _validate_mm([_mm_block(html)])
+    assert "MULTIMEDIA_AUDIO_DESC_MISSING" not in _codes(result)
+
+
+def test_mm_missing_transcript_flags_transcript_only() -> None:
+    html = (
+        '<figure class="multimedia" data-cf-block-id="page_01#multimedia_x_0">'
+        '<video controls><track kind="captions" srclang="en">'
+        '<track kind="descriptions" srclang="en"></video></figure>'
+    )
+    result = _validate_mm([_mm_block(html)])
+    assert "MULTIMEDIA_TRANSCRIPT_MISSING" in _codes(result)
+    assert "MULTIMEDIA_CAPTIONS_MISSING" not in _codes(result)
+
+
+def test_mm_missing_controls_flags_controls_only() -> None:
+    html = _MM_FULL.replace("<video controls>", "<video>")
+    result = _validate_mm([_mm_block(html)])
+    assert "MULTIMEDIA_CONTROLS_MISSING" in _codes(result)
+    assert "MULTIMEDIA_CAPTIONS_MISSING" not in _codes(result)
+
+
+def test_mm_empty_stub_flags_every_piece() -> None:
+    html = (
+        '<figure class="multimedia" '
+        'data-cf-block-id="page_01#multimedia_x_0"><video></video></figure>'
+    )
+    result = _validate_mm([_mm_block(html)])
+    for code in (
+        "MULTIMEDIA_CAPTIONS_MISSING", "MULTIMEDIA_AUDIO_DESC_MISSING",
+        "MULTIMEDIA_TRANSCRIPT_MISSING", "MULTIMEDIA_CONTROLS_MISSING",
+    ):
+        assert code in _codes(result)
+    assert result.passed is True  # warning-day-1
+
+
+def test_mm_pieces_noop_when_flag_off() -> None:
+    html = (
+        '<figure class="multimedia" '
+        'data-cf-block-id="page_01#multimedia_x_0"><video></video></figure>'
+    )
+    result = _validate_mm([_mm_block(html)], enabled=False)
+    for code in (
+        "MULTIMEDIA_CAPTIONS_MISSING", "MULTIMEDIA_AUDIO_DESC_MISSING",
+        "MULTIMEDIA_TRANSCRIPT_MISSING", "MULTIMEDIA_CONTROLS_MISSING",
+    ):
+        assert code not in _codes(result)

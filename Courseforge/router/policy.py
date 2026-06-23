@@ -244,6 +244,11 @@ DEFAULT_BLOCK_ROUTING: Dict[str, Dict[str, Any]] = {
         "optional": ["accessibility"],
         "fail_action": "regenerate",
     },
+    "resources": {
+        "required": ["source_ref"],
+        "optional": ["accessibility"],
+        "fail_action": "regenerate",
+    },
 }
 
 

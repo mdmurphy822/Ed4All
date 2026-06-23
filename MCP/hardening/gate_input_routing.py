@@ -2497,6 +2497,14 @@ def default_router() -> GateInputRouter:
         "lib.validators.udl_coverage.UdlCoverageValidator",
         _build_block_input_rewrite,
     )
+    # B15 — ResourceLinkPurposeValidator audits WCAG 2.4.4 descriptive-link-text
+    # on ``resources`` blocks. Consumes only ``inputs['blocks']`` so it reuses
+    # the rewrite-tier Block surface (no-ops + byte-stable when
+    # ED4ALL_NEW_BLOCK_TYPES is unset; the B15 type is only selectable then).
+    r.register(
+        "lib.validators.resource_link_purpose.ResourceLinkPurposeValidator",
+        _build_block_input_rewrite,
+    )
     r.register(
         "lib.validators.rewrite_source_grounding.RewriteSourceGroundingValidator",
         _build_rewrite_block_input,

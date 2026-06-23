@@ -50,7 +50,10 @@ from lib.ontology.slugs import canonical_slug as _slugify  # noqa: E402
 from lib.ontology.taxonomy import validate_classification  # noqa: E402
 from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: E402
 
-from blocks import Block  # noqa: E402  (Phase 2 intermediate format)
+from blocks import (  # noqa: E402  (Phase 2 intermediate format)
+    Block,
+    _new_block_types_emit_enabled,
+)
 
 # Phase 2: sentinel page_id for renderer call sites that don't yet thread
 # the canonical page_id from ``generate_week``. Block.__post_init__
@@ -1589,6 +1592,89 @@ def _render_diagram_section(block: "Block") -> str:
     table_parts.append('      </table>')
     parts.extend(table_parts)
     parts.append('    </figure>')
+    return "\n".join(parts)
+
+
+def _render_resources_section(block: "Block") -> str:
+    """B15 — render a Resources / Further Reading section (deterministic).
+
+    Emits ``<section class="resources">`` with a heading + a ``<ul>`` of
+    outbound ``<a>`` links, each carrying DESCRIPTIVE link text (a title and an
+    optional annotation) so the link purpose is clear from the link text alone
+    (WCAG 2.4.4 Link Purpose (In Context)). A bare URL is NEVER the link text —
+    when an item supplies no human title the URL is shown as a non-link
+    ``<span>`` so the renderer never produces a "click here"/raw-URL anchor.
+
+    Reads ``content = {"heading": str, "links": [{"url", "title",
+    "annotation"}, ...]}`` (dict) or a bare list of link dicts. Each link's
+    ``title`` (falling back to ``text`` / ``label``) is the descriptive anchor
+    text; ``annotation`` (falling back to ``description``) is an optional gloss.
+
+    Gated by ``ED4ALL_NEW_BLOCK_TYPES`` (default OFF) — returns ``""`` when the
+    flag is unset so default output is byte-identical (mirrors the IB5
+    new-block-type posture). The B15 type is only selectable via the dynamic
+    planner under the same flag.
+    """
+    if not _new_block_types_emit_enabled():
+        return ""
+    content = block.content
+    if isinstance(content, dict):
+        heading = str(content.get("heading") or "Resources")
+        raw_links = content.get("links") or []
+    elif isinstance(content, (list, tuple)):
+        heading = "Resources"
+        raw_links = content
+    else:
+        heading = "Resources"
+        raw_links = []
+    block_attrs = block.to_html_attrs()
+    parts = [
+        f'    <section class="resources" data-cf-content-type="resources"'
+        f'{block_attrs}>',
+        f'      <h3>{html_mod.escape(heading)}</h3>',
+        '      <ul class="resource-list">',
+    ]
+    for link in raw_links:
+        if isinstance(link, dict):
+            url = str(link.get("url") or link.get("href") or "")
+            title = str(
+                link.get("title") or link.get("text") or link.get("label") or ""
+            ).strip()
+            annotation = str(
+                link.get("annotation") or link.get("description") or ""
+            ).strip()
+        else:
+            url = str(link or "")
+            title = ""
+            annotation = ""
+        # Descriptive link text contract: prefer the human title; never emit a
+        # bare URL as the anchor text. When no title resolves, show the URL as
+        # plain (non-link) text so the 2.4.4 contract is never violated by this
+        # renderer (the link-purpose validator backstops authored blocks).
+        li_parts = ['        <li>']
+        if url and title:
+            li_parts.append(
+                f'<a href="{html_mod.escape(url)}">{html_mod.escape(title)}</a>'
+            )
+        elif title:
+            li_parts.append(html_mod.escape(title))
+        elif url:
+            li_parts.append(
+                f'<span class="resource-url-pending">{html_mod.escape(url)}</span>'
+            )
+        else:
+            li_parts.append(
+                '<span class="resource-pending">Resource pending.</span>'
+            )
+        if annotation:
+            li_parts.append(
+                f' <span class="resource-annotation">'
+                f'{html_mod.escape(annotation)}</span>'
+            )
+        li_parts.append('</li>')
+        parts.append("".join(li_parts))
+    parts.append('      </ul>')
+    parts.append('    </section>')
     return "\n".join(parts)
 
 

@@ -203,3 +203,22 @@ focused on the current authoritative counts.
 > fastest-flip exception). The count table above is re-derived from
 > `config/workflows.yaml`: `course_generation` 13→15 warning,
 > `textbook_to_course` 54→59 warning, Total 70→77 warning / 136→143 total.
+
+> B15 landing (Resources block type — closes the last framework catalog gap):
+> adds the `resources` Ed4All block type (B15 Resources / Further Reading), the
+> only canonical B-code that previously had no Ed4All primary. ONE new gate
+> wired in **warning** at `post_rewrite_validation` in BOTH `course_generation`
+> (+1 warning) and `textbook_to_course` (+1 warning): `resource_link_purpose`
+> (`lib.validators.resource_link_purpose.ResourceLinkPurposeValidator`) — the
+> WCAG 2.4.4 Link Purpose check that flags any link in a `resources` block whose
+> text is non-descriptive (bare URL / "click here" / "read more" / empty) as
+> `RESOURCE_LINK_PURPOSE_UNCLEAR` (`action=regenerate`). The validator no-ops
+> (`passed=True` + an info issue) when `ED4ALL_NEW_BLOCK_TYPES` is unset — the
+> same flag that makes the `resources` type selectable (planner content-shape
+> nudge) + renderable (`_render_resources_section` returns `""` when off), so
+> default runs are byte-stable. Warning-day-1 with a deferred
+> `# TODO(calibration)` critical-flip marker (the standard multi-wave deferred-
+> flip; IB3 is the roadmap's single documented fastest-flip exception, this is
+> NOT IB3). The count table is re-derived from `config/workflows.yaml`:
+> `course_generation` 29→30 warning, `textbook_to_course` 73→74 warning, Total
+> 105→107 warning / 167→169 total.

@@ -350,7 +350,7 @@ _MM_NO_TRACK = (
     '<figure class="multimedia" data-cf-block-id="page_01#multimedia_x_0">'
     '<video controls></video>'
     '<details data-cf-transcript><summary>Transcript</summary><p>t</p></details>'
-    '</figure>'
+    '<p class="audio-description">Audio description: …</p></figure>'
 )
 _DG_COMPLETE = (
     '<figure class="diagram" data-cf-content-type="diagram" '
@@ -384,11 +384,24 @@ def test_ib5_multimedia_complete_stack_passes() -> None:
 
 
 def test_ib5_multimedia_missing_track_warns_not_blocks() -> None:
+    # _MM_NO_TRACK is complete EXCEPT the captions track → exactly the
+    # per-piece MULTIMEDIA_CAPTIONS_MISSING warning fires (the per-piece code
+    # refactor; the old combined REWRITE_IB5_A11Y_CONTRACT no longer applies to
+    # multimedia).
     block = _make_block(_MM_NO_TRACK, block_type="multimedia")
     result = _validate_ib5([block])
-    warnings = [i for i in result.issues if i.code == "REWRITE_IB5_A11Y_CONTRACT"]
+    warnings = [i for i in result.issues if i.code == "MULTIMEDIA_CAPTIONS_MISSING"]
     assert len(warnings) == 1
     assert warnings[0].severity == "warning"
+    # No other media piece flags (transcript / AD / controls all present).
+    assert not [
+        i for i in result.issues
+        if i.code in (
+            "MULTIMEDIA_TRANSCRIPT_MISSING",
+            "MULTIMEDIA_AUDIO_DESC_MISSING",
+            "MULTIMEDIA_CONTROLS_MISSING",
+        )
+    ]
     # Warning-day-1: the gate still passes (no critical issue).
     assert result.passed is True
     assert not [i for i in result.issues if i.severity == "critical"]

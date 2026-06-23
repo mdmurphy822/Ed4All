@@ -744,6 +744,15 @@ _DIAGRAM_HINT_RE = re.compile(
     r"tree\s+diagram|venn\s+diagram|concept\s+map|process\s+flow"
     r")\b|<svg[\s>]"
 )
+_RESOURCES_HINT_RE = re.compile(
+    r"(?is)\b("
+    r"further\s+reading|for\s+further\s+study|"
+    r"additional\s+resources|external\s+resources|"
+    r"recommended\s+(reading|resources)|"
+    r"references|bibliography|works\s+cited|"
+    r"see\s+also|learn\s+more\s+at|read\s+more\s+about"
+    r")\b"
+)
 
 
 def detect_procedure(source_text: str) -> bool:
@@ -774,6 +783,16 @@ def detect_diagram_reference(source_text: str) -> bool:
     if not source_text:
         return False
     return bool(_DIAGRAM_HINT_RE.search(source_text))
+
+
+def detect_resources_reference(source_text: str) -> bool:
+    """True when the source points OUTWARD to further resources (B15 nudge).
+
+    Fires on "further reading" / "additional resources" / "references" /
+    "bibliography" / "see also" framing. Deterministic; precision-leaning."""
+    if not source_text:
+        return False
+    return bool(_RESOURCES_HINT_RE.search(source_text))
 
 
 def build_planner_provider(
@@ -1101,6 +1120,13 @@ def _build_prompt(
                 "  - The source references a spatial/diagram artifact "
                 "(figure / flowchart / schematic) — use a `diagram` block "
                 "(a structured long-description + a data-table equivalent)."
+            )
+        if detect_resources_reference(source_blob):
+            detector_lines.append(
+                "  - The source points OUTWARD to further reading / references "
+                "/ external resources — CLOSE this objective with a `resources` "
+                "block: an accessible list of links each with DESCRIPTIVE text "
+                "(a title, never a bare URL or 'click here')."
             )
         detector_lines.append(
             "  - OPEN this objective with a `hook` block — a short activation / "

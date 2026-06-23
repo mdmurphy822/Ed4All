@@ -329,3 +329,6 @@ SemantiK/dart_semantic/parse_wikipedia.py
 SemantiK/dart_semantic/arxiv_license.py
 SemantiK/dart_semantic/arxiv_sections.py
 SemantiK/scripts/_figure_fetch_lib.py
+
+# Calibration harness generated measurement artifact (scripts/calibration_harness.py)
+/calibration_report.json

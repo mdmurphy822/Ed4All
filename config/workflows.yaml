@@ -666,6 +666,25 @@ workflows:
               on_error: warn
             description: IB7.6c — per-type Bloom-range ceiling (block Bloom <= type bloom_ceiling). Warning day-1; deferred critical-flip.
 
+          # B15 — WCAG 2.4.4 Link Purpose gate for the new B15 ``resources``
+          # block type. Flags any link whose text is non-descriptive (bare URL
+          # / "click here" / "read more" / empty) as RESOURCE_LINK_PURPOSE_
+          # UNCLEAR. No-op + byte-stable when ED4ALL_NEW_BLOCK_TYPES is unset
+          # (the same flag that makes the B15 type selectable / renderable).
+          # action=regenerate on miss.
+          # TODO(calibration) — flip RESOURCE_LINK_PURPOSE_UNCLEAR to critical
+          # after a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern;
+          # IB3 is the single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: resource_link_purpose
+            validator: lib.validators.resource_link_purpose.ResourceLinkPurposeValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: B15 — WCAG 2.4.4 descriptive-link-text on resources blocks. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
+
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Mirror of
       # the textbook_to_course phase, adapted to course_generation's leaner
@@ -3027,6 +3046,25 @@ workflows:
               on_fail: warn
               on_error: warn
             description: IB7.6c — per-type Bloom-range ceiling (block Bloom <= type bloom_ceiling). Warning day-1; deferred critical-flip.
+
+          # B15 — WCAG 2.4.4 Link Purpose gate for the new B15 ``resources``
+          # block type. Flags any link whose text is non-descriptive (bare URL
+          # / "click here" / "read more" / empty) as RESOURCE_LINK_PURPOSE_
+          # UNCLEAR. No-op + byte-stable when ED4ALL_NEW_BLOCK_TYPES is unset
+          # (the same flag that makes the B15 type selectable / renderable).
+          # action=regenerate on miss.
+          # TODO(calibration) — flip RESOURCE_LINK_PURPOSE_UNCLEAR to critical
+          # after a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern;
+          # IB3 is the single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: resource_link_purpose
+            validator: lib.validators.resource_link_purpose.ResourceLinkPurposeValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: B15 — WCAG 2.4.4 descriptive-link-text on resources blocks. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
 
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Reuses

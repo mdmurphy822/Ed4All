@@ -219,6 +219,18 @@ BLOCK_TYPES: frozenset = frozenset(
         "multimedia",
         "worked_example",
         "diagram",
+        # B15 framework-aligned addition (snake_case canonical token). The last
+        # remaining catalog gap: ``resources`` (B15 Resources / Further Reading
+        # — an accessible list of curated external links / references each with
+        # DESCRIPTIVE link text, never a bare URL or "click here"). DISTINCT
+        # from ``callout`` (a single inline highlight) and ``summary_takeaway``
+        # (the section's own key points, not outbound links). Emitted ONLY via
+        # the dynamic block planner path behind ``ED4ALL_NEW_BLOCK_TYPES``
+        # (default OFF); the fixed-plan / legacy paths never select it, so every
+        # existing snapshot stays byte-stable (mirrors the IB5 hook/multimedia/
+        # worked_example/diagram posture). The 2.4.4 link-purpose contract is
+        # gated by ``lib/validators/resource_link_purpose.py``.
+        "resources",
     }
 )
 

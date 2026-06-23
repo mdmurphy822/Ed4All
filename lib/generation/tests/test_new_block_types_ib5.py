@@ -47,7 +47,8 @@ def test_new_type_in_block_types(block_type):
 
 
 def test_block_types_count_is_twenty_eight():
-    assert len(BLOCK_TYPES) == 28
+    # 28 after IB5; the B15 `resources` addition brings the palette to 29.
+    assert len(BLOCK_TYPES) == 29
 
 
 @pytest.mark.parametrize("block_type", NEW_BLOCK_TYPES)
@@ -296,7 +297,13 @@ def test_failing_multimedia_a11y_emits_shape_check_decision():
         e for e in cap.events
         if e.get("decision_type") == "rewrite_html_shape_check"
     ]
-    assert any("REWRITE_IB5_A11Y_CONTRACT" in e["decision"] for e in shape_events)
+    # Per-piece B04 codes: the empty <video> stub is missing controls,
+    # captions, audio-description, and transcript — each emits its own decision.
+    decisions = " ".join(e["decision"] for e in shape_events)
+    assert "MULTIMEDIA_CONTROLS_MISSING" in decisions
+    assert "MULTIMEDIA_CAPTIONS_MISSING" in decisions
+    assert "MULTIMEDIA_AUDIO_DESC_MISSING" in decisions
+    assert "MULTIMEDIA_TRANSCRIPT_MISSING" in decisions
 
 
 if __name__ == "__main__":  # pragma: no cover

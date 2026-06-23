@@ -9,6 +9,27 @@ NOT emitted to HTML / JSON-LD, so every existing snapshot / ``contentHash`` stay
 byte-identical (mirrors ``ED4ALL_BLOCK_ANATOMY`` / ``COURSEFORGE_EMIT_BLOCKS`` /
 ``ED4ALL_KEY_TERMS_PAGE``).
 
+Keyboard / focus contract (the IB4.1 per-block sub-check, gated by this flag):
+
+* **Keyboard operability (WCAG 2.1.1).** A static-HTML validator can't run JS
+  ``keydown`` handlers, so the contract is structural: an interactive control
+  MUST be a NATIVE interactive element (``<button>`` / ``<a href>`` /
+  ``<input>`` / ``<select>`` / ``<textarea>`` / ``<details>`` / ``<summary>``)
+  OR carry an explicit, documented keyboard affordance the renderer emits — a
+  native key-handler attribute (``onkeydown`` / ``onkeyup`` / ``onkeypress``)
+  or a ``data-cf-keys`` / ``data-cf-keyboard`` marker enumerating the keys
+  (Enter / Space / Arrow) the control honors. A click-only custom control
+  (e.g. a ``<div role="button" onclick=…>`` or a ``data-cf-component``-bearing
+  ``<div>`` / ``<span>``) with neither is operable by mouse only and is flagged
+  ``BLOCK_KEYBOARD_OPERABLE`` (warning-day-1, deferred critical-flip). A native
+  ``<details>`` / ``<summary>`` reveal anywhere in the block is the escape
+  hatch (keyboard-operable for free).
+* **Visible focus (WCAG 2.4.7).** An interactive element (native OR custom)
+  carrying an inline ``outline:none`` / ``outline:0`` in its ``style`` WITHOUT
+  a replacement focus indicator (``box-shadow`` / ``border`` / ``outline-*``
+  declaration in the same inline style) suppresses the keyboard-focus ring and
+  is flagged ``BLOCK_FOCUS_VISIBLE`` (warning-day-1, deferred critical-flip).
+
 Scope split (IB4.6 RECOMMENDATION, stated explicitly):
 
 * The EMIT (UDL field stamping in ``Block.to_html_attrs`` / ``to_jsonld_entry``)

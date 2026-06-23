@@ -93,6 +93,44 @@ _A11Y_INTERACTIVE_BLOCK_TYPES: frozenset = frozenset(
 # B04 time-based media (lands fully in IB5; the contract ships dormant here).
 _A11Y_MEDIA_BLOCK_TYPES: frozenset = frozenset({"multimedia"})
 
+# ARIA roles that mark an element as an interactive control for the visible-
+# focus (2.4.7) check. A custom <div role="button"> that suppresses its focus
+# outline is as broken as a native <button> that does.
+_INTERACTIVE_ARIA_ROLES: frozenset = frozenset(
+    {
+        "button", "link", "checkbox", "radio", "switch", "tab", "menuitem",
+        "menuitemcheckbox", "menuitemradio", "option", "slider", "spinbutton",
+        "textbox", "combobox", "listbox", "treeitem",
+    }
+)
+
+
+def _suppresses_focus_outline(style: str) -> bool:
+    """True iff an inline ``style`` removes the focus outline with no replacement.
+
+    WCAG 2.4.7 (visible focus). A bare ``outline:none`` / ``outline:0`` on an
+    interactive element kills the keyboard-focus ring. It is only a violation
+    when NO replacement focus indicator is declared in the SAME inline style —
+    a ``box-shadow``, a non-zero ``outline-width`` / ``outline-color`` /
+    ``outline-style`` declaration, a ``border`` change, or an explicit
+    focus-styling marker. ``style`` is expected already lower-cased.
+    """
+    compact = style.replace(" ", "")
+    suppresses = "outline:none" in compact or "outline:0" in compact
+    if not suppresses:
+        return False
+    # A replacement focus indicator in the same inline style rescues it.
+    replacement = (
+        "box-shadow:" in compact
+        or "border:" in compact
+        or "border-" in compact
+        or "outline-style:" in compact
+        or "outline-color:" in compact
+        or "outline-width:" in compact
+        or "outline-offset:" in compact
+    )
+    return not replacement
+
 
 # Cap per-block issue list so a uniformly-broken rewrite batch doesn't
 # drown the gate report.
@@ -252,6 +290,26 @@ class _ShapeParser(HTMLParser):
         self.interactive_tabindex: bool = False
         self.interactive_role: bool = False
         self.interactive_name: bool = False
+        # WCAG 2.1.1 keyboard OPERATION (vs mere focusability). A static HTML
+        # parser can't run JS keydown handlers, so the contract is: a custom
+        # (non-native) control that LOOKS interactive (click-bearing or a
+        # data-cf-component) MUST declare a keyboard affordance — a documented
+        # key-handling marker the renderer emits (``data-cf-keys`` /
+        # ``data-cf-keyboard`` / ``onkeydown`` / ``onkeyup`` / ``onkeypress``)
+        # OR be a native interactive element (which is keyboard-operable for
+        # free). Cleared the first time a click-bearing custom control with no
+        # such affordance is seen.
+        self.saw_clickonly_custom_control: bool = False
+        # WCAG 2.4.7 visible focus. ``focus_suppressed`` becomes True the first
+        # time an interactive (native OR custom) element carries an inline
+        # ``outline:none`` / ``outline:0`` in its ``style`` attribute WITHOUT a
+        # replacement focus indicator (a ``box-shadow`` / ``outline-*`` /
+        # ``border`` declaration in the same inline style, or a focus-styling
+        # data-marker).
+        self.focus_suppressed: bool = False
+        # WCAG 1.2.5 audio description: a <track kind="descriptions"> on the
+        # media element, OR a described/transcript alternative.
+        self.media_audio_desc: bool = False
         # Native <details>/<summary> reveal — keyboard-operable for free.
         self.saw_details_summary: bool = False
         # Anchor text accumulation for the descriptive-link-text check (2.4.4).
@@ -327,6 +385,16 @@ class _ShapeParser(HTMLParser):
         is_native_interactive = tag in ("button", "a", "details", "summary", "input", "select", "textarea")
         has_component = "data-cf-component" in attr_map
         has_click = "onclick" in attr_map
+        # A documented keyboard affordance the renderer emits for a custom
+        # control: a native key-handler attribute OR a data-marker enumerating
+        # the keys the control honors (Enter/Space/Arrow). (WCAG 2.1.1)
+        has_keyboard_affordance = (
+            "onkeydown" in attr_map
+            or "onkeyup" in attr_map
+            or "onkeypress" in attr_map
+            or "data-cf-keys" in attr_map
+            or "data-cf-keyboard" in attr_map
+        )
         if has_component or (has_click and not is_native_interactive):
             self.saw_custom_interactive = True
             tabindex = (attr_map.get("tabindex") or "").strip()
@@ -338,13 +406,53 @@ class _ShapeParser(HTMLParser):
                 attr_map.get("aria-labelledby") or ""
             ).strip():
                 self.interactive_name = True
+            # 2.1.1 keyboard OPERATION: a custom control that responds to a
+            # pointer click (or is a non-native component) but is NOT a native
+            # interactive element and declares NO keyboard affordance can't be
+            # operated from the keyboard. A native <details>/<summary> reveal
+            # elsewhere in the block satisfies the contract for free, so the
+            # caller exempts blocks that carry one.
+            if not is_native_interactive and not has_keyboard_affordance:
+                self.saw_clickonly_custom_control = True
+
+        # 2.4.7 visible focus: an inline outline:none / outline:0 on an
+        # interactive element (native OR custom) WITHOUT a replacement focus
+        # indicator suppresses the focus ring. A custom non-native control with
+        # tabindex / role is interactive; a native interactive element always
+        # is.
+        is_interactive_el = (
+            is_native_interactive
+            or has_component
+            or has_click
+            or (attr_map.get("tabindex") or "").strip() == "0"
+            or (attr_map.get("role") or "").strip() in _INTERACTIVE_ARIA_ROLES
+        )
+        if is_interactive_el:
+            style = (attr_map.get("style") or "").lower()
+            if style and _suppresses_focus_outline(style):
+                self.focus_suppressed = True
 
         if tag == "track":
             kind = (attr_map.get("kind") or "").strip().lower()
             if kind == "captions":
                 self.media_track = True
+            # 1.2.5 audio description: a <track kind="descriptions"> is the
+            # native AD affordance.
+            if kind == "descriptions":
+                self.media_audio_desc = True
         if "data-cf-transcript" in attr_map:
             self.media_transcript = True
+        # A described/transcript alternative also satisfies the audio-
+        # description obligation (1.2.5) for a media-alternative-for-prerecorded
+        # delivery. Three recognised AD affordances (matching what the renderer
+        # actually emits): an explicit data-marker, OR a non-empty
+        # ``class="audio-description"`` element (the B04 renderer's
+        # ``<p class="audio-description">Audio description: …</p>`` skeleton).
+        if "data-cf-audio-description" in attr_map:
+            self.media_audio_desc = True
+        cls = (attr_map.get("class") or "").lower()
+        if "audio-description" in cls.split():
+            self.media_audio_desc = True
         # IB5 B04 — media element + controls (learner pause/segment, 1.4.2/etc).
         if tag in ("video", "audio"):
             self.saw_media_element = True
@@ -576,14 +684,15 @@ def _check_palette_v2_shape(
 
 def _check_block_a11y_contract(
     block_type: str, parser: "_ShapeParser", content: str
-) -> Optional[str]:
-    """Return a per-block WCAG 2.2 AA failure reason, or None.
+) -> List[Tuple[str, str]]:
+    """Return ``[(code, reason), ...]`` of per-block WCAG 2.2 AA failures.
 
     IB4.1 — per-block-type WCAG 2.2 AA contract (the §4.2 baseline + the
     block-by-block playbook). Reads the deterministic facts the
     :class:`_ShapeParser` tracked (``_track_a11y``); does NOT re-parse.
-    Returns a single short human-readable reason on the first obligation a
-    block fails, or ``None`` when the block satisfies its per-type contract.
+    Returns one ``(code, reason)`` tuple per failed obligation (empty list when
+    the block satisfies its per-type contract). Every issue is WARNING-severity
+    at the call site (non-blocking day-1, deferred critical-flip).
 
     Obligations by block-type partition:
 
@@ -592,26 +701,52 @@ def _check_block_a11y_contract(
       (``role="presentation"`` / ``aria-hidden="true"``). (1.1.1)
     * Interactive (self_check_question / activity / flip_card_grid): a custom
       control (``data-cf-component``-bearing div/span, or a click-bearing
-      non-native element) MUST be keyboard-operable — ``tabindex="0"`` AND an
-      ARIA ``role`` AND an accessible ``name``. A native ``<details>``/
-      ``<summary>`` reveal passes for free. (2.1.1 / 4.1.2)
+      non-native element) MUST be keyboard-FOCUSABLE — ``tabindex="0"`` AND an
+      ARIA ``role`` AND an accessible ``name`` — AND keyboard-OPERABLE: either
+      a native interactive element (``<button>``/``<a href>``/``<input>``/
+      ``<details>``/``<summary>``) OR a documented keyboard affordance the
+      renderer emits (``data-cf-keys`` / ``data-cf-keyboard`` /
+      ``onkeydown``/``onkeyup``/``onkeypress``). A click-only custom
+      ``<div role="button">`` with no key handler is operable by mouse only →
+      ``BLOCK_KEYBOARD_OPERABLE`` (2.1.1). A native ``<details>``/``<summary>``
+      reveal in the block satisfies the operability contract for free.
+    * Any interactive element: an inline ``outline:none`` / ``outline:0`` with
+      no replacement focus indicator suppresses the keyboard-focus ring →
+      ``BLOCK_FOCUS_VISIBLE`` (2.4.7). Applies to ANY block.
     * Any block: a ``<a href>`` MUST NOT use generic link text
       (reuses ``WCAGValidator.GENERIC_LINK_TEXT``). (2.4.4)
     * ``multimedia`` (B04, dormant until IB5): MUST carry a
       ``<track kind="captions">`` AND a transcript anchor.
+
+    The dedicated B04 time-based-media stack (captions / audio-description /
+    transcript / controls, each with its own code) is checked by
+    :func:`_check_ib5_a11y_shape` under ``ED4ALL_NEW_BLOCK_TYPES``; this
+    figure-partition multimedia check stays the IB4 baseline for the
+    ``ED4ALL_BLOCK_A11Y`` flag.
     """
+    findings: List[Tuple[str, str]] = []
+
     # 2.4.4 — descriptive link text (applies to ANY block carrying an <a href>).
     for text in parser.link_texts:
         normalized = text.strip().lower()
         if normalized and normalized in _GENERIC_LINK_TEXT:
-            return f"non-descriptive link text: {text!r}"
+            findings.append((
+                "REWRITE_BLOCK_A11Y_CONTRACT",
+                f"non-descriptive link text: {text!r}",
+            ))
+            break
 
     # 1.1.1 — figure-bearing blocks: every <img> alt-or-decorative.
     if block_type in _A11Y_FIGURE_BLOCK_TYPES and parser.saw_img:
         if not parser.img_alt_present:
-            return "<img> with no alt text and not marked decorative"
+            findings.append((
+                "REWRITE_BLOCK_A11Y_CONTRACT",
+                "<img> with no alt text and not marked decorative",
+            ))
 
-    # 2.1.1 / 4.1.2 — interactive blocks keyboard-operable.
+    # 4.1.2 — interactive blocks: a custom control must be name/role/value
+    # complete (keyboard-FOCUSABLE). A native <details>/<summary> reveal passes
+    # for free.
     if block_type in _A11Y_INTERACTIVE_BLOCK_TYPES:
         if parser.saw_custom_interactive and not parser.saw_details_summary:
             if not (
@@ -619,55 +754,113 @@ def _check_block_a11y_contract(
                 and parser.interactive_role
                 and parser.interactive_name
             ):
-                return (
+                findings.append((
+                    "REWRITE_BLOCK_A11Y_CONTRACT",
                     "interactive component is not keyboard-operable "
-                    "(missing tabindex=0 + role + accessible name)"
-                )
+                    "(missing tabindex=0 + role + accessible name)",
+                ))
 
-    # B04 multimedia time-based-media stack (dormant until IB5).
+    # 2.1.1 — keyboard OPERATION. A custom non-native control that responds to
+    # a pointer click (or is a data-cf-component) but declares NO keyboard
+    # affordance and is NOT a native interactive element can only be operated
+    # with a mouse. A native <details>/<summary> reveal in the block is the
+    # keyboard-operable escape hatch. Applies to ANY block (interactivity isn't
+    # confined to the interactive-block partition once a click handler appears).
+    if parser.saw_clickonly_custom_control and not parser.saw_details_summary:
+        findings.append((
+            "BLOCK_KEYBOARD_OPERABLE",
+            "custom control is operable by mouse only (a click-bearing "
+            "non-native element with no keyboard affordance: needs a native "
+            "interactive element, an onkeydown/onkeyup/onkeypress handler, or "
+            "a data-cf-keys / data-cf-keyboard marker)",
+        ))
+
+    # 2.4.7 — visible focus. An interactive element with an inline outline:none
+    # / outline:0 and no replacement focus indicator hides the focus ring.
+    if parser.focus_suppressed:
+        findings.append((
+            "BLOCK_FOCUS_VISIBLE",
+            "interactive element suppresses its focus outline "
+            "(outline:none / outline:0) with no replacement focus indicator "
+            "(box-shadow / border / outline-* declaration)",
+        ))
+
+    # B04 multimedia time-based-media stack (IB4 baseline; the richer
+    # per-piece IB5 check rides ED4ALL_NEW_BLOCK_TYPES).
     if block_type in _A11Y_MEDIA_BLOCK_TYPES:
         if not (parser.media_track and parser.media_transcript):
-            return "time-based media missing captions/transcript stack"
+            findings.append((
+                "REWRITE_BLOCK_A11Y_CONTRACT",
+                "time-based media missing captions/transcript stack",
+            ))
 
-    return None
+    return findings
 
 
 def _check_ib5_a11y_shape(
     block_type: str, parser: "_ShapeParser"
-) -> Optional[str]:
-    """Return an IB5 B04/B06 a11y-shape failure reason, or None (warning-day-1).
+) -> List[Tuple[str, str]]:
+    """Return ``[(code, reason), ...]`` of IB5 B04/B06 a11y-shape failures.
 
     IB5.7 — the type-specific a11y contracts for the two NEW types that carry a
     structural a11y obligation:
 
-    * ``multimedia`` (B04): the MANDATORY time-based-media stack — a media
-      element with ``controls`` AND a ``<track kind="captions">`` AND a
-      transcript affordance (``<details data-cf-transcript>``). (1.2.2 / 1.2.4 /
-      1.2.5 + transcript + learner controls.)
+    * ``multimedia`` (B04): the MANDATORY time-based-media stack — each piece is
+      checked and flagged with its OWN code so an operator can see exactly which
+      part of the rendered skeleton is incomplete / empty-stub:
+
+      - ``MULTIMEDIA_CONTROLS_MISSING`` — no native player ``controls`` on the
+        ``<video>``/``<audio>`` element (learner pause/segment).
+      - ``MULTIMEDIA_CAPTIONS_MISSING`` — no ``<track kind="captions">`` (1.2.4).
+      - ``MULTIMEDIA_AUDIO_DESC_MISSING`` — no audio-description affordance:
+        ``<track kind="descriptions">`` OR a ``data-cf-audio-description``
+        described/transcript alternative (1.2.5).
+      - ``MULTIMEDIA_TRANSCRIPT_MISSING`` — no transcript affordance
+        (``<details data-cf-transcript>``).
+
     * ``diagram`` (B06): a structured long-description (``<details>`` reveal or
       an ``aria-describedby`` target) AND a ``<table>`` data-equivalent so the
-      spatial relationships are available non-visually.
+      spatial relationships are available non-visually
+      (``REWRITE_IB5_A11Y_CONTRACT``).
 
-    Returns ``None`` when the block_type is not an IB5 structural type or its
-    contract is satisfied; otherwise a short human-readable failure reason
-    naming the missing piece. This is the WARNING-severity surface the caller
-    rides on the existing gate (NOT a critical parse-fail). ``# TODO(calibration)``
-    — flip to critical only after a ≥2-corpus FP measurement.
+    Returns an empty list when the block_type is not an IB5 structural type or
+    its contract is satisfied; otherwise one ``(code, reason)`` per missing
+    piece. WARNING-severity surface (NOT a critical parse-fail).
+    ``# TODO(calibration)`` — flip to critical only after a ≥2-corpus FP
+    measurement.
     """
+    findings: List[Tuple[str, str]] = []
     if block_type == "multimedia":
-        missing: List[str] = []
+        # The renderer emits the skeleton; the validator confirms it's complete
+        # AND non-empty-stub. A media element MUST be present — captions /
+        # AD / controls live ON it, so a multimedia block with no <video>/
+        # <audio> element at all is an empty stub that fails every piece.
         if not parser.media_controls:
-            missing.append("controls on the media element")
+            findings.append((
+                "MULTIMEDIA_CONTROLS_MISSING",
+                "time-based media has no native player controls "
+                "(controls attribute on the <video>/<audio> element)",
+            ))
         if not parser.media_track:
-            missing.append('<track kind="captions">')
+            findings.append((
+                "MULTIMEDIA_CAPTIONS_MISSING",
+                'time-based media has no captions track '
+                '(<track kind="captions">) — WCAG 1.2.4',
+            ))
+        if not parser.media_audio_desc:
+            findings.append((
+                "MULTIMEDIA_AUDIO_DESC_MISSING",
+                "time-based media has no audio-description affordance "
+                '(<track kind="descriptions"> or a data-cf-audio-description '
+                "described/transcript alternative) — WCAG 1.2.5",
+            ))
         if not parser.media_transcript:
-            missing.append("a transcript affordance (<details data-cf-transcript>)")
-        if missing:
-            return (
-                "time-based media missing its mandatory a11y stack: "
-                + ", ".join(missing)
-            )
-        return None
+            findings.append((
+                "MULTIMEDIA_TRANSCRIPT_MISSING",
+                "time-based media has no transcript affordance "
+                "(<details data-cf-transcript>)",
+            ))
+        return findings
     if block_type == "diagram":
         missing_d: List[str] = []
         if not parser.saw_long_desc_details:
@@ -677,9 +870,12 @@ def _check_ib5_a11y_shape(
         if not parser.saw_data_table:
             missing_d.append("a <table> data-equivalent")
         if missing_d:
-            return "diagram missing " + " and ".join(missing_d)
-        return None
-    return None
+            findings.append((
+                "REWRITE_IB5_A11Y_CONTRACT",
+                "diagram missing " + " and ".join(missing_d),
+            ))
+        return findings
+    return findings
 
 
 def _emit_a11y_decision(
@@ -1078,27 +1274,36 @@ class RewriteHtmlShapeValidator:
             # False (byte-stable). Emits one rewrite_block_a11y_check decision
             # per audited block (IB4.7).
             if block_a11y_enabled:
-                a11y_reason = _check_block_a11y_contract(
+                a11y_findings = _check_block_a11y_contract(
                     block.block_type, parser, content
                 )
-                link_flagged = bool(
-                    a11y_reason and a11y_reason.startswith("non-descriptive link")
+                link_flagged = any(
+                    reason.startswith("non-descriptive link")
+                    for _code, reason in a11y_findings
                 )
-                if a11y_reason is not None and len(issues) < _ISSUE_LIST_CAP:
+                # Emit one WARNING per failed obligation. Distinct codes per
+                # WCAG criterion: REWRITE_BLOCK_A11Y_CONTRACT (1.1.1 / 4.1.2 /
+                # 2.4.4 / B04 baseline), BLOCK_KEYBOARD_OPERABLE (2.1.1),
+                # BLOCK_FOCUS_VISIBLE (2.4.7). All warning-day-1 with a deferred
+                # critical-flip (# TODO(calibration): flip after a ≥2-corpus FP
+                # measurement, mirroring REWRITE_BLOCK_A11Y_CONTRACT).
+                for code, reason in a11y_findings:
+                    if len(issues) >= _ISSUE_LIST_CAP:
+                        break
                     issues.append(GateIssue(
                         severity="warning",
-                        code="REWRITE_BLOCK_A11Y_CONTRACT",
+                        code=code,
                         message=(
                             f"Rewrite-tier Block {block.block_id!r} (block_type="
                             f"{block.block_type!r}) failed its per-block WCAG 2.2 "
-                            f"AA contract: {a11y_reason}."
+                            f"AA contract: {reason}."
                         ),
                         location=block.block_id,
                     ))
                 _emit_a11y_decision(
                     capture, block,
                     n_representations=getattr(block, "n_representations", 0),
-                    reason=a11y_reason,
+                    reason=("; ".join(r for _c, r in a11y_findings) or None),
                     saw_img=parser.saw_img,
                     interactive_role=parser.interactive_role,
                     link_text_flagged=link_flagged,
@@ -1115,21 +1320,29 @@ class RewriteHtmlShapeValidator:
             # NEW call site). # TODO(calibration): flip to critical after a
             # ≥2-corpus FP measurement.
             if new_block_types_enabled:
-                ib5_reason = _check_ib5_a11y_shape(block.block_type, parser)
-                if ib5_reason is not None and len(issues) < _ISSUE_LIST_CAP:
+                ib5_findings = _check_ib5_a11y_shape(block.block_type, parser)
+                # One WARNING per missing piece. B04 multimedia uses per-piece
+                # codes (MULTIMEDIA_CAPTIONS_MISSING / _AUDIO_DESC_MISSING /
+                # _TRANSCRIPT_MISSING / _CONTROLS_MISSING) so an operator sees
+                # exactly which part of the rendered media skeleton is an
+                # empty stub; B06 diagram keeps the combined
+                # REWRITE_IB5_A11Y_CONTRACT code.
+                for code, reason in ib5_findings:
+                    if len(issues) >= _ISSUE_LIST_CAP:
+                        break
                     issues.append(GateIssue(
                         severity="warning",
-                        code="REWRITE_IB5_A11Y_CONTRACT",
+                        code=code,
                         message=(
                             f"Rewrite-tier Block {block.block_id!r} (block_type="
                             f"{block.block_type!r}) failed its IB5 a11y-shape "
-                            f"contract: {ib5_reason}."
+                            f"contract: {reason}."
                         ),
                         location=block.block_id,
                     ))
                     _emit_decision(
                         capture, block,
-                        passed=False, code="REWRITE_IB5_A11Y_CONTRACT",
+                        passed=False, code=code,
                         content_length=content_length, tags_seen=parser.tags_seen,
                     )
 
