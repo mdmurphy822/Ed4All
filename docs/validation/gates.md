@@ -263,3 +263,36 @@ is DEFERRED behind `# TODO(calibration)` markers in `config/workflows.yaml` unti
 the anchored 0-3 scale is calibrated against ≥2 corpora — the mean floors would
 block early runs. Count moves (re-derived from `config/workflows.yaml`):
 `course_generation` 15→25 warning, `textbook_to_course` 59→69 warning.
+
+## IB7 landing (planner pedagogy — Bloom-climb / lifecycle / spacing / type-range)
+
+IB7 makes the planner *produce* framework-shaped sequences (the
+`ED4ALL_PLANNER_BLOOM_CLIMB` / `_LIFECYCLE` / `_SPACING` / `_BLOOM_CEILING`
+passes in `lib/generation/block_planner.py`, all default OFF) rather than
+relying on validators to *catch* violations after the fact. Two of those
+framework axes are also backstopped by **advisory→gate** validators so a
+violation is visible even when the planner passes are off.
+
+Two new validators wire **warning day-1** at BOTH `inter_tier_validation` and
+`post_rewrite_validation` in `course_generation` + `textbook_to_course`:
+
+- `retrieval_presence` (IB7.5b, `lib.validators.retrieval_presence.RetrievalPresenceValidator`)
+  — every content-bearing module must carry ≥1 SPACED low-stakes retrieval
+  block (`self_check_question` / `reflection_prompt`), and not as the page's
+  first block (spacing axis 3 / QA-15). Pairs with the
+  `ED4ALL_PLANNER_SPACING` planner pass.
+- `bloom_type_range` (IB7.6c, `lib.validators.bloom_type_range.BloomTypeRangeValidator`)
+  — a block whose target Bloom exceeds its catalog `bloom_ceiling` is flagged
+  (the advisory `bloom_fit` becomes a gate). Pairs with the
+  `ED4ALL_PLANNER_BLOOM_CEILING` re-route pass.
+
+Both carry the WS3/W4 deferred-flip `# TODO(calibration)` markers in
+`config/workflows.yaml` (this is NOT the IB3 accelerated fast-flip exception);
+the critical flip waits on a ≥2-corpus FP measurement. Each workflow gains +2
+warning effectively per run (the two phases mirror each other; only the fired
+phase counts per run, matching the W3 manifest-completeness wording). Count
+moves (re-derived from `config/workflows.yaml`): `course_generation` 25→27
+warning, `textbook_to_course` 69→71 warning — consistent with the live yaml
+totals (`course_generation` 17 critical / 29 warning / 46; `textbook_to_course`
+39 critical / 73 warning / 112; `rag_training` 4 / 3 / 7; `trainforge_train`
+2 / 0 / 2; **Total 62 critical / 105 warning / 167**).

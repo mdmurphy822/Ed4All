@@ -2,12 +2,24 @@
 
 ## § 0 Header & scope
 
-This document is a **descriptive snapshot** of the Ed4All ontology as it exists in branch `dev-v0.2.0` at or near commit `fea48f8` (post Workers R/S/T merges). It catalogs what classes, relations, taxonomies, provenance mechanisms, serialization surfaces, identifiers, constraints, and version counters exist in the code and schemas **today** — nothing more.
+This document is a **layered descriptive record** of the Ed4All ontology — what classes, relations,
+taxonomies, provenance mechanisms, serialization surfaces, identifiers, constraints, and version
+counters exist in the code and schemas. It is NOT a single point-in-time snapshot: §§ 1–11 are the
+original `dev-v0.2.0` baseline (catalogued at or near commit `fea48f8`, post Workers R/S/T merges),
+and §§ 12–13 are **additive deltas** layered on top recording everything Waves 1+ added afterward
+(through `dev-v0.3.0`/`dev-v0.3.1`, including the SemantiK conversion engine that replaced DART, the
+two-pass Courseforge phases, the SLM training pipeline, and the grown decision/phase enums). When a
+baseline section and a delta section disagree, the delta section and — above all — the live schema
+file win.
 
 There is no gap analysis, no target ontology, no improvement recommendation, and no implementation plan in this document. Those belong elsewhere.
 
-**Last generated:** 2026-04-19.
-**Regeneration:** re-run Worker U's sub-plan against the current tree (`~/.claude/plans/worker-u-schemas-ontology-map.md`); every `Definition:` path can be grep-verified against the filesystem.
+**Authoritative counts:** several enums in this doc (notably `decision_type` and `phase`) grow over
+time; the cited counts are verified against the live schema at edit time but the schema file
+(`schemas/events/decision_event.schema.json`) is always the source of truth. Re-derive rather than
+trust a transcribed list.
+**Regeneration:** every `Definition:` path can be grep-verified against the filesystem; re-derive
+each enum count from its schema's `enum` array.
 
 ---
 
@@ -142,7 +154,7 @@ Per-class subsections follow a fixed template (definition path, production site,
 ### ContentBlock
 
 **Definition:** `schemas/academic/textbook_structure.schema.json#/definitions/contentBlock`.
-**Instance production:** textbook-ingestor parsing DART-produced HTML.
+**Instance production:** textbook-ingestor parsing SemantiK-produced accessible HTML (the SemantiK semantic-cascade converter replaced DART; the emitted HTML still carries the stable `data-dart-*` provenance attributes — see § "SemantiK conversion engine" and § 13). `tableData` / `figureData` are recovered by SemantiK's structural table-confirm + figure-detection passes (`SEMANTIK_TABLE_STRUCTURAL_CONFIRM` / `SEMANTIK_DETECT_FIGURES` / `SEMANTIK_FIGURE_CAPTION`).
 **Instance consumption:** chapter-level section extractors in Courseforge objective synthesis.
 
 **Required fields:** `id`, `blockType`.
@@ -365,7 +377,7 @@ Two closely-related representations exist:
 ### WCAGCompliance
 
 **Definition:** `schemas/compliance/wcag22_compliance.schema.json`.
-**Instance production:** accessibility-remediation agent; DART conversion validation.
+**Instance production:** accessibility-remediation agent; SemantiK conversion validation (the SemantiK semantic-cascade converter replaced DART).
 **Instance consumption:** `lib/validators/content.py::ContentStructureValidator`; WCAGValidator validation gate.
 
 **Top-level required:** `complianceLevel.standard ∈ {WCAG_2.0_AA, WCAG_2.1_AA, WCAG_2.2_AA}` (default `WCAG_2.2_AA`).
@@ -414,9 +426,9 @@ Tool-local; describes the transformation contract used when upgrading older Boot
 
 **Phase-0-hardening optional fields:** `event_id` (`^EVT_[a-f0-9]{16}$`), `seq` (monotonic int per run), `task_id` (`^T-[a-f0-9]{8}$`), `is_default` (bool), `outputs[]` (artifact pointers).
 
-**Other optionals:** `course_id` (`^[A-Z]{2,8}_[0-9]{3}$`), `module_id` (`^[A-Z]{2,8}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$`), `artifact_id` (SHA-256 short hash), `phase` (23-value enum), `tool ∈ {dart, courseforge, trainforge, orchestrator}`, `alternatives_considered[]`, `context`, `confidence ∈ [0.0, 1.0]`, `ml_features`, `inputs_ref[]` (see InputRef), `prompt_ref`, `outcome`, `metadata`.
+**Other optionals:** `course_id` (`^[A-Z]{2,8}_[0-9]{3}$`), `module_id` (`^[A-Z]{2,8}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$`), `artifact_id` (SHA-256 short hash), `phase` (35-value enum), `tool ∈ {dart, courseforge, trainforge, orchestrator}`, `alternatives_considered[]`, `context`, `confidence ∈ [0.0, 1.0]`, `ml_features`, `inputs_ref[]` (see InputRef), `prompt_ref`, `outcome`, `metadata`.
 
-**Discriminators:** `tool` (which tool produced); `decision_type` (40-value enum — see § 4); `phase`.
+**Discriminators:** `tool` (which tool produced); `decision_type` (216-value enum — see § 4; the schema is the source of truth); `phase`.
 
 ### TrainforgeDecisionEvent
 
@@ -776,34 +788,32 @@ Source: lines 30-42, plus details oneOf variants.
 **`workflow_event_details.event_subtype`:** `start, phase_start, phase_complete, task_dispatch, task_complete, complete, failed, aborted`.
 **`security_event_details.security_event_type`:** `sandbox_violation, permission_denied, secret_detected, path_traversal_attempt`.
 
-### `decision_event.schema.json` — decision_type enum (40)
+### `decision_event.schema.json` — decision_type enum (216)
 
-Source: `schemas/events/decision_event.schema.json:63-103`.
-```
-approach_selection, strategy_decision, source_selection, source_interpretation,
-textbook_integration, existing_content_usage, content_structure, content_depth,
-content_adaptation, example_selection, pedagogical_strategy, assessment_design,
-bloom_level_assignment, learning_objective_mapping, accessibility_measures,
-format_decision, component_selection, quality_judgment, validation_result,
-error_handling, prompt_response, file_creation, outcome_signal, chunk_selection,
-question_generation, distractor_generation, revision_decision, source_usage,
-alignment_check, structure_detection, heading_assignment, alt_text_generation,
-math_conversion, research_approach, query_decomposition, retrieval_ranking,
-result_fusion, chunk_deduplication, index_strategy
-```
+**Source of truth (do NOT re-list inline):** `schemas/events/decision_event.schema.json` — the
+`properties.decision_type.enum` array. As of this layer the enum carries **216** values (verified
+against the live schema; the enum has grown ~5×+ since the v0.2.0 baseline's 40-value list). Because
+`DECISION_VALIDATION_STRICT=true` fails closed on any `decision_type` not in this enum, the schema —
+never a doc copy — is authoritative; consult it directly when adding a new `decision_type`.
 
-### `decision_event.schema.json` — phase enum (23)
+### `decision_event.schema.json` — phase enum (35)
 
-Source: `schemas/events/decision_event.schema.json:53`.
+Source: `schemas/events/decision_event.schema.json` — the `properties.phase.enum` array. As of this
+layer the enum carries **35** non-null values (plus `null` allowed):
 ```
-input-research, exam-research, course-outliner, content-generator, brightspace-packager,
-dart-conversion, dart-validation, trainforge-assessment, validation, content-analysis,
-question-generation, assessment-assembly, courseforge-input-research, courseforge-exam-research,
-courseforge-course-outliner, courseforge-content-generator, courseforge-brightspace-packager,
-trainforge-content-analysis, trainforge-question-generation, trainforge-assessment-assembly,
-trainforge-validation, libv2-retrieval, libv2-indexing, libv2-fusion
+input-research, exam-research, course-outliner, textbook-ingestor, content-generator,
+brightspace-packager, dart-conversion, dart-validation, trainforge-assessment, trainforge-training,
+synthesize-training, validation, content-analysis, question-generation, assessment-assembly,
+courseforge-input-research, courseforge-exam-research, courseforge-course-outliner,
+courseforge-content-generator, courseforge-content-generator-outline,
+courseforge-content-generator-rewrite, courseforge-brightspace-packager,
+courseforge-statistical-validation, courseforge-bert-ensemble, trainforge-content-analysis,
+trainforge-question-generation, trainforge-assessment-assembly, trainforge-validation,
+curriculum-alignment, inter_tier_validation, post_rewrite_validation, libv2-retrieval,
+libv2-indexing, libv2-fusion, libv2-answer
 ```
-(plus `null` allowed.)
+The live schema remains the source of truth (the count grows over time); re-derive from
+`properties.phase.enum` rather than trusting this list verbatim.
 
 ### Workflow type enum
 
@@ -1024,7 +1034,7 @@ Per-file counts of constraint keywords (approximate, grep-based):
 | `academic/learning_objectives.schema.json` | LO required {objectiveId, statement, bloomLevel} | 6-Bloom, 9-assessment, 7-extractionSource | chapterId `^ch[0-9]+$`, sectionId `^ch[0-9]+_s[0-9]+$` | courseObjectives 3–15, statement ≥10 | |
 | `academic/textbook_structure.schema.json` | `documentInfo` {title, sourcePath, sourceFormat} | 3-sourceFormat, 14-blockType, 4-sourceType (explicit objectives), 4-emphasisType | level 1–6 | | |
 | `compliance/wcag22_compliance.schema.json` | `complianceLevel.standard` | 3-standard, 5-automated, 6-manual, 4-labelAssociation, many booleans | focusAppearance contrast ≥3.0, minOutlineWidth ≥2, targetSize ≥24 | | 1131 lines total |
-| `events/decision_event.schema.json` | run_id, timestamp, operation, decision_type, decision, rationale | 40-decision_type, 23-phase, 8-source_type, 4-hash_algorithm, 3-edit_distance, 4-quality_level, 4-tool | event_id, module_id, course_id, task_id, content_hash patterns | rationale ≥20, confidence 0–1 | rationale minLength is the headline gate |
+| `events/decision_event.schema.json` | run_id, timestamp, operation, decision_type, decision, rationale | 216-decision_type, 35-phase, 8-source_type, 4-hash_algorithm, 3-edit_distance, 4-quality_level, 4-tool | event_id, module_id, course_id, task_id, content_hash patterns | rationale ≥20, confidence 0–1 | rationale minLength is the headline gate |
 | `events/trainforge_decision.schema.json` | imscc_source | 6-bloom, 8-question_type, 3-difficulty | | `lo_coverage_score` 0–1 etc. | allOf ref to decision_event |
 | `events/audit_event.schema.json` | run_id, event_id, seq, timestamp, event_type | 8-event_type, 5-file_op, 5-state_change, 8-workflow_subtype, 4-security_type | event_id `^EVT_…`, content_hash, run_id alphanumeric | seq ≥0 | `additionalProperties: false` at root |
 | `events/hash_chained_event.schema.json` | seq, prev_hash, event_hash, timestamp, event | — | `prev_hash = "genesis"` OR 64-hex; `event_hash` 64-hex | seq ≥0 | tamper-evident |
@@ -1114,7 +1124,7 @@ Every version counter currently in use:
 |---|---|---|
 | `schemas/academic/course_metadata.schema.json` | Course, Module | Full academic course metadata (MIT OCW shape) |
 | `schemas/academic/learning_objectives.schema.json` | LearningObjective | Extracted LO hierarchy (course/chapter/section/subsection) |
-| `schemas/academic/textbook_structure.schema.json` | Section, ContentBlock, TOC entry, key-term / definition / procedure / example records | DART-processed textbook semantic structure |
+| `schemas/academic/textbook_structure.schema.json` | Section, ContentBlock, TOC entry, key-term / definition / procedure / example records | SemantiK-processed textbook semantic structure (SemantiK replaced DART; the `data-dart-*` provenance wire contract is preserved) |
 | `schemas/academic/courseforge_page_types.schema.json` | CourseforgePageType (enum) | Authoritative academic-domain page-type enum (`overview` / `content` / `application` / `assessment` / `summary` / `discussion`). Reference doc — enum values intentionally duplicate `schemas/taxonomies/module_type.json` per REC-CTR-02 so academic-schema consumers and pure-taxonomy consumers each have a domain-local `$ref` target. |
 | `schemas/compliance/wcag22_compliance.schema.json` | WCAGCompliance | WCAG 2.2 AA requirements (4 principles + SC codes). Reference doc — runtime gate is `lib.validators.wcag.WCAGValidator`, which encodes the same SC matrix in code rather than `$ref`-loading this file. |
 | `schemas/config/workflows_meta.schema.json` | WorkflowMeta | Meta-schema for `config/workflows.yaml` (phase routing, gate shape, inputs_from references) |
@@ -1248,13 +1258,48 @@ Exact file:line anchors to key emit/consume sites. Grep-verified against the tre
 
 ## § 12 v0.2.0 changes (Waves 1–6 summary)
 
-Additive section. Descriptive snapshot of what Waves 1–6 (commits `fea48f8` → post-Worker-V/W Wave 6 merges on `dev-v0.2.0`) added to the Ed4All ontology. No goal-setting, no gap analysis — just what's in the tree now that wasn't there at v0.2.0-alpha. For full rationale per recommendation, see `plans/kg-quality-review-2026-04/review.md` and the per-worker sub-plans under `plans/kg-quality-review-2026-04/`.
+Additive section. Descriptive record of what Waves 1–6 (commits `fea48f8` → post-Worker-V/W Wave 6 merges, on the `dev-v0.2.0` baseline) added to the Ed4All ontology over the §§ 1–11 baseline. No goal-setting, no gap analysis. For full rationale per recommendation, see `plans/kg-quality-review-2026-04/review.md` and the per-worker sub-plans under `plans/kg-quality-review-2026-04/`.
+
+### SemantiK conversion engine (replaced DART)
+
+The PDF → accessible-HTML converter that produces the upstream of the entire ontology (`Section` /
+`ContentBlock` / source provenance) is now **SemantiK** — a license-clean semantic-cascade ML
+pipeline under `SemantiK/dart_semantic/` + `lib/semantik/` — which **wholesale replaced DART**
+(PyMuPDF/AGPL, retired). The data contract is deliberately UNCHANGED: SemantiK still emits the
+`data-dart-*` HTML provenance attributes, the `dart:{slug}#{block_id}` `sourceId` shape, runs under
+the `dart_conversion` workflow phase, and is dispatched via the `dart-converter` / `dart-chunker`
+agents. So everything § 8 (data-cf / data-dart wire contract) and § 13 Wave 8/9 (source provenance)
+describe is preserved verbatim — only the engine behind the contract changed.
+
+Canonical reference: **`SemantiK/CLAUDE.md`** (cascade stages 1–13, council adapters, the full
+`SEMANTIK_*` flag family). Ontology-relevant SemantiK behaviors:
+
+- **`SEMANTIK_*` flag family** (owner: `SemantiK/CLAUDE.md § Opt-In Behavior Flags`). All
+  parse-with-fallback, byte-stable / off-or-local by default. Provider/model selectors:
+  `SEMANTIK_SPECIALIST_PROVIDER` (local in-process GGUF council vs hosted OpenAI-compatible endpoint)
+  + `SEMANTIK_SPECIALIST_MODEL` / `SEMANTIK_STRUCTURE_REVIEW_MODEL` seats (NVIDIA hosted-70B default,
+  the only `docs/LICENSING.md`-rowed flags here).
+- **Figure / table recovery** — the `tableData` / `figureData` `ContentBlock` fields are populated by
+  SemantiK's structural passes: `SEMANTIK_TABLE_STRUCTURAL_CONFIRM` (default on; a geometrically
+  confident pdfplumber grid is confirmed regardless of the BERT `table_region` head),
+  `SEMANTIK_DETECT_FIGURES` + `SEMANTIK_FIGURE_CAPTION` (tri-state `auto`/on/off; SmolVLM2 caption
+  only on CUDA, else an honest type-level `"Figure."` alt).
+- **Heading-contiguity pass** — `assembler/heading_contiguity.py::normalize_document_heading_levels`
+  re-levels every `<hN>` (structural + specialist-embedded + gap-filled) so the Stage-10
+  `heading_tree` hard gate sees a contiguous hierarchy (text/ids/attrs byte-preserved, idempotent).
+- **Theta-stub bypass** — when the semantic-preservation evaluator runs in stub mode (legacy compat
+  env `DART_ALLOW_THETA_STUB=1`, the flat-0.7 placeholder), the exit-decider ships `ship_with_flag`
+  with a `THETA_UNVERIFIED_STUB` flag rather than tripping the theta offline-retry / non-certified
+  path (byte-stable when theta is real).
+- **Single-region envelope tolerance** + the optional Stage-5e block JOIN/SPLIT resegment
+  (`SEMANTIK_BLOCK_RESEGMENT` / `_LLM`) holding the R-PART invariant (FeatureBlock multiset + document
+  order preserved, fail-closed to the input partition on any violation).
 
 ### Wave-by-wave headline
 
 | Wave | Scope | Representative workers / PRs | KG impact |
 | ---- | ----- | ---------------------------- | --------- |
-| 1 | Decision-capture hardening, schema-directory unification, slug / Bloom / teaching-role canonicalization, 44-value `decision_type` enum | Workers A–G (PRs #14–22) | Canonical ID pipeline; fewer emit-side forks. |
+| 1 | Decision-capture hardening, schema-directory unification, slug / Bloom / teaching-role canonicalization, `decision_type` enum widened (44 values *at this wave*; since grown to **216** in the live schema — see § 4) | Workers A–G (PRs #14–22) | Canonical ID pipeline; fewer emit-side forks. |
 | 2 | Content-type enum; page-objectives validator; DART marker validation tool | Workers H–L (PRs #23–26) | Section metadata constrained; objective coverage enforced per page. |
 | 3 | Typed-edge precedence + dedupe; fixture-driven golden tuples; preservation of LO-ref case | Worker M (PR #24) | 3-tier typed-edge artifact stabilised. |
 | 4 | Opt-in content-hash chunk IDs; opt-in course-scoped concept IDs; run_id + created_at provenance fields on chunks/nodes/edges; courseforge_jsonld_v1 schema; strict instruction-pair variant; first-class Misconception schema | Workers N–R (PRs #27–31) | Provenance + stability surface complete; Misconception promoted from inline field to standalone entity. |
@@ -1344,7 +1389,7 @@ Environment-variable flags gate opt-in behavior to preserve backward-compat with
 Per-flag rows now live in subsystem CLAUDE.md files (one row per flag, one owner per prefix):
 
 - `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` → `Trainforge/CLAUDE.md § Opt-In Behavior Flags`.
-- `DART_*` → `DART/CLAUDE.md § Opt-In Behavior Flags`.
+- `SEMANTIK_*` (the license-clean SemantiK semantic-cascade PDF→structured-content converter that replaced DART) → `SemantiK/CLAUDE.md § Opt-In Behavior Flags`.
 - `COURSEFORGE_*` → `Courseforge/CLAUDE.md § Opt-In Behavior Flags`.
 - `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) → root `CLAUDE.md § Opt-In Behavior Flags`.
 
@@ -1360,7 +1405,7 @@ The table below mirrors the v0.2.0 / Wave 82-85 subset for historical context; t
 | `TRAINFORGE_STRICT_EVIDENCE` | Strips FallbackProvenance from the evidence discriminator; unknown rules + shape-drifting known rules fail validation. |
 | `TRAINFORGE_SOURCE_PROVENANCE` | Evidence arms emit `source_references[]` sourced from chunks' `source.source_references[]`. Off: arms emit the pre-provenance shape. |
 | `DECISION_VALIDATION_STRICT` | Fails closed on unknown `decision_type` values in decision captures. |
-| `DART_LLM_CLASSIFICATION` | DART's block classifier routes through Claude via `LLMClassifier` instead of heuristic regex. Requires an injected `LLMBackend`. |
+| `SEMANTIK_SPECIALIST_PROVIDER` | Selects the SemantiK Stage-6 specialist + Stage-5d structure-reviewer generation backend (`local` in-process GGUF council vs a hosted OpenAI-compatible endpoint). Supersedes the retired `DART_LLM_CLASSIFICATION` block-classifier flag; see `SemantiK/CLAUDE.md § Opt-In Behavior Flags` for the full `SEMANTIK_*` family (incl. `SEMANTIK_STRUCTURE_REVIEW`, `SEMANTIK_BLOCK_RESEGMENT`, the figure/table-recovery passes, and `*_MODEL` seats). |
 | `LOCAL_DISPATCHER_ALLOW_STUB` | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` when no `agent_tool` callable is wired in. Tests / dry-run only; production `--mode local` runs fail loudly without it set. |
 | `TRAINFORGE_PROVENANCE_CORPUS` | Worker L: absolute path to a locally regenerated `chunks.jsonl` consumed by `Trainforge/tests/test_provenance.py` to assert 100% `source.html_xpath` + `source.char_span` coverage. Unset / pre-Worker-E corpora → those tests `pytest.skip`. Test-only — no production code path reads this flag. |
 | `TRAINFORGE_SEED_TECH_CONCEPTS` | Wave 82 Phase C: enables `lib/ontology/tech_anchors.py::detect_anchors`, which scans chunk text for W3C foundational-tech surface forms (RDF, RDFS, OWL, SHACL, SPARQL, Turtle, JSON-LD, `owl:sameAs`, …) and appends matching anchor slugs to `concept_tags` so the 2-chunk co-occurrence gate admits standalone concept nodes for them. Default off so legacy corpora don't shift tag distributions on rebuild. |
@@ -1402,11 +1447,18 @@ Two new gates wire into `config/workflows.yaml` (Worker V, Wave 6):
 
 ### Decision type enum expansion
 
-`decision_type` enum in `schemas/events/decision_event.schema.json` grew from 39 → 44 values. Five additions (Wave 1, Worker G): `concept_graph_publish`, `chunk_validation_failure`, `opt_in_flag_override`, `typed_edge_dedup`, `evidence_discriminator_fallback`. The `DECISION_VALIDATION_STRICT=true` flag (above) enforces the enum at write time; default is lenient (unknown values pass with a warning).
+`decision_type` enum in `schemas/events/decision_event.schema.json` grew from 39 → 44 values at this wave. Five additions (Wave 1, Worker G): `concept_graph_publish`, `chunk_validation_failure`, `opt_in_flag_override`, `typed_edge_dedup`, `evidence_discriminator_fallback`. The `DECISION_VALIDATION_STRICT=true` flag (above) enforces the enum at write time; default is lenient (unknown values pass with a warning). **Present state:** the live enum has since grown to **216** values — never trust a doc copy; consult `properties.decision_type.enum` in the schema directly (see § 4). The companion `phase` enum likewise grew to **35** non-null values, adding `trainforge-training` / `synthesize-training` / `inter_tier_validation` / `post_rewrite_validation` / `libv2-answer` / the two-pass `courseforge-content-generator-outline` + `courseforge-content-generator-rewrite` / `textbook-ingestor` / `curriculum-alignment` / `courseforge-statistical-validation` / `courseforge-bert-ensemble` among others.
 
-### Wave 8 changes — DART source provenance
+### Wave 8 changes — source provenance (then DART, now SemantiK)
 
-Wave 8 lands the shared `SourceReference` shape and threads per-block provenance through DART's emit path:
+> **Historical-record note:** the Wave 8/9 bullets below describe the converter's emit path *as it
+> existed when those waves landed* (DART, since RETIRED). The SemantiK semantic-cascade converter now
+> produces this provenance, but the **`data-dart-*` HTML attribute names, the `dart:{slug}#{block_id}`
+> `sourceId` shape, the `dart_conversion` phase, and the `dart-converter`/`dart-chunker` agent names
+> are PRESERVED as the stable wire contract** (see § "SemantiK conversion engine"). Read "DART's emit
+> path" below as "the converter's emit path."
+
+Wave 8 lands the shared `SourceReference` shape and threads per-block provenance through the converter's emit path:
 
 - **New canonical schema**: `schemas/knowledge/source_reference.schema.json` — `{sourceId, role, weight?, confidence?, pages?, extractor?}`. `sourceId` matches `^dart:[a-z0-9_-]+#[a-z0-9_-]+$`. Shared by Courseforge JSON-LD (Wave 9) and Trainforge chunks + evidence (Waves 10–11).
 - **DART per-section record** gains a `provenance: {sources, strategy, confidence}` block + `section_id` + `page_range`. Legacy `sources_used` retained for back-compat.

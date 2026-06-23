@@ -308,18 +308,40 @@ typed `Region` candidates. Implementation:
 - `table` — passthrough of a Stage-4-confirmed `TableCandidate`, with `cell_grid` / `header_row_indices` / `bordered`.
 - `math` — passthrough of a Stage-4-confirmed `MathCandidate`, with `src_text` and glyph-density features.
 - `code_block` / `blockquote` — runs of the matching `structural_role` label.
-- `figure` — single FB demoted by Stage 4's `image_block_demoted` flag.
+- `figure` — a synthetic image FeatureBlock routed to the figure track (the
+  default `SEMANTIK_DETECT_FIGURES` path), OR a single FB demoted by Stage 4's
+  legacy `image_block_demoted` flag.
 - `form` — runs of FBs with `in_widget=True` (pikepdf AcroForm overlap).
 - `metadata_drop` — single FB whose Semantic `doc_role` is `footer` or `metadata` at high confidence; Stage 9 surfaces these as artifacts.
 
-**Six deterministic passes** (in order, sharing a `claimed: set[int]`):
+**Nine deterministic passes** (in order, sharing a `claimed: set[int]`):
 
 1. Claim every `member_block_indices` of each `RoutingDecision` whose route is `table` or `math` so prose passes skip them.
+1b. Drop deterministic page-furniture (running headers/footers).
 2. Emit a heading region per FB whose `Structure.is_heading` top-1 is `heading` ≥ threshold.
-3. Emit one `Region(kind="table"|"math")` per confirmed Stage-4 decision (overlapping math candidates dedup by FB ownership). Demoted candidates release their FBs back to prose. Image-block-demoted regions become `figure`.
+3. Emit one `Region(kind="table"|"math")` per confirmed Stage-4 decision (overlapping math candidates dedup by FB ownership). Demoted candidates release their FBs back to prose.
+3a. **Figure formation from `ImageCandidate`s (load-bearing).** An
+    `ImageCandidate` routed `figure` by the deterministic arbiter forms ONE
+    `figure` Region per candidate, claiming its synthetic image FB (the
+    `is_image_block` head is a secondary confirmation only); a caption FB below
+    is recorded for the alt path. Only runs on the `SEMANTIK_DETECT_FIGURES`
+    path.
+3b. Legacy `figure` formation for any FB Stage 4 flagged `image_block_demoted`.
 4. Group maximal runs of unclaimed FBs whose `structural_role` top-1 is `list_item` into one `list` region.
 5. Group maximal runs of unclaimed paragraph-role FBs into `paragraph` regions, splitting where MergeOrSplit's `same_logical_block` head emits `not_same` ≥ threshold.
 6. Code/blockquote runs, single-FB metadata drops, form runs, and a single-FB-paragraph fallback for any FB still unclaimed.
+
+**Figure detection path (`SEMANTIK_DETECT_FIGURES`, off by default).** When on,
+Stage 1 enumerates PDF IMAGE page-objects via pypdfium2
+(`_pypdfium2_page_images`, Y-flipped to top-left), filters spacer/rule images,
+and synthesizes one image FeatureBlock per surviving candidate **interleaved
+into the FB stream in reading order**. Each `ImageCandidate` is routed
+DETERMINISTICALLY to the figure track (Pass-3a above). Stage 5c then renders the
+figure Region bbox to a PNG and writes a deterministic sidecar
+`{pdf_stem}_figures/fig-{first_fb_index}.png` next to the source PDF (per-region
+fail-soft), stamping the relative `image_src` (`./{stem}_figures/fig-N.png`)
+onto the region payload so the emitters fill the previously-empty `<img src="">`.
+The flag is part of the extract disk-cache key, so a flip invalidates the cache.
 
 **Boundary clarification.** Stage 5 produces a flat candidate region
 list. Heading hierarchy normalization, list continuation, ARIA wiring,
@@ -471,6 +493,20 @@ cross-encoder scores fit-quality:
 - `<html lang>` declared
 - `<title>` non-empty
 - `<main>` landmark present
+
+**Whole-document heading-contiguity normalization (Stage 9, this session
+`3a71e57`).** Stage 9a's heading normalization only re-levels regions whose
+`Region.kind == "heading"`, so an `<hN>` a Stage-6 specialist (e.g. the hosted
+70B prose seat) emits *inside* a non-heading region's body bypasses it and
+reaches the Stage-10 `heading_tree` gate verbatim (a prose-embedded `<h6>`
+producing an `h2 → h6` skip → `wcag_status = "failed"` → the fast lane is
+discarded for the offline lane). `assembler/heading_contiguity.py::normalize_
+document_heading_levels`, wired into `assemble_document` after passes 9a/9c,
+closes that gap: a deterministic, document-order pass re-levels EVERY `<hN>`
+(structural + specialist-EMBEDDED + gap-filled) under the same
+promote-first/demote-forward/never-skip rules so the Stage-10 gate sees a
+contiguous hierarchy. Heading text/ids/attrs are preserved byte-for-byte (only
+the level digit changes); idempotent (a contiguous doc returns byte-identical).
 
 **Document-level soft reranker (Stage 11).** Rule-based composite (DP-10.1
 default). **v1 scope is restricted to fast-lane vs. offline-lane** — only one
@@ -644,8 +680,20 @@ The tau values are calibrated and loaded from `theta/config.yaml`
 | pass | offline | ≥ 0.85 | none | `ship_with_confidence` |
 | pass | offline | < 0.85 | none | `ship_with_flag` |
 | pass | offline | any | floor breach | `ship_with_flag` |
+| pass | (either) | stubbed | (any) | `ship_with_flag` (`theta_unverified_stub`) |
 | **fail** | fast | n/a | n/a | `offline_qwen_lane` (existing) |
 | **fail** | offline | n/a | n/a | `non_certified_stamp` (theta omitted) |
+
+When theta is in **stub mode** (the `DART_ALLOW_THETA_STUB=1` mode-collapse
+fallback substitutes a flat 0.7 placeholder), the placeholder is meaningless and
+must NOT decide the exit. `theta_is_stubbed(report)` keys off the
+`semantic_preservation` dimension's `method == "stub_v1"` (self-describing, no
+env re-read; `theta/evaluator.py`); `offline_retry._needs_retry` then skips the
+theta-`<TAU>` retry trigger (it STILL retries on a real `wcag=failed`), and
+`exits.decide_exit` ships `ship_with_flag` with the explicit
+`THETA_UNVERIFIED_STUB` flag instead of letting the 0.7 placeholder trip the
+offline retry / non-certified path. Byte-stable when theta is real
+(`theta/exits.py` + `theta/offline_retry.py`, this session `3a71e57`).
 
 ### 7.1 ship-with-confidence
 
@@ -1133,7 +1181,7 @@ Honest constraints an operator should know going in:
 
 ---
 
-*Document version: 2026-06-22. §1–§11 are the target cascade architecture
+*Document version: 2026-06-23. §1–§11 are the target cascade architecture
 (version 2026-05-03), superseding the "two trained models, Qwen as single
 decision-maker" design; §12–§14 document the live output contract, cross-venv
 bridge, and honest limitations of the conversion engine. WCAG / standards

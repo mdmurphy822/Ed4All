@@ -108,6 +108,9 @@ state/nvidia_*
 
 runtime/
 
+# Extraction scratch root (intake/extraction working dir — never committed)
+extracted/
+
 # Training captures (generated data)
 training-captures/dart/*
 !training-captures/dart/.gitkeep
