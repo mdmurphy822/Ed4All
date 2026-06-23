@@ -39,6 +39,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable
 
+from .evaluator import theta_is_stubbed
 from .types import (
     DELTA_THETA_IMPROVE,
     TAU_THETA_RETRY,
@@ -51,14 +52,28 @@ def _needs_retry(report: ThetaReport) -> bool:
 
     * ``wcag_status == "failed"`` on the fast lane: always retry.
     * ``wcag_status == "passed"`` on the fast lane with theta below the
-      retry threshold: retry.
+      retry threshold: retry — UNLESS theta is STUBBED.
     * Any report already on the offline lane: NEVER retry (single-shot
       offline lane is a hard architecture rule — see §7).
+
+    Theta-stub bypass: when the semantic-preservation cross-encoder is
+    mode-collapsed and the run substituted the 0.7 placeholder
+    (``DART_ALLOW_THETA_STUB=1`` — detected via
+    :func:`dart_semantic.theta.evaluator.theta_is_stubbed`), the
+    composite ``theta_score`` is MEANINGLESS and must NOT trigger the
+    offline retry — that would silently discard a clean fast-lane (e.g.
+    70B-endpoint) assembly for the local lane purely because a broken
+    model couldn't score it. A REAL ``wcag_status == "failed"`` still
+    retries (the WCAG hard gate is independent of theta). Byte-stable
+    when theta is not stubbed (real-model path unchanged).
     """
     if report.lane != "fast":
         return False
     if report.wcag_status == "failed":
         return True
+    if theta_is_stubbed(report):
+        # Theta unverified — do not let the placeholder gate the retry.
+        return False
     theta = report.theta_score if report.theta_score is not None else 0.0
     return theta < TAU_THETA_RETRY
 

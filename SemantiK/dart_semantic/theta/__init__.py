@@ -13,7 +13,7 @@ Phase 0 landed the typed report contract + the YAML config skeleton.
 Stage 12 (``evaluate``) and Stage 13 (``decide_exit``) land here.
 """
 
-from .evaluator import evaluate
+from .evaluator import STUB_SEMANTIC_METHOD, evaluate, theta_is_stubbed
 from .exits import StageThirteenStubRequired, decide_exit
 from .offline_retry import maybe_offline_retry
 from .types import (
@@ -38,6 +38,7 @@ __all__ = [
     "DIM_FLOORS",
     "DimensionScore",
     "SectionScore",
+    "STUB_SEMANTIC_METHOD",
     "TAU_THETA_CONFIDENCE",
     "TAU_THETA_RETRY",
     "ThetaConfig",
@@ -48,4 +49,5 @@ __all__ = [
     "decide_exit",
     "evaluate",
     "maybe_offline_retry",
+    "theta_is_stubbed",
 ]

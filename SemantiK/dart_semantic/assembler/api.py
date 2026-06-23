@@ -75,7 +75,7 @@ def assemble_document(
         config=config,
     )
     if config.skip_gap_fill or not gaps_found:
-        return pre
+        return _finalize_heading_contiguity(pre)
 
     candidates_per_gap = run_pass_9b(
         gaps_found,
@@ -84,7 +84,7 @@ def assemble_document(
         config_path=config_path,
         validator=validator,
     )
-    return run_pass_9c(
+    post = run_pass_9c(
         pre,
         gaps_found,
         candidates_per_gap,
@@ -92,6 +92,50 @@ def assemble_document(
         feature_blocks,
         config=config,
     )
+    return _finalize_heading_contiguity(post)
+
+
+def _finalize_heading_contiguity(doc: AssembledDoc) -> AssembledDoc:
+    """Re-level EVERY ``<hN>`` in the final HTML to a contiguous tree.
+
+    Stage 9a's heading-tree normalization only re-levels the STRUCTURAL
+    heading regions; a Stage-6 specialist (notably the hosted 70B prose
+    seat) can emit ``<hN>`` tags *inside* a non-heading region's body
+    (e.g. ``<h6>EXAMPLE 1.6</h6>`` after an ``<h2>``), which bypasses
+    that pass and produces a level skip the Stage-10 ``heading_tree``
+    document gate rejects. This deterministic document-order pass closes
+    that gap by judging the WHOLE document's heading levels in context.
+
+    Idempotent: a doc with an already-contiguous heading tree is returned
+    unchanged (``html`` byte-identical, ``heading_tree`` untouched). When
+    a rewrite occurs, ``heading_tree`` is re-derived from the corrected
+    HTML so the metadata matches the emitted levels.
+    """
+    from .heading_contiguity import normalize_document_heading_levels
+    from .pass_9a import _HEADING_CLOSE_RE, _HEADING_OPEN_RE
+
+    new_html = normalize_document_heading_levels(doc.html)
+    if new_html == doc.html:
+        return doc
+
+    # Re-derive (level, text) in document order from the corrected HTML so
+    # downstream consumers (theta nav scoring, conformance audit) see the
+    # emitted levels. Crude inner-text strip mirrors pass_9a._heading_text.
+    import re as _re
+
+    tree: list[tuple[int, str]] = []
+    for open_m in _HEADING_OPEN_RE.finditer(new_html):
+        lvl = int(open_m.group(1))
+        close_m = _HEADING_CLOSE_RE.search(new_html, open_m.end())
+        inner = new_html[open_m.end() : close_m.start()] if close_m else ""
+        text = _re.sub(r"<[^>]+>", "", inner).strip()
+        tree.append((lvl, text))
+
+    doc.html = new_html
+    doc.heading_tree = tree
+    doc.sub_task_log = dict(doc.sub_task_log or {})
+    doc.sub_task_log["heading_contiguity"] = "doc-order re-level applied"
+    return doc
 
 
 __all__ = ["AssemblerConfig", "assemble_document"]

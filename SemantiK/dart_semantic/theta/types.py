@@ -86,6 +86,15 @@ class ThetaFlag(str, Enum):
     # degradation reason on the sidecar.
     THETA_LOW_NO_RETRY = "theta_low_no_retry"
     OFFLINE_LANE_UNAVAILABLE_V1 = "offline_lane_unavailable_v1"
+    # The semantic-preservation cross-encoder could not be loaded
+    # (mode-collapsed / missing) and the 0.7 stub placeholder was
+    # substituted (DART_ALLOW_THETA_STUB=1). The composite theta_score
+    # is therefore UNVERIFIED — Stage 13 ships the doc WITH this flag
+    # rather than letting the meaningless score gate ship/retry. Honest
+    # degradation per feedback_no_silent_fallbacks: a WCAG-clean doc is
+    # not held hostage by a broken theta model, but the flag records
+    # that meaning-preservation was not actually measured.
+    THETA_UNVERIFIED_STUB = "theta_unverified_stub"
 
 
 # ---------------------------------------------------------------------------

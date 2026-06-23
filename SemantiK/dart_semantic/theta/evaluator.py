@@ -83,6 +83,46 @@ _TABLE_QWEN_INFERRED_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: Canonical ``breakdown["method"]`` value the semantic-preservation
+#: dimension carries when the cross-encoder could not be loaded and the
+#: 0.7 placeholder was substituted (``DART_ALLOW_THETA_STUB=1``). This is
+#: the single source of truth for the stub marker — ``theta_is_stubbed``
+#: keys off it, so a stubbed run is detectable from the ``ThetaReport``
+#: alone (no env re-read needed at the Stage-13 seam).
+STUB_SEMANTIC_METHOD: str = "stub_v1"
+
+
+def theta_is_stubbed(report: ThetaReport | None) -> bool:
+    """True iff this report's semantic_preservation dimension was STUBBED.
+
+    The theta cross-encoder (v8) is mode-collapsed on this box, so the
+    ``DART_ALLOW_THETA_STUB=1`` path substitutes a flat 0.7 placeholder
+    for the learned ``semantic_preservation`` dimension. That makes the
+    composite ``theta_score`` meaningless — it MUST NOT gate the offline
+    retry or the exit decision (see ``offline_retry._needs_retry`` /
+    ``exits.decide_exit``).
+
+    Detection keys ONLY off the report's own
+    ``dimensions["semantic_preservation"]["breakdown"]["method"]`` ==
+    :data:`STUB_SEMANTIC_METHOD` — the marker the evaluator stamps when
+    ``_get_model()`` returned ``None``. No env re-read: the report is
+    self-describing, so a report serialized to JSON and re-read at any
+    seam yields the same verdict. Returns ``False`` for a None report,
+    an empty/failed-WCAG report (no dimensions), or a real-model run
+    (byte-stable: the real path's breakdown carries the model's scoring
+    method, never ``stub_v1``).
+    """
+    if report is None:
+        return False
+    dims = getattr(report, "dimensions", None) or {}
+    sem = dims.get(ThetaDimension.SEMANTIC_PRESERVATION.value)
+    if not isinstance(sem, dict):
+        return False
+    breakdown = sem.get("breakdown")
+    if not isinstance(breakdown, dict):
+        return False
+    return breakdown.get("method") == STUB_SEMANTIC_METHOD
+
 
 # ---------------------------------------------------------------------------
 # Public entry point.
@@ -147,7 +187,7 @@ def evaluate(
         sem = DimensionScore(
             dimension=ThetaDimension.SEMANTIC_PRESERVATION,
             score=0.7,
-            breakdown={"method": "stub_v1", "reason": "model_unavailable"},
+            breakdown={"method": STUB_SEMANTIC_METHOD, "reason": "model_unavailable"},
         )
     else:
         from . import semantic_preservation as _sp
@@ -638,4 +678,4 @@ def _score_hallucinated_structure(
     }
 
 
-__all__ = ["evaluate"]
+__all__ = ["evaluate", "theta_is_stubbed", "STUB_SEMANTIC_METHOD"]

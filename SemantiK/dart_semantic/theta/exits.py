@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import dataclasses
 
+from .evaluator import theta_is_stubbed
 from .types import (
     ConfidenceAction,
     ThetaFlag,
@@ -147,6 +148,25 @@ def decide_exit(report: ThetaReport) -> ThetaReport:
             theta_score=None,
         )
 
+    # WCAG passed, but the semantic-preservation cross-encoder was
+    # STUBBED (mode-collapsed / unavailable; DART_ALLOW_THETA_STUB=1).
+    # The composite theta_score includes a flat 0.7 placeholder and is
+    # therefore meaningless — it must NOT decide ship_with_confidence
+    # vs ship_with_flag. Stamp SHIP_WITH_FLAG with the explicit
+    # THETA_UNVERIFIED_STUB flag so a WCAG-clean doc (e.g. the 70B fast
+    # lane) ships honestly without claiming a confidence the broken
+    # model could not support. Applies to both lanes (a stubbed offline
+    # lane is equally unverified). A genuine floor breach still rides
+    # along on the flag list. Byte-stable when theta is not stubbed.
+    if theta_is_stubbed(report):
+        if ThetaFlag.THETA_UNVERIFIED_STUB.value not in flags:
+            flags.append(ThetaFlag.THETA_UNVERIFIED_STUB.value)
+        return _replace(
+            report,
+            action=ConfidenceAction.SHIP_WITH_FLAG,
+            flags=flags,
+        )
+
     # WCAG passed. Thresholds come from the same cached config load
     # that supplied the evaluator's composite weights (theta-config-2.0
     # calibration discipline) — not from import-time snapshots.
@@ -162,8 +182,6 @@ def decide_exit(report: ThetaReport) -> ThetaReport:
             action = ConfidenceAction.SHIP_WITH_CONFIDENCE
         elif theta >= tau_retry:
             action = ConfidenceAction.SHIP_WITH_FLAG
-            from .types import ThetaFlag
-
             if ThetaFlag.MEANING_PRESERVATION_BORDERLINE.value not in flags:
                 flags.append(ThetaFlag.MEANING_PRESERVATION_BORDERLINE.value)
         else:  # theta < tau_retry
@@ -174,8 +192,6 @@ def decide_exit(report: ThetaReport) -> ThetaReport:
             # treatment used in the borderline band; the difference is
             # ``retry_history`` is non-empty.
             action = ConfidenceAction.SHIP_WITH_FLAG
-            from .types import ThetaFlag
-
             if ThetaFlag.MEANING_PRESERVATION_BORDERLINE.value not in flags:
                 flags.append(ThetaFlag.MEANING_PRESERVATION_BORDERLINE.value)
     else:
