@@ -684,6 +684,28 @@ _REWRITE_SYSTEM_PROMPT = (
 )
 
 
+# System-turn directive prepended to the BATCHED multi-block rewrite call.
+# Instructs the model to emit one delimited block per requested block, in
+# order, with NO commentary or code fences between blocks, so
+# ``parse_rewrite_batch_envelope`` can split the response back per-block. Each
+# block's USER section already carries its full single-block rewrite prompt; the
+# directive only adds the envelope contract.
+_BATCH_ENVELOPE_DIRECTIVE = (
+    "You will author MULTIPLE course-HTML blocks in ONE response. The USER "
+    "message lists each block, tagged with its id and carrying that block's "
+    "full authoring instructions. For EACH block, emit EXACTLY this delimited "
+    "block and nothing else around it:\n"
+    '<<<CF_BLOCK id="THE-BLOCK-ID">>>\n'
+    "...the rendered HTML body for that block (same single-block contract)...\n"
+    '<<<CF_BLOCK_END id="THE-BLOCK-ID">>>\n'
+    "Use each block's OWN id verbatim in BOTH delimiters. Emit the blocks IN "
+    "THE SAME ORDER the USER message lists them. Put NOTHING between blocks — "
+    "no commentary, no Markdown, no code fences, no blank-line prose. Each "
+    "block's body is the SAME accessible HTML a single-block conversion would "
+    "produce; the per-block authoring rules below the id apply to that block."
+)
+
+
 # ---------------------------------------------------------------------------
 # Block-type → HTML output contract map (Subtask 24).
 # ---------------------------------------------------------------------------
@@ -2832,6 +2854,160 @@ class RewriteProvider(_BaseLLMProvider):
             decision_capture_id=self._last_capture_id(),
             purpose=_TOUCH_PURPOSE_CURIE_FORCED,
         )
+
+    # ------------------------------------------------------------------
+    # Multi-block BATCHED rewrite dispatch (rate-limit defeat)
+    # ------------------------------------------------------------------
+
+    def generate_rewrite_batch(
+        self,
+        blocks: Sequence[Block],
+        *,
+        source_chunks_by_id: Optional[Dict[str, Sequence[Any]]] = None,
+        objectives: Optional[Sequence[Any]] = None,
+        remediation_suffix_by_id: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Optional[Block]]:
+        """Rewrite MANY outline blocks in ONE HTTP POST.
+
+        Builds ONE user prompt that wraps each block's existing rendered
+        single-block prompt (``_render_user_prompt`` / the escalated variant)
+        inside the ``CF_BLOCK`` envelope, dispatches ONE ``_dispatch_call``,
+        parses the response back per-block via
+        :func:`parse_rewrite_batch_envelope`, and reuses ``_force_inject_curies``
+        per parsed block so minted CURIEs survive into the published HTML.
+
+        Returns ``{block_id: Block | None}`` — a block whose envelope slot is
+        absent / empty (parse-miss or model omission) maps to ``None`` (the
+        fail-soft sentinel; the router re-batches None blocks, never silently
+        dropping them). The single-block :meth:`generate_rewrite` path is left
+        UNCHANGED so the off (per-block) path stays byte-stable.
+
+        This is the rate-limit-defeat path: ONE POST for ``len(blocks)`` blocks
+        instead of one POST per block. Per-block-type validation still runs
+        per-block (post-parse) in the router — this method only collapses the
+        HTTP dispatch.
+        """
+        from Courseforge.generators._rewrite_batch import (  # noqa: PLC0415
+            CF_BLOCK_OPEN,
+            CF_BLOCK_CLOSE,
+            parse_rewrite_batch_envelope,
+        )
+
+        block_list = list(blocks)
+        block_ids = [b.block_id for b in block_list]
+        if not block_list:
+            return {}
+
+        chunks_by_id = source_chunks_by_id or {}
+        suffix_by_id = remediation_suffix_by_id or {}
+
+        # Build ONE user prompt: each block's full single-block prompt wrapped
+        # in its CF_BLOCK envelope. Reuses the exact per-block renderers so the
+        # batched and per-block prompts carry identical authoring instructions.
+        segments: List[str] = [_BATCH_ENVELOPE_DIRECTIVE, ""]
+        for block in block_list:
+            block_chunks = chunks_by_id.get(block.block_id) or []
+            if block.escalation_marker is not None:
+                inner = self._render_escalated_user_prompt(
+                    block=block,
+                    source_chunks=block_chunks,
+                    objectives=objectives,
+                )
+            else:
+                inner = self._render_user_prompt(
+                    block=block,
+                    source_chunks=block_chunks,
+                    objectives=objectives,
+                )
+            suffix = suffix_by_id.get(block.block_id)
+            if suffix:
+                inner = inner + "\n\n" + suffix
+            open_tag = CF_BLOCK_OPEN.format(block_id=block.block_id)
+            close_tag = CF_BLOCK_CLOSE.format(block_id=block.block_id)
+            segments.append(open_tag)
+            segments.append(inner)
+            segments.append(close_tag)
+            segments.append("")
+        batch_prompt = "\n".join(segments)
+
+        # ONE POST. A dispatch raise degrades EVERY block in the batch to None
+        # (the router re-batches them) rather than aborting the whole phase —
+        # mirrors the per-block fail-soft contract.
+        try:
+            html_response, retry_count = self._dispatch_call(batch_prompt)
+        except Exception as exc:  # noqa: BLE001 — fail-soft per batch
+            logger.warning(
+                "RewriteProvider.generate_rewrite_batch: batched POST "
+                "raised for %d block(s): %s — degrading those blocks to None",
+                len(block_list),
+                exc,
+            )
+            return {bid: None for bid in block_ids}
+
+        html_response = _escape_orphan_placeholder_tags(html_response)
+        parsed = parse_rewrite_batch_envelope(html_response, block_ids)
+
+        results: Dict[str, Optional[Block]] = {}
+        n_parsed = 0
+        for block in block_list:
+            fragment = parsed.get(block.block_id)
+            if not (isinstance(fragment, str) and fragment.strip()):
+                results[block.block_id] = None
+                continue
+            n_parsed += 1
+            # Reuse the per-block CURIE-preservation force-inject so minted
+            # CURIEs survive (the validator's str path extracts tokens). The
+            # batched path runs no inner remediation retry — a block whose
+            # validation fails is re-batched by the router round loop, exactly
+            # like the per-block remediation-suffix retry.
+            outline_curies = _extract_outline_curies(block.content)
+            enforceable = _select_enforceable_curies(outline_curies, fragment)
+            fragment = _force_inject_curies(fragment, enforceable)
+            self._emit_per_call_decision(
+                raw_text=fragment,
+                retry_count=retry_count,
+                block_id=block.block_id,
+                block_type=block.block_type,
+                page_id=block.page_id,
+                escalation_marker=block.escalation_marker,
+                outline_curie_count=len(outline_curies),
+                remediation_attempts=0,
+                enforced_curie_count=len(enforceable),
+                pruned_curie_count=len(outline_curies) - len(enforceable),
+            )
+            results[block.block_id] = _apply_rewrite_touch(
+                block=block,
+                html_response=fragment,
+                provider=self._provider,
+                model=self._model,
+                decision_capture_id=self._last_capture_id(),
+            )
+
+        if self._capture is not None:
+            try:
+                self._emit_decision(
+                    decision_type="block_rewrite_call",
+                    decision=(
+                        f"batched rewrite: {n_parsed}/{len(block_list)} "
+                        f"block(s) parsed"
+                    ),
+                    rationale=(
+                        f"Batched rewrite POST authored {len(block_list)} "
+                        f"block(s) in ONE request via provider={self._provider}, "
+                        f"model={self._model} (rate-limit defeat). Parsed "
+                        f"{n_parsed} block slot(s) from the CF_BLOCK envelope; "
+                        f"{len(block_list) - n_parsed} slot(s) were absent/empty "
+                        f"and degrade to None for the router round-loop to "
+                        f"re-batch (fail-soft, never silently dropped)."
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 — never break dispatch
+                logger.warning(
+                    "generate_rewrite_batch decision-capture emit failed: %s",
+                    exc,
+                )
+
+        return results
 
     # ------------------------------------------------------------------
     # Per-call decision capture (Subtask 26)

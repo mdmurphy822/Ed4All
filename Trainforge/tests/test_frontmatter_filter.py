@@ -1,8 +1,8 @@
 """Unit tests for the front-matter / donor contamination classifier.
 
-Fixtures are lifted from (or faithfully model) the real OpenStax Elementary
-Algebra 2e 7B build's contaminated chunkset
-(``LibV2/courses/sample-course-a/dart_chunks/chunks.jsonl`` —
+Fixtures are lifted from (or faithfully model) a real OpenStax Elementary
+Algebra 7B build's contaminated chunkset
+(``LibV2/courses/<course-slug>/dart_chunks/chunks.jsonl`` —
 ``_chunk_00001`` cover/authors/copyright, ``_chunk_00002`` donor list + TOC +
 marketing). The negative fixtures model real algebra content, INCLUDING the
 "Chapter 1 Foundations" running-header case that is the documented

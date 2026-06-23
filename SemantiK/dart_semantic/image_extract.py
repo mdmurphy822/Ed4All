@@ -12,8 +12,8 @@ Stage 5c sits between Stage 5b (GLM-OCR table enrichment) and Stage 6
 without pixels, the alt-text path can't function. The function is a no-op
 when no figure Regions are present (no PDF open, no overhead).
 
-PDF backend: ``pypdfium2`` (Apache-2 / BSD-3, ``feedback_license_policy``).
-PyMuPDF is AGPL-3 and is deliberately avoided.
+PDF backend: ``pypdfium2`` (Apache-2 / BSD-3, ``feedback_license_policy``) —
+a permissively-licensed, commercial-safe rasterizer.
 
 No silent fallback (``feedback_no_silent_fallbacks``): a bbox that fails to
 render raises :class:`FigureRenderError` so the cascade surfaces the failure

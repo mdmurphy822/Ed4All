@@ -30,11 +30,20 @@
 # API key: REQUIRED, read from `NVIDIA_API_KEY` (never hardcoded).
 # `base_url` + `model` on the large tier below are ALSO overridable via
 # the `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL` env vars (resolution:
-# per-call kwarg > NVIDIA_LARGE_MODEL > this YAML model). NB: the
-# per-tier `COURSEFORGE_REWRITE_MODEL` env override in the router's
-# chain projector fires ONLY for `provider: local` tiers, so dialing
-# the bulk down to a 7B local model does NOT touch this NVIDIA large
-# tier.
+# per-call kwarg > NVIDIA_LARGE_MODEL > this YAML model).
+#
+# WARNING — tier env vars OUTRANK this YAML. The router precedence is
+# per-call kwarg > tier env vars (`COURSEFORGE_REWRITE_PROVIDER` /
+# `COURSEFORGE_REWRITE_MODEL`) > this YAML policy > hardcoded defaults
+# (Courseforge/router/router.py::_resolve_spec; `_read_tier_env` reads
+# the rewrite env vars UNCONDITIONALLY — there is NO "local-tiers-only"
+# guard). So an operator who pins `COURSEFORGE_REWRITE_PROVIDER=local`
+# (or `COURSEFORGE_REWRITE_MODEL=<a 7B local model>`) SILENTLY OVERRIDES
+# this NVIDIA large tier and runs rewrite on the local model (→ 7B
+# max_tokens truncation). To keep rewrite on NVIDIA, either leave the
+# rewrite tier env vars unset (this YAML governs) or set them to the
+# NVIDIA seat (`COURSEFORGE_REWRITE_PROVIDER=nvidia`,
+# `COURSEFORGE_REWRITE_MODEL="$NVIDIA_LARGE_MODEL"`).
 #
 # Licensing: the NVIDIA hosted API here generates COURSE CONTENT
 # (published product HTML), NOT the training-data corpus — see

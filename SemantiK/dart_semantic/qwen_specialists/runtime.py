@@ -172,7 +172,8 @@ class QwenRuntime(Protocol):
         top_p: float = 0.95,
         seed: int | None = None,
         repeat_penalty: float = 1.0,
-    ) -> list[str]:
+        fail_soft: bool = False,
+    ) -> list[str] | list[str | None]:
         """Return one completion per prompt, IN INPUT ORDER.
 
         Unlike :meth:`generate` (K samples of ONE prompt), this maps N
@@ -180,7 +181,12 @@ class QwenRuntime(Protocol):
         batched driver so a whole adapter group (local) or a whole region
         set (endpoint) is generated in a single batched pass rather than a
         per-region swap/POST loop. Implementations MUST return a list the
-        SAME LENGTH as ``prompts`` and in the SAME ORDER."""
+        SAME LENGTH as ``prompts`` and in the SAME ORDER.
+
+        ``fail_soft`` (endpoint runtime only): when ``True``, a per-item
+        failure returns the ``None`` sentinel in that slot instead of
+        raising, so the caller degrades only that region. Local runtimes
+        ignore it (a broken local model is a fail-loud condition)."""
 
 
 # ---------------------------------------------------------------------------
@@ -365,13 +371,16 @@ class MockRuntime:
         top_p: float = 0.95,
         seed: int | None = None,
         repeat_penalty: float = 1.0,
+        fail_soft: bool = False,
     ) -> list[str]:
         """One completion per prompt, in order — maps over :meth:`generate`.
 
         Each prompt is generated with ``n=1`` so the per-kind fragment
         sniffing in :meth:`generate` still produces kind-appropriate
         well-formed output. The single completion (index 0) is returned per
-        prompt, preserving input order."""
+        prompt, preserving input order. ``fail_soft`` is accepted for
+        signature parity with the endpoint runtime and ignored (the mock
+        never fails an item)."""
         out: list[str] = []
         for prompt in prompts:
             res = self.generate(
@@ -561,6 +570,7 @@ class LlamaCppRuntime:
         top_p: float = 0.95,
         seed: int | None = None,
         repeat_penalty: float = 1.0,
+        fail_soft: bool = False,
     ) -> list[str]:
         """One completion per prompt, sequentially, over the LOADED adapter.
 

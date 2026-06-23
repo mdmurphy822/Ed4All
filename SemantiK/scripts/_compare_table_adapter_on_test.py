@@ -20,7 +20,7 @@ from sklearn.metrics import classification_report
 from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer, DataCollatorWithPadding
 
-from train_table_specialist import (
+from training.train_table_specialist import (
     CELL_ROLE_SCOPE_NAMES,
     TableSpecialistModel,
     evaluate,

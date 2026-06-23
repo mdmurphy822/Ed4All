@@ -359,10 +359,15 @@ def _review_by_region_index(verdicts: list[Any] | None) -> dict[int, dict[str, A
         level_before = getattr(v, "level_before", None)
         level_after = getattr(v, "level_after", None)
         reverted = bool(getattr(v, "reverted_for_invariant", False))
+        endpoint_degraded = bool(
+            getattr(v, "reverted_for_endpoint_failure", False)
+        )
         verdict_label = getattr(v, "verdict", "ok")
         changed = (kind_before != kind_after) or (level_before != level_after)
-        if not changed and not reverted:
-            # Pure no-op ``ok`` — no audit signal to carry.
+        if not changed and not reverted and not endpoint_degraded:
+            # Pure no-op ``ok`` — no audit signal to carry. An endpoint-
+            # degraded cluster IS surfaced (it must not silently look
+            # "reviewed" — it was never reviewed; the endpoint was down).
             continue
         bid = getattr(v, "block_id", None)
         if not isinstance(bid, int):
@@ -374,6 +379,7 @@ def _review_by_region_index(verdicts: list[Any] | None) -> dict[int, dict[str, A
             "level_to": level_after,
             "reason_code": verdict_label,
             "reverted": reverted,
+            "reverted_for_endpoint_failure": endpoint_degraded,
             "note": getattr(v, "review_note", "") or "",
         }
     return out

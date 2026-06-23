@@ -79,6 +79,10 @@
         "unverified": {
           "type": "boolean",
           "description": "Audit flag: illustrative cloud stub not yet exercised against a live key. A post-resolve audit log surfaces the entry."
+        },
+        "extra_body": {
+          "type": "object",
+          "description": "OPTIONAL request-body extras merged into every chat-completion request for this endpoint (top-level body keys, e.g. chat_template_kwargs for a reasoning model that must suppress chain-of-thought via {\"thinking\": false}). Default ABSENT → byte-stable: no extras are sent. The underlying OpenAICompatibleClient already merges arbitrary top-level body keys via its per-call extra_payload kwarg, so a consumer that resolves this row can forward these keys verbatim. FOLLOW-UP: the GENERAL backend (MCP/orchestrator/llm_backend.py::OpenAICompatibleBackend) does NOT yet auto-forward this field — non-SemantiK consumers of a reasoning endpoint need a thinking-off mechanism wired there. Carried as opaque metadata on the row until that wiring lands; SemantiK uses its own SEMANTIK_SPECIALIST_DISABLE_THINKING path."
         }
       },
       "allOf": [

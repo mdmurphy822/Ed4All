@@ -20,7 +20,7 @@ from sklearn.metrics import classification_report
 from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer, DataCollatorWithPadding
 
-from train_semantic import (
+from training.train_semantic import (
     DOC_ROLE_NAMES,
     SemanticModel,
     evaluate,

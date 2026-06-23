@@ -50,6 +50,7 @@ from typing import Any
 from dart_semantic.structure_graph import REGION_KINDS, Region
 from dart_semantic.types import FeatureBlock
 
+from .endpoint_runtime import EndpointRuntimeError
 from .reviewer_prompt import build_reviewer_request
 
 logger = logging.getLogger(__name__)
@@ -311,6 +312,16 @@ def _region_payload_text(region: Region) -> str:
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 
+# Anti-crawl short-circuit threshold. If at least this FRACTION of the first
+# batch's heading clusters fail their endpoint call (transient errors, after
+# the bounded retries), the endpoint is treated as effectively dead and the
+# WHOLE review degrades to unreviewed — we do NOT keep grinding remaining
+# clusters through timeout×retries (that was the ~46-minute crawl on the real
+# down-endpoint run). Because generate_batch already fans every cluster
+# concurrently in ONE call, this fires on that single batch's failure ratio.
+_ENDPOINT_DEAD_FAILURE_RATIO = 0.8
+
+
 def resolve_structure_review_mode() -> bool:
     """Return True when the Stage-5d reviewer is enabled.
 
@@ -337,6 +348,14 @@ class ReviewVerdict:
     ``drop_injected_header``) AFTER admission — a rejected correction is
     recorded with ``reverted_for_invariant=True`` and the *_after fields
     equal the *_before fields (the original Region was kept verbatim).
+
+    ``reverted_for_endpoint_failure`` records the OTHER safe-revert reason:
+    the cluster's endpoint call failed (after the bounded retries) so the
+    region was degraded to UNREVIEWED rather than reviewed. It is the
+    endpoint-failure sibling of ``reverted_for_invariant`` — both keep the
+    original Region verbatim, but this one means "we never got a verdict"
+    (a slow/down 70B), not "we got a verdict and rejected it". Defaults
+    False (serialization-safe; an off / healthy-endpoint run is byte-stable).
     """
 
     block_id: int
@@ -347,6 +366,7 @@ class ReviewVerdict:
     level_after: int | None
     review_note: str
     reverted_for_invariant: bool = False
+    reverted_for_endpoint_failure: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +671,55 @@ def _rejected(
     )
 
 
+def _endpoint_failure_verdict(
+    region: Region,
+    block_id: int,
+    note: str,
+) -> ReviewVerdict:
+    """Degrade ONE region to UNREVIEWED because its endpoint call failed.
+
+    The endpoint-failure sibling of :func:`_rejected`: the cluster's 70B
+    call failed (after the bounded retries) so we never got a verdict for
+    this heading. Keep the ORIGINAL Region verbatim (do NOT alter text /
+    kind / level) and record the degradation so the audit shows the block
+    as endpoint-degraded, NOT silently "reviewed=ok". Maps an endpoint
+    failure onto the same safe outcome the token-conservation /
+    admission-invariant reverts use."""
+    payload = region.payload or {}
+    level = payload.get("level_hint")
+    return ReviewVerdict(
+        block_id=block_id,
+        verdict="ok",
+        kind_before=region.kind,
+        kind_after=region.kind,
+        level_before=level,
+        level_after=level,
+        review_note=note,
+        reverted_for_invariant=False,
+        reverted_for_endpoint_failure=True,
+    )
+
+
+def _degrade_whole_review_unreviewed(
+    regions: list[Region], note: str
+) -> tuple[list[Region], list[ReviewVerdict]]:
+    """Degrade the ENTIRE review to UNREVIEWED (the byte-stable floor).
+
+    Every region is kept verbatim; heading regions get an endpoint-failure
+    verdict and non-headings an ok verdict, so the audit shows the whole
+    review as endpoint-degraded rather than silently "reviewed=ok". Shared by
+    the anti-crawl dead-endpoint short-circuit and the fail_soft-unsupported
+    fallback (a runtime that cannot fail-soft must NOT be re-run fail-loud —
+    that re-creates the per-item timeout crawl the 429 fix removes)."""
+    verdicts: list[ReviewVerdict] = []
+    for index, region in enumerate(regions):
+        if str(region.kind) in HEADING_KINDS:
+            verdicts.append(_endpoint_failure_verdict(region, index, note))
+        else:
+            verdicts.append(_ok_verdict(region, index, "non-heading; not reviewed"))
+    return regions, verdicts
+
+
 def _admits(
     original: Region,
     candidate: Region,
@@ -926,28 +995,92 @@ def run_structure_review(
             for idx, region in enumerate(regions)
         ]
 
-    # (2) batch — REUSE generate_batch verbatim. A batch-level failure is
-    #     NOT swallowed here (the endpoint runtime owns its fail-loud
-    #     contract); only PER-ITEM parse misses soft-fall-back below.
-    completions = runtime.generate_batch(prompts, max_tokens=max_tokens)
+    # (2) batch — REUSE generate_batch with fail_soft=True (the Stage-6
+    #     robustness contract). A per-cluster endpoint failure (after the
+    #     bounded transient retries in OpenAICompatibleRuntime) comes back as
+    #     the None SENTINEL in that slot instead of raising
+    #     EndpointBatchItemError, so one slow/down cluster degrades only
+    #     itself — never hanging the document. PER-ITEM parse misses still
+    #     soft-fall-back below; a None sentinel degrades that cluster to
+    #     UNREVIEWED (reverted_for_endpoint_failure) further down.
+    #
+    #     Anti-crawl: generate_batch already fans EVERY cluster concurrently
+    #     in one call, so there is no cluster-after-cluster serial crawl here.
+    #     The crawl the real run hit was per-item timeout×retries; fail_soft
+    #     bounds each item, and the all-/high-failed short-circuit below stops
+    #     us from doing any further work on a clearly-dead endpoint.
+    #
+    #     Defensive: a runtime that does NOT accept fail_soft (e.g. an older
+    #     scripted mock) falls back to the legacy call — its own fail-loud
+    #     contract then applies, unchanged from before this fix.
+    try:
+        completions = runtime.generate_batch(
+            prompts, max_tokens=max_tokens, fail_soft=True
+        )
+    except TypeError:
+        # The runtime does NOT accept fail_soft (e.g. an older scripted mock).
+        # Re-run WITHOUT the kwarg so a deterministic mock still produces its
+        # crafted completions — BUT guard the call: a runtime that lacks
+        # fail_soft AND raises a real endpoint failure must NOT propagate
+        # (that re-creates the per-item 429 crawl the fix removes). On any
+        # endpoint error here, degrade the WHOLE review to the byte-stable
+        # UNREVIEWED floor instead of re-raising.
+        try:
+            completions = runtime.generate_batch(prompts, max_tokens=max_tokens)
+        except EndpointRuntimeError as exc:
+            logger.warning(
+                "structure-review runtime lacks fail_soft and the fail-loud "
+                "call failed (%s) -> degrading WHOLE review to unreviewed "
+                "(no fail-loud crawl)",
+                exc,
+            )
+            return _degrade_whole_review_unreviewed(
+                regions,
+                "endpoint failure without fail_soft; whole-review degraded to "
+                "unreviewed",
+            )
 
     # Defensive: a runtime must return one completion per prompt. Pad/clip
     # to M so the per-block loop stays addressable (a short batch
     # soft-falls-back the missing tail to ok).
     m = len(prompts)
+    completions = list(completions)
     if len(completions) < m:
-        completions = list(completions) + [""] * (m - len(completions))
+        completions = completions + [""] * (m - len(completions))
 
-    # Map heading region index -> its completion string (non-heading indices
-    # have no completion).
-    completion_by_index: dict[int, str] = {}
+    # Anti-crawl whole-document short-circuit: if the endpoint is clearly
+    # dead (>= _ENDPOINT_DEAD_FAILURE_RATIO of clusters came back as the None
+    # sentinel), degrade the ENTIRE review to unreviewed rather than parsing /
+    # re-attempting cluster after cluster. This is the byte-stable UNREVIEWED
+    # floor — every region kept verbatim, the audit shows the whole review as
+    # endpoint-degraded.
+    none_count = sum(1 for c in completions[:m] if c is None)
+    if m > 0 and none_count >= max(1, int(round(_ENDPOINT_DEAD_FAILURE_RATIO * m))):
+        logger.warning(
+            "structure-review endpoint appears dead (%d/%d clusters failed) "
+            "-> degrading WHOLE review to unreviewed (anti-crawl short-circuit)",
+            none_count,
+            m,
+        )
+        return _degrade_whole_review_unreviewed(
+            regions,
+            "endpoint unavailable; whole-review degraded to unreviewed",
+        )
+
+    # Map heading region index -> its completion (None sentinel = endpoint
+    # failure for that cluster; str = a completion to parse).
+    completion_by_index: dict[int, str | None] = {}
     for prompt_pos, region_index in enumerate(heading_indices):
         raw = completions[prompt_pos] if prompt_pos < len(completions) else ""
-        completion_by_index[region_index] = raw if isinstance(raw, str) else ""
+        if raw is None:
+            completion_by_index[region_index] = None
+        else:
+            completion_by_index[region_index] = raw if isinstance(raw, str) else ""
 
     # (3)+(4) parse + apply per block. Non-heading regions pass through.
     corrected: list[Region] = []
     verdicts: list[ReviewVerdict] = []
+    endpoint_failure_count = 0
     for index, region in enumerate(regions):
         if index not in completion_by_index:
             # Non-heading region — not reviewed, kept verbatim.
@@ -955,6 +1088,17 @@ def run_structure_review(
             verdicts.append(_ok_verdict(region, index, "non-heading; not reviewed"))
             continue
         raw = completion_by_index[index]
+        if raw is None:
+            # Per-cluster endpoint failure (None sentinel from fail_soft) ->
+            # degrade THIS cluster to unreviewed; keep the region verbatim.
+            corrected.append(region)
+            verdicts.append(
+                _endpoint_failure_verdict(
+                    region, index, "endpoint call failed; cluster kept unreviewed"
+                )
+            )
+            endpoint_failure_count += 1
+            continue
         obj = _extract_verdict_obj(raw if isinstance(raw, str) else "")
         if obj is None:
             # parse miss -> soft fallback ok.
@@ -1001,6 +1145,18 @@ def run_structure_review(
             for idx, region in enumerate(regions)
         ]
         return regions, reverted_verdicts
+
+    # One-line summary: how many heading clusters reviewed vs degraded to
+    # unreviewed because their endpoint call failed (visible in the audit via
+    # each verdict's reverted_for_endpoint_failure flag).
+    reviewed_count = m - endpoint_failure_count
+    logger.info(
+        "structure-review complete: %d/%d heading clusters reviewed, "
+        "%d reverted-for-endpoint-failure",
+        reviewed_count,
+        m,
+        endpoint_failure_count,
+    )
 
     return corrected, verdicts
 

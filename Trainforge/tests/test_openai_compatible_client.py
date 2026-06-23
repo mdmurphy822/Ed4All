@@ -538,3 +538,189 @@ def test_extract_json_lenient_non_object_returns_none():
     the synthesis contract requires an object."""
     assert OpenAICompatibleClient._extract_json_lenient("[1, 2, 3]") is None
     assert OpenAICompatibleClient._extract_json_lenient("42") is None
+
+
+# ---------------------------------------------------------------------------
+# Stage-0 429 fix: Retry-After header honoring
+# ---------------------------------------------------------------------------
+
+
+def _build_capturing_sleep(
+    handler: Callable[[httpx.Request], httpx.Response],
+    *,
+    max_retries: int = 3,
+    initial_backoff_seconds: float = 1.0,
+) -> tuple[OpenAICompatibleClient, List[float]]:
+    """Build a client whose ``sleep_fn`` records every requested wait.
+
+    Lets a test assert the exact duration the retry path WOULD have
+    slept without actually waiting (no real time burned, no network).
+    """
+    slept: List[float] = []
+    transport = httpx.MockTransport(handler)
+    client = OpenAICompatibleClient(
+        base_url="https://api.example.com/v1",
+        model="test-model",
+        api_key="test-key",
+        max_retries=max_retries,
+        initial_backoff_seconds=initial_backoff_seconds,
+        provider_label="test_provider",
+        client=httpx.Client(transport=transport),
+        sleep_fn=lambda s: slept.append(s),
+    )
+    return client, slept
+
+
+def test_retry_after_integer_seconds_is_honored():
+    """A 429 carrying ``Retry-After: 5`` → the client sleeps ~5s.
+
+    The server-supplied wait is honored in preference to the computed
+    exponential backoff (which on attempt 1 would be ~1s).
+    """
+    state = {"i": 0}
+    responses = [
+        httpx.Response(
+            429, json={"error": "rate limited"}, headers={"Retry-After": "5"}
+        ),
+        httpx.Response(200, json=_success_body("after retry")),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        i = state["i"]
+        state["i"] = i + 1
+        return responses[i]
+
+    client, slept = _build_capturing_sleep(handler)
+    out = client.chat_completion([{"role": "user", "content": "x"}])
+    assert out == "after retry"
+    assert slept == [5.0]
+
+
+def test_retry_after_http_date_is_parsed_to_seconds():
+    """``Retry-After`` as an HTTP-date → parsed to ~seconds-from-now."""
+    from email.utils import format_datetime
+    from datetime import datetime, timedelta, timezone
+
+    when = datetime.now(timezone.utc) + timedelta(seconds=12)
+    http_date = format_datetime(when)
+
+    state = {"i": 0}
+    responses = [
+        httpx.Response(
+            503,
+            json={"error": "unavailable"},
+            headers={"Retry-After": http_date},
+        ),
+        httpx.Response(200, json=_success_body("recovered")),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        i = state["i"]
+        state["i"] = i + 1
+        return responses[i]
+
+    client, slept = _build_capturing_sleep(handler)
+    out = client.chat_completion([{"role": "user", "content": "x"}])
+    assert out == "recovered"
+    assert len(slept) == 1
+    # ~12s from now; allow a generous window for clock skew + test runtime.
+    assert 8.0 <= slept[0] <= 12.5
+
+
+def test_retry_after_above_ceiling_is_clamped():
+    """A pathological ``Retry-After`` is clamped to the max ceiling."""
+    from Trainforge.generators._openai_compatible_client import (
+        _RETRY_AFTER_MAX_SECONDS,
+    )
+
+    state = {"i": 0}
+    responses = [
+        httpx.Response(
+            429,
+            json={"error": "rate limited"},
+            headers={"Retry-After": "86400"},  # one day — pathological
+        ),
+        httpx.Response(200, json=_success_body("ok")),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        i = state["i"]
+        state["i"] = i + 1
+        return responses[i]
+
+    client, slept = _build_capturing_sleep(handler)
+    out = client.chat_completion([{"role": "user", "content": "x"}])
+    assert out == "ok"
+    assert slept == [_RETRY_AFTER_MAX_SECONDS]
+
+
+def test_x_ratelimit_reset_used_when_retry_after_absent():
+    """``X-RateLimit-Reset`` (bare delta seconds) is the secondary source."""
+    state = {"i": 0}
+    responses = [
+        httpx.Response(
+            429,
+            json={"error": "rate limited"},
+            headers={"X-RateLimit-Reset": "7"},
+        ),
+        httpx.Response(200, json=_success_body("ok")),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        i = state["i"]
+        state["i"] = i + 1
+        return responses[i]
+
+    client, slept = _build_capturing_sleep(handler)
+    out = client.chat_completion([{"role": "user", "content": "x"}])
+    assert out == "ok"
+    assert slept == [7.0]
+
+
+def test_no_retry_after_header_uses_exponential_backoff():
+    """No header → exponential-backoff fallback (byte-stable contract).
+
+    With full jitter the sleep lies in ``[0, initial * 2**(attempt-1)]``.
+    The legacy fixed schedule is the upper bound — the client never
+    sleeps LONGER than the historical exponential value, and a server
+    that sends no ``Retry-After`` keeps the legacy fallback path.
+    """
+    state = {"i": 0}
+    responses = [
+        httpx.Response(500, json={"error": "boom"}),  # no Retry-After
+        httpx.Response(503, json={"error": "still boom"}),  # no Retry-After
+        httpx.Response(200, json=_success_body("third time lucky")),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        i = state["i"]
+        state["i"] = i + 1
+        return responses[i]
+
+    client, slept = _build_capturing_sleep(
+        handler, max_retries=3, initial_backoff_seconds=1.0
+    )
+    out = client.chat_completion([{"role": "user", "content": "x"}])
+    assert out == "third time lucky"
+    assert len(slept) == 2
+    # Attempt 1 base = 1.0 → [0, 1.0]; attempt 2 base = 2.0 → [0, 2.0].
+    assert 0.0 <= slept[0] <= 1.0
+    assert 0.0 <= slept[1] <= 2.0
+
+
+def test_compute_backoff_upper_bound_matches_legacy_schedule():
+    """``_compute_backoff`` never exceeds the legacy fixed exponential.
+
+    Pins the byte-stability guarantee at the unit level: across many
+    samples the jittered value stays within ``[0, initial*2**(n-1)]`` —
+    the exact ceiling of the pre-jitter schedule.
+    """
+    client, _ = _build_capturing_sleep(
+        lambda r: httpx.Response(200, json=_success_body("ok")),
+        initial_backoff_seconds=1.0,
+    )
+    for attempt in range(1, 5):
+        ceiling = 1.0 * (2 ** (attempt - 1))
+        for _ in range(200):
+            val = client._compute_backoff(attempt)
+            assert 0.0 <= val <= ceiling

@@ -61,6 +61,11 @@ from typing import Any, Literal
 import yaml
 
 from .base import AdapterSwap
+from .endpoint_runtime import (
+    EndpointRuntimeError,
+    resolve_specialist_batch_regions,
+    resolve_specialist_concurrency,
+)
 from .prompts import build_math_request, build_prose_request, build_table_request
 from .routing import adapter_for
 from .runtime import QwenRuntime, make_runtime, specialist_provider_is_endpoint
@@ -104,6 +109,111 @@ def resolve_refine_mode() -> bool:
     (unset / blank / garbage) is off."""
     raw = (os.environ.get("SEMANTIK_SPECIALIST_REFINE") or "").strip().lower()
     return raw in _REFINE_TRUTHY
+
+
+# Falsey strings that disable the (default-ON) endpoint batched lane.
+_BATCH_FALSEY = frozenset({"0", "false", "no", "off"})
+
+# Default candidate-K ceiling on the BATCHED endpoint lane. The prose
+# config default is K=4; running 4 candidate slots multiplies POSTs by 4.
+# Capping the batched endpoint lane to 2 keeps total POSTs ~34 for a 16-page
+# slice while still giving the soft reranker two candidates to choose from.
+_DEFAULT_BATCHED_ENDPOINT_K = 2
+
+# Default concurrency for the BATCHED endpoint lane. The per-region path used
+# 8; with batching each POST already carries ~12 regions, so a LOW fan-out of
+# batches keeps us well under the ~40-req/min cap. SEMANTIK_SPECIALIST_CONCURRENCY
+# (if explicitly set) overrides this.
+_DEFAULT_BATCHED_CONCURRENCY = 2
+
+# Per-batch summed-output-token cap for _pack_batches. A bucket of big-output
+# regions (tables) starts a new batch sooner so no single batched POST asks
+# for more than the model can emit. 16384 matches the runtime's ceiling; the
+# runtime additionally applies its own hard cap + safety margin.
+_DEFAULT_OUTPUT_TOKEN_CAP = 16384
+
+
+def resolve_batch_mode() -> bool:
+    """True when the endpoint lane should use the BATCHED multi-region path.
+
+    Gate ``SEMANTIK_SPECIALIST_BATCH``. **Default ON for the endpoint lane**
+    (the per-region path 429s against the ~40-req/min cap). Parse-with-
+    fallback, default-ON semantics: an explicit falsey value
+    (``0``/``false``/``no``/``off``) selects the EXACT legacy per-region
+    ``generate_batch`` path (byte-stable); unset / truthy / garbage → on.
+
+    Only consulted on the endpoint lane (Phase 2). The local Phase-1 path is
+    unaffected — it always batches by adapter regardless of this flag."""
+    raw = (os.environ.get("SEMANTIK_SPECIALIST_BATCH") or "").strip().lower()
+    return raw not in _BATCH_FALSEY
+
+
+def resolve_batched_endpoint_k(requested_k: int) -> int:
+    """Resolve the candidate-K used on the BATCHED endpoint lane.
+
+    ``SEMANTIK_SPECIALIST_BATCH_K`` (positive int) pins the cap explicitly;
+    otherwise the caller's ``requested_k`` is clamped down to
+    ``_DEFAULT_BATCHED_ENDPOINT_K`` (2) so the batched lane does not multiply
+    POSTs by the prose K=4. Never raises K above what the caller asked for
+    (a caller passing k=1 keeps k=1). Parse-with-fallback."""
+    raw = os.environ.get("SEMANTIK_SPECIALIST_BATCH_K")
+    if raw:
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            val = 0
+        if val > 0:
+            return min(requested_k, val)
+    return min(requested_k, _DEFAULT_BATCHED_ENDPOINT_K)
+
+
+def resolve_batched_concurrency() -> int:
+    """Thread-pool size for dispatching BATCHES on the endpoint lane.
+
+    An explicitly-set ``SEMANTIK_SPECIALIST_CONCURRENCY`` is honoured as an
+    override; otherwise the batched lane uses a LOW default
+    (``_DEFAULT_BATCHED_CONCURRENCY`` = 2) because each batch already packs
+    many regions — a high fan-out would re-create the rate-limit pressure
+    batching exists to remove."""
+    if os.environ.get("SEMANTIK_SPECIALIST_CONCURRENCY"):
+        return resolve_specialist_concurrency()
+    return _DEFAULT_BATCHED_CONCURRENCY
+
+
+def _pack_batches(
+    active: list["_RegionJob"],
+    *,
+    max_regions: int,
+    output_token_cap: int,
+) -> list[list["_RegionJob"]]:
+    """Pack a bucket's active jobs (IN ORDER) into batches.
+
+    A new batch is started when EITHER the current batch reaches
+    ``max_regions`` jobs OR adding the next job would push the batch's summed
+    ``defaults["max_new_tokens"]`` over ``output_token_cap`` — so a bucket of
+    big-output regions (tables) automatically gets smaller batches and never
+    asks one POST for more output than the model can emit. A single job whose
+    own budget already exceeds the cap still gets its own (one-job) batch
+    rather than being dropped. Order within and across batches is preserved
+    so the region->job mapping by ``r{idx}`` stays exact."""
+    batches: list[list[_RegionJob]] = []
+    current: list[_RegionJob] = []
+    current_tokens = 0
+    cap = max(1, int(max_regions))
+    tok_cap = max(1, int(output_token_cap))
+    for job in active:
+        job_tokens = int(job.defaults.get("max_new_tokens", 512))
+        would_overflow_tokens = current and (current_tokens + job_tokens > tok_cap)
+        would_overflow_count = len(current) >= cap
+        if would_overflow_count or would_overflow_tokens:
+            batches.append(current)
+            current = []
+            current_tokens = 0
+        current.append(job)
+        current_tokens += job_tokens
+    if current:
+        batches.append(current)
+    return batches
 
 
 def _refine_prompt(region_prompt: str, draft: str) -> str:
@@ -282,6 +392,39 @@ def _skip_candidate(job: "_RegionJob", seed: int | None) -> list[Candidate]:
     ]
 
 
+# Reason code stamped on a region's candidate/metadata when its Phase-2
+# endpoint call failed (after retries) and we degraded instead of aborting
+# the whole document. Visible in provenance/audit via raw_metadata.
+_ENDPOINT_DEGRADED_MARKER = "endpoint_degraded"
+
+
+def _degraded_skip_candidate(
+    job: "_RegionJob", seed: int | None, *, reason: str
+) -> list[Candidate]:
+    """Build the single empty Candidate for a region whose endpoint call
+    failed in PURE-ENDPOINT mode (no local draft to fall back on).
+
+    Mirrors :func:`_skip_candidate`'s empty-Candidate shape (so Stage 7
+    drops it and pass_9a per-kind fallback fires) but stamps the
+    ``endpoint_degraded`` marker + the failure reason so the degradation is
+    auditable rather than silent."""
+    return [
+        Candidate(
+            adapter=job.request.adapter,
+            request_id=job.request.request_id,
+            text="",
+            score=0.0,
+            sampling_seed=seed,
+            finish_reason=_ENDPOINT_DEGRADED_MARKER,
+            raw_metadata={
+                "skip_reason": _ENDPOINT_DEGRADED_MARKER,
+                "endpoint_degraded": True,
+                "degraded_reason": reason,
+            },
+        )
+    ]
+
+
 def _wrap_candidates(
     job: "_RegionJob",
     texts: list[str],
@@ -290,6 +433,7 @@ def _wrap_candidates(
     adapter_version: str,
     phase: str,
     base_idx: int = 0,
+    degraded_reason: str | None = None,
 ) -> list[Candidate]:
     """Wrap raw completion strings into typed Candidates for a region.
 
@@ -301,11 +445,25 @@ def _wrap_candidates(
 
     ``base_idx`` offsets ``candidate_idx`` so a caller appending one slot
     at a time (the Phase-2 per-slot endpoint path) can keep the indices
-    monotonic across calls."""
+    monotonic across calls.
+
+    ``degraded_reason`` (hybrid fail-soft path): when set, the candidate is
+    a KEPT Phase-1 local draft standing in for a failed endpoint refine —
+    stamp ``endpoint_degraded`` + the reason so the degradation is
+    auditable (the text is still real content, not a skip)."""
     builder_metadata = (job.request.sampling_overrides or {}).get("metadata") or {}
     out: list[Candidate] = []
     for i, text in enumerate(texts):
         cand_idx = base_idx + i
+        meta = {
+            **builder_metadata,
+            "candidate_idx": cand_idx,
+            "adapter_version": adapter_version,
+            "stage6_phase": phase,
+        }
+        if degraded_reason is not None:
+            meta["endpoint_degraded"] = True
+            meta["degraded_reason"] = degraded_reason
         out.append(
             Candidate(
                 adapter=job.request.adapter,
@@ -313,15 +471,147 @@ def _wrap_candidates(
                 text=text,
                 sampling_seed=(seed + i) if seed is not None else None,
                 finish_reason="stop",
-                raw_metadata={
-                    **builder_metadata,
-                    "candidate_idx": cand_idx,
-                    "adapter_version": adapter_version,
-                    "stage6_phase": phase,
-                },
+                raw_metadata=meta,
             )
         )
     return out
+
+
+def _phase2_slot_texts_per_region(
+    rt: Any,
+    active: list["_RegionJob"],
+    *,
+    k_idx: int,
+    slot_seed: int | None,
+    refine: bool,
+) -> list[str | None]:
+    """Produce one slot's completions for the per-region (legacy) endpoint
+    path: ONE ``generate_batch`` over ALL active jobs, returned aligned to
+    ``active`` order (None sentinels passed through).
+
+    This is the EXACT byte-stable pre-batching dispatch — selected when
+    ``SEMANTIK_SPECIALIST_BATCH`` is falsey."""
+    if refine:
+        prompts = [
+            _refine_prompt(
+                j.prompt,
+                (j.drafts[k_idx] if j.drafts and k_idx < len(j.drafts) else ""),
+            )
+            for j in active
+        ]
+    else:
+        prompts = [j.prompt for j in active]
+    batch_max = max(j.defaults["max_new_tokens"] for j in active)
+    batch_temp = active[0].defaults["temperature"]
+    batch_top_p = active[0].defaults["top_p"]
+    batch_rp = active[0].defaults.get("repetition_penalty", 1.0)
+    texts = rt.generate_batch(
+        prompts,
+        max_tokens=batch_max,
+        temperature=batch_temp,
+        top_p=batch_top_p,
+        seed=slot_seed,
+        repeat_penalty=batch_rp,
+        fail_soft=True,
+    )
+    if len(texts) != len(active):
+        raise RuntimeError(
+            f"Stage6 phase2: generate_batch returned "
+            f"{len(texts)} != {len(active)} prompts"
+        )
+    return list(texts)
+
+
+def _phase2_slot_texts_batched(
+    rt: Any,
+    active: list["_RegionJob"],
+    *,
+    k_idx: int,
+    slot_seed: int | None,
+    refine: bool,
+) -> list[str | None]:
+    """Produce one slot's completions for the BATCHED endpoint path.
+
+    Packs the active jobs into batches (``_pack_batches``) and dispatches the
+    BATCHES (not regions) through a low-concurrency ThreadPoolExecutor, each
+    via :meth:`OpenAICompatibleRuntime.generate_multi` — ONE POST per batch
+    (the rate-limit defeat). Each ``{r{idx}: fragment}`` result is mapped back
+    to its job by id; a region missing from its batch (or whose whole batch
+    POST failed) stays the None sentinel. Returns a ``list[str | None]``
+    aligned to ``active`` order so the downstream degradation mapping is
+    IDENTICAL to the per-region path."""
+    from concurrent.futures import ThreadPoolExecutor  # noqa: WPS433
+
+    # Capability fallback: a runtime that does NOT expose generate_multi
+    # (an older mock, or a non-endpoint runtime that somehow reaches Phase 2)
+    # cannot be batched — fall back to the per-region generate_batch path so
+    # it still produces real candidates rather than degrading to all-None.
+    if not callable(getattr(rt, "generate_multi", None)):
+        return _phase2_slot_texts_per_region(
+            rt, active, k_idx=k_idx, slot_seed=slot_seed, refine=refine
+        )
+
+    max_regions = resolve_specialist_batch_regions()
+    batches = _pack_batches(
+        active,
+        max_regions=max_regions,
+        output_token_cap=_DEFAULT_OUTPUT_TOKEN_CAP,
+    )
+    # Map each region id -> its index in ``active`` so results land in order.
+    id_to_pos = {f"r{job.idx}": a_pos for a_pos, job in enumerate(active)}
+    texts: list[str | None] = [None] * len(active)
+
+    def _run_batch(batch: list["_RegionJob"]) -> dict[str, str | None]:
+        items: list[tuple[str, str]] = [(f"r{j.idx}", j.prompt) for j in batch]
+        drafts: dict[str, str] | None = None
+        if refine:
+            drafts = {
+                f"r{j.idx}": (
+                    j.drafts[k_idx] if j.drafts and k_idx < len(j.drafts) else ""
+                )
+                for j in batch
+            }
+        # Summed per-region budget for this batch (the runtime caps it at the
+        # model ceiling minus the safety margin).
+        batch_max = sum(int(j.defaults.get("max_new_tokens", 512)) for j in batch)
+        batch_temp = batch[0].defaults["temperature"]
+        batch_top_p = batch[0].defaults["top_p"]
+        batch_rp = batch[0].defaults.get("repetition_penalty", 1.0)
+        return rt.generate_multi(
+            items,
+            max_tokens=batch_max,
+            temperature=batch_temp,
+            top_p=batch_top_p,
+            seed=slot_seed,
+            repeat_penalty=batch_rp,
+            drafts=drafts,
+        )
+
+    if not batches:
+        return texts
+    max_workers = max(1, min(resolve_batched_concurrency(), len(batches)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_run_batch, b): b for b in batches}
+        for future in futures:
+            batch = futures[future]
+            try:
+                mapping = future.result()
+            except Exception as exc:  # noqa: BLE001
+                # A batch dispatch that raises (generate_multi already fails
+                # soft internally, so this is defensive) degrades every region
+                # in that batch to the None sentinel — never aborts the slot.
+                logger.warning(
+                    "Stage6 phase2 batched POST raised (%d regions): %s "
+                    "— degrading those regions to None",
+                    len(batch),
+                    exc,
+                )
+                mapping = {f"r{j.idx}": None for j in batch}
+            for rid, fragment in mapping.items():
+                pos = id_to_pos.get(rid)
+                if pos is not None:
+                    texts[pos] = fragment
+    return texts
 
 
 def run_qwen_specialists(
@@ -510,6 +800,14 @@ def run_qwen_specialists(
                     prompts = [j.prompt for j in active]
                     for k_idx in range(k):
                         slot_seed = None if seed is None else int(seed + k_idx)
+                        # fail_soft: a per-item failure returns the None
+                        # sentinel rather than aborting the whole Phase-1
+                        # batch (closes the residual 429 gap on the local-
+                        # draft path). Local runtimes ignore the kwarg and
+                        # never fail an item; the endpoint runtime (hybrid
+                        # refine mode runs Phase 1 too) degrades only that
+                        # slot. A None slot becomes an empty draft below —
+                        # Stage 7 then drops it, same as a skip.
                         texts = rt.generate_batch(
                             prompts,
                             max_tokens=defaults["max_new_tokens"],
@@ -517,13 +815,16 @@ def run_qwen_specialists(
                             top_p=defaults["top_p"],
                             seed=slot_seed,
                             repeat_penalty=defaults.get("repetition_penalty", 1.0),
+                            fail_soft=True,
                         )
                         if len(texts) != len(prompts):
                             raise RuntimeError(
                                 f"Stage6 phase1 {adapter}: generate_batch "
                                 f"returned {len(texts)} != {len(prompts)} prompts"
                             )
-                        per_slot.append(texts)
+                        # Normalize None sentinels (fail-soft) to empty drafts
+                        # so the per-region re-assembly stays str-typed.
+                        per_slot.append([t if t is not None else "" for t in texts])
             # Re-assemble per-region: drafts[region] = [slot0, slot1, ...].
             for a_pos, job in enumerate(active):
                 job.drafts = [per_slot[k_idx][a_pos] for k_idx in range(k)]
@@ -576,65 +877,157 @@ def run_qwen_specialists(
                 out[job.idx] = _skip_candidate(job, seed)
 
         if active:
+            # Batched lane (default ON for the endpoint): pack many regions
+            # into few large POSTs to survive the ~40-req/min rate cap. An
+            # explicit SEMANTIK_SPECIALIST_BATCH=0 selects the EXACT legacy
+            # per-region generate_batch path (byte-stable). The batched lane
+            # also caps candidate-K to <=2 so K does not multiply POSTs.
+            batched = resolve_batch_mode()
+            phase2_k = resolve_batched_endpoint_k(k) if batched else k
             # Phase 2 uses one representative sampling profile (prose
             # defaults) for the shared endpoint; per-region max_new_tokens
             # stays per-adapter so long tables still get headroom.
             logger.info(
-                "Stage6 phase2 (endpoint%s): %d region(s) -> concurrent batch x%d",
+                "Stage6 phase2 (endpoint%s, %s): %d region(s) -> x%d candidate slot(s)",
                 " refine" if refine else "",
+                "batched" if batched else "per-region",
                 len(active),
-                k,
+                phase2_k,
             )
+            # Per-region degradation bookkeeping: count, per a_pos, how many
+            # of the K slots the endpoint FAILED (after retries). The KEY
+            # FIX — a per-region endpoint failure degrades only THAT region
+            # (keep its local draft in hybrid mode / emit a degraded skip in
+            # pure-endpoint mode) instead of raising and aborting the whole
+            # document.
+            slot_failures: list[int] = [0] * len(active)
             # Per-region prompt: refine appends the chosen draft slot.
-            for k_idx in range(k):
+            for k_idx in range(phase2_k):
                 slot_seed = None if seed is None else int(seed + k_idx)
-                if refine:
-                    prompts = [
-                        _refine_prompt(
-                            j.prompt,
-                            (j.drafts[k_idx] if j.drafts and k_idx < len(j.drafts) else ""),
-                        )
-                        for j in active
-                    ]
+                # Both dispatch paths return a list[str | None] aligned to
+                # ``active`` order, so the degradation mapping below is
+                # identical regardless of batching.
+                if batched:
+                    texts = _phase2_slot_texts_batched(
+                        rt, active, k_idx=k_idx, slot_seed=slot_seed, refine=refine
+                    )
                 else:
-                    prompts = [j.prompt for j in active]
-                # Use each job's own max_new_tokens? generate_batch takes one
-                # max_tokens for the whole call — use the max across the
-                # active set so no region is truncated below its budget.
-                batch_max = max(j.defaults["max_new_tokens"] for j in active)
-                batch_temp = active[0].defaults["temperature"]
-                batch_top_p = active[0].defaults["top_p"]
-                batch_rp = active[0].defaults.get("repetition_penalty", 1.0)
-                texts = rt.generate_batch(
-                    prompts,
-                    max_tokens=batch_max,
-                    temperature=batch_temp,
-                    top_p=batch_top_p,
-                    seed=slot_seed,
-                    repeat_penalty=batch_rp,
-                )
-                if len(texts) != len(active):
-                    raise RuntimeError(
-                        f"Stage6 phase2: generate_batch returned "
-                        f"{len(texts)} != {len(active)} prompts"
+                    texts = _phase2_slot_texts_per_region(
+                        rt, active, k_idx=k_idx, slot_seed=slot_seed, refine=refine
                     )
                 for a_pos, job in enumerate(active):
-                    bucket_slot = out.setdefault(job.idx, [])
-                    # Build/extend the candidate list slot-by-slot.
+                    text = texts[a_pos]
+                    if text is None:
+                        # Endpoint failed this region's slot (after retries).
+                        slot_failures[a_pos] += 1
+                        if refine:
+                            # Hybrid: keep the region's Phase-1 LOCAL draft
+                            # for this slot — we already paid for it; don't
+                            # throw it away. Stamp a degradation marker.
+                            draft = (
+                                job.drafts[k_idx]
+                                if job.drafts and k_idx < len(job.drafts)
+                                else ""
+                            )
+                            logger.warning(
+                                "Stage6 phase2 r%d slot %d: endpoint refine "
+                                "failed -> keeping Phase-1 local draft",
+                                job.idx,
+                                k_idx,
+                            )
+                            cand = _wrap_candidates(
+                                job,
+                                [draft],
+                                seed=slot_seed,
+                                adapter_version="local",
+                                phase="refine",
+                                base_idx=k_idx,
+                                degraded_reason="endpoint_refine_failed_kept_local_draft",
+                            )[0]
+                            out.setdefault(job.idx, []).append(cand)
+                        else:
+                            # Pure-endpoint: no local draft. Defer the
+                            # degraded skip until all slots are tried — only
+                            # emit it if EVERY slot failed for this region.
+                            logger.warning(
+                                "Stage6 phase2 r%d slot %d: endpoint generate "
+                                "failed (no local draft)",
+                                job.idx,
+                                k_idx,
+                            )
+                        continue
+                    # Success: build/extend the candidate list slot-by-slot.
                     cand = _wrap_candidates(
                         job,
-                        [texts[a_pos]],
+                        [text],
                         seed=slot_seed,
                         adapter_version="endpoint",
                         phase="refine" if refine else "endpoint",
                         base_idx=k_idx,
                     )[0]
-                    bucket_slot.append(cand)
+                    out.setdefault(job.idx, []).append(cand)
+
+            # Post-pass: pure-endpoint regions that produced NO usable
+            # candidate (every slot failed) get a degraded skip candidate so
+            # the document still assembles around them.
+            degraded_regions = 0
+            for a_pos, job in enumerate(active):
+                produced = out.get(job.idx) or []
+                if not produced:
+                    degraded_regions += 1
+                    logger.warning(
+                        "Stage6 phase2 r%d (%s): all %d endpoint slot(s) "
+                        "failed -> degraded skip candidate",
+                        job.idx,
+                        job.adapter,
+                        phase2_k,
+                    )
+                    out[job.idx] = _degraded_skip_candidate(
+                        job,
+                        seed,
+                        reason="endpoint_failed_all_slots",
+                    )
+                elif slot_failures[a_pos]:
+                    # Partial degradation (kept-draft in refine, or some
+                    # slots succeeded in pure-endpoint).
+                    degraded_regions += 1
+
+            # Fail-loud guard: if EVERY active region was fully degraded
+            # (endpoint down / bad key) we must NOT ship an empty document —
+            # only PARTIAL failures degrade-and-continue. (In hybrid/refine
+            # mode a region always keeps its local draft, so it is never
+            # "fully degraded" here and this guard never fires — correct: we
+            # still have real local content.)
+            fully_failed = [
+                job
+                for a_pos, job in enumerate(active)
+                if slot_failures[a_pos] >= phase2_k
+                and not refine
+            ]
+            if active and len(fully_failed) == len(active):
+                raise EndpointRuntimeError(
+                    "Stage6 phase2: ALL "
+                    f"{len(active)} active region(s) failed the endpoint "
+                    "(every slot, after retries). Refusing to ship an empty "
+                    "document — this is a total endpoint failure (endpoint "
+                    "down / bad key / wrong base_url), not a partial "
+                    "degradation. Fail-loud."
+                )
+
+            if degraded_regions:
+                logger.warning(
+                    "Stage6 phase2 summary: %d/%d region(s) degraded due to "
+                    "endpoint failure (the rest assembled normally).",
+                    degraded_regions,
+                    len(active),
+                )
 
     return out
 
 
 __all__ = [
+    "resolve_batch_mode",
+    "resolve_batched_endpoint_k",
     "resolve_refine_mode",
     "run_qwen_specialists",
 ]

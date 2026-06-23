@@ -1373,7 +1373,7 @@ def test_callout_contract_constrains_scope_to_single_focused_highlight():
 
 # ---------------------------------------------------------------------------
 # Lane "rewrite" authoring fixes (findings 1, 5, 12, 15, 16) — Sonnet-vs-7B
-# manual review of sample-course-a vs the sample-course-a baseline.
+# manual review of a real 7B course export vs its Sonnet baseline.
 # Each is a small prompt/parse assertion; the dispatched-prompt cases mock
 # the client so no live model call fires.
 # ---------------------------------------------------------------------------

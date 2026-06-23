@@ -36,7 +36,7 @@ class RawBlock:
     is_bold: bool | None = None
     is_italic: bool | None = None
     confidence: float = 1.0
-    source: str = "pymupdf"                     # "pymupdf" | "tesseract"
+    source: str = "pypdfium2"                   # "pypdfium2" | "tesseract"
 
 
 @dataclass

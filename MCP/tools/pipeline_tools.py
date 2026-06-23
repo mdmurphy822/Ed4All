@@ -12248,7 +12248,154 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             _block_to_snake_case_entry(_result),
         )
 
-    if _rewrite_concurrency <= 1:
+    # Multi-block BATCHED cloud-lane path (rate-limit defeat). When
+    # COURSEFORGE_REWRITE_BATCH is on (default) AND the resolved rewrite lane
+    # is a hosted CLOUD endpoint, fan BATCHES (not blocks) through
+    # router.route_rewrite_batch so the hosted seat's ~req/min cap is not
+    # exhausted by per-block POSTs. Cache hits / key-terms short-circuits /
+    # dict-objective-lift are handled per-block FIRST (identical to the
+    # per-block path); only blocks needing a fresh LLM dispatch are batched.
+    # An explicit COURSEFORGE_REWRITE_BATCH=0 OR a loopback (local) lane skips
+    # this branch entirely → the EXACT current per-block path runs (byte-
+    # stable). Concurrency auto-defaults to 2 on the cloud lane only when
+    # COURSEFORGE_REWRITE_CONCURRENCY is unset (explicit value always wins).
+    _use_batch = False
+    try:
+        from Courseforge.generators._rewrite_batch import (
+            resolve_rewrite_batch_mode as _rb_mode,
+            resolve_rewrite_batched_concurrency as _rb_conc,
+        )
+        if _rb_mode() and outline_blocks:
+            _probe_spec = router._resolve_spec(outline_blocks[0], "rewrite")
+            _use_batch = router._is_cloud_rewrite_lane(_probe_spec)
+    except Exception as _batch_exc:  # noqa: BLE001 — fall back to per-block
+        logger.warning(
+            "rewrite phase: batched-lane probe failed (%s); falling back to "
+            "the per-block path.", _batch_exc,
+        )
+        _use_batch = False
+
+    if _use_batch:
+        # --- Phase A: per-block prep (cache / key-terms / dict-lift) -------
+        # A block that resolves to a finished Block here (cache hit or
+        # high-quality key-terms short-circuit) is NOT batched; everything
+        # else is collected (as its prepared outline Block) for batching.
+        _finished_by_idx: Dict[int, Any] = {}
+        _to_batch: list = []          # prepared outline Blocks for fresh dispatch
+        _batch_idx_by_id: Dict[str, int] = {}   # block_id -> original index
+        _chunks_for_batch: Dict[str, list] = {}
+        for _idx, blk in enumerate(outline_blocks):
+            _cached_entry = _rewrite_cache.get(blk.block_id)
+            if _cached_entry is not None:
+                _cached_blk = _entry_to_block(_cached_entry)
+                if _cached_blk is not None:
+                    _finished_by_idx[_idx] = _apply_str_backstops(_cached_blk)
+                    continue
+            # Key-terms high-quality short-circuit (mirror _process_one_block).
+            if (
+                getattr(blk, "template_type", None) == _KEY_TERMS_TEMPLATE_TYPE
+                and isinstance(blk.content, str)
+                and blk.content.strip()
+            ):
+                from lib.generation import key_terms as _kt_sc  # noqa: PLC0415
+                if (
+                    _kt_sc.block_definition_quality(
+                        content=blk.content,
+                        has_source_ids=bool(
+                            getattr(blk, "source_ids", ()) or ()
+                        ),
+                    )
+                    == _kt_sc.DEFINITION_QUALITY_HIGH
+                ):
+                    _finished_by_idx[_idx] = _apply_str_backstops(blk)
+                    continue
+            # Dict-objective lift (mirror _process_one_block) so the rewrite
+            # carries the real LO refs into str content.
+            if not blk.objective_ids and isinstance(blk.content, dict):
+                _lifted: list = []
+                _lifted_seen: set = set()
+                for _key in ("objective_refs", "objective_ids"):
+                    for _oid in blk.content.get(_key) or []:
+                        if (
+                            isinstance(_oid, str) and _oid
+                            and _oid not in _lifted_seen
+                        ):
+                            _lifted.append(_oid)
+                            _lifted_seen.add(_oid)
+                if _lifted:
+                    blk = _dc.replace(blk, objective_ids=tuple(_lifted))
+            _block_chunks = chunks_lookup.get(blk.block_id, []) if isinstance(
+                chunks_lookup, dict
+            ) else []
+            _to_batch.append(blk)
+            _batch_idx_by_id[blk.block_id] = _idx
+            _chunks_for_batch[blk.block_id] = _block_chunks
+
+        # --- Phase B: batched fresh dispatch ------------------------------
+        if _to_batch:
+            if capture is not None:
+                try:
+                    capture.log_decision(
+                        decision_type="content_selection",
+                        decision=(
+                            f"Rewrite-tier BATCHED cloud lane: dispatching "
+                            f"{len(_to_batch)} fresh block(s) via "
+                            f"route_rewrite_batch (concurrency={_rb_conc()})."
+                        ),
+                        rationale=(
+                            f"COURSEFORGE_REWRITE_BATCH on + resolved rewrite "
+                            f"lane is a hosted CLOUD endpoint "
+                            f"(provider={_probe_spec.provider}, "
+                            f"base_url={_probe_spec.base_url}); packing blocks "
+                            f"into multi-block POSTs (round-based per-block "
+                            f"validator regen) so the hosted seat's ~req/min "
+                            f"cap is not exhausted by per-block POSTs. "
+                            f"{len(_finished_by_idx)} block(s) were cache/key-"
+                            f"terms short-circuited and not batched. Output is "
+                            f"re-ordered to the original block sequence."
+                        ),
+                        ml_features={
+                            "gate_id": "_run_content_generation_rewrite",
+                            "batched_blocks": len(_to_batch),
+                            "short_circuited_blocks": len(_finished_by_idx),
+                            "cloud_provider": _probe_spec.provider,
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                _batch_results = router.route_rewrite_batch(
+                    _to_batch,
+                    source_chunks_by_block_id=_chunks_for_batch,
+                    objectives=objectives_payload,
+                    validators=[],
+                )
+            except Exception as exc:  # noqa: BLE001 — fail-soft whole batch
+                logger.warning(
+                    "rewrite phase: route_rewrite_batch() failed (%s); "
+                    "marking the batched blocks consensus-fail.", exc,
+                )
+                _batch_results = {}
+                for blk in _to_batch:
+                    try:
+                        _batch_results[blk.block_id] = _dc.replace(
+                            blk, escalation_marker="validator_consensus_fail",
+                        )
+                    except (TypeError, ValueError):
+                        pass
+            for _bid, _res in _batch_results.items():
+                _idx = _batch_idx_by_id.get(_bid)
+                if _idx is None or _res is None:
+                    continue
+                _finished_by_idx[_idx] = _apply_str_backstops(_res)
+
+        # --- Phase C: re-order + checkpoint -------------------------------
+        for _idx in range(len(outline_blocks)):
+            _result = _finished_by_idx.get(_idx)
+            if _result is not None:
+                rewrite_blocks.append(_result)
+                _checkpoint_rewrite_result(_result)
+    elif _rewrite_concurrency <= 1:
         # Sequential path — EXACT legacy behavior. No pool constructed.
         for blk in outline_blocks:
             _result = _process_one_block(blk)
@@ -16095,6 +16242,14 @@ def _build_tool_registry() -> dict:
         # (legacy DART-only / external MCP callers) → no-op.
         imscc_chunks_path_kw = kwargs.get("imscc_chunks_path") or ""
         dart_chunks_path_kw = kwargs.get("dart_chunks_path") or ""
+        # Objectives plumbing: explicit path to the course_planning-emitted
+        # synthesized_objectives.json. When unset, resolved below from the
+        # project export (sibling of trainforge_dir). Drives the canonical
+        # archive-side objectives.json projection that the strict
+        # packet-integrity gate's co_has_parent rule depends on.
+        synthesized_objectives_path_kw = (
+            kwargs.get("synthesized_objectives_path") or ""
+        )
 
         if not course_name:
             return json.dumps({"error": "archive_to_libv2 requires course_name"})
@@ -16389,6 +16544,89 @@ def _build_tool_registry() -> dict:
             logger.warning(
                 "archive_to_libv2: no Trainforge output dir located for "
                 f"course {course_name} — features flags will default to false."
+            )
+
+        # --- Objectives plumbing: emit canonical objectives.json ----------
+        # The strict packet_integrity gate's _load_objectives reads
+        # archive_root / "objectives.json" FIRST (with course.json fallback),
+        # and its co_has_parent rule requires every CO to carry a
+        # parent_terminal resolving to a TO. The Trainforge-flattened
+        # course.json drops that back-pointer, so a pipeline-built archive
+        # without an objectives.json fails the gate with one
+        # ORPHAN_COMPONENT_OBJECTIVE per CO. Project the canonical Worker-A
+        # objectives.json from the course_planning-emitted
+        # synthesized_objectives.json (which carries terminal_id per CO),
+        # restoring parent_terminal via the canonical CO→TO resolver.
+        # Best-effort: a missing / unparseable synthesized file logs a
+        # warning and leaves the gate to fall back to course.json (no crash).
+        _objectives_src: Optional[Path] = None
+        if synthesized_objectives_path_kw:
+            _cand = Path(synthesized_objectives_path_kw)
+            if _cand.exists() and _cand.is_file():
+                _objectives_src = _cand
+        if _objectives_src is None:
+            # Resolve from the project export. trainforge_dir is
+            # <export>/trainforge/, so the synthesized objectives live at
+            # <export>/01_learning_objectives/synthesized_objectives.json.
+            _export_roots: list[Path] = []
+            if trainforge_dir is not None:
+                _export_roots.append(trainforge_dir.parent)
+            if project_workspace_kw:
+                _pw = Path(project_workspace_kw)
+                _export_roots.append(
+                    _pw.parent if _pw.name == "trainforge" else _pw
+                )
+            if project_id_kw:
+                _export_roots.append(
+                    courseforge_exports_dir() / project_id_kw
+                )
+            for _root in _export_roots:
+                _cand = (
+                    _root / "01_learning_objectives"
+                    / "synthesized_objectives.json"
+                )
+                if _cand.exists() and _cand.is_file():
+                    _objectives_src = _cand
+                    break
+
+        if _objectives_src is not None:
+            try:
+                from lib.libv2_storage import (
+                    OBJECTIVES_ARCHIVE_FILENAME,
+                    project_objectives_for_archive,
+                )
+                _synth = json.loads(
+                    _objectives_src.read_text(encoding="utf-8")
+                )
+                _objectives = project_objectives_for_archive(_synth)
+                _obj_dest = course_dir / OBJECTIVES_ARCHIVE_FILENAME
+                _obj_dest.write_text(
+                    json.dumps(_objectives, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                archived["objectives"] = str(_obj_dest)
+                logger.info(
+                    "archive_to_libv2: projected %s -> %s "
+                    "(%d terminal_outcomes + %d component_objectives).",
+                    _objectives_src,
+                    _obj_dest,
+                    len(_objectives.get("terminal_outcomes", [])),
+                    len(_objectives.get("component_objectives", [])),
+                )
+            except (OSError, ValueError) as _exc:
+                logger.warning(
+                    "archive_to_libv2: failed to project objectives.json "
+                    "from %s (%s); packet-integrity gate will fall back to "
+                    "course.json.",
+                    _objectives_src, _exc,
+                )
+        else:
+            logger.warning(
+                "archive_to_libv2: no synthesized_objectives.json located "
+                "for course %s — archive will lack objectives.json; the "
+                "packet-integrity gate falls back to the (parent-less) "
+                "course.json learning_outcomes.",
+                course_name,
             )
 
         # --- Wave 74 fail-closed: chunks-freshness gate -------------------

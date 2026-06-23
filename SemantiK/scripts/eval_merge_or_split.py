@@ -47,7 +47,7 @@ def _eval_test_split(adapter_dir: Path, test_path: Path,
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from data.build_merge_or_split_data import JOIN_TYPES, JOIN_TYPE_IGNORE
-    from train_merge_or_split import (
+    from training.train_merge_or_split import (
         _format_input, HEADING_LABELS, HYPHEN_LABELS, SAME_LOGICAL_LABELS,
     )
 

@@ -50,7 +50,7 @@ NVIDIA_API_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 
 # Default large-tier model (exists in the NVIDIA catalog). Returns clean
 # ``message.content`` with reasoning isolated in ``reasoning_content``.
-DEFAULT_SYNTHESIS_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+DEFAULT_SYNTHESIS_MODEL = "nvidia/nemotron-3-nano-30b-a3b"
 
 # Env-var contract. The API key is REQUIRED (the hosted endpoint
 # authenticates every request) — never hardcoded. Base URL + model are

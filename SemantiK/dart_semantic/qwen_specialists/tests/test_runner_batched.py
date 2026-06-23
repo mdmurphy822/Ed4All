@@ -24,6 +24,10 @@ from dart_semantic.qwen_specialists.endpoint_runtime import (
     resolve_specialist_concurrency,
 )
 from dart_semantic.qwen_specialists.runner import (
+    _RegionJob,
+    _pack_batches,
+    resolve_batch_mode,
+    resolve_batched_endpoint_k,
     resolve_refine_mode,
     run_qwen_specialists,
 )
@@ -321,6 +325,145 @@ def test_concurrency_bound_resolver(monkeypatch):
     assert resolve_specialist_concurrency() == 8
 
 
+# ---------------------------------------------------------------------------
+# Phase-2 per-region fail-soft degradation (the document-abort fix)
+# ---------------------------------------------------------------------------
+
+
+from dart_semantic.qwen_specialists.endpoint_runtime import EndpointRuntimeError
+
+
+class _FailSoftEndpointSpy(MockRuntime):
+    """Endpoint-shaped runtime that fails specific prompt indices.
+
+    When ``fail_soft`` is passed (the runner Phase-2 path), failed indices
+    return the ``None`` sentinel; successful indices echo a fragment. When
+    ``fail_soft`` is False it RAISES on the first failing index (legacy
+    fail-loud), mirroring the real endpoint runtime."""
+
+    def __init__(self, fail_indices):
+        super().__init__()
+        self.fail_indices = set(fail_indices)
+        self.batch_calls = 0
+
+    def generate_batch(self, prompts, *, max_tokens, fail_soft=False, **kw):  # type: ignore[override]
+        self.batch_calls += 1
+        out = []
+        for i, _p in enumerate(prompts):
+            if i in self.fail_indices:
+                if fail_soft:
+                    out.append(None)
+                else:
+                    raise EndpointRuntimeError(f"item {i} failed", transient=True)
+            else:
+                out.append(f"<p>endpoint {i}</p>")
+        return out
+
+
+def test_phase2_hybrid_one_region_fails_keeps_local_draft(monkeypatch):
+    """Scenario (a): one region times out in HYBRID (refine) mode -> the
+    conversion CONTINUES, that region keeps its Phase-1 LOCAL draft, the
+    document assembles."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_REFINE", "1")
+
+    regions = [_region("math", "a"), _region("paragraph", "b")]
+    # active order is PROSE-first then MATH (PASS_ORDER): paragraph=a_pos 0,
+    # math=a_pos 1. Fail a_pos 1 (the math region) on every slot.
+    rt = _FailSoftEndpointSpy(fail_indices={1})
+    out = run_qwen_specialists(regions, [], k=2, runtime=rt)
+
+    # Both regions produced candidates (document assembles, no abort).
+    assert set(out.keys()) == {0, 1}
+    for idx in out:
+        assert len(out[idx]) == 2
+
+    # The math region (region index 0) kept its LOCAL draft and is stamped
+    # degraded. (region idx 0 is the math region in the input list.)
+    math_cands = out[0]
+    assert all(c.raw_metadata.get("endpoint_degraded") for c in math_cands)
+    assert all(
+        c.raw_metadata.get("degraded_reason")
+        == "endpoint_refine_failed_kept_local_draft"
+        for c in math_cands
+    )
+    # The draft text is real local content (a MathML fragment from the mock),
+    # NOT empty / a skip.
+    assert all(c.text and c.text.strip() for c in math_cands)
+    assert all(c.raw_metadata["stage6_phase"] == "refine" for c in math_cands)
+
+    # The healthy paragraph region got real endpoint output, NOT degraded.
+    para_cands = out[1]
+    assert all(not c.raw_metadata.get("endpoint_degraded") for c in para_cands)
+    assert all("endpoint" in c.text for c in para_cands)
+
+
+def test_phase2_pure_endpoint_one_region_fails_degraded_skip(monkeypatch):
+    """Scenario (b): one region fails in PURE-ENDPOINT mode -> degraded/skip
+    candidate for THAT region, the others are fine."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+
+    regions = [_region("math", "a"), _region("paragraph", "b")]
+    # active: PROSE (paragraph) a_pos 0, MATH a_pos 1. Fail a_pos 1 (math).
+    rt = _FailSoftEndpointSpy(fail_indices={1})
+    out = run_qwen_specialists(regions, [], k=2, runtime=rt)
+
+    assert set(out.keys()) == {0, 1}
+    # Math region (region idx 0) -> single degraded skip candidate.
+    math_cands = out[0]
+    assert len(math_cands) == 1
+    assert math_cands[0].text == ""
+    assert math_cands[0].raw_metadata.get("endpoint_degraded") is True
+    assert math_cands[0].raw_metadata.get("degraded_reason") == "endpoint_failed_all_slots"
+    assert math_cands[0].finish_reason == "endpoint_degraded"
+
+    # Paragraph region (idx 1) is fine — k=2 real endpoint candidates.
+    para_cands = out[1]
+    assert len(para_cands) == 2
+    assert all("endpoint" in c.text for c in para_cands)
+
+
+def test_phase2_pure_endpoint_all_regions_fail_raises(monkeypatch):
+    """Scenario (c): ALL active regions fail the endpoint -> still RAISES
+    (fail-loud). We do not ship an empty document on a total failure."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+
+    regions = [_region("math", "a"), _region("paragraph", "b")]
+    rt = _FailSoftEndpointSpy(fail_indices={0, 1})  # every active region fails
+    with pytest.raises(EndpointRuntimeError) as exc:
+        run_qwen_specialists(regions, [], k=2, runtime=rt)
+    assert "ALL" in str(exc.value) and "empty document" in str(exc.value)
+
+
+def test_phase2_pure_endpoint_partial_slot_failure_keeps_good_slots(monkeypatch):
+    """A region with SOME slots failing but ≥1 succeeding keeps the good
+    candidates (no degraded skip), proving partial-slot resilience."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+
+    # Fail the region only on EVEN slots: a stateful spy.
+    class _AltSlotSpy(MockRuntime):
+        def __init__(self):
+            super().__init__()
+            self.slot = -1
+
+        def generate_batch(self, prompts, *, max_tokens, fail_soft=False, **kw):  # type: ignore[override]
+            self.slot += 1
+            fail = self.slot % 2 == 0  # fail slot 0, succeed slot 1
+            out = []
+            for i in range(len(prompts)):
+                out.append(None if (fail and fail_soft) else f"<p>e{i}</p>")
+            return out
+
+    rt = _AltSlotSpy()
+    out = run_qwen_specialists([_region("math", "a")], [], k=2, runtime=rt)
+    # k=2: slot0 failed (None), slot1 succeeded -> exactly 1 kept candidate.
+    assert len(out[0]) == 1
+    assert out[0][0].text == "<p>e0</p>"
+
+
 def test_concurrency_bound_honored_capped_at_prompt_count(monkeypatch):
     """max_workers is min(concurrency, len(prompts)) — proven via peak."""
     monkeypatch.setenv("SEMANTIK_SPECIALIST_CONCURRENCY", "8")
@@ -349,3 +492,219 @@ def test_concurrency_bound_honored_capped_at_prompt_count(monkeypatch):
         out = rt.generate_batch(prompts, max_tokens=32)
     assert len(out) == 2
     assert peak <= 2
+
+
+# ---------------------------------------------------------------------------
+# Stage B — _pack_batches packing policy
+# ---------------------------------------------------------------------------
+
+
+def _job(idx: int, *, adapter: AdapterID, max_new_tokens: int) -> _RegionJob:
+    return _RegionJob(
+        idx=idx,
+        adapter=adapter,
+        request=types.SimpleNamespace(
+            adapter=adapter, request_id=f"r{idx}", sampling_overrides={}
+        ),
+        defaults={
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "max_new_tokens": max_new_tokens,
+            "repetition_penalty": 1.0,
+        },
+        prompt=f"SYSTEM: r\nUSER: region-{idx}",
+    )
+
+
+def test_pack_batches_respects_max_regions():
+    jobs = [_job(i, adapter=AdapterID.PROSE, max_new_tokens=100) for i in range(7)]
+    batches = _pack_batches(jobs, max_regions=3, output_token_cap=10_000_000)
+    # 7 jobs / 3 per batch -> [3, 3, 1]; order preserved.
+    assert [len(b) for b in batches] == [3, 3, 1]
+    flat = [j.idx for b in batches for j in b]
+    assert flat == list(range(7))
+
+
+def test_pack_batches_output_token_cap_forces_smaller_table_batches():
+    # Big-output table jobs (4000 tokens each) with a 10000 cap -> 2 per batch
+    # even though max_regions allows 12.
+    jobs = [_job(i, adapter=AdapterID.TABLE, max_new_tokens=4000) for i in range(5)]
+    batches = _pack_batches(jobs, max_regions=12, output_token_cap=10_000)
+    # 4000+4000=8000 <= 10000, +4000=12000 > 10000 -> new batch. [2,2,1].
+    assert [len(b) for b in batches] == [2, 2, 1]
+
+
+def test_pack_batches_oversized_single_job_gets_own_batch():
+    jobs = [_job(0, adapter=AdapterID.TABLE, max_new_tokens=99_999)]
+    batches = _pack_batches(jobs, max_regions=12, output_token_cap=1000)
+    assert len(batches) == 1 and len(batches[0]) == 1  # never dropped
+
+
+def test_pack_batches_197_prose_jobs_collapse_to_about_17_batches():
+    jobs = [_job(i, adapter=AdapterID.PROSE, max_new_tokens=200) for i in range(197)]
+    batches = _pack_batches(jobs, max_regions=12, output_token_cap=10_000_000)
+    # 197 / 12 = 16.4 -> 17 batches (the ~197 POSTs -> ~17 POSTs claim).
+    assert len(batches) == 17
+
+
+def test_batch_mode_resolver_default_on_falsey_off(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH", raising=False)
+    assert resolve_batch_mode() is True  # default ON for endpoint lane
+    for falsey in ("0", "false", "no", "off"):
+        monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH", falsey)
+        assert resolve_batch_mode() is False, falsey
+    for truthy in ("1", "true", "yes", "garbage", ""):
+        monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH", truthy)
+        assert resolve_batch_mode() is True, truthy
+
+
+def test_batched_endpoint_k_caps_at_2(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH_K", raising=False)
+    assert resolve_batched_endpoint_k(4) == 2  # prose K=4 -> capped to 2
+    assert resolve_batched_endpoint_k(1) == 1  # never raised above caller's k
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH_K", "3")
+    assert resolve_batched_endpoint_k(4) == 3  # explicit pin honoured
+    assert resolve_batched_endpoint_k(2) == 2  # still clamped to caller's k
+
+
+# ---------------------------------------------------------------------------
+# Stage C/D — Phase-2 BATCHED dispatch via generate_multi
+# ---------------------------------------------------------------------------
+
+
+class _BatchedEndpointSpy(MockRuntime):
+    """Endpoint-shaped runtime exposing generate_multi (batched path).
+
+    Records each generate_multi call's region ids. ``fail_ids`` (a set of
+    ``r{idx}`` strings) come back as the None sentinel; others echo a
+    fragment. ``raise_batch_with`` (a region id) makes the WHOLE batch
+    containing that id raise, to exercise the per-batch degrade-to-None."""
+
+    def __init__(self, fail_ids=None, raise_batch_with=None):
+        super().__init__()
+        self.fail_ids = set(fail_ids or [])
+        self.raise_batch_with = raise_batch_with
+        self.multi_calls: list[list[str]] = []
+
+    def generate_multi(self, items, *, max_tokens, drafts=None, **kw):  # type: ignore[override]
+        ids = [rid for rid, _ in items]
+        self.multi_calls.append(ids)
+        if self.raise_batch_with is not None and self.raise_batch_with in ids:
+            raise RuntimeError("simulated batch dispatch error")
+        out = {}
+        for rid, _payload in items:
+            out[rid] = None if rid in self.fail_ids else f"<p>endpoint {rid}</p>"
+        return out
+
+
+def test_phase2_batched_one_post_per_batch_default_on(monkeypatch):
+    """Default (batch ON): regions are dispatched via generate_multi, one
+    POST per batch — fewer calls than regions×K."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH", raising=False)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH_REGIONS", "12")
+
+    regions = [_region("paragraph", str(i)) for i in range(5)]
+    rt = _BatchedEndpointSpy()
+    out = run_qwen_specialists(regions, [], k=4, runtime=rt)
+
+    # All 5 regions produced candidates via the batched path.
+    assert set(out.keys()) == {0, 1, 2, 3, 4}
+    # K capped to 2 on the batched lane -> 2 slots; 5 prose regions fit in ONE
+    # batch each slot -> 2 generate_multi calls total (NOT 5×4 = 20 POSTs).
+    assert len(rt.multi_calls) == 2
+    assert all(c.raw_metadata["stage6_phase"] == "endpoint" for c in out[0])
+    assert all("endpoint" in c.text for c in out[0])
+
+
+def test_phase2_batched_failsoft_one_region_degrades_others_assemble(monkeypatch):
+    """One region's batch fails (None) -> that region degrades, the rest
+    assemble. ALL regions failing still fails loud."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH", raising=False)
+
+    regions = [_region("paragraph", "a"), _region("paragraph", "b")]
+    # Region index 1 (id r1) fails every slot.
+    rt = _BatchedEndpointSpy(fail_ids={"r1"})
+    out = run_qwen_specialists(regions, [], k=4, runtime=rt)
+
+    assert set(out.keys()) == {0, 1}
+    # r0 assembled normally.
+    assert all("endpoint" in c.text for c in out[0])
+    # r1 degraded to a single skip candidate (pure-endpoint, no local draft).
+    assert len(out[1]) == 1
+    assert out[1][0].text == ""
+    assert out[1][0].raw_metadata.get("endpoint_degraded") is True
+    assert out[1][0].raw_metadata.get("degraded_reason") == "endpoint_failed_all_slots"
+
+
+def test_phase2_batched_all_regions_fail_raises(monkeypatch):
+    from dart_semantic.qwen_specialists.endpoint_runtime import EndpointRuntimeError
+
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH", raising=False)
+
+    regions = [_region("paragraph", "a"), _region("paragraph", "b")]
+    rt = _BatchedEndpointSpy(fail_ids={"r0", "r1"})
+    with pytest.raises(EndpointRuntimeError) as exc:
+        run_qwen_specialists(regions, [], k=4, runtime=rt)
+    assert "ALL" in str(exc.value) and "empty document" in str(exc.value)
+
+
+def test_phase2_batched_batch_dispatch_raise_degrades_that_batch(monkeypatch):
+    """A generate_multi call that RAISES degrades its batch's regions to None
+    (defensive) rather than aborting — the other batch still assembles."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH", raising=False)
+    # Force one region per batch so the raising region is isolated.
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH_REGIONS", "1")
+
+    regions = [_region("paragraph", "a"), _region("paragraph", "b")]
+    rt = _BatchedEndpointSpy(raise_batch_with="r1")
+    out = run_qwen_specialists(regions, [], k=4, runtime=rt)
+    # r0 fine; r1's batch raised -> degraded skip, document still assembles.
+    assert "endpoint" in out[0][0].text
+    assert out[1][0].raw_metadata.get("endpoint_degraded") is True
+
+
+def test_phase2_byte_stable_when_off(monkeypatch):
+    """SEMANTIK_SPECIALIST_BATCH=0 -> EXACT per-region generate_batch path.
+
+    The off path uses generate_batch (not generate_multi), keeps full K, and
+    produces the identical Candidate shape the legacy path emits."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH", "0")
+
+    # A runtime exposing BOTH generate_batch (used when off) and generate_multi
+    # (must NOT be called when off).
+    class _DualSpy(MockRuntime):
+        def __init__(self):
+            super().__init__()
+            self.batch_calls = 0
+            self.multi_calls = 0
+
+        def generate_batch(self, prompts, *, max_tokens, fail_soft=False, **kw):  # type: ignore[override]
+            self.batch_calls += 1
+            return [f"<p>endpoint {i}</p>" for i in range(len(prompts))]
+
+        def generate_multi(self, items, *, max_tokens, drafts=None, **kw):  # type: ignore[override]
+            self.multi_calls += 1
+            return {rid: f"<p>multi {rid}</p>" for rid, _ in items}
+
+    regions = [_region("paragraph", "a"), _region("math", "b")]
+    rt = _DualSpy()
+    out = run_qwen_specialists(regions, [], k=4, runtime=rt)
+
+    # Off path took generate_batch, NEVER generate_multi.
+    assert rt.batch_calls > 0
+    assert rt.multi_calls == 0
+    # Full K=4 preserved (no batched-lane K cap when off).
+    assert len(out[0]) == 4 and len(out[1]) == 4
+    # Legacy Candidate shape: phase tagged "endpoint", real content.
+    assert all(c.raw_metadata["stage6_phase"] == "endpoint" for c in out[0])
+    assert all("endpoint" in c.text for c in out[0])

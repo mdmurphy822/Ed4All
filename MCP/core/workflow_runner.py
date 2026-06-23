@@ -507,6 +507,23 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "imscc_chunks_sha256": (
             "phase_outputs", "imscc_chunking", "imscc_chunks_sha256",
         ),
+        # Issue I1: explicit chunkset PATHS pin the fresh on-disk chunkset
+        # as the archive copy source (vs the mtime heuristic). Mirrors the
+        # YAML routing at config/workflows.yaml::libv2_archival.
+        "imscc_chunks_path": (
+            "phase_outputs", "imscc_chunking", "imscc_chunks_path",
+        ),
+        "dart_chunks_path": (
+            "phase_outputs", "chunking", "dart_chunks_path",
+        ),
+        # Objectives plumbing: thread the course_planning-emitted
+        # synthesized_objectives.json so _archive_to_libv2 can project the
+        # canonical archive-side objectives.json (with parent_terminal
+        # back-pointers) the strict packet_integrity gate's co_has_parent
+        # rule depends on.
+        "synthesized_objectives_path": (
+            "phase_outputs", "course_planning", "synthesized_objectives_path",
+        ),
     },
     "finalization": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),

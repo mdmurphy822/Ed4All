@@ -32,8 +32,8 @@ only after a full pipeline run that produced trainforge outputs).
 
 Usage:
     python scripts/run_post_courseforge_tail.py \
-        --project-id PROJ-sample-course-a-20260618121309 \
-        --course-name sample-course-pkgtest \
+        --project-id PROJ-<course-slug>-<timestamp> \
+        --course-name <course-name> \
         --libv2-root /tmp/libv2-pkgtest
 """
 from __future__ import annotations

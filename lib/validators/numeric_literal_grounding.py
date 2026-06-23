@@ -26,8 +26,8 @@ EXTENDS the precedent's normalization (unicode minus / slash) and adds a
 
 The measured rule (real-data, see the module-level investigation)
 -----------------------------------------------------------------
-On the 8 real 7B blocks (``inputs/contentgen/alg_blocks.json``) vs the 72 real
-chunks (``LibV2/courses/sample-course-a/dart_chunks/chunks.jsonl``):
+On the 8 real 7B blocks vs the 72 real chunks of a course archive
+(``LibV2/courses/<course-slug>/dart_chunks/chunks.jsonl``):
 
 * The fabrication ``-40/88`` (a worked-example INPUT that appears NOWHERE as an
   adjacent digit-group pair in the 72 chunks) is FLAGGED — present in BOTH the

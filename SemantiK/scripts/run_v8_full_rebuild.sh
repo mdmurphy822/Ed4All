@@ -140,7 +140,7 @@ cat "$LOG_DIR/v8_06_audit.log" >&2
 
 # ----- Step 7: train reasoner_v8 -----
 echo "[v8] 07 train reasoner_v8" >&2
-TOKENIZERS_PARALLELISM=false "$PY" train_reasoner.py \
+TOKENIZERS_PARALLELISM=false "$PY" training/train_reasoner.py \
     --dataset-dir data/qwen_dataset_v8ds \
     --output-dir models/reasoner_v8 \
     --subsample-train 3000 --eval-size 100 --epochs 1 \

@@ -1,168 +1,193 @@
-# Semantic — DART structure pipeline
+# SemantiK — Accessible-HTML Conversion Engine
 
-Turns arbitrary PDFs into WCAG 2.2 AA-conformant accessible HTML for DART, on
-the principle that **learned models are narrow candidate generators;
-deterministic code orchestrates, gates, and assembles.** No external LLMs at
-runtime. No human in the loop.
+Ed4All's **PDF → WCAG 2.2 AA accessible-HTML conversion engine**. A
+local-only ML cascade built on one principle:
 
-> **Target architecture lives in [`architecture.md`](architecture.md).** It
-> covers the BERT council, the Qwen specialist adapters, the two-tier
-> validation gate, and the three exit modes (ship / offline-Qwen lane /
-> non-certified stamp). Read that first if you want the canonical design.
->
-> **Two pipelines coexist in this repo:**
->
-> - **v1** — the deterministic 8-stage pipeline described below, with one
->   trained block-classifier at stage 3 (`dart_semantic/pipeline.py`, also
->   reachable as `pipeline_v2.run(pdf, mode="v1")`). The classifier is the
->   seed of `BERT-Structure` in the target design.
-> - **v2** — the full 13-stage cascade from `architecture.md`, now wired
->   end-to-end in `dart_semantic/cascade.py` and reachable as
->   `pipeline_v2.run(pdf, mode="v2")`. Every stage (council → cross-BERT
->   reranker → structure graph → Qwen specialists → two-tier gates →
->   assembler → ThetaEvaluator → exit decider) is implemented in code.
->
-> **v2 is model-complete.** A real-runtime corpus eval passed 2026-06-09
-> (`data/eval_reports/full_cascade_real_v8_R10_postfix.json`: WCAG 3/3,
-> `stage10_pass_rate` 1.0), with the theta `semantic_preservation` dimension
-> running live on the v8 full-FT DeBERTa-v3-small head (no stub) and the
-> offline-Qwen lane firing. Earlier `*_under_mock` evidence in
-> `data/eval_reports/` is superseded by this real-runtime run.
+> **Learned models are narrow candidate generators; deterministic code
+> orchestrates, gates, and assembles.**
 
-## v1 reference path (legacy seed — 8 stages, one trained model)
+BERTs classify, Qwens generate candidates, and deterministic code owns
+composition, hierarchy, ARIA wiring, validation, and final assembly. That
+split is what lets SemantiK make an auditable WCAG conformance claim: the
+rules that produce conformance are visible code, not weights.
 
-> The v2 BERT-council + Qwen-specialist cascade described above is the canonical
-> architecture (see [`architecture.md`](architecture.md)). The v1 path below is
-> the original single-classifier seed: still runnable and used for data-gen, but
-> no longer the system's primary path. The training command in this section
-> builds/trains the v1 classifier specifically.
+- **License-clean by construction.** The PDF stack is built entirely on
+  permissively-licensed tooling — pypdfium2 (Apache-2/BSD-3) for text
+  extraction and rendering, pdfplumber (MIT) for layout, pikepdf (MPL-2.0)
+  for structure, and Tesseract (Apache-2) for OCR. The code ships Apache-2.0
+  (see `LICENSE`).
+- **No cloud LLM at runtime.** The Stage-6 specialists run fully offline on
+  local GGUF weights. A hosted 70B endpoint is an opt-in quality seat, not a
+  dependency.
+- **No human in the loop.** Four deterministic exit actions, no escalation.
 
+## Where things live
 
-```
-1. extract       pikepdf + pypdfium2 + pdfplumber + Tesseract  no model
-2. features      per-block layout features (size/gap/caps…)   no model
-3. classify      7 rules + distilbert role classifier         ONE model ← trained
-4. hierarchy     font-stack heading depth + list nesting      no model
-5. ontology_map  (role, depth) → HTML via config              no model
-6. enrich        language detect + stubbed vision calls       specialized tools
-7. validate      axe-core wcag22aa ruleset                    no model
-8. escalate      rule-based ship / llm_fallback / fail        no model
-```
+| Path | What |
+|------|------|
+| `SemantiK/dart_semantic/` | The 13-stage cascade + model runtimes |
+| `lib/semantik/` | The Ed4All-facing adapter seam (output-contract normalizer + deterministic front-matter filter) |
+| `MCP/tools/pipeline_tools.py` | The bridge wiring into the Ed4All pipeline |
+| [`architecture.md`](architecture.md) | **Canonical** cascade deep-dive (read this for the design) |
+| [`CLAUDE.md`](CLAUDE.md) | Subsystem guide for coding agents (runtime modes, flags, bridge, tests) |
+| [`docs/ontology.md`](docs/ontology.md) | Standards mapping for every emitted element (WAI-ARIA 1.2 APG, HTML Living Standard, ARIA-in-HTML, PDF/UA, EPUB Accessibility 1.1, WCAG 2.2 AA) |
 
-Every intermediate block is inspectable; every structural choice traces back
-to either a rule, an algorithm, or a classifier confidence.
+## The cascade at a glance
 
-> **Note on the earlier "zero-violation on four arXiv papers" result.** That
-> result was contaminated: v1 used to silently flatten header-less tables into
-> `<p class="unlabeled-table">`, so axe-core had no `<table>` to flag. That
-> silent fallback has been removed — a header-less table now raises
-> `MappingError` and the document is dropped with a stage-5 error (per the
-> no-silent-fallbacks invariant). The four reference papers all hit that path,
-> so they now drop rather than ship a degraded result. Honest table
-> remediation is a v2 (Qwen table specialist) responsibility.
+Entry point: `dart_semantic/cascade.py::run_full_cascade` (reachable as
+`pipeline_v2.run(pdf, mode="v2")`). Per-stage depth is in
+[`architecture.md`](architecture.md); the one-liner map:
 
-The historical refactor that produced this layout is documented in
-[`docs/refactor_plan.md`](docs/refactor_plan.md). The target architecture
-(BERT council + Qwen specialists) supersedes it; see
-[`architecture.md`](architecture.md).
+| # | Stage | What it does |
+|---|-------|--------------|
+| 1 | extract | pikepdf + pypdfium2 + pdfplumber + Tesseract → per-page text/bbox |
+| 2 | features | font/geometry/column/reading-order features per block |
+| 3 | council | BERT specialists (Structure · Semantic · MergeOrSplit · TableSpecialist · Math), shared backbone with one-resident LoRA adapter swap |
+| 4 | cross-BERT reranker | arbitrate conflicting council signals → routing decisions |
+| 5 | structure_graph | deterministic 6-pass grouping → typed `Region` objects |
+| 6 | Qwen specialists | prose/table/math HTML generation; local GGUF or hosted 70B endpoint; batched by adapter |
+| 7 | per-region hard gate | axe-wcag22aa · html5 · text-preservation · MathML · table/heading (eliminating) |
+| 8 | per-region soft reranker | pick the top surviving candidate per region |
+| 9 | assembler | role→HTML, heading-tree normalize, gap-fill splice |
+| 10 | document hard gate | document-scope axe · lang · title · landmark · heading contiguity |
+| 11 | document soft reranker | document quality / lane-selection signal |
+| 12 | theta | DeBERTa-v3-small semantic-preservation cross-encoder (post-WCAG quality score) |
+| 13 | exit decider | stamp `ship_with_confidence` / `ship_with_flag` / `offline_qwen_lane` / `non_certified_stamp` |
 
-## Hardware
+Every intermediate decision is inspectable: each structural choice traces
+back to a rule, an algorithm, or a model confidence. See
+[`architecture.md`](architecture.md) for the BERT council, the Qwen
+specialists, the two-tier validation gate, the theta evaluator, and the
+exit-decision table.
 
-RTX 3070 8 GB (WSL2 Ubuntu 24.04, Python 3.12). CUDA 12.1+ for the stage-3 classifier. Stages 1/2/4/5/6/7/8 run on CPU.
+## Quick start
 
-## Setup
+SemantiK runs inside Ed4All as the `dart_conversion` conversion backend (via
+the bridge in `MCP/tools/pipeline_tools.py`) — no dedicated CLI of its own.
+To provision the runtime in-process, install the deps into a venv that
+already carries the heavy ML stack (Ed4All's `[training]`+`[embedding]`
+extras satisfy torch / transformers / peft / scikit-learn / scipy):
 
 ```bash
-sudo apt install tesseract-ocr libasound2t64
-# Note: Poppler (GPL-2.0) and PyMuPDF/MuPDF (AGPL-3.0) are deliberately NOT
-# dependencies. All PDF handling uses pypdfium2 (Apache-2), pdfplumber
-# (MIT), pikepdf (MPL-2.0), and Tesseract (Apache-2).
-./setup.sh
-source .venv/bin/activate
+# 1. The pure-pip deps (the [semantik] extra).
+pip install -e '.[semantik]'
+
+# 2. The headless Chromium used by the axe-core a11y audit.
+playwright install chromium
+
+# 3. llama-cpp-python for the LOCAL Stage-6 GGUF specialists — a CUDA
+#    *source* build, NOT the CPU wheel:
+CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=86" \
+  pip install --no-binary llama-cpp-python llama-cpp-python
 ```
 
-## Running
+Step 3 is **optional for structure-only conversion**: the Stage-6
+specialists can run on the hosted 70B endpoint seat instead
+(`SEMANTIK_SPECIALIST_PROVIDER=nvidia`, key `NVIDIA_API_KEY`), so a box
+without a CUDA-built `llama-cpp-python` can still run the full cascade.
 
-### On a real PDF
+Alternatively, the cascade runs **out of process** in its own venv behind a
+JSON bridge (`scripts/run_cascade_json.py`); point `SEMANTIK_PYTHON` at that
+venv's interpreter and `SEMANTIK_RUNTIME_DIR` at this repo root. Full
+provisioning, runtime modes, and the env-flag table are in
+[`CLAUDE.md`](CLAUDE.md).
 
-```bash
-# With the trained classifier (expected path):
-python scripts/infer_pdf.py path/to/doc.pdf --save /tmp/result.json
+## Runtime modes
 
-# Without the classifier (rules-only + paragraph defaults):
-python scripts/infer_pdf.py path/to/doc.pdf --no-classifier
-```
+- **Local GGUF specialists (default).** `SEMANTIK_SPECIALIST_PROVIDER=local`
+  (or unset) runs the Stage-6 specialists in-process on `llama-cpp-python`
+  (built against CUDA), fully offline, no key. This is the byte-stable
+  default.
+- **Hosted 70B endpoint seat.** Any non-local
+  `SEMANTIK_SPECIALIST_PROVIDER` value (e.g. `nvidia`) routes Stage-6
+  generation (and the optional Stage-5d structure reviewer) to an
+  OpenAI-compatible hosted endpoint. This is the **only** part of SemantiK
+  that selects an LLM provider, so it is the only flag carrying a
+  `docs/LICENSING.md` row.
 
-Outputs: role distribution, axe-core result, escalation verdict, and optionally the full resolved-block list saved as JSON.
+Specialist generation is **batched by adapter** (one PROSE/TABLE/MATH
+adapter resident at a time — never interleaved on 8 GB VRAM). The optional
+Stage-5d structure reviewer (`SEMANTIK_STRUCTURE_REVIEW=1`, off by default)
+is a conservative heading corrector that never alters text and **fails
+closed** on any token-conservation mismatch.
 
-### Training the classifier
+## Output contract
 
-```bash
-# 1. Build per-block training data from existing pair files:
-python data/build_classifier_data.py
+SemantiK emits a stable, downstream-facing shape so every Ed4All consumer
+(Courseforge staging, source-mapping, the chunker, the Ask path) reads one
+consistent interface across runs and versions. Full detail:
+[`architecture.md`](architecture.md) §12.
 
-# 2. Train:
-python train_classifier.py                  # ~12-15 min on a 3070
-# Adapter saved to models/classifier/final/
-```
+- **Source-provenance block attributes.** The adapter seam
+  (`lib/semantik/adapter.py`, `cascade_ir.py`) wraps each content block in a
+  `<section class="dart-section">` carrying provenance attributes
+  (`data-dart-block-id`, `data-dart-source`, `data-dart-pages`,
+  `data-dart-confidence`, `data-dart-wcag`, …) — the stable block id, the
+  `synthesized`/`vendor` provenance, the physical PDF page span, and the
+  per-region gate verdict.
+- **A deterministic sourceId**, `{prefix}:{slug}#{block_id}`, where the
+  `block_id` is minted from the block's first raw FeatureBlock index (or a
+  content hash under `TRAINFORGE_CONTENT_HASH_IDS=1`). **Same PDF in → same
+  sourceIds out**, so chunk refs, `source_module_map.json`, and citation
+  deep-links survive re-runs.
+- **`region_provenance`** — a per-region list in emission order (region
+  index, kind, role, confidence, WCAG status, raw block index, pages,
+  heading text/level, figure alt, raw text).
+- **`*.conformance_audit.json`** (schema `conformance-audit/1.0`) — exit
+  action + WCAG status, per-region + document gate logs *with skip counts*
+  (skips are first-class: "no measurement", not "verified safe"), the theta
+  report, thresholds, heading tree, and a rule-id → WCAG SC coverage map.
 
-### Generating training data
+## Key concepts
 
-The pair files under `data/pairs/` and `data/synthetic/` are produced by:
+- **Front-matter handling is deterministic.** Phantom-TOC / front-matter
+  contamination (a book's table-of-contents getting classified as real
+  chapter headings) is fixed at the adapter seam by the CPU-only detector
+  `lib/semantik/toc_frontmatter_detector.py` — a front-matter-zone anchor, a
+  monotonic-page-number TOC run, and a page-density cluster. This is the
+  load-bearing front-matter fix; the off-by-default Stage-5d 70B reviewer is
+  the secondary, conservative defensive layer.
+- **Hard gates eliminate; soft rerankers only choose among survivors.**
+  Mixing eliminating WCAG checks with fit-quality signals in one scorer
+  would let the model trade an axe violation against style — the wrong
+  direction on the axis SemantiK competes on. So axe/html5/text-preservation
+  failures *drop* a candidate before any soft reranker sees it.
+- **Theta is a post-WCAG quality score, not a gate.** It runs only on
+  documents that pass the document-level hard gate and never overrides a
+  WCAG verdict; it may lower confidence, trigger one capped offline retry,
+  or attach a review flag.
 
-```bash
-python scripts/pair_from_wikipedia.py --titles data/seeds/seed_titles.txt --workers 4
-python scripts/pair_from_arxiv.py --limit 200 --workers 4
-python scripts/gen_synthetic_forms.py --n 200
-```
+## Honest constraints
 
-Each script emits `{input_ocr, output_html}` pairs (no JSON target). `data/build_classifier_data.py` derives per-block `(features, role)` labels from them.
+- **Council VRAM on 8 GB.** The full cascade is GPU-flaky on an 8 GB card:
+  council BERTs share one ModernBERT-base backbone (one-resident LoRA
+  adapter swap) and the Qwen specialists batch *by adapter* rather than
+  fanning out, because parallel adapter contexts plus a concurrent
+  Chromium/axe-core process poison CUDA on 8 GB. Mitigated, not eliminated.
+  The DGX Spark-class deployment target is the real fix.
+- **Structure quality is council-bound.** Block-ID quality of *pedagogical*
+  elements is only as good as BERT-Structure's `structural_role` /
+  `is_heading` heads; heading over-detection is patched defensively (the
+  always-on deterministic front-matter detector is load-bearing; the
+  Stage-5d 70B reviewer is conservative and off by default).
 
-## Layout
+Full limitations: [`architecture.md`](architecture.md) §14.
 
-```
-dart_semantic/
-  extract.py          stage 1: thin adapter over extract_shared.py
-  extract_shared.py   stage 1 core: parallel pikepdf + pypdfium2 +
-                      pdfplumber + Tesseract → standardized per-page JSON
-  features.py         stage 2: RawBlock → FeatureBlock
-  classify.py         stage 3: Role enum + rules + classifier hook
-  hierarchy.py        stage 4: depth resolution algorithms
-  ontology_map.py     stage 5: role → HTML assembly (supersedes emit_html)
-  enrich.py           stage 6: language detect + vision stubs
-  validate.py         stage 7: axe-core runner
-  escalate.py         stage 8: ship / llm_fallback / fail rules
-  pipeline.py         orchestrator — run_pipeline(pdf)
-  types.py            dataclasses flowing between stages
-  parse_wikipedia.py  data-gen: Wikipedia REST HTML → legacy IR
-  parse_ar5iv.py      data-gen: ar5iv HTML → legacy IR
-  arxiv_sections.py   data-gen: PDF bookmarks → section page ranges
-  arxiv_license.py    commercial-OK license filter
-  worker_pool.py      ProcessPoolExecutor helper (per-worker HtmlValidator)
-  emit_html.py        [LEGACY] used by data-gen scripts for ground-truth HTML
-  ir.py               [LEGACY] tree IR used by emit_html
-data/
-  build_classifier_data.py    pair files → per-block training JSONL
-  synthetic/                  synthetic pair files (gitignored)
-  pairs/                      wikipedia + arxiv pairs (gitignored)
-  classifier_dataset/         train/val/test JSONL (gitignored)
-scripts/
-  pair_from_wikipedia.py      generate Wikipedia pairs
-  pair_from_arxiv.py          generate arXiv pairs (local PDFs + ar5iv HTML)
-  gen_synthetic_forms.py      synthetic form generator
-  infer_pdf.py                run full pipeline on a real PDF
-eval/
-  compare_classifiers.py      side-by-side checkpoint comparison on real PDFs
-architecture.md               target architecture (BERT council + Qwen specialists)
-docs/
-  ontology.md                 standards-grounded structural ontology
-  refactor_plan.md            8-stage refactor plan (historical)
-  bloat_audit.md              code-cleanup audit (historical)
-train_classifier.py           stage-3 classifier training
-```
+## License
 
-## License stance
+Apache-2.0 (`LICENSE`, "Copyright 2026 Ed4All"). License-clean by
+construction across both the PDF stack (pypdfium2 + pdfplumber + pikepdf +
+pytesseract/Tesseract) and the ML stack (transformers / peft /
+llama-cpp-python) — **every dependency on the path is permissively
+licensed**. Model weights (council BERTs, Qwen GGUFs, theta head) are
+separate artifacts, not shipped in this tree.
 
-Training data sourced only under commercial-permissive licenses (CC-BY, CC-BY-SA, CC0, ODC-By, public domain, arXiv). No LLM-API-derived labels — labels are mechanically extracted from ground-truth HTML tags. Positioning line for procurement: *"DART's structure model is trained exclusively on public and synthetic data, with every training example validated against WCAG 2.2 AA before inclusion."*
+Training data is sourced only under commercial-permissive licenses (CC-BY,
+CC-BY-SA, CC0, ODC-By, public domain, arXiv), with no LLM-API-derived
+labels — labels are mechanically extracted from ground-truth HTML tags. The
+provider/model licensing for the opt-in hosted 70B endpoint seat lives in
+`docs/LICENSING.md`.
 
-See `architecture.md` for the target pipeline (BERT council + Qwen specialist adapters + two-tier validation gate) and `docs/ontology.md` for the exact standards mapping: WAI-ARIA 1.2 APG, HTML Living Standard, W3C ARIA in HTML, PDF/UA (ISO 14289), EPUB Accessibility 1.1, WCAG 2.2 AA.
+> Positioning line for procurement: *"SemantiK's structure model is trained
+> exclusively on public and synthetic data, with every training example
+> validated against WCAG 2.2 AA before inclusion."*

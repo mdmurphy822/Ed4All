@@ -19,7 +19,7 @@ architecture allows a soft-hint slot for ``Structure top-k``, but v1
 relies on positional/text-shape signals only — see
 data.build_table_specialist_data module docstring.
 
-Mirrors the shape declared in :mod:`train_table_specialist`.
+Mirrors the shape declared in :mod:`training.train_table_specialist`.
 """
 from __future__ import annotations
 

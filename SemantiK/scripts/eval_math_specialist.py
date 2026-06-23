@@ -46,7 +46,7 @@ def _eval_test_split(
     from data.build_math_specialist_data import (
         EQ_NUM_ASSOC, EQ_NUM_TO_ID, MATH_TYPES, MATH_TYPE_TO_ID,
     )
-    from train_math_specialist import MathSpecialistModel, _format_input
+    from training.train_math_specialist import MathSpecialistModel, _format_input
     from peft import PeftModel
     from transformers import AutoModel
 

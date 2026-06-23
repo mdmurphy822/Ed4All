@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # GPU allocation guard — coordinates GPU-heavy work across the concurrent
-# Ed4All and Semantic (/home/user/Projects/Semantic) sessions that share one
-# 8GB GPU. Deliberately interoperable with the Semantic project's conventions:
+# Ed4All and a sibling Semantic session that share one local 8GB GPU.
+# Deliberately interoperable with that sibling session's conventions:
 #
 #   * Shared flock mutex on /tmp/dart_qwen_train.lock — the SAME file
 #     Semantic's dart_semantic/qwen_specialists/training_lock.py flocks. Holding
 #     it here makes Semantic's (non-blocking) flock refuse, and vice-versa.
 #   * VRAM gate: refuse to start while memory.used > 1500 MiB — the SAME
 #     threshold Semantic's scripts/run_gpu_queue.sh uses. Catches ANY hog
-#     (e.g. Semantic's train_structure.py, which does NOT take the flock).
+#     (e.g. SemantiK's training/train_structure.py, which does NOT take the flock).
 #
 # Primary entrypoint:
 #   scripts/gpu_guard.sh run --task LABEL -- <command...>

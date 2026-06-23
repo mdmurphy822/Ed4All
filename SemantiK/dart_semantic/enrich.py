@@ -22,8 +22,9 @@ v1 implementations:
                           upgrade to Florence-2 when row images are extracted.
     extended_description: Florence-2 with "caption_detailed" prompt for now;
                           future upgrade to a dedicated chart-understanding model.
-    math:                 passthrough of MathML when present (from pymupdf
-                          or ar5iv); Pix2Tex for image-only equations (future).
+    math:                 passthrough of MathML when present in the source
+                          (e.g. ar5iv markup); Pix2Tex for image-only
+                          equations (future).
 
 All models above are Apache 2.0 or MIT. No Claude, OpenAI, Gemini, or
 any other LLM-API dependency at runtime.

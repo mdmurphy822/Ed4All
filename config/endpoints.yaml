@@ -88,6 +88,33 @@ endpoints:
     default_model: nvidia/nemotron-3-nano-30b-a3b
     provenance_provider: nvidia
 
+  nvidia-deepseek:
+    kind: openai_compatible
+    base_url: https://integrate.api.nvidia.com/v1
+    base_url_env: NVIDIA_BASE_URL
+    api_key_env: NVIDIA_API_KEY
+    api_key_required: true
+    # DEDICATED model env — must NOT reuse NVIDIA_LARGE_MODEL (that drives
+    # the nemotron `nvidia` row above; reusing it would collide).
+    model_env: NVIDIA_DEEPSEEK_MODEL
+    default_model: deepseek-ai/deepseek-v4-pro
+    vision_capable: false
+    # Maps onto the EXISTING `nvidia` provenance value so the frozen
+    # Touch.provider set does not grow (NVIDIA-hosted, same vendor identity).
+    provenance_provider: nvidia
+    # deepseek-v4-pro is a REASONING model — it needs
+    # chat_template_kwargs:{thinking:false} in the request body to suppress
+    # chain-of-thought. SemantiK injects this via its own endpoint runtime
+    # (SEMANTIK_SPECIALIST_DISABLE_THINKING). The general Ed4All
+    # OpenAI-compatible backend (MCP/orchestrator/llm_backend.py) does NOT
+    # yet forward extra_body — see the FOLLOW-UP note in the schema doc for
+    # `extra_body` and in the row above. Declared here so the intent is
+    # captured on the registry row; the projection carries it through for a
+    # consumer that opts in.
+    extra_body:
+      chat_template_kwargs:
+        thinking: false
+
   claude_session:
     kind: claude_session            # LocalDispatcher subagent — NOT an HTTP endpoint
     base_url: null

@@ -48,7 +48,7 @@ def test_resolve_nvidia_defaults(monkeypatch):
     monkeypatch.setenv("NVIDIA_API_KEY", "test-key-not-printed")
     r = ep.resolve_endpoint("nvidia")
     assert r.base_url == "https://integrate.api.nvidia.com/v1"
-    assert r.model == "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+    assert r.model == "nvidia/nemotron-3-nano-30b-a3b"
     assert r.api_key == "test-key-not-printed"
     assert r.api_key_required is True
     assert r.provenance_provider == "nvidia"
@@ -156,7 +156,7 @@ def test_build_client_nvidia(monkeypatch):
         monkeypatch.delenv(v, raising=False)
     client = ep.build_openai_compatible_client("nvidia")
     assert client.base_url == "https://integrate.api.nvidia.com/v1"
-    assert client.model == "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+    assert client.model == "nvidia/nemotron-3-nano-30b-a3b"
 
 
 def test_build_client_injected_client_skips_key_check(monkeypatch):

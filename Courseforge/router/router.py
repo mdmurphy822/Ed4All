@@ -152,6 +152,19 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_TIERS: Tuple[str, ...] = ("outline", "rewrite")
 
+# Loopback hosts that mark a rewrite-tier base_url as LOCAL (per-block path,
+# byte-stable) rather than cloud (the batched rate-limit-defeat path).
+_LOOPBACK_HOSTS: frozenset = frozenset(
+    {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+)
+
+# Provider seats that dispatch to a hosted CLOUD endpoint when no base_url
+# override pins the host. ``local`` / ``openai_compatible`` / ``claude_session``
+# are intentionally excluded (the in-session subagent path is not rate-capped).
+_CLOUD_REWRITE_PROVIDERS: frozenset = frozenset(
+    {"anthropic", "together", "nvidia"}
+)
+
 # Legacy alias the router admits in addition to the registry endpoint
 # names: ``openai_compatible`` is the "non-Ollama / non-Together
 # OpenAI-compatible server" tag. It collapses to ``local`` at provider
@@ -2076,6 +2089,45 @@ class CourseforgeRouter:
         return outcome_block
 
     # ------------------------------------------------------------------
+    # Cloud-lane detection (rewrite-tier batching)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_cloud_rewrite_lane(spec: "BlockProviderSpec") -> bool:
+        """True when the resolved rewrite spec dispatches to a CLOUD endpoint.
+
+        The batched (rate-limit-defeat) path is only worth taking against a
+        hosted endpoint whose ~req/min cap the per-block POSTs exhaust. We
+        treat a spec as cloud when EITHER:
+
+        - the provider is a non-local hosted seat (``anthropic`` / ``together``
+          / ``nvidia``), OR
+        - the resolved ``base_url`` host is NOT loopback
+          (``localhost`` / ``127.0.0.1`` / ``::1`` / ``0.0.0.0``).
+
+        A loopback base_url (a local Ollama / vLLM / llama.cpp server) is NOT
+        cloud — the per-block path stays byte-stable there. Conservative:
+        unknown / unparseable base_url with a local provider → not cloud.
+        """
+        provider = (getattr(spec, "provider", "") or "").lower()
+        base_url = getattr(spec, "base_url", None)
+        if base_url:
+            try:
+                from urllib.parse import urlparse  # noqa: PLC0415
+
+                host = (urlparse(base_url).hostname or "").lower()
+            except Exception:  # noqa: BLE001 — defensive parse
+                host = ""
+            if host and host not in _LOOPBACK_HOSTS:
+                return True
+            if host in _LOOPBACK_HOSTS:
+                return False
+        # No base_url override — decide by provider seat. The hosted seats
+        # (anthropic / together / nvidia) are cloud; ``local`` /
+        # ``openai_compatible`` / ``claude_session`` are not.
+        return provider in _CLOUD_REWRITE_PROVIDERS
+
+    # ------------------------------------------------------------------
     # Rewrite-tier remediation dispatch (Phase 3.5 Subtask 19)
     # ------------------------------------------------------------------
 
@@ -2155,6 +2207,27 @@ class CourseforgeRouter:
             tier_chain[0], "capability_tier_name", None
         ):
             spec = tier_chain[0]
+
+        # 2b. Cloud-lane top-1 clamp. On a hosted endpoint the best-of-N
+        # candidate count multiplies POSTs by N and re-creates the
+        # rate-limit pressure batching exists to defeat — so when the
+        # rewrite-batch gate is on AND the resolved lane is cloud, clamp
+        # ``resolved_n`` down via ``resolve_rewrite_batch_k`` (top-1 by
+        # default). The off/local path is left byte-identical (the clamp
+        # only ever LOWERS N; a clamp to the same value is a no-op).
+        try:
+            from Courseforge.generators._rewrite_batch import (  # noqa: PLC0415
+                resolve_rewrite_batch_k,
+                resolve_rewrite_batch_mode,
+            )
+
+            if (
+                resolve_rewrite_batch_mode()
+                and self._is_cloud_rewrite_lane(spec)
+            ):
+                resolved_n = resolve_rewrite_batch_k(resolved_n)
+        except Exception:  # noqa: BLE001 — never break dispatch on the helper
+            pass
 
         # 3. Resolve the rewrite-tier regen budget per the Subtask 20
         # precedence chain.
@@ -2532,6 +2605,196 @@ class CourseforgeRouter:
                 )
 
         return outcome_block
+
+    # ------------------------------------------------------------------
+    # Rewrite-tier MULTI-BLOCK batched dispatch (rate-limit defeat)
+    # ------------------------------------------------------------------
+
+    def route_rewrite_batch(
+        self,
+        blocks: List[Block],
+        *,
+        source_chunks_by_block_id: Optional[Dict[str, List[Any]]] = None,
+        objectives: Optional[List[Any]] = None,
+        regen_budget: Optional[int] = None,
+        validators: Optional[List[Any]] = None,
+        fast_fail: bool = True,
+    ) -> Dict[str, Block]:
+        """Rewrite a list of blocks via BATCHED HTTP POSTs (round-based regen).
+
+        The cloud-lane analogue of :meth:`route_rewrite_with_remediation`,
+        collapsing the per-block POST into ONE POST per batch to defeat the
+        hosted seat's ~req/min rate cap. Returns ``{block_id: Block}`` for
+        EVERY input block (the caller re-orders by input index).
+
+        Round-based loop::
+
+            remaining = blocks
+            for round in range(regen_budget):
+                batches = pack_rewrite_batches(remaining)
+                for batch in batches:               # ONE POST each
+                    parsed = provider.generate_rewrite_batch(batch, ...)
+                    for block in batch:
+                        run the block's EXISTING per-block validator chain
+                        pass  → finalize
+                        fail/None → next round's remaining (refreshed suffix)
+                if not remaining: break
+            survivors after budget → stamp validator_consensus_fail
+
+        CRITICAL: a failed block is re-batched ALONE-with-other-failures, NOT
+        by re-rolling its (passing) batch siblings — a passing block is
+        finalized the round it passes and never re-dispatched. Batching is
+        scoped to a single ``(provider, model, max_tokens)`` group so per-
+        block-type validator matrices + routing are honored (validators run
+        per-block post-parse).
+        """
+        from Courseforge.generators._rewrite_batch import (  # noqa: PLC0415
+            pack_rewrite_batches,
+            resolve_rewrite_batch_size,
+        )
+        from Courseforge.router.remediation import (  # noqa: PLC0415
+            _append_remediation_for_gates,
+        )
+
+        block_list = list(blocks)
+        if not block_list:
+            return {}
+
+        chunks_by_id = source_chunks_by_block_id or {}
+        validator_list: List[Any] = list(validators or [])
+        objective_statements_map = self._objective_statements_from_objectives(
+            objectives,
+        )
+
+        # Resolve each block's spec ONCE; group by (provider, model,
+        # max_tokens) so a batch is dispatched against a single provider seat
+        # (per-block-type routing is honored). Stamp each block's resolved
+        # rewrite max_tokens onto a hash-excluded attribute the packer reads.
+        groups: Dict[Tuple[str, str, int], List[Block]] = {}
+        spec_by_group: Dict[Tuple[str, str, int], BlockProviderSpec] = {}
+        for block in block_list:
+            spec = self._resolve_spec(block, "rewrite")
+            key = (spec.provider, spec.model, int(spec.max_tokens))
+            # Stamp the per-block output budget for pack_rewrite_batches.
+            # ``object.__setattr__`` because Block is frozen; the attribute is
+            # NOT a dataclass field (hash-excluded, render-irrelevant).
+            try:
+                object.__setattr__(block, "_rewrite_max_tokens", spec.max_tokens)
+            except Exception:  # noqa: BLE001 — defensive
+                pass
+            groups.setdefault(key, []).append(block)
+            spec_by_group.setdefault(key, spec)
+
+        resolved_budget = self._resolve_rewrite_regen_budget(
+            block_list[0], regen_budget
+        )
+        batch_size = resolve_rewrite_batch_size()
+
+        results: Dict[str, Block] = {}
+
+        for key, group_blocks in groups.items():
+            spec = spec_by_group[key]
+            provider_instance = self._get_rewrite_provider(spec)
+            # Per-block remediation suffix (refreshed each round from the
+            # block's own validator failures), keyed by block_id.
+            suffix_by_id: Dict[str, str] = {}
+            # Working set of blocks still needing a passing rewrite.
+            remaining: List[Block] = list(group_blocks)
+            last_seen: Dict[str, Block] = {b.block_id: b for b in group_blocks}
+
+            for _round in range(max(1, resolved_budget)):
+                if not remaining:
+                    break
+                batches = pack_rewrite_batches(
+                    remaining, batch_size=batch_size,
+                )
+                next_remaining: List[Block] = []
+                for batch in batches:
+                    batch_chunks = {
+                        b.block_id: chunks_by_id.get(b.block_id, [])
+                        for b in batch
+                    }
+                    try:
+                        parsed = provider_instance.generate_rewrite_batch(
+                            batch,
+                            source_chunks_by_id=batch_chunks,
+                            objectives=objectives,
+                            remediation_suffix_by_id={
+                                b.block_id: suffix_by_id[b.block_id]
+                                for b in batch
+                                if b.block_id in suffix_by_id
+                            },
+                        )
+                    except Exception as exc:  # noqa: BLE001 — fail-soft batch
+                        logger.warning(
+                            "route_rewrite_batch: batch dispatch raised for "
+                            "%d block(s): %s — re-queuing for next round",
+                            len(batch), exc,
+                        )
+                        parsed = {b.block_id: None for b in batch}
+
+                    for block in batch:
+                        candidate = parsed.get(block.block_id)
+                        if candidate is None:
+                            # Parse-miss / None slot → re-batch next round.
+                            next_remaining.append(block)
+                            continue
+                        # Run the block's EXISTING per-block validator chain.
+                        all_passed, gate_results, candidate = (
+                            self._run_validator_chain(
+                                candidate,
+                                validator_list,
+                                fast_fail=fast_fail,
+                                validator_tier="rewrite_val",
+                                objectives=objectives,
+                            )
+                        )
+                        last_seen[block.block_id] = candidate
+                        if all_passed:
+                            results[block.block_id] = candidate
+                            continue
+                        # Failed → refresh this block's remediation suffix from
+                        # its OWN gate failures, re-queue it ALONE-with-other-
+                        # failures for the next round (siblings that passed are
+                        # NOT re-rolled).
+                        built_suffix = _append_remediation_for_gates(
+                            "",
+                            gate_results,
+                            objective_statements=objective_statements_map,
+                        )
+                        if built_suffix:
+                            suffix_by_id[block.block_id] = (
+                                built_suffix.lstrip("\n")
+                            )
+                        # Re-queue the ORIGINAL outline-dict block (the rewrite
+                        # is re-authored from the outline each round, exactly
+                        # like the per-block remediation loop re-dispatches).
+                        next_remaining.append(block)
+                remaining = next_remaining
+
+            # Budget exhausted for this group's survivors → stamp the
+            # symmetric consensus-fail marker on the best-effort last-seen
+            # candidate (mirrors route_rewrite_with_remediation).
+            for block in remaining:
+                survivor = last_seen.get(block.block_id, block)
+                stamped = dataclasses.replace(
+                    survivor,
+                    escalation_marker="validator_consensus_fail",
+                )
+                results[block.block_id] = stamped
+                self._emit_block_escalation(
+                    stamped,
+                    marker="validator_consensus_fail",
+                    attempts=resolved_budget,
+                    n_candidates=1,
+                )
+
+        # Safety net: a block that never landed in results (e.g. an empty
+        # group edge case) returns its input unchanged so the caller always
+        # gets a Block per input id.
+        for block in block_list:
+            results.setdefault(block.block_id, block)
+        return results
 
     # ------------------------------------------------------------------
     # W5 best-of-N selector seam

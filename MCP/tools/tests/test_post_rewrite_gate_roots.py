@@ -164,7 +164,7 @@ def test_bogus_source_id_element_stripped():
     html = (
         '<li data-cf-block-id="b#x_0" data-cf-objective-id="TO-04" '
         'data-cf-bloom-level="understand">Understand primes.</li>'
-        '<data-cf-source-ids="sample_course_a_chunk_00009"></data-cf-source-ids>'
+        '<data-cf-source-ids="sample_course_chunk_00009"></data-cf-source-ids>'
     )
     out = _pt._BOGUS_SOURCE_ID_EL_RE.sub("", html)
     assert "data-cf-source-ids" not in out
@@ -239,7 +239,7 @@ def test_emit_manifest_flag_off_is_noop(tmp_path, monkeypatch):
 # Root 6 — 7B prose (explanation/example) blocks stamp CONCEPT CURIEs into the
 # data-cf-source-ids attribute instead of canonical dart:{slug}#{chunk} refs.
 #
-# A live full-7B run (PROJ-sample-course-a) produced a NON-HOLLOW course
+# A live full-7B run produced a NON-HOLLOW course
 # whose explanation/example blocks emitted
 #   <section data-cf-source-ids="slug:concept_a,slug:concept_b">...
 # Those ``slug:concept`` values are domain CURIEs (concept vocab), NOT source
@@ -252,7 +252,18 @@ def test_emit_manifest_flag_off_is_noop(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-_SLUG = "sample-course-a"
+# Slug-free synthetic identity for the pure-unit ref-minting tests below. These
+# tests read NO on-disk LibV2 corpus — the slug is an arbitrary argument and the
+# chunk ids are synthetic keys into the map — so per the project rule (tracked
+# tests never hardcode a course slug) the identity is generic, not a pinned
+# real-corpus slug. ``_chunk_id(n)`` derives the chunk-id strings from the slug
+# so no literal corpus slug remains.
+_SLUG = "sample-course"
+
+
+def _chunk_id(n: int) -> str:
+    """Synthetic ``{slug-as-underscores}_chunk_{n:05d}`` chunk id."""
+    return f"{_SLUG.replace('-', '_')}_chunk_{n:05d}"
 
 
 # Real, content_grounding-resolvable dart:{module_id}#{hash} sourceIds keyed by
@@ -261,8 +272,8 @@ _SLUG = "sample-course-a"
 # mint these tests previously asserted was the root cause of the all-blocks
 # UNRESOLVED_SOURCE_ID failure (it never resolves against the DART staging HTML).
 _CHUNK_SOURCE_ID_MAP = {
-    "sample_course_a_chunk_00001": ["dart:module-1#aaa111"],
-    "sample_course_a_chunk_00002": ["dart:module-1#bbb222"],
+    _chunk_id(1): ["dart:module-1#aaa111"],
+    _chunk_id(2): ["dart:module-1#bbb222"],
 }
 
 
@@ -338,8 +349,8 @@ def _curie_explanation_block() -> Block:
         page_id="week_01_content_01",
         sequence=1,
         content=(
-            '<section data-cf-source-ids="samplecoursea:prime_factorization,'
-            'samplecoursea:prime_numbers">'
+            '<section data-cf-source-ids="samplecourse:prime_factorization,'
+            'samplecourse:prime_numbers">'
             '<h2 data-cf-content-type="explanation" '
             'data-cf-block-id="week_01_content_01#explanation_x_1">'
             "Prime Factorization</h2>"
@@ -353,9 +364,9 @@ def _curie_explanation_block() -> Block:
 
 def _grounded_chunks():
     return [
-        {"id": "sample_course_a_chunk_00001", "text": "Prime numbers...",
+        {"id": _chunk_id(1), "text": "Prime numbers...",
          "heading": "Primes"},
-        {"id": "sample_course_a_chunk_00002", "text": "Factorization...",
+        {"id": _chunk_id(2), "text": "Factorization...",
          "heading": "Primes"},
     ]
 
@@ -366,7 +377,7 @@ def test_canonical_source_ids_for_chunks_mints_dart_refs():
     (no-text / no-id / unmapped) chunk entry."""
     refs = _pt._canonical_source_ids_for_chunks(
         [
-            {"id": "sample_course_a_chunk_00001", "text": "real text"},
+            {"id": _chunk_id(1), "text": "real text"},
             {"id": "no_text_chunk", "text": ""},      # no text -> dropped
             {"id": "", "text": "orphan text"},         # no id -> dropped
             {"heading": "topic-fallback"},             # no id/text -> dropped
@@ -388,16 +399,16 @@ def test_canonical_source_ids_empty_when_no_grounded_chunks():
         [], _SLUG, chunk_source_id_map=_CHUNK_SOURCE_ID_MAP,
     ) == []
     assert _pt._canonical_source_ids_for_chunks(
-        [{"id": "sample_course_a_chunk_00001", "text": ""}], _SLUG,
+        [{"id": _chunk_id(1), "text": ""}], _SLUG,
         chunk_source_id_map=_CHUNK_SOURCE_ID_MAP,
     ) == []
     assert _pt._canonical_source_ids_for_chunks(
-        [{"id": "sample_course_a_chunk_00001", "text": "x"}], "",
+        [{"id": _chunk_id(1), "text": "x"}], "",
         chunk_source_id_map=_CHUNK_SOURCE_ID_MAP,
     ) == []
     # No map supplied -> fail closed (never the synthetic dart:{slug}#{chunk}).
     assert _pt._canonical_source_ids_for_chunks(
-        [{"id": "sample_course_a_chunk_00001", "text": "x"}], _SLUG,
+        [{"id": _chunk_id(1), "text": "x"}], _SLUG,
     ) == []
 
 
@@ -422,7 +433,7 @@ def test_prose_block_curie_source_ids_rewritten_passes_gate():
     # the REAL resolvable sourceIds from the chunk map, not a synthetic mint.
     assert fixed.source_ids == ("dart:module-1#aaa111", "dart:module-1#bbb222")
     assert 'data-cf-source-ids="dart:module-1#' in fixed.content
-    assert "samplecoursea:prime_factorization" not in (
+    assert "samplecourse:prime_factorization" not in (
         fixed.content.split("<span")[0]
     ), "CURIE must be removed from the source-ids attribute"
 
@@ -446,10 +457,10 @@ def test_prose_block_displaced_curies_preserved_for_anchoring():
     assert 'data-cf-curie="' in fixed.content
     # The validator strips tags first, so the CURIE must live in TEXT content.
     stripped = _strip_html(fixed.content)
-    assert "samplecoursea:prime_factorization" in stripped
+    assert "samplecourse:prime_factorization" in stripped
     scraped = _extract_curies_from_block(fixed)
-    assert "samplecoursea:prime_factorization" in scraped
-    assert "samplecoursea:prime_numbers" in scraped
+    assert "samplecourse:prime_factorization" in scraped
+    assert "samplecourse:prime_numbers" in scraped
 
 
 def test_prose_block_no_grounding_strips_curie_attr_defers():

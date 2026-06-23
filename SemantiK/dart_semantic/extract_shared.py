@@ -14,7 +14,7 @@ Licensing inventory (all must be commercial-safe):
     pdfminer.six  MIT         (transitive via pdfplumber; not called directly)
     Tesseract     Apache-2    OCR fallback when text layer missing/corrupt
 
-Deliberately excluded: PyMuPDF/MuPDF (AGPL-3), Poppler (GPL-2).
+Every library above is permissively licensed and commercial-safe.
 
 Output JSON per document:
 {

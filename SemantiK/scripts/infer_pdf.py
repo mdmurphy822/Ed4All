@@ -111,7 +111,7 @@ def main() -> None:
     if not args.no_classifier:
         if not args.classifier.exists():
             print(f"error: classifier {args.classifier} not found. "
-                  f"Run `python train_classifier.py` first, or use --no-classifier.",
+                  f"Run `python training/train_classifier.py` first, or use --no-classifier.",
                   file=sys.stderr)
             sys.exit(1)
         print(f"[load] classifier {args.classifier}", file=sys.stderr)

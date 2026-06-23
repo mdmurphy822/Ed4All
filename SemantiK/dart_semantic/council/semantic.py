@@ -37,7 +37,7 @@ Side-channel layout (31-dim):
     layout(20) || cascade(8) || positional(3) → LayerNorm → MLP(31→64→64)
     → concatenated with ModernBERT pooled (CLS) → 2 heads.
 
-Mirrors the shape declared in :mod:`train_semantic`.
+Mirrors the shape declared in :mod:`training.train_semantic`.
 """
 from __future__ import annotations
 

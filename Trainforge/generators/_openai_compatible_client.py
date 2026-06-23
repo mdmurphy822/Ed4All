@@ -40,8 +40,10 @@ import json as _json
 import logging
 import math
 import os
+import random as _random
 import re as _re
 import time
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import httpx
@@ -66,6 +68,16 @@ DEFAULT_MAX_RETRIES: int = 3
 DEFAULT_RETRY_STATUS_CODES: Tuple[int, ...] = (429, 500, 502, 503, 504)
 DEFAULT_INITIAL_BACKOFF_SECONDS: float = 1.0
 DEFAULT_PROVIDER_LABEL: str = "openai_compatible"
+
+# Stage-0 429 fix: when a retryable response carries a ``Retry-After``
+# (or, secondarily, ``X-RateLimit-Reset``) header, the server is telling
+# us EXACTLY how long to wait — honor it in preference to the local
+# exponential backoff. This benefits every NVIDIA / Together / hosted-OSS
+# consumer (Courseforge rewrite, objective-review, block-planner,
+# SemantiK-via-client) uniformly, since they all compose this one client.
+# The header value is clamped to this ceiling so a pathological /
+# misconfigured header (e.g. ``Retry-After: 86400``) can't hang a run.
+_RETRY_AFTER_MAX_SECONDS: float = 60.0
 
 # Cross-cutting env override for the per-request HTTP timeout. When the
 # caller does NOT pass an explicit ``timeout`` to the constructor, the
@@ -565,7 +577,7 @@ class OpenAICompatibleClient:
                     "%s: transient HTTP %d on attempt %d/%d; retrying",
                     provider_label, status, attempt, self._max_retries,
                 )
-                self._sleep_for_attempt(attempt)
+                self._sleep_for_attempt(attempt, response=response)
                 continue
 
             # Either retries exhausted on a transient status or a non-
@@ -587,15 +599,131 @@ class OpenAICompatibleClient:
             code="max_retries_exceeded",
         )
 
-    def _sleep_for_attempt(self, attempt: int) -> None:
-        """Exponential backoff, doubling per retry.
+    def _sleep_for_attempt(
+        self, attempt: int, response: Optional["httpx.Response"] = None
+    ) -> None:
+        """Sleep before the next retry.
+
+        Header-honoring (Stage-0 429 fix): when ``response`` carries a
+        ``Retry-After`` header (integer seconds OR an HTTP-date per
+        RFC 7231), that value — clamped to
+        :data:`_RETRY_AFTER_MAX_SECONDS` — is used in PREFERENCE to the
+        computed exponential backoff. ``X-RateLimit-Reset`` is accepted
+        as a secondary source when ``Retry-After`` is absent. When the
+        server sends no usable header (or no response — the transport-
+        error retry path), the client falls back to the legacy
+        exponential backoff (doubling per retry) — byte-stable behavior
+        for servers that send no ``Retry-After``.
 
         Routes through ``self._sleep_fn`` so composing providers can
         forward their own ``time.sleep`` reference and keep test
         fixtures patching that module path effective.
         """
-        backoff = self._initial_backoff_seconds * (2 ** (attempt - 1))
-        self._sleep_fn(backoff)
+        server_wait = self._parse_retry_after(response)
+        if server_wait is not None:
+            self._sleep_fn(server_wait)
+            return
+        self._sleep_fn(self._compute_backoff(attempt))
+
+    def _compute_backoff(self, attempt: int) -> float:
+        """Exponential backoff with full jitter, doubling per retry.
+
+        ``full jitter`` (random in ``[0, base]``) de-synchronizes
+        concurrent retriers so a fleet of NVIDIA consumers that all 429
+        at the same instant don't re-stampede the endpoint in lockstep.
+        The mean wait is half the base — still monotonically growing per
+        attempt — and the legacy ``initial_backoff * 2**(attempt-1)`` is
+        the upper bound, so this never sleeps LONGER than the old fixed
+        schedule.
+        """
+        base = self._initial_backoff_seconds * (2 ** (attempt - 1))
+        if base <= 0:
+            return 0.0
+        return _random.uniform(0.0, base)
+
+    def _parse_retry_after(
+        self, response: Optional["httpx.Response"]
+    ) -> Optional[float]:
+        """Return seconds to wait per the server's rate-limit headers.
+
+        Preference order: ``Retry-After`` (integer seconds, or an
+        HTTP-date → seconds-from-now) then ``X-RateLimit-Reset`` (epoch
+        seconds → seconds-from-now, or a bare delta in seconds). The
+        result is clamped to ``[0, _RETRY_AFTER_MAX_SECONDS]`` so a
+        pathological header can't hang the run. Returns ``None`` when no
+        usable header is present (the fallback-to-exponential signal),
+        which keeps behavior byte-stable for servers that send neither.
+        """
+        if response is None:
+            return None
+        try:
+            headers = response.headers
+        except Exception:
+            return None
+
+        raw = headers.get("Retry-After")
+        if raw is not None and str(raw).strip():
+            seconds = self._retry_after_value_to_seconds(str(raw).strip())
+            if seconds is not None:
+                return max(0.0, min(seconds, _RETRY_AFTER_MAX_SECONDS))
+
+        reset = headers.get("X-RateLimit-Reset")
+        if reset is not None and str(reset).strip():
+            seconds = self._rate_limit_reset_to_seconds(str(reset).strip())
+            if seconds is not None:
+                return max(0.0, min(seconds, _RETRY_AFTER_MAX_SECONDS))
+
+        return None
+
+    @staticmethod
+    def _retry_after_value_to_seconds(value: str) -> Optional[float]:
+        """Parse a ``Retry-After`` header value into seconds-from-now.
+
+        Per RFC 7231 the value is EITHER a non-negative integer number
+        of seconds OR an HTTP-date. Returns ``None`` on an unparseable
+        value (the caller then falls back to exponential backoff).
+        """
+        # Integer / numeric seconds form.
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            pass
+        # HTTP-date form → seconds from now.
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        try:
+            now = time.time()
+            delta = when.timestamp() - now
+        except (OverflowError, OSError, ValueError):
+            return None
+        # A date in the past means "retry now".
+        return max(0.0, delta)
+
+    @staticmethod
+    def _rate_limit_reset_to_seconds(value: str) -> Optional[float]:
+        """Parse ``X-RateLimit-Reset`` into seconds-from-now.
+
+        Trivially supported as a fallback: the value is either an
+        absolute epoch timestamp (heuristically, anything close to or
+        beyond ``now``) or a bare delta in seconds. Returns ``None`` on
+        an unparseable value.
+        """
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(parsed) or parsed < 0:
+            return None
+        now = time.time()
+        # Treat a value within the current epoch range as an absolute
+        # reset time; otherwise it's a bare delta-seconds value.
+        if parsed > now - _RETRY_AFTER_MAX_SECONDS:
+            return max(0.0, parsed - now)
+        return parsed
 
     # ------------------------------------------------------------------
     # Internals — response shape

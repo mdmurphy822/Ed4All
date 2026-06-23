@@ -296,19 +296,33 @@ def test_no_fractions_noop_pass() -> None:
 # --------------------------------------------------------------------- #
 
 _ALG_BLOCKS = _REPO_ROOT / "inputs" / "contentgen" / "alg_blocks.json"
-_ALG_CHUNKS = (
-    _REPO_ROOT
-    / "LibV2"
-    / "courses"
-    / "sample-course-a"
-    / "dart_chunks"
-    / "chunks.jsonl"
-)
+
+
+def _discover_chunks_jsonl() -> Optional[Path]:
+    """First ``dart_chunks/chunks.jsonl`` under any LibV2 course.
+
+    Resolves the LibV2 root via the ``ED4ALL_LIBV2_ROOT`` convention
+    (``lib.paths.libv2_path``) so the real-corpus regression binds to
+    whatever course corpus is present on disk rather than a pinned slug
+    (mirrors ``lib/ontology/tests/test_edge_slug_normalizer.py``).
+    """
+    from lib.paths import libv2_path
+
+    courses_root = libv2_path() / "courses"
+    if not courses_root.is_dir():
+        return None
+    for chunks in sorted(courses_root.glob("*/dart_chunks/chunks.jsonl")):
+        if chunks.is_file():
+            return chunks
+    return None
+
+
+_ALG_CHUNKS = _discover_chunks_jsonl()
 
 
 @pytest.mark.skipif(
-    not (_ALG_BLOCKS.exists() and _ALG_CHUNKS.exists()),
-    reason="real sample-course-a fixture corpus not present",
+    not (_ALG_BLOCKS.exists() and _ALG_CHUNKS is not None and _ALG_CHUNKS.exists()),
+    reason="no LibV2 course dart_chunks/chunks.jsonl + alg_blocks.json fixture corpus present",
 )
 def test_real_corpus_separates_fabrication_from_grounded() -> None:
     """The two REAL 7B fabrication blocks (explanation + misconception, both

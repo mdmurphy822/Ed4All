@@ -6,19 +6,19 @@ This file provides guidance to coding agents working in this repository.
 
 ## Overview
 
-SemantiK is the **license-clean replacement for DART** — a local-only
-PDF → WCAG 2.2 AA accessible-HTML pipeline. It exists because the whole
-point of replacing DART was **license cleanliness**: SemantiK's extraction
-stack carries no PyMuPDF/MuPDF (AGPL-3) and no Poppler (GPL-2), so the code
-ships Apache-2.0 (see `LICENSE`). The runtime needs no cloud LLM — the local
-GGUF specialists run fully offline; a hosted 70B endpoint is an opt-in
-quality seat, not a dependency.
+SemantiK is Ed4All's **PDF → WCAG 2.2 AA accessible-HTML conversion
+engine** — a local-only pipeline that is **license-clean by construction**:
+the extraction stack is built entirely on permissively-licensed tooling
+(pypdfium2 + pdfplumber + pikepdf + Tesseract), so the code ships Apache-2.0
+(see `LICENSE`). The runtime needs no
+cloud LLM — the local GGUF specialists run fully offline; a hosted 70B
+endpoint is an opt-in quality seat, not a dependency.
 
-SemantiK is a drop-in for DART: it preserves DART's `data-dart-*` HTML
-markers and the `dart:{slug}#{block_id}` sourceId **wire contract** so every
-downstream Ed4All consumer (Courseforge staging, source-mapping, the chunker,
-the Ask path) is unchanged. The full contract is in
-[`architecture.md`](architecture.md) §12.
+SemantiK emits a stable **source-provenance wire contract** — the
+`data-dart-*` block attributes and the `dart:{slug}#{block_id}` sourceId —
+that every downstream Ed4All consumer (Courseforge staging, source-mapping,
+the chunker, the Ask path) reads to thread block-level provenance through the
+pipeline. The full contract is in [`architecture.md`](architecture.md) §12.
 
 Core principle: **learned models are narrow candidate generators;
 deterministic code orchestrates, gates, and assembles.** BERTs classify,
@@ -75,7 +75,13 @@ output) is in [`architecture.md`](architecture.md); the one-liner map:
   pure-endpoint mode skips Phase 1 and fans all regions concurrently; the
   hybrid `SEMANTIK_SPECIALIST_REFINE=1` mode sends the local drafts to the
   70B for a polish pass. Region-index keying is identical across modes, so
-  Stages 7+ never see the difference.
+  Stages 7+ never see the difference. On the endpoint lane the Phase-2 POSTs
+  are **multi-region BATCHED by default** (`SEMANTIK_SPECIALIST_BATCH`, on) —
+  many regions per POST via `generate_multi` so the hosted seat's
+  ~40-requests/minute cap is not exhausted by the ~197×K per-region POSTs
+  that otherwise 429 on ~every call (set `SEMANTIK_SPECIALIST_BATCH=0` for the
+  byte-stable per-region path). The batched lane caps candidate-K to ≤2 and
+  uses low concurrency (2) so a 16-page slice fires ~34 POSTs.
 - **Stage-5d structure reviewer (off by default).** `SEMANTIK_STRUCTURE_REVIEW=1`
   enables a conservative, cluster-aware 70B reviewer that corrects
   chapter/section headings before structure is finalized. It never alters
@@ -95,14 +101,14 @@ process**, in its own venv, behind a JSON bridge:
   in → `run_full_cascade` → HTML + `region_provenance` + conformance audit as
   JSON on stdout.
 - `MCP/tools/pipeline_tools.py` invokes it (`_run_semantik_bridge_subprocess`,
-  the DART-conversion seam). `SEMANTIK_PYTHON` = absolute path to the SemantiK
-  venv python; `SEMANTIK_RUNTIME_DIR` = SemantiK repo root used as the
-  subprocess `cwd` (so model/cache dirs resolve). When the in-process deps are
-  absent and `SEMANTIK_PYTHON` is unset, the bridge **fails closed with
-  operator guidance** (no silent stub).
+  the conversion seam for the `dart_conversion` phase). `SEMANTIK_PYTHON` =
+  absolute path to the SemantiK venv python; `SEMANTIK_RUNTIME_DIR` = SemantiK
+  repo root used as the subprocess `cwd` (so model/cache dirs resolve). When
+  the in-process deps are absent and `SEMANTIK_PYTHON` is unset, the bridge
+  **fails closed with operator guidance** (no silent stub).
 
 Everything crossing the bridge is the § Output contract wire contract, so the
-rest of Ed4All cannot tell SemantiK from DART.
+rest of Ed4All consumes conversion output through one stable interface.
 
 ## In-process install (Option A)
 
@@ -139,17 +145,20 @@ the endpoint seat.
 
 ## Output contract
 
-SemantiK emits the same shape DART did (full detail:
+SemantiK emits a stable, downstream-facing shape (full detail:
 [`architecture.md`](architecture.md) §12):
 
-- **`data-dart-*` markers + `dart:{slug}#{block_id}` sourceId.** The adapter
-  seam (`lib/semantik/adapter.py`, `cascade_ir.py`) wraps each block in
-  `<section class="dart-section" data-dart-block-id=… data-dart-source=…
-  data-dart-pages=… data-dart-page-kind="physical" data-dart-confidence=…
-  data-dart-wcag=…>`. The sourceId `block_id` is **deterministic** (first raw
-  FeatureBlock index, or a content hash under `TRAINFORGE_CONTENT_HASH_IDS=1`)
-  — same PDF in → same sourceIds out, so chunk refs / `source_module_map.json`
-  / citation deep-links survive re-runs.
+- **Source-provenance block attributes + `dart:{slug}#{block_id}` sourceId.**
+  The adapter seam (`lib/semantik/adapter.py`, `cascade_ir.py`) wraps each
+  block in `<section class="dart-section" data-dart-block-id=…
+  data-dart-source=… data-dart-pages=… data-dart-page-kind="physical"
+  data-dart-confidence=… data-dart-wcag=…>` — `data-dart-block-id` carries
+  the block's stable id, `data-dart-source` the `synthesized`/`vendor`
+  provenance, `data-dart-pages` the physical PDF page span, and
+  `data-dart-wcag` the per-region gate verdict. The sourceId `block_id` is
+  **deterministic** (first raw FeatureBlock index, or a content hash under
+  `TRAINFORGE_CONTENT_HASH_IDS=1`) — same PDF in → same sourceIds out, so
+  chunk refs / `source_module_map.json` / citation deep-links survive re-runs.
 - **`region_provenance`.** Per-region list in emission order
   (`cascade.py::_build_region_provenance`): `region_index`, `region_kind`,
   `role`, `confidence`, `wcag_status`, `first_raw_block_index`, `pages`,
@@ -191,13 +200,12 @@ secondary, conservative defensive layer.
 ## MCP Tools
 
 SemantiK has no dedicated `@mcp.tool()` surface of its own — it is wired in as
-the **DART-conversion backend** in `MCP/tools/pipeline_tools.py`. The
+the **conversion backend** in `MCP/tools/pipeline_tools.py`. The
 `dart_conversion` phase routes through the cross-venv bridge
 (`_run_semantik_bridge_subprocess`) when the SemantiK runtime is configured,
-producing the same output contract DART emitted (§ Output contract), so the
-`stage_dart_outputs` / `validate_dart_markers` pipeline tools downstream are
-unchanged. Bridge env (`SEMANTIK_PYTHON` / `SEMANTIK_RUNTIME_DIR` / timeout /
-alloc-conf) is in the flag table below.
+producing the § Output contract shape that the downstream `stage_dart_outputs`
+/ `validate_dart_markers` pipeline tools consume. Bridge env (`SEMANTIK_PYTHON`
+/ `SEMANTIK_RUNTIME_DIR` / timeout / alloc-conf) is in the flag table below.
 
 ## Decision Capture
 
@@ -212,9 +220,9 @@ asserts the JSONL row fires with a dynamic rationale. See root `/CLAUDE.md`
 
 ## Opt-In Behavior Flags
 
-SemantiK (the DART replacement — a license-clean semantic-cascade
-PDF→structured-content converter under `SemantiK/dart_semantic/` +
-`lib/semantik/`) owns the `SEMANTIK_*` env-var prefix. All toggles default to
+SemantiK (the license-clean semantic-cascade PDF→structured-content converter
+under `SemantiK/dart_semantic/` + `lib/semantik/`) owns the `SEMANTIK_*`
+env-var prefix. All toggles default to
 byte-stable / off-or-local behaviour to preserve backward compatibility; only
 the two model/provider selectors below (`SEMANTIK_SPECIALIST_PROVIDER` + the
 two `*_MODEL` seats) carry a `docs/LICENSING.md` row. Resolution everywhere is
@@ -231,11 +239,16 @@ posture.
 | `SEMANTIK_STRUCTURE_REVIEW` | unset (off) | Stage-5d 70B **structure-reviewer** gate (`SemantiK/dart_semantic/qwen_specialists/reviewer.py::resolve_structure_review_mode`, ~L322). Default OFF → the cascade's heading/structure output is byte-identical (no reviewer dispatch). Truthy (`1`/`true`/`yes`/`on`, case-insensitive) → a conservative, cluster-aware 70B reviewer corrects chapter/section headings before the structure is finalized. Falsey / unset / garbage → off. Gate only (the model it dispatches is the `SEMANTIK_STRUCTURE_REVIEW_MODEL` / specialist seat) — no separate `docs/LICENSING.md` row beyond the model seat's. |
 | `SEMANTIK_STRUCTURE_REVIEW_MODEL` | `meta/llama-3.3-70b-instruct` | **Model ID for the Stage-5d structure-reviewer seat** (`runtime.py::resolve_structure_review_model`, ~L126; mirrored in `MCP/tools/pipeline_tools.py` ~L6380). Resolution: `SEMANTIK_STRUCTURE_REVIEW_MODEL` > `SEMANTIK_SPECIALIST_MODEL` > `NVIDIA_LARGE_MODEL` > the literal `meta/llama-3.3-70b-instruct`. **Selects an LLM model → has a `docs/LICENSING.md` row** (same NVIDIA hosted-70B seat as the specialist). No-op when `SEMANTIK_STRUCTURE_REVIEW` is off. |
 | `SEMANTIK_SPECIALIST_REFINE` | unset (off) | Hybrid two-phase Stage-6 refine gate (`SemantiK/dart_semantic/qwen_specialists/runner.py::resolve_refine_mode`, ~L105). Default OFF. Truthy (`1`/`true`/`yes`/`on`) → Phase-2 sends the local-adapter drafts + directive to the 70B endpoint for a polish pass (only meaningful when `SEMANTIK_SPECIALIST_PROVIDER` resolves to the endpoint). Falsey / garbage → off. Routes to the already-licensed specialist seat — no separate licensing row. |
-| `SEMANTIK_SPECIALIST_CONCURRENCY` | `8` | Thread-pool `max_workers` for concurrent endpoint POSTs in batched Stage-6 generation (`endpoint_runtime.py`, ~L101). Parse-with-fallback: non-int / non-positive / garbage → `8`. No provider/model selection — no licensing row. |
+| `SEMANTIK_SPECIALIST_CONCURRENCY` | `8` (per-region path) / used as the explicit override on the batched path | Thread-pool `max_workers` for concurrent endpoint POSTs (`endpoint_runtime.py::resolve_specialist_concurrency`). On the legacy per-region path it bounds `generate_batch`'s region fan-out (default 8). On the BATCHED endpoint lane (`SEMANTIK_SPECIALIST_BATCH` on, the default) it is honoured ONLY when explicitly set — otherwise the batched lane uses a LOW default of **2** (`runner.py::resolve_batched_concurrency`), because each batched POST already packs ~12 regions so a high fan-out would re-create the rate-limit pressure batching removes. Parse-with-fallback: non-int / non-positive / garbage → `8`. No provider/model selection — no licensing row. |
+| `SEMANTIK_SPECIALIST_BATCH` | `1` (ON for the endpoint lane) | **Multi-region BATCHED Stage-6 endpoint gate** — defeats the hosted seat's ~40-requests/MINUTE rate cap (`runner.py::resolve_batch_mode`). Default **ON for the endpoint lane**: instead of one POST per region per candidate (~197×K POSTs that 429 on ~every call), the active regions are packed into a few large POSTs via `OpenAICompatibleRuntime.generate_multi` (one POST per batch — the limit is requests, not tokens). Each region travels in a delimited `<<<DART_REGION id="rN">>> … <<<DART_REGION_END id="rN">>>` block with its grounding payload verbatim; the response is split back per-region (a missing/malformed block → the same `None` fail-soft sentinel as `generate_batch`). The batched lane also caps candidate-K to **≤2** (see `SEMANTIK_SPECIALIST_BATCH_K`) and uses concurrency **2** by default, so a 16-page slice fires ~34 POSTs. Default-ON parse semantics: explicit falsey (`0`/`false`/`no`/`off`) → the EXACT legacy per-region `generate_batch` path (byte-stable); unset / truthy / garbage → on. Only consulted on the endpoint lane (Phase 2); the local Phase-1 path is unaffected (it always batches by adapter). A runtime lacking `generate_multi` falls back to the per-region path. No provider/model selection — no licensing row. |
+| `SEMANTIK_SPECIALIST_BATCH_REGIONS` | `12` | Maximum regions packed into ONE batched endpoint POST (`endpoint_runtime.py::resolve_specialist_batch_regions`, consumed by `runner.py::_pack_batches`). A new batch is also started early when the running batch's summed per-region output budget would exceed the output-token cap, so big-output tables get smaller batches automatically. Larger values cut total POSTs (the rate-limit win) at the cost of a bigger per-call prompt. Parse-with-fallback: non-int / non-positive / garbage → `12`. No-op when `SEMANTIK_SPECIALIST_BATCH` is off. No provider/model selection — no licensing row. |
+| `SEMANTIK_SPECIALIST_BATCH_K` | unset (→ cap at 2) | Candidate-K cap on the BATCHED endpoint lane (`runner.py::resolve_batched_endpoint_k`). The config prose default is K=4; running 4 candidate slots multiplies POSTs by 4. Unset → the caller's K is clamped down to **2**; a positive int pins the cap explicitly. Never raises K above what the caller requested. Parse-with-fallback: garbage / non-positive → the default-2 cap. No-op when `SEMANTIK_SPECIALIST_BATCH` is off (full K is used on the per-region path). No provider/model selection — no licensing row. |
 | `SEMANTIK_SPECIALIST_TIMEOUT_SECONDS` | `120.0` | Per-request HTTP timeout (float seconds) for endpoint specialist/reviewer POSTs (`endpoint_runtime.py`, ~L135). Non-finite / non-positive / garbage → `120.0`. No licensing row. |
+| `SEMANTIK_SPECIALIST_MAX_RETRIES` | `2` | Bounded **per-region retry count** on TRANSIENT endpoint errors only — ReadTimeout / ConnectionError / 5xx / 429 (`endpoint_runtime.py::resolve_specialist_max_retries`; the retry loop is `OpenAICompatibleRuntime._one_completion_with_retry`, used by `generate_batch`). The number of EXTRA attempts after the first, with a short linear back-off (attempt N → 0.5×N s). PERMANENT errors (missing key, 400/401/403, malformed response) are NEVER retried — re-asking a bad key/request just burns the timeout budget. Paired with the Stage-6 Phase-2 per-region **fail-soft** path (`runner.py`): a region whose endpoint call still fails after retries degrades alone — hybrid/`SEMANTIK_SPECIALIST_REFINE` mode keeps that region's Phase-1 LOCAL draft, pure-endpoint mode emits a degraded skip candidate stamped `endpoint_degraded` — instead of one item's timeout aborting the whole document; only a TOTAL failure (every active region fails) still fails loud. Parse-with-fallback: garbage / negative → `2`; `0` is honoured (single attempt, no retry). No provider/model selection → no licensing row. |
+| `SEMANTIK_SPECIALIST_DISABLE_THINKING` | unset (off) | Suppresses chain-of-thought on a REASONING endpoint model (`endpoint_runtime.py::resolve_disable_thinking`; injected in `OpenAICompatibleRuntime._one_completion`). Default OFF → byte-identical body for the non-reasoning seats (no extra field). Truthy (`1`/`true`/`yes`/`on`, case-insensitive) → the endpoint request body carries `chat_template_kwargs={"thinking": False}` so a reasoning model (e.g. `deepseek-ai/deepseek-v4-pro`) returns the structured answer directly instead of spending the `max_tokens` budget on a `<think>` block; harmlessly ignored by models that do not read the field. Falsey / unset / garbage → off (parse-with-fallback). A request parameter only — selects no provider/model → no `docs/LICENSING.md` row. |
 | `SEMANTIK_DROP_FRONTMATTER_ZONE` | `1` (on) | Deterministic **page-density front-matter-zone** detector gate (`lib/semantik/toc_frontmatter_detector.py::_zone_flag_enabled`, ~L73/446). Default ON → a page-density pass detects dense chapter-heading clusters on early pages and drops the front-matter zone (catches the preface-summary contamination defect). Default-on parse semantics: explicit falsey (`0`/`false`/`no`/`off`) → off; unset / truthy / garbage → on. No provider/model — no licensing row. |
 | `SEMANTIK_DROP_FRONTMATTER_TOC` | `1` (on) | Deterministic **phantom-TOC** front-matter detector gate (`lib/semantik/toc_frontmatter_detector.py::_flag_enabled`, ~L66/170). Default ON → the phantom-TOC + chapter-index-cluster + boilerplate detection runs inside the front-matter zone. Default-on parse semantics identical to `SEMANTIK_DROP_FRONTMATTER_ZONE` (explicit falsey → off; else on). No licensing row. |
-| `SEMANTIK_THETA_DEVICE` | `cpu` | Torch device for the theta cross-encoder (DeBERTa-v3-small + LoRA semantic-preservation head; `SemantiK/dart_semantic/theta/semantic_preservation.py`, `ENV_THETA_DEVICE`, ~L74). Resolution: explicit `device` arg > `SEMANTIK_THETA_DEVICE` > legacy `DART_THETA_DEVICE` > `cpu`. Accepts `cpu` / `cuda` / `cuda:N`; empty / garbage → `cpu`. Graceful CUDA-unavailable fallback to CPU at load time (never crashes a GPU-less box). Mirrors `ED4ALL_NLI_DEVICE`. Device knob, not a provider/model — no licensing row. |
+| `SEMANTIK_THETA_DEVICE` | `cpu` | Torch device for the theta cross-encoder (DeBERTa-v3-small + LoRA semantic-preservation head; `SemantiK/dart_semantic/theta/semantic_preservation.py`, `ENV_THETA_DEVICE`, ~L74). Resolution: explicit `device` arg > `SEMANTIK_THETA_DEVICE` > the back-compat `DART_THETA_DEVICE` alias > `cpu`. Accepts `cpu` / `cuda` / `cuda:N`; empty / garbage → `cpu`. Graceful CUDA-unavailable fallback to CPU at load time (never crashes a GPU-less box). Mirrors `ED4ALL_NLI_DEVICE`. Device knob, not a provider/model — no licensing row. |
 | `SEMANTIK_EXPANDABLE_SEGMENTS` | unset (off) | CUDA-allocator opt-in for the out-of-process bridge (`MCP/tools/pipeline_tools.py::_semantik_expandable_segments_enabled`, ~L6061). Truthy (`1`/`true`/`yes`/`on`) → the bridge subprocess env gets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (OOM mitigation; opt-in because the setting is driver/torch-version dependent). Falsey / unset / garbage → off (unset). No licensing row. |
 | `SEMANTIK_BRIDGE_TIMEOUT_SECONDS` | `3600.0` | Subprocess timeout (float seconds) for the out-of-process SemantiK cascade JSON bridge (`MCP/tools/pipeline_tools.py::_resolve_semantik_bridge_timeout`, ~L6068). Non-float / non-positive / garbage → `3600.0`. No licensing row. |
 | `SEMANTIK_PYTHON` | unset (required for bridge) | Absolute path to the SemantiK runtime venv's python interpreter, used when the cascade runs out-of-process via the JSON bridge (`MCP/tools/pipeline_tools.py`, `_SEMANTIK_PYTHON_ENV` ~L6041/6134/6579). No machine default — when the in-process SemantiK deps are absent and this is unset, the bridge fails closed with operator guidance. Exec path, not a provider/model — no licensing row. |
@@ -266,8 +279,8 @@ See [`architecture.md`](architecture.md) §14 for the full limitations section.
 Apache-2.0 (`LICENSE`, "Copyright 2026 Ed4All"). License-clean by
 construction: the PDF stack is pypdfium2 (Apache-2/BSD-3) + pdfplumber (MIT) +
 pikepdf (MPL-2.0) + pytesseract/Tesseract (Apache-2); the ML stack is
-transformers/peft/llama-cpp-python (all permissive). **No PyMuPDF/MuPDF
-(AGPL-3), no Poppler (GPL-2)** anywhere on the path (see the avoidance notes in
+transformers/peft/llama-cpp-python — **every dependency on the path is
+permissively licensed** (see the licensing inventory in
 `dart_semantic/extract_shared.py` and `image_extract.py`). Model weights
 (council BERTs, Qwen GGUFs, theta head) are separate artifacts, not shipped in
 this tree. The provider/model licensing for the opt-in hosted 70B endpoint seat

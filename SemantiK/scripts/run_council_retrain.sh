@@ -91,7 +91,7 @@ for stage in "${ORDER[@]}"; do
         --include-legal-pseudo --workers 8 \
         --out-dir data/structure_dataset_v2
       # GPU train (Plan 14 §5 hyperparams — 12 epochs fixes is_heading undertraining)
-      CUDA_VISIBLE_DEVICES=0 .venv/bin/python train_structure.py \
+      CUDA_VISIBLE_DEVICES=0 .venv/bin/python training/train_structure.py \
         --dataset-dir data/structure_dataset_v2 \
         --output-dir models/council/structure \
         --base-model answerdotai/ModernBERT-base \
@@ -110,7 +110,7 @@ for stage in "${ORDER[@]}"; do
       # GPU build — NO --skip-cascade; uses the just-trained Structure (Plan 13 §2)
       PYTHONPATH=. CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m data.build_semantic_data \
         --max-examples-per-source 20000 --source-cap gutenberg=5000 --workers 8
-      CUDA_VISIBLE_DEVICES=0 .venv/bin/python train_semantic.py \
+      CUDA_VISIBLE_DEVICES=0 .venv/bin/python training/train_semantic.py \
         --dataset-dir data/semantic_dataset --output-dir models/council/semantic
       gate semantic test_doc_role_macro_f1
       ;;
@@ -119,7 +119,7 @@ for stage in "${ORDER[@]}"; do
       # CPU build — uniform cap, NO --cap-protect-frac (Plan 13 §3)
       PYTHONPATH=. .venv/bin/python -m data.build_table_specialist_data \
         --max-examples-per-source 20000 --source-cap gutenberg=5000 --workers 8
-      CUDA_VISIBLE_DEVICES=0 .venv/bin/python train_table_specialist.py \
+      CUDA_VISIBLE_DEVICES=0 .venv/bin/python training/train_table_specialist.py \
         --dataset-dir data/table_specialist_dataset \
         --output-dir models/council/table_specialist/final
       gate table_specialist test_macro_f1

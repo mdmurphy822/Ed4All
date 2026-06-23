@@ -42,7 +42,16 @@ from sklearn.metrics import classification_report, f1_score
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from transformers import AutoModel, AutoTokenizer, DataCollatorWithPadding
 
-from data.build_math_specialist_data import (
+import sys
+
+# This trainer lives under SemantiK/training/; ensure the SemantiK root is on
+# the import path so the top-level ``data`` namespace resolves regardless of
+# the invocation directory.
+_SEMANTIK_ROOT = str(Path(__file__).resolve().parent.parent)
+if _SEMANTIK_ROOT not in sys.path:
+    sys.path.insert(0, _SEMANTIK_ROOT)
+
+from data.build_math_specialist_data import (  # noqa: E402  (after sys.path bootstrap)
     EQ_NUM_ASSOC,
     EQ_NUM_TO_ID,
     MATH_TYPE_TO_ID,

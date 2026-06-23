@@ -1,5 +1,5 @@
-"""Regression: residual ``post_rewrite_validation`` gate fixes on the
-sample-course-a 7B export.
+"""Regression: residual ``post_rewrite_validation`` gate fixes on a real
+7B course export.
 
 Three fixes land here (all DETERMINISTIC — no LLM/GPU):
 

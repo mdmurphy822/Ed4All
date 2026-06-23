@@ -1,13 +1,15 @@
 # SemantiK — Architecture (the 13-stage v2 cascade)
 
-> SemantiK is the **license-clean replacement for DART** — a local-only
-> PDF → WCAG 2.2 AA accessible-HTML pipeline, built on the principle:
+> SemantiK is Ed4All's **PDF → WCAG 2.2 AA accessible-HTML conversion
+> engine** — a local-only pipeline built on the principle:
 > **learned models are narrow candidate generators; deterministic code
-> orchestrates, gates, and assembles.** No PyMuPDF/AGPL anywhere on the
-> extraction path; no cloud LLM required at runtime (a hosted 70B endpoint
-> is an opt-in seat, not a dependency); no human in the loop. SemantiK keeps
-> DART's `data-dart-*` HTML markers and `dart:{slug}#{block_id}` sourceId
-> **wire contract** stable so Ed4All consumers are unchanged — see §12.
+> orchestrates, gates, and assembles.** The extraction path is built
+> entirely on permissively-licensed PDF tooling (pypdfium2 + pdfplumber +
+> pikepdf + Tesseract); no cloud LLM required at runtime (a hosted 70B endpoint
+> is an opt-in seat, not a dependency); no human in the loop. SemantiK emits a
+> stable source-provenance **wire contract** — the `data-dart-*` HTML block
+> attributes and the `dart:{slug}#{block_id}` sourceId — so Ed4All consumers
+> thread block-level provenance through the pipeline unchanged (see §12).
 >
 > This file is the cascade deep-dive. The subsystem guide (`CLAUDE.md`)
 > links here; the wire contract + cross-venv bridge are §12–§14 below.
@@ -386,7 +388,7 @@ and not via Ollama. Reasons:
 - Mature offline-local story; no Ollama daemon dependency.
 
 **Training stays on transformers + PEFT.** LoRA adapters are produced by
-HF/PEFT (`train_reasoner.py` recipe is reusable). Each trained adapter is
+HF/PEFT (`training/train_reasoner.py` recipe is reusable). Each trained adapter is
 then exported to a llama.cpp-loadable form for inference. Two viable
 implementation paths — choose at Phase 5 measurement, not now:
 
@@ -696,7 +698,7 @@ plus a sidecar JSON `{document_id, exit, failed_checks}`. Theta is omitted on th
 </aside>
 ```
 
-Visible-not-just-machine is deliberate: a consumer with no DART-aware
+Visible-not-just-machine is deliberate: a consumer with no provenance-aware
 tooling sees nothing if the stamp is metadata-only. WCAG conformance is a
 product claim; failure to meet it must be communicated to the actual reader.
 
@@ -934,17 +936,17 @@ The following are decided. Changes require an explicit revision of this doc.
 
 ## 12. The output contract + the cross-venv bridge
 
-SemantiK's whole point is to be a **drop-in replacement for DART** — the
-HTML it emits, and the way Ed4All references blocks inside it, must match
-DART's contract byte-for-byte so nothing downstream (Courseforge staging,
-source-mapping, the chunker, the Ask path) has to change.
+SemantiK's output is a **stable, downstream-facing contract** — the HTML it
+emits, and the way Ed4All references blocks inside it, are fixed so everything
+downstream (Courseforge staging, source-mapping, the chunker, the Ask path)
+reads one consistent shape across runs and versions.
 
-### 12.1 The wire contract — `data-dart-*` markers + `dart:{slug}#{block_id}`
+### 12.1 The wire contract — block-provenance attributes + `dart:{slug}#{block_id}`
 
 The cascade emits HTML; the **adapter seam** (`lib/semantik/adapter.py`,
 `lib/semantik/cascade_ir.py`) normalizes that HTML into Ed4All's chapter IR,
 wrapping each content block in a `<section class="dart-section">` carrying
-the stable DART marker set (`adapter.py::_render_section`):
+the source-provenance attribute set (`adapter.py::_render_section`):
 
 ```html
 <section class="dart-section"
@@ -971,7 +973,7 @@ The **sourceId** is `dart:{slug}#{block_id}`:
   `TRAINFORGE_CONTENT_HASH_IDS=1` it switches to a content hash of the raw
   text (stable iff the source text is unchanged).
 
-This is the determinism contract DART established and Ed4All depends on:
+This is the determinism contract Ed4All depends on:
 **same PDF in → same sourceIds out**, so chunk `learning_outcome_refs[]`,
 `source_module_map.json`, and citation deep-links resolve across re-runs.
 
@@ -1018,9 +1020,9 @@ SemantiK's runtime pulls in **heavy ML deps** (torch, transformers, peft,
 do NOT belong in Ed4All's MCP/orchestrator venv. So the cascade runs **out
 of process**, in its own venv, behind a JSON bridge:
 
-- `SemantiK/run_cascade_json.py` is the subprocess entry point: it takes a
-  PDF path, runs `run_full_cascade`, and writes the HTML + `region_provenance`
-  + conformance audit as JSON to stdout.
+- `SemantiK/scripts/run_cascade_json.py` is the subprocess entry point: it
+  takes a PDF path, runs `run_full_cascade`, and writes the HTML +
+  `region_provenance` + conformance audit as JSON to stdout.
 - `MCP/tools/pipeline_tools.py` invokes it. `SEMANTIK_PYTHON` is the absolute
   path to the SemantiK venv's python; `SEMANTIK_RUNTIME_DIR` is the SemantiK
   repo root used as the subprocess `cwd` (so model/cache dirs resolve). When
@@ -1032,7 +1034,8 @@ of process**, in its own venv, behind a JSON bridge:
 
 The bridge is the seam that lets Ed4All stay lean while SemantiK keeps its
 GPU-heavy ML stack isolated. Everything crossing it is the §12.1 wire
-contract, so the rest of Ed4All cannot tell SemantiK from DART.
+contract, so the rest of Ed4All consumes conversion output through one stable
+interface.
 
 ---
 
@@ -1130,9 +1133,8 @@ Honest constraints an operator should know going in:
 
 ---
 
-*Document version: 2026-06-22 (SemantiK migration). §1–§11 are the original
-target architecture (version 2026-05-03), superseding the "two trained
-models, Qwen as single decision-maker" design; §12–§14 document the live
-output contract, cross-venv bridge, and honest limitations of the SemantiK
-replacement. WCAG / standards mapping continues to live in
-[`docs/ontology.md`](docs/ontology.md).*
+*Document version: 2026-06-22. §1–§11 are the target cascade architecture
+(version 2026-05-03), superseding the "two trained models, Qwen as single
+decision-maker" design; §12–§14 document the live output contract, cross-venv
+bridge, and honest limitations of the conversion engine. WCAG / standards
+mapping continues to live in [`docs/ontology.md`](docs/ontology.md).*

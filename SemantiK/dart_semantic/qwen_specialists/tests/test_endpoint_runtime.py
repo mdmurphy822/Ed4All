@@ -17,8 +17,13 @@ from unittest import mock
 import pytest
 
 from dart_semantic.qwen_specialists.endpoint_runtime import (
+    EndpointBatchItemError,
     EndpointRuntimeError,
     OpenAICompatibleRuntime,
+    parse_batch_envelope,
+    resolve_disable_thinking,
+    resolve_specialist_batch_regions,
+    resolve_specialist_max_retries,
     split_specialist_prompt,
 )
 from dart_semantic.qwen_specialists.runtime import (
@@ -179,6 +184,336 @@ def test_malformed_json_raises():
         with pytest.raises(EndpointRuntimeError) as exc:
             rt.generate("SYSTEM: r\nUSER: {}", n=1, temperature=0.6, top_p=0.95, max_tokens=64)
     assert "malformed" in str(exc.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Transient/permanent classification + bounded retry
+# ---------------------------------------------------------------------------
+
+
+def test_max_retries_resolver_parse_with_fallback(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_MAX_RETRIES", raising=False)
+    assert resolve_specialist_max_retries() == 2
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MAX_RETRIES", "3")
+    assert resolve_specialist_max_retries() == 3
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MAX_RETRIES", "0")
+    assert resolve_specialist_max_retries() == 0  # honoured: no retry
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MAX_RETRIES", "-1")
+    assert resolve_specialist_max_retries() == 2  # negative -> default
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MAX_RETRIES", "garbage")
+    assert resolve_specialist_max_retries() == 2
+
+
+# ---------------------------------------------------------------------------
+# SEMANTIK_SPECIALIST_DISABLE_THINKING — resolver + body injection
+# ---------------------------------------------------------------------------
+
+
+def test_disable_thinking_resolver_parse_with_fallback(monkeypatch):
+    # Unset -> False (default off, byte-stable for non-reasoning seats).
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_DISABLE_THINKING", raising=False)
+    assert resolve_disable_thinking() is False
+    # Falsey / garbage -> False.
+    for falsey in ("0", "false", "no", "off", "garbage", "", "  "):
+        monkeypatch.setenv("SEMANTIK_SPECIALIST_DISABLE_THINKING", falsey)
+        assert resolve_disable_thinking() is False, falsey
+    # Truthy (case-insensitive) -> True.
+    for truthy in ("1", "true", "TRUE", "yes", "Yes", "on", "ON", " true "):
+        monkeypatch.setenv("SEMANTIK_SPECIALIST_DISABLE_THINKING", truthy)
+        assert resolve_disable_thinking() is True, truthy
+
+
+def test_disable_thinking_on_injects_chat_template_kwargs(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_DISABLE_THINKING", "1")
+    rt = OpenAICompatibleRuntime(
+        base_url="https://x/v1", api_key="K", model="deepseek-ai/deepseek-v4-pro"
+    )
+    captured = {}
+
+    def _fake_post(url, *, json, headers, timeout):
+        captured["json"] = json
+        return _FakeResponse(200, _ok_body("frag"))
+
+    with mock.patch("requests.post", side_effect=_fake_post):
+        rt.generate("SYSTEM: r\nUSER: {}", n=1, temperature=0.6, top_p=0.95, max_tokens=64)
+
+    assert captured["json"]["chat_template_kwargs"] == {"thinking": False}
+
+
+def test_disable_thinking_off_omits_chat_template_kwargs(monkeypatch):
+    # Default OFF -> body is byte-stable (no chat_template_kwargs key).
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_DISABLE_THINKING", raising=False)
+    rt = OpenAICompatibleRuntime(base_url="https://x/v1", api_key="K", model="m")
+    captured = {}
+
+    def _fake_post(url, *, json, headers, timeout):
+        captured["json"] = json
+        return _FakeResponse(200, _ok_body("frag"))
+
+    with mock.patch("requests.post", side_effect=_fake_post):
+        rt.generate("SYSTEM: r\nUSER: {}", n=1, temperature=0.6, top_p=0.95, max_tokens=64)
+
+    assert "chat_template_kwargs" not in captured["json"]
+
+
+def test_timeout_is_marked_transient():
+    import requests
+
+    rt = OpenAICompatibleRuntime(base_url="https://x/v1", api_key="K", model="m")
+
+    def _fake_post(url, *, json, headers, timeout):
+        raise requests.exceptions.ReadTimeout("read timeout=120.0")
+
+    with mock.patch("requests.post", side_effect=_fake_post):
+        with pytest.raises(EndpointRuntimeError) as exc:
+            rt.generate("SYSTEM: r\nUSER: {}", n=1, temperature=0.6, top_p=0.95, max_tokens=64)
+    assert exc.value.transient is True
+
+
+def test_5xx_transient_4xx_permanent():
+    rt = OpenAICompatibleRuntime(base_url="https://x/v1", api_key="K", model="m")
+
+    def _post_503(url, *, json, headers, timeout):
+        return _FakeResponse(503, json_body=None, text="upstream unavailable")
+
+    with mock.patch("requests.post", side_effect=_post_503):
+        with pytest.raises(EndpointRuntimeError) as exc:
+            rt.generate("SYSTEM: r\nUSER: {}", n=1, temperature=0.6, top_p=0.95, max_tokens=64)
+    assert exc.value.transient is True
+
+    def _post_400(url, *, json, headers, timeout):
+        return _FakeResponse(400, json_body=None, text="bad request")
+
+    with mock.patch("requests.post", side_effect=_post_400):
+        with pytest.raises(EndpointRuntimeError) as exc:
+            rt.generate("SYSTEM: r\nUSER: {}", n=1, temperature=0.6, top_p=0.95, max_tokens=64)
+    assert exc.value.transient is False
+
+
+def test_transient_error_retried_then_succeeds(monkeypatch):
+    """A transient timeout on the first attempt is retried and succeeds —
+    the region's completion is recovered, not lost. (Test scenario (d).)"""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MAX_RETRIES", "2")
+    # Zero out the back-off so the test is fast.
+    monkeypatch.setattr(
+        "dart_semantic.qwen_specialists.endpoint_runtime._RETRY_BACKOFF_BASE_SECONDS",
+        0.0,
+    )
+    rt = OpenAICompatibleRuntime(base_url="https://x/v1", api_key="K", model="m")
+
+    import requests
+
+    calls = {"n": 0}
+
+    def _fake_post(url, *, json, headers, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise requests.exceptions.ReadTimeout("transient")
+        return _FakeResponse(200, _ok_body("<p>recovered</p>"))
+
+    with mock.patch("requests.post", side_effect=_fake_post):
+        # generate_batch routes through the retry wrapper.
+        out = rt.generate_batch(["SYSTEM: r\nUSER: {}"], max_tokens=64)
+    assert out == ["<p>recovered</p>"]
+    assert calls["n"] == 2  # one failed attempt + one successful retry
+
+
+def test_permanent_error_not_retried(monkeypatch):
+    """A 400 is NOT retried — only one POST is fired."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MAX_RETRIES", "5")
+    rt = OpenAICompatibleRuntime(base_url="https://x/v1", api_key="K", model="m")
+
+    calls = {"n": 0}
+
+    def _fake_post(url, *, json, headers, timeout):
+        calls["n"] += 1
+        return _FakeResponse(400, json_body=None, text="bad request")
+
+    with mock.patch("requests.post", side_effect=_fake_post):
+        with pytest.raises(EndpointBatchItemError):
+            rt.generate_batch(["SYSTEM: r\nUSER: {}"], max_tokens=64)
+    assert calls["n"] == 1  # NOT retried
+
+
+def test_generate_batch_fail_soft_returns_none_sentinel(monkeypatch):
+    """fail_soft=True: a failed item is the None sentinel; others succeed."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MAX_RETRIES", "0")
+    rt = OpenAICompatibleRuntime(base_url="https://x/v1", api_key="K", model="m")
+
+    def _fake_post(url, *, json, headers, timeout):
+        user = json["messages"][1]["content"]
+        if user == "item-1":
+            return _FakeResponse(500, json_body=None, text="boom")
+        return _FakeResponse(200, _ok_body(f"<p>{user}</p>"))
+
+    prompts = [f"SYSTEM: r\nUSER: item-{i}" for i in range(3)]
+    with mock.patch("requests.post", side_effect=_fake_post):
+        out = rt.generate_batch(prompts, max_tokens=32, fail_soft=True)
+    assert out == ["<p>item-0</p>", None, "<p>item-2</p>"]
+
+
+def test_generate_batch_default_still_raises(monkeypatch):
+    """fail_soft default (False) keeps the byte-identical legacy raise."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MAX_RETRIES", "0")
+    rt = OpenAICompatibleRuntime(base_url="https://x/v1", api_key="K", model="m")
+
+    def _fake_post(url, *, json, headers, timeout):
+        user = json["messages"][1]["content"]
+        if user == "item-1":
+            return _FakeResponse(500, json_body=None, text="boom")
+        return _FakeResponse(200, _ok_body(f"<p>{user}</p>"))
+
+    prompts = [f"SYSTEM: r\nUSER: item-{i}" for i in range(3)]
+    with mock.patch("requests.post", side_effect=_fake_post):
+        with pytest.raises(EndpointBatchItemError) as ei:
+            rt.generate_batch(prompts, max_tokens=32)
+    assert ei.value.index == 1
+
+
+# ---------------------------------------------------------------------------
+# generate_multi — batched multi-region primitive (the 429 defeat)
+# ---------------------------------------------------------------------------
+
+
+def _batch_block(rid: str, frag: str) -> str:
+    return f'<<<DART_REGION id="{rid}">>>\n{frag}\n<<<DART_REGION_END id="{rid}">>>'
+
+
+def test_batch_regions_resolver_parse_with_fallback(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH_REGIONS", raising=False)
+    assert resolve_specialist_batch_regions() == 12
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH_REGIONS", "20")
+    assert resolve_specialist_batch_regions() == 20
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH_REGIONS", "0")
+    assert resolve_specialist_batch_regions() == 12
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH_REGIONS", "garbage")
+    assert resolve_specialist_batch_regions() == 12
+
+
+def test_parse_batch_envelope_well_formed_and_missing():
+    body = "\n\n".join(
+        [_batch_block("r0", "<p>zero</p>"), _batch_block("r2", "<p>two</p>")]
+    )
+    out = parse_batch_envelope(body, ["r0", "r1", "r2"])
+    assert out == {"r0": "<p>zero</p>", "r1": None, "r2": "<p>two</p>"}
+
+
+def test_parse_batch_envelope_tolerates_fences_and_missing_end_tag():
+    # r1's END tag is absent -> None; fences + commentary around the rest are
+    # stripped/ignored.
+    body = (
+        "```html\n"
+        "Sure, here you go:\n"
+        + _batch_block("r0", "<p>zero</p>")
+        + '\n<<<DART_REGION id="r1">>>\n<p>orphan, no end tag</p>\n'
+        + _batch_block("r2", "<math><mi>x</mi></math>")
+        + "\n```"
+    )
+    out = parse_batch_envelope(body, ["r0", "r1", "r2"])
+    assert out["r0"] == "<p>zero</p>"
+    assert out["r1"] is None  # missing END tag
+    assert out["r2"] == "<math><mi>x</mi></math>"
+
+
+def test_generate_multi_one_post_splits_by_id(monkeypatch):
+    rt = OpenAICompatibleRuntime(
+        base_url="https://x/v1", api_key="K", model="m", timeout=10.0
+    )
+    posts = {"n": 0}
+
+    def _fake_post(url, *, json, headers, timeout):
+        posts["n"] += 1
+        # Echo a well-formed multi-region response for r0/r1 (drop r2 to
+        # exercise the None sentinel).
+        content = "\n\n".join(
+            [_batch_block("r0", "<p>A</p>"), _batch_block("r1", "<p>B</p>")]
+        )
+        return _FakeResponse(200, _ok_body(content))
+
+    items = [("r0", "payload-0"), ("r1", "payload-1"), ("r2", "payload-2")]
+    with mock.patch("requests.post", side_effect=_fake_post):
+        out = rt.generate_multi(items, max_tokens=1024)
+
+    # EXACTLY ONE POST for THREE regions (the rate-limit win).
+    assert posts["n"] == 1
+    assert out == {"r0": "<p>A</p>", "r1": "<p>B</p>", "r2": None}
+
+
+def test_generate_multi_packs_payloads_into_single_user_turn(monkeypatch):
+    rt = OpenAICompatibleRuntime(base_url="https://x/v1", api_key="K", model="m")
+    captured = {}
+
+    def _fake_post(url, *, json, headers, timeout):
+        captured["json"] = json
+        content = _batch_block("r0", "<p>A</p>")
+        return _FakeResponse(200, _ok_body(content))
+
+    with mock.patch("requests.post", side_effect=_fake_post):
+        rt.generate_multi([("r0", "GROUNDING-PAYLOAD-VERBATIM")], max_tokens=512)
+
+    user = captured["json"]["messages"][1]["content"]
+    # Grounding payload travels verbatim, wrapped in the region delimiters.
+    assert "GROUNDING-PAYLOAD-VERBATIM" in user
+    assert '<<<DART_REGION id="r0">>>' in user
+    assert '<<<DART_REGION_END id="r0">>>' in user
+    # System turn carries the batch envelope directive.
+    sys_turn = captured["json"]["messages"][0]["content"]
+    assert "DART_REGION" in sys_turn
+
+
+def test_generate_multi_caps_max_tokens_at_ceiling(monkeypatch):
+    rt = OpenAICompatibleRuntime(base_url="https://x/v1", api_key="K", model="m")
+    captured = {}
+
+    def _fake_post(url, *, json, headers, timeout):
+        captured["json"] = json
+        return _FakeResponse(200, _ok_body(_batch_block("r0", "<p>A</p>")))
+
+    with mock.patch("requests.post", side_effect=_fake_post):
+        # Ask for an absurd summed budget; the runtime caps at ceiling - margin.
+        rt.generate_multi(
+            [("r0", "p")], max_tokens=999999, output_token_ceiling=16384
+        )
+    # 16384 - 512 safety margin.
+    assert captured["json"]["max_tokens"] == 16384 - 512
+
+
+def test_generate_multi_refine_embeds_drafts_once(monkeypatch):
+    rt = OpenAICompatibleRuntime(base_url="https://x/v1", api_key="K", model="m")
+    captured = {}
+
+    def _fake_post(url, *, json, headers, timeout):
+        captured["json"] = json
+        return _FakeResponse(200, _ok_body(_batch_block("r0", "<p>better</p>")))
+
+    with mock.patch("requests.post", side_effect=_fake_post):
+        out = rt.generate_multi(
+            [("r0", "payload-0")],
+            max_tokens=512,
+            drafts={"r0": "<p>local draft</p>"},
+        )
+    assert out == {"r0": "<p>better</p>"}
+    user = captured["json"]["messages"][1]["content"]
+    assert "DRAFT_FRAGMENT" in user
+    assert "<p>local draft</p>" in user
+    # The refine directive is stated ONCE in the SYSTEM turn, not per region.
+    sys_turn = captured["json"]["messages"][0]["content"]
+    assert "DRAFT_FRAGMENT" in sys_turn or "draft" in sys_turn.lower()
+
+
+def test_generate_multi_whole_batch_failure_returns_all_none(monkeypatch):
+    """A batch POST that fails after retries degrades EVERY region in the
+    batch to None (fail-soft) — never raises, never aborts the document."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MAX_RETRIES", "0")
+    rt = OpenAICompatibleRuntime(base_url="https://x/v1", api_key="K", model="m")
+
+    def _fake_post(url, *, json, headers, timeout):
+        return _FakeResponse(429, json_body=None, text="rate limited")
+
+    items = [("r0", "p0"), ("r1", "p1")]
+    with mock.patch("requests.post", side_effect=_fake_post):
+        out = rt.generate_multi(items, max_tokens=512)
+    assert out == {"r0": None, "r1": None}
 
 
 # ---------------------------------------------------------------------------

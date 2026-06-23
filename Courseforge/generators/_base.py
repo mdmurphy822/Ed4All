@@ -135,7 +135,7 @@ TOGETHER_DEFAULT_BASE_URL = _registry_default_base_url(
     "together", "https://api.together.xyz/v1"
 )
 NVIDIA_DEFAULT_MODEL = _registry_default_model(
-    "nvidia", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+    "nvidia", "nvidia/nemotron-3-nano-30b-a3b"
 )
 NVIDIA_DEFAULT_BASE_URL = _registry_default_base_url(
     "nvidia", "https://integrate.api.nvidia.com/v1"

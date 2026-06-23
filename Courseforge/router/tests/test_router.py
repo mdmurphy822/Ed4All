@@ -440,7 +440,7 @@ def test_license_clean_large_tier_routes_to_nvidia(monkeypatch):
     ``large`` seat, not a ``[medium, large]`` cascade) yields:
 
       - provider → ``nvidia``
-      - model    → ``nvidia/nemotron-3-nano-30b-a3b`` (the YAML-pinned
+      - model    → ``meta/llama-3.3-70b-instruct`` (the YAML-pinned
         non-reasoning sibling — the large tier authors structured HTML, so
         the YAML deliberately avoids the *-reasoning variant whose
         chain-of-thought overruns the completion budget)
@@ -487,7 +487,7 @@ def test_license_clean_large_tier_routes_to_nvidia(monkeypatch):
     large = chain[0]
     assert large.provider == "nvidia"
     # The YAML pins the non-reasoning sibling for structured HTML authoring.
-    assert large.model == "nvidia/nemotron-3-nano-30b-a3b"
+    assert large.model == "meta/llama-3.3-70b-instruct"
     assert large.base_url == "https://integrate.api.nvidia.com/v1"
 
     # 2. NO tier in the chain is named "medium" — the medium/14B tier was
@@ -497,7 +497,7 @@ def test_license_clean_large_tier_routes_to_nvidia(monkeypatch):
     assert not [s for s in chain if s.capability_tier_name == "medium"], (
         "two-tier design must carry no medium tier"
     )
-    assert large.model == "nvidia/nemotron-3-nano-30b-a3b", (
+    assert large.model == "meta/llama-3.3-70b-instruct", (
         "COURSEFORGE_REWRITE_MODEL must not dial the cloud large tier down"
     )
 
@@ -508,14 +508,14 @@ def test_license_clean_large_tier_routes_to_nvidia(monkeypatch):
     )
     assert [s.capability_tier_name for s in concept_chain] == ["large"]
     assert concept_chain[0].provider == "nvidia"
-    assert concept_chain[0].model == "nvidia/nemotron-3-nano-30b-a3b"
+    assert concept_chain[0].model == "meta/llama-3.3-70b-instruct"
 
     # 4. The resolved large spec constructs a real RewriteProvider that
     #    sources its key from NVIDIA_API_KEY (no live call, no client
     #    injection — construction-time key resolution only).
     provider_instance = r._get_rewrite_provider(large)
     assert provider_instance._provider == "nvidia"
-    assert provider_instance._model == "nvidia/nemotron-3-nano-30b-a3b"
+    assert provider_instance._model == "meta/llama-3.3-70b-instruct"
     assert provider_instance._base_url == "https://integrate.api.nvidia.com/v1"
     assert provider_instance._api_key == "nvapi-test-key-xyz"
 
@@ -554,7 +554,7 @@ def test_nvidia_provider_spec_validates():
         block_type="assessment_item",
         tier="rewrite",
         provider="nvidia",
-        model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        model="nvidia/nemotron-3-nano-30b-a3b",
         base_url="https://integrate.api.nvidia.com/v1",
     )
     assert spec.provider == "nvidia"

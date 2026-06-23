@@ -19,7 +19,7 @@ from sklearn.metrics import classification_report
 from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer, DataCollatorWithPadding
 
-from train_structure import (
+from training.train_structure import (
     StructureModel,
     evaluate,
     load_split,

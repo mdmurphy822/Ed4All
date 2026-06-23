@@ -63,18 +63,41 @@ class _ScriptedRuntime:
     Takes a list of completion strings (one per prompt, in order). Records
     the prompts it was handed so a test can assert prompt shape. Mirrors the
     QwenRuntime.generate_batch signature; loads no model / GPU.
+
+    Accepts ``fail_soft`` (the Stage-6 robustness kwarg the reviewer now
+    passes) and an OPTIONAL ``fail_indices`` set — prompt positions whose
+    completion is returned as the ``None`` SENTINEL (mirroring the endpoint
+    runtime's fail_soft behaviour after the bounded retries) so a test can
+    simulate a slow/down endpoint per cluster.
     """
 
-    def __init__(self, completions: list[str]) -> None:
+    def __init__(
+        self,
+        completions: list[str],
+        *,
+        fail_indices: set[int] | None = None,
+    ) -> None:
         self._completions = completions
+        self._fail_indices = fail_indices or set()
         self.batch_calls: list[dict] = []
 
     def generate_batch(self, prompts, *, max_tokens, temperature=0.6,
-                        top_p=0.95, seed=None, repeat_penalty=1.0):
-        self.batch_calls.append({"prompts": list(prompts), "max_tokens": max_tokens})
-        # Return exactly the scripted completions (the driver pads a short
-        # list defensively, but we always script len == len(prompts)).
-        return list(self._completions)
+                        top_p=0.95, seed=None, repeat_penalty=1.0,
+                        fail_soft=False):
+        self.batch_calls.append({
+            "prompts": list(prompts),
+            "max_tokens": max_tokens,
+            "fail_soft": fail_soft,
+        })
+        # Return the scripted completions, overriding any ``fail_indices``
+        # slot with the None sentinel (only honoured under fail_soft, exactly
+        # as the real endpoint runtime does — but the reviewer always passes
+        # fail_soft=True now, so we don't gate the test fixture on it).
+        out: list = list(self._completions)
+        for i in self._fail_indices:
+            if 0 <= i < len(out):
+                out[i] = None
+        return out
 
 
 def _verdict_json(block_id, *, verdict="corrected", kind=None, level=None,
@@ -761,6 +784,119 @@ def test_conservative_still_retags_clear_answer_key_noise_heading():
     assert out[1].kind == "metadata_drop"
     assert out[2].kind == "paragraph"
     assert verdicts[1].kind_after == "metadata_drop"
+    assert not any(v.reverted_for_invariant for v in verdicts)
+    _assert_coverage_invariant(out, len(fbs))
+
+
+# ---------------------------------------------------------------------------
+# Endpoint-failure resilience (Stage-6 robustness parity) — per-cluster
+# degrade, whole-document degrade, healthy-endpoint unchanged.
+# ---------------------------------------------------------------------------
+
+
+def test_reviewer_passes_fail_soft_to_generate_batch():
+    # The driver must call generate_batch with fail_soft=True so a per-cluster
+    # endpoint failure returns the None sentinel instead of raising.
+    fbs = [_fb("Chapter 1")]
+    regions = [Region(kind="heading", feature_block_indices=(0,),
+                      payload={"level_hint": 2, "text": "Chapter 1"})]
+    rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=1)])
+    run_structure_review(regions, fbs, rt)
+    assert rt.batch_calls[0]["fail_soft"] is True
+
+
+def test_one_cluster_endpoint_failure_degrades_only_that_cluster():
+    # (a) One heading's endpoint call fails (None sentinel) -> that cluster
+    # reverts to UNREVIEWED (reverted_for_endpoint_failure), the other heading
+    # is reviewed normally, the paragraph is untouched, no raise.
+    fbs = [_fb("Chapter 1"), _fb("body para"), _fb("Chapter 2")]
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,), payload={"level_hint": 2, "text": "Chapter 1"}),
+        Region(kind="paragraph", feature_block_indices=(1,), payload={"text": "body para"}),
+        Region(kind="heading", feature_block_indices=(2,), payload={"level_hint": 2, "text": "Chapter 2"}),
+    ]
+    # Two heading prompts (positions 0 and 1 in the dense prompt list map to
+    # region indices 0 and 2). Fail the SECOND prompt (region index 2).
+    completions = [
+        _verdict_json(0, kind="heading", level=1, note="re-level"),
+        _verdict_json(2, kind="metadata_drop", note="would-drop"),
+    ]
+    rt = _ScriptedRuntime(completions, fail_indices={1})
+    out, verdicts = run_structure_review(regions, fbs, rt)
+
+    # heading 0 reviewed normally (re-leveled).
+    assert out[0].kind == "heading"
+    assert out[0].payload["level_hint"] == 1
+    assert verdicts[0].verdict == "corrected"
+    assert verdicts[0].reverted_for_endpoint_failure is False
+
+    # paragraph untouched.
+    assert out[1].kind == "paragraph"
+    assert verdicts[1].verdict == "ok"
+    assert verdicts[1].reverted_for_endpoint_failure is False
+
+    # heading 2's endpoint failed -> kept ORIGINAL heading verbatim (NOT
+    # dropped), stamped reverted_for_endpoint_failure.
+    assert out[2].kind == "heading"
+    assert out[2].payload["level_hint"] == 2
+    assert verdicts[2].verdict == "ok"
+    assert verdicts[2].reverted_for_endpoint_failure is True
+    assert verdicts[2].reverted_for_invariant is False
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_all_clusters_endpoint_down_degrades_whole_review_no_raise():
+    # (b) Every heading's endpoint call fails -> the WHOLE review degrades to
+    # unreviewed (anti-crawl short-circuit). Document NOT aborted, no raise,
+    # original regions returned verbatim.
+    fbs = [_fb("Chapter 1"), _fb("body para"), _fb("Chapter 2"), _fb("Chapter 3")]
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,), payload={"level_hint": 2, "text": "Chapter 1"}),
+        Region(kind="paragraph", feature_block_indices=(1,), payload={"text": "body para"}),
+        Region(kind="heading", feature_block_indices=(2,), payload={"level_hint": 2, "text": "Chapter 2"}),
+        Region(kind="heading", feature_block_indices=(3,), payload={"level_hint": 2, "text": "Chapter 3"}),
+    ]
+    # 3 heading prompts; fail ALL of them.
+    completions = [
+        _verdict_json(0, kind="metadata_drop"),
+        _verdict_json(2, kind="metadata_drop"),
+        _verdict_json(3, kind="metadata_drop"),
+    ]
+    rt = _ScriptedRuntime(completions, fail_indices={0, 1, 2})
+    out, verdicts = run_structure_review(regions, fbs, rt)
+
+    # Whole review degraded -> the original regions list is returned verbatim
+    # (byte-stable UNREVIEWED floor); no heading was dropped.
+    assert out is regions
+    assert [r.kind for r in out] == ["heading", "paragraph", "heading", "heading"]
+    # every heading verdict is endpoint-degraded; the paragraph stays ok.
+    assert verdicts[0].reverted_for_endpoint_failure is True
+    assert verdicts[1].reverted_for_endpoint_failure is False  # paragraph
+    assert verdicts[1].verdict == "ok"
+    assert verdicts[2].reverted_for_endpoint_failure is True
+    assert verdicts[3].reverted_for_endpoint_failure is True
+    # No correction leaked through despite the would-drop completions.
+    assert not any(v.kind_after == "metadata_drop" for v in verdicts)
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_healthy_endpoint_review_unchanged():
+    # (c) Healthy endpoint -> review behaves exactly as before this fix: no
+    # endpoint-failure reverts, corrections applied normally.
+    fbs = [_fb("Chapter 1"), _fb("Chapter 2")]
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,), payload={"level_hint": 3, "text": "Chapter 1"}),
+        Region(kind="heading", feature_block_indices=(1,), payload={"level_hint": 2, "text": "Chapter 2"}),
+    ]
+    completions = [
+        _verdict_json(0, kind="heading", level=1, note="top-level"),
+        _verdict_json(1, verdict="ok"),
+    ]
+    rt = _ScriptedRuntime(completions)  # no fail_indices -> healthy
+    out, verdicts = run_structure_review(regions, fbs, rt)
+    assert out[0].payload["level_hint"] == 1  # corrected
+    assert verdicts[0].verdict == "corrected"
+    assert not any(v.reverted_for_endpoint_failure for v in verdicts)
     assert not any(v.reverted_for_invariant for v in verdicts)
     _assert_coverage_invariant(out, len(fbs))
 

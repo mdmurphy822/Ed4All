@@ -712,8 +712,8 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 > each prose fraction's `num/denom` pair against the cited source under
 > OCR-tolerant containment (`lib/validators/numeric_literal_grounding.py`,
 > reusing the `ED4ALL_ANSWER_NLI_ADD` numeric precedent in
-> `lib/retrieval/citation_attribution.py`). Measured CLEAN on the real
-> sample-course-a corpus (grounded blocks 0% source-absent including
+> `lib/retrieval/citation_attribution.py`). Measured CLEAN on a real
+> algebra corpus (grounded blocks 0% source-absent including
 > OCR-flattened + computed results; the 2 fabrication blocks flag; zero false
 > positives). Day-1 warning; flip to critical at the `# TODO(calibration)`
 > markers in `config/workflows.yaml` after a ≥2-corpus FP-rate measurement

@@ -39,7 +39,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
-from train_structure import (  # noqa: E402  (after sys.path tweak)
+from training.train_structure import (  # noqa: E402  (after sys.path tweak)
     StructureModel,
     load_split,
 )

@@ -3826,6 +3826,16 @@ workflows:
             source: phase_outputs
             phase: chunking
             output: dart_chunks_path
+          # Objectives plumbing: thread the course_planning-emitted
+          # synthesized_objectives.json so _archive_to_libv2 can project
+          # the canonical archive-side objectives.json (with parent_terminal
+          # back-pointers restored). Without it the strict packet_integrity
+          # gate's co_has_parent rule fails closed on every CO (the
+          # Trainforge-flattened course.json drops the CO→TO link).
+          - param: synthesized_objectives_path
+            source: phase_outputs
+            phase: course_planning
+            output: synthesized_objectives_path
 
         outputs:
           - course_slug

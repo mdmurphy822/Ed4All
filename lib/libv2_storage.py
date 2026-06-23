@@ -695,6 +695,85 @@ def validate_libv2_structure() -> Dict[str, bool]:
     }
 
 
+OBJECTIVES_ARCHIVE_FILENAME = "objectives.json"
+
+
+def project_objectives_for_archive(synthesized: Dict[str, Any]) -> Dict[str, Any]:
+    """Project a ``synthesized_objectives.json`` dict to the canonical
+    LibV2-archive ``objectives.json`` (Worker-A) shape.
+
+    The archive's ``objectives.json`` is the PRIMARY objectives source for
+    :class:`lib.validators.libv2.packet_integrity.PacketIntegrityValidator`
+    (``_load_objectives`` reads ``archive_root / "objectives.json"`` before
+    falling back to ``course.json``). That validator's ``co_has_parent``
+    rule requires every component objective to carry a non-empty
+    ``parent_terminal`` resolving to an existing terminal — a back-pointer
+    the Trainforge-flattened ``course.json`` drops on disk. This projection
+    restores it from the synthesized objectives' ``terminal_id`` (and its
+    aliases) so the strict packet-integrity gate at ``libv2_archival`` can
+    actually pass on a pipeline-built archive.
+
+    Reuses the canonical CO→TO back-pointer resolution
+    (:func:`lib.ontology.terminal_coverage.co_parent_terminal`) and the
+    canonical chapter-objective flattener
+    (:func:`lib.ontology.terminal_coverage.flatten_chapter_objectives`),
+    so the three on-disk ``chapter_objectives`` shapes (group-of-groups,
+    flat list, LibV2 ``component_objectives`` alias) all normalise here.
+
+    Accepts both the Courseforge synthesized form
+    (``terminal_objectives`` + ``chapter_objectives``) and the LibV2
+    archive form (``terminal_outcomes`` + ``component_objectives``).
+
+    Returns a dict shaped
+    ``{"terminal_outcomes": [...], "component_objectives": [...]}``. The
+    projection is anti-fabrication: it never invents an objective; a CO
+    whose synthesized record carries no resolvable terminal back-pointer
+    is emitted verbatim WITHOUT a ``parent_terminal`` (the validator then
+    flags it honestly rather than us papering over a real upstream gap).
+    """
+    # Lazy import keeps libv2_storage importable in CLI-only environments
+    # that don't pull the ontology package eagerly.
+    from lib.ontology.terminal_coverage import (
+        co_parent_terminal,
+        flatten_chapter_objectives,
+    )
+
+    if not isinstance(synthesized, dict):
+        return {"terminal_outcomes": [], "component_objectives": []}
+
+    terminal_raw = (
+        synthesized.get("terminal_objectives")
+        or synthesized.get("terminal_outcomes")
+        or []
+    )
+    terminal_outcomes: List[Dict[str, Any]] = [
+        dict(t) for t in terminal_raw if isinstance(t, dict)
+    ]
+
+    chapter_raw = (
+        synthesized.get("chapter_objectives")
+        or synthesized.get("component_objectives")
+        or synthesized.get("component_outcomes")
+        or []
+    )
+    component_objectives: List[Dict[str, Any]] = []
+    for co in flatten_chapter_objectives(chapter_raw):
+        entry = dict(co)
+        # ``co_parent_terminal`` lower-cases for case-insensitive matching;
+        # preserve the canonical terminal id casing where possible so the
+        # archived back-pointer reads naturally, falling back to the
+        # lower-cased resolution otherwise.
+        parent = co_parent_terminal(entry)
+        if parent and not (entry.get("parent_terminal") or "").strip():
+            entry["parent_terminal"] = parent
+        component_objectives.append(entry)
+
+    return {
+        "terminal_outcomes": terminal_outcomes,
+        "component_objectives": component_objectives,
+    }
+
+
 # Module-level validation
 def _validate_libv2_paths():
     """Validate LibV2 paths at module load."""
@@ -724,4 +803,6 @@ __all__ = [
     'CHUNKSET_KIND_TO_DIRNAME',
     'VECTOR_INDEX_DIRNAME',
     'VECTOR_INDEX_MANIFEST_FILENAME',
+    'OBJECTIVES_ARCHIVE_FILENAME',
+    'project_objectives_for_archive',
 ]
