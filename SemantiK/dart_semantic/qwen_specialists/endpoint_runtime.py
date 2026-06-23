@@ -267,6 +267,16 @@ def parse_batch_envelope(
         rid = match.group(1)
         # First occurrence wins (defensive against a duplicated block).
         found.setdefault(rid, match.group(2).strip())
+    # Single-region tolerance: when exactly ONE region was requested and the
+    # model emitted its fragment WITHOUT the envelope wrapper (common — given a
+    # single item the model just answers) OR truncated before the END tag (so
+    # the backreference-pinned pair never matched), treat the whole stripped
+    # body as that region's fragment instead of dropping it to the None
+    # sentinel. Only fires for a 1-region batch with zero parsed pairs, so
+    # there is no region-to-fragment ambiguity; multi-region batches are
+    # unchanged (the envelope is required to disambiguate them).
+    if len(region_ids) == 1 and not found and body.strip():
+        return {region_ids[0]: body.strip()}
     return {rid: found.get(rid) for rid in region_ids}
 
 
