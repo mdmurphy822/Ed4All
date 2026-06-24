@@ -16,7 +16,11 @@ interactive block (framework B07/B08/B10/B14), it asserts the feedback slot is:
 * (c) misconception-targeted where a distractor cluster exists — REUSES the
   ``distractor_misconception_alignment`` signal threaded in via
   ``inputs["distractor_signals_by_block"]`` (does NOT recompute distractor
-  quality; honest scope — the distractor engine stays untouched).
+  quality; honest scope — the distractor engine stays untouched). FR-INT-05
+  escalates that signal to a WARNING (``DISTRACTOR_NO_MISCONCEPTION_FEEDBACK``)
+  when a B07/B14 block HAS distractors but neither the threaded signal nor the
+  block's own ``option_feedback`` map covers them with per-option "why this is
+  wrong" feedback — closing the distractor-naming gap.
 
 Honest delta (gap ``feedback-elaborated-misconception``, PARTIALLY MET):
 misconception modeling + distractor faithfulness already exist for
@@ -178,6 +182,38 @@ class InteractionFeedbackValidator:
             if isinstance(sig, dict):
                 misconception_targeted = bool(sig.get("misconception_targeted"))
 
+            # FR-INT-05 — escalate the threaded distractor_misconception_alignment
+            # signal to a WARNING when a B07 knowledge-check's distractors lack
+            # per-option misconception-targeted feedback. Closes the
+            # distractor-naming gap: a knowledge-check whose wrong options carry no
+            # "why this is wrong" feedback teaches nothing on a miss.
+            misc_code = self._check_misconception_targeting(
+                block=block,
+                bcode=bcode,
+                misconception_targeted=misconception_targeted,
+            )
+            if misc_code is not None:
+                block_codes.append(misc_code)
+                if len(issues) < _ISSUE_LIST_CAP:
+                    issues.append(
+                        GateIssue(
+                            severity="warning",
+                            code=misc_code,
+                            message=(
+                                f"Knowledge-check block {block_id!r} ({bt}/{bcode}) "
+                                f"has distractors but no per-option "
+                                f"misconception-targeted feedback — the framework's "
+                                f"Feedback dimension (D5/QA-8) requires each "
+                                f"distractor explain WHY it is wrong."
+                            ),
+                            location=block_id,
+                            suggestion=(
+                                "Add per-option (option_feedback) misconception-"
+                                "targeted feedback for each distractor."
+                            ),
+                        )
+                    )
+
             per_block[block_id] = {
                 "framework_block": bcode,
                 "feedback_status": status,  # elaborated | thin | bare | missing
@@ -206,6 +242,89 @@ class InteractionFeedbackValidator:
                 }
             },
         )
+
+    @staticmethod
+    def _check_misconception_targeting(
+        *,
+        block: Any,
+        bcode: Any,
+        misconception_targeted: Any,
+    ) -> "str | None":
+        """FR-INT-05 — return ``DISTRACTOR_NO_MISCONCEPTION_FEEDBACK`` when a
+        B07 knowledge-check (or B14 graded assessment) carries distractors but
+        no per-option misconception-targeted feedback; ``None`` otherwise.
+
+        DETECTION precedence:
+
+        * the threaded ``distractor_misconception_alignment`` signal
+          (``misconception_targeted``) is AUTHORITATIVE when present — a truthy
+          value clears the check (the distractor engine already confirmed
+          misconception targeting), a falsey value (``False``, not ``None``)
+          fires the warning.
+        * with no threaded signal, fall back to the block's own
+          ``option_feedback`` map: a knowledge-check that HAS distractors but
+          whose distractor options carry no non-empty feedback fires.
+
+        Scope: only blocks whose framework B-code is B07/B14 (the
+        distractor-bearing types) AND that actually expose ≥1 distractor are
+        audited; a check with no distractors (e.g. a free-response prompt)
+        never fires (no distractor to target a misconception at).
+        """
+        from lib.validators._block_rubric_helpers import block_attr
+
+        # Only the distractor-bearing knowledge/assessment types.
+        if bcode not in ("B07", "B14"):
+            return None
+
+        distractors = InteractionFeedbackValidator._distractor_keys(block)
+        if not distractors:
+            # No distractors to target a misconception at — nothing to require.
+            return None
+
+        # Authoritative threaded signal wins (advisory, never recomputed).
+        if misconception_targeted is True:
+            return None
+        if misconception_targeted is False:
+            return "DISTRACTOR_NO_MISCONCEPTION_FEEDBACK"
+
+        # No threaded signal → inspect the block's own per-option feedback map.
+        raw = block_attr(block, "option_feedback")
+        if isinstance(raw, dict) and raw:
+            # At least one distractor must carry non-empty feedback.
+            covered = any(
+                isinstance(raw.get(d), str) and raw.get(d).strip()
+                for d in distractors
+            )
+            if covered:
+                return None
+        return "DISTRACTOR_NO_MISCONCEPTION_FEEDBACK"
+
+    @staticmethod
+    def _distractor_keys(block: Any) -> List[str]:
+        """Return the distractor option identifiers for a knowledge-check block.
+
+        A distractor is an option NOT marked correct. Reads the block's
+        ``content`` dict ``options`` list (the canonical self-check / assessment
+        shape ``{"text", "correct"}``). Returns the option text (or index-keyed
+        fallback) for each non-correct option; ``[]`` when no options resolve.
+        """
+        from lib.validators._block_rubric_helpers import block_attr
+
+        content = block_attr(block, "content")
+        options = None
+        if isinstance(content, dict):
+            options = content.get("options")
+        if not isinstance(options, list):
+            return []
+        keys: List[str] = []
+        for i, opt in enumerate(options):
+            if not isinstance(opt, dict):
+                continue
+            if opt.get("correct"):
+                continue
+            key = opt.get("text") or opt.get("key") or f"option_{i}"
+            keys.append(str(key))
+        return keys
 
     @staticmethod
     def _emit_decision(

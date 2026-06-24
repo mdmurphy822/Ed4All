@@ -422,6 +422,50 @@ def _courseforge_emit_blocks_enabled() -> bool:
     return os.getenv(_EMIT_BLOCKS_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
 
 
+# FR-A11Y-03 — typed-callout emit flag (ED4ALL_CALLOUT_TYPED). Default OFF:
+# with this unset the callout renderer emits its legacy markup byte-identical.
+# When truthy, a typed B12 callout (carrying a ``callout_kind``) renders a
+# redundant non-color contract: a visible LABEL + an icon + a per-kind border
+# class so the callout's category is conveyed without relying on color alone
+# (WCAG 1.4.1). Mirrors the COURSEFORGE_EMIT_BLOCKS / ED4ALL_NEW_BLOCK_TYPES
+# gating posture (parse-with-fallback; falsey / garbage → off).
+_CALLOUT_TYPED_ENV = "ED4ALL_CALLOUT_TYPED"
+
+
+def _callout_typed_enabled() -> bool:
+    """Return True when ``ED4ALL_CALLOUT_TYPED`` is set to a truthy value.
+
+    Default off → the callout renderer is byte-identical. Falsey / garbage →
+    off (parse-with-fallback, mirroring :func:`_courseforge_emit_blocks_enabled`).
+    """
+    return os.getenv(_CALLOUT_TYPED_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
+
+
+# FR-A11Y-03 — canonical typed-callout kinds + their redundant non-color coding.
+# Each kind maps to a visible LABEL, a (text) icon glyph, and a border CSS class.
+# The label + icon are the redundant signals (never color-only); the border
+# class supplies the visible border. Unknown kinds fall back to ``note``.
+_CALLOUT_KIND_PRESENTATION: Dict[str, Dict[str, str]] = {
+    "note": {"label": "Note", "icon": "ℹ", "border_class": "callout-kind-note"},
+    "tip": {"label": "Tip", "icon": "💡", "border_class": "callout-kind-tip"},
+    "warning": {
+        "label": "Warning",
+        "icon": "⚠",
+        "border_class": "callout-kind-warning",
+    },
+    "example": {
+        "label": "Example",
+        "icon": "✎",
+        "border_class": "callout-kind-example",
+    },
+    "key-idea": {
+        "label": "Key Idea",
+        "icon": "★",
+        "border_class": "callout-kind-key-idea",
+    },
+}
+
+
 def _shacl_deps_available() -> bool:
     """Return True if pyld / pyshacl / rdflib are importable.
 
@@ -1017,6 +1061,22 @@ COURSEFORGE_CSS = """
 """
 
 
+# FR-A11Y-03 — per-kind typed-callout CSS. Appended to the page <style> only
+# when ED4ALL_CALLOUT_TYPED is on (default off → byte-identical <style>). Each
+# kind gets a distinct visible BORDER (redundant with the rendered label+icon
+# row, so the coding is never color-only — WCAG 1.4.1). The label row styling
+# keeps the icon + kind name legible.
+_CALLOUT_TYPED_CSS = """
+    .callout-label { font-weight: 700; margin: 0 0 0.4em; color: #1a1a1a; }
+    .callout-icon { margin-right: 0.35em; }
+    .callout-kind-note { border-left: 4px solid #2c5aa0; }
+    .callout-kind-tip { border-left: 4px solid #28a745; }
+    .callout-kind-warning { border-left: 4px solid #ffc107; }
+    .callout-kind-example { border-left: 4px solid #6610f2; }
+    .callout-kind-key-idea { border-left: 4px solid #e83e8c; }
+"""
+
+
 # ---------------------------------------------------------------------------
 # Defect D post-hoc CSS patch (no re-gen).
 # ---------------------------------------------------------------------------
@@ -1135,7 +1195,7 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{safe_title} &mdash; {course_code}</title>
-  <style>{COURSEFORGE_CSS}</style>{json_ld}
+  <style>{COURSEFORGE_CSS}{_CALLOUT_TYPED_CSS if _callout_typed_enabled() else ""}</style>{json_ld}
 </head>
 <body>
   <a href="#main-content" class="skip-link" data-cf-role="template-chrome">Skip to main content</a>
@@ -1713,7 +1773,9 @@ def _render_self_check(
                 f'        <label class="sc-option" data-correct="{correct}">'
                 f'<input type="radio" name="q{i}" style="margin-right:0.5em">'
                 f'{html_mod.escape(opt["text"])}</label>\n'
-                f'        <div class="sc-feedback">{fb}</div>'
+                # FR-INT-05 — aria-live="polite" so revealed self-check feedback
+                # is announced to assistive tech when the answer is checked.
+                f'        <div class="sc-feedback" aria-live="polite">{fb}</div>'
             )
         options_html = "\n".join(opts)
         # Per-question source override falls back to page-level ids.
@@ -1922,6 +1984,21 @@ def _render_content_sections(
         if section.get("callout"):
             c = section["callout"]
             cls = f'callout {c.get("type", "")}'.strip()
+            # FR-A11Y-03 — typed B12 callout. Resolve callout_kind (note / tip /
+            # warning / example / key-idea) and, behind ED4ALL_CALLOUT_TYPED,
+            # emit a redundant non-color contract: a visible LABEL + icon + a
+            # per-kind border class so the category is conveyed without relying
+            # on color alone (WCAG 1.4.1). Default off → byte-identical legacy
+            # markup (no kind class, no label/icon row).
+            callout_kind = c.get("kind")
+            typed_on = bool(callout_kind) and _callout_typed_enabled()
+            presentation: Optional[Dict[str, str]] = None
+            if typed_on:
+                presentation = _CALLOUT_KIND_PRESENTATION.get(
+                    str(callout_kind).strip().lower(),
+                    _CALLOUT_KIND_PRESENTATION["note"],
+                )
+                cls = f'{cls} {presentation["border_class"]}'.strip()
             # Validator runs on every callout emit (test contract:
             # ``test_render_content_sections_routes_callout_through_validator``).
             callout_type = _validate_callout_content_type(
@@ -1937,6 +2014,7 @@ def _render_content_sections(
                 sequence=sec_idx,
                 content={"items": list(c.get("items", []))},
                 content_type_label=callout_type,
+                callout_kind=str(callout_kind).strip().lower() if callout_kind else None,
             )
             callout_attrs = callout_block.to_html_attrs()
             parts.append(
@@ -1944,6 +2022,15 @@ def _render_content_sections(
                 f' aria-label="{html_mod.escape(c.get("label", "Note"))}"'
                 f'{callout_attrs}>'
             )
+            if presentation is not None:
+                # Redundant label + icon row (visible text, not color-only).
+                parts.append(
+                    f'      <p class="callout-label">'
+                    f'<span class="callout-icon" aria-hidden="true">'
+                    f'{html_mod.escape(presentation["icon"])}</span> '
+                    f'<span class="callout-kind-label">'
+                    f'{html_mod.escape(presentation["label"])}</span></p>'
+                )
             parts.append(f'      <h3>{html_mod.escape(c.get("heading", "Note"))}</h3>')
             for item in c.get("items", []):
                 parts.append(f"      <p>{item}</p>")

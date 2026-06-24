@@ -302,6 +302,24 @@ def test_compute_content_hash_excludes_anatomy_slots():
     assert a.compute_content_hash() == b.compute_content_hash()
 
 
+def test_option_feedback_default_none_and_hash_excluded():
+    """FR-INT-05 — option_feedback defaults None and is excluded from the hash."""
+    a = _make_block(block_type="self_check_question", page_id="p", content="c")
+    assert a.option_feedback is None
+    b = dataclasses.replace(a, option_feedback={"wrong": "because you forgot X"})
+    assert b.option_feedback == {"wrong": "because you forgot X"}
+    assert a.compute_content_hash() == b.compute_content_hash()
+
+
+def test_callout_kind_default_none_and_hash_excluded():
+    """FR-A11Y-03 — callout_kind defaults None and is excluded from the hash."""
+    a = _make_block(block_type="callout", content="c")
+    assert a.callout_kind is None
+    b = dataclasses.replace(a, callout_kind="warning")
+    assert b.callout_kind == "warning"
+    assert a.compute_content_hash() == b.compute_content_hash()
+
+
 def test_derive_anatomy_slots_heading_from_html():
     """IB1.5 — heading is parsed from content HTML; feedback/transition None."""
     b = _make_block(

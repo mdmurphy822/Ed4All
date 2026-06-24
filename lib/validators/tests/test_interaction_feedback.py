@@ -93,3 +93,97 @@ def test_disabled_is_noop_pass():
     )
     assert res.passed is True
     assert {i.code for i in res.issues} == {"INTERACTION_FEEDBACK_DISABLED"}
+
+
+# --- FR-INT-05: per-distractor misconception-targeted feedback ----------------
+
+
+def _knowledge_check(*, options, option_feedback=None, feedback="Elaborated why "
+                     "the order of operations matters here.", block_id="kc1") -> Block:
+    return Block(
+        block_id=block_id,
+        block_type="self_check_question",  # B07
+        page_id="week_01_self_check",
+        sequence=1,
+        content={"question": "Q?", "options": options},
+        interaction="Answer.",
+        feedback=feedback,
+        option_feedback=option_feedback,
+    )
+
+
+_OPTIONS = [
+    {"text": "right", "correct": True},
+    {"text": "wrong-a", "correct": False},
+    {"text": "wrong-b", "correct": False},
+]
+
+
+def test_distractors_without_option_feedback_flagged():
+    block = _knowledge_check(options=_OPTIONS, option_feedback=None)
+    res = InteractionFeedbackValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    assert any(
+        i.code == "DISTRACTOR_NO_MISCONCEPTION_FEEDBACK" for i in res.issues
+    )
+
+
+def test_distractors_with_option_feedback_pass():
+    block = _knowledge_check(
+        options=_OPTIONS,
+        option_feedback={"wrong-a": "you added first", "wrong-b": "you skipped X"},
+    )
+    res = InteractionFeedbackValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    assert not any(
+        i.code == "DISTRACTOR_NO_MISCONCEPTION_FEEDBACK" for i in res.issues
+    )
+
+
+def test_threaded_signal_true_clears_check():
+    block = _knowledge_check(options=_OPTIONS, option_feedback=None)
+    res = InteractionFeedbackValidator().validate(
+        {
+            "blocks": [block],
+            "rubric_enabled": True,
+            "distractor_signals_by_block": {
+                "kc1": {"misconception_targeted": True}
+            },
+        }
+    )
+    assert not any(
+        i.code == "DISTRACTOR_NO_MISCONCEPTION_FEEDBACK" for i in res.issues
+    )
+
+
+def test_threaded_signal_false_fires_even_with_option_feedback():
+    block = _knowledge_check(
+        options=_OPTIONS, option_feedback={"wrong-a": "x", "wrong-b": "y"}
+    )
+    res = InteractionFeedbackValidator().validate(
+        {
+            "blocks": [block],
+            "rubric_enabled": True,
+            "distractor_signals_by_block": {
+                "kc1": {"misconception_targeted": False}
+            },
+        }
+    )
+    assert any(
+        i.code == "DISTRACTOR_NO_MISCONCEPTION_FEEDBACK" for i in res.issues
+    )
+
+
+def test_no_distractors_never_fires():
+    # Free-response-style: only a correct option, no distractors.
+    block = _knowledge_check(
+        options=[{"text": "right", "correct": True}], option_feedback=None
+    )
+    res = InteractionFeedbackValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    assert not any(
+        i.code == "DISTRACTOR_NO_MISCONCEPTION_FEEDBACK" for i in res.issues
+    )

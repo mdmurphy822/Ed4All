@@ -919,6 +919,28 @@ class Block:
     # default-None state keeps legacy / flag-off blocks byte-identical. Read by the
     # planner reasoning only; not projected to HTML/JSON-LD.
     anatomy_slot_weights: Optional[Dict[str, Any]] = None
+    # FR-INT-05 — per-distractor misconception feedback (B07 knowledge-check /
+    # B14 graded assessment). A mapping of option key/text -> the misconception-
+    # targeted "why this is wrong" feedback string the framework's Feedback
+    # dimension (D5 / QA-8) requires for an interaction's distractors. Additive
+    # Optional/None default and INTENTIONALLY excluded from compute_content_hash()
+    # (the hash payload is an explicit 5-key allowlist; mirrors target_bloom /
+    # quality_rubric / anatomy_slot_weights) so an option-feedback retro-fit
+    # never drifts an existing block hash; the default-None state keeps legacy /
+    # flag-off blocks byte-identical. Read by the IB6.3 InteractionFeedback-
+    # Validator's _check_misconception_targeting arm (gated by
+    # ED4ALL_BLOCK_QUALITY_RUBRIC). Not projected to HTML/JSON-LD here.
+    option_feedback: Optional[Dict[str, str]] = None
+    # FR-A11Y-03 — typed B12 callout kind (note / tip / warning / example /
+    # key-idea). Drives the redundant non-color coding (visible LABEL + icon +
+    # border) in the generate_course callout renderer behind ED4ALL_CALLOUT_TYPED
+    # (default OFF; byte-stable when unset). Additive Optional/None default and
+    # INTENTIONALLY excluded from compute_content_hash() (the hash payload is an
+    # explicit 5-key allowlist; mirrors target_bloom / anatomy_slot_weights) so a
+    # kind retro-fit never drifts an existing block hash; the default-None state
+    # keeps legacy / flag-off blocks byte-identical. Read by the
+    # CalloutStructureValidator (CALLOUT_NO_KIND) + the renderer.
+    callout_kind: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -988,11 +1010,15 @@ class Block:
         ``anchored_rubric`` Evaluate/Create scoring rubric, the IB4 UDL
         coverage fields ``n_representations`` / ``response_formats`` /
         ``engagement_affordance``, and the IB5 type-specific fields
-        ``fade_state`` / ``long_description`` / ``media_a11y`` so a
+        ``fade_state`` / ``long_description`` / ``media_a11y``, the FR-INT-05
+        ``option_feedback`` per-distractor feedback map, and the FR-A11Y-03
+        ``callout_kind`` typed-callout enum so a
         touch-only / budget-only / classifier-retrofit / objective-
         delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring /
-        anchored-rubric-attach / udl-coverage-retrofit / ib5-field-attach
-        revision keeps a stable hash. ``content`` (the BODY slot) IS in the payload; the other
+        anchored-rubric-attach / udl-coverage-retrofit / ib5-field-attach /
+        option-feedback-attach / callout-kind-attach
+        revision keeps a stable hash. The payload below is an explicit 5-key
+        allowlist, so any new field is excluded by construction. ``content`` (the BODY slot) IS in the payload; the other
         five anatomy slots are derived-or-authored metadata ABOUT the same
         content, so hashing them would drift every existing block hash on a
         back-derivation retrofit — exactly the failure the

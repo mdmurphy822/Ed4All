@@ -293,3 +293,29 @@ focused on the current authoritative counts.
 > mirroring `retrieval_presence`). The count table is re-derived from
 > `config/workflows.yaml`: `course_generation` 31→34 warning,
 > `textbook_to_course` 75→78 warning, Total 109→115 warning / 171→177 total.
+
+> FR-A11Y-03 landing (typed B12 callouts — redundant non-color coding): one new
+> validator added in **warning** at `post_rewrite_validation` in BOTH two-pass
+> workflows (+1 each) — `callout_structure`
+> (`lib.validators.callout_structure.CalloutStructureValidator`). Flags
+> `CALLOUT_NO_KIND` (untyped callout), `CALLOUT_COLOR_ONLY` (a `callout-kind-*`
+> color/border class with no visible label+icon row — WCAG 1.4.1),
+> `CALLOUT_BODY_OVERFLOW` (reuses the ~200-char `resolve_body_char_ceiling`
+> cognitive-load ceiling), and `CALLOUT_MOTION` (motion without a
+> `prefers-reduced-motion` guard); reuses the rewrite-tier
+> `_build_block_input_rewrite` builder. Introduces the new `ED4ALL_CALLOUT_TYPED`
+> flag — the same flag that makes the `generate_course.py` callout renderer emit
+> the redundant visible LABEL + icon + per-kind border (never color-only); strict
+> no-op + byte-stable (passed=True + a `CALLOUT_STRUCTURE_DISABLED` info issue)
+> when unset. The new `Block.callout_kind` field is Optional-default-None +
+> hash-EXCLUDED (the `compute_content_hash` payload is a fixed 5-key allowlist).
+> Warning-day-1 with a `# TODO(calibration)` deferred critical-flip (standard
+> multi-wave deferred-flip — IB3 is the roadmap's single documented fastest-flip
+> exception, this is NOT IB3). The sibling FR-INT-05 change (B07 per-option
+> misconception feedback) added NO new gate — it escalates the existing
+> `interaction_feedback` gate's already-threaded
+> `distractor_misconception_alignment` signal to a WARNING
+> (`DISTRACTOR_NO_MISCONCEPTION_FEEDBACK`) and is byte-stable behind
+> `ED4ALL_BLOCK_QUALITY_RUBRIC`. The count table is re-derived from
+> `config/workflows.yaml`: `course_generation` 34→35 warning,
+> `textbook_to_course` 78→79 warning, Total 115→117 warning / 177→179 total.

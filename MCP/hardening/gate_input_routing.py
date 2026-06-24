@@ -617,6 +617,10 @@ def _accepted_block_fields() -> frozenset:
         "component", "source_ids", "source_primary",
         "source_references", "content_hash",
         "validation_attempts", "escalation_marker",
+        # FR-INT-05 / FR-A11Y-03 — additive Optional Block fields the
+        # CalloutStructureValidator / InteractionFeedbackValidator read off
+        # hydrated blocks. Default None → byte-stable when absent from the JSONL.
+        "feedback", "option_feedback", "callout_kind",
     })
 
 
@@ -2568,6 +2572,15 @@ def default_router() -> GateInputRouter:
     # (no-ops + byte-stable when ED4ALL_BLOCK_A11Y is unset).
     r.register(
         "lib.validators.interactive_a11y.InteractiveA11yValidator",
+        _build_block_input_rewrite,
+    )
+    # FR-A11Y-03 — CalloutStructureValidator audits typed B12 callouts (WCAG
+    # 1.4.1 non-color coding + body-overflow + motion). Consumes only
+    # ``inputs['blocks']`` so it reuses the rewrite-tier Block surface (no-ops +
+    # byte-stable when ED4ALL_CALLOUT_TYPED is unset — the same flag that makes
+    # the typed callout renderer emit the redundant label/icon/border).
+    r.register(
+        "lib.validators.callout_structure.CalloutStructureValidator",
         _build_block_input_rewrite,
     )
     # FR-COURSE-02 — BlockSequenceOrderValidator audits the worked-example ->
