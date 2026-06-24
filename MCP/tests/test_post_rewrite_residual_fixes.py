@@ -292,3 +292,152 @@ def test_restamp_no_vocabulary_is_curie_noop(tmp_path):
     assert res["curie_minted"] == 0
     # content_type still stamped (taxonomy-independent).
     assert res["content_type_stamped"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Fix 3 — final deterministic CURIE-anchoring sweep (course-a-calib calib)
+# ---------------------------------------------------------------------------
+#
+# Root cause: a block whose outline DECLARED minted CURIEs and whose published
+# prose genuinely discusses the concept could still reach blocks_final.jsonl
+# with NO ``<span data-cf-curie>`` (the provider's pedagogical-context
+# preservation check considered the bare TERM "present" so its forced-inject
+# set was empty, and the in-loop per-block backstop had a sequencing gap). The
+# str-path ``BlockCurieAnchoringValidator`` then extracted ZERO CURIE TOKENS
+# and failed OUTLINE_BLOCK_MISSING_CURIES — aborting the whole post-rewrite
+# gate before the block_quality_rollup. The fix adds a final deterministic
+# prose-mint sweep over the assembled rewrite blocks before blocks_final.jsonl
+# is written. These tests prove the failure→fix chain THROUGH the actual gate.
+
+
+def _build_block(block_id, block_type, content, *, page_id="week_01_content_01"):
+    """Construct a rewrite-tier Block (str content) for the gate."""
+    import dataclasses as _dc
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _scripts = _Path(pt.__file__).resolve().parents[1] / "Courseforge" / "scripts"
+    if str(_scripts) not in _sys.path:
+        _sys.path.insert(0, str(_scripts))
+    from blocks import Block  # noqa: PLC0415
+
+    flds = {f.name for f in _dc.fields(Block)}
+    kw = {
+        "block_id": block_id,
+        "block_type": block_type,
+        "content": content,
+        "page_id": page_id,
+        "sequence": 0,
+    }
+    return Block(**{k: v for k, v in kw.items() if k in flds})
+
+
+def test_anchoring_sweep_fixes_spanless_block_through_gate(tmp_path):
+    """A rewrite block whose prose names a vocab concept but carries NO CURIE
+    token reaches the gate FAILING; after the deterministic prose-mint sweep
+    (same contract as the in-loop final sweep) it PASSES. End-to-end through
+    the real ``BlockCurieAnchoringValidator``."""
+    from Courseforge.router.inter_tier_gates import BlockCurieAnchoringValidator
+    from lib.ontology.curie_discovery import resolve_minted_curie_map
+
+    libv2_root = tmp_path / "libv2"
+    slug = "sample-course"
+    _write_vocab(libv2_root, slug)
+    minted_curie_map = resolve_minted_curie_map(
+        threaded_path=str(
+            libv2_root / "courses" / slug / "concept_graph"
+            / "domain_concept_vocabulary.json"
+        ),
+    )
+
+    # A concept block whose published prose discusses "order of operations"
+    # (a vocab concept) but carries NO ``prefix:localname`` CURIE token and NO
+    # data-cf-curie span — the exact calib failure shape.
+    spanless_html = (
+        '<section data-cf-content-type="concept" '
+        'data-cf-block-id="week_01_content_01#concept_x_3">'
+        "<h2>Evaluating Expressions</h2>"
+        "<p>The order of operations tells you which step to perform first "
+        "when you simplify an expression.</p></section>"
+    )
+
+    # --- BEFORE the sweep: the gate FAILS this block (no extractable CURIE).
+    pre_block = _build_block("week_01_content_01#concept_x_3", "concept",
+                             spanless_html)
+    pre = BlockCurieAnchoringValidator().validate(
+        {"blocks": [pre_block], "minted_curie_map": minted_curie_map},
+    )
+    assert pre.passed is False
+    assert any(i.code == "OUTLINE_BLOCK_MISSING_CURIES" for i in pre.issues)
+
+    # --- Apply the deterministic prose-mint sweep (restamp = identical
+    # contract to the in-loop final sweep wired into the rewrite handler).
+    blocks_path = tmp_path / "blocks_final.jsonl"
+    blocks_path.write_text(
+        json.dumps({
+            "block_id": "week_01_content_01#concept_x_3",
+            "block_type": "concept",
+            "page_id": "week_01_content_01",
+            "sequence": 0,
+            "content": spanless_html,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    res = restamp_blocks_final_jsonl(
+        blocks_final_path=str(blocks_path),
+        course_code=slug,
+        libv2_root=str(libv2_root),
+        in_place=True,
+    )
+    assert res["curie_minted"] == 1
+    assert res["still_curieless"] == 0
+
+    # --- AFTER the sweep: the gate PASSES (a real CURIE was minted from the
+    # block's OWN prose and now extracts from the hidden span).
+    post_entry = json.loads(blocks_path.read_text(encoding="utf-8").strip())
+    assert "data-cf-curie" in post_entry["content"]
+    post_block = _build_block("week_01_content_01#concept_x_3", "concept",
+                              post_entry["content"])
+    post = BlockCurieAnchoringValidator().validate(
+        {"blocks": [post_block], "minted_curie_map": minted_curie_map},
+    )
+    assert post.passed is True
+    assert not any(
+        i.code == "OUTLINE_BLOCK_MISSING_CURIES" for i in post.issues
+    )
+
+
+def test_anchoring_sweep_preserves_anti_fabrication(tmp_path):
+    """A rewrite block whose prose names NO vocabulary concept gains NO span —
+    the sweep never invents a CURIE (anti-fabrication), so the block stays
+    honestly curieless rather than carrying a fabricated anchor."""
+    libv2_root = tmp_path / "libv2"
+    slug = "sample-course"
+    _write_vocab(libv2_root, slug)
+
+    # Prose about insurance — names no vocabulary concept.
+    no_concept_html = (
+        '<section data-cf-content-type="example">'
+        "<h2>Insurance Payment</h2>"
+        "<p>An insurer pays a claim minus the deductible.</p></section>"
+    )
+    blocks_path = tmp_path / "blocks_final.jsonl"
+    blocks_path.write_text(
+        json.dumps({
+            "block_id": "week_12_content_01#example_x_1",
+            "block_type": "example",
+            "page_id": "week_12_content_01",
+            "sequence": 0,
+            "content": no_concept_html,
+        }) + "\n",
+        encoding="utf-8",
+    )
+    res = restamp_blocks_final_jsonl(
+        blocks_final_path=str(blocks_path),
+        course_code=slug,
+        libv2_root=str(libv2_root),
+        in_place=True,
+    )
+    assert res["curie_minted"] == 0
+    assert res["still_curieless"] == 1
+    assert "data-cf-curie" not in blocks_path.read_text(encoding="utf-8")

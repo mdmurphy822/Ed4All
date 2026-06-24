@@ -12832,6 +12832,116 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             if _result is not None:
                 rewrite_blocks.append(_result)
 
+    # ---- Final deterministic CURIE-anchoring sweep (calib fix) ----------
+    # Belt-and-suspenders guarantee that EVERY shipping block carries a
+    # gate-extractable CURIE before the post_rewrite_validation gate runs,
+    # regardless of which per-block dispatch path it took (sequential /
+    # concurrent / batched / cache-hit) or whether the provider's
+    # ``_force_inject_curies`` / the in-loop ``_apply_str_backstops`` mint
+    # actually landed a span. Root cause (course-a-calib calib run): a
+    # block whose outline DECLARED minted CURIEs and whose published prose
+    # genuinely discusses the concept could still reach blocks_final.jsonl
+    # with NO ``<span data-cf-curie>`` (the provider's pedagogical-context
+    # preservation check considered the bare TERM "present" so
+    # ``last_missing`` was empty → ``_force_inject_curies`` injected
+    # nothing; the str-path BlockCurieAnchoringValidator then extracts ZERO
+    # CURIE TOKENS and fails OUTLINE_BLOCK_MISSING_CURIES). This sweep runs
+    # the SAME proven prose-mint contract as ``restamp_blocks_final_jsonl``:
+    # for any STR-content shipping block whose stripped body carries no
+    # extractable CURIE, mint a real domain CURIE from the block's OWN
+    # published prose (a concept surface form present in the prose is the
+    # exact anchoring surface the validator accepts) and append it as a
+    # hidden ``<span data-cf-curie>`` whose TEXT content carries the tokens.
+    # ANTI-FABRICATION: prose-mint only (no vocabulary / no surface match →
+    # mint nothing; the block stays curieless and fails the gate honestly).
+    # Idempotent: a body that already carries an extractable CURIE is
+    # untouched. No LLM / no GPU. No-op on RDF / legacy corpora (empty
+    # minter resources).
+    _final_anchor_minted = 0
+    if _rewrite_domain_seeds and _rewrite_minted_by_canonical:
+        from Courseforge.router.inter_tier_gates import (  # noqa: PLC0415
+            _strip_html as _strip_html_anchor,
+            _is_unshipped_escalation_tombstone as _is_tombstone_anchor,
+            _is_deterministic_template_block as _is_det_template_anchor,
+        )
+        from lib.ontology.curie_extraction import (  # noqa: PLC0415
+            extract_curies as _extract_curies_anchor,
+        )
+        _swept: List[Any] = []
+        for _blk in rewrite_blocks:
+            _content = getattr(_blk, "content", None)
+            if not isinstance(_content, str):
+                _swept.append(_blk)
+                continue
+            # Mirror the gate's audit universe: skip exactly the blocks the
+            # gate skips (unshipped tombstones + deterministic templates).
+            try:
+                if _is_tombstone_anchor(_blk) or _is_det_template_anchor(_blk):
+                    _swept.append(_blk)
+                    continue
+            except Exception:  # noqa: BLE001 — never break the sweep
+                _swept.append(_blk)
+                continue
+            try:
+                _body = _extract_curies_anchor(_strip_html_anchor(_content))
+            except Exception:  # noqa: BLE001
+                _body = set()
+            if _body:
+                _swept.append(_blk)
+                continue
+            # No extractable CURIE — strip any junk data-cf-curie span (one
+            # whose text carries no extractable CURIE) then prose-mint.
+            _new_content = _content
+            if "data-cf-curie" in _new_content:
+                _new_content = _CURIE_SPAN_EL_RE.sub("", _new_content)
+            try:
+                _prose = _strip_html_anchor(_new_content)
+            except Exception:  # noqa: BLE001
+                _prose = ""
+            _tokens = [t for t in _mint_curie_for_str_block_prose(_prose) if t]
+            if _tokens and "data-cf-curie" not in _new_content:
+                _txt = " ".join(_tokens)
+                _new_content = (
+                    f"{_new_content}"
+                    f'<span hidden data-cf-curie="{_txt}">{_txt}</span>'
+                )
+                try:
+                    _blk = _dc.replace(_blk, content=_new_content)
+                    _final_anchor_minted += 1
+                except (TypeError, ValueError):
+                    pass
+            _swept.append(_blk)
+        rewrite_blocks = _swept
+        if _final_anchor_minted and capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=(
+                        f"Final CURIE-anchoring sweep minted prose CURIEs for "
+                        f"{_final_anchor_minted} shipping block(s) that reached "
+                        f"blocks_final without a gate-extractable CURIE."
+                    ),
+                    rationale=(
+                        f"Deterministic prose-mint backstop (no LLM/GPU) closed "
+                        f"the rewrite-tier anchoring gap for "
+                        f"{_final_anchor_minted} block(s): each carried no "
+                        f"extractable CURIE token despite its published prose "
+                        f"discussing a domain concept, so a real "
+                        f"{{prefix}}:{{concept}} CURIE was minted from the "
+                        f"block's OWN prose (anti-fabrication: surface-form "
+                        f"match only) and appended as a hidden data-cf-curie "
+                        f"span the str-path BlockCurieAnchoringValidator can "
+                        f"extract. course={course_code}."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_rewrite",
+                        "final_anchor_sweep_minted": _final_anchor_minted,
+                        "rewrite_block_count": len(rewrite_blocks),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
     # Persist final blocks JSONL (consumed by post_rewrite_validation).
     blocks_final_path = out_dir / "blocks_final.jsonl"
     with blocks_final_path.open("w", encoding="utf-8") as fh:
