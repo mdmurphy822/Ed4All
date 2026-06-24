@@ -319,3 +319,40 @@ focused on the current authoritative counts.
 > `ED4ALL_BLOCK_QUALITY_RUBRIC`. The count table is re-derived from
 > `config/workflows.yaml`: `course_generation` 34→35 warning,
 > `textbook_to_course` 78→79 warning, Total 115→117 warning / 177→179 total.
+
+> FR-COURSE-01 landing (course-level §6.5 EMERGENT-quality QA gate): one new
+> validator added in **warning** at `post_rewrite_validation` in BOTH
+> `course_generation` (+1) + `textbook_to_course` (+1) — `course_level_qa`
+> (`lib.validators.course_level_qa.CourseLevelQaValidator`). The course-scope
+> companion to the per-block IB6 rubric/rollup gates: it COMPOSES already-
+> computed REAL signals (NEVER re-scores blocks) — the block→module→course
+> rollup (reconstructed self-sufficiently from the canonical IB6.1 rubric
+> scorer exactly as `BlockQualityRollupValidator` does) + the per-page block-
+> type distribution of the rewrite-tier `blocks` + the OPTIONAL 06_assessments
+> manifest — into the framework §6.5 A-F course-level gaps no per-block gate can
+> capture. KEYSTONE is Section F, the interaction MIX (OSCQR rubric item 34): a
+> course must span ≥2 of {student-content (exposition/check), student-student
+> (discussion B10), student-instructor (graded/feedback B14 or a graded
+> assessments-manifest item)} → `COURSE_INTERACTION_MIX_NARROW`. Also
+> `COURSE_NO_INTEGRATION_CLOSE` (the last content module lacks a summative
+> B13/B14/recap/checklist close), `COURSE_TO_COVERAGE_GAP` (a terminal
+> objective touched by zero authored block — pure id resolution, no embeddings,
+> only emitted when the objectives universe resolves), and
+> `COURSE_RETRIEVAL_RHYTHM_THIN` (< half of content-bearing modules carry a
+> retrieval/check block — advisory course-level companion to `retrieval_presence`
+> / `block_sequence_order`, no recompute of the per-module spacing logic).
+> Anti-fabrication: every flag is grounded in a real signal in the input
+> surface; an unresolvable signal yields a structured skip, not an invented
+> verdict. New `_build_course_level_qa` builder — the BROADEST
+> post_rewrite_validation builder — surfaces `{blocks,
+> synthesized_objectives_path?, assessments_path?}` (reuses
+> `_build_block_input_rewrite` for the block set, `_resolve_objectives_path` for
+> the TO universe, and `_locate` for the optional manifest). No new behavior
+> flag: REUSES `ED4ALL_BLOCK_QUALITY_RUBRIC` (the rollup it composes already
+> rides that flag), so it no-ops byte-stable (passed=True + a `RUBRIC_DISABLED`
+> info issue) when the flag is unset. Wired warning-day-1 with a
+> `# TODO(calibration)` deferred critical-flip on `COURSE_INTERACTION_MIX_NARROW`
+> (standard multi-wave deferred-flip — IB3 is the roadmap's single documented
+> fastest-flip exception, this is NOT IB3). The count table is re-derived from
+> `config/workflows.yaml`: `course_generation` 35→36 warning,
+> `textbook_to_course` 79→80 warning, Total 117→119 warning / 179→181 total.

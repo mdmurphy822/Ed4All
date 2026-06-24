@@ -2258,6 +2258,53 @@ def _build_cumulative_assessment(
     return inputs, ["synthesized_objectives_path"]
 
 
+def _build_course_level_qa(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """FR-COURSE-01 — input builder for CourseLevelQaValidator.
+
+    The course-level §6.5 emergent-quality gate is the BROADEST builder on the
+    post_rewrite_validation seam: it composes the FULL rewrite-tier ``blocks``
+    set (the load-bearing signal — the per-page block-type distribution drives
+    the interaction-mix + integration-close + coverage signals) PLUS the
+    optional 06_assessments manifest PLUS the synthesized objectives universe
+    PLUS the rollup it self-sufficiently recomputes from ``blocks``.
+
+    Resolution:
+
+    * ``blocks`` — required (reuses the rewrite-tier Block surface, the same
+      hydration the IB6 rubric / rollup gates consume). Absent → skip.
+    * ``synthesized_objectives_path`` — optional (Dimension A cumulative-TO
+      coverage). When absent the coverage signal is skipped, not invented.
+    * ``assessments_path`` — optional supplementary student↔instructor signal
+      (the 06_assessments manifest). Usually absent at post_rewrite_validation
+      because assessment_synthesis runs LATER; the block-derived B14 signal is
+      the primary student↔instructor surface, so absence is graceful.
+
+    The validator no-ops byte-stable when ED4ALL_BLOCK_QUALITY_RUBRIC is unset
+    (reads the flag itself), so this builder always populates whatever it can.
+    """
+    inputs, missing = _build_block_input_rewrite(phase_outputs, workflow_params)
+    if missing:
+        # No blocks → the validator's BLOCKS_UNAVAILABLE arm is the safety net,
+        # but a missing block set is a structured skip, not a silent pass.
+        return inputs, missing
+
+    synthesized = _resolve_objectives_path(phase_outputs, workflow_params)
+    if synthesized:
+        inputs["synthesized_objectives_path"] = synthesized
+
+    # Optional 06_assessments manifest (supplementary student↔instructor signal).
+    assessments = _locate(
+        phase_outputs, "assessments_path", "assessment_path", "qti_dir", "output_path",
+    )
+    if assessments:
+        inputs["assessments_path"] = assessments
+
+    return inputs, []
+
+
 # ---------------------------------------------------------------------- #
 # Registry
 # ---------------------------------------------------------------------- #
@@ -2490,6 +2537,18 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.block_quality_rollup.BlockQualityRollupValidator",
         _build_block_input_rewrite,
+    )
+    # FR-COURSE-01 — course-level §6.5 emergent-quality QA gate. The BROADEST
+    # post_rewrite_validation builder: surfaces the full rewrite-tier ``blocks``
+    # set + the optional synthesized objectives universe + the optional
+    # 06_assessments manifest so the validator can COMPOSE the
+    # interaction-mix (OSCQR item 34), integration-close, cumulative-TO-coverage,
+    # and retrieval-rhythm signals (it self-sufficiently recomputes the rollup
+    # from ``blocks``). No-op + byte-stable when ED4ALL_BLOCK_QUALITY_RUBRIC is
+    # unset (the validator reads the flag itself).
+    r.register(
+        "lib.validators.course_level_qa.CourseLevelQaValidator",
+        _build_course_level_qa,
     )
     # Worker W7: assessment_item payload-shape gate. Same Block-input
     # surface as the four Block*Validators above (filters to

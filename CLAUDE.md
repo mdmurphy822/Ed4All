@@ -610,11 +610,11 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 
 | Workflow | Critical | Warning | Total |
 |----------|---------:|--------:|------:|
-| `course_generation` | 17 | 35 | 52 |
+| `course_generation` | 17 | 36 | 53 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 39 | 79 | 118 |
+| `textbook_to_course` | 39 | 80 | 119 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **62** | **117** | **179** |
+| **Total** | **62** | **119** | **181** |
 
 Per-wave gate-landing history (additions, demotions, deferred severity flips, with the intermediate running subtotals at each wave): `docs/validation/gate-history.md`. The table above is the current authoritative count; the history file's per-wave subtotals are provenance-only and do not sum to the current total.
 

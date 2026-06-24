@@ -771,6 +771,36 @@ workflows:
               on_error: warn
             description: IB6.6 — block->module->course quality rollup gate (course_pass / FR-07/13). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
 
+          # FR-COURSE-01 — course-level §6.5 EMERGENT-quality QA gate. Composes
+          # the block->module->course rollup + the per-page block-type
+          # distribution (+ the optional 06_assessments manifest) into the §6.5
+          # A-F course-level signals NO per-block gate captures. KEYSTONE is
+          # Section F, the interaction MIX (OSCQR item 34): a course must span
+          # >=2 of {student-content (exposition/check), student-student
+          # (discussion B10), student-instructor (graded/feedback B14)} ->
+          # COURSE_INTERACTION_MIX_NARROW. Also flags COURSE_NO_INTEGRATION_CLOSE
+          # (last module lacks a summative B13/B14 close), COURSE_TO_COVERAGE_GAP
+          # (orphan terminal objective), COURSE_RETRIEVAL_RHYTHM_THIN (massed,
+          # not spaced retrieval — advisory companion to retrieval_presence /
+          # block_sequence_order, no recompute). Anti-fabrication: only flags
+          # what real signals support. No-op + byte-stable when
+          # ED4ALL_BLOCK_QUALITY_RUBRIC is unset (the rollup it composes rides
+          # the same flag).
+          # TODO(calibration) — flip COURSE_INTERACTION_MIX_NARROW to critical
+          # (severity: critical + on_fail: block, and set passed accordingly in
+          # the validator) AFTER scripts/calibration_harness.py confirms the
+          # course-level FP rate on >=2 corpora (WS3/W4 deferred-flip pattern;
+          # IB3 is the single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: course_level_qa
+            validator: lib.validators.course_level_qa.CourseLevelQaValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-COURSE-01 — course-level §6.5 emergent-quality (interaction-mix keystone / integration-close / cumulative-coverage / retrieval-rhythm). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
+
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Mirror of
       # the textbook_to_course phase, adapted to course_generation's leaner
@@ -3256,6 +3286,36 @@ workflows:
               on_fail: warn
               on_error: warn
             description: IB6.6 — block->module->course quality rollup gate (course_pass / FR-07/13). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
+
+          # FR-COURSE-01 — course-level §6.5 EMERGENT-quality QA gate. Composes
+          # the block->module->course rollup + the per-page block-type
+          # distribution (+ the optional 06_assessments manifest) into the §6.5
+          # A-F course-level signals NO per-block gate captures. KEYSTONE is
+          # Section F, the interaction MIX (OSCQR item 34): a course must span
+          # >=2 of {student-content (exposition/check), student-student
+          # (discussion B10), student-instructor (graded/feedback B14)} ->
+          # COURSE_INTERACTION_MIX_NARROW. Also flags COURSE_NO_INTEGRATION_CLOSE
+          # (last module lacks a summative B13/B14 close), COURSE_TO_COVERAGE_GAP
+          # (orphan terminal objective), COURSE_RETRIEVAL_RHYTHM_THIN (massed,
+          # not spaced retrieval — advisory companion to retrieval_presence /
+          # block_sequence_order, no recompute). Anti-fabrication: only flags
+          # what real signals support. No-op + byte-stable when
+          # ED4ALL_BLOCK_QUALITY_RUBRIC is unset (the rollup it composes rides
+          # the same flag).
+          # TODO(calibration) — flip COURSE_INTERACTION_MIX_NARROW to critical
+          # (severity: critical + on_fail: block, and set passed accordingly in
+          # the validator) AFTER scripts/calibration_harness.py confirms the
+          # course-level FP rate on >=2 corpora (WS3/W4 deferred-flip pattern;
+          # IB3 is the single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: course_level_qa
+            validator: lib.validators.course_level_qa.CourseLevelQaValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-COURSE-01 — course-level §6.5 emergent-quality (interaction-mix keystone / integration-close / cumulative-coverage / retrieval-rhythm). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
 
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Reuses
