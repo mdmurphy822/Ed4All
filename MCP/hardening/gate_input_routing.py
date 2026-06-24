@@ -2387,6 +2387,25 @@ def _build_course_level_qa(
     return inputs, []
 
 
+def _build_cross_week_spacing(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """C3-6 — input builder for CrossWeekSpacingValidator.
+
+    The cross-week distributed-practice gate needs the FULL rewrite-tier
+    ``blocks`` set — the load-bearing signal, since the per-block objective
+    ids / concept tags + their ``week_NN`` page-id grouping are what drive the
+    cross-week distribution measurement. Reuses the broadest post_rewrite Block
+    builder (the same hydration the IB6 rubric / rollup / course_level_qa gates
+    consume), so a missing block set is a structured skip, not a silent pass.
+
+    The validator no-ops byte-stable when ED4ALL_BLOCK_QUALITY_RUBRIC is unset
+    (reads the flag itself), so this builder always populates whatever it can.
+    """
+    return _build_block_input_rewrite(phase_outputs, workflow_params)
+
+
 # ---------------------------------------------------------------------- #
 # Registry
 # ---------------------------------------------------------------------- #
@@ -2640,6 +2659,15 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.course_level_qa.CourseLevelQaValidator",
         _build_course_level_qa,
+    )
+    # C3-6 — course-level CROSS-WEEK distributed-practice (spacing) gate. Reuses
+    # the broadest post_rewrite Block surface: the per-block objective ids /
+    # concept tags + their ``week_NN`` page-id grouping drive the cross-week
+    # distribution measurement. No-op + byte-stable when
+    # ED4ALL_BLOCK_QUALITY_RUBRIC is unset (the validator reads the flag itself).
+    r.register(
+        "lib.validators.cross_week_spacing.CrossWeekSpacingValidator",
+        _build_cross_week_spacing,
     )
     # Worker W7: assessment_item payload-shape gate. Same Block-input
     # surface as the four Block*Validators above (filters to

@@ -857,6 +857,32 @@ workflows:
               on_fail: warn
               on_error: warn
             description: FR-COURSE-01 — course-level §6.5 emergent-quality (interaction-mix keystone / integration-close / cumulative-coverage / retrieval-rhythm). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
+          # C3-6 — course-level CROSS-WEEK distributed-practice (spacing) gate.
+          # The framework §6.5 spacing axis wants a substantive concept/objective
+          # REVISITED across weeks, not massed in one. Composes the per-block
+          # objective ids / concept tags + their week_NN grouping (NO model load);
+          # flags CONCEPT_MASSED_SINGLE_WEEK when a substantive concept (>= a few
+          # blocks, >=1 retrieval/check) is taught + assessed entirely within one
+          # week with no spaced revisit. Distinct from the within-module IB7.5a
+          # planner spacing pass AND from course_level_qa's per-module retrieval
+          # rhythm. Anti-fabrication: graceful-skips on unresolvable week info /
+          # single-week course. Warning day-1; no-op + byte-stable when
+          # ED4ALL_BLOCK_QUALITY_RUBRIC unset (course-level QA, same flag as
+          # course_level_qa).
+          # TODO(calibration) — flip CONCEPT_MASSED_SINGLE_WEEK to critical
+          # (severity: critical + on_fail: block, and set passed accordingly in
+          # the validator) AFTER scripts/calibration_harness.py confirms the
+          # course-level FP rate on >=2 corpora (WS3/W4 deferred-flip pattern;
+          # IB3 is the single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: cross_week_spacing
+            validator: lib.validators.cross_week_spacing.CrossWeekSpacingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: C3-6 — course-level §6.5 cross-week distributed practice (spacing). Flags a substantive concept/objective taught+assessed entirely within one week with no spaced revisit. Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
 
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Mirror of
@@ -3431,6 +3457,32 @@ workflows:
               on_fail: warn
               on_error: warn
             description: FR-COURSE-01 — course-level §6.5 emergent-quality (interaction-mix keystone / integration-close / cumulative-coverage / retrieval-rhythm). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
+          # C3-6 — course-level CROSS-WEEK distributed-practice (spacing) gate.
+          # The framework §6.5 spacing axis wants a substantive concept/objective
+          # REVISITED across weeks, not massed in one. Composes the per-block
+          # objective ids / concept tags + their week_NN grouping (NO model load);
+          # flags CONCEPT_MASSED_SINGLE_WEEK when a substantive concept (>= a few
+          # blocks, >=1 retrieval/check) is taught + assessed entirely within one
+          # week with no spaced revisit. Distinct from the within-module IB7.5a
+          # planner spacing pass AND from course_level_qa's per-module retrieval
+          # rhythm. Anti-fabrication: graceful-skips on unresolvable week info /
+          # single-week course. Warning day-1; no-op + byte-stable when
+          # ED4ALL_BLOCK_QUALITY_RUBRIC unset (course-level QA, same flag as
+          # course_level_qa).
+          # TODO(calibration) — flip CONCEPT_MASSED_SINGLE_WEEK to critical
+          # (severity: critical + on_fail: block, and set passed accordingly in
+          # the validator) AFTER scripts/calibration_harness.py confirms the
+          # course-level FP rate on >=2 corpora (WS3/W4 deferred-flip pattern;
+          # IB3 is the single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: cross_week_spacing
+            validator: lib.validators.cross_week_spacing.CrossWeekSpacingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: C3-6 — course-level §6.5 cross-week distributed practice (spacing). Flags a substantive concept/objective taught+assessed entirely within one week with no spaced revisit. Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
 
       # W10 (plan plans/finegrain/w10-assessments-qti-discussions-2026-06.md
       # §2.4 Option A) — pre-packaging PRODUCT-assessment synthesis. Reuses

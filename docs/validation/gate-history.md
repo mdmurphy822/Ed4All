@@ -451,3 +451,30 @@ focused on the current authoritative counts.
 > gate. Severity stays `warning` (deferred `# TODO`-style critical-flip after a
 > ≥2-corpus FP measurement; WS3/W4 deferred-flip pattern; NOT IB3). The count
 > table is unchanged: 62 critical / 125 warning / 187 total.
+
+### Cycle-3 C3-6 — course-level cross-week distributed-practice (spacing) gate
+
+> **C3-6** adds `lib.validators.cross_week_spacing.CrossWeekSpacingValidator`
+> (gate id `cross_week_spacing`) — the COURSE-level companion to the
+> within-module IB7.5a `ED4ALL_PLANNER_SPACING` planner pass. The framework's
+> §6.5 distributed-practice / spacing axis wants a substantive concept/objective
+> REVISITED across weeks, not massed into one. The gate COMPOSES existing
+> signals (no model load): for each substantive concept it builds the distinct
+> `week_NN`-set its blocks appear in (objective ids preferred, `key_terms`
+> concept tags as fallback) and flags `CONCEPT_MASSED_SINGLE_WEEK` when a
+> concept with ≥3 blocks AND ≥1 retrieval/check is taught + assessed entirely
+> within one week with no spaced revisit. It is DISTINCT from `course_level_qa`'s
+> `COURSE_RETRIEVAL_RHYTHM_THIN` (per-module presence of checks, not per-concept
+> cross-week distribution). Anti-fabrication: graceful structured-skip on
+> unresolvable week info (`WEEK_INFO_UNRESOLVABLE`) or a single-week course
+> (`SINGLE_WEEK_COURSE`); reuses the `ED4ALL_BLOCK_QUALITY_RUBRIC` flag (no-op +
+> byte-stable off). Wired warning-day-1 at `post_rewrite_validation` in BOTH the
+> `course_generation` and `textbook_to_course` two-pass workflows (mirrors
+> `course_level_qa`'s wiring); builder `_build_cross_week_spacing` reuses the
+> broadest post_rewrite Block surface (`_build_block_input_rewrite`). Severity
+> `warning` with a `# TODO(calibration)` deferred critical-flip after a
+> ≥2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+>
+> The count table is re-derived from `config/workflows.yaml` (+1 warning gate ×
+> 2 workflows): `course_generation` 39→40 warning, `textbook_to_course` 83→84
+> warning, Total 125→127 warning / 187→189 total.
