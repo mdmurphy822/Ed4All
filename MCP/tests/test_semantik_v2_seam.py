@@ -819,3 +819,157 @@ def test_gap_a_noop_when_no_figures_written(tmp_path):
     out = _relocate_figure_sidecars(html, pdf_path=pdf_file, html_path=html_path)
     assert out == html
     assert not (html_path.parent / "slice_figures").exists()
+
+
+# ---------------------------------------------------------------------------
+# C3-1 keystone: the raw-PDF dart_conversion handler must offload the SYNC
+# SemantiK cascade to a worker thread so the sync-Playwright (axe-core WCAG
+# gate) path does NOT see a running asyncio loop. Sync Playwright raises
+# "It looks like you are using Playwright Sync API inside the asyncio loop"
+# the instant it detects a running loop on its calling thread. The fix runs
+# the sync seam via ``asyncio.to_thread`` so the seam executes on a thread
+# WITHOUT a running loop. These tests reproduce that tripwire faithfully (a
+# sync stand-in that raises iff a running loop is visible on its thread) and
+# assert the handler offloads it.
+# ---------------------------------------------------------------------------
+
+_SYNC_PLAYWRIGHT_ERR = (
+    "It looks like you are using Playwright Sync API inside the asyncio loop. "
+    "Please use the Async API instead."
+)
+
+
+def _loop_tripwire_seam(html_output_arg):
+    """Sync stand-in for the SemantiK cascade that mimics sync Playwright.
+
+    Raises the exact sync-Playwright error iff a running asyncio event loop is
+    visible from the thread it executes on — i.e. it would crash if called
+    in-line on the ed4all loop, and succeed only when thread-offloaded.
+    """
+    import asyncio as _a
+
+    def _seam(pdf, html_output, **_kwargs):  # noqa: ANN001
+        try:
+            _a.get_running_loop()
+        except RuntimeError:
+            running = False
+        else:
+            running = True
+        if running:
+            raise RuntimeError(_SYNC_PLAYWRIGHT_ERR)
+        # No running loop on this thread → faithful "conversion succeeds".
+        from pathlib import Path as _P
+
+        _P(html_output).write_text("<html><body>ok</body></html>", "utf-8")
+        return {
+            "success": True,
+            "method": "semantik_v2",
+            "runtime_mode": "local-real",
+            "output_path": html_output,
+            "html_path": html_output,
+        }
+
+    return _seam
+
+
+@pytest.mark.asyncio
+async def test_c31_pdf_conversion_offloads_sync_cascade(monkeypatch, tmp_path):
+    """Raw-PDF dart_conversion does NOT raise the sync-Playwright loop error.
+
+    Without the ``asyncio.to_thread`` offload this would crash, because the
+    handler is an ``async def`` running on a live loop and the sync seam sees
+    that loop. With the offload the seam runs on a loop-free worker thread.
+    """
+    from MCP.tools import pipeline_tools as PT
+
+    pdf = tmp_path / "raw_textbook.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n%mock\n")
+    out_dir = tmp_path / "out"
+
+    monkeypatch.setattr(
+        PT, "_run_semantik_v2_conversion", _loop_tripwire_seam(None)
+    )
+
+    registry = PT._build_tool_registry()
+    handler = registry["extract_and_convert_pdf"]
+
+    # Sanity: we ARE on a running loop in this coroutine.
+    import asyncio as _a
+
+    _a.get_running_loop()
+
+    out = await handler(
+        pdf_path=str(pdf),
+        output_dir=str(out_dir),
+        phase="dart_conversion",
+    )
+    payload = json.loads(out)
+    assert payload.get("success"), payload
+    assert payload.get("method") == "semantik_v2"
+    # The seam actually ran (and wrote the file) — proving it was offloaded,
+    # not skipped.
+    assert payload["html_path"].endswith("_accessible.html")
+    from pathlib import Path as _P
+
+    assert _P(payload["html_path"]).is_file()
+
+
+@pytest.mark.asyncio
+async def test_c31_inline_call_would_raise(monkeypatch, tmp_path):
+    """Control: calling the sync seam IN-LINE on the loop still trips.
+
+    Confirms the tripwire seam is faithful — invoked directly (no offload)
+    from within the running loop it raises the sync-Playwright error, which is
+    exactly the bug the handler offload prevents.
+    """
+    seam = _loop_tripwire_seam(None)
+    html_out = tmp_path / "x_accessible.html"
+    with pytest.raises(RuntimeError, match="Sync API inside the asyncio loop"):
+        seam(str(tmp_path / "x.pdf"), str(html_out))
+
+
+@pytest.mark.asyncio
+async def test_c31_vendor_conversion_offloads_sync_seam(monkeypatch, tmp_path):
+    """The mirroring vendor-ingest seam is offloaded too (same exposure)."""
+    from MCP.tools import pipeline_tools as PT
+
+    # A directory of accessible HTML (no PDF) routes to the vendor seam.
+    src = tmp_path / "vendor_pages"
+    src.mkdir()
+    (src / "page1.html").write_text("<html><body><p>hi</p></body></html>", "utf-8")
+    out_dir = tmp_path / "out"
+
+    def _vendor_seam(input_path, html_output, **_kwargs):  # noqa: ANN001
+        import asyncio as _a
+
+        try:
+            _a.get_running_loop()
+        except RuntimeError:
+            running = False
+        else:
+            running = True
+        if running:
+            raise RuntimeError(_SYNC_PLAYWRIGHT_ERR)
+        from pathlib import Path as _P
+
+        _P(html_output).write_text("<html><body>ok</body></html>", "utf-8")
+        return {
+            "success": True,
+            "method": "vendor_ingest",
+            "output_path": html_output,
+            "html_path": html_output,
+        }
+
+    monkeypatch.setattr(PT, "_run_vendor_ingest_conversion", _vendor_seam)
+
+    registry = PT._build_tool_registry()
+    handler = registry["extract_and_convert_pdf"]
+
+    out = await handler(
+        pdf_path=str(src),
+        output_dir=str(out_dir),
+        phase="dart_conversion",
+    )
+    payload = json.loads(out)
+    assert payload.get("success"), payload
+    assert payload.get("method") == "vendor_ingest"

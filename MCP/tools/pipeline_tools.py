@@ -13213,7 +13213,26 @@ def _build_tool_registry() -> dict:
         3. Build clean semantic HTML from the extracted text
            (strips page numbers, TOC artifacts, headers/footers)
         """
+        import asyncio as _asyncio
+        import functools as _functools
+
         from lib.paths import DART_PATH
+
+        # C3-1 keystone fix: the SemantiK v2 cascade (and the mirroring
+        # vendor-ingest seam) is a SYNC code path that drives sync Playwright
+        # for the axe-core WCAG gate. Sync Playwright raises
+        # ``It looks like you are using Playwright Sync API inside the asyncio
+        # loop`` the moment it detects a running event loop. This handler is an
+        # ``async def`` dispatched on the ed4all asyncio loop, so calling the
+        # sync cascade in-line crashes raw-PDF ``dart_conversion``. Offload the
+        # sync work to a worker thread (no running loop on that thread) so the
+        # sync Playwright path is happy. The bridge subprocess fallback inside
+        # ``_run_semantik_v2_conversion`` is preserved (it only fires when the
+        # in-process import FAILS, which is orthogonal to this offload).
+        async def _to_thread(_fn, *_args, **_kwargs):
+            return await _asyncio.to_thread(
+                _functools.partial(_fn, *_args, **_kwargs)
+            )
 
         pdf_path = kwargs.get("pdf_path", "")
         course_code = kwargs.get("course_code")
@@ -13253,7 +13272,8 @@ def _build_tool_registry() -> dict:
                 vendor_stem = pdf.name if pdf.is_dir() else pdf.stem
                 vendor_stem = vendor_stem or "vendor"
                 html_output = out_dir / f"{vendor_stem}_accessible.html"
-                ven_result = _run_vendor_ingest_conversion(
+                ven_result = await _to_thread(
+                    _run_vendor_ingest_conversion,
                     str(pdf),
                     str(html_output),
                     doc_title=kwargs.get("doc_title"),
@@ -13293,7 +13313,8 @@ def _build_tool_registry() -> dict:
             # PDF input → SemantiK cascade seam (the existing P3c path).
             out_stem = pdf.stem
             html_output = out_dir / f"{out_stem}_accessible.html"
-            sem_result = _run_semantik_v2_conversion(
+            sem_result = await _to_thread(
+                _run_semantik_v2_conversion,
                 str(pdf),
                 str(html_output),
                 figures_dir=kwargs.get("figures_dir"),
