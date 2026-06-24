@@ -1027,6 +1027,25 @@ class Block:
     prediction_prompt: Optional[str] = None
     reveal_content: Optional[str] = None
     calibration_feedback: Optional[str] = None
+    # C3-3 — B01 objective-block constructive-alignment ENRICHMENT (framework
+    # B01, constructive alignment). A well-authored learning-objective block
+    # carries the full alignment surface: the Bloom (verb · level · knowledge-
+    # type) chip (already emitted as a block-level attr via _bloom_triple_attrs —
+    # NOT re-added here), a learner confidence / self-rating slot, and the
+    # objective→assessment thread (which assessment(s) evidence this objective).
+    # ``self_rating_prompt`` carries the confidence-capture prompt text;
+    # ``objective_assessment_thread`` carries the structured map
+    # ({"prompt": str, "assessment_refs": [str, ...]}) linking this objective to
+    # the blocks/items that assess it. Both additive Optional/None defaults and
+    # INTENTIONALLY excluded from compute_content_hash() (the hash payload is an
+    # explicit 5-key allowlist; mirrors target_bloom / discussion_protocol / the
+    # IB5 fields) so an enrichment retro-fit never drifts an existing block hash;
+    # the default-None state keeps legacy / flag-off blocks byte-identical. Read
+    # by the generate_course objective renderer (the confidence slot + the
+    # objective↔assessment <details> thread), gated by ED4ALL_BLOCK_ANATOMY (the
+    # same flag the six-slot anatomy rides). Not projected to HTML/JSON-LD here.
+    self_rating_prompt: Optional[str] = None
+    objective_assessment_thread: Optional[Dict[str, Any]] = None
     # FR-INT-06 — B09 case/scenario authoring MODE. A real B09 block is one of
     # three escalating forms: ``case`` (a static worked situation the learner
     # analyzes), ``scenario`` (a situated decision the learner makes), or
@@ -1119,7 +1138,8 @@ class Block:
         ``discussion_protocol`` / ``discussion_bloom_verb`` B10 three-move
         protocol fields, and the FR-INT-03 ``prediction_prompt`` /
         ``reveal_content`` / ``calibration_feedback`` B11 predict-then-reveal
-        calibration fields so a
+        calibration fields, and the C3-3 ``self_rating_prompt`` /
+        ``objective_assessment_thread`` B01 objective-enrichment fields so a
         touch-only / budget-only / classifier-retrofit / objective-
         delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring /
         anchored-rubric-attach / udl-coverage-retrofit / ib5-field-attach /
@@ -1592,6 +1612,24 @@ class Block:
             if anatomy:
                 anatomy["lifecycle"] = slots_to_lifecycle(self)
                 entry["anatomy"] = anatomy
+        # C3-7 — IB2 canonical framework B-code (B01–B15). Emit the
+        # ``frameworkBlock`` field carrying this block_type's primary framework
+        # parent, resolved from the SoT catalog loader
+        # (lib/ontology/framework_blocks.py::framework_block_for, backed by
+        # Courseforge/config/block_catalog.yaml::framework_block). Gated behind
+        # ``_anatomy_emit_enabled()`` (ED4ALL_BLOCK_ANATOMY, default OFF) so
+        # legacy emit stays byte-identical / contentHash is unchanged. Emitted
+        # only when the type resolves a B-code (None for the non-pedagogical
+        # ``chrome`` scaffolding / any unknown type → no key). camelCase key
+        # mirrors schemas/knowledge/courseforge_jsonld_v1.schema.json::
+        # $defs.Block.properties.frameworkBlock. Excluded from contentHash
+        # (resolved deterministically from block_type — never a content field).
+        if _anatomy_emit_enabled():
+            from lib.ontology.framework_blocks import framework_block_for
+
+            fb_code = framework_block_for(self.block_type)
+            if fb_code is not None:
+                entry["frameworkBlock"] = fb_code
         # IB4 — UDL multiple-means coverage (QA-13 / D7). Emit a ``udlCoverage``
         # sub-object DOUBLE-gated: behind BOTH ``_block_a11y_emit_enabled()``
         # (the new ED4ALL_BLOCK_A11Y flag, default OFF) AND only-when-set.

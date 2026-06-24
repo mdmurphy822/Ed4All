@@ -52,6 +52,7 @@ from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: 
 
 from blocks import (  # noqa: E402  (Phase 2 intermediate format)
     Block,
+    _anatomy_emit_enabled,
     _new_block_types_emit_enabled,
     _reflection_calibration_emit_enabled,
 )
@@ -1236,6 +1237,77 @@ def _source_attr_string(
     return out
 
 
+def _render_objective_enrichment(block: "Block") -> str:
+    """C3-3 — render the B01 objective-block constructive-alignment surface.
+
+    A well-authored learning objective carries the full alignment surface:
+
+    * the Bloom (verb · level · knowledge-type) CHIP — already emitted as a
+      block-level ``data-cf-bloom-triple`` attr by ``Block._bloom_triple_attrs``
+      (behind ``ED4ALL_BLOCK_QUALITY_RUBRIC``). Here we make the SAME resolved
+      triple visible as a rendered chip (we render it, we do not re-add it).
+    * a learner CONFIDENCE / self-rating slot (``self_rating_prompt``).
+    * the objective↔assessment THREAD — a ``<details>`` listing which
+      assessment(s) evidence this objective (``objective_assessment_thread``),
+      so the constructive-alignment link is visible to the learner.
+
+    Gated by ``ED4ALL_BLOCK_ANATOMY`` (default OFF) — returns ``""`` when the
+    flag is unset so default / legacy objective HTML is byte-identical (mirrors
+    the ``_render_reflection_calibration`` / ``_render_resources_section``
+    flag-off-returns-empty posture). With the flag on, each sub-part renders
+    only when its data resolves (the chip from the block's bloom triple; the
+    confidence slot / thread only when the corresponding field is populated).
+    """
+    if not _anatomy_emit_enabled():
+        return ""
+    parts: List[str] = []
+    # (1) Visible Bloom (verb · level · knowledge-type) chip — render the
+    # already-resolved triple (do NOT re-derive a new one).
+    verb = (block.bloom_verb or "").strip()
+    level = (block.bloom_level or "").strip()
+    ktype = (block.cognitive_domain or "").strip()
+    if verb and level and ktype:
+        parts.append(
+            f'        <span class="objective-bloom-chip" '
+            f'data-cf-bloom-triple="{html_mod.escape(verb.lower())}.'
+            f'{html_mod.escape(level.lower())}.{html_mod.escape(ktype.lower())}">'
+            f'{html_mod.escape(verb)} · {html_mod.escape(level)} · '
+            f'{html_mod.escape(ktype)}</span>'
+        )
+    # (2) Learner confidence / self-rating slot.
+    rating = getattr(block, "self_rating_prompt", None)
+    if isinstance(rating, str) and rating.strip():
+        parts.append(
+            f'        <p class="objective-self-rating">'
+            f'<label>{html_mod.escape(rating.strip())}</label></p>'
+        )
+    # (3) Objective↔assessment thread (constructive-alignment visibility).
+    thread = getattr(block, "objective_assessment_thread", None)
+    if isinstance(thread, dict):
+        refs = [str(r).strip() for r in (thread.get("assessment_refs") or []) if str(r).strip()]
+        prompt = str(thread.get("prompt") or "").strip()
+        if refs or prompt:
+            parts.append('        <details class="objective-assessment-thread">')
+            summary = prompt or "How this objective is assessed"
+            parts.append(
+                f'          <summary>{html_mod.escape(summary)}</summary>'
+            )
+            if refs:
+                refs_html = "\n".join(
+                    f'            <li>{html_mod.escape(r)}</li>' for r in refs
+                )
+                parts.append(f'          <ul>\n{refs_html}\n          </ul>')
+            parts.append('        </details>')
+    if not parts:
+        return ""
+    body = "\n".join(parts)
+    return (
+        '\n        <div class="objective-enrichment">\n'
+        f'{body}\n'
+        '        </div>'
+    )
+
+
 def _render_objectives(
     objectives: List[Dict],
     *,
@@ -1278,12 +1350,20 @@ def _render_objectives(
             bloom_level=bloom_level or None,
             bloom_verb=bloom_verb or None,
             cognitive_domain=domain or None,
+            # C3-3 — carry the objective-enrichment fields when the objective
+            # dict supplies them (deterministic; rendered only behind
+            # ED4ALL_BLOCK_ANATOMY). Absent keys => default None => byte-stable.
+            self_rating_prompt=(o.get("self_rating_prompt") or None),
+            objective_assessment_thread=(
+                o.get("objective_assessment_thread") or None
+            ),
         )
         blocks.append(block)
     items = [
         f'      <li{block.to_html_attrs()}>'
         f'<strong>{block.objective_ids[0]}:</strong> '
         f'{html_mod.escape(block.content if isinstance(block.content, str) else "")}'
+        f'{_render_objective_enrichment(block)}'
         f'</li>'
         for block in blocks
     ]

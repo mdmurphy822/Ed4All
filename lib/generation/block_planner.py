@@ -434,6 +434,15 @@ _BLOOM_CEILING_ENV = "ED4ALL_PLANNER_BLOOM_CEILING"
 # worked_example (B05) and stamped with a ``fade_state`` (the field already
 # exists from IB5 — reused, not re-added).
 _FADING_ENV = "ED4ALL_PLANNER_FADING"
+# C3-3 — B01 objective-block enrichment. Reuses the EXISTING ED4ALL_BLOCK_ANATOMY
+# flag (NOT a new flag): the same gate the six-slot anatomy + the C3-7
+# frameworkBlock emit ride. Default OFF (parse-with-fallback) so the planner
+# output is BYTE-STABLE / identity-no-op unless an operator opts in. When on, the
+# pass stamps deterministic constructive-alignment annotations
+# (``self_rating_prompt`` + ``objective_assessment_thread``) onto each objective
+# block dict — planner-reasoning annotations (mirrors ``anatomy_slot_weights``),
+# NOT projected through ``_to_page_plan`` tuples.
+_BLOCK_ANATOMY_ENV = "ED4ALL_BLOCK_ANATOMY"
 _IB7_FLAG_ENVS: Tuple[str, ...] = (
     _BLOOM_CLIMB_ENV, _LIFECYCLE_ENV, _SPACING_ENV, _BLOOM_CEILING_ENV,
     _FADING_ENV,
@@ -2299,6 +2308,69 @@ def _apply_fading_sequence(
     return out
 
 
+def _enrich_objective_blocks(
+    *,
+    selected: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """C3-3 — stamp constructive-alignment enrichment on objective blocks.
+
+    Gated on ``ED4ALL_BLOCK_ANATOMY`` (the EXISTING anatomy flag — NOT a new
+    one); strict identity no-op / byte-stable when off. Deterministic. For every
+    ``objective`` block that doesn't already carry the field, stamp:
+
+    * ``self_rating_prompt`` — the learner confidence / self-rating prompt.
+    * ``objective_assessment_thread`` — a ``{"prompt", "assessment_refs"}`` map
+      linking the objective to the in-week blocks that assess it. The
+      ``assessment_refs`` are derived deterministically from the SAME selected
+      block set: the check/assessment blocks (B07 / B14 / activity / problem /
+      scenario) whose ``target_co_ids`` overlap the objective's targets. No id
+      is invented (anti-fabrication — refs come from real selected blocks).
+
+    These are planner-reasoning annotations (mirrors ``anatomy_slot_weights``);
+    NOT projected through ``_to_page_plan`` tuples. Returns a NEW list.
+    """
+    if not _env_floor_on(_BLOCK_ANATOMY_ENV):
+        return selected
+
+    _ASSESSING_TYPES = {
+        "self_check_question", "assessment_item", "activity", "problem",
+        "scenario", "reflection_prompt",
+    }
+    out = list(selected)
+    for blk in out:
+        if str(blk.get("block_type") or "") != "objective":
+            continue
+        obj_cos = set(str(c) for c in (blk.get("target_co_ids") or []))
+        # Deterministic assessment refs: assessing blocks sharing a CO (or, when
+        # the objective carries no specific CO, every assessing block in the
+        # week). Use block_type tokens as the stable refs (no fabricated ids).
+        refs: List[str] = []
+        seen: set = set()
+        for other in out:
+            if other is blk:
+                continue
+            if str(other.get("block_type") or "") not in _ASSESSING_TYPES:
+                continue
+            other_cos = set(str(c) for c in (other.get("target_co_ids") or []))
+            if obj_cos and not (obj_cos & other_cos):
+                continue
+            ref = str(other.get("block_type") or "")
+            if ref and ref not in seen:
+                seen.add(ref)
+                refs.append(ref)
+        if blk.get("self_rating_prompt") is None:
+            blk["self_rating_prompt"] = (
+                "How confident are you that you can already do this? "
+                "Rate yourself before and after the lesson."
+            )
+        if blk.get("objective_assessment_thread") is None:
+            blk["objective_assessment_thread"] = {
+                "prompt": "How this objective is assessed",
+                "assessment_refs": refs,
+            }
+    return out
+
+
 def _apply_ib7_passes(
     *,
     selected: List[Dict[str, Any]],
@@ -2411,6 +2483,16 @@ def _apply_ib7_passes(
     signals["scenario_modes_assigned"] = sum(
         1 for b in selected if b.get("scenario_mode")
     )
+    # C3-3 B01 objective-block enrichment (stamp self_rating_prompt +
+    # objective_assessment_thread on objective blocks). Identity no-op when
+    # ED4ALL_BLOCK_ANATOMY is off.
+    anatomy_on = _env_floor_on(_BLOCK_ANATOMY_ENV)
+    selected = _enrich_objective_blocks(selected=selected)
+    signals["objectives_enriched"] = sum(
+        1 for b in selected
+        if str(b.get("block_type") or "") == "objective"
+        and b.get("objective_assessment_thread") is not None
+    ) if anatomy_on else 0
     return selected
 
 

@@ -599,7 +599,7 @@
         "frameworkBlock": {
           "type": ["string", "null"],
           "pattern": "^B(0[1-9]|1[0-5])$",
-          "description": "IB2: the canonical framework B-code parent (B01–B15) this block's type maps onto per the IB2 reconciliation map (Courseforge/config/block_catalog.yaml::framework_block; SoT loader lib/ontology/framework_blocks.py). Optional + additive; null for the non-pedagogical chrome scaffolding. NOT populated this wave (reserved for a future emitter behind COURSEFORGE_EMIT_FRAMEWORK_BLOCK). Excluded from contentHash."
+          "description": "IB2 / C3-7: the canonical framework B-code parent (B01–B15) this block's type maps onto per the IB2 reconciliation map (Courseforge/config/block_catalog.yaml::framework_block; SoT loader lib/ontology/framework_blocks.py). Optional + additive; emitted by Block._minimal_block_jsonld only when ED4ALL_BLOCK_ANATOMY is on AND the type resolves a B-code (the key is absent — not null — for the non-pedagogical chrome scaffolding / any unknown type). Excluded from contentHash (resolved deterministically from block_type)."
         },
         "qualityRubric": {
           "type": "array",
