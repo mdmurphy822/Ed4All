@@ -75,6 +75,16 @@ Device selection (``ED4ALL_NLI_DEVICE``):
   warning and falls back to CPU rather than crashing (mirrors the
   embedding provider's device handling) — important since CI and many
   dev boxes have no GPU.
+* VRAM contention (``ED4ALL_NLI_EVICT_FOR_CUDA``, default on): when cuda
+  is requested + available but free VRAM is below
+  ``ED4ALL_NLI_MIN_FREE_VRAM_MIB`` (a resident local ollama generation
+  model is holding the card), the loader FIRST evicts that ollama model
+  (via :func:`lib.llm.vram_reclaim.evict_local_llm`) and re-probes free
+  VRAM. Generation (ollama 7B) and validation (NLI) don't run at the same
+  time within a phase, so the card is handed off — the 7B lazy-reloads on
+  its next generation request. NLI then loads on cuda for speed. CPU
+  fallback is the LAST RESORT only when eviction is disabled (flag
+  falsey → ab0ce44 behavior), fails, or doesn't free enough.
 * Determinism note: GPU softmax is non-associative, so the post-softmax
   probabilities can differ from the CPU path by ~1e-6. The downstream
   verdict thresholds (0.70 entailment / 0.50 contradiction) are robust
@@ -129,6 +139,33 @@ ENV_MIN_FREE_VRAM_MIB = "ED4ALL_NLI_MIN_FREE_VRAM_MIB"
 #: 512-token scoring path (the OOM trigger observed during
 #: post_rewrite_validation on an 8 GB card with a resident ollama 7B).
 _DEFAULT_MIN_FREE_VRAM_MIB = 1024
+
+#: Env var: when truthy (default), the VRAM-contention guard first EVICTS
+#: the resident local ollama generation model (freeing the card) and
+#: re-probes free VRAM before deciding to fall back to CPU. The better
+#: design over ab0ce44's pure CPU demotion: generation (ollama 7B) and
+#: validation (NLI) do NOT run simultaneously within a phase, so the card
+#: can be handed off — the 7B lazy-reloads on its next generation request.
+#: Set falsey to skip eviction and use the ab0ce44 pure-CPU-fallback
+#: behavior. Documented in root CLAUDE.md § "Cross-cutting flags".
+ENV_EVICT_FOR_CUDA = "ED4ALL_NLI_EVICT_FOR_CUDA"
+
+
+def resolve_evict_for_cuda(value: Optional[bool] = None) -> bool:
+    """Resolve whether to evict the resident local LLM before CPU fallback.
+
+    Resolution chain: explicit ``value`` arg → ``ED4ALL_NLI_EVICT_FOR_CUDA``
+    env → default ``True``. Parse-with-fallback: only the explicit falsey
+    tokens (``0`` / ``false`` / ``no`` / ``off``, case-insensitive) disable
+    eviction; anything else (including garbage) keeps the default-ON
+    coexistence behavior the user wants (cuda NLI).
+    """
+    if value is not None:
+        return bool(value)
+    raw = os.environ.get(ENV_EVICT_FOR_CUDA)
+    if raw is None or not raw.strip():
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
 def _cuda_device_index(device: str) -> int:
@@ -420,16 +457,71 @@ class NliClassifier:
                     device,
                 )
             if free_mib is not None and free_mib < floor_mib:
-                logger.warning(
-                    "NliClassifier: only %d MiB free on %r (floor %d MiB, "
-                    "%s); a resident local LLM is likely holding the card. "
-                    "Falling back to CPU (fp32) for NLI scoring to avoid a "
-                    "forward-pass CUDA OOM. The generation model keeps the "
-                    "GPU. Lower %s to override.",
-                    free_mib, device, floor_mib, ENV_MIN_FREE_VRAM_MIB,
-                    ENV_MIN_FREE_VRAM_MIB,
-                )
-                return "cpu", "float32"
+                # The better design (the user directive): generation
+                # (ollama 7B) and validation (NLI) do NOT run at the same
+                # time within a phase, so instead of demoting NLI to CPU,
+                # EVICT the resident ollama generation model to free the
+                # card and run NLI on cuda for speed. The 7B lazy-reloads
+                # on its next generation HTTP request (ollama auto-loads on
+                # demand), so no explicit reload is needed. CPU fallback is
+                # the LAST RESORT only when eviction is disabled, fails, or
+                # doesn't free enough. The reclaim knowledge lives in
+                # ``lib.llm.vram_reclaim`` so the NLI path stays free of
+                # ollama-specific wire details.
+                if resolve_evict_for_cuda():
+                    try:
+                        from lib.llm.vram_reclaim import evict_local_llm
+
+                        evicted = evict_local_llm()
+                    except Exception as exc:  # noqa: BLE001 — fully graceful
+                        logger.debug(
+                            "NliClassifier: VRAM-reclaim helper raised "
+                            "(%s); treating as eviction failure.", exc,
+                        )
+                        evicted = False
+                    if evicted:
+                        # Re-probe after the hand-off (NVML-first again).
+                        reprobed = probe_free_vram_mib(torch_module, device)
+                        if reprobed is not None and reprobed >= floor_mib:
+                            logger.info(
+                                "NliClassifier: evicted resident ollama model "
+                                "→ free VRAM %d→%d MiB on %r (floor %d MiB) → "
+                                "loading NLI on cuda (fp16). The 7B lazy-"
+                                "reloads on its next generation request.",
+                                free_mib, reprobed, device, floor_mib,
+                            )
+                            # Fall through to the .to(device).half() block.
+                        else:
+                            logger.warning(
+                                "NliClassifier: evicted ollama but free VRAM "
+                                "is %s MiB on %r (floor %d MiB) — insufficient; "
+                                "falling back to CPU (fp32) for NLI scoring.",
+                                reprobed, device, floor_mib,
+                            )
+                            return "cpu", "float32"
+                    else:
+                        logger.warning(
+                            "NliClassifier: eviction failed/no-op (only %d MiB "
+                            "free on %r, floor %d MiB, %s); falling back to CPU "
+                            "(fp32) for NLI scoring to avoid a forward-pass "
+                            "CUDA OOM. Lower %s to override.",
+                            free_mib, device, floor_mib, ENV_MIN_FREE_VRAM_MIB,
+                            ENV_MIN_FREE_VRAM_MIB,
+                        )
+                        return "cpu", "float32"
+                else:
+                    # Eviction disabled (ab0ce44 pure-CPU-fallback behavior).
+                    logger.warning(
+                        "NliClassifier: only %d MiB free on %r (floor %d MiB, "
+                        "%s); a resident local LLM is likely holding the card "
+                        "and eviction is disabled (%s). Falling back to CPU "
+                        "(fp32) for NLI scoring to avoid a forward-pass CUDA "
+                        "OOM. The generation model keeps the GPU. Lower %s to "
+                        "override.",
+                        free_mib, device, floor_mib, ENV_MIN_FREE_VRAM_MIB,
+                        ENV_EVICT_FOR_CUDA, ENV_MIN_FREE_VRAM_MIB,
+                    )
+                    return "cpu", "float32"
 
         try:
             # fp16 on CUDA keeps the ~184M-param head at ~0.4 GB VRAM so it

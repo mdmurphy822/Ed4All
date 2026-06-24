@@ -51,6 +51,7 @@ def _reset_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.delenv(ENV_DEVICE, raising=False)
     monkeypatch.delenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", raising=False)
+    monkeypatch.delenv("ED4ALL_NLI_EVICT_FOR_CUDA", raising=False)
     NliClassifier._reset_for_tests()
     yield
     NliClassifier._reset_for_tests()
@@ -663,6 +664,161 @@ def test_resolve_min_free_vram_mib_parse_with_fallback(
     assert resolve_min_free_vram_mib() == _DEFAULT_MIN_FREE_VRAM_MIB
     # explicit arg beats env
     assert resolve_min_free_vram_mib(512) == 512
+
+
+# --------------------------------------------------------------------- #
+# VRAM-eviction path (ED4ALL_NLI_EVICT_FOR_CUDA, default on): when free
+# VRAM is below the floor, FIRST evict the resident ollama generation
+# model and re-probe; if now >= floor → cuda. CPU only as last resort.
+# --------------------------------------------------------------------- #
+
+
+def test_eviction_frees_vram_loads_on_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Below floor → evict succeeds → re-probe >= floor → NLI on cuda (fp16)."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    monkeypatch.delenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", raising=False)  # 1024
+    monkeypatch.delenv("ED4ALL_NLI_EVICT_FOR_CUDA", raising=False)  # default on
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+
+    # First probe: 200 MiB (ollama resident). After eviction: 6 GB free.
+    probe_returns = iter([200, 6144])
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib",
+        lambda _torch, _device: next(probe_returns),
+    )
+    evict = MagicMock(return_value=True)
+    monkeypatch.setattr("lib.llm.vram_reclaim.evict_local_llm", evict)
+
+    classifier = _build_classifier(fake_torch)
+    assert classifier.device == "cuda"
+    assert classifier.dtype == "float16"
+    classifier._model.to.assert_called_once_with("cuda")
+    classifier._model.half.assert_called_once_with()
+    evict.assert_called_once_with()
+
+
+def test_eviction_fails_falls_back_to_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Below floor → eviction returns False → CPU fallback (re-probe skipped)."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    monkeypatch.delenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", raising=False)
+    monkeypatch.delenv("ED4ALL_NLI_EVICT_FOR_CUDA", raising=False)
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+
+    probe = MagicMock(return_value=200)  # always below floor
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib", probe,
+    )
+    evict = MagicMock(return_value=False)
+    monkeypatch.setattr("lib.llm.vram_reclaim.evict_local_llm", evict)
+
+    classifier = _build_classifier(fake_torch)
+    assert classifier.device == "cpu"
+    assert classifier.dtype == "float32"
+    classifier._model.to.assert_not_called()
+    classifier._model.half.assert_not_called()
+    evict.assert_called_once_with()
+    # Eviction failed → no re-probe (only the initial probe ran).
+    assert probe.call_count == 1
+
+
+def test_eviction_insufficient_falls_back_to_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Below floor → evict succeeds but re-probe STILL below floor → CPU."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    monkeypatch.delenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", raising=False)
+    monkeypatch.delenv("ED4ALL_NLI_EVICT_FOR_CUDA", raising=False)
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+
+    # 200 MiB → evict → still only 512 MiB (another process grabbed it).
+    probe_returns = iter([200, 512])
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib",
+        lambda _torch, _device: next(probe_returns),
+    )
+    monkeypatch.setattr(
+        "lib.llm.vram_reclaim.evict_local_llm", MagicMock(return_value=True),
+    )
+
+    classifier = _build_classifier(fake_torch)
+    assert classifier.device == "cpu"
+    assert classifier.dtype == "float32"
+    classifier._model.to.assert_not_called()
+
+
+def test_eviction_disabled_pure_cpu_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag off → ab0ce44 behavior: CPU fallback, eviction NEVER attempted."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    monkeypatch.delenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", raising=False)
+    monkeypatch.setenv("ED4ALL_NLI_EVICT_FOR_CUDA", "false")
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib",
+        lambda _torch, _device: 200,
+    )
+    evict = MagicMock(return_value=True)
+    monkeypatch.setattr("lib.llm.vram_reclaim.evict_local_llm", evict)
+
+    classifier = _build_classifier(fake_torch)
+    assert classifier.device == "cpu"
+    assert classifier.dtype == "float32"
+    evict.assert_not_called()
+
+
+def test_eviction_helper_exception_falls_back_to_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reclaim helper raises → treated as eviction failure → CPU (graceful)."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    monkeypatch.delenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", raising=False)
+    monkeypatch.delenv("ED4ALL_NLI_EVICT_FOR_CUDA", raising=False)
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib",
+        lambda _torch, _device: 200,
+    )
+
+    def _boom() -> bool:
+        raise RuntimeError("ollama client blew up")
+
+    monkeypatch.setattr("lib.llm.vram_reclaim.evict_local_llm", _boom)
+
+    classifier = _build_classifier(fake_torch)
+    assert classifier.device == "cpu"
+    assert classifier.dtype == "float32"
+
+
+def test_resolve_evict_for_cuda_parse_with_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default on; only explicit falsey tokens disable; garbage → on."""
+    from lib.classifiers.nli_classifier import (
+        ENV_EVICT_FOR_CUDA,
+        resolve_evict_for_cuda,
+    )
+
+    monkeypatch.delenv(ENV_EVICT_FOR_CUDA, raising=False)
+    assert resolve_evict_for_cuda() is True
+    for falsey in ("0", "false", "FALSE", "no", "off", "Off"):
+        monkeypatch.setenv(ENV_EVICT_FOR_CUDA, falsey)
+        assert resolve_evict_for_cuda() is False
+    for truthy in ("1", "true", "yes", "on", "garbage"):
+        monkeypatch.setenv(ENV_EVICT_FOR_CUDA, truthy)
+        assert resolve_evict_for_cuda() is True
+    # explicit arg beats env
+    monkeypatch.setenv(ENV_EVICT_FOR_CUDA, "false")
+    assert resolve_evict_for_cuda(True) is True
 
 
 @pytest.mark.slow
