@@ -2217,6 +2217,43 @@ def _build_assessment_objective_alignment(
     return inputs, ["chunks_path"]
 
 
+def _build_cumulative_assessment(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """FR-COURSE-03 — input builder for CumulativeAssessmentValidator.
+
+    Surfaces ``{assessments_path, synthesized_objectives_path}``. Mirrors
+    :func:`_build_assessment_objective_alignment`'s assessment-path resolution
+    (the assessment_synthesis phase emits ``assessments_path`` /
+    ``assessment_path`` / ``output_path``) and reuses the canonical
+    :func:`_resolve_objectives_path` for the TO universe. The validator
+    establishes the terminal-objective count from the objectives doc and is a
+    strict no-op when the course has < 4 TOs, so the objectives path is the
+    load-bearing input.
+
+    Resolution:
+
+    * ``assessments_path`` — required. Absent → structured skip.
+    * ``synthesized_objectives_path`` — required for the TO universe; absent →
+      structured skip (the validator's OBJECTIVES_UNAVAILABLE arm is the
+      safety net, but a missing path is a skip, not a silent pass).
+    """
+    assessments = _locate(
+        phase_outputs, "assessments_path", "assessment_path", "output_path",
+    )
+    if not assessments:
+        return {}, ["assessments_path"]
+
+    inputs: Dict[str, Any] = {"assessments_path": assessments}
+
+    synthesized = _resolve_objectives_path(phase_outputs, workflow_params)
+    if synthesized:
+        inputs["synthesized_objectives_path"] = synthesized
+        return inputs, []
+    return inputs, ["synthesized_objectives_path"]
+
+
 # ---------------------------------------------------------------------- #
 # Registry
 # ---------------------------------------------------------------------- #
@@ -2373,6 +2410,15 @@ def default_router() -> GateInputRouter:
         "lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator",
         _build_assessment_objective_alignment,
     )
+    # FR-COURSE-03 — CumulativeAssessmentValidator audits whether the final
+    # graded assessment (B14) spans >= 2 TOs when the course has >= 4 TOs.
+    # Surfaces {assessments_path, synthesized_objectives_path}; strict no-op
+    # when the course has < 4 TOs. Mirrors the assessment_objective_alignment
+    # builder's path resolution.
+    r.register(
+        "lib.validators.cumulative_assessment.CumulativeAssessmentValidator",
+        _build_cumulative_assessment,
+    )
     # Wave 31: content grounding — verifies Courseforge content traces
     # back to DART source blocks. The builder lives in the validator
     # module so routing stays co-located with the check.
@@ -2514,6 +2560,24 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.resource_link_purpose.ResourceLinkPurposeValidator",
         _build_block_input_rewrite,
+    )
+    # FR-A11Y-02 — InteractiveA11yValidator audits WCAG 2.1.1/2.5.7
+    # (drag-only-no-keyboard) + 1.4.1 (colour-only signalling) on interaction
+    # blocks. Consumes only ``inputs['blocks']`` (+ the threaded
+    # ``block_a11y_enabled``) so it reuses the rewrite-tier Block surface
+    # (no-ops + byte-stable when ED4ALL_BLOCK_A11Y is unset).
+    r.register(
+        "lib.validators.interactive_a11y.InteractiveA11yValidator",
+        _build_block_input_rewrite,
+    )
+    # FR-COURSE-02 — BlockSequenceOrderValidator audits the worked-example ->
+    # guided-practice fade gradient, check spacing, and scenario-opens-TO on
+    # each content module. Consumes only ``inputs['blocks']`` so it reuses the
+    # outline-tier Block surface (mirrors retrieval_presence — runs warning-
+    # day-1 regardless of any flag).
+    r.register(
+        "lib.validators.block_sequence_order.BlockSequenceOrderValidator",
+        _build_block_input_outline,
     )
     r.register(
         "lib.validators.rewrite_source_grounding.RewriteSourceGroundingValidator",

@@ -259,3 +259,37 @@ focused on the current authoritative counts.
 > this is NOT IB3). The count table is re-derived from `config/workflows.yaml`:
 > `course_generation` 30→31 warning, `textbook_to_course` 74→75 warning, Total
 > 107→109 warning / 169→171 total.
+
+> FR-A11Y-02 / FR-COURSE-02 / FR-COURSE-03 landing (framework a11y +
+> course-structure gates): THREE new validators wired in **warning** across the
+> two two-pass workflows (+3 warning each → +6 warning total). (1)
+> `interactive_a11y`
+> (`lib.validators.interactive_a11y.InteractiveA11yValidator`) at
+> `post_rewrite_validation` in BOTH `course_generation` (+1) +
+> `textbook_to_course` (+1) — interaction-block WCAG 2.1.1/2.5.7
+> (`DRAG_ONLY_NO_KEYBOARD`) + 1.4.1 (`COLOR_ONLY_SIGNALING`); reuses the
+> rewrite-tier `_build_block_input_rewrite` builder; rides `ED4ALL_BLOCK_A11Y`
+> (strict no-op + byte-stable when the flag is unset, mirroring IB4's per-block
+> a11y emit). (2) `block_sequence_order`
+> (`lib.validators.block_sequence_order.BlockSequenceOrderValidator`) at
+> `inter_tier_validation` in BOTH `course_generation` (+1) +
+> `textbook_to_course` (+1) — cloned from `RetrievalPresenceValidator` (same
+> `inputs['blocks']` shape + no-flag posture); flags worked_example(B05)→
+> guided-practice(B08) out of order (`WORKED_BEFORE_GUIDED_OUT_OF_ORDER`), a
+> B07 check massed against same-objective exposition (`CHECK_NOT_SPACED`), and a
+> B09 scenario opening a TO (`SCENARIO_OPENS_TO`); reuses
+> `_build_block_input_outline`. (3) `cumulative_assessment`
+> (`lib.validators.cumulative_assessment.CumulativeAssessmentValidator`) at
+> `assessment_synthesis` in BOTH `course_generation` (+1) +
+> `textbook_to_course` (+1) — flags `CUMULATIVE_RETRIEVAL_TOO_NARROW` when the
+> final graded assessment (B14) spans < 2 terminal objectives while the course
+> defines ≥ 4 TOs; strict no-op when < 4 TOs; new `_build_cumulative_assessment`
+> builder surfaces `{assessments_path, synthesized_objectives_path}` (mirrors
+> `_build_assessment_objective_alignment`). All three are **warning-day-1** with
+> a `# TODO(calibration)` deferred critical-flip (standard multi-wave
+> deferred-flip — IB3 is the roadmap's single documented fastest-flip exception,
+> these are NOT IB3). No new behavior flags introduced (FR-A11Y-02 reuses
+> `ED4ALL_BLOCK_A11Y`; the two course gates run warning-day-1 unconditionally,
+> mirroring `retrieval_presence`). The count table is re-derived from
+> `config/workflows.yaml`: `course_generation` 31→34 warning,
+> `textbook_to_course` 75→78 warning, Total 109→115 warning / 171→177 total.

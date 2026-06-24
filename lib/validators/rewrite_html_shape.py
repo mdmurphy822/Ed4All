@@ -132,6 +132,110 @@ def _suppresses_focus_outline(style: str) -> bool:
     return not replacement
 
 
+# FR-A11Y-01 — CSS properties whose animation/transition signals motion the
+# learner can't stop. A bare ``transition:`` / ``animation:`` shorthand or any
+# of these named properties under transition/animation means the element moves.
+_MOTION_CSS_PROPS: Tuple[str, ...] = (
+    "transform", "translate", "rotate", "scale", "top", "left", "right",
+    "bottom", "margin", "width", "height", "opacity", "all",
+)
+
+# Common non-moving transition targets — a transition naming only these is a
+# color/visual change, not motion, so the bare-shorthand fallback skips it.
+_NON_MOVING_CSS_PROPS: Tuple[str, ...] = (
+    "color", "background", "box-shadow", "border-color", "fill", "stroke",
+    "filter", "visibility",
+)
+
+
+def _declares_unguarded_motion(style: str) -> Optional[str]:
+    """Return a reason string iff an inline ``style`` declares moving motion.
+
+    WCAG 2.3.1 (three-flashes) / 2.2.2 (pause-stop-hide). A static-HTML
+    validator flags the inline motion MARKER — an ``animation:`` declaration,
+    or a ``transition:`` on a moving property — without a reduced-motion guard.
+    The block-level ``@media (prefers-reduced-motion)`` guard (tracked
+    separately on the parser) is the rescue. ``style`` is expected lower-cased.
+    """
+    compact = style.replace(" ", "")
+    # An animation shorthand / name is motion by definition.
+    if "animation:" in compact or "animation-name:" in compact:
+        return "inline animation: declaration"
+    # A transition is motion only when it animates a moving property (or the
+    # ``all`` keyword / a bare shorthand with no named prop, which defaults to
+    # ``all``). A transition that names ONLY non-moving properties (color /
+    # background / box-shadow / etc.) is not flagged.
+    if "transition:" in compact or "transition-property:" in compact:
+        for prop in _MOTION_CSS_PROPS:
+            if prop in compact:
+                return f"inline transition on a moving property ({prop})"
+        # No moving property named. Only flag the bare-shorthand case (no CSS
+        # property name at all → defaults to ``all``); a named non-moving prop
+        # such as ``color`` / ``background`` is not motion.
+        if not any(name in compact for name in _NON_MOVING_CSS_PROPS):
+            return "inline transition (defaults to animating all properties)"
+    return None
+
+
+# Interactive tags + ARIA roles that mark a control for the target-size (2.5.8)
+# and non-text-contrast (1.4.11) checks.
+_INTERACTIVE_CONTROL_TAGS: frozenset = frozenset(
+    {"button", "a", "input", "select", "textarea"}
+)
+
+
+def _parse_css_px(style: str, prop: str) -> Optional[float]:
+    """Return the px value of an inline ``style`` property, or None.
+
+    Only recognises an explicit ``<number>px`` declaration — a ``%`` / ``em`` /
+    ``auto`` / unset value returns None (do NOT guess when the unit isn't px).
+    ``style`` is expected lower-cased + space-stripped.
+    """
+    needle = prop + ":"
+    idx = style.find(needle)
+    if idx < 0:
+        return None
+    rest = style[idx + len(needle):]
+    # Take up to the next ``;`` declaration boundary.
+    semi = rest.find(";")
+    value = (rest if semi < 0 else rest[:semi]).strip()
+    if not value.endswith("px"):
+        return None
+    num = value[:-2].strip()
+    try:
+        return float(num)
+    except ValueError:
+        return None
+
+
+def _declares_subminimum_target(style: str) -> Optional[str]:
+    """Return a reason iff a declared interactive control size is < 24x24 px.
+
+    WCAG 2.5.8 (target size, minimum). Reads ``width`` / ``height`` /
+    ``min-width`` / ``min-height``; flags ONLY when a px size is declared AND it
+    is sub-24 (never guesses when a dimension is unspecified). ``style`` is
+    expected lower-cased + space-stripped.
+    """
+    too_small: List[str] = []
+    for dim, floor_props in (
+        ("width", ("min-width", "width")),
+        ("height", ("min-height", "height")),
+    ):
+        declared: Optional[float] = None
+        for prop in floor_props:
+            px = _parse_css_px(style, prop)
+            if px is not None:
+                declared = px
+                break
+        if declared is not None and declared < 24.0:
+            too_small.append(f"{dim}={declared:g}px")
+    if too_small:
+        return "declared interactive target size < 24x24 CSS px (" + ", ".join(
+            too_small
+        ) + ")"
+    return None
+
+
 # Cap per-block issue list so a uniformly-broken rewrite batch doesn't
 # drown the gate report.
 _ISSUE_LIST_CAP: int = 50
@@ -315,6 +419,9 @@ class _ShapeParser(HTMLParser):
         # Anchor text accumulation for the descriptive-link-text check (2.4.4).
         self.link_texts: List[str] = []
         self._open_anchor_text: Optional[List[str]] = None
+        # FR-A11Y-01 — <style> element CSS-text accumulation so a block-level
+        # @media (prefers-reduced-motion) guard (2.3.1/2.2.2) is detectable.
+        self._open_style_text: Optional[List[str]] = None
         # B04 multimedia (IB5 lands the block; the contract ships dormant here).
         self.media_track: bool = False
         self.media_transcript: bool = False
@@ -326,6 +433,22 @@ class _ShapeParser(HTMLParser):
         # AND a <table> data-equivalent.
         self.saw_long_desc_details: bool = False
         self.saw_data_table: bool = False
+        # FR-A11Y-01 WCAG-baseline tracking (rides ED4ALL_BLOCK_A11Y, warning).
+        # 2.3.1 / 2.2.2 reduced motion: a moving element (animation marker /
+        # autoplaying motion / <marquee> / autoplaying media) that does NOT
+        # respect prefers-reduced-motion or offer a pause affordance.
+        self.motion_unguarded_reason: Optional[str] = None
+        # A page-/block-level @media (prefers-reduced-motion) guard anywhere in
+        # the block's inline <style> rescues every motion marker in the block.
+        self.saw_reduced_motion_guard: bool = False
+        # 2.5.8 target size: an interactive control with a declared size below
+        # 24 CSS px on width/height/min-width/min-height.
+        self.target_too_small_reason: Optional[str] = None
+        # 1.4.11 non-text contrast: a UI control that signals its boundary /
+        # state via color alone (border:none/outline:none with no other
+        # non-color affordance, or an inline color on an icon-only control with
+        # no border/shape).
+        self.non_text_contrast_reason: Optional[str] = None
 
     def _track_palette_v2(
         self, tag: str, attrs: List[Tuple[str, Optional[str]]]
@@ -472,9 +595,99 @@ class _ShapeParser(HTMLParser):
             # Begin accumulating this anchor's visible text for the 2.4.4 check.
             self._open_anchor_text = []
 
+        # FR-A11Y-01 — begin accumulating a <style> element's CSS text so a
+        # block-level @media (prefers-reduced-motion) guard (2.3.1/2.2.2) is
+        # detectable from the parser stream.
+        if tag == "style":
+            self._open_style_text = []
+
+        self._track_baseline_a11y(tag, attr_map)
+
+    def _track_baseline_a11y(self, tag: str, attr_map: Dict[str, str]) -> None:
+        """Record the FR-A11Y-01 WCAG-baseline facts (2.3.1/2.2.2, 2.5.8, 1.4.11).
+
+        All three checks ride ``ED4ALL_BLOCK_A11Y`` (the caller no-ops when the
+        flag is off) and emit WARNING-severity findings with deferred
+        ``# TODO(calibration)`` critical-flips. Precision over recall — only
+        clear, declared, static-HTML-visible markers are tracked.
+        """
+        style = (attr_map.get("style") or "").lower().replace(" ", "")
+
+        # --- 2.3.1 / 2.2.2 reduced motion -------------------------------- #
+        # An inline @media (prefers-reduced-motion) guard on the element's own
+        # style attr also rescues (rare but legal). The richer <style>-element
+        # guard is folded in finalize().
+        if "@media(prefers-reduced-motion" in style:
+            self.saw_reduced_motion_guard = True
+        # Autoplaying time-based media is motion; a `controls` (pause) affordance
+        # is the escape hatch.
+        if tag in ("video", "audio") and "autoplay" in attr_map:
+            if "controls" not in attr_map and self.motion_unguarded_reason is None:
+                self.motion_unguarded_reason = (
+                    f"autoplaying <{tag}> with no controls/pause affordance"
+                )
+        # The deprecated <marquee> is unconditional, unstoppable motion.
+        if tag == "marquee" and self.motion_unguarded_reason is None:
+            self.motion_unguarded_reason = "<marquee> (unstoppable motion)"
+        # An inline animation/transition on a moving property with no pause
+        # affordance. A native <details>/<summary> reveal is user-initiated, not
+        # auto-playing — not flagged here.
+        motion_reason = _declares_unguarded_motion(style)
+        if motion_reason is not None and self.motion_unguarded_reason is None:
+            self.motion_unguarded_reason = motion_reason
+
+        # --- 2.5.8 target size ------------------------------------------- #
+        is_interactive_control = (
+            tag in _INTERACTIVE_CONTROL_TAGS
+            or "data-cf-component" in attr_map
+            or "onclick" in attr_map
+            or (attr_map.get("role") or "").strip().lower() in _INTERACTIVE_ARIA_ROLES
+        )
+        if is_interactive_control and style and self.target_too_small_reason is None:
+            small = _declares_subminimum_target(style)
+            if small is not None:
+                self.target_too_small_reason = small
+
+        # --- 1.4.11 non-text contrast ------------------------------------ #
+        # Conservative, clear cases only:
+        #   (1) an interactive control that removes its boundary
+        #       (border:none / outline:none) AND declares no other non-color
+        #       affordance (background / box-shadow / text-decoration / a
+        #       remaining border-* side) → state/boundary by color alone.
+        #   (2) an icon-only control (no visible text — aria-label only) that
+        #       signals via an inline `color:` with no border/shape/background.
+        if is_interactive_control and style and self.non_text_contrast_reason is None:
+            removes_boundary = (
+                "border:none" in style
+                or "border:0" in style
+                or "outline:none" in style
+                or "outline:0" in style
+            )
+            has_shape_affordance = (
+                "background:" in style
+                or "background-color:" in style
+                or "box-shadow:" in style
+                or "text-decoration:" in style
+                or "border-bottom:" in style
+                or "border-top:" in style
+                or "border-left:" in style
+                or "border-right:" in style
+                or "border-width:" in style
+                or "border-style:" in style
+            )
+            if removes_boundary and not has_shape_affordance:
+                self.non_text_contrast_reason = (
+                    "interactive control removes its boundary "
+                    "(border:none/outline:none) with no non-color shape "
+                    "affordance (background / box-shadow / underline / "
+                    "remaining border side)"
+                )
+
     def handle_data(self, data: str) -> None:
         if self._open_anchor_text is not None and data:
             self._open_anchor_text.append(data)
+        if self._open_style_text is not None and data:
+            self._open_style_text.append(data)
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         tag = tag.lower()
@@ -509,6 +722,11 @@ class _ShapeParser(HTMLParser):
             text = "".join(self._open_anchor_text).strip()
             self.link_texts.append(text)
             self._open_anchor_text = None
+        if tag == "style" and self._open_style_text is not None:
+            css = "".join(self._open_style_text).lower().replace(" ", "")
+            if "@media(prefers-reduced-motion" in css:
+                self.saw_reduced_motion_guard = True
+            self._open_style_text = None
         if tag in _VOID_TAGS:
             # Spec-violating end tag for a void element — ignore but
             # don't fail (browsers tolerate this).
@@ -718,6 +936,25 @@ def _check_block_a11y_contract(
     * ``multimedia`` (B04, dormant until IB5): MUST carry a
       ``<track kind="captions">`` AND a transcript anchor.
 
+    FR-A11Y-01 WCAG-baseline checks (any block; warning-day-1, deferred
+    critical-flip — each rides this SAME emit path, so no workflows.yaml change):
+
+    * ``REWRITE_BLOCK_REDUCED_MOTION`` (2.3.1 / 2.2.2): a moving element — an
+      inline ``animation:`` / motion-property ``transition:``, a ``<marquee>``,
+      or autoplaying ``<video>``/``<audio>`` with no ``controls`` — that carries
+      NO ``@media (prefers-reduced-motion)`` guard (inline or in a block
+      ``<style>``) and NO pause affordance.
+    * ``REWRITE_BLOCK_TARGET_SIZE`` (2.5.8): an interactive control
+      (``<button>``/``<a>``/``<input>``/``data-cf-component``/click-bearing/ARIA
+      role) whose DECLARED inline ``width``/``height``/``min-width``/
+      ``min-height`` is below 24 CSS px. Only when a px size is declared and is
+      sub-24 — never guesses an unspecified dimension.
+    * ``REWRITE_BLOCK_NON_TEXT_CONTRAST`` (1.4.11): an interactive control that
+      signals its boundary/state by color alone — a ``border:none`` /
+      ``outline:none`` boundary removal with NO other non-color affordance
+      (background / box-shadow / underline / a remaining border side).
+      Precision over recall — only this clear case is flagged.
+
     The dedicated B04 time-based-media stack (captions / audio-description /
     transcript / controls, each with its own code) is checked by
     :func:`_check_ib5_a11y_shape` under ``ED4ALL_NEW_BLOCK_TYPES``; this
@@ -793,6 +1030,40 @@ def _check_block_a11y_contract(
                 "REWRITE_BLOCK_A11Y_CONTRACT",
                 "time-based media missing captions/transcript stack",
             ))
+
+    # FR-A11Y-01 — three WCAG-baseline checks (warning-day-1, deferred critical-
+    # flip). Each rides ED4ALL_BLOCK_A11Y via this same emit path (the caller
+    # only invokes this helper when block_a11y_enabled), so NO config/
+    # workflows.yaml change is needed — the codes ride the existing warning
+    # GateIssue loop. # TODO(calibration): flip to critical after a ≥2-corpus FP
+    # measurement (mirroring REWRITE_BLOCK_A11Y_CONTRACT).
+
+    # 2.3.1 / 2.2.2 — reduced motion. A moving element with no
+    # prefers-reduced-motion guard / pause affordance.
+    if (
+        parser.motion_unguarded_reason is not None
+        and not parser.saw_reduced_motion_guard
+    ):
+        findings.append((
+            "REWRITE_BLOCK_REDUCED_MOTION",
+            f"{parser.motion_unguarded_reason} with no "
+            "@media (prefers-reduced-motion) guard or pause affordance",
+        ))
+
+    # 2.5.8 — target size. A declared interactive control size below 24x24 px.
+    if parser.target_too_small_reason is not None:
+        findings.append((
+            "REWRITE_BLOCK_TARGET_SIZE",
+            parser.target_too_small_reason,
+        ))
+
+    # 1.4.11 — non-text contrast. A UI control signalling boundary/state via
+    # color alone (no non-color shape affordance).
+    if parser.non_text_contrast_reason is not None:
+        findings.append((
+            "REWRITE_BLOCK_NON_TEXT_CONTRAST",
+            parser.non_text_contrast_reason,
+        ))
 
     return findings
 
@@ -1284,7 +1555,10 @@ class RewriteHtmlShapeValidator:
                 # Emit one WARNING per failed obligation. Distinct codes per
                 # WCAG criterion: REWRITE_BLOCK_A11Y_CONTRACT (1.1.1 / 4.1.2 /
                 # 2.4.4 / B04 baseline), BLOCK_KEYBOARD_OPERABLE (2.1.1),
-                # BLOCK_FOCUS_VISIBLE (2.4.7). All warning-day-1 with a deferred
+                # BLOCK_FOCUS_VISIBLE (2.4.7), REWRITE_BLOCK_REDUCED_MOTION
+                # (FR-A11Y-01 / 2.3.1 / 2.2.2), REWRITE_BLOCK_TARGET_SIZE
+                # (FR-A11Y-01 / 2.5.8), REWRITE_BLOCK_NON_TEXT_CONTRAST
+                # (FR-A11Y-01 / 1.4.11). All warning-day-1 with a deferred
                 # critical-flip (# TODO(calibration): flip after a ≥2-corpus FP
                 # measurement, mirroring REWRITE_BLOCK_A11Y_CONTRACT).
                 for code, reason in a11y_findings:

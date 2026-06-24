@@ -288,6 +288,24 @@ workflows:
               on_error: warn
             description: IB7.5b — >=1 spaced low-stakes retrieval block per content-bearing module. Warning day-1; deferred critical-flip.
 
+          # FR-COURSE-02 — pedagogical block-sequence-order floor. Flags
+          # worked_example(B05)->guided-practice(B08) out of order, a check
+          # (B07) massed against same-objective exposition, and a scenario
+          # (B09) opening a TO module. Consumes inputs['blocks']; runs warning-
+          # day-1 regardless of any flag (mirrors retrieval_presence).
+          # TODO(calibration) — flip these three codes to critical after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
+          # single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: block_sequence_order
+            validator: lib.validators.block_sequence_order.BlockSequenceOrderValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-COURSE-02 — worked-example->guided fade gradient, check spacing, scenario-opens-TO. Warning day-1; deferred critical-flip.
+
           # IB7.6c — per-type Bloom-range ceiling enforcement (advisory->gate
           # promotion of block_catalog.yaml's bloom_ceiling). Flags a block
           # whose declared/observed target Bloom exceeds its type's stretch
@@ -685,6 +703,26 @@ workflows:
               on_error: warn
             description: B15 — WCAG 2.4.4 descriptive-link-text on resources blocks. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
 
+          # FR-A11Y-02 — interaction-block WCAG 2.1.1/2.5.7 (drag-only-no-
+          # keyboard) + 1.4.1 (colour-only signalling) floor. Consumes
+          # inputs['blocks'] (+ threaded block_a11y_enabled). Rides
+          # ED4ALL_BLOCK_A11Y — strict no-op + byte-stable when the flag is
+          # unset (same flag as IB4's per-block a11y emit). action=regenerate
+          # on miss.
+          # TODO(calibration) — flip DRAG_ONLY_NO_KEYBOARD + COLOR_ONLY_
+          # SIGNALING to critical after a >=2-corpus FP measurement (WS3/W4
+          # deferred-flip pattern; IB3 is the single documented fastest-flip
+          # exception, this is NOT IB3).
+          - gate_id: interactive_a11y
+            validator: lib.validators.interactive_a11y.InteractiveA11yValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-A11Y-02 — interaction-block WCAG 2.1.1/2.5.7 + 1.4.1. Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_A11Y unset.
+
           # IB6.6 — block->module->course quality-rollup GATE (framework
           # FR-07/13, §6.5). Surfaces the BlockQualityRollupAggregator's
           # course_pass / per-block-fail signal (the 3 hard gates: Accessibility
@@ -801,6 +839,25 @@ workflows:
               on_fail: warn
               on_error: warn
             description: "W10 — per-type grounding attribution for assignment + discussion items (warning day-1; reuses the alignment validator until a per-type validator lands)."
+
+          # FR-COURSE-03 — cumulative-retrieval breadth floor for the B14 final
+          # graded assessment. Flags CUMULATIVE_RETRIEVAL_TOO_NARROW when the
+          # final graded assessment spans < 2 terminal objectives while the
+          # course defines >= 4 TOs. Strict no-op when the course has < 4 TOs.
+          # Builder surfaces {assessments_path, synthesized_objectives_path}.
+          # TODO(calibration) — flip CUMULATIVE_RETRIEVAL_TOO_NARROW to
+          # critical after a >=2-corpus FP measurement (WS3/W4 deferred-flip
+          # pattern; IB3 is the single documented fastest-flip exception, this
+          # is NOT IB3).
+          - gate_id: cumulative_assessment
+            validator: lib.validators.cumulative_assessment.CumulativeAssessmentValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-COURSE-03 — B14 final graded assessment must span >= 2 TOs when course has >= 4 TOs. Warning day-1; deferred critical-flip; no-op when < 4 TOs.
 
       - name: packaging
         agents: [brightspace-packager]
@@ -2320,6 +2377,24 @@ workflows:
               on_error: warn
             description: IB7.5b — >=1 spaced low-stakes retrieval block per content-bearing module. Warning day-1; deferred critical-flip.
 
+          # FR-COURSE-02 — pedagogical block-sequence-order floor. Flags
+          # worked_example(B05)->guided-practice(B08) out of order, a check
+          # (B07) massed against same-objective exposition, and a scenario
+          # (B09) opening a TO module. Consumes inputs['blocks']; runs warning-
+          # day-1 regardless of any flag (mirrors retrieval_presence).
+          # TODO(calibration) — flip these three codes to critical after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
+          # single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: block_sequence_order
+            validator: lib.validators.block_sequence_order.BlockSequenceOrderValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-COURSE-02 — worked-example->guided fade gradient, check spacing, scenario-opens-TO. Warning day-1; deferred critical-flip.
+
           # IB7.6c — per-type Bloom-range ceiling enforcement (advisory->gate
           # promotion of block_catalog.yaml's bloom_ceiling). Flags a block
           # whose declared/observed target Bloom exceeds its type's stretch
@@ -3093,6 +3168,26 @@ workflows:
               on_error: warn
             description: B15 — WCAG 2.4.4 descriptive-link-text on resources blocks. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
 
+          # FR-A11Y-02 — interaction-block WCAG 2.1.1/2.5.7 (drag-only-no-
+          # keyboard) + 1.4.1 (colour-only signalling) floor. Consumes
+          # inputs['blocks'] (+ threaded block_a11y_enabled). Rides
+          # ED4ALL_BLOCK_A11Y — strict no-op + byte-stable when the flag is
+          # unset (same flag as IB4's per-block a11y emit). action=regenerate
+          # on miss.
+          # TODO(calibration) — flip DRAG_ONLY_NO_KEYBOARD + COLOR_ONLY_
+          # SIGNALING to critical after a >=2-corpus FP measurement (WS3/W4
+          # deferred-flip pattern; IB3 is the single documented fastest-flip
+          # exception, this is NOT IB3).
+          - gate_id: interactive_a11y
+            validator: lib.validators.interactive_a11y.InteractiveA11yValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-A11Y-02 — interaction-block WCAG 2.1.1/2.5.7 + 1.4.1. Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_A11Y unset.
+
           # IB6.6 — block->module->course quality-rollup GATE (framework
           # FR-07/13, §6.5). Surfaces the BlockQualityRollupAggregator's
           # course_pass / per-block-fail signal (the 3 hard gates: Accessibility
@@ -3249,6 +3344,25 @@ workflows:
               on_fail: warn
               on_error: warn
             description: "W10 — per-type grounding attribution for assignment + discussion items (warning day-1; reuses the alignment validator until a per-type validator lands)."
+
+          # FR-COURSE-03 — cumulative-retrieval breadth floor for the B14 final
+          # graded assessment. Flags CUMULATIVE_RETRIEVAL_TOO_NARROW when the
+          # final graded assessment spans < 2 terminal objectives while the
+          # course defines >= 4 TOs. Strict no-op when the course has < 4 TOs.
+          # Builder surfaces {assessments_path, synthesized_objectives_path}.
+          # TODO(calibration) — flip CUMULATIVE_RETRIEVAL_TOO_NARROW to
+          # critical after a >=2-corpus FP measurement (WS3/W4 deferred-flip
+          # pattern; IB3 is the single documented fastest-flip exception, this
+          # is NOT IB3).
+          - gate_id: cumulative_assessment
+            validator: lib.validators.cumulative_assessment.CumulativeAssessmentValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-COURSE-03 — B14 final graded assessment must span >= 2 TOs when course has >= 4 TOs. Warning day-1; deferred critical-flip; no-op when < 4 TOs.
 
       - name: packaging
         agents: [brightspace-packager]

@@ -508,3 +508,266 @@ def test_mm_pieces_noop_when_flag_off() -> None:
         "MULTIMEDIA_TRANSCRIPT_MISSING", "MULTIMEDIA_CONTROLS_MISSING",
     ):
         assert code not in _codes(result)
+
+
+# --------------------------------------------------------------------------- #
+# FR-A11Y-01 (1/3) — reduced motion (WCAG 2.3.1 / 2.2.2)
+# REWRITE_BLOCK_REDUCED_MOTION
+# --------------------------------------------------------------------------- #
+
+
+def _concept_wrap(inner):
+    return (
+        '<section data-cf-block-id="page_01#concept_demo_0" '
+        'data-cf-content-type="concept" data-cf-key-terms="x">'
+        f"{inner}</section>"
+    )
+
+
+def test_inline_animation_no_guard_warns_reduced_motion() -> None:
+    block = _block(_concept_wrap(
+        '<div style="animation: spin 2s infinite linear">spinner</div>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_REDUCED_MOTION" in _codes(result)
+    assert result.passed is True
+    assert _critical(result) == []
+
+
+def test_inline_transition_on_moving_property_warns() -> None:
+    block = _block(_concept_wrap(
+        '<div style="transition: transform 0.3s ease">slide</div>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_REDUCED_MOTION" in _codes(result)
+
+
+def test_marquee_warns_reduced_motion() -> None:
+    block = _block(_concept_wrap("<marquee>scrolling text</marquee>"))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_REDUCED_MOTION" in _codes(result)
+
+
+def test_autoplay_video_no_controls_warns_reduced_motion() -> None:
+    block = _block(_concept_wrap('<video autoplay src="x.mp4"></video>'))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_REDUCED_MOTION" in _codes(result)
+
+
+def test_animation_with_inline_reduced_motion_guard_is_clean() -> None:
+    block = _block(_concept_wrap(
+        '<div style="animation: spin 2s infinite; '
+        '@media (prefers-reduced-motion: reduce) { animation: none }">x</div>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_REDUCED_MOTION" not in _codes(result)
+
+
+def test_animation_with_style_block_reduced_motion_guard_is_clean() -> None:
+    block = _block(_concept_wrap(
+        "<style>@media (prefers-reduced-motion: reduce) "
+        "{ .spin { animation: none } }</style>"
+        '<div style="animation: spin 2s infinite" class="spin">x</div>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_REDUCED_MOTION" not in _codes(result)
+
+
+def test_autoplay_video_with_controls_is_clean() -> None:
+    block = _block(_concept_wrap('<video autoplay controls src="x.mp4"></video>'))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_REDUCED_MOTION" not in _codes(result)
+
+
+def test_static_transition_on_color_only_is_clean() -> None:
+    # A color-only transition is not a "moving" property.
+    block = _block(_concept_wrap(
+        '<div style="transition: color 0.2s">hover</div>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_REDUCED_MOTION" not in _codes(result)
+
+
+def test_reduced_motion_noop_when_flag_off() -> None:
+    block = _block(_concept_wrap(
+        '<div style="animation: spin 2s infinite">x</div>'
+    ))
+    result = _validate([block], a11y=False)
+    assert "REWRITE_BLOCK_REDUCED_MOTION" not in _codes(result)
+    assert result.passed is True
+
+
+# --------------------------------------------------------------------------- #
+# FR-A11Y-01 (2/3) — target size (WCAG 2.5.8)
+# REWRITE_BLOCK_TARGET_SIZE
+# --------------------------------------------------------------------------- #
+
+
+def test_button_below_24px_warns_target_size() -> None:
+    block = _block(_concept_wrap(
+        '<button style="width:16px; height:16px">x</button>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_TARGET_SIZE" in _codes(result)
+    assert result.passed is True
+    assert _critical(result) == []
+
+
+def test_min_width_below_24px_warns_target_size() -> None:
+    block = _block(_concept_wrap(
+        '<a href="/x" style="min-width:20px; min-height:20px">go</a>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_TARGET_SIZE" in _codes(result)
+
+
+def test_target_at_24px_is_clean() -> None:
+    block = _block(_concept_wrap(
+        '<button style="width:24px; height:24px">x</button>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_TARGET_SIZE" not in _codes(result)
+
+
+def test_target_above_24px_is_clean() -> None:
+    block = _block(_concept_wrap(
+        '<button style="width:44px; height:44px">x</button>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_TARGET_SIZE" not in _codes(result)
+
+
+def test_target_unspecified_size_is_clean() -> None:
+    # No declared px size → never guesses.
+    block = _block(_concept_wrap("<button>submit</button>"))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_TARGET_SIZE" not in _codes(result)
+
+
+def test_target_percent_unit_is_clean() -> None:
+    # A non-px unit is not a guessable absolute size.
+    block = _block(_concept_wrap(
+        '<button style="width:10%; height:10%">x</button>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_TARGET_SIZE" not in _codes(result)
+
+
+def test_small_size_on_non_interactive_is_clean() -> None:
+    # A small <span> with no interactivity is not a target.
+    block = _block(_concept_wrap(
+        '<span style="width:8px; height:8px">.</span>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_TARGET_SIZE" not in _codes(result)
+
+
+def test_target_size_noop_when_flag_off() -> None:
+    block = _block(_concept_wrap(
+        '<button style="width:16px; height:16px">x</button>'
+    ))
+    result = _validate([block], a11y=False)
+    assert "REWRITE_BLOCK_TARGET_SIZE" not in _codes(result)
+    assert result.passed is True
+
+
+# --------------------------------------------------------------------------- #
+# FR-A11Y-01 (3/3) — non-text contrast (WCAG 1.4.11)
+# REWRITE_BLOCK_NON_TEXT_CONTRAST
+# --------------------------------------------------------------------------- #
+
+
+def test_border_none_control_no_affordance_warns_non_text_contrast() -> None:
+    block = _block(_concept_wrap(
+        '<button style="border:none; color:blue">Go</button>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_NON_TEXT_CONTRAST" in _codes(result)
+    assert result.passed is True
+    assert _critical(result) == []
+
+
+def test_outline_none_control_no_affordance_warns_non_text_contrast() -> None:
+    block = _block(_concept_wrap(
+        '<a href="/x" style="outline:none">deep dive</a>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_NON_TEXT_CONTRAST" in _codes(result)
+
+
+def test_border_none_with_background_affordance_is_clean() -> None:
+    block = _block(_concept_wrap(
+        '<button style="border:none; background:#0055aa; color:white">Go</button>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_NON_TEXT_CONTRAST" not in _codes(result)
+
+
+def test_border_none_with_boxshadow_affordance_is_clean() -> None:
+    block = _block(_concept_wrap(
+        '<button style="border:none; box-shadow:0 0 0 2px navy">Go</button>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_NON_TEXT_CONTRAST" not in _codes(result)
+
+
+def test_control_with_real_border_is_clean() -> None:
+    block = _block(_concept_wrap(
+        '<button style="border:2px solid navy">Go</button>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_NON_TEXT_CONTRAST" not in _codes(result)
+
+
+def test_non_interactive_border_none_is_clean() -> None:
+    # A non-interactive element removing its border is harmless.
+    block = _block(_concept_wrap(
+        '<p style="border:none; color:gray">prose</p>'
+    ))
+    result = _validate([block], a11y=True)
+    assert "REWRITE_BLOCK_NON_TEXT_CONTRAST" not in _codes(result)
+
+
+def test_non_text_contrast_noop_when_flag_off() -> None:
+    block = _block(_concept_wrap(
+        '<button style="border:none; color:blue">Go</button>'
+    ))
+    result = _validate([block], a11y=False)
+    assert "REWRITE_BLOCK_NON_TEXT_CONTRAST" not in _codes(result)
+    assert result.passed is True
+
+
+# --------------------------------------------------------------------------- #
+# FR-A11Y-01 — byte-stability: flag off → ZERO of the three codes, regardless
+# of how non-conformant the markup is.
+# --------------------------------------------------------------------------- #
+
+
+def test_fr_a11y_01_all_three_byte_stable_when_flag_off() -> None:
+    block = _block(_concept_wrap(
+        '<marquee>moving</marquee>'
+        '<button style="width:8px; height:8px; border:none; '
+        'animation: spin 2s infinite">x</button>'
+    ))
+    result = _validate([block], a11y=False)
+    for code in (
+        "REWRITE_BLOCK_REDUCED_MOTION",
+        "REWRITE_BLOCK_TARGET_SIZE",
+        "REWRITE_BLOCK_NON_TEXT_CONTRAST",
+    ):
+        assert code not in _codes(result)
+    assert result.passed is True
+
+
+def test_fr_a11y_01_all_three_fire_together_when_flag_on() -> None:
+    block = _block(_concept_wrap(
+        '<button style="width:8px; height:8px; border:none; '
+        'animation: spin 2s infinite; color:red">x</button>'
+    ))
+    result = _validate([block], a11y=True)
+    codes = _codes(result)
+    assert "REWRITE_BLOCK_REDUCED_MOTION" in codes
+    assert "REWRITE_BLOCK_TARGET_SIZE" in codes
+    assert "REWRITE_BLOCK_NON_TEXT_CONTRAST" in codes
+    assert result.passed is True  # all warning-day-1
+    assert _critical(result) == []

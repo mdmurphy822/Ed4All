@@ -44,6 +44,8 @@ _EXPECTED_PRIMARY = {
     "multimedia": "B04",
     "worked_example": "B05",
     "diagram": "B06",
+    # IB8/cycle-1: B15 Resources — closes the last canonical-catalog gap.
+    "resources": "B15",
 }
 
 # Expected secondary B-code (only for the types that straddle two parents).

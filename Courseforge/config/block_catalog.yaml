@@ -136,6 +136,7 @@ blocks:
       mental model and supply the correction.
     conveys: A named common error plus the correct reasoning that replaces it.
     bloom_fit: [understand, analyze]
+    bloom_ceiling: apply
     format_summary: "<section>; JSON-LD carries the misconception + correction."
     framework_block: B03
     framework_block_secondary: B12
@@ -284,6 +285,7 @@ blocks:
       derivation).
     conveys: One highlighted formula plus a one-line naming of each variable.
     bloom_fit: [remember, understand, apply]
+    bloom_ceiling: apply
     format_summary: "<div class=formula-card> centered formula + variable gloss."
     framework_block: B03
     framework_block_secondary: B06

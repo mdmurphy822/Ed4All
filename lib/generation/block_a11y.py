@@ -30,6 +30,33 @@ Keyboard / focus contract (the IB4.1 per-block sub-check, gated by this flag):
   declaration in the same inline style) suppresses the keyboard-focus ring and
   is flagged ``BLOCK_FOCUS_VISIBLE`` (warning-day-1, deferred critical-flip).
 
+FR-A11Y-01 WCAG-baseline contract (three checks, gated by this same flag; each
+rides the EXISTING warning emit path in
+``RewriteHtmlShapeValidator.validate`` so NO ``config/workflows.yaml`` change is
+needed — all warning-day-1 with a deferred ``# TODO(calibration)`` critical-flip
+after a ≥2-corpus FP measurement, mirroring the cycle-1 checks):
+
+* **Reduced motion (WCAG 2.3.1 / 2.2.2).** A moving element that does NOT
+  respect ``prefers-reduced-motion`` and offers no pause affordance —
+  static-HTML-appropriate detection of the inline/attached motion markers: an
+  inline ``animation:`` declaration, a ``transition:`` on a moving property
+  (transform / translate / opacity / size / position / ``all``), a deprecated
+  ``<marquee>``, or an autoplaying ``<video>``/``<audio>`` with no ``controls``.
+  Rescued by an ``@media (prefers-reduced-motion)`` guard (inline on the element
+  OR in a block-level ``<style>``). Flagged ``REWRITE_BLOCK_REDUCED_MOTION``.
+* **Target size (WCAG 2.5.8).** An interactive control (``<button>`` / ``<a>``
+  / ``<input>`` / a ``data-cf-component`` / click-bearing / ARIA-role control)
+  whose DECLARED inline ``width`` / ``height`` / ``min-width`` / ``min-height``
+  is below 24 CSS px. Fires ONLY when a px size is declared and is sub-24 — does
+  NOT guess when a dimension is unspecified. Flagged
+  ``REWRITE_BLOCK_TARGET_SIZE``.
+* **Non-text contrast (WCAG 1.4.11).** A UI component / graphical control that
+  signals its boundary/state via color alone — conservatively, an interactive
+  control whose inline style removes its boundary (``border:none`` /
+  ``outline:none``) with NO other non-color affordance (background / box-shadow
+  / text-decoration underline / a remaining border side). Precision over recall
+  — only this clear case is flagged. Flagged ``REWRITE_BLOCK_NON_TEXT_CONTRAST``.
+
 Scope split (IB4.6 RECOMMENDATION, stated explicitly):
 
 * The EMIT (UDL field stamping in ``Block.to_html_attrs`` / ``to_jsonld_entry``)
