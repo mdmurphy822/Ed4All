@@ -479,9 +479,10 @@
             "multimedia",
             "worked_example",
             "diagram",
-            "resources"
+            "resources",
+            "guided_practice"
           ],
-          "description": "One of the 29 canonical Phase 2 block types (mirror of Courseforge/scripts/blocks.py::BLOCK_TYPES). Issue I6 added table / acronym / key_idea (instruction palette v2); IB5 added hook (B02) / multimedia (B04) / worked_example (B05) / diagram (B06); the B15 wave added resources (B15 Resources / Further Reading) — all framework-aligned pedagogical types emitted only via the dynamic planner under ED4ALL_NEW_BLOCK_TYPES; each Ed4All type declares its canonical framework B-code parent via the catalog's framework_block field (B01–B15)."
+          "description": "One of the 30 canonical Phase 2 block types (mirror of Courseforge/scripts/blocks.py::BLOCK_TYPES). Issue I6 added table / acronym / key_idea (instruction palette v2); IB5 added hook (B02) / multimedia (B04) / worked_example (B05) / diagram (B06); the B15 wave added resources (B15 Resources / Further Reading); FR-INT-02 added guided_practice (B08 first-class faded-scaffold practice, distinct from the B07 self_check_question and the generic B08 activity/problem) — all framework-aligned pedagogical types emitted only via the dynamic planner under ED4ALL_NEW_BLOCK_TYPES; each Ed4All type declares its canonical framework B-code parent via the catalog's framework_block field (B01–B15)."
         },
         "sequence": {
           "type": "integer",

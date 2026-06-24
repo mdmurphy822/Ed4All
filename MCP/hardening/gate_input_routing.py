@@ -2650,6 +2650,24 @@ def default_router() -> GateInputRouter:
         "lib.validators.resource_link_purpose.ResourceLinkPurposeValidator",
         _build_block_input_rewrite,
     )
+    # FR-INT-02 — B08SequenceValidator audits the guided-practice sequence
+    # (follows a worked_example) + fade_state presence on ``guided_practice``
+    # blocks. Consumes only ``inputs['blocks']`` (IN ORDER) so it reuses the
+    # rewrite-tier Block surface (no-ops + byte-stable when ED4ALL_NEW_BLOCK_TYPES
+    # is unset; the B08 first-class type is only selectable then).
+    r.register(
+        "lib.validators.b08_sequence.B08SequenceValidator",
+        _build_block_input_rewrite,
+    )
+    # FR-INT-06 — B09DebriefValidator audits the mandatory case/scenario debrief
+    # in the transition/consolidate slot on ``scenario`` blocks. Consumes only
+    # ``inputs['blocks']`` so it reuses the rewrite-tier Block surface (no-ops +
+    # byte-stable when ED4ALL_NEW_BLOCK_TYPES is unset; the same flag the B09
+    # scenario_mode / debrief render scaffold rides).
+    r.register(
+        "lib.validators.b09_debrief.B09DebriefValidator",
+        _build_block_input_rewrite,
+    )
     # FR-INT-04 — B10ProtocolValidator audits the three-move discussion protocol
     # (post -> respond -> synthesize) on ``discussion_prompt`` blocks. Consumes
     # only ``inputs['blocks']`` so it reuses the rewrite-tier Block surface

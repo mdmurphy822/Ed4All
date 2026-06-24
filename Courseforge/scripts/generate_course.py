@@ -1739,6 +1739,121 @@ def _render_resources_section(block: "Block") -> str:
     return "\n".join(parts)
 
 
+def _render_guided_practice(block: "Block") -> str:
+    """FR-INT-02 — render a B08 guided_practice section (deterministic).
+
+    Emits ``<section class="guided-practice"
+    data-cf-fade-state="…">`` with a faded-scaffold set of practice items that
+    FOLLOW a worked example. The ``data-cf-fade-state`` attr is sourced from
+    ``block.fade_state`` (default ``worked``) marking the gradual-release stage
+    (``worked`` | ``completion`` | ``independent``) — REUSES the existing
+    ``fade_state`` field, no new fading field. Reads ``content = {"prompt":
+    str, "items": [{"prompt"/"text", "support"/"hint"}, ...]}`` (dict) or a bare
+    list of practice items. Each item carries an optional fading-support gloss.
+
+    Gated by ``ED4ALL_NEW_BLOCK_TYPES`` (default OFF) — returns ``""`` when the
+    flag is unset so default output is byte-identical (mirrors the IB5 / B15
+    new-block-type posture). The B08 first-class type is only selectable via the
+    dynamic planner under the same flag.
+    """
+    if not _new_block_types_emit_enabled():
+        return ""
+    content = block.content if isinstance(block.content, dict) else {}
+    if isinstance(block.content, (list, tuple)):
+        prompt = ""
+        raw_items = list(block.content)
+    else:
+        prompt = str(content.get("prompt") or content.get("instruction") or "")
+        raw_items = content.get("items") or content.get("practice") or []
+    fade_state = block.fade_state or "worked"
+    block_attrs = block.to_html_attrs()
+    parts = [
+        f'    <section class="guided-practice" '
+        f'data-cf-fade-state="{html_mod.escape(fade_state)}"{block_attrs}>',
+    ]
+    if prompt:
+        parts.append(
+            f'      <p class="guided-practice-instruction">'
+            f'{html_mod.escape(prompt)}</p>'
+        )
+    parts.append('      <ol class="guided-practice-items">')
+    for item in raw_items:
+        if isinstance(item, dict):
+            item_prompt = str(
+                item.get("prompt") or item.get("text") or item.get("item") or ""
+            )
+            support = str(item.get("support") or item.get("hint") or "")
+        else:
+            item_prompt = str(item or "")
+            support = ""
+        li_parts = ['        <li>', html_mod.escape(item_prompt)]
+        if support:
+            li_parts.append(
+                f' <span class="guided-practice-support">'
+                f'{html_mod.escape(support)}</span>'
+            )
+        li_parts.append('</li>')
+        parts.append("".join(li_parts))
+    parts.append('      </ol>')
+    parts.append('    </section>')
+    return "\n".join(parts)
+
+
+def _render_scenario(block: "Block") -> str:
+    """FR-INT-06 — render a B09 case/scenario/branching section with debrief.
+
+    Emits ``<section class="scenario-card" data-cf-scenario-mode="…">`` carrying
+    the situated case/scenario/branching prose + an apply prompt, and — the
+    mandatory B09 contract — a DEBRIEF in the transition/consolidate slot
+    (``<div class="scenario-debrief">``). A B09 block that does NOT end with a
+    debrief is flagged by ``lib/validators/b09_debrief.py`` (SCENARIO_DEBRIEF_
+    MISSING). The ``data-cf-scenario-mode`` attr is sourced from
+    ``block.scenario_mode`` (default ``scenario``: case | scenario | branching).
+    Reads ``content = {"situation"/"prose": str, "prompt": str, "debrief":
+    str}`` (dict) or a bare string of scenario prose.
+
+    Gated by ``ED4ALL_NEW_BLOCK_TYPES`` (default OFF) — returns ``""`` when the
+    flag is unset so default output is byte-identical (mirrors the IB5 / B15
+    new-block-type posture).
+    """
+    if not _new_block_types_emit_enabled():
+        return ""
+    content = block.content
+    if isinstance(content, dict):
+        situation = str(content.get("situation") or content.get("prose") or "")
+        prompt = str(content.get("prompt") or content.get("apply") or "")
+        debrief = str(content.get("debrief") or content.get("consolidate") or "")
+    else:
+        situation = str(content or "")
+        prompt = ""
+        debrief = ""
+    mode = block.scenario_mode or "scenario"
+    block_attrs = block.to_html_attrs()
+    parts = [
+        f'    <section class="scenario-card" '
+        f'data-cf-scenario-mode="{html_mod.escape(mode)}"{block_attrs}>',
+    ]
+    if situation:
+        parts.append(
+            f'      <p class="scenario-situation">'
+            f'{html_mod.escape(situation)}</p>'
+        )
+    if prompt:
+        parts.append(
+            f'      <p class="scenario-prompt">{html_mod.escape(prompt)}</p>'
+        )
+    # Mandatory B09 debrief in the transition/consolidate slot. The renderer
+    # always emits the debrief container (the validator backstops missing /
+    # placeholder authored debriefs) so the consolidate move is present.
+    debrief_text = debrief or "Debrief: what did this case reveal, and how would you apply it next time?"
+    parts.append(
+        f'      <div class="scenario-debrief" data-cf-purpose="debrief">'
+        f'<h4>Debrief</h4><p>{html_mod.escape(debrief_text)}</p></div>'
+    )
+    parts.append('    </section>')
+    return "\n".join(parts)
+
+
 def _render_self_check(
     questions: List[Dict],
     *,

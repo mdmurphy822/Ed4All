@@ -78,8 +78,9 @@ def test_new_type_in_block_types(block_type):
 
 def test_block_types_count_is_twenty_eight():
     # IB5 added 4 framework-aligned types (hook / multimedia / worked_example /
-    # diagram) to the 24-member palette; B15 added `resources` -> 29.
-    assert len(BLOCK_TYPES) == 29
+    # diagram) to the 24-member palette; B15 added `resources` -> 29;
+    # FR-INT-02 added `guided_practice` (B08) -> 30.
+    assert len(BLOCK_TYPES) == 30
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +290,7 @@ def test_framework_block_coverage_equals_block_types():
 
 
 def test_framework_map_onto_b01_through_b15():
-    """The 29 primaries are ONTO the FULL canonical catalog B01–B15; every
+    """The 30 primaries are ONTO the FULL canonical catalog B01–B15; every
     primary is a valid code.
 
     IB5 landed the dedicated B02 (hook), B04 (multimedia), B05 (worked_example),

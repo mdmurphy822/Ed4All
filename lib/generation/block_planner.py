@@ -2158,6 +2158,61 @@ def _resolve_interaction_types(
     return out
 
 
+# FR-INT-06 — B09 case/scenario authoring MODE-by-Bloom. A real B09 block is one
+# of three escalating forms; the demanded cognitive level selects the form:
+#   apply            -> ``case``      (analyze a static worked situation)
+#   analyze/evaluate -> ``scenario``  (make a situated decision)
+#   create           -> ``branching`` (navigate a multi-step decision tree)
+# Lower/unknown levels fall back to ``case`` (the least-escalated form).
+_SCENARIO_MODE_BY_BLOOM: Dict[str, str] = {
+    "remember": "case",
+    "understand": "case",
+    "apply": "case",
+    "analyze": "scenario",
+    "evaluate": "scenario",
+    "create": "branching",
+}
+
+
+def _resolve_one_scenario_mode(target_bloom: str) -> str:
+    """Pick the B09 authoring mode for one scenario block from its target Bloom.
+
+    Returns ``case`` | ``scenario`` | ``branching``; defaults to ``case`` (the
+    least-escalated form) for a lower-order or unknown Bloom level.
+    """
+    return _SCENARIO_MODE_BY_BLOOM.get(
+        target_bloom if target_bloom in _SCENARIO_MODE_BY_BLOOM else "", "case"
+    )
+
+
+def _resolve_scenario_modes(
+    *,
+    selected: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """FR-INT-06 — stamp a ``scenario_mode`` on each B09 ``scenario`` block.
+
+    Gated on ``ED4ALL_DYNAMIC_BLOCK_PLAN`` (the existing planner flag); a strict
+    identity NO-OP when off so a default-off / legacy run is byte-stable (mirrors
+    :func:`_resolve_interaction_types`). For every ``scenario`` block, picks the
+    case/scenario/branching mode from its target Bloom level (see
+    :func:`_resolve_one_scenario_mode`); a block that already carries an explicit
+    ``scenario_mode`` is left untouched. Returns a NEW list (the input dicts are
+    mutated in place, matching the other passes' posture).
+    """
+    if not _dynamic_block_plan_on():
+        return selected
+    out = list(selected)
+    for blk in out:
+        if str(blk.get("block_type") or "") != "scenario":
+            continue
+        if blk.get("scenario_mode"):
+            continue
+        blk["scenario_mode"] = _resolve_one_scenario_mode(
+            str(blk.get("target_bloom") or "")
+        )
+    return out
+
+
 # FR-INT-01 — the canonical B08 guided-practice fade ladder. After a fully-
 # worked example the learner moves to a completion problem (partial scaffold)
 # then to independent practice. The fading pass injects a single B08 completion
@@ -2348,6 +2403,13 @@ def _apply_ib7_passes(
     )
     signals["interaction_types_assigned"] = sum(
         1 for b in selected if b.get("interaction_type")
+    )
+    # FR-INT-06 B09 scenario-mode resolution (stamp a scenario_mode on each
+    # scenario block by its target Bloom). Identity no-op when
+    # ED4ALL_DYNAMIC_BLOCK_PLAN is off.
+    selected = _resolve_scenario_modes(selected=selected)
+    signals["scenario_modes_assigned"] = sum(
+        1 for b in selected if b.get("scenario_mode")
     )
     return selected
 

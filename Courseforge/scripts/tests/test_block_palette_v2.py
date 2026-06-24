@@ -53,8 +53,8 @@ def test_new_type_registered(block_type):
 
 def test_block_types_count_is_twenty_eight():
     # IB5 added 4 framework-aligned types to the 24-member palette; B15 added
-    # `resources` -> 29.
-    assert len(BLOCK_TYPES) == 29
+    # `resources` -> 29; FR-INT-02 added `guided_practice` (B08) -> 30.
+    assert len(BLOCK_TYPES) == 30
 
 
 # --------------------------------------------------------------------------- #

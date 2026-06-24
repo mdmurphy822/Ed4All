@@ -703,6 +703,44 @@ workflows:
               on_error: warn
             description: B15 — WCAG 2.4.4 descriptive-link-text on resources blocks. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
 
+          # FR-INT-02 — B08 guided-practice sequence + fade-state gate for the
+          # ``guided_practice`` block type. Flags B08_PRACTICE_NOT_AFTER_WORKED
+          # (a guided_practice with no worked_example before it) +
+          # B08_PRACTICE_NO_FADE_STATE (no worked/completion/independent stage).
+          # No-op + byte-stable when ED4ALL_NEW_BLOCK_TYPES is unset (the same
+          # flag the B08 first-class type rides). action=regenerate on miss.
+          # TODO(calibration) — flip the B08 sequence codes to critical after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
+          # single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: b08_sequence
+            validator: lib.validators.b08_sequence.B08SequenceValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-INT-02 — B08 guided-practice follows a worked_example + carries a fade_state. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
+
+          # FR-INT-06 — B09 mandatory case/scenario debrief gate for the
+          # ``scenario`` block type. Flags SCENARIO_DEBRIEF_MISSING when a B09
+          # scenario carries no debrief in its transition/consolidate slot. No-op
+          # + byte-stable when ED4ALL_NEW_BLOCK_TYPES is unset (the same flag the
+          # B09 scenario_mode / debrief render scaffold rides). action=regenerate
+          # on miss.
+          # TODO(calibration) — flip SCENARIO_DEBRIEF_MISSING to critical after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
+          # single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: b09_debrief
+            validator: lib.validators.b09_debrief.B09DebriefValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-INT-06 — B09 case/scenario must end with a debrief in its transition/consolidate slot. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
+
           # FR-INT-04 — B10 three-move discussion-protocol gate for the
           # ``discussion_prompt`` block type. Flags DISCUSSION_PROTOCOL_COLLAPSED
           # when a discussion ships a single prompt with no required peer-
@@ -3237,6 +3275,44 @@ workflows:
               on_fail: warn
               on_error: warn
             description: B15 — WCAG 2.4.4 descriptive-link-text on resources blocks. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
+
+          # FR-INT-02 — B08 guided-practice sequence + fade-state gate for the
+          # ``guided_practice`` block type. Flags B08_PRACTICE_NOT_AFTER_WORKED
+          # (a guided_practice with no worked_example before it) +
+          # B08_PRACTICE_NO_FADE_STATE (no worked/completion/independent stage).
+          # No-op + byte-stable when ED4ALL_NEW_BLOCK_TYPES is unset (the same
+          # flag the B08 first-class type rides). action=regenerate on miss.
+          # TODO(calibration) — flip the B08 sequence codes to critical after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
+          # single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: b08_sequence
+            validator: lib.validators.b08_sequence.B08SequenceValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-INT-02 — B08 guided-practice follows a worked_example + carries a fade_state. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
+
+          # FR-INT-06 — B09 mandatory case/scenario debrief gate for the
+          # ``scenario`` block type. Flags SCENARIO_DEBRIEF_MISSING when a B09
+          # scenario carries no debrief in its transition/consolidate slot. No-op
+          # + byte-stable when ED4ALL_NEW_BLOCK_TYPES is unset (the same flag the
+          # B09 scenario_mode / debrief render scaffold rides). action=regenerate
+          # on miss.
+          # TODO(calibration) — flip SCENARIO_DEBRIEF_MISSING to critical after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
+          # single documented fastest-flip exception, this is NOT IB3).
+          - gate_id: b09_debrief
+            validator: lib.validators.b09_debrief.B09DebriefValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: FR-INT-06 — B09 case/scenario must end with a debrief in its transition/consolidate slot. Warning day-1; deferred critical-flip; no-op when ED4ALL_NEW_BLOCK_TYPES unset.
 
           # FR-INT-04 — B10 three-move discussion-protocol gate for the
           # ``discussion_prompt`` block type. Flags DISCUSSION_PROTOCOL_COLLAPSED

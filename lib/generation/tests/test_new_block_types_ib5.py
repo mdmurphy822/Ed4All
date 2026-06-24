@@ -47,8 +47,9 @@ def test_new_type_in_block_types(block_type):
 
 
 def test_block_types_count_is_twenty_eight():
-    # 28 after IB5; the B15 `resources` addition brings the palette to 29.
-    assert len(BLOCK_TYPES) == 29
+    # 28 after IB5; the B15 `resources` addition brings the palette to 29;
+    # the FR-INT-02 `guided_practice` (B08) addition brings it to 30.
+    assert len(BLOCK_TYPES) == 30
 
 
 @pytest.mark.parametrize("block_type", NEW_BLOCK_TYPES)

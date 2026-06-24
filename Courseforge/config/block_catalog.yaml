@@ -452,3 +452,27 @@ blocks:
     bloom_ceiling: understand
     format_summary: "<section class=resources> heading + <ul> of <a> links each with descriptive text + optional annotation."
     framework_block: B15
+
+  # FR-INT-02 — B08 first-class Guided Practice. DISTINCT from
+  # self_check_question (B07, a single low-stakes check) and from activity /
+  # problem (also B08 but generic). A guided_practice is the framework's
+  # faded-scaffold practice block: it FOLLOWS a worked_example and carries a
+  # fade_state (worked | completion | independent) marking the gradual-release
+  # stage. Emitted ONLY via the dynamic planner path under ED4ALL_NEW_BLOCK_TYPES
+  # (default OFF); the fixed-plan / legacy paths never select it, so every
+  # existing snapshot stays byte-stable. The follow-a-worked-example +
+  # carry-a-fade-state contract is gated by lib/validators/b08_sequence.py.
+  - block_type: guided_practice
+    label: Guided Practice
+    use_when: >-
+      The learner needs scaffolded practice that follows a worked example,
+      gradually fading support across the worked -> completion -> independent
+      stages. Choose this over activity (a flat set of items) or problem (a
+      single reveal-on-demand item) when the goal is faded gradual-release
+      practice that builds toward independent performance of the skill.
+    conveys: A faded-scaffold set of practice items that follow a worked example and build toward independent skill performance.
+    bloom_fit: [apply, analyze, evaluate, create]
+    bloom_ceiling: create
+    default_activity_types: [fill_in_blank, drag_drop, ordering, matching, numeric, categorization, short_answer]
+    format_summary: "<div class=guided-practice-card> faded practice items (worked | completion | independent) following a worked example."
+    framework_block: B08

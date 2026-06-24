@@ -390,3 +390,35 @@ focused on the current authoritative counts.
 > The count table is re-derived from `config/workflows.yaml`:
 > `course_generation` 36→37 warning, `textbook_to_course` 80→81 warning,
 > Total 119→121 warning / 181→183 total.
+
+> **FR-INT-02 + FR-INT-06 landing (B08 first-class guided_practice + B09
+> case/scenario mode + mandatory debrief):** two NEW gates wired in **warning**
+> at `post_rewrite_validation` in BOTH `course_generation` + `textbook_to_course`
+> (+2 warning each) — `b08_sequence`
+> (`lib.validators.b08_sequence.B08SequenceValidator`, FR-INT-02: the new
+> first-class `guided_practice` B08 type should FOLLOW a worked_example and carry
+> a reused `fade_state` (worked/completion/independent); flags
+> `B08_PRACTICE_NOT_AFTER_WORKED` + `B08_PRACTICE_NO_FADE_STATE`) +
+> `b09_debrief` (`lib.validators.b09_debrief.B09DebriefValidator`, FR-INT-06: a
+> B09 `scenario` must end with a debrief in its transition/consolidate slot;
+> flags `SCENARIO_DEBRIEF_MISSING`). Both gates ride `ED4ALL_NEW_BLOCK_TYPES`
+> (strict no-op + byte-stable, passed=True + an `*_DISABLED` info issue, when the
+> flag is unset) and are warning-day-1 with deferred `# TODO(calibration)`
+> critical-flip markers (WS3/W4 deferred-flip pattern; IB3 is the single
+> documented fastest-flip exception, this is NOT IB3).
+>
+> **FR-INT-02** is a FULL new-block-type landing: `guided_practice` joins
+> `Courseforge/scripts/blocks.py::BLOCK_TYPES` (29→30), gains a catalog entry
+> (`framework_block: B08`, `bloom_ceiling: create`), a `DEFAULT_BLOCK_ROUTING`
+> validator-matrix entry, an `_OUTLINE_KIND_BOUNDS` entry, the `blockType` schema
+> enum, the `_EXPECTED_PRIMARY` framework-map (`B08`), and a deterministic
+> `_render_guided_practice` faded-scaffold renderer (REUSES the existing
+> `fade_state` field; byte-stable off). **FR-INT-06** adds an Optional
+> hash-excluded `scenario_mode` Block field (case/scenario/branching), a
+> mode-by-Bloom planner pass (`lib/generation/block_planner.py::
+> _resolve_scenario_modes`, gated `ED4ALL_DYNAMIC_BLOCK_PLAN`, identity-no-op
+> off), and a `_render_scenario` debrief scaffold (byte-stable off).
+>
+> The count table is re-derived from `config/workflows.yaml`:
+> `course_generation` 37→39 warning, `textbook_to_course` 81→83 warning,
+> Total 121→125 warning / 183→187 total.

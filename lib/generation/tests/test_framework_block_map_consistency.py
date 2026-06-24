@@ -46,6 +46,8 @@ _EXPECTED_PRIMARY = {
     "diagram": "B06",
     # IB8/cycle-1: B15 Resources — closes the last canonical-catalog gap.
     "resources": "B15",
+    # FR-INT-02: B08 first-class Guided Practice (faded-scaffold practice).
+    "guided_practice": "B08",
 }
 
 # Expected secondary B-code (only for the types that straddle two parents).

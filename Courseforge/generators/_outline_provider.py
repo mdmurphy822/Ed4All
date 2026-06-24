@@ -430,6 +430,14 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "section_skeleton": (0, 1),
         "summary_chars": (60, 300),
     },
+    # FR-INT-02 — B08 first-class Guided Practice — faded-scaffold practice
+    # items that follow a worked example; mirrors activity/problem bounds (one
+    # claim per practice item, optional section decomposition for the steps).
+    "guided_practice": {
+        "key_claims": (1, 4),
+        "section_skeleton": (0, 3),
+        "summary_chars": (80, 400),
+    },
 }
 # Terse outline-tier system prompt. Kept ≤80 words on purpose — the
 # 7B-class default model has a small effective instruction-following

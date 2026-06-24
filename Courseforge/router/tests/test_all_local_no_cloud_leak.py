@@ -108,9 +108,9 @@ def test_every_block_type_both_tiers_resolves_no_cloud():
                 )
                 checked += 1
 
-    # Sanity: we actually walked all 24 block types (not a silently-empty loop).
-    assert len(BLOCK_TYPES) == 24
-    assert checked >= 24 * 2
+    # Sanity: we actually walked all 30 block types (not a silently-empty loop).
+    assert len(BLOCK_TYPES) == 30
+    assert checked >= 30 * 2
 
 
 # ---------------------------------------------------------------------------

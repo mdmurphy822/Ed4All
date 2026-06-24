@@ -252,6 +252,21 @@ BLOCK_TYPES: frozenset = frozenset(
         # worked_example/diagram posture). The 2.4.4 link-purpose contract is
         # gated by ``lib/validators/resource_link_purpose.py``.
         "resources",
+        # FR-INT-02 framework-aligned addition (snake_case canonical token).
+        # ``guided_practice`` (B08 Guided Practice) — a FIRST-CLASS practice
+        # scaffold DISTINCT from ``self_check_question`` (B07, a single low-stakes
+        # knowledge check) and ``problem``/``activity`` (also B08 siblings but
+        # generic). A guided_practice is the framework's faded-scaffold practice
+        # block: it FOLLOWS a worked_example and carries a ``fade_state`` (worked
+        # | completion | independent) marking the gradual-release stage. Emitted
+        # ONLY via the dynamic block planner path behind ``ED4ALL_NEW_BLOCK_TYPES``
+        # (default OFF); the fixed-plan / legacy paths never select it, so every
+        # existing snapshot stays byte-stable (mirrors the IB5 hook/multimedia/
+        # worked_example/diagram + B15 resources posture). REUSES the existing
+        # ``fade_state`` field (no new fading field). The follow-a-worked-example
+        # + carry-a-fade-state contract is gated by
+        # ``lib/validators/b08_sequence.py``.
+        "guided_practice",
     }
 )
 
@@ -1012,6 +1027,22 @@ class Block:
     prediction_prompt: Optional[str] = None
     reveal_content: Optional[str] = None
     calibration_feedback: Optional[str] = None
+    # FR-INT-06 — B09 case/scenario authoring MODE. A real B09 block is one of
+    # three escalating forms: ``case`` (a static worked situation the learner
+    # analyzes), ``scenario`` (a situated decision the learner makes), or
+    # ``branching`` (a multi-step decision tree whose paths diverge by choice).
+    # The mode is selected by-Bloom in the dynamic block planner
+    # (``lib/generation/block_planner.py``, gated ED4ALL_DYNAMIC_BLOCK_PLAN —
+    # identity-no-op when off) and drives the renderer's debrief scaffold (a B09
+    # block MUST end with a debrief in its transition/consolidate slot). Additive
+    # Optional/None default and INTENTIONALLY excluded from
+    # compute_content_hash() (the hash payload is an explicit 5-key allowlist;
+    # mirrors target_bloom / callout_kind / the IB5 fields) so a mode retro-fit
+    # never drifts an existing block hash; the default-None state keeps legacy /
+    # flag-off blocks byte-identical. Read by the B09DebriefValidator
+    # (SCENARIO_DEBRIEF_MISSING) + the scenario renderer's debrief scaffold, both
+    # gated by ED4ALL_NEW_BLOCK_TYPES. Not projected to HTML/JSON-LD here.
+    scenario_mode: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:

@@ -249,6 +249,14 @@ DEFAULT_BLOCK_ROUTING: Dict[str, Dict[str, Any]] = {
         "optional": ["accessibility"],
         "fail_action": "regenerate",
     },
+    # FR-INT-02 — B08 first-class Guided Practice. A grounded faded-scaffold
+    # practice block (B08 sibling of activity / problem); source_ref required so
+    # each is auditable, accessibility optional (mirrors activity).
+    "guided_practice": {
+        "required": ["objective_ref", "source_ref"],
+        "optional": ["accessibility"],
+        "fail_action": "regenerate",
+    },
 }
 
 
