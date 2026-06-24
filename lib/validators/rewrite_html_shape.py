@@ -1091,8 +1091,10 @@ def _check_ib5_a11y_shape(
 
     * ``diagram`` (B06): a structured long-description (``<details>`` reveal or
       an ``aria-describedby`` target) AND a ``<table>`` data-equivalent so the
-      spatial relationships are available non-visually
-      (``REWRITE_IB5_A11Y_CONTRACT``).
+      spatial relationships are available non-visually, AND — when the diagram
+      ships an ``<img>`` — a short text alternative (``alt``) on that image or
+      an explicit decorative marker (1.1.1). All three ride the combined
+      ``REWRITE_IB5_A11Y_CONTRACT`` code.
 
     Returns an empty list when the block_type is not an IB5 structural type or
     its contract is satisfied; otherwise one ``(code, reason)`` per missing
@@ -1144,6 +1146,23 @@ def _check_ib5_a11y_shape(
             findings.append((
                 "REWRITE_IB5_A11Y_CONTRACT",
                 "diagram missing " + " and ".join(missing_d),
+            ))
+        # WCAG 1.1.1 — the diagram's <img> itself MUST carry a short text
+        # alternative (alt) OR be explicitly marked decorative
+        # (role="presentation" / aria-hidden="true"). The structured long-
+        # description + data-table convey the RELATIONAL content, but a
+        # diagram <img> with no alt is still a 1.1.1 miss (the framework's B06
+        # short-text-alternative obligation, distinct from the long-desc). The
+        # IB4 figure-partition arm covers this too but is gated behind the
+        # SEPARATE ED4ALL_BLOCK_A11Y flag — so a diagram authored with only
+        # ED4ALL_NEW_BLOCK_TYPES on would otherwise get no 1.1.1 check. Rides
+        # the existing REWRITE_IB5_A11Y_CONTRACT code (no new gate row).
+        if parser.saw_img and not parser.img_alt_present:
+            findings.append((
+                "REWRITE_IB5_A11Y_CONTRACT",
+                "diagram <img> has no short text alternative (alt) and is not "
+                "marked decorative (role=presentation / aria-hidden) — WCAG "
+                "1.1.1",
             ))
         return findings
     return findings

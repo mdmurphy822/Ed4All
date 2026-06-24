@@ -511,6 +511,96 @@ def test_mm_pieces_noop_when_flag_off() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# B06 diagram a11y contract (rides ED4ALL_NEW_BLOCK_TYPES /
+# REWRITE_IB5_A11Y_CONTRACT): long-desc + data-table + the diagram <img>'s
+# 1.1.1 short text alternative.
+# --------------------------------------------------------------------------- #
+
+
+def _dg_block(html):
+    return _block(
+        html, block_type="diagram", block_id="page_01#diagram_x_0",
+    )
+
+
+def _validate_dg(blocks, *, enabled=True):
+    return RewriteHtmlShapeValidator().validate(
+        {"blocks": blocks, "new_block_types_enabled": enabled}
+    )
+
+
+# A complete diagram skeleton: image WITH alt, a long-desc <details>, a data
+# <table>. Satisfies every piece of the B06 contract.
+_DG_FULL = (
+    '<figure class="diagram" data-cf-content-type="diagram" '
+    'data-cf-block-id="page_01#diagram_x_0">'
+    '<img src="d.svg" alt="A->B->C process flow">'
+    '<figcaption>Process flow</figcaption>'
+    '<details class="diagram-longdesc"><summary>Long description</summary>'
+    '<p>The flow goes A then B then C.</p></details>'
+    '<table><caption>Process flow — data equivalent</caption>'
+    '<tbody><tr><td>A</td><td>B</td></tr></tbody></table>'
+    '</figure>'
+)
+
+
+def test_dg_full_contract_passes() -> None:
+    result = _validate_dg([_dg_block(_DG_FULL)])
+    assert "REWRITE_IB5_A11Y_CONTRACT" not in _codes(result)
+    assert result.passed is True
+
+
+def test_dg_img_no_alt_flags_contract() -> None:
+    # An informative diagram <img> with no alt + not decorative is a 1.1.1
+    # miss even though the long-desc + table carry the relational content.
+    html = _DG_FULL.replace(' alt="A->B->C process flow"', "")
+    result = _validate_dg([_dg_block(html)])
+    assert "REWRITE_IB5_A11Y_CONTRACT" in _codes(result)
+    # warning-day-1 — never flips the gate.
+    assert result.passed is True
+    assert _critical(result) == []
+
+
+def test_dg_img_empty_alt_only_clean_when_decorative() -> None:
+    # An <img> explicitly marked decorative is NOT a 1.1.1 miss.
+    html = _DG_FULL.replace(
+        ' alt="A->B->C process flow"', ' alt="" role="presentation"'
+    )
+    result = _validate_dg([_dg_block(html)])
+    assert "REWRITE_IB5_A11Y_CONTRACT" not in _codes(result)
+
+
+def test_dg_no_img_with_longdesc_and_table_clean() -> None:
+    # The renderer's image-pending skeleton (no <img>) is clean — the 1.1.1
+    # arm only fires when an <img> is actually present.
+    html = _DG_FULL.replace(
+        '<img src="d.svg" alt="A->B->C process flow">',
+        '<p class="diagram-pending">Diagram pending.</p>',
+    )
+    result = _validate_dg([_dg_block(html)])
+    assert "REWRITE_IB5_A11Y_CONTRACT" not in _codes(result)
+
+
+def test_dg_img_no_alt_noop_when_flag_off() -> None:
+    # Byte-stable off: with new_block_types_enabled False (and block_a11y off),
+    # a diagram <img> with no alt emits no IB5 contract issue.
+    html = _DG_FULL.replace(' alt="A->B->C process flow"', "")
+    result = _validate_dg([_dg_block(html)], enabled=False)
+    assert "REWRITE_IB5_A11Y_CONTRACT" not in _codes(result)
+
+
+def test_dg_missing_longdesc_still_flagged() -> None:
+    # Regression: the original long-desc / data-table arm still fires.
+    html = _DG_FULL.replace(
+        '<details class="diagram-longdesc"><summary>Long description</summary>'
+        '<p>The flow goes A then B then C.</p></details>',
+        "",
+    )
+    result = _validate_dg([_dg_block(html)])
+    assert "REWRITE_IB5_A11Y_CONTRACT" in _codes(result)
+
+
+# --------------------------------------------------------------------------- #
 # FR-A11Y-01 (1/3) — reduced motion (WCAG 2.3.1 / 2.2.2)
 # REWRITE_BLOCK_REDUCED_MOTION
 # --------------------------------------------------------------------------- #
