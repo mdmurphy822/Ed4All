@@ -108,6 +108,53 @@ ENV_DEVICE = "ED4ALL_NLI_DEVICE"
 #: with no ``.to()`` / ``.half()`` calls, preserving today's behavior.
 _DEFAULT_DEVICE = "cpu"
 
+#: Env var: minimum FREE VRAM (MiB) required on the target CUDA device
+#: before the NLI model is allowed onto the GPU. On an 8 GB box shared
+#: with a resident local ollama 7B (~5.3 GB), free VRAM can sit at
+#: ~200 MiB — enough to *load* the ~0.4 GB fp16 head but NOT enough for a
+#: batch-8 × 512-token forward pass, whose activations spike several
+#: hundred MiB. That spike raises an UNCAUGHT-at-load ``RuntimeError:
+#: CUDA out of memory`` mid-validation, which the orchestrator's broad
+#: ``except Exception`` swallows as a tracebackless task failure ("silent
+#: death"). This floor moves the decision to load time: when free VRAM is
+#: below it, the model loads on CPU (fp32) instead — the heavy generation
+#: 7B keeps the GPU, the comparatively light NLI scoring runs on CPU. The
+#: 1024 MiB default covers the fp16 weights plus forward-pass activation
+#: headroom. Set to ``0`` to disable the floor (force the historical
+#: load-time-only OOM guard). Mirrors the ``ED4ALL_NLI_DEVICE`` knob.
+ENV_MIN_FREE_VRAM_MIB = "ED4ALL_NLI_MIN_FREE_VRAM_MIB"
+
+#: Default free-VRAM floor (MiB). fp16 DeBERTa-v3-base weights are ~0.4 GB;
+#: the remainder is forward-pass activation headroom for the batch-8 ×
+#: 512-token scoring path (the OOM trigger observed during
+#: post_rewrite_validation on an 8 GB card with a resident ollama 7B).
+_DEFAULT_MIN_FREE_VRAM_MIB = 1024
+
+
+def resolve_min_free_vram_mib(value: Optional[int] = None) -> int:
+    """Resolve the free-VRAM floor (MiB) for the NLI cuda gate.
+
+    Resolution chain (mirrors :func:`resolve_nli_device`): explicit
+    ``value`` arg → ``ED4ALL_NLI_MIN_FREE_VRAM_MIB`` env → default
+    :data:`_DEFAULT_MIN_FREE_VRAM_MIB`. Parse-with-fallback: a negative /
+    non-integer / garbage value falls back to the default; ``0`` is a
+    valid value that disables the floor.
+    """
+    if value is not None:
+        try:
+            iv = int(value)
+            return iv if iv >= 0 else _DEFAULT_MIN_FREE_VRAM_MIB
+        except (TypeError, ValueError):
+            return _DEFAULT_MIN_FREE_VRAM_MIB
+    raw = os.environ.get(ENV_MIN_FREE_VRAM_MIB)
+    if raw is None or not raw.strip():
+        return _DEFAULT_MIN_FREE_VRAM_MIB
+    try:
+        iv = int(raw.strip())
+        return iv if iv >= 0 else _DEFAULT_MIN_FREE_VRAM_MIB
+    except ValueError:
+        return _DEFAULT_MIN_FREE_VRAM_MIB
+
 
 def resolve_nli_device(device: Optional[str] = None) -> str:
     """Resolve the NLI torch device string.
@@ -295,6 +342,43 @@ class NliClassifier:
                 device, ENV_DEVICE,
             )
             return "cpu", "float32"
+
+        # VRAM-contention guard: on an 8 GB card shared with a resident
+        # local ollama 7B (~5.3 GB), free VRAM can sit at ~200 MiB — enough
+        # to LOAD the ~0.4 GB fp16 head but NOT enough for a batch-8 × 512
+        # forward pass, whose activations spike several hundred MiB and
+        # raise an uncaught ``RuntimeError: CUDA out of memory`` mid-scoring
+        # (the orchestrator swallows it tracebackless → "silent death").
+        # Decide at LOAD time: if free VRAM is below the floor, score on CPU
+        # so the generation 7B keeps the GPU. ``floor == 0`` disables this
+        # (preserves the historical load-time-only OOM guard below).
+        floor_mib = resolve_min_free_vram_mib()
+        if floor_mib > 0:
+            try:
+                # ``mem_get_info`` returns (free_bytes, total_bytes) for the
+                # given device (None → current device). Available since
+                # torch 1.10; guard defensively for older / odd builds.
+                dev_arg = device if device != "cuda" else None
+                free_bytes, _total_bytes = torch_module.cuda.mem_get_info(dev_arg)
+                free_mib = int(free_bytes) // (1024 * 1024)
+            except Exception as exc:  # noqa: BLE001 — probe is best-effort
+                logger.warning(
+                    "NliClassifier could not probe free VRAM on %r (%s); "
+                    "proceeding with the load-time OOM guard only.",
+                    device, exc,
+                )
+                free_mib = None
+            if free_mib is not None and free_mib < floor_mib:
+                logger.warning(
+                    "NliClassifier: only %d MiB free on %r (floor %d MiB, "
+                    "%s); a resident local LLM is likely holding the card. "
+                    "Falling back to CPU (fp32) for NLI scoring to avoid a "
+                    "forward-pass CUDA OOM. The generation model keeps the "
+                    "GPU. Lower %s to override.",
+                    free_mib, device, floor_mib, ENV_MIN_FREE_VRAM_MIB,
+                    ENV_MIN_FREE_VRAM_MIB,
+                )
+                return "cpu", "float32"
 
         try:
             # fp16 on CUDA keeps the ~184M-param head at ~0.4 GB VRAM so it

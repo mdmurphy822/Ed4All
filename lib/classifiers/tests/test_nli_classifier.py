@@ -36,13 +36,21 @@ from lib.classifiers.nli_classifier import (  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _reset_singleton() -> None:
+def _reset_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     """Reset NliClassifier singleton state before AND after each test.
 
     The singleton-load pattern caches both the loaded instance AND the
     negative result (load-failed flag). Resetting both directions keeps
     every test independent.
+
+    Also clears ``ED4ALL_NLI_DEVICE`` / ``ED4ALL_NLI_MIN_FREE_VRAM_MIB``
+    from the inherited shell env so the module's documented "default cpu
+    for CI hermeticity" holds even on an operator box that pins
+    ``ED4ALL_NLI_DEVICE=cuda`` (this project does, via .claude/settings.json
+    + ~/.bashrc). Tests that exercise the cuda path set the env explicitly.
     """
+    monkeypatch.delenv(ENV_DEVICE, raising=False)
+    monkeypatch.delenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", raising=False)
     NliClassifier._reset_for_tests()
     yield
     NliClassifier._reset_for_tests()
@@ -465,6 +473,98 @@ def test_constructor_arg_overrides_env_device(
     assert classifier.device == "cpu"
     classifier._model.to.assert_not_called()
     fake_torch.cuda.is_available.assert_not_called()
+
+
+# --------------------------------------------------------------------- #
+# VRAM-contention guard: cuda requested + available, but free VRAM below
+# the floor (a resident local LLM is holding the card) → CPU fallback so
+# the NLI forward pass never OOMs mid-validation. Regression guard for the
+# 8 GB shared-GPU "silent death" diagnosed 2026-06-24.
+# --------------------------------------------------------------------- #
+
+
+def test_cuda_low_free_vram_falls_back_to_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cuda available but free VRAM < floor → load on CPU (fp32), warn."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    monkeypatch.delenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", raising=False)  # default 1024
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+    # 200 MiB free — the observed 8 GB-shared-with-ollama-7B state.
+    fake_torch.cuda.mem_get_info.return_value = (200 * 1024 * 1024, 8192 * 1024 * 1024)
+
+    with patch("lib.classifiers.nli_classifier.logger.warning") as warn:
+        classifier = _build_classifier(fake_torch)
+
+    assert classifier.device == "cpu"
+    assert classifier.dtype == "float32"
+    classifier._model.to.assert_not_called()
+    classifier._model.half.assert_not_called()
+    assert warn.called  # the contention-fallback warning fired
+    # Still scores correctly on the CPU fallback path.
+    score = classifier.score_pair(premise="A", hypothesis="B")
+    assert isinstance(score.entailment, float)
+
+
+def test_cuda_ample_free_vram_stays_on_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cuda available + free VRAM >= floor → model.to('cuda') + .half()."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    monkeypatch.delenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", raising=False)
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+    # 6 GB free — ample for the fp16 head + activations.
+    fake_torch.cuda.mem_get_info.return_value = (6144 * 1024 * 1024, 8192 * 1024 * 1024)
+
+    classifier = _build_classifier(fake_torch)
+    assert classifier.device == "cuda"
+    assert classifier.dtype == "float16"
+    classifier._model.to.assert_called_once_with("cuda")
+    classifier._model.half.assert_called_once_with()
+
+
+def test_vram_floor_zero_disables_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """floor==0 disables the free-VRAM gate → loads on GPU even when tight."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    monkeypatch.setenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", "0")
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+    # Even with 100 MiB free, floor=0 means mem_get_info is never consulted.
+    fake_torch.cuda.mem_get_info.return_value = (100 * 1024 * 1024, 8192 * 1024 * 1024)
+
+    classifier = _build_classifier(fake_torch)
+    assert classifier.device == "cuda"
+    assert classifier.dtype == "float16"
+    classifier._model.to.assert_called_once_with("cuda")
+    fake_torch.cuda.mem_get_info.assert_not_called()
+
+
+def test_resolve_min_free_vram_mib_parse_with_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env parse: valid int wins; garbage/negative → default; 0 is valid."""
+    from lib.classifiers.nli_classifier import (
+        _DEFAULT_MIN_FREE_VRAM_MIB,
+        ENV_MIN_FREE_VRAM_MIB,
+        resolve_min_free_vram_mib,
+    )
+
+    monkeypatch.delenv(ENV_MIN_FREE_VRAM_MIB, raising=False)
+    assert resolve_min_free_vram_mib() == _DEFAULT_MIN_FREE_VRAM_MIB
+    monkeypatch.setenv(ENV_MIN_FREE_VRAM_MIB, "2048")
+    assert resolve_min_free_vram_mib() == 2048
+    monkeypatch.setenv(ENV_MIN_FREE_VRAM_MIB, "0")
+    assert resolve_min_free_vram_mib() == 0
+    monkeypatch.setenv(ENV_MIN_FREE_VRAM_MIB, "-5")
+    assert resolve_min_free_vram_mib() == _DEFAULT_MIN_FREE_VRAM_MIB
+    monkeypatch.setenv(ENV_MIN_FREE_VRAM_MIB, "garbage")
+    assert resolve_min_free_vram_mib() == _DEFAULT_MIN_FREE_VRAM_MIB
+    # explicit arg beats env
+    assert resolve_min_free_vram_mib(512) == 512
 
 
 @pytest.mark.slow
