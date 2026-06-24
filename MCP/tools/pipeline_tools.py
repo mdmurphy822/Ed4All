@@ -202,6 +202,20 @@ _REWRITE_BLOCK_TYPE_CONTENT_TYPE: Dict[str, str] = {
     "prereq_set": "overview",
     "reflection_prompt": "reflection",
     "discussion_prompt": "discussion",
+    # IB5 framework-aligned block types (hook B02 / multimedia B04 /
+    # worked_example B05 / diagram B06). NONE are in the content_type gate's
+    # {objective, chrome, recap} scaffolding skip set, so a rewrite-tier HTML
+    # block carrying no data-cf-content-type fires OUTLINE_BLOCK_MISSING_CONTENT
+    # _TYPE (measured on the course-a-cal2 export: worked_example/diagram/hook
+    # among 13 IB5-type post_rewrite_validation failures). The deterministic
+    # renderers (Courseforge/scripts/generate_course.py::_render_*_section) stamp
+    # these on the root, but the LLM str-rewrite path needs this backstop. Values
+    # are canonical ChunkType members so BlockContentTypeValidator's enum check
+    # passes; kept in lockstep with generate_course.py::_IB5_DEFAULT_CONTENT_TYPE.
+    "hook": "overview",
+    "multimedia": "explanation",
+    "worked_example": "example",
+    "diagram": "diagram",
 }
 
 

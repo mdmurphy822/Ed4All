@@ -307,5 +307,128 @@ def test_failing_multimedia_a11y_emits_shape_check_decision():
     assert "MULTIMEDIA_TRANSCRIPT_MISSING" in decisions
 
 
+# --------------------------------------------------------------------------- #
+# IB5 content-type fix — each IB5 renderer stamps a valid data-cf-content-type
+# on its block root so the critical rewrite_content_type gate
+# (BlockContentTypeValidator) + rewrite_html_shape gate PASS on the str-path.
+# Regression for the course-a-cal2 post_rewrite_validation failure: 13 IB5-type
+# blocks failed for carrying no data-cf-content-type.
+# --------------------------------------------------------------------------- #
+
+import dataclasses as _dataclasses  # noqa: E402
+
+
+def _ib5_block(block_type, content):
+    """Minimal renderable IB5 Block (dict content -> deterministic renderer)."""
+    return Block(
+        block_id=f"page_01#{block_type}_x_0", block_type=block_type,
+        page_id="page_01", sequence=0, content=content,
+    )
+
+
+def _str_block_from_render(rendered_block, html):
+    """Clone a Block with its ``content`` set to the rendered HTML string.
+
+    The rewrite-tier validators (BlockContentTypeValidator / RewriteHtmlShape
+    Validator) dispatch on ``isinstance(block.content, str)`` — they scrape the
+    rendered HTML. So we validate the renderer output by feeding it back as the
+    block's str content.
+    """
+    return _dataclasses.replace(rendered_block, content=html)
+
+
+# block_type -> (dict content, expected default content_type, renderer name)
+_IB5_RENDER_CASES = {
+    "hook": (
+        {"prompt": "What do you already know about fractions?",
+         "transition": "We will build on that next."},
+        "overview", "_render_hook_section",
+    ),
+    "multimedia": (
+        {"media_url": "https://x/v.mp4", "captions_url": "https://x/c.vtt",
+         "transcript": "Full transcript here.", "audio_desc": "AD here.",
+         "caption": "A short clip."},
+        "explanation", "_render_multimedia_section",
+    ),
+    "worked_example": (
+        {"problem": "Solve 2x + 3 = 11",
+         "steps": [{"subgoal": "Isolate", "body": "subtract 3", "why": "undo add"},
+                   {"subgoal": "Solve", "body": "divide by 2", "why": "undo mult"}]},
+        "example", "_render_worked_example_section",
+    ),
+    "diagram": (
+        {"caption": "Process flow", "long_description": "A->B->C",
+         "headers": ["Node", "Next"], "rows": [["A", "B"], ["B", "C"]]},
+        "diagram", "_render_diagram_section",
+    ),
+}
+
+
+@pytest.mark.parametrize("block_type", sorted(_IB5_RENDER_CASES))
+def test_ib5_render_stamps_valid_content_type(block_type, monkeypatch):
+    """Each IB5 renderer stamps a data-cf-content-type that is a valid ChunkType.
+
+    Asserts the rendered root carries data-cf-content-type with the per-type
+    default value AND that BlockContentTypeValidator + RewriteHtmlShapeValidator
+    PASS on the rendered HTML (str-path). COURSEFORGE_EMIT_BLOCKS is on (as in
+    the real two-pass pipeline) so to_html_attrs() emits the universal
+    data-cf-block-id that rewrite_html_shape's REQUIRED_ATTRS demands.
+    """
+    import importlib
+
+    monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
+    monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "true")
+
+    from lib.validators.content_type import get_valid_chunk_types
+    from Courseforge.router.inter_tier_gates import BlockContentTypeValidator
+    from lib.validators.rewrite_html_shape import RewriteHtmlShapeValidator
+
+    gc = importlib.import_module("Courseforge.scripts.generate_course")
+    dict_content, expected_ct, renderer_name = _IB5_RENDER_CASES[block_type]
+    renderer = getattr(gc, renderer_name)
+
+    blk = _ib5_block(block_type, dict_content)
+    html = renderer(blk)
+    assert "data-cf-block-id=" in html
+
+    # The root carries a data-cf-content-type whose value is a valid ChunkType.
+    assert f'data-cf-content-type="{expected_ct}"' in html
+    assert expected_ct in get_valid_chunk_types()
+
+    str_block = _str_block_from_render(blk, html)
+
+    ct_result = BlockContentTypeValidator().validate({"blocks": [str_block]})
+    assert ct_result.passed, (
+        f"{block_type}: BlockContentTypeValidator failed: "
+        f"{[i.code for i in ct_result.issues]}"
+    )
+
+    shape_result = RewriteHtmlShapeValidator().validate({
+        "blocks": [str_block],
+        "new_block_types_enabled": True,
+    })
+    # rewrite_html_shape's IB5 a11y arms are WARNING-severity; the gate only
+    # fails on critical shape issues (not-HTML / parse-fail / missing required
+    # attr). The deterministic renderer ships a clean shape, so it must pass.
+    assert shape_result.passed, (
+        f"{block_type}: RewriteHtmlShapeValidator failed: "
+        f"{[(i.severity, i.code) for i in shape_result.issues]}"
+    )
+
+
+def test_ib5_render_honors_resolved_content_type_label():
+    """A block with an explicit content_type_label uses it over the default."""
+    import importlib
+
+    gc = importlib.import_module("Courseforge.scripts.generate_course")
+    blk = _dataclasses.replace(
+        _ib5_block("worked_example", {"problem": "p", "steps": []}),
+        content_type_label="procedure",
+    )
+    html = gc._render_worked_example_section(blk)
+    assert 'data-cf-content-type="procedure"' in html
+    assert 'data-cf-content-type="example"' not in html
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

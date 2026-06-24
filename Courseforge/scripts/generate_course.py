@@ -1517,7 +1517,48 @@ def _render_key_terms_section(
 # data-table) so rewrite_html_shape's IB5 arms PASS on this deterministic
 # output even when the corpus supplies no media (curie-minting backward-compat
 # posture: ship the structure even when unpopulated).
+#
+# Each IB5 renderer stamps ``data-cf-content-type`` on its block ROOT element so
+# the critical ``rewrite_content_type`` gate (BlockContentTypeValidator, str-path
+# ``_DATA_CF_CONTENT_TYPE_RE`` over the rendered HTML) PASSES — these four types
+# are NOT in that gate's ``{objective, chrome, recap}`` scaffolding skip set, so
+# a root with no ``data-cf-content-type`` fires OUTLINE_BLOCK_MISSING_CONTENT_TYPE.
+# The value is the block's RESOLVED ``content_type_label`` when present, else a
+# per-type default that is a canonical ChunkType member (``get_valid_chunk_types``
+# / schemas/taxonomies/content_type.json::ChunkType) so the value also clears the
+# enum check (OUTLINE_BLOCK_INVALID_CONTENT_TYPE). Mirrors the
+# ``_REWRITE_BLOCK_TYPE_CONTENT_TYPE`` backstop in MCP/tools/pipeline_tools.py
+# (which now also carries these four keys for the str-rewrite path).
 # ---------------------------------------------------------------------------
+
+# Per-type default content_type for the IB5 framework-aligned block roots. Each
+# value is a canonical ChunkType member so BlockContentTypeValidator's enum check
+# passes: hook (B02 activation) -> overview (frames the objective, mirrors the
+# prereq_set -> overview backstop); multimedia (B04) -> explanation (it presents
+# content); worked_example (B05) -> example; diagram (B06) -> diagram (a native
+# ChunkType member). Kept in lockstep with MCP/tools/pipeline_tools.py
+# ::_REWRITE_BLOCK_TYPE_CONTENT_TYPE so the renderer path and the str-rewrite
+# backstop stamp the same label.
+_IB5_DEFAULT_CONTENT_TYPE: Dict[str, str] = {
+    "hook": "overview",
+    "multimedia": "explanation",
+    "worked_example": "example",
+    "diagram": "diagram",
+}
+
+
+def _ib5_content_type(block: "Block") -> str:
+    """Resolve the content_type label for an IB5 block root.
+
+    Prefers the block's resolved ``content_type_label`` (set by the planner /
+    outline tier) when it is a non-empty string; otherwise falls back to the
+    per-type default in :data:`_IB5_DEFAULT_CONTENT_TYPE` (a canonical ChunkType
+    member). Both branches yield a value BlockContentTypeValidator accepts.
+    """
+    label = getattr(block, "content_type_label", None)
+    if isinstance(label, str) and label.strip():
+        return label.strip()
+    return _IB5_DEFAULT_CONTENT_TYPE.get(block.block_type, "explanation")
 
 
 def _render_hook_section(block: "Block") -> str:
@@ -1536,8 +1577,10 @@ def _render_hook_section(block: "Block") -> str:
         prompt = str(content or "")
         transition = ""
     block_attrs = block.to_html_attrs()
+    content_type = _ib5_content_type(block)
     parts = [
-        f'    <section class="hook"{block_attrs}>',
+        f'    <section class="hook" data-cf-content-type="{content_type}"'
+        f'{block_attrs}>',
         f'      <p class="hook-prompt">{html_mod.escape(prompt)}</p>',
     ]
     if transition:
@@ -1562,8 +1605,10 @@ def _render_worked_example_section(block: "Block") -> str:
     raw_steps = content.get("steps") or []
     fade_state = block.fade_state or "worked"
     block_attrs = block.to_html_attrs()
+    content_type = _ib5_content_type(block)
     parts = [
         f'    <section class="worked-example" '
+        f'data-cf-content-type="{content_type}" '
         f'data-cf-fade-state="{html_mod.escape(fade_state)}"{block_attrs}>',
     ]
     if problem:
@@ -1621,7 +1666,11 @@ def _render_multimedia_section(block: "Block") -> str:
     )
     caption = str(content.get("caption") or "")
     block_attrs = block.to_html_attrs()
-    parts = [f'    <figure class="multimedia"{block_attrs}>']
+    content_type = _ib5_content_type(block)
+    parts = [
+        f'    <figure class="multimedia" data-cf-content-type="{content_type}"'
+        f'{block_attrs}>'
+    ]
     if media_url:
         # controls attr is the keyboard/learner-pause contract (mandatory).
         track = (
@@ -1683,8 +1732,10 @@ def _render_diagram_section(block: "Block") -> str:
     headers = content.get("headers") or []
     rows = content.get("rows") or []
     block_attrs = block.to_html_attrs()
+    content_type = _ib5_content_type(block)
     parts = [
-        f'    <figure class="diagram" data-cf-content-type="diagram"{block_attrs}>'
+        f'    <figure class="diagram" data-cf-content-type="{content_type}"'
+        f'{block_attrs}>'
     ]
     if image_url:
         parts.append(
