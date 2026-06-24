@@ -2782,6 +2782,23 @@ def default_router() -> GateInputRouter:
         "lib.validators.block_objective_delivery.BlockObjectiveDeliveryValidator",
         _build_block_statistical_input,
     )
+    # IB3.4 / IB3.5 — constructive-alignment keystone gates (anchored
+    # rubric on Evaluate/Create scored blocks; triangle completeness per
+    # objective). Both consume the Block surface (``inputs['blocks']`` +
+    # ``inputs['objectives']``) and handle the OUTLINE-tier dict-content
+    # block shape, so the statistical-tier builder — which surfaces both
+    # blocks and the full objectives map (rewrite-tier-then-outline-tier
+    # fallthrough) — feeds them at both the outline + rewrite seams. The
+    # FR-11 anchored-rubric producer authors Block.anchored_rubric at the
+    # outline phase, so the rubric is present by inter_tier_validation.
+    r.register(
+        "lib.validators.alignment.anchored_rubric.AnchoredRubricValidator",
+        _build_block_statistical_input,
+    )
+    r.register(
+        "lib.validators.alignment.triangle_completeness.TriangleCompletenessValidator",
+        _build_block_statistical_input,
+    )
 
     # Group E — degraded fail-loud entries. The chunk-shape
     # CurieAnchoringValidator / ContentTypeValidator are wired at the

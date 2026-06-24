@@ -799,6 +799,19 @@ _W4_OUTLINE_LIB_VALIDATORS_ALLOWLIST = frozenset({
     # surface as the four distractor gates above; wired symmetrically at
     # outline + rewrite seams.
     "lib.validators.assessment_numeric_equivalence.AssessmentNumericEquivalenceValidator",
+    # IB3.4 / IB3.5 — constructive-alignment keystone gates wired
+    # symmetrically at the outline + rewrite seams. Both consume the
+    # Block surface (``inputs['blocks']`` + ``inputs['objectives']``) and
+    # handle the OUTLINE-tier dict-content block shape (``_block_attr``
+    # Mapping fallback + ``_resolve_objective_ids`` content-dict
+    # fallback). The FR-11 anchored-rubric PRODUCER (commit 7c9b8ba,
+    # lib/generation/anchored_rubric.py) authors ``Block.anchored_rubric``
+    # AT the outline phase, so the rubric is present by
+    # inter_tier_validation; routed via the statistical-tier
+    # ``_build_block_statistical_input`` builder (surfaces blocks +
+    # objectives, rewrite-tier-then-outline-tier fallthrough).
+    "lib.validators.alignment.anchored_rubric.AnchoredRubricValidator",
+    "lib.validators.alignment.triangle_completeness.TriangleCompletenessValidator",
 })
 
 
