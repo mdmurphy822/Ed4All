@@ -133,6 +133,53 @@ def _inject_block_id_attr(html: str, block_id: str) -> str:
     return _FIRST_START_TAG_RE.sub(_repl, html, count=1)
 
 
+def _html_has_block_id_attr(html: str) -> bool:
+    """True iff ``data-cf-block-id`` parses as a real attribute on some element.
+
+    The rewrite-tier block-id backstop must mirror what
+    ``RewriteHtmlShapeValidator`` actually checks: the gate scrapes every
+    parsed start/self-closing tag's ``data-cf-*`` attribute NAMES into its
+    ``found_attrs`` set (see ``rewrite_html_shape._ShapeParser.handle_starttag``)
+    and fails ``REWRITE_MISSING_REQUIRED_ATTR`` when ``data-cf-block-id`` is
+    absent from that set. A naive ``"data-cf-block-id" in html`` substring test
+    is WRONG here — the literal token can appear in prose / comment / CDATA text
+    (the 7B sometimes narrates the contract) without ever landing as a parseable
+    attribute, so the substring guard skips injection while the gate still sees
+    a missing attribute → critical ``REWRITE_MISSING_REQUIRED_ATTR`` on a block
+    whose id is known. This helper parses with the stdlib ``HTMLParser`` (same
+    engine the gate uses) and returns True only when the attribute is genuinely
+    present on an element. On a parser exception it falls back to the substring
+    check (best-effort; never crashes the backstop).
+    """
+    if "data-cf-block-id" not in html:
+        return False
+    from html.parser import HTMLParser  # noqa: PLC0415
+
+    class _AttrProbe(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.found = False
+
+        def _scan(self, attrs: "list") -> None:
+            for name, _value in attrs:
+                if name and name.lower() == "data-cf-block-id":
+                    self.found = True
+
+        def handle_starttag(self, tag: str, attrs: "list") -> None:
+            self._scan(attrs)
+
+        def handle_startendtag(self, tag: str, attrs: "list") -> None:
+            self._scan(attrs)
+
+    probe = _AttrProbe()
+    try:
+        probe.feed(html)
+        probe.close()
+    except Exception:  # noqa: BLE001 — defensive: fall back to substring
+        return "data-cf-block-id" in html
+    return probe.found
+
+
 def _inject_source_ids_attr(html: str, source_ids_value: str) -> str:
     """Stamp ``data-cf-source-ids="{value}"`` onto the first start tag.
 
@@ -12291,7 +12338,14 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
 
             new_content = _OBJ_ID_RE.sub(_strip_unknown_obj, new_content)
 
-        if "data-cf-block-id" not in new_content:
+        # Inject the universal ``data-cf-block-id`` when no PARSEABLE
+        # data-cf-block-id attribute is present (mirrors the gate's
+        # found_attrs scrape — a bare substring in prose / comment text does
+        # NOT satisfy RewriteHtmlShapeValidator, so the substring-only guard
+        # used to skip injection while the gate still failed
+        # REWRITE_MISSING_REQUIRED_ATTR). Idempotent: a block that already
+        # carries a real root attribute is left untouched.
+        if not _html_has_block_id_attr(new_content):
             new_content = _inject_block_id_attr(
                 new_content, rewritten.block_id,
             )
