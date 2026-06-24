@@ -77,6 +77,173 @@ def test_corpus_key_dash_underscore_equivalence():
 
 
 # --------------------------------------------------------------------------------------
+# content-based corpus identity (collapses same-textbook, differently-named runs)
+# --------------------------------------------------------------------------------------
+def test_normalize_source_doc_collapses_slices_and_markers():
+    # Partial section/chapter slices of one textbook + the SemantiK -accessible marker
+    # + file extension all normalize to ONE stable identity.
+    n = ch._normalize_source_doc
+    assert n("sample-algebra-2e-s11to13_accessible.html") == "sample-algebra-2e"
+    assert n("sample-algebra-2e-ch1-3_accessible") == "sample-algebra-2e"
+    assert n("/abs/path/sample-algebra-2e-ch1to3_accessible.html") == "sample-algebra-2e"
+    # A different textbook stays distinct.
+    assert n("demo-ch1_accessible.html") == "demo"
+    assert n("") == ""
+
+
+def _write_export_with_blocks(root: Path, name: str, source_doc: str):
+    """Synthesize a courseforge-export dir whose blocks cite ``source_doc`` (no slug)."""
+    import json
+
+    d = root / name
+    (d / "04_rewrite").mkdir(parents=True)
+    block = {
+        "block_id": "blk_000",
+        "source_ids": [f"dart:{source_doc}#aa11bb22", f"dart:{source_doc}#cc33dd44"],
+        "source_references": [],
+    }
+    (d / "04_rewrite" / "blocks_final.jsonl").write_text(
+        json.dumps(block) + "\n", encoding="utf-8"
+    )
+    return d
+
+
+def _write_export_with_structure(root: Path, name: str, source_files: list[str]):
+    """Synthesize an export dir whose textbook_structure cites ``source_files``."""
+    import json
+
+    d = root / name
+    (d / "01_learning_objectives").mkdir(parents=True)
+    struct = {
+        "source_files": source_files,
+        "chapters": [{"source_file": source_files[0]}],
+    }
+    (d / "01_learning_objectives" / "textbook_structure.json").write_text(
+        json.dumps(struct), encoding="utf-8"
+    )
+    return d
+
+
+def test_content_key_collapses_two_named_runs_of_one_textbook(tmp_path):
+    # Two DIFFERENTLY-NAMED exports built from the same source document must share a key.
+    a = _write_export_with_blocks(
+        tmp_path, "course-a-calib", "sample-algebra-2e-s11to13_accessible"
+    )
+    b = _write_export_with_blocks(
+        tmp_path, "sample-course-a", "sample-algebra-2e-ch1-3_accessible"
+    )
+    ka = ch._content_corpus_key(a, "course-a-calib")
+    kb = ch._content_corpus_key(b, "sample-course-a")
+    # Slug keys would have been distinct; content keys collapse to one.
+    assert ka == kb == "src:sample-algebra-2e"
+    assert ch._corpus_key("course-a-calib") != ch._corpus_key("sample-course-a")
+
+
+def test_content_key_keeps_distinct_textbooks_distinct(tmp_path):
+    alg = _write_export_with_blocks(
+        tmp_path, "course-a-cal2", "sample-algebra-2e-s11to13_accessible"
+    )
+    demo = _write_export_with_blocks(
+        tmp_path, "demo-ch1-calib", "demo-ch1_accessible"
+    )
+    assert ch._content_corpus_key(alg, "course-a-cal2") == "src:sample-algebra-2e"
+    assert ch._content_corpus_key(demo, "demo-ch1-calib") == "src:demo"
+    assert ch._content_corpus_key(alg, "course-a-cal2") != ch._content_corpus_key(
+        demo, "demo-ch1-calib"
+    )
+
+
+def test_content_key_from_textbook_structure_when_no_blocks(tmp_path):
+    # No blocks present -> falls through to textbook_structure source_files.
+    d = _write_export_with_structure(
+        tmp_path,
+        "alg-from-structure",
+        ["/inp/textbooks/TTC_x/sample-algebra-2e-s11to13_accessible.html"],
+    )
+    assert ch._content_corpus_key(d, "alg-from-structure") == "src:sample-algebra-2e"
+
+
+def test_content_key_multidoc_corpus_resolves_dominant_doc(tmp_path):
+    # A multi-document corpus resolves to its DOMINANT (most-cited) document
+    # deterministically (the doc appearing most across source_files + chapter refs).
+    d = _write_export_with_structure(
+        tmp_path,
+        "rdf-bundle",
+        [
+            "rdf11_primer_accessible.html",
+            "rdf11_primer_accessible.html",
+            "shacl_spec_accessible.html",
+        ],
+    )
+    # rdf11_primer cited twice in source_files + once as chapter[0].source_file = 3 total
+    # vs shacl_spec once -> dominant is rdf11-primer.
+    assert ch._content_corpus_key(d, "rdf-bundle") == "src:rdf11-primer"
+
+
+def test_content_key_falls_back_to_slug_when_no_content_signal(tmp_path):
+    # Legacy export: dir exists but carries NO blocks / structure / chunk signal.
+    d = tmp_path / "legacy-export"
+    (d / "00_template_analysis").mkdir(parents=True)
+    key = ch._content_corpus_key(d, "PROJ-legacy-export-20260101")
+    assert key == ch._corpus_key("PROJ-legacy-export-20260101") == "legacy-export"
+
+
+def test_content_key_never_crashes_on_malformed_blocks(tmp_path):
+    # A malformed blocks file degrades to the slug key, never raises.
+    d = tmp_path / "broken-export"
+    (d / "04_rewrite").mkdir(parents=True)
+    (d / "04_rewrite" / "blocks_final.jsonl").write_text(
+        "{ this is not valid json\n", encoding="utf-8"
+    )
+    key = ch._content_corpus_key(d, "broken-export")
+    # Malformed JSON line is skipped; no content signal -> slug fallback.
+    assert key == "broken-export"
+
+
+def test_discovery_collapses_same_textbook_runs(tmp_path):
+    # End-to-end discovery: three differently-named exports of one textbook collapse to
+    # ONE corpus_key, while a distinct textbook keys separately. Uses the --runs-dir
+    # override so each child dir is treated as a courseforge export (hermetic, no real
+    # course slug pinned).
+    import json
+
+    def _full_export(name: str, source_doc: str):
+        d = _write_export_with_blocks(tmp_path, name, source_doc)
+        # Give it a validation report so it produces >=1 observation (contributing).
+        vr = d / "04_rewrite" / "02_validation_report"
+        vr.mkdir(parents=True)
+        report = {
+            "per_block": [
+                {
+                    "block_id": "blk_000",
+                    "gate_results": [
+                        {"gate_id": "udl_coverage", "passed": True,
+                         "issue_count": 0, "action": None},
+                    ],
+                }
+            ]
+        }
+        (vr / "report.json").write_text(json.dumps(report), encoding="utf-8")
+        return d
+
+    _full_export("course-a-cal2", "sample-algebra-2e-s11to13_accessible")
+    _full_export("course-a-calib", "sample-algebra-2e-s11to13_accessible")
+    _full_export("sample-course-a", "sample-algebra-2e-ch1-3_accessible")
+    _full_export("demo-ch1-calib", "demo-ch1_accessible")
+
+    corpora = ch.discover_corpora(course_filter=None, runs_dir=tmp_path)
+    keys = {c.corpus_key for c in corpora}
+    assert "src:sample-algebra-2e" in keys
+    assert "src:demo" in keys
+    # The three algebra exports collapsed to a single key.
+    alg_runs = [c for c in corpora if c.corpus_key == "src:sample-algebra-2e"]
+    assert len(alg_runs) == 3  # all three discovered...
+    # ...but aggregate collapses them to ONE representative.
+    distinct = {c.corpus_key for c in corpora}
+    assert len(distinct) == 2  # sample-algebra-2e + demo, NOT 4
+
+
+# --------------------------------------------------------------------------------------
 # aggregation + flip heuristic
 # --------------------------------------------------------------------------------------
 def test_single_corpus_is_never_flip_ready():

@@ -637,6 +637,215 @@ def _corpus_key(name: str) -> str:
     return n.strip("-") or _course_token(name)
 
 
+# --------------------------------------------------------------------------------------
+# Content-based corpus identity
+# --------------------------------------------------------------------------------------
+# The slug-based ``_corpus_key`` above collapses RE-RUNS of one named course, but it
+# CANNOT see that two DIFFERENTLY-NAMED courses are the same underlying textbook. Three
+# exports — ``course-a-cal2``, ``course-a-calib``, ``sample-course-a`` — are all the
+# OpenStax ``sample-algebra-2e`` textbook, yet they key to three distinct slugs and
+# fake the ">=2 distinct corpora" diversity precondition the flip heuristic depends on.
+# The fix: when an export carries a resolvable SOURCE-DOCUMENT signal, key on the
+# normalized source-document identity instead of the slug, so same-textbook runs collapse.
+
+# A dart source-id is ``dart:<doc-slug>#<block-hash>``; we want the ``<doc-slug>``.
+_DART_SOURCE_RE = re.compile(r"^dart:([^#\s]+)")
+# Section/chapter-range suffixes appended to a textbook doc slug for a partial ingest
+# (e.g. ``sample-algebra-2e-s11to13`` / ``sample-algebra-2e-ch1-3``). Stripping
+# them collapses partial slices of one textbook to a single stable identity.
+_DOC_RANGE_SUFFIX_RE = re.compile(
+    r"-(?:s\d+(?:to\d+)?|ch\d+(?:[-to]+\d+)?|sec\d+(?:[-to]+\d+)?|p\d+(?:[-to]+\d+)?)$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_source_doc(raw: str) -> str:
+    """Normalize a source-document slug/path/basename to a stable textbook identity.
+
+    ``sample-algebra-2e-s11to13_accessible.html`` and
+    ``sample-algebra-2e-ch1-3_accessible`` both normalize to
+    ``sample-algebra-2e`` so partial slices of one textbook share an identity.
+    Returns ``""`` when nothing usable remains.
+    """
+    s = str(raw).strip()
+    if not s:
+        return ""
+    # Drop any path components -> basename only.
+    s = s.replace("\\", "/").rsplit("/", 1)[-1]
+    s = s.lower()
+    # Drop a file extension (.html/.pdf/.xhtml...).
+    if "." in s:
+        s = s.rsplit(".", 1)[0]
+    s = s.replace("_", "-")
+    # Drop the SemantiK/DART ``-accessible`` marker.
+    for marker in ("-accessible", "-converted", "-clean"):
+        if s.endswith(marker):
+            s = s[: -len(marker)]
+    # Repeatedly strip a trailing section/chapter range suffix.
+    changed = True
+    while changed:
+        changed = False
+        new = _DOC_RANGE_SUFFIX_RE.sub("", s)
+        if new != s:
+            s, changed = new, True
+    return s.strip("-")
+
+
+def _dominant(counter: dict[str, int]) -> str:
+    """Return the most-frequent key (ties broken alphabetically for determinism)."""
+    if not counter:
+        return ""
+    return max(sorted(counter), key=lambda k: counter[k])
+
+
+def _source_doc_from_blocks(export_dir: Path) -> str:
+    """Most-common normalized source document across this export's blocks.
+
+    Reads ``source_ids`` (``dart:<slug>#...``) from the richest available blocks file
+    (rewrite-tier ``blocks_final`` preferred, then ``blocks_validated``). Returns ``""``
+    when no blocks / no dart source-ids are present.
+    """
+    candidates = (
+        "04_rewrite/blocks_final.jsonl",
+        "04_rewrite/blocks_validated.jsonl",
+        "01_outline/blocks_validated.jsonl",
+    )
+    counter: dict[str, int] = {}
+    for rel in candidates:
+        fpath = export_dir / rel
+        if not fpath.is_file():
+            continue
+        try:
+            with fpath.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    block = json.loads(line)
+                    sids = block.get("source_ids") or []
+                    if not isinstance(sids, list):
+                        continue
+                    for sid in sids:
+                        m = _DART_SOURCE_RE.match(str(sid))
+                        if not m:
+                            continue
+                        doc = _normalize_source_doc(m.group(1))
+                        if doc:
+                            counter[doc] = counter.get(doc, 0) + 1
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            LOG.debug("blocks source-id read failed for %s: %s", fpath, exc)
+            continue
+        if counter:
+            # First file that yielded a signal is authoritative; do not double-count.
+            break
+    return _dominant(counter)
+
+
+def _source_doc_from_structure(course_dir: Path) -> str:
+    """Most-common normalized source document from a ``textbook_structure.json``.
+
+    Prefers the top-level ``source_files`` list; falls back to per-chapter
+    ``source_file``. Multi-document corpora (e.g. an 8-file RDF/SHACL bundle) resolve to
+    their DOMINANT (most-frequently-cited) document. Returns ``""`` on no signal.
+    """
+    structs = list(course_dir.rglob("01_learning_objectives/textbook_structure.json"))
+    structs += list(course_dir.rglob("textbook_structure.json"))
+    seen: set[Path] = set()
+    counter: dict[str, int] = {}
+    for sp in structs:
+        rp = sp.resolve()
+        if rp in seen or not sp.is_file():
+            continue
+        seen.add(rp)
+        try:
+            data = json.loads(sp.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            LOG.debug("textbook_structure read failed for %s: %s", sp, exc)
+            continue
+        sources = data.get("source_files")
+        if isinstance(sources, list):
+            for src in sources:
+                doc = _normalize_source_doc(str(src))
+                if doc:
+                    counter[doc] = counter.get(doc, 0) + 1
+        for ch in data.get("chapters") or []:
+            if isinstance(ch, dict) and ch.get("source_file"):
+                doc = _normalize_source_doc(str(ch["source_file"]))
+                if doc:
+                    counter[doc] = counter.get(doc, 0) + 1
+    return _dominant(counter)
+
+
+def _source_doc_from_chunks(course_dir: Path) -> str:
+    """Most-common normalized source document from a libv2 course's chunk files.
+
+    Reads ``source.module_id`` / ``source.lesson_id`` from the dart/imscc chunk JSONL.
+    Returns ``""`` on no signal (e.g. empty smoke-test chunk files).
+    """
+    counter: dict[str, int] = {}
+    chunk_files = list(course_dir.rglob("dart_chunks/chunks.jsonl"))
+    chunk_files += list(course_dir.rglob("imscc_chunks/chunks.jsonl"))
+    for cf in chunk_files:
+        if not cf.is_file():
+            continue
+        try:
+            with cf.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    block = json.loads(line)
+                    src = block.get("source")
+                    if not isinstance(src, dict):
+                        continue
+                    raw = src.get("module_id") or src.get("lesson_id")
+                    if not raw:
+                        continue
+                    doc = _normalize_source_doc(str(raw))
+                    if doc:
+                        counter[doc] = counter.get(doc, 0) + 1
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            LOG.debug("chunk source read failed for %s: %s", cf, exc)
+            continue
+        if counter:
+            break
+    return _dominant(counter)
+
+
+def _content_corpus_key(course_dir: Path, name: str) -> str:
+    """Corpus identity keyed on the export's SOURCE DOCUMENT when resolvable.
+
+    Tries the content signals in order of ROBUSTNESS. ``textbook_structure.json``'s
+    ``source_files`` is the ingested INPUT-FILE path, which carries the textbook
+    identity verbatim across every provenance convention, so it is tried FIRST. The
+    blocks' ``dart:<slug>`` source-ids are a useful fallback BUT older exports stamped
+    the COURSE slug (not the textbook slug) into the dart id — so blocks are consulted
+    only when no structure signal is present. Libv2 chunk source is the last resort.
+    When ONE resolves, the corpus key is ``src:<normalized-doc>`` so two differently-
+    named courses built from the same textbook collapse to a single corpus. When NONE
+    resolves (legacy exports with no content signal, or a read error), falls back to the
+    slug-based ``_corpus_key`` — discovery NEVER crashes on a missing/unreadable artifact.
+    """
+    try:
+        doc = (
+            _source_doc_from_structure(course_dir)
+            or _source_doc_from_blocks(course_dir)
+            or _source_doc_from_chunks(course_dir)
+        )
+    except Exception as exc:  # never let a malformed artifact break discovery
+        LOG.warning(
+            "content corpus-key derivation failed for %s (%s); "
+            "falling back to slug key",
+            course_dir,
+            exc,
+        )
+        doc = ""
+    if doc:
+        return f"src:{doc}"
+    LOG.debug("no content source signal under %s; using slug corpus key", course_dir)
+    return _corpus_key(name)
+
+
 def _find_capture_files_for(course_name: str, captures_root: Path) -> list[Path]:
     """Find decision-capture JSONL whose <COURSE> path segment matches the course.
 
@@ -685,7 +894,7 @@ def discover_corpora(
                 corpus_id=name,
                 origin="courseforge_export",
                 path=str(export_dir),
-                corpus_key=_corpus_key(name),
+                corpus_key=_content_corpus_key(export_dir, name),
             ),
         )
         # Read every validation report under this export (outline tier + 04_rewrite tier).
@@ -715,7 +924,7 @@ def discover_corpora(
                 corpus_id=name,
                 origin="libv2",
                 path=str(course_dir),
-                corpus_key=_corpus_key(name),
+                corpus_key=_content_corpus_key(course_dir, name),
             ),
         )
         rollup = course_dir / "block_quality_rollup_report.json"
@@ -763,7 +972,9 @@ def aggregate(corpora: list[CorpusResult]) -> dict[str, Any]:
 
     Corpus IDENTITY for the ">=2 corpora" requirement is keyed on the underlying source
     corpus (``corpus_key``), NOT the run/export dir — ten timestamped runs of one
-    textbook count as ONE corpus. When multiple runs share a key, the most-recent run
+    textbook count as ONE corpus, AND two differently-named courses built from the same
+    source document (resolved from blocks/structure/chunk content via
+    ``_content_corpus_key``) also count as ONE. When multiple runs share a key, the most-recent run
     (latest path name, lexicographically — names carry sortable timestamps) is the
     representative whose observations are used, so the measurement reflects current
     behavior rather than summing stale + fresh runs.
