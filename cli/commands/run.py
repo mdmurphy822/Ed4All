@@ -113,6 +113,18 @@ VALID_BLOCK_TYPES = (
     "vocab_card",
     "formula",
     "checklist",
+    # I6 structured-content types.
+    "table",
+    "acronym",
+    "key_idea",
+    "resources",
+    # IB5 framework-aligned pedagogical types (B02/B04/B05/B06) + the
+    # FR-INT-01 B08 guided-practice fade block.
+    "hook",
+    "multimedia",
+    "worked_example",
+    "diagram",
+    "guided_practice",
 )
 
 
