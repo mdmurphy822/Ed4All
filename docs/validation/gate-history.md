@@ -422,3 +422,32 @@ focused on the current authoritative counts.
 > The count table is re-derived from `config/workflows.yaml`:
 > `course_generation` 37→39 warning, `textbook_to_course` 81→83 warning,
 > Total 121→125 warning / 183→187 total.
+
+### Cycle-3 C3-2 — discussion_assignment_grounded stand-in → real validator
+
+> **C3-2** replaces the `discussion_assignment_grounded` gate's
+> `# TODO(validator)` stand-in with a dedicated validator. The gate previously
+> pointed at `AssessmentObjectiveAlignmentValidator` — the SAME class the
+> critical `assessment_objective_alignment` gate uses — so it merely re-ran the
+> aggregate objective-coverage check already enforced critically elsewhere and
+> contributed ZERO independent signal. The new
+> `lib.validators.discussion_assignment_grounding.DiscussionAssignmentGroundingValidator`
+> isolates the B10 discussion + assignment items and audits each ONE AT A TIME:
+> an item is grounded iff its explicit `source_chunk_ids` resolve to real chunks
+> OR its `objective_id` is present in some chunk's `learning_outcome_refs[]`
+> (∪ the synthesized objectives' id set — the W5.E union surface reused from the
+> alignment validator; NO new model load). Flags `DISCUSSION_UNGROUNDED` /
+> `ASSIGNMENT_UNGROUNDED` (warning). Items come from the upstream
+> `discussion_items` / `assignment_items` lists when surfaced, else are
+> reconstructed from the `06_assessments` manifest (+ per-item XML for the
+> objective id the persisted manifest drops). Graceful-skips (passed=True) when
+> chunks or items are absent — anti-fabrication. Builder
+> `MCP/hardening/gate_input_routing.py::_build_discussion_assignment_grounding`
+> reuses the alignment builder's `{assessments_path, chunks_path,
+> synthesized_objectives_path}` resolution.
+>
+> **No count change** — this is a validator-PATH REPOINT of an existing
+> warning gate in BOTH `course_generation` and `textbook_to_course`, not a new
+> gate. Severity stays `warning` (deferred `# TODO`-style critical-flip after a
+> ≥2-corpus FP measurement; WS3/W4 deferred-flip pattern; NOT IB3). The count
+> table is unchanged: 62 critical / 125 warning / 187 total.

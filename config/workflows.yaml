@@ -934,19 +934,20 @@ workflows:
 
           # W10 §7 — per-TYPE grounding attribution for assignment +
           # discussion items (warning day-1; mirrors WS3 deferred-flip).
-          # TODO(validator): no dedicated discussion/assignment-scoped
-          # validator class exists yet — wired to the existing
-          # AssessmentObjectiveAlignmentValidator at WARNING until the
-          # per-type validator lands, then flip to critical.
+          # C3-2: the dedicated DiscussionAssignmentGroundingValidator now
+          # owns this gate (per-item B10 discussion + assignment grounding:
+          # each prompt must trace to a real source chunk via resolvable
+          # source_chunk_ids OR an objective_id present in some chunk's
+          # learning_outcome_refs). Stays WARNING; deferred critical-flip.
           - gate_id: discussion_assignment_grounded
-            validator: lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator
+            validator: lib.validators.discussion_assignment_grounding.DiscussionAssignmentGroundingValidator
             severity: warning
             threshold:
               max_critical_issues: 0
             behavior:
               on_fail: warn
               on_error: warn
-            description: "W10 — per-type grounding attribution for assignment + discussion items (warning day-1; reuses the alignment validator until a per-type validator lands)."
+            description: "W10 — per-type grounding for assignment + discussion items (warning day-1; DiscussionAssignmentGroundingValidator flags DISCUSSION_UNGROUNDED / ASSIGNMENT_UNGROUNDED per item; deferred critical-flip)."
 
           # FR-COURSE-03 — cumulative-retrieval breadth floor for the B14 final
           # graded assessment. Flags CUMULATIVE_RETRIEVAL_TOO_NARROW when the
@@ -3546,20 +3547,23 @@ workflows:
           # from a missing-grounding quiz. The aggregate
           # assessment_objective_alignment gate above covers all three
           # types critically; this gate is the per-type breakdown.
-          # TODO(validator): no dedicated discussion/assignment-scoped
-          # validator class exists yet — wired to the existing
-          # AssessmentObjectiveAlignmentValidator at WARNING day-1 (mirrors
-          # the WS3 deferred-flip pattern). Replace the validator path +
-          # flip to critical when the per-type validator lands.
+          # C3-2: the dedicated DiscussionAssignmentGroundingValidator now
+          # owns this gate — it isolates the discussion (B10) + assignment
+          # items and verifies each prompt is grounded in real source chunks
+          # (resolvable source_chunk_ids OR an objective_id present in some
+          # chunk's learning_outcome_refs), an independent per-item signal
+          # the aggregate alignment gate did NOT provide. Stays WARNING
+          # day-1 (mirrors the WS3 deferred-flip pattern); flip to critical
+          # after a >=2-corpus FP measurement.
           - gate_id: discussion_assignment_grounded
-            validator: lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator
+            validator: lib.validators.discussion_assignment_grounding.DiscussionAssignmentGroundingValidator
             severity: warning
             threshold:
               max_critical_issues: 0
             behavior:
               on_fail: warn
               on_error: warn
-            description: "W10 — per-type grounding attribution for assignment + discussion items (warning day-1; reuses the alignment validator until a per-type validator lands)."
+            description: "W10 — per-type grounding for assignment + discussion items (warning day-1; DiscussionAssignmentGroundingValidator flags DISCUSSION_UNGROUNDED / ASSIGNMENT_UNGROUNDED per item; deferred critical-flip)."
 
           # FR-COURSE-03 — cumulative-retrieval breadth floor for the B14 final
           # graded assessment. Flags CUMULATIVE_RETRIEVAL_TOO_NARROW when the

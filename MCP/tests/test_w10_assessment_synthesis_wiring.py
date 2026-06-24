@@ -6,9 +6,9 @@ Covers the Phase-5 wiring slice of
 * the new ``assessment_synthesis`` phase exists in BOTH ``textbook_to_course``
   and ``course_generation``, sits BEFORE ``packaging``, and is declared
   ``agents: []`` (the validator-only-phase / phase-name-dispatch pattern);
-* the phase wires exactly the three contracted gates
+* the phase wires exactly the four contracted gates
   (``qti_well_formed`` critical, ``assessment_objective_alignment`` critical,
-  ``discussion_assignment_grounded`` warning);
+  ``discussion_assignment_grounded`` warning, ``cumulative_assessment`` warning);
 * ``packaging`` depends on ``assessment_synthesis`` (both the default and the
   two-pass ``depends_on_when_env_value`` dep list);
 * ``MCP/core/executor.py::_PHASE_TOOL_MAPPING['assessment_synthesis']`` routes
@@ -43,10 +43,18 @@ EXPECTED_GATES = {
         "lib.validators.assessment_objective_alignment."
         "AssessmentObjectiveAlignmentValidator",
     ),
+    # C3-2: repointed from the AssessmentObjectiveAlignmentValidator stand-in
+    # to the dedicated per-item-type grounding validator. Stays warning.
     "discussion_assignment_grounded": (
         "warning",
-        "lib.validators.assessment_objective_alignment."
-        "AssessmentObjectiveAlignmentValidator",
+        "lib.validators.discussion_assignment_grounding."
+        "DiscussionAssignmentGroundingValidator",
+    ),
+    # cycle-2 Batch A (FR-COURSE-03): cumulative B14 retrieval-breadth gate,
+    # warning-day-1, added to this phase at commit 808dd3c.
+    "cumulative_assessment": (
+        "warning",
+        "lib.validators.cumulative_assessment.CumulativeAssessmentValidator",
     ),
 }
 
@@ -91,7 +99,7 @@ def test_phase_is_validator_only_routed_by_name(workflows_data, wf_name):
 
 
 @pytest.mark.parametrize("wf_name", ["textbook_to_course", "course_generation"])
-def test_phase_declares_three_contracted_gates(workflows_data, wf_name):
+def test_phase_declares_four_contracted_gates(workflows_data, wf_name):
     phase = _phase(workflows_data, wf_name, PHASE_NAME)
     gates = {g["gate_id"]: g for g in phase.get("validation_gates", [])}
     assert set(gates) == set(EXPECTED_GATES), (

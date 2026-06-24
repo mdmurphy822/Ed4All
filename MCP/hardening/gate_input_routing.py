@@ -2247,6 +2247,62 @@ def _build_assessment_objective_alignment(
     return inputs, ["chunks_path"]
 
 
+def _build_discussion_assignment_grounding(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """C3-2 — input builder for DiscussionAssignmentGroundingValidator.
+
+    Per-TYPE grounding for the B10 discussion + assignment items. Surfaces
+    ``{assessments_path, chunks_path, synthesized_objectives_path}`` —
+    the SAME three inputs :func:`_build_assessment_objective_alignment`
+    resolves, because the per-type validator reuses that validator's
+    chunk-side ``learning_outcome_refs`` resolution surface (no new model
+    load). When the upstream phase surfaces the in-memory discussion /
+    assignment item lists directly (``discussion_items`` /
+    ``assignment_items``), those are forwarded too; otherwise the validator
+    reconstructs the item set from the ``06_assessments`` manifest at
+    ``assessments_path``.
+
+    Resolution mirrors the alignment builder exactly:
+
+    * ``assessments_path`` — required (the 06_assessments manifest the
+      validator reconstructs discussion/assignment items from). Absent →
+      structured skip.
+    * ``chunks_path`` — the grounding-resolution surface (every chunk's
+      ``learning_outcome_refs`` + id). Derived from the assessments path /
+      LibV2 archive exactly as the alignment builder does. Absent → the
+      validator's graceful GROUNDING_INPUTS_UNAVAILABLE skip.
+    * ``synthesized_objectives_path`` — optional union arm (W5.E parity).
+    """
+    # Reuse the alignment builder's path resolution verbatim — it resolves
+    # assessments_path + chunks_path + synthesized_objectives_path with the
+    # same fallback chain (assessments output -> imscc_chunks/corpus sibling
+    # -> LibV2 archive). The per-type validator consumes the identical shape.
+    inputs, missing = _build_assessment_objective_alignment(
+        phase_outputs, workflow_params
+    )
+
+    # Forward the in-memory item lists when an upstream phase surfaced them
+    # directly (optional fast path; the validator otherwise reconstructs them
+    # from the manifest at assessments_path). phase_outputs is keyed by phase
+    # name, so walk the nested per-phase dicts (mirrors _locate).
+    for key in ("discussion_items", "assignment_items"):
+        for phase_data in phase_outputs.values():
+            if isinstance(phase_data, dict) and isinstance(
+                phase_data.get(key), list
+            ):
+                inputs[key] = phase_data[key]
+                break
+
+    # chunks_path is the grounding surface but NOT load-bearing for the skip
+    # decision — the validator graceful-skips (passed=True) when it's absent.
+    # Only a missing assessments_path is a structured skip here.
+    if "assessments_path" not in inputs:
+        return inputs, ["assessments_path"]
+    return inputs, []
+
+
 def _build_cumulative_assessment(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -2486,6 +2542,15 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator",
         _build_assessment_objective_alignment,
+    )
+    # C3-2 — DiscussionAssignmentGroundingValidator: per-TYPE grounding for
+    # the B10 discussion + assignment items (warning day-1). Replaces the
+    # AssessmentObjectiveAlignmentValidator stand-in on the
+    # discussion_assignment_grounded gate. Reuses the alignment builder's
+    # {assessments_path, chunks_path, synthesized_objectives_path} resolution.
+    r.register(
+        "lib.validators.discussion_assignment_grounding.DiscussionAssignmentGroundingValidator",
+        _build_discussion_assignment_grounding,
     )
     # FR-COURSE-03 — CumulativeAssessmentValidator audits whether the final
     # graded assessment (B14) spans >= 2 TOs when the course has >= 4 TOs.
