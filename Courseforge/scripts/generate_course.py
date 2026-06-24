@@ -1531,34 +1531,34 @@ def _render_key_terms_section(
 # (which now also carries these four keys for the str-rewrite path).
 # ---------------------------------------------------------------------------
 
-# Per-type default content_type for the IB5 framework-aligned block roots. Each
-# value is a canonical ChunkType member so BlockContentTypeValidator's enum check
-# passes: hook (B02 activation) -> overview (frames the objective, mirrors the
-# prereq_set -> overview backstop); multimedia (B04) -> explanation (it presents
-# content); worked_example (B05) -> example; diagram (B06) -> diagram (a native
-# ChunkType member). Kept in lockstep with MCP/tools/pipeline_tools.py
-# ::_REWRITE_BLOCK_TYPE_CONTENT_TYPE so the renderer path and the str-rewrite
-# backstop stamp the same label.
-_IB5_DEFAULT_CONTENT_TYPE: Dict[str, str] = {
-    "hook": "overview",
-    "multimedia": "explanation",
-    "worked_example": "example",
-    "diagram": "diagram",
-}
+# Per-type default content_type for deterministic block roots is sourced from
+# the single-source-of-truth map in ``lib/ontology/content_types.py`` (the SAME
+# map the str-rewrite backstop in MCP/tools/pipeline_tools.py consumes), so the
+# renderer path and the str-rewrite backstop stamp identical labels and never
+# drift. ``resolve_block_content_type`` returns a canonical ChunkType member for
+# every non-scaffolding block_type (hook -> overview, multimedia -> explanation,
+# worked_example -> example, diagram -> diagram, scenario -> scenario, …).
+from lib.ontology.content_types import (  # noqa: E402
+    resolve_block_content_type as _resolve_block_content_type,
+    is_valid_content_type as _is_valid_content_type,
+)
 
 
 def _ib5_content_type(block: "Block") -> str:
-    """Resolve the content_type label for an IB5 block root.
+    """Resolve the content_type label for a deterministic block root.
 
     Prefers the block's resolved ``content_type_label`` (set by the planner /
-    outline tier) when it is a non-empty string; otherwise falls back to the
-    per-type default in :data:`_IB5_DEFAULT_CONTENT_TYPE` (a canonical ChunkType
-    member). Both branches yield a value BlockContentTypeValidator accepts.
+    outline tier) ONLY when it is a non-empty string AND a valid canonical
+    ChunkType member — an invalid label (e.g. a domain term like ``expression``
+    the planner wrote into the slot) is REPAIRED to the block_type's canonical
+    default rather than emitted (which would fail BlockContentTypeValidator's
+    enum check, OUTLINE_BLOCK_INVALID_CONTENT_TYPE). Falls back to the canonical
+    per-block_type default, then ``explanation`` for an unmapped type.
     """
     label = getattr(block, "content_type_label", None)
-    if isinstance(label, str) and label.strip():
+    if isinstance(label, str) and label.strip() and _is_valid_content_type(label.strip()):
         return label.strip()
-    return _IB5_DEFAULT_CONTENT_TYPE.get(block.block_type, "explanation")
+    return _resolve_block_content_type(block.block_type) or "explanation"
 
 
 def _render_hook_section(block: "Block") -> str:
@@ -1898,8 +1898,10 @@ def _render_guided_practice(block: "Block") -> str:
         raw_items = content.get("items") or content.get("practice") or []
     fade_state = block.fade_state or "worked"
     block_attrs = block.to_html_attrs()
+    content_type = _ib5_content_type(block)
     parts = [
         f'    <section class="guided-practice" '
+        f'data-cf-content-type="{content_type}" '
         f'data-cf-fade-state="{html_mod.escape(fade_state)}"{block_attrs}>',
     ]
     if prompt:
@@ -1960,8 +1962,10 @@ def _render_scenario(block: "Block") -> str:
         debrief = ""
     mode = block.scenario_mode or "scenario"
     block_attrs = block.to_html_attrs()
+    content_type = _ib5_content_type(block)
     parts = [
         f'    <section class="scenario-card" '
+        f'data-cf-content-type="{content_type}" '
         f'data-cf-scenario-mode="{html_mod.escape(mode)}"{block_attrs}>',
     ]
     if situation:

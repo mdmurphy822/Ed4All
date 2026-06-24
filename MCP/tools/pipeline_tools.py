@@ -171,52 +171,85 @@ def _inject_source_ids_attr(html: str, source_ids_value: str) -> str:
 # value choices in ``Courseforge/scripts/blocks.py::_self_check_question_attrs``
 # / ``_activity_attrs`` (which themselves carry no content-type — the
 # templated-emit path the rewrite tier replaces).
-_REWRITE_BLOCK_TYPE_CONTENT_TYPE: Dict[str, str] = {
-    "self_check_question": "assessment_item",
-    "activity": "exercise",
-    # Issue I6 instruction-palette-v2: backstop content-type for the three
-    # new block types. The rewrite contracts already stamp
-    # data-cf-content-type on the emitted HTML; this map is the fallback the
-    # content-type backstop uses when the LLM omitted it. The values are
-    # canonical ChunkType members (added to schemas/taxonomies/content_type
-    # .json::$defs.ChunkType by I6) so BlockContentTypeValidator accepts them.
-    "table": "table",
-    "acronym": "acronym",
-    "key_idea": "key_idea",
-    # Substantive-but-content-type-less block types. Their rewrite contracts
-    # (Courseforge/generators/_rewrite_provider.py::_BLOCK_TYPE_OUTPUT_CONTRACTS)
-    # emit a bare ``<div class="reflection-prompt|discussion-prompt|prereq-card
-    # |misconception-card">`` wrapper carrying source-ids / block-id but NO
-    # data-cf-content-type — yet all four are content-bearing
-    # (manifest_completeness.SUBSTANTIVE_BLOCK_TYPES) so the content_type gate
-    # is NOT in the {objective,chrome,recap} scaffolding skip set and fires
-    # OUTLINE_BLOCK_MISSING_CONTENT_TYPE on every one of them (measured on the
-    # sample-course-a 7B export: reflection_prompt 24, prereq_set 12,
-    # discussion_prompt 5, misconception 2). This backstop stamps a
-    # pedagogically-honest canonical ChunkType: misconception is a learner's
-    # common error → ``common_pitfall``; a prereq_set frames prior-knowledge
-    # scaffolding on the week overview → ``overview``; reflection_prompt /
-    # discussion_prompt are metacognitive / collaborative content types added
-    # additively to the ChunkType taxonomy (``reflection`` / ``discussion``).
-    "misconception": "common_pitfall",
-    "prereq_set": "overview",
-    "reflection_prompt": "reflection",
-    "discussion_prompt": "discussion",
-    # IB5 framework-aligned block types (hook B02 / multimedia B04 /
-    # worked_example B05 / diagram B06). NONE are in the content_type gate's
-    # {objective, chrome, recap} scaffolding skip set, so a rewrite-tier HTML
-    # block carrying no data-cf-content-type fires OUTLINE_BLOCK_MISSING_CONTENT
-    # _TYPE (measured on the course-a-cal2 export: worked_example/diagram/hook
-    # among 13 IB5-type post_rewrite_validation failures). The deterministic
-    # renderers (Courseforge/scripts/generate_course.py::_render_*_section) stamp
-    # these on the root, but the LLM str-rewrite path needs this backstop. Values
-    # are canonical ChunkType members so BlockContentTypeValidator's enum check
-    # passes; kept in lockstep with generate_course.py::_IB5_DEFAULT_CONTENT_TYPE.
-    "hook": "overview",
-    "multimedia": "explanation",
-    "worked_example": "example",
-    "diagram": "diagram",
-}
+# block_type -> canonical ChunkType label backstop. The COMPLETE map (every
+# non-scaffolding BLOCK_TYPES member) lives in the single-source-of-truth module
+# ``lib/ontology/content_types.py``; this alias keeps the historical symbol name
+# (referenced by the drift-guard test) pointing at the canonical map so the
+# str-rewrite backstop and the ``generate_course.py`` renderer never drift.
+# Before the SoT this map carried only the component / new-block-type tokens, so
+# the backstop could not fill a content-type for the rest of the palette
+# (``scenario`` / ``problem`` / ``concept`` / …) when the rewrite LLM omitted it
+# → BlockContentTypeValidator fired OUTLINE_BLOCK_MISSING_CONTENT_TYPE on
+# course-a-cal2. The scaffolding skip set (objective / chrome / recap) is NOT
+# keyed — the gate skips those.
+from lib.ontology.content_types import (  # noqa: E402
+    BLOCK_TYPE_CONTENT_TYPE as _REWRITE_BLOCK_TYPE_CONTENT_TYPE,
+    resolve_block_content_type as _resolve_block_content_type,
+    get_valid_content_types as _get_valid_content_types_for_backstop,
+)
+
+# Valid ChunkType labels resolved ONCE at import. The content-type backstop
+# REPAIRS an invalid data-cf-content-type value (one not in this set) — not just
+# fills a missing one — so a rewrite-LLM-authored ``data-cf-content-type=
+# "expression"`` (a domain term the planner / LLM wrote into the content-type
+# slot, which fails BlockContentTypeValidator's enum check with
+# OUTLINE_BLOCK_INVALID_CONTENT_TYPE) is replaced with the block_type's canonical
+# default rather than left to fail.
+_VALID_CONTENT_TYPES: "frozenset[str]" = _get_valid_content_types_for_backstop()
+
+
+# Matches the data-cf-content-type attribute (value captured) for the
+# repair-invalid pass. Mirrors the str-path scrape regex in
+# ``Courseforge/router/inter_tier_gates.py::_DATA_CF_CONTENT_TYPE_RE``.
+_DATA_CF_CONTENT_TYPE_ATTR_RE = re.compile(
+    r'data-cf-content-type=["\']([^"\']*)["\']'
+)
+
+
+def _repair_invalid_content_type_attr(html: str, block_type: Optional[str]) -> str:
+    """Replace an INVALID ``data-cf-content-type`` value with the canonical one.
+
+    Idempotent + surgical: only the data-cf-content-type attribute value is
+    touched, and ONLY when the present value is NOT a member of the ChunkType
+    enum. A missing attribute is left to :func:`_inject_content_type_attr` (this
+    function never adds the attribute). A valid value is preserved verbatim. A
+    block_type with no canonical default (or an empty valid-type set) is a
+    no-op. Re-running finds a now-valid value and does nothing.
+    """
+    if "data-cf-content-type" not in html or not _VALID_CONTENT_TYPES:
+        return html
+    canonical = _resolve_block_content_type(block_type)
+    if not canonical:
+        return html
+
+    def _repl(match: "re.Match") -> str:
+        current = match.group(1).strip()
+        if current in _VALID_CONTENT_TYPES:
+            return match.group(0)
+        return f'data-cf-content-type="{canonical}"'
+
+    return _DATA_CF_CONTENT_TYPE_ATTR_RE.sub(_repl, html)
+
+
+def _apply_content_type_backstop(
+    html: str, block_type: Optional[str]
+) -> "Tuple[str, bool, bool]":
+    """Fill a missing content-type OR repair an invalid one in one shot.
+
+    Returns ``(new_html, filled, repaired)``. ``filled`` is True when the
+    attribute was absent and the canonical default was injected; ``repaired`` is
+    True when a present-but-invalid value was replaced. At most one of the two
+    fires per block (fill only happens when the attr is absent; repair only when
+    it is present). A block_type with no canonical default leaves the HTML
+    untouched (returns the original + both flags False).
+    """
+    canonical = _resolve_block_content_type(block_type)
+    if not canonical:
+        return html, False, False
+    if "data-cf-content-type" not in html:
+        return _inject_content_type_attr(html, canonical), True, False
+    repaired_html = _repair_invalid_content_type_attr(html, block_type)
+    return repaired_html, False, repaired_html != html
 
 
 def _inject_content_type_attr(html: str, content_type_value: str) -> str:
@@ -9195,13 +9228,22 @@ def restamp_blocks_final_jsonl(
         new_content = content
         block_type = entry.get("block_type")
 
-        # ---- content_type pass ----
-        _ct_label = _REWRITE_BLOCK_TYPE_CONTENT_TYPE.get(block_type)
-        if _ct_label and "data-cf-content-type" not in new_content:
-            new_content = _inject_content_type_attr(new_content, _ct_label)
-            if not entry.get("content_type_label"):
-                entry["content_type_label"] = _ct_label
+        # ---- content_type pass (fill-missing OR repair-invalid) ----
+        _ct_label = _resolve_block_content_type(block_type)
+        new_content, _ct_filled, _ct_repaired = _apply_content_type_backstop(
+            new_content, block_type,
+        )
+        if _ct_filled or _ct_repaired:
             content_type_stamped += 1
+        # Promote a freshly-filled label onto the structural field; on a repair
+        # the existing label may itself be the invalid value, so overwrite it
+        # with the canonical default when it is not a valid ChunkType.
+        if _ct_label and _ct_filled and not entry.get("content_type_label"):
+            entry["content_type_label"] = _ct_label
+        elif _ct_label and _ct_repaired:
+            _existing = entry.get("content_type_label")
+            if not isinstance(_existing, str) or _existing not in _VALID_CONTENT_TYPES:
+                entry["content_type_label"] = _ct_label
 
         # ---- CURIE anchoring pass ----
         try:
@@ -12265,13 +12307,30 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         # Stamp the canonical content-type for those types (idempotent — the
         # injector is a no-op when the attribute is already present). Block
         # types absent from the map keep whatever the LLM authored.
-        _ct_label = _REWRITE_BLOCK_TYPE_CONTENT_TYPE.get(rewritten.block_type)
-        if _ct_label:
-            new_content = _inject_content_type_attr(new_content, _ct_label)
+        # Fill a MISSING content-type OR REPAIR an invalid one (e.g. a rewrite-
+        # LLM-authored ``data-cf-content-type="expression"`` — a domain term in
+        # the content-type slot that fails BlockContentTypeValidator's enum
+        # check with OUTLINE_BLOCK_INVALID_CONTENT_TYPE). Idempotent; only the
+        # data-cf-content-type attr is touched.
+        _ct_label = _resolve_block_content_type(rewritten.block_type)
+        new_content, _ct_filled, _ct_repaired = _apply_content_type_backstop(
+            new_content, rewritten.block_type,
+        )
+        if _ct_label and (_ct_filled or _ct_repaired):
             # Promote onto the structural field too so the str-path extractor's
             # ``content_type_label`` fallback (and any JSON-LD projection)
-            # resolves without re-scraping the attribute.
-            if not getattr(rewritten, "content_type_label", None):
+            # resolves without re-scraping the attribute. On a repair, overwrite
+            # an existing label only when it is itself not a valid ChunkType.
+            _existing_label = getattr(rewritten, "content_type_label", None)
+            _needs_promote = (
+                not _existing_label
+                if _ct_filled
+                else (
+                    not isinstance(_existing_label, str)
+                    or _existing_label not in _VALID_CONTENT_TYPES
+                )
+            )
+            if _needs_promote:
                 try:
                     rewritten = _dc.replace(
                         rewritten, content_type_label=_ct_label,

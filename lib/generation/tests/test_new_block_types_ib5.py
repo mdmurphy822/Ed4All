@@ -430,5 +430,71 @@ def test_ib5_render_honors_resolved_content_type_label():
     assert 'data-cf-content-type="example"' not in html
 
 
+def test_ib5_render_repairs_invalid_content_type_label():
+    """An INVALID content_type_label is repaired to the per-type canonical default.
+
+    Regression for the course-a-cal2 ``OUTLINE_BLOCK_INVALID_CONTENT_TYPE``
+    root: the planner / LLM wrote a domain term (``expression``) into the
+    content-type slot. The renderer must NOT emit it (it would fail the gate) —
+    it falls back to the block_type's canonical ChunkType default.
+    """
+    import importlib
+
+    from lib.validators.content_type import get_valid_chunk_types
+
+    gc = importlib.import_module("Courseforge.scripts.generate_course")
+    blk = _dataclasses.replace(
+        _ib5_block("worked_example", {"problem": "p", "steps": []}),
+        content_type_label="expression",  # not a ChunkType member
+    )
+    html = gc._render_worked_example_section(blk)
+    assert 'data-cf-content-type="expression"' not in html
+    assert 'data-cf-content-type="example"' in html
+    assert "example" in get_valid_chunk_types()
+
+
+def test_scenario_and_guided_practice_roots_stamp_content_type(monkeypatch):
+    """The standard scenario (B09) + guided_practice (B08) roots carry a valid
+    data-cf-content-type so the post_rewrite rewrite_content_type gate passes.
+
+    Regression for the course-a-cal2 ``week_01_application#scenario`` /
+    ``week_02_application#problem`` MISSING-content-type failures — these roots
+    previously emitted no data-cf-content-type at all.
+    """
+    import importlib
+
+    monkeypatch.setenv("COURSEFORGE_EMIT_BLOCKS", "true")
+    monkeypatch.setenv(ENV_NEW_BLOCK_TYPES, "true")
+
+    from Courseforge.router.inter_tier_gates import BlockContentTypeValidator
+    from lib.validators.content_type import get_valid_chunk_types
+
+    gc = importlib.import_module("Courseforge.scripts.generate_course")
+
+    scenario_blk = _ib5_block(
+        "scenario",
+        {"situation": "A car accelerates.", "prompt": "Find a.", "debrief": "ok"},
+    )
+    scenario_html = gc._render_scenario(scenario_blk)
+    assert 'data-cf-content-type="scenario"' in scenario_html
+    assert "scenario" in get_valid_chunk_types()
+
+    gp_blk = _ib5_block(
+        "guided_practice", {"prompt": "Try these.", "items": ["q1", "q2"]}
+    )
+    gp_html = gc._render_guided_practice(gp_blk)
+    assert 'data-cf-content-type="exercise"' in gp_html
+
+    V = BlockContentTypeValidator()
+    for blk, html in (
+        (scenario_blk, scenario_html), (gp_blk, gp_html),
+    ):
+        result = V.validate({"blocks": [_str_block_from_render(blk, html)]})
+        assert result.passed, (
+            f"{blk.block_type}: BlockContentTypeValidator failed: "
+            f"{[i.code for i in result.issues]}"
+        )
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

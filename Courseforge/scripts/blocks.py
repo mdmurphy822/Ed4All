@@ -1433,15 +1433,43 @@ class Block:
         attrs += _source_attr_string(self.source_ids, self.source_primary)
         return attrs
 
+    def _resolved_content_type(self) -> str:
+        """Return an enum-valid content_type for this block's HTML attrs.
+
+        Prefers a VALID ``content_type_label``; repairs an invalid one to the
+        block_type's canonical ChunkType default (``lib/ontology/content_types``);
+        falls back to the raw ``block_type`` only when no default exists (e.g.
+        scaffolding types the content_type gate skips anyway).
+        """
+        from lib.ontology.content_types import (
+            is_valid_content_type,
+            resolve_block_content_type,
+        )
+
+        label = self.content_type_label
+        if isinstance(label, str) and label.strip() and is_valid_content_type(
+            label.strip()
+        ):
+            return label.strip()
+        return resolve_block_content_type(self.block_type) or self.block_type
+
     def _content_section_attrs(self) -> str:
         """Match `_render_content_sections:1018-1035` (heading attrs).
 
         ``content_type_label`` carries the resolved content_type (or it
-        falls back to ``block_type``); ``key_terms`` carries the term
-        slugs already slugified by the renderer; ``bloom_range`` is the
-        section span string.
+        falls back to a canonical ChunkType default for ``block_type``);
+        ``key_terms`` carries the term slugs already slugified by the renderer;
+        ``bloom_range`` is the section span string.
+
+        An invalid ``content_type_label`` (e.g. a domain term like
+        ``expression`` the planner / LLM wrote into the content-type slot) is
+        REPAIRED to the block_type's canonical default rather than emitted
+        verbatim — emitting it would fail BlockContentTypeValidator's enum
+        check (OUTLINE_BLOCK_INVALID_CONTENT_TYPE). The raw ``block_type`` (not
+        itself a ChunkType member, e.g. ``concept``) is used only as the last
+        resort when no canonical default exists.
         """
-        content_type = self.content_type_label or self.block_type
+        content_type = self._resolved_content_type()
         attrs = f' data-cf-content-type="{content_type}"'
         if self.key_terms:
             joined = ",".join(self.key_terms)
