@@ -97,6 +97,41 @@ DEFAULT_MIN_EXPLANATION_TOKENS_PER_CONCEPT: int = 80
 #: corpora. Mirrors the cap used by sibling structural validators.
 _ISSUE_LIST_CAP: int = 50
 
+#: Purely-structural / chrome block types. A page composed ENTIRELY of these
+#: (an overview / objectives / summary page) carries no instructional concepts
+#: by design, so the concepts-per-page floor must NOT fire against it — that is
+#: a false positive (course-a-calib calibration run, 2026-06-24:
+#: ``week_01_overview`` emitting 0 concept blocks tripped the critical floor).
+#: A page is "content-bearing" iff it carries >=1 block OUTSIDE this set; only
+#: content-bearing pages are subject to the concepts-per-page floor.
+STRUCTURAL_BLOCK_TYPES: frozenset = frozenset(
+    {
+        "hook",
+        "objective",
+        "prereq_set",
+        "recap",
+        "summary_takeaway",
+        "checklist",
+        "chrome",
+        "resources",
+    }
+)
+
+
+def _page_is_content_bearing(page_blocks: List[Any]) -> bool:
+    """True iff the page carries >=1 non-structural (instructional) block.
+
+    A page composed entirely of structural scaffolding (overview / objectives
+    / summary) is exempt from the concepts-per-page floor — it is not a
+    content page and is never expected to teach >=2 concepts. A page with no
+    blocks at all is treated as not content-bearing (nothing to require).
+    """
+    for b in page_blocks:
+        bt = getattr(b, "block_type", None)
+        if isinstance(bt, str) and bt not in STRUCTURAL_BLOCK_TYPES:
+            return True
+    return False
+
 
 # ---------------------------------------------------------------------------
 # HTML / token helpers
@@ -409,6 +444,10 @@ class InstructionalDepthValidator:
                     "n_concepts": n_concepts,
                     "n_examples": n_examples,
                     "explanation_tokens": exp_tokens,
+                    # Structural/overview pages (purely hook/objective/summary/
+                    # etc.) are exempt from the concepts-per-page floor — they
+                    # are not content pages and never teach >=2 concepts.
+                    "is_content_bearing": _page_is_content_bearing(page_blocks),
                 }
             )
 
@@ -436,7 +475,8 @@ class InstructionalDepthValidator:
 
         below_concepts_pages = [
             r for r in per_page_records
-            if r["n_concepts"] < thresholds["min_concepts_per_page"]
+            if r.get("is_content_bearing", True)
+            and r["n_concepts"] < thresholds["min_concepts_per_page"]
         ]
         if below_concepts_pages:
             failure_codes.append(

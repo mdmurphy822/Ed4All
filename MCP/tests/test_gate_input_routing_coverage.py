@@ -387,3 +387,48 @@ def test_every_post_rewrite_and_inter_tier_gate_has_a_builder():
         "post_rewrite/inter_tier gate validators with NO registered "
         f"builder (these skip silently in production): {sorted(missing)}"
     )
+
+
+# --------------------------------------------------------------------- #
+# Render-dependent gate placement — anti-recurrence guard.
+#
+# udl_coverage / anatomy_slot_presence / interaction_feedback /
+# block_quality_rubric / qa_checklist measure rewrite/render-tier fields
+# (UDL n_representations from rendered HTML tags, the IB1 anatomy
+# interaction/feedback/transition slots, the Bloom chip, rendered
+# interaction/feedback HTML) that do NOT exist on outline-tier dict
+# blocks. Wired at inter_tier_validation they blanket-fail every block as
+# a false positive (course-a-calib calibration, 2026-06-24). They must
+# live at post_rewrite_validation ONLY. These tests pin that placement so
+# a re-wire at inter_tier can't silently reintroduce the FP storm.
+# --------------------------------------------------------------------- #
+
+_RENDER_DEPENDENT_GATE_VALIDATORS = {
+    "lib.validators.udl_coverage.UdlCoverageValidator",
+    "lib.validators.anatomy_slot_presence.AnatomySlotPresenceValidator",
+    "lib.validators.interaction_feedback.InteractionFeedbackValidator",
+    "lib.validators.block_quality_rubric.BlockQualityRubricValidator",
+    "lib.validators.qa_checklist.QaChecklistValidator",
+}
+
+
+def test_render_dependent_gates_not_wired_at_inter_tier():
+    """Render-dependent IB4.5/IB6 gates must NOT be wired at the
+    outline-tier inter_tier_validation phase (they blanket-FP there)."""
+    inter_tier = _gate_validators_for_phase("inter_tier_validation")
+    leaked = _RENDER_DEPENDENT_GATE_VALIDATORS & inter_tier
+    assert not leaked, (
+        "render-dependent gates wired at inter_tier_validation (they "
+        f"blanket-fail outline-tier dict blocks as false positives): {sorted(leaked)}"
+    )
+
+
+def test_render_dependent_gates_remain_at_post_rewrite():
+    """The same gates MUST stay wired at post_rewrite_validation, where
+    the rendered fields exist and the signal is real (no signal lost)."""
+    post_rewrite = _gate_validators_for_phase("post_rewrite_validation")
+    missing = _RENDER_DEPENDENT_GATE_VALIDATORS - post_rewrite
+    assert not missing, (
+        "render-dependent gates dropped from post_rewrite_validation "
+        f"(real signal lost): {sorted(missing)}"
+    )

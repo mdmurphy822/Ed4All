@@ -427,3 +427,89 @@ def test_explanation_blocks_contribute_to_token_count() -> None:
     ]
     result = InstructionalDepthValidator().validate({"blocks": blocks})
     assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
+# 11. Structural/overview pages are EXEMPT from the concepts-per-page floor.
+#     A week_NN_overview page composed purely of hook/objective/prereq_set
+#     blocks (0 concepts) must NOT trip
+#     INSTRUCTIONAL_DEPTH_CONCEPTS_PER_PAGE_BELOW_THRESHOLD — that is a false
+#     positive (course-a-calib calibration run, 2026-06-24).
+# ---------------------------------------------------------------------------
+
+
+def _make_structural(
+    *, block_type: str, page_id: str, sequence: int = 0
+) -> Block:
+    """A purely-structural Block (hook / objective / prereq_set / summary)."""
+    return Block(
+        block_id=f"{page_id}#{block_type}_demo_{sequence}",
+        block_type=block_type,
+        page_id=page_id,
+        sequence=sequence,
+        content={"body": "structural scaffolding, not an instructional concept"},
+    )
+
+
+def test_structural_overview_page_exempt_from_concepts_floor() -> None:
+    """An overview page (hook + objective + prereq_set, 0 concepts) must
+    pass — it is not a content page and is never expected to teach >=2
+    concepts. Pre-fix this blanket-failed the critical concepts floor."""
+    blocks = [
+        _make_structural(block_type="hook", page_id="week_01_overview", sequence=0),
+        _make_structural(block_type="objective", page_id="week_01_overview", sequence=1),
+        _make_structural(block_type="prereq_set", page_id="week_01_overview", sequence=2),
+    ]
+    result = InstructionalDepthValidator().validate({"blocks": blocks})
+    assert result.passed is True
+    codes = {i.code for i in result.issues}
+    assert "INSTRUCTIONAL_DEPTH_CONCEPTS_PER_PAGE_BELOW_THRESHOLD" not in codes
+
+
+def test_summary_only_page_exempt_from_concepts_floor() -> None:
+    """A summary page (summary_takeaway + checklist + recap, 0 concepts)
+    is structural → exempt from the concepts-per-page floor."""
+    blocks = [
+        _make_structural(block_type="summary_takeaway", page_id="week_01_summary", sequence=0),
+        _make_structural(block_type="checklist", page_id="week_01_summary", sequence=1),
+        _make_structural(block_type="recap", page_id="week_01_summary", sequence=2),
+    ]
+    result = InstructionalDepthValidator().validate({"blocks": blocks})
+    assert result.passed is True
+
+
+def test_content_page_still_fails_concepts_floor_when_thin() -> None:
+    """A genuine content page (carries a non-structural instructional
+    block) with only 1 concept STILL trips the concepts-per-page floor —
+    the structural exemption must not weaken real content pages."""
+    blocks = [
+        # One real concept + an explanation makes this content-bearing,
+        # but only 1 concept < the floor of 2.
+        _make_concept(page_id="week_01_content", sequence=0, body=_word_padding(120)),
+        _make_explanation(page_id="week_01_content", sequence=1, body=_word_padding(120)),
+        _make_example(page_id="week_01_content", sequence=2),
+    ]
+    result = InstructionalDepthValidator().validate({"blocks": blocks})
+    assert result.passed is False
+    codes = {i.code for i in result.issues}
+    assert "INSTRUCTIONAL_DEPTH_CONCEPTS_PER_PAGE_BELOW_THRESHOLD" in codes
+
+
+def test_mixed_corpus_exempts_only_structural_pages() -> None:
+    """A corpus with both a structural overview page (0 concepts, exempt)
+    and a thin content page (1 concept, fails) flags ONLY the content
+    page — the overview page never appears in the below-floor set."""
+    blocks = [
+        _make_structural(block_type="hook", page_id="week_01_overview", sequence=0),
+        _make_structural(block_type="objective", page_id="week_01_overview", sequence=1),
+        _make_concept(page_id="week_01_content", sequence=0, body=_word_padding(120)),
+        _make_explanation(page_id="week_01_content", sequence=1, body=_word_padding(120)),
+    ]
+    result = InstructionalDepthValidator().validate({"blocks": blocks})
+    assert result.passed is False
+    concept_floor_locations = {
+        i.location for i in result.issues
+        if i.code == "INSTRUCTIONAL_DEPTH_CONCEPTS_PER_PAGE_BELOW_THRESHOLD"
+    }
+    assert "week_01_content" in concept_floor_locations
+    assert "week_01_overview" not in concept_floor_locations

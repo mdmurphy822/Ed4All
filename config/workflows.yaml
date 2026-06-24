@@ -197,32 +197,26 @@ workflows:
               on_error: warn
             description: IB3.5 — every objective has >=1 activity AND >=1 band-aligned assessment (the complete constructive-alignment triangle). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
 
-          # IB4.5 — UDL multiple-means coverage (>=2 representations per
-          # content-bearing block + a per-week engagement/autonomy floor;
-          # QA-13 / D7). Deterministic (derives on read); runs warning-day-1
-          # regardless of ED4ALL_BLOCK_A11Y. Feeds IB6's Engagement +
-          # Accessibility/UDL quality dimensions.
-          # TODO(calibration) — flip UDL_SINGLE_REPRESENTATION to critical after
-          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
-          # single documented fastest-flip exception, this is NOT IB3).
-          - gate_id: udl_coverage
-            validator: lib.validators.udl_coverage.UdlCoverageValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB4.5 — UDL >=2-representations + per-week autonomy floor. Warning day-1; deferred critical-flip.
-
-          # IB6 — eight-dimension block-quality rubric surface. All five gates
-          # no-op (passed=True, info issue) when the IB6 keystone flag
-          # ED4ALL_BLOCK_QUALITY_RUBRIC is unset, so default-off runs are
-          # byte-stable. Warning-day-1; TODO(calibration) — the hard-gate
-          # critical flip (mean>=2.0 floors + Accessibility=0 block-fail) is
-          # DEFERRED until the anchored 0-3 scale is calibrated on >=2 corpora
-          # (see plans/finegrain/ib6-*.md §4; the mean floors would block early
-          # runs).
+          # NOTE — render-dependent IB4.5 / IB6 gates (udl_coverage,
+          # anatomy_slot_presence, interaction_feedback, block_quality_rubric,
+          # qa_checklist) are INTENTIONALLY ABSENT from the outline-tier
+          # inter_tier_validation phase. They measure fields that exist only
+          # after the rewrite/render stage (UDL n_representations derives from
+          # rendered HTML tags; the IB1 anatomy interaction/feedback/transition
+          # slots, the (verb·level·knowledge-type) Bloom chip, and the rendered
+          # interaction/feedback HTML are all rewrite-tier emit), so against
+          # outline-tier dict blocks they blanket-fail every block as a false
+          # positive (course-a-calib calibration run, 2026-06-24: udl_coverage
+          # 50/50 UDL_SINGLE_REPRESENTATION, qa_checklist 50/50 QA3_NO_BLOOM_TAG,
+          # block_quality_rubric 2664, interaction_feedback 2146,
+          # anatomy_slot_presence 74). They remain wired at
+          # post_rewrite_validation, where the rendered fields exist and the
+          # signal is real.
+          # IB6.4 cognitive-load: reads the BODY text (content), present at
+          # outline tier → meaningful pre-render. No-op when the keystone flag
+          # ED4ALL_BLOCK_QUALITY_RUBRIC is unset (byte-stable). Warning-day-1;
+          # TODO(calibration) — the hard-gate critical flip is DEFERRED until
+          # the anchored 0-3 scale is calibrated on >=2 corpora.
           - gate_id: block_cognitive_load
             validator: lib.validators.content.BlockCognitiveLoadValidator
             severity: warning
@@ -232,42 +226,6 @@ workflows:
               on_fail: warn
               on_error: warn
             description: IB6.4 — per-block <=~200-char / <=4-idea-chunk body ceiling (D2). Warning day-1; TODO(calibration).
-          - gate_id: anatomy_slot_presence
-            validator: lib.validators.anatomy_slot_presence.AnatomySlotPresenceValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.2 — six-slot anatomy presence (interaction/feedback/transition). Warning day-1; TODO(calibration).
-          - gate_id: interaction_feedback
-            validator: lib.validators.interaction_feedback.InteractionFeedbackValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.3 — universal interaction-feedback presence + elaboration gate. Warning day-1; TODO(calibration).
-          - gate_id: block_quality_rubric
-            validator: lib.validators.block_quality_rubric.BlockQualityRubricValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.1 — per-block eight-dimension 0-3 rubric scoring (composes upstream signals). Warning day-1; TODO(calibration).
-          - gate_id: qa_checklist
-            validator: lib.validators.qa_checklist.QaChecklistValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.7 — 15-point per-block QA checklist (composes IB1-IB6.6 + QA-9/13/15 net-new). Warning day-1; TODO(calibration).
 
           # IB7.5b — spacing-aware retrieval-presence floor: every
           # content-bearing module must carry >=1 low-stakes retrieval block
@@ -2421,32 +2379,26 @@ workflows:
               on_error: warn
             description: IB3.5 — every objective has >=1 activity AND >=1 band-aligned assessment (the complete constructive-alignment triangle). Warning day-1; no-ops when ED4ALL_ALIGNMENT_VERB_TRIPLE is unset.
 
-          # IB4.5 — UDL multiple-means coverage (>=2 representations per
-          # content-bearing block + a per-week engagement/autonomy floor;
-          # QA-13 / D7). Deterministic (derives on read); runs warning-day-1
-          # regardless of ED4ALL_BLOCK_A11Y. Feeds IB6's Engagement +
-          # Accessibility/UDL quality dimensions.
-          # TODO(calibration) — flip UDL_SINGLE_REPRESENTATION to critical after
-          # a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; IB3 is the
-          # single documented fastest-flip exception, this is NOT IB3).
-          - gate_id: udl_coverage
-            validator: lib.validators.udl_coverage.UdlCoverageValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB4.5 — UDL >=2-representations + per-week autonomy floor. Warning day-1; deferred critical-flip.
-
-          # IB6 — eight-dimension block-quality rubric surface. All five gates
-          # no-op (passed=True, info issue) when the IB6 keystone flag
-          # ED4ALL_BLOCK_QUALITY_RUBRIC is unset, so default-off runs are
-          # byte-stable. Warning-day-1; TODO(calibration) — the hard-gate
-          # critical flip (mean>=2.0 floors + Accessibility=0 block-fail) is
-          # DEFERRED until the anchored 0-3 scale is calibrated on >=2 corpora
-          # (see plans/finegrain/ib6-*.md §4; the mean floors would block early
-          # runs).
+          # NOTE — render-dependent IB4.5 / IB6 gates (udl_coverage,
+          # anatomy_slot_presence, interaction_feedback, block_quality_rubric,
+          # qa_checklist) are INTENTIONALLY ABSENT from the outline-tier
+          # inter_tier_validation phase. They measure fields that exist only
+          # after the rewrite/render stage (UDL n_representations derives from
+          # rendered HTML tags; the IB1 anatomy interaction/feedback/transition
+          # slots, the (verb·level·knowledge-type) Bloom chip, and the rendered
+          # interaction/feedback HTML are all rewrite-tier emit), so against
+          # outline-tier dict blocks they blanket-fail every block as a false
+          # positive (course-a-calib calibration run, 2026-06-24: udl_coverage
+          # 50/50 UDL_SINGLE_REPRESENTATION, qa_checklist 50/50 QA3_NO_BLOOM_TAG,
+          # block_quality_rubric 2664, interaction_feedback 2146,
+          # anatomy_slot_presence 74). They remain wired at
+          # post_rewrite_validation, where the rendered fields exist and the
+          # signal is real.
+          # IB6.4 cognitive-load: reads the BODY text (content), present at
+          # outline tier → meaningful pre-render. No-op when the keystone flag
+          # ED4ALL_BLOCK_QUALITY_RUBRIC is unset (byte-stable). Warning-day-1;
+          # TODO(calibration) — the hard-gate critical flip is DEFERRED until
+          # the anchored 0-3 scale is calibrated on >=2 corpora.
           - gate_id: block_cognitive_load
             validator: lib.validators.content.BlockCognitiveLoadValidator
             severity: warning
@@ -2456,42 +2408,6 @@ workflows:
               on_fail: warn
               on_error: warn
             description: IB6.4 — per-block <=~200-char / <=4-idea-chunk body ceiling (D2). Warning day-1; TODO(calibration).
-          - gate_id: anatomy_slot_presence
-            validator: lib.validators.anatomy_slot_presence.AnatomySlotPresenceValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.2 — six-slot anatomy presence (interaction/feedback/transition). Warning day-1; TODO(calibration).
-          - gate_id: interaction_feedback
-            validator: lib.validators.interaction_feedback.InteractionFeedbackValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.3 — universal interaction-feedback presence + elaboration gate. Warning day-1; TODO(calibration).
-          - gate_id: block_quality_rubric
-            validator: lib.validators.block_quality_rubric.BlockQualityRubricValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.1 — per-block eight-dimension 0-3 rubric scoring (composes upstream signals). Warning day-1; TODO(calibration).
-          - gate_id: qa_checklist
-            validator: lib.validators.qa_checklist.QaChecklistValidator
-            severity: warning
-            threshold:
-              max_critical_issues: 0
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: IB6.7 — 15-point per-block QA checklist (composes IB1-IB6.6 + QA-9/13/15 net-new). Warning day-1; TODO(calibration).
 
           # IB7.5b — spacing-aware retrieval-presence floor: every
           # content-bearing module must carry >=1 low-stakes retrieval block
