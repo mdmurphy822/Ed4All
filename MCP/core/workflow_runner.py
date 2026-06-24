@@ -1302,9 +1302,29 @@ class WorkflowRunner:
         # synthesised entry so the phase loop re-runs them.
         outline_dir_resolved = self._resolve_outline_dir(workflow_params)
         if outline_dir_resolved is not None:
+            # When a courseforge_stage whitelist is active, a two-pass
+            # phase that is OUTSIDE the whitelist gets skipped by the loop
+            # but a downstream WHITELISTED phase may still depend on its
+            # on-disk output via ``inputs_from``. The clearest motivating
+            # case: ``courseforge-validate`` activates
+            # ``post_rewrite_validation`` (which needs
+            # ``content_generation_rewrite.blocks_final_path``) but SKIPS
+            # ``content_generation_rewrite`` itself — so its output must be
+            # reconstructed from ``04_rewrite/blocks_final.jsonl`` on disk.
+            # Pass the active whitelist down so the synthesizer reconstructs
+            # the skipped-but-depended-on two-pass phases WITHOUT
+            # reconstructing (and thus wrongly ``_completed``-skipping) the
+            # phases that the stage actually intends to RE-RUN.
+            stage_param = workflow_params.get("courseforge_stage")
+            stage_active_phases = (
+                self._resolve_courseforge_stage_active_phases(stage_param)
+                if stage_param
+                else None
+            )
             try:
                 outline_synth = self._synthesize_outline_output(
-                    outline_dir_resolved
+                    outline_dir_resolved,
+                    stage_active_phases=stage_active_phases,
                 )
             except Exception as e:  # noqa: BLE001 — defensive
                 logger.error(
@@ -3696,6 +3716,7 @@ class WorkflowRunner:
         self,
         outline_dir: Path,
         target_phases: Optional[List[str]] = None,
+        stage_active_phases: Optional[frozenset] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """Reconstruct phase_outputs for upstream phases from disk.
 
@@ -3758,6 +3779,20 @@ class WorkflowRunner:
         ``target_phases`` filters which upstream phases to reconstruct;
         defaults to the full canonical list above. Unknown names are
         silently dropped (not an error).
+
+        ``content_generation_rewrite`` — reads
+        ``<project>/04_rewrite/blocks_final.jsonl`` and synthesises
+        ``blocks_final_path``. ONLY reconstructed when a
+        ``stage_active_phases`` whitelist is supplied AND
+        ``content_generation_rewrite`` is OUTSIDE it (i.e. the active stage
+        SKIPS the rewrite tier but a whitelisted phase — typically
+        ``post_rewrite_validation`` under ``courseforge-validate`` — still
+        needs its on-disk output via ``inputs_from``). It is deliberately
+        NOT in the default ``canonical_phases`` set: on a normal
+        full-pipeline run, or under ``courseforge`` / ``courseforge-rewrite``
+        (where the rewrite tier is whitelisted and meant to RE-RUN),
+        synthesising it as ``_completed=True`` would wrongly make the loop
+        skip the live rewrite.
         """
         from pathlib import Path as _Path
 
@@ -3772,6 +3807,14 @@ class WorkflowRunner:
             "content_generation_outline",
             "inter_tier_validation",
         ]
+        # Conditionally reconstruct the rewrite-tier output for a stage
+        # subcommand that SKIPS content_generation_rewrite but depends on
+        # its blocks_final_path downstream (courseforge-validate).
+        if (
+            stage_active_phases is not None
+            and "content_generation_rewrite" not in stage_active_phases
+        ):
+            canonical_phases.append("content_generation_rewrite")
         if target_phases is None:
             phases = list(canonical_phases)
         else:
@@ -4207,6 +4250,52 @@ class WorkflowRunner:
                     "outline reuse: blocks_validated.jsonl missing at "
                     "%s; skipping inter_tier_validation pre-population",
                     validated_path,
+                )
+
+        # ----- content_generation_rewrite ---------------------------
+        # Only reachable when the stage whitelist SKIPS the rewrite tier
+        # (courseforge-validate) — see the canonical_phases gate above.
+        # post_rewrite_validation resolves its ``blocks_final_path``
+        # ``inputs_from`` against this synthesised output, so without it
+        # the phase-handler task receives no path and returns
+        # ``{"error": "blocks_final_path is required"}`` → zero outputs →
+        # the anti-zombie guard fails the workflow before the
+        # validation-report writer runs.
+        if "content_generation_rewrite" in phases:
+            rewrite_subdir = project_path / "04_rewrite"
+            blocks_final_path = rewrite_subdir / "blocks_final.jsonl"
+            if blocks_final_path.exists():
+                rewrite_block_count = 0
+                try:
+                    with blocks_final_path.open(
+                        "r", encoding="utf-8"
+                    ) as fh:
+                        for line in fh:
+                            if line.strip():
+                                rewrite_block_count += 1
+                except OSError as e:
+                    logger.warning(
+                        "outline reuse: blocks_final.jsonl unreadable: %s",
+                        e,
+                    )
+                synthesized["content_generation_rewrite"] = {
+                    "blocks_final_path": str(blocks_final_path),
+                    "project_id": project_id,
+                    "block_count": rewrite_block_count,
+                    "_completed": True,
+                    "_skipped": True,
+                    "_gates_passed": True,
+                    "_skip_reason": (
+                        "outline reuse: read 04_rewrite/blocks_final.jsonl"
+                    ),
+                }
+            else:
+                logger.warning(
+                    "outline reuse: blocks_final.jsonl missing at %s; "
+                    "skipping content_generation_rewrite pre-population "
+                    "(post_rewrite_validation will fail loudly with "
+                    "'blocks_final_path is required')",
+                    blocks_final_path,
                 )
 
         logger.info(

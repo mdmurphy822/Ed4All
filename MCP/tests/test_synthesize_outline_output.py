@@ -621,3 +621,157 @@ class TestSynthesizeOutlineOutputEdgeCases:
         assert "concept_extraction" not in synth
         assert "content_generation_outline" not in synth
         assert "inter_tier_validation" not in synth
+
+
+# ---------------------------------------------------------------------
+# content_generation_rewrite synthesis (courseforge-validate fix)
+# ---------------------------------------------------------------------
+
+
+def _populate_rewrite(project_path: Path) -> Path:
+    """Write 04_rewrite/blocks_final.jsonl (the rewrite-tier output).
+
+    Mirrors what ``_run_content_generation_rewrite`` writes on a live
+    run so a ``courseforge-validate`` re-run reconstructs
+    ``content_generation_rewrite.blocks_final_path`` from disk.
+    """
+    rewrite_dir = project_path / "04_rewrite"
+    rewrite_dir.mkdir(parents=True, exist_ok=True)
+    blocks_final = rewrite_dir / "blocks_final.jsonl"
+    blocks_final.write_text(
+        '{"block_id": "b1", "block_type": "objective", "week": 1}\n'
+        '{"block_id": "b2", "block_type": "concept", "week": 1}\n'
+        '{"block_id": "b3", "block_type": "example", "week": 2}\n',
+        encoding="utf-8",
+    )
+    return blocks_final
+
+
+class TestContentGenerationRewriteSynthesis:
+    """The courseforge-validate fix: reconstruct the rewrite-tier
+    ``blocks_final_path`` from disk so ``post_rewrite_validation`` (the
+    only LLM-free validator phase the validate stage runs) resolves its
+    ``inputs_from`` instead of getting an empty path → zero outputs →
+    the anti-zombie guard failing the workflow before the report writes.
+    """
+
+    def test_validate_stage_synthesizes_blocks_final_path(
+        self, runner_stub, tmp_path, monkeypatch
+    ):
+        """courseforge-validate skips content_generation_rewrite, so its
+        on-disk blocks_final.jsonl is reconstructed for post_rewrite."""
+        project_path = _make_project(tmp_path)
+        _make_staging(tmp_path)
+        _make_libv2(tmp_path, "test-101")
+        _populate_objectives(project_path)
+        _populate_source_map(project_path)
+        _populate_outline(project_path)
+        blocks_final = _populate_rewrite(project_path)
+        monkeypatch.setattr(
+            "MCP.core.workflow_runner.PROJECT_ROOT", tmp_path,
+        )
+
+        validate_active = (
+            WorkflowRunner._resolve_courseforge_stage_active_phases(
+                "courseforge_validate"
+            )
+        )
+        synth = runner_stub._synthesize_outline_output(
+            project_path, stage_active_phases=validate_active
+        )
+
+        assert "content_generation_rewrite" in synth
+        cgr = synth["content_generation_rewrite"]
+        # The exact key post_rewrite_validation's inputs_from resolves.
+        assert cgr["blocks_final_path"] == str(blocks_final)
+        assert cgr["_completed"] is True
+        assert cgr["_skipped"] is True
+        assert cgr["block_count"] == 3
+
+    def test_rewrite_stage_does_not_synthesize_rewrite(
+        self, runner_stub, tmp_path, monkeypatch
+    ):
+        """courseforge-rewrite RE-RUNS the rewrite tier, so synthesising
+        it (as _completed) would wrongly make the loop skip the live
+        rewrite. It must stay un-reconstructed."""
+        project_path = _make_project(tmp_path)
+        _populate_objectives(project_path)
+        _populate_outline(project_path)
+        _populate_rewrite(project_path)
+        monkeypatch.setattr(
+            "MCP.core.workflow_runner.PROJECT_ROOT", tmp_path,
+        )
+
+        rewrite_active = (
+            WorkflowRunner._resolve_courseforge_stage_active_phases(
+                "courseforge_rewrite"
+            )
+        )
+        synth = runner_stub._synthesize_outline_output(
+            project_path, stage_active_phases=rewrite_active
+        )
+        assert "content_generation_rewrite" not in synth
+
+    def test_full_courseforge_stage_does_not_synthesize_rewrite(
+        self, runner_stub, tmp_path, monkeypatch
+    ):
+        """The full ``courseforge`` slice runs the rewrite tier live too."""
+        project_path = _make_project(tmp_path)
+        _populate_objectives(project_path)
+        _populate_outline(project_path)
+        _populate_rewrite(project_path)
+        monkeypatch.setattr(
+            "MCP.core.workflow_runner.PROJECT_ROOT", tmp_path,
+        )
+
+        full_active = (
+            WorkflowRunner._resolve_courseforge_stage_active_phases(
+                "courseforge"
+            )
+        )
+        synth = runner_stub._synthesize_outline_output(
+            project_path, stage_active_phases=full_active
+        )
+        assert "content_generation_rewrite" not in synth
+
+    def test_no_stage_does_not_synthesize_rewrite(
+        self, runner_stub, tmp_path, monkeypatch
+    ):
+        """A normal (non-stage) run never reconstructs the rewrite tier —
+        the live rewrite phase produces it. Byte-stable to the historical
+        default canonical-phase set."""
+        project_path = _make_project(tmp_path)
+        _populate_objectives(project_path)
+        _populate_outline(project_path)
+        _populate_rewrite(project_path)
+        monkeypatch.setattr(
+            "MCP.core.workflow_runner.PROJECT_ROOT", tmp_path,
+        )
+
+        synth = runner_stub._synthesize_outline_output(project_path)
+        assert "content_generation_rewrite" not in synth
+
+    def test_validate_stage_missing_blocks_final_omits_phase(
+        self, runner_stub, tmp_path, monkeypatch
+    ):
+        """Anti-fabrication: when 04_rewrite/blocks_final.jsonl is absent,
+        the phase is OMITTED (not stubbed). post_rewrite_validation then
+        fails loudly with 'blocks_final_path is required' rather than the
+        synthesizer inventing a placeholder path."""
+        project_path = _make_project(tmp_path)
+        _populate_objectives(project_path)
+        _populate_outline(project_path)
+        # No _populate_rewrite — 04_rewrite/blocks_final.jsonl absent.
+        monkeypatch.setattr(
+            "MCP.core.workflow_runner.PROJECT_ROOT", tmp_path,
+        )
+
+        validate_active = (
+            WorkflowRunner._resolve_courseforge_stage_active_phases(
+                "courseforge_validate"
+            )
+        )
+        synth = runner_stub._synthesize_outline_output(
+            project_path, stage_active_phases=validate_active
+        )
+        assert "content_generation_rewrite" not in synth
