@@ -1998,13 +1998,21 @@ def _render_self_check(
             objective_ids=(obj_ref,) if obj_ref else (),
             source_ids=tuple(q_ids) if q_ids else (),
             source_primary=q_primary,
+            # C3-4 — confidence-capture prompt (per-question override → default).
+            # None unless the question supplies one, so flag-off / legacy emit is
+            # byte-identical (the renderer is gated separately).
+            confidence_prompt=(q.get("confidence_prompt") or None),
         )
         sc_attrs = block.to_html_attrs()
+        # C3-4 — confidence-capture control (gated by ED4ALL_REFLECTION_
+        # CALIBRATION; "" when off or no confidence_prompt → byte-stable).
+        confidence_html = _render_confidence_capture(block)
+        confidence_block = f"\n{confidence_html}" if confidence_html else ""
         blocks.append(f"""
     <div class="self-check"{sc_attrs}>
       <h3>Question {i}</h3>
       <p>{html_mod.escape(q["question"])}</p>
-{options_html}
+{options_html}{confidence_block}
     </div>""")
     return "\n".join(blocks)
 
@@ -2419,6 +2427,51 @@ def _render_reflection_calibration(block: "Block") -> str:
             f'{html_mod.escape(calibration.strip())}</p>'
         )
     parts.append('    </div>')
+    return "\n".join(parts)
+
+
+# C3-4 — confidence-capture scale labels for the B07 self-check control. A
+# 4-point certainty scale (no neutral midpoint) so the learner must commit to a
+# confidence direction — the calibration signal is sharper than a 5-point scale.
+_CONFIDENCE_SCALE = (
+    ("1", "Not sure"),
+    ("2", "Somewhat sure"),
+    ("3", "Fairly sure"),
+    ("4", "Very sure"),
+)
+
+
+def _render_confidence_capture(block: "Block") -> str:
+    """C3-4 — render the B07 self-check CONFIDENCE-capture control.
+
+    The framework wants a knowledge-check to capture the learner's CONFIDENCE /
+    certainty alongside their answer (supports calibration + metacognition; the
+    same theme as the B11 predict-then-reveal work). Renders a radio-group
+    "how sure are you?" scale from the ``Block.confidence_prompt`` field.
+
+    Gated by ``ED4ALL_REFLECTION_CALIBRATION`` (reused — confidence capture is
+    the same calibration theme) — returns ``""`` when the flag is unset OR the
+    ``confidence_prompt`` field is not populated, so default / legacy output is
+    byte-identical (mirrors ``_render_reflection_calibration``).
+    """
+    if not _reflection_calibration_emit_enabled():
+        return ""
+    prompt = getattr(block, "confidence_prompt", None)
+    if not (isinstance(prompt, str) and prompt.strip()):
+        return ""
+    group_name = f"confidence-{getattr(block, 'block_id', '') or 'q'}"
+    parts = [
+        '      <fieldset class="confidence-capture">',
+        f'        <legend>{html_mod.escape(prompt.strip())}</legend>',
+    ]
+    for value, label in _CONFIDENCE_SCALE:
+        parts.append(
+            f'        <label class="confidence-option">'
+            f'<input type="radio" name="{html_mod.escape(group_name)}" '
+            f'value="{value}" style="margin-right:0.5em">'
+            f'{html_mod.escape(label)}</label>'
+        )
+    parts.append('      </fieldset>')
     return "\n".join(parts)
 
 
@@ -3048,6 +3101,9 @@ def _build_self_check_blocks(
             objective_ids=(obj_ref,) if obj_ref else (),
             source_ids=tuple(q_ids) if q_ids else (),
             source_primary=q_primary,
+            # C3-4 — confidence-capture prompt (hash-excluded, not projected to
+            # JSON-LD); None unless the question supplies one → byte-stable.
+            confidence_prompt=(q.get("confidence_prompt") or None),
         )
         blocks.append(block)
     return blocks

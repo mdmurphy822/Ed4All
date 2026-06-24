@@ -264,6 +264,39 @@ class InteractionFeedbackValidator:
                         )
                     )
 
+            # C3-4 — B07 self-check CONFIDENCE-capture arm. A knowledge-check
+            # that captures the learner's confidence / certainty alongside their
+            # answer supports calibration + metacognition (the same theme as the
+            # FR-INT-03 B11 predict-then-reveal work). Rides ED4ALL_REFLECTION_
+            # CALIBRATION (reused — confidence capture IS calibration); no-op
+            # when that flag is off → byte-stable.
+            conf_code = self._check_confidence_capture(
+                block=block,
+                bcode=bcode,
+                calibration_enabled=reflection_calibration_enabled,
+            )
+            if conf_code is not None:
+                block_codes.append(conf_code)
+                if len(issues) < _ISSUE_LIST_CAP:
+                    issues.append(
+                        GateIssue(
+                            severity="warning",
+                            code=conf_code,
+                            message=(
+                                f"Self-check block {block_id!r} ({bt}/{bcode}) "
+                                f"captures no learner confidence — the framework's "
+                                f"metacognition / calibration goal wants a "
+                                f"knowledge-check to record how SURE the learner is "
+                                f"alongside their answer (C3-4)."
+                            ),
+                            location=block_id,
+                            suggestion=(
+                                "Add a confidence_prompt so the self-check captures "
+                                "the learner's certainty for calibration feedback."
+                            ),
+                        )
+                    )
+
             per_block[block_id] = {
                 "framework_block": bcode,
                 "feedback_status": status,  # elaborated | thin | bare | missing
@@ -383,6 +416,33 @@ class InteractionFeedbackValidator:
         if (has_prediction and has_reveal) or has_calibration:
             return None
         return "REFLECTION_NO_CAPTURE"
+
+    @staticmethod
+    def _check_confidence_capture(
+        *,
+        block: Any,
+        bcode: Any,
+        calibration_enabled: Any,
+    ) -> "str | None":
+        """C3-4 — return ``SELF_CHECK_NO_CONFIDENCE_CAPTURE`` when a B07
+        self-check offers no confidence capture; ``None`` otherwise.
+
+        A self-check CAPTURES confidence when it carries a non-empty
+        ``confidence_prompt`` (the radio / scale "how sure are you?" prompt the
+        renderer projects). Scope: only B07 knowledge-checks, and only when
+        ``calibration_enabled`` (rides ``ED4ALL_REFLECTION_CALIBRATION`` —
+        reused, since confidence capture is the same calibration theme; default
+        OFF → byte-stable no-op).
+        """
+        from lib.validators._block_rubric_helpers import block_attr
+
+        if not calibration_enabled or bcode != "B07":
+            return None
+
+        conf = block_attr(block, "confidence_prompt")
+        if isinstance(conf, str) and conf.strip():
+            return None
+        return "SELF_CHECK_NO_CONFIDENCE_CAPTURE"
 
     @staticmethod
     def _distractor_keys(block: Any) -> List[str]:

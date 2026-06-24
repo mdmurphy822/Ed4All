@@ -1027,6 +1027,24 @@ class Block:
     prediction_prompt: Optional[str] = None
     reveal_content: Optional[str] = None
     calibration_feedback: Optional[str] = None
+    # C3-4 — B07 self-check CONFIDENCE capture (metacognition / calibration).
+    # The framework wants a knowledge-check to capture the learner's CONFIDENCE /
+    # certainty ALONGSIDE their answer, so the learner can later compare their
+    # confidence against correctness (the calibration loop that makes
+    # self-assessment honest; the same theme as the B11 predict-then-reveal
+    # work). ``confidence_prompt`` carries the confidence-capture prompt text
+    # (e.g. "How sure are you of this answer?"); the renderer projects it into a
+    # radio / scale control on the B07 self-check. Additive Optional/None default
+    # and INTENTIONALLY excluded from compute_content_hash() (the hash payload is
+    # an explicit 5-key allowlist; mirrors prediction_prompt / self_rating_prompt
+    # / target_bloom) so a confidence-capture retro-fit never drifts an existing
+    # block hash; the default-None state keeps legacy / flag-off blocks
+    # byte-identical. Read by the interaction_feedback
+    # SELF_CHECK_NO_CONFIDENCE_CAPTURE arm (rides the existing gate) + the
+    # self-check renderer's confidence-capture control, both gated by
+    # ED4ALL_REFLECTION_CALIBRATION (reused — confidence capture is the same
+    # calibration theme). Not projected to HTML/JSON-LD here.
+    confidence_prompt: Optional[str] = None
     # C3-3 — B01 objective-block constructive-alignment ENRICHMENT (framework
     # B01, constructive alignment). A well-authored learning-objective block
     # carries the full alignment surface: the Bloom (verb · level · knowledge-
@@ -1138,8 +1156,9 @@ class Block:
         ``discussion_protocol`` / ``discussion_bloom_verb`` B10 three-move
         protocol fields, and the FR-INT-03 ``prediction_prompt`` /
         ``reveal_content`` / ``calibration_feedback`` B11 predict-then-reveal
-        calibration fields, and the C3-3 ``self_rating_prompt`` /
-        ``objective_assessment_thread`` B01 objective-enrichment fields so a
+        calibration fields, the C3-3 ``self_rating_prompt`` /
+        ``objective_assessment_thread`` B01 objective-enrichment fields, and the
+        C3-4 ``confidence_prompt`` B07 self-check confidence-capture field so a
         touch-only / budget-only / classifier-retrofit / objective-
         delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring /
         anchored-rubric-attach / udl-coverage-retrofit / ib5-field-attach /
