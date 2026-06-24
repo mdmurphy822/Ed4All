@@ -261,45 +261,83 @@ def _chunk_body(chunk: Any) -> str:
 # Statement naming (content-derived, deterministic)
 # ---------------------------------------------------------------------------
 
-_STOPWORDS = frozenset(
+# A "concept-ish" span: 2–5 capitalized-or-content words, or a math-ish term.
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+#: OpenStax / generic structural & pedagogical labels that lead a NON-concept
+#: line (a callout / exercise / answer-key header, not a teachable concept). A
+#: sentence whose first word is one of these is leaked source chrome, not an
+#: objective.
+_NON_CONCEPT_LEAD = frozenset(
     {
-        "the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with",
-        "is", "are", "be", "as", "by", "that", "this", "these", "those", "it",
-        "we", "you", "they", "can", "will", "may", "such", "from", "at", "into",
-        "their", "its", "our", "if", "then", "when", "which", "what", "how",
+        "be", "try", "how", "example", "solution", "exercises", "exercise",
+        "chapter", "section", "figure", "table", "learning", "objectives",
+        "objective", "answer", "answers", "key", "glossary", "practice",
+        "review", "note", "tip", "warning", "checklist", "step", "prepared",
     }
 )
 
-# A "concept-ish" span: 2–5 capitalized-or-content words, or a math-ish term.
-_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+#: Substrings marking raw exercise / callout / answer-key / glyph fragments that
+#: leak verbatim from OpenStax-style source chunks (e.g. "BE PREPARED : : 1.1",
+#: "TRY IT : : 1.6", the circled-letter exercise glyphs). A sentence containing
+#: any of these is not a concept statement.
+_JUNK_MARKERS = (
+    "::", "ⓐ", "ⓑ", "ⓒ", "ⓓ", "ⓔ",
+    "BE PREPARED", "TRY IT", "HOW TO", "LEARNING OBJECTIVES",
+)
+
+
+def _looks_like_concept_sentence(s: str) -> bool:
+    """True when ``s`` reads as a teachable concept sentence.
+
+    Rejects the raw exercise / callout / answer-key / math fragments that leak
+    verbatim from source chunks (the ``BE PREPARED`` / ``TRY IT`` / glyph /
+    bare-equation noise). Pure + deterministic: a sentence qualifies only when it
+    has ≥3 words, carries no junk marker, does not lead with a structural label
+    or a digit, and is mostly letters (a concept reads as prose, not symbols).
+    """
+    text = (s or "").strip()
+    if len(text.split()) < 3:
+        return False
+    if any(marker in text for marker in _JUNK_MARKERS):
+        return False
+    lead = text.split(" ", 1)[0].lower().strip(".,;:()")
+    # A concept sentence opens on a real word — not a structural label, a bare
+    # number, or a math token ("3+5=8 ...", "|n| ...", "5+3 ...").
+    if lead in _NON_CONCEPT_LEAD or not lead[:1].isalpha():
+        return False
+    # Reject symbol-/math-dominated spans ("3+5=8 ...", "|n| ≥ 0 ..."): a concept
+    # sentence is overwhelmingly letters + spaces.
+    letters = sum(c.isalpha() or c.isspace() for c in text)
+    if letters / max(len(text), 1) < 0.65:
+        return False
+    return True
 
 
 def _salient_statement(body: str, fallback: str) -> str:
     """Derive a short, content-derived sub-objective statement from chunk text.
 
-    Deterministic: takes the first non-trivial sentence of the chunk body,
-    trims it to a concise concept phrase, and prefixes a teaching verb so the
-    sub-objective reads as an objective ("Understand <topic>"). Falls back to
-    ``fallback`` (the CO statement) when the body yields nothing usable. NOT a
+    Deterministic: scans the chunk body for the FIRST sentence that reads like a
+    teachable concept (:func:`_looks_like_concept_sentence`) and trims it to a
+    concise clause. Raw exercise / callout / answer-key fragments
+    (``BE PREPARED``, ``TRY IT``, glyphs, bare math) are skipped; when no clean
+    concept sentence is found the CO statement (``fallback``) is used, so a
+    sub-objective is always a real objective — never leaked source chrome and
+    never the historical ``"Understand: <junk>"`` template prefix. NOT a
     summarizer — a pure, replayable span extraction.
     """
     text = (body or "").strip()
     if not text:
         return fallback
-    first = _SENTENCE_SPLIT.split(text, maxsplit=1)[0].strip()
-    # Collapse whitespace, drop a trailing colon, cap length.
-    first = re.sub(r"\s+", " ", first).rstrip(":;,. ")
-    if not first:
-        return fallback
-    words = first.split(" ")
-    if len(words) > 14:
-        first = " ".join(words[:14])
-    # If the span already reads like an objective (leads with a verb-ish token),
-    # keep it; else frame it as a concept to understand.
-    lead = words[0].lower().strip(".,;:")
-    if lead in _STOPWORDS or lead.isdigit():
-        return f"Understand: {first}"
-    return first
+    for cand in _SENTENCE_SPLIT.split(text):
+        cand = re.sub(r"\s+", " ", cand).strip().rstrip(":;,. ")
+        if not _looks_like_concept_sentence(cand):
+            continue
+        words = cand.split(" ")
+        if len(words) > 14:
+            cand = " ".join(words[:14])
+        return cand
+    return fallback
 
 
 # ---------------------------------------------------------------------------

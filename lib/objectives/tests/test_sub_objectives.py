@@ -430,3 +430,69 @@ def test_decision_type_in_schema_enum():
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     enum = schema["properties"]["decision_type"]["enum"]
     assert _DECISION_TYPE in enum
+
+
+# ---------------------------------------------------------------------------
+# leak rejection: raw OpenStax exercise / callout / math fragments must NOT
+# become sub-objective statements, and the "Understand:" template prefix must
+# never leak (regression for the course-a-calib course_planning review).
+# ---------------------------------------------------------------------------
+
+
+def test_raw_exercise_and_callout_text_never_leaks_into_statements():
+    co = {
+        "id": "CO-LEAK",
+        "statement": "Apply place value concepts to round whole numbers.",
+        # Every grounded chunk body is raw OpenStax chrome (callout labels,
+        # exercise glyphs, bare math) — exactly the text that leaked verbatim
+        # (incl. the hardcoded "Understand:" prefix) in the prior derivation.
+        "source_chunk_ids": ["c1", "c2", "c3", "c4"],
+        "sub_objectives": [],
+    }
+    chunks = {
+        "c1": {"text": "BE PREPARED : : 1.1 A more thorough introduction to the topics."},
+        "c2": {"text": "TRY IT : : 1.6 Write the number eleven billion in words."},
+        "c3": {"text": "3+5=8 The sum of three and five is equal to eight."},
+        "c4": {"text": "ⓐ After completing the exercises, use this checklist."},
+    }
+
+    subs = derive_sub_objectives_for_co(
+        co=co, chunks_by_id=chunks, embedder=_Embed()
+    )
+
+    assert subs, "still 3-level (grounded ids preserved), just no garbage text"
+    for so in subs:
+        stmt = so["statement"]
+        assert stmt.strip()
+        # No leaked template prefix and no raw-chrome markers.
+        assert not stmt.startswith("Understand:")
+        for marker in ("BE PREPARED", "TRY IT", "::", "ⓐ", "3+5=8"):
+            assert marker not in stmt, f"leaked {marker!r}: {stmt!r}"
+        # With no clean concept sentence available, each sub-objective falls
+        # back to the (clean) CO statement — never source noise.
+        assert stmt == co["statement"]
+    # Anti-fabrication still holds.
+    covered = {cid for so in subs for cid in so["source_chunk_ids"]}
+    assert covered.issubset(set(co["source_chunk_ids"]))
+
+
+def test_clean_concept_sentence_is_preferred_over_leading_junk():
+    co = {
+        "id": "CO-MIX",
+        "statement": "FALLBACK should not be used here.",
+        "source_chunk_ids": ["m1"],
+        "sub_objectives": [],
+    }
+    chunks = {
+        "m1": {
+            "text": "TRY IT :: 1.1 do this exercise. The opposite of a number "
+            "is the same distance from zero on the number line."
+        }
+    }
+    subs = derive_sub_objectives_for_co(
+        co=co, chunks_by_id=chunks, embedder=_Embed()
+    )
+    assert len(subs) == 1
+    stmt = subs[0]["statement"]
+    assert stmt.startswith("The opposite of a number")
+    assert "TRY IT" not in stmt and stmt != co["statement"]

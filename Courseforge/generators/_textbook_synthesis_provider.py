@@ -1963,6 +1963,33 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         return obj
 
     @staticmethod
+    def _backfill_bloom_verb(statement: str, bloom_level: str) -> str:
+        """Recover a missing ``bloom_verb`` from the objective's own statement.
+
+        Used only when the model omitted the verb. Anti-fabrication: only a verb
+        actually PRESENT in the statement is returned — never a copy of
+        ``abcd.behavior.verb`` (which would silently force verb-triple agreement
+        and mask a real misalignment the IB3 gate exists to catch). Prefers a
+        concrete action verb over a bare Bloom *level name*, then one whose band
+        matches the assigned level. When the statement carries no Bloom verb the
+        field stays absent ("") and the gate legitimately flags it. Fail-soft:
+        a taxonomy-load error returns "" (status quo).
+        """
+        try:
+            from lib.ontology.bloom import detect_bloom_verbs  # noqa: PLC0415
+        except Exception:  # noqa: BLE001 — taxonomy load is the floor
+            return ""
+        detected = detect_bloom_verbs(statement or "")
+        if not detected:
+            return ""
+        non_level = [
+            (lvl, v) for lvl, v in detected if v not in _BLOOM_LEVEL_ENUM
+        ]
+        pool = non_level or detected
+        match = next((v for lvl, v in pool if lvl == bloom_level), None)
+        return (match or pool[0][1]).strip().lower()
+
+    @staticmethod
     def _normalise_one_objective(
         raw: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
@@ -1987,6 +2014,13 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
         entry["bloom_level"] = bloom_level
 
         bloom_verb = str(raw.get("bloom_verb") or "").strip().lower()
+        if not bloom_verb:
+            # The 7B sometimes omits bloom_verb entirely. Recover it from the
+            # objective's OWN statement rather than leaving it absent (which
+            # leaves the IB3 verb-triple gate nothing to compare against).
+            bloom_verb = TextbookSynthesisProvider._backfill_bloom_verb(
+                statement, bloom_level
+            )
         if bloom_verb:
             entry["bloom_verb"] = bloom_verb
 

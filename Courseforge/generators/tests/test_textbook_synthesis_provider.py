@@ -1319,3 +1319,42 @@ def test_outline_decision_carries_band_and_section_count():
     rationale = events[0]["rationale"]
     assert "section_count_input=141" in rationale
     assert "draft_to_band=(6, 12)" in rationale
+
+
+# ---------------------------------------------------------------------------
+# bloom_verb backfill: a model-omitted verb is recovered from the objective's
+# OWN statement (never fabricated, never copied from abcd). Regression for the
+# course-a-calib course_planning review (2 of 31 COs had bloom_verb=None).
+# ---------------------------------------------------------------------------
+
+
+def test_normalise_backfills_missing_bloom_verb_from_statement():
+    # No bloom_verb emitted -> recovered from the statement's own verb.
+    e = TextbookSynthesisProvider._normalise_one_objective(
+        {"statement": "Apply the rounding process to whole numbers.",
+         "bloom_level": "apply"}
+    )
+    assert e["bloom_verb"] == "apply"
+    # A concrete action verb is preferred over the bare level name.
+    e2 = TextbookSynthesisProvider._normalise_one_objective(
+        {"statement": "Apply the order of operations to simplify expressions.",
+         "bloom_level": "apply"}
+    )
+    assert e2["bloom_verb"] == "simplify"
+
+
+def test_normalise_does_not_fabricate_bloom_verb_when_statement_has_none():
+    # Statement carries no Bloom verb -> field stays absent (the gate flags it),
+    # never invented.
+    e = TextbookSynthesisProvider._normalise_one_objective(
+        {"statement": "Prime numbers exist in the natural numbers.",
+         "bloom_level": "remember"}
+    )
+    assert "bloom_verb" not in e
+
+
+def test_normalise_preserves_explicit_bloom_verb():
+    e = TextbookSynthesisProvider._normalise_one_objective(
+        {"statement": "Anything.", "bloom_level": "apply", "bloom_verb": "solve"}
+    )
+    assert e["bloom_verb"] == "solve"
