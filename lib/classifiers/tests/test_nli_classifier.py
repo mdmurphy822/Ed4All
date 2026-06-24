@@ -426,6 +426,12 @@ def test_cuda_device_when_available_moves_and_halves(
     monkeypatch.setenv(ENV_DEVICE, "cuda")
     fake_torch = _make_scoring_fake_torch()
     fake_torch.cuda.is_available.return_value = True
+    # Pin ample free VRAM so this GPU-path test is deterministic regardless
+    # of the box's actual VRAM (e.g. a dev box with a resident ollama 7B).
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib",
+        lambda _torch, _device: 6144,
+    )
 
     classifier = _build_classifier(fake_torch)
     assert classifier.device == "cuda"
@@ -486,13 +492,21 @@ def test_constructor_arg_overrides_env_device(
 def test_cuda_low_free_vram_falls_back_to_cpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """cuda available but free VRAM < floor → load on CPU (fp32), warn."""
+    """cuda available but free VRAM < floor → load on CPU (fp32), warn.
+
+    Mocks the ``probe_free_vram_mib`` seam (NVML-first) rather than
+    ``mem_get_info`` — on WSL2 the latter is wrong, which is exactly why
+    the probe prefers NVML.
+    """
     monkeypatch.setenv(ENV_DEVICE, "cuda")
     monkeypatch.delenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", raising=False)  # default 1024
     fake_torch = _make_scoring_fake_torch()
     fake_torch.cuda.is_available.return_value = True
     # 200 MiB free — the observed 8 GB-shared-with-ollama-7B state.
-    fake_torch.cuda.mem_get_info.return_value = (200 * 1024 * 1024, 8192 * 1024 * 1024)
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib",
+        lambda _torch, _device: 200,
+    )
 
     with patch("lib.classifiers.nli_classifier.logger.warning") as warn:
         classifier = _build_classifier(fake_torch)
@@ -516,7 +530,10 @@ def test_cuda_ample_free_vram_stays_on_gpu(
     fake_torch = _make_scoring_fake_torch()
     fake_torch.cuda.is_available.return_value = True
     # 6 GB free — ample for the fp16 head + activations.
-    fake_torch.cuda.mem_get_info.return_value = (6144 * 1024 * 1024, 8192 * 1024 * 1024)
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib",
+        lambda _torch, _device: 6144,
+    )
 
     classifier = _build_classifier(fake_torch)
     assert classifier.device == "cuda"
@@ -525,22 +542,103 @@ def test_cuda_ample_free_vram_stays_on_gpu(
     classifier._model.half.assert_called_once_with()
 
 
-def test_vram_floor_zero_disables_guard(
+def test_cuda_probe_failure_proceeds_to_gpu(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """floor==0 disables the free-VRAM gate → loads on GPU even when tight."""
+    """probe returns None (no NVML / mem_get_info) → load-time guard only.
+
+    A failed probe must NOT block the GPU path (that would regress every
+    native-Linux box where the probe is merely unavailable); the model
+    proceeds onto cuda and the existing ``.to().half()`` OOM try/except
+    is the remaining guard.
+    """
     monkeypatch.setenv(ENV_DEVICE, "cuda")
-    monkeypatch.setenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", "0")
+    monkeypatch.delenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", raising=False)
     fake_torch = _make_scoring_fake_torch()
     fake_torch.cuda.is_available.return_value = True
-    # Even with 100 MiB free, floor=0 means mem_get_info is never consulted.
-    fake_torch.cuda.mem_get_info.return_value = (100 * 1024 * 1024, 8192 * 1024 * 1024)
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib",
+        lambda _torch, _device: None,
+    )
 
     classifier = _build_classifier(fake_torch)
     assert classifier.device == "cuda"
     assert classifier.dtype == "float16"
     classifier._model.to.assert_called_once_with("cuda")
-    fake_torch.cuda.mem_get_info.assert_not_called()
+
+
+def test_vram_floor_zero_disables_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """floor==0 disables the free-VRAM gate → loads on GPU; probe never called."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    monkeypatch.setenv("ED4ALL_NLI_MIN_FREE_VRAM_MIB", "0")
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+    probe = MagicMock(return_value=100)
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib", probe,
+    )
+
+    classifier = _build_classifier(fake_torch)
+    assert classifier.device == "cuda"
+    assert classifier.dtype == "float16"
+    classifier._model.to.assert_called_once_with("cuda")
+    probe.assert_not_called()
+
+
+def test_probe_free_vram_prefers_nvml_over_mem_get_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WSL2 regression: NVML's global-free wins over mem_get_info's wrong value.
+
+    On WSL2 ``torch.cuda.mem_get_info`` ignores a separate ollama
+    process's allocation (reports ~5.4 GB "free" on a full 8 GB card);
+    NVML reports the true ~150 MiB. ``probe_free_vram_mib`` must return
+    the NVML value so the contention fallback actually fires.
+    """
+    import types
+
+    from lib.classifiers.nli_classifier import probe_free_vram_mib
+
+    # Fake NVML reporting the TRUE 150 MiB free (WSL2 with ollama resident).
+    fake_pynvml = types.SimpleNamespace()
+    fake_pynvml.nvmlInit = lambda: None
+    fake_pynvml.nvmlShutdown = lambda: None
+    fake_pynvml.nvmlDeviceGetHandleByIndex = lambda i: object()
+    fake_pynvml.nvmlDeviceGetMemoryInfo = lambda h: types.SimpleNamespace(
+        free=150 * 1024 * 1024, used=8042 * 1024 * 1024, total=8192 * 1024 * 1024,
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml)
+
+    # mem_get_info would report the WRONG 5419 MiB — must be ignored.
+    fake_torch = MagicMock()
+    fake_torch.cuda.mem_get_info.return_value = (5419 * 1024 * 1024, 8192 * 1024 * 1024)
+
+    assert probe_free_vram_mib(fake_torch, "cuda") == 150
+    fake_torch.cuda.mem_get_info.assert_not_called()  # NVML short-circuits
+
+    # NVML unavailable → falls back to mem_get_info (correct on native Linux).
+    monkeypatch.delitem(sys.modules, "pynvml", raising=False)
+    monkeypatch.setattr(
+        "builtins.__import__",
+        _import_raising_for("pynvml"),
+    )
+    assert probe_free_vram_mib(fake_torch, "cuda") == 5419
+
+
+def _import_raising_for(name: str):
+    """Return an __import__ shim that raises ImportError for ``name`` only."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _shim(n, *a, **k):
+        if n == name:
+            raise ImportError(f"no {name}")
+        return real_import(n, *a, **k)
+
+    return _shim
 
 
 def test_resolve_min_free_vram_mib_parse_with_fallback(

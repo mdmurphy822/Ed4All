@@ -131,6 +131,62 @@ ENV_MIN_FREE_VRAM_MIB = "ED4ALL_NLI_MIN_FREE_VRAM_MIB"
 _DEFAULT_MIN_FREE_VRAM_MIB = 1024
 
 
+def _cuda_device_index(device: str) -> int:
+    """Map a torch device string to a 0-based GPU index for NVML.
+
+    ``"cuda"`` / ``""`` → 0 (the current/default device); ``"cuda:N"`` →
+    ``N``. Anything unparseable → 0.
+    """
+    if ":" in device:
+        try:
+            return int(device.rsplit(":", 1)[1])
+        except (ValueError, IndexError):
+            return 0
+    return 0
+
+
+def probe_free_vram_mib(torch_module: Any, device: str) -> Optional[int]:
+    """Return the GLOBALLY-free VRAM (MiB) on ``device``, or None on failure.
+
+    Prefers NVML (``pynvml`` / ``nvidia-ml-py``) because it reports the
+    GPU's true cross-process free memory — the number that matters when a
+    SEPARATE process (a local ollama LLM server) holds the card. This is
+    load-bearing on WSL2, where ``torch.cuda.mem_get_info()`` does NOT
+    account for other processes' allocations (it reports ~5.4 GB "free"
+    on an 8 GB card that NVML/nvidia-smi correctly show as ~150 MiB free
+    with ollama resident) — so a ``mem_get_info``-only probe would wave
+    the NLI model onto a full GPU and OOM anyway. Falls back to
+    ``torch.cuda.mem_get_info`` (correct on native Linux) when NVML is
+    unavailable, then to None (probe failed → caller proceeds with the
+    load-time OOM guard only). Best-effort: never raises.
+    """
+    idx = _cuda_device_index(device)
+    # 1) NVML — true global free (correct on WSL2 AND native Linux).
+    try:
+        import pynvml  # type: ignore
+
+        pynvml.nvmlInit()
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return int(mem.free) // (1024 * 1024)
+        finally:
+            try:
+                pynvml.nvmlShutdown()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001 — NVML missing / no permission / odd build
+        pass
+    # 2) torch.cuda.mem_get_info — correct on native Linux (NOT WSL2, where
+    #    it ignores other processes' allocations).
+    try:
+        dev_arg = device if device != "cuda" else None
+        free_bytes, _total = torch_module.cuda.mem_get_info(dev_arg)
+        return int(free_bytes) // (1024 * 1024)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def resolve_min_free_vram_mib(value: Optional[int] = None) -> int:
     """Resolve the free-VRAM floor (MiB) for the NLI cuda gate.
 
@@ -354,20 +410,15 @@ class NliClassifier:
         # (preserves the historical load-time-only OOM guard below).
         floor_mib = resolve_min_free_vram_mib()
         if floor_mib > 0:
-            try:
-                # ``mem_get_info`` returns (free_bytes, total_bytes) for the
-                # given device (None → current device). Available since
-                # torch 1.10; guard defensively for older / odd builds.
-                dev_arg = device if device != "cuda" else None
-                free_bytes, _total_bytes = torch_module.cuda.mem_get_info(dev_arg)
-                free_mib = int(free_bytes) // (1024 * 1024)
-            except Exception as exc:  # noqa: BLE001 — probe is best-effort
+            # NVML-first global free-VRAM probe (load-bearing on WSL2, where
+            # torch.cuda.mem_get_info ignores other processes' allocations).
+            free_mib = probe_free_vram_mib(torch_module, device)
+            if free_mib is None:
                 logger.warning(
-                    "NliClassifier could not probe free VRAM on %r (%s); "
+                    "NliClassifier could not probe free VRAM on %r; "
                     "proceeding with the load-time OOM guard only.",
-                    device, exc,
+                    device,
                 )
-                free_mib = None
             if free_mib is not None and free_mib < floor_mib:
                 logger.warning(
                     "NliClassifier: only %d MiB free on %r (floor %d MiB, "
