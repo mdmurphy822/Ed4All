@@ -4310,7 +4310,7 @@ class WorkflowRunner:
     # consumers (operator-facing dashboards, dry-run preview tooling,
     # the Phase 6 ABCD concept-extractor's validator surface) should
     # gate on this field when reading the report.
-    _VALIDATION_REPORT_SCHEMA_VERSION = "v1"
+    _VALIDATION_REPORT_SCHEMA_VERSION = "v2"
 
     def _write_validation_report(
         self,
@@ -4354,7 +4354,7 @@ class WorkflowRunner:
             {
               "run_id": "<workflow_id>",
               "phase": "<phase_name>",
-              "schema_version": "v1",
+              "schema_version": "v2",
               "total_blocks": <int>,
               "passed": <int>,
               "failed": <int>,
@@ -4367,13 +4367,61 @@ class WorkflowRunner:
                   "page": "<page_id|null>",
                   "week": <int|null>,
                   "status": "passed|failed|escalated",
-                  "gate_results": [...],
+                  "gate_results": [
+                    {
+                      "gate_id": "<id>",
+                      "action": "<action|null>",
+                      "passed": <bool>,         # PHASE-level pass/fail
+                      "issue_count": <int>      # issues whose location == THIS block_id
+                    },
+                    ...
+                  ],
                   "escalation_marker": "<marker|null>",
                   "curie_force_injected": true   # present only when set
                 },
                 ...
+              ],
+              "phase_level_gate_results": [
+                {
+                  "gate_id": "<id>",
+                  "action": "<action|null>",
+                  "passed": <bool>,
+                  "issue_count": <int>,             # TOTAL issues for the gate
+                  "unattributed_issue_count": <int> # issues whose location matched
+                                                    # NO block_id (objective/page/None)
+                },
+                ...
               ]
             }
+
+        Per-block ``issue_count`` attribution (schema v2 fix): a
+        ``GateResult``'s ``issues[]`` each carry a ``location`` field
+        whose meaning is gate-dependent — a BLOCK-level gate
+        (``udl_coverage`` / ``qa_checklist`` / …) sets ``location`` to a
+        ``block_id``; OBJECTIVE-level (``triangle_completeness`` ->
+        ``CO-01``), MODULE/PAGE-level (``retrieval_presence`` ->
+        ``week_01_content_01``), and summary issues set ``location`` to a
+        non-block id or ``None``. The writer builds, ONCE, a
+        ``gate_id -> Counter(location)`` map from
+        ``gate_results_list``, then each block's ``gate_results[].
+        issue_count`` counts ONLY the issues whose ``location`` equals
+        THAT block's ``block_id``. Schema v1 (the bug this supersedes)
+        attached the same phase-level ``issue_count`` to every block,
+        smearing course-wide totals across all blocks and inflating the
+        calibration harness's per-gate fire-rates toward 100%. The
+        per-gate ``passed`` stays PHASE-level (a gate either passed or
+        failed for the whole phase); only ``issue_count`` is now
+        per-block.
+
+        ``phase_level_gate_results`` (schema v2 addition): preserves the
+        structural (objective / page / ``None``-location) issues that are
+        NOT attributable to any single block. Per gate it carries the
+        TOTAL ``issue_count`` plus ``unattributed_issue_count`` (issues
+        whose ``location`` matched no block_id). This is where the
+        calibration harness reads structural gates
+        (``triangle_completeness`` / ``retrieval_presence`` /
+        anatomy-summary issues) at the right granularity instead of from
+        smeared per-block counts.
 
         R6 — ``curie_force_injected``: the top-level count + the
         per-block boolean flag mark blocks that PASSED the
@@ -4497,22 +4545,79 @@ class WorkflowRunner:
             def _has_forced_curie(_html: Any) -> bool:  # type: ignore[misc]
                 return False
 
-        # gate_results_list is the executor's emit; we attach the
-        # full chain to every block's ``gate_results`` in the report so
-        # the operator can introspect each gate's per-block findings
-        # without re-running the validators. Down-shape any
-        # ``GateResult.to_dict()`` payloads to a stable shape per plan
-        # §6 (gate_id / action / passed / issues).
-        gate_chain_summary: List[Dict[str, Any]] = []
+        # gate_results_list is the executor's emit; we attach a stable
+        # per-gate chain (gate_id / action / passed / issue_count) to
+        # every block's ``gate_results`` so the operator can introspect
+        # each gate's findings WITHOUT re-running the validators.
+        #
+        # Schema v2 attribution fix: each ``GateResult.issues[]`` entry
+        # carries a ``location`` field. For a BLOCK-level gate the
+        # location IS the block_id; for OBJECTIVE / MODULE / summary
+        # issues the location is a non-block id or ``None``. We build,
+        # ONCE, a per-gate ``Counter`` over issue locations, then each
+        # block looks up the count for ITS OWN block_id — so a gate's
+        # per-block ``issue_count`` reflects only the issues that name
+        # that block, not the course-wide total (the schema-v1 bug).
+        from collections import Counter as _Counter
+        from collections import OrderedDict
+
+        # gate_id -> Counter(location -> n_issues). Insertion-ordered so
+        # the per-block ``gate_results`` array preserves chain order.
+        gate_location_counts: "OrderedDict[str, _Counter]" = OrderedDict()
+        # Stable per-gate (action, passed) + total issue_count, for the
+        # phase-level section and the per-block chain scaffold.
+        gate_chain_meta: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
         for gr in gate_results_list or []:
             if not isinstance(gr, dict):
                 continue
-            gate_chain_summary.append({
-                "gate_id": gr.get("gate_id"),
+            gid = gr.get("gate_id")
+            issues = gr.get("issues") or []
+            counter = gate_location_counts.setdefault(gid, _Counter())
+            for issue in issues:
+                loc = issue.get("location") if isinstance(issue, dict) else None
+                # ``None`` locations (summary issues) are tracked under a
+                # sentinel so they roll up into the phase-level section
+                # but never attach to a block.
+                counter[loc] += 1
+            # Keep the LAST (action, passed, total) for a gate_id if the
+            # executor somehow emitted it twice; total is the true count.
+            gate_chain_meta[gid] = {
+                "gate_id": gid,
                 "action": gr.get("action"),
                 "passed": gr.get("passed"),
-                "issue_count": len(gr.get("issues") or []),
-            })
+                "issue_count": len(issues),
+            }
+
+        # Pre-resolve the set of real block_ids so we can compute, per
+        # gate, how many issues were NOT attributable to any block
+        # (objective/page/None-location issues) for the phase-level
+        # section. Built from the loaded validated + failed blocks.
+        all_block_ids: set = set()
+        for _blk in validated_blocks:
+            _bid = _blk.get("block_id")
+            if _bid is not None:
+                all_block_ids.add(_bid)
+        for _blk in failed_blocks:
+            _bid = _blk.get("block_id")
+            if _bid is not None:
+                all_block_ids.add(_bid)
+
+        def _block_gate_results(block_id: Any) -> List[Dict[str, Any]]:
+            """Per-block gate chain: phase-level (action, passed) + the
+            issue_count of issues whose ``location`` == this block_id."""
+            chain: List[Dict[str, Any]] = []
+            for gid, meta in gate_chain_meta.items():
+                counter = gate_location_counts.get(gid)
+                per_block_issue_count = (
+                    counter.get(block_id, 0) if counter is not None else 0
+                )
+                chain.append({
+                    "gate_id": meta["gate_id"],
+                    "action": meta["action"],
+                    "passed": meta["passed"],
+                    "issue_count": per_block_issue_count,
+                })
+            return chain
 
         def _record_block(entry: Dict[str, Any], status: str) -> None:
             nonlocal passed_count, failed_count, escalated_count
@@ -4540,7 +4645,7 @@ class WorkflowRunner:
                 "page": entry.get("page_id"),
                 "week": entry.get("week"),
                 "status": status,
-                "gate_results": gate_chain_summary,
+                "gate_results": _block_gate_results(entry.get("block_id")),
                 "escalation_marker": esc,
             }
             if forced:
@@ -4607,6 +4712,35 @@ class WorkflowRunner:
             label=f"two_pass_{phase_name}",
         )
 
+        # Schema v2: the phase-level gate section preserves the
+        # structural (objective / page / None-location) issues that are
+        # NOT attributable to any single block. Per gate it carries the
+        # TOTAL issue_count plus the count of issues whose ``location``
+        # matched NO block_id — i.e. objective-scoped
+        # (``triangle_completeness`` -> ``CO-01``), page/module-scoped
+        # (``retrieval_presence`` -> ``week_01_content_01``), and
+        # ``None``-location summary issues. The calibration harness reads
+        # structural gates from HERE rather than from per-block counts.
+        phase_level_gate_results: List[Dict[str, Any]] = []
+        for gid, meta in gate_chain_meta.items():
+            counter = gate_location_counts.get(gid)
+            if counter is None:
+                total = 0
+                unattributed = 0
+            else:
+                total = sum(counter.values())
+                unattributed = sum(
+                    n for loc, n in counter.items()
+                    if loc is None or loc not in all_block_ids
+                )
+            phase_level_gate_results.append({
+                "gate_id": meta["gate_id"],
+                "action": meta["action"],
+                "passed": meta["passed"],
+                "issue_count": total,
+                "unattributed_issue_count": unattributed,
+            })
+
         report = {
             "run_id": workflow_id,
             "phase": phase_name,
@@ -4623,6 +4757,7 @@ class WorkflowRunner:
             # ``per_block[*].curie_force_injected``.
             "curie_force_injected": curie_force_injected_count,
             "per_block": per_block,
+            "phase_level_gate_results": phase_level_gate_results,
             "source_coverage": source_coverage_block,
         }
 

@@ -209,3 +209,110 @@ def test_report_has_all_gate_families():
     assert set(report["gate_families"]) == {f.family for f in ch.GATE_FAMILIES}
     for g in report["gate_families"].values():
         assert g["flip_ready"] is False  # no data -> never ready
+
+
+# --------------------------------------------------------------------------------------
+# schema-v2 attribution: per-block fire_rate from per-block issue_count, NOT the
+# smeared phase-level ``passed`` flag (the bug this fix removes).
+# --------------------------------------------------------------------------------------
+def _read_report_dict(report_dict: dict) -> "ch.CorpusResult":
+    import json
+    import tempfile
+
+    res = ch.CorpusResult(
+        corpus_id="attrib-corpus-20260101000000",
+        origin="courseforge_export",
+        path="/synth/attrib",
+        corpus_key="attrib-corpus",
+    )
+    with tempfile.TemporaryDirectory() as td:
+        rp = Path(td) / "report.json"
+        rp.write_text(json.dumps(report_dict), encoding="utf-8")
+        ch.read_validation_report(res, rp)
+    return res
+
+
+def test_block_fire_rate_uses_per_block_issue_count_not_phase_passed():
+    # A block-scoped gate (udl_coverage) failed for the PHASE (passed=False on
+    # every block, the schema-v2 phase-level flag), but only ONE of four blocks
+    # actually carries an issue (issue_count>0). Fire rate must be 1/4, not 4/4.
+    per_block = []
+    for i in range(4):
+        per_block.append(
+            {
+                "block_id": f"blk_{i:03d}",
+                "gate_results": [
+                    {
+                        "gate_id": "udl_coverage",
+                        "passed": False,            # PHASE-level: smeared on all
+                        "issue_count": 1 if i == 0 else 0,  # only blk_000 fired
+                        "action": "regenerate",
+                    }
+                ],
+            }
+        )
+    report_dict = {"per_block": per_block, "phase_level_gate_results": []}
+    res = _read_report_dict(report_dict)
+    obs = res.observations["IB4 UDL multiple-means coverage"]
+    assert obs.evaluated == 4
+    assert obs.fired == 1            # NOT 4 (the schema-v1 smear)
+    assert abs(obs.fire_rate - 0.25) < 1e-9
+
+
+def test_structural_gate_read_from_phase_level_section():
+    # Module-scoped retrieval_presence is read from phase_level_gate_results,
+    # not smeared across per_block. A block-scoped gate in the SAME phase-level
+    # list must NOT be double-counted from there.
+    report_dict = {
+        "per_block": [
+            {
+                "block_id": "blk_000",
+                "gate_results": [
+                    {"gate_id": "udl_coverage", "passed": False,
+                     "issue_count": 1, "action": "regenerate"},
+                ],
+            }
+        ],
+        "phase_level_gate_results": [
+            {"gate_id": "retrieval_presence", "passed": False,
+             "issue_count": 3, "unattributed_issue_count": 3,
+             "action": "regenerate"},
+            # A block-scoped gate also appears here (total view) — must be
+            # ignored by the phase-level reader to avoid double counting.
+            {"gate_id": "udl_coverage", "passed": False,
+             "issue_count": 1, "unattributed_issue_count": 0,
+             "action": "regenerate"},
+        ],
+    }
+    res = _read_report_dict(report_dict)
+
+    # retrieval_presence (module-scoped) fired once from the phase-level section.
+    rp_obs = res.observations["IB7.5b retrieval presence (module-scoped)"]
+    assert rp_obs.evaluated == 1
+    assert rp_obs.fired == 1
+
+    # udl_coverage counted ONCE (from per_block), not twice.
+    udl_obs = res.observations["IB4 UDL multiple-means coverage"]
+    assert udl_obs.evaluated == 1
+    assert udl_obs.fired == 1
+
+
+def test_legacy_v1_report_without_phase_level_section_degrades_gracefully():
+    # A legacy v1 report (no phase_level_gate_results) still reads block-scoped
+    # gates; structural/module families are simply not observed from it.
+    report_dict = {
+        "per_block": [
+            {
+                "block_id": "blk_000",
+                "gate_results": [
+                    {"gate_id": "udl_coverage", "passed": False,
+                     "issue_count": 1, "action": "regenerate"},
+                ],
+            }
+        ],
+        # no phase_level_gate_results key
+    }
+    res = _read_report_dict(report_dict)
+    assert res.observations["IB4 UDL multiple-means coverage"].fired == 1
+    # retrieval_presence never observed (no phase-level section).
+    assert "IB7.5b retrieval presence (module-scoped)" not in res.observations

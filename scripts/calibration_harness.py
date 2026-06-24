@@ -346,7 +346,27 @@ def _record_fire(
 
 
 def read_validation_report(res: CorpusResult, report_path: Path) -> bool:
-    """Read a Courseforge 02_validation_report/report.json per-block GateResult list.
+    """Read a Courseforge 02_validation_report/report.json GateResult list.
+
+    Two sources, by gate scope (schema v2 — the per-block ``issue_count``
+    attribution fix):
+
+    * BLOCK-scoped families read ``per_block[].gate_results[]``. The
+      per-gate ``passed`` flag in that array is PHASE-level (the same on
+      every block), so it can NOT distinguish which block actually
+      tripped a gate — under the schema-v1 bug it smeared one phase
+      verdict across all blocks and inflated fire-rates toward 100%.
+      Instead, a block "fires" a block-scoped gate iff its OWN
+      ``issue_count`` (now correctly attributed to that block's id) is
+      > 0. Each block is one ``evaluated`` unit.
+
+    * OBJECTIVE / MODULE / summary (non-block-attributable) families read
+      the schema-v2 ``phase_level_gate_results[]`` section, which carries
+      per gate the total ``issue_count`` + ``unattributed_issue_count``
+      (issues whose location matched no block_id). A module-scoped family
+      fires once with the gate's phase-level ``passed`` verdict (the
+      existing module-scope contract). Gracefully degrades when the
+      section is absent (legacy v1 report) — logged, skipped.
 
     Returns True if any calibration gate was observed.
     """
@@ -359,6 +379,8 @@ def read_validation_report(res: CorpusResult, report_path: Path) -> bool:
 
     src = f"validation_report:{report_path.name}"
     saw_any = False
+
+    # --- BLOCK-scoped: fire per block on that block's OWN issue_count. ---
     for block in per_block:
         if not isinstance(block, dict):
             continue
@@ -370,22 +392,81 @@ def read_validation_report(res: CorpusResult, report_path: Path) -> bool:
             fam = _GATE_TO_FAMILY.get(str(gid))
             if fam is None:
                 continue
+            # Module/objective-scoped families are read from the
+            # phase-level section below, not smeared per block.
+            if fam.scope == "module":
+                continue
             saw_any = True
-            passed = bool(gr.get("passed", True))
-            fired = not passed
+            try:
+                issue_count = int(gr.get("issue_count") or 0)
+            except (TypeError, ValueError):
+                issue_count = 0
+            fired = issue_count > 0
             sample = None
             if fired:
                 sample = {
                     "corpus": res.corpus_id,
                     "block_id": block_id,
                     "gate_id": gid,
-                    "issue_count": gr.get("issue_count"),
+                    "issue_count": issue_count,
                     "action": gr.get("action"),
                     "source": src,
                 }
             _record_fire(
                 res, fam, fired=fired, evaluated=1, source=src, sample=sample
             )
+
+    # --- Structural / module-scoped: read the phase-level section. ---
+    phase_level = data.get("phase_level_gate_results")
+    if isinstance(phase_level, list):
+        for gr in phase_level:
+            if not isinstance(gr, dict):
+                continue
+            gid = gr.get("gate_id")
+            fam = _GATE_TO_FAMILY.get(str(gid))
+            if fam is None:
+                continue
+            # Only structural (module/objective-scoped) families come
+            # from here; block-scoped gates were already attributed per
+            # block above and must not be double-counted.
+            if fam.scope != "module":
+                continue
+            saw_any = True
+            try:
+                total_issues = int(gr.get("issue_count") or 0)
+            except (TypeError, ValueError):
+                total_issues = 0
+            passed = bool(gr.get("passed", True))
+            # A module-scoped gate fires when the phase verdict is fail
+            # OR it logged any (structural) issue. _record_fire counts a
+            # module-scoped fire as the whole evaluated unit.
+            fired = (not passed) or total_issues > 0
+            sample = None
+            if fired:
+                sample = {
+                    "corpus": res.corpus_id,
+                    "gate_id": gid,
+                    "issue_count": total_issues,
+                    "unattributed_issue_count": gr.get(
+                        "unattributed_issue_count"
+                    ),
+                    "action": gr.get("action"),
+                    "source": f"{src}:phase_level",
+                }
+            _record_fire(
+                res, fam, fired=fired, evaluated=1,
+                source=f"{src}:phase_level", sample=sample,
+            )
+    else:
+        # Legacy v1 report (no phase-level section). Module-scoped
+        # structural families simply aren't observed from this report;
+        # the decision-capture reader remains their fallback source.
+        LOG.debug(
+            "validation_report %s has no phase_level_gate_results "
+            "(legacy v1); structural gates skipped here",
+            report_path.name,
+        )
+
     if saw_any:
         res.sources_read.append(_rel_to_repo(report_path))
     return saw_any
