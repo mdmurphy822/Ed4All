@@ -15,8 +15,14 @@ IS the body slot per IB1.2) and asserts:
 * **feedback present** whenever interaction is present (the cap-1 trigger);
 * **transition present** on every pedagogical block (B-code resolves).
 
+It additionally asserts (FR-INT-01) that a **B08 guided-practice block in a
+faded sequence** (one directly following a ``worked_example`` B05) carries a
+``fade_state`` (the reused IB5 field) so the worked→completion→independent
+ladder is auditable — ``ANATOMY_FADE_STATE_MISSING`` (warning-day-1, rides this
+gate; no new gate row).
+
 Emits ``ANATOMY_INTERACTION_MISSING`` / ``ANATOMY_FEEDBACK_MISSING_ON_INTERACTIVE``
-/ ``ANATOMY_TRANSITION_MISSING``. The feedback-missing-on-interactive issue
+/ ``ANATOMY_TRANSITION_MISSING`` / ``ANATOMY_FADE_STATE_MISSING``. The feedback-missing-on-interactive issue
 carries the **Feedback+Coherence cap-1 semantics** consumed by the IB6.1
 scorer / IB6.6 rollup: per offending block_id it stamps a
 ``caps_dims=["feedback","coherence"]`` entry on the GateResult ``metadata``.
@@ -138,6 +144,39 @@ class AnatomySlotPresenceValidator:
             has_transition = _nonempty(block_attr(block, "transition"))
 
             block_issues: List[str] = []
+
+            # FR-INT-01 — a B08 guided-practice block that is part of a FADED
+            # sequence (it directly follows a worked_example B05) should carry a
+            # ``fade_state`` (the reused IB5 field) so the worked→completion→
+            # independent ladder is auditable. Warning-day-1 (rides this gate; no
+            # new gate row). # TODO(calibration): flip to a hard check once the
+            # fading planner pass is calibrated on >=2 corpora.
+            prev_type = (
+                block_type_of(blocks[idx - 1]) if idx > 0 else ""
+            )
+            if bcode == "B08" and prev_type == "worked_example":
+                if not _nonempty(block_attr(block, "fade_state")):
+                    block_issues.append("ANATOMY_FADE_STATE_MISSING")
+                    if len(issues) < _ISSUE_LIST_CAP:
+                        issues.append(
+                            GateIssue(
+                                severity="warning",
+                                code="ANATOMY_FADE_STATE_MISSING",
+                                message=(
+                                    f"Guided-practice block {block_id!r} "
+                                    f"({bt}/{bcode}) follows a worked_example "
+                                    f"but carries no fade_state — the faded "
+                                    f"guided-practice ladder "
+                                    f"(worked→completion→independent) is not "
+                                    f"auditable (FR-INT-01)."
+                                ),
+                                location=block_id,
+                                suggestion=(
+                                    "Stamp fade_state='completion' on the "
+                                    "faded-practice block after a worked example."
+                                ),
+                            )
+                        )
 
             if interactive and not has_interaction:
                 block_issues.append("ANATOMY_INTERACTION_MISSING")

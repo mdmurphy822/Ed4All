@@ -7268,6 +7268,7 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
             "source_references", "content_hash",
             "validation_attempts", "escalation_marker",
             "anchored_rubric",
+            "interaction_type", "fade_state",
         }
         block_id_for_log = (entry or {}).get("block_id") or "<unknown>"
         kwargs_clean: dict = {}
@@ -7608,6 +7609,10 @@ def _block_to_snake_case_entry(block: Any) -> Dict[str, Any]:
         "cognitive_domain", "teaching_role", "content_type_label",
         "purpose", "component", "source_primary", "content_hash",
         "escalation_marker",
+        # FR-PLAN-01 / FR-INT-01: emit ONLY when present (Optional/None default)
+        # so the serializer is byte-stable when the planner flags are off; both
+        # survive outline-JSONL → rewrite rehydration.
+        "interaction_type", "fade_state",
     )
     for name in optional_scalars:
         value = getattr(block, name, None)
@@ -7832,6 +7837,7 @@ def _block_from_checkpoint_entry(entry: Dict[str, Any]) -> Optional[Any]:
         "source_references", "content_hash",
         "validation_attempts", "escalation_marker",
         "anchored_rubric",
+        "interaction_type", "fade_state",
     }
     tuple_fields = {
         "key_terms", "objective_ids", "bloom_levels", "bloom_verbs",
@@ -10396,21 +10402,32 @@ async def _run_content_generation_outline(**kwargs) -> str:
                     _page_plan_specs = _page_block_plan_for(page_type)
             else:
                 _page_plan_specs = _page_block_plan_for(page_type)
-            page_block_specs: List[Tuple[str, int, str, Tuple[str, ...]]] = []
+            page_block_specs: List[
+                Tuple[str, int, str, Tuple[str, ...], Optional[str], Optional[str]]
+            ] = []
             for spec_offset, _spec in enumerate(_page_plan_specs):
                 # Arity-tolerant: planner 3-tuple carries per-block
-                # ``target_co_ids``; the fixed 2-tuple has none → empty.
+                # ``target_co_ids``; the fixed 2-tuple has none → empty. A
+                # planner 4-tuple (FR-PLAN-01) also carries the selected
+                # ``interaction_type``; a 5-tuple (FR-INT-01) also carries the
+                # ``fade_state``. The 2/3-tuple paths leave both None.
                 spec_type = _spec[0]
                 spec_bloom = _spec[1]
                 spec_co_ids: Tuple[str, ...] = (
                     tuple(_spec[2]) if len(_spec) > 2 and _spec[2] else ()
                 )
+                spec_itype: Optional[str] = (
+                    str(_spec[3]) if len(_spec) > 3 and _spec[3] else None
+                )
+                spec_fade: Optional[str] = (
+                    str(_spec[4]) if len(_spec) > 4 and _spec[4] else None
+                )
                 page_block_specs.append(
-                    (spec_type, spec_offset, spec_bloom, spec_co_ids)
+                    (spec_type, spec_offset, spec_bloom, spec_co_ids, spec_itype, spec_fade)
                 )
 
             page_block_added = False
-            for spec_type, spec_idx, spec_bloom, spec_co_ids in page_block_specs:
+            for spec_type, spec_idx, spec_bloom, spec_co_ids, spec_itype, spec_fade in page_block_specs:
                 # CO-id fan-out fix: stamp the block with the SPECIFIC CO id(s)
                 # the planner targeted (filtered to the valid CO set), falling
                 # back to the week-TO ``objective_ids`` when the planner gave no
@@ -10438,6 +10455,12 @@ async def _run_content_generation_outline(**kwargs) -> str:
                         # it as a per-block directive + enforces it as a
                         # floor after the LLM emits.
                         target_bloom=spec_bloom,
+                        # FR-PLAN-01: carry the planner-selected interaction
+                        # type (None on the fixed / flag-off path → byte-stable).
+                        interaction_type=spec_itype,
+                        # FR-INT-01: carry the planner-stamped fade_state for the
+                        # B08 faded-practice ladder (None when flag off).
+                        fade_state=spec_fade,
                     )
                 except (TypeError, ValueError) as exc:
                     logger.warning(
@@ -11021,6 +11044,7 @@ async def _run_inter_tier_validation(**kwargs) -> str:
             "source_references", "content_hash",
             "validation_attempts", "escalation_marker",
             "anchored_rubric",
+            "interaction_type", "fade_state",
         }
         kwargs_clean: dict = {}
         for k, v in (entry or {}).items():
@@ -11666,6 +11690,7 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             "source_references", "content_hash",
             "validation_attempts", "escalation_marker",
             "anchored_rubric",
+            "interaction_type", "fade_state",
         }
         kwargs_clean: dict = {}
         for k, v in (entry or {}).items():

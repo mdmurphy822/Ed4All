@@ -1179,6 +1179,46 @@ def _required_attrs_directive(block_type: str, block_id: str) -> str:
     )
 
 
+# FR-PLAN-01 — human-readable rendering hints for each Chapter-5 activity type,
+# so the rewrite tier authors the planner-selected interaction shape rather than
+# defaulting to a generic prompt. Absent token → a generic directive.
+_INTERACTION_TYPE_HINTS: Dict[str, str] = {
+    "multiple_choice": "a single-best-answer multiple-choice question (one correct option + misconception-targeted distractors)",
+    "multiple_response": "a select-all-that-apply question (more than one correct option)",
+    "true_false": "a true/false statement the learner judges",
+    "fill_in_blank": "a fill-in-the-blank item with the missing term(s) elided from a sentence",
+    "matching": "a matching exercise pairing items from two columns",
+    "ordering": "an ordering/sequencing task (arrange the steps/items in correct order)",
+    "drag_drop": "a drag-and-drop task (place items into the correct targets)",
+    "hotspot": "a hotspot task (identify/select the correct region of an image or diagram)",
+    "short_answer": "a short constructed-response question (a sentence or two)",
+    "essay": "an extended constructed-response / essay prompt",
+    "numeric": "a numeric-entry computation item (the learner enters a calculated value)",
+    "categorization": "a categorization task (sort items into named categories)",
+    "labeling": "a labeling task (label the parts of a figure/diagram)",
+    "branching_scenario": "a branching decision scenario (choices lead to different consequences)",
+}
+
+
+def _interaction_type_directive(interaction_type: Optional[str]) -> str:
+    """FR-PLAN-01 — render the planner-selected interaction-type directive.
+
+    Returns an empty string when the planner did not select an interaction type
+    (non-interaction-bearing block, or the planner flag was off → byte-stable
+    prompt). Otherwise instructs the rewrite tier to author the specific
+    Chapter-5 activity shape the planner chose.
+    """
+    if not interaction_type:
+        return ""
+    hint = _INTERACTION_TYPE_HINTS.get(
+        interaction_type, f"a {interaction_type.replace('_', ' ')} interaction"
+    )
+    return (
+        f"Interaction type (planner-selected): author the interaction as "
+        f"{hint}.\n"
+    )
+
+
 # HTML5 void elements (WHATWG HTML Living Standard § 12.1.2) — never
 # carry a closing tag. Used by ``_escape_orphan_placeholder_tags`` to
 # skip elements that legitimately appear without a closer.
@@ -2471,6 +2511,9 @@ class RewriteProvider(_BaseLLMProvider):
         required_attrs_line = _required_attrs_directive(
             block.block_type, block.block_id
         )
+        interaction_line = _interaction_type_directive(
+            getattr(block, "interaction_type", None)
+        )
 
         return (
             f"ESCALATED REWRITE — marker={marker}\n"
@@ -2505,6 +2548,7 @@ class RewriteProvider(_BaseLLMProvider):
             "Output contract (HTML attributes for this block_type):\n"
             f"{output_contract}\n"
             f"{required_attrs_line}\n"
+            f"{interaction_line}"
             "\n"
             "Title every heading from the SPECIFIC content of this block "
             "(its concepts / key terms / objective statements) — never a "
@@ -2562,6 +2606,9 @@ class RewriteProvider(_BaseLLMProvider):
         required_attrs_line = _required_attrs_directive(
             block.block_type, block.block_id
         )
+        interaction_line = _interaction_type_directive(
+            getattr(block, "interaction_type", None)
+        )
 
         return (
             f"Block type: {block.block_type}\n"
@@ -2585,6 +2632,7 @@ class RewriteProvider(_BaseLLMProvider):
             "Output contract (HTML attributes for this block_type):\n"
             f"{output_contract}\n"
             f"{required_attrs_line}\n"
+            f"{interaction_line}"
             "\n"
             "Title every heading from the SPECIFIC content of this block "
             "(its concepts / key terms / objective statements) — never a "

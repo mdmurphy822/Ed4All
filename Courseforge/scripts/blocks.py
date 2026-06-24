@@ -941,6 +941,20 @@ class Block:
     # keeps legacy / flag-off blocks byte-identical. Read by the
     # CalloutStructureValidator (CALLOUT_NO_KIND) + the renderer.
     callout_kind: Optional[str] = None
+    # FR-PLAN-01 — the Ch.5 14-type activity catalog → planner-selected
+    # interaction type for this block (e.g. ``multiple_choice`` / ``drag_drop`` /
+    # ``fill_in_blank`` / ``short_answer`` / ``matching`` / ``hotspot`` / …). A
+    # DETERMINISTIC resolver (``lib/generation/block_planner.py::
+    # _resolve_interaction_types``) selects it per block from its framework
+    # B-code × catalog ``bloom_fit`` × the catalog ``default_activity_types``,
+    # gated behind ``ED4ALL_DYNAMIC_BLOCK_PLAN`` (identity-no-op when off).
+    # Threaded into the rewrite prompt so the rewrite tier authors to the
+    # selected interaction type. Additive Optional/None default and
+    # INTENTIONALLY excluded from compute_content_hash() (the hash payload is an
+    # explicit 5-key allowlist; mirrors target_bloom / callout_kind / the IB5
+    # fields) so an interaction-type retro-fit never drifts an existing block
+    # hash; the default-None state keeps legacy / flag-off blocks byte-identical.
+    interaction_type: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -1011,8 +1025,9 @@ class Block:
         coverage fields ``n_representations`` / ``response_formats`` /
         ``engagement_affordance``, and the IB5 type-specific fields
         ``fade_state`` / ``long_description`` / ``media_a11y``, the FR-INT-05
-        ``option_feedback`` per-distractor feedback map, and the FR-A11Y-03
-        ``callout_kind`` typed-callout enum so a
+        ``option_feedback`` per-distractor feedback map, the FR-A11Y-03
+        ``callout_kind`` typed-callout enum, and the FR-PLAN-01
+        ``interaction_type`` planner-selected activity type so a
         touch-only / budget-only / classifier-retrofit / objective-
         delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring /
         anchored-rubric-attach / udl-coverage-retrofit / ib5-field-attach /

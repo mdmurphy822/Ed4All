@@ -30,6 +30,18 @@
 #                    genuinely straddles two framework parents; key is
 #                    omitted entirely (not ``null``) when there is no
 #                    secondary.
+#   default_activity_types: (FR-PLAN-01 — OPTIONAL) for the interaction-bearing
+#                    framework codes (B07 knowledge-check / B08 guided-practice /
+#                    B09 case-scenario / B10 discussion / B14 graded-assessment),
+#                    the ORDERED candidate list of Chapter-5 14-type activity
+#                    types this block can host (multiple_choice / multiple_response
+#                    / true_false / fill_in_blank / matching / ordering / drag_drop
+#                    / hotspot / short_answer / essay / numeric / categorization /
+#                    labeling / branching_scenario). The deterministic resolver
+#                    ``lib/generation/block_planner.py::_resolve_interaction_types``
+#                    picks ONE per block from this list × the block's target Bloom
+#                    (gated by ED4ALL_DYNAMIC_BLOCK_PLAN). ABSENCE => the block
+#                    carries no interaction_type (non-interactive types).
 #   bloom_ceiling:   (IB7.6 — OPTIONAL) the framework stretch LIMIT for this
 #                    type's primary Bloom range (pp.26-33, p.138 Step 2). A
 #                    block whose target Bloom EXCEEDS this ceiling is
@@ -89,6 +101,7 @@ blocks:
     conveys: A scored question + misconception-targeted distractors mapped to an objective.
     bloom_fit: [understand, apply, analyze, evaluate]
     bloom_ceiling: create
+    default_activity_types: [multiple_choice, multiple_response, true_false, numeric, fill_in_blank, matching, short_answer, essay]
     format_summary: "<div class=assessment-item> stem + <ol> of <li data-cf-distractor-index>; QTI downstream."
     framework_block: B14
 
@@ -125,6 +138,7 @@ blocks:
     conveys: A guided set of practice items all exercising one named skill.
     bloom_fit: [apply, analyze]
     bloom_ceiling: analyze
+    default_activity_types: [fill_in_blank, drag_drop, ordering, matching, numeric, categorization, labeling]
     format_summary: "<div class=activity-card> instruction + practice items."
     framework_block: B08
 
@@ -173,6 +187,7 @@ blocks:
     conveys: A single formative question with a reveal answer for self-assessment.
     bloom_fit: [understand, apply]
     bloom_ceiling: apply
+    default_activity_types: [multiple_choice, true_false, fill_in_blank, short_answer, numeric]
     format_summary: "<div class=self-check self-check-item> question + <details> reveal."
     framework_block: B07
 
@@ -209,6 +224,7 @@ blocks:
       when the value is in comparing views, not private reflection.
     conveys: An open-ended group-debate question with no single correct answer.
     bloom_fit: [analyze, evaluate]
+    default_activity_types: [essay, short_answer, branching_scenario]
     format_summary: "<section> heading + <p> open-ended group discussion question(s)."
     framework_block: B10
 
@@ -244,6 +260,7 @@ blocks:
     conveys: A realistic situation grounded in the source plus a prompt to apply the concept to it.
     bloom_fit: [apply, analyze, evaluate]
     bloom_ceiling: evaluate
+    default_activity_types: [branching_scenario, short_answer, hotspot, categorization, essay]
     format_summary: "<div class=scenario-card> scenario prose + an apply <p> prompt."
     framework_block: B09
 
@@ -257,6 +274,7 @@ blocks:
     conveys: One stated practice problem with a reveal-on-demand worked solution.
     bloom_fit: [apply, analyze]
     bloom_ceiling: analyze
+    default_activity_types: [numeric, fill_in_blank, short_answer, ordering, drag_drop]
     format_summary: "<div class=problem-card> problem <p> + <details> reveal solution."
     framework_block: B08
 

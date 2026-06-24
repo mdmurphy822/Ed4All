@@ -427,8 +427,16 @@ _BLOOM_CLIMB_ENV = "ED4ALL_PLANNER_BLOOM_CLIMB"
 _LIFECYCLE_ENV = "ED4ALL_PLANNER_LIFECYCLE"
 _SPACING_ENV = "ED4ALL_PLANNER_SPACING"
 _BLOOM_CEILING_ENV = "ED4ALL_PLANNER_BLOOM_CEILING"
+# FR-INT-01 — B08 guided-practice FADING-sequence planner pass. Default OFF
+# (parse-with-fallback) so the planner output is BYTE-STABLE unless an operator
+# opts in; the pass is a strict identity no-op when off (mirrors the IB7 passes
+# above). When on, an explicit faded-practice (B08) block is injected after a
+# worked_example (B05) and stamped with a ``fade_state`` (the field already
+# exists from IB5 — reused, not re-added).
+_FADING_ENV = "ED4ALL_PLANNER_FADING"
 _IB7_FLAG_ENVS: Tuple[str, ...] = (
     _BLOOM_CLIMB_ENV, _LIFECYCLE_ENV, _SPACING_ENV, _BLOOM_CEILING_ENV,
+    _FADING_ENV,
 )
 
 
@@ -2050,6 +2058,192 @@ def _apply_bloom_ceilings(
     return out
 
 
+# FR-PLAN-01 — the Chapter-5 14-type activity catalog. The canonical interaction
+# (activity) types the deterministic resolver may stamp onto an interaction-
+# bearing block, drawn from the catalog's per-type ``default_activity_types``.
+# The resolver picks ONE per block from that list × the block's target Bloom.
+_ACTIVITY_TYPES: Tuple[str, ...] = (
+    "multiple_choice",
+    "multiple_response",
+    "true_false",
+    "fill_in_blank",
+    "matching",
+    "ordering",
+    "drag_drop",
+    "hotspot",
+    "short_answer",
+    "essay",
+    "numeric",
+    "categorization",
+    "labeling",
+    "branching_scenario",
+)
+
+# A coarse Bloom-band → activity-type AFFINITY ordering. Higher-order Bloom
+# levels prefer constructed-response / scenario activities; lower-order levels
+# prefer recognition / recall activities. The resolver intersects this affinity
+# order with the block's catalog ``default_activity_types`` and picks the first
+# match — a DETERMINISTIC choice driven by B-code × bloom_fit × catalog list.
+_BLOOM_ACTIVITY_AFFINITY: Dict[str, Tuple[str, ...]] = {
+    "remember": ("true_false", "multiple_choice", "matching", "labeling", "fill_in_blank"),
+    "understand": ("multiple_choice", "matching", "categorization", "fill_in_blank", "true_false"),
+    "apply": ("numeric", "fill_in_blank", "drag_drop", "ordering", "short_answer", "multiple_choice"),
+    "analyze": ("categorization", "hotspot", "matching", "short_answer", "multiple_response"),
+    "evaluate": ("short_answer", "essay", "branching_scenario", "multiple_response"),
+    "create": ("essay", "branching_scenario", "short_answer"),
+}
+
+
+def _catalog_activity_types(
+    block_type: str, catalog_by_type: Dict[str, Dict[str, Any]],
+) -> List[str]:
+    """Return a type's catalog ``default_activity_types`` (valid tokens only)."""
+    entry = catalog_by_type.get(block_type) or {}
+    raw = entry.get("default_activity_types") or []
+    return [a for a in raw if isinstance(a, str) and a in _ACTIVITY_TYPES]
+
+
+def _resolve_one_interaction_type(
+    *,
+    block_type: str,
+    target_bloom: str,
+    catalog_by_type: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    """Deterministically pick ONE interaction type for a single block.
+
+    Returns ``None`` for a non-interaction-bearing type (no
+    ``default_activity_types`` in the catalog). Otherwise intersects the block's
+    target Bloom affinity order with the catalog list and returns the first
+    match; falls back to the catalog list's FIRST entry when no affinity token
+    is offered (so an interaction-bearing block always gets a type).
+    """
+    candidates = _catalog_activity_types(block_type, catalog_by_type)
+    if not candidates:
+        return None
+    candidate_set = set(candidates)
+    bloom = target_bloom if target_bloom in _BLOOM_ACTIVITY_AFFINITY else "understand"
+    for activity in _BLOOM_ACTIVITY_AFFINITY[bloom]:
+        if activity in candidate_set:
+            return activity
+    # No affinity token offered — keep the catalog's authored first choice.
+    return candidates[0]
+
+
+def _resolve_interaction_types(
+    *,
+    selected: List[Dict[str, Any]],
+    catalog_by_type: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """FR-PLAN-01 — stamp an ``interaction_type`` on each interaction-bearing block.
+
+    Gated on ``ED4ALL_DYNAMIC_BLOCK_PLAN`` (the existing planner flag); a strict
+    identity NO-OP when off so a default-off / legacy run is byte-stable. For
+    every block whose type carries catalog ``default_activity_types``, picks ONE
+    interaction type from its framework B-code × ``bloom_fit`` × the catalog list
+    (see :func:`_resolve_one_interaction_type`); non-interaction-bearing blocks
+    are left untouched. Returns a NEW list (the input dicts are mutated in place,
+    matching the IB7 passes' posture).
+    """
+    if not _dynamic_block_plan_on():
+        return selected
+    out = list(selected)
+    for blk in out:
+        bt = str(blk.get("block_type") or "")
+        bloom = str(blk.get("target_bloom") or "")
+        itype = _resolve_one_interaction_type(
+            block_type=bt, target_bloom=bloom, catalog_by_type=catalog_by_type,
+        )
+        if itype is not None:
+            blk["interaction_type"] = itype
+    return out
+
+
+# FR-INT-01 — the canonical B08 guided-practice fade ladder. After a fully-
+# worked example the learner moves to a completion problem (partial scaffold)
+# then to independent practice. The fading pass injects a single B08 completion
+# block carrying the ``completion`` fade_state after each worked_example.
+_FADE_LADDER: Tuple[str, str, str] = ("worked", "completion", "independent")
+
+# The B08 (guided-practice) block type the fading pass injects as the faded
+# step after a worked_example, in preference order — the first one present in
+# the resolved block-type palette is used.
+_FADING_B08_TYPES: Tuple[str, ...] = ("problem", "activity", "checklist")
+
+
+def _apply_fading_sequence(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    block_types: frozenset,
+) -> List[Dict[str, Any]]:
+    """FR-INT-01 — inject a B08 faded-practice block after a worked_example (B05).
+
+    Gated on ``ED4ALL_PLANNER_FADING``; a strict identity NO-OP when off so a
+    default-off run is byte-stable (mirrors the IB7 planner passes' posture). The
+    framework's guided-practice fading sequence (worked → completion →
+    independent, p.139) is realized by: for each ``worked_example`` block that is
+    not already FOLLOWED by a faded-practice (B08) block, inject ONE B08
+    completion block (``problem`` / ``activity`` / ``checklist`` — the first in
+    the palette) right after it and stamp its ``fade_state="completion"`` so the
+    practice is partially-scaffolded (the reused IB5 ``fade_state`` field). The
+    worked_example itself is stamped ``fade_state="worked"`` when it carries
+    none. Anti-fabrication: the injected block inherits the worked_example's
+    ``target_co_ids`` (or the TO's first real CO id) — no CO id is invented.
+    Returns a NEW list.
+    """
+    if not _env_floor_on(_FADING_ENV):
+        return selected
+
+    # The B08 type to use (first present in the palette).
+    b08_type: Optional[str] = None
+    for cand in _FADING_B08_TYPES:
+        if cand in block_types:
+            b08_type = cand
+            break
+    if b08_type is None:
+        return selected
+
+    # Fallback CO id (first real CO) for anti-fabrication grounding.
+    fallback_co: List[str] = []
+    for co in chapter_objectives or ():
+        cid = str(co.get("id") or co.get("co_id") or "").strip()
+        if cid:
+            fallback_co = [cid]
+            break
+
+    b08_page = _BLOCK_TYPE_DEFAULT_PAGE.get(b08_type, "application")
+
+    out: List[Dict[str, Any]] = []
+    for idx, blk in enumerate(selected):
+        out.append(blk)
+        if str(blk.get("block_type") or "") != "worked_example":
+            continue
+        # Stamp the worked stage on the worked_example when it has none.
+        if not blk.get("fade_state"):
+            blk["fade_state"] = "worked"
+        # Skip injection when the NEXT block is already a faded-practice B08.
+        nxt = selected[idx + 1] if idx + 1 < len(selected) else None
+        if nxt is not None and str(nxt.get("block_type") or "") in _FADING_B08_TYPES:
+            # Ensure the existing follow-on carries a completion fade_state.
+            if not nxt.get("fade_state"):
+                nxt["fade_state"] = "completion"
+            continue
+        target_co_ids = [str(c) for c in (blk.get("target_co_ids") or [])] or list(fallback_co)
+        out.append({
+            "block_type": b08_type,
+            "page_type": b08_page,
+            "target_co_ids": target_co_ids,
+            "content_focus": (
+                "FR-INT-01 faded practice: completion step after the worked "
+                "example (guided-practice fade ladder worked→completion→"
+                "independent)"
+            ),
+            "target_bloom": str(blk.get("target_bloom") or "apply"),
+            "fade_state": "completion",
+        })
+    return out
+
+
 def _apply_ib7_passes(
     *,
     selected: List[Dict[str, Any]],
@@ -2131,6 +2325,30 @@ def _apply_ib7_passes(
         )
         if ceiling_on else 0
     )
+
+    # FR-INT-01 fading sequence (inject a B08 completion block after each
+    # worked_example). Identity no-op when ED4ALL_PLANNER_FADING is off.
+    fading_on = _env_floor_on(_FADING_ENV)
+    n_before_fade = len(selected)
+    selected = _apply_fading_sequence(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        block_types=block_types,
+    )
+    signals["fading_blocks_injected"] = (
+        len(selected) - n_before_fade if fading_on else 0
+    )
+
+    # FR-PLAN-01 interaction-type resolution (stamp an interaction_type on each
+    # interaction-bearing block). Runs LAST so every final block — including any
+    # injected by the fading pass — gets a type. Identity no-op when
+    # ED4ALL_DYNAMIC_BLOCK_PLAN is off.
+    selected = _resolve_interaction_types(
+        selected=selected, catalog_by_type=catalog_by_type,
+    )
+    signals["interaction_types_assigned"] = sum(
+        1 for b in selected if b.get("interaction_type")
+    )
     return selected
 
 
@@ -2169,7 +2387,7 @@ def _to_page_plan(
 
     Every canonical page type is present as a key (empty list when no block
     landed there) so the consumer's per-page loop never KeyErrors."""
-    plan: Dict[str, List[Tuple[str, str, List[str]]]] = {
+    plan: Dict[str, List[Tuple]] = {
         ptype: [] for ptype in CANONICAL_PAGE_TYPES
     }
     for blk in selected:
@@ -2177,9 +2395,27 @@ def _to_page_plan(
         if ptype not in plan:
             ptype = "content"
         target_co_ids = [str(c) for c in (blk.get("target_co_ids") or [])]
-        plan[ptype].append(
-            (blk["block_type"], blk["target_bloom"], target_co_ids)
-        )
+        # FR-PLAN-01 / FR-INT-01: emit a 4th tuple element (the planner-selected
+        # interaction_type) and a 5th (the FR-INT-01 fade_state) ONLY when set,
+        # so a flag-off run stays byte-stable at the legacy 3-tuple shape. The
+        # consumer's unpack is arity-tolerant.
+        itype = blk.get("interaction_type")
+        fade = blk.get("fade_state")
+        if fade:
+            plan[ptype].append(
+                (
+                    blk["block_type"], blk["target_bloom"], target_co_ids,
+                    str(itype) if itype else None, str(fade),
+                )
+            )
+        elif itype:
+            plan[ptype].append(
+                (blk["block_type"], blk["target_bloom"], target_co_ids, str(itype))
+            )
+        else:
+            plan[ptype].append(
+                (blk["block_type"], blk["target_bloom"], target_co_ids)
+            )
     return plan
 
 

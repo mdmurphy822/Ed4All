@@ -93,3 +93,90 @@ def test_disabled_is_noop_pass():
     )
     assert res.passed is True
     assert {i.code for i in res.issues} == {"ANATOMY_PRESENCE_DISABLED"}
+
+
+def test_faded_b08_without_fade_state_fires():
+    # FR-INT-01: a B08 (problem) directly following a worked_example with no
+    # fade_state should fire ANATOMY_FADE_STATE_MISSING (warning-day-1).
+    blocks = [
+        Block(
+            block_id="we",
+            block_type="worked_example",
+            page_id="week_01_content",
+            sequence=0,
+            content="<p>Worked.</p>",
+            heading="Worked example",
+            transition="Now try a faded version.",
+        ),
+        Block(
+            block_id="prob",
+            block_type="problem",
+            page_id="week_01_application",
+            sequence=1,
+            content="<p>Your turn.</p>",
+            heading="Practice",
+            transition="Next.",
+        ),
+    ]
+    res = AnatomySlotPresenceValidator().validate(
+        {"blocks": blocks, "rubric_enabled": True}
+    )
+    assert res.passed is True  # warning-day-1
+    assert any(i.code == "ANATOMY_FADE_STATE_MISSING" for i in res.issues)
+
+
+def test_faded_b08_with_fade_state_passes():
+    blocks = [
+        Block(
+            block_id="we",
+            block_type="worked_example",
+            page_id="week_01_content",
+            sequence=0,
+            content="<p>Worked.</p>",
+            heading="Worked example",
+            transition="Now try a faded version.",
+            fade_state="worked",
+        ),
+        Block(
+            block_id="prob",
+            block_type="problem",
+            page_id="week_01_application",
+            sequence=1,
+            content="<p>Your turn.</p>",
+            heading="Practice",
+            transition="Next.",
+            fade_state="completion",
+        ),
+    ]
+    res = AnatomySlotPresenceValidator().validate(
+        {"blocks": blocks, "rubric_enabled": True}
+    )
+    assert not any(i.code == "ANATOMY_FADE_STATE_MISSING" for i in res.issues)
+
+
+def test_standalone_b08_not_after_worked_example_no_fade_check():
+    # A B08 not preceded by a worked_example carries no fade contract.
+    blocks = [
+        Block(
+            block_id="c",
+            block_type="concept",
+            page_id="week_01_content",
+            sequence=0,
+            content="<p>Idea.</p>",
+            heading="Concept",
+            transition="Next.",
+        ),
+        Block(
+            block_id="prob",
+            block_type="problem",
+            page_id="week_01_application",
+            sequence=1,
+            content="<p>Practice.</p>",
+            heading="Practice",
+            transition="Next.",
+        ),
+    ]
+    res = AnatomySlotPresenceValidator().validate(
+        {"blocks": blocks, "rubric_enabled": True}
+    )
+    assert not any(i.code == "ANATOMY_FADE_STATE_MISSING" for i in res.issues)

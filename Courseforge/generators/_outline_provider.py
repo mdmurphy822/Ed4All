@@ -316,6 +316,13 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "section_skeleton": (0, 1),
         "summary_chars": (40, 200),
     },
+    # B15 Resources — a curated list of further-reading links; each
+    # resource is one claim, no prose body (cycle-1 B15 completion).
+    "resources": {
+        "key_claims": (1, 8),
+        "section_skeleton": (0, 1),
+        "summary_chars": (40, 240),
+    },
     # Discussion prompts — opener + branching points.
     "discussion_prompt": {
         "key_claims": (1, 3),
