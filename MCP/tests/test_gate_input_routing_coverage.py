@@ -290,3 +290,100 @@ def test_default_router_covers_all_defect2_gates():
     }
     missing = must_have - set(r.builders.keys())
     assert not missing, f"Missing builders: {missing}"
+
+
+# --------------------------------------------------------------------- #
+# IB6 / IB7 keystone block-quality gates — latent no-builder skip.
+#
+# These validators are wired at inter_tier_validation +
+# post_rewrite_validation (and the assessment seams) in
+# config/workflows.yaml but shipped with NO builder registered, so the
+# executor returned ``__no_builder_registered__`` and every one of them
+# SKIPPED silently on a real run. The IB6 keystone rubric, anatomy
+# slot-presence, interaction-feedback, QA-checklist, Bloom type-range,
+# cognitive-load, retrieval-presence, instructional-depth, Bloom
+# structural-enforcement, and assessment-retrieval-grounding gates never
+# fired. These tests pin the registration so the regression can't recur.
+# --------------------------------------------------------------------- #
+
+# Every block-quality / IB6 / IB7 gate validator that MUST resolve a
+# builder (i.e. NOT fall through to ``__no_builder_registered__``).
+_IB6_IB7_BLOCK_QUALITY_VALIDATORS = {
+    "lib.validators.content.BlockCognitiveLoadValidator",
+    "lib.validators.anatomy_slot_presence.AnatomySlotPresenceValidator",
+    "lib.validators.interaction_feedback.InteractionFeedbackValidator",
+    "lib.validators.block_quality_rubric.BlockQualityRubricValidator",
+    "lib.validators.qa_checklist.QaChecklistValidator",
+    "lib.validators.retrieval_presence.RetrievalPresenceValidator",
+    "lib.validators.bloom_type_range.BloomTypeRangeValidator",
+    "lib.validators.instructional_depth.InstructionalDepthValidator",
+    "lib.validators.bloom.structural_enforcement.BloomStructuralEnforcementValidator",
+    "lib.validators.assessment_retrieval_grounding.AssessmentRetrievalGroundingValidator",
+}
+
+
+def test_default_router_covers_ib6_ib7_block_quality_gates():
+    """The default router must include builders for every IB6/IB7
+    block-quality gate. Pre-fix these all skipped via
+    ``__no_builder_registered__`` because no builder was wired."""
+    r = default_router()
+    missing = _IB6_IB7_BLOCK_QUALITY_VALIDATORS - set(r.builders.keys())
+    assert not missing, f"Missing builders for block-quality gates: {missing}"
+
+
+def test_ib6_ib7_gates_resolve_a_builder_not_no_builder():
+    """Each IB6/IB7 gate must resolve a builder through ``router.build``,
+    NOT the ``__no_builder_registered__`` fallthrough that made the gate
+    skip silently on every real post_rewrite run."""
+    r = default_router()
+    for validator_path in _IB6_IB7_BLOCK_QUALITY_VALIDATORS:
+        # No phase outputs / params → the builder runs and reports a
+        # structured missing-blocks skip, NOT the no-builder sentinel.
+        _inputs, missing = r.build(validator_path, {}, {})
+        assert "__no_builder_registered__" not in missing, (
+            f"{validator_path} fell through to the no-builder fallback "
+            f"(gate would skip silently); missing={missing}"
+        )
+
+
+def _gate_validators_for_phase(phase_name: str) -> set:
+    """Collect every validation-gate validator dotted path declared on a
+    workflow phase across config/workflows.yaml. Returns the union over
+    all workflows that define the phase."""
+    import yaml
+
+    repo_root = Path(__file__).resolve().parents[2]
+    cfg = yaml.safe_load((repo_root / "config" / "workflows.yaml").read_text())
+    found: set = set()
+    for wf in (cfg.get("workflows") or {}).values():
+        for phase in wf.get("phases") or []:
+            if phase.get("name") != phase_name:
+                continue
+            for gate in phase.get("validation_gates") or []:
+                vp = gate.get("validator")
+                if isinstance(vp, str) and vp:
+                    found.add(vp)
+    return found
+
+
+def test_every_post_rewrite_and_inter_tier_gate_has_a_builder():
+    """Anti-recurrence guard: every validator wired at the
+    ``post_rewrite_validation`` + ``inter_tier_validation`` phases in
+    config/workflows.yaml must have a registered gate-input builder.
+
+    This is the test that would have caught the IB6/IB7 keystone gates
+    skipping on a real run. Derives the gate set from the YAML so a
+    newly-wired gate without a builder fails here instead of silently
+    skipping in production."""
+    r = default_router()
+    registered = set(r.builders.keys())
+    wired = (
+        _gate_validators_for_phase("post_rewrite_validation")
+        | _gate_validators_for_phase("inter_tier_validation")
+    )
+    assert wired, "expected to discover gate validators from workflows.yaml"
+    missing = wired - registered
+    assert not missing, (
+        "post_rewrite/inter_tier gate validators with NO registered "
+        f"builder (these skip silently in production): {sorted(missing)}"
+    )

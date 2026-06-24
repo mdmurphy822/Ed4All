@@ -3078,6 +3078,113 @@ def default_router() -> GateInputRouter:
         _build_kg_quality_inputs,
     )
 
+    # ------------------------------------------------------------------ #
+    # IB6 / IB7 keystone block-quality gates — latent no-builder skip.
+    #
+    # These validators are wired at ``inter_tier_validation`` +
+    # ``post_rewrite_validation`` (and the assessment seams) in
+    # config/workflows.yaml but had NO builder registered here, so the
+    # executor returned ``__no_builder_registered__`` and EVERY one of
+    # them skipped silently on a real run (the log line
+    # "No gate-input builder registered for validator
+    # lib.validators.block_quality_rubric.BlockQualityRubricValidator ...
+    # missing inputs: __no_builder_registered__"). The IB6 keystone
+    # rubric, anatomy slot-presence, interaction-feedback, QA-checklist,
+    # Bloom type-range, cognitive-load, retrieval-presence,
+    # instructional-depth, Bloom structural-enforcement, and
+    # assessment-retrieval-grounding gates NEVER fired.
+    #
+    # Every one of these reads ``inputs['blocks']`` (the rewrite-tier
+    # Block set is the load-bearing signal). The rubric/QA gates also
+    # read OPTIONAL ``gate_results_by_block`` / ``spacing_by_block`` and
+    # COMPOSE upstream signals when present (they degrade byte-stable to
+    # an empty-signal pass when absent — never recompute). So the broadest
+    # rewrite-tier Block-input shim (``_build_block_input_rewrite``, which
+    # also threads the IB4/IB5/FR-INT-03 flag resolutions the anatomy /
+    # interaction gates consult) is the correct input shape for all of the
+    # blocks-only gates. ``assessment_retrieval_grounding`` additionally
+    # needs the per-source chunk-body map (``chunks_lookup`` / fallback
+    # ``source_chunks``), so it routes to ``_build_rewrite_block_input``
+    # which layers ``source_chunks`` on top of the same Block surface.
+    #
+    # All of these reuse the shim with NO gate_id discrimination, so the
+    # single registration covers both the inter_tier (outline-tier) and
+    # post_rewrite (rewrite-tier) seams — the shim's blocks_path resolver
+    # prefers the rewrite-tier emit when present and falls back to the
+    # outline-tier emit, so the inter_tier seam resolves the outline
+    # blocks correctly.
+
+    # IB6.4 — per-block D2 cognitive-load body ceiling. blocks-only.
+    r.register(
+        "lib.validators.content.BlockCognitiveLoadValidator",
+        _build_block_input_rewrite,
+    )
+    # IB6 — anatomy six-slot presence (reads reflection_calibration_enabled,
+    # threaded by the shim). blocks-only.
+    r.register(
+        "lib.validators.anatomy_slot_presence.AnatomySlotPresenceValidator",
+        _build_block_input_rewrite,
+    )
+    # IB6.3 — interaction→feedback contract (reads the OPTIONAL
+    # distractor_signals_by_block + reflection_calibration_enabled, both
+    # graceful-degrade). blocks-only.
+    r.register(
+        "lib.validators.interaction_feedback.InteractionFeedbackValidator",
+        _build_block_input_rewrite,
+    )
+    # IB6 keystone — eight-dimension 0-3 block-quality rubric. COMPOSES the
+    # OPTIONAL upstream ``gate_results_by_block`` signal map (degrades to an
+    # empty-signal pass when absent — never recomputes / loads a model).
+    # blocks-only via the shim.
+    r.register(
+        "lib.validators.block_quality_rubric.BlockQualityRubricValidator",
+        _build_block_input_rewrite,
+    )
+    # IB6 — 15-point QA checklist. COMPOSES the OPTIONAL
+    # ``gate_results_by_block`` + ``spacing_by_block`` maps (both
+    # graceful-degrade). blocks-only via the shim.
+    r.register(
+        "lib.validators.qa_checklist.QaChecklistValidator",
+        _build_block_input_rewrite,
+    )
+    # IB7.5b — retrieval-presence (spaced-checkpoint) gate. blocks-only,
+    # runs warning-day-1 regardless of any flag.
+    r.register(
+        "lib.validators.retrieval_presence.RetrievalPresenceValidator",
+        _build_block_input_rewrite,
+    )
+    # IB7.6c — per-type Bloom×type-range gate (reads OPTIONAL
+    # ``bloom_ceilings`` override, merged via gate.config). blocks-only.
+    r.register(
+        "lib.validators.bloom_type_range.BloomTypeRangeValidator",
+        _build_block_input_rewrite,
+    )
+    # W7 — per-page instructional-depth (pedagogical density) floors.
+    # blocks-only (reads OPTIONAL ``thresholds`` override via gate.config).
+    # Wired at outline_instructional_depth + rewrite_instructional_depth.
+    r.register(
+        "lib.validators.instructional_depth.InstructionalDepthValidator",
+        _build_block_input_rewrite,
+    )
+    # W6 — deterministic Bloom structural-enforcement on assessment_item
+    # stems. blocks-only. Wired at outline_bloom_structural_enforcement +
+    # rewrite_bloom_structural_enforcement.
+    r.register(
+        "lib.validators.bloom.structural_enforcement.BloomStructuralEnforcementValidator",
+        _build_block_input_rewrite,
+    )
+    # W2 — assessment answerability / retrieval-grounding. Needs the Block
+    # set PLUS the per-source chunk-body map (``chunks_lookup`` →
+    # fallback ``source_chunks``) so it can overlap each assessment_item
+    # answer against its referenced source chunk. Routes to the rewrite-
+    # block + source_chunks builder. Wired at
+    # outline_assessment_retrieval_grounding +
+    # rewrite_assessment_retrieval_grounding.
+    r.register(
+        "lib.validators.assessment_retrieval_grounding.AssessmentRetrievalGroundingValidator",
+        _build_rewrite_block_input,
+    )
+
     return r
 
 
