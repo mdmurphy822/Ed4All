@@ -223,7 +223,12 @@ blocks:
       Use an open-ended question posed to peers; choose this over reflection
       when the value is in comparing views, not private reflection.
     conveys: An open-ended group-debate question with no single correct answer.
-    bloom_fit: [analyze, evaluate]
+    bloom_fit: [analyze, evaluate, create]
+    # FR-INT-04 — a real B10 discussion drives the three-move protocol
+    # (post -> respond -> synthesize) UP to Create (the synthesize move
+    # consolidates peer viewpoints into a new position). The bloom_ceiling
+    # admits Create so the bloom_type_range gate never down-routes a discussion.
+    bloom_ceiling: create
     default_activity_types: [essay, short_answer, branching_scenario]
     format_summary: "<section> heading + <p> open-ended group discussion question(s)."
     framework_block: B10

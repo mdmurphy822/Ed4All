@@ -119,6 +119,27 @@ def _new_block_types_emit_enabled() -> bool:
     return os.environ.get(_NEW_BLOCK_TYPES_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
 
 
+# FR-INT-03 — B11 reflection predict-then-reveal calibration emit flag
+# (ED4ALL_REFLECTION_CALIBRATION). Default OFF: with this unset the three B11
+# calibration fields (``prediction_prompt`` / ``reveal_content`` /
+# ``calibration_feedback``) are NOT projected to the <details> render scaffold
+# (byte-stable). The fields are unconditionally valid additive Optional Block
+# fields (hash-excluded); only the renderer emit + the two validator arms are
+# flag-gated. Canonical resolver: lib/generation/reflection_calibration.py; this
+# module-level reader keeps blocks.py dependency-light.
+_REFLECTION_CALIBRATION_EMIT_ENV = "ED4ALL_REFLECTION_CALIBRATION"
+
+
+def _reflection_calibration_emit_enabled() -> bool:
+    """Read ``ED4ALL_REFLECTION_CALIBRATION`` each call so tests can toggle it.
+
+    Default off — the three FR-INT-03 calibration fields are purely additive and
+    must not break byte-stable emit. Falsey / garbage values → off
+    (parse-with-fallback, mirroring :func:`_new_block_types_emit_enabled`).
+    """
+    return os.environ.get(_REFLECTION_CALIBRATION_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
+
+
 # IB6.5 — universal (verb · level · knowledge-type) triple chip emit flag
 # (ED4ALL_BLOCK_QUALITY_RUBRIC, the IB6 keystone). Default OFF: with this unset
 # the cognitive-domain chip stays objectives-only (``_objective_attrs``) and no
@@ -955,6 +976,42 @@ class Block:
     # fields) so an interaction-type retro-fit never drifts an existing block
     # hash; the default-None state keeps legacy / flag-off blocks byte-identical.
     interaction_type: Optional[str] = None
+    # FR-INT-04 — B10 three-move discussion protocol (post -> respond ->
+    # synthesize). A real graded discussion is not a single prompt; the
+    # framework's B10 contract is a three-move protocol: an initial POST, a
+    # required RESPOND to peers, and a SYNTHESIZE move that consolidates the
+    # thread. ``discussion_protocol`` carries the structured move map
+    # ({"post": str, "respond": str, "synthesize": str}); ``discussion_bloom_verb``
+    # records the target Bloom verb the synthesize move drives to (a real
+    # discussion climbs to Create). Both additive Optional/None defaults and
+    # INTENTIONALLY excluded from compute_content_hash() (the hash payload is an
+    # explicit 5-key allowlist; mirrors target_bloom / callout_kind /
+    # interaction_type) so a protocol retro-fit never drifts an existing block
+    # hash; the default-None state keeps legacy / flag-off blocks byte-identical.
+    # Read by the B10ProtocolValidator (DISCUSSION_PROTOCOL_COLLAPSED) + the
+    # discussion renderer (the three-move scaffold), both gated by
+    # ED4ALL_NEW_BLOCK_TYPES (the same flag the B10 type rides). Not projected to
+    # HTML/JSON-LD here.
+    discussion_protocol: Optional[Dict[str, Any]] = None
+    discussion_bloom_verb: Optional[str] = None
+    # FR-INT-03 — B11 reflection predict-then-reveal calibration. A real
+    # reflection does not merely ASK; it captures the learner's PREDICTION /
+    # judgment, then REVEALS the benchmark / expert answer, then gives
+    # CALIBRATION feedback comparing the two (the predict-then-reveal pattern
+    # that makes self-assessment honest). ``prediction_prompt`` = the captured-
+    # judgment prompt; ``reveal_content`` = the benchmark/expert answer revealed
+    # after the prediction; ``calibration_feedback`` = the compare-your-judgment
+    # feedback. All three additive Optional/None defaults and INTENTIONALLY
+    # excluded from compute_content_hash() (the hash payload is an explicit 5-key
+    # allowlist; mirrors discussion_protocol / target_bloom) so a calibration
+    # retro-fit never drifts an existing block hash; the default-None state keeps
+    # legacy / flag-off blocks byte-identical. Read by the interaction_feedback
+    # REFLECTION_NO_CAPTURE arm + the anatomy benchmark-in-feedback-slot check
+    # (both ride existing gates) + the reflection renderer's <details> predict-
+    # then-reveal scaffold, all gated by ED4ALL_REFLECTION_CALIBRATION.
+    prediction_prompt: Optional[str] = None
+    reveal_content: Optional[str] = None
+    calibration_feedback: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -1026,8 +1083,12 @@ class Block:
         ``engagement_affordance``, and the IB5 type-specific fields
         ``fade_state`` / ``long_description`` / ``media_a11y``, the FR-INT-05
         ``option_feedback`` per-distractor feedback map, the FR-A11Y-03
-        ``callout_kind`` typed-callout enum, and the FR-PLAN-01
-        ``interaction_type`` planner-selected activity type so a
+        ``callout_kind`` typed-callout enum, the FR-PLAN-01
+        ``interaction_type`` planner-selected activity type, the FR-INT-04
+        ``discussion_protocol`` / ``discussion_bloom_verb`` B10 three-move
+        protocol fields, and the FR-INT-03 ``prediction_prompt`` /
+        ``reveal_content`` / ``calibration_feedback`` B11 predict-then-reveal
+        calibration fields so a
         touch-only / budget-only / classifier-retrofit / objective-
         delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring /
         anchored-rubric-attach / udl-coverage-retrofit / ib5-field-attach /

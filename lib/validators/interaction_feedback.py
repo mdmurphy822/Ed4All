@@ -101,12 +101,62 @@ class InteractionFeedbackValidator:
         # (block_id -> {"misconception_targeted": bool, ...}). Never recomputed.
         distractor_signals = inputs.get("distractor_signals_by_block") or {}
 
+        # FR-INT-03 — reflection-calibration gate (rides ED4ALL_REFLECTION_
+        # CALIBRATION, default OFF → byte-stable). Optional override seam.
+        reflection_calibration_enabled = inputs.get("reflection_calibration_enabled")
+        if reflection_calibration_enabled is None:
+            from lib.generation.reflection_calibration import (
+                resolve_reflection_calibration,
+            )
+
+            reflection_calibration_enabled = resolve_reflection_calibration()
+
         issues: List[GateIssue] = []
         audited = 0
         caps_by_block: Dict[str, List[str]] = {}
         per_block: Dict[str, Dict[str, Any]] = {}
 
         for idx, block in enumerate(blocks):
+            # FR-INT-03 — a B11 reflection is NOT in the interactive
+            # (B07/B08/B10/B14) set, so audit it on its own arm before the
+            # interactive short-circuit. No-op when the calibration flag is off.
+            if (
+                reflection_calibration_enabled
+                and framework_block_of(block) == "B11"
+            ):
+                bt_r = block_type_of(block)
+                block_id_r = str(block_attr(block, "block_id") or f"block-{idx}")
+                refl_code = self._check_reflection_capture(
+                    block=block,
+                    bcode="B11",
+                    calibration_enabled=True,
+                )
+                if refl_code is not None and len(issues) < _ISSUE_LIST_CAP:
+                    issues.append(
+                        GateIssue(
+                            severity="warning",
+                            code=refl_code,
+                            message=(
+                                f"Reflection block {block_id_r!r} ({bt_r}/B11) "
+                                f"only asks — it carries no predict-then-reveal "
+                                f"capture (prediction_prompt + reveal_content) and "
+                                f"no calibration_feedback, so the learner never "
+                                f"calibrates their judgment against a benchmark "
+                                f"(FR-INT-03)."
+                            ),
+                            location=block_id_r,
+                            suggestion=(
+                                "Add a prediction_prompt (capture the learner's "
+                                "judgment), a reveal_content benchmark, and "
+                                "calibration_feedback comparing the two."
+                            ),
+                        )
+                    )
+                    per_block[block_id_r] = {
+                        "framework_block": "B11",
+                        "feedback_status": "reflection_no_capture",
+                        "issues": [refl_code],
+                    }
             if not is_interactive_block(block):
                 continue
             audited += 1
@@ -298,6 +348,41 @@ class InteractionFeedbackValidator:
             if covered:
                 return None
         return "DISTRACTOR_NO_MISCONCEPTION_FEEDBACK"
+
+    @staticmethod
+    def _check_reflection_capture(
+        *,
+        block: Any,
+        bcode: Any,
+        calibration_enabled: Any,
+    ) -> "str | None":
+        """FR-INT-03 — return ``REFLECTION_NO_CAPTURE`` when a B11 reflection
+        only asks (no predict-then-reveal capture + no calibration feedback);
+        ``None`` otherwise.
+
+        A reflection CAPTURES when it carries BOTH a ``prediction_prompt`` and a
+        ``reveal_content`` (the predict-then-reveal pair), OR a
+        ``calibration_feedback`` benchmark. Scope: only B11 blocks, and only
+        when ``calibration_enabled`` (rides ``ED4ALL_REFLECTION_CALIBRATION``;
+        default OFF → byte-stable no-op).
+        """
+        from lib.validators._block_rubric_helpers import block_attr
+
+        if not calibration_enabled or bcode != "B11":
+            return None
+
+        def _nonempty(v: Any) -> bool:
+            return isinstance(v, str) and bool(v.strip())
+
+        has_prediction = _nonempty(block_attr(block, "prediction_prompt"))
+        has_reveal = _nonempty(block_attr(block, "reveal_content"))
+        has_calibration = _nonempty(block_attr(block, "calibration_feedback"))
+
+        # Captured when the predict-then-reveal pair is present, OR a calibration
+        # benchmark is supplied.
+        if (has_prediction and has_reveal) or has_calibration:
+            return None
+        return "REFLECTION_NO_CAPTURE"
 
     @staticmethod
     def _distractor_keys(block: Any) -> List[str]:

@@ -53,6 +53,7 @@ from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: 
 from blocks import (  # noqa: E402  (Phase 2 intermediate format)
     Block,
     _new_block_types_emit_enabled,
+    _reflection_calibration_emit_enabled,
 )
 
 # Phase 2: sentinel page_id for renderer call sites that don't yet thread
@@ -2136,6 +2137,96 @@ def _render_reflection(questions: List[str]) -> str:
     </div>"""
 
 
+def _render_discussion_protocol(disc: Dict[str, Any]) -> str:
+    """FR-INT-04 — render the B10 three-move discussion protocol scaffold.
+
+    The framework's B10 contract is a three-move protocol — POST, RESPOND to
+    peers, SYNTHESIZE the thread (the synthesize move drives the discussion up
+    to Create). This emits an ordered scaffold making each move explicit so the
+    discussion is not a single prompt with collapsed structure.
+
+    Reads the moves from ``disc["discussion_protocol"] = {"post", "respond",
+    "synthesize"}`` (falling back to the existing ``initial_post`` / ``replies``
+    keys for the first two moves). Gated by ``ED4ALL_NEW_BLOCK_TYPES`` (default
+    OFF) — returns ``""`` when the flag is unset so default output is
+    byte-identical (mirrors the B15 ``_render_resources_section`` posture).
+    """
+    if not _new_block_types_emit_enabled():
+        return ""
+    proto = disc.get("discussion_protocol")
+    proto = proto if isinstance(proto, dict) else {}
+    post = str(
+        proto.get("post")
+        or disc.get("initial_post")
+        or "Post your initial position with supporting reasoning."
+    )
+    respond = str(
+        proto.get("respond")
+        or disc.get("replies")
+        or "Respond to at least two peers, building on or challenging their views."
+    )
+    synthesize = str(
+        proto.get("synthesize")
+        or proto.get("synthesis")
+        or "Synthesize the thread: consolidate the strongest peer arguments into "
+        "a revised position."
+    )
+    return f"""
+      <h3>Discussion Protocol</h3>
+      <ol class="discussion-protocol">
+        <li data-move="post"><strong>1. Post:</strong> {html_mod.escape(post)}</li>
+        <li data-move="respond"><strong>2. Respond:</strong> {html_mod.escape(respond)}</li>
+        <li data-move="synthesize"><strong>3. Synthesize:</strong> {html_mod.escape(synthesize)}</li>
+      </ol>"""
+
+
+def _render_reflection_calibration(block: "Block") -> str:
+    """FR-INT-03 — render the B11 predict-then-reveal calibration scaffold.
+
+    A real reflection is predict-then-reveal: capture the learner's PREDICTION /
+    judgment, REVEAL the benchmark / expert answer (behind a ``<details>`` so the
+    learner commits first), then give CALIBRATION feedback comparing the two.
+
+    Reads the ``Block`` calibration fields ``prediction_prompt`` /
+    ``reveal_content`` / ``calibration_feedback``. Gated by
+    ``ED4ALL_REFLECTION_CALIBRATION`` (default OFF) — returns ``""`` when the
+    flag is unset OR no calibration field is populated, so default / legacy
+    output is byte-identical (mirrors the B15 ``_render_resources_section`` /
+    FR-INT-04 ``_render_discussion_protocol`` posture).
+    """
+    if not _reflection_calibration_emit_enabled():
+        return ""
+    prediction = getattr(block, "prediction_prompt", None)
+    reveal = getattr(block, "reveal_content", None)
+    calibration = getattr(block, "calibration_feedback", None)
+    if not any(
+        isinstance(v, str) and v.strip() for v in (prediction, reveal, calibration)
+    ):
+        return ""
+    parts = ['    <div class="reflection-calibration" role="group" '
+             'aria-label="Predict then reveal">']
+    if isinstance(prediction, str) and prediction.strip():
+        parts.append(
+            f'      <p class="prediction-prompt"><strong>Predict:</strong> '
+            f'{html_mod.escape(prediction.strip())}</p>'
+        )
+    if isinstance(reveal, str) and reveal.strip():
+        parts.append('      <details class="reveal">')
+        parts.append('        <summary>Reveal the benchmark answer</summary>')
+        parts.append(
+            f'        <div class="reveal-content">'
+            f'{html_mod.escape(reveal.strip())}</div>'
+        )
+        parts.append('      </details>')
+    if isinstance(calibration, str) and calibration.strip():
+        parts.append(
+            f'      <p class="calibration-feedback"><strong>Calibrate:</strong> '
+            f'{html_mod.escape(calibration.strip())}</p>'
+        )
+    parts.append('    </div>')
+    return "\n".join(parts)
+
+
 def _summary_recap_paragraphs(
     content_modules: List[Dict[str, Any]],
     *,
@@ -3462,7 +3553,7 @@ def generate_week(
         <li><strong>Initial Post:</strong> {disc.get("initial_post", "250 words minimum")}</li>
         <li><strong>Replies:</strong> {disc.get("replies", "Respond to at least 2 classmates (100 words each)")}</li>
         <li><strong>Due:</strong> {disc.get("due", "Initial post by Wednesday; replies by Sunday")}</li>
-      </ul>
+      </ul>{_render_discussion_protocol(disc)}
     </div>"""
         # Phase 2 (Subtask 27): collect the canonical Block list for this
         # discussion page (objective Blocks + wrapper Block).

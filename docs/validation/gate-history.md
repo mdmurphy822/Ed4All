@@ -356,3 +356,37 @@ focused on the current authoritative counts.
 > fastest-flip exception, this is NOT IB3). The count table is re-derived from
 > `config/workflows.yaml`: `course_generation` 35→36 warning,
 > `textbook_to_course` 79→80 warning, Total 117→119 warning / 179→181 total.
+
+---
+
+> FR-INT-04 / FR-INT-03 landing (B10 three-move discussion protocol + B11
+> reflection predict-then-reveal calibration). **FR-INT-04** adds ONE new gate —
+> `b10_protocol` (`lib.validators.b10_protocol.B10ProtocolValidator`) — in
+> **warning** at `post_rewrite_validation` in BOTH `course_generation` +
+> `textbook_to_course` (+1 warning each). It flags `DISCUSSION_PROTOCOL_COLLAPSED`
+> when a `discussion_prompt` block ships a single prompt with no required peer-
+> response and no synthesize move (the framework's B10 contract is post →
+> respond → synthesize). Rides `ED4ALL_NEW_BLOCK_TYPES` — strict no-op +
+> byte-stable (`B10_PROTOCOL_DISABLED` info issue) when the flag is unset (the
+> same flag the B10 three-move render scaffold rides). Day-1 warning with a
+> `# TODO(calibration)` deferred critical-flip (WS3/W4 deferred-flip pattern;
+> IB3 is the single documented fastest-flip exception, this is NOT IB3). The
+> `discussion_prompt` catalog entry also gains `bloom_ceiling: create` (a real
+> discussion drives the synthesize move to Create) and two additive hash-excluded
+> Block fields (`discussion_protocol` / `discussion_bloom_verb`).
+>
+> **FR-INT-03** adds NO new gate row — it RIDES two existing gates behind the new
+> `ED4ALL_REFLECTION_CALIBRATION` flag (default OFF). When the flag is on, the
+> `interaction_feedback` gate (IB6.3) gains a `REFLECTION_NO_CAPTURE` arm (a B11
+> reflection that only asks — no predict-then-reveal capture + no calibration
+> feedback) and the `anatomy_slot_presence` gate (IB6.2) gains an
+> `ANATOMY_REFLECTION_NO_BENCHMARK` arm (a B11 feedback slot carrying no
+> calibration benchmark). Three additive hash-excluded Block fields
+> (`prediction_prompt` / `reveal_content` / `calibration_feedback`) + a
+> `<details>` predict-then-reveal render scaffold (byte-stable off). Both arms
+> are warning-day-1 and no-op byte-stable when the flag (or the parent
+> `ED4ALL_BLOCK_QUALITY_RUBRIC`) is unset.
+>
+> The count table is re-derived from `config/workflows.yaml`:
+> `course_generation` 36→37 warning, `textbook_to_course` 80→81 warning,
+> Total 119→121 warning / 181→183 total.

@@ -621,6 +621,18 @@ def _accepted_block_fields() -> frozenset:
         # CalloutStructureValidator / InteractionFeedbackValidator read off
         # hydrated blocks. Default None → byte-stable when absent from the JSONL.
         "feedback", "option_feedback", "callout_kind",
+        # FR-INT-04 — B10 three-move discussion protocol fields the
+        # B10ProtocolValidator reads. Default None → byte-stable when absent.
+        "discussion_protocol", "discussion_bloom_verb",
+        # FR-INT-03 — B11 predict-then-reveal calibration fields the
+        # InteractionFeedbackValidator (REFLECTION_NO_CAPTURE) +
+        # AnatomySlotPresenceValidator (benchmark-in-feedback) read. Default None
+        # → byte-stable when absent from the JSONL.
+        "prediction_prompt", "reveal_content", "calibration_feedback",
+        # IB1 anatomy slots the AnatomySlotPresenceValidator reads (the benchmark
+        # check inspects the feedback slot). heading/purpose_tag/interaction/
+        # transition complete the six-slot read surface; default None → byte-stable.
+        "heading", "purpose_tag", "interaction", "transition",
     })
 
 
@@ -1131,6 +1143,20 @@ def _build_block_input(
         inputs["new_block_types_enabled"] = resolve_new_block_types()
     except Exception:  # noqa: BLE001 — never let the resolver import break routing
         inputs["new_block_types_enabled"] = False
+
+    # FR-INT-03 — thread the ED4ALL_REFLECTION_CALIBRATION resolution into the
+    # Block-input surface so the InteractionFeedbackValidator's REFLECTION_NO_
+    # CAPTURE arm + the AnatomySlotPresenceValidator's benchmark-in-feedback
+    # check fire only when the flag is on. Harmless for the other validators
+    # sharing this builder — they ignore the key. Default OFF → byte-stable.
+    try:
+        from lib.generation.reflection_calibration import (
+            resolve_reflection_calibration,
+        )
+
+        inputs["reflection_calibration_enabled"] = resolve_reflection_calibration()
+    except Exception:  # noqa: BLE001 — never let the resolver import break routing
+        inputs["reflection_calibration_enabled"] = False
 
     objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
     if objectives_path:
@@ -2622,6 +2648,15 @@ def default_router() -> GateInputRouter:
     # ED4ALL_NEW_BLOCK_TYPES is unset; the B15 type is only selectable then).
     r.register(
         "lib.validators.resource_link_purpose.ResourceLinkPurposeValidator",
+        _build_block_input_rewrite,
+    )
+    # FR-INT-04 — B10ProtocolValidator audits the three-move discussion protocol
+    # (post -> respond -> synthesize) on ``discussion_prompt`` blocks. Consumes
+    # only ``inputs['blocks']`` so it reuses the rewrite-tier Block surface
+    # (no-ops + byte-stable when ED4ALL_NEW_BLOCK_TYPES is unset; the same flag
+    # the B10 three-move render scaffold rides).
+    r.register(
+        "lib.validators.b10_protocol.B10ProtocolValidator",
         _build_block_input_rewrite,
     )
     # FR-A11Y-02 — InteractiveA11yValidator audits WCAG 2.1.1/2.5.7

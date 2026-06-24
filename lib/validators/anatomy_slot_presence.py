@@ -125,6 +125,21 @@ class AnatomySlotPresenceValidator:
                 metadata={"anatomy_slot_presence": {"enabled": True, "slots_absent": True}},
             )
 
+        # FR-INT-03 — reflection-calibration gate (rides ED4ALL_REFLECTION_
+        # CALIBRATION, default OFF → byte-stable no-op). When on, a B11
+        # reflection's feedback slot should carry the calibration / benchmark
+        # (the reveal_content / calibration_feedback). Optional override seam.
+        reflection_calibration_enabled = inputs.get("reflection_calibration_enabled")
+        if reflection_calibration_enabled is None:
+            try:
+                from lib.generation.reflection_calibration import (
+                    resolve_reflection_calibration,
+                )
+
+                reflection_calibration_enabled = resolve_reflection_calibration()
+            except Exception:  # noqa: BLE001 — never let the resolver break the gate
+                reflection_calibration_enabled = False
+
         issues: List[GateIssue] = []
         audited = 0
         caps_by_block: Dict[str, List[str]] = {}
@@ -233,6 +248,42 @@ class AnatomySlotPresenceValidator:
                             suggestion="Add a transition that connects to the next block.",
                         )
                     )
+
+            # FR-INT-03 — a B11 reflection's feedback slot should carry the
+            # calibration / benchmark (the predict-then-reveal payload: the
+            # reveal_content benchmark or calibration_feedback) so the
+            # reflection's feedback is a benchmark to calibrate against, not just
+            # an ack. Rides ED4ALL_REFLECTION_CALIBRATION (default OFF →
+            # byte-stable). Warning-day-1; rides this gate (no new gate row).
+            if reflection_calibration_enabled and bcode == "B11":
+                has_benchmark = (
+                    has_feedback
+                    or _nonempty(block_attr(block, "reveal_content"))
+                    or _nonempty(block_attr(block, "calibration_feedback"))
+                )
+                if not has_benchmark:
+                    block_issues.append("ANATOMY_REFLECTION_NO_BENCHMARK")
+                    if len(issues) < _ISSUE_LIST_CAP:
+                        issues.append(
+                            GateIssue(
+                                severity="warning",
+                                code="ANATOMY_REFLECTION_NO_BENCHMARK",
+                                message=(
+                                    f"Reflection block {block_id!r} ({bt}/B11) "
+                                    f"feedback slot carries no calibration "
+                                    f"benchmark (reveal_content / "
+                                    f"calibration_feedback) — a reflection's "
+                                    f"feedback should be a benchmark to calibrate "
+                                    f"the learner's judgment against (FR-INT-03)."
+                                ),
+                                location=block_id,
+                                suggestion=(
+                                    "Populate the feedback slot with the "
+                                    "calibration benchmark (the revealed answer "
+                                    "+ how to compare your judgment to it)."
+                                ),
+                            )
+                        )
 
             per_block[block_id] = {
                 "framework_block": bcode,
