@@ -394,7 +394,12 @@ class BlockCognitiveLoadValidator:
                 metadata={"block_cognitive_load": {"enabled": False}},
             )
 
-        ceiling = resolve_body_char_ceiling(inputs.get("body_char_ceiling"))
+        body_char_ceiling_override = inputs.get("body_char_ceiling")
+        # Representative top-level ceiling for the metadata summary: the atomic
+        # single-idea default (per-block ceilings vary by type — recorded in
+        # ``per_block[...]["ceiling"]``). With an explicit override or env set,
+        # that same global value applies to every block, so the summary matches.
+        ceiling = resolve_body_char_ceiling(body_char_ceiling_override)
         blocks = inputs.get("blocks") or []
         issues: List[GateIssue] = []
         audited = 0
@@ -413,11 +418,19 @@ class BlockCognitiveLoadValidator:
             from lib.validators._block_rubric_helpers import block_attr
 
             block_id = str(block_attr(block, "block_id") or f"block-{audited}")
-            is_overflow = char_count > ceiling or chunks > _BLOCK_IDEA_CHUNK_CEILING
+            # FIX 2: per-block-TYPE char ceiling — exposition / answer-bearing
+            # types get the higher budget; atomic types keep ~200. An explicit
+            # override / env still globally wins (resolve precedence).
+            block_ceiling = resolve_body_char_ceiling(
+                body_char_ceiling_override, block_type=bt
+            )
+            is_overflow = (
+                char_count > block_ceiling or chunks > _BLOCK_IDEA_CHUNK_CEILING
+            )
             per_block[block_id] = {
                 "char_count": char_count,
                 "idea_chunks": chunks,
-                "ceiling": ceiling,
+                "ceiling": block_ceiling,
                 "overflow": is_overflow,
             }
             if is_overflow:
@@ -430,7 +443,7 @@ class BlockCognitiveLoadValidator:
                             message=(
                                 f"Block {block_id!r} ({bt}) body is "
                                 f"{char_count} chars / {chunks} idea-chunks, "
-                                f"over the D2 ceiling ({ceiling} chars / "
+                                f"over the D2 ceiling ({block_ceiling} chars / "
                                 f"{_BLOCK_IDEA_CHUNK_CEILING} chunks). The "
                                 f"'everything-block' anti-pattern — overflow "
                                 f"should spawn a NEW block, not a denser one."

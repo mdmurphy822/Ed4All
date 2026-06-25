@@ -37,10 +37,90 @@ def _codes(result):
 
 
 def test_single_representation_block_warns() -> None:
+    # A single prose-only block IS the whole page; the page provides only 1
+    # representation mode → it still warns, now at PAGE granularity.
     block = _block("<p>only prose</p>")
     result = _validate([block])
     assert "UDL_SINGLE_REPRESENTATION" in _codes(result)
     assert result.passed is True  # warning-day-1
+
+
+def test_page_with_two_blocks_collectively_two_modes_clears_floor() -> None:
+    # Core per-page-aggregation regression: two blocks sharing the same
+    # page_id, each individually single-mode (prose-only + table-only), but
+    # COLLECTIVELY providing >=2 distinct modes → the page clears the floor
+    # even though each block in isolation is single-mode.
+    prose = _block(
+        "<p>Variables stand in for unknown values in an equation.</p>",
+        block_id="week_01_overview#concept_prose_0",
+    )
+    table = _block(
+        "<table><caption>t</caption><tr><td>x</td></tr></table>",
+        block_type="table", block_id="week_01_overview#table_demo_0",
+    )
+    result = _validate([prose, table])
+    assert "UDL_SINGLE_REPRESENTATION" not in _codes(result)
+
+
+def test_prose_in_div_without_literal_p_counts_as_mode() -> None:
+    # Detection-artifact fix: prose wrapped in <div>/<section> with NO literal
+    # <p> now registers the prose representation mode. A <div>-wrapped
+    # paragraph + a <table> on the same page clears the >=2 floor.
+    div_prose = _block(
+        "<div>Some explanatory prose about variables and how to use them "
+        "in equations.</div>",
+        block_id="week_02_overview#concept_div_0",
+    )
+    table = _block(
+        "<table><caption>t</caption></table>",
+        block_type="table", block_id="week_02_overview#table_demo_0",
+    )
+    result = _validate([div_prose, table])
+    assert "UDL_SINGLE_REPRESENTATION" not in _codes(result)
+
+
+def test_section_div_prose_plus_image_derives_two_modes() -> None:
+    # A single block whose content nests prose in <section><div> plus an <img>
+    # derives >=2 modes (prose + image) on its own page — no warning.
+    block = _block(
+        "<section><div>prose about the topic at hand and its uses</div>"
+        "</section><img alt='x'>",
+        block_id="week_03_overview#concept_mixed_0",
+    )
+    result = _validate([block])
+    assert "UDL_SINGLE_REPRESENTATION" not in _codes(result)
+
+
+def test_table_only_block_does_not_register_prose() -> None:
+    # Anti-over-count: a <table>-only block (no block-level prose container)
+    # must NOT register the prose mode just because its cells carry text. On
+    # its own page it provides only the single 'table' mode → it warns.
+    table = _block(
+        "<table><caption>caption text here</caption>"
+        "<tr><td>some cell text content</td></tr></table>",
+        block_type="table", block_id="week_04_overview#table_only_0",
+    )
+    result = _validate([table])
+    assert "UDL_SINGLE_REPRESENTATION" in _codes(result)
+
+
+def test_intrinsic_single_mode_block_with_prose_block_no_page_failure() -> None:
+    # An intrinsically-single-mode block type (summary_takeaway) sharing a page
+    # WITH a prose block: the page union is {prose, ...} but the single-mode
+    # block contributes its own mode too — the page clears the floor and the
+    # single-mode block causes NO per-block failure (page-level only).
+    summary = _block(
+        "<ul><li>recap point one</li><li>recap point two</li></ul>",
+        block_type="summary_takeaway",
+        block_id="week_05_overview#summary_takeaway_0",
+    )
+    prose = _block(
+        "<p>This week we explored how variables behave in linear equations.</p>",
+        block_id="week_05_overview#concept_prose_0",
+    )
+    result = _validate([summary, prose])
+    # prose (prose) + summary (list) => 2 modes on the page => clears floor.
+    assert "UDL_SINGLE_REPRESENTATION" not in _codes(result)
 
 
 def test_two_representations_clears_floor() -> None:

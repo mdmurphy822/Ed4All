@@ -47,6 +47,32 @@ BLOCK_QUALITY_RUBRIC_ENV = "ED4ALL_BLOCK_QUALITY_RUBRIC"
 BLOCK_BODY_CHAR_CEILING_ENV = "ED4ALL_BLOCK_BODY_CHAR_CEILING"
 _DEFAULT_BODY_CHAR_CEILING = 200
 
+# IB6.4 per-block-TYPE body-char budget (FIX 2 — type-blind-ceiling fix).
+#
+# The single global 200-char ceiling was structurally unsatisfiable for the
+# exposition / answer-bearing block types: across two real corpora only 1 of 99
+# non-exempt blocks measured <=200 chars (alg median body 794, demo 1216). The
+# 200 target is the right ATOMIC single-idea budget (key_idea / callout / vocab
+# card / a one-line check), but exposition that legitimately develops one idea
+# across a worked example, a diagram long-description, or a scenario needs a
+# higher budget. The higher-budget set below is the gap-map's "exposition /
+# answer-bearing" types; the ~1000 value sits at p50-p75 of the measured bodies
+# (alg median 794 / demo 1216). The block_catalog.yaml carries no char-budget
+# field, so this constant table is the single source of truth.
+#
+# The orthogonal ">4-idea-chunk" axis (content.py::_BLOCK_IDEA_CHUNK_CEILING)
+# is UNTOUCHED — it still catches genuine multi-idea "everything-blocks"
+# regardless of the per-type char budget.
+_EXPOSITION_BODY_CHAR_CEILING = 1000
+_BLOCK_BODY_CHAR_CEILING_BY_TYPE: dict = {
+    "concept": _EXPOSITION_BODY_CHAR_CEILING,
+    "example": _EXPOSITION_BODY_CHAR_CEILING,
+    "worked_example": _EXPOSITION_BODY_CHAR_CEILING,
+    "self_check_question": _EXPOSITION_BODY_CHAR_CEILING,
+    "diagram": _EXPOSITION_BODY_CHAR_CEILING,
+    "scenario": _EXPOSITION_BODY_CHAR_CEILING,
+}
+
 # The framework's interactive block codes — B07 Knowledge-Check, B08 Guided
 # Practice, B10 Discussion, B14 Graded Assessment. These are the codes the
 # Feedback / interaction-presence gates apply to (the plan's B07/B08/B10/B14).
@@ -58,10 +84,22 @@ def block_quality_rubric_enabled() -> bool:
     return os.environ.get(BLOCK_QUALITY_RUBRIC_ENV, "").strip().lower() in _TRUTHY
 
 
-def resolve_body_char_ceiling(override: Optional[int] = None) -> int:
-    """Resolve the D2 body char ceiling (arg > env > 200).
+def resolve_body_char_ceiling(
+    override: Optional[int] = None, block_type: Optional[str] = None
+) -> int:
+    """Resolve the D2 body char ceiling per block type.
 
-    Garbage / non-positive values fall back to the 200-char default
+    Precedence (high → low):
+      1. explicit positive ``override`` arg (caller-pinned), then
+      2. ``ED4ALL_BLOCK_BODY_CHAR_CEILING`` env — a GLOBAL override that still
+         wins over the per-type default (preserves the historical env
+         semantics: an env of 50 makes even an exposition concept overflow),
+         then
+      3. the per-block-TYPE budget (``_BLOCK_BODY_CHAR_CEILING_BY_TYPE``) for
+         the exposition / answer-bearing types, then
+      4. the 200-char atomic single-idea default.
+
+    Garbage / non-positive values fall back to the next tier
     (parse-with-fallback, mirroring ``ED4ALL_ANSWER_NUM_CTX``).
     """
     if isinstance(override, int) and override > 0:
@@ -74,6 +112,10 @@ def resolve_body_char_ceiling(override: Optional[int] = None) -> int:
                 return val
         except (TypeError, ValueError):
             pass
+    if isinstance(block_type, str):
+        bt = block_type.strip().lower()
+        if bt in _BLOCK_BODY_CHAR_CEILING_BY_TYPE:
+            return _BLOCK_BODY_CHAR_CEILING_BY_TYPE[bt]
     return _DEFAULT_BODY_CHAR_CEILING
 
 
@@ -118,6 +160,52 @@ def is_interactive_block(block: Any) -> bool:
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
+# IB6.4 escaped-provenance scrub (FIX 2 — escaped-tag measurement bug).
+#
+# Source-provenance markup is sometimes ENTITY-ESCAPED into a block's body
+# (``&lt;aside data-cf-source-ids='dart:slug#b1'&gt;…&lt;/aside&gt;``). The
+# plain ``_TAG_RE`` only strips literal ``<...>`` tags, so an escaped run is
+# counted as visible body text and inflates the measured length (observed: a
+# demo ``key_idea`` 667 → 2843 chars). We TARGET escaped-tag runs only — we do
+# NOT blanket-unescape every entity, because a legitimately-escaped ``&amp;``
+# or a math ``&lt;`` ("x &lt; 5") is real content and must keep its length.
+#
+# Rule:
+#   1. Drop an escaped ``aside`` provenance element WHOLE — opening tag,
+#      inner text, and closing tag — since the inner text is the provenance
+#      payload, not body prose.
+#   2. Drop any other escaped tag (``&lt;tag …&gt;`` / ``&lt;/tag&gt;``) whose
+#      attributes carry a provenance token (``data-cf-source-ids`` /
+#      ``data-cf-`` / ``data-dart-`` / a ``dart:`` CURIE), leaving its inner
+#      text (which, for a span wrapper, IS body content).
+# A token like "x &lt; 5" has no tag-name + attr shape, so it never matches.
+_ESCAPED_ASIDE_PROVENANCE_RE = re.compile(
+    r"&lt;\s*aside\b[^&]*?&gt;.*?&lt;\s*/\s*aside\s*&gt;",
+    re.IGNORECASE | re.DOTALL,
+)
+_ESCAPED_PROVENANCE_TAG_RE = re.compile(
+    r"&lt;\s*/?\s*[A-Za-z][\w-]*\b"  # an escaped opening/closing tag name …
+    r"[^&]*?"                          # … its attributes (no entity inside) …
+    r"(?:data-cf-source-ids|data-cf-|data-dart-|dart:)"  # … a provenance token
+    r"[^&]*?&gt;",
+    re.IGNORECASE,
+)
+
+
+def _scrub_escaped_provenance(s: str) -> str:
+    """Remove entity-escaped provenance markup runs so they don't inflate body.
+
+    Targeted (NOT a blanket ``html.unescape``): only escaped ``aside``
+    provenance elements + escaped tags carrying a ``data-cf-*`` / ``data-dart-``
+    / ``dart:`` token are dropped, preserving legitimately-escaped content
+    entities (``&amp;``, math ``&lt;``).
+    """
+    if "&lt;" not in s:
+        return s
+    s = _ESCAPED_ASIDE_PROVENANCE_RE.sub(" ", s)
+    s = _ESCAPED_PROVENANCE_TAG_RE.sub(" ", s)
+    return s
+
 
 def strip_html_text(s: Any) -> str:
     """Strip HTML tags + collapse whitespace to visible text.
@@ -155,7 +243,12 @@ def body_text_of(block: Any) -> str:
                 val = content.get(key)
                 if isinstance(val, str) and val.strip():
                     parts.append(val)
-    return strip_html_text("\n".join(parts))
+    # FIX 2: drop entity-escaped provenance markup BEFORE stripping literal
+    # tags so an escaped ``&lt;aside data-cf-source-ids=…&gt;…&lt;/aside&gt;``
+    # run does not inflate the measured body length. Scoped to body_text_of so
+    # strip_html_text's contract (used by interaction_feedback) is unchanged.
+    joined = _scrub_escaped_provenance("\n".join(parts))
+    return strip_html_text(joined)
 
 
 _SENTENCE_RE = re.compile(r"[.!?]+(?:\s|$)")

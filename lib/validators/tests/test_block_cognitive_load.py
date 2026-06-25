@@ -15,8 +15,20 @@ def _concept(content: str, block_id: str = "b1") -> Block:
     )
 
 
+def _block(block_type: str, content: str, block_id: str = "b1") -> Block:
+    return Block(
+        block_id=block_id,
+        block_type=block_type,
+        page_id="week_01_content",
+        sequence=1,
+        content=content,
+    )
+
+
 def test_overflow_flags_everything_block():
-    block = _concept("<p>" + ("word " * 200) + "</p>")  # ~1000 chars
+    # A concept now gets the ~1000-char exposition budget, so to demonstrate
+    # char-overflow it must clearly exceed it (~1200 chars of a single <p>).
+    block = _concept("<p>" + ("word " * 240) + "</p>")  # ~1200 chars
     res = BlockCognitiveLoadValidator().validate(
         {"blocks": [block], "rubric_enabled": True}
     )
@@ -26,6 +38,32 @@ def test_overflow_flags_everything_block():
     meta = res.metadata["block_cognitive_load"]
     assert meta["blocks_overflow"] == 1
     assert meta["per_block"]["b1"]["overflow"] is True
+
+
+def test_exposition_concept_within_budget_passes():
+    # FIX 2: a single-idea ~800-char concept body (<=4 chunks) is WITHIN the
+    # exposition per-type budget (~1000) and no longer overflows — proving the
+    # per-type ceiling. Under the old type-blind 200 ceiling this overflowed.
+    block = _concept("<p>" + ("word " * 160) + "</p>")  # ~800 chars, one <p>
+    res = BlockCognitiveLoadValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    assert res.passed is True
+    assert not any(i.code == "BLOCK_BODY_OVERFLOW" for i in res.issues)
+    meta = res.metadata["block_cognitive_load"]
+    assert meta["blocks_overflow"] == 0
+    assert meta["per_block"]["b1"]["ceiling"] == 1000
+
+
+def test_atomic_type_keeps_200_ceiling():
+    # FIX 2: an ATOMIC type (key_idea) with a ~400-char body STILL overflows —
+    # the 200 single-idea ceiling is preserved for non-exposition types.
+    block = _block("key_idea", "<p>" + ("word " * 80) + "</p>")  # ~400 chars
+    res = BlockCognitiveLoadValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    assert any(i.code == "BLOCK_BODY_OVERFLOW" for i in res.issues)
+    assert res.metadata["block_cognitive_load"]["per_block"]["b1"]["ceiling"] == 200
 
 
 def test_short_block_passes():

@@ -615,14 +615,79 @@ def derive_anatomy_slots(block: "Block") -> "Block":
 # the existing body-tag vocabulary — prose <p>, tabular <table>, figure
 # <img>/<figure>, formula <math> (or a data-cf-content-type="formula"
 # wrapper / a <span class="math"> token), list <ul>/<ol>, reveal <details>.
+# NOTE: the "prose" mode is detected by :func:`_udl_has_prose` (a block-level
+# prose container with visible text), NOT by a single regex — a <div>/<section>
+# wrapped paragraph is genuinely prose, but a <table>-only block must NOT
+# register prose just because its cells carry text. The other modes stay
+# regex-driven. The "prose" mode is decided by _udl_has_prose, not by this tuple.
+#
+# A literal <p> is an explicit prose container and ALWAYS counts (preserves the
+# original byte-stable behaviour where any <p> registered prose). A
+# <div>/<section> is a generic structural container, so it counts as prose only
+# when it carries non-trivial visible text (the IB4 detection-artifact fix:
+# <div>-wrapped prose with no literal <p>) — this keeps a <div>-wrapping a
+# table/empty container from over-counting prose.
+_UDL_PROSE_P_RE = re.compile(r"(?is)<p[\s>]")
+_UDL_PROSE_BLOCK_CONTAINER_RE = re.compile(r"(?is)<(?:div|section)[\s>]")
+
 _UDL_REPRESENTATION_PATTERNS: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
-    ("prose", re.compile(r"(?is)<p[\s>]")),
     ("table", re.compile(r"(?is)<table[\s>]")),
     ("image", re.compile(r"(?is)<(?:img|figure)[\s>]")),
     ("formula", re.compile(r"(?is)<math[\s>]|class=\"[^\"]*\bmath\b|data-cf-content-type=\"formula\"")),
     ("list", re.compile(r"(?is)<(?:ul|ol)[\s>]")),
     ("reveal", re.compile(r"(?is)<details[\s>]")),
 )
+
+# Minimum visible-text length (chars, tags stripped) for a generic
+# <div>/<section> container to count as the "prose" representation mode. A
+# <div>-wrapped paragraph clears it; an empty <div></div> wrapper does not.
+# (Only consulted for <div>/<section>; a literal <p> always counts.)
+_UDL_PROSE_MIN_TEXT_CHARS: int = 20
+
+# Tag-stripper used to recover visible text for the prose-presence check.
+_UDL_TAG_STRIP_RE = re.compile(r"(?is)<[^>]+>")
+
+
+def _udl_has_prose(text: str) -> bool:
+    """Detect the "prose" representation mode.
+
+    Prose is present when EITHER a literal ``<p>`` is present (always counts —
+    byte-stable with the original behaviour), OR a generic block-level
+    container (``<div>``/``<section>``) is present AND the visible text (tags
+    stripped) is non-trivial (>= ``_UDL_PROSE_MIN_TEXT_CHARS``). The latter
+    counts ``<div>``/``<section>``-wrapped prose that carries no literal
+    ``<p>`` (the IB4 detection-artifact fix) WITHOUT over-counting a
+    ``<table>``-only block whose cells happen to carry text — a ``<table>``
+    with no block-level prose container registers no prose.
+    """
+    if not text:
+        return False
+    if _UDL_PROSE_P_RE.search(text):
+        return True
+    if not _UDL_PROSE_BLOCK_CONTAINER_RE.search(text):
+        return False
+    visible = _UDL_TAG_STRIP_RE.sub(" ", text)
+    return len(visible.strip()) >= _UDL_PROSE_MIN_TEXT_CHARS
+
+
+def _derive_udl_representation_modes(block: "Block") -> "frozenset[str]":
+    """Return the SET of distinct representation-mode names present in a block.
+
+    Single source of truth for both the per-block ``n_representations`` count
+    (``len(...)`` of this set) and the page-level union the
+    ``UdlCoverageValidator`` aggregates. Pure string/HTML inspection — NO LLM,
+    NO embeddings; anti-fabrication (only modes whose markers are literally
+    present are returned).
+    """
+    text = _udl_content_text(block)
+    modes: set = set()
+    if _udl_has_prose(text):
+        modes.add("prose")
+    for mode, pattern in _UDL_REPRESENTATION_PATTERNS:
+        if pattern.search(text):
+            modes.add(mode)
+    return frozenset(modes)
+
 
 # block_type -> learner response/expression mode (Action/Expression network).
 _UDL_RESPONSE_BY_BLOCK_TYPE: Dict[str, str] = {
@@ -678,10 +743,10 @@ def _derive_udl_coverage(
     """
     text = _udl_content_text(block)
 
-    n_representations = 0
-    for _mode, pattern in _UDL_REPRESENTATION_PATTERNS:
-        if pattern.search(text):
-            n_representations += 1
+    # Single source of truth: the count is the size of the mode SET (so the
+    # per-block n_representations and the validator's page-level union stay
+    # consistent — including the <div>/<section> prose detection fix).
+    n_representations = len(_derive_udl_representation_modes(block))
 
     response_formats: Tuple[str, ...] = ()
     rf = _UDL_RESPONSE_BY_BLOCK_TYPE.get(block.block_type)

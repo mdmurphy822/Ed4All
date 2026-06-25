@@ -2,9 +2,14 @@
 
 Audits the UDL coverage of the Block batch (QA-13 / 4.5 Rule 6 / D7):
 
-* Per CONTENT-BEARING block (skip ``chrome`` / ``objective``): assert
-  ``n_representations >= 2`` (the Representation/Recognition floor). A miss is
-  ``UDL_SINGLE_REPRESENTATION`` (warning).
+* Per PAGE/module (grouped by ``page_id``, skip ``chrome`` / ``objective``
+  blocks): assert the UNION of representation modes across the page's
+  content-bearing blocks is ``>= 2`` (the Representation/Recognition floor).
+  UDL multiple-means is a per-PAGE property, NOT a per-block one — an
+  intrinsically single-mode block (table, checklist, callout, scenario, ...)
+  is expected to be single-modal in isolation; only the page aggregate is
+  judged. A page below the floor emits a single ``UDL_SINGLE_REPRESENTATION``
+  (warning).
 * Per MODULE/week (grouped by ``page_id`` week prefix): assert ≥1 block carries
   an engagement/autonomy affordance — a non-empty ``response_formats`` OR a
   non-``None`` ``engagement_affordance`` (the Action/Expression +
@@ -48,7 +53,10 @@ _SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "Courseforge" / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
-from blocks import _derive_udl_coverage  # type: ignore[import-not-found]  # noqa: E402
+from blocks import (  # type: ignore[import-not-found]  # noqa: E402
+    _derive_udl_coverage,
+    _derive_udl_representation_modes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +65,22 @@ _ISSUE_LIST_CAP: int = 50
 # Block types that are NOT content-bearing for the representation floor.
 _UDL_SKIP_BLOCK_TYPES: frozenset = frozenset({"chrome", "objective"})
 
-# Minimum distinct representation modes per content-bearing block (QA-13).
+# Intrinsically single-mode block types. UDL multiple-means is a per-PAGE /
+# module property, NOT a per-block one: a table, checklist, callout, or
+# scenario is *expected* to be single-modal in isolation, and only the PAGE
+# aggregate matters. These types are documented here so future maintainers do
+# not re-introduce a per-block failure for them. With the page-level floor
+# they never produce a per-block failure (the page union is what is judged);
+# they STILL contribute their own mode(s) to that page union.
+_UDL_INTRINSIC_SINGLE_MODE_BLOCK_TYPES: frozenset = frozenset({
+    "table", "checklist", "summary_takeaway", "callout", "scenario",
+    "key_idea", "acronym", "vocab_card",
+})
+
+# Minimum distinct representation modes the PAGE as a whole must provide
+# (QA-13). UDL multiple-means is a per-PAGE/module property — the floor is the
+# UNION of representation modes across all content-bearing blocks sharing a
+# page, NOT a per-block check.
 _MIN_REPRESENTATIONS: int = 2
 
 # Week-prefix extractor: ``week_03#...`` / ``week03_...`` etc. → the week key.
@@ -102,6 +125,42 @@ def _week_key(block: Any) -> str:
     if m:
         return m.group(1).lower().replace("-", "_")
     return str(page_id)
+
+
+def _page_key(block: Any) -> str:
+    """Group key for the page-level representation floor — the page_id itself.
+
+    The page is the UDL multiple-means granularity (the week key, used only for
+    the coarser autonomy floor, would over-aggregate distinct pages).
+    """
+    return str(getattr(block, "page_id", "") or "")
+
+
+def _resolve_mode_set(block: Any) -> "frozenset[str]":
+    """Resolve the SET of representation-mode names a block contributes.
+
+    Mirrors ``_resolve_coverage``'s populated-fields fast path but at SET
+    granularity, so the page-level floor can union modes across blocks. When
+    the block carries a populated ``n_representations`` but we cannot recover
+    its concrete mode SET (the emit-side fields store only the count), we fall
+    back to a synthetic placeholder set sized to that count — enough to let a
+    block with populated ``n_representations >= 2`` clear the page floor on its
+    own. Otherwise we derive the real mode set on read.
+    """
+    n = getattr(block, "n_representations", 0) or 0
+    if n:
+        # Try to recover the concrete modes from content anyway (keeps the
+        # page union precise); fall back to a count-sized placeholder set when
+        # the content can't be inspected.
+        try:
+            derived = _derive_udl_representation_modes(block)
+        except Exception:  # noqa: BLE001
+            derived = frozenset()
+        if derived:
+            return derived
+        # Synthetic placeholder modes so a populated count still unions.
+        return frozenset(f"_n{i}" for i in range(int(n)))
+    return _derive_udl_representation_modes(block)
 
 
 def _resolve_coverage(block: Any) -> Tuple[int, Tuple[str, ...], Optional[str]]:
@@ -162,10 +221,13 @@ class UdlCoverageValidator:
             )
 
         issues: List[GateIssue] = []
-        single_rep_count = 0
         content_bearing = 0
         # week_key -> bool(any autonomy affordance seen)
         week_autonomy: Dict[str, bool] = {}
+        # page_key -> set(distinct representation modes across the page's
+        # content-bearing blocks). The page-level UDL multiple-means floor is
+        # judged on this UNION, NOT per block.
+        page_modes: Dict[str, set] = {}
 
         for block in raw:
             block_type = getattr(block, "block_type", "")
@@ -174,25 +236,40 @@ class UdlCoverageValidator:
             # Outline-tier blocks (dict content) still expose block_type +
             # page_id; _derive_udl_coverage handles dict content.
             content_bearing += 1
-            n_rep, rf, ea = _resolve_coverage(block)
+            _n_rep, rf, ea = _resolve_coverage(block)
 
-            if n_rep < _MIN_REPRESENTATIONS:
-                single_rep_count += 1
+            # Page-level representation floor: union this block's modes onto
+            # its page. Intrinsically-single-mode block types (table,
+            # checklist, ...) are EXPECTED to be single-modal and never produce
+            # a per-block failure — they still contribute their mode(s) to the
+            # page union (the page aggregate is the only thing judged).
+            pk = _page_key(block)
+            modes = _resolve_mode_set(block)
+            page_modes.setdefault(pk, set()).update(modes)
+
+            wk = _week_key(block)
+            has_autonomy = bool(rf) or ea is not None
+            week_autonomy[wk] = week_autonomy.get(wk, False) or has_autonomy
+
+        # Per-PAGE representation floor — a page whose UNION of representation
+        # modes across its content-bearing blocks is below the floor.
+        pages_audited = len(page_modes)
+        pages_single_representation = 0
+        for pk, modes in sorted(page_modes.items()):
+            if len(modes) < _MIN_REPRESENTATIONS:
+                pages_single_representation += 1
                 if len(issues) < _ISSUE_LIST_CAP:
                     issues.append(GateIssue(
                         severity="warning",
                         code="UDL_SINGLE_REPRESENTATION",
                         message=(
-                            f"Block {getattr(block, 'block_id', '?')!r} (block_type="
-                            f"{block_type!r}) provides {n_rep} representation mode(s); "
-                            f"UDL floor is {_MIN_REPRESENTATIONS} (QA-13)."
+                            f"Page {pk!r} provides {len(modes)} distinct "
+                            f"representation mode(s) across its content-bearing "
+                            f"blocks; UDL multiple-means floor is "
+                            f"{_MIN_REPRESENTATIONS} (QA-13)."
                         ),
-                        location=str(getattr(block, "block_id", "")),
+                        location=pk,
                     ))
-
-            wk = _week_key(block)
-            has_autonomy = bool(rf) or ea is not None
-            week_autonomy[wk] = week_autonomy.get(wk, False) or has_autonomy
 
         # Per-week autonomy floor — a week with zero affordance flags.
         weeks_no_autonomy = 0
@@ -214,21 +291,26 @@ class UdlCoverageValidator:
         # Warning-day-1: every issue is warning severity, so passed stays True.
         passed = True
         score = round(
-            1.0 - (single_rep_count / content_bearing) if content_bearing else 1.0,
+            1.0 - (pages_single_representation / pages_audited)
+            if pages_audited else 1.0,
             4,
         )
         _emit_udl_decision(
             capture,
             passed=passed,
             code=(
-                "UDL_SINGLE_REPRESENTATION" if single_rep_count else (
+                "UDL_SINGLE_REPRESENTATION" if pages_single_representation else (
                     "UDL_NO_AUTONOMY_AFFORDANCE" if weeks_no_autonomy else None
                 )
             ),
             metrics={
                 "block_count": len(raw),
                 "content_bearing": content_bearing,
-                "single_representation_count": single_rep_count,
+                # Repurposed to count under-floor PAGES (the floor is now
+                # per-page); aliased page-named keys added for clarity.
+                "single_representation_count": pages_single_representation,
+                "pages_audited": pages_audited,
+                "pages_single_representation": pages_single_representation,
                 "weeks_audited": len(week_autonomy),
                 "weeks_no_autonomy": weeks_no_autonomy,
             },
