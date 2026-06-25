@@ -432,7 +432,13 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
 
         self._registry_provider: Optional[str] = None
         if (
-            resolved_provider not in ("anthropic", "together", "local")
+            # ``nvidia`` is base-NATIVE (``_base.py`` has a direct nvidia
+            # branch that resolves NVIDIA_API_KEY + the nvidia base_url),
+            # so it must NOT route through the W-D12 registry override
+            # (which wires the base under "local" and would send the
+            # "local" placeholder api_key -> HTTP 401). Other registry
+            # providers (groq/fireworks/deepseek) keep the override path.
+            resolved_provider not in ("anthropic", "together", "local", "nvidia")
             and resolved_provider in _OPENAI_COMPATIBLE_PROVIDERS
         ):
             # Stash the real provider for the W-D12 dispatch override;
@@ -456,7 +462,7 @@ class TextbookSynthesisProvider(_BaseLLMProvider):
             anthropic_client=anthropic_client,
             env_provider_var=ENV_PROVIDER,
             default_provider=DEFAULT_PROVIDER,
-            supported_providers=("anthropic", "together", "local"),
+            supported_providers=("anthropic", "together", "local", "nvidia"),
             system_prompt=_TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT,
         )
         # Restore the runtime provider label so decision-capture and

@@ -260,7 +260,12 @@ class OutlinerProvider(_BaseLLMProvider):
             )
         self._registry_provider: Optional[str] = None
         if (
-            resolved_provider not in ("anthropic", "together", "local")
+            # ``nvidia`` is base-NATIVE (``_base.py`` resolves NVIDIA_API_KEY
+            # + the nvidia base_url directly), so it must NOT route through
+            # the W-D12 registry override (which wires the base under "local"
+            # and would send the "local" placeholder api_key -> HTTP 401).
+            # Other registry providers (groq/fireworks/deepseek) keep it.
+            resolved_provider not in ("anthropic", "together", "local", "nvidia")
             and resolved_provider in _OPENAI_COMPATIBLE_PROVIDERS
         ):
             # Stash the real provider for the W-D12 dispatch override;
@@ -288,7 +293,7 @@ class OutlinerProvider(_BaseLLMProvider):
             # the override below. This keeps the base's init invariants
             # (api_key checks, model resolution) honored without forking
             # the base class.
-            supported_providers=("anthropic", "together", "local"),
+            supported_providers=("anthropic", "together", "local", "nvidia"),
             system_prompt=_OUTLINER_SYSTEM_PROMPT,
         )
         # Restore the runtime provider label so decision-capture and
