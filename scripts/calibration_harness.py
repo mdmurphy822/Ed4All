@@ -24,8 +24,14 @@ For every discovered corpus (a LibV2 course slug or a Courseforge project export
 3. Decision-capture JSONL under ``training-captures/*/<COURSE>/`` carrying
    ``block_validation_action`` / ``statistical_validation_*`` events (gate-level rollups
    with ``ml_features.gate_id`` / ``passed`` / ``block_count`` / ``issues_count``).
+4. ``<export>/courseforge_validation_report.json`` (the post-loop aggregator) —
+   ``per_phase[].gates[]``. This is the ONLY on-disk artifact that surfaces gates wired
+   at the PRE-Courseforge phases (``chunking`` / ``course_planning``), which own no
+   standalone ``02_validation_report``. Read for the three aggregator-only families
+   (chunk WCAG status / CO<->TO alignment / source->objective coverage); a full
+   ``textbook_to_course`` run emits it, a content-only two-pass slice does not.
 
-A corpus missing ALL three sources for a gate is SKIPPED for that gate with a logged
+A corpus missing ALL four sources for a gate is SKIPPED for that gate with a logged
 reason (no fabricated data).
 
 WHAT IT EMITS
@@ -514,6 +520,108 @@ def read_block_quality_rollup(res: CorpusResult, rollup_path: Path) -> bool:
     return saw_any
 
 
+# Calibration gate families whose gates run at PRE-Courseforge phases
+# (``chunking`` / ``objective_extraction`` / ``course_planning`` /
+# ``concept_extraction``) rather than the two-pass outline/rewrite tiers. Those
+# phases own NO on-disk ``02_validation_report/report.json`` — their per-phase
+# GateResults are surfaced ONLY in the post-loop ``courseforge_validation_report.json``
+# aggregator (``per_phase[].gates[]``), which a full ``textbook_to_course`` run emits.
+# The per-block / phase-level validation-report readers above therefore never see them.
+# These three families are read from the aggregator instead, as ONE phase-level
+# observation per corpus that fires iff the gate logged any issue (``issue_count > 0``);
+# ``passed`` is NOT the signal because these gates ship warning-day-1 (passed stays True
+# even when issues are present, mirroring the per-block reader's ``issue_count > 0``
+# fire rule).
+_AGGREGATOR_ONLY_GATE_IDS: frozenset[str] = frozenset(
+    {
+        "chunk_wcag_status",        # IB4 chunk WCAG status (chunking phase)
+        "co_terminal_alignment",    # WS3 CO<->TO semantic alignment (course_planning)
+        "source_coverage",          # WS6a/I3 source->objective coverage (course_planning)
+        "objective_source_refs",    # WS6a/I3 source->objective coverage (course_planning)
+    }
+)
+
+
+def read_courseforge_validation_report(res: CorpusResult, report_path: Path) -> bool:
+    """Read the post-loop ``courseforge_validation_report.json`` aggregator.
+
+    A full ``textbook_to_course`` run walks every per-phase report and folds it into
+    ``per_phase[].gates[]``, where each entry carries ``gate_id`` / ``issue_count`` /
+    ``passed`` / ``severity`` for a PHASE-level gate. This is the only on-disk artifact
+    that surfaces the gates wired at the PRE-Courseforge phases (``chunking`` /
+    ``course_planning``) — those phases own no standalone ``02_validation_report``.
+
+    To avoid double-counting gates the richer per-block / rollup / phase-level readers
+    already observed, this reader records ONLY families in
+    ``_AGGREGATOR_ONLY_GATE_IDS`` and ONLY when the family has no observation yet for
+    this corpus. Each such gate is one phase-level ``evaluated`` unit that fires iff its
+    ``issue_count > 0`` (warning-day-1: ``passed`` stays True even with issues, so it is
+    NOT the fire signal). Returns True if any calibration gate was observed.
+    """
+    data = _read_json(report_path)
+    if not isinstance(data, dict):
+        return False
+    per_phase = data.get("per_phase")
+    if not isinstance(per_phase, list):
+        return False
+
+    src = f"courseforge_validation_report:{report_path.name}"
+    saw_any = False
+    # Families a RICHER reader (per-block / rollup / phase-level) already recorded for
+    # this corpus before the aggregator reader ran. The aggregator must not override
+    # those. Two distinct aggregator-only gate_ids that map to the SAME family (e.g.
+    # source_coverage + objective_source_refs) DO each contribute a phase-level
+    # observation, so this snapshot is taken ONCE up front (not re-checked per gate).
+    pre_observed = {
+        name for name, o in res.observations.items() if o.evaluated > 0
+    }
+    for phase_entry in per_phase:
+        if not isinstance(phase_entry, dict):
+            continue
+        phase_name = phase_entry.get("phase")
+        for gr in phase_entry.get("gates", []) or []:
+            if not isinstance(gr, dict):
+                continue
+            gid = gr.get("gate_id")
+            if str(gid) not in _AGGREGATOR_ONLY_GATE_IDS:
+                continue
+            fam = _GATE_TO_FAMILY.get(str(gid))
+            if fam is None:
+                continue
+            # Don't override a richer per-block/phase-level observation of the
+            # SAME family already recorded for this corpus by another reader.
+            if fam.family in pre_observed:
+                continue
+            saw_any = True
+            try:
+                issue_count = int(gr.get("issue_count") or 0)
+            except (TypeError, ValueError):
+                issue_count = 0
+            fired = issue_count > 0
+            sample = None
+            if fired:
+                top_issues = gr.get("top_issues") or []
+                first_loc = None
+                if isinstance(top_issues, list) and top_issues:
+                    first = top_issues[0]
+                    if isinstance(first, dict):
+                        first_loc = first.get("location")
+                sample = {
+                    "corpus": res.corpus_id,
+                    "phase": phase_name,
+                    "gate_id": gid,
+                    "issue_count": issue_count,
+                    "action": gr.get("action"),
+                    "first_issue_location": first_loc,
+                    "source": src,
+                }
+            _record_fire(res, fam, fired=fired, evaluated=1, source=src, sample=sample)
+
+    if saw_any:
+        res.sources_read.append(_rel_to_repo(report_path))
+    return saw_any
+
+
 def read_decision_captures(res: CorpusResult, capture_files: Iterable[Path]) -> bool:
     """Read block_validation_action / statistical_validation_* JSONL events.
 
@@ -907,6 +1015,12 @@ def discover_corpora(
         rollup = export_dir / "block_quality_rollup_report.json"
         if rollup.is_file():
             read_block_quality_rollup(res, rollup)
+        # Post-loop aggregator — the ONLY on-disk source for the pre-Courseforge
+        # phase gates (chunk_wcag_status / co_terminal_alignment / source_coverage /
+        # objective_source_refs), emitted by a full textbook_to_course run.
+        agg = export_dir / "courseforge_validation_report.json"
+        if agg.is_file():
+            read_courseforge_validation_report(res, agg)
         # Decision captures for this course.
         caps = _find_capture_files_for(name, captures_root)
         if caps:
@@ -934,6 +1048,9 @@ def discover_corpora(
         # Some libv2 courses keep a courseforge validation report alongside.
         for rp in sorted(course_dir.rglob("02_validation_report/report.json")):
             got = read_validation_report(res, rp) or got
+        # Archived post-loop aggregator (pre-Courseforge phase gates).
+        for agg in sorted(course_dir.rglob("courseforge_validation_report.json")):
+            got = read_courseforge_validation_report(res, agg) or got
         caps = _find_capture_files_for(name, captures_root)
         if caps:
             got = read_decision_captures(res, caps) or got

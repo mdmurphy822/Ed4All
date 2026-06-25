@@ -464,6 +464,137 @@ def test_structural_gate_read_from_phase_level_section():
     assert udl_obs.fired == 1
 
 
+# --------------------------------------------------------------------------------------
+# Aggregator (courseforge_validation_report.json) reader — the pre-Courseforge phase
+# gates (chunk_wcag_status / co_terminal_alignment / source_coverage /
+# objective_source_refs) are surfaced ONLY here, not in the two-pass report.json.
+# --------------------------------------------------------------------------------------
+def _read_aggregator_dict(agg_dict: dict, corpus_id: str = "agg-corpus-20260101000000"):
+    import json
+    import tempfile
+
+    res = ch.CorpusResult(
+        corpus_id=corpus_id,
+        origin="courseforge_export",
+        path=f"/synth/{corpus_id}",
+        corpus_key=ch._corpus_key(corpus_id),
+    )
+    with tempfile.TemporaryDirectory() as td:
+        ap = Path(td) / "courseforge_validation_report.json"
+        ap.write_text(json.dumps(agg_dict), encoding="utf-8")
+        ch.read_courseforge_validation_report(res, ap)
+    return res
+
+
+def test_aggregator_reader_records_pre_courseforge_phase_families():
+    # A full-run aggregator carrying chunk_wcag_status (chunking phase),
+    # co_terminal_alignment + source_coverage + objective_source_refs (course_planning)
+    # -> each family records ONE phase-level observation that fires iff issue_count > 0.
+    # ``passed`` stays True (warning-day-1) and must NOT suppress the fire.
+    agg = {
+        "per_phase": [
+            {
+                "phase": "chunking",
+                "gates": [
+                    {"gate_id": "chunk_wcag_status", "passed": True,
+                     "issue_count": 0, "severity": "critical", "action": None},
+                ],
+            },
+            {
+                "phase": "course_planning",
+                "gates": [
+                    {"gate_id": "co_terminal_alignment", "passed": True,
+                     "issue_count": 0, "severity": "critical", "action": None},
+                    {"gate_id": "source_coverage", "passed": True,
+                     "issue_count": 7, "severity": "critical", "action": "regenerate",
+                     "top_issues": [{"code": "SOURCE_SECTION_UNCOVERED",
+                                     "location": "ch1-sec3", "severity": "warning"}]},
+                    {"gate_id": "objective_source_refs", "passed": True,
+                     "issue_count": 3, "severity": "critical", "action": "regenerate"},
+                ],
+            },
+        ]
+    }
+    res = _read_aggregator_dict(agg)
+
+    wcag = res.observations["IB4 chunk WCAG status"]
+    assert wcag.evaluated == 1 and wcag.fired == 0  # 0 issues -> clean
+
+    align = res.observations["WS3 CO<->TO semantic alignment"]
+    assert align.evaluated == 1 and align.fired == 0
+
+    cov = res.observations["WS6a/I3 source->objective coverage"]
+    # source_coverage(7) + objective_source_refs(3) BOTH map to this one family;
+    # each is one phase-level evaluated unit, both fired.
+    assert cov.evaluated == 2 and cov.fired == 2
+    # sample carries the first top_issue location for auditability.
+    locs = [s.get("first_issue_location") for s in cov.samples]
+    assert "ch1-sec3" in locs
+
+
+def test_aggregator_reader_does_not_double_count_already_observed_family():
+    # If a richer reader already recorded a family for this corpus, the aggregator
+    # reader must NOT override it (no double counting). udl_coverage is read per-block;
+    # if it also showed in the aggregator we'd skip it — but udl_coverage isn't an
+    # aggregator-only id, so here we assert the guard on a shared family via a manual
+    # pre-existing observation on the source->objective coverage family.
+    res = ch.CorpusResult(
+        corpus_id="guard-corpus-20260101000000",
+        origin="courseforge_export",
+        path="/synth/guard",
+        corpus_key="guard-corpus",
+    )
+    # Pre-seed an observation for the coverage family (as if a per-block reader ran).
+    pre = res.obs("WS6a/I3 source->objective coverage")
+    pre.evaluated = 5
+    pre.fired = 1
+
+    import json
+    import tempfile
+
+    agg = {
+        "per_phase": [
+            {
+                "phase": "course_planning",
+                "gates": [
+                    {"gate_id": "source_coverage", "passed": True,
+                     "issue_count": 99, "severity": "critical", "action": "regenerate"},
+                ],
+            }
+        ]
+    }
+    with tempfile.TemporaryDirectory() as td:
+        ap = Path(td) / "courseforge_validation_report.json"
+        ap.write_text(json.dumps(agg), encoding="utf-8")
+        ch.read_courseforge_validation_report(res, ap)
+
+    cov = res.observations["WS6a/I3 source->objective coverage"]
+    # Untouched: the pre-existing per-block observation wins; no aggregator override.
+    assert cov.evaluated == 5 and cov.fired == 1
+
+
+def test_aggregator_reader_ignores_non_aggregator_only_gate_ids():
+    # Gates that ALSO appear in the aggregator per_phase but are read elsewhere
+    # (e.g. udl_coverage, bloom_type_range) must be IGNORED by this reader so they
+    # aren't double-counted against the per-block reader.
+    agg = {
+        "per_phase": [
+            {
+                "phase": "post_rewrite_validation",
+                "gates": [
+                    {"gate_id": "udl_coverage", "passed": False,
+                     "issue_count": 4, "severity": "warning", "action": "regenerate"},
+                    {"gate_id": "bloom_type_range", "passed": False,
+                     "issue_count": 2, "severity": "warning", "action": "regenerate"},
+                ],
+            }
+        ]
+    }
+    res = _read_aggregator_dict(agg)
+    assert "IB4 UDL multiple-means coverage" not in res.observations
+    assert "IB7.6c per-type Bloom-range ceiling" not in res.observations
+
+
 def test_legacy_v1_report_without_phase_level_section_degrades_gracefully():
     # A legacy v1 report (no phase_level_gate_results) still reads block-scoped
     # gates; structural/module families are simply not observed from it.
