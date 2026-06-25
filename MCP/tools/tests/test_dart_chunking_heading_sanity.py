@@ -1,20 +1,24 @@
 """Live-path integration test for the chunk heading-sanity filter.
 
-Re-chunks a real staged DART HTML through the live
+Re-chunks a real staged accessible-HTML conversion output through the live
 ``MCP/tools/pipeline_tools.py::_run_dart_chunking`` path (via the
-``run_dart_chunking`` tool-registry entry) and asserts:
+``run_dart_chunking`` tool-registry entry) and asserts the CORPUS-AGNOSTIC
+structural invariants of the ``lib/chunk_heading_sanity.py`` contract:
 
 * WITH ``TRAINFORGE_HEADING_SANITY_FILTER=1`` (mirroring the corpus-gen flag
-  set the pipeline auto-applies), the known noise ``section_heading``s
-  (answer-key / exercise-prose / numeric) are REPAIRED to a real ancestor
-  heading OR stamped ``heading_suspect``; the real headings ("Prime
-  Factorization", "Least Common Multiple", "1.x …") are UNCHANGED; total chunk
-  count unchanged; every chunk still schema-valid.
-* WITH the flag OFF, the emitted ``section_heading``s are byte-identical to the
-  on-flag run's ORIGINAL (un-repaired) headings (back-compat).
+  set the pipeline auto-applies), the total chunk count is UNCHANGED vs the
+  flag-off run (the filter repairs/flags headings, never adds or drops chunks),
+  every chunk still validates against the v4 schema, and EVERY emitted heading
+  is either (a) not suspect, (b) repaired to a non-suspect ancestor (heading
+  changed vs the off-run for that slot, and the result is no longer suspect), or
+  (c) left as-is and stamped ``heading_suspect`` — never a suspect heading
+  relayed verbatim without a flag.
+* WITH the flag OFF, the emitted ``section_heading``s are deterministic and NO
+  chunk carries the ``heading_suspect`` flag (back-compat — the filter never
+  mutates a heading when the gate is off).
 
 The input HTML lives under the gitignored ``inputs/`` tree (no course-data
-references in tracked code), so the test discovers it dynamically and
+references in tracked code), so the test DISCOVERS it dynamically and
 ``pytest.skip()``s when absent — CI on a clean checkout stays green.
 """
 
@@ -29,41 +33,24 @@ import pytest
 
 from lib.paths import PROJECT_ROOT
 
-# Candidate staged-HTML inputs (gitignored). First existing wins.
-_CANDIDATE_HTML = [
-    PROJECT_ROOT
-    / "inputs"
-    / "sample7b-full"
-    / "dart_in"
-    / "sample-algebra-2e-ch1-3_accessible.html",
-]
-
-# The known noise ``section_heading`` families observed on this corpus at the
-# live path (substrings — the chunker may append " (part N)").
-_KNOWN_NOISE_PREFIXES = [
-    "Preface",  # front-matter (exact, no part suffix)
-    "EXERCISES Practice Makes Perfect",  # exercise banner / following-exercises
-    "2⎡⎣1 + 3(10 − 2)⎤⎦",  # bracket-glyph math run
-    "24a 32b 2",  # compact numeric noise
-    "3u 2 − 4u + 5 when u = −3 313.",  # math prose + embedded markers
-    "Write the numbers one under the other",  # full-sentence prose
-]
-
-# Real section titles that MUST survive untouched.
-_KNOWN_REAL_HEADINGS = [
-    "Prime Factorization",
-    "Least Common Multiple",
-    "Multiple of a Number",
-]
-
-
 def _resolve_input_html() -> Path:
-    for cand in _CANDIDATE_HTML:
-        if cand.exists():
-            return cand
+    """Discover a real accessible-HTML conversion output under ``inputs/``.
+
+    The corpus lives under the gitignored ``inputs/`` tree (no course-data
+    references in tracked code), so the path is DISCOVERED at runtime — glob
+    every ``*/dart_in/*_accessible.html`` conversion output and take the first
+    (sorted for determinism). ``pytest.skip()`` when none is present so a clean
+    checkout stays green rather than erroring.
+    """
+    candidates = sorted(
+        (PROJECT_ROOT / "inputs").glob("*/dart_in/*_accessible.html")
+    )
+    if candidates:
+        return candidates[0]
     pytest.skip(
-        "no staged DART HTML fixture present under inputs/ "
-        "(gitignored corpus) — skipping live-path heading-sanity test"
+        "no staged accessible-HTML conversion output present under "
+        "inputs/*/dart_in/ (gitignored corpus) — skipping live-path "
+        "heading-sanity test"
     )
 
 
@@ -125,14 +112,23 @@ def _heading(chunk) -> str:
     return (chunk.get("source") or {}).get("section_heading") or ""
 
 
-def test_heading_sanity_repairs_noise_keeps_real_and_count(tmp_path):
+def test_heading_sanity_structural_invariants(tmp_path):
+    """The filter holds its contract on ANY corpus (structural, slug-agnostic).
+
+    Asserts only invariants that hold for any discovered conversion output —
+    no corpus-specific noise/real-heading literals (the discovered file is
+    arbitrary, so content-specific expectations are not sound).
+    """
+    from lib.chunk_heading_sanity import is_suspect_section_heading
+
     src = _resolve_input_html()
     staging = _stage_html(tmp_path, src)
 
     on_chunks = _run_chunking(tmp_path, staging, flag_on=True)
     off_chunks = _run_chunking(tmp_path, staging, flag_on=False)
 
-    # (a) total chunk count unchanged by the filter.
+    # (a) total chunk count unchanged by the filter (repairs/flags headings,
+    # never adds or drops chunks).
     assert len(on_chunks) == len(off_chunks), (
         f"chunk count changed: on={len(on_chunks)} off={len(off_chunks)}"
     )
@@ -140,50 +136,35 @@ def test_heading_sanity_repairs_noise_keeps_real_and_count(tmp_path):
     on_headings = [_heading(c) for c in on_chunks]
     off_headings = [_heading(c) for c in off_chunks]
 
-    # (b) every known-noise heading present in the OFF run must, in the ON run,
-    # either be REPAIRED away (no longer present as a stamped heading) OR carry
-    # a heading_suspect flag — never silently relayed verbatim without a flag.
-    found_any_noise = False
-    for prefix in _KNOWN_NOISE_PREFIXES:
-        off_hits = [h for h in off_headings if h.startswith(prefix)]
-        if not off_hits:
+    # (b) EVERY heading in the ON run satisfies the contract: it is either
+    # not-suspect, repaired to a non-suspect ancestor (heading changed vs the
+    # off-run slot), or left as-is and stamped ``heading_suspect``. A suspect
+    # heading is NEVER relayed verbatim without the flag.
+    for i, c in enumerate(on_chunks):
+        h = on_headings[i]
+        suspect_flag = (c.get("source") or {}).get("heading_suspect") is True
+        if not is_suspect_section_heading(h):
+            # Clean heading: must not carry the suspect flag.
+            assert not suspect_flag, (
+                f"clean heading {h[:50]!r} wrongly stamped heading_suspect"
+            )
             continue
-        found_any_noise = True
-        # In the ON run, no chunk should carry this noise prefix as its
-        # stamped section_heading UNLESS it is flagged heading_suspect.
-        for c in on_chunks:
-            h = _heading(c)
-            if h.startswith(prefix):
-                assert (c.get("source") or {}).get("heading_suspect") is True, (
-                    f"noise heading {h[:50]!r} relayed verbatim WITHOUT "
-                    f"heading_suspect flag in the ON run"
-                )
-    assert found_any_noise, (
-        "fixture carried none of the known noise headings — the corpus may "
-        "have changed; update _KNOWN_NOISE_PREFIXES"
-    )
+        # Heading still reads as suspect → it must have been LEFT as-is (no
+        # clean ancestor) and therefore flagged; a repair would have replaced
+        # it with a non-suspect heading.
+        assert suspect_flag, (
+            f"suspect heading {h[:50]!r} relayed verbatim WITHOUT the "
+            f"heading_suspect flag in the ON run"
+        )
 
-    # (c) at least one noise heading was actually REPAIRED to a real ancestor
-    # (proves the repair path fires, not just the flag).
-    repaired = [
-        c
-        for c in on_chunks
-        if (c.get("source") or {}).get("section_heading")
-        not in off_headings  # heading changed vs the off run for that slot
-    ]
-    # Looser, positional check: compare slot-by-slot (chunk order is stable).
+    # (c) any slot whose heading CHANGED between off/on was a genuine repair:
+    # suspect before, clean after (no false-positive demotion of a real title).
     changed_slots = [
         (off_headings[i], on_headings[i])
         for i in range(len(on_headings))
         if off_headings[i] != on_headings[i]
     ]
-    assert changed_slots, (
-        "no section_heading changed between off/on runs — repair never fired"
-    )
     for before, after in changed_slots:
-        # A changed heading must have been suspect before and clean after.
-        from lib.chunk_heading_sanity import is_suspect_section_heading
-
         assert is_suspect_section_heading(before), (
             f"a NON-suspect heading {before[:50]!r} was changed to "
             f"{after[:50]!r} — false-positive demotion!"
@@ -192,15 +173,15 @@ def test_heading_sanity_repairs_noise_keeps_real_and_count(tmp_path):
             f"heading {before[:50]!r} repaired to STILL-suspect {after[:50]!r}"
         )
 
-    # (d) real headings are UNCHANGED by the filter.
-    for real in _KNOWN_REAL_HEADINGS:
-        off_has = any(h == real for h in off_headings)
-        on_has = any(h == real for h in on_headings)
-        if off_has:
-            assert on_has, (
-                f"real heading {real!r} present off-flag but MISSING on-flag "
-                f"(wrongly demoted)"
-            )
+    # (d) a non-suspect (real) heading present off-flag survives on-flag — the
+    # filter only ever touches suspect slots.
+    off_clean = {h for h in off_headings if h and not is_suspect_section_heading(h)}
+    on_present = set(on_headings)
+    for real in off_clean:
+        assert real in on_present, (
+            f"clean heading {real[:50]!r} present off-flag but MISSING on-flag "
+            f"(wrongly demoted)"
+        )
 
 
 def test_flag_off_byte_identical_headings(tmp_path):

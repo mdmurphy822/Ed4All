@@ -58,6 +58,16 @@ ed4all run textbook-to-course --provider nvidia --course-name PHYS_101 \
 ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
   --reuse-objectives Courseforge/exports/PROJ-PHYS_101-.../01_learning_objectives/synthesized_objectives.json
 
+# Reuse a prior SemantiK PDF→accessible-HTML conversion instead of
+# re-running the (model-nondeterministic) SemantiK v2 cascade. When set
+# AND prior `{stem}_accessible.html` + sidecars exist at the conversion
+# output path, the cascade is skipped and the prior artifacts are reused
+# (the re-run model-nondeterminism guarantee, analogous to
+# --reuse-objectives). Mirrors the ED4ALL_REUSE_CONVERSION env var (the
+# flag wins when both are set). See SemantiK/CLAUDE.md §3.3a.
+ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
+  --reuse-conversion
+
 # Phase 5: stage-by-stage Courseforge two-pass subcommands. Re-run a
 # single tier of the Courseforge two-pass pipeline against an existing
 # project export. Pre-Courseforge phases (DART -> staging -> chunking
@@ -766,7 +776,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix). Coun
 
 The `LLM_*` env vars (`LLM_MODE`, `LLM_PROVIDER`, `LLM_MODEL`) are CLI runtime knobs documented in § Quick Start above.
 
-**Other `ED4ALL_*` vars not in the table above (kept out to avoid table noise):** the GUI server vars `ED4ALL_GUI_HOST` / `ED4ALL_GUI_PORT` / `ED4ALL_GUI_LEARNER` / `ED4ALL_GUI_MODE` / `ED4ALL_GUI_TOKEN` (the full-mode operator shared-secret bearer token; required before any non-loopback operator deploy) are documented in `gui/README.md` (read in `gui/server.py` / `gui/app.py` / `gui/auth.py` / `cli/commands/gui_cmd.py`). The remaining `ED4ALL_*` knobs are test-only discovery / gating overrides documented inline at their read sites, not production code paths: `ED4ALL_RUN_FULL_ARCHIVE_TEST` (gates `Trainforge/tests/test_emit_pipeline_full_archive.py`), `ED4ALL_A11Y_SMOKE_OLLAMA` (gates the live-backend smoke in `gui/tests/test_learner_a11y_gate.py`), and the per-suite fixture-slug overrides `ED4ALL_ARCHIVE_FIXTURE_SLUG`, `ED4ALL_RDF_EXPORT_FIXTURE_SLUG`, `ED4ALL_INTENT_ROUTER_FIXTURE_SLUG`, `ED4ALL_TUTORING_FIXTURE_SLUG`, `ED4ALL_STUDY_PACK_FIXTURE_SLUG` (let a tier-2 test discover a specific course slug instead of auto-discovering one).
+**Other `ED4ALL_*` vars not in the table above (kept out to avoid table noise):** the GUI server vars `ED4ALL_GUI_HOST` / `ED4ALL_GUI_PORT` / `ED4ALL_GUI_LEARNER` / `ED4ALL_GUI_MODE` / `ED4ALL_GUI_TOKEN` (the full-mode operator shared-secret bearer token; required before any non-loopback operator deploy) are documented in `gui/README.md` (read in `gui/server.py` / `gui/app.py` / `gui/auth.py` / `cli/commands/gui_cmd.py`). The remaining `ED4ALL_*` knobs are test-only discovery / gating overrides documented inline at their read sites, not production code paths: `ED4ALL_RUN_FULL_ARCHIVE_TEST` (gates `Trainforge/tests/test_emit_pipeline_full_archive.py`), `ED4ALL_A11Y_SMOKE_OLLAMA` (gates the live-backend smoke in `gui/tests/test_learner_a11y_gate.py`), and the per-suite fixture-slug overrides `ED4ALL_ARCHIVE_FIXTURE_SLUG`, `ED4ALL_RDF_EXPORT_FIXTURE_SLUG`, `ED4ALL_INTENT_ROUTER_FIXTURE_SLUG`, `ED4ALL_TUTORING_FIXTURE_SLUG`, `ED4ALL_STUDY_PACK_FIXTURE_SLUG` (let a tier-2 test discover a specific course slug instead of auto-discovering one). Finally, two more `ED4ALL_*`-prefixed flags are documented in the subsystem file whose surface they gate (so the root cross-cutting count of 77 above, which tracks only the rows in this section's table, excludes them): the three rewrite-tier `ED4ALL_REWRITE_FIT_WINDOW` / `ED4ALL_REWRITE_NUM_CTX` / `ED4ALL_REWRITE_TRUNCATION_TRIPWIRE` flags live in [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) alongside the Courseforge two-pass rewrite tier, and the W10 assessment prose-tier selector `ED4ALL_ASSESSMENT_PROSE_PROVIDER` lives in [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) alongside the `assessment_synthesis` provider it builds.
 
 ---
 
