@@ -443,6 +443,34 @@ def _callout_typed_enabled() -> bool:
     return os.getenv(_CALLOUT_TYPED_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
 
 
+# Phase 0 of the richer-visual-system plan (richer-visual-system-plan-2026-06.md
+# §4). Default OFF: with this unset the emitted page <style> is BYTE-IDENTICAL
+# to HEAD — the token prelude + token-consuming component re-statement + the
+# a11y-theme override blocks are all gated behind it and APPENDED (never an
+# in-place rewrite of COURSEFORGE_CSS). When truthy, the emitted page gains a
+# :root token prelude (mirror of templates/_base/variables.css), a
+# token-consuming value-identical re-statement of the existing component rules
+# (so the boxes become themeable WITHOUT changing their default appearance),
+# and — when a theme is selected — that theme's :root override block AFTER the
+# tokens so cascade-by-source-order wins. Mirrors the COURSEFORGE_EMIT_BLOCKS /
+# ED4ALL_CALLOUT_TYPED gating posture (parse-with-fallback; falsey / garbage →
+# off).
+_RICHER_VISUAL_SYSTEM_ENV = "ED4ALL_RICHER_VISUAL_SYSTEM"
+
+
+def _richer_visual_system_enabled() -> bool:
+    """Return True when ``ED4ALL_RICHER_VISUAL_SYSTEM`` is set to a truthy value.
+
+    Default off → the emitted page (incl. the ``<style>`` block) is
+    byte-identical to HEAD. Falsey / garbage → off (parse-with-fallback,
+    mirroring :func:`_callout_typed_enabled`).
+    """
+    return (
+        os.getenv(_RICHER_VISUAL_SYSTEM_ENV, "").strip().lower()
+        in _ENFORCE_TRUTHY_VALUES
+    )
+
+
 # FR-A11Y-03 — canonical typed-callout kinds + their redundant non-color coding.
 # Each kind maps to a visible LABEL, a (text) icon glyph, and a border CSS class.
 # The label + icon are the redundant signals (never color-only); the border
@@ -1080,6 +1108,346 @@ _CALLOUT_TYPED_CSS = """
 
 
 # ---------------------------------------------------------------------------
+# Richer Visual System — Phase 0 (richer-visual-system-plan-2026-06.md §2.1/§4).
+#
+# Two appended, flag-gated constants. Both are emitted into the page <style>
+# ONLY when ``ED4ALL_RICHER_VISUAL_SYSTEM`` is on, AFTER ``COURSEFORGE_CSS`` and
+# AFTER ``_CALLOUT_TYPED_CSS`` (cascade-by-source-order). With the flag off the
+# <style> block is byte-identical to HEAD.
+#
+# COURSEFORGE_TOKENS_CSS — a ``:root{}`` token prelude that is a CHECKED-IN
+# MIRROR of templates/_base/variables.css's ``--cf-*`` token block (so the
+# emitted page is self-contained — no template read at emit time), plus the
+# Phase-0 exact-value / role / accent / frame / lifecycle / fade tokens. The
+# sync test ``test_richer_token_prelude_in_sync`` asserts this mirror equals
+# variables.css's declared token set declaration-for-declaration.
+# ---------------------------------------------------------------------------
+COURSEFORGE_TOKENS_CSS = """
+    :root {
+      --cf-primary: #2c5aa0;
+      --cf-primary-dark: #1e3d6f;
+      --cf-primary-light: #e7f3ff;
+      --cf-primary-hover: #1a3d6e;
+      --cf-success: #28a745;
+      --cf-success-dark: #1e7e34;
+      --cf-success-light: #d4edda;
+      --cf-success-border: #c3e6cb;
+      --cf-warning: #ffc107;
+      --cf-warning-dark: #856404;
+      --cf-warning-light: #fff3cd;
+      --cf-warning-border: #ffeaa7;
+      --cf-danger: #dc3545;
+      --cf-danger-dark: #721c24;
+      --cf-danger-light: #f8d7da;
+      --cf-danger-border: #f5c6cb;
+      --cf-info: #17a2b8;
+      --cf-info-dark: #0c5460;
+      --cf-info-light: #d1ecf1;
+      --cf-info-border: #bee5eb;
+      --cf-white: #ffffff;
+      --cf-black: #000000;
+      --cf-gray-50: #f8f9fa;
+      --cf-gray-100: #f1f3f4;
+      --cf-gray-200: #e9ecef;
+      --cf-gray-300: #dee2e6;
+      --cf-gray-400: #ced4da;
+      --cf-gray-500: #adb5bd;
+      --cf-gray-600: #6c757d;
+      --cf-gray-700: #495057;
+      --cf-gray-800: #343a40;
+      --cf-gray-900: #212529;
+      --cf-text: #212529;
+      --cf-text-muted: #6c757d;
+      --cf-background: #ffffff;
+      --cf-background-alt: #f8f9fa;
+      --cf-border: #dee2e6;
+      --cf-border-light: #e9ecef;
+      --cf-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      --cf-font-family-mono: 'Consolas', 'Monaco', 'Courier New', monospace;
+      --cf-font-size-xs: 0.75rem;
+      --cf-font-size-sm: 0.875rem;
+      --cf-font-size-base: 1rem;
+      --cf-font-size-lg: 1.125rem;
+      --cf-font-size-xl: 1.25rem;
+      --cf-font-size-2xl: 1.5rem;
+      --cf-font-size-3xl: 2rem;
+      --cf-font-size-4xl: 2.25rem;
+      --cf-line-height-tight: 1.25;
+      --cf-line-height-base: 1.6;
+      --cf-line-height-loose: 1.8;
+      --cf-font-weight-normal: 400;
+      --cf-font-weight-medium: 500;
+      --cf-font-weight-semibold: 600;
+      --cf-font-weight-bold: 700;
+      --cf-space-0: 0;
+      --cf-space-1: 0.25rem;
+      --cf-space-2: 0.5rem;
+      --cf-space-3: 0.75rem;
+      --cf-space-4: 1rem;
+      --cf-space-5: 1.25rem;
+      --cf-space-6: 1.5rem;
+      --cf-space-8: 2rem;
+      --cf-space-10: 2.5rem;
+      --cf-space-12: 3rem;
+      --cf-space-16: 4rem;
+      --cf-border-width: 1px;
+      --cf-border-width-thick: 4px;
+      --cf-border-radius-sm: 4px;
+      --cf-border-radius: 8px;
+      --cf-border-radius-lg: 12px;
+      --cf-border-radius-xl: 16px;
+      --cf-border-radius-full: 9999px;
+      --cf-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+      --cf-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      --cf-shadow-md: 0 4px 8px rgba(0, 0, 0, 0.12);
+      --cf-shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.15);
+      --cf-shadow-xl: 0 12px 24px rgba(0, 0, 0, 0.2);
+      --cf-shadow-hover: 0 4px 8px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08);
+      --cf-focus-color: rgba(44, 90, 160, 0.6);
+      --cf-focus-ring: 0 0 0 3px var(--cf-focus-color);
+      --cf-focus-outline-width: 2px;
+      --cf-focus-outline-offset: 2px;
+      --cf-transition-fast: 150ms ease;
+      --cf-transition: 200ms ease;
+      --cf-transition-slow: 300ms ease;
+      --cf-container-sm: 540px;
+      --cf-container-md: 720px;
+      --cf-container-lg: 800px;
+      --cf-container-xl: 960px;
+      --cf-container-max: 1200px;
+      --cf-z-dropdown: 100;
+      --cf-z-sticky: 200;
+      --cf-z-fixed: 300;
+      --cf-z-modal-backdrop: 400;
+      --cf-z-modal: 500;
+      --cf-z-tooltip: 600;
+      --cf-primary-tint: #ebf8ff;
+      --cf-ink: #1a1a1a;
+      --cf-heading: #1a365d;
+      --cf-heading-strong: #2d3748;
+      --cf-heading-muted: #495057;
+      --cf-accent-blue: #007bff;
+      --cf-accent-orange: #fd7e14;
+      --cf-accent-purple: #6f42c1;
+      --cf-accent-teal: #20c997;
+      --cf-accent-pink: #e83e8c;
+      --cf-accent-indigo: #6610f2;
+      --cf-accent-orange-strong: #b35900;
+      --cf-accent-teal-strong: #0f7c63;
+      --cf-role-activate: var(--cf-primary);
+      --cf-role-exposition: var(--cf-gray-600);
+      --cf-role-definition: var(--cf-warning);
+      --cf-role-rule: var(--cf-info);
+      --cf-role-example: var(--cf-accent-blue);
+      --cf-role-caution: var(--cf-danger);
+      --cf-role-practice: var(--cf-accent-orange);
+      --cf-role-check: var(--cf-info);
+      --cf-role-assess: var(--cf-primary-dark);
+      --cf-role-scenario: var(--cf-accent-purple);
+      --cf-role-discuss: var(--cf-info);
+      --cf-role-reflect: var(--cf-info);
+      --cf-role-media: var(--cf-gray-700);
+      --cf-role-resources: var(--cf-gray-600);
+      --cf-role-summary: var(--cf-primary);
+      --cf-role-success: var(--cf-success);
+      --cf-frame-flat: var(--cf-border-width) solid var(--cf-border);
+      --cf-frame-accent: var(--cf-border-width-thick) solid var(--cf-primary);
+      --cf-frame-card: var(--cf-border-width) solid var(--cf-border);
+      --cf-elev-card: var(--cf-shadow-sm);
+      --cf-elev-hover: var(--cf-shadow-hover);
+      --cf-box-radius: 0 var(--cf-border-radius-sm) var(--cf-border-radius-sm) 0;
+      --cf-stage-activate: var(--cf-primary);
+      --cf-stage-present: var(--cf-gray-600);
+      --cf-stage-apply: var(--cf-accent-orange-strong);
+      --cf-stage-check: var(--cf-info);
+      --cf-stage-consolidate: var(--cf-success);
+      --cf-fade-worked: var(--cf-info);
+      --cf-fade-completion: var(--cf-accent-orange-strong);
+      --cf-fade-independent: var(--cf-success);
+    }
+"""
+
+
+# COURSEFORGE_RICHER_CSS — a TOKEN-CONSUMING RE-STATEMENT of the EXISTING
+# component rules in COURSEFORGE_CSS at VALUE-IDENTICAL hex. Each var(--cf-...)
+# below resolves (through COURSEFORGE_TOKENS_CSS) to the SAME hex the legacy
+# rule hardcoded, so the boxes look identical by default but become themeable
+# the moment a theme overrides the tokens. NO new block-type styling is added
+# here (that is Phase 1) — only the already-styled component rules are restated.
+# Source-order is AFTER COURSEFORGE_CSS, so these win the cascade (same
+# specificity, later rule) and re-point each property at a token.
+COURSEFORGE_RICHER_CSS = """
+    body { color: var(--cf-ink); }
+    h1 { color: var(--cf-heading); border-bottom: 3px solid var(--cf-primary); }
+    h2 { color: var(--cf-primary); }
+    h3 { color: var(--cf-heading-strong); }
+    .objectives { background: var(--cf-primary-tint); border-left: 4px solid var(--cf-primary); border-radius: var(--cf-box-radius); }
+    .objectives h2 { color: var(--cf-primary); }
+    .key-term { color: var(--cf-heading-strong); }
+    .callout { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: var(--cf-border-radius-sm); }
+    .callout-warning { background: #fffbeb; border-color: var(--cf-warning); color: var(--cf-ink); }
+    .callout-success { background: #f0fff4; border-color: var(--cf-success); color: var(--cf-ink); }
+    .reflection { background: #fefcbf; border-left: 4px solid #d69e2e; border-radius: var(--cf-box-radius); }
+    .activity-card { background: var(--cf-gray-50); border: 2px solid var(--cf-primary); border-radius: var(--cf-border-radius); }
+    .activity-card h3 { color: var(--cf-primary); }
+    th { background: var(--cf-primary); color: var(--cf-white); }
+    td { border-bottom: 1px solid #e0e0e0; }
+    tr:nth-child(even) { background: var(--cf-gray-50); }
+    .flip-card-front { background: var(--cf-primary); color: var(--cf-white); }
+    .flip-card-back { background: var(--cf-primary-tint); color: var(--cf-heading); border: 2px solid var(--cf-primary); }
+    .self-check { background: var(--cf-gray-50); border: 1px solid #e0e0e0; border-radius: var(--cf-border-radius); }
+    .sc-option:hover { background: var(--cf-primary-tint); }
+    .sc-option.correct { background: var(--cf-success-light); border: 1px solid var(--cf-success); color: var(--cf-ink); }
+    .sc-option.incorrect { background: var(--cf-danger-light); border: 1px solid var(--cf-danger); color: var(--cf-ink); }
+    .discussion-prompt { background: #e8f4f8; border: 2px solid var(--cf-primary); border-radius: var(--cf-border-radius); color: var(--cf-ink); }
+    .discussion-prompt h3 { color: var(--cf-info-dark); }
+    .example-box { background: var(--cf-gray-50); border-left: 4px solid var(--cf-role-example); color: var(--cf-ink); }
+    .definition-box { background: var(--cf-warning-light); border-left: 4px solid var(--cf-role-definition); color: var(--cf-ink); }
+    .key-rule { background: var(--cf-info-light); border-left: 4px solid var(--cf-role-rule); color: var(--cf-ink); }
+    .formula-box { background: var(--cf-gray-50); border: 1px solid var(--cf-gray-300); color: var(--cf-ink); }
+    .worked-example { background: var(--cf-gray-50); border-left: 4px solid var(--cf-role-example); color: var(--cf-ink); }
+    .worked-example .step-label { color: var(--cf-primary); }
+    .worked-example .solution-line { background: #e9f7ef; border-left: 4px solid var(--cf-role-success); color: var(--cf-ink); }
+    .self-check-item { border: 1px solid var(--cf-gray-400); color: var(--cf-ink); }
+    .alert-info { background: var(--cf-info-light); border-color: var(--cf-info-border); color: var(--cf-info-dark); }
+    .alert-warning { background: var(--cf-warning-light); border-color: #ffeeba; color: var(--cf-warning-dark); }
+    .alert-success { background: var(--cf-success-light); border-color: var(--cf-success-border); color: #155724; }
+    .scenario-card { background: var(--cf-gray-50); border-left: 4px solid var(--cf-role-scenario); color: var(--cf-ink); }
+    .problem-card { background: var(--cf-gray-50); border-left: 4px solid var(--cf-role-practice); color: var(--cf-ink); }
+    .problem-card summary { color: var(--cf-primary); }
+    .vocab-card { background: var(--cf-gray-50); border-left: 4px solid var(--cf-accent-teal); color: var(--cf-ink); }
+    .vocab-card .vocab-term { color: var(--cf-ink); }
+    .formula-card { background: var(--cf-gray-50); border-left: 4px solid var(--cf-accent-pink); color: var(--cf-ink); }
+    .checklist { background: var(--cf-gray-50); border-left: 4px solid var(--cf-accent-indigo); color: var(--cf-ink); }
+    .checklist .checklist-item { color: var(--cf-ink); }
+    table caption { color: var(--cf-primary); }
+    table th, table td { border: 1px solid #e0e0e0; }
+    table thead th { background: var(--cf-primary-tint); color: var(--cf-heading); }
+    table th[scope="row"] { background: var(--cf-gray-50); }
+    .acronym-card { background: var(--cf-gray-50); border-left: 4px solid var(--cf-accent-purple); color: var(--cf-ink); }
+    .acronym-card .acronym-list dt { color: var(--cf-primary); }
+    .acronym-card .acronym-list dd { color: var(--cf-ink); }
+    aside.key-idea { background: var(--cf-info-light); border-left: 4px solid var(--cf-info); color: var(--cf-ink); border-radius: var(--cf-box-radius); }
+    aside.key-idea strong { color: var(--cf-info-dark); }
+    .takeaway-card { background: var(--cf-primary-tint); border-left: 4px solid var(--cf-primary); color: var(--cf-ink); border-radius: var(--cf-box-radius); }
+    .takeaway-card h3 { color: var(--cf-primary); }
+    .recap-box { background: var(--cf-gray-50); border-left: 4px solid var(--cf-gray-600); color: var(--cf-ink); border-radius: var(--cf-box-radius); }
+    .recap-box h2, .recap-box h3 { color: var(--cf-heading-muted); }
+    .prereq-card { background: var(--cf-gray-50); border-left: 4px solid var(--cf-success); color: var(--cf-ink); border-radius: var(--cf-box-radius); }
+    .prereq-card h2, .prereq-card h3 { color: var(--cf-success-dark); }
+    .misconception-card { background: var(--cf-danger-light); border-left: 4px solid var(--cf-danger); color: var(--cf-ink); border-radius: var(--cf-box-radius); }
+    .misconception-card .misconception-claim { color: var(--cf-danger-dark); }
+    .misconception-card .misconception-correction { color: var(--cf-ink); }
+    .reflection-prompt { background: var(--cf-info-light); border-left: 4px solid var(--cf-info); color: var(--cf-ink); border-radius: var(--cf-box-radius); }
+    .reflection-prompt h3 { color: var(--cf-info-dark); }
+"""
+
+
+# Selected-theme override blocks. When a theme is selected AND the flag is on,
+# the theme's :root token override is appended to the page <style> AFTER the
+# tokens+components so cascade-by-source-order makes the override win (no
+# specificity war). The actual operator trigger that selects a theme is a
+# deferred product decision (richer-visual-system-plan-2026-06.md §5.6); this
+# is the SEAM + a param.
+#
+# Mirror of the :root{} override at the top of each theme CSS file. Read those
+# files (templates/theme/...) to keep these in sync; only the token-override
+# :root block is embedded (the theme files' element/utility rules use !important
+# and are out of scope for Phase 0's reskin proof).
+_THEME_OVERRIDE_CSS: Dict[str, str] = {
+    "high_contrast": """
+    :root {
+      --cf-primary: #003366;
+      --cf-primary-dark: #001a33;
+      --cf-primary-light: #cce0ff;
+      --cf-primary-hover: #002244;
+      --cf-text: #000000;
+      --cf-text-muted: #333333;
+      --cf-text-inverse: #ffffff;
+      --cf-background: #ffffff;
+      --cf-background-alt: #f0f0f0;
+      --cf-success: #006600;
+      --cf-success-dark: #004400;
+      --cf-success-light: #ccffcc;
+      --cf-success-border: #006600;
+      --cf-warning: #664400;
+      --cf-warning-dark: #553300;
+      --cf-warning-light: #fff0cc;
+      --cf-warning-border: #664400;
+      --cf-danger: #990000;
+      --cf-danger-dark: #660000;
+      --cf-danger-light: #ffcccc;
+      --cf-danger-border: #990000;
+      --cf-info: #004466;
+      --cf-info-dark: #003355;
+      --cf-info-light: #ccf2ff;
+      --cf-info-border: #004466;
+      --cf-border: #666666;
+      --cf-border-light: #999999;
+      --cf-focus-color: #ff6600;
+      --cf-focus-ring: 0 0 0 4px #ff6600;
+      /* Phase-0 reskin: re-point the box body text + tint to the HC palette so
+         the token-consuming component rules pick up high-contrast values. */
+      --cf-ink: #000000;
+      --cf-primary-tint: #cce0ff;
+      --cf-heading: #001a33;
+      --cf-heading-strong: #000000;
+      --cf-heading-muted: #333333;
+    }
+""",
+    "dyslexia_friendly": """
+    :root {
+      --cf-font-family: 'OpenDyslexic', 'Lexie Readable', 'Comic Sans MS', 'Verdana', 'Arial', sans-serif;
+      --cf-font-family-mono: 'OpenDyslexicMono', 'Consolas', 'Courier New', monospace;
+      --cf-font-size-base: 1.125rem;
+      --cf-line-height-base: 1.8;
+      --cf-line-height-tight: 1.5;
+      --cf-line-height-loose: 2.0;
+      --cf-letter-spacing: 0.05em;
+      --cf-letter-spacing-wide: 0.1em;
+      --cf-word-spacing: 0.15em;
+      --cf-paragraph-spacing: 1.5em;
+    }
+""",
+}
+
+#: The canonical a11y-theme names the Phase-0 seam can append (selection is a
+#: deferred product decision; ``None`` = no theme appended).
+RICHER_VISUAL_THEMES: FrozenSet[str] = frozenset(_THEME_OVERRIDE_CSS)
+
+
+def _richer_style_segments(theme: Optional[str] = None) -> str:
+    """Return the flag-gated CSS appended to the page ``<style>``.
+
+    Empty string when ``ED4ALL_RICHER_VISUAL_SYSTEM`` is off (so the emitted
+    ``<style>`` is byte-identical to HEAD). When on: the token prelude + the
+    token-consuming component re-statement, then — when ``theme`` selects a
+    known a11y theme — that theme's ``:root`` override block APPENDED LAST so
+    cascade-by-source-order wins (no specificity war).
+    """
+    if not _richer_visual_system_enabled():
+        return ""
+    segments = COURSEFORGE_TOKENS_CSS + COURSEFORGE_RICHER_CSS
+    if theme:
+        override = _THEME_OVERRIDE_CSS.get(theme)
+        if override:
+            segments += override
+    return segments
+
+
+def _page_style_block(theme: Optional[str] = None) -> str:
+    """Compose the full page ``<style>`` inner CSS in source order.
+
+    ``COURSEFORGE_CSS`` first (byte-identical baseline), then the typed-callout
+    CSS (when on), then the flag-gated richer segments (tokens + components +
+    selected-theme override). With every flag off this is exactly
+    ``COURSEFORGE_CSS`` — byte-identical to HEAD.
+    """
+    typed = _CALLOUT_TYPED_CSS if _callout_typed_enabled() else ""
+    return f"{COURSEFORGE_CSS}{typed}{_richer_style_segments(theme)}"
+
+
+# ---------------------------------------------------------------------------
 # Defect D post-hoc CSS patch (no re-gen).
 # ---------------------------------------------------------------------------
 
@@ -1089,21 +1457,30 @@ _CALLOUT_TYPED_CSS = """
 _STYLE_BLOCK_RE = re.compile(r"<style>.*?</style>", re.DOTALL)
 
 
-def patch_css_in_html(html_text: str) -> Tuple[str, bool]:
+def patch_css_in_html(
+    html_text: str, *, theme: Optional[str] = None
+) -> Tuple[str, bool]:
     """Replace every ``<style>...</style>`` block with the fixed
     ``COURSEFORGE_CSS`` (Defect D — white-on-white contrast regression).
 
     Returns ``(patched_text, changed)``. ``changed`` is ``False`` when the
     page carries no ``<style>`` block (idempotent no-op) or is already
     byte-identical after the swap, so re-running never rewrites a clean file.
+
+    Phase 0 (richer-visual-system): the replacement is composed via
+    :func:`_page_style_block`, so when ``ED4ALL_RICHER_VISUAL_SYSTEM`` is on the
+    patch ALSO re-emits the token prelude + token-consuming components (+ the
+    selected ``theme`` override) — otherwise a post-hoc patch run would STRIP
+    the richer CSS from already-emitted pages. With the flag off the replacement
+    is exactly ``<style>{COURSEFORGE_CSS}</style>`` — byte-identical to HEAD.
     """
-    replacement = f"<style>{COURSEFORGE_CSS}</style>"
+    replacement = f"<style>{_page_style_block(theme)}</style>"
     new_text, n = _STYLE_BLOCK_RE.subn(lambda _m: replacement, html_text)
     return new_text, (n > 0 and new_text != html_text)
 
 
 def patch_css_in_export(
-    content_dir: Path, *, dry_run: bool = False
+    content_dir: Path, *, dry_run: bool = False, theme: Optional[str] = None
 ) -> List[Path]:
     """Patch the embedded CSS in every ``*.html`` page under an existing
     export's content directory (e.g.
@@ -1119,7 +1496,7 @@ def patch_css_in_export(
             original = html_path.read_text(encoding="utf-8")
         except OSError:
             continue
-        patched, did_change = patch_css_in_html(original)
+        patched, did_change = patch_css_in_html(original, theme=theme)
         if not did_change:
             continue
         changed.append(html_path)
@@ -1160,7 +1537,8 @@ document.querySelectorAll('.self-check').forEach(sc => {
 
 def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
                extra_js: str = "",
-               page_metadata: Optional[Dict[str, Any]] = None) -> str:
+               page_metadata: Optional[Dict[str, Any]] = None,
+               theme: Optional[str] = None) -> str:
     """Wrap body content in a full HTML page with Courseforge styling.
 
     Args:
@@ -1197,7 +1575,7 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{safe_title} &mdash; {course_code}</title>
-  <style>{COURSEFORGE_CSS}{_CALLOUT_TYPED_CSS if _callout_typed_enabled() else ""}</style>{json_ld}
+  <style>{_page_style_block(theme)}</style>{json_ld}
 </head>
 <body>
   <a href="#main-content" class="skip-link" data-cf-role="template-chrome">Skip to main content</a>

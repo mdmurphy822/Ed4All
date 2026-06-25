@@ -169,6 +169,73 @@
     --cf-z-modal-backdrop: 400;
     --cf-z-modal: 500;
     --cf-z-tooltip: 600;
+
+    /* ========================================
+       RICHER VISUAL SYSTEM — Phase 0 (richer-visual-system-plan-2026-06.md §2.1)
+       Exact-value tokens for the values the emitted COURSEFORGE_CSS uses that
+       had no token home (no near-neighbor snapping), plus the pedagogical-role,
+       extended-accent, frame/elevation, lifecycle, and fade vocabularies. The
+       a11y themes (high_contrast / dyslexia_friendly) override these so the
+       emitted course boxes finally reskin. KEEP IN SYNC with the checked-in
+       mirror COURSEFORGE_TOKENS_CSS in generate_course.py (sync test guards it).
+       ======================================== */
+
+    /* Exact-value page/box tokens (no token home before; do NOT snap) */
+    --cf-primary-tint: #ebf8ff;      /* objectives/takeaway bg, flip-back, sc-hover */
+    --cf-ink: #1a1a1a;               /* universal box BODY text (distinct from --cf-text) */
+    --cf-heading: #1a365d;           /* h1, flip-back text, thead th */
+    --cf-heading-strong: #2d3748;    /* h3, .key-term */
+    --cf-heading-muted: #495057;     /* .recap-box headings */
+
+    /* Extended-palette accent tokens (Bootstrap-extended hues, kept distinct) */
+    --cf-accent-blue: #007bff;       /* example-box / worked-example rail */
+    --cf-accent-orange: #fd7e14;     /* problem accent */
+    --cf-accent-purple: #6f42c1;     /* scenario / acronym accent */
+    --cf-accent-teal: #20c997;       /* vocab accent */
+    --cf-accent-pink: #e83e8c;       /* formula-card accent */
+    --cf-accent-indigo: #6610f2;     /* checklist accent */
+    /* Darkened signal variants (>=3:1 as a sole UI/graphic signal — 1.4.11) */
+    --cf-accent-orange-strong: #b35900;
+    --cf-accent-teal-strong: #0f7c63;
+
+    /* Pedagogical-role tokens — re-point to semantic/accent tokens so a block
+       names its ROLE, not a raw hue, and theme overrides flow through. */
+    --cf-role-activate: var(--cf-primary);
+    --cf-role-exposition: var(--cf-gray-600);
+    --cf-role-definition: var(--cf-warning);
+    --cf-role-rule: var(--cf-info);
+    --cf-role-example: var(--cf-accent-blue);
+    --cf-role-caution: var(--cf-danger);
+    --cf-role-practice: var(--cf-accent-orange);
+    --cf-role-check: var(--cf-info);
+    --cf-role-assess: var(--cf-primary-dark);
+    --cf-role-scenario: var(--cf-accent-purple);
+    --cf-role-discuss: var(--cf-info);
+    --cf-role-reflect: var(--cf-info);
+    --cf-role-media: var(--cf-gray-700);
+    --cf-role-resources: var(--cf-gray-600);
+    --cf-role-summary: var(--cf-primary);
+    --cf-role-success: var(--cf-success);
+
+    /* Frame / elevation vocabulary (block KINDS by shape, not just hue) */
+    --cf-frame-flat: var(--cf-border-width) solid var(--cf-border);
+    --cf-frame-accent: var(--cf-border-width-thick) solid var(--cf-primary);
+    --cf-frame-card: var(--cf-border-width) solid var(--cf-border);
+    --cf-elev-card: var(--cf-shadow-sm);
+    --cf-elev-hover: var(--cf-shadow-hover);
+    --cf-box-radius: 0 var(--cf-border-radius-sm) var(--cf-border-radius-sm) 0;
+
+    /* 5-stage lifecycle eyebrow/rail colors */
+    --cf-stage-activate: var(--cf-primary);
+    --cf-stage-present: var(--cf-gray-600);
+    --cf-stage-apply: var(--cf-accent-orange-strong);
+    --cf-stage-check: var(--cf-info);
+    --cf-stage-consolidate: var(--cf-success);
+
+    /* Fade-state progression (worked_example / guided_practice) */
+    --cf-fade-worked: var(--cf-info);
+    --cf-fade-completion: var(--cf-accent-orange-strong);
+    --cf-fade-independent: var(--cf-success);
 }
 
 /* ========================================
