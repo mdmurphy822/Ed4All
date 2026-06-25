@@ -1308,6 +1308,122 @@ COURSEFORGE_RICHER_CSS = """
     .worked-example { background: var(--cf-gray-50); border-left: 4px solid var(--cf-role-example); color: var(--cf-ink); }
     .worked-example .step-label { color: var(--cf-primary); }
     .worked-example .solution-line { background: #e9f7ef; border-left: 4px solid var(--cf-role-success); color: var(--cf-ink); }
+    /* ===================================================================
+       PHASE 1 — token-consuming rules for the previously-UNSTYLED block
+       types (0 CSS rules on HEAD). Token-only (never raw hex); flag-gated
+       behind ED4ALL_RICHER_VISUAL_SYSTEM (appended in COURSEFORGE_RICHER_CSS).
+       Group B exposition (concept/explanation/formula/misconception/table)
+       is DELIBERATELY left as calm plain prose — no box, no rail.
+       =================================================================== */
+
+    /* :focus-visible ring — the emitted CSS defines NO :focus rule on HEAD
+       (a real keyboard-a11y defect). Tokenized so a theme can re-point it. */
+    a:focus-visible, button:focus-visible, summary:focus-visible,
+    [tabindex]:focus-visible, input:focus-visible, .sc-option:focus-visible,
+    .confidence-option:focus-visible, .flip-card:focus-visible {
+      outline: var(--cf-focus-outline-width) solid var(--cf-focus-color);
+      outline-offset: var(--cf-focus-outline-offset);
+    }
+    /* Target size (2.5.8) — >=24px min on interactive targets. */
+    .sc-option, .confidence-option, .flip-card {
+      min-height: 24px;
+    }
+
+    /* --- worked_example substructure: the ACTUAL emitted classes ---------
+       (HEAD's richer CSS carried DEAD .step-row/.step-label/.solution-line
+       rules; the renderer emits .worked-example-problem / -steps / .subgoal-
+       label / .why. These rules target what is really emitted.) */
+    .worked-example-problem { font-weight: var(--cf-font-weight-semibold); color: var(--cf-heading-strong); margin-bottom: var(--cf-space-3); }
+    .worked-example-steps { padding-left: var(--cf-space-6); line-height: var(--cf-line-height-base); }
+    .worked-example-steps > li { margin-bottom: var(--cf-space-3); }
+    .subgoal-label { font-weight: var(--cf-font-weight-semibold); color: var(--cf-primary); font-family: var(--cf-font-family); }
+    .worked-example .why { display: inline-block; color: var(--cf-heading-muted); font-style: italic; font-size: var(--cf-font-size-sm); }
+    /* fade-state LEFT RAIL — worked -> completion -> independent. The
+       completion rail uses --cf-accent-orange-strong (>=3:1), never the weak
+       orange as a sole signal; each rail is paired with the eyebrow label. */
+    [data-cf-fade-state] { border-left: var(--cf-border-width-thick) solid var(--cf-fade-worked); padding-left: var(--cf-space-4); }
+    [data-cf-fade-state="worked"] { border-left-color: var(--cf-fade-worked); }
+    [data-cf-fade-state="completion"] { border-left-color: var(--cf-fade-completion); }
+    [data-cf-fade-state="independent"] { border-left-color: var(--cf-fade-independent); }
+    .fade-state-eyebrow { display: block; font-size: var(--cf-font-size-xs); font-weight: var(--cf-font-weight-bold); text-transform: uppercase; letter-spacing: var(--cf-letter-spacing-wide, 0.06em); color: var(--cf-heading-muted); margin-bottom: var(--cf-space-2); }
+
+    /* --- multimedia (B04) — elevated bordered MEDIA CARD ------------------ */
+    .multimedia { background: var(--cf-white); border: var(--cf-frame-card); border-radius: var(--cf-border-radius); box-shadow: var(--cf-elev-card); padding: var(--cf-space-4); color: var(--cf-ink); font-family: var(--cf-font-family); line-height: var(--cf-line-height-base); margin: var(--cf-space-4) 0; }
+    .multimedia video { max-width: 100%; border-radius: var(--cf-border-radius-sm); background: var(--cf-gray-900); }
+    .multimedia figcaption { color: var(--cf-heading-muted); font-size: var(--cf-font-size-sm); margin-top: var(--cf-space-2); }
+    .multimedia .audio-description { color: var(--cf-ink); font-size: var(--cf-font-size-sm); }
+    .multimedia details[data-cf-transcript] { border: var(--cf-frame-flat); border-radius: var(--cf-border-radius-sm); padding: var(--cf-space-2) var(--cf-space-3); margin-top: var(--cf-space-3); background: var(--cf-gray-50); }
+    .multimedia details[data-cf-transcript] > summary { font-weight: var(--cf-font-weight-semibold); color: var(--cf-primary); cursor: pointer; }
+    /* HONEST dashed placeholder — must NEVER look like real media exists. */
+    .media-pending { border: 2px dashed var(--cf-gray-500); border-radius: var(--cf-border-radius-sm); padding: var(--cf-space-4); color: var(--cf-heading-muted); background: repeating-linear-gradient(45deg, var(--cf-gray-50), var(--cf-gray-50) 10px, var(--cf-gray-100) 10px, var(--cf-gray-100) 20px); font-style: italic; text-align: center; }
+    /* AD/CC badge row — text+icon pills (1.4.1 color-not-sole, aria-hidden glyph). */
+    .media-a11y-badges { display: flex; flex-wrap: wrap; gap: var(--cf-space-2); margin-bottom: var(--cf-space-3); }
+    .media-a11y-badge { display: inline-flex; align-items: center; gap: var(--cf-space-1); padding: var(--cf-space-1) var(--cf-space-2); border: var(--cf-border-width) solid var(--cf-gray-700); border-radius: var(--cf-border-radius-full); font-size: var(--cf-font-size-xs); font-weight: var(--cf-font-weight-semibold); color: var(--cf-ink); background: var(--cf-gray-50); }
+
+    /* --- diagram (B06) — bordered FIGURE card; data-table FIRST-CLASS ----- */
+    .diagram { background: var(--cf-white); border: var(--cf-frame-card); border-radius: var(--cf-border-radius); box-shadow: var(--cf-elev-card); padding: var(--cf-space-4); color: var(--cf-ink); font-family: var(--cf-font-family); line-height: var(--cf-line-height-base); margin: var(--cf-space-4) 0; }
+    .diagram img { max-width: 100%; height: auto; }
+    .diagram figcaption { color: var(--cf-heading-strong); font-weight: var(--cf-font-weight-semibold); margin: var(--cf-space-2) 0; }
+    /* The data-table is a first-class element, NOT a fallback afterthought. */
+    .diagram table { width: 100%; border-collapse: collapse; margin-top: var(--cf-space-3); }
+    .diagram table caption { color: var(--cf-primary); font-weight: var(--cf-font-weight-semibold); text-align: left; margin-bottom: var(--cf-space-2); }
+    .diagram table th, .diagram table td { border: var(--cf-border-width) solid var(--cf-gray-300); padding: var(--cf-space-2); color: var(--cf-ink); }
+    .diagram table thead th { background: var(--cf-primary-tint); color: var(--cf-heading); }
+    .diagram .diagram-longdesc { border: var(--cf-frame-flat); border-radius: var(--cf-border-radius-sm); padding: var(--cf-space-2) var(--cf-space-3); margin-top: var(--cf-space-3); background: var(--cf-gray-50); }
+    .diagram .diagram-longdesc > summary { font-weight: var(--cf-font-weight-semibold); color: var(--cf-primary); cursor: pointer; }
+    .diagram-pending { border: 2px dashed var(--cf-gray-500); border-radius: var(--cf-border-radius-sm); padding: var(--cf-space-4); color: var(--cf-heading-muted); background: repeating-linear-gradient(45deg, var(--cf-gray-50), var(--cf-gray-50) 10px, var(--cf-gray-100) 10px, var(--cf-gray-100) 20px); font-style: italic; text-align: center; }
+
+    /* --- hook (B02) — activation banner ---------------------------------- */
+    .hook { background: var(--cf-primary-tint); border-top: var(--cf-border-width-thick) solid var(--cf-role-activate); border-radius: var(--cf-border-radius-sm); padding: var(--cf-space-4); color: var(--cf-ink); font-family: var(--cf-font-family); line-height: var(--cf-line-height-base); margin: var(--cf-space-4) 0; }
+    .hook .hook-prompt { font-weight: var(--cf-font-weight-semibold); color: var(--cf-heading); }
+    .hook .hook-transition { color: var(--cf-heading-muted); font-style: italic; }
+
+    /* --- resources (B15) — calm link-list card --------------------------- */
+    .resources { background: var(--cf-gray-50); border-left: var(--cf-border-width-thick) solid var(--cf-role-resources); border-radius: var(--cf-box-radius); padding: var(--cf-space-4); color: var(--cf-ink); font-family: var(--cf-font-family); line-height: var(--cf-line-height-base); margin: var(--cf-space-4) 0; }
+    .resources h3 { color: var(--cf-heading-muted); margin-top: 0; }
+    .resources .resource-list { list-style: none; padding-left: 0; }
+    .resources .resource-list > li { margin-bottom: var(--cf-space-3); }
+    .resources .resource-list a { color: var(--cf-primary); text-decoration: underline; }
+    .resources .resource-annotation { display: block; color: var(--cf-heading-muted); font-size: var(--cf-font-size-sm); }
+
+    /* --- guided_practice (B08) — interaction card (shares fade rail) ------ */
+    .guided-practice { background: var(--cf-gray-50); border-left: var(--cf-border-width-thick) solid var(--cf-role-practice); border-radius: var(--cf-box-radius); padding: var(--cf-space-4); color: var(--cf-ink); font-family: var(--cf-font-family); line-height: var(--cf-line-height-base); margin: var(--cf-space-4) 0; }
+    .guided-practice .guided-practice-instruction { font-weight: var(--cf-font-weight-semibold); color: var(--cf-heading-strong); }
+    .guided-practice-items { padding-left: var(--cf-space-6); }
+    .guided-practice-items > li { margin-bottom: var(--cf-space-3); }
+    .guided-practice-support { display: inline-block; color: var(--cf-heading-muted); font-style: italic; font-size: var(--cf-font-size-sm); }
+
+    /* --- key-terms (vocab card GRID) ------------------------------------- */
+    .key-terms { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--cf-space-4); margin: var(--cf-space-4) 0; }
+    .key-terms .vocab-card { background: var(--cf-gray-50); border-left: var(--cf-border-width-thick) solid var(--cf-accent-teal); border-radius: var(--cf-box-radius); padding: var(--cf-space-3); color: var(--cf-ink); }
+    .key-terms .vocab-card .key-term { font-weight: var(--cf-font-weight-bold); color: var(--cf-heading-strong); }
+    .key-terms .key-term-source a { color: var(--cf-primary); text-decoration: underline; font-size: var(--cf-font-size-sm); }
+
+    /* --- reflection-calibration — three-zone predict-then-reveal ---------- */
+    .reflection-calibration { background: var(--cf-info-light); border-left: var(--cf-border-width-thick) solid var(--cf-role-reflect); border-radius: var(--cf-box-radius); padding: var(--cf-space-4); color: var(--cf-ink); font-family: var(--cf-font-family); line-height: var(--cf-line-height-base); margin: var(--cf-space-4) 0; }
+    .reflection-calibration .prediction-prompt { color: var(--cf-ink); }
+    .reflection-calibration .prediction-prompt strong, .reflection-calibration .calibration-feedback strong { color: var(--cf-info-dark); }
+    .reflection-calibration .reveal { border: var(--cf-frame-flat); border-radius: var(--cf-border-radius-sm); padding: var(--cf-space-2) var(--cf-space-3); margin: var(--cf-space-3) 0; background: var(--cf-white); }
+    .reflection-calibration .reveal > summary { font-weight: var(--cf-font-weight-semibold); color: var(--cf-info-dark); cursor: pointer; }
+    .reflection-calibration .reveal-content { color: var(--cf-ink); margin-top: var(--cf-space-2); }
+    .reflection-calibration .calibration-feedback { color: var(--cf-ink); }
+    /* confidence-capture — 4-point scale, >=24px targets, own gap (no inline). */
+    .confidence-capture { border: var(--cf-frame-flat); border-radius: var(--cf-border-radius-sm); padding: var(--cf-space-3); margin-top: var(--cf-space-3); }
+    .confidence-capture legend { font-weight: var(--cf-font-weight-semibold); color: var(--cf-heading-strong); }
+    .confidence-option { display: inline-flex; align-items: center; gap: var(--cf-space-2); margin-right: var(--cf-space-3); padding: var(--cf-space-1) 0; color: var(--cf-ink); }
+
+    /* --- scenario-debrief — separated FOOTER ----------------------------- */
+    .scenario-debrief { border-top: var(--cf-border-width) solid var(--cf-gray-300); margin-top: var(--cf-space-4); padding-top: var(--cf-space-3); color: var(--cf-ink); }
+    .scenario-debrief h4 { color: var(--cf-role-scenario); margin: 0 0 var(--cf-space-2); }
+
+    /* --- assessment_item — visually DISTINCT from self_check ------------- */
+    /* Graded vs formative must read differently: a HEAVIER frame +
+       --cf-primary-dark (10.76:1 rail), reinforced by the "Graded" stakes
+       label the renderer emits. self_check stays the lighter .self-check box. */
+    .assessment-item { background: var(--cf-white); border: 2px solid var(--cf-role-assess); border-radius: var(--cf-border-radius); box-shadow: var(--cf-elev-card); padding: var(--cf-space-4); color: var(--cf-ink); font-family: var(--cf-font-family); line-height: var(--cf-line-height-base); margin: var(--cf-space-4) 0; }
+    .stakes-label { display: inline-block; font-size: var(--cf-font-size-xs); font-weight: var(--cf-font-weight-bold); text-transform: uppercase; letter-spacing: var(--cf-letter-spacing-wide, 0.06em); padding: var(--cf-space-1) var(--cf-space-2); border-radius: var(--cf-border-radius-sm); margin-bottom: var(--cf-space-2); }
+    .stakes-label.stakes-graded { color: var(--cf-white); background: var(--cf-role-assess); }
+    .stakes-label.stakes-formative { color: var(--cf-heading-muted); border: var(--cf-border-width) solid var(--cf-gray-400); background: var(--cf-gray-50); }
     .self-check-item { border: 1px solid var(--cf-gray-400); color: var(--cf-ink); }
     .alert-info { background: var(--cf-info-light); border-color: var(--cf-info-border); color: var(--cf-info-dark); }
     .alert-warning { background: var(--cf-warning-light); border-color: #ffeeba; color: var(--cf-warning-dark); }
@@ -1340,6 +1456,47 @@ COURSEFORGE_RICHER_CSS = """
     .misconception-card .misconception-correction { color: var(--cf-ink); }
     .reflection-prompt { background: var(--cf-info-light); border-left: 4px solid var(--cf-info); color: var(--cf-ink); border-radius: var(--cf-box-radius); }
     .reflection-prompt h3 { color: var(--cf-info-dark); }
+
+    /* ===================================================================
+       PHASE 3 — a11y completion: print, reduced-motion. (focus-visible +
+       target-size rules live in the Phase 1 block above.) Emitted pages
+       ship ZERO print / reduced-motion CSS on HEAD; these are authored
+       from scratch, flag-gated.
+       =================================================================== */
+
+    /* @media print — force-open every <details> so the transcript / long-
+       description / solution / reveal prints; white-bg / black-text; no
+       toner-wasting dark fills. */
+    @media print {
+      body { background: var(--cf-white); color: var(--cf-black); }
+      details { display: block; }
+      details > summary { font-weight: var(--cf-font-weight-semibold); }
+      details[data-cf-transcript] > *, .diagram-longdesc > *, .reveal > *,
+      .problem-card[open] > *, details > * { display: revert; }
+      details:not([open]) > *:not(summary) { display: block; }
+      .multimedia, .diagram, .hook, .resources, .guided-practice,
+      .self-check, .assessment-item, .reflection-calibration, .scenario-card,
+      .objectives, .takeaway-card, .callout, th, table thead th,
+      .flip-card-front, .flip-card-back, .media-pending, .diagram-pending {
+        background: var(--cf-white) !important; color: var(--cf-black) !important;
+        box-shadow: none !important;
+      }
+      .media-a11y-badge, .stakes-label { background: var(--cf-white) !important; color: var(--cf-black) !important; }
+    }
+
+    /* @media (prefers-reduced-motion) — every new affordance is static or
+       collapses (the .flip-card-inner transition is already gated in
+       COURSEFORGE_CSS; this covers the Phase-1 additions). */
+    @media (prefers-reduced-motion: reduce) {
+      .multimedia, .diagram, .hook, .resources, .guided-practice,
+      .key-terms .vocab-card, .reflection-calibration, .assessment-item,
+      .media-a11y-badge, .stakes-label, .sc-option, .confidence-option,
+      .flip-card, .flip-card-inner {
+        transition: none !important;
+        animation: none !important;
+        transform: none !important;
+      }
+    }
 """
 
 
@@ -1393,6 +1550,43 @@ _THEME_OVERRIDE_CSS: Dict[str, str] = {
       --cf-heading: #001a33;
       --cf-heading-strong: #000000;
       --cf-heading-muted: #333333;
+      /* Phase-3 theme parity: HC variants for the Phase-0 extended accent /
+         role / stage / fade tokens (ZERO HC coverage before this — without
+         these, HC users get un-overridable low-contrast accent colors). Each
+         hue is re-pointed to a >=7:1-on-white HC family so the token-consuming
+         Phase-1 rules pick up high-contrast rails. */
+      --cf-accent-blue: #003366;
+      --cf-accent-orange: #664400;
+      --cf-accent-purple: #4b0082;
+      --cf-accent-teal: #004466;
+      --cf-accent-pink: #990000;
+      --cf-accent-indigo: #4b0082;
+      --cf-accent-orange-strong: #664400;
+      --cf-accent-teal-strong: #004466;
+      --cf-role-activate: #003366;
+      --cf-role-exposition: #333333;
+      --cf-role-definition: #664400;
+      --cf-role-rule: #004466;
+      --cf-role-example: #003366;
+      --cf-role-caution: #990000;
+      --cf-role-practice: #664400;
+      --cf-role-check: #004466;
+      --cf-role-assess: #001a33;
+      --cf-role-scenario: #4b0082;
+      --cf-role-discuss: #004466;
+      --cf-role-reflect: #004466;
+      --cf-role-media: #333333;
+      --cf-role-resources: #333333;
+      --cf-role-summary: #003366;
+      --cf-role-success: #006600;
+      --cf-stage-activate: #003366;
+      --cf-stage-present: #333333;
+      --cf-stage-apply: #664400;
+      --cf-stage-check: #004466;
+      --cf-stage-consolidate: #006600;
+      --cf-fade-worked: #004466;
+      --cf-fade-completion: #664400;
+      --cf-fade-independent: #006600;
     }
 """,
     "dyslexia_friendly": """
@@ -1989,6 +2183,19 @@ def _render_worked_example_section(block: "Block") -> str:
         f'data-cf-content-type="{content_type}" '
         f'data-cf-fade-state="{html_mod.escape(fade_state)}"{block_attrs}>',
     ]
+    # Richer-visual-system (flag-gated, additive): a fade-state eyebrow label so
+    # the fade rail (worked/completion/independent) is reinforced by TEXT, not
+    # color alone (1.4.1). Suppressed flag-off → byte-identical emit.
+    if _richer_visual_system_enabled():
+        _fade_label = {
+            "worked": "Worked example",
+            "completion": "Completion practice",
+            "independent": "Independent practice",
+        }.get(fade_state, fade_state.replace("_", " ").title())
+        parts.append(
+            f'      <span class="fade-state-eyebrow">'
+            f'{html_mod.escape(_fade_label)}</span>'
+        )
     if problem:
         parts.append(
             f'      <p class="worked-example-problem">'
@@ -2049,6 +2256,18 @@ def _render_multimedia_section(block: "Block") -> str:
         f'    <figure class="multimedia" data-cf-content-type="{content_type}"'
         f'{block_attrs}>'
     ]
+    # Richer-visual-system (flag-gated, additive): an AD/CC badge pill row —
+    # text + aria-hidden icon (1.4.1 color-not-sole). Suppressed when the flag
+    # is off so flag-off emit is byte-identical.
+    if _richer_visual_system_enabled():
+        parts.append(
+            '      <p class="media-a11y-badges">'
+            '<span class="media-a11y-badge">'
+            '<span aria-hidden="true">▶</span> Captions</span>'
+            '<span class="media-a11y-badge">'
+            '<span aria-hidden="true">\U0001f50a</span> Audio description</span>'
+            '</p>'
+        )
     if media_url:
         # controls attr is the keyboard/learner-pause contract (mandatory).
         track = (
@@ -2441,9 +2660,18 @@ def _render_self_check(
         # CALIBRATION; "" when off or no confidence_prompt → byte-stable).
         confidence_html = _render_confidence_capture(block)
         confidence_block = f"\n{confidence_html}" if confidence_html else ""
+        # Richer-visual-system (flag-gated, additive): a "Self-check" stakes
+        # label so the formative (not-graded) status reads differently from a
+        # graded assessment_item ("Graded"). Suppressed flag-off → byte-stable.
+        stakes_block = ""
+        if _richer_visual_system_enabled():
+            stakes_block = (
+                '\n      <span class="stakes-label stakes-formative">'
+                'Self-check &middot; not graded</span>'
+            )
         blocks.append(f"""
     <div class="self-check"{sc_attrs}>
-      <h3>Question {i}</h3>
+      <h3>Question {i}</h3>{stakes_block}
       <p>{html_mod.escape(q["question"])}</p>
 {options_html}{confidence_block}
     </div>""")

@@ -57,6 +57,56 @@
     /* Focus - Highly visible */
     --cf-focus-color: #ff6600;       /* Orange - high visibility */
     --cf-focus-ring: 0 0 0 4px #ff6600;
+
+    /* ========================================
+       RICHER-VISUAL-SYSTEM TOKEN PARITY (Phase 3)
+       HC variants for the Phase-0 box-body / extended-accent / role / stage /
+       fade tokens. Without these, the token-consuming richer component rules
+       fall back to their low-contrast default accent hues even under HC.
+       Each hue maps to a >=7:1-on-white HC family. Mirrored in
+       generate_course.py::_THEME_OVERRIDE_CSS["high_contrast"].
+       ======================================== */
+    --cf-ink: #000000;
+    --cf-primary-tint: #cce0ff;
+    --cf-heading: #001a33;
+    --cf-heading-strong: #000000;
+    --cf-heading-muted: #333333;
+
+    --cf-accent-blue: #003366;
+    --cf-accent-orange: #664400;
+    --cf-accent-purple: #4b0082;
+    --cf-accent-teal: #004466;
+    --cf-accent-pink: #990000;
+    --cf-accent-indigo: #4b0082;
+    --cf-accent-orange-strong: #664400;
+    --cf-accent-teal-strong: #004466;
+
+    --cf-role-activate: #003366;
+    --cf-role-exposition: #333333;
+    --cf-role-definition: #664400;
+    --cf-role-rule: #004466;
+    --cf-role-example: #003366;
+    --cf-role-caution: #990000;
+    --cf-role-practice: #664400;
+    --cf-role-check: #004466;
+    --cf-role-assess: #001a33;
+    --cf-role-scenario: #4b0082;
+    --cf-role-discuss: #004466;
+    --cf-role-reflect: #004466;
+    --cf-role-media: #333333;
+    --cf-role-resources: #333333;
+    --cf-role-summary: #003366;
+    --cf-role-success: #006600;
+
+    --cf-stage-activate: #003366;
+    --cf-stage-present: #333333;
+    --cf-stage-apply: #664400;
+    --cf-stage-check: #004466;
+    --cf-stage-consolidate: #006600;
+
+    --cf-fade-worked: #004466;
+    --cf-fade-completion: #664400;
+    --cf-fade-independent: #006600;
 }
 
 /* ========================================

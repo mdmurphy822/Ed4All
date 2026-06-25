@@ -273,3 +273,244 @@ def _last_root_token_values(css: str) -> dict:
         for name, value in _DECL_RE.findall(m.group(1)):
             out[name] = " ".join(value.split())
     return out
+
+
+# ===========================================================================
+# PHASE 1 — style the previously-UNSTYLED block types (0 CSS rules on HEAD)
+# ===========================================================================
+
+# The block types that carried ZERO CSS rules on HEAD (plan §1 / §4 Phase 1).
+_PHASE1_NEW_CLASSES = [
+    ".multimedia",
+    ".media-pending",
+    ".media-a11y-badge",
+    ".diagram",
+    ".diagram-longdesc",
+    ".diagram-pending",
+    ".hook",
+    ".resources",
+    ".guided-practice",
+    ".key-terms",
+    ".reflection-calibration",
+    ".reveal",
+    ".confidence-capture",
+    ".confidence-option",
+    ".scenario-debrief",
+    ".assessment-item",
+    ".stakes-label",
+]
+
+
+def test_phase1_new_type_classes_appear_in_richer_css():
+    # Each previously-0-rule class now has at least one rule in the richer CSS.
+    for cls in _PHASE1_NEW_CLASSES:
+        assert re.search(r"(?:^|\n|\s)" + re.escape(cls) + r"[\s{,:.\[]", COURSEFORGE_RICHER_CSS), (
+            f"{cls} has no rule in COURSEFORGE_RICHER_CSS"
+        )
+
+
+def test_phase1_new_type_classes_absent_from_legacy_css():
+    # Proof these were unstyled on HEAD: the legacy COURSEFORGE_CSS carries none
+    # of the IB5 / new-type classes.
+    for cls in (".multimedia", ".diagram", ".hook", ".resources",
+                ".guided-practice", ".key-terms", ".reflection-calibration",
+                ".scenario-debrief", ".assessment-item"):
+        assert cls not in COURSEFORGE_CSS, f"{cls} unexpectedly present in legacy CSS"
+
+
+def test_phase1_rules_consume_tokens_not_raw_hex():
+    # Every Phase-1 rule body must resolve through --cf-* tokens (no raw hex in
+    # the new-type rule bodies — plan: "never raw hex"). Spot-check the media
+    # card + fade rail + diagram table.
+    for selector in (".multimedia", ".diagram", ".hook", ".resources",
+                     ".key-terms", ".reflection-calibration",
+                     "[data-cf-fade-state=\"completion\"]"):
+        body = _rule_body(COURSEFORGE_RICHER_CSS, selector)
+        assert "var(--cf-" in body, f"{selector} does not consume a token"
+        assert not re.search(r"#[0-9a-fA-F]{3,6}\b", body), (
+            f"{selector} carries a raw hex literal: {body!r}"
+        )
+
+
+def test_worked_example_targets_actual_emitted_classes():
+    # REGRESSION on the dead-CSS bug (plan §1): the richer CSS must target the
+    # ACTUAL emitted worked_example classes, not the dead .step-row/.solution-line.
+    for cls in (".worked-example-problem", ".worked-example-steps",
+                ".subgoal-label", ".worked-example .why"):
+        assert cls in COURSEFORGE_RICHER_CSS, f"{cls} missing — dead-CSS bug not fixed"
+
+
+def test_assessment_item_distinct_from_self_check():
+    # assessment_item reads as GRADED (heavier frame, --cf-role-assess /
+    # primary-dark) vs the lighter formative .self-check.
+    body = _rule_body(COURSEFORGE_RICHER_CSS, ".assessment-item")
+    assert "var(--cf-role-assess)" in body
+    assert "2px solid" in body  # heavier frame than self-check's 1px
+
+
+def test_fade_completion_uses_orange_strong_not_weak_orange():
+    # The completion rail uses --cf-accent-orange-strong (>=3:1), never the weak
+    # --cf-accent-orange as a SOLE signal (plan §2.2 / §3 1.4.11).
+    assert _resolve_var(COURSEFORGE_TOKENS_CSS, "--cf-fade-completion") == "#b35900"
+    assert _resolve_var(COURSEFORGE_TOKENS_CSS, "--cf-accent-orange-strong") == "#b35900"
+
+
+def test_group_b_exposition_stays_calm_prose():
+    # Anti-over-decoration: no NEW box/rail rule is added for the exposition
+    # group selectors (concept/explanation prose sections). The richer CSS does
+    # not introduce a .concept-section / .explanation-section box.
+    assert ".concept-section" not in COURSEFORGE_RICHER_CSS
+    assert ".explanation-section" not in COURSEFORGE_RICHER_CSS
+
+
+# ===========================================================================
+# PHASE 1 — additive renderer emits (flag-gated, byte-stable off)
+# ===========================================================================
+
+
+def _block(block_type, **kw):
+    from blocks import Block  # noqa: WPS433
+    base = dict(block_id=f"p#{block_type}_x_0", block_type=block_type,
+                page_id="p", sequence=0, content={})
+    base.update(kw)
+    return Block(**base)
+
+
+def test_multimedia_badge_row_gated(monkeypatch):
+    blk = _block("multimedia", content={"caption": "c"})
+    monkeypatch.delenv("ED4ALL_RICHER_VISUAL_SYSTEM", raising=False)
+    off = gc._render_multimedia_section(blk)
+    assert "media-a11y-badge" not in off
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    on = gc._render_multimedia_section(blk)
+    assert "media-a11y-badge" in on
+    assert "Captions" in on and "Audio description" in on
+    assert 'aria-hidden="true"' in on  # decorative glyph
+
+
+def test_worked_example_eyebrow_gated(monkeypatch):
+    blk = _block("worked_example",
+                 content={"problem": "P", "steps": [{"subgoal": "S", "body": "B"}]},
+                 fade_state="completion")
+    monkeypatch.delenv("ED4ALL_RICHER_VISUAL_SYSTEM", raising=False)
+    off = gc._render_worked_example_section(blk)
+    assert "fade-state-eyebrow" not in off
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    on = gc._render_worked_example_section(blk)
+    assert "fade-state-eyebrow" in on
+    assert "Completion practice" in on
+
+
+def test_self_check_stakes_label_gated(monkeypatch):
+    qs = [{"question": "Q?", "options": [{"text": "a", "correct": True},
+                                          {"text": "b"}]}]
+    monkeypatch.delenv("ED4ALL_RICHER_VISUAL_SYSTEM", raising=False)
+    off = gc._render_self_check(qs, page_id="p")
+    assert "stakes-label" not in off
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    on = gc._render_self_check(qs, page_id="p")
+    assert "stakes-label" in on and "stakes-formative" in on
+    assert "not graded" in on
+
+
+# ===========================================================================
+# PHASE 3 — theme parity + motion / print / focus
+# ===========================================================================
+
+
+def test_focus_visible_ring_present_when_on(monkeypatch):
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    style = _page_style_block()
+    assert ":focus-visible" in style
+    assert "var(--cf-focus-color)" in style
+    # HEAD's emitted CSS defines NO :focus rule.
+    assert ":focus-visible" not in COURSEFORGE_CSS
+
+
+def test_print_media_query_present_when_on(monkeypatch):
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    style = _page_style_block()
+    assert "@media print" in style
+    # Force-open <details> for transcript / long-desc / reveal.
+    assert "details" in style.split("@media print", 1)[1][:600]
+    assert "@media print" not in COURSEFORGE_CSS
+
+
+def test_reduced_motion_query_present_when_on(monkeypatch):
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    style = _page_style_block()
+    assert "@media (prefers-reduced-motion: reduce)" in style
+
+
+def test_target_size_floor_on_interactive_targets():
+    # 2.5.8 — >=24px min on the interactive targets.
+    body = _rule_body(COURSEFORGE_RICHER_CSS, ".sc-option, .confidence-option, .flip-card")
+    assert "24px" in body
+
+
+def test_hc_theme_reskins_a_new_accent_token(monkeypatch):
+    # Phase-3 theme parity: a representative NEW accent/role token now has an HC
+    # variant, so an HC user's box rail is high-contrast (it had ZERO HC
+    # coverage before — un-overridable low-contrast accent).
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    style = _page_style_block(theme="high_contrast")
+    final = _last_root_token_values(style)
+    # --cf-role-scenario (purple #6f42c1 default) reskins to the HC purple.
+    assert final["--cf-role-scenario"] == "#4b0082"
+    # --cf-fade-completion (orange-strong default) reskins to the HC amber.
+    assert final["--cf-fade-completion"] == "#664400"
+    # --cf-accent-teal reskins to the HC teal.
+    assert final["--cf-accent-teal"] == "#004466"
+
+
+def test_hc_theme_file_mirrors_new_tokens():
+    # The source-of-truth high_contrast.css file carries the same new-token
+    # parity block (so a server-render path that links the file, not the
+    # embedded mirror, also reskins).
+    hc = (Path(__file__).resolve().parents[2] / "templates" / "theme"
+          / "color_schemes" / "high_contrast.css").read_text(encoding="utf-8")
+    for tok in ("--cf-role-scenario", "--cf-fade-completion", "--cf-accent-teal",
+                "--cf-stage-apply", "--cf-ink"):
+        assert tok in hc, f"{tok} missing from high_contrast.css parity block"
+
+
+def test_dyslexia_reaches_new_boxes_via_font_token(monkeypatch):
+    # The Phase-1 box rules consume var(--cf-font-family) / var(--cf-line-height-
+    # base), so the dyslexia theme's font/spacing override reaches them.
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    for selector in (".multimedia", ".diagram", ".hook", ".reflection-calibration"):
+        body = _rule_body(COURSEFORGE_RICHER_CSS, selector)
+        assert "var(--cf-font-family)" in body, f"{selector} not dyslexia-reachable"
+    style = _page_style_block(theme="dyslexia_friendly")
+    final = _last_root_token_values(style)
+    assert "OpenDyslexic" in final["--cf-font-family"]
+
+
+# ===========================================================================
+# FLAG-OFF BYTE-STABILITY + contentHash invariance (Phase 1 + 3 additions)
+# ===========================================================================
+
+
+def test_full_page_off_byte_identical_with_new_renderers(monkeypatch):
+    # A page whose body exercises the new renderers stays byte-identical when
+    # the richer flag is off (the renderer emits are suppressed).
+    monkeypatch.delenv("ED4ALL_RICHER_VISUAL_SYSTEM", raising=False)
+    monkeypatch.delenv("ED4ALL_CALLOUT_TYPED", raising=False)
+    qs = [{"question": "Q?", "options": [{"text": "a", "correct": True}]}]
+    body = gc._render_self_check(qs, page_id="p")
+    kwargs = dict(_wrap_kwargs())
+    kwargs["body_html"] = body
+    page = _wrap_page(**kwargs)
+    assert f"<style>{COURSEFORGE_CSS}</style>" in page
+    assert "stakes-label" not in page
+    assert "media-a11y-badge" not in page
+    assert ":root" not in page
+
+
+def test_content_hash_invariant_across_flag_phase1and3(monkeypatch):
+    block = _representative_block()
+    monkeypatch.delenv("ED4ALL_RICHER_VISUAL_SYSTEM", raising=False)
+    off = block.compute_content_hash()
+    monkeypatch.setenv("ED4ALL_RICHER_VISUAL_SYSTEM", "1")
+    on = block.compute_content_hash()
+    assert off == on, "contentHash must be META-only — Phase-1/3 must not drift it"
