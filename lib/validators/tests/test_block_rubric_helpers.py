@@ -13,11 +13,19 @@ from lib.validators._block_rubric_helpers import (
 
 def test_atomic_default_ceiling_is_200():
     assert resolve_body_char_ceiling() == 200
-    assert resolve_body_char_ceiling(block_type="key_idea") == 200
-    assert resolve_body_char_ceiling(block_type="callout") == 200
+    # Unknown / untabled block_type falls through to the atomic default.
+    assert resolve_body_char_ceiling(block_type="not_a_real_type") == 200
+
+
+def test_atomic_micro_block_types_keep_200():
+    # FIX 3 — genuinely-atomic one-line micro-blocks keep the 200 budget so a
+    # multi-idea over-stuffed key_idea / callout still trips the char axis.
+    for bt in ("vocab_card", "callout", "formula", "key_idea"):
+        assert resolve_body_char_ceiling(block_type=bt) == 200
 
 
 def test_exposition_types_get_higher_budget():
+    # FIX 3 — the FIX 2 six PLUS the single-developed-idea types raised to 1000.
     for bt in (
         "concept",
         "example",
@@ -25,8 +33,45 @@ def test_exposition_types_get_higher_budget():
         "self_check_question",
         "diagram",
         "scenario",
+        "explanation",
+        "problem",
+        "activity",
+        "guided_practice",
+        "misconception",
+        "hook",
+        "multimedia",
     ):
         assert resolve_body_char_ceiling(block_type=bt) == 1000
+
+
+def test_aggregating_types_get_highest_budget():
+    # FIX 3 — structural roll-ups (a prereq set / recap / acronym table is a
+    # several-entry aggregate by construction) get the ~1200 budget.
+    for bt in (
+        "prereq_set",
+        "recap",
+        "checklist",
+        "reflection_prompt",
+        "acronym",
+        "table",
+        "discussion_prompt",
+        "resources",
+        "flip_card_grid",
+    ):
+        assert resolve_body_char_ceiling(block_type=bt) == 1200
+
+
+def test_exempt_types_not_in_ceiling_table():
+    # ``objective`` / ``summary_takeaway`` are EXEMPT from the body-overflow
+    # check in content.py, so they must NOT carry a (dead) ceiling row here —
+    # they fall through to the atomic default, but the validator never reaches
+    # this resolver for them.
+    from lib.validators._block_rubric_helpers import (
+        _BLOCK_BODY_CHAR_CEILING_BY_TYPE,
+    )
+
+    assert "objective" not in _BLOCK_BODY_CHAR_CEILING_BY_TYPE
+    assert "summary_takeaway" not in _BLOCK_BODY_CHAR_CEILING_BY_TYPE
 
 
 def test_explicit_override_wins_over_everything():

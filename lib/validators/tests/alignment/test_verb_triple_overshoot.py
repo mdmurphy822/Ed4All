@@ -237,6 +237,61 @@ def test_overshoot_status_aligned_in_alignment_entry(monkeypatch):
     assert ali["objective_bloom"] == "understand"
 
 
+def test_prose_only_cohort_overshoot_tolerated_under_delivery_fires(monkeypatch):
+    """cal2 finding — prose-only blocks (no declared bloom) are the real corpus
+    shape, and the over-shoot tolerance carries the FP reduction there.
+
+    cal2 (66-block sample-algebra rewrite) blocks carry NO declared bloom
+    anywhere — ``content`` is an HTML string, so ``resolve_block_verb_level``
+    always falls through to the math-idiom-vulnerable prose scan. On that
+    cohort 29 audited verb-triple pairs resolved ABOVE the objective band
+    (over-shoot, now ALIGNED) and only the genuine under-delivery pairs fire.
+    This pins that mixed shape: an over-shoot prose block does NOT fire while a
+    co-located strict under-delivery block DOES — so the recalibration's FP
+    reduction holds on the production cohort, not just on declared-bloom
+    fixtures.
+    """
+    objectives = {
+        # Objective band Apply — an over-shoot prose block resolving to Evaluate
+        # must be tolerated.
+        "CO-OS": {
+            "id": "CO-OS", "bloom_level": "apply", "bloom_verb": "solve",
+            "statement": "Apply the rule",
+            "abcd": {"behavior": {"verb": "solve"}},
+        },
+        # Objective band Evaluate — an under-delivering Remember prose block
+        # must still fire.
+        "CO-UD": {
+            "id": "CO-UD", "bloom_level": "evaluate", "bloom_verb": "critique",
+            "statement": "Critique the result",
+            "abcd": {"behavior": {"verb": "critique"}},
+        },
+    }
+    overshoot = Block(
+        block_id="week_01_self_check#self_check_question_os",
+        block_type="self_check_question", page_id="week_01_self_check",
+        sequence=0,
+        content="Evaluate the two strategies and judge which is stronger.",
+        objective_ids=("CO-OS",),
+    )
+    underdeliver = Block(
+        block_id="week_02_self_check#self_check_question_ud",
+        block_type="self_check_question", page_id="week_02_self_check",
+        sequence=0,
+        content="Identify the term and list its parts.",
+        objective_ids=("CO-UD",),
+    )
+    # Neither block declares a bloom_level → both use the prose-scan path.
+    assert resolve_block_verb_level(overshoot)[1] == "evaluate"
+    assert resolve_block_verb_level(underdeliver)[1] == "remember"
+    res = _validate([overshoot, underdeliver], objectives, monkeypatch)
+    codes = _codes(res)
+    # Exactly one verb-triple mismatch: the under-deliverer, not the over-shoot.
+    assert codes.count(_CODE_VERB_TRIPLE_MISMATCH) == 1
+    msgs = [i for i in res.issues if i.code == _CODE_VERB_TRIPLE_MISMATCH]
+    assert msgs[0].location == "week_02_self_check#self_check_question_ud"
+
+
 def test_assessment_under_delivery_still_sets_cap(monkeypatch):
     """Under-delivery on an assessment block still fires AND sets the
     alignment-cap-at-1 signal — the cap is the assessment-Bloom-below-objective

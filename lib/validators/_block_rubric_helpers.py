@@ -47,30 +47,92 @@ BLOCK_QUALITY_RUBRIC_ENV = "ED4ALL_BLOCK_QUALITY_RUBRIC"
 BLOCK_BODY_CHAR_CEILING_ENV = "ED4ALL_BLOCK_BODY_CHAR_CEILING"
 _DEFAULT_BODY_CHAR_CEILING = 200
 
-# IB6.4 per-block-TYPE body-char budget (FIX 2 — type-blind-ceiling fix).
+# IB6.4 per-block-TYPE body-char budget (FIX 2 — type-blind-ceiling fix;
+# FIX 3 — per-type granularity calibration, cal2 cohort).
 #
 # The single global 200-char ceiling was structurally unsatisfiable for the
 # exposition / answer-bearing block types: across two real corpora only 1 of 99
 # non-exempt blocks measured <=200 chars (alg median body 794, demo 1216). The
 # 200 target is the right ATOMIC single-idea budget (key_idea / callout / vocab
-# card / a one-line check), but exposition that legitimately develops one idea
-# across a worked example, a diagram long-description, or a scenario needs a
-# higher budget. The higher-budget set below is the gap-map's "exposition /
-# answer-bearing" types; the ~1000 value sits at p50-p75 of the measured bodies
-# (alg median 794 / demo 1216). The block_catalog.yaml carries no char-budget
-# field, so this constant table is the single source of truth.
+# card / formula — a one-line idea), but exposition that legitimately develops
+# ONE idea across a worked example, a diagram long-description, a scenario, or a
+# multi-step problem needs a higher budget, and a STRUCTURAL aggregator (a
+# prereq set, a recap, a checklist, an acronym table) is a roll-up of several
+# entries by construction, so it needs a higher budget still.
 #
-# The orthogonal ">4-idea-chunk" axis (content.py::_BLOCK_IDEA_CHUNK_CEILING)
-# is UNTOUCHED — it still catches genuine multi-idea "everything-blocks"
-# regardless of the per-type char budget.
+# FIX 2 raised only 6 exposition types to 1000 and left every OTHER non-exempt
+# type pinned at the 200 atomic default. On the cal2 cohort (66-block
+# sample-algebra rewrite) the 7B authored reasonable-length content for
+# many of those still-pinned types — objective 1599 / acronym 1267 /
+# prereq_set 836 / hook 547 / problem 897 / reflection_prompt 1003 / recap 473
+# / checklist 784 / activity 1623 / explanation 2879 — so 37 non-exempt blocks
+# (50 incl. the orthogonal chunk axis) tripped the char ceiling, pinning the
+# gate at its 50-issue cap with mostly FALSE positives (a 547-char hook is not
+# an "everything-block"; it is a normally-sized activation prompt).
+#
+# FIX 3 extends the table to a realistic per-type ceiling reflecting each
+# type's INTENDED granularity, grounded in the cal2 cohort's measured p50-p75
+# bodies (so the table does NOT just blanket-raise to never fire — genuine
+# over-stuffers still trip it):
+#
+#   * ATOMIC (~200) — a single one-line idea: vocab_card / callout / formula /
+#     key_idea. (cal2 key_idea ran 266-516 → still trips the char axis, which
+#     is the intended catch: a key_idea is meant to be one line.)
+#   * DEVELOPED (~1000) — one idea developed across a few sentences / steps:
+#     concept / example / worked_example / self_check_question / diagram /
+#     scenario (the FIX 2 six) PLUS explanation / problem / activity /
+#     guided_practice / misconception / hook / multimedia. (cal2 p50-p75 for
+#     these sits 397-937; the genuine over-stuffers — concept 1839,
+#     explanation 2879 — still trip it.)
+#   * AGGREGATING (~1200) — a structural roll-up of several entries by
+#     construction: prereq_set / recap / checklist / reflection_prompt /
+#     acronym / table / discussion_prompt / resources / flip_card_grid. (cal2
+#     p75 836/473/784/1165 sits under 1200; the genuine over-stuffer —
+#     acronym 2058 — still trips it.)
+#
+# ``objective`` and ``summary_takeaway`` are NOT in the table: they are
+# EXEMPT from the body-overflow check entirely in
+# ``content.py::_COGNITIVE_LOAD_EXEMPT_TYPES`` (the validator skips them before
+# resolving a ceiling), so adding a ceiling row for them would be dead config.
+#
+# The block_catalog.yaml carries no char-budget field, so this constant table
+# is the single source of truth. The orthogonal ">4-idea-chunk" axis
+# (content.py::_BLOCK_IDEA_CHUNK_CEILING) is UNTOUCHED — it remains the real
+# "everything-block" over-stuffing catcher regardless of the per-type char
+# budget; the char ceiling is the softer per-type signal.
+_ATOMIC_BODY_CHAR_CEILING = _DEFAULT_BODY_CHAR_CEILING  # 200
 _EXPOSITION_BODY_CHAR_CEILING = 1000
+_AGGREGATING_BODY_CHAR_CEILING = 1200
 _BLOCK_BODY_CHAR_CEILING_BY_TYPE: dict = {
+    # ATOMIC single-idea micro-blocks — keep the 200 atomic budget.
+    "vocab_card": _ATOMIC_BODY_CHAR_CEILING,
+    "callout": _ATOMIC_BODY_CHAR_CEILING,
+    "formula": _ATOMIC_BODY_CHAR_CEILING,
+    "key_idea": _ATOMIC_BODY_CHAR_CEILING,
+    # DEVELOPED single-idea exposition / answer-bearing types — ~1000.
     "concept": _EXPOSITION_BODY_CHAR_CEILING,
     "example": _EXPOSITION_BODY_CHAR_CEILING,
     "worked_example": _EXPOSITION_BODY_CHAR_CEILING,
     "self_check_question": _EXPOSITION_BODY_CHAR_CEILING,
     "diagram": _EXPOSITION_BODY_CHAR_CEILING,
     "scenario": _EXPOSITION_BODY_CHAR_CEILING,
+    "explanation": _EXPOSITION_BODY_CHAR_CEILING,
+    "problem": _EXPOSITION_BODY_CHAR_CEILING,
+    "activity": _EXPOSITION_BODY_CHAR_CEILING,
+    "guided_practice": _EXPOSITION_BODY_CHAR_CEILING,
+    "misconception": _EXPOSITION_BODY_CHAR_CEILING,
+    "hook": _EXPOSITION_BODY_CHAR_CEILING,
+    "multimedia": _EXPOSITION_BODY_CHAR_CEILING,
+    # AGGREGATING / structural roll-ups — ~1200.
+    "prereq_set": _AGGREGATING_BODY_CHAR_CEILING,
+    "recap": _AGGREGATING_BODY_CHAR_CEILING,
+    "checklist": _AGGREGATING_BODY_CHAR_CEILING,
+    "reflection_prompt": _AGGREGATING_BODY_CHAR_CEILING,
+    "acronym": _AGGREGATING_BODY_CHAR_CEILING,
+    "table": _AGGREGATING_BODY_CHAR_CEILING,
+    "discussion_prompt": _AGGREGATING_BODY_CHAR_CEILING,
+    "resources": _AGGREGATING_BODY_CHAR_CEILING,
+    "flip_card_grid": _AGGREGATING_BODY_CHAR_CEILING,
 }
 
 # The framework's interactive block codes — B07 Knowledge-Check, B08 Guided
@@ -95,9 +157,11 @@ def resolve_body_char_ceiling(
          wins over the per-type default (preserves the historical env
          semantics: an env of 50 makes even an exposition concept overflow),
          then
-      3. the per-block-TYPE budget (``_BLOCK_BODY_CHAR_CEILING_BY_TYPE``) for
-         the exposition / answer-bearing types, then
-      4. the 200-char atomic single-idea default.
+      3. the per-block-TYPE budget (``_BLOCK_BODY_CHAR_CEILING_BY_TYPE``) —
+         ~200 atomic micro-blocks, ~1000 developed exposition / answer-bearing
+         types, ~1200 aggregating / structural roll-ups, then
+      4. the 200-char atomic single-idea default (for any block_type not in
+         the table).
 
     Garbage / non-positive values fall back to the next tier
     (parse-with-fallback, mirroring ``ED4ALL_ANSWER_NUM_CTX``).

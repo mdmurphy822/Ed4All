@@ -66,6 +66,62 @@ def test_atomic_type_keeps_200_ceiling():
     assert res.metadata["block_cognitive_load"]["per_block"]["b1"]["ceiling"] == 200
 
 
+def test_developed_types_within_1000_budget_pass():
+    # FIX 3: the single-developed-idea types raised to ~1000 (hook / problem /
+    # activity / explanation / misconception / multimedia / guided_practice) no
+    # longer trip the char axis on a normally-sized body. A 547-char hook is a
+    # normal activation prompt, not an "everything-block".
+    for bt in (
+        "hook",
+        "problem",
+        "explanation",
+        "misconception",
+        "guided_practice",
+    ):
+        block = _block(bt, "<p>" + ("word " * 100) + "</p>", block_id="b1")  # ~500 chars
+        res = BlockCognitiveLoadValidator().validate(
+            {"blocks": [block], "rubric_enabled": True}
+        )
+        assert not any(
+            i.code == "BLOCK_BODY_OVERFLOW" for i in res.issues
+        ), f"{bt} should not overflow at ~500 chars (budget 1000)"
+        assert res.metadata["block_cognitive_load"]["per_block"]["b1"]["ceiling"] == 1000
+
+
+def test_aggregating_types_within_1200_budget_pass():
+    # FIX 3: structural roll-ups (prereq_set / recap / checklist / acronym /
+    # reflection_prompt) get the ~1200 budget — a several-entry aggregate under
+    # 1200 chars is normal, not over-stuffed. Each body is a single long <p> so
+    # the orthogonal chunk axis stays quiet and we isolate the char axis.
+    for bt in (
+        "prereq_set",
+        "recap",
+        "checklist",
+        "acronym",
+        "reflection_prompt",
+    ):
+        block = _block(bt, "<p>" + ("word " * 200) + "</p>", block_id="b1")  # ~1000 chars
+        res = BlockCognitiveLoadValidator().validate(
+            {"blocks": [block], "rubric_enabled": True}
+        )
+        assert not any(
+            i.code == "BLOCK_BODY_OVERFLOW" for i in res.issues
+        ), f"{bt} should not overflow at ~1000 chars (budget 1200)"
+        assert res.metadata["block_cognitive_load"]["per_block"]["b1"]["ceiling"] == 1200
+
+
+def test_genuine_over_stuffer_still_fires_per_type():
+    # FIX 3 must NOT blanket-raise to never fire: an acronym table at ~1400
+    # chars (over the 1200 aggregating budget) is a genuine over-stuffer and
+    # STILL trips the char axis.
+    block = _block("acronym", "<p>" + ("word " * 280) + "</p>")  # ~1400 chars
+    res = BlockCognitiveLoadValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    assert any(i.code == "BLOCK_BODY_OVERFLOW" for i in res.issues)
+    assert res.metadata["block_cognitive_load"]["per_block"]["b1"]["ceiling"] == 1200
+
+
 def test_short_block_passes():
     block = _concept("<p>A short single idea about variables.</p>")
     res = BlockCognitiveLoadValidator().validate(
