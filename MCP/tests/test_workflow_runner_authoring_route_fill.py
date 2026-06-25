@@ -28,6 +28,11 @@ import pytest
 from MCP.core.executor import AGENT_AUTHORING_PROVIDER_ENV_MAP
 from MCP.core.workflow_runner import (
     _ALL_LOCAL_BLOCK_ROUTING_PATH,
+    _NVIDIA_LARGE_BLOCK_ROUTING_PATH,
+    _NVIDIA_LARGE_MODEL_DEFAULT,
+    _NVIDIA_LARGE_MODEL_ENV,
+    _TEXTBOOK_SYNTHESIS_MODEL_ROUTE_ENV,
+    _TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV,
     _TWO_PASS_TIER_PROVIDER_ENVS,
     WorkflowRunner,
 )
@@ -38,6 +43,10 @@ _ALL_ROUTE_ENVS = (
     "LLM_PROVIDER",
     "COURSEFORGE_TWO_PASS",
     "COURSEFORGE_BLOCK_ROUTING_PATH",
+    _NVIDIA_LARGE_MODEL_ENV,
+    _TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV,
+    _TEXTBOOK_SYNTHESIS_MODEL_ROUTE_ENV,
+    "TRAINFORGE_SYNTHESIS_PROVIDER",
     *AGENT_AUTHORING_PROVIDER_ENV_MAP.values(),
     *_TWO_PASS_TIER_PROVIDER_ENVS,
 )
@@ -240,3 +249,103 @@ def test_redirected_routing_file_resolves_non_anthropic_large_tier(
     assert not policy.is_empty()
     for tier_name, spec in policy.capability_tiers.items():
         assert spec.get("provider") != "anthropic", tier_name
+
+
+# ---------------------------------------------------------------------------
+# NVIDIA-70b-everywhere — the THIRD (nvidia) branch
+# ---------------------------------------------------------------------------
+
+
+def test_nvidia_branch_sets_routing_model_and_synthesis(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """provider=nvidia + two-pass on -> nvidia routing YAML + 70B model +
+    TEXTBOOK_SYNTHESIS_PROVIDER=nvidia, AND leaves TRAINFORGE_SYNTHESIS_PROVIDER
+    untouched (GAP-3 licensing guard).
+    """
+    import os
+
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv("COURSEFORGE_TWO_PASS", "true")
+    runner = _make_runner()
+
+    applied = runner._apply_authoring_route_env("textbook_to_course", "nvidia")
+
+    # (1) routing YAML redirected to the nvidia-large variant.
+    assert os.environ["COURSEFORGE_BLOCK_ROUTING_PATH"] == _NVIDIA_LARGE_BLOCK_ROUTING_PATH
+    assert applied["COURSEFORGE_BLOCK_ROUTING_PATH"] == _NVIDIA_LARGE_BLOCK_ROUTING_PATH
+    # (2) the 70B model pinned (closes the 30B-nano registry leak).
+    assert os.environ[_NVIDIA_LARGE_MODEL_ENV] == _NVIDIA_LARGE_MODEL_DEFAULT
+    assert "nano" not in os.environ[_NVIDIA_LARGE_MODEL_ENV].lower()
+    # (3) GAP-1: the synthesis seat reaches nvidia + the 70B.
+    assert os.environ[_TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV] == "nvidia"
+    assert os.environ[_TEXTBOOK_SYNTHESIS_MODEL_ROUTE_ENV] == _NVIDIA_LARGE_MODEL_DEFAULT
+    # (4) GAP-3: the TRAINING seat is pinned LOCAL (NEVER nvidia) so the SLM
+    #     training corpus can never route through Llama-3.3.
+    assert os.environ["TRAINFORGE_SYNTHESIS_PROVIDER"] == "local"
+    assert applied["TRAINFORGE_SYNTHESIS_PROVIDER"] == "local"
+    # The OTHER three authoring envs filled with nvidia.
+    for agent, env_var in AGENT_AUTHORING_PROVIDER_ENV_MAP.items():
+        if agent == "training-synthesizer":
+            continue
+        assert os.environ[env_var] == "nvidia", env_var
+
+
+def test_nvidia_branch_setdefault_explicit_overrides_win(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Explicit per-phase env exports win over the nvidia branch (setdefault)."""
+    import os
+
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv("COURSEFORGE_TWO_PASS", "true")
+    # Operator pins the routing path + model + synthesis seat explicitly.
+    monkeypatch.setenv("COURSEFORGE_BLOCK_ROUTING_PATH", "/custom.yaml")
+    monkeypatch.setenv(_NVIDIA_LARGE_MODEL_ENV, "meta/llama-3.3-70b-custom")
+    monkeypatch.setenv(_TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV, "local")
+    runner = _make_runner()
+
+    applied = runner._apply_authoring_route_env("textbook_to_course", "nvidia")
+
+    assert os.environ["COURSEFORGE_BLOCK_ROUTING_PATH"] == "/custom.yaml"
+    assert "COURSEFORGE_BLOCK_ROUTING_PATH" not in applied
+    assert os.environ[_NVIDIA_LARGE_MODEL_ENV] == "meta/llama-3.3-70b-custom"
+    assert _NVIDIA_LARGE_MODEL_ENV not in applied
+    # The explicit synthesis-seat override is honored.
+    assert os.environ[_TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV] == "local"
+    assert _TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV not in applied
+
+
+def test_nvidia_branch_noop_without_two_pass(monkeypatch: pytest.MonkeyPatch):
+    """provider=nvidia but COURSEFORGE_TWO_PASS unset -> no routing redirect."""
+    import os
+
+    _clear_envs(monkeypatch)
+    runner = _make_runner()
+
+    applied = runner._apply_authoring_route_env("textbook_to_course", "nvidia")
+
+    assert "COURSEFORGE_BLOCK_ROUTING_PATH" not in os.environ
+    assert _NVIDIA_LARGE_MODEL_ENV not in os.environ
+    assert _TEXTBOOK_SYNTHESIS_PROVIDER_ROUTE_ENV not in os.environ
+    # The four authoring envs still fill (provider routing is independent).
+    # The GAP-3 licensing guard pins the training seat local even here.
+    for agent, env_var in AGENT_AUTHORING_PROVIDER_ENV_MAP.items():
+        expected = "local" if agent == "training-synthesizer" else "nvidia"
+        assert os.environ[env_var] == expected, env_var
+
+
+def test_nvidia_routing_yaml_large_tier_is_nvidia(monkeypatch: pytest.MonkeyPatch):
+    """The nvidia routing YAML's `large` rewrite tier resolves provider=nvidia."""
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv("COURSEFORGE_TWO_PASS", "true")
+    runner = _make_runner()
+    runner._apply_authoring_route_env("textbook_to_course", "nvidia")
+
+    from Courseforge.router.policy import load_block_routing_policy
+
+    project_root = Path(__file__).resolve().parents[2]
+    policy = load_block_routing_policy(project_root / _NVIDIA_LARGE_BLOCK_ROUTING_PATH)
+    assert not policy.is_empty()
+    large = policy.capability_tiers.get("large", {})
+    assert large.get("provider") == "nvidia"

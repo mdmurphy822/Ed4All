@@ -17,6 +17,36 @@ ed4all run rag_training --corpus course.imscc --course-name CHEM_101 --mode api
 ed4all run textbook-to-course --corpus x.pdf --course-name T --dry-run   # plan only
 ed4all run textbook-to-course --resume WF-20260420-abc12345               # resume
 
+# --stop-after <phase>: halt the run cleanly AFTER the named phase
+# completes, skipping every subsequent phase. The canonical "build a
+# retrieval-ready course WITHOUT training synthesis" slice stops after
+# imscc_chunking (before trainforge_assessment / training_synthesis /
+# libv2_archival / finalization). The phase name is validated against
+# the workflow's phase list (unknown name -> error). Default unset ->
+# runs to completion.
+ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
+  --skip-training --stop-after imscc_chunking
+
+# NVIDIA 70B-everywhere build profile (SETUP — gated on a later RUN
+# discussion; nothing dispatches to NVIDIA by default). `--provider
+# nvidia` (also via LLM_PROVIDER=nvidia) on a COURSEFORGE_TWO_PASS=true
+# run redirects the block-routing YAML to
+# Courseforge/config/block_routing.nvidia_large.yaml (rewrite tier on
+# the hosted 70B `meta/llama-3.3-70b-instruct`; outline first draft
+# stays local 7B), pins NVIDIA_LARGE_MODEL to the 70B (closes the
+# 30B-nano registry-default leak), AND routes the textbook-synthesis
+# seat (objective_extraction / course_planning / concept_extraction) to
+# nvidia. The TRAINING seat (TRAINFORGE_SYNTHESIS_PROVIDER) is pinned
+# LOCAL by this branch (licensing — the SLM training corpus must never
+# route through Llama-3.3). All setdefault (explicit per-phase overrides
+# win). The canonical cloud-model knob is NVIDIA_LARGE_MODEL / the YAML,
+# NEVER COURSEFORGE_REWRITE_MODEL (dead on the cloud tier). Run --dry-run
+# first for the "wired but not firing" routing preflight.
+export COURSEFORGE_TWO_PASS=true
+ed4all run textbook-to-course --provider nvidia --course-name PHYS_101 \
+  --corpus slice.pdf --skip-dart --skip-training \
+  --stop-after imscc_chunking --dry-run   # preflight: resolve+assert, NO dispatch
+
 # Pin the course_planning phase to a previously-synthesized
 # objectives JSON instead of re-dispatching the course-outliner
 # subagent. Eliminates LLM-nondeterminism drift across re-runs that
@@ -650,7 +680,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix). Coun
 | `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 49 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 33 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 32 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 73 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root (table below) | 74 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -661,6 +691,7 @@ Per-flag rows now live in subsystem CLAUDE.md files (one owner per prefix). Coun
 | `ED4ALL_BLOCK_BODY_CHAR_CEILING` | `200` (global override) / per-type default | IB6.4 per-block D2 cognitive-load body ceiling (`lib/validators/content.py::BlockCognitiveLoadValidator`; resolver `lib/validators/_block_rubric_helpers.py::resolve_body_char_ceiling`). The `BLOCK_BODY_OVERFLOW` ("everything-block anti-pattern") check fires when a block's visible body exceeds its ceiling (OR above the separate, UNTOUCHED >4-idea-chunk ceiling). Drives the D2 dimension score in the rubric. **This env is a GLOBAL override** — when set (and positive) it pins ONE ceiling for every block type (preserving the historical semantics: `50` makes even an exposition concept overflow). When UNSET, the ceiling is resolved PER BLOCK TYPE from `_BLOCK_BODY_CHAR_CEILING_BY_TYPE` reflecting each type's intended granularity (FIX 3, calibrated on the cal2 cohort's measured p50-p75 bodies — does NOT blanket-raise): **~200** atomic one-line micro-blocks (`vocab_card`/`callout`/`formula`/`key_idea`); **~1000** single-developed-idea exposition / answer-bearing types (`concept`/`example`/`worked_example`/`self_check_question`/`diagram`/`scenario`/`explanation`/`problem`/`activity`/`guided_practice`/`misconception`/`hook`/`multimedia`); **~1200** aggregating / structural roll-ups (`prereq_set`/`recap`/`checklist`/`reflection_prompt`/`acronym`/`table`/`discussion_prompt`/`resources`/`flip_card_grid`); any untabled type falls through to the **200** atomic default. `chrome`/`objective`/`summary_takeaway` are EXEMPT from the check entirely (`content.py::_COGNITIVE_LOAD_EXEMPT_TYPES` — structural/roll-up bodies, skipped before a ceiling is resolved, so they carry NO table row). Genuine over-stuffers (a concept over 1000, an acronym table over 1200) still trip the char axis; the FIX 3 calibration only rescued normally-sized composite blocks from the type-blind-200 FP that pinned the gate at its 50-issue cap. Garbage / non-positive env → falls through to the per-type default (parse-with-fallback, mirroring `ED4ALL_ANSWER_NUM_CTX`). Selects no provider/model → no `docs/LICENSING.md` row. No-op when `ED4ALL_BLOCK_QUALITY_RUBRIC` is off. |
 | `MCP_ORCHESTRATOR_LLM_MODEL` | `claude-opus-4-7` | Pins the Anthropic model ID used by `MCP/orchestrator/llm_backend.py::DEFAULT_ANTHROPIC_MODEL`; per-run `LLM_MODEL` keeps higher precedence. |
 | `LOCAL_DISPATCHER_ALLOW_STUB` | unset | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` when no `agent_tool` is wired. Tests / dry-run only. |
+| `ED4ALL_CLOUD_RATE_LIMIT` | unset (off) | NVIDIA-70b-everywhere SETUP — master switch for the shared cloud-provider admission gate (`lib/llm/rate_limiter.py`: RPM token bucket + TPM token bucket (debit estimate up front, reconcile vs server-reported `usage`) + a concurrency semaphore). **Ships DARK.** Default OFF → `get_admission_gate` returns a no-op gate, so the hook at `Trainforge/generators/_openai_compatible_client.py::_post_with_retry` (the chokepoint above every COMPOSED authoring seat — Together / Local / Curriculum / Courseforge rewrite+outline / textbook synthesis / the NVIDIA large tier) is a pure no-op (no sleeps, no state, byte-identical to the legacy path; proven by the unchanged 60-test client suite). When truthy (`1`/`true`/`yes`/`on`) AND ≥1 ceiling env is set, a real `AdmissionGate` is built once process-wide and admits/blocks each request. Per-axis ceilings are operator-supplied at RUN time (no hardcoded guess): `ED4ALL_CLOUD_RPM` / `ED4ALL_CLOUD_TPM` / `ED4ALL_CLOUD_MAX_CONCURRENCY` (each unset by default → that axis is off; parse-with-fallback — garbage / non-positive → unset). Cross-process caveat (documented, not solved): an in-process singleton does NOT coordinate separate OS processes sharing one API key (concurrent `ed4all run` sessions each get their own gate) — a real multi-session deploy needs flock/IPC. KNOWN GAP: `MCP/orchestrator/llm_backend.py::AnthropicBackend` uses a raw `anthropic.Anthropic` client that BYPASSES `_post_with_retry`, so api-mode orchestration is NOT covered — a pure-nvidia build routes its authoring through the composed seats (all covered); harden the AnthropicBackend bypass only if/when api-mode runs cloud (documented TODO at the hook + at `llm_backend.py`). Selects no provider/model → no `docs/LICENSING.md` row. Falsey / garbage → off (parse-with-fallback). |
 | `ED4ALL_AGENT_DISPATCH` | unset | Routes subagent-classified agents through `dispatcher.dispatch_task` instead of in-process tool registry. |
 | `ED4ALL_AGENT_TIMEOUT_SECONDS` | `1800` | Per-task subagent dispatch mailbox timeout. |
 | `ED4ALL_ALIGNMENT_VERB_TRIPLE` | unset (off) | IB3 constructive-alignment keystone. Default OFF → byte-identical: the verb-triple equality axis on `BlockObjectiveDeliveryValidator`, the evidence-form check on `AssessmentObjectiveAlignmentValidator`, the `AnchoredRubricValidator`, and the `TriangleCompletenessValidator` all no-op, and the `Block.anchored_rubric` field stays None + hash-excluded (snapshots unchanged). When truthy (`1`/`true`/`yes`/`on`): enforces `objective-verb = activity-verb = assessment-verb` within the Bloom band (`BLOCK_OBJECTIVE_VERB_TRIPLE_MISMATCH`), records the `alignment_cap_at_1` signal when assessment Bloom < objective Bloom (consumed by the IB6 rollup), bars recall MCQ on Apply+ objectives (`ASSESSMENT_EVIDENCE_FORM_TOO_LOW`), requires an exemplar-anchored published-first rubric on Evaluate/Create scored blocks, and asserts every objective has ≥1 activity + ≥1 band-aligned assessment (triangle completeness). All gates wire warning day-1 with an ACCELERATED fast-flip `# TODO(calibration)` marker (IB3 is the roadmap's documented exception — the keystone validity rule flips critical after ONE ≥2-corpus FP measurement). Reuses `lib/ontology/bloom.py` verb bands; needs IB1 slot-addressability (`interaction`/`feedback` slots). Generated PRODUCT content (course validation), not training data → no `docs/LICENSING.md` row. Falsey / garbage → off (parse-with-fallback). |

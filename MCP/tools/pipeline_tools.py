@@ -4688,6 +4688,8 @@ async def create_textbook_pipeline(
     courseforge_stage: Optional[str] = None,
     force_rerun: bool = False,
     skip_training: bool = False,
+    stop_after: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> str:
     """
     Create and orchestrate a textbook-to-course pipeline.
@@ -4828,6 +4830,15 @@ async def create_textbook_pipeline(
             params["force_rerun"] = True
         if skip_training:
             params["skip_training"] = True
+        # NVIDIA-70b-everywhere GAP-2 fix — forward --stop-after so the workflow
+        # runner halts cleanly after the named phase (before later phases run).
+        if stop_after:
+            params["stop_after"] = stop_after
+        # W1 Gap C / NVIDIA-70b-everywhere — forward the EXPLICIT run provider
+        # so ``_apply_authoring_route_env`` resolves the authoring + nvidia
+        # routing branch from it (else it falls to LLM_PROVIDER > local).
+        if provider:
+            params["provider"] = provider
 
         # Create workflow via orchestrator
         result = await create_workflow_impl(

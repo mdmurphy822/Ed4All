@@ -189,6 +189,7 @@ def _build_workflow_params(
     libv2_root: Optional[str] = None,
     skip_training: bool = False,
     provider: Optional[str] = None,
+    stop_after: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the params dict for a workflow from CLI inputs.
 
@@ -302,6 +303,12 @@ def _build_workflow_params(
     # envs and regress the local default.
     if provider:
         params["provider"] = provider
+
+    # NVIDIA-70b-everywhere GAP-2 fix — thread --stop-after so the workflow
+    # runner halts cleanly after the named phase completes (before later
+    # phases run). Default unset → no behaviour change.
+    if stop_after:
+        params["stop_after"] = stop_after
 
     return params
 
@@ -483,6 +490,8 @@ async def _create_textbook_workflow(
         courseforge_stage=params.get("courseforge_stage"),
         force_rerun=bool(params.get("force_rerun", False)),
         skip_training=bool(params.get("skip_training", False)),
+        stop_after=params.get("stop_after"),
+        provider=params.get("provider"),
     )
     return json.loads(result)
 
@@ -560,9 +569,19 @@ def _build_orchestrator(
 )
 @click.option(
     "--api-provider",
-    type=click.Choice(["anthropic", "openai"]),
+    "--provider",
+    "api_provider",
+    type=click.Choice(["anthropic", "openai", "nvidia"]),
     default=None,
-    help="LLM provider for api mode. Default: env LLM_PROVIDER or 'anthropic'.",
+    help=(
+        "LLM provider for the run. ``anthropic`` / ``openai`` are the api-mode "
+        "backends; ``nvidia`` selects the 70B-everywhere build profile "
+        "(redirects the two-pass block-routing + synthesis seat to the NVIDIA "
+        "hosted 70B; the training seat stays local for licensing). Also "
+        "settable via env LLM_PROVIDER. Default: env LLM_PROVIDER or "
+        "'anthropic'. NB: ``nvidia`` requires COURSEFORGE_TWO_PASS=true and a "
+        "NVIDIA_API_KEY; run --dry-run first for the routing preflight."
+    ),
 )
 @click.option(
     "--model",
@@ -718,6 +737,20 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--stop-after",
+    "stop_after",
+    default=None,
+    help=(
+        "Halt the run cleanly AFTER the named phase completes, skipping all "
+        "subsequent phases. E.g. ``--stop-after imscc_chunking`` stops before "
+        "trainforge_assessment / training_synthesis / libv2_archival / "
+        "finalization run — the canonical 'build a retrieval-ready course "
+        "without training synthesis' slice. The phase name is validated "
+        "against the workflow's phase list (unknown name → error). Default "
+        "unset → runs to completion."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show the planned pipeline without executing",
@@ -753,6 +786,7 @@ def run_command(
     force_rerun: bool,
     libv2_root: Optional[str],
     skip_training: bool,
+    stop_after: Optional[str],
     dry_run: bool,
     watch: bool,
     output_json: bool,
@@ -860,6 +894,7 @@ def run_command(
         courseforge_stage=courseforge_stage,
         libv2_root=libv2_root,
         skip_training=skip_training,
+        stop_after=stop_after,
         # Pass the EXPLICIT flag (None when unset), not the
         # `_resolve_provider` anthropic-fallback value, so an unset provider
         # leaves the authoring-env resolution to LLM_PROVIDER > local.
@@ -968,6 +1003,10 @@ def _dry_run_plan(
         # annotation precedent at ``_dry_run_plan`` for --reuse-objectives.
         target_block_ids = params.get("target_block_ids")
         force_rerun_flag = bool(params.get("force_rerun", False))
+        # NVIDIA-70b-everywhere GAP-2 — the --stop-after halt phase (annotated
+        # in the dry-run plan; phases after it are marked SKIPPED-after-stop).
+        stop_after_phase = str(params.get("stop_after", "") or "").strip()
+        stop_reached = False
         # Phases that consume target_block_ids (single-source-of-truth list
         # for the dry-run annotation). Kept narrow because plan §3
         # explicitly scopes selection to the rewrite tier.
@@ -1020,6 +1059,19 @@ def _dry_run_plan(
                     f"--blocks set; re-rolling only block_type(s) "
                     f"{list(target_block_ids)!r}"
                 )
+            # NVIDIA-70b-everywhere GAP-2 — --stop-after annotation. Phases
+            # AFTER the named stop phase are marked as not-running; the stop
+            # phase itself is the last to execute.
+            if stop_after_phase:
+                if stop_reached:
+                    phase_entry["status"] = "SKIPPED_AFTER_STOP"
+                    phase_entry["skip_reason"] = (
+                        f"--stop-after {stop_after_phase!r}; halts before this "
+                        f"phase"
+                    )
+                elif phase.name == stop_after_phase:
+                    phase_entry["stop_after"] = True
+                    stop_reached = True
             phases.append(phase_entry)
 
         plan_dict: Dict[str, Any] = {
@@ -1036,6 +1088,13 @@ def _dry_run_plan(
             plan_dict["blocks_filter"] = list(target_block_ids)
         if force_rerun_flag:
             plan_dict["force_rerun"] = True
+        if stop_after_phase:
+            plan_dict["stop_after"] = stop_after_phase
+        # NVIDIA-70b-everywhere SETUP — preflight ("wired but not firing"
+        # proof). When --provider nvidia, resolve+assert the routing for every
+        # build phase WITHOUT dispatching. Makes NO network call.
+        if provider == "nvidia":
+            plan_dict["nvidia_preflight"] = _nvidia_preflight(params)
         return plan_dict
     except Exception as exc:  # noqa: BLE001 — dry-run shouldn't explode
         return {
@@ -1046,6 +1105,187 @@ def _dry_run_plan(
             "error": f"plan build failed: {exc}",
             "phases": [],
         }
+
+
+def _nvidia_preflight(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve + assert the NVIDIA-70b-everywhere routing for a build.
+
+    The "wired but not firing" proof. Computes what every build seat WOULD
+    resolve to under ``--provider nvidia`` + ``COURSEFORGE_TWO_PASS=true``
+    (using the same module constants the workflow runner uses), and emits
+    pass/warn/error assertions WITHOUT making any network call or requiring a
+    real key value (presence-only). Never dispatches to NVIDIA.
+
+    Asserts:
+      - NVIDIA_API_KEY present (presence only — no call).
+      - the rewrite + synthesis tiers resolve to nvidia + the 70B (catch the
+        30B-nano leak).
+      - TRAINFORGE_SYNTHESIS_PROVIDER resolves LOCAL (gap-3 licensing guard).
+      - ED4ALL_ANSWER_PROVIDER resolves loopback.
+      - WARN on a stale ``COURSEFORGE_*_PROVIDER=local`` env that would
+        silently win over the nvidia YAML.
+    """
+    from MCP.core import workflow_runner as _wr
+
+    checks: List[Dict[str, str]] = []
+
+    def _check(level: str, name: str, detail: str) -> None:
+        checks.append({"level": level, "name": name, "detail": detail})
+
+    two_pass = str(os.environ.get("COURSEFORGE_TWO_PASS", "")).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if not two_pass:
+        _check(
+            "error",
+            "two_pass",
+            "COURSEFORGE_TWO_PASS is not truthy — the nvidia routing branch "
+            "only fires on the two-pass surface. Export COURSEFORGE_TWO_PASS=true.",
+        )
+
+    # 1. NVIDIA_API_KEY presence (NOT value, NEVER a call).
+    if os.environ.get("NVIDIA_API_KEY", "").strip():
+        _check("pass", "nvidia_api_key", "NVIDIA_API_KEY is present (presence-only check).")
+    else:
+        _check(
+            "error",
+            "nvidia_api_key",
+            "NVIDIA_API_KEY is not set — required for the nvidia rewrite + "
+            "synthesis tiers (no value/call made here, presence only).",
+        )
+
+    # 2. Rewrite tier — the block-routing YAML the branch would select.
+    routing_path = os.environ.get("COURSEFORGE_BLOCK_ROUTING_PATH", "").strip()
+    expected_routing = _wr._NVIDIA_LARGE_BLOCK_ROUTING_PATH
+    if routing_path and routing_path != expected_routing:
+        _check(
+            "warn",
+            "block_routing_path",
+            f"COURSEFORGE_BLOCK_ROUTING_PATH is pinned to {routing_path!r} "
+            f"(would override the nvidia YAML {expected_routing!r}).",
+        )
+    else:
+        try:
+            from MCP.core.config import OrchestratorConfig  # noqa: F401
+            from Courseforge.router.policy import load_block_routing_policy
+            from pathlib import Path as _Path
+
+            project_root = _Path(_wr.__file__).resolve().parents[2]
+            policy = load_block_routing_policy(project_root / expected_routing)
+            large = policy.capability_tiers.get("large", {}) if not policy.is_empty() else {}
+            if str(large.get("provider")) == "nvidia":
+                _check(
+                    "pass",
+                    "rewrite_tier",
+                    f"rewrite 'large' tier resolves provider=nvidia via {expected_routing}.",
+                )
+            else:
+                _check(
+                    "error",
+                    "rewrite_tier",
+                    f"rewrite 'large' tier did NOT resolve nvidia in {expected_routing} "
+                    f"(got {large.get('provider')!r}).",
+                )
+        except Exception as exc:  # noqa: BLE001 — preflight never crashes a plan
+            _check("warn", "rewrite_tier", f"could not load nvidia routing YAML: {exc}")
+
+    # 3. NVIDIA_LARGE_MODEL — catch the 30B-nano registry-default leak.
+    large_model = os.environ.get("NVIDIA_LARGE_MODEL", "").strip()
+    expected_model = _wr._NVIDIA_LARGE_MODEL_DEFAULT
+    resolved_model = large_model or expected_model  # branch setdefaults the 70B
+    if "nano" in resolved_model.lower() or "30b" in resolved_model.lower():
+        _check(
+            "error",
+            "cloud_model",
+            f"NVIDIA_LARGE_MODEL resolves to {resolved_model!r} — the 30B-nano "
+            f"leak. The branch setdefaults the 70B ({expected_model!r}); a stale "
+            f"export is overriding it.",
+        )
+    else:
+        _check(
+            "pass",
+            "cloud_model",
+            f"cloud model resolves to {resolved_model!r} (70B, not the 30B nano).",
+        )
+
+    # 4. Synthesis seat — must resolve nvidia + 70B (the GAP-1 surface).
+    synth_provider = os.environ.get("TEXTBOOK_SYNTHESIS_PROVIDER", "").strip()
+    # The branch setdefaults nvidia when unset; an explicit value wins.
+    resolved_synth = synth_provider or "nvidia"
+    if resolved_synth == "nvidia":
+        _check(
+            "pass",
+            "synthesis_tier",
+            "TEXTBOOK_SYNTHESIS_PROVIDER resolves nvidia (objective_extraction "
+            "/ course_planning / concept_extraction reach the 70B).",
+        )
+    else:
+        _check(
+            "warn",
+            "synthesis_tier",
+            f"TEXTBOOK_SYNTHESIS_PROVIDER is pinned to {resolved_synth!r} — the "
+            f"synthesis phases would NOT route to nvidia (GAP-1 surface).",
+        )
+
+    # 5. GAP-3 licensing guard — TRAINFORGE_SYNTHESIS_PROVIDER must be LOCAL.
+    train_provider = os.environ.get("TRAINFORGE_SYNTHESIS_PROVIDER", "").strip().lower()
+    # The branch leaves it untouched; A5 defaults-on setdefaults it local.
+    resolved_train = train_provider or "local"
+    if resolved_train == "nvidia":
+        _check(
+            "error",
+            "training_seat_licensing",
+            "TRAINFORGE_SYNTHESIS_PROVIDER resolves nvidia — the SLM training "
+            "corpus must NEVER route through Llama-3.3 (docs/LICENSING.md). The "
+            "nvidia branch leaves this local; a stale export is overriding it.",
+        )
+    else:
+        _check(
+            "pass",
+            "training_seat_licensing",
+            f"TRAINFORGE_SYNTHESIS_PROVIDER resolves {resolved_train!r} (local — "
+            f"training corpus stays off the cloud tier).",
+        )
+
+    # 6. Answer path — must resolve loopback (Phase IA wall).
+    answer_provider = os.environ.get("ED4ALL_ANSWER_PROVIDER", "").strip().lower()
+    resolved_answer = answer_provider or "local"
+    if resolved_answer == "local":
+        _check(
+            "pass",
+            "answer_loopback",
+            "ED4ALL_ANSWER_PROVIDER resolves local/loopback (grounded-answer "
+            "path never reaches the cloud).",
+        )
+    else:
+        _check(
+            "warn",
+            "answer_loopback",
+            f"ED4ALL_ANSWER_PROVIDER is {resolved_answer!r} — verify it resolves "
+            f"to a loopback base_url (Phase IA: no cloud arm on the answer path).",
+        )
+
+    # 7. WARN on a stale COURSEFORGE_*_PROVIDER=local that would silently win.
+    for env_name in ("COURSEFORGE_REWRITE_PROVIDER", "COURSEFORGE_OUTLINE_PROVIDER",
+                     "COURSEFORGE_PROVIDER"):
+        val = os.environ.get(env_name, "").strip().lower()
+        if val == "local":
+            _check(
+                "warn",
+                "stale_provider_env",
+                f"{env_name}=local is exported — it would silently win over the "
+                f"nvidia YAML (setdefault honors the explicit export). Unset it "
+                f"for a pure-nvidia build.",
+            )
+
+    has_error = any(c["level"] == "error" for c in checks)
+    has_warn = any(c["level"] == "warn" for c in checks)
+    return {
+        "provider": "nvidia",
+        "verdict": "FAIL" if has_error else ("WARN" if has_warn else "PASS"),
+        "checks": checks,
+        "note": "No NVIDIA dispatch — routing resolved + asserted only.",
+    }
 
 
 def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
@@ -1066,6 +1306,21 @@ def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
         click.echo(f"  Blocks:    {plan['blocks_filter']}")
     if plan.get("force_rerun"):
         click.echo(f"  Force:     re-run completed phases (--force)")
+    if plan.get("stop_after"):
+        click.echo(f"  StopAfter: {plan['stop_after']} (halts before later phases)")
+    # NVIDIA-70b-everywhere preflight summary.
+    preflight = plan.get("nvidia_preflight")
+    if preflight:
+        verdict = preflight.get("verdict", "?")
+        color = {"PASS": "green", "WARN": "yellow", "FAIL": "red"}.get(verdict, "white")
+        click.echo()
+        click.secho(f"NVIDIA preflight: {verdict}", fg=color, bold=True)
+        click.secho(f"  ({preflight.get('note', '')})", fg="white")
+        for chk in preflight.get("checks", []):
+            lvl = chk.get("level", "")
+            sym = {"pass": "OK ", "warn": "!! ", "error": "XX "}.get(lvl, "   ")
+            lcolor = {"pass": "green", "warn": "yellow", "error": "red"}.get(lvl, "white")
+            click.secho(f"  {sym}{chk.get('name')}: {chk.get('detail')}", fg=lcolor)
     click.echo()
     click.secho("Phases:", fg="cyan")
     for phase in plan.get("phases", []):

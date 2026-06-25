@@ -509,6 +509,60 @@ class OpenAICompatibleClient:
         as ``SynthesisProviderError(code=str(status))``. Persistent
         transient failures after ``max_retries`` attempts also raise.
         """
+        # NVIDIA-70b-everywhere SETUP scaffold: shared cloud admission gate
+        # (RPM/TPM token buckets + concurrency semaphore). Default-OFF — when
+        # ``ED4ALL_CLOUD_RATE_LIMIT`` is unset/falsey OR no ceiling env is
+        # configured, ``get_admission_gate`` returns a no-op gate so this is
+        # byte-identical to the legacy path (no sleeps, no state). This is the
+        # chokepoint for every COMPOSED authoring seat (Together / Local /
+        # Curriculum / Courseforge rewrite + outline / textbook synthesis /
+        # the NVIDIA large tier), so a pure-nvidia build is fully covered.
+        #
+        # TODO(nvidia-70b-everywhere RUN phase): the api-mode orchestrator
+        # ``MCP/orchestrator/llm_backend.py::AnthropicBackend`` uses a raw
+        # ``anthropic.Anthropic`` client that BYPASSES this method, so a hook
+        # here does NOT cover api-mode orchestration. A pure-nvidia build
+        # routes its authoring through the composed seats above (all covered);
+        # harden the AnthropicBackend bypass only if/when api-mode runs cloud.
+        from lib.llm.rate_limiter import get_admission_gate
+
+        _admission = get_admission_gate()
+        _est_tokens = self._estimate_payload_tokens(payload)
+        _reservation = _admission.acquire(_est_tokens)
+        try:
+            return self._post_with_retry_inner(payload, _reservation)
+        finally:
+            _reservation.release()
+
+    def _estimate_payload_tokens(self, payload: Dict[str, Any]) -> float:
+        """Cheap up-front token estimate for the TPM bucket debit.
+
+        Sums the character length of every message ``content`` (string or
+        content-block list) plus the requested ``max_tokens``, divided by a
+        ~4-chars/token heuristic. Reconciled later against the server-reported
+        ``usage`` so the estimate only needs to be in the right ballpark.
+        Returns 0.0 when rate-limiting is off (the gate ignores it anyway).
+        """
+        chars = 0
+        for message in payload.get("messages", []) or []:
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, str):
+                chars += len(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        chars += len(str(block.get("text", "")))
+        prompt_tokens = chars / 4.0
+        try:
+            completion_tokens = float(payload.get("max_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            completion_tokens = 0.0
+        return prompt_tokens + completion_tokens
+
+    def _post_with_retry_inner(
+        self, payload: Dict[str, Any], reservation: Any
+    ) -> Tuple[Dict[str, Any], int]:
+        """The legacy POST-with-retry body, wrapped by the admission gate."""
         headers: Dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -561,6 +615,21 @@ class OpenAICompatibleClient:
                         f"JSON object",
                         code="malformed_response",
                     )
+                # Reconcile the TPM bucket against server-reported usage so the
+                # bucket tracks REAL consumption rather than our estimate
+                # (no-op when rate-limiting is off). total_tokens preferred;
+                # fall back to prompt+completion.
+                usage = body.get("usage") if isinstance(body, dict) else None
+                if isinstance(usage, dict):
+                    actual = usage.get("total_tokens")
+                    if actual is None:
+                        actual = (usage.get("prompt_tokens", 0) or 0) + (
+                            usage.get("completion_tokens", 0) or 0
+                        )
+                    try:
+                        reservation.reconcile(float(actual))
+                    except (TypeError, ValueError):
+                        pass
                 return body, attempt - 1
 
             last_status = status
