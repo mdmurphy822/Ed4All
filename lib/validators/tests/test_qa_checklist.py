@@ -89,6 +89,73 @@ def test_qa15_massed_fails():
     assert rows["QA-15"]["code"] == "QA15_MASSED"
 
 
+def _serialized_concept(**kw) -> Block:
+    """A block as it re-hydrates from blocks_final.jsonl: the emit-only anatomy
+    / UDL / Bloom fields (bloom_verb/bloom_level/heading/purpose_tag/transition/
+    n_representations) are NOT serialized, so they come back None / 0."""
+    base = dict(
+        block_id="s1",
+        block_type="concept",
+        page_id="week_01_content",
+        sequence=1,
+        content="<p>One idea.</p>",
+        objective_ids=("CO-01",),
+    )
+    base.update(kw)
+    return Block(**base)
+
+
+def test_absent_emit_only_fields_do_not_false_fire():
+    # Regression for the IB6.7 truthiness bug: QA-3 (bloom), QA-6 (activation),
+    # QA-13 (UDL >=2), QA-14 (transition) read emit-only Block fields that
+    # re-hydrate to None/0 from blocks_final.jsonl. A truthiness check failed
+    # EVERY serialized block on absent metadata (not bad content) and all(15)
+    # made every block fail unconditionally. Post-fix, an absent field is
+    # not-applicable → pass.
+    block = _serialized_concept()
+    res = QaChecklistValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    rows = _checklist(res, "s1")
+    for item in ("QA-3", "QA-6", "QA-13", "QA-14"):
+        assert rows[item]["passed"] is True, (item, rows[item])
+    # The absent-metadata block now clears all 15 (it would have failed before).
+    assert res.metadata["qa_checklist"]["per_block"]["s1"]["all_pass"] is True
+
+
+def test_qa3_populated_but_missing_bloom_still_fires():
+    # A block whose bloom fields ARE populated but genuinely empty still fires.
+    block = _serialized_concept(bloom_verb="", bloom_level="")
+    res = QaChecklistValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    rows = _checklist(res, "s1")
+    assert rows["QA-3"]["passed"] is False
+    assert rows["QA-3"]["code"] == "QA3_NO_BLOOM_TAG"
+
+
+def test_qa14_populated_but_empty_transition_still_fires():
+    block = _serialized_concept(transition="")
+    res = QaChecklistValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    rows = _checklist(res, "s1")
+    assert rows["QA-14"]["passed"] is False
+    assert rows["QA-14"]["code"] == "ANATOMY_TRANSITION_MISSING"
+
+
+def test_qa13_positively_declared_single_representation_still_fires():
+    # n_representations == 1 is a POSITIVE single-code declaration (vs the
+    # absent 0 sentinel) and still fires QA-13.
+    block = _serialized_concept(n_representations=1)
+    res = QaChecklistValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    rows = _checklist(res, "s1")
+    assert rows["QA-13"]["passed"] is False
+    assert rows["QA-13"]["code"] == "QA13_SINGLE_REPRESENTATION"
+
+
 def test_disabled_is_noop_pass():
     block = _clean_concept()
     res = QaChecklistValidator().validate(

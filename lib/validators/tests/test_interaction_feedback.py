@@ -95,6 +95,116 @@ def test_disabled_is_noop_pass():
     assert {i.code for i in res.issues} == {"INTERACTION_FEEDBACK_DISABLED"}
 
 
+# --- IB6.3 FP fix: feedback lives INLINE in content, not the feedback slot ----
+
+
+def test_inline_details_reveal_counts_as_feedback():
+    # Regression for the IB6.3 false-fire: Block.feedback is reserved for an
+    # authoring wave and NEVER populated by derive_anatomy_slots, so 0/N
+    # interactive blocks carry it — the renderers emit corrective feedback
+    # INLINE as a <details>/Show-answer reveal. A self-check whose feedback
+    # slot is empty BUT whose content carries an explained inline reveal must
+    # NOT fire NO_FEEDBACK.
+    block = Block(
+        block_id="b1",
+        block_type="self_check_question",
+        page_id="week_01_self_check",
+        sequence=1,
+        content=(
+            "<p>What is 2 + 3 x 4?</p>"
+            "<details><summary>Show answer</summary>"
+            "<p>The answer is 14 — order of operations requires you to "
+            "multiply 3 x 4 first, then add 2.</p></details>"
+        ),
+        interaction="Answer.",
+        feedback=None,  # never populated in practice
+    )
+    res = InteractionFeedbackValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    assert not any(i.code == "INTERACTION_NO_FEEDBACK" for i in res.issues)
+    assert (
+        res.metadata["interaction_feedback"]["per_block"]["b1"]["feedback_status"]
+        == "elaborated"
+    )
+
+
+def test_inline_dict_explanation_counts_as_feedback():
+    block = Block(
+        block_id="kc1",
+        block_type="self_check_question",
+        page_id="week_01_self_check",
+        sequence=1,
+        content={
+            "question": "Q?",
+            "options": [{"text": "right", "correct": True}],
+            "explanation": "Because the distributive property applies here, "
+            "you expand the product before combining like terms.",
+        },
+        interaction="Answer.",
+        feedback=None,
+    )
+    res = InteractionFeedbackValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    assert not any(i.code == "INTERACTION_NO_FEEDBACK" for i in res.issues)
+
+
+def test_problem_with_no_reveal_still_fires_no_feedback():
+    # A problem (B08) with NO feedback slot AND no inline reveal in its body
+    # genuinely lacks feedback — it still fires (the fix only changes WHERE the
+    # validator looks, not whether a real miss fires).
+    block = Block(
+        block_id="p1",
+        block_type="problem",
+        page_id="week_01_practice",
+        sequence=1,
+        content="<p>Solve for x: 2x + 3 = 11.</p>",
+        interaction="Answer.",
+        feedback=None,
+    )
+    res = InteractionFeedbackValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    assert any(i.code == "INTERACTION_NO_FEEDBACK" for i in res.issues)
+
+
+def test_checklist_excluded_from_feedback_requirement():
+    # A checklist (B08 listing) is non-answer-bearing — nothing to reveal — so
+    # it is excluded from the feedback-presence requirement and never audited.
+    block = Block(
+        block_id="cl1",
+        block_type="checklist",
+        page_id="week_01_summary",
+        sequence=1,
+        content="<ul><li>Item A</li><li>Item B</li></ul>",
+        interaction="Check.",
+        feedback=None,
+    )
+    res = InteractionFeedbackValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    assert not any(i.code == "INTERACTION_NO_FEEDBACK" for i in res.issues)
+    assert res.metadata["interaction_feedback"]["interactive_blocks_audited"] == 0
+
+
+def test_discussion_prompt_excluded_from_feedback_requirement():
+    block = Block(
+        block_id="dp1",
+        block_type="discussion_prompt",
+        page_id="week_01_discussion",
+        sequence=1,
+        content="<p>Discuss how order of operations applies in real life.</p>",
+        interaction="Discuss.",
+        feedback=None,
+    )
+    res = InteractionFeedbackValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    assert not any(i.code == "INTERACTION_NO_FEEDBACK" for i in res.issues)
+    assert res.metadata["interaction_feedback"]["interactive_blocks_audited"] == 0
+
+
 # --- FR-INT-05: per-distractor misconception-targeted feedback ----------------
 
 

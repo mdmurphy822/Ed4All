@@ -230,10 +230,21 @@ class QaChecklistValidator:
         out.append(row("QA-2", "objective_trace", has_obj,
                        None if has_obj else "QA2_NO_OBJECTIVE_TRACE"))
 
-        # QA-3 Bloom verb tag.
-        has_bloom = bool(block_attr(block, "bloom_verb")) or bool(block_attr(block, "bloom_level"))
-        out.append(row("QA-3", "bloom_verb_tag", has_bloom,
-                       None if has_bloom else "QA3_NO_BLOOM_TAG"))
+        # QA-3 Bloom verb tag. PRESENCE-gated (not truthiness): bloom_verb /
+        # bloom_level are HTML/JSON-LD emit-only fields that re-hydrate to None
+        # from blocks_final.jsonl, so a truthiness check would fail every
+        # serialized block on absent metadata (not bad content). When NEITHER
+        # field is present (both None/absent) the item is not-applicable → pass
+        # (mirrors the QA-8/11/12 "not threaded → don't fail day-1" posture). A
+        # block whose bloom tag IS populated but resolves falsey still fires.
+        bloom_verb = block_attr(block, "bloom_verb")
+        bloom_level = block_attr(block, "bloom_level")
+        if bloom_verb is None and bloom_level is None:
+            out.append(row("QA-3", "bloom_verb_tag", True))  # absent → N/A
+        else:
+            has_bloom = bool(bloom_verb) or bool(bloom_level)
+            out.append(row("QA-3", "bloom_verb_tag", has_bloom,
+                           None if has_bloom else "QA3_NO_BLOOM_TAG"))
 
         # QA-4 six elements present (IB6.2 anatomy — pass when no slot-presence issue).
         anatomy_issues = _sig(sig, "anatomy_slot_presence.issues", default=[]) or []
@@ -248,9 +259,19 @@ class QaChecklistValidator:
                        None if qa5 else "QA5_ALIGNMENT_MISMATCH"))
 
         # QA-6 activation present (IB1 lifecycle — heading/purpose_tag slot).
-        has_activation = bool(block_attr(block, "heading")) or bool(block_attr(block, "purpose_tag"))
-        out.append(row("QA-6", "activation_present", has_activation,
-                       None if has_activation else "QA6_NO_ACTIVATION"))
+        # PRESENCE-gated: heading / purpose_tag are emit-only anatomy slots that
+        # re-hydrate to None from blocks_final.jsonl, so truthiness would fail
+        # every serialized block on absent metadata. When NEITHER slot is
+        # present the item is not-applicable → pass; a populated-but-falsey slot
+        # still fires.
+        heading = block_attr(block, "heading")
+        purpose_tag = block_attr(block, "purpose_tag")
+        if heading is None and purpose_tag is None:
+            out.append(row("QA-6", "activation_present", True))  # absent → N/A
+        else:
+            has_activation = bool(heading) or bool(purpose_tag)
+            out.append(row("QA-6", "activation_present", has_activation,
+                           None if has_activation else "QA6_NO_ACTIVATION"))
 
         # QA-7 interaction present (only meaningful on interactive blocks).
         if interactive:
@@ -277,10 +298,17 @@ class QaChecklistValidator:
         out.append(row("QA-9", "signaling_restraint", qa9,
                        None if qa9 else _QA9_FAIL))
 
-        # QA-10 dual coding + contiguity (>=2 representations OR a media/diagram block).
-        n_repr = block_attr(block, "n_representations")
-        n_repr = n_repr if isinstance(n_repr, int) else 0
-        qa10 = n_repr >= 2 or framework_block in ("B04", "B06")
+        # QA-10 dual coding + contiguity (>=2 representations OR a media/diagram
+        # block). n_representations is the IB4 UDL emit-only field that
+        # re-hydrates to its int default 0 from blocks_final.jsonl; an absent
+        # (0) value is "no UDL signal threaded", NOT a positive single-code
+        # determination, so it must not fail this item on absent metadata. The
+        # item passes for >=2 representations, a media/diagram block, OR an
+        # absent (0) signal; only a POSITIVELY-declared single representation
+        # (n_repr == 1) fails.
+        raw_n_repr = block_attr(block, "n_representations")
+        n_repr = raw_n_repr if isinstance(raw_n_repr, int) else 0
+        qa10 = n_repr >= 2 or framework_block in ("B04", "B06") or n_repr == 0
         out.append(row("QA-10", "dual_coding_contiguity", qa10,
                        None if qa10 else "QA10_SINGLE_CODE"))
 
@@ -297,14 +325,27 @@ class QaChecklistValidator:
                        None if qa12 else "QA12_WCAG_FAIL"))
 
         # QA-13 UDL >=2 representations (NET-NEW): reuse IB4 n_representations.
-        qa13 = n_repr >= 2
+        # PRESENCE-gated on the same emit-only int: an absent (0) signal is
+        # not-applicable → pass (no UDL data threaded ≠ single representation).
+        # Only a POSITIVELY-declared single representation (n_repr == 1) fires.
+        qa13 = n_repr >= 2 or n_repr == 0
         out.append(row("QA-13", "udl_two_representations", qa13,
                        None if qa13 else _QA13_FAIL))
 
-        # QA-14 transition / transfer (IB6.2 transition slot).
-        has_transition = bool(block_attr(block, "transition"))
-        out.append(row("QA-14", "transition_transfer", has_transition,
-                       None if has_transition else "ANATOMY_TRANSITION_MISSING"))
+        # QA-14 transition / transfer (IB6.2 transition slot). PRESENCE-gated:
+        # the transition slot is NEVER back-derived (reserved for an authoring
+        # wave per derive_anatomy_slots) and is emit-only, so it re-hydrates to
+        # None from blocks_final.jsonl — a truthiness check would fail every
+        # serialized block on absent metadata. When the slot is absent (None)
+        # the item is not-applicable → pass; a populated-but-empty transition
+        # ("") still fires.
+        transition = block_attr(block, "transition")
+        if transition is None:
+            out.append(row("QA-14", "transition_transfer", True))  # absent → N/A
+        else:
+            has_transition = bool(transition)
+            out.append(row("QA-14", "transition_transfer", has_transition,
+                           None if has_transition else "ANATOMY_TRANSITION_MISSING"))
 
         # QA-15 spacing (NET-NEW): advisory until IB7 supplies the module-scope
         # spacing signal. Absent → unverified (warning, but never a hard fail).

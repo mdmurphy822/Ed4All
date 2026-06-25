@@ -54,6 +54,27 @@ _BARE_MARKER_RE = re.compile(
 # The dims an interaction-without-feedback block caps at 1 (framework 6.4).
 _FEEDBACK_CAP_DIMS = ["feedback", "coherence"]
 
+# Framework B-codes whose interactions are NON-answer-bearing — a checklist
+# (B08 listing) and a discussion prompt (B10 open prompt) have nothing to
+# "reveal" as feedback, so the feedback-presence requirement does not apply to
+# them. (B07 self-checks, B14 graded assessments, and B08 problems / guided
+# practice / activities DO carry answers/solutions and stay in scope.)
+_NON_ANSWER_BEARING_BLOCK_TYPES = frozenset({"checklist", "discussion_prompt"})
+
+# Inline answer-reveal markers. The renderers emit corrective feedback INLINE in
+# the content HTML — a <details>/<summary> reveal or a "Show answer"/"Show
+# solution"/"Answer:"/"Solution:" toggle that discloses the worked answer — NOT
+# in the (never-populated, authoring-wave-reserved) Block.feedback slot. A
+# reveal that discloses an explained answer counts as feedback present.
+_INLINE_REVEAL_RE = re.compile(
+    r"<details\b"
+    r"|<summary\b"
+    r"|show\s+(?:answer|solution|the\s+answer|the\s+solution|feedback|explanation)"
+    r"|reveal\s+(?:answer|solution)"
+    r"|\b(?:answer|solution|explanation|feedback)\s*:",
+    re.IGNORECASE,
+)
+
 
 class InteractionFeedbackValidator:
     """IB6.3 — universal per-interaction feedback presence + elaboration."""
@@ -159,12 +180,31 @@ class InteractionFeedbackValidator:
                     }
             if not is_interactive_block(block):
                 continue
-            audited += 1
             bt = block_type_of(block)
             bcode = framework_block_of(block)
+            # Non-answer-bearing interactive types (checklist B08 listing,
+            # discussion_prompt B10 open prompt) have no answer to reveal — the
+            # feedback-presence requirement does not apply to them. Skip the
+            # feedback arms; they remain audited for the per_block record but
+            # never fire a NO_FEEDBACK / THIN / BARE issue.
+            if bt in _NON_ANSWER_BEARING_BLOCK_TYPES:
+                continue
+            audited += 1
             block_id = str(block_attr(block, "block_id") or f"block-{idx}")
             fb_raw = block_attr(block, "feedback")
             fb_text = strip_html_text(fb_raw) if isinstance(fb_raw, str) else ""
+
+            # The Block.feedback slot is reserved for an authoring wave and is
+            # NEVER populated by derive_anatomy_slots (parsing LLM prose is
+            # lossy), so 0/N interactive blocks carry it. The renderers instead
+            # emit corrective feedback INLINE in the content HTML as an
+            # answer-reveal (<details>/"Show answer"/"Show solution"). Before
+            # declaring NO_FEEDBACK, resolve feedback from that inline reveal:
+            # an explained answer-reveal in the body counts as feedback present.
+            if not fb_text:
+                inline_fb = self._resolve_inline_feedback(block, strip_html_text)
+                if inline_fb:
+                    fb_text = inline_fb
 
             status = "elaborated"
             block_codes: List[str] = []
@@ -325,6 +365,60 @@ class InteractionFeedbackValidator:
                 }
             },
         )
+
+    @staticmethod
+    def _resolve_inline_feedback(block: Any, strip_html_text) -> str:
+        """Return the inline answer-reveal feedback text, or ``""``.
+
+        The corrective feedback the framework requires lives INLINE in the
+        rendered content HTML — a ``<details>`` / "Show answer" / "Show
+        solution" / "Answer:" reveal that discloses the worked answer — not in
+        the (authoring-wave-reserved, never-populated) ``Block.feedback`` slot.
+        This resolves it from the block's content so the validator looks where
+        feedback actually lives.
+
+        Resolution:
+
+        * a string ``content`` (rendered HTML) carrying an inline-reveal marker
+          → the VISIBLE text inside / after the reveal (the explained answer);
+        * a dict ``content`` carrying an explicit ``feedback`` / ``explanation``
+          / ``rationale`` / ``answer_explanation`` string → that string;
+        * otherwise ``""`` (no inline feedback found — the caller then declares
+          NO_FEEDBACK as before).
+
+        Honest scope: a BARE answer reveal (just the answer, no "why") still
+        flows through the downstream elaboration check — this only changes
+        WHERE feedback is read, not the elaboration bar. A reveal disclosing an
+        explained answer surfaces here as elaborated; a bare one surfaces as
+        thin/bare, exactly as if it had been authored in the feedback slot.
+        """
+        from lib.validators._block_rubric_helpers import block_attr
+
+        content = block_attr(block, "content")
+
+        # Structured content: prefer an explicit explanation/feedback string.
+        if isinstance(content, dict):
+            for key in (
+                "feedback",
+                "explanation",
+                "rationale",
+                "answer_explanation",
+                "solution",
+            ):
+                val = content.get(key)
+                if isinstance(val, str) and val.strip():
+                    return strip_html_text(val)
+            return ""
+
+        if not isinstance(content, str) or not content.strip():
+            return ""
+
+        # Rendered HTML body: only treat the body as feedback when it carries an
+        # inline-reveal marker (a <details>/Show answer/Answer: reveal) — a
+        # plain prompt with no reveal is NOT feedback.
+        if not _INLINE_REVEAL_RE.search(content):
+            return ""
+        return strip_html_text(content)
 
     @staticmethod
     def _check_misconception_targeting(

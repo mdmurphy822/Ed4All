@@ -460,12 +460,28 @@ def _score_block(
     # --- Dim 4: Retrieval / spacing (content blocks) -----------------------
     # Applies to content-bearing exposition blocks (B03/B05/B06). A co-located
     # retrieval prompt (self_check) earns 3; spacing is advisory until IB7.
+    #
+    # Absent-signal default is the NON-FAILING 2 (thin-signal), matching every
+    # other dimension — NOT 1. There is no runtime producer of the per-block
+    # `has_colocated_retrieval` / `retrieval_score` signal yet, so 100% of
+    # B03/B05/B06 exposition blocks would otherwise score a failing 1 purely
+    # from absent metadata (the validator's own docstring: "missing signals
+    # degrade to a conservative-but-not-failing default"). A score of 1 is
+    # reserved for when a producer has POSITIVELY determined no co-located
+    # retrieval exists (`has_colocated_retrieval` present-and-False); an
+    # absent signal stays the thin-signal 2. Retrieval is NOT a CORE dim, so
+    # this only feeds the applicable-dim mean, never the core-floor.
     if framework_block in ("B03", "B05", "B06"):
         applicable.add(_RETRIEVAL)
         retr = _resolve_int(signals, "retrieval_score", default=None)
         if retr is None:
-            has_retrieval = bool(signals.get("has_colocated_retrieval"))
-            retr = 3 if has_retrieval else 1
+            if "has_colocated_retrieval" in signals and signals[
+                "has_colocated_retrieval"
+            ] is not None:
+                # A producer has positively determined presence/absence.
+                retr = 3 if bool(signals["has_colocated_retrieval"]) else 1
+            else:
+                retr = 2  # thin-signal default (no producer → never fail)
         scores[_RETRIEVAL] = _clamp(retr)
 
     # --- Dim 5: Feedback (interactive blocks) ------------------------------

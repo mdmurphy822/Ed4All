@@ -144,6 +144,59 @@ def test_scoring_writes_rubric_into_block_via_replace():
     assert block.quality_rubric == ()  # input untouched
 
 
+def test_exposition_block_no_retrieval_signal_does_not_fail_on_default():
+    # Regression for the IB6.1 D4 false-fire: an exposition block (B03/B05/B06)
+    # with NO threaded retrieval signal (there is no runtime producer of
+    # has_colocated_retrieval) must NOT fail the rubric purely on the Retrieval
+    # dimension's absent-signal default. Pre-fix, Retrieval defaulted to a
+    # FAILING 1; post-fix it is the non-failing thin-signal 2.
+    block = Block(
+        block_id="e1",
+        block_type="concept",  # B03 exposition
+        page_id="week_01_content",
+        sequence=1,
+        content="<p>A short single idea.</p>",
+        objective_ids=("CO-01",),
+    )
+    res = BlockQualityRubricValidator().validate(
+        {"blocks": [block], "rubric_enabled": True}
+    )
+    row = _rubric_of(res, "e1")
+    assert "retrieval" in row["scores"]
+    assert row["scores"]["retrieval"] == 2  # thin-signal default, non-failing
+    # Retrieval is non-core, so it never sinks the core floor; with every other
+    # dim at its non-failing default the block passes (mean >= 2.0 + core ok).
+    assert row["core_ok"] is True
+    assert row["block_pass"] is True
+
+
+def test_retrieval_signal_present_and_false_still_scores_1():
+    # The failing score of 1 is RESERVED for a producer that POSITIVELY
+    # determined retrieval is absent (has_colocated_retrieval present-and-False)
+    # — that genuine signal still scores 1, so the fix narrows, not removes, the
+    # check.
+    block = Block(
+        block_id="e2",
+        block_type="example",  # B05 exposition
+        page_id="week_01_content",
+        sequence=1,
+        content="<p>A short single idea.</p>",
+        objective_ids=("CO-01",),
+    )
+    sigs = {"e2": {"has_colocated_retrieval": False}}
+    res = BlockQualityRubricValidator().validate(
+        {"blocks": [block], "gate_results_by_block": sigs, "rubric_enabled": True}
+    )
+    row = _rubric_of(res, "e2")
+    assert row["scores"]["retrieval"] == 1
+    # And a present-and-True signal still earns the full 3.
+    sigs_true = {"e2": {"has_colocated_retrieval": True}}
+    res2 = BlockQualityRubricValidator().validate(
+        {"blocks": [block], "gate_results_by_block": sigs_true, "rubric_enabled": True}
+    )
+    assert _rubric_of(res2, "e2")["scores"]["retrieval"] == 3
+
+
 def test_does_not_reload_nli_or_embeddings():
     # The rubric path composes threaded signals; it must NOT import/load the
     # NLI classifier or an embedder. We assert no model singleton is touched by
