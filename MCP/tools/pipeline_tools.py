@@ -1074,6 +1074,33 @@ def _fallback_claim_texts(block: Any) -> List[str]:
     return claims
 
 
+# rewrite-overflow-fix-2026-06: the same ``<li data-cf-distractor-index="N">``
+# sibling pattern the CRITICAL ``rewrite_assessment_item_payload`` gate scans
+# (``lib/validators/assessment_item_payload.py::_DATA_CF_DISTRACTOR_INDEX_LI_RE``).
+# Used to detect a PARSED-but-structurally-empty assessment_item MCQ (a real
+# 7B item that omitted the canonical option markup) so it routes to the
+# deterministic MCQ-completion fallback BEFORE the gate can BLOCK the run.
+_ASSESSMENT_ITEM_DISTRACTOR_LI_RE = re.compile(
+    r'<li[^>]*data-cf-distractor-index=["\'](\d+)["\'][^>]*>',
+    re.IGNORECASE,
+)
+
+
+def _assessment_item_payload_structurally_empty(content: str) -> bool:
+    """Return True when an assessment_item HTML body would FAIL the gate.
+
+    Mirrors the CRITICAL ``rewrite_assessment_item_payload`` floor: a valid
+    item carries >= 2 ``<li data-cf-distractor-index="N">`` siblings. Fewer
+    than 2 means the rewrite tier authored an item missing the canonical
+    MCQ option markup (a `<strong>` marker or bare "Correct answer: …" line
+    the validator can't parse) — which would BLOCK the whole run. Such an
+    item is routed to the deterministic MCQ-completion fallback instead.
+    """
+    if not content or not content.strip():
+        return False  # empty content is handled by the escalation path.
+    return len(_ASSESSMENT_ITEM_DISTRACTOR_LI_RE.findall(content)) < 2
+
+
 def _render_block_fallback_html(
     block: Any,
     *,
@@ -13338,6 +13365,64 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 continue
             content = b.content if isinstance(b.content, str) else ""
             if not content.strip():
+                continue
+            # rewrite-overflow-fix-2026-06: a PARSED-but-structurally-empty
+            # assessment_item (non-empty content, no escalation marker, but
+            # missing the >= 2 ``<li data-cf-distractor-index="N">`` siblings
+            # the CRITICAL ``rewrite_assessment_item_payload`` gate requires)
+            # would BLOCK the whole run. Route it to the SAME deterministic
+            # MCQ-completion fallback the escalated path uses (which emits the
+            # canonical option markup) BEFORE the gate sees it, so a real 7B
+            # MCQ that omitted a ``data-cf-distractor-index`` sibling can't
+            # fail the run closed. Minimal + targeted: only assessment_item,
+            # only when the gate WOULD fail.
+            if (
+                b.block_type == "assessment_item"
+                and _assessment_item_payload_structurally_empty(content)
+            ):
+                _ai_fallback_sids = list(b.source_ids or ())
+                if not _ai_fallback_sids:
+                    _ai_fallback_sids = _page_source_ids(b.page_id)
+                _ai_fallback_html = _render_block_fallback_html(
+                    b,
+                    objective_statements=_objective_id_statement_map,
+                    minted_curie_map=_rewrite_minted_map,
+                    source_ids=_ai_fallback_sids,
+                )
+                body_parts.append(_ai_fallback_html)
+                if capture is not None:
+                    try:
+                        capture.log_decision(
+                            decision_type="block_template_fallback",
+                            decision=(
+                                f"Repaired structurally-empty assessment_item "
+                                f"MCQ for block_id={b.block_id} via the "
+                                f"deterministic option-markup fallback "
+                                f"(no escalation marker)."
+                            ),
+                            rationale=(
+                                f"assessment_item block_id={b.block_id} parsed "
+                                "to non-empty HTML but carried fewer than 2 "
+                                "<li data-cf-distractor-index='N'> siblings, so "
+                                "the CRITICAL rewrite_assessment_item_payload "
+                                "gate would BLOCK the whole run. Routed it to "
+                                "the deterministic LLM-free MCQ-completion "
+                                "fallback (canonical <li data-cf-distractor-"
+                                "index>/data-cf-correct markup) BEFORE the gate "
+                                "so a real 7B MCQ missing the option markup "
+                                "ships gate-valid instead of failing the run "
+                                "closed; stamped data-cf-fallback=\"template\"."
+                            ),
+                            ml_features={
+                                "gate_id": "_run_content_generation_rewrite",
+                                "block_id": b.block_id,
+                                "block_type": b.block_type,
+                                "page_id": page_id,
+                                "fallback": "assessment_item_payload_repair",
+                            },
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
                 continue
             # Stamp canonical data-cf-source-ids / data-cf-objective-id
             # on the section wrapper from the Block dataclass fields,

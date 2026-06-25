@@ -463,8 +463,36 @@ class _BaseLLMProvider(ABC):
         ignored — the Anthropic SDK does not accept arbitrary
         OpenAI-compatible fields.
         """
+        text, retry_count, _usage = self._dispatch_call_with_usage(
+            user_prompt, extra_payload=extra_payload
+        )
+        return text, retry_count
+
+    def _dispatch_call_with_usage(
+        self,
+        user_prompt: str,
+        *,
+        extra_payload: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, int, Dict[str, Any]]:
+        """Like :meth:`_dispatch_call` but ALSO returns the usage dict.
+
+        Returns ``(text, retry_count, usage)`` where ``usage`` is the
+        server-reported token tally (``{"prompt_tokens", ...}``) extracted
+        from the OpenAI-compatible response body. The Anthropic branch
+        returns an EMPTY usage dict (the SDK response is parsed for text
+        only, with no per-request prompt-token tally threaded here) — a
+        genuine no-op signal so a downstream input-truncation tripwire
+        fail-OPENs on the Anthropic path.
+
+        Introduced for the rewrite-overflow-fix-2026-06 tripwire: usage
+        travels by RETURN VALUE (not a shared-mutable ``last_usage`` on the
+        client), so a cloud block can never read a stale OAI count from a
+        prior local call. The legacy 2-tuple :meth:`_dispatch_call` stays
+        the surface every other tier consumes.
+        """
         if self._provider == "anthropic":
-            return self._call_anthropic(user_prompt)
+            text, retry_count = self._call_anthropic(user_prompt)
+            return text, retry_count, {}
         assert self._oa_client is not None
         messages = [
             {"role": "system", "content": self._system_prompt},
@@ -485,7 +513,8 @@ class _BaseLLMProvider(ABC):
                 payload[key] = value
         body, retry_count = self._oa_client._post_with_retry(payload)
         text = self._oa_client._extract_text(body)
-        return text, retry_count
+        usage = body.get("usage") if isinstance(body, dict) else None
+        return text, retry_count, usage if isinstance(usage, dict) else {}
 
     def _call_anthropic(self, user_prompt: str) -> Tuple[str, int]:
         """Run the call against the Anthropic SDK.

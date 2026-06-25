@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
+from lib.llm.truncation_guard import check_prompt_not_truncated
 from lib.retrieval._prompts import (
     ANSWER_PROMPT_VERSION,
     ANSWER_SYSTEM_PROMPT,
@@ -208,33 +209,25 @@ def _check_prompt_not_truncated(
     No-ops when usage is unavailable (the server omitted it, or a test
     double doesn't expose ``last_usage``): the tripwire is a guard, not a
     requirement, and a missing signal must never block a valid answer.
+
+    Delegates the actual shortfall comparison to the provider-agnostic
+    ``lib.llm.truncation_guard.check_prompt_not_truncated`` (the rewrite
+    tier reuses the same helper) — this wrapper only reads the reported
+    ``prompt_tokens`` off the client's ``last_usage`` and forwards the
+    answer-path constants (``0.5`` / ``256``) so behaviour is byte-
+    equivalent to the inline check it replaced.
     """
     usage = getattr(client, "last_usage", None)
     if not isinstance(usage, dict):
         return
-    reported = usage.get("prompt_tokens")
-    try:
-        reported_int = int(reported)
-    except (TypeError, ValueError):
-        return
-    if reported_int <= 0:
-        return  # server omitted / zeroed usage — no signal.
-    if estimated_prompt_tokens < _TRUNCATION_MIN_ESTIMATE_TOKENS:
-        return  # too small for the ratio to be meaningful.
-    threshold = estimated_prompt_tokens * _TRUNCATION_REPORTED_FRACTION
-    if reported_int < threshold:
-        raise PromptTruncatedError(
-            f"Prompt HEAD was silently truncated by the model server for "
-            f"model {model_id!r}: estimated ~{estimated_prompt_tokens} "
-            f"prompt tokens but the server reported only {reported_int} "
-            f"(< {threshold:.0f}). The served context window "
-            f"(num_ctx={num_ctx}) is too small for this prompt, so the "
-            f"system prompt + leading passage ids were dropped and any "
-            f"citations are fabricated. Fixes: raise the server window "
-            f"(OLLAMA_CONTEXT_LENGTH or a Modelfile 'PARAMETER num_ctx') "
-            f"AND set ED4ALL_ANSWER_NUM_CTX to the served window so the "
-            f"context budget shrinks the prompt to fit."
-        )
+    check_prompt_not_truncated(
+        usage.get("prompt_tokens"),
+        estimated_prompt_tokens,
+        model_id=model_id,
+        num_ctx=num_ctx,
+        reported_fraction=_TRUNCATION_REPORTED_FRACTION,
+        min_estimate=_TRUNCATION_MIN_ESTIMATE_TOKENS,
+    )
 
 
 # ---------------------------------------------------------------------------

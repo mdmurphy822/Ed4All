@@ -77,6 +77,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from Courseforge.generators._base import _BaseLLMProvider
+from Courseforge.generators._rewrite_fit_window import (  # noqa: E402
+    cited_chunk_ids_from_content,
+    resolve_fit_window,
+    resolve_rewrite_num_ctx,
+    resolve_truncation_tripwire,
+    select_chunks_under_budget,
+)
+from lib.llm.truncation_guard import check_prompt_not_truncated  # noqa: E402
+from lib.retrieval.answer_backend import (  # noqa: E402
+    PromptTruncatedError as _PromptTruncatedError,
+)
+from lib.retrieval._prompts import estimate_tokens as _estimate_tokens  # noqa: E402
 from Trainforge.generators._openai_compatible_client import (  # noqa: E402
     ENV_REQUEST_TIMEOUT as _OA_ENV_REQUEST_TIMEOUT,
 )
@@ -220,6 +232,13 @@ _NO_DISPATCHER_MSG = (
 # gate. Direct port of the Trainforge precedent
 # (``_local_provider.py:540`` :: ``MAX_PARSE_RETRIES``).
 MAX_PARSE_RETRIES = 2
+
+# rewrite-overflow-fix-2026-06: escalation marker stamped when the input-
+# truncation tripwire detects the served window silently dropped the system
+# prompt HEAD. Member of ``Courseforge/scripts/blocks.py::_ESCALATION_MARKERS``;
+# surfaces the block as ``escalated`` (not ``failed``) in the validation
+# report and routes it through the W5 packager-side escalation filter.
+_INPUT_PROMPT_TRUNCATED_MARKER = "input_prompt_truncated"
 
 # Worker W6: per-block transient-retry budget for dispatch-side
 # failures (Ollama 503 / connection reset / read timeout). Transient
@@ -686,6 +705,96 @@ _REWRITE_SYSTEM_PROMPT = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Fit-window system-prompt trim (rewrite-overflow-fix-2026-06).
+# ---------------------------------------------------------------------------
+#
+# The untrimmed ``_REWRITE_SYSTEM_PROMPT`` above is ≈7,800 tok — alone it
+# overflows an 8k served window before a single grounding chunk, so Ollama
+# silently head-truncates and drops the authoring CONTRACT. When
+# ``ED4ALL_REWRITE_FIT_WINDOW`` is ON, the ≈42% block-type-specific
+# segments are RELOCATED out of the global system prompt and into the
+# per-block-type output contract (only the relevant block sees its rules).
+#
+# Derivation is structural, NOT a hand-retyped copy: the authoritative
+# ``_REWRITE_SYSTEM_PROMPT`` bytes above are split on ``"\n\n"`` and
+# classified by index. When OFF, NOTHING here runs — the constructor uses
+# ``_REWRITE_SYSTEM_PROMPT`` verbatim and ``_block_type_output_contract``
+# returns the original contract, so every snapshot / prompt is byte-
+# identical to today.
+#
+# KEEP (global): role/palette/grounding/emit-only (0), outline-preserve +
+# CURIE-natural-name (1), per-objective Bloom (2), per-claim attribution
+# (3), HEADING STRUCTURE (6), BREVITY (7), STRUCTURED-OVER-PROSE (17), MATH
+# RENDERING (18), DIVERSE HEADINGS (20), CITATION HYGIENE (22), HARD-
+# CONSTRAINT GROUNDING (23), per-block data-cf attrs (24), objective-id
+# verbatim (25), Wave-27 MANDATORY OUTPUT CONTRACT (26-30).
+#
+# MOVE (block-specific) → relocated into the per-type contract:
+_REWRITE_SYSTEM_PROMPT_SEGMENTS: Tuple[str, ...] = tuple(
+    _REWRITE_SYSTEM_PROMPT.split("\n\n")
+)
+
+# Segment indices that relocate out of the global prompt when the fit-
+# window flag is ON (everything not listed here stays global / KEEP).
+_RELOCATED_SEGMENT_INDICES: frozenset = frozenset(
+    {4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 19, 21}
+)
+
+# Per-block-type relocation map: which moved-segment indices append to each
+# block type's output contract when the flag is ON. A block type absent
+# from this map carries only the KEEP-global system prompt (its contract is
+# unchanged). The lead-in PEDAGOGICAL-DEPTH segment (8) rides with the per-
+# type pedagogical bullets it introduces.
+_RELOCATED_SEGMENTS_BY_BLOCK_TYPE: Dict[str, Tuple[int, ...]] = {
+    "concept": (4, 8, 9, 11, 16, 21),
+    "explanation": (4, 8, 9, 11, 21),
+    "example": (4, 5, 8, 10, 11),
+    "worked_example": (4, 5, 8, 10, 11),
+    "self_check_question": (4, 12, 13),
+    "assessment_item": (14, 15, 19),
+    "callout": (21,),
+    "key_idea": (21,),
+}
+
+# The trimmed (fit-window-ON) system prompt: the KEEP-global segments only,
+# joined with the SAME ``"\n\n"`` separator so the kept text is byte-
+# identical to its appearance in the untrimmed prompt.
+_REWRITE_SYSTEM_PROMPT_TRIMMED: str = "\n\n".join(
+    seg
+    for i, seg in enumerate(_REWRITE_SYSTEM_PROMPT_SEGMENTS)
+    if i not in _RELOCATED_SEGMENT_INDICES
+)
+
+
+def _resolve_system_prompt(fit_window: bool) -> str:
+    """Return the rewrite-tier system prompt for the fit-window state.
+
+    OFF → the untrimmed ``_REWRITE_SYSTEM_PROMPT`` (byte-identical to
+    today). ON → the trimmed KEEP-global prompt (block-specific guidance
+    relocated into the per-type contracts).
+    """
+    return _REWRITE_SYSTEM_PROMPT_TRIMMED if fit_window else _REWRITE_SYSTEM_PROMPT
+
+
+def _relocated_contract_suffix(block_type: str) -> str:
+    """Return the relocated block-specific segments for ``block_type``.
+
+    Empty string when the block type has no relocated segments. The
+    segments are joined with ``"\n\n"`` (matching their original prompt
+    spacing) and prefixed with a separator so they append cleanly onto the
+    existing per-type contract paragraph. Only consulted when the fit-
+    window flag is ON.
+    """
+    indices = _RELOCATED_SEGMENTS_BY_BLOCK_TYPE.get(block_type)
+    if not indices:
+        return ""
+    moved = "\n\n".join(
+        _REWRITE_SYSTEM_PROMPT_SEGMENTS[i] for i in indices
+    )
+    return "\n\n" + moved
+
+
 # System-turn directive prepended to the BATCHED multi-block rewrite call.
 # Instructs the model to emit one delimited block per requested block, in
 # order, with NO commentary or code fences between blocks, so
@@ -1136,14 +1245,22 @@ _BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
 }
 
 
-def _block_type_output_contract(block_type: str) -> str:
+def _block_type_output_contract(
+    block_type: str, *, fit_window: bool = False
+) -> str:
     """Return the per-block-type HTML attribute contract paragraph.
 
     Falls back to a generic instruction when the block_type has no
     entry in the table — defensive only; ``Block.__post_init__``
     already validates the set.
+
+    When ``fit_window`` is True (``ED4ALL_REWRITE_FIT_WINDOW`` ON), the
+    block-type-specific authoring segments relocated out of the trimmed
+    system prompt are APPENDED here so the per-block prompt still carries
+    its rules. When False (default), the contract is byte-identical to the
+    original table entry — no relocation, so OFF is byte-stable.
     """
-    return _BLOCK_TYPE_OUTPUT_CONTRACTS.get(
+    base = _BLOCK_TYPE_OUTPUT_CONTRACTS.get(
         block_type,
         (
             f"Emit the rendered HTML body for a block of type "
@@ -1151,6 +1268,9 @@ def _block_type_output_contract(block_type: str) -> str:
             f"wrapper to attribute the source chunks."
         ),
     )
+    if not fit_window:
+        return base
+    return base + _relocated_contract_suffix(block_type)
 
 
 def _required_attrs_directive(block_type: str, block_id: str) -> str:
@@ -1428,6 +1548,46 @@ def _format_source_chunks(chunks: Sequence[Any]) -> str:
             text = getattr(c, "text", "") or getattr(c, "content", "")
         parts.append(f"- [{cid}] {text}")
     return "\n".join(parts)
+
+
+def _rank_query_for_block(block: Block) -> str:
+    """Build the cosine-rank query for fit-window chunk selection.
+
+    The grounding chunks should be relevant to what the block TEACHES, so
+    the query is the block's key-claim text (joined) falling back to the
+    block id. Pure read of ``block.content`` — no fabrication.
+    """
+    content = getattr(block, "content", None)
+    parts: List[str] = []
+    if isinstance(content, dict):
+        claims = content.get("key_claims")
+        if isinstance(claims, list):
+            for claim in claims:
+                if isinstance(claim, dict):
+                    txt = claim.get("text") or claim.get("claim") or ""
+                    if isinstance(txt, str) and txt.strip():
+                        parts.append(txt.strip())
+                elif isinstance(claim, str) and claim.strip():
+                    parts.append(claim.strip())
+    query = " ".join(parts).strip()
+    return query or str(getattr(block, "block_id", "") or "")
+
+
+def _try_rewrite_embedder() -> Optional[Any]:
+    """Lazy-load the statistical-tier sentence embedder, or ``None``.
+
+    Reuses the same ``lib.embedding`` loader the Courseforge statistical-
+    tier validators use, so a single model serves both. Absence (no
+    ``[embedding]`` extras, or a load failure) returns ``None`` → the
+    chunk selector degrades to citation-order ranking (NOT a new fail-
+    closed dependency).
+    """
+    try:
+        from lib.embedding import try_load_embedder  # noqa: PLC0415
+
+        return try_load_embedder()
+    except Exception:  # noqa: BLE001 — embedding is optional
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -2499,6 +2659,17 @@ class RewriteProvider(_BaseLLMProvider):
             else _resolve_request_timeout()
         )
 
+        # Fit-window state (rewrite-overflow-fix-2026-06). Resolved ONCE at
+        # construction so the whole rewrite call uses a consistent state.
+        # OFF (default) → untrimmed system prompt + no chunk-window budget
+        # (byte-identical to today). ON → trimmed system prompt + num_ctx-
+        # aware grounding budget. The truncation tripwire is independent
+        # (default ON, output-neutral).
+        self._fit_window = resolve_fit_window()
+        self._rewrite_num_ctx = resolve_rewrite_num_ctx()
+        self._truncation_tripwire = resolve_truncation_tripwire()
+        resolved_system_prompt = _resolve_system_prompt(self._fit_window)
+
         if resolved_provider == "claude_session":
             if dispatcher is None:
                 raise RuntimeError(_NO_DISPATCHER_MSG)
@@ -2510,7 +2681,7 @@ class RewriteProvider(_BaseLLMProvider):
             self._capture = capture
             self._max_tokens = int(max_tokens)
             self._temperature = float(temperature)
-            self._system_prompt = _REWRITE_SYSTEM_PROMPT
+            self._system_prompt = resolved_system_prompt
             self._supported_providers = tuple(SUPPORTED_PROVIDERS)
             self._env_provider_var = ENV_PROVIDER
             self._api_key = None
@@ -2552,7 +2723,7 @@ class RewriteProvider(_BaseLLMProvider):
             # latter returns early above), so they're intentionally NOT
             # in this base-enforcement tuple.
             supported_providers=("anthropic", "together", "local", "nvidia"),
-            system_prompt=_REWRITE_SYSTEM_PROMPT,
+            system_prompt=resolved_system_prompt,
             # Rewrite tier emits raw HTML body strings — NOT JSON.
             # Forcing json_mode=True (the base default) makes Qwen/Ollama
             # wrap HTML in {"block": "<...>"} JSON, breaking the
@@ -2565,6 +2736,97 @@ class RewriteProvider(_BaseLLMProvider):
         self._run_id = run_id or "rewrite-standalone"
 
     # ------------------------------------------------------------------
+    # Fit-window helpers (rewrite-overflow-fix-2026-06)
+    # ------------------------------------------------------------------
+
+    def _scaffold_tokens_estimate(self) -> int:
+        """Worst-case (escalated) user-scaffold token estimate.
+
+        The chunk-window budget must reserve the scaffold (everything in
+        the user prompt EXCEPT the grounding chunks). The ESCALATED prompt
+        is the larger of the two scaffolds, so budget against it — a budget
+        sized for the worst case never overflows the standard path. A
+        small, fixed structural estimate is sufficient (the precise outline
+        / objectives text is block-specific and bounded); this mirrors the
+        outline tier's fixed ``draft_block`` reserve posture.
+        """
+        # ≈1,124 tok empirical rewrite scaffold (per the design doc) — the
+        # block context + outline payload + per-claim + objectives +
+        # contract + closing instructions, minus the chunk block the budget
+        # is selecting. Fixed-cost; the chunk budget shrinks the variable
+        # part.
+        return 1124
+
+    def _select_source_chunks_for_budget(
+        self,
+        block: Block,
+        source_chunks: Optional[Sequence[Any]],
+    ) -> Tuple[List[Any], List[str]]:
+        """Trim ``source_chunks`` to the num_ctx budget when fit-window ON.
+
+        Returns ``(selected, dropped_cited_chunk_ids)``. OFF → the input
+        list verbatim + no drops (byte-stable). ON → the num_ctx-aware
+        selection (cited-first, cosine-ranked, always-keep-≥1, drop-
+        trailing-whole, per-chunk cap). Anti-fabrication: ``selected`` ⊆
+        the input universe; never invents a chunk.
+        """
+        chunks = list(source_chunks or [])
+        if not self._fit_window or not chunks:
+            return chunks, []
+        cited = cited_chunk_ids_from_content(block.content)
+        # Rank query = the block's key-claim / objective text (what the
+        # grounding should be relevant to). Lazy-load the statistical-tier
+        # embedder; absence degrades to citation-order (NOT fail-closed).
+        rank_query = _rank_query_for_block(block)
+        embedder = _try_rewrite_embedder()
+        # Trimmed system prompt is already on ``self._system_prompt`` (ON
+        # state), so its token cost is consistent with the budget.
+        sys_tokens = _estimate_tokens(self._system_prompt)
+        selected, dropped_cited = select_chunks_under_budget(
+            chunks,
+            num_ctx=self._rewrite_num_ctx,
+            sys_tokens=sys_tokens,
+            scaffold_tokens=self._scaffold_tokens_estimate(),
+            max_tokens=self._max_tokens,
+            cited_chunk_ids=cited,
+            rank_query=rank_query,
+            embedder=embedder,
+        )
+        return selected, dropped_cited
+
+    def _check_truncation(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        usage: Optional[Dict[str, Any]],
+        block_id: str,
+    ) -> None:
+        """Fire the input-truncation tripwire (default ON, fail-OPEN).
+
+        Compares the server-reported ``usage.prompt_tokens`` against the
+        local 2.5-char/token estimate of system+user prompt and raises
+        :class:`PromptTruncatedError` on a large shortfall. No-op when the
+        tripwire is disabled, usage is absent/zero (Ollama may omit it), or
+        the provider returned no usage (Anthropic / claude_session). The
+        caller maps the raise to the ``input_prompt_truncated`` escalation
+        marker (hard, non-retryable).
+        """
+        if not self._truncation_tripwire:
+            return
+        if not isinstance(usage, dict):
+            return
+        estimated = _estimate_tokens(system_prompt) + _estimate_tokens(
+            user_prompt
+        )
+        check_prompt_not_truncated(
+            usage.get("prompt_tokens"),
+            estimated,
+            model_id=self._model,
+            num_ctx=self._rewrite_num_ctx,
+        )
+
+    # ------------------------------------------------------------------
     # Wave6: dispatch override for the claude_session provider
     # ------------------------------------------------------------------
 
@@ -2573,7 +2835,7 @@ class RewriteProvider(_BaseLLMProvider):
         user_prompt: str,
         *,
         extra_payload: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[str, int]:
+    ) -> Tuple[str, int, Dict[str, Any]]:
         """Wave6 override — route through LocalDispatcher when provider
         is ``claude_session``; otherwise defer to the base's
         HTTP / Anthropic-SDK plumbing.
@@ -2582,10 +2844,17 @@ class RewriteProvider(_BaseLLMProvider):
         ``Trainforge/generators/_claude_session_provider.py::_dispatch``
         (`:326-394`). The async dispatcher is run synchronously via
         ``asyncio.run`` so the rewrite tier's parse-retry loop in
-        :meth:`generate_rewrite` stays unchanged across backends —
-        ``_dispatch_call`` always returns ``(text, retry_count)`` regardless
-        of provider, so the base's retry / CURIE-preservation contract
-        applies identically here.
+        :meth:`generate_rewrite` stays unchanged across backends.
+
+        Returns a 3-tuple ``(text, retry_count, usage)`` (rewrite-overflow-
+        fix-2026-06): ``usage`` is the server-reported token dict (carrying
+        ``prompt_tokens``) extracted from the OpenAI-compatible response
+        body, threaded back so the input-truncation tripwire can compare it
+        against the local estimate. The Anthropic + claude_session branches
+        return an EMPTY usage dict (no per-request token signal) → the
+        tripwire no-ops there (fail-OPEN). No shared-mutable
+        ``last_usage`` is read — usage travels by return value so a cloud
+        block can't read a stale local OAI count.
 
         Reuses ``agent_type="content-generator"`` intentionally: the
         ``Courseforge/agents/content-generator.md`` spec already carries
@@ -2594,7 +2863,7 @@ class RewriteProvider(_BaseLLMProvider):
         stamping) — exactly the contract the rewrite tier needs.
         """
         if self._provider != "claude_session":
-            return super()._dispatch_call(
+            return super()._dispatch_call_with_usage(
                 user_prompt, extra_payload=extra_payload
             )
         # Subagent receives both the rewrite-tier system prompt AND the
@@ -2657,9 +2926,10 @@ class RewriteProvider(_BaseLLMProvider):
                 f"returned empty/missing html in outputs={sorted(outputs)!r}"
             )
         # No transport-level retries inside the dispatcher path — the
-        # subagent either returns or fails. Return 0 retries so the
-        # decision-capture rationale stays honest.
-        return html_response, 0
+        # subagent either returns or fails. Return 0 retries + empty usage
+        # (the subagent path has no server token tally) so the tripwire
+        # no-ops here.
+        return html_response, 0, {}
 
     # ------------------------------------------------------------------
     # Escalated user-prompt rendering (Subtask 25)
@@ -2725,7 +2995,9 @@ class RewriteProvider(_BaseLLMProvider):
         objectives_block = _format_objectives(
             _objectives_for_block(objectives, block)
         )
-        output_contract = _block_type_output_contract(block.block_type)
+        output_contract = _block_type_output_contract(
+            block.block_type, fit_window=getattr(self, "_fit_window", False)
+        )
         required_attrs_line = _required_attrs_directive(
             block.block_type, block.block_id
         )
@@ -2820,7 +3092,9 @@ class RewriteProvider(_BaseLLMProvider):
         objectives_block = _format_objectives(
             _objectives_for_block(objectives, block)
         )
-        output_contract = _block_type_output_contract(block.block_type)
+        output_contract = _block_type_output_contract(
+            block.block_type, fit_window=getattr(self, "_fit_window", False)
+        )
         required_attrs_line = _required_attrs_directive(
             block.block_type, block.block_id
         )
@@ -2915,17 +3189,25 @@ class RewriteProvider(_BaseLLMProvider):
         """
         outline_curies = _extract_outline_curies(block.content)
 
+        # Fit-window (rewrite-overflow-fix-2026-06): trim the grounding to
+        # the num_ctx budget BEFORE rendering. OFF → ``budgeted_chunks`` is
+        # the input verbatim + no drops (byte-stable). Anti-fabrication:
+        # ``budgeted_chunks`` ⊆ the input universe.
+        budgeted_chunks, dropped_cited_chunk_ids = (
+            self._select_source_chunks_for_budget(block, source_chunks)
+        )
+
         # Build the initial user prompt per the escalation flag.
         if block.escalation_marker is not None:
             user_prompt = self._render_escalated_user_prompt(
                 block=block,
-                source_chunks=source_chunks,
+                source_chunks=budgeted_chunks,
                 objectives=objectives,
             )
         else:
             user_prompt = self._render_user_prompt(
                 block=block,
-                source_chunks=source_chunks,
+                source_chunks=budgeted_chunks,
                 objectives=objectives,
             )
 
@@ -2955,7 +3237,9 @@ class RewriteProvider(_BaseLLMProvider):
         # ``_local_provider._call_with_parse``.
         while attempt < MAX_PARSE_RETRIES + 1:
             try:
-                html_response, retry_count = self._dispatch_call(user_prompt)
+                html_response, retry_count, usage = self._dispatch_call(
+                    user_prompt
+                )
             except Exception as exc:
                 # Worker W6: classify the dispatch-side failure so a
                 # transient (Ollama 503 / connection reset / read
@@ -3004,6 +3288,55 @@ class RewriteProvider(_BaseLLMProvider):
                 attempt += 1
                 continue
             dispatched_ok = True
+            # Input-truncation tripwire (rewrite-overflow-fix-2026-06):
+            # compare the server-reported prompt_tokens against the local
+            # estimate. A large shortfall means the served window dropped
+            # the system prompt HEAD (the authoring CONTRACT), so the model
+            # authored with source but no rules. HARD, NON-RETRYABLE fail —
+            # re-dispatching the same prompt re-truncates. Stamp the
+            # block with ``input_prompt_truncated`` (surfaces as escalated)
+            # and short-circuit the parse-retry loop. Default-ON, fail-OPEN
+            # (no-op when usage is absent/zero — Ollama may omit it).
+            try:
+                self._check_truncation(
+                    system_prompt=self._system_prompt,
+                    user_prompt=user_prompt,
+                    usage=usage,
+                    block_id=block.block_id,
+                )
+            except _PromptTruncatedError as exc:
+                logger.warning(
+                    "RewriteProvider: input prompt truncated for block %r "
+                    "(num_ctx=%d) — short-circuiting as escalated: %s",
+                    block.block_id,
+                    self._rewrite_num_ctx,
+                    exc,
+                )
+                self._emit_per_call_decision(
+                    raw_text=html_response,
+                    retry_count=total_retries + retry_count,
+                    block_id=block.block_id,
+                    block_type=block.block_type,
+                    page_id=block.page_id,
+                    escalation_marker=block.escalation_marker,
+                    outline_curie_count=len(outline_curies),
+                    remediation_attempts=attempt,
+                    input_truncated=True,
+                    estimated_prompt_tokens=(
+                        _estimate_tokens(self._system_prompt)
+                        + _estimate_tokens(user_prompt)
+                    ),
+                    reported_prompt_tokens=(
+                        usage.get("prompt_tokens")
+                        if isinstance(usage, dict) else None
+                    ),
+                    num_ctx=self._rewrite_num_ctx,
+                    dropped_cited_chunk_ids=dropped_cited_chunk_ids,
+                )
+                return dataclasses.replace(
+                    block,
+                    escalation_marker=_INPUT_PROMPT_TRUNCATED_MARKER,
+                )
             # Post-emit sanitizers, run BEFORE any downstream gate / parser /
             # consumer sees the response:
             #   1. Repair entity-escaped comment closes (``--&gt;`` → ``-->``)
@@ -3065,6 +3398,7 @@ class RewriteProvider(_BaseLLMProvider):
                     remediation_attempts=attempt,
                     enforced_curie_count=len(enforceable),
                     pruned_curie_count=len(outline_curies) - len(enforceable),
+                    dropped_cited_chunk_ids=dropped_cited_chunk_ids,
                 )
                 return _apply_rewrite_touch(
                     block=block,
@@ -3120,6 +3454,7 @@ class RewriteProvider(_BaseLLMProvider):
             curie_force_injected=True,
             enforced_curie_count=len(last_enforceable),
             pruned_curie_count=len(outline_curies) - len(last_enforceable),
+            dropped_cited_chunk_ids=dropped_cited_chunk_ids,
         )
         return _apply_rewrite_touch(
             block=block,
@@ -3180,18 +3515,28 @@ class RewriteProvider(_BaseLLMProvider):
         # in its CF_BLOCK envelope. Reuses the exact per-block renderers so the
         # batched and per-block prompts carry identical authoring instructions.
         segments: List[str] = [_BATCH_ENVELOPE_DIRECTIVE, ""]
+        # Track per-block fit-window cited-chunk drops for the decision
+        # capture (empty when the flag is off → byte-stable).
+        dropped_cited_by_id: Dict[str, List[str]] = {}
         for block in block_list:
             block_chunks = chunks_by_id.get(block.block_id) or []
+            # Fit-window: trim each block's grounding to the budget BEFORE
+            # rendering. OFF → verbatim input + no drops (byte-stable).
+            budgeted_chunks, dropped_cited = (
+                self._select_source_chunks_for_budget(block, block_chunks)
+            )
+            if dropped_cited:
+                dropped_cited_by_id[block.block_id] = dropped_cited
             if block.escalation_marker is not None:
                 inner = self._render_escalated_user_prompt(
                     block=block,
-                    source_chunks=block_chunks,
+                    source_chunks=budgeted_chunks,
                     objectives=objectives,
                 )
             else:
                 inner = self._render_user_prompt(
                     block=block,
-                    source_chunks=block_chunks,
+                    source_chunks=budgeted_chunks,
                     objectives=objectives,
                 )
             suffix = suffix_by_id.get(block.block_id)
@@ -3209,7 +3554,9 @@ class RewriteProvider(_BaseLLMProvider):
         # (the router re-batches them) rather than aborting the whole phase —
         # mirrors the per-block fail-soft contract.
         try:
-            html_response, retry_count = self._dispatch_call(batch_prompt)
+            html_response, retry_count, usage = self._dispatch_call(
+                batch_prompt
+            )
         except Exception as exc:  # noqa: BLE001 — fail-soft per batch
             logger.warning(
                 "RewriteProvider.generate_rewrite_batch: batched POST "
@@ -3218,6 +3565,36 @@ class RewriteProvider(_BaseLLMProvider):
                 exc,
             )
             return {bid: None for bid in block_ids}
+
+        # Input-truncation tripwire (rewrite-overflow-fix-2026-06): the whole
+        # batch travelled through ONE POST, so a silent head-truncation
+        # dropped the leading block(s)' prompts. HARD, NON-RETRYABLE — stamp
+        # EVERY block in the batch with ``input_prompt_truncated`` (re-
+        # batching the same over-window batch re-truncates). Default-ON,
+        # fail-OPEN (no-op when usage absent/zero — the cloud lane that
+        # batching defaults to returns empty Anthropic usage).
+        try:
+            self._check_truncation(
+                system_prompt=self._system_prompt,
+                user_prompt=batch_prompt,
+                usage=usage,
+                block_id=",".join(block_ids),
+            )
+        except _PromptTruncatedError as exc:
+            logger.warning(
+                "RewriteProvider.generate_rewrite_batch: input prompt "
+                "truncated for %d block(s) (num_ctx=%d) — stamping all as "
+                "escalated: %s",
+                len(block_list),
+                self._rewrite_num_ctx,
+                exc,
+            )
+            return {
+                b.block_id: dataclasses.replace(
+                    b, escalation_marker=_INPUT_PROMPT_TRUNCATED_MARKER
+                )
+                for b in block_list
+            }
 
         # Repair entity-escaped comment closes (``--&gt;`` → ``-->``) at the
         # envelope level FIRST so an unterminated comment in one block's
@@ -3260,6 +3637,9 @@ class RewriteProvider(_BaseLLMProvider):
                 remediation_attempts=0,
                 enforced_curie_count=len(enforceable),
                 pruned_curie_count=len(outline_curies) - len(enforceable),
+                dropped_cited_chunk_ids=dropped_cited_by_id.get(
+                    block.block_id, []
+                ),
             )
             results[block.block_id] = _apply_rewrite_touch(
                 block=block,
@@ -3329,8 +3709,17 @@ class RewriteProvider(_BaseLLMProvider):
         missing_curies = call_context.get("missing_curies") or []
         enforced_curie_count = call_context.get("enforced_curie_count")
         pruned_curie_count = call_context.get("pruned_curie_count")
+        input_truncated = bool(call_context.get("input_truncated", False))
+        estimated_prompt_tokens = call_context.get("estimated_prompt_tokens")
+        reported_prompt_tokens = call_context.get("reported_prompt_tokens")
+        num_ctx = call_context.get("num_ctx")
+        dropped_cited_chunk_ids = (
+            call_context.get("dropped_cited_chunk_ids") or []
+        )
 
-        if curie_force_injected:
+        if input_truncated:
+            outcome = "input_truncated"
+        elif curie_force_injected:
             outcome = "curie_force_injected"
         elif curie_drop:
             outcome = "curie_drop"
@@ -3354,6 +3743,30 @@ class RewriteProvider(_BaseLLMProvider):
                 f"on-topic CURIE(s), pruned {pruned_curie_count} the rewrite "
                 f"tier did not use (kept >=1 to satisfy the anchoring "
                 f"invariant) so the prose was not bloated past max_tokens."
+            )
+        if input_truncated:
+            rationale_parts.append(
+                f"INPUT PROMPT TRUNCATED: the served window "
+                f"(num_ctx={num_ctx}) silently dropped the prompt HEAD — "
+                f"estimated ~{estimated_prompt_tokens} prompt tokens but "
+                f"the server reported {reported_prompt_tokens}; the "
+                f"system-prompt authoring CONTRACT was lost. Stamped "
+                f"input_prompt_truncated (hard, non-retryable); raise the "
+                f"served window or ED4ALL_REWRITE_NUM_CTX, or enable "
+                f"ED4ALL_REWRITE_FIT_WINDOW to shrink the prompt to fit."
+            )
+            if dropped_cited_chunk_ids:
+                rationale_parts.append(
+                    f"Fit-window dropped {len(dropped_cited_chunk_ids)} "
+                    f"cited chunk(s) under the budget: "
+                    f"{dropped_cited_chunk_ids}."
+                )
+        elif dropped_cited_chunk_ids:
+            rationale_parts.append(
+                f"Fit-window chunk budget dropped "
+                f"{len(dropped_cited_chunk_ids)} cited chunk(s) "
+                f"(drop-trailing-whole, never head-truncated): "
+                f"{dropped_cited_chunk_ids}."
             )
         if escalation_marker:
             rationale_parts.append(

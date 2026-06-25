@@ -373,6 +373,15 @@ _ESCALATION_MARKERS: frozenset = frozenset(
         # winner). The block still ships (it passed the validator chain); the
         # marker tells a postmortem the NLI-selection had no clean pick.
         "best_of_n_no_clean_candidate",
+        # rewrite-overflow-fix-2026-06: the rewrite-tier input-truncation
+        # tripwire detected the served context window silently truncated the
+        # prompt HEAD (the system-prompt authoring CONTRACT was dropped so
+        # the model authored with source but no rules). HARD, NON-RETRYABLE —
+        # the block is stamped + short-circuited rather than re-dispatched
+        # (re-dispatching the same over-window prompt re-truncates).
+        # Surfaces as ``escalated`` and routes through the W5 packager-side
+        # escalation filter.
+        "input_prompt_truncated",
     }
 )
 

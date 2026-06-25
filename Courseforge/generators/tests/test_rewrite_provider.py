@@ -71,9 +71,15 @@ def _success_body(content: str, *, model: str = "test-rewrite") -> dict:
             }
         ],
         "usage": {
-            "prompt_tokens": 200,
+            # rewrite-overflow-fix-2026-06: a REALISTIC non-truncated
+            # prompt-token tally. The rewrite system prompt alone is
+            # ~7,800 tok, so the default-ON input-truncation tripwire
+            # (reported < 0.5 * estimate ⇒ head dropped) would (correctly)
+            # trip on the old unrealistic 200. A server that actually saw
+            # the whole prompt reports a count near the estimate.
+            "prompt_tokens": 8800,
             "completion_tokens": 80,
-            "total_tokens": 280,
+            "total_tokens": 8880,
         },
     }
 
