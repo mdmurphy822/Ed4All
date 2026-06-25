@@ -984,10 +984,27 @@ def aggregate(corpora: list[CorpusResult]) -> dict[str, Any]:
         c for c in corpora if any(o.evaluated > 0 for o in c.observations.values())
     ]
 
-    # Collapse to one representative per underlying corpus_key (latest run wins).
+    # Collapse to one representative per underlying corpus_key. The
+    # representative is the run with the MOST gate-family coverage, tie-broken by
+    # the latest run TIMESTAMP. A flags-ON run exercises every IB gate; an older
+    # flags-OFF run of the same textbook exercises fewer, so coverage must lead.
+    # NOTE: sorting by the full corpus_id name is WRONG — differing PROJ- name
+    # prefixes (course-a vs openstax) dominate a lexicographic sort over the
+    # trailing timestamp, so an older "openstax-..." run would beat a newer
+    # "course-a-..." run of the SAME underlying corpus. Sort by the extracted
+    # timestamp instead.
+    def _coverage(c: CorpusResult) -> int:
+        return sum(1 for o in c.observations.values() if o.evaluated > 0)
+
+    def _run_ts(corpus_id: str) -> str:
+        m = _TIMESTAMP_RE.search(corpus_id)
+        return m.group(0).lstrip("-") if m else ""
+
     by_key: dict[str, CorpusResult] = {}
-    for c in sorted(contributing, key=lambda r: r.corpus_id):
-        by_key[c.corpus_key] = c  # later (lexicographically larger ts) overwrites
+    for c in sorted(
+        contributing, key=lambda r: (_coverage(r), _run_ts(r.corpus_id), r.corpus_id)
+    ):
+        by_key[c.corpus_key] = c  # most-coverage, then latest-timestamp, overwrites
     representatives = list(by_key.values())
 
     gates_out: dict[str, Any] = {}
