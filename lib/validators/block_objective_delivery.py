@@ -115,7 +115,7 @@ from lib.validators.alignment.verb_triple import (
     bloom_below,
     resolve_block_verb_level,
     resolve_objective_verb_level,
-    verbs_share_band,
+    verb_triple_misaligned,
 )
 
 logger = logging.getLogger(__name__)
@@ -859,9 +859,26 @@ class BlockObjectiveDeliveryValidator:
                     blk_verb_for_entry = blk_verb
                     obj_level_for_entry = obj_level
                     blk_level_for_entry = blk_level
+                    # IB3 recalibration (2-corpus gap-map): the strict
+                    # band-EQUALITY fire (verbs_share_band-negation) tripped
+                    # ~32% mostly as FALSE POSITIVES — blocks resolving ABOVE
+                    # the objective band (the math-idiom prose inflation +
+                    # genuinely higher-order blocks that still serve the
+                    # objective). The mismatch fire is now ASYMMETRIC: ONLY a
+                    # block whose resolved Bloom is strictly BELOW the
+                    # objective band fires (genuine UNDER-delivery — the real
+                    # constructive-alignment defect: you cannot certify a
+                    # cognitive demand with evidence collected at a LOWER
+                    # demand). Over-shoot (block band >= objective band, equal
+                    # OR above) is ALIGNED — a higher-order block still serves
+                    # the objective and over-shoot never fraudulently
+                    # certifies. See verb_triple_misaligned() for the full
+                    # rationale.
                     if obj_level is None or blk_level is None:
                         verb_triple_status = "unverifiable"
-                    elif verbs_share_band(obj_level, blk_level):
+                    elif not verb_triple_misaligned(obj_level, blk_level):
+                        # At or ABOVE the objective band → aligned (equal band
+                        # OR pedagogically-acceptable over-shoot).
                         verb_triple_status = "aligned"
                     else:
                         verb_triple_status = "mismatch"
@@ -882,18 +899,21 @@ class BlockObjectiveDeliveryValidator:
                                         f"(bloom={obj_level!r}). The "
                                         f"constructive-alignment verb-triple "
                                         f"requires the practiced/certified "
-                                        f"verb to share the objective's Bloom "
+                                        f"verb to reach the objective's Bloom "
                                         f"band — a "
-                                        f"{obj_level!r} objective checked by a "
-                                        f"{blk_level!r} block is a "
-                                        f"construct-irrelevant mismatch."
+                                        f"{obj_level!r} objective UNDER-served "
+                                        f"by a lower-order {blk_level!r} block "
+                                        f"cannot certify the objective "
+                                        f"(over-shoot is tolerated; "
+                                        f"under-delivery is not)."
                                     ),
                                     location=block_id,
                                     suggestion=(
                                         f"Re-author the block to exercise a "
-                                        f"{obj_level!r}-band verb (matching "
-                                        f"the objective's {obj_verb!r}), or "
-                                        f"re-route to a block type that can."
+                                        f"verb at-or-above the {obj_level!r} "
+                                        f"band (matching the objective's "
+                                        f"{obj_verb!r}), or re-route to a "
+                                        f"block type that can."
                                     ),
                                 )
                             )

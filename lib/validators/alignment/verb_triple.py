@@ -37,6 +37,7 @@ __all__ = [
     "resolve_objective_verb_level",
     "resolve_block_verb_level",
     "verbs_share_band",
+    "verb_triple_misaligned",
     "bloom_below",
     "is_apply_plus",
 ]
@@ -157,6 +158,20 @@ def resolve_objective_verb_level(
     return (verb, level)
 
 
+def _content_attr(block: Any, key: str) -> Any:
+    """Read ``key`` off the block's structured ``content`` payload.
+
+    Outline-tier blocks carry their declared ``bloom_level`` / ``bloom_verb``
+    INSIDE the ``content`` dict (e.g. ``content["bloom_level"]``), not as a
+    top-level attr. This pulls from there so the declared-bloom anchor below
+    resolves on the real outline-tier shape.
+    """
+    content = _block_attr(block, "content")
+    if isinstance(content, Mapping):
+        return content.get(key)
+    return None
+
+
 def resolve_block_verb_level(
     block: Any,
 ) -> Tuple[Optional[str], Optional[str]]:
@@ -164,64 +179,120 @@ def resolve_block_verb_level(
 
     For an activity / interaction or assessment block, the cognitive demand
     the block exercises is what the framework's verb-triple compares against
-    the objective. Resolution order:
+    the objective.
+
+    IB3 recalibration (2-corpus calibration gap-map). The original resolver
+    led with a raw prose scan that picked the HIGHEST-Bloom verb anywhere in
+    the text. On math/STEM corpora that systematically INFLATES the resolved
+    Bloom: the arithmetic idiom "Evaluate the expression to find …" (= Apply)
+    string-matches as Bloom EVALUATE, and "Create a number line" (= construct)
+    matches as Bloom CREATE. On the alg Chapter-1 corpus the raw prose scan
+    yielded 8 evaluate + 2 create across 16 interaction/assessment blocks —
+    implausible for an integers unit — and every one of those over-resolved
+    blocks then tripped the strict band-equality mismatch as a false positive.
+
+    A DECLARED Bloom level is a far more reliable signal than "highest verb
+    anywhere in prose" (the author/planner stated the intended demand; it is
+    not an incidental idiom). Resolution order is therefore now:
 
     1. Prefer the IB1 ``interaction`` slot text (the framework's
-       slot-addressable interaction verb); fall back to the ``content`` body
-       text when the interaction slot is empty (degraded prose-heuristic
-       mode — IB3 lands degraded-against-IB1 until the slot is populated, per
-       the plan §4 dependency note).
-    2. Over that text, run :func:`lib.ontology.bloom.detect_bloom_verbs` and
-       pick the HIGHEST-Bloom verb present (the strongest cognitive demand
-       the block actually exercises — a block that both "lists" and
-       "evaluates" exercises evaluate).
-    3. Fall back to the block's declared ``bloom_verb`` / ``bloom_level`` when
-       no verb is detectable in the text.
+       slot-addressable interaction verb), when populated — the most direct
+       signal of what the learner *does*. (The slot is empty on legacy /
+       current corpora until IB1 populates it; this stays the top preference
+       for when it lands.)
+    2. Else prefer the block's DECLARED ``bloom_level`` (from the structured
+       ``content`` payload or a top-level attr), pairing it with the declared
+       ``bloom_verb`` when present. This is the planner/author's stated demand
+       and is NOT vulnerable to incidental high-Bloom idioms in body prose.
+    3. Else FALL BACK to the prose scan over the ``content`` body (highest-
+       Bloom verb present). This path is the LAST resort — it is the one
+       vulnerable to the math-idiom inflation, so the asymmetric
+       over-shoot tolerance in :func:`verb_triple_misaligned` is what
+       neutralizes the resulting FPs (an inflated block resolves ABOVE the
+       objective band, which is now treated as ALIGNED, not a mismatch). The
+       declared-bloom anchor in step 2 is the primary defense; this fallback
+       only runs when no declared bloom exists at all.
 
     Returns ``(None, None)`` when no text and no declared bloom data resolve.
     """
-    text_parts = []
+    # (1) IB1 interaction slot text — the most direct demand signal.
     interaction = _block_attr(block, "interaction")
+    interaction_text: Optional[str] = None
     if isinstance(interaction, str) and interaction.strip():
-        text_parts.append(interaction)
-    else:
-        content = _block_attr(block, "content")
-        if isinstance(content, str) and content.strip():
-            text_parts.append(content)
-        elif isinstance(content, Mapping):
-            # Pull stem / prompt / question text from a structured payload.
-            for key in ("stem", "prompt", "question", "text", "body"):
-                val = content.get(key)
-                if isinstance(val, str) and val.strip():
-                    text_parts.append(val)
+        interaction_text = interaction
 
-    text = "\n".join(text_parts)
+    if interaction_text is not None:
+        verb, level = _scan_prose_for_demand(interaction_text)
+        if level is not None:
+            return (verb, level)
 
+    # (2) DECLARED bloom anchor — reliable, idiom-proof. Read from the
+    # structured content payload first (outline-tier shape), then top-level.
+    declared_level = _norm_level(_content_attr(block, "bloom_level"))
+    if declared_level is None:
+        declared_level = _norm_level(_block_attr(block, "bloom_level"))
+    declared_verb = _norm_verb(_content_attr(block, "bloom_verb"))
+    if declared_verb is None:
+        declared_verb = _norm_verb(_block_attr(block, "bloom_verb"))
+    if declared_level is not None:
+        # Pair with a declared verb when present, else with the declared
+        # level's name as a stand-in verb token.
+        return (declared_verb or declared_level, declared_level)
+
+    # (3) Prose fallback over the content body — corroboration-guarded so a
+    # lone incidental idiom can't dominate the resolved band.
+    content = _block_attr(block, "content")
+    body_text: Optional[str] = None
+    if isinstance(content, str) and content.strip():
+        body_text = content
+    elif isinstance(content, Mapping):
+        parts = []
+        for key in ("stem", "prompt", "question", "text", "body"):
+            val = content.get(key)
+            if isinstance(val, str) and val.strip():
+                parts.append(val)
+        if parts:
+            body_text = "\n".join(parts)
+
+    if body_text is not None:
+        verb, level = _scan_prose_for_demand(body_text)
+        if level is not None:
+            return (verb, level)
+
+    # No interaction text, no declared bloom, no usable body prose → fall
+    # back to the bare declared verb (level may still be None).
+    return (declared_verb, declared_level)
+
+
+def _scan_prose_for_demand(
+    text: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve ``(verb, level)`` from free prose — highest-Bloom verb present.
+
+    detect_bloom_verbs returns longest-first, higher-level ties first; we pick
+    the HIGHEST-Bloom verb present (the strongest cognitive demand the prose
+    exercises — a block that both "lists" and "evaluates" exercises evaluate).
+
+    This is the prose path's historical behavior, preserved deliberately: it
+    is the LAST resort (steps 1-2 of :func:`resolve_block_verb_level` —
+    interaction slot then declared bloom — take precedence), and the
+    math-idiom inflation it can produce is neutralized downstream by the
+    asymmetric over-shoot tolerance in :func:`verb_triple_misaligned` rather
+    than by a brittle lexical demotion heuristic here.
+    """
+    if not text.strip():
+        return (None, None)
+    matches = detect_bloom_verbs(text)
     detected_verb: Optional[str] = None
     detected_level: Optional[str] = None
-    if text.strip():
-        # detect_bloom_verbs returns longest-first, higher-level ties first.
-        # We want the HIGHEST-Bloom verb present → pick by level index.
-        matches = detect_bloom_verbs(text)
-        best_idx = -1
-        for level, verb in matches:
-            idx = _BLOOM_INDEX.get(level, -1)
-            if idx > best_idx:
-                best_idx = idx
-                detected_level = level
-                detected_verb = verb
-
-    if detected_verb is not None and detected_level is not None:
-        return (detected_verb, detected_level)
-
-    # Fall back to the block's declared bloom metadata.
-    declared_verb = _norm_verb(_block_attr(block, "bloom_verb"))
-    declared_level = _norm_level(_block_attr(block, "bloom_level"))
-    # Prefer any text-detected element over the declared one, but never
-    # return a half-resolved pair when the text gave us nothing.
-    verb = detected_verb if detected_verb is not None else declared_verb
-    level = detected_level if detected_level is not None else declared_level
-    return (verb, level)
+    best_idx = -1
+    for level, verb in matches:
+        idx = _BLOOM_INDEX.get(level, -1)
+        if idx > best_idx:
+            best_idx = idx
+            detected_level = level
+            detected_verb = verb
+    return (detected_verb, detected_level)
 
 
 def verbs_share_band(
@@ -243,6 +314,58 @@ def verbs_share_band(
     if a is None or b is None:
         return False
     return _BLOOM_INDEX[a] == _BLOOM_INDEX[b]
+
+
+def verb_triple_misaligned(
+    objective_level: Optional[str],
+    block_level: Optional[str],
+) -> bool:
+    """True iff the block UNDER-delivers the objective's Bloom band.
+
+    IB3 recalibration (2-corpus calibration gap-map). The framework's
+    verb-triple equality rule, enforced as strict band-equality via
+    :func:`verbs_share_band`, fired ~32% mostly as FALSE POSITIVES — blocks
+    whose RESOLVED Bloom landed ABOVE the objective's band. The over-shoot is
+    an ARTIFACT of two compounding effects:
+
+    * the prose-scan resolver (:func:`resolve_block_verb_level`) inflating a
+      block's Bloom on math idioms ("Evaluate the expression to find …" is
+      arithmetic = Apply, not Bloom Evaluate; "Create a number line" is
+      construction, not Bloom Create), and
+    * even a genuinely higher-order block still SERVING a lower-order
+      objective — a block that teaches at Analyze for an Apply objective has
+      not failed the objective; it exceeds it.
+
+    So this gate is now ASYMMETRIC and tolerant of over-shoot:
+
+    * block band == objective band  → ALIGNED (not misaligned).
+    * block band  > objective band  → ALIGNED (over-shoot is pedagogically
+      acceptable AND the dominant FP class; a higher-order block still serves
+      the objective). NOT a mismatch fire.
+    * block band  < objective band  → MISALIGNED (genuine UNDER-delivery —
+      the real constructive-alignment defect the keystone must catch: an
+      objective demanding Evaluate "checked" by an Understand block does not
+      certify the objective). This is the ONLY case that fires.
+
+    UNDER-delivery, not over-shoot, is what invalidates constructive
+    alignment: you cannot certify a cognitive demand with evidence collected
+    at a LOWER demand. Over-shoot at worst wastes effort; it never
+    fraudulently certifies. Reserving the fire for strict under-delivery
+    stops the over-shoot FP storm WITHOUT weakening the gate's ability to
+    catch the genuine under/cross-level misalignment it exists for.
+
+    Returns ``False`` when either level is unresolvable (an unverifiable pair
+    is not asserted misaligned — mirrors :func:`verbs_share_band` /
+    :func:`bloom_below` fail-safe-to-unverifiable semantics; the caller maps
+    the None pair to ``unverifiable`` before reaching this).
+    """
+    o = _norm_level(objective_level)
+    b = _norm_level(block_level)
+    if o is None or b is None:
+        return False
+    # Strictly below the objective band → genuine under-delivery → fire.
+    # At-or-above (equal OR over-shoot) → aligned → do not fire.
+    return _BLOOM_INDEX[b] < _BLOOM_INDEX[o]
 
 
 def bloom_below(
