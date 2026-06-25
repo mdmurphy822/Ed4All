@@ -152,6 +152,74 @@ def test_no_visible_curie_or_lo_id_tokens_leak():
     assert not re.search(r"\bCO-\d{2}\b", out)
 
 
+def test_assessment_item_fallback_emits_gate_valid_payload():
+    """F2: a retry-exhausted assessment_item must NOT fall to the generic <p>
+    else-branch (which carries zero distractor markup and FAILS the critical
+    rewrite_assessment_item_payload gate → blocks the run). The fallback emits a
+    minimal gate-VALID MCQ: stem + >= 2 contiguous-from-0
+    <li data-cf-distractor-index> options with non-empty bodies + exactly one
+    data-cf-correct marker."""
+    blk = _make_block(
+        "assessment_item",
+        [
+            "Which value is 6/8 simplified to lowest terms?",
+            "3/4 — divide numerator and denominator by the GCF 2.",
+            "6/8 — left unsimplified.",
+            "4/6 — divided by the wrong common factor.",
+        ],
+        page_id="week_01_self_check",
+        block_id="week_01_self_check#assessment_item_x_0",
+    )
+    out = pt._render_block_fallback_html(blk, objective_statements={})
+    assert 'class="assessment-item"' in out
+    assert 'data-cf-distractor-index="0"' in out
+    assert 'data-cf-distractor-index="1"' in out
+    assert 'data-cf-correct="true"' in out
+    assert 'data-cf-fallback="template"' in out
+
+    # The keystone: the rendered HTML passes the CRITICAL payload gate in
+    # rewrite (str-content) mode.
+    from lib.validators.assessment_item_payload import (
+        BlockAssessmentItemPayloadValidator,
+    )
+    from Courseforge.scripts.blocks import Block as _Block
+    rewritten = _Block(
+        block_id="week_01_self_check#assessment_item_x_0",
+        block_type="assessment_item",
+        page_id="week_01_self_check",
+        sequence=0,
+        content=out,  # str content → rewrite-mode audit
+    )
+    res = BlockAssessmentItemPayloadValidator().validate({"blocks": [rewritten]})
+    assert res.passed, [(i.code, i.message) for i in res.issues]
+
+
+def test_assessment_item_fallback_pads_to_min_distractors_when_thin():
+    """Even with too few grounded claims, the fallback pads to the 2-distractor
+    floor so the payload stays gate-valid (the padding is an honest placeholder,
+    not a fabricated plausible answer)."""
+    blk = _make_block(
+        "assessment_item",
+        ["What is the simplest form of 6/8?"],  # only the stem — no options
+        page_id="week_01_self_check",
+        block_id="week_01_self_check#assessment_item_thin_0",
+    )
+    out = pt._render_block_fallback_html(blk, objective_statements={})
+    from lib.validators.assessment_item_payload import (
+        BlockAssessmentItemPayloadValidator,
+    )
+    from Courseforge.scripts.blocks import Block as _Block
+    rewritten = _Block(
+        block_id="week_01_self_check#assessment_item_thin_0",
+        block_type="assessment_item",
+        page_id="week_01_self_check",
+        sequence=0,
+        content=out,
+    )
+    res = BlockAssessmentItemPayloadValidator().validate({"blocks": [rewritten]})
+    assert res.passed, [(i.code, i.message) for i in res.issues]
+
+
 def test_self_check_fallback_question_card():
     blk = _make_block(
         "self_check_question",

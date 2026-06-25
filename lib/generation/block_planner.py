@@ -105,6 +105,9 @@ __all__ = [
     "detect_procedure",
     "detect_media_reference",
     "detect_diagram_reference",
+    "_apply_triangle_floor",
+    "_apply_retrieval_interleave_floor",
+    "_apply_alignment_floors",
 ]
 
 # System prompt for the dedicated planner provider — frames the 70B as an
@@ -407,6 +410,74 @@ def _new_block_types_on() -> bool:
 #   create 0% on the reviewed run).
 _WORKED_EXAMPLE_FLOOR_ENV = "ED4ALL_WORKED_EXAMPLE_FLOOR"
 _BLOOM_SPREAD_FLOOR_ENV = "ED4ALL_BLOOM_SPREAD_FLOOR"
+
+# GAP D / GAP C per-CO + per-content-page floors — BOTH default OFF
+# (parse-with-fallback) so the planner output is BYTE-STABLE / identity-no-op
+# unless an operator opts in (mirrors the P4 floors above). They close the two
+# REAL planner gaps from the 2-corpus calibration:
+#
+# ``ED4ALL_TRIANGLE_FLOOR`` (GAP D — IB3 triangle) — when truthy, guarantee
+#   every CO referenced by >= 1 block on the week gets (a) >= 1 activity-class
+#   block (``activity`` / ``self_check_question`` / ``scenario`` / ``problem``
+#   — the types ``TriangleCompletenessValidator`` accepts as an activity) AND
+#   (b) >= 1 band-aligned ``assessment_item`` block (the ONLY type the gate
+#   accepts as an assessment; its ``target_bloom`` is set to the CO's declared
+#   Bloom so the gate's band-alignment test passes). Closes the
+#   ``OBJECTIVE_NO_ACTIVITY`` / ``OBJECTIVE_NO_ALIGNED_ASSESSMENT`` ~100% fire.
+#   NOTE: on the two-pass surface this floor runs on, an injected
+#   ``assessment_item`` ships as a REAL, LLM-authored, VISIBLE in-page MCQ —
+#   the rewrite tier authors it (``Courseforge/generators/_rewrite_provider.py``
+#   ``assessment_item`` contract: stem + ``<li data-cf-distractor-index="N">``
+#   options) and it renders as ``<section>{content}</section>``
+#   (``MCP/tools/pipeline_tools.py`` rewrite-emit). It is INDEPENDENTLY GATED
+#   CRITICAL by ``outline_assessment_item_payload`` /
+#   ``rewrite_assessment_item_payload`` (``max_critical_issues: 0``), so a
+#   structurally-empty payload BLOCKS the run — NOT an empty placeholder. This is
+#   distinct from the W10 ``assessment_synthesis`` / QTI surface, which
+#   synthesizes scored QTI ORTHOGONALLY from chunks and never reads content-tier
+#   blocks. The injected block both satisfies the alignment GATE (which audits
+#   the planned block set) AND is realised as authored, gated MCQ content.
+# ``ED4ALL_RETRIEVAL_INTERLEAVE`` (GAP C — IB7.5b interleaved retrieval) — when
+#   truthy, guarantee every content-bearing ``content`` page carries >= 1
+#   low-stakes retrieval block (``self_check_question`` / ``reflection_prompt``)
+#   placed AFTER >= 1 exposition block on that page — instead of siloing all
+#   retrieval onto the dedicated end-of-week ``self_check`` page (which the
+#   ``RetrievalPresenceValidator`` does not credit to the content modules). The
+#   cumulative end-of-week ``self_check`` page is PRESERVED.
+_TRIANGLE_FLOOR_ENV = "ED4ALL_TRIANGLE_FLOOR"
+_RETRIEVAL_INTERLEAVE_ENV = "ED4ALL_RETRIEVAL_INTERLEAVE"
+
+# GAP D — the activity-class block types ``TriangleCompletenessValidator``
+# accepts as an activity (mirror of its ``_ACTIVITY_BLOCK_TYPES``). The triangle
+# floor injects the FIRST present-in-palette type as the per-CO activity.
+_TRIANGLE_ACTIVITY_TYPES: Tuple[str, ...] = (
+    "self_check_question", "activity", "problem", "scenario",
+)
+# GAP D — the assessment block type the gate accepts (its
+# ``_ASSESSMENT_BLOCK_TYPES``). Only ``assessment_item`` satisfies the
+# band-aligned-assessment arm.
+_TRIANGLE_ASSESSMENT_TYPE: str = "assessment_item"
+# GAP C — the low-stakes retrieval types ``RetrievalPresenceValidator`` accepts
+# (mirror of its ``RETRIEVAL_BLOCK_TYPES``). The interleave floor injects the
+# FIRST present-in-palette type as a content-page retrieval block.
+_RETRIEVAL_INTERLEAVE_TYPES: Tuple[str, ...] = (
+    "self_check_question", "reflection_prompt",
+)
+# GAP C — the content-bearing block types. This MUST be an EXACT mirror of
+# ``lib/validators/retrieval_presence.py::CONTENT_BLOCK_TYPES`` (kept inline to
+# avoid importing the validator — which pulls the Courseforge ``Block`` import
+# bridge — at planner module load). The validator audits a page-group as a
+# "content-bearing module" iff it carries >= 1 of these, so the floor's
+# content-bearing TRIGGER + its "after exposition" placement anchor both key off
+# THIS set: the floor must inject exactly where the validator would audit (no
+# more, no less). A drift between the two sets reopens the gate (a page the
+# validator audits but the floor skips → MODULE_NO_RETRIEVAL).
+_RETRIEVAL_EXPOSITION_TYPES: frozenset = frozenset(
+    {
+        "concept", "explanation", "example", "worked_example", "formula",
+        "vocab_card", "key_idea", "table", "scenario", "problem", "activity",
+    }
+)
 
 # IB7 planner-pedagogy flags — ALL default OFF (parse-with-fallback) so the
 # planner's output is BYTE-STABLE unless an operator opts in. Each gates a pure
@@ -1454,6 +1525,312 @@ def _apply_bloom_spread_floor(
             "content_focus": "P4 Bloom-spread floor (analyze-or-higher)",
             "target_bloom": bloom,
         }]
+    return selected
+
+
+def _apply_triangle_floor(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    block_types: frozenset,
+    co_bloom: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """Guarantee a complete constructive-alignment TRIANGLE per CO (GAP D).
+
+    Gated on ``ED4ALL_TRIANGLE_FLOOR``; NO-OP / byte-stable when off (mirrors
+    :func:`_apply_worked_example_floor`). The ``TriangleCompletenessValidator``
+    (``lib/validators/alignment/triangle_completeness.py``) audits every
+    objective referenced by >= 1 block and fires:
+
+    * ``OBJECTIVE_NO_ACTIVITY`` unless an ``activity`` / ``self_check_question``
+      / ``scenario`` / ``problem`` block targets that objective, AND
+    * ``OBJECTIVE_NO_ALIGNED_ASSESSMENT`` unless an ``assessment_item`` block
+      whose resolved Bloom shares the objective's band targets it.
+
+    The planner emits ZERO ``assessment_item`` blocks and no per-CO activity
+    floor, so both codes fire on ~100% of objectives by construction. This pass
+    closes BOTH halves: for every CO referenced by >= 1 block (the gate's audit
+    scope), if no activity-class block targets it, APPEND one
+    (``self_check_question`` — the first present-in-palette activity type) on
+    the ``self_check`` page; if no ``assessment_item`` targets it, APPEND one on
+    its default page, stamping ``target_bloom`` = the CO's declared Bloom so the
+    gate's band-alignment test passes.
+
+    On the two-pass surface this floor runs on, an injected ``assessment_item``
+    ships as a REAL, LLM-authored, VISIBLE in-page MCQ: the rewrite tier authors
+    it (``Courseforge/generators/_rewrite_provider.py`` ``assessment_item``
+    contract — stem + ``<li data-cf-distractor-index="N">`` options) and it
+    renders as ``<section>{content}</section>``. It is INDEPENDENTLY GATED
+    CRITICAL by ``outline_assessment_item_payload`` /
+    ``rewrite_assessment_item_payload`` (``max_critical_issues: 0``), so a
+    structurally-empty payload BLOCKS the run — it is NOT an empty placeholder
+    and NOT filled by W10. (W10 ``assessment_synthesis`` synthesizes scored QTI
+    ORTHOGONALLY from chunks and never reads content-tier blocks.) The injected
+    block both satisfies the alignment GATE (which audits the planned block set +
+    emits a JSON-LD entry) AND is realised as authored, gated MCQ content; a
+    retry-exhausted assessment_item falls to the
+    ``_render_block_fallback_html`` deterministic distractor renderer (still
+    gate-valid).
+
+    ANTI-FABRICATION: every injected block targets a REAL CO id that is already
+    referenced by a selected block — never an invented id. The audit scope is
+    "objectives referenced by >= 1 block", so a CO no block touches is NOT
+    fabricated a triangle (it is not in the gate's coverage map either).
+    Returns a NEW list.
+    """
+    if not _env_floor_on(_TRIANGLE_FLOOR_ENV):
+        return selected
+
+    # The CO ids actually referenced by the selected blocks — the gate's audit
+    # scope. Only these objectives are triangle-audited, so only these need a
+    # guaranteed activity + assessment (anti-fabrication: never invent a CO).
+    referenced: List[str] = []
+    seen_ref: set = set()
+    for blk in selected:
+        for cid in blk.get("target_co_ids") or ():
+            sc = str(cid)
+            if sc and sc not in seen_ref:
+                seen_ref.add(sc)
+                referenced.append(sc)
+    if not referenced:
+        return selected
+
+    activity_type = next(
+        (bt for bt in _TRIANGLE_ACTIVITY_TYPES if bt in block_types), None
+    )
+    assessment_type = (
+        _TRIANGLE_ASSESSMENT_TYPE
+        if _TRIANGLE_ASSESSMENT_TYPE in block_types
+        else None
+    )
+
+    # Per-CO coverage of the two triangle arms across the existing block set.
+    has_activity: set = set()
+    has_assessment: set = set()
+    for blk in selected:
+        bt = str(blk.get("block_type") or "")
+        cos = {str(c) for c in (blk.get("target_co_ids") or [])}
+        if bt in _TRIANGLE_ACTIVITY_TYPES:
+            has_activity |= cos
+        if bt == _TRIANGLE_ASSESSMENT_TYPE:
+            has_assessment |= cos
+
+    appended = list(selected)
+    for cid in referenced:
+        co_level = str(co_bloom.get(cid) or "").strip().lower()
+        # (a) activity arm.
+        if activity_type is not None and cid not in has_activity:
+            appended.append({
+                "block_type": activity_type,
+                "page_type": _BLOCK_TYPE_DEFAULT_PAGE.get(
+                    activity_type, "self_check"
+                ),
+                "target_co_ids": [cid],
+                "content_focus": (
+                    f"GAP D triangle floor: practice activity for CO {cid} "
+                    "(constructive-alignment activity arm)"
+                ),
+                "target_bloom": co_level if co_level in BLOOM_LEVELS else "apply",
+            })
+            has_activity.add(cid)
+        # (b) band-aligned assessment arm. target_bloom = the CO's declared
+        # Bloom so the gate's band-alignment test (assessment band == objective
+        # band) passes. ``assessment_item``'s catalog ceiling is ``create`` so
+        # the IB7.6 ceiling re-route never fires on it for any objective band.
+        if assessment_type is not None and cid not in has_assessment:
+            appended.append({
+                "block_type": assessment_type,
+                "page_type": _BLOCK_TYPE_DEFAULT_PAGE.get(
+                    assessment_type, "self_check"
+                ),
+                "target_co_ids": [cid],
+                "content_focus": (
+                    f"GAP D triangle floor: band-aligned assessment for CO "
+                    f"{cid} (certifies the objective at its Bloom band; scored "
+                    "surface is the W10 QTI phase)"
+                ),
+                "target_bloom": co_level if co_level in BLOOM_LEVELS else "apply",
+            })
+            has_assessment.add(cid)
+    return appended
+
+
+def _apply_retrieval_interleave_floor(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    block_types: frozenset,
+) -> List[Dict[str, Any]]:
+    """Interleave a retrieval block onto every content-bearing PAGE (GAP C).
+
+    Gated on ``ED4ALL_RETRIEVAL_INTERLEAVE``; NO-OP / byte-stable when off
+    (mirrors :func:`_apply_worked_example_floor`). The
+    ``RetrievalPresenceValidator`` (``lib/validators/retrieval_presence.py``)
+    audits every content-bearing module (page group with >= 1 content block) and
+    requires >= 1 low-stakes retrieval block (``self_check_question`` /
+    ``reflection_prompt``) that is SPACED — not the first block on the page.
+
+    The planner hard-routes every retrieval block to ``page_type='self_check'``
+    (``_BLOCK_TYPE_DEFAULT_PAGE``), so ALL retrieval siloes onto the dedicated
+    end-of-week self-check page and EVERY content-bearing page carries zero
+    interleaved retrieval — 100% of content-bearing pages fail the gate by
+    construction (and the IB7.5a spacing pass is inert because it cannot change
+    page grouping).
+
+    F3b: each ``page_type`` becomes a DISTINCT downstream ``page_id``
+    (``MCP/tools/pipeline_tools.py::_page_id_for`` → ``week_NN_overview`` /
+    ``week_NN_application`` / ``week_NN_content_NN`` / …), and the validator
+    audits by ``page_id`` — so a content-bearing ``overview`` / ``application``
+    page is its OWN module and needs its OWN retrieval block. This pass therefore
+    scans EVERY page-type group (not just ``content``): for any group that
+    carries >= 1 content-bearing block (``_RETRIEVAL_EXPOSITION_TYPES``, an exact
+    mirror of the validator's ``CONTENT_BLOCK_TYPES``) but no retrieval block, it
+    INJECTS one ``self_check_question`` (the first present-in-palette retrieval
+    type) stamped with THAT page_type so it stays on the same module — placed
+    AFTER the group's last block so it reads as spaced retrieval-from-memory, not
+    a pre-quiz. The cumulative end-of-week ``self_check`` page is PRESERVED
+    (this ADDS interleaved checkpoints; it never moves the self-check page — and
+    a ``self_check`` page carrying only retrieval blocks is not content-bearing,
+    so it is never audited and never gets a duplicate).
+
+    ANTI-FABRICATION: the injected retrieval block targets the same CO(s) as the
+    last content block on its page (a real CO id already on the page), falling
+    back to the TO's first real CO id; no CO id is invented. Returns a NEW list.
+    """
+    if not _env_floor_on(_RETRIEVAL_INTERLEAVE_ENV):
+        return selected
+
+    retrieval_type = next(
+        (bt for bt in _RETRIEVAL_INTERLEAVE_TYPES if bt in block_types), None
+    )
+    if retrieval_type is None:
+        return selected
+
+    # Fallback CO id (anti-fabrication grounding when the content block on a
+    # page carries no specific CO).
+    fallback_co = next(
+        (str(co.get("id")) for co in chapter_objectives or () if isinstance(co, dict) and co.get("id")),
+        "",
+    )
+
+    # Group block indices by page_type, preserving first-appearance page order
+    # (mirrors the validator's OrderedDict page grouping). A page is
+    # content-bearing iff it carries >= 1 content block; it already has retrieval
+    # iff some block on it is a retrieval type. Inject only when content-bearing
+    # AND no retrieval.
+    page_order: List[str] = []
+    page_idxs: Dict[str, List[int]] = {}
+    for i, b in enumerate(selected):
+        ptype = str(b.get("page_type") or "")
+        if ptype not in page_idxs:
+            page_idxs[ptype] = []
+            page_order.append(ptype)
+        page_idxs[ptype].append(i)
+
+    # Collect the (insert-anchor-index, retrieval_block) injections first, then
+    # splice them in from LAST anchor to FIRST so earlier insert positions are
+    # never invalidated by an earlier splice.
+    injections: List[Tuple[int, Dict[str, Any]]] = []
+    for ptype in page_order:
+        idxs = page_idxs[ptype]
+        has_content = any(
+            str(selected[i].get("block_type") or "") in _RETRIEVAL_EXPOSITION_TYPES
+            for i in idxs
+        )
+        has_retrieval = any(
+            str(selected[i].get("block_type") or "") in _RETRIEVAL_INTERLEAVE_TYPES
+            for i in idxs
+        )
+        if not has_content or has_retrieval:
+            continue
+        # The CO the injected retrieval block checks: prefer the LAST content
+        # block's CO(s) on this page (the material just taught), else the TO
+        # fallback.
+        last_content_cos: List[str] = []
+        for i in idxs:
+            if str(selected[i].get("block_type") or "") in _RETRIEVAL_EXPOSITION_TYPES:
+                cos = [str(c) for c in (selected[i].get("target_co_ids") or [])]
+                if cos:
+                    last_content_cos = cos
+        target_co_ids = last_content_cos or ([fallback_co] if fallback_co else [])
+        retrieval_block = {
+            "block_type": retrieval_type,
+            "page_type": ptype,
+            "target_co_ids": list(target_co_ids),
+            "content_focus": (
+                "GAP C interleaved retrieval: a low-stakes retrieval-from-memory "
+                f"checkpoint on the {ptype} module, spaced after the exposition "
+                "(not siloed onto the end-of-week self-check page)"
+            ),
+            "target_bloom": "understand",
+        }
+        # Insert AFTER this page-group's last block so it follows >= 1 content
+        # block on the page (spaced). The validator groups by page_id and asserts
+        # a retrieval block sits at index > 0 on the page — placing it last among
+        # the page's blocks guarantees that.
+        injections.append((idxs[-1] + 1, retrieval_block))
+
+    if not injections:
+        return selected
+    out = list(selected)
+    for anchor, block in sorted(injections, key=lambda t: t[0], reverse=True):
+        out.insert(anchor, block)
+    return out
+
+
+def _apply_alignment_floors(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    block_types: frozenset,
+    co_bloom: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """Run the GAP C + GAP D alignment floors in gate-closing order.
+
+    Both floors are individually env-gated (``ED4ALL_RETRIEVAL_INTERLEAVE`` /
+    ``ED4ALL_TRIANGLE_FLOOR``) and a strict identity no-op when off, so this
+    helper is byte-stable when BOTH flags are off (the keystone byte-stability
+    contract). It is the SINGLE call site for both the dynamic
+    (:func:`plan_week_blocks`) and the fixed-plan fallback
+    (:func:`_fallback_plan`) paths.
+
+    RUN ORDER (both invariants are load-bearing):
+
+    1. **After all IB7 passes** — the caller invokes this AFTER
+       :func:`_apply_ib7_passes`. The IB7 bloom-ceiling re-route
+       (:func:`_apply_bloom_ceilings`) would otherwise re-route a triangle
+       activity arm injected for a Create/Evaluate-level CO (an injected
+       ``self_check_question`` has catalog ``bloom_ceiling=apply``; stamped at
+       ``target_bloom=create`` it exceeds the ceiling and re-routes to
+       ``assessment_item`` — NOT activity-class — re-firing
+       ``OBJECTIVE_NO_ACTIVITY``), and re-page an over-ceiling exposition onto a
+       page the retrieval floor never inspected (re-firing
+       ``MODULE_NO_RETRIEVAL``). Running the floors LAST means no IB7 pass can
+       touch the injected blocks. The floors place blocks in gate-valid
+       positions BY CONSTRUCTION (retrieval after the page's content; activity +
+       assessment on their default pages), so they do not need climb/spacing to
+       order them — superseding the earlier "before IB7 so climb/spacing order
+       them" comment, which the review showed is unsafe.
+
+    2. **Retrieval BEFORE triangle** — the retrieval floor may inject a
+       ``self_check_question`` (an ``_TRIANGLE_ACTIVITY_TYPES`` member) onto a
+       content page to satisfy the activity arm of that page's CO. Running the
+       triangle floor AFTER it means the triangle floor re-scans the referenced
+       CO set INCLUDING the retrieval-injected activity, so a CO whose ONLY
+       activity comes from retrieval injection still gets its missing
+       ``assessment_item`` arm (F3a), and no redundant activity block is added.
+    """
+    selected = _apply_retrieval_interleave_floor(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        block_types=block_types,
+    )
+    selected = _apply_triangle_floor(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        block_types=block_types,
+        co_bloom=co_bloom,
+    )
     return selected
 
 
@@ -2722,6 +3099,11 @@ def plan_week_blocks(
         block_types=block_types,
     )
 
+    # NOTE: the GAP D / GAP C alignment floors (triangle + retrieval-interleave)
+    # are NOT applied here. They run LAST — AFTER the IB7 passes
+    # (`_apply_ib7_passes`) — via `_apply_alignment_floors`, so no IB7 re-route /
+    # re-page pass can move the injected gate-closing blocks (see F4 below).
+
     # Issue I6 (Part A): deterministically deploy the palette-v2 types
     # (table / acronym / key_idea) by CONTENT SHAPE so they no longer depend on
     # the 70B choosing them. NO-OP when ED4ALL_DYNAMIC_BLOCK_PLAN is off (the
@@ -2759,6 +3141,17 @@ def plan_week_blocks(
         catalog_by_type=catalog_by_type,
         block_types=block_types,
         signals=ib7_signals,
+    )
+
+    # GAP D / GAP C alignment floors run LAST — after every IB7 pass (climb,
+    # lifecycle, spacing, bloom-ceiling, fading) — so nothing re-routes or
+    # re-pages the gate-closing blocks they inject (F3a / F4). Both default OFF →
+    # byte-stable.
+    selected = _apply_alignment_floors(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        block_types=block_types,
+        co_bloom=co_bloom,
     )
 
     page_plan = _to_page_plan(selected)
@@ -2852,6 +3245,27 @@ def _fallback_plan(
             catalog_by_type=_catalog_by_type,
             block_types=_resolve_block_types(),
             signals=ib7_signals,
+        )
+        page_plan = _to_page_plan(selected)
+    # GAP D / GAP C alignment floors ALSO run on the fallback path — LAST, after
+    # the IB7 passes (mirroring `plan_week_blocks`), so no IB7 re-route/re-page
+    # touches the injected blocks (F3a / F4). Each floor is individually flag-
+    # gated and a strict NO-OP when off, so the fixed-plan fallback stays
+    # byte-identical with both flags off — AND the fixed plan's blocks all carry
+    # empty target_co_ids, so the triangle floor's "referenced CO" scope is empty
+    # and it no-ops even when ON unless an upstream injection added a CO-targeted
+    # block. When on, the injected entries re-derive page_plan.
+    if _env_floor_on(_TRIANGLE_FLOOR_ENV) or _env_floor_on(_RETRIEVAL_INTERLEAVE_ENV):
+        _co_bloom_fb = {
+            str(co.get("id")): str(co.get("bloom_level") or "")
+            for co in (chapter_objectives or [])
+            if isinstance(co, dict) and co.get("id")
+        }
+        selected = _apply_alignment_floors(
+            selected=selected,
+            chapter_objectives=chapter_objectives or [],
+            block_types=_resolve_block_types(),
+            co_bloom=_co_bloom_fb,
         )
         page_plan = _to_page_plan(selected)
     _emit_block_plan_decision(

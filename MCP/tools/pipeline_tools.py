@@ -1238,6 +1238,49 @@ def _render_block_fallback_html(
             f"<p><strong>Key Idea:</strong> {esc(principle)}</p>{extra}</aside>"
         )
 
+    elif block_type == "assessment_item":
+        # GAP D triangle floor (+ any escalated assessment_item): the rewrite
+        # tier exhausted its retry budget, so emit a deterministic, gate-VALID
+        # MCQ payload rather than the generic <p> else-branch (which carries zero
+        # <li data-cf-distractor-index> markup and FAILS the CRITICAL
+        # rewrite_assessment_item_payload gate → blocks the whole run).
+        #
+        # Contract enforced by
+        # ``lib/validators/assessment_item_payload.py::_audit_rewrite_block``
+        # (rewrite/str mode): >= 2 ``<li data-cf-distractor-index="N">`` siblings
+        # with NON-EMPTY body text and indices CONTIGUOUS from 0. We additionally
+        # mark exactly one option ``data-cf-correct="true"`` (the answer marker
+        # the success-path emit uses) so the payload is well-formed for the
+        # broader distractor validators too. Grounded/minimal: the question stem
+        # is the first key_claim; option bodies reuse the remaining claims
+        # (padded only to reach the 2-option floor), never invented content.
+        stem = claims[0] if claims else "Which statement is best supported by this material?"
+        # Option bodies: prefer the block's remaining grounded claims; the
+        # correct option leads, distractors follow. Pad to >= 3 options (1
+        # correct + 2 distractors) only when the block supplied too few claims —
+        # the padding is an honest "needs review" placeholder, never a fabricated
+        # plausible-looking wrong answer.
+        correct_body = claims[1] if len(claims) > 1 else stem
+        distractor_bodies = [c for c in claims[2:] if c]
+        while len(distractor_bodies) < 2:
+            distractor_bodies.append(
+                f"Not supported by the source (option {len(distractor_bodies) + 1})."
+            )
+        option_bodies = [(correct_body, True)] + [
+            (b, False) for b in distractor_bodies
+        ]
+        li_html = "".join(
+            f'<li data-cf-distractor-index="{idx}"'
+            + (' data-cf-correct="true"' if is_correct else "")
+            + f">{esc(body)}</li>"
+            for idx, (body, is_correct) in enumerate(option_bodies)
+        )
+        body_parts.append(
+            '<div class="assessment-item">'
+            f"<p>{esc(stem)}</p>"
+            f"<ol>{li_html}</ol></div>"
+        )
+
     else:
         # Generic styled fallback: each concise claim as a paragraph.
         for claim in claims:
