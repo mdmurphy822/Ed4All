@@ -354,6 +354,99 @@ def test_structured_ref_unresolved(tmp_path: Path) -> None:
     assert "ch_NOT_IN_TEXTBOOK" in miss.message
 
 
+def test_structured_no_ref_grounded_chunks_passes(tmp_path: Path) -> None:
+    """FIX A: a terminal objective's structured ``{chunk_ids}`` entry that omits
+    the ``ref`` key (the post-fix shape of ``_annotate_terminals_with_children``)
+    PASSES — its grounded chunk_ids resolve and the impossible self-referential
+    textbook-universe check is skipped.
+
+    Before FIX A the annotator minted ``ref=<this TO's own id>`` (e.g. TO-01
+    citing ref="TO-01"), which can never resolve against the chapter/section
+    universe → ``OBJECTIVE_SOURCE_NOT_IN_TEXTBOOK_STRUCTURE`` fired on EVERY TO.
+    The fix omits ``ref`` entirely; this test pins that the no-``ref`` shape is
+    accepted while the chunk_ids grounding is still enforced.
+    """
+    ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
+    chunks_manifest = _write_dart_chunks(
+        tmp_path,
+        [
+            {
+                "id": "course_chunk_00001",
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:rdf11_primer#s4"},
+                        {"sourceId": "dart:rdf11_primer#s5"},
+                    ],
+                },
+            },
+        ],
+    )
+    objectives = _write_objectives(
+        tmp_path,
+        terminal=[{
+            "id": "TO-01",
+            "statement": "Master RDF foundations.",
+            # FIX A shape: NO self-referential ``ref`` — only grounded chunk_ids.
+            "source_refs": [
+                {
+                    "chunk_ids": [
+                        "dart:rdf11_primer#s4",
+                        "dart:rdf11_primer#s5",
+                    ],
+                },
+            ],
+        }],
+        chapter=[],
+    )
+
+    result = ObjectiveSourceRefValidator().validate({
+        "synthesized_objectives_path": str(objectives),
+        "textbook_structure_path": str(ts),
+        "dart_chunks_manifest_path": str(chunks_manifest),
+        "require_to_attribution": True,
+    })
+
+    # No self-referential ref → no OBJECTIVE_SOURCE_NOT_IN_TEXTBOOK_STRUCTURE,
+    # and the grounded chunk_ids resolve → clean pass.
+    assert result.passed is True
+    assert result.action is None
+    assert result.issues == []
+    assert result.score == 1.0
+
+
+def test_structured_no_ref_unresolved_chunk_still_flagged(tmp_path: Path) -> None:
+    """FIX A guard: omitting ``ref`` does NOT weaken chunk_ids enforcement — an
+    unresolvable chunk_id on a no-``ref`` entry still fires the chunk-miss code.
+    """
+    ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
+    chunks_manifest = _write_dart_chunks(
+        tmp_path,
+        [{"id": "course_chunk_00001",
+          "source": {"source_references": [{"sourceId": "dart:rdf11_primer#s4"}]}}],
+    )
+    objectives = _write_objectives(
+        tmp_path,
+        terminal=[{
+            "id": "TO-01",
+            "statement": "Master RDF foundations.",
+            "source_refs": [{"chunk_ids": ["dart:rdf11_primer#sNOPE"]}],
+        }],
+        chapter=[],
+    )
+
+    result = ObjectiveSourceRefValidator().validate({
+        "synthesized_objectives_path": str(objectives),
+        "textbook_structure_path": str(ts),
+        "dart_chunks_manifest_path": str(chunks_manifest),
+        "require_to_attribution": True,
+    })
+
+    codes = [i.code for i in result.issues]
+    assert "OBJECTIVE_CHUNK_NOT_IN_DART_MANIFEST" in codes
+    # No textbook-structure miss — there is no ref to (fail to) resolve.
+    assert "OBJECTIVE_SOURCE_NOT_IN_TEXTBOOK_STRUCTURE" not in codes
+
+
 def test_structured_chunk_id_unresolved(tmp_path: Path) -> None:
     """Case 5: structured shape, one chunk_id unresolved → WARNING."""
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])

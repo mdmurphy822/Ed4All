@@ -78,6 +78,38 @@ def test_backfill_promotes_discarded_order_of_operations():
     assert "order of operations" in statements
 
 
+def test_backfill_promoted_source_refs_uses_real_chapter_not_self_ref():
+    """FIX B coverage parity with FIX A: a promoted CO's ``source_refs`` entry
+    carries the candidate's REAL ``chapter_id`` as ``ref`` (a resolvable chapter
+    label), NOT a self-referential / fabricated id, and its chunk_ids subset the
+    candidate's. Confirms the source-coverage backfill path is reachable and
+    emits a gate-clean source_ref when enabled.
+    """
+    pre_dedup = [
+        _cand("Simplify expressions broadly", ["c_simp"], chapter="ch1"),
+        _cand("Define an ontology as a shared conceptualization",
+              ["c_onto"], chapter="ch3"),
+    ]
+    canonical = [_cand("Simplify expressions broadly", ["c_simp"], chapter="ch1")]
+    chunks = _chunks_by_id(_chunk("c_simp"), _chunk("c_onto"))
+
+    result = backfill_uncovered_chunks(
+        canonical=canonical,
+        pre_dedup_candidates=pre_dedup,
+        chunks_by_id=chunks,
+        enabled=True,
+    )
+    assert result.cos_promoted == 1
+    promoted = [c for c in canonical if c.get("backfilled")]
+    assert len(promoted) == 1
+    co = promoted[0]
+    refs = co["source_refs"]
+    assert refs == [{"ref": "ch3", "chunk_ids": ["c_onto"]}]
+    # ref is the candidate's real chapter, never the CO's own id.
+    assert refs[0]["ref"] == "ch3"
+    assert set(co["source_chunk_ids"]) == {"c_onto"}
+
+
 def test_backfill_anti_fabrication_subset():
     """Every backfilled CO's source_chunk_ids ⊆ the promoted candidate's."""
     cand_ids = ["c_oo", "c_extra"]

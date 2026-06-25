@@ -419,12 +419,15 @@ def test_annotate_terminals_with_children_unions_chunks():
     counts = pt._annotate_terminals_with_children(tos, cos)
     assert counts == {"tos_annotated": 2, "cos_mapped": 3, "orphan_tos": 1}
     assert tos[0]["child_co_ids"] == ["CO-01", "CO-02"]
-    # Union, deduped, course order — never invents a chunk.
-    assert tos[0]["source_refs"] == [
-        {"ref": "TO-01", "chunk_ids": ["c1", "c2", "c3"]}
-    ]
+    # FIX A — Union, deduped, course order — never invents a chunk. The entry
+    # carries NO self-referential ``ref`` (a TO citing its OWN id never resolves
+    # against the chapter/section universe the objective_source_refs gate audits,
+    # firing on every TO); only the grounded chunk_ids survive.
+    assert tos[0]["source_refs"] == [{"chunk_ids": ["c1", "c2", "c3"]}]
+    assert "ref" not in tos[0]["source_refs"][0]
     assert tos[1]["child_co_ids"] == ["CO-03"]
-    assert tos[1]["source_refs"] == [{"ref": "TO-02", "chunk_ids": ["c9"]}]
+    assert tos[1]["source_refs"] == [{"chunk_ids": ["c9"]}]
+    assert "ref" not in tos[1]["source_refs"][0]
     # Orphan TO keeps its original empty source_refs (no fabricated provenance).
     assert tos[2]["child_co_ids"] == []
     assert tos[2]["source_refs"] == []

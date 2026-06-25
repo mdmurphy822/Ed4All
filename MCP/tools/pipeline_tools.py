@@ -3819,9 +3819,23 @@ def _annotate_terminals_with_children(
         to["child_co_ids"] = list(cids)
         if chunks:
             tos_annotated += 1
-            to["source_refs"] = [
-                {"ref": str(to.get("id") or ""), "chunk_ids": list(chunks)}
-            ]
+            # FIX A — do NOT mint ``ref=<this TO's own id>``. A self-referential
+            # ref (e.g. TO-01 citing ref="TO-01") can never resolve against the
+            # chapter/section source universe the ``objective_source_refs`` gate
+            # audits, so it fired OBJECTIVE_SOURCE_NOT_IN_TEXTBOOK_STRUCTURE on
+            # every terminal objective deterministically. The TO IS validly
+            # grounded — its ``chunk_ids`` (the union of its child COs' cited
+            # chunks) all resolve against the DART chunkset — so we emit a
+            # structured ``{chunk_ids}`` entry with NO ``ref`` key. The
+            # validator's structured-shape arm only resolves a ``ref`` when it
+            # is a non-empty string, so omitting it skips the impossible
+            # textbook-universe check while the chunk_ids grounding still
+            # passes. Every downstream consumer of TO ``source_refs`` reads only
+            # ``ref["chunk_ids"]`` (never ``ref["ref"]``), so this is
+            # behaviour-preserving for the pacing / chunk-index builders.
+            # Anti-fabrication: no chapter id is invented — the chunk_ids are
+            # exactly the child COs' real cited chunks.
+            to["source_refs"] = [{"chunk_ids": list(chunks)}]
         else:
             orphan_tos += 1
     return {
