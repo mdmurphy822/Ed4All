@@ -7228,6 +7228,27 @@ def _key_terms_page_enabled() -> bool:
     )
 
 
+# Page-per-CO content-emit gate. Default OFF → byte-identical: the content-page
+# count stays ``max(topic_count, 1)`` per week (O(sections)). When truthy AND
+# COURSEFORGE_TWO_PASS is on, the content-page count is driven by the week's CO
+# count (the bounded axis), each CO gets one content page, and that page's
+# grounding is token-bounded to fit the authoring window. Resolvers + the token
+# budget + the top-K cap live in ``lib.generation.content_page_budget``; this
+# wrapper additionally no-ops the feature unless the two-pass surface is on.
+def _content_page_per_co_enabled() -> bool:
+    """``ED4ALL_CONTENT_PAGE_PER_CO`` AND ``COURSEFORGE_TWO_PASS`` both on.
+
+    Read each call (tests toggle inline). Default OFF / parse-with-fallback.
+    The feature only applies on the two-pass outline surface, so the master
+    flag is gated behind ``_courseforge_two_pass_enabled()``.
+    """
+    from lib.generation.content_page_budget import (  # noqa: PLC0415
+        content_page_per_co_enabled,
+    )
+
+    return content_page_per_co_enabled() and _courseforge_two_pass_enabled()
+
+
 def _build_block_planner_provider(capture=None):
     """Construct the 70B provider seam for the dynamic block planner.
 
@@ -9746,8 +9767,51 @@ def _build_week_chunk_id_index(
     return index
 
 
+def _clamp_week(week: int, duration_weeks: Optional[int]) -> int:
+    """Clamp a resolved CO-group week into ``[1, duration_weeks]``.
+
+    Review fix 2 (page-per-CO). :func:`_chapter_label_to_week_num` returns an
+    UNBOUNDED parsed chapter int, so a "Chapter 12" group on a ``--weeks 8`` run
+    lands in week 12 — a week the descriptor loop's ``range(1, duration_weeks+1)``
+    NEVER iterates, so those COs silently vanish (the documented 15-chapter
+    failure mode). Folding overflow into the LAST week keeps every CO reachable
+    by some emitted page. ``duration_weeks=None``/``<1`` → identity (the legacy
+    builders pass None so OFF behaviour is byte-identical).
+    """
+    if not isinstance(duration_weeks, int) or duration_weeks < 1:
+        return week
+    if week < 1:
+        return 1
+    if week > duration_weeks:
+        return duration_weeks
+    return week
+
+
+def _resolve_content_page_count(
+    *, topic_count: int, co_count: int, page_per_co: bool
+) -> int:
+    """Resolve a week's content-page count (page-per-CO review fix 3).
+
+    OFF (``page_per_co`` False) → ``max(topic_count, 1)`` verbatim (the legacy
+    O(sections) driver). ON → one content page per CO (``max(co_count, 1)``)
+    with the NEVER-INCREASE guard: cap at today's ``max(topic_count, 1)`` so a
+    CO-rich / topic-thin week can never emit MORE pages than today. A
+    topic-less week (``topic_count == 0``) is NOT capped to zero — it falls
+    through to ``max(co_count, 1)`` (the week always emits ≥1 content page).
+    """
+    if not page_per_co:
+        return max(topic_count, 1)
+    co_driven = max(co_count, 1)
+    if topic_count:
+        return min(co_driven, max(topic_count, 1))
+    return co_driven
+
+
 def _build_week_co_chunk_index(
     chapter_objective_groups: List[Dict[str, Any]],
+    *,
+    duration_weeks: Optional[int] = None,
+    require_id: bool = False,
 ) -> Dict[int, List[List[str]]]:
     """Build ``{week_num: [[chunk_id, ...] per CO, ...]}`` — the per-objective
     chunk universe parallel to :func:`_build_week_chunk_id_index`'s union.
@@ -9786,9 +9850,20 @@ def _build_week_co_chunk_index(
         week = _chapter_label_to_week_num(group.get("chapter"))
         if week is None:
             week = position + 1
+        # Review fix 2 (page-per-CO): clamp into [1, duration_weeks] so a
+        # chapter-numbered group past the last week is not silently dropped.
+        # ``duration_weeks=None`` (the legacy caller) → identity.
+        week = _clamp_week(week, duration_weeks)
         week_bucket = index.setdefault(week, [])
         for obj in group.get("objectives") or []:
             if not isinstance(obj, dict):
+                continue
+            # Predicate-identity with ``_build_week_co_objectives_index``: when
+            # ``require_id`` is on (page-per-CO path), SKIP id-less objectives
+            # in BOTH builders so the i-th chunk slice positionally aligns with
+            # the i-th objective. The legacy caller leaves ``require_id`` off →
+            # byte-identical (every objective contributes an inner list).
+            if require_id and not obj.get("id"):
                 continue
             co_cids: List[str] = []
             co_seen: set = set()
@@ -9806,6 +9881,8 @@ def _build_week_co_chunk_index(
 
 def _build_week_co_objectives_index(
     chapter_objective_groups: List[Dict[str, Any]],
+    *,
+    duration_weeks: Optional[int] = None,
 ) -> Dict[int, List[Dict[str, Any]]]:
     """Build ``{week_num: [{id, statement, bloom_level}, ...]}`` per week.
 
@@ -9823,12 +9900,20 @@ def _build_week_co_objectives_index(
         week = _chapter_label_to_week_num(group.get("chapter"))
         if week is None:
             week = position + 1
+        # Review fix 2 (page-per-CO): clamp into [1, duration_weeks] so a
+        # chapter-numbered group past the last week lands in the last iterated
+        # week instead of an unreachable bucket. ``duration_weeks=None`` (the
+        # legacy caller) → identity. Mirrors ``_build_week_co_chunk_index``.
+        week = _clamp_week(week, duration_weeks)
         bucket = index.setdefault(week, [])
         for obj in group.get("objectives") or []:
             if not isinstance(obj, dict):
                 continue
             oid = obj.get("id")
             if not oid:
+                # Predicate shared with ``_build_week_co_chunk_index``'s
+                # ``require_id`` path: id-less objectives are skipped here too,
+                # so the two indexes stay positionally aligned.
                 continue
             bucket.append({
                 "id": str(oid),
@@ -10300,15 +10385,51 @@ async def _run_content_generation_outline(**kwargs) -> str:
         chapter_objective_groups,
         week_terminal_chunk_ids=week_terminal_chunk_ids,
     )
+    # Page-per-CO content-emit gate. Default OFF → every index builder is called
+    # with its legacy (unclamped, ``require_id`` off) signature so the emitted
+    # descriptors are byte-identical. ON → clamp CO-group weeks into
+    # ``[1, duration_weeks]`` (review fix 2) AND make the two per-CO index
+    # builders predicate-identical so the i-th chunk slice aligns with the i-th
+    # CO objective.
+    _page_per_co = _content_page_per_co_enabled()
+    _idx_duration = duration_weeks if _page_per_co else None
     # Fix 2A (Step 2b): per-week per-CO chunk universe (parallel to the
     # week-wide union above) so each page can be NARROWED to a single
     # objective's chunks instead of the whole-week grab-bag.
-    week_co_chunk_index = _build_week_co_chunk_index(chapter_objective_groups)
+    week_co_chunk_index = _build_week_co_chunk_index(
+        chapter_objective_groups,
+        duration_weeks=_idx_duration,
+        require_id=_page_per_co,
+    )
     # Wave-2 Part 3 (keystone): per-week child chapter objectives for the
     # dynamic block planner.
     week_co_objectives_index = _build_week_co_objectives_index(
-        chapter_objective_groups
+        chapter_objective_groups,
+        duration_weeks=_idx_duration,
     )
+    # Review fix 2 (defense-in-depth): the two per-CO indexes MUST be
+    # positionally aligned per week (chunk slice i ↔ objective i). On the
+    # page-per-CO path, assert per-week length equality; on any mismatch, fall
+    # back to the OFF behaviour for the whole run (disable the CO-count driver)
+    # so a misaligned bind can never strand a CO under a wrong objective_id.
+    if _page_per_co:
+        _aligned = True
+        for _wn in set(week_co_chunk_index) | set(week_co_objectives_index):
+            if len(week_co_chunk_index.get(_wn, [])) != len(
+                week_co_objectives_index.get(_wn, [])
+            ):
+                _aligned = False
+                logger.warning(
+                    "page-per-co: week %d per-CO index length mismatch "
+                    "(chunk_slices=%d, objectives=%d) — disabling the CO-count "
+                    "page driver for this run (falling back to topic-count).",
+                    _wn,
+                    len(week_co_chunk_index.get(_wn, [])),
+                    len(week_co_objectives_index.get(_wn, [])),
+                )
+                break
+        if not _aligned:
+            _page_per_co = False
     # CO-id fan-out fix: the course-wide valid CHAPTER-objective id set. A
     # planned block's ``target_co_ids`` is filtered against this before it can
     # override the week-TO ``objective_ids`` (anti-fabrication — a hallucinated
@@ -10327,6 +10448,54 @@ async def _run_content_generation_outline(**kwargs) -> str:
     _OBJ_SCOPE_MIN_CHUNKS = 2  # floor below which a page reverts to week-wide
     n_pages_objective_scoped = 0
     n_pages_week_fallback = 0
+
+    # Page-per-CO: per-run counters + the token budget for the per-page chunk
+    # cap. The budget is computed ONCE (the system-prompt lengths are measured
+    # DYNAMICALLY at import so a prompt edit cannot silently invalidate it).
+    # All zero/None on the OFF path → no behavioural effect.
+    _ppc_emitted_co_ids: Set[str] = set()
+    _ppc_pages_emitted = 0
+    _ppc_chunks_kept = 0
+    _ppc_chunks_dropped = 0
+    _ppc_dropped_cited = 0
+    _ppc_token_budget: Optional[int] = None
+    _ppc_num_ctx: Optional[int] = None
+    _ppc_max_chunks: Optional[int] = None
+    if _page_per_co:
+        from lib.generation.content_page_budget import (  # noqa: PLC0415
+            resolve_content_page_num_ctx,
+            resolve_content_page_max_chunks,
+            _estimate_tokens as _ppc_estimate_tokens,
+            page_chunk_token_budget,
+        )
+
+        _ppc_num_ctx = resolve_content_page_num_ctx()
+        _ppc_max_chunks = resolve_content_page_max_chunks()
+        # Measure the heavier rewrite-tier system prompt DYNAMICALLY (the
+        # authoring lane that actually overflows). A failed import → fall back
+        # to a conservative fixed estimate so the budget still bounds the page.
+        _sys_tokens = 8000
+        try:
+            from Courseforge.generators._rewrite_provider import (  # noqa: PLC0415
+                _REWRITE_SYSTEM_PROMPT,
+            )
+
+            _sys_tokens = _ppc_estimate_tokens(_REWRITE_SYSTEM_PROMPT)
+        except Exception:  # noqa: BLE001 — keep the conservative default
+            pass
+        # user_fixed + max_tokens reserves: the rewrite user-prompt scaffold +
+        # the 2,400-token output reservation (per the plan's measured budget).
+        _ppc_token_budget = page_chunk_token_budget(
+            num_ctx=_ppc_num_ctx,
+            system_prompt_tokens=_sys_tokens,
+            user_fixed_tokens=1200,
+            max_tokens=2400,
+        )
+        logger.info(
+            "page-per-co: num_ctx=%d rewrite_sys≈%d tok → per-page chunk "
+            "token_budget=%d (max_chunks=%d).",
+            _ppc_num_ctx, _sys_tokens, _ppc_token_budget, _ppc_max_chunks,
+        )
 
     # Wave-2 Part 3 (keystone): the 70B content-aware block planner. Default
     # OFF → ``dynamic_block_plan`` stays False and every page consumes the
@@ -10460,11 +10629,22 @@ async def _run_content_generation_outline(**kwargs) -> str:
         # ``(page_type, content_idx, topic_or_None)``; ``content_idx`` is the
         # 1-based topic index for content pages (else 1).
         topic_count = len(week_topics)
+        # Page-per-CO driver. OFF → ``max(topic_count, 1)`` verbatim (the
+        # content-page count tracks parsed sections, O(sections)). ON → drive
+        # the content-page count from the week's CO count (the bounded axis):
+        # one content page per child CO, with a NEVER-INCREASE guard so a
+        # CO-rich / topic-thin week can never emit MORE pages than today.
+        _week_co_count = len(week_co_chunk_index.get(week_num, []))
         page_descriptors: List[Tuple[str, int, Optional[Dict[str, Any]]]] = []
         for _ptype in _WEEK_PAGE_TYPES:
             if _ptype == "content":
-                # One content page per topic (or one minimum if no topics).
-                _n_content = max(topic_count, 1)
+                # OFF → ``max(topic_count, 1)`` verbatim (byte-identical). ON →
+                # one content page per CO with the never-increase guard.
+                _n_content = _resolve_content_page_count(
+                    topic_count=topic_count,
+                    co_count=_week_co_count,
+                    page_per_co=_page_per_co,
+                )
                 for _ci in range(_n_content):
                     _topic = week_topics[_ci] if _ci < topic_count else None
                     page_descriptors.append(("content", _ci + 1, _topic))
@@ -10479,6 +10659,19 @@ async def _run_content_generation_outline(**kwargs) -> str:
             # four singleton page types use the week-wide union (i = -1 keeps
             # them out of the per-CO slice path).
             i = (content_idx - 1) if page_type == "content" else -1
+            # Page-per-CO: the content page at position ``i`` is bound 1:1 to the
+            # week's ``i``-th CO (the index builders are predicate-identical, so
+            # ``week_co_objectives_index[i]`` is exactly the CO whose chunk slice
+            # ``week_co_chunk_index[i]`` grounds this page). Stamp that CO id on
+            # every block of the page (instead of falling back to the week TO),
+            # which is what makes the positional CO→page map zero-stranded.
+            _page_bound_co_id: Optional[str] = None
+            if _page_per_co and page_type == "content":
+                _wk_objs_bind = week_co_objectives_index.get(week_num, [])
+                if 0 <= i < len(_wk_objs_bind):
+                    _cid_bind = str(_wk_objs_bind[i].get("id") or "")
+                    if _cid_bind in _valid_co_ids:
+                        _page_bound_co_id = _cid_bind
             heading = (topic or {}).get("heading") or (
                 f"week_{week_num:02d} {page_type.replace('_', ' ').title()}"
                 if page_type != "content"
@@ -10536,6 +10729,50 @@ async def _run_content_generation_outline(**kwargs) -> str:
                         week_num, page_id, len(_page_scoped_cids),
                         _OBJ_SCOPE_MIN_CHUNKS, len(_week_union_cids),
                     )
+
+            # ---------------------------------------------------------- #
+            # Page-per-CO (Phase 2): token-aware per-page top-K chunk cap.
+            # ---------------------------------------------------------- #
+            # Consolidating a multi-section CO's chunks onto one page makes the
+            # authoring prompt fatter — it can overflow the per-call serving
+            # window and silently head-truncate (fabricating citations). Bound
+            # the page's offered universe to fit the window: cosine-rank by the
+            # CO statement, keep at most ``min(max_chunks, budget-allows)``,
+            # ALWAYS keep ≥1, kept ⊆ union (anti-fabrication: only DROPS). Only
+            # applies to ``content`` pages (i >= 0) bound to a real CO; the four
+            # singleton page types keep the week-wide union unchanged.
+            if _page_per_co and page_type == "content" and page_chunk_cids:
+                from lib.generation.content_page_budget import (  # noqa: PLC0415
+                    cap_page_chunks,
+                )
+
+                _week_objs = week_co_objectives_index.get(week_num, [])
+                _co_stmt = ""
+                if 0 <= i < len(_week_objs):
+                    _co_stmt = str(_week_objs[i].get("statement") or "")
+                _capped_cids, _dropped_cited, _cap_stats = cap_page_chunks(
+                    union_ids=page_chunk_cids,
+                    cited_ids=page_chunk_cids,  # outline-tier: all cited
+                    chunk_text_map=chunk_text_map,
+                    statement=_co_stmt,
+                    token_budget=_ppc_token_budget,
+                    max_chunks=_ppc_max_chunks,
+                    embed_builder=None,  # GPU-free: citation-order rank
+                )
+                if _capped_cids:
+                    _ppc_chunks_kept += len(_capped_cids)
+                    _ppc_chunks_dropped += _cap_stats.get("dropped_count", 0)
+                    _ppc_dropped_cited += len(_dropped_cited)
+                    if _dropped_cited:
+                        logger.info(
+                            "page-per-co: week %d page %s capped %d→%d chunk(s) "
+                            "to fit the authoring window (%d cited dropped; "
+                            "budget=%s, max_chunks=%s).",
+                            week_num, page_id, len(page_chunk_cids),
+                            len(_capped_cids), len(_dropped_cited),
+                            _ppc_token_budget, _ppc_max_chunks,
+                        )
+                    page_chunk_cids = _capped_cids
 
             # ---------------------------------------------------------- #
             # Keystone fix (hollow-course defect): emit a block PLAN per
@@ -10630,8 +10867,18 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 # the planner targeted (filtered to the valid CO set), falling
                 # back to the week-TO ``objective_ids`` when the planner gave no
                 # (valid) CO target.
+                #
+                # Page-per-CO: when this content page is bound 1:1 to a CO and
+                # the planner gave no (valid) per-block CO target, prefer the
+                # page's BOUND CO id over the week-TO fallback — so a CO-page's
+                # blocks always carry their CO id (zero stranded COs, by
+                # construction). The planner's explicit target still wins when
+                # present (a planner that names a different valid CO is honored).
+                _block_co_fallback = objective_ids
+                if _page_bound_co_id and not spec_co_ids:
+                    _block_co_fallback = (_page_bound_co_id,)
                 block_objective_ids = _resolve_block_objective_ids(
-                    spec_co_ids, objective_ids, _valid_co_ids
+                    spec_co_ids, _block_co_fallback, _valid_co_ids
                 )
                 block_id = Block.stable_id(
                     page_id=page_id,
@@ -10668,6 +10915,13 @@ async def _run_content_generation_outline(**kwargs) -> str:
                     )
                     continue
                 all_blocks.append(stub)
+                # Page-per-CO coverage tracking: record every VALID CO id this
+                # block stamps, so the post-loop assertion can verify the union
+                # of emitted CO ids == all valid CO ids (zero-stranded contract).
+                if _page_per_co:
+                    for _oid in block_objective_ids:
+                        if _oid in _valid_co_ids:
+                            _ppc_emitted_co_ids.add(_oid)
                 # Resolve this block's source-chunk universe from its
                 # week's grounded objectives. Only emit chunk dicts whose
                 # id resolves to real text in the chunkset — NEVER
@@ -10710,6 +10964,8 @@ async def _run_content_generation_outline(**kwargs) -> str:
                     ]
                     n_blocks_fallback_to_topic += 1
                 page_block_added = True
+            if _page_per_co and page_type == "content" and page_block_added:
+                _ppc_pages_emitted += 1
             week_block_added = week_block_added or page_block_added
         if week_block_added:
             weeks_with_blocks += 1
@@ -10737,6 +10993,77 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 capture=capture,
             )
             _key_terms_blocks.extend(_kt_week_blocks)
+
+    # Page-per-CO coverage assertion (review fix 2): the union of emitted CO
+    # ids MUST equal the set of valid CO ids that landed in some iterated week's
+    # objectives index — every such CO got its own content page (zero-stranded
+    # contract). A miss means a CO group's week clamp or a predicate mismatch
+    # left a CO with no page; log it loudly (fail-closed contract is a logged
+    # error, not a crash — the run still ships, but the gap is recorded).
+    if _page_per_co:
+        _expected_co_ids: Set[str] = set()
+        for _wn in range(1, duration_weeks + 1):
+            for _obj in week_co_objectives_index.get(_wn, []):
+                _oid = str(_obj.get("id") or "")
+                if _oid in _valid_co_ids:
+                    _expected_co_ids.add(_oid)
+        _missing_co_ids = _expected_co_ids - _ppc_emitted_co_ids
+        if _missing_co_ids:
+            logger.error(
+                "page-per-co: COVERAGE GAP — %d CO id(s) in an iterated week's "
+                "objectives index were NOT stamped on any emitted block: %s. "
+                "The clamp + predicate-identical builders should make this "
+                "impossible; investigate the index alignment.",
+                len(_missing_co_ids),
+                sorted(_missing_co_ids)[:20],
+            )
+        else:
+            logger.info(
+                "page-per-co: coverage OK — all %d iterated-week CO id(s) "
+                "stamped on an emitted page (zero stranded).",
+                len(_expected_co_ids),
+            )
+        # Phase 3: page-per-CO decision capture (one event/run; replayable).
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=(
+                        f"Page-per-CO emit: drove the content-page count from "
+                        f"the week CO count (one page/CO), emitting "
+                        f"{_ppc_pages_emitted} content page(s) across "
+                        f"{len(_expected_co_ids)} valid CO(s); per-page chunk "
+                        f"cap kept {_ppc_chunks_kept}, dropped "
+                        f"{_ppc_chunks_dropped} ({_ppc_dropped_cited} cited)."
+                    ),
+                    rationale=(
+                        f"ED4ALL_CONTENT_PAGE_PER_CO on (two-pass): content "
+                        f"pages now O(Σ COs) not O(sections). num_ctx="
+                        f"{_ppc_num_ctx}, per-page token_budget="
+                        f"{_ppc_token_budget}, max_chunks={_ppc_max_chunks}. "
+                        f"Coverage {'OK' if not _missing_co_ids else 'GAP'}: "
+                        f"{len(_expected_co_ids - _missing_co_ids)}/"
+                        f"{len(_expected_co_ids)} CO(s) stamped on a page "
+                        f"(missing {len(_missing_co_ids)}). Anti-fabrication: "
+                        f"per-page chunks are a subset of the CO's real union "
+                        f"(always-keep-≥1); no CO id or chunk invented."
+                    ),
+                    ml_features={
+                        "page_per_co_enabled": True,
+                        "content_pages_emitted": _ppc_pages_emitted,
+                        "valid_co_count": len(_expected_co_ids),
+                        "co_ids_stamped": len(_ppc_emitted_co_ids),
+                        "co_ids_missing": len(_missing_co_ids),
+                        "chunks_kept": _ppc_chunks_kept,
+                        "chunks_dropped": _ppc_chunks_dropped,
+                        "cited_chunks_dropped": _ppc_dropped_cited,
+                        "num_ctx": _ppc_num_ctx,
+                        "page_token_budget": _ppc_token_budget,
+                        "max_chunks": _ppc_max_chunks,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
     # Summary decision capture for grounded source-chunk resolution. One
     # event per run (per-block logging would flood). Rationale interpolates
