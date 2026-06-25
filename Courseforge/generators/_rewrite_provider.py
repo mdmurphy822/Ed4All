@@ -71,6 +71,8 @@ import math
 import os
 import re
 import sys
+from html import escape as html_escape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -1275,6 +1277,51 @@ def _escape_orphan_placeholder_tags(html: str) -> str:
     return "".join(out)
 
 
+# Malformed comment-close pattern: the Qwen-7B-Q4 rewrite tier, when it
+# free-authors a B04 multimedia / B06 diagram block, sometimes emits an
+# HTML comment whose CLOSE delimiter was entity-escaped — ``--&gt;`` (or a
+# double-/triple-escaped variant) instead of a real ``-->``. Per the WHATWG
+# tokenizer (and Python's ``html.parser``) the entity-escaped close does NOT
+# terminate the comment, so the comment runs on and SWALLOWS every downstream
+# sibling (``<source>`` / ``<track>`` / ``<details>`` / ``</table>``), genuinely
+# destroying the captions / transcript / long-description in a real browser
+# (confirmed on demo block ``week_02_content_01#multimedia_week02_4`` — the
+# ``<!-- … --&gt;`` swallowed 1293 chars including the ``<track>`` and
+# ``<details>``). The repair rewrites the escaped close back to a real ``-->``
+# BEFORE any downstream gate / parser / consumer sees the content.
+#
+# The regex anchors on ``--`` immediately followed by ONE OR MORE
+# entity-escaped ``>`` layers (``&gt;`` / ``&amp;gt;`` / ``&amp;amp;gt;`` / …)
+# with NO intervening characters, so it can only match a comment-close that was
+# escaped — it never touches a well-formed ``-->`` (no ``&`` there) nor a
+# legitimate escaped entity in prose (those are not preceded by a bare ``--``).
+# Idempotent: a single pass collapses any depth of escaping to one real close,
+# and a second pass finds nothing left to rewrite.
+_MALFORMED_COMMENT_CLOSE_RE = re.compile(r"--(?:&(?:amp;)*gt;)+")
+
+
+def _fix_malformed_comment_closes(html: str) -> str:
+    """Rewrite entity-escaped comment closes ``--&gt;`` back to real ``-->``.
+
+    Closes the Qwen-7B-Q4 failure mode where the rewrite tier emits an HTML
+    comment terminated with an HTML-entity-escaped close (``--&gt;`` or any
+    double-/triple-escaped variant) instead of a literal ``-->``. The escaped
+    close leaves the comment UNTERMINATED under the HTML tokenizer, so the
+    parser swallows the downstream ``<source>`` / ``<track>`` / ``<details>`` /
+    ``</table>`` siblings — silently destroying the B04 captions/transcript and
+    the B06 long-description/data-table in any real browser (and hiding them
+    from the IB5 a11y shape gate).
+
+    Conservative + idempotent: only the ``--`` + escaped-``>`` sequence is
+    rewritten; well-formed ``-->`` (no ``&``) and legitimate escaped entities
+    elsewhere in prose are untouched. A second invocation is a no-op.
+    """
+    if "--&" not in html:
+        # Fast path — no candidate substring, nothing to repair.
+        return html
+    return _MALFORMED_COMMENT_CLOSE_RE.sub("-->", html)
+
+
 def _safe_json_dumps(content: Any) -> str:
     """Serialize ``Block.content`` to a JSON string for the prompt.
 
@@ -2021,6 +2068,177 @@ def _force_inject_curies(html: str, missing_curies: Sequence[str]) -> str:
         f'{_CURIE_FORCED_ATTR}="true">{attr_value}</span>'
     )
     return html + span
+
+
+# ---------------------------------------------------------------------------
+# IB5 structural a11y backstop (mirror of the CURIE force-inject sweep).
+#
+# When the rewrite tier FREE-AUTHORS a B04 multimedia / B06 diagram block
+# (instead of consuming the renderer's guaranteed skeleton) it sometimes drops
+# a renderer-guaranteed a11y piece — the audio-description note, a captions
+# <track>, the transcript <details>, or (B06) the long-description <details> /
+# data-<table>. The IB5 a11y shape gate (rewrite_html_shape._check_ib5_a11y_shape)
+# checks STRUCTURAL PRESENCE of exactly these pieces. This backstop re-injects
+# ONLY the missing structural skeleton — the same shape the renderer guarantees
+# — so a shipping block satisfies the structural contract.
+#
+# ANTI-FABRICATION: the backstop NEVER invents narration / caption prose. It
+# threads through any long-description / transcript text the block already
+# carries in its fields (``Block.long_description`` / ``content[...]``); when no
+# source text exists it emits the SAME empty-labelled "pending" skeleton the
+# renderer would (the gate's contract is structural presence, not prose).
+# ---------------------------------------------------------------------------
+
+
+class _Ib5ShapeProbe(HTMLParser):
+    """Detect which IB5-gate structural a11y markers a fragment already has.
+
+    Mirrors the marker logic in ``rewrite_html_shape._ShapeParser._track_a11y``
+    so a backstop decision agrees with what the gate will conclude. Runs over
+    the POST-sanitize HTML (after ``_fix_malformed_comment_closes``), so a
+    repaired comment-close exposes the previously-swallowed siblings here.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.media_controls = False
+        self.media_track = False        # <track kind="captions">
+        self.media_audio_desc = False   # AD affordance
+        self.media_transcript = False   # <details data-cf-transcript>
+        self.saw_long_desc_details = False
+        self.saw_data_table = False
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        self._mark(tag, {k: (v or "") for k, v in attrs})
+
+    def handle_startendtag(self, tag: str, attrs: Any) -> None:
+        self._mark(tag, {k: (v or "") for k, v in attrs})
+
+    def _mark(self, tag: str, attr_map: Dict[str, str]) -> None:
+        if tag in ("video", "audio") and "controls" in attr_map:
+            self.media_controls = True
+        if tag == "track":
+            kind = (attr_map.get("kind") or "").strip().lower()
+            if kind == "captions":
+                self.media_track = True
+            if kind == "descriptions":
+                self.media_audio_desc = True
+        if "data-cf-transcript" in attr_map:
+            self.media_transcript = True
+        if "data-cf-audio-description" in attr_map:
+            self.media_audio_desc = True
+        if "audio-description" in (attr_map.get("class") or "").lower().split():
+            self.media_audio_desc = True
+        if tag == "details":
+            self.saw_long_desc_details = True
+        if "aria-describedby" in attr_map:
+            self.saw_long_desc_details = True
+        if tag == "table":
+            self.saw_data_table = True
+
+
+def _ib5_block_field(block: Block, *keys: str) -> str:
+    """Return the first non-empty value among ``block``'s dataclass fields and
+    its ``content`` dict for ``keys`` (anti-fabrication source text).
+
+    Reads only text the block ALREADY carries — never synthesizes prose.
+    """
+    for key in keys:
+        val = getattr(block, key, None)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    content = block.content if isinstance(block.content, dict) else {}
+    for key in keys:
+        val = content.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+def _inject_ib5_a11y_skeleton(html: str, block: Block) -> str:
+    """Re-inject any renderer-guaranteed IB5 a11y skeleton the block is missing.
+
+    For a SHIPPING B04 (``multimedia``) / B06 (``diagram``) block whose
+    post-sanitize HTML is missing a structural a11y piece the gate
+    (``_check_ib5_a11y_shape``) requires, append ONLY the missing structural
+    skeleton — mirroring ``generate_course._render_multimedia_section`` /
+    ``_render_diagram_section``. Well-formed blocks are byte-identical
+    (idempotent — nothing appended when every marker is already present).
+
+    Anti-fabrication: emits the empty labelled "pending" skeleton the renderer
+    would when the block carries no source text; threads through
+    ``long_description`` / ``transcript`` / ``audio_desc`` text the block
+    already has.
+    """
+    btype = getattr(block, "block_type", "")
+    if btype not in ("multimedia", "diagram"):
+        return html
+    html = html or ""
+    probe = _Ib5ShapeProbe()
+    try:
+        probe.feed(html)
+        probe.close()
+    except Exception as exc:  # noqa: BLE001 — never let a probe raise kill the emit
+        logger.debug("IB5 a11y probe raised on %r: %s", block.block_id, exc)
+        return html
+
+    additions: List[str] = []
+    if btype == "multimedia":
+        if not probe.media_controls:
+            # The media element carries controls + the captions track; emit the
+            # renderer's media-pending skeleton when neither is present.
+            additions.append(
+                '<video controls>'
+                '<track kind="captions" srclang="en" '
+                'label="Captions pending"></video>'
+            )
+        elif not probe.media_track:
+            # Controls present but no captions track — add a standalone track.
+            additions.append(
+                '<track kind="captions" srclang="en" label="Captions pending">'
+            )
+        if not probe.media_transcript:
+            transcript = _ib5_block_field(block, "transcript") or "Transcript pending."
+            additions.append(
+                f'<details data-cf-transcript><summary>Transcript</summary>'
+                f'<p>{html_escape(transcript)}</p></details>'
+            )
+        if not probe.media_audio_desc:
+            audio_desc = (
+                _ib5_block_field(block, "audio_desc", "audio_description")
+                or "Audio description pending."
+            )
+            additions.append(
+                f'<p class="audio-description">Audio description: '
+                f'{html_escape(audio_desc)}</p>'
+            )
+    else:  # diagram
+        if not probe.saw_long_desc_details:
+            long_desc = (
+                _ib5_block_field(block, "long_description")
+                or "Long description pending."
+            )
+            additions.append(
+                f'<details class="diagram-longdesc">'
+                f'<summary>Long description</summary>'
+                f'<p>{html_escape(long_desc)}</p></details>'
+            )
+        if not probe.saw_data_table:
+            additions.append(
+                '<table><caption>Diagram — data equivalent</caption>'
+                '<tbody></tbody></table>'
+            )
+
+    if not additions:
+        return html
+    logger.warning(
+        "RewriteProvider: IB5 a11y backstop re-injected %d structural "
+        "skeleton piece(s) for %s block %r (free-authored emit dropped them)",
+        len(additions),
+        btype,
+        getattr(block, "block_id", "?"),
+    )
+    return html + "".join(additions)
 
 
 def _apply_rewrite_touch(
@@ -2786,12 +3004,21 @@ class RewriteProvider(_BaseLLMProvider):
                 attempt += 1
                 continue
             dispatched_ok = True
-            # Post-emit sanitizer: escape orphan-opener placeholder tags
-            # before any downstream gate or consumer sees the response.
-            # Conservative — only ``<word>`` openers with no attributes
-            # AND no matching closer are rewritten as ``&lt;word&gt;``.
-            # Real attribute-bearing elements pass through untouched.
+            # Post-emit sanitizers, run BEFORE any downstream gate / parser /
+            # consumer sees the response:
+            #   1. Repair entity-escaped comment closes (``--&gt;`` → ``-->``)
+            #      so an unterminated comment stops swallowing the downstream
+            #      <track>/<details>/<table> a11y siblings. Runs FIRST so the
+            #      previously-swallowed tags are visible to the orphan-tag
+            #      sanitizer and the IB5 a11y backstop below.
+            #   2. Escape orphan-opener placeholder tags (``<word>`` with no
+            #      attributes and no closer) as ``&lt;word&gt;``.
+            #   3. IB5 structural a11y backstop — re-inject any
+            #      renderer-guaranteed B04/B06 a11y skeleton the free-authored
+            #      emit dropped (structural presence only; no fabricated prose).
+            html_response = _fix_malformed_comment_closes(html_response)
             html_response = _escape_orphan_placeholder_tags(html_response)
+            html_response = _inject_ib5_a11y_skeleton(html_response, block)
             total_retries += retry_count
             last_text = html_response
 
@@ -2992,6 +3219,12 @@ class RewriteProvider(_BaseLLMProvider):
             )
             return {bid: None for bid in block_ids}
 
+        # Repair entity-escaped comment closes (``--&gt;`` → ``-->``) at the
+        # envelope level FIRST so an unterminated comment in one block's
+        # fragment doesn't swallow the per-block delimiter / a11y siblings,
+        # then escape orphan-opener placeholder tags. The IB5 a11y backstop
+        # runs PER-BLOCK below (it needs the Block for its source-text fields).
+        html_response = _fix_malformed_comment_closes(html_response)
         html_response = _escape_orphan_placeholder_tags(html_response)
         parsed = parse_rewrite_batch_envelope(html_response, block_ids)
 
@@ -3008,6 +3241,11 @@ class RewriteProvider(_BaseLLMProvider):
             # batched path runs no inner remediation retry — a block whose
             # validation fails is re-batched by the router round loop, exactly
             # like the per-block remediation-suffix retry.
+            # IB5 structural a11y backstop — re-inject any renderer-guaranteed
+            # B04/B06 a11y skeleton this free-authored fragment dropped (the
+            # comment-close repair above already ran at the envelope level, so a
+            # repaired comment exposes the previously-swallowed siblings here).
+            fragment = _inject_ib5_a11y_skeleton(fragment, block)
             outline_curies = _extract_outline_curies(block.content)
             enforceable = _select_enforceable_curies(outline_curies, fragment)
             fragment = _force_inject_curies(fragment, enforceable)
