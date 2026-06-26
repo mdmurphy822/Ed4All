@@ -77,7 +77,7 @@ are passed): `ED4ALL_GUI_HOST` (default `127.0.0.1`) and `ED4ALL_GUI_PORT`
 ed4all gui` to bind all interfaces on port 9000.
 
 **Default URL:** <http://127.0.0.1:8077>. The SPA is served at `/`; the REST API
-lives under `/api`; the run-log WebSocket is `/ws/runs/{run_id}`. A liveness
+lives under `/api`; the run-log WebSocket is `/api/ws/runs/{run_id}`. A liveness
 probe is `GET /api/health`.
 
 ---
@@ -299,7 +299,7 @@ Courseforge stage subcommands (`courseforge`, `courseforge_outline`,
 
 | Path | Frames |
 |------|--------|
-| `WS /ws/runs/{run_id}` | `{type:"line", line}` per log chunk; `{type:"status", status, gates, error}` at a terminal state, then close; `{type:"error", ...}` if the run is unknown. |
+| `WS /api/ws/runs/{run_id}` | `{type:"line", line}` per log chunk; `{type:"status", status, gates, error}` at a terminal state, then close; `{type:"error", ...}` if the run is unknown. |
 
 The socket tails the run's log file by byte offset and polls the run record
 until it reaches `completed` / `failed` / `cancelled`.
@@ -556,7 +556,7 @@ structure with `aria-current="step"` on the active step):
    with a link to the Studio settings page, and an **Advanced** `<details>`
    block (skip assessments / skip training synthesis) collapsed by default.
 3. **Launch** — `POST /api/runs` (`workflow: textbook_to_course`), then a
-   **phase-checklist** progress view driven by the existing `/ws/runs/{run_id}`
+   **phase-checklist** progress view driven by the existing `/api/ws/runs/{run_id}`
    socket. Each phase renders with a friendly name (from the `label` field on
    `/api/workflows` phases — see `run_service.PHASE_LABELS`) and a
    pending / running / done / skipped / failed state, plus an elapsed timer. On

@@ -389,7 +389,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "optional": ["staging_dir", "textbook_structure_path", "course_name"],
         "defaults": {},
         "param_mapping": {},
-        "description": "Wave 9 source_mapping phase stub: writes an empty source_module_map.json so content-generator falls through to the LO-only backward-compat path.",
+        "description": "source_mapping phase: TF-IDF / keyword-overlap router that maps DART source blocks to Courseforge module pages; emits source_module_map.json consumed by content_generation.",
     },
 
     # Wave 24: Replace textbook-ingestor's create_course_project dispatch

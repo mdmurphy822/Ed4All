@@ -9,7 +9,7 @@ LibV2 is a large-scale repository (1000+ entries) for SLM (Small Language Model)
 LibV2 is the **final stage** of the Ed4All core pipeline. SLM training is a post-import sub-stage that operates on already-imported courses.
 
 ```
-DART ───> Courseforge ───> Trainforge ─────────────────> LibV2 (this)
+SemantiK ───> Courseforge ───> Trainforge ──────────────> LibV2 (this)
                                 │                          │
                                 └─── training_specs/ ────> models/<model_id>/
                                           ↓                       ↑

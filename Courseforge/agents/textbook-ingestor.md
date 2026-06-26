@@ -10,7 +10,7 @@ Accept various input formats (PDF, IMSCC, HTML, text) and route to appropriate p
 
 | Input Type | Detection | Processing Route |
 |------------|-----------|-----------------|
-| PDF (textbook) | `.pdf` extension | DART conversion |
+| PDF (textbook) | `.pdf` extension | SemantiK v2 cascade conversion |
 | IMSCC Package | `.imscc` extension, ZIP with `imscc_manifest.xml` | IMSCC intake parser → DART enhancement |
 | HTML (DART-processed) | Skip-link, ARIA landmarks, semantic sections | Direct to structure extraction |
 | HTML (generic) | Missing DART markers | WCAG enhancement → DART-style formatting |
@@ -74,36 +74,38 @@ def detect_input_type(input_path: str) -> InputType:
 ```python
 def process_pdf_textbook(pdf_path: str, workspace: str) -> ProcessingResult:
     """
-    Process PDF textbook through DART.
+    Convert a PDF textbook to accessible HTML via the SemantiK v2 cascade.
 
-    Uses: scripts/dart-batch-processor/dart_batch_processor.py
-    DART location: Set via DART_PATH environment variable
+    SemantiK is the sole conversion engine; the legacy DART / PyMuPDF batch
+    processor is retired. The single chokepoint is
+    MCP/tools/pipeline_tools.py::_run_semantik_v2_conversion, which runs
+    SemantiK.dart_semantic.cascade.run_pipeline_v2(pdf) -> build_chapters_ir
+    -> normalize_cascade_to_ed4all, writes {stem}_accessible.html + two
+    sidecars, and preserves the data-dart-* / dart:{slug}#{block_id}
+    source-provenance wire contract that downstream stages still consume.
     """
-    dart_path = os.environ.get('DART_PATH')
-    if not dart_path:
-        raise EnvironmentError("DART_PATH environment variable must be set")
+    from MCP.tools.pipeline_tools import _run_semantik_v2_conversion
 
-    dart_processor = DARTBatchProcessor(
-        output_dir=workspace / 'dart_processing',
-        dart_path=Path(dart_path)
+    stem = Path(pdf_path).stem
+    output_path = Path(workspace) / 'dart_processing' / f'{stem}_accessible.html'
+
+    # Run the SemantiK v2 cascade (lazy-imports SemantiK's heavy runtime deps;
+    # returns the Ed4All tool JSON contract — success / html_path / html_paths).
+    result = _run_semantik_v2_conversion(
+        pdf_path=str(pdf_path),
+        output_path=str(output_path),
     )
 
-    # Add document for processing
-    dart_processor.add_document(pdf_path)
-
-    # Execute DART conversion
-    result = dart_processor.process_all()
-
-    if result.successful_conversions > 0:
+    if result.get('success'):
         return ProcessingResult(
             status='success',
-            output_path=result.tasks[0].output_path,
-            format='dart_html'
+            output_path=result['html_path'],
+            format='dart_html'  # accessible HTML carrying the data-cf-*/data-dart-* contract
         )
     else:
         return ProcessingResult(
             status='failed',
-            error=result.errors[0] if result.errors else 'Unknown error'
+            error=result.get('error', 'SemantiK conversion failed')
         )
 ```
 

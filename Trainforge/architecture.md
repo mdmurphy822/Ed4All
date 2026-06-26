@@ -454,4 +454,4 @@ libv2 models eval <course-slug> <model_id>
 - Licensing posture (per provider, per model): `docs/LICENSING.md`
 - LibV2 import / model-pointers contract: `LibV2/CLAUDE.md`
 - Courseforge JSON-LD output (Trainforge metadata input): `Courseforge/CLAUDE.md`
-- DART source provenance (chunk `source.source_references[]` ancestry): `DART/CLAUDE.md`
+- DART source provenance (chunk `source.source_references[]` ancestry): `SemantiK/CLAUDE.md`

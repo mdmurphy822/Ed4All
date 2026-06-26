@@ -5,7 +5,7 @@
 
 **Generate LMS-ready course packages from learning objectives or accessible textbook content.**
 
-Courseforge turns a set of objectives (and optional DART-processed textbook HTML) into a complete, accessible, IMSCC-packaged online course. Output includes weekly modules with content pages, activities, self-checks, summaries, and discussions — all WCAG 2.2 AA compliant and ready to import into Brightspace, Canvas, Blackboard, or Moodle. Every page carries rich machine-readable metadata (Bloom's-aligned learning objectives, content types, key terms, misconceptions) so downstream tools can ground assessments and retrieval in cited source material. Courseforge can also ingest an existing IMSCC package from any supported LMS and remediate it to 100% WCAG 2.2 AA compliance.
+Courseforge turns a set of objectives (and optional SemantiK-converted textbook HTML) into a complete, accessible, IMSCC-packaged online course. Output includes weekly modules with content pages, activities, self-checks, summaries, and discussions — all WCAG 2.2 AA compliant and ready to import into Brightspace, Canvas, Blackboard, or Moodle. Every page carries rich machine-readable metadata (Bloom's-aligned learning objectives, content types, key terms, misconceptions) so downstream tools can ground assessments and retrieval in cited source material. Courseforge can also ingest an existing IMSCC package from any supported LMS and remediate it to 100% WCAG 2.2 AA compliance.
 
 ## Quick example
 
