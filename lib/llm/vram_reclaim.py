@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -84,31 +84,56 @@ def resolve_ollama_root(base_url: Optional[str] = None) -> str:
     return resolved
 
 
-def _list_running_models(client: "Any", root: str) -> List[str]:  # noqa: F821
-    """Return the model names ollama reports as currently resident.
+def _fetch_resident_models(client: "Any", root: str) -> List[Dict[str, Any]]:  # noqa: F821
+    """Parse ``GET {root}/api/ps`` into resident-model entries.
 
-    ``GET {root}/api/ps`` returns ``{"models": [{"name": "...", ...}, ...]}``.
-    Best-effort: any error / unexpected shape returns an empty list.
+    The SINGLE shared ollama ``/api/ps`` parser — both this module's evictor
+    (:func:`_list_running_models`, which needs only the names) and the VRAM
+    doctor (``lib.llm.vram_doctor._query_resident_models``, which needs the
+    name + ``size_vram`` bytes → MiB) call this so the guard sequence
+    (get → raise_for_status → json → dict guard → models-list → per-entry
+    name) lives in exactly one place.
+
+    ``GET {root}/api/ps`` returns ``{"models": [{"name": "...",
+    "size_vram": <bytes>, ...}, ...]}``. Returns a list of
+    ``{"name": str, "size_vram": <raw>}`` dicts — one per resident model
+    that carries a usable name (``"name"`` or ``"model"``). A response of an
+    unexpected-but-non-erroring shape yields ``[]``.
+
+    NOTE: this helper does NOT swallow transport/JSON errors — it lets a
+    failed ``client.get`` / ``raise_for_status`` / ``json`` propagate so each
+    caller can decide how to report it. Both call sites wrap it best-effort
+    (never raise; ollama-down → ``[]`` / a degraded value).
     """
-    try:
-        resp = client.get(f"{root}/api/ps")
-        resp.raise_for_status()
-        body = resp.json()
-    except Exception as exc:  # noqa: BLE001 — server down / bad JSON / etc.
-        logger.debug("vram_reclaim: /api/ps probe failed: %s", exc)
-        return []
+    resp = client.get(f"{root}/api/ps")
+    resp.raise_for_status()
+    body = resp.json()
     models = body.get("models") if isinstance(body, dict) else None
     if not isinstance(models, list):
         return []
-    names: List[str] = []
+    entries: List[Dict[str, Any]] = []
     for entry in models:
         if not isinstance(entry, dict):
             continue
         # ollama uses "name" (and sometimes "model"); accept either.
         name = entry.get("name") or entry.get("model")
         if isinstance(name, str) and name.strip():
-            names.append(name.strip())
-    return names
+            entries.append({"name": name.strip(), "size_vram": entry.get("size_vram")})
+    return entries
+
+
+def _list_running_models(client: "Any", root: str) -> List[str]:  # noqa: F821
+    """Return the model names ollama reports as currently resident.
+
+    Thin wrapper over the shared :func:`_fetch_resident_models` parser.
+    Best-effort: any error / unexpected shape returns an empty list.
+    """
+    try:
+        entries = _fetch_resident_models(client, root)
+    except Exception as exc:  # noqa: BLE001 — server down / bad JSON / etc.
+        logger.debug("vram_reclaim: /api/ps probe failed: %s", exc)
+        return []
+    return [entry["name"] for entry in entries]
 
 
 def _unload_model(client: "Any", root: str, model: str) -> bool:  # noqa: F821

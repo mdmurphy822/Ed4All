@@ -16,6 +16,8 @@ try:
         ExecutionResult,
         TaskExecutor,
         ToolRegistryError,
+        _is_cuda_oom,
+        _probe_free_vram_mib,
     )
 except ImportError:
     pytest.skip("executor not available", allow_module_level=True)
@@ -569,3 +571,261 @@ class TestAgentToolMapping:
         for agent, tool in AGENT_TOOL_MAPPING.items():
             assert isinstance(agent, str)
             assert isinstance(tool, str)
+
+
+# =============================================================================
+# CUDA OUT-OF-MEMORY DIAGNOSTIC TESTS
+# =============================================================================
+
+class _SyntheticOutOfMemoryError(Exception):
+    """Stand-in whose ``__name__`` is ``OutOfMemoryError`` for OOM detection.
+
+    Mirrors how ``torch.cuda.OutOfMemoryError`` is seen by ``_is_cuda_oom``
+    without requiring torch in CI.
+    """
+
+
+# Rename so ``type(exc).__name__ == "OutOfMemoryError"`` matches.
+_SyntheticOutOfMemoryError.__name__ = "OutOfMemoryError"
+_SyntheticOutOfMemoryError.__qualname__ = "OutOfMemoryError"
+
+
+class TestIsCudaOom:
+    """Test the _is_cuda_oom predicate (torch-free)."""
+
+    @pytest.mark.unit
+    def test_true_for_outofmemoryerror_class_name(self):
+        """True when the exception class name is OutOfMemoryError."""
+        exc = _SyntheticOutOfMemoryError("ran out")
+        assert type(exc).__name__ == "OutOfMemoryError"
+        assert _is_cuda_oom(exc) is True
+
+    @pytest.mark.unit
+    def test_true_for_cuda_out_of_memory_message(self):
+        """True for a generic exception carrying a CUDA OOM message."""
+        exc = RuntimeError(
+            "CUDA out of memory. Tried to allocate 512.00 MiB"
+        )
+        assert _is_cuda_oom(exc) is True
+
+    @pytest.mark.unit
+    def test_true_for_out_of_memory_plus_cuda_message(self):
+        """True when message has both 'out of memory' and 'cuda' separately."""
+        exc = Exception("the CUDA device reported it is out of memory")
+        assert _is_cuda_oom(exc) is True
+
+    @pytest.mark.unit
+    def test_false_for_value_error(self):
+        """False for an ordinary ValueError."""
+        assert _is_cuda_oom(ValueError("bad input")) is False
+
+    @pytest.mark.unit
+    def test_false_for_timeout(self):
+        """False for a timeout-style error (the transient retry path)."""
+        assert _is_cuda_oom(TimeoutError("Connection timeout")) is False
+
+    @pytest.mark.unit
+    def test_false_for_host_oom_message(self):
+        """False for a plain host 'out of memory' with no CUDA context."""
+        assert _is_cuda_oom(MemoryError("out of memory")) is False
+
+    @pytest.mark.unit
+    def test_false_for_none(self):
+        """False (no crash) for None."""
+        assert _is_cuda_oom(None) is False
+
+
+@pytest.mark.usefixtures("state_runs_isolated")
+class TestCudaOomExecutionPath:
+    """Test the executor's loud CUDA-OOM DIAGNOSTIC branch.
+
+    Contract (post-redesign): a CUDA OOM is a pure LOGGING side-effect —
+    the executor emits one loud, attributable ``GPU OUT OF MEMORY`` error
+    (with a best-effort free-VRAM probe), then FALLS THROUGH to the
+    unchanged ``ErrorClassifier`` + ``PoisonPillDetector`` path. Because
+    the classifier matches "out of memory" as a POISON_PATTERN, a real
+    CUDA OOM is classified POISON_PILL and trips the runaway-VRAM circuit
+    breaker. The OOM branch must NOT short-circuit with a forced one-shot
+    PERMANENT result (the regression this redesign fixes — that bypassed
+    the poison detector and removed the circuit breaker).
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_oom_fires_loud_diagnostic_and_defers_to_classifier(self, caplog):
+        """OOM fires the loud diagnostic, then flows through classify/poison.
+
+        Not a one-shot forced PERMANENT: a persistent OOM is recorded by
+        the poison detector across attempts and stops the batch
+        (POISON_PILL) once the default threshold (3) is reached — proving
+        the branch is logging-only, not a control-flow short-circuit.
+        """
+        import logging
+
+        call_count = [0]
+
+        async def oom_tool(**kwargs):
+            call_count[0] += 1
+            raise RuntimeError(
+                "CUDA out of memory. Tried to allocate 2.00 GiB"
+            )
+
+        registry = {"generate_course_content": oom_tool}
+        # Default poison_pill_threshold=3.
+        executor = TaskExecutor(tool_registry=registry, max_retries=3)
+        if executor.poison_detector is None:
+            pytest.skip("hardening error_classifier/poison_detector unavailable")
+
+        task = {
+            "agent_type": "content-generator",
+            "params": {"project_id": "TEST_OOM"},
+        }
+        with patch(
+            "MCP.core.executor._probe_free_vram_mib", return_value=137
+        ):
+            with patch.object(executor, "_load_task", return_value=task):
+                with patch.object(executor, "_update_task_status"):
+                    with caplog.at_level(logging.ERROR, logger="MCP.core.executor"):
+                        result = await executor.execute_task("W001", "T_OOM")
+
+        # Deferred to the classifier → POISON_PILL via the circuit breaker
+        # (NOT a forced one-shot PERMANENT).
+        assert result.status == "POISON_PILL"
+        assert result.error_class == "poison_pill"
+        # Reached the threshold → tool invoked 3x (NOT short-circuited at 1).
+        assert call_count[0] == 3
+        # The loud diagnostic landed exactly once, carrying the probed VRAM.
+        loud = [
+            r for r in caplog.records
+            if r.levelno >= logging.ERROR
+            and "GPU OUT OF MEMORY" in r.getMessage()
+        ]
+        assert loud, "expected a loud GPU OUT OF MEMORY error log"
+        assert "137 MiB free" in loud[0].getMessage()
+        # Logged at most once per task execution despite 3 OOM attempts.
+        assert len(loud) == 1
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_oom_unprobeable_vram_still_loud(self, caplog):
+        """OOM with an unprobeable VRAM snapshot still logs the loud diagnostic."""
+        import logging
+
+        async def oom_tool(**kwargs):
+            # Synthetic torch-OOM class AND a real OOM message so it is both
+            # detected by ``_is_cuda_oom`` and classified POISON_PILL.
+            raise _SyntheticOutOfMemoryError(
+                "CUDA out of memory while allocating buffer"
+            )
+
+        registry = {"generate_course_content": oom_tool}
+        executor = TaskExecutor(tool_registry=registry, max_retries=3)
+        if executor.poison_detector is None:
+            pytest.skip("hardening error_classifier/poison_detector unavailable")
+
+        task = {
+            "agent_type": "content-generator",
+            "params": {"project_id": "TEST_OOM2"},
+        }
+        with patch(
+            "MCP.core.executor._probe_free_vram_mib", return_value=None
+        ):
+            with patch.object(executor, "_load_task", return_value=task):
+                with patch.object(executor, "_update_task_status"):
+                    with caplog.at_level(logging.ERROR, logger="MCP.core.executor"):
+                        result = await executor.execute_task("W001", "T_OOM2")
+
+        # Still deferred to the classifier (POISON_PILL); the diagnostic
+        # just reports the VRAM as unprobeable.
+        assert result.status == "POISON_PILL"
+        loud = [
+            r for r in caplog.records
+            if "GPU OUT OF MEMORY" in r.getMessage()
+        ]
+        assert loud, "expected a loud GPU OUT OF MEMORY error log"
+        assert "free VRAM unprobeable" in loud[0].getMessage()
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_oom_does_not_bypass_poison_detector(self):
+        """Regression guard: the OOM branch must REACH the poison detector.
+
+        The buggy early-return classified OOM as a one-shot PERMANENT and
+        returned BEFORE ``record_failure`` ran, removing the runaway-VRAM
+        circuit breaker. This proves the detector now sees the OOM
+        failures and the breaker fires.
+        """
+        async def oom_tool(**kwargs):
+            raise RuntimeError(
+                "CUDA out of memory. Tried to allocate 4.00 GiB"
+            )
+
+        registry = {"generate_course_content": oom_tool}
+        executor = TaskExecutor(tool_registry=registry, max_retries=3)
+        if executor.poison_detector is None:
+            pytest.skip("hardening error_classifier/poison_detector unavailable")
+
+        # Spy on the real poison detector (delegating to the real impl) to
+        # prove the OOM path reaches record_failure.
+        real_record = executor.poison_detector.record_failure
+        seen = []
+
+        def _spy(classified):
+            seen.append(classified)
+            return real_record(classified)
+
+        executor.poison_detector.record_failure = _spy
+
+        task = {
+            "agent_type": "content-generator",
+            "params": {"project_id": "TEST_CB"},
+        }
+        with patch("MCP.core.executor._probe_free_vram_mib", return_value=42):
+            with patch.object(executor, "_load_task", return_value=task):
+                with patch.object(executor, "_update_task_status"):
+                    result = await executor.execute_task("W001", "T_CB")
+
+        # The detector saw the OOM failures (NOT bypassed) ...
+        assert len(seen) >= 1
+        # ... each classified POISON_PILL by the existing classifier ...
+        assert all(c.error_class.name == "POISON_PILL" for c in seen)
+        # ... and the circuit breaker fired.
+        assert result.status == "POISON_PILL"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_non_oom_transient_error_unchanged(self):
+        """A non-OOM transient error still follows the classify/retry path."""
+        call_count = [0]
+
+        async def flaky_tool(**kwargs):
+            call_count[0] += 1
+            if call_count[0] < 3:
+                raise ConnectionError("Connection reset by peer")
+            return json.dumps({"status": "success"})
+
+        registry = {"generate_course_content": flaky_tool}
+        executor = TaskExecutor(tool_registry=registry, max_retries=3)
+
+        task = {
+            "agent_type": "content-generator",
+            "params": {"project_id": "TEST_RETRY"},
+        }
+        # Probe must never be consulted on the non-OOM path.
+        with patch(
+            "MCP.core.executor._probe_free_vram_mib",
+            side_effect=AssertionError("VRAM probe must not run on non-OOM path"),
+        ):
+            with patch.object(executor, "_load_task", return_value=task):
+                with patch.object(executor, "_update_task_status"):
+                    result = await executor.execute_task("W001", "T_RETRY")
+
+        # Retried and eventually succeeded — the existing path is intact.
+        assert result.status == "COMPLETE"
+        assert call_count[0] == 3
+
+    @pytest.mark.unit
+    def test_probe_free_vram_never_raises(self):
+        """_probe_free_vram_mib returns an int or None, never raises."""
+        out = _probe_free_vram_mib()
+        assert out is None or isinstance(out, int)

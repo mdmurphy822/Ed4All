@@ -10,6 +10,7 @@ Usage:
     result = await runner.run_workflow(workflow_id)
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -31,6 +32,18 @@ from .executor import (
     ExecutionResult,
     TaskExecutor,
     _agent_dispatch_enabled,
+)
+
+# VRAM-contention doctor — per-phase forensic free-VRAM trajectory. Imported
+# at module scope (rather than lazily inside the hook) so a default-off run
+# pays only the import cost and tests can patch these symbols on this module.
+# The whole hook is gated behind ``vram_doctor_enabled()`` (default OFF) and
+# wrapped best-effort, so the default path never calls ``snapshot_vram`` and a
+# doctor failure can never affect the run. See lib/llm/vram_doctor.py.
+from lib.llm.vram_doctor import (
+    snapshot_vram,
+    vram_doctor_enabled,
+    write_trajectory_row,
 )
 
 
@@ -1243,6 +1256,78 @@ class WorkflowRunner:
         self.executor = executor
         self.config = config
 
+    async def _vram_doctor_snapshot(
+        self,
+        phase_name: str,
+        when: str,
+        event: str,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Append one best-effort VRAM-trajectory row for a phase boundary.
+
+        A no-op unless ``ED4ALL_VRAM_DOCTOR`` is on (``vram_doctor_enabled``):
+        the default-off path returns IMMEDIATELY — it never probes VRAM (no
+        NVML read, no ollama HTTP call) AND spawns NO worker thread, so a
+        default run is byte-identical and zero-overhead.
+
+        When enabled, the actual snapshot+write — ``snapshot_vram`` does a
+        BLOCKING ollama ``/api/ps`` HTTP round-trip + NVML probes — is offloaded
+        to a worker thread via ``asyncio.to_thread`` so a slow/unreachable
+        ollama (or a slow NVML probe) can NEVER block the async run loop at a
+        phase boundary (this hook runs inline twice per phase). It snapshots
+        free/total VRAM + the resident ollama models and appends a JSON line to
+        ``state/runs/<run_id>/vram_trajectory.jsonl`` (the SAME run dir the
+        executor writes its phase checkpoints into — ``run_id`` is the
+        executor's ``run_id``, which resolves ``get_state_runs_dir() / run_id``
+        identically to the checkpoint manager's ``run_path``). The whole hook is
+        wrapped best-effort so a doctor failure (incl. a ``to_thread`` error)
+        can NEVER perturb the run's control flow or ``final_status``.
+        """
+        try:
+            if not vram_doctor_enabled():
+                return
+            run_id = getattr(self.executor, "run_id", None) or "unknown"
+            await asyncio.to_thread(
+                self._vram_doctor_snapshot_blocking,
+                run_id,
+                phase_name,
+                when,
+                event,
+                extra,
+            )
+        except Exception as exc:  # noqa: BLE001 — observability must never crash the run
+            logger.debug(
+                "vram_doctor: per-phase trajectory hook failed for phase %r "
+                "(%s); ignoring: %s",
+                phase_name, when, exc,
+            )
+
+    @staticmethod
+    def _vram_doctor_snapshot_blocking(
+        run_id: str,
+        phase_name: str,
+        when: str,
+        event: str,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Synchronous snapshot+write body, run off the event loop.
+
+        Holds the blocking ``snapshot_vram`` (ollama HTTP + NVML) +
+        ``write_trajectory_row`` (disk append). Invoked only via
+        ``asyncio.to_thread`` from the enabled path of
+        ``_vram_doctor_snapshot``; the caller wraps it best-effort, so this body
+        does not need its own guard.
+        """
+        snapshot = snapshot_vram()
+        write_trajectory_row(
+            run_id,
+            phase_name,
+            when,
+            snapshot,
+            event=event,
+            extra=extra,
+        )
+
     async def run_workflow(self, workflow_id: str) -> Dict[str, Any]:
         """
         Execute all phases of a workflow in dependency order.
@@ -1563,6 +1648,11 @@ class WorkflowRunner:
             # Pre-Wave-33 extraction happened here (post-execute_phase)
             # so gate builders never saw the current phase's keys and
             # six gates silently skipped with "missing inputs: *".
+            #
+            # VRAM doctor: capture free-VRAM BEFORE the phase runs so a
+            # crash / OOM mid-phase still leaves a forensic timeline. No-op
+            # + zero-overhead unless ED4ALL_VRAM_DOCTOR is on.
+            await self._vram_doctor_snapshot(phase_name, "before", "phase_start")
             results, gates_passed, gate_results = await self.executor.execute_phase(
                 workflow_id=workflow_id,
                 phase_name=phase_name,
@@ -1573,6 +1663,13 @@ class WorkflowRunner:
                 phase_outputs=phase_outputs,
                 workflow_params=workflow_params,
                 extract_phase_outputs_fn=self._extract_phase_outputs,
+            )
+            # VRAM doctor: capture free-VRAM AFTER the phase returns, stamped
+            # with the gate verdict, so the trajectory shows the per-phase
+            # delta (e.g. a model that loaded + never released the card).
+            await self._vram_doctor_snapshot(
+                phase_name, "after", "phase_end",
+                extra={"phase_passed": bool(gates_passed)},
             )
 
             # Extract outputs from results

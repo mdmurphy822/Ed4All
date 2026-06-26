@@ -392,6 +392,89 @@ def _agent_dispatch_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _is_cuda_oom(exc: Optional[BaseException]) -> bool:
+    """Return True iff ``exc`` is (or looks like) a CUDA out-of-memory error.
+
+    A ``torch.cuda.OutOfMemoryError`` raised during an NLI / embedding
+    forward pass on a VRAM-starved box (a resident local 7B holding the
+    card) is otherwise swallowed by the broad ``except Exception`` in
+    ``_execute_with_retries`` and logged as a generic, hard-to-grep
+    warning. This predicate lets the executor recognise the OOM and emit a
+    LOUD, attributable diagnostic.
+
+    Scope note: this predicate now governs LOGGING ONLY. The OOM branch in
+    ``_execute_with_retries`` uses it to decide whether to emit the loud
+    GPU-OOM diagnostic, then FALLS THROUGH to the unchanged
+    ``ErrorClassifier`` path — and a CUDA OOM message already matches the
+    classifier's ``out of memory`` POISON_PATTERN, so it is classified
+    POISON_PILL and stops the batch via the existing runaway-VRAM circuit
+    breaker. Because this gates only the extra log line, an over-broad
+    match here is harmless (it costs at most one spurious diagnostic, never
+    a behaviour change).
+
+    Deliberately does NOT require torch to be importable (torch may be
+    absent in CI / on a CPU box). Detection is three-pronged:
+
+      1. ``isinstance`` against ``torch.cuda.OutOfMemoryError`` when torch
+         imports cleanly (the precise check).
+      2. The exception class name is ``OutOfMemoryError`` (covers a torch
+         OOM seen through a different import path, and any builtin
+         ``OutOfMemoryError``).
+      3. The message contains "cuda out of memory", or BOTH "out of
+         memory" AND "cuda" (robust against driver / runtime variants).
+
+    Never raises.
+    """
+    if exc is None:
+        return False
+    # 1) Precise isinstance when torch is importable.
+    try:  # pragma: no cover - torch presence is environment-dependent
+        import torch  # type: ignore
+
+        oom_cls = getattr(getattr(torch, "cuda", None), "OutOfMemoryError", None)
+        if oom_cls is not None and isinstance(exc, oom_cls):
+            return True
+    except Exception:  # noqa: BLE001 - torch absent / broken build
+        pass
+    # 2) Class-name fallback (torch absent / different import path).
+    if type(exc).__name__ == "OutOfMemoryError":
+        return True
+    # 3) Message-content fallback.
+    msg = str(exc).lower()
+    if "cuda out of memory" in msg:
+        return True
+    if "out of memory" in msg and "cuda" in msg:
+        return True
+    return False
+
+
+def _probe_free_vram_mib() -> Optional[int]:
+    """Best-effort free-VRAM (MiB) snapshot for the OOM diagnostic.
+
+    Cheap and GPU-process-free: reads the NLI classifier's
+    ``probe_free_vram_mib`` (NVML-first, so it reports the correct
+    cross-process free VRAM on WSL2) DIRECTLY. It deliberately does NOT go
+    through ``lib/llm/vram_doctor.snapshot_vram`` — that helper does a
+    blocking ollama ``/api/ps`` HTTP round-trip plus a total-VRAM probe to
+    build a full snapshot, which is far too heavy for a diagnostic that
+    only needs one free-MiB int. ``torch`` and the probe are imported
+    lazily inside the guard so neither is a hard dependency (torch may be
+    absent in CI / on a CPU box). Returns ``None`` on any failure; never
+    raises (the diagnostic path must not itself blow up).
+    """
+    try:
+        import torch  # type: ignore
+
+        from lib.classifiers.nli_classifier import probe_free_vram_mib
+
+        free = probe_free_vram_mib(torch, "cuda")
+        if free is not None:
+            return int(free)
+    except Exception:  # noqa: BLE001 - torch / probe unavailable
+        pass
+    return None
+
+
 @dataclass
 class ExecutionResult:
     """Result of executing a task."""
@@ -817,6 +900,10 @@ class TaskExecutor:
         last_error = None
         error_class_value = None
         retry_count = 0
+        # Log the loud GPU-OOM diagnostic at most once per task execution
+        # (an OOM that persists across retry attempts would otherwise emit
+        # one loud line + one VRAM probe per attempt — noise, not signal).
+        _oom_logged = False
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -892,6 +979,59 @@ class TaskExecutor:
 
             except Exception as e:
                 last_error = str(e)
+
+                # GPU OUT-OF-MEMORY diagnostic (LOGGING ONLY — this branch
+                # does NOT alter control flow). A torch CUDA OOM raised
+                # during NLI/embedding scoring on a VRAM-starved box (a
+                # resident local 7B holding the card) is otherwise swallowed
+                # here as a bland warning. We emit a LOUD, attributable
+                # diagnostic with a best-effort free-VRAM probe so the OOM is
+                # greppable, then FALL THROUGH to the unchanged classifier +
+                # poison-detector path below.
+                #
+                # Crucially we do NOT early-return a forced PERMANENT result:
+                # the ``ErrorClassifier`` already matches "out of memory" via
+                # its POISON_PATTERNS, so a CUDA OOM is classified POISON_PILL
+                # and the existing poison-detector STOPS the batch (the
+                # documented runaway-VRAM circuit breaker). An earlier version
+                # short-circuited with a one-shot PERMANENT return here, which
+                # silently removed that circuit breaker — the bug this redesign
+                # fixes. The diagnostic is emitted at most once per task
+                # execution (``_oom_logged``) to avoid repeating across retry
+                # attempts.
+                if _is_cuda_oom(e) and not _oom_logged:
+                    _oom_logged = True
+                    free_mib = _probe_free_vram_mib()
+                    free_desc = (
+                        f"{free_mib} MiB free"
+                        if free_mib is not None
+                        else "free VRAM unprobeable"
+                    )
+                    logger.error(
+                        f"[{self.run_id}] GPU OUT OF MEMORY during task "
+                        f"{task_id} (tool '{tool_name}', attempt "
+                        f"{attempt + 1}): {free_desc} at failure — a "
+                        f"resident model (likely the local 7B) is starving "
+                        f"NLI/embedding. Deferring to the standard error "
+                        f"classifier (POISON_PILL → batch circuit breaker). "
+                        f"Exception: {e}"
+                    )
+                    if self.capture:
+                        self.capture.log_decision(
+                            decision_type="task_execution",
+                            decision=(
+                                f"Task {task_id} hit CUDA out-of-memory; emitted "
+                                f"loud diagnostic, deferring to the classifier"
+                            ),
+                            rationale=(
+                                f"GPU OOM via tool '{tool_name}' on attempt "
+                                f"{attempt + 1} ({free_desc} at failure) — logged "
+                                f"as a side-effect; the classify + poison-pill "
+                                f"path proceeds unchanged so the runaway-VRAM "
+                                f"circuit breaker fires"
+                            ),
+                        )
+
                 logger.warning(f"[{self.run_id}] Task {task_id} attempt {attempt + 1} failed: {e}")
 
                 # Phase 0: Classify error for retry decisions

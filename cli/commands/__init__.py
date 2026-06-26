@@ -14,6 +14,7 @@ natural-language query).
 # Importing libv2_generate_quiz attaches the ``generate-quiz``
 # subcommand to the shared ``libv2_group`` Click group at import time.
 from . import libv2_generate_quiz  # noqa: F401
+from .doctor import register_doctor_command
 from .gui_cmd import register_gui_command
 from .libv2_ask import register_libv2_ask_command
 from .libv2_generate_study_pack import register_generate_study_pack_command
@@ -51,4 +52,5 @@ __all__ = [
     "register_generate_study_pack_command",
     "register_tutor_command",
     "register_gui_command",
+    "register_doctor_command",
 ]

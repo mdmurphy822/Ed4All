@@ -130,6 +130,21 @@ except ImportError as _gui_import_err:  # pragma: no cover
     )
 
 
+# Register 'ed4all doctor' command — GPU/VRAM-contention preflight check.
+# Lazy try/except so the CLI still loads if the vram_doctor foundation (or
+# its torch/httpx-optional deps) fails to import.
+try:
+    from cli.commands import register_doctor_command
+
+    register_doctor_command(cli)
+except ImportError as _doctor_import_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.doctor unavailable: %s",
+        _doctor_import_err,
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================

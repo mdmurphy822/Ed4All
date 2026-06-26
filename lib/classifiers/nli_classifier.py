@@ -182,6 +182,53 @@ def _cuda_device_index(device: str) -> int:
     return 0
 
 
+def probe_free_vram_mib_with_source(
+    torch_module: Any, device: str
+) -> Tuple[Optional[int], str]:
+    """Same probe as :func:`probe_free_vram_mib`, plus the source backend.
+
+    Returns ``(free_mib, source)`` where ``source`` is:
+
+    * ``"nvml"`` — the NVML memory read succeeded (the cross-process-correct,
+      WSL2-load-bearing number);
+    * ``"torch"`` — NVML failed and the value came from the
+      ``torch.cuda.mem_get_info`` fallback (correct on native Linux only,
+      cross-process-BLIND on WSL2 — it over-reports);
+    * ``"unavailable"`` — both backends failed (``free_mib`` is ``None``).
+
+    The branch ORDER mirrors :func:`probe_free_vram_mib` exactly (NVML init →
+    handle → memory-info → on ANY NVML failure, ``torch.cuda.mem_get_info`` →
+    else None); the returned source tag identifies the branch that actually
+    produced the int, so a caller stamping provenance can never mislabel a
+    torch-derived number as ``"nvml"``. Best-effort: never raises.
+    """
+    idx = _cuda_device_index(device)
+    # 1) NVML — true global free (correct on WSL2 AND native Linux).
+    try:
+        import pynvml  # type: ignore
+
+        pynvml.nvmlInit()
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return int(mem.free) // (1024 * 1024), "nvml"
+        finally:
+            try:
+                pynvml.nvmlShutdown()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001 — NVML missing / no permission / odd build
+        pass
+    # 2) torch.cuda.mem_get_info — correct on native Linux (NOT WSL2, where
+    #    it ignores other processes' allocations).
+    try:
+        dev_arg = device if device != "cuda" else None
+        free_bytes, _total = torch_module.cuda.mem_get_info(dev_arg)
+        return int(free_bytes) // (1024 * 1024), "torch"
+    except Exception:  # noqa: BLE001
+        return None, "unavailable"
+
+
 def probe_free_vram_mib(torch_module: Any, device: str) -> Optional[int]:
     """Return the GLOBALLY-free VRAM (MiB) on ``device``, or None on failure.
 
@@ -196,32 +243,13 @@ def probe_free_vram_mib(torch_module: Any, device: str) -> Optional[int]:
     ``torch.cuda.mem_get_info`` (correct on native Linux) when NVML is
     unavailable, then to None (probe failed → caller proceeds with the
     load-time OOM guard only). Best-effort: never raises.
-    """
-    idx = _cuda_device_index(device)
-    # 1) NVML — true global free (correct on WSL2 AND native Linux).
-    try:
-        import pynvml  # type: ignore
 
-        pynvml.nvmlInit()
-        try:
-            handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
-            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            return int(mem.free) // (1024 * 1024)
-        finally:
-            try:
-                pynvml.nvmlShutdown()
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception:  # noqa: BLE001 — NVML missing / no permission / odd build
-        pass
-    # 2) torch.cuda.mem_get_info — correct on native Linux (NOT WSL2, where
-    #    it ignores other processes' allocations).
-    try:
-        dev_arg = device if device != "cuda" else None
-        free_bytes, _total = torch_module.cuda.mem_get_info(dev_arg)
-        return int(free_bytes) // (1024 * 1024)
-    except Exception:  # noqa: BLE001
-        return None
+    Thin delegate over :func:`probe_free_vram_mib_with_source` (the single
+    probe implementation) so the value-only and value+source surfaces can
+    never drift; behavior is byte-identical to the historical loader (same
+    return values, never raises, no logging).
+    """
+    return probe_free_vram_mib_with_source(torch_module, device)[0]
 
 
 def resolve_min_free_vram_mib(value: Optional[int] = None) -> int:

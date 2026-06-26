@@ -628,6 +628,46 @@ def test_probe_free_vram_prefers_nvml_over_mem_get_info(
     assert probe_free_vram_mib(fake_torch, "cuda") == 5419
 
 
+def test_probe_free_vram_mib_with_source_reports_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The value+source primitive tags WHICH backend produced the int:
+    nvml-success / torch-fallback / both-fail. ``probe_free_vram_mib``
+    delegates to it (byte-identical value)."""
+    import types
+
+    from lib.classifiers.nli_classifier import (
+        probe_free_vram_mib,
+        probe_free_vram_mib_with_source,
+    )
+
+    # 1) NVML succeeds → ("nvml") and the value matches NVML's free.
+    fake_pynvml = types.SimpleNamespace()
+    fake_pynvml.nvmlInit = lambda: None
+    fake_pynvml.nvmlShutdown = lambda: None
+    fake_pynvml.nvmlDeviceGetHandleByIndex = lambda i: object()
+    fake_pynvml.nvmlDeviceGetMemoryInfo = lambda h: types.SimpleNamespace(
+        free=150 * 1024 * 1024, used=8042 * 1024 * 1024, total=8192 * 1024 * 1024,
+    )
+    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml)
+    fake_torch = MagicMock()
+    fake_torch.cuda.mem_get_info.return_value = (5419 * 1024 * 1024, 8192 * 1024 * 1024)
+
+    assert probe_free_vram_mib_with_source(fake_torch, "cuda") == (150, "nvml")
+    # The value-only delegate returns the same number.
+    assert probe_free_vram_mib(fake_torch, "cuda") == 150
+
+    # 2) NVML unavailable → torch fallback → ("torch").
+    monkeypatch.delitem(sys.modules, "pynvml", raising=False)
+    monkeypatch.setattr("builtins.__import__", _import_raising_for("pynvml"))
+    assert probe_free_vram_mib_with_source(fake_torch, "cuda") == (5419, "torch")
+
+    # 3) Both fail (torch also raises) → (None, "unavailable").
+    fake_torch.cuda.mem_get_info.side_effect = RuntimeError("no cuda")
+    assert probe_free_vram_mib_with_source(fake_torch, "cuda") == (None, "unavailable")
+    assert probe_free_vram_mib(fake_torch, "cuda") is None
+
+
 def _import_raising_for(name: str):
     """Return an __import__ shim that raises ImportError for ``name`` only."""
     import builtins
