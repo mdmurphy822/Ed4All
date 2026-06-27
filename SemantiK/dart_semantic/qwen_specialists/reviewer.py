@@ -334,6 +334,37 @@ def resolve_structure_review_mode() -> bool:
     return raw in _TRUTHY
 
 
+# Default sampling temperature for the Stage-5d structure-reviewer dispatch.
+# 0.0 = greedy / deterministic decoding: a structure-correction pass should
+# NOT introduce run-to-run noise in chapter/section decisions (measured
+# heading-set Jaccard 0.91-0.94 across re-runs at the old 0.6 default). An
+# operator can opt back into sampling by setting the env > 0. NOTE: greedy
+# decoding makes the DISPATCH deterministic at the sampling layer; hosted-
+# endpoint / float non-determinism can still cause rare token ties, so this
+# is "deterministic decoding (temperature 0)", not an absolute guarantee.
+_DEFAULT_STRUCTURE_REVIEW_TEMPERATURE = 0.0
+
+
+def resolve_structure_review_temperature() -> float:
+    """Parse-with-fallback ``SEMANTIK_STRUCTURE_REVIEW_TEMPERATURE`` (default 0.0).
+
+    Returns the sampling temperature threaded into the Stage-5d reviewer's
+    ``generate_batch`` dispatch. Default ``0.0`` is greedy / deterministic
+    decoding; a positive float opts back into sampling. Garbage / non-float /
+    negative / NaN values fall back to ``0.0`` (mirrors ``_resolve_timeout`` /
+    ``resolve_specialist_max_retries``)."""
+    raw = os.environ.get("SEMANTIK_STRUCTURE_REVIEW_TEMPERATURE")
+    if not raw:
+        return _DEFAULT_STRUCTURE_REVIEW_TEMPERATURE
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_STRUCTURE_REVIEW_TEMPERATURE
+    if val < 0 or val != val:  # negative / NaN
+        return _DEFAULT_STRUCTURE_REVIEW_TEMPERATURE
+    return val
+
+
 # ---------------------------------------------------------------------------
 # Typed verdict result.
 # ---------------------------------------------------------------------------
@@ -1013,9 +1044,17 @@ def run_structure_review(
     #     Defensive: a runtime that does NOT accept fail_soft (e.g. an older
     #     scripted mock) falls back to the legacy call — its own fail-loud
     #     contract then applies, unchanged from before this fix.
+    # Greedy / deterministic decoding by default (temperature 0.0) so the
+    # structure-correction pass does not introduce run-to-run noise in
+    # chapter/section decisions; an operator can opt back into sampling via
+    # SEMANTIK_STRUCTURE_REVIEW_TEMPERATURE > 0.
+    review_temperature = resolve_structure_review_temperature()
     try:
         completions = runtime.generate_batch(
-            prompts, max_tokens=max_tokens, fail_soft=True
+            prompts,
+            max_tokens=max_tokens,
+            temperature=review_temperature,
+            fail_soft=True,
         )
     except TypeError:
         # The runtime does NOT accept fail_soft (e.g. an older scripted mock).
@@ -1026,7 +1065,9 @@ def run_structure_review(
         # endpoint error here, degrade the WHOLE review to the byte-stable
         # UNREVIEWED floor instead of re-raising.
         try:
-            completions = runtime.generate_batch(prompts, max_tokens=max_tokens)
+            completions = runtime.generate_batch(
+                prompts, max_tokens=max_tokens, temperature=review_temperature
+            )
         except EndpointRuntimeError as exc:
             logger.warning(
                 "structure-review runtime lacks fail_soft and the fail-loud "
@@ -1169,5 +1210,6 @@ __all__ = [
     "assert_token_conservation",
     "compute_cluster_signals",
     "resolve_structure_review_mode",
+    "resolve_structure_review_temperature",
     "run_structure_review",
 ]

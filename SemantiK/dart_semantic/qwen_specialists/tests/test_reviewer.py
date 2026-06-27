@@ -25,6 +25,7 @@ from dart_semantic.qwen_specialists.reviewer import (
     TokenConservationError,
     assert_token_conservation,
     resolve_structure_review_mode,
+    resolve_structure_review_temperature,
     run_structure_review,
 )
 from dart_semantic.structure_graph import Region
@@ -87,6 +88,7 @@ class _ScriptedRuntime:
         self.batch_calls.append({
             "prompts": list(prompts),
             "max_tokens": max_tokens,
+            "temperature": temperature,
             "fail_soft": fail_soft,
         })
         # Return the scripted completions, overriding any ``fail_indices``
@@ -803,6 +805,44 @@ def test_reviewer_passes_fail_soft_to_generate_batch():
     rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=1)])
     run_structure_review(regions, fbs, rt)
     assert rt.batch_calls[0]["fail_soft"] is True
+
+
+# ---------------------------------------------------------------------------
+# Deterministic decoding — SEMANTIK_STRUCTURE_REVIEW_TEMPERATURE (default 0.0).
+# ---------------------------------------------------------------------------
+
+
+def test_review_temperature_default_greedy(monkeypatch):
+    # Default (env unset) -> greedy decoding: the reviewer must pass
+    # temperature=0.0 to generate_batch so the structure-correction pass is
+    # deterministic, not sampled at the endpoint's 0.6 default.
+    monkeypatch.delenv("SEMANTIK_STRUCTURE_REVIEW_TEMPERATURE", raising=False)
+    assert resolve_structure_review_temperature() == 0.0
+    fbs = [_fb("Chapter 1")]
+    regions = [Region(kind="heading", feature_block_indices=(0,),
+                      payload={"level_hint": 2, "text": "Chapter 1"})]
+    rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=1)])
+    run_structure_review(regions, fbs, rt)
+    assert rt.batch_calls[0]["temperature"] == 0.0
+
+
+def test_review_temperature_env_threads_through(monkeypatch):
+    # An operator opt-in to sampling threads the resolved value through.
+    monkeypatch.setenv("SEMANTIK_STRUCTURE_REVIEW_TEMPERATURE", "0.7")
+    assert resolve_structure_review_temperature() == 0.7
+    fbs = [_fb("Chapter 1")]
+    regions = [Region(kind="heading", feature_block_indices=(0,),
+                      payload={"level_hint": 2, "text": "Chapter 1"})]
+    rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=1)])
+    run_structure_review(regions, fbs, rt)
+    assert rt.batch_calls[0]["temperature"] == 0.7
+
+
+def test_review_temperature_parse_with_fallback(monkeypatch):
+    # Garbage / negative / NaN -> default 0.0 (parse-with-fallback).
+    for bad in ("garbage", "-1.0", "nan", ""):
+        monkeypatch.setenv("SEMANTIK_STRUCTURE_REVIEW_TEMPERATURE", bad)
+        assert resolve_structure_review_temperature() == 0.0
 
 
 def test_one_cluster_endpoint_failure_degrades_only_that_cluster():
