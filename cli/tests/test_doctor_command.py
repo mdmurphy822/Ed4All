@@ -1,20 +1,21 @@
-"""Tests for ``ed4all doctor`` (GPU/VRAM-contention preflight).
+"""Tests for ``ed4all doctor`` (multi-check preflight diagnostics).
 
-GPU-free + deterministic: ``snapshot_vram`` / ``fit_check`` are monkeypatched
-to return constructed dataclass instances so the tests never touch a real GPU,
-ollama, or torch.
+GPU-free + deterministic: the command iterates the
+:mod:`lib.diagnostics` registry, so the tests patch at the registry
+seam (``doctor_mod.run_checks``) to return constructed
+:class:`~lib.diagnostics.CheckResult` lists. They never touch a real
+GPU, ollama, or torch.
 """
 
 from __future__ import annotations
 
 import json
 
-import pytest
 from click.testing import CliRunner
 
 from cli.commands import doctor as doctor_mod
 from cli.commands.doctor import doctor_command
-from lib.llm.vram_doctor import FitVerdict, VramSnapshot
+from lib.diagnostics import CheckResult, Severity, registered_checks
 
 
 # ---------------------------------------------------------------------- #
@@ -22,35 +23,58 @@ from lib.llm.vram_doctor import FitVerdict, VramSnapshot
 # ---------------------------------------------------------------------- #
 
 
-def _snapshot(**overrides) -> VramSnapshot:
+def _result(name: str, group: str, severity: Severity, **overrides) -> CheckResult:
     base = dict(
-        free_mib=6000,
-        total_mib=8192,
-        cuda_available=True,
-        probe_source="nvml",
-        resident_models=[{"name": "qwen2.5:7b", "vram_mib": 5300}],
-        error=None,
+        name=name,
+        group=group,
+        severity=severity,
+        summary=f"{name} summary",
+        detail=f"{name} detail",
+        remediation="do the thing" if severity is not Severity.OK else "",
+        data={"k": name},
     )
     base.update(overrides)
-    return VramSnapshot(**base)
+    return CheckResult(**base)
 
 
-def _verdict(consumer: str, outcome: str, device: str = "cuda", **overrides) -> FitVerdict:
-    base = dict(
-        consumer=consumer,
-        device_requested=device,
-        need_mib=900,
-        free_mib=6000,
-        outcome=outcome,
-        detail=f"{consumer} {outcome} detail.",
-    )
-    base.update(overrides)
-    return FitVerdict(**base)
+def _all_ok_results() -> list[CheckResult]:
+    return [
+        _result("gpu_fit_nli", "gpu", Severity.OK),
+        _result("window_budget", "window", Severity.OK),
+        _result("environment_provider", "environment", Severity.OK),
+    ]
 
 
-def _patch(monkeypatch, snapshot: VramSnapshot, verdicts: list[FitVerdict]) -> None:
-    monkeypatch.setattr(doctor_mod, "snapshot_vram", lambda base_url=None: snapshot)
-    monkeypatch.setattr(doctor_mod, "fit_check", lambda snap: verdicts)
+def _patch_run_checks(monkeypatch, results, *, capture=None):
+    """Patch the registry seam to return ``results``.
+
+    If ``capture`` is a dict, the ``groups=`` kwarg run_checks received is
+    recorded under ``capture['groups']``.
+    """
+
+    def fake_run_checks(context, groups=None):
+        if capture is not None:
+            capture["groups"] = groups
+            capture["base_url"] = context.base_url
+        return results
+
+    monkeypatch.setattr(doctor_mod, "run_checks", fake_run_checks)
+
+
+# ---------------------------------------------------------------------- #
+# Bootstrap
+# ---------------------------------------------------------------------- #
+
+
+def test_bootstrap_registers_exactly_three_groups_and_is_idempotent():
+    doctor_mod._bootstrap_checks()
+    groups_once = {g for g, _ in registered_checks()}
+    assert groups_once == {"gpu", "window", "environment"}
+
+    # Idempotent: a second bootstrap clears-then-registers, still three.
+    doctor_mod._bootstrap_checks()
+    groups_twice = {g for g, _ in registered_checks()}
+    assert groups_twice == {"gpu", "window", "environment"}
 
 
 # ---------------------------------------------------------------------- #
@@ -58,69 +82,36 @@ def _patch(monkeypatch, snapshot: VramSnapshot, verdicts: list[FitVerdict]) -> N
 # ---------------------------------------------------------------------- #
 
 
-def test_doctor_prints_report_with_free_line_and_both_consumers(monkeypatch):
-    verdicts = [
-        _verdict("nli", "fits"),
-        _verdict("embedding", "cpu_requested", device="cpu"),
-    ]
-    _patch(monkeypatch, _snapshot(), verdicts)
+def test_doctor_prints_all_groups_and_ok_verdict(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _all_ok_results(), capture=capture)
 
     result = CliRunner().invoke(doctor_command, [])
 
     assert result.exit_code == 0, result.output
-    # Free-VRAM header line.
-    assert "free 6000 MiB" in result.output
-    # Both consumers appear in the fit-check section.
-    assert "nli" in result.output
-    assert "embedding" in result.output
+    # All three groups' output present.
+    assert "[gpu]" in result.output
+    assert "[window]" in result.output
+    assert "[environment]" in result.output
+    # Each group's result summary appears.
+    assert "gpu_fit_nli summary" in result.output
+    assert "window_budget summary" in result.output
+    assert "environment_provider summary" in result.output
+    # Overall verdict.
     assert "OK" in result.output
+    # Default run threads no group filter and no base-url.
+    assert capture["groups"] is None
+    assert capture["base_url"] is None
 
 
-def test_doctor_handles_unavailable_snapshot_without_raising(monkeypatch):
-    """A degraded/unavailable (no-GPU) snapshot must not raise."""
-    snap = _snapshot(
-        free_mib=None,
-        total_mib=None,
-        cuda_available=False,
-        probe_source="unavailable",
-        resident_models=[],
-        error="ollama /api/ps unreachable: connection refused",
-    )
-    verdicts = [
-        _verdict("nli", "cpu_requested", device="cpu", free_mib=None),
-        _verdict("embedding", "cpu_requested", device="cpu", free_mib=None),
-    ]
-    _patch(monkeypatch, snap, verdicts)
+def test_doctor_threads_base_url(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _all_ok_results(), capture=capture)
 
-    result = CliRunner().invoke(doctor_command, [])
-
-    assert result.exception is None or isinstance(result.exception, SystemExit), result.output
-    assert result.exit_code == 0, result.output
-    assert "unknown" in result.output  # free/total render as "unknown"
-
-
-# ---------------------------------------------------------------------- #
-# JSON output
-# ---------------------------------------------------------------------- #
-
-
-def test_doctor_json_emits_parseable_snapshot_and_verdicts(monkeypatch):
-    verdicts = [
-        _verdict("nli", "fits"),
-        _verdict("embedding", "fits"),
-    ]
-    _patch(monkeypatch, _snapshot(), verdicts)
-
-    result = CliRunner().invoke(doctor_command, ["--json"])
+    result = CliRunner().invoke(doctor_command, ["--base-url", "http://x:1234"])
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
-    assert payload["snapshot"]["free_mib"] == 6000
-    assert payload["snapshot"]["probe_source"] == "nvml"
-    assert len(payload["verdicts"]) == 2
-    assert {v["consumer"] for v in payload["verdicts"]} == {"nli", "embedding"}
-    assert payload["exit_code"] == 0
-    assert payload["summary"] == "OK"
+    assert capture["base_url"] == "http://x:1234"
 
 
 # ---------------------------------------------------------------------- #
@@ -128,12 +119,12 @@ def test_doctor_json_emits_parseable_snapshot_and_verdicts(monkeypatch):
 # ---------------------------------------------------------------------- #
 
 
-def test_doctor_exit_2_on_would_oom(monkeypatch):
-    verdicts = [
-        _verdict("nli", "would_oom"),
-        _verdict("embedding", "fits"),
+def test_doctor_exit_2_and_danger_on_fail(monkeypatch):
+    results = [
+        _result("gpu_fit_nli", "gpu", Severity.FAIL),
+        _result("window_budget", "window", Severity.OK),
     ]
-    _patch(monkeypatch, _snapshot(free_mib=200), verdicts)
+    _patch_run_checks(monkeypatch, results)
 
     result = CliRunner().invoke(doctor_command, [])
 
@@ -141,12 +132,12 @@ def test_doctor_exit_2_on_would_oom(monkeypatch):
     assert "DANGER" in result.output
 
 
-def test_doctor_exit_1_on_cuda_fallback_cpu(monkeypatch):
-    verdicts = [
-        _verdict("nli", "would_fallback_cpu", device="cuda"),
-        _verdict("embedding", "fits"),
+def test_doctor_exit_1_and_degraded_on_warn(monkeypatch):
+    results = [
+        _result("gpu_fit_nli", "gpu", Severity.WARN),
+        _result("window_budget", "window", Severity.OK),
     ]
-    _patch(monkeypatch, _snapshot(free_mib=300), verdicts)
+    _patch_run_checks(monkeypatch, results)
 
     result = CliRunner().invoke(doctor_command, [])
 
@@ -154,38 +145,59 @@ def test_doctor_exit_1_on_cuda_fallback_cpu(monkeypatch):
     assert "DEGRADED" in result.output
 
 
-def test_doctor_exit_0_on_fits_and_cpu_requested(monkeypatch):
-    verdicts = [
-        _verdict("nli", "fits"),
-        _verdict("embedding", "cpu_requested", device="cpu"),
-    ]
-    _patch(monkeypatch, _snapshot(), verdicts)
+def test_doctor_exit_0_on_all_ok(monkeypatch):
+    _patch_run_checks(monkeypatch, _all_ok_results())
 
     result = CliRunner().invoke(doctor_command, [])
 
     assert result.exit_code == 0, result.output
+    assert "OK" in result.output
 
 
-def test_doctor_cpu_fallback_on_cpu_device_is_not_degraded(monkeypatch):
-    """A would_fallback_cpu whose device was already CPU is not exit-1.
-
-    (Defensive: the foundation only emits would_fallback_cpu on a cuda
-    request, but the gating must key on device_requested != cpu.)
-    """
-    verdicts = [
-        _verdict("nli", "would_fallback_cpu", device="cpu"),
-        _verdict("embedding", "fits"),
+def test_doctor_never_raises_on_degraded_environment(monkeypatch):
+    """A WARN-heavy (degraded/unavailable) result set must exit cleanly."""
+    results = [
+        _result("gpu_error", "gpu", Severity.WARN),
+        _result("window_budget", "window", Severity.WARN),
+        _result("environment_provider", "environment", Severity.WARN),
     ]
-    _patch(monkeypatch, _snapshot(), verdicts)
+    _patch_run_checks(monkeypatch, results)
 
     result = CliRunner().invoke(doctor_command, [])
 
+    assert result.exception is None or isinstance(result.exception, SystemExit), result.output
+    assert result.exit_code == 1, result.output
+
+
+# ---------------------------------------------------------------------- #
+# JSON output
+# ---------------------------------------------------------------------- #
+
+
+def test_doctor_json_emits_results_exit_code_and_summary(monkeypatch):
+    results = [
+        _result("gpu_fit_nli", "gpu", Severity.OK),
+        _result("window_budget", "window", Severity.OK),
+    ]
+    _patch_run_checks(monkeypatch, results)
+
+    result = CliRunner().invoke(doctor_command, ["--json"])
+
     assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert isinstance(payload["results"], list)
+    assert len(payload["results"]) == 2
+    assert payload["exit_code"] == 0
+    assert payload["summary"] == "OK"
+    # Severities serialize as strings.
+    for entry in payload["results"]:
+        assert isinstance(entry["severity"], str)
+    assert {e["severity"] for e in payload["results"]} == {"ok"}
 
 
 def test_doctor_json_reflects_danger_exit_code(monkeypatch):
-    verdicts = [_verdict("embedding", "would_oom")]
-    _patch(monkeypatch, _snapshot(free_mib=100), verdicts)
+    results = [_result("gpu_fit_nli", "gpu", Severity.FAIL)]
+    _patch_run_checks(monkeypatch, results)
 
     result = CliRunner().invoke(doctor_command, ["--json"])
 
@@ -193,3 +205,158 @@ def test_doctor_json_reflects_danger_exit_code(monkeypatch):
     payload = json.loads(result.output)
     assert payload["exit_code"] == 2
     assert "DANGER" in payload["summary"]
+    assert payload["results"][0]["severity"] == "fail"
+
+
+# ---------------------------------------------------------------------- #
+# Group filter
+# ---------------------------------------------------------------------- #
+
+
+def test_doctor_group_filter_passes_groups_to_run_checks(monkeypatch):
+    capture: dict = {}
+    # Only a gpu result comes back (simulating the registry filter).
+    _patch_run_checks(monkeypatch, [_result("gpu_fit_nli", "gpu", Severity.OK)], capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--group", "gpu"])
+
+    assert result.exit_code == 0, result.output
+    assert capture["groups"] == ("gpu",)
+    assert "[gpu]" in result.output
+    assert "[window]" not in result.output
+    assert "[environment]" not in result.output
+
+
+def test_doctor_multiple_group_filters(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _all_ok_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--group", "gpu", "--group", "window"])
+
+    assert result.exit_code == 0, result.output
+    assert capture["groups"] == ("gpu", "window")
+
+
+# ---------------------------------------------------------------------- #
+# Group validation (Finding #2 — unknown group must not exit 0/OK)
+# ---------------------------------------------------------------------- #
+
+
+def test_doctor_unknown_group_exits_2_and_runs_nothing(monkeypatch):
+    capture: dict = {}
+    # If the command (wrongly) reached run_checks, this would record "groups".
+    _patch_run_checks(monkeypatch, _all_ok_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--group", "gpuu"])
+
+    # A typo'd group fails LOUD (exit 2), never silently exits 0/OK.
+    assert result.exit_code == 2, result.output
+    # Short-circuited BEFORE run_checks (it was never called).
+    assert "groups" not in capture
+    # stderr names the bad group + lists the valid groups.
+    assert "gpuu" in result.output
+    assert "Valid groups:" in result.output
+    assert "window" in result.output
+    assert "environment" in result.output
+
+
+def test_doctor_unknown_group_among_valid_still_exits_2(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _all_ok_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--group", "gpu", "--group", "nope"])
+
+    assert result.exit_code == 2, result.output
+    assert "groups" not in capture
+    assert "nope" in result.output
+
+
+def test_doctor_valid_group_gpu_runs(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(
+        monkeypatch, [_result("gpu_fit_nli", "gpu", Severity.OK)], capture=capture
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--group", "gpu"])
+
+    assert result.exit_code == 0, result.output
+    assert capture["groups"] == ("gpu",)
+    assert "[gpu]" in result.output
+
+
+# ---------------------------------------------------------------------- #
+# JSON back-compat (Finding #4 — snapshot + verdicts keys preserved)
+# ---------------------------------------------------------------------- #
+
+
+def _gpu_snapshot_result() -> CheckResult:
+    return _result(
+        "gpu_snapshot",
+        "gpu",
+        Severity.OK,
+        data={
+            "free_mib": 1234,
+            "total_mib": 8192,
+            "cuda_available": True,
+            "probe_source": "nvml",
+            "resident_models": [],
+            "error": None,
+        },
+    )
+
+
+def _gpu_fit_result() -> CheckResult:
+    return _result(
+        "gpu_fit_nli",
+        "gpu",
+        Severity.OK,
+        detail="fits fine",
+        data={
+            "consumer": "nli",
+            "device": "cuda",
+            "need_mib": 400,
+            "free_mib": 1234,
+            "outcome": "fits",
+        },
+    )
+
+
+def test_doctor_json_includes_snapshot_and_verdicts_from_gpu(monkeypatch):
+    results = [_gpu_snapshot_result(), _gpu_fit_result()]
+    _patch_run_checks(monkeypatch, results)
+
+    result = CliRunner().invoke(doctor_command, ["--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    # New general key still present.
+    assert isinstance(payload["results"], list)
+    # Back-compat snapshot reconstructed from the gpu_snapshot result.data.
+    assert payload["snapshot"]["free_mib"] == 1234
+    assert payload["snapshot"]["total_mib"] == 8192
+    assert payload["snapshot"]["cuda_available"] is True
+    assert payload["snapshot"]["probe_source"] == "nvml"
+    # Back-compat verdicts reconstructed from the gpu_fit_* result(s).
+    assert isinstance(payload["verdicts"], list)
+    assert len(payload["verdicts"]) == 1
+    verdict = payload["verdicts"][0]
+    assert verdict["consumer"] == "nli"
+    assert verdict["device_requested"] == "cuda"
+    assert verdict["need_mib"] == 400
+    assert verdict["free_mib"] == 1234
+    assert verdict["outcome"] == "fits"
+    assert verdict["detail"] == "fits fine"
+
+
+def test_doctor_json_snapshot_verdicts_empty_without_gpu(monkeypatch):
+    # window-only run: gpu group did not run → snapshot/verdicts null-or-empty.
+    _patch_run_checks(monkeypatch, [_result("window_budget", "window", Severity.OK)])
+
+    result = CliRunner().invoke(doctor_command, ["--json", "--group", "window"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["snapshot"] is None
+    assert payload["verdicts"] == []
+    # No crash; the general results key is still present.
+    assert isinstance(payload["results"], list)
