@@ -138,9 +138,12 @@ _SYSTEM_REVIEWER = (
     "\"ok\", \"corrected\", \"drop_injected_header\"), corrected_kind (a "
     "RegionKind string or null), corrected_level (int 1-6 or null), "
     "corrected_doc_role (string or null), review_note (a short string "
-    "stating what you found and why). When the block is already correct, "
-    "return verdict \"ok\" with corrected_kind/level/doc_role unchanged or "
-    "null."
+    "stating what you found and why), and OPTIONALLY ambiguous (a boolean — "
+    "set true ONLY when the head/tail edge you were shown is genuinely "
+    "insufficient to decide the kind, so a fuller-text re-read is warranted; "
+    "omit it or set false when you are confident). When the block is already "
+    "correct, return verdict \"ok\" with corrected_kind/level/doc_role "
+    "unchanged or null."
 )
 
 

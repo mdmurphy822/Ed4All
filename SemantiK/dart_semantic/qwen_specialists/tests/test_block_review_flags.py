@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dart_semantic.qwen_specialists.reviewer import (
     resolve_block_review_cache_mode,
+    resolve_block_review_conf_floor,
     resolve_block_review_edge_tokens,
     resolve_block_review_mode,
     resolve_block_review_window,
@@ -76,6 +77,31 @@ def test_block_review_edge_tokens_parse_with_fallback(monkeypatch):
         assert resolve_block_review_edge_tokens() == 12
     monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_EDGE_TOKENS", "20")
     assert resolve_block_review_edge_tokens() == 20
+
+
+# ---------------------------------------------------------------------------
+# Confidence floor — SEMANTIK_BLOCK_REVIEW_CONF (Phase 3, default 0.4, float
+# parse-with-fallback). Mirrors _CODE_CONFIDENCE_FLOOR; the Phase-6 calibration
+# knob.
+# ---------------------------------------------------------------------------
+
+
+def test_block_review_conf_floor_default(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW_CONF", raising=False)
+    assert resolve_block_review_conf_floor() == 0.4
+
+
+def test_block_review_conf_floor_parse_with_fallback(monkeypatch):
+    # blank / non-float / NaN / Inf / out-of-[0,1] -> 0.4 default.
+    for bad in ("", "  ", "garbage", "nan", "inf", "-inf", "-0.1", "1.5", "2"):
+        monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_CONF", bad)
+        assert resolve_block_review_conf_floor() == 0.4
+
+
+def test_block_review_conf_floor_valid_float_honored(monkeypatch):
+    for good, want in (("0.0", 0.0), ("0.25", 0.25), ("0.6", 0.6), ("1.0", 1.0)):
+        monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_CONF", good)
+        assert resolve_block_review_conf_floor() == want
 
 
 # ---------------------------------------------------------------------------

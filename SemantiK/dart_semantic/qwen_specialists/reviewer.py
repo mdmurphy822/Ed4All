@@ -43,15 +43,16 @@ import json
 import logging
 import os
 import re
+import string
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-from dart_semantic.structure_graph import REGION_KINDS, Region
+from dart_semantic.structure_graph import REGION_KINDS, Region, _get_signal, _top1
 from dart_semantic.types import FeatureBlock
 
 from .endpoint_runtime import EndpointRuntimeError
-from .reviewer_prompt import build_reviewer_request
+from .reviewer_prompt import build_edge_input, build_reviewer_request
 
 logger = logging.getLogger(__name__)
 
@@ -383,6 +384,26 @@ _FALSEY = frozenset({"0", "false", "no", "off"})
 _DEFAULT_BLOCK_REVIEW_WINDOW = 24
 _DEFAULT_BLOCK_REVIEW_EDGE_TOKENS = 12
 
+# Default council structural_role top-1 confidence floor below which a
+# ``code_block`` content region is escalated to the reviewer (§6.2
+# deterministic-first). Mirrors structure_graph._CODE_CONFIDENCE_FLOOR (0.4):
+# the council emits a code_block at >= 0.4, so a sub-floor code_block is a
+# low-confidence type the LLM should re-judge.
+_DEFAULT_BLOCK_REVIEW_CONF_FLOOR = 0.4
+
+# Content (non-heading) region kinds the full-block reviewer may re-type when
+# SEMANTIK_BLOCK_REVIEW is on. A SEPARATE scope set from HEADING_KINDS so the
+# heading-vs-content discriminator (compute_cluster_signals /
+# _region_is_content_bearing / _content_blocks_following) keeps reading the
+# UNCHANGED HEADING_KINDS — widening that frozenset corrupts cluster signals
+# even flag-off. Every member is validated against REGION_KINDS; a token that
+# is not a real RegionKind is dropped (never invent a kind).
+CONTENT_REVIEW_KINDS: frozenset[str] = frozenset(
+    k
+    for k in ("paragraph", "code_block", "table", "blockquote", "list")
+    if k in REGION_KINDS
+)
+
 
 def resolve_block_review_mode() -> bool:
     """Return True when the Stage-5d full-block structural-editor reviewer is enabled.
@@ -447,6 +468,30 @@ def resolve_block_review_cache_mode() -> bool:
     then."""
     raw = (os.environ.get("SEMANTIK_BLOCK_REVIEW_CACHE") or "").strip().lower()
     return raw not in _FALSEY
+
+
+def resolve_block_review_conf_floor() -> float:
+    """Parse-with-fallback ``SEMANTIK_BLOCK_REVIEW_CONF`` (default 0.4).
+
+    The council ``structural_role`` top-1 confidence below which a
+    ``code_block`` content region is escalated to the reviewer (§6.2
+    deterministic-first). Mirrors ``_CODE_CONFIDENCE_FLOOR``. Float
+    parse-with-fallback (mirrors the Phase-0 int resolvers): blank / non-float
+    / NaN / Inf / out-of-``[0.0, 1.0]`` -> the 0.4 default. Consumed by the
+    content-block dispatch gate (a pure read until then). Makes the Phase-6
+    calibration a no-code env change."""
+    raw = os.environ.get("SEMANTIK_BLOCK_REVIEW_CONF")
+    if not raw:
+        return _DEFAULT_BLOCK_REVIEW_CONF_FLOOR
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_BLOCK_REVIEW_CONF_FLOOR
+    # NaN / Inf / out-of-range -> default (NaN comparisons are False, so the
+    # range guard rejects it too).
+    if not (0.0 <= val <= 1.0):
+        return _DEFAULT_BLOCK_REVIEW_CONF_FLOOR
+    return val
 
 
 # ---------------------------------------------------------------------------
@@ -1041,6 +1086,131 @@ def _neighbors_for(regions: list[Region], index: int) -> tuple[Region | None, Re
 
 
 # ---------------------------------------------------------------------------
+# Phase 3 — review-scope predicate + deterministic-first gate + ambiguity
+# escalation. All no-ops when SEMANTIK_BLOCK_REVIEW is off (the heading-only,
+# byte-stable path).
+# ---------------------------------------------------------------------------
+
+# Pedagogical-label head tokens (OpenStax "TRY IT" / "EXAMPLE 2" / "EXERCISE")
+# — a SMALL, documented allowlist. A content block whose first word is one of
+# these is a likely mis-typed pedagogical unit and is always sent to the
+# reviewer regardless of council confidence (the §6.2 OR-arm). Heading
+# pedagogical-label demotion is owned by the always-on deterministic
+# clean_structure pass — this set only routes CONTENT-block re-types.
+_PEDAGOGICAL_LABEL_PREFIXES: frozenset[str] = frozenset({"TRY", "EXAMPLE", "EXERCISE"})
+
+# §3 single-shot escalation: an ambiguous content-block re-type is re-asked
+# ONCE with the FULL verbatim source (token-capped to fit n_ctx) instead of
+# the head/tail edge. No recursion (the re-ask is not itself re-escalated).
+_ESCALATION_SOURCE_TOKEN_CAP = 2048
+
+
+def _in_review_scope(region: Region) -> bool:
+    """True when ``region`` is eligible for a Stage-5d reviewer prompt.
+
+    Heading regions are ALWAYS in scope (the byte-stable heading-only path).
+    Content regions (``CONTENT_REVIEW_KINDS``) are in scope ONLY when
+    ``SEMANTIK_BLOCK_REVIEW`` is on. SEPARATE from ``HEADING_KINDS`` so the
+    heading-vs-content discriminator keeps reading the unchanged
+    ``HEADING_KINDS`` (flag-off reduces this to the exact old predicate
+    ``region.kind in HEADING_KINDS``).
+    """
+    if str(region.kind) in HEADING_KINDS:
+        return True
+    return resolve_block_review_mode() and str(region.kind) in CONTENT_REVIEW_KINDS
+
+
+def _has_pedagogical_label_prefix(text: str) -> bool:
+    """True when ``text``'s first word is a pedagogical label (TRY/EXAMPLE/EXERCISE)."""
+    if not text:
+        return False
+    parts = text.split(None, 1)
+    if not parts:
+        return False
+    head = parts[0].strip(string.punctuation).upper()
+    return head in _PEDAGOGICAL_LABEL_PREFIXES
+
+
+def _content_block_dispatch_gate(
+    region: Region,
+    council_state: Any | None,
+    feature_blocks: list[FeatureBlock],
+) -> bool:
+    """Deterministic-first (§6.2): send a content block to the LLM only when uncertain.
+
+    Dispatch iff EITHER
+      * the block carries a pedagogical-label prefix (TRY/EXAMPLE/EXERCISE), OR
+      * the council kind is ``code_block`` AND the council ``structural_role``
+        top-1 confidence is below ``resolve_block_review_conf_floor()``.
+
+    A high-confidence content block returns ``False`` -> NO prompt (the
+    deterministic council kind is trusted). ``RoutingDecision.low_confidence``
+    is NOT consulted: ``run_structure_review`` is handed a ``CouncilState``
+    (per-head signals); RoutingDecisions live on a separate cross-reranker
+    object that is not threaded here, so the gate uses council confidence only
+    (documented). A missing structural_role signal reads as confidence 0.0
+    (``_top1`` default) -> treated as low-confidence -> dispatch (when-in-doubt
+    review).
+    """
+    text = _joined_source_text(region, feature_blocks) or str(
+        (region.payload or {}).get("text") or ""
+    )
+    if _has_pedagogical_label_prefix(text):
+        return True
+    fb_indices = region.feature_block_indices or ()
+    first_idx = fb_indices[0] if fb_indices else None
+    if str(region.kind) == "code_block" and council_state is not None and first_idx is not None:
+        _, conf = _top1(_get_signal(council_state, "structure", "structural_role", first_idx))
+        if conf < resolve_block_review_conf_floor():
+            return True
+    return False
+
+
+def _is_ambiguous_verdict(obj: dict[str, Any]) -> bool:
+    """True when the model FLAGGED this re-type as genuinely ambiguous (§3).
+
+    The verdict contract carries an OPTIONAL ``ambiguous`` boolean (absent ->
+    False, backward-compatible with every existing completion). When truthy, a
+    CONTENT-block re-type is escalated ONCE to a fuller-text re-ask. Heading
+    verdicts never escalate (the heading path stays byte-stable)."""
+    return bool(obj.get("ambiguous"))
+
+
+def _content_edge_text(
+    region: Region,
+    index: int,
+    feature_blocks: list[FeatureBlock],
+    council_state: Any | None,
+) -> str:
+    """First-pass content-block prompt text: the Phase-1 head/tail edge record.
+
+    Reuses ``build_edge_input`` (default ``edge_tokens`` resolver) so a long
+    block is sent head/tail-truncated; a short block carries its full verbatim
+    ``text``. The ambiguity escalation re-asks with the fuller capped source.
+    """
+    rec = build_edge_input(
+        region,
+        block_id=index,
+        feature_blocks=feature_blocks,
+        council_state=council_state,
+    )
+    if "text" in rec:
+        return str(rec["text"])
+    head = str(rec.get("head", ""))
+    tail = str(rec.get("tail", ""))
+    return f"{head} … {tail}".strip()
+
+
+def _capped_source_text(region: Region, feature_blocks: list[FeatureBlock]) -> str:
+    """Full verbatim joined source, token-capped to fit n_ctx (escalation text)."""
+    src = _joined_source_text(region, feature_blocks)
+    tokens = src.split()
+    if len(tokens) > _ESCALATION_SOURCE_TOKEN_CAP:
+        return " ".join(tokens[:_ESCALATION_SOURCE_TOKEN_CAP])
+    return src
+
+
+# ---------------------------------------------------------------------------
 # Driver.
 # ---------------------------------------------------------------------------
 
@@ -1051,6 +1221,7 @@ def run_structure_review(
     runtime: Any,
     *,
     max_tokens: int = 512,
+    council_state: Any | None = None,
 ) -> tuple[list[Region], list[ReviewVerdict]]:
     """Run the Stage-5d structure review over the full region list.
 
@@ -1102,15 +1273,25 @@ def run_structure_review(
     # (0) cluster-level signals over the FULL ordered list (model-free).
     cluster_signals = compute_cluster_signals(regions)
 
-    # (1) build prompts — HEADING regions only (scoping). Track the mapping
-    # from the dense prompt list back to the sparse region indices.
+    # (1) build prompts — in-scope regions only. HEADINGS are always in scope
+    # (byte-stable); CONTENT blocks join only when SEMANTIK_BLOCK_REVIEW is on
+    # AND the deterministic-first confidence gate fires (§6.2). Track the
+    # mapping from the dense prompt list back to the sparse region indices.
     prompts: list[str] = []
-    heading_indices: list[int] = []
+    dispatched_indices: list[int] = []
     for index, region in enumerate(regions):
-        if str(region.kind) not in HEADING_KINDS:
+        if not _in_review_scope(region):
             continue
         neighbors = _neighbors_for(regions, index)
-        text = _resolve_region_text(region, feature_blocks)
+        if str(region.kind) in HEADING_KINDS:
+            text = _resolve_region_text(region, feature_blocks)
+        else:
+            # Content block (flag on). Deterministic-first: high-confidence
+            # blocks get NO prompt; only uncertain ones are dispatched. The
+            # first-pass prompt carries the head/tail edge record (Phase 1).
+            if not _content_block_dispatch_gate(region, council_state, feature_blocks):
+                continue
+            text = _content_edge_text(region, index, feature_blocks, council_state)
         prompts.append(
             build_reviewer_request(
                 region,
@@ -1120,7 +1301,7 @@ def run_structure_review(
                 cluster_signals=cluster_signals[index],
             )
         )
-        heading_indices.append(index)
+        dispatched_indices.append(index)
 
     # No headings -> nothing to review; pass everything through as ok.
     if not prompts:
@@ -1214,20 +1395,24 @@ def run_structure_review(
     # Map heading region index -> its completion (None sentinel = endpoint
     # failure for that cluster; str = a completion to parse).
     completion_by_index: dict[int, str | None] = {}
-    for prompt_pos, region_index in enumerate(heading_indices):
+    for prompt_pos, region_index in enumerate(dispatched_indices):
         raw = completions[prompt_pos] if prompt_pos < len(completions) else ""
         if raw is None:
             completion_by_index[region_index] = None
         else:
             completion_by_index[region_index] = raw if isinstance(raw, str) else ""
 
-    # (3)+(4) parse + apply per block. Non-heading regions pass through.
+    # (3)+(4) parse + apply per block. Out-of-scope / un-gated regions pass
+    # through. Content blocks whose re-type is flagged ``ambiguous`` are
+    # DEFERRED for a single fuller-text re-ask (§3) collected below.
+    block_review_on = resolve_block_review_mode()
+    escalation_indices: list[int] = []
     corrected: list[Region] = []
     verdicts: list[ReviewVerdict] = []
     endpoint_failure_count = 0
     for index, region in enumerate(regions):
         if index not in completion_by_index:
-            # Non-heading region — not reviewed, kept verbatim.
+            # Out-of-scope / un-gated region — not reviewed, kept verbatim.
             corrected.append(region)
             verdicts.append(_ok_verdict(region, index, "non-heading; not reviewed"))
             continue
@@ -1265,9 +1450,75 @@ def run_structure_review(
             note = "verdict block_id mismatch; kept original"
             verdicts.append(_ok_verdict(region, index, note))
             continue
+        # §3 ambiguity escalation: a CONTENT-block re-type the model flagged
+        # ``ambiguous`` is DEFERRED — keep the original verbatim for now and
+        # collect it for ONE fuller-text re-ask (single-shot, no recursion).
+        # Headings never escalate (byte-stable). The first (ambiguous) result
+        # is NOT applied; the escalated fuller-text result replaces it below.
+        if (
+            block_review_on
+            and str(region.kind) not in HEADING_KINDS
+            and _is_ambiguous_verdict(obj)
+        ):
+            escalation_indices.append(index)
+            corrected.append(region)
+            verdicts.append(
+                _ok_verdict(region, index, "ambiguous re-type; escalating to fuller text")
+            )
+            continue
         region_out, verdict = _apply_verdict(region, index, obj, feature_blocks)
         corrected.append(region_out)
         verdicts.append(verdict)
+
+    # (4b) §3 single-shot fuller-text escalation. For every deferred ambiguous
+    # content block, re-ask ONCE with the FULL capped source (one extra batched
+    # call total — NOT per-block, NO recursion). The escalated result is applied
+    # through the SAME _apply_verdict / _admits invariant; a parse miss /
+    # endpoint failure / out-of-idx re-ask keeps the placeholder original (never
+    # regresses). The re-ask is itself NOT re-escalated.
+    if escalation_indices:
+        esc_prompts = [
+            build_reviewer_request(
+                regions[idx],
+                _neighbors_for(regions, idx),
+                idx,
+                text=_capped_source_text(regions[idx], feature_blocks),
+                cluster_signals=cluster_signals[idx],
+            )
+            for idx in escalation_indices
+        ]
+        try:
+            esc_completions = runtime.generate_batch(
+                esc_prompts,
+                max_tokens=max_tokens,
+                temperature=review_temperature,
+                fail_soft=True,
+            )
+        except TypeError:
+            try:
+                esc_completions = runtime.generate_batch(
+                    esc_prompts, max_tokens=max_tokens, temperature=review_temperature
+                )
+            except EndpointRuntimeError:
+                esc_completions = [None] * len(esc_prompts)
+        esc_completions = list(esc_completions)
+        for pos, idx in enumerate(escalation_indices):
+            raw = esc_completions[pos] if pos < len(esc_completions) else None
+            if not isinstance(raw, str):
+                continue  # endpoint failure -> keep placeholder original.
+            obj2 = _extract_verdict_obj(raw)
+            if obj2 is None:
+                continue  # parse miss -> keep placeholder original.
+            claimed2 = obj2.get("block_id")
+            try:
+                claimed2_int = int(claimed2)
+            except (TypeError, ValueError):
+                claimed2_int = None
+            if claimed2_int != idx:
+                continue  # mismatched id -> keep placeholder original.
+            region_out, verdict = _apply_verdict(regions[idx], idx, obj2, feature_blocks)
+            corrected[idx] = region_out
+            verdicts[idx] = verdict
 
     # (5) document-level token conservation — fail-closed to flag-OFF list.
     try:
@@ -1306,6 +1557,7 @@ def run_structure_review(
 
 
 __all__ = [
+    "CONTENT_REVIEW_KINDS",
     "ClusterSignals",
     "HEADING_KINDS",
     "ReviewVerdict",
@@ -1313,6 +1565,7 @@ __all__ = [
     "assert_token_conservation",
     "compute_cluster_signals",
     "resolve_block_review_cache_mode",
+    "resolve_block_review_conf_floor",
     "resolve_block_review_edge_tokens",
     "resolve_block_review_mode",
     "resolve_block_review_window",

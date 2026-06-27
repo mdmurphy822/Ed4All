@@ -815,6 +815,7 @@ def run_full_cascade(
             structure_regions,
             feature_blocks,
             review_runtime,
+            council_state=state,
         )
         # Which region indices did THIS stage NEWLY re-tag to metadata_drop?
         # (a region that was already metadata_drop pre-review is not a

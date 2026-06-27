@@ -1189,3 +1189,175 @@ def test_scoping_reviews_only_heading_kinds():
     assert "not reviewed" in verdicts[1].review_note
     assert out[2].kind == "metadata_drop"
     _assert_coverage_invariant(out, len(fbs))
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — review-scope predicate + deterministic-first gate + ambiguity
+# escalation. Content blocks join the reviewer ONLY when SEMANTIK_BLOCK_REVIEW
+# is on AND the confidence gate fires; cluster signals stay byte-identical.
+# ---------------------------------------------------------------------------
+
+
+def _council_state(conf_by_fb):
+    """Minimal CouncilState exposing structure.structural_role top-1 per FB idx.
+
+    ``conf_by_fb`` maps a FeatureBlock index -> (label, confidence) so a test
+    can drive the council top-1 the gate reads via _get_signal/_top1.
+    """
+    from types import SimpleNamespace
+
+    signals = [
+        SimpleNamespace(
+            head_name="structural_role",
+            region_id=fb_idx,
+            top_k_labels=[label],
+            top_k_confidences=[conf],
+        )
+        for fb_idx, (label, conf) in conf_by_fb.items()
+    ]
+    return SimpleNamespace(outputs={"structure": SimpleNamespace(signals=signals)})
+
+
+def test_content_block_in_scope_when_flag_on(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    fbs = [_fb("x = compute(y)")]
+    regions = [Region(kind="code_block", feature_block_indices=(0,),
+                      payload={"text": "x = compute(y)"})]
+    state = _council_state({0: ("code_block", 0.30)})  # below the 0.4 floor
+    rt = _ScriptedRuntime([_verdict_json(0, verdict="ok")])
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    # the low-confidence code_block WAS dispatched (one prompt, one call).
+    assert len(rt.batch_calls) == 1
+    assert len(rt.batch_calls[0]["prompts"]) == 1
+    assert verdicts[0].review_note != "non-heading; not reviewed"
+
+
+def test_content_block_skipped_when_flag_off(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW", raising=False)
+    fbs = [_fb("x = compute(y)")]
+    regions = [Region(kind="code_block", feature_block_indices=(0,),
+                      payload={"text": "x = compute(y)"})]
+    # A council confidence that WOULD dispatch the block if the flag were on.
+    state = _council_state({0: ("code_block", 0.10)})
+    rt = _ScriptedRuntime([_verdict_json(0, verdict="ok")])
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    # heading-only: no heading present, content block NOT in scope -> no batch.
+    assert rt.batch_calls == []
+    assert out == regions
+    assert verdicts[0].review_note == "non-heading; not reviewed"
+
+
+def test_cluster_signals_unaffected_by_scope_widen(monkeypatch):
+    # compute_cluster_signals reads the UNCHANGED HEADING_KINDS (never the
+    # scope predicate / flag), so its output is byte-identical flag-on vs off.
+    from dart_semantic.qwen_specialists.reviewer import compute_cluster_signals
+
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 2, "text": "Section A"}),
+        Region(kind="code_block", feature_block_indices=(1,),
+               payload={"text": "def f(): return 1"}),
+        Region(kind="paragraph", feature_block_indices=(2,),
+               payload={"text": "Body content here."}),
+        Region(kind="heading", feature_block_indices=(3,),
+               payload={"level_hint": 2, "text": "Section B"}),
+    ]
+    monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW", raising=False)
+    sig_off = compute_cluster_signals(regions)
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    sig_on = compute_cluster_signals(regions)
+    assert sig_off == sig_on
+
+
+def test_high_confidence_block_skips_llm(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    fbs = [_fb("def f(): return 1")]
+    regions = [Region(kind="code_block", feature_block_indices=(0,),
+                      payload={"text": "def f(): return 1"})]
+    state = _council_state({0: ("code_block", 0.95)})  # well above the floor
+    rt = _ScriptedRuntime([_verdict_json(0, verdict="ok")])
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    # deterministic-first: a high-confidence code_block gets NO prompt.
+    assert rt.batch_calls == []
+    assert out == regions
+    assert verdicts[0].review_note == "non-heading; not reviewed"
+
+
+def test_pedagogical_label_block_dispatched_without_council(monkeypatch):
+    # The pedagogical-label OR-arm fires WITHOUT council confidence: a "TRY IT"
+    # code_block is dispatched even when no council_state is threaded.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    fbs = [_fb("TRY IT 2.4 simplify the expression")]
+    regions = [Region(kind="code_block", feature_block_indices=(0,),
+                      payload={"text": "TRY IT 2.4 simplify the expression"})]
+    rt = _ScriptedRuntime([_verdict_json(0, verdict="ok")])
+    out, verdicts = run_structure_review(regions, fbs, rt)  # no council_state
+    assert len(rt.batch_calls) == 1
+    assert len(rt.batch_calls[0]["prompts"]) == 1
+
+
+def test_ambiguous_block_escalates_to_fuller_text(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_EDGE_TOKENS", "3")  # force truncation
+    long_text = " ".join(f"tok{i}" for i in range(40))
+    fbs = [_fb(long_text)]
+    regions = [Region(kind="code_block", feature_block_indices=(0,),
+                      payload={"text": long_text})]
+    state = _council_state({0: ("code_block", 0.30)})
+    amb = json.dumps({
+        "block_id": 0, "verdict": "corrected", "corrected_kind": "paragraph",
+        "corrected_level": None, "corrected_doc_role": None,
+        "review_note": "edge insufficient", "ambiguous": True,
+    })
+    rt = _ScriptedRuntime([amb])
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    # exactly TWO calls: the first window + the SINGLE fuller-text re-ask.
+    assert len(rt.batch_calls) == 2
+    assert len(rt.batch_calls[1]["prompts"]) == 1     # one re-ask, for the idx
+    first_prompt = rt.batch_calls[0]["prompts"][0]
+    esc_prompt = rt.batch_calls[1]["prompts"][0]
+    # the re-ask carries the FULL verbatim source (larger window); the first
+    # prompt was head/tail-truncated (the full string is NOT present).
+    assert long_text in esc_prompt
+    assert long_text not in first_prompt
+    assert len(esc_prompt) > len(first_prompt)
+    # the escalated result is applied through _apply_verdict / _admits.
+    assert out[0].kind == "paragraph"
+    assert verdicts[0].kind_after == "paragraph"
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_flag_off_byte_stable_with_content_blocks(monkeypatch):
+    # A doc with a heading + code_block + paragraph: flag-off output is
+    # byte-identical whether the flag is unset or explicitly off, the content
+    # blocks pass through untouched, and only the heading gets a prompt — even
+    # though a council low-confidence would dispatch the code_block IF on.
+    fbs = [_fb("Chapter 1"), _fb("def f(): pass"), _fb("Body text.")]
+
+    def _regions():
+        return [
+            Region(kind="heading", feature_block_indices=(0,),
+                   payload={"level_hint": 2, "text": "Chapter 1"}),
+            Region(kind="code_block", feature_block_indices=(1,),
+                   payload={"text": "def f(): pass"}),
+            Region(kind="paragraph", feature_block_indices=(2,),
+                   payload={"text": "Body text."}),
+        ]
+
+    comps = [_verdict_json(0, verdict="ok")]  # only the heading is prompted
+    state = _council_state({1: ("code_block", 0.10)})  # would dispatch IF on
+
+    monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW", raising=False)
+    out_unset, v_unset = run_structure_review(
+        _regions(), fbs, _ScriptedRuntime(comps), council_state=state)
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "0")
+    out_off, v_off = run_structure_review(
+        _regions(), fbs, _ScriptedRuntime(comps), council_state=state)
+
+    assert out_unset == out_off == _regions()  # content blocks untouched
+    assert v_unset == v_off
+    assert all(v.role_after is None for v in v_unset)
+    # only the heading fired a prompt (content blocks not in scope flag-off).
+    rt = _ScriptedRuntime(comps)
+    run_structure_review(_regions(), fbs, rt, council_state=state)
+    assert len(rt.batch_calls[0]["prompts"]) == 1
