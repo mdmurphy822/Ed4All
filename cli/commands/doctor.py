@@ -13,6 +13,11 @@ self-register — the bootstrap wires them in explicitly):
   :mod:`lib.llm.vram_doctor`; the historical VRAM-only doctor).
 * ``window`` — serving-window / context-budget checks.
 * ``environment`` — environment / provider / dependency checks.
+* ``provider`` — provider/seat run-preflight (which provider every
+  authoring/synthesis/answer/embedding seat resolves to for a run, and is
+  it correct + reachable). EXCLUDED from the bare default — it is a
+  run-preflight concern, surfaced only via ``--run`` / ``--ping`` /
+  ``--group provider`` so the default doctor stays focused.
 
 The body is wrapped defensively so the command can never raise to the
 operator (the foundation already never raises; this is
@@ -31,6 +36,7 @@ Exit codes (for preflight scripting / build gating) — owned by
 from __future__ import annotations
 
 import json as _json
+import os
 import sys
 
 import click
@@ -46,11 +52,32 @@ from lib.diagnostics import (
     run_checks,
 )
 
-# The three check modules do NOT self-register — importing them is
+# The check modules do NOT self-register — importing them is
 # side-effect-free; the bootstrap calls their register_* fns explicitly.
 from lib.diagnostics.environment import register_environment_checks
+from lib.diagnostics.provider import register_provider_checks
+from lib.diagnostics.run_env import applied_run_env
 from lib.diagnostics.serving_window import register_serving_window_checks
 from lib.diagnostics.vram import register_gpu_checks
+
+# Reused, pure, side-effect-free helpers from the sibling ``run`` command
+# (same CLI layer — importing across cli.commands is fine). ``_nvidia_preflight``
+# resolves+asserts the NVIDIA routing off env (no dispatch); the workflow
+# normaliser + supported set validate ``--run``. Imported as module globals so
+# tests can monkeypatch ``doctor_mod._nvidia_preflight`` / ``applied_run_env``.
+from cli.commands.run import (
+    COURSEFORGE_STAGE_SUBCOMMANDS,
+    SUPPORTED_WORKFLOWS,
+    _nvidia_preflight,
+    _normalize_workflow,
+)
+
+#: The three always-on groups. ``provider`` is intentionally NOT here — it is
+#: a run-preflight concern, opted into via ``--run`` / ``--ping`` /
+#: ``--group provider`` (keeps the bare default free of class-default seat
+#: noise).
+_DEFAULT_GROUPS = ("gpu", "window", "environment")
+_RUN_GROUPS = ("gpu", "window", "environment", "provider")
 
 
 def _gpu_backcompat_payload(results) -> tuple[dict | None, list[dict]]:
@@ -106,14 +133,40 @@ def _bootstrap_checks() -> None:
     """Register the built-in check groups (idempotent).
 
     Clears the registry first so repeated command invocations / tests do
-    NOT double-register, then wires the three explicit per-group helpers
-    (``gpu`` / ``window`` / ``environment``). Safe to call on every
-    command invocation.
+    NOT double-register, then wires the four explicit per-group helpers
+    (``gpu`` / ``window`` / ``environment`` / ``provider``). Safe to call on
+    every command invocation. NB: registering ``provider`` makes
+    ``--group provider`` valid; it is still EXCLUDED from the bare default
+    group selection (run-preflight only).
     """
     clear_registry()
     register_gpu_checks()
     register_serving_window_checks()
     register_environment_checks()
+    register_provider_checks()
+
+
+def _compute_nvidia_preflight(workflow: str, provider: str | None) -> dict | None:
+    """Best-effort NVIDIA routing preflight UNDER the run fanout (or ``None``).
+
+    Only meaningful when the run's effective provider could be ``nvidia``
+    (the ``--provider`` hint or ``LLM_PROVIDER`` env) — ``_nvidia_preflight``
+    always reports an nvidia verdict off env, so computing it for a non-nvidia
+    run would attach misleading FAILs. Computed inside
+    :func:`applied_run_env` so it reflects the env a real ``ed4all run`` would
+    apply. NEVER raises — any failure degrades to ``None`` (the provider check
+    is fine without it).
+    """
+    effective = (provider or os.environ.get("LLM_PROVIDER") or "").strip().lower()
+    if effective != "nvidia":
+        return None
+    try:
+        # _nvidia_preflight reads only env + flags; params are nominal.
+        params = {"course_name": "doctor-preflight", "provider": provider or ""}
+        with applied_run_env(workflow, provider or ""):
+            return _nvidia_preflight(params)
+    except Exception:  # noqa: BLE001 — preflight must never break the command
+        return None
 
 
 @click.command("doctor")
@@ -139,17 +192,68 @@ def _bootstrap_checks() -> None:
     "groups",
     multiple=True,
     help=(
-        "Run only the named check group(s) (e.g. -g gpu -g window). "
-        "Repeatable. Default (none given): run ALL groups."
+        "Run only the named check group(s) (e.g. -g gpu -g window -g provider). "
+        "Repeatable. Default (none given): gpu/window/environment (provider is "
+        "opt-in via --run/--ping/-g provider)."
     ),
 )
-def doctor_command(base_url: str | None, output_json: bool, groups: tuple[str, ...]) -> None:
-    """Report build-preflight diagnostics across all registered check groups.
+@click.option(
+    "--run",
+    "-r",
+    "run_workflow",
+    default=None,
+    help=(
+        "Model the provider/seat preflight for a specific workflow run (e.g. "
+        "--run textbook_to_course). Adds the ``provider`` group and resolves "
+        "every authoring/synthesis/answer/embedding seat UNDER the run fanout. "
+        "Unknown workflow → error + exit 2."
+    ),
+)
+@click.option(
+    "--provider",
+    "provider",
+    default=None,
+    help=(
+        "The run's --provider hint (e.g. nvidia / anthropic / local) used when "
+        "modelling the provider/seat preflight. Only consulted with --run / "
+        "--ping. Default: unset (the fanout's single-switch local default)."
+    ),
+)
+@click.option(
+    "--mode",
+    "mode",
+    type=click.Choice(["local", "api"]),
+    default=None,
+    help="The run's execution mode for the provider preflight. Default: local.",
+)
+@click.option(
+    "--ping",
+    "ping",
+    is_flag=True,
+    default=False,
+    help=(
+        "Opt-in reachability probe: do a real 1-token network call per distinct "
+        "OpenAI-compatible provider seat. Adds the ``provider`` group. Off by "
+        "default (the rest of the doctor makes NO network calls)."
+    ),
+)
+def doctor_command(
+    base_url: str | None,
+    output_json: bool,
+    groups: tuple[str, ...],
+    run_workflow: str | None,
+    provider: str | None,
+    mode: str | None,
+    ping: bool,
+) -> None:
+    """Report build-preflight diagnostics across the registered check groups.
 
-    Bootstraps the diagnostics registry, runs every check (optionally
-    filtered to ``--group``) for the given ``--base-url``, then renders the
-    grouped report (or JSON). Never raises; exit code gates a preflight
-    script (2=DANGER any-FAIL, 1=DEGRADED any-WARN, 0=OK).
+    Bootstraps the diagnostics registry, runs each check (optionally filtered
+    to ``--group``) for the given ``--base-url``, then renders the grouped
+    report (or JSON). With ``--run <workflow>`` (or ``--ping``) it also runs
+    the ``provider`` group — modelling which provider every seat resolves to
+    for that run. Never raises; exit code gates a preflight script
+    (2=DANGER any-FAIL, 1=DEGRADED any-WARN, 0=OK).
     """
     try:
         _bootstrap_checks()
@@ -170,8 +274,67 @@ def doctor_command(base_url: str | None, output_json: bool, groups: tuple[str, .
             )
             sys.exit(2)
 
-        ctx = CheckContext(base_url=base_url)
-        results = run_checks(ctx, groups=groups or None)
+        # Validate --run against the supported workflow set (mirror the
+        # unknown-group pattern: fail loud, exit 2, run nothing).
+        workflow: str | None = None
+        if run_workflow:
+            normalized = _normalize_workflow(run_workflow)
+            supported = {_normalize_workflow(w) for w in SUPPORTED_WORKFLOWS}
+            if normalized not in supported:
+                click.secho(
+                    "ed4all doctor: unknown --run workflow: "
+                    f"{run_workflow!r}. "
+                    f"Valid workflows: {', '.join(sorted(supported))}.",
+                    fg="red",
+                    err=True,
+                )
+                sys.exit(2)
+            # Finding #7: mirror the run command's aliasing. ``ed4all run``
+            # aliases every courseforge-* stage subcommand back to
+            # ``textbook_to_course`` BEFORE the fanout fires (see
+            # cli/commands/run.py: ``if workflow in COURSEFORGE_STAGE_SUBCOMMANDS:
+            # workflow = "textbook_to_course"``). The doctor must model the
+            # SAME canonical workflow's fanout, so the value fed to run_config /
+            # applied_run_env is the aliased one — not the un-aliased subcommand.
+            if normalized in COURSEFORGE_STAGE_SUBCOMMANDS:
+                workflow = "textbook_to_course"
+            else:
+                workflow = normalized
+
+        # Build the provider-check run_config when modelling a run (--run)
+        # or probing reachability (--ping). Bare (neither) → None, and the
+        # provider group resolves seats off the CURRENT env (caveated).
+        run_config: dict | None = None
+        if run_workflow or ping:
+            run_config = {
+                "workflow": workflow,  # None in bare+ping mode
+                "provider_hint": provider or "",
+                "mode": mode or "local",
+                "ping": bool(ping),
+            }
+            if run_workflow:
+                # Best-effort, never breaks the command (→ None on failure).
+                run_config["nvidia_preflight"] = _compute_nvidia_preflight(
+                    workflow, provider
+                )
+
+        # Group selection: explicit --group wins; else --run/--ping add the
+        # provider group; else the bare default (provider EXCLUDED).
+        # Finding #9: --run/--ping NEED the provider group (it owns the only
+        # network probe). When an explicit --group list omits ``provider`` we
+        # union it in rather than silently filtering the ping/run preflight out
+        # to a no-op — the operator asked for a probe, they get one.
+        if groups:
+            selected_groups = groups
+            if (run_workflow or ping) and "provider" not in selected_groups:
+                selected_groups = (*selected_groups, "provider")
+        elif run_workflow or ping:
+            selected_groups = _RUN_GROUPS
+        else:
+            selected_groups = _DEFAULT_GROUPS
+
+        ctx = CheckContext(base_url=base_url, run_config=run_config)
+        results = run_checks(ctx, groups=selected_groups)
         exit_code = resolve_exit_code(results)
 
         if output_json:

@@ -56,6 +56,7 @@ def _patch_run_checks(monkeypatch, results, *, capture=None):
         if capture is not None:
             capture["groups"] = groups
             capture["base_url"] = context.base_url
+            capture["run_config"] = context.run_config
         return results
 
     monkeypatch.setattr(doctor_mod, "run_checks", fake_run_checks)
@@ -66,15 +67,15 @@ def _patch_run_checks(monkeypatch, results, *, capture=None):
 # ---------------------------------------------------------------------- #
 
 
-def test_bootstrap_registers_exactly_three_groups_and_is_idempotent():
+def test_bootstrap_registers_exactly_four_groups_and_is_idempotent():
     doctor_mod._bootstrap_checks()
     groups_once = {g for g, _ in registered_checks()}
-    assert groups_once == {"gpu", "window", "environment"}
+    assert groups_once == {"gpu", "window", "environment", "provider"}
 
-    # Idempotent: a second bootstrap clears-then-registers, still three.
+    # Idempotent: a second bootstrap clears-then-registers, still four.
     doctor_mod._bootstrap_checks()
     groups_twice = {g for g, _ in registered_checks()}
-    assert groups_twice == {"gpu", "window", "environment"}
+    assert groups_twice == {"gpu", "window", "environment", "provider"}
 
 
 # ---------------------------------------------------------------------- #
@@ -99,8 +100,11 @@ def test_doctor_prints_all_groups_and_ok_verdict(monkeypatch):
     assert "environment_provider summary" in result.output
     # Overall verdict.
     assert "OK" in result.output
-    # Default run threads no group filter and no base-url.
-    assert capture["groups"] is None
+    # Bare default runs exactly gpu/window/environment — provider EXCLUDED.
+    assert capture["groups"] == ("gpu", "window", "environment")
+    assert "provider" not in capture["groups"]
+    assert "[provider]" not in result.output
+    # Bare default threads no run_config and no base-url.
     assert capture["base_url"] is None
 
 
@@ -360,3 +364,321 @@ def test_doctor_json_snapshot_verdicts_empty_without_gpu(monkeypatch):
     assert payload["verdicts"] == []
     # No crash; the general results key is still present.
     assert isinstance(payload["results"], list)
+
+
+# ---------------------------------------------------------------------- #
+# Provider / seat preflight: --run, --provider, --mode, --ping, --group provider
+# ---------------------------------------------------------------------- #
+
+
+import contextlib  # noqa: E402 — grouped with the provider-preflight tests
+
+
+@contextlib.contextmanager
+def _noop_run_env(*_a, **_k):
+    """Stand-in for ``applied_run_env`` so tests never apply the real fanout."""
+    yield {}
+
+
+def _provider_results() -> list[CheckResult]:
+    return [_result("seat_content", "provider", Severity.OK)]
+
+
+def test_doctor_bare_excludes_provider_group(monkeypatch):
+    """No new flags → exactly gpu/window/environment; provider absent + no run_config."""
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _all_ok_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, [])
+
+    assert result.exit_code == 0, result.output
+    assert capture["groups"] == ("gpu", "window", "environment")
+    assert "provider" not in capture["groups"]
+    assert capture["run_config"] is None
+
+
+def test_doctor_run_adds_provider_group_and_threads_run_config(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+    # Avoid any real fanout / nvidia preflight work.
+    monkeypatch.setattr(doctor_mod, "applied_run_env", _noop_run_env)
+    monkeypatch.setattr(
+        doctor_mod, "_nvidia_preflight", lambda params: {"verdict": "PASS"}
+    )
+
+    result = CliRunner().invoke(
+        doctor_command, ["--run", "textbook_to_course", "--mode", "api"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "provider" in capture["groups"]
+    assert capture["groups"] == ("gpu", "window", "environment", "provider")
+    rc = capture["run_config"]
+    assert rc is not None
+    assert rc["workflow"] == "textbook_to_course"
+    assert rc["provider_hint"] == ""
+    assert rc["mode"] == "api"
+    assert rc["ping"] is False
+
+
+def test_doctor_run_unknown_workflow_exits_2_and_runs_nothing(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _all_ok_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--run", "not_a_workflow"])
+
+    assert result.exit_code == 2, result.output
+    # Short-circuited BEFORE run_checks (never called).
+    assert "groups" not in capture
+    # stderr names the bogus workflow.
+    assert "not_a_workflow" in result.output
+
+
+def test_doctor_ping_without_run_is_bare_plus_ping(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--ping"])
+
+    assert result.exit_code == 0, result.output
+    assert "provider" in capture["groups"]
+    rc = capture["run_config"]
+    assert rc is not None
+    assert rc["workflow"] is None  # bare + ping
+    assert rc["ping"] is True
+    # No --run → no nvidia_preflight key computed.
+    assert "nvidia_preflight" not in rc
+
+
+def test_doctor_group_provider_runs_only_provider(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--group", "provider"])
+
+    assert result.exit_code == 0, result.output
+    assert capture["groups"] == ("provider",)
+    # Explicit -g provider but no --run/--ping → bare (run_config None).
+    assert capture["run_config"] is None
+    assert "[provider]" in result.output
+
+
+def test_doctor_run_nvidia_preflight_lands_in_run_config(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+    monkeypatch.setattr(doctor_mod, "applied_run_env", _noop_run_env)
+    sentinel = {"verdict": "WARN", "checks": [{"level": "warn", "name": "x"}]}
+    monkeypatch.setattr(doctor_mod, "_nvidia_preflight", lambda params: sentinel)
+
+    result = CliRunner().invoke(
+        doctor_command,
+        ["--run", "textbook_to_course", "--provider", "nvidia"],
+    )
+
+    assert result.exit_code == 0, result.output
+    rc = capture["run_config"]
+    assert rc["provider_hint"] == "nvidia"
+    assert rc["nvidia_preflight"] is sentinel
+
+
+def test_doctor_run_nvidia_preflight_failure_degrades_to_none(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+    monkeypatch.setattr(doctor_mod, "applied_run_env", _noop_run_env)
+
+    def _boom(params):
+        raise RuntimeError("preflight blew up")
+
+    monkeypatch.setattr(doctor_mod, "_nvidia_preflight", _boom)
+
+    result = CliRunner().invoke(
+        doctor_command,
+        ["--run", "textbook_to_course", "--provider", "nvidia"],
+    )
+
+    # The command still succeeds; the failed preflight degrades to None.
+    assert result.exit_code == 0, result.output
+    rc = capture["run_config"]
+    assert rc["nvidia_preflight"] is None
+
+
+def test_doctor_run_non_nvidia_provider_skips_nvidia_preflight(monkeypatch):
+    """A non-nvidia run threads run_config but the nvidia_preflight stays None."""
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+
+    def _should_not_run(params):  # pragma: no cover - asserted not called
+        raise AssertionError("_nvidia_preflight must not run for a non-nvidia run")
+
+    monkeypatch.setattr(doctor_mod, "_nvidia_preflight", _should_not_run)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+
+    result = CliRunner().invoke(
+        doctor_command, ["--run", "textbook_to_course", "--provider", "local"]
+    )
+
+    assert result.exit_code == 0, result.output
+    rc = capture["run_config"]
+    assert rc["nvidia_preflight"] is None
+
+
+# ---------------------------------------------------------------------- #
+# Finding #7 — stage-subcommand --run aliases to textbook_to_course before
+# the fanout (run_config / applied_run_env must see the canonical workflow).
+# ---------------------------------------------------------------------- #
+
+
+def test_doctor_run_courseforge_stage_aliases_to_textbook_to_course(monkeypatch):
+    """``--run courseforge_outline`` must feed the ALIASED ``textbook_to_course``
+    workflow to run_config (mirroring ``ed4all run``'s pre-fanout aliasing)."""
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+    monkeypatch.setattr(doctor_mod, "applied_run_env", _noop_run_env)
+    monkeypatch.setattr(
+        doctor_mod, "_nvidia_preflight", lambda params: {"verdict": "PASS"}
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--run", "courseforge_outline"])
+
+    assert result.exit_code == 0, result.output
+    rc = capture["run_config"]
+    assert rc is not None
+    # The fanout must model textbook_to_course, NOT courseforge_outline.
+    assert rc["workflow"] == "textbook_to_course"
+
+
+def test_doctor_run_all_courseforge_stage_subcommands_alias(monkeypatch):
+    """Every courseforge-* stage subcommand aliases to textbook_to_course."""
+    for sub in (
+        "courseforge",
+        "courseforge_outline",
+        "courseforge_validate",
+        "courseforge_rewrite",
+    ):
+        capture: dict = {}
+        _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+        monkeypatch.setattr(doctor_mod, "applied_run_env", _noop_run_env)
+        monkeypatch.setattr(
+            doctor_mod, "_nvidia_preflight", lambda params: {"verdict": "PASS"}
+        )
+
+        result = CliRunner().invoke(doctor_command, ["--run", sub])
+
+        assert result.exit_code == 0, (sub, result.output)
+        assert capture["run_config"]["workflow"] == "textbook_to_course", sub
+
+
+def test_doctor_run_non_aliased_workflow_passes_through(monkeypatch):
+    """A non-aliased workflow (textbook_to_course) is fed through unchanged."""
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+    monkeypatch.setattr(doctor_mod, "applied_run_env", _noop_run_env)
+    monkeypatch.setattr(
+        doctor_mod, "_nvidia_preflight", lambda params: {"verdict": "PASS"}
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--run", "rag_training"])
+
+    assert result.exit_code == 0, result.output
+    assert capture["run_config"]["workflow"] == "rag_training"
+
+
+def test_doctor_run_aliased_workflow_is_what_nvidia_preflight_sees(monkeypatch):
+    """The aliased workflow is also what _compute_nvidia_preflight models."""
+    capture: dict = {}
+    seen: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+
+    @contextlib.contextmanager
+    def _spy_run_env(workflow, provider, *_a, **_k):
+        seen["workflow"] = workflow
+        yield {}
+
+    monkeypatch.setattr(doctor_mod, "applied_run_env", _spy_run_env)
+    monkeypatch.setattr(
+        doctor_mod, "_nvidia_preflight", lambda params: {"verdict": "PASS"}
+    )
+
+    result = CliRunner().invoke(
+        doctor_command, ["--run", "courseforge_rewrite", "--provider", "nvidia"]
+    )
+
+    assert result.exit_code == 0, result.output
+    # _compute_nvidia_preflight opened applied_run_env with the aliased workflow.
+    assert seen["workflow"] == "textbook_to_course"
+
+
+# ---------------------------------------------------------------------- #
+# Finding #9 — --ping/--run must keep the provider group even when an
+# explicit --group list omits it (the only network probe lives there).
+# ---------------------------------------------------------------------- #
+
+
+def test_doctor_ping_with_explicit_group_still_includes_provider(monkeypatch):
+    """``--ping --group gpu`` must NOT filter provider out (silent no-op probe)."""
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--ping", "--group", "gpu"])
+
+    assert result.exit_code == 0, result.output
+    # provider was unioned into the explicit selection.
+    assert "provider" in capture["groups"]
+    assert "gpu" in capture["groups"]
+    rc = capture["run_config"]
+    assert rc is not None
+    assert rc["ping"] is True
+
+
+def test_doctor_run_with_explicit_group_still_includes_provider(monkeypatch):
+    """``--run ... --group window`` also force-includes the provider group."""
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+    monkeypatch.setattr(doctor_mod, "applied_run_env", _noop_run_env)
+    monkeypatch.setattr(
+        doctor_mod, "_nvidia_preflight", lambda params: {"verdict": "PASS"}
+    )
+
+    result = CliRunner().invoke(
+        doctor_command, ["--run", "textbook_to_course", "--group", "window"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "provider" in capture["groups"]
+    assert "window" in capture["groups"]
+
+
+def test_doctor_ping_with_explicit_provider_group_not_duplicated(monkeypatch):
+    """An explicit ``--group provider`` with --ping is not double-added."""
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--ping", "--group", "provider"])
+
+    assert result.exit_code == 0, result.output
+    assert capture["groups"].count("provider") == 1
+
+
+def test_doctor_ping_alone_still_includes_provider(monkeypatch):
+    """``--ping`` with no --group keeps the full run-group set incl. provider."""
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _provider_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--ping"])
+
+    assert result.exit_code == 0, result.output
+    assert "provider" in capture["groups"]
+
+
+def test_doctor_explicit_group_without_ping_unchanged(monkeypatch):
+    """Without --ping/--run, an explicit --group is NOT augmented with provider."""
+    capture: dict = {}
+    _patch_run_checks(
+        monkeypatch, [_result("gpu_fit_nli", "gpu", Severity.OK)], capture=capture
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--group", "gpu"])
+
+    assert result.exit_code == 0, result.output
+    assert capture["groups"] == ("gpu",)
+    assert "provider" not in capture["groups"]
