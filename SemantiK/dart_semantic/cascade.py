@@ -1235,6 +1235,14 @@ def run_full_cascade(
         row = dataclasses.asdict(verdict)
         if row.get("role_after") is None:
             row.pop("role_after", None)
+        # Phase 5 (SEMANTIK_BLOCK_REVIEW) byte-stability: the per-window
+        # ``block_review_window`` capture-metadata field is Optional-default-None
+        # and EXCLUDED when None (SCOPED, exactly like ``role_after`` — never a
+        # blanket None-key drop, which would strip the legitimately-None
+        # ``level_before`` / ``level_after`` keys). A flag-off / heading-only run
+        # never populates it, so its audit dict stays byte-identical to today.
+        if row.get("block_review_window") is None:
+            row.pop("block_review_window", None)
         return row
 
     structure_review_audit = (

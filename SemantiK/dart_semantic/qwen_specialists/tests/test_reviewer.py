@@ -676,11 +676,14 @@ def test_audit_asdict_byte_stable_flag_off(monkeypatch):
     rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=1)])
     _, verdicts = rv.run_structure_review(regions, fbs, rt)
 
-    # Mirror cascade.py's scoped None-exclusion (role_after ONLY).
+    # Mirror cascade.py's scoped None-exclusion (role_after + the Phase-5
+    # block_review_window field, each ONLY when None — never a blanket drop).
     def _row(v):
         row = _dc.asdict(v)
         if row.get("role_after") is None:
             row.pop("role_after", None)
+        if row.get("block_review_window") is None:
+            row.pop("block_review_window", None)
         return row
 
     PRE_PHASE2_KEYS = {
@@ -690,8 +693,10 @@ def test_audit_asdict_byte_stable_flag_off(monkeypatch):
     }
     for v in verdicts:
         assert v.role_after is None                        # flag-off -> never set
+        assert v.block_review_window is None               # flag-off -> never set
         row = _row(v)
         assert "role_after" not in row                     # excluded from audit
+        assert "block_review_window" not in row            # excluded from audit
         assert set(row) == PRE_PHASE2_KEYS                 # byte-identical key set
     # The paragraph verdict's legitimately-None level_* keys SURVIVE the scoped
     # exclusion (a blanket None-drop would wrongly strip them -> the F1 trap).
@@ -1443,6 +1448,40 @@ def test_op_list_keyed_by_idx_applies(monkeypatch):
     assert verdicts[0].kind_after == "paragraph"
     assert verdicts[1].kind_after == "paragraph"
     _assert_coverage_invariant(out, len(fbs))
+
+
+def test_block_review_window_metadata_stamped(monkeypatch):
+    # Phase 5: every dispatched verdict carries the shared per-window
+    # block_review_window capture metadata (window_index + idx-range + model +
+    # max_tokens + council kinds/conf); non-dispatched pass-throughs do not.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_WINDOW", "4")
+    monkeypatch.setenv("SEMANTIK_STRUCTURE_REVIEW_MODEL", "meta/llama-3.3-70b")
+    n = 10
+    fbs, regions = _code_regions(n)
+    state = _low_conf_state(n)
+    from dart_semantic.qwen_specialists.reviewer import (
+        _BLOCK_REVIEW_WINDOW_OVERLAP,
+        _build_windows,
+    )
+
+    windows = _build_windows(list(range(n)), 4, _BLOCK_REVIEW_WINDOW_OVERLAP)
+    completions = [_oplist(win) for win in windows]
+    rt = _ScriptedRuntime(completions)
+    _, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+
+    stamped = [v for v in verdicts if v.block_review_window is not None]
+    assert stamped, "expected windowed verdicts to carry block_review_window"
+    seen_windows = set()
+    for v in stamped:
+        meta = v.block_review_window
+        assert meta["model"] == "meta/llama-3.3-70b"
+        assert meta["max_tokens"] >= 1
+        assert meta["idx_min"] <= v.block_id <= meta["idx_max"]
+        assert isinstance(meta["council_kinds"], dict) and meta["council_kinds"]
+        seen_windows.add(meta["window_index"])
+    # Each window owns its members first-wins -> >1 distinct window stamped.
+    assert len(seen_windows) >= 2
 
 
 def test_op_out_of_window_dropped(monkeypatch):

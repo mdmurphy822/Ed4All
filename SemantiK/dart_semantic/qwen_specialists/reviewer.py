@@ -541,6 +541,20 @@ class ReviewVerdict:
     # ONLY when block-review is on (no content re-types are produced with
     # the flag off, so this is None on every flag-off verdict).
     role_after: str | None = None
+    # Phase 5 (SEMANTIK_BLOCK_REVIEW): per-WINDOW reviewer-call metadata for
+    # the per-window DecisionCapture in the MCP bridge. A dict carrying the
+    # window's grouping identity (``window_index``) + replayable aggregates
+    # (member idx-range, page span, council kinds-in, resolved model id,
+    # max_tokens, council-confidence distribution) — every verdict produced by
+    # the SAME windowed call shares the SAME dict, so the bridge GROUPS the
+    # audit rows by ``window_index`` and emits ONE capture per window. Mirrors
+    # the ``role_after`` posture EXACTLY: Optional-default-None, audit-EXCLUDED
+    # when None (see cascade.py ``_verdict_audit_row``) so the heading-only /
+    # flag-off path's audit dict stays byte-identical, and hash/serialization
+    # safe. Populated ONLY on the windowed block-review success path (None on
+    # every flag-off verdict, on the whole-stage revert/degrade floors, and on
+    # the non-dispatched pass-through ``ok`` verdicts).
+    block_review_window: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1276,6 +1290,59 @@ def _window_max_tokens(base_max_tokens: int, windows: list[list[int]]) -> int:
     return max(int(base_max_tokens), _PER_MEMBER_OP_MAX_TOKENS * biggest)
 
 
+def _build_window_capture_meta(
+    window_index: int,
+    members: list[int],
+    record_by_idx: dict[int, dict[str, Any]],
+    *,
+    model: str,
+    max_tokens: int,
+) -> dict[str, Any]:
+    """Phase-5 static (model-free) per-window DecisionCapture metadata.
+
+    Reads ONLY the already-built edge records (``record_by_idx``) — no LLM, no
+    region mutation. The returned dict carries the window's grouping identity
+    (``window_index``) plus the replayable dispatch signals the MCP bridge
+    interpolates into a per-window rationale: member idx-range, page span,
+    council kinds-in (a sorted count map), the resolved reviewer model id, the
+    per-call ``max_tokens``, and the council top-1 confidence distribution
+    (min/mean/max). The ops-out tally is intentionally NOT here — the bridge
+    derives it from the grouped verdict rows (``verdict`` / ``role_after``).
+    """
+    pages = [
+        record_by_idx[m].get("page")
+        for m in members
+        if isinstance(record_by_idx.get(m, {}).get("page"), int)
+    ]
+    confidences = [
+        float(c)
+        for m in members
+        for c in (record_by_idx.get(m, {}).get("confidence"),)
+        if isinstance(c, (int, float)) and not isinstance(c, bool)
+    ]
+    kind_counts: dict[str, int] = {}
+    for m in members:
+        kind = str(record_by_idx.get(m, {}).get("council_kind"))
+        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+    meta: dict[str, Any] = {
+        "window_index": int(window_index),
+        "members": len(members),
+        "idx_min": min(members) if members else None,
+        "idx_max": max(members) if members else None,
+        "page_min": min(pages) if pages else None,
+        "page_max": max(pages) if pages else None,
+        "council_kinds": dict(sorted(kind_counts.items())),
+        "model": model,
+        "max_tokens": int(max_tokens),
+        "confidence_min": round(min(confidences), 4) if confidences else None,
+        "confidence_max": round(max(confidences), 4) if confidences else None,
+        "confidence_mean": (
+            round(sum(confidences) / len(confidences), 4) if confidences else None
+        ),
+    }
+    return meta
+
+
 def _first_balanced_array(text: str) -> str | None:
     """Scan for the FIRST balanced ``[ … ]`` array and return it (string-aware).
 
@@ -1789,6 +1856,13 @@ def _run_windowed_block_review(
     windows = _build_windows(
         dispatched_indices, resolve_block_review_window(), _BLOCK_REVIEW_WINDOW_OVERLAP
     )
+    # Phase 5: map each dispatched idx to the FIRST window that owns it (matches
+    # the ``applied`` first-window-wins dedup below) so the per-window capture
+    # metadata can be stamped onto exactly the verdict each window produced.
+    window_of_idx: dict[int, int] = {}
+    for _wi, _win in enumerate(windows):
+        for _idx in _win:
+            window_of_idx.setdefault(_idx, _wi)
     window_prompts: list[str] = []
     for win in windows:
         if len(win) == 1:
@@ -1829,6 +1903,22 @@ def _run_windowed_block_review(
         "edge_tokens": resolve_block_review_edge_tokens(),
         "conf": resolve_block_review_conf_floor(),
     }
+    # Phase 5: static per-window capture metadata (model-free, read off the
+    # already-built edge records). Stamped onto each window's verdicts before
+    # the success return so the MCP bridge can emit ONE replayable
+    # DecisionCapture per window. The ops-out tally is NOT carried here — the
+    # bridge derives it from the grouped verdict rows themselves (verdict /
+    # role_after fields), keeping this dict purely the dispatch-time signals.
+    window_meta = [
+        _build_window_capture_meta(
+            wi,
+            win,
+            record_by_idx,
+            model=review_model,
+            max_tokens=win_max_tokens,
+        )
+        for wi, win in enumerate(windows)
+    ]
     window_keys: list[str | None] = [None] * w
     if cache_on:
         for i, win in enumerate(windows):
@@ -2031,6 +2121,19 @@ def _run_windowed_block_review(
     final_verdicts = [
         v if v is not None else _ok_verdict(regions[i], i, "not reviewed")
         for i, v in enumerate(verdicts)
+    ]
+    # Phase 5: stamp the per-window capture metadata onto exactly the verdicts
+    # each window produced (window_of_idx == the first-window-wins owner). A
+    # frozen ReviewVerdict so we ``replace`` rather than mutate. Non-dispatched
+    # pass-through verdicts have no owning window -> block_review_window stays
+    # None -> audit-excluded -> no per-window capture row for them. This is the
+    # SUCCESS path only; the whole-stage revert/degrade floors below return
+    # their own (unstamped) lists, preserving their byte-stable behaviour.
+    final_verdicts = [
+        dataclasses.replace(v, block_review_window=window_meta[window_of_idx[i]])
+        if i in window_of_idx and window_of_idx[i] < len(window_meta)
+        else v
+        for i, v in enumerate(final_verdicts)
     ]
 
     # (5) document-level token conservation — fail-closed to the flag-OFF list.

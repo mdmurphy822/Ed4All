@@ -6111,9 +6111,28 @@ def _emit_structure_review_capture(
 
     ``decision_type='structure_review'`` is a canonical enum member
     (``schemas/events/decision_event.schema.json``), added for this seam.
+
+    Phase 5 (SEMANTIK_BLOCK_REVIEW): when the windowed full-block reviewer ran,
+    the verdicts carry per-window ``block_review_window`` metadata. In that case
+    this emitter logs ONE ``structure_review`` capture PER WINDOW (grouped by
+    ``window_index``) with a window-scoped replayable rationale, instead of the
+    single per-doc row. It falls back to the per-doc row below when only
+    heading verdicts exist (no window metadata) — the shipped heading path.
     """
     if verdicts is None:
         return  # reviewer did not run — nothing to capture (skip cleanly)
+    # Phase 5: windowed full-block-review path — one capture per window.
+    try:
+        window_groups = _group_block_review_windows(verdicts)
+    except Exception:  # noqa: BLE001 — grouping is best-effort; fall through
+        window_groups = []
+    if window_groups:
+        _emit_block_review_window_captures(
+            window_groups,
+            canonical_course_code=canonical_course_code,
+            pdf_stem=pdf_stem,
+        )
+        return
     try:
         from lib.decision_capture import DecisionCapture, normalize_course_code
 
@@ -6182,6 +6201,165 @@ def _emit_structure_review_capture(
     except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
         logger.warning(
             "structure_review DecisionCapture failed (non-fatal) on %s: %s",
+            pdf_stem,
+            exc,
+        )
+
+
+def _group_block_review_windows(
+    verdicts: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Group windowed full-block-review verdicts by their owning window.
+
+    Phase 5: the SemantiK windowed reviewer stamps a shared
+    ``block_review_window`` dict (``window_index`` + replayable aggregates) onto
+    every verdict produced by the same windowed call. This groups the verdict
+    rows by ``window_index`` and returns one ``{"meta": <window dict>,
+    "verdicts": [...]}`` entry per window, ordered by window index. Heading-only
+    / flag-off verdicts carry NO ``block_review_window`` key and yield an EMPTY
+    list, so the caller falls back to the per-doc capture (byte-stable).
+    """
+    groups: Dict[Any, Dict[str, Any]] = {}
+    for v in verdicts or []:
+        if not isinstance(v, dict):
+            continue
+        meta = v.get("block_review_window")
+        if not isinstance(meta, dict):
+            continue
+        wi = meta.get("window_index")
+        if wi is None:
+            continue
+        bucket = groups.setdefault(wi, {"meta": meta, "verdicts": []})
+        bucket["verdicts"].append(v)
+    return [groups[k] for k in sorted(groups, key=lambda x: (x is None, x))]
+
+
+def _emit_block_review_window_captures(
+    window_groups: List[Dict[str, Any]],
+    *,
+    canonical_course_code: Optional[str],
+    pdf_stem: str,
+) -> None:
+    """Emit ONE ``structure_review`` DecisionCapture per reviewer WINDOW.
+
+    Phase 5: the per-window successor to the per-doc ``_emit_structure_review_capture``
+    body, for the windowed full-block reviewer (``SEMANTIK_BLOCK_REVIEW`` on).
+    Best-effort by contract — ANY failure logs a warning and returns, NEVER
+    breaking the conversion (mirrors the per-doc emitter). Reuses the canonical
+    ``decision_type='structure_review'`` enum member (NO schema/enum edit). The
+    per-window rationale is DYNAMIC/replayable: it interpolates the window's
+    idx-range, page span, council kinds-in, ops-out tally, resolved model id,
+    ``max_tokens``, and the council-confidence distribution — all read off the
+    window metadata + the grouped verdict rows (the ops tally is derived here).
+    """
+    if not window_groups:
+        return
+    try:
+        from lib.decision_capture import DecisionCapture, normalize_course_code
+
+        course_code = (
+            (canonical_course_code or "").strip()
+            or normalize_course_code(pdf_stem or "unknown")
+        )
+        capture = DecisionCapture(
+            course_code=course_code,
+            phase="dart-conversion",
+            tool="dart",
+        )
+        for group in window_groups:
+            meta = group.get("meta") if isinstance(group, dict) else None
+            rows = group.get("verdicts") if isinstance(group, dict) else None
+            if not isinstance(meta, dict) or not isinstance(rows, list):
+                continue
+            wi = meta.get("window_index")
+            idx_min = meta.get("idx_min")
+            idx_max = meta.get("idx_max")
+            page_min = meta.get("page_min")
+            page_max = meta.get("page_max")
+            model = str(meta.get("model") or "unspecified")
+            max_tokens = meta.get("max_tokens")
+            kinds = meta.get("council_kinds")
+            kinds_str = (
+                ", ".join(f"{k}×{n}" for k, n in kinds.items())
+                if isinstance(kinds, dict) and kinds
+                else "n/a"
+            )
+            c_min = meta.get("confidence_min")
+            c_mean = meta.get("confidence_mean")
+            c_max = meta.get("confidence_max")
+
+            reviewed = len(rows)
+            corrected = sum(
+                1
+                for v in rows
+                if isinstance(v, dict)
+                and str(v.get("verdict") or "ok") != "ok"
+                and not v.get("reverted_for_invariant")
+                and not v.get("reverted_for_endpoint_failure")
+            )
+            retyped = sum(
+                1
+                for v in rows
+                if isinstance(v, dict) and v.get("role_after") is not None
+            )
+            dropped = sum(
+                1
+                for v in rows
+                if isinstance(v, dict) and "drop" in str(v.get("verdict") or "")
+            )
+            reverted = sum(
+                1
+                for v in rows
+                if isinstance(v, dict) and v.get("reverted_for_invariant")
+            )
+            endpoint_failures = sum(
+                1
+                for v in rows
+                if isinstance(v, dict) and v.get("reverted_for_endpoint_failure")
+            )
+
+            rationale = (
+                f"Stage-5d full-block reviewer ({model}) window {wi} "
+                f"(blocks {idx_min}-{idx_max}, pages {page_min}-{page_max}, "
+                f"max_tokens={max_tokens}, council conf "
+                f"min/mean/max {c_min}/{c_mean}/{c_max}) reviewed {reviewed} "
+                f"block(s) [council kinds-in: {kinds_str}]: {corrected} "
+                f"structural correction(s) applied ({retyped} re-type, "
+                f"{dropped} drop), {reverted} reverted for the "
+                f"verbatim/partition-immutable invariant, {endpoint_failures} "
+                f"kept unreviewed on endpoint failure. Index-keyed op-list, "
+                f"text-preserving (no words rewritten)."
+            )
+            capture.log_decision(
+                decision_type="structure_review",
+                decision=(
+                    f"window={wi} reviewed={reviewed} applied={corrected} "
+                    f"retype={retyped} drop={dropped} reverted={reverted}"
+                ),
+                rationale=rationale,
+                alternatives_considered=[
+                    {
+                        "option": "per-document structure-review capture",
+                        "reason_rejected": (
+                            "the windowed full-block reviewer dispatches one "
+                            "op-list call per window; a per-window capture "
+                            "attributes each window's re-type/drop ops to its "
+                            "own dispatch for replay"
+                        ),
+                    },
+                    {
+                        "option": "deterministic-detector-only backstop",
+                        "reason_rejected": (
+                            "the always-on front-matter detector cannot re-type "
+                            "a mis-classified content block (code_block→prose) "
+                            "the way the full-block reviewer does"
+                        ),
+                    },
+                ],
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+        logger.warning(
+            "block-review per-window DecisionCapture failed (non-fatal) on %s: %s",
             pdf_stem,
             exc,
         )

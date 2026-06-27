@@ -420,6 +420,206 @@ def test_decision_capture_is_best_effort(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 3b. Phase 5 — per-window full-block-review DecisionCapture (one row / window).
+# ---------------------------------------------------------------------------
+
+
+def _block_review_windowed_audit() -> list[dict]:
+    """A two-window full-block-review verdict list (re-type ops), each verdict
+    carrying the shared per-window ``block_review_window`` capture metadata the
+    Phase-5 windowed reviewer stamps."""
+    meta0 = {
+        "window_index": 0,
+        "members": 2,
+        "idx_min": 0,
+        "idx_max": 1,
+        "page_min": 3,
+        "page_max": 4,
+        "council_kinds": {"code_block": 2},
+        "model": "meta/llama-3.3-70b",
+        "max_tokens": 512,
+        "confidence_min": 0.31,
+        "confidence_mean": 0.34,
+        "confidence_max": 0.37,
+    }
+    meta1 = {
+        "window_index": 1,
+        "members": 2,
+        "idx_min": 2,
+        "idx_max": 3,
+        "page_min": 5,
+        "page_max": 6,
+        "council_kinds": {"code_block": 1, "table": 1},
+        "model": "meta/llama-3.3-70b",
+        "max_tokens": 512,
+        "confidence_min": 0.20,
+        "confidence_mean": 0.25,
+        "confidence_max": 0.30,
+    }
+    return [
+        {
+            "block_id": 0,
+            "verdict": "corrected",
+            "kind_before": "code_block",
+            "kind_after": "paragraph",
+            "level_before": None,
+            "level_after": None,
+            "review_note": "TRY IT exercise; re-typed out of code",
+            "reverted_for_invariant": False,
+            "reverted_for_endpoint_failure": False,
+            "role_after": "example",
+            "block_review_window": meta0,
+        },
+        {
+            "block_id": 1,
+            "verdict": "ok",
+            "kind_before": "code_block",
+            "kind_after": "code_block",
+            "level_before": None,
+            "level_after": None,
+            "review_note": "kept original",
+            "reverted_for_invariant": False,
+            "reverted_for_endpoint_failure": False,
+            "role_after": None,
+            "block_review_window": meta0,
+        },
+        {
+            "block_id": 2,
+            "verdict": "corrected",
+            "kind_before": "table",
+            "kind_after": "paragraph",
+            "level_before": None,
+            "level_after": None,
+            "review_note": "definition row; re-typed",
+            "reverted_for_invariant": False,
+            "reverted_for_endpoint_failure": False,
+            "role_after": "definition",
+            "block_review_window": meta1,
+        },
+        {
+            "block_id": 3,
+            "verdict": "ok",
+            "kind_before": "code_block",
+            "kind_after": "code_block",
+            "level_before": None,
+            "level_after": None,
+            "review_note": "kept original",
+            "reverted_for_invariant": False,
+            "reverted_for_endpoint_failure": False,
+            "role_after": None,
+            "block_review_window": meta1,
+        },
+    ]
+
+
+def _read_capture_rows(captures_root) -> list[dict]:
+    rows: list[dict] = []
+    for jsonl in Path(captures_root).rglob("*.jsonl"):
+        for line in jsonl.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    return rows
+
+
+def test_block_review_capture_fires_per_window_dynamic_rationale(monkeypatch):
+    monkeypatch.setenv("VALIDATE_DECISIONS", "true")
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+    monkeypatch.setenv("SEMANTIK_STRUCTURE_REVIEW_MODEL", "meta/llama-3.3-70b")
+
+    from lib.paths import get_training_captures_dir
+    from MCP.tools.pipeline_tools import _emit_structure_review_capture
+
+    captures_root = get_training_captures_dir()
+
+    _emit_structure_review_capture(
+        _block_review_windowed_audit(),
+        canonical_course_code="BREV_CAP_101",
+        pdf_stem="mybook",
+    )
+
+    rows = [
+        r
+        for r in _read_capture_rows(captures_root)
+        if r.get("decision_type") == "structure_review"
+        and r.get("course_id") in {"BREV_CAP_101", "BREV-CAP-101"}
+    ]
+    # ONE capture row PER WINDOW (two windows -> two rows), not a per-doc row.
+    assert len(rows) == 2, f"expected one capture per window, got {len(rows)}"
+    by_window = {}
+    for r in rows:
+        assert r["decision_type"] == "structure_review"  # canonical enum reused
+        assert len(r["rationale"]) >= 20
+        # Dynamic, replayable tokens: model id + window idx-range + ops counts.
+        assert "meta/llama-3.3-70b" in r["rationale"]
+        assert "full-block reviewer" in r["rationale"]
+        if "window=0" in r["decision"]:
+            by_window[0] = r
+        elif "window=1" in r["decision"]:
+            by_window[1] = r
+    assert set(by_window) == {0, 1}, "expected window 0 and window 1 rows"
+    # Window 0: blocks 0-1, 1 re-type applied (block 0 corrected).
+    assert "blocks 0-1" in by_window[0]["rationale"]
+    assert "applied=1" in by_window[0]["decision"]
+    assert "retype=1" in by_window[0]["decision"]
+    # Window 1: blocks 2-3, 1 re-type applied (block 2 corrected).
+    assert "blocks 2-3" in by_window[1]["rationale"]
+    assert "applied=1" in by_window[1]["decision"]
+
+
+def test_block_review_capture_best_effort_no_raise(monkeypatch):
+    """A DecisionCapture failure on the windowed path must NOT raise."""
+    import MCP.tools.pipeline_tools as pt
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("simulated capture init failure")
+
+    monkeypatch.setattr(
+        "lib.decision_capture.DecisionCapture", _Boom, raising=True
+    )
+    assert (
+        pt._emit_structure_review_capture(
+            _block_review_windowed_audit(),
+            canonical_course_code="BREV_BOOM_101",
+            pdf_stem="y",
+        )
+        is None
+    )
+
+
+def test_capture_skips_when_flag_off(monkeypatch):
+    """Heading-only verdicts (no block_review_window) emit the per-doc capture
+    and NO per-window rows — the flag-off byte-stable path."""
+    monkeypatch.setenv("VALIDATE_DECISIONS", "true")
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+
+    from lib.paths import get_training_captures_dir
+    from MCP.tools.pipeline_tools import _emit_structure_review_capture
+
+    captures_root = get_training_captures_dir()
+
+    _emit_structure_review_capture(
+        _structure_review_audit(),
+        canonical_course_code="BREV_OFF_101",
+        pdf_stem="mybook",
+    )
+
+    rows = [
+        r
+        for r in _read_capture_rows(captures_root)
+        if r.get("decision_type") == "structure_review"
+        and r.get("course_id") in {"BREV_OFF_101", "BREV-OFF-101"}
+    ]
+    # The per-doc capture fires (heading-only path) ...
+    assert len(rows) == 1, f"expected one per-doc capture row, got {len(rows)}"
+    # ... and it is NOT a per-window row (no window grouping signal).
+    assert "window=" not in rows[0]["decision"]
+
+
+# ---------------------------------------------------------------------------
 # 3c. A block_resegment DecisionCapture JSONL row is emitted (dynamic >=20),
 #     skips cleanly when the re-segmenter is off, and is best-effort.
 # ---------------------------------------------------------------------------
