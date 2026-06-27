@@ -483,3 +483,93 @@ def test_cluster_guards_default_off_is_noop_with_signals():
         assert signals.get("to_guard_outliers_absorbed", 0) == 0
         assert signals.get("to_guard_undersize_merged", 0) == 0
         assert signals.get("to_guard_near_dup_clusters_merged", 0) == 0
+
+
+def _cohort_plus_outlier_cos() -> List[Dict[str, Any]]:
+    """Five cohesive prime-number COs (heavy shared vocab) + ONE semantic
+    outlier (disjoint insurance vocabulary).
+
+    Mirrors the real sample-course-a CO-71 failure: an Everyday-Math
+    insurance word-problem CO sitting among an otherwise-cohesive algebra
+    cohort. Under both clustering paths (Ward at a pinned K=2, or the
+    no-sklearn single-link fallback at the 0.50 TO threshold) the five prime
+    COs join into one cluster and the insurance CO lands in its OWN singleton.
+    """
+    return [
+        _co("Define a prime number and identify its prime factors."),
+        _co("Define what a prime number is and list its prime factors."),
+        _co("Identify prime numbers and find the prime factorization."),
+        _co("Find the prime factorization of a composite whole number."),
+        _co("Determine whether a whole number is prime or composite."),
+        # Semantic outlier — disjoint vocabulary, no token overlap with prime.
+        _co("Compute insurance deductible premium reimbursement payouts."),
+    ]
+
+
+def test_cluster_guards_on_absorbs_outlier_no_singleton_to(monkeypatch):
+    """Bucket A — with the guard flags ON, a semantic-outlier CO does NOT form
+    its own singleton TO: it is absorbed into its nearest (the cohesive) cluster.
+
+    Pins ``ED4ALL_TO_CLUSTER_K=2`` so the Ward path (sklearn present) and the
+    single-link fallback (sklearn absent) agree on the same 2-cluster partition
+    [cohort, outlier-singleton]. ``ED4ALL_TO_OUTLIER_MIN_SIZE=2`` makes only the
+    singleton a merge candidate (the size-5 cohort is untouched);
+    ``ED4ALL_TO_OUTLIER_ABSORB_FLOOR=0`` lets the outlier fold into its only
+    neighbor. Near-dup merge stays OFF (default).
+    """
+    monkeypatch.setenv("ED4ALL_TO_CLUSTER_K", "2")
+    monkeypatch.setenv("ED4ALL_TO_CLUSTER_GUARDS", "true")
+    monkeypatch.setenv("ED4ALL_TO_OUTLIER_MIN_SIZE", "2")
+    monkeypatch.setenv("ED4ALL_TO_OUTLIER_ABSORB_FLOOR", "0")
+    monkeypatch.delenv("ED4ALL_TO_MERGE_NEAR_DUP", raising=False)
+
+    cos = _cohort_plus_outlier_cos()
+    terminals, signals = pt._derive_terminals_bottom_up(
+        provider=_FakeProvider(),
+        chapter_cos=cos,
+        embed=FakeEmbed(),
+        course_name="MATH_101",
+        mint_lo_id=_mint,
+    )
+
+    # The singleton outlier was absorbed → exactly ONE TO, no standalone outlier.
+    assert len(terminals) == 1
+    assert signals.get("to_guard_outliers_absorbed", 0) == 1
+    # Every CO (cohort + the absorbed outlier) shares the one surviving TO.
+    minted = {t["id"] for t in terminals}
+    assert all(co.get("terminal_id") in minted for co in cos)
+    assert len({co["terminal_id"] for co in cos}) == 1
+    # Partition invariant: no CO dropped or duplicated (6 in, 6 placed).
+    assert len(cos) == 6
+
+
+def test_cluster_guards_off_outlier_keeps_its_own_to(monkeypatch):
+    """Bucket A control — with the guards OFF (default), the SAME outlier cohort
+    still produces a standalone singleton TO for the outlier (the pathology the
+    guard fixes). Confirms the guard, not the cohort, is what changes behavior.
+    """
+    monkeypatch.setenv("ED4ALL_TO_CLUSTER_K", "2")
+    monkeypatch.delenv("ED4ALL_TO_CLUSTER_GUARDS", raising=False)
+    monkeypatch.delenv("ED4ALL_TO_OUTLIER_MIN_SIZE", raising=False)
+    monkeypatch.delenv("ED4ALL_TO_OUTLIER_ABSORB_FLOOR", raising=False)
+    monkeypatch.delenv("ED4ALL_TO_MERGE_NEAR_DUP", raising=False)
+
+    cos = _cohort_plus_outlier_cos()
+    terminals, signals = pt._derive_terminals_bottom_up(
+        provider=_FakeProvider(),
+        chapter_cos=cos,
+        embed=FakeEmbed(),
+        course_name="MATH_101",
+        mint_lo_id=_mint,
+    )
+
+    # Two clusters → two TOs; the outlier sits in its OWN singleton TO.
+    assert len(terminals) == 2
+    assert signals.get("to_guard_outliers_absorbed", 0) == 0
+    # The five cohesive COs share one TO; the outlier owns the other.
+    cohort_tos = {cos[i]["terminal_id"] for i in range(5)}
+    outlier_to = cos[5]["terminal_id"]
+    assert len(cohort_tos) == 1                      # cohort still clusters as one
+    assert outlier_to not in cohort_tos             # outlier is standalone
+    # The outlier TO has exactly one member CO (the singleton pathology).
+    assert sum(1 for co in cos if co["terminal_id"] == outlier_to) == 1
