@@ -37,7 +37,23 @@ import json
 from typing import Any
 
 # Keep in lock-step with structure_graph.REGION_KINDS (11 members).
-from dart_semantic.structure_graph import REGION_KINDS, Region
+# ``_get_signal`` / ``_top1`` (CouncilState lookup) and ``_running_header_norm``
+# / ``_detect_running_headers`` (deterministic furniture recurrence) are reused
+# verbatim from ``structure_graph`` — that module is a dependency of this one
+# (no cycle), so the import is safe at module top. ``_joined_source_text`` /
+# ``resolve_block_review_edge_tokens`` live in ``reviewer`` (which imports THIS
+# module), so they are imported lazily inside ``build_edge_input`` to break the
+# import cycle (doc §7 pins ``_joined_source_text`` as the SOLE verbatim-source
+# accessor — it is reused, never reimplemented).
+from dart_semantic.structure_graph import (
+    REGION_KINDS,
+    Region,
+    _detect_running_headers,
+    _get_signal,
+    _running_header_norm,
+    _top1,
+)
+from dart_semantic.types import FeatureBlock
 
 # ---------------------------------------------------------------------------
 # Neighbor-snippet truncation (§3 — ~120 chars/neighbor; m4: the window
@@ -390,9 +406,204 @@ def build_reviewer_request(
     return f"SYSTEM: {system}\nUSER: {user_json}"
 
 
+# ---------------------------------------------------------------------------
+# Edge-input builder (Phase 1 — design §3 record).
+#
+# Turns ONE region + its council signal into the head/tail-biased "edge"
+# record the full-block reviewer windows over. Pure + GPU-free: no LLM, no
+# region mutation, no env side effect beyond reading ``_EDGE_TOKENS`` (the
+# Phase-0 resolver). NOT yet wired into any dispatch — dead-but-callable
+# (Phase 4 wires it). The record is the design §3 shape:
+#
+#     {idx, council_kind, role, confidence, page, n_tokens, dup_count}
+#
+# plus EXACTLY ONE verbatim-text representation:
+#   * short block (``n_tokens <= 2 * edge_tokens``): a ``text`` key carrying
+#     the FULL verbatim joined source — ``head`` / ``tail`` are OMITTED (a
+#     short block has no "middle" to elide, so the full text is the edge);
+#   * long block: ``head`` (first N tokens) + ``tail`` (last N tokens) as
+#     space-joined verbatim strings — ``text`` is OMITTED.
+# The furniture-dedup helper additionally stamps an optional ``pages`` list.
+# ---------------------------------------------------------------------------
+
+
+def _fb_page(feature_blocks: list[FeatureBlock], idx: int | None) -> int | None:
+    """The 1-indexed source page of FeatureBlock ``idx`` (``raw.page``)."""
+    if idx is None:
+        return None
+    try:
+        fb = feature_blocks[idx]
+    except (IndexError, TypeError):
+        return None
+    return getattr(getattr(fb, "raw", None), "page", None)
+
+
+def _fb_raw_text(feature_blocks: list[FeatureBlock], idx: int | None) -> str:
+    """One FeatureBlock's stripped raw text (``raw.text``)."""
+    if idx is None:
+        return ""
+    try:
+        fb = feature_blocks[idx]
+    except (IndexError, TypeError):
+        return ""
+    return (getattr(getattr(fb, "raw", None), "text", "") or "").strip()
+
+
+def _edge_role_confidence(
+    region: Region,
+    council_state: Any | None,
+    fb_idx: int | None,
+) -> tuple[str | None, float | None]:
+    """Resolve ``(role, confidence)`` for the edge record.
+
+    A ``heading`` region carries its is_heading ``confidence`` on the payload
+    (``structure_graph.py:1214``), so a heading reads it directly and its role
+    is ``"heading"``. Content blocks do NOT carry ``payload['confidence']`` —
+    the structural role is RE-DERIVED from CouncilState via Structure's
+    ``structural_role`` head (``_get_signal`` -> ``_top1``, mirroring the
+    structure_graph content-role sites). When the signal / state is missing,
+    role falls back to the region's council kind and confidence is ``None``.
+    """
+    payload = region.payload or {}
+    if region.kind == "heading":
+        return "heading", payload.get("confidence")
+    if council_state is None or fb_idx is None:
+        return region.kind, None
+    label, conf = _top1(_get_signal(council_state, "structure", "structural_role", fb_idx))
+    return (label or region.kind), conf
+
+
+def build_edge_input(
+    region: Region,
+    *,
+    block_id: int,
+    feature_blocks: list[FeatureBlock],
+    council_state: Any | None = None,
+    edge_tokens: int | None = None,
+    dup_count: int = 1,
+    pages: list[int] | None = None,
+) -> dict[str, Any]:
+    """Build the design §3 edge record for ONE region (pure read, no LLM).
+
+    ``edge_tokens`` defaults to ``resolve_block_review_edge_tokens()`` (the
+    Phase-0 ``SEMANTIK_BLOCK_REVIEW_EDGE_TOKENS`` resolver) so the builder
+    reads ``_EDGE_TOKENS`` by default; an explicit positive value overrides it.
+
+    Verbatim source rides ``_joined_source_text`` (the SOLE FB-text accessor,
+    doc §7) tokenized with the whitespace ``.split()`` convention — case is
+    PRESERVED (unlike the lower-cased token-conservation multiset) because the
+    head/tail edges are read by the model verbatim. ``n_tokens`` is the full
+    token count; the head/tail (or full ``text``) is the only window kept.
+
+    The builder NEVER mutates ``region`` or ``feature_blocks`` — it only views
+    the edges (the Phase-1 pure-read contract).
+    """
+    # Lazy import — ``reviewer`` imports this module, so importing from it at
+    # module top would cycle. ``_joined_source_text`` is reused verbatim (the
+    # design's SOLE verbatim-source accessor); the edge-tokens resolver is the
+    # Phase-0 ``_EDGE_TOKENS`` read.
+    from .reviewer import _joined_source_text, resolve_block_review_edge_tokens
+
+    if edge_tokens is None:
+        edge_tokens = resolve_block_review_edge_tokens()
+    n = int(edge_tokens)
+    if n <= 0:
+        n = resolve_block_review_edge_tokens()
+
+    source = _joined_source_text(region, feature_blocks)
+    tokens = source.split()
+    n_tokens = len(tokens)
+
+    fb_indices = region.feature_block_indices or ()
+    first_idx = fb_indices[0] if fb_indices else None
+    role, confidence = _edge_role_confidence(region, council_state, first_idx)
+
+    record: dict[str, Any] = {
+        "idx": block_id,
+        "council_kind": region.kind,
+        "role": role,
+        "confidence": confidence,
+        "page": _fb_page(feature_blocks, first_idx),
+        "n_tokens": n_tokens,
+        "dup_count": dup_count,
+    }
+    if n_tokens <= 2 * n:
+        # Short block — the full verbatim text IS the edge (head/tail omitted).
+        record["text"] = source
+    else:
+        record["head"] = " ".join(tokens[:n])
+        record["tail"] = " ".join(tokens[-n:])
+    if pages is not None:
+        record["pages"] = list(pages)
+    return record
+
+
+def dedup_furniture_records(
+    regions: list[Region],
+    *,
+    feature_blocks: list[FeatureBlock],
+    council_state: Any | None = None,
+    edge_tokens: int | None = None,
+    block_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    """Build edge records for ``regions``, collapsing repeated furniture.
+
+    A running header / footer recurs verbatim (modulo its page number) on many
+    pages; the design §3 furniture-dedup keeps ONE record + a page-list + a
+    ``dup_count`` instead of one record per page. Recurrence detection is
+    REUSED, not rebuilt: ``_detect_running_headers`` flags the furniture FBs
+    (the same detector that ``metadata_drop``'s them at
+    ``structure_graph.py:986``) and ``_running_header_norm`` supplies the
+    cross-page grouping key. The first region of each furniture group keeps its
+    edge record (``dup_count`` incremented + ``pages`` appended per repeat);
+    every non-furniture region passes through unchanged (``dup_count`` 1).
+    """
+    header_fbs = _detect_running_headers(feature_blocks)
+    records: list[dict[str, Any]] = []
+    group_pos: dict[str, int] = {}  # norm key -> index into ``records``
+    for pos, region in enumerate(regions):
+        block_id = block_ids[pos] if block_ids is not None else pos
+        fb_indices = region.feature_block_indices or ()
+        first_idx = fb_indices[0] if fb_indices else None
+        is_furniture = first_idx is not None and first_idx in header_fbs
+        if is_furniture:
+            norm = _running_header_norm(_fb_raw_text(feature_blocks, first_idx))
+            page = _fb_page(feature_blocks, first_idx)
+            if norm in group_pos:
+                rec = records[group_pos[norm]]
+                rec["dup_count"] += 1
+                if page is not None and page not in rec["pages"]:
+                    rec["pages"].append(page)
+                continue
+            rec = build_edge_input(
+                region,
+                block_id=block_id,
+                feature_blocks=feature_blocks,
+                council_state=council_state,
+                edge_tokens=edge_tokens,
+                dup_count=1,
+                pages=[page] if page is not None else [],
+            )
+            group_pos[norm] = len(records)
+            records.append(rec)
+            continue
+        records.append(
+            build_edge_input(
+                region,
+                block_id=block_id,
+                feature_blocks=feature_blocks,
+                council_state=council_state,
+                edge_tokens=edge_tokens,
+            )
+        )
+    return records
+
+
 __all__ = [
     "NEIGHBOR_SNIPPET_CHARS",
     "REGION_KINDS",
+    "build_edge_input",
     "build_reviewer_input_json",
     "build_reviewer_request",
+    "dedup_furniture_records",
 ]
