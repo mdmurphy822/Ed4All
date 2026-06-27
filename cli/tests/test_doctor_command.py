@@ -57,6 +57,7 @@ def _patch_run_checks(monkeypatch, results, *, capture=None):
             capture["groups"] = groups
             capture["base_url"] = context.base_url
             capture["run_config"] = context.run_config
+            capture["run_id"] = context.run_id
         return results
 
     monkeypatch.setattr(doctor_mod, "run_checks", fake_run_checks)
@@ -67,15 +68,15 @@ def _patch_run_checks(monkeypatch, results, *, capture=None):
 # ---------------------------------------------------------------------- #
 
 
-def test_bootstrap_registers_exactly_four_groups_and_is_idempotent():
+def test_bootstrap_registers_exactly_five_groups_and_is_idempotent():
     doctor_mod._bootstrap_checks()
     groups_once = {g for g, _ in registered_checks()}
-    assert groups_once == {"gpu", "window", "environment", "provider"}
+    assert groups_once == {"gpu", "window", "environment", "provider", "postmortem"}
 
-    # Idempotent: a second bootstrap clears-then-registers, still four.
+    # Idempotent: a second bootstrap clears-then-registers, still five.
     doctor_mod._bootstrap_checks()
     groups_twice = {g for g, _ in registered_checks()}
-    assert groups_twice == {"gpu", "window", "environment", "provider"}
+    assert groups_twice == {"gpu", "window", "environment", "provider", "postmortem"}
 
 
 # ---------------------------------------------------------------------- #
@@ -682,3 +683,155 @@ def test_doctor_explicit_group_without_ping_unchanged(monkeypatch):
     assert result.exit_code == 0, result.output
     assert capture["groups"] == ("gpu",)
     assert "provider" not in capture["groups"]
+
+
+# ---------------------------------------------------------------------- #
+# Post-mortem mode (--run-id): analyzes a PAST run; ONLY the postmortem
+# group; no live-env probing; mutually exclusive with --run / --ping.
+# ---------------------------------------------------------------------- #
+
+
+def _postmortem_results() -> list[CheckResult]:
+    return [_result("phase_finalization", "postmortem", Severity.OK)]
+
+
+def test_doctor_run_id_runs_only_postmortem_group(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _postmortem_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--run-id", "RUN123"])
+
+    assert result.exit_code == 0, result.output
+    # ONLY the postmortem group runs — gpu/window/environment/provider absent.
+    assert capture["groups"] == ("postmortem",)
+    assert "gpu" not in capture["groups"]
+    assert "window" not in capture["groups"]
+    assert "environment" not in capture["groups"]
+    assert "provider" not in capture["groups"]
+    # The run id is threaded onto the context; run_config stays None.
+    assert capture["run_id"] == "RUN123"
+    assert capture["run_config"] is None
+
+
+def test_doctor_run_id_threads_base_url(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _postmortem_results(), capture=capture)
+
+    result = CliRunner().invoke(
+        doctor_command, ["--run-id", "RUN123", "--base-url", "http://x:1234"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert capture["run_id"] == "RUN123"
+    assert capture["base_url"] == "http://x:1234"
+
+
+def test_doctor_run_id_with_run_is_mutually_exclusive(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _postmortem_results(), capture=capture)
+
+    result = CliRunner().invoke(
+        doctor_command, ["--run-id", "RUN123", "--run", "textbook_to_course"]
+    )
+
+    assert result.exit_code == 2, result.output
+    # Short-circuited BEFORE run_checks.
+    assert "groups" not in capture
+    assert "mutually exclusive" in result.output
+
+
+def test_doctor_run_id_with_ping_is_mutually_exclusive(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _postmortem_results(), capture=capture)
+
+    result = CliRunner().invoke(doctor_command, ["--run-id", "RUN123", "--ping"])
+
+    assert result.exit_code == 2, result.output
+    assert "groups" not in capture
+    assert "mutually exclusive" in result.output
+
+
+def test_doctor_run_id_with_conflicting_group_errors(monkeypatch):
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _postmortem_results(), capture=capture)
+
+    result = CliRunner().invoke(
+        doctor_command, ["--run-id", "RUN123", "--group", "gpu"]
+    )
+
+    assert result.exit_code == 2, result.output
+    assert "groups" not in capture
+    assert "gpu" in result.output
+
+
+def test_doctor_run_id_with_explicit_postmortem_group_is_fine(monkeypatch):
+    """An explicit --group postmortem alongside --run-id is NOT a conflict."""
+    capture: dict = {}
+    _patch_run_checks(monkeypatch, _postmortem_results(), capture=capture)
+
+    result = CliRunner().invoke(
+        doctor_command, ["--run-id", "RUN123", "--group", "postmortem"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert capture["groups"] == ("postmortem",)
+    assert capture["run_id"] == "RUN123"
+
+
+def test_doctor_run_id_exit_2_on_failed_run(monkeypatch):
+    """Post-mortem of a FAILED run passes the FAIL through to exit 2."""
+    _patch_run_checks(
+        monkeypatch,
+        [_result("phase_course_planning", "postmortem", Severity.FAIL)],
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--run-id", "RUN123"])
+
+    assert result.exit_code == 2, result.output
+    assert "DANGER" in result.output
+
+
+def test_doctor_run_id_exit_0_on_clean_run(monkeypatch):
+    """Post-mortem of an all-OK run exits 0."""
+    _patch_run_checks(monkeypatch, _postmortem_results())
+
+    result = CliRunner().invoke(doctor_command, ["--run-id", "RUN123"])
+
+    assert result.exit_code == 0, result.output
+    assert "OK" in result.output
+
+
+def test_doctor_run_id_json_emits_postmortem_results(monkeypatch):
+    _patch_run_checks(
+        monkeypatch,
+        [
+            _result("phase_finalization", "postmortem", Severity.OK),
+            _result("vram_timeline", "postmortem", Severity.INFO),
+        ],
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--run-id", "RUN123", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert isinstance(payload["results"], list)
+    assert len(payload["results"]) == 2
+    assert payload["exit_code"] == 0
+    # No gpu group ran → snapshot/verdicts back-compat keys are null/empty.
+    assert payload["snapshot"] is None
+    assert payload["verdicts"] == []
+    assert {e["group"] for e in payload["results"]} == {"postmortem"}
+
+
+def test_doctor_run_id_json_reflects_failed_run_exit_code(monkeypatch):
+    _patch_run_checks(
+        monkeypatch,
+        [_result("phase_course_planning", "postmortem", Severity.FAIL)],
+    )
+
+    result = CliRunner().invoke(doctor_command, ["--run-id", "RUN123", "--json"])
+
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.output)
+    assert payload["exit_code"] == 2
+    assert "DANGER" in payload["summary"]

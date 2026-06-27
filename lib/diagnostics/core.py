@@ -73,10 +73,15 @@ class CheckContext:
     ``base_url`` is the ollama base from the CLI ``--base-url`` flag.
     ``run_config`` is populated only in ``--run`` mode (a later phase); it
     is ``None`` for plain environment checks.
+    ``run_id`` is populated only in ``--run-id`` post-mortem mode (the
+    forensic run-analysis check group); it is ``None`` for every other
+    check. Additive + default ``None`` → fully backward-compatible with
+    existing ``CheckContext(base_url=..., run_config=...)`` call sites.
     """
 
     base_url: Optional[str] = None
     run_config: Optional[dict] = None
+    run_id: Optional[str] = None
 
 
 #: A check is a callable taking a :class:`CheckContext` and returning a

@@ -55,6 +55,7 @@ from lib.diagnostics import (
 # The check modules do NOT self-register — importing them is
 # side-effect-free; the bootstrap calls their register_* fns explicitly.
 from lib.diagnostics.environment import register_environment_checks
+from lib.diagnostics.postmortem import register_postmortem_checks
 from lib.diagnostics.provider import register_provider_checks
 from lib.diagnostics.run_env import applied_run_env
 from lib.diagnostics.serving_window import register_serving_window_checks
@@ -78,6 +79,11 @@ from cli.commands.run import (
 #: noise).
 _DEFAULT_GROUPS = ("gpu", "window", "environment")
 _RUN_GROUPS = ("gpu", "window", "environment", "provider")
+
+#: Post-mortem mode (``--run-id``) is a DISTINCT mode — it analyzes a PAST run
+#: off disk (checkpoints + VRAM trajectory) and does ZERO live-env probing. It
+#: runs ONLY this group; it is mutually exclusive with the preflight flags.
+_POSTMORTEM_GROUPS = ("postmortem",)
 
 
 def _gpu_backcompat_payload(results) -> tuple[dict | None, list[dict]]:
@@ -133,17 +139,20 @@ def _bootstrap_checks() -> None:
     """Register the built-in check groups (idempotent).
 
     Clears the registry first so repeated command invocations / tests do
-    NOT double-register, then wires the four explicit per-group helpers
-    (``gpu`` / ``window`` / ``environment`` / ``provider``). Safe to call on
-    every command invocation. NB: registering ``provider`` makes
-    ``--group provider`` valid; it is still EXCLUDED from the bare default
-    group selection (run-preflight only).
+    NOT double-register, then wires the five explicit per-group helpers
+    (``gpu`` / ``window`` / ``environment`` / ``provider`` / ``postmortem``).
+    Safe to call on every command invocation. NB: registering ``provider``
+    makes ``--group provider`` valid; it is still EXCLUDED from the bare
+    default group selection (run-preflight only). Likewise ``postmortem`` is
+    reachable via ``--group postmortem`` / ``--run-id`` only (past-run forensic
+    mode), never in the bare default.
     """
     clear_registry()
     register_gpu_checks()
     register_serving_window_checks()
     register_environment_checks()
     register_provider_checks()
+    register_postmortem_checks()
 
 
 def _compute_nvidia_preflight(workflow: str, provider: str | None) -> dict | None:
@@ -237,6 +246,18 @@ def _compute_nvidia_preflight(workflow: str, provider: str | None) -> dict | Non
         "default (the rest of the doctor makes NO network calls)."
     ),
 )
+@click.option(
+    "--run-id",
+    "run_id",
+    default=None,
+    help=(
+        "Post-mortem mode: forensically analyze a PAST run by its id (reads the "
+        "run's persisted checkpoints + VRAM trajectory off disk). Runs ONLY the "
+        "``postmortem`` group — does NO live-env probing (no GPU / ollama / "
+        "network). Mutually exclusive with --run / --ping (post-mortem vs "
+        "preflight are different modes). Exit 2 if the analyzed run failed."
+    ),
+)
 def doctor_command(
     base_url: str | None,
     output_json: bool,
@@ -245,6 +266,7 @@ def doctor_command(
     provider: str | None,
     mode: str | None,
     ping: bool,
+    run_id: str | None,
 ) -> None:
     """Report build-preflight diagnostics across the registered check groups.
 
@@ -252,7 +274,10 @@ def doctor_command(
     to ``--group``) for the given ``--base-url``, then renders the grouped
     report (or JSON). With ``--run <workflow>`` (or ``--ping``) it also runs
     the ``provider`` group — modelling which provider every seat resolves to
-    for that run. Never raises; exit code gates a preflight script
+    for that run. With ``--run-id <id>`` it switches to POST-MORTEM mode:
+    runs ONLY the ``postmortem`` group, analyzing a past run off disk (no
+    live-env probing); the exit code then reflects that run's OUTCOME (2 if it
+    failed). Never raises; exit code gates a preflight script
     (2=DANGER any-FAIL, 1=DEGRADED any-WARN, 0=OK).
     """
     try:
@@ -273,6 +298,51 @@ def doctor_command(
                 err=True,
             )
             sys.exit(2)
+
+        # Post-mortem mode (--run-id): a DISTINCT mode that analyzes a PAST
+        # run off disk. It runs ONLY the ``postmortem`` group and does ZERO
+        # live-env probing (no GPU / ollama / network). It is mutually
+        # exclusive with the preflight flags (--run / --ping), and forces the
+        # postmortem group (an explicit conflicting --group is a loud error).
+        if run_id is not None:
+            if run_workflow or ping:
+                click.secho(
+                    "ed4all doctor: --run-id (post-mortem of a past run) is "
+                    "mutually exclusive with --run / --ping (live-env "
+                    "preflight). Pass one mode or the other.",
+                    fg="red",
+                    err=True,
+                )
+                sys.exit(2)
+            conflicting = [g for g in groups if g != "postmortem"]
+            if conflicting:
+                click.secho(
+                    "ed4all doctor: --run-id forces the 'postmortem' group; "
+                    "remove the conflicting --group value(s): "
+                    f"{', '.join(sorted(set(conflicting)))}.",
+                    fg="red",
+                    err=True,
+                )
+                sys.exit(2)
+
+            ctx = CheckContext(base_url=base_url, run_id=run_id)
+            results = run_checks(ctx, groups=_POSTMORTEM_GROUPS)
+            exit_code = resolve_exit_code(results)
+
+            if output_json:
+                snapshot, verdicts = _gpu_backcompat_payload(results)
+                payload = {
+                    "results": results_to_json(results),
+                    "snapshot": snapshot,
+                    "verdicts": verdicts,
+                    "exit_code": exit_code,
+                    "summary": resolve_verdict(results),
+                }
+                click.echo(_json.dumps(payload, indent=2))
+            else:
+                click.echo(format_report(results))
+
+            sys.exit(exit_code)
 
         # Validate --run against the supported workflow set (mirror the
         # unknown-group pattern: fail loud, exit 2, run nothing).
