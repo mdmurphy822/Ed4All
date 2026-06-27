@@ -1221,8 +1221,23 @@ def run_full_cascade(
     # reviewer ran, None when off (the None-vs-[] reviewer-did-not-run vs
     # ran-found-nothing distinction). dataclasses.asdict serializes each
     # frozen ReviewVerdict; build_conformance_audit treats it as OPTIONAL.
+    # Phase 2 (SEMANTIK_BLOCK_REVIEW) byte-stability (F1): the new
+    # ``ReviewVerdict.role_after`` field is Optional-default-None and is
+    # EXCLUDED from the audit row when None, so a flag-off / heading-only run's
+    # audit dict is byte-identical to today (asdict would otherwise emit
+    # ``role_after: null`` on every verdict, including the shipped heading
+    # path). The exclusion is SCOPED to ``role_after`` ONLY — a blanket
+    # None-key drop would strip the legitimately-None ``level_before`` /
+    # ``level_after`` keys that today's audit already emits for non-heading
+    # regions, which would itself break byte-stability.
+    def _verdict_audit_row(verdict: Any) -> dict[str, Any]:
+        row = dataclasses.asdict(verdict)
+        if row.get("role_after") is None:
+            row.pop("role_after", None)
+        return row
+
     structure_review_audit = (
-        [dataclasses.asdict(v) for v in review_verdicts]
+        [_verdict_audit_row(v) for v in review_verdicts]
         if review_verdicts is not None
         else None
     )

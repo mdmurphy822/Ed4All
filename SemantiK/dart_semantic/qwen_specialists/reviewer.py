@@ -482,6 +482,14 @@ class ReviewVerdict:
     review_note: str
     reverted_for_invariant: bool = False
     reverted_for_endpoint_failure: bool = False
+    # Phase 2 (SEMANTIK_BLOCK_REVIEW): the region's doc_role AFTER a
+    # block-review re-type, mirrored from the already-written
+    # ``payload['doc_role']``. Optional-default-None + audit-EXCLUDED when
+    # None (see cascade.py structure_review_audit) so the heading-only /
+    # flag-off path's audit dict stays byte-identical to today. Populated
+    # ONLY when block-review is on (no content re-types are produced with
+    # the flag off, so this is None on every flag-off verdict).
+    role_after: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -753,6 +761,16 @@ def _apply_verdict(
         # No structural change actually happened -> normalize to ok.
         final_verdict = "ok"
 
+    # Phase 2: mirror the already-written ``doc_role`` onto ``role_after``,
+    # but ONLY when block-review is on. The kind change itself already flows
+    # through the admission path above (``dataclasses.replace`` + ``_admits``);
+    # this is the sole net-new apply work. Gating on the flag keeps the
+    # heading-only / flag-off path's audit byte-identical to today — a heading
+    # whose payload carries a Semantic ``doc_role`` (or a heading verdict that
+    # sets ``corrected_doc_role``) does NOT leak a non-None ``role_after``
+    # while the flag is off, so no content re-types ⇒ ``role_after`` is None
+    # on every flag-off verdict.
+    role_after = new_payload.get("doc_role") if resolve_block_review_mode() else None
     verdict = ReviewVerdict(
         block_id=block_id,
         verdict=final_verdict,
@@ -762,6 +780,7 @@ def _apply_verdict(
         level_after=new_payload.get("level_hint"),
         review_note=note,
         reverted_for_invariant=False,
+        role_after=role_after,
     )
     return candidate, verdict
 
