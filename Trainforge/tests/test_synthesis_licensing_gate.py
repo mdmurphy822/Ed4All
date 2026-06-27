@@ -1,12 +1,18 @@
-"""Marketable-v1 D4 — license-clean-by-default gate for training-pair synthesis.
+"""Marketable-v1 D4 / Phase 4 — license-clean gate for training-pair synthesis.
 
-``Trainforge/synthesize_training.py::run_synthesis`` fails closed when an
-Anthropic-family provider (``anthropic`` / ``claude_session``) is selected for
-TRAINING-PAIR synthesis without the explicit
-``TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS`` acknowledgment env. The emitted
-instruction / preference pairs ARE the SLM training corpus (the adapter is a
-derivative work of them), so per ``docs/LICENSING.md`` an Anthropic-family
-provider is not a clean default here — it must be an explicit, fail-loud opt-in.
+``Trainforge/synthesize_training.py::run_synthesis`` fails closed for two
+distinct Anthropic-related cases:
+
+- ``provider="anthropic"`` — the Anthropic-SDK training path was REMOVED
+  (Phase 4). It fails closed UNCONDITIONALLY (no ack-flag escape): the
+  ``TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS`` env does NOT unlock it.
+- ``provider="claude_session"`` — a separate Claude-Code-session route
+  (Anthropic Consumer Terms). It stays a fail-loud opt-in gated behind the
+  ``TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS`` acknowledgment env.
+
+The emitted instruction / preference pairs ARE the SLM training corpus (the
+adapter is a derivative work of them), so per ``docs/LICENSING.md`` neither is
+a clean default here.
 
 These tests drive the gate at the front of ``run_synthesis`` against a scratch
 corpus, so the raise (or pass-through to the next branch) is exercised without
@@ -22,6 +28,7 @@ import pytest
 from Trainforge.synthesize_training import (
     SynthesisLicensingError,
     _ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS,
+    _REMOVED_SYNTHESIS_PROVIDERS,
     _RESTRICTED_NO_ACK_SYNTHESIS_PROVIDERS,
     run_synthesis,
 )
@@ -45,7 +52,34 @@ def _corpus(tmp_path: Path) -> Path:
 
 
 # --------------------------------------------------------------------------
-# Anthropic-family providers fail closed without the ack env.
+# provider="anthropic" — REMOVED path, fails closed UNCONDITIONALLY.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("ack", [None, "true", "1", "yes", "on", "false", "0"])
+def test_anthropic_removed_fails_closed_unconditionally(tmp_path, monkeypatch, ack):
+    """The Anthropic-SDK training path was removed: ``provider="anthropic"``
+    fails closed with NO ack-flag escape — even ``TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS=true``
+    does NOT unlock it."""
+    _scrub(monkeypatch)
+    if ack is not None:
+        monkeypatch.setenv(_GATE_ENV, ack)
+    with pytest.raises(SynthesisLicensingError) as exc:
+        run_synthesis(
+            corpus_dir=_corpus(tmp_path),
+            course_code="LIC_TEST",
+            provider="anthropic",
+        )
+    msg = str(exc.value)
+    assert "anthropic" in msg
+    assert "docs/LICENSING.md" in msg
+    # The message states the path was removed / has no escape.
+    assert "REMOVED" in msg or "removed" in msg
+    assert "local" in msg
+
+
+# --------------------------------------------------------------------------
+# provider="claude_session" — still ack-gated; fails closed without the env.
 # --------------------------------------------------------------------------
 
 
@@ -67,14 +101,18 @@ def test_anthropic_family_without_ack_fails_closed(tmp_path, monkeypatch, provid
     assert "local" in msg
 
 
-def test_gate_set_matches_documented_anthropic_family():
-    """The gated set is exactly the two Anthropic-family providers — never the
-    license-clean ones (mock / local / together)."""
-    assert _ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS == frozenset(
-        {"anthropic", "claude_session"}
+def test_gate_sets_match_documented_split():
+    """Phase 4 split: ``anthropic`` is the REMOVED (unconditional) set;
+    ``claude_session`` is the remaining ack-gated Anthropic-family provider.
+    Neither set contains a license-clean provider, and the two are disjoint."""
+    assert _REMOVED_SYNTHESIS_PROVIDERS == frozenset({"anthropic"})
+    assert _ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS == frozenset({"claude_session"})
+    assert _REMOVED_SYNTHESIS_PROVIDERS.isdisjoint(
+        _ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS
     )
     for clean in ("mock", "local", "together"):
         assert clean not in _ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS
+        assert clean not in _REMOVED_SYNTHESIS_PROVIDERS
 
 
 # --------------------------------------------------------------------------
@@ -164,14 +202,14 @@ def test_anthropic_with_ack_proceeds_past_gate(tmp_path, monkeypatch, truthy):
 
 def test_falsey_ack_value_still_fails_closed(tmp_path, monkeypatch):
     """A non-truthy ack value (e.g. ``false`` / ``0``) does NOT unlock the
-    gate — only the canonical truthy tokens count."""
+    claude_session gate — only the canonical truthy tokens count."""
     _scrub(monkeypatch)
     monkeypatch.setenv(_GATE_ENV, "false")
     with pytest.raises(SynthesisLicensingError):
         run_synthesis(
             corpus_dir=_corpus(tmp_path),
             course_code="LIC_TEST",
-            provider="anthropic",
+            provider="claude_session",
         )
 
 

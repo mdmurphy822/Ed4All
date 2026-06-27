@@ -391,11 +391,16 @@ def test_emit_decision_safely_no_op_when_capture_is_none():
 
 
 def test_anthropic_module_constants_preserved():
+    # Phase 4: the Anthropic-SDK training-pair synthesis provider was removed.
+    # The slim ``_anthropic_provider`` retains ONLY the anthropic-identity
+    # constants (consumed by the out-of-scope curriculum / assessment anthropic
+    # backends); the shared synthesis symbols moved to ``_synthesis_common``.
     from Trainforge.generators._anthropic_provider import (
         DEFAULT_SYNTHESIS_MODEL,
         ENV_API_KEY,
         ENV_MODEL,
-        MAX_PARSE_RETRIES,
+    )
+    from Trainforge.generators._synthesis_common import (
         PROMPT_MIN,
         PROMPT_MAX,
         COMPLETION_MIN,
@@ -406,7 +411,6 @@ def test_anthropic_module_constants_preserved():
     assert DEFAULT_SYNTHESIS_MODEL
     assert ENV_API_KEY == "ANTHROPIC_API_KEY"
     assert ENV_MODEL == "ANTHROPIC_SYNTHESIS_MODEL"
-    assert MAX_PARSE_RETRIES > 0
     assert PROMPT_MIN < PROMPT_MAX
     assert COMPLETION_MIN < COMPLETION_MAX
     assert "prompt" in _KIND_BOUNDS

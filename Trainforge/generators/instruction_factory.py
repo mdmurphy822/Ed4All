@@ -831,21 +831,18 @@ def synthesize_instruction_pair(
         "schema_version": "v1",
     }
 
-    # Wave 91 Action A: when provider="anthropic", paraphrase the mock
-    # draft through Claude. The mock pair already passed every length /
-    # leakage / grounding gate above; the LLM step is anchored against
-    # the chunk text via prompt caching and only paraphrases — it must
-    # not introduce new facts. Failures (missing API key, parse retry
-    # exhaustion) raise loudly per Action A spec.
-    if provider in ("anthropic", "claude_session", "together", "local"):
+    # Paraphrase the mock draft through the selected LLM seat. The mock pair
+    # already passed every length / leakage / grounding gate above; the LLM
+    # step is anchored against the chunk text and only paraphrases — it must
+    # not introduce new facts. Phase 4: ``anthropic`` is NOT in the dispatch
+    # set — the Anthropic-SDK training path was removed (run_synthesis fails
+    # closed on it before reaching here), so a ``provider="anthropic"`` call
+    # falls through unparaphrased, mirroring how ``mock`` / ``nvidia`` skip
+    # the paraphrase block.
+    if provider in ("claude_session", "together", "local"):
         provider_instance = paraphrase_provider
         if provider_instance is None:
-            if provider == "anthropic":
-                from Trainforge.generators._anthropic_provider import (
-                    AnthropicSynthesisProvider,
-                )
-                provider_instance = AnthropicSynthesisProvider()
-            elif provider == "together":
+            if provider == "together":
                 # Phase 3: agnostic cutover (default ON) — route the
                 # hosted OpenAI-wire seat through the leaf-exact builder
                 # (verbose prompts, preserve disabled, hard 60s timeout).
@@ -890,9 +887,9 @@ def synthesize_instruction_pair(
         # Wave 120: pass preserve_tokens through to providers that
         # support it. Save the deterministic draft so the caller can
         # fall back if the paraphrase pass drops a required surface
-        # form. Providers that don't accept the kwarg (anthropic /
-        # together / claude_session pre-Wave-120) fall through to the
-        # legacy 2-arg call.
+        # form. Providers that don't accept the kwarg (together /
+        # claude_session pre-Wave-120) fall through to the legacy 2-arg
+        # call.
         deterministic_draft = dict(pair)
         try:
             try:
@@ -928,7 +925,7 @@ def synthesize_instruction_pair(
         f"Selected template '{template_id}' for bloom='{bloom}' content_type='{content_type}' "
         f"targeting topic='{topic}'. Completion grounded in key_terms/concept_tags with a "
         f"bloom-level-specific closing sentence. Verbatim-span check against chunk.text passed. "
-        f"Provider='{provider}' (anthropic = paraphrase pass over the mock draft)."
+        f"Provider='{provider}' (local/together/claude_session = paraphrase pass over the mock draft)."
     )
 
     return InstructionSynthesisResult(

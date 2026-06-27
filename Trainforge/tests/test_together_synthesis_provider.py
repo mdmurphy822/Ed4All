@@ -39,7 +39,7 @@ from Trainforge.generators._together_provider import (  # noqa: E402
     SynthesisProviderError,
     TogetherSynthesisProvider,
 )
-from Trainforge.generators._anthropic_provider import (  # noqa: E402
+from Trainforge.generators._synthesis_common import (  # noqa: E402
     COMPLETION_MIN,
 )
 

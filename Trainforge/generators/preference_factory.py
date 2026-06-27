@@ -769,18 +769,17 @@ def synthesize_preference_pair(
         "schema_version": "v1",
     }
 
-    # Wave 91 Action A: paraphrase the mock draft via Anthropic when
-    # provider="anthropic". Same fail-loud contract as the instruction
-    # factory: missing key raises, malformed JSON retries up to 3x.
-    if provider in ("anthropic", "claude_session", "together", "local"):
+    # Paraphrase the mock draft via the selected LLM seat. Same fail-loud
+    # contract as the instruction factory: missing key raises, malformed JSON
+    # retries. Phase 4: ``anthropic`` is NOT in the dispatch set — the
+    # Anthropic-SDK training path was removed (run_synthesis fails closed on
+    # it before reaching here), so a ``provider="anthropic"`` call falls
+    # through unparaphrased, mirroring how ``mock`` / ``nvidia`` skip the
+    # paraphrase block.
+    if provider in ("claude_session", "together", "local"):
         provider_instance = paraphrase_provider
         if provider_instance is None:
-            if provider == "anthropic":
-                from Trainforge.generators._anthropic_provider import (
-                    AnthropicSynthesisProvider,
-                )
-                provider_instance = AnthropicSynthesisProvider()
-            elif provider == "together":
+            if provider == "together":
                 # Phase 3: agnostic cutover (default ON) — route the
                 # hosted OpenAI-wire seat through the leaf-exact builder
                 # (verbose prompts, preserve disabled, hard 60s timeout).

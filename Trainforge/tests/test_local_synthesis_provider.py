@@ -649,7 +649,7 @@ def test_local_provider_default_prompt_floor_matches_schema(monkeypatch):
     from Trainforge.generators._local_provider import (  # noqa: E402
         DEFAULT_LOCAL_KIND_BOUNDS,
     )
-    from Trainforge.generators._anthropic_provider import (  # noqa: E402
+    from Trainforge.generators._synthesis_common import (  # noqa: E402
         PROMPT_MIN,
     )
 

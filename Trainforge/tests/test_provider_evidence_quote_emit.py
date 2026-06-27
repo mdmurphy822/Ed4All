@@ -39,8 +39,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, List
-from unittest.mock import MagicMock
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -188,27 +187,14 @@ def test_emit_rate_legacy_list_str_key_claims_skipped() -> None:
 
 
 # ---------------------------------------------------------------------------
-# (a) Anthropic / Together / Local prompt directive presence
+# (a) Together / Local prompt directive presence
+#
+# Phase 4: the Anthropic-SDK synthesis provider was removed, so the
+# anthropic prompt-directive + emit-threading arms of this module were
+# deleted. The shared evidence-quote directive contract is still proven via
+# the Together / Local providers below (which import the SAME canonical
+# directive constant) plus the base-helper emit-rate tests above.
 # ---------------------------------------------------------------------------
-
-
-def test_anthropic_prompt_carries_evidence_quote_directive() -> None:
-    """Anthropic provider's ``_render_instruction_user`` /
-    ``_render_preference_user`` must append the canonical evidence-
-    quote directive sourced from the base provider module."""
-    from Trainforge.generators._anthropic_provider import (
-        AnthropicSynthesisProvider,
-    )
-    inst = AnthropicSynthesisProvider._render_instruction_user(
-        _instruction_draft(), "chunk_001",
-    )
-    assert "evidence_quote" in inst
-    assert "verbatim substring" in inst
-    pref_draft = {**_instruction_draft(), "chosen": "x", "rejected": "y"}
-    pref = AnthropicSynthesisProvider._render_preference_user(
-        pref_draft, "chunk_001",
-    )
-    assert "evidence_quote" in pref
 
 
 def test_together_prompt_carries_evidence_quote_directive() -> None:
@@ -247,30 +233,22 @@ def test_local_prompt_carries_evidence_quote_directive() -> None:
 
 
 def test_canonical_directive_constant_used_uniformly() -> None:
-    """Anthropic / Together / Local must all import the SAME directive
-    text (single source of truth) — a future edit to
-    ``EVIDENCE_QUOTE_PROMPT_DIRECTIVE`` updates every provider in
-    lockstep without per-provider drift."""
-    from Trainforge.generators._anthropic_provider import (
-        AnthropicSynthesisProvider,
-    )
+    """Together / Local must both import the SAME directive text (single
+    source of truth) — a future edit to ``EVIDENCE_QUOTE_PROMPT_DIRECTIVE``
+    updates every provider in lockstep without per-provider drift."""
     from Trainforge.generators._together_provider import (
         TogetherSynthesisProvider,
     )
     from Trainforge.generators._local_provider import (
         LocalSynthesisProvider,
     )
-    a = AnthropicSynthesisProvider._render_instruction_user(
-        _instruction_draft(), "chunk_001",
-    )
     t = TogetherSynthesisProvider._render_instruction_user(
         _instruction_draft(), "chunk_001",
     )
+    assert EVIDENCE_QUOTE_PROMPT_DIRECTIVE in t
     # Local doesn't append the directive last (it has stacked
     # directives) — so we don't assert byte-suffix equality, only
     # that the canonical directive substring appears intact.
-    assert EVIDENCE_QUOTE_PROMPT_DIRECTIVE in a
-    assert EVIDENCE_QUOTE_PROMPT_DIRECTIVE in t
     local_inst = LocalSynthesisProvider._render_instruction_user(
         _instruction_draft(), "chunk_001",
     )
@@ -323,180 +301,10 @@ def test_claude_session_dispatch_threads_evidence_quote_directive() -> None:
 
 
 # ---------------------------------------------------------------------------
-# (d) + (e) Mock-provider end-to-end emit (anthropic surface)
+# (d) + (e) Mock-provider end-to-end emit — Phase 4: the anthropic emit-
+# threading tests were removed alongside the deleted AnthropicSynthesisProvider.
+# The OpenAI-compatible (local / together) providers carry the same
+# key_claims / evidence_quote emit-threading, covered in their own provider
+# suites; the shared emit-rate computation is proven by the base-helper tests
+# above.
 # ---------------------------------------------------------------------------
-
-
-def _mock_anthropic_response(text: str) -> Any:
-    block = MagicMock()
-    block.type = "text"
-    block.text = text
-    response = MagicMock()
-    response.content = [block]
-    usage = MagicMock()
-    usage.input_tokens = 100
-    usage.output_tokens = 50
-    usage.cache_read_input_tokens = 0
-    usage.cache_creation_input_tokens = 100
-    response.usage = usage
-    return response
-
-
-def test_anthropic_emit_threads_key_claims_with_evidence_quote() -> None:
-    """When the LLM returns a structured response with key_claims[]
-    each carrying ``evidence_quote``, the field is threaded onto
-    the emitted instruction-pair dict."""
-    import json
-    from Trainforge.generators._anthropic_provider import (
-        AnthropicSynthesisProvider,
-    )
-
-    body = {
-        "prompt": (
-            "Explain how SHACL shapes constrain RDF graphs in "
-            "instructional terms suitable for a learner."
-        ),
-        "completion": (
-            "SHACL shapes attach property constraints to typed nodes "
-            "and the validator reports violations against the data "
-            "graph during the validation walk."
-        ),
-        "key_claims": [
-            {
-                "claim": "SHACL shapes constrain RDF graphs.",
-                "source_chunk_ids": ["chunk_001"],
-                "evidence_quote": "SHACL shapes constrain RDF graphs",
-                "evidence_char_span": [0, 33],
-            },
-        ],
-    }
-    client = MagicMock()
-    client.messages.create.side_effect = [_mock_anthropic_response(json.dumps(body))]
-    provider = AnthropicSynthesisProvider(api_key="sk-test", client=client)
-    out = provider.paraphrase_instruction(_instruction_draft(), _chunk())
-    assert "key_claims" in out
-    assert isinstance(out["key_claims"], list)
-    assert out["key_claims"][0]["evidence_quote"] == (
-        "SHACL shapes constrain RDF graphs"
-    )
-    assert out["key_claims"][0]["evidence_char_span"] == [0, 33]
-
-
-def test_anthropic_emit_graceful_degrade_no_evidence_quote() -> None:
-    """When the LLM omits ``evidence_quote`` (older / smaller model
-    that ignores the schema directive), the emit still succeeds.
-    The downstream T11.2 validator handles the missing-quote arm
-    as warning-only."""
-    import json
-    from Trainforge.generators._anthropic_provider import (
-        AnthropicSynthesisProvider,
-    )
-
-    body = {
-        "prompt": (
-            "Explain how SHACL shapes constrain RDF graphs in "
-            "instructional terms suitable for a learner."
-        ),
-        "completion": (
-            "SHACL shapes attach property constraints to typed nodes "
-            "and the validator reports violations against the data "
-            "graph during the validation walk."
-        ),
-        # Note: no key_claims at all — the today-default shape.
-    }
-    client = MagicMock()
-    client.messages.create.side_effect = [_mock_anthropic_response(json.dumps(body))]
-    provider = AnthropicSynthesisProvider(api_key="sk-test", client=client)
-    out = provider.paraphrase_instruction(_instruction_draft(), _chunk())
-    # Emit succeeds — graceful degrade.
-    assert "prompt" in out
-    assert "completion" in out
-    assert out["provider"] == "anthropic"
-    # No key_claims threaded because the response didn't carry any.
-    assert "key_claims" not in out
-
-
-def test_anthropic_emit_rate_lands_in_decision_capture() -> None:
-    """The ``synthesis_provider_call`` decision rationale interpolates
-    ``evidence_quote_emit_rate`` (mirrors W5.D pattern — extend
-    existing decision_type rationale, no enum change)."""
-    import json
-    from Trainforge.generators._anthropic_provider import (
-        AnthropicSynthesisProvider,
-    )
-
-    body = {
-        "prompt": (
-            "Explain how SHACL shapes constrain RDF graphs in "
-            "instructional terms suitable for a learner."
-        ),
-        "completion": (
-            "SHACL shapes attach property constraints to typed nodes "
-            "and the validator reports violations against the data "
-            "graph during the validation walk."
-        ),
-        "key_claims": [
-            {
-                "claim": "SHACL shapes constrain RDF graphs.",
-                "evidence_quote": "SHACL shapes constrain RDF graphs",
-            },
-            {"claim": "Validator reports violations."},
-        ],
-    }
-    client = MagicMock()
-    client.messages.create.side_effect = [_mock_anthropic_response(json.dumps(body))]
-
-    captured: List[dict] = []
-
-    class _FakeCapture:
-        def log_decision(self, **kwargs: Any) -> None:
-            captured.append(kwargs)
-
-    provider = AnthropicSynthesisProvider(
-        api_key="sk-test", client=client, capture=_FakeCapture(),
-    )
-    provider.paraphrase_instruction(_instruction_draft(), _chunk())
-    assert len(captured) == 1
-    rationale = captured[0]["rationale"]
-    assert "evidence_quote_emit_rate=0.500" in rationale
-    assert "1/2 claims carry verbatim quotes" in rationale
-
-
-def test_anthropic_emit_rate_fragment_when_no_claims_emitted() -> None:
-    """The today-default (no ``key_claims`` / ``per_claim_support``
-    in the response) emits ``evidence_quote_emit_rate=0.000 (no
-    claims emitted)`` so an operator can tell apart "no claims" from
-    "claims without quotes" when post-hoc auditing the rationale
-    stream."""
-    import json
-    from Trainforge.generators._anthropic_provider import (
-        AnthropicSynthesisProvider,
-    )
-
-    body = {
-        "prompt": (
-            "Explain how SHACL shapes constrain RDF graphs in "
-            "instructional terms suitable for a learner."
-        ),
-        "completion": (
-            "SHACL shapes attach property constraints to typed nodes "
-            "and the validator reports violations against the data "
-            "graph during the validation walk."
-        ),
-    }
-    client = MagicMock()
-    client.messages.create.side_effect = [_mock_anthropic_response(json.dumps(body))]
-
-    captured: List[dict] = []
-
-    class _FakeCapture:
-        def log_decision(self, **kwargs: Any) -> None:
-            captured.append(kwargs)
-
-    provider = AnthropicSynthesisProvider(
-        api_key="sk-test", client=client, capture=_FakeCapture(),
-    )
-    provider.paraphrase_instruction(_instruction_draft(), _chunk())
-    assert len(captured) == 1
-    rationale = captured[0]["rationale"]
-    assert "no claims emitted" in rationale

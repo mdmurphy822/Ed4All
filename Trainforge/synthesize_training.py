@@ -87,13 +87,25 @@ logger = logging.getLogger(__name__)
 DEFAULT_SEED = 17  # Arbitrary but stable; stage adds chunk-index for variety.
 
 
+# Phase 4 — the Anthropic-SDK training-pair synthesis path (the
+# ``AnthropicSynthesisProvider`` class + its SDK transport) was REMOVED
+# entirely. ``provider="anthropic"`` is now UNCONDITIONALLY forbidden for
+# training-pair synthesis: there is NO acknowledgment escape, because the code
+# that could route the SLM training corpus through the Anthropic SDK no longer
+# exists (the surface is license-clean by construction). This is distinct from
+# the NVIDIA no-ack set below only in provenance — both fail closed with no
+# escape. Canonical posture: docs/LICENSING.md § "Synthesis providers".
+_REMOVED_SYNTHESIS_PROVIDERS = frozenset({"anthropic"})
+
 # Marketable-v1 D4 — providers whose ToS restricts using outputs to train a
-# derivative model. Selecting one for TRAINING-PAIR synthesis (the corpus the
-# SLM adapter is a derivative work of) is a fail-loud opt-in gated behind
+# derivative model. ``claude_session`` is a SEPARATE Claude-Code-session route
+# (NOT the removed SDK path); its outputs are restricted under Anthropic
+# Consumer Terms, so selecting it for TRAINING-PAIR synthesis (the corpus the
+# SLM adapter is a derivative work of) stays a fail-loud opt-in gated behind
 # ``TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS=true``. ``mock`` / ``together`` /
 # ``local`` (and any registered OpenAI-compatible OSS provider) are
 # license-clean and pass through ungated. Canonical posture: docs/LICENSING.md.
-_ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS = frozenset({"anthropic", "claude_session"})
+_ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS = frozenset({"claude_session"})
 
 # Hosted-cloud providers whose ToS + underlying model license unconditionally
 # restrict using outputs as SLM training data — NVIDIA's hosted Llama-3.3 tier.
@@ -1303,33 +1315,50 @@ def run_synthesis(
     if _env_provider:
         provider = _env_provider
 
+    # Phase 4 — the Anthropic-SDK training-pair synthesis path was REMOVED.
+    # ``provider="anthropic"`` is UNCONDITIONALLY forbidden here: there is no
+    # acknowledgment escape, because the ``AnthropicSynthesisProvider`` class +
+    # its SDK transport no longer exist, so the SLM training corpus can never
+    # be routed through the Anthropic SDK (license-clean by construction).
+    # Fails closed BEFORE any provider construction. See docs/LICENSING.md
+    # § "Synthesis providers".
+    if provider in _REMOVED_SYNTHESIS_PROVIDERS:
+        raise SynthesisLicensingError(
+            f"Training-pair synthesis provider {provider!r} was REMOVED: the "
+            f"Anthropic-SDK training path (AnthropicSynthesisProvider) no longer "
+            f"exists, so the SLM training corpus can never be routed through it "
+            f"— there is no acknowledgment-flag escape. The documented "
+            f"license-clean default is --provider local (Apache-2.0 Qwen) or "
+            f"--provider together (hosted OSS). See docs/LICENSING.md "
+            f"§ \"Synthesis providers\"."
+        )
+
     # Marketable-v1 D4 — license-clean-by-default gate for TRAINING-PAIR
     # synthesis. The emitted instruction / preference pairs ARE the canonical
     # SLM training corpus (the trained adapter is a derivative work of them),
-    # so per ``docs/LICENSING.md`` § "Synthesis providers" an Anthropic-family
-    # provider is NOT a clean default here. Selecting one for THIS surface
-    # (the kwarg default is "mock" and the documented clean path is
-    # local / together) is therefore an explicit, fail-loud opt-in: the
-    # operator must set ``TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS=true`` to
-    # acknowledge they have a separate written agreement with Anthropic
-    # permitting derivative training. Without it we fail closed rather than
-    # silently producing a ToS-unclean corpus. ``claude_session`` (Consumer
-    # Terms) is even more restrictive, so it is gated identically. This is
-    # the synthesis-side companion to the executor's subagent short-circuit
-    # and the A5 CLI ``TRAINFORGE_SYNTHESIS_PROVIDER`` default-to-local.
+    # so per ``docs/LICENSING.md`` § "Synthesis providers" the ``claude_session``
+    # route (a SEPARATE Claude-Code-session path, Anthropic Consumer Terms) is
+    # NOT a clean default here. Selecting it for THIS surface (the kwarg default
+    # is "mock" and the documented clean path is local / together) is therefore
+    # an explicit, fail-loud opt-in: the operator must set
+    # ``TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS=true`` to acknowledge they have a
+    # separate written agreement with Anthropic permitting derivative training.
+    # Without it we fail closed rather than silently producing a ToS-unclean
+    # corpus. This is the synthesis-side companion to the executor's subagent
+    # short-circuit and the A5 CLI ``TRAINFORGE_SYNTHESIS_PROVIDER``
+    # default-to-local.
     if provider in _ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS:
         _ack = os.environ.get("TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS", "").strip().lower()
         if _ack not in ("1", "true", "yes", "on"):
             raise SynthesisLicensingError(
                 f"Training-pair synthesis provider {provider!r} routes the SLM "
-                f"training corpus through an Anthropic-family backend whose ToS "
-                f"restricts using outputs to train a derivative model "
-                f"({'Anthropic Commercial Terms' if provider == 'anthropic' else 'Anthropic Consumer Terms (Pro/Max)'}). "
-                f"The documented license-clean default is --provider local "
-                f"(Apache-2.0 Qwen) or --provider together (hosted OSS). To "
-                f"proceed with {provider!r} anyway — only valid if you hold a "
-                f"separate written agreement with Anthropic permitting "
-                f"derivative training — set "
+                f"training corpus through a Claude Code session whose ToS "
+                f"(Anthropic Consumer Terms, Pro/Max) restricts using outputs "
+                f"to train a derivative model. The documented license-clean "
+                f"default is --provider local (Apache-2.0 Qwen) or --provider "
+                f"together (hosted OSS). To proceed with {provider!r} anyway — "
+                f"only valid if you hold a separate written agreement with "
+                f"Anthropic permitting derivative training — set "
                 f"TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS=true to acknowledge the "
                 f"licensing posture. See docs/LICENSING.md "
                 f"§ \"Synthesis providers\"."

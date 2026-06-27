@@ -789,9 +789,9 @@ Canonical reference: **`docs/LICENSING.md`**. Read it before running any trainin
 The project distinguishes two surfaces with different licensing exposure:
 
 - **Development tools** (Claude Code, OpenAI Codex) generate code, prose, and shell invocations. Their ToS restricts training-data routing, but on this project that restriction is moot — these tools never produce training data, so the dev tool you use has zero effect on the trained SLM's licensing.
-- **LLM providers** (`--provider anthropic` / `claude_session` / `together` / `local`) generate the paraphrased instruction / preference pairs that become training data. The trained model is a derivative work of those outputs, so the provider's ToS + the underlying model license decide whether the corpus is shippable.
+- **LLM providers** (`--provider claude_session` / `together` / `local`) generate the paraphrased instruction / preference pairs that become training data. The trained model is a derivative work of those outputs, so the provider's ToS + the underlying model license decide whether the corpus is shippable.
 
-Default posture: training-data synthesis routes to license-clean providers — `--provider local` with an Apache 2.0 model (Qwen2.5-7B/14B/32B) for an air-gapped clean corpus, or `--provider together` with a hosted OSS model as the cloud fallback. Anthropic providers stay wired for backward compatibility but are not the recommended default for training data.
+Default posture: training-data synthesis routes to license-clean providers — `--provider local` with an Apache 2.0 model (Qwen2.5-7B/14B/32B) for an air-gapped clean corpus, or `--provider together` with a hosted OSS model as the cloud fallback. The `--provider anthropic` SDK training-pair path was **removed (Phase 4)** — `run_synthesis` fails closed on it unconditionally, so training-pair synthesis is license-clean by construction. The `claude_session` route stays wired behind the `TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS` acknowledgment gate but is not recommended for training data.
 
 **Maintenance contract:** any new behavior flag in the table above that selects an LLM provider, model ID, or synthesis backend MUST land with a corresponding row in `docs/LICENSING.md`'s "Synthesis providers" table. Drift between this file's per-flag rows and `docs/LICENSING.md` is a documentation bug.
 

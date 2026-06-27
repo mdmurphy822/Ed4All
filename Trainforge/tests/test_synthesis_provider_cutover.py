@@ -10,9 +10,10 @@ fall back to the per-vendor leaves (``LocalSynthesisProvider`` /
 These tests assert WHICH class the factory constructs (the cutover seam) +
 the ``terse_prompts`` mapping (local terse, hosted verbose) — they do not
 re-prove paraphrase byte-parity (``test_synthesis_provider.py`` owns that).
-The ``anthropic`` arm always constructs ``AnthropicSynthesisProvider``
-regardless of the flag (P4 will handle it); ``claude_session`` is never
-lazily constructed by the factory at all.
+Phase 4: the ``anthropic`` arm was REMOVED — ``provider="anthropic"`` is no
+longer in the factory dispatch set, so it constructs NOTHING and falls
+through unparaphrased (run_synthesis fails closed on it upstream);
+``claude_session`` is never lazily constructed by the factory at all.
 """
 
 from __future__ import annotations
@@ -106,12 +107,11 @@ def _install_spies(monkeypatch) -> List[Tuple[str, Dict[str, Any]]]:
     from Trainforge.generators import _synthesis_provider as sp_mod
     from Trainforge.generators import _local_provider as lp_mod
     from Trainforge.generators import _together_provider as tp_mod
-    from Trainforge.generators import _anthropic_provider as ap_mod
 
     monkeypatch.setattr(sp_mod, "build_synthesis_provider", _builder_recorder)
     monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _leaf_recorder("local_leaf"))
     monkeypatch.setattr(tp_mod, "TogetherSynthesisProvider", _leaf_recorder("together_leaf"))
-    monkeypatch.setattr(ap_mod, "AnthropicSynthesisProvider", _leaf_recorder("anthropic_leaf"))
+    # Phase 4: ``AnthropicSynthesisProvider`` was removed — no anthropic spy.
     return record
 
 
@@ -187,9 +187,12 @@ def test_instruction_flag_off_constructs_leaf(monkeypatch, provider, expected_ta
 
 
 @pytest.mark.parametrize("flag", [None, "0"])
-def test_instruction_anthropic_always_constructs_leaf(monkeypatch, flag):
-    """The anthropic arm is untouched by the cutover — constructs
-    AnthropicSynthesisProvider regardless of the flag (P4 owns it)."""
+def test_instruction_anthropic_constructs_nothing(monkeypatch, flag):
+    """Phase 4: the anthropic arm was REMOVED. ``provider="anthropic"`` is
+    no longer in the factory dispatch set, so it constructs NO provider
+    (neither the agnostic builder nor any leaf) regardless of the flag — the
+    pair falls through unparaphrased. run_synthesis fails closed on
+    ``anthropic`` upstream, so this path is never reached in practice."""
     if flag is None:
         monkeypatch.delenv(ENV_AGNOSTIC_SYNTHESIS, raising=False)
     else:
@@ -200,8 +203,8 @@ def test_instruction_anthropic_always_constructs_leaf(monkeypatch, flag):
         _instruction_chunk(), seed=11, provider="anthropic",
     )
     assert result.pair is not None
-    assert ("anthropic_leaf", {}) in record
-    assert not any(tag == "agnostic" for tag, _ in record)
+    # No provider construction of any kind for the removed anthropic arm.
+    assert record == []
 
 
 # ---------------------------------------------------------------------------
