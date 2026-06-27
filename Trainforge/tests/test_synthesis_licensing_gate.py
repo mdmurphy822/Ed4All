@@ -22,6 +22,7 @@ import pytest
 from Trainforge.synthesize_training import (
     SynthesisLicensingError,
     _ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS,
+    _RESTRICTED_NO_ACK_SYNTHESIS_PROVIDERS,
     run_synthesis,
 )
 
@@ -74,6 +75,67 @@ def test_gate_set_matches_documented_anthropic_family():
     )
     for clean in ("mock", "local", "together"):
         assert clean not in _ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS
+
+
+# --------------------------------------------------------------------------
+# NVIDIA-hosted Llama-3.3 — unconditionally restricted, NO ack-flag escape.
+# --------------------------------------------------------------------------
+
+
+def test_nvidia_provider_fails_closed_unconditionally(tmp_path, monkeypatch):
+    """A direct ``provider="nvidia"`` selection for training-pair synthesis
+    fails closed before any LLM dispatch — NVIDIA-hosted Llama-3.3 is restricted
+    for training data. This is the defense-in-depth backstop for a bare
+    run_synthesis / MCP-tool / CLI call that bypasses the workflow-runner's
+    license-clean training-seat default."""
+    _scrub(monkeypatch)
+    with pytest.raises(SynthesisLicensingError) as exc:
+        run_synthesis(
+            corpus_dir=_corpus(tmp_path),
+            course_code="LIC_TEST",
+            provider="nvidia",
+        )
+    msg = str(exc.value)
+    assert "nvidia" in msg
+    assert "docs/LICENSING.md" in msg
+
+
+def test_nvidia_has_no_ack_flag_escape(tmp_path, monkeypatch):
+    """Unlike the Anthropic family, NVIDIA has NO acknowledgment-flag escape:
+    setting TRAINFORGE_ALLOW_ANTHROPIC_SYNTHESIS does NOT unlock the nvidia gate
+    (the ack flag is Anthropic-family-only)."""
+    _scrub(monkeypatch)
+    monkeypatch.setenv(_GATE_ENV, "true")
+    with pytest.raises(SynthesisLicensingError):
+        run_synthesis(
+            corpus_dir=_corpus(tmp_path),
+            course_code="LIC_TEST",
+            provider="nvidia",
+        )
+
+
+def test_nvidia_env_override_triggers_gate(tmp_path, monkeypatch):
+    """A clean ``provider=`` kwarg is overridden by TRAINFORGE_SYNTHESIS_PROVIDER
+    =nvidia; the gate fires on the EFFECTIVE (env-resolved) provider."""
+    _scrub(monkeypatch)
+    monkeypatch.setenv(_PROVIDER_ENV, "nvidia")
+    with pytest.raises(SynthesisLicensingError):
+        run_synthesis(
+            corpus_dir=_corpus(tmp_path),
+            course_code="LIC_TEST",
+            provider="local",  # clean kwarg, but env override wins
+        )
+
+
+def test_restricted_no_ack_set_is_exactly_nvidia():
+    """The unconditional-restricted set is exactly ``nvidia`` — never the
+    license-clean providers, and disjoint from the Anthropic-family set."""
+    assert _RESTRICTED_NO_ACK_SYNTHESIS_PROVIDERS == frozenset({"nvidia"})
+    for clean in ("mock", "local", "together"):
+        assert clean not in _RESTRICTED_NO_ACK_SYNTHESIS_PROVIDERS
+    assert _RESTRICTED_NO_ACK_SYNTHESIS_PROVIDERS.isdisjoint(
+        _ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS
+    )
 
 
 # --------------------------------------------------------------------------

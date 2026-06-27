@@ -189,6 +189,107 @@ def test_training_synthesis_provider_explicit_value_honored(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# LICENSING — a restricted LLM_PROVIDER never AUTO-resolves the training seat
+# to a ToS-restricted provider (the corpus the SLM is a derivative work of).
+# --------------------------------------------------------------------------
+
+
+def test_nvidia_llm_provider_pins_training_seat_local_textbook_follows(monkeypatch):
+    """LLM_PROVIDER=nvidia — the AUTO-resolved TRAINING-PAIR seat is pinned to
+    the license-clean ``local`` (NVIDIA-hosted Llama-3.3 is ToS-restricted for
+    training data), while the textbook seat still follows the authoring
+    provider (nvidia). Only the training seat is guarded."""
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "nvidia")
+    runner = _make_runner()
+
+    applied = runner._apply_corpus_generalization_defaults("textbook_to_course")
+
+    import os
+
+    assert os.environ.get(_TRAINFORGE_SYNTHESIS_PROVIDER_ENV) == "local"
+    assert applied[_TRAINFORGE_SYNTHESIS_PROVIDER_ENV] == "local"
+    assert os.environ.get(_TEXTBOOK_SYNTHESIS_PROVIDER_ENV) == "nvidia"
+    assert applied[_TEXTBOOK_SYNTHESIS_PROVIDER_ENV] == "nvidia"
+
+
+def test_anthropic_llm_provider_pins_training_seat_local(monkeypatch):
+    """LLM_PROVIDER=anthropic — the AUTO-resolved training seat is pinned to
+    ``local`` too (Anthropic Commercial/Consumer Terms restrict training-data
+    use); the textbook seat still follows authoring."""
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    runner = _make_runner()
+
+    applied = runner._apply_corpus_generalization_defaults("textbook_to_course")
+
+    import os
+
+    assert os.environ.get(_TRAINFORGE_SYNTHESIS_PROVIDER_ENV) == "local"
+    assert applied[_TRAINFORGE_SYNTHESIS_PROVIDER_ENV] == "local"
+    assert os.environ.get(_TEXTBOOK_SYNTHESIS_PROVIDER_ENV) == "anthropic"
+
+
+def test_corpus_gen_then_authoring_route_training_seat_stays_local(monkeypatch):
+    """Real run_workflow ORDERING: corpus-generalization runs FIRST, then
+    authoring-route fill. With LLM_PROVIDER=nvidia + COURSEFORGE_TWO_PASS=true,
+    the training seat must be ``local`` at the END of both passes — corpus-gen's
+    license-clean pin holds because the authoring-route fill is a setdefault
+    that no longer touches the already-set seat."""
+    _clear_envs(monkeypatch)
+    monkeypatch.delenv("COURSEFORGE_TWO_PASS", raising=False)
+    monkeypatch.delenv("TEXTBOOK_SYNTHESIS_MODEL", raising=False)
+    monkeypatch.delenv("COURSEFORGE_PROVIDER", raising=False)
+    monkeypatch.delenv("COURSEPLANNER_PROVIDER", raising=False)
+    monkeypatch.delenv("TRAINFORGE_ASSESSMENT_PROVIDER", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "nvidia")
+    monkeypatch.setenv("COURSEFORGE_TWO_PASS", "true")
+    runner = _make_runner()
+
+    # Order mirrors WorkflowRunner.run_workflow.
+    runner._apply_corpus_generalization_defaults("textbook_to_course")
+    runner._apply_authoring_route_env("textbook_to_course")
+
+    import os
+
+    assert os.environ.get(_TRAINFORGE_SYNTHESIS_PROVIDER_ENV) == "local"
+
+
+def test_explicit_nvidia_training_seat_export_honored_verbatim(monkeypatch):
+    """REGRESSION — an EXPLICIT operator export of the training seat to nvidia
+    is honored verbatim (the setdefault skip wins; the licensing guard only
+    touches the AUTO-resolved seat). The downstream run_synthesis gate is the
+    fail-closed backstop for a direct export."""
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "nvidia")
+    monkeypatch.setenv(_TRAINFORGE_SYNTHESIS_PROVIDER_ENV, "nvidia")
+    runner = _make_runner()
+
+    applied = runner._apply_corpus_generalization_defaults("textbook_to_course")
+
+    import os
+
+    assert os.environ.get(_TRAINFORGE_SYNTHESIS_PROVIDER_ENV) == "nvidia"
+    assert _TRAINFORGE_SYNTHESIS_PROVIDER_ENV not in applied
+
+
+def test_together_llm_provider_training_seat_unchanged(monkeypatch):
+    """BYTE-IDENTICAL guard — a license-clean LLM_PROVIDER (together) is NOT in
+    the restricted set, so the training seat resolves to ``together`` exactly as
+    before. Only anthropic/nvidia auto-resolve changes."""
+    _clear_envs(monkeypatch)
+    monkeypatch.setenv("LLM_PROVIDER", "together")
+    runner = _make_runner()
+
+    runner._apply_corpus_generalization_defaults("textbook_to_course")
+
+    import os
+
+    assert os.environ.get(_TRAINFORGE_SYNTHESIS_PROVIDER_ENV) == "together"
+    assert os.environ.get(_TEXTBOOK_SYNTHESIS_PROVIDER_ENV) == "together"
+
+
+# --------------------------------------------------------------------------
 # explicit legacy value -> honored verbatim (setdefault semantics).
 # --------------------------------------------------------------------------
 

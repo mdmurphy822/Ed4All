@@ -249,6 +249,19 @@ _TEXTBOOK_SYNTHESIS_MODEL_ROUTE_ENV = "TEXTBOOK_SYNTHESIS_MODEL"
 # NVIDIA-70b-everywhere — the canonical hosted-cloud provider token.
 _NVIDIA_PROVIDER = "nvidia"
 
+# Providers whose training-data outputs are ToS-restricted (corpus taint):
+# selecting one for the SLM TRAINING-PAIR seat (TRAINFORGE_SYNTHESIS_PROVIDER)
+# taints the corpus the adapter is a derivative work of. This set MIRRORS the
+# licensing posture in ``docs/LICENSING.md`` § "Synthesis providers" (the single
+# source of truth) AND the checked-in copy at
+# ``lib/diagnostics/provider.py::_LICENSE_RESTRICTED`` — keep all three in sync;
+# drift between them is a documentation bug (mirrors the project's
+# doc-mirrored-constant convention). Used below to pin the AUTO-resolved
+# training seat to "local" when LLM_PROVIDER resolves to a restricted provider,
+# so the corpus-generalization defaults never silently route training-pair
+# synthesis through Anthropic / NVIDIA-hosted Llama-3.3.
+_LICENSE_RESTRICTED_SYNTHESIS = frozenset({"anthropic", "nvidia"})
+
 # Master opt-out for the A5 corpus-generalization defaults-on path. When
 # truthy, ``_apply_corpus_generalization_defaults`` returns early and sets
 # NOTHING — neither the measured graph-shaping flags nor the
@@ -2250,6 +2263,22 @@ class WorkflowRunner:
             if os.environ.get(_provider_env, "").strip():
                 continue
             resolved_provider = os.environ.get("LLM_PROVIDER", "").strip() or "local"
+            # LICENSING guard: the TRAINING-PAIR seat (the corpus the SLM adapter
+            # is a derivative work of) must NEVER auto-resolve to a ToS-restricted
+            # provider. For anthropic/nvidia (Anthropic Commercial/Consumer Terms;
+            # NVIDIA-hosted Llama-3.3), pin the AUTO-resolved training seat to the
+            # license-clean "local" instead. This runs FIRST in run_workflow, so
+            # the seat is correct regardless of helper order (the later
+            # _apply_authoring_route_env GAP-3 guard would otherwise be dead —
+            # its setdefault short-circuit fires because this loop already set
+            # the seat). The textbook seat still follows the resolved provider;
+            # only the training seat is guarded. The setdefault skip ABOVE still
+            # honors an explicit operator export verbatim. See docs/LICENSING.md.
+            if (
+                _provider_env == _TRAINFORGE_SYNTHESIS_PROVIDER_ENV
+                and resolved_provider in _LICENSE_RESTRICTED_SYNTHESIS
+            ):
+                resolved_provider = "local"
             os.environ[_provider_env] = resolved_provider
             applied[_provider_env] = resolved_provider
 

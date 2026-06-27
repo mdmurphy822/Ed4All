@@ -92,6 +92,18 @@ DEFAULT_SEED = 17  # Arbitrary but stable; stage adds chunk-index for variety.
 # license-clean and pass through ungated. Canonical posture: docs/LICENSING.md.
 _ANTHROPIC_FAMILY_SYNTHESIS_PROVIDERS = frozenset({"anthropic", "claude_session"})
 
+# Hosted-cloud providers whose ToS + underlying model license unconditionally
+# restrict using outputs as SLM training data — NVIDIA's hosted Llama-3.3 tier.
+# Unlike the Anthropic family (which has a documented ack-flag escape for an
+# operator holding a separate written agreement), there is NO escape hatch here:
+# the hosted Llama-3.3 corpus is never shippable as training data, so selecting
+# this provider for TRAINING-PAIR synthesis fails closed unconditionally. This
+# is the synthesis-side defense-in-depth companion to the workflow-runner's
+# license-clean training-seat default (which covers the pipeline path; this
+# covers a bare run_synthesis / MCP-tool / CLI call that bypasses corpus-gen).
+# Canonical posture: docs/LICENSING.md § "Synthesis providers".
+_RESTRICTED_NO_ACK_SYNTHESIS_PROVIDERS = frozenset({"nvidia"})
+
 
 class SynthesisLicensingError(RuntimeError):
     """Raised when a training-pair synthesis run selects a ToS-unclean
@@ -1325,6 +1337,27 @@ def run_synthesis(
             "resulting corpus is NOT license-clean for derivative training "
             "absent a separate Anthropic agreement (docs/LICENSING.md).",
             provider,
+        )
+
+    # Marketable-v1 D4 (defense-in-depth) — unconditional fail-closed gate for
+    # hosted-cloud providers whose ToS restricts training-data use with NO
+    # documented escape (NVIDIA-hosted Llama-3.3). Unlike the Anthropic-family
+    # gate above, there is no ack-flag: the hosted Llama-3.3 corpus is never
+    # shippable as SLM training data, so this raises unconditionally before any
+    # LLM dispatch. This covers a DIRECT TRAINFORGE_SYNTHESIS_PROVIDER=nvidia
+    # selection (a bare run_synthesis / MCP-tool / CLI call) that bypasses the
+    # workflow-runner's license-clean training-seat default.
+    if provider in _RESTRICTED_NO_ACK_SYNTHESIS_PROVIDERS:
+        raise SynthesisLicensingError(
+            f"Training-pair synthesis provider {provider!r} routes the SLM "
+            f"training corpus through a hosted-cloud backend whose ToS + "
+            f"underlying model license (NVIDIA-hosted Llama-3.3) restrict using "
+            f"outputs to train a derivative model. Unlike the Anthropic family, "
+            f"there is NO acknowledgment-flag escape — the hosted Llama-3.3 "
+            f"corpus is unconditionally restricted for the training-pair "
+            f"surface. The documented license-clean default is --provider local "
+            f"(Apache-2.0 Qwen) or --provider together (hosted OSS). See "
+            f"docs/LICENSING.md § \"Synthesis providers\"."
         )
 
     if provider == "claude_session" and dispatcher is None:
