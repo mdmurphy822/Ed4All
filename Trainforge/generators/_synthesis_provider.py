@@ -68,6 +68,7 @@ from Trainforge.generators._local_provider import (
     _LOCAL_PREFERENCE_SYSTEM_PROMPT,
 )
 from Trainforge.generators._together_provider import (
+    DEFAULT_TIMEOUT,
     MAX_PARSE_RETRIES,
     _INSTRUCTION_SYSTEM_PROMPT,
     _PREFERENCE_SYSTEM_PROMPT,
@@ -82,6 +83,35 @@ ENV_MODEL = "TRAINFORGE_SYNTHESIS_MODEL"
 
 # Default provider (endpoint name) — the local seat.
 DEFAULT_PROVIDER = "local"
+
+
+# Phase 3 rollback flag. When ON (the DEFAULT), the run_synthesis
+# construction + the instruction/preference factory dispatch arms route
+# the OpenAI-compatible synthesis providers (``local`` / ``together``)
+# through the LLM-agnostic :class:`SynthesisProvider` instead of the
+# per-vendor leaves (``LocalSynthesisProvider`` / ``TogetherSynthesisProvider``).
+# The agnostic provider is golden-tested byte-identical to those leaves
+# (see ``Trainforge/tests/test_synthesis_provider.py``), so the cutover is
+# behavior-preserving; the flag exists purely as a rollback escape hatch.
+# Parse-with-fallback, mirroring the other ``TRAINFORGE_*`` toggles: unset
+# → ON; an explicit ``0`` / ``false`` / ``no`` / ``off`` → OFF (legacy
+# per-vendor leaf path); anything else → ON.
+ENV_AGNOSTIC_SYNTHESIS = "TRAINFORGE_AGNOSTIC_SYNTHESIS"
+
+
+def agnostic_synthesis_enabled() -> bool:
+    """Return whether the LLM-agnostic synthesis cutover is active.
+
+    Reads :data:`ENV_AGNOSTIC_SYNTHESIS` (``TRAINFORGE_AGNOSTIC_SYNTHESIS``).
+    DEFAULT ON: a missing / empty value resolves to ``True``. Only the
+    explicit falsey tokens ``0`` / ``false`` / ``no`` / ``off`` (case-
+    insensitive) disable it; any other value (garbage included) resolves
+    ON (parse-with-fallback).
+    """
+    raw = os.environ.get(ENV_AGNOSTIC_SYNTHESIS)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
 class SynthesisProvider:
@@ -101,8 +131,12 @@ class SynthesisProvider:
     - ``provider`` — endpoint NAME in the registry (``"local"`` default /
       ``"together"`` / ``"nvidia"`` / any ``openai_compatible`` row).
       Written to ``out["provider"]`` + the decision-capture event.
-    - ``model`` — explicit model override. ``None`` → ``TRAINFORGE_SYNTHESIS_MODEL``
-      → the registry row's default.
+    - ``model`` — explicit model override. ``None`` → the registry row's
+      per-provider ``model_env`` (``LOCAL_SYNTHESIS_MODEL`` /
+      ``TOGETHER_SYNTHESIS_MODEL`` / …) → the row's default. The
+      constructor does NOT auto-read ``TRAINFORGE_SYNTHESIS_MODEL`` — that
+      would diverge from the per-vendor leaves, which honor only their own
+      ``model_env``.
     - ``capture`` — optional ``DecisionCapture`` for the per-call
       ``synthesis_provider_call`` event.
     - ``client`` — pre-built ``httpx.Client`` (tests inject one with
@@ -122,6 +156,21 @@ class SynthesisProvider:
     - ``terse_prompts`` — ``True`` (default) uses the terse local system
       prompts; ``False`` uses the verbose hosted prompts. The ONLY
       prompt-behavior switch.
+    - ``preserve_tokens_enabled`` — ``True`` (default) honors the
+      ``preserve_tokens`` arg of the paraphrase methods (the local-leaf
+      contract: inject the "MUST appear verbatim" directive + run the
+      preservation gate). ``False`` IGNORES ``preserve_tokens`` entirely
+      (no directive, no gate) — the together-leaf contract, whose 2-arg
+      paraphrase methods never received a preserve directive.
+    - ``local_user_directives`` — ``True`` (default) renders the
+      local-leaf-only USER-prompt directives that the lean hosted
+      (together) renderer never sent. Today that is the Wave-126
+      ``definition_directive`` (the explanation-asking nudge on
+      definition / recall chunks); ``False`` OMITS it so the rendered
+      user prompt is byte-identical to ``TogetherSynthesisProvider``'s
+      lean renderer for EVERY pair kind. The preserve directive is gated
+      separately by ``preserve_tokens_enabled``; on the cutover both
+      flags co-vary with ``is_local`` (see :func:`build_synthesis_provider`).
     """
 
     def __init__(
@@ -138,14 +187,21 @@ class SynthesisProvider:
         max_parse_retries: Optional[int] = None,
         min_preserve_rate: Optional[float] = None,
         terse_prompts: bool = True,
+        preserve_tokens_enabled: bool = True,
+        local_user_directives: bool = True,
     ) -> None:
         # Provider tag written to ``out["provider"]`` and surfaced in the
         # decision-capture event for audit.
         self._provider_name = provider
 
-        # Model resolution: explicit arg > TRAINFORGE_SYNTHESIS_MODEL >
-        # (let the registry row's default fill when None).
-        resolved_model = model or os.environ.get(ENV_MODEL)
+        # Model resolution: explicit arg > (let the registry row's
+        # per-provider ``model_env`` / default fill when None). The
+        # constructor deliberately does NOT auto-read
+        # ``TRAINFORGE_SYNTHESIS_MODEL`` — honoring it would diverge from
+        # the per-vendor leaves (local reads only ``LOCAL_SYNTHESIS_MODEL``,
+        # together only ``TOGETHER_SYNTHESIS_MODEL``, both via the row's
+        # ``model_env``).
+        resolved_model = model
 
         self._capture = capture
         self._temperature = float(temperature)
@@ -168,6 +224,17 @@ class SynthesisProvider:
                 f"min_preserve_rate must be in [0.0, 1.0], "
                 f"got {self._min_preserve_rate}"
             )
+
+        # Preserve-token switch — local honors preserve_tokens; together
+        # never injected a preserve directive (its leaf is 2-arg).
+        self._preserve_tokens_enabled = bool(preserve_tokens_enabled)
+
+        # Local-only USER-prompt directive switch — the local leaf renders
+        # the Wave-126 definition_directive (and any future local-only user
+        # directive) that the lean hosted (together) renderer never sent.
+        # False → omitted, so the together path's rendered user prompt is
+        # byte-identical to TogetherSynthesisProvider's lean renderer.
+        self._local_user_directives = bool(local_user_directives)
 
         # Prompt-behavior switch — the ONLY per-mode difference.
         self._terse_prompts = bool(terse_prompts)
@@ -240,7 +307,9 @@ class SynthesisProvider:
             raise TypeError("draft must be a dict")
         chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
         chunk_text = str(chunk.get("text") or "")
-        preserve = list(preserve_tokens or [])
+        # When preserve is disabled (together-leaf parity), drop the tokens
+        # entirely: no directive rendered, no preservation gate run.
+        preserve = list(preserve_tokens or []) if self._preserve_tokens_enabled else []
         user_prompt = self._render_instruction_user(draft, chunk_id, preserve)
 
         parsed, usage, retry_count = self._call_with_parse(
@@ -294,7 +363,9 @@ class SynthesisProvider:
             raise TypeError("draft must be a dict")
         chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
         chunk_text = str(chunk.get("text") or "")
-        preserve = list(preserve_tokens or [])
+        # When preserve is disabled (together-leaf parity), drop the tokens
+        # entirely: no directive rendered, no preservation gate run.
+        preserve = list(preserve_tokens or []) if self._preserve_tokens_enabled else []
         user_prompt = self._render_preference_user(draft, chunk_id, preserve)
 
         parsed, usage, retry_count = self._call_with_parse(
@@ -579,34 +650,41 @@ class SynthesisProvider:
             f"rewrite them as natural language."
         )
 
-    @classmethod
     def _render_instruction_user(
-        cls, draft: Dict[str, Any], chunk_id: str,
+        self, draft: Dict[str, Any], chunk_id: str,
         preserve_tokens: Optional[List[str]] = None,
     ) -> str:
         from Trainforge.generators._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
         )
-        preserve = cls._preserve_directive(
+        preserve = self._preserve_directive(
             preserve_tokens or [], "the prompt or completion",
         )
-        content_type = str(draft.get("content_type", "")).lower()
-        bloom_level = str(draft.get("bloom_level", "")).lower()
-        is_definition_kind = (
-            "definition" in content_type
-            or "glossary" in content_type
-            or "key_term" in content_type
-            or bloom_level == "remember"
-        )
-        definition_directive = (
-            "\n\nThis is a definition / recall chunk. The prompt MUST be an "
-            "EXPLANATION-asking question of at least 40 characters — for "
-            "example, 'Explain what an IRI is in RDF and describe its role "
-            "in identifying resources globally.' Do NOT emit a bare 'Define "
-            "X.' or 'What is X?' prompt — those are too short."
-            if is_definition_kind
-            else ""
-        )
+        # Wave-126 definition_directive — a LOCAL-leaf-only USER-prompt
+        # directive. The lean hosted (together) renderer never sent it, so
+        # it fires only when ``local_user_directives`` is on (the local
+        # path). Gated so the together path is byte-identical to the
+        # 2-fragment TogetherSynthesisProvider renderer for definition /
+        # recall chunks (the case the output-dict tests can't see).
+        definition_directive = ""
+        if self._local_user_directives:
+            content_type = str(draft.get("content_type", "")).lower()
+            bloom_level = str(draft.get("bloom_level", "")).lower()
+            is_definition_kind = (
+                "definition" in content_type
+                or "glossary" in content_type
+                or "key_term" in content_type
+                or bloom_level == "remember"
+            )
+            if is_definition_kind:
+                definition_directive = (
+                    "\n\nThis is a definition / recall chunk. The prompt MUST "
+                    "be an EXPLANATION-asking question of at least 40 "
+                    "characters — for example, 'Explain what an IRI is in RDF "
+                    "and describe its role in identifying resources globally.' "
+                    "Do NOT emit a bare 'Define X.' or 'What is X?' prompt — "
+                    "those are too short."
+                )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Bloom level: {draft.get('bloom_level','unknown')}\n"
@@ -622,18 +700,17 @@ class SynthesisProvider:
             f"{preserve}"
             f"{definition_directive}"
             f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
-            f"{cls._INSTRUCTION_JSON_DIRECTIVE}"
+            f"{self._INSTRUCTION_JSON_DIRECTIVE}"
         )
 
-    @classmethod
     def _render_preference_user(
-        cls, draft: Dict[str, Any], chunk_id: str,
+        self, draft: Dict[str, Any], chunk_id: str,
         preserve_tokens: Optional[List[str]] = None,
     ) -> str:
         from Trainforge.generators._base_synthesis_provider import (
             EVIDENCE_QUOTE_PROMPT_DIRECTIVE,
         )
-        preserve = cls._preserve_directive(
+        preserve = self._preserve_directive(
             preserve_tokens or [], "the chosen completion",
         )
         return (
@@ -650,7 +727,7 @@ class SynthesisProvider:
             f"'chosen', and 'rejected'."
             f"{preserve}"
             f"{EVIDENCE_QUOTE_PROMPT_DIRECTIVE}"
-            f"{cls._PREFERENCE_JSON_DIRECTIVE}"
+            f"{self._PREFERENCE_JSON_DIRECTIVE}"
         )
 
     def _clamp(self, text: str, kind: str, *, chunk_id: Optional[str] = None) -> str:
@@ -772,9 +849,66 @@ class SynthesisProvider:
         )
 
 
+def build_synthesis_provider(
+    provider: str,
+    *,
+    capture: Optional[Any] = None,
+    max_parse_retries: Optional[int] = None,
+    min_preserve_rate: Optional[float] = None,
+    kind_bounds: Optional[Dict[str, tuple]] = None,
+) -> "SynthesisProvider":
+    """Construct the LEAF-EXACT :class:`SynthesisProvider` for the cutover.
+
+    The ONE construction the agnostic cutover uses at all 6 dispatch sites
+    (mirroring :func:`lib.llm.endpoints.build_openai_compatible_client` and
+    :class:`Trainforge.generators._assessment_provider.AssessmentGeneratorProvider`).
+    It pins the three per-leaf parity knobs so the flag-ON default path
+    reproduces the legacy ``LocalSynthesisProvider`` / ``TogetherSynthesisProvider``
+    behavior byte-for-byte:
+
+    - ``terse_prompts`` — local uses the terse prompts; hosted (together /
+      any other registry seat) uses the verbose prompts (today's mapping).
+    - ``preserve_tokens_enabled`` — local honors ``preserve_tokens`` (its
+      leaf is preserve-aware); together never injected a preserve directive
+      (its 2-arg leaf could not receive one), so it is DISABLED for hosted.
+    - ``local_user_directives`` — local renders the leaf-only USER-prompt
+      directives (the Wave-126 ``definition_directive``); the lean hosted
+      (together) renderer never sent them, so it is DISABLED for hosted.
+      All three local-rendering axes (``terse_prompts`` system prompt +
+      ``preserve_tokens_enabled`` + ``local_user_directives``) are driven
+      consistently by ``is_local``.
+    - ``timeout=DEFAULT_TIMEOUT`` (60.0) — both leaves construct their
+      client with the explicit hard 60s timeout. Pinned HERE rather than as
+      the class default so :class:`SynthesisProvider` stays flexible for
+      non-cutover callers (which let the client resolve
+      ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS``).
+
+    ``model`` is NOT passed — ``None`` flows to the registry's per-provider
+    ``model_env`` (``LOCAL_SYNTHESIS_MODEL`` / ``TOGETHER_SYNTHESIS_MODEL``),
+    matching the leaves. The local-path knobs (``capture`` /
+    ``max_parse_retries`` / ``min_preserve_rate`` / ``kind_bounds``) are
+    threaded through; the together path passes None (leaf defaults).
+    """
+    is_local = provider == "local"
+    return SynthesisProvider(
+        provider=provider,
+        capture=capture,
+        terse_prompts=is_local,
+        preserve_tokens_enabled=is_local,
+        local_user_directives=is_local,
+        timeout=DEFAULT_TIMEOUT,
+        max_parse_retries=max_parse_retries,
+        min_preserve_rate=min_preserve_rate,
+        kind_bounds=kind_bounds,
+    )
+
+
 __all__ = [
     "SynthesisProvider",
+    "build_synthesis_provider",
     "ENV_MODEL",
     "DEFAULT_PROVIDER",
+    "ENV_AGNOSTIC_SYNTHESIS",
+    "agnostic_synthesis_enabled",
     "SynthesisProviderError",
 ]

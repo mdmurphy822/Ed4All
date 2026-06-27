@@ -586,10 +586,11 @@ def test_property_bearing_chunk_falls_back_to_deterministic_when_paraphrase_stri
 
     # Run synthesis with the local provider's path, but inject the stub
     # provider via the synthesize_training pathway. Since run_synthesis
-    # constructs the provider internally, we monkeypatch
-    # LocalSynthesisProvider for this test.
-    from Trainforge.generators import _local_provider as lp_mod
-    monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _AlwaysFailsProvider)
+    # constructs the provider internally, we monkeypatch the construction
+    # symbol. Phase 3: with TRAINFORGE_AGNOSTIC_SYNTHESIS ON (default),
+    # run_synthesis builds the agnostic SynthesisProvider, so patch that.
+    from Trainforge.generators import _synthesis_provider as sp_mod
+    monkeypatch.setattr(sp_mod, "SynthesisProvider", _AlwaysFailsProvider)
 
     from lib.decision_capture import DecisionCapture
     capture = DecisionCapture(
@@ -659,8 +660,9 @@ def test_paraphrase_invalid_after_retry_falls_back_to_deterministic_draft(
                 code="paraphrase_invalid_after_retry",
             )
 
-    from Trainforge.generators import _local_provider as lp_mod
-    monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _AlwaysExhaustsProvider)
+    # Phase 3: patch the agnostic construction symbol (default-ON path).
+    from Trainforge.generators import _synthesis_provider as sp_mod
+    monkeypatch.setattr(sp_mod, "SynthesisProvider", _AlwaysExhaustsProvider)
 
     from lib.decision_capture import DecisionCapture
     capture = DecisionCapture(
@@ -701,6 +703,54 @@ def test_paraphrase_invalid_after_retry_falls_back_to_deterministic_draft(
         "'paraphrase_invalid_after_retry'; instead got "
         f"{fallback_count} such pairs out of {stats.instruction_pairs_emitted} emitted."
     )
+
+
+def test_run_synthesis_flag_off_constructs_legacy_local_leaf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#4 — rollback path coverage. With ``TRAINFORGE_AGNOSTIC_SYNTHESIS=0``,
+    ``run_synthesis`` constructs the legacy ``LocalSynthesisProvider`` leaf,
+    NOT the agnostic ``SynthesisProvider``. Guards the rollback escape hatch
+    AND keeps the default-ON suite from ever hitting a live localhost server
+    if the default were to flip — both construction symbols are stubbed."""
+    course_dir = _make_working_copy(tmp_path)
+    monkeypatch.setenv("TRAINFORGE_AGNOSTIC_SYNTHESIS", "0")
+
+    constructed: list[str] = []
+
+    class _LegacyLeafStub:
+        def __init__(self, *args, **kwargs):
+            constructed.append("local_leaf")
+
+        def paraphrase_instruction(self, draft, chunk, *, preserve_tokens=None):
+            return draft
+
+        def paraphrase_preference(self, draft, chunk, *, preserve_tokens=None):
+            return draft
+
+    class _AgnosticTripwire:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError(
+                "agnostic SynthesisProvider constructed on the flag-OFF "
+                "rollback path"
+            )
+
+    from Trainforge.generators import _local_provider as lp_mod
+    from Trainforge.generators import _synthesis_provider as sp_mod
+    monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _LegacyLeafStub)
+    monkeypatch.setattr(sp_mod, "SynthesisProvider", _AgnosticTripwire)
+
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="demo-course-1",
+        provider="local",
+        seed=11,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+    )
+
+    assert "local_leaf" in constructed
+    assert stats.instruction_pairs_emitted > 0
 
 
 def test_local_provider_definition_chunk_directive_is_injected() -> None:
@@ -813,8 +863,9 @@ def test_smoke_paraphrase_uses_provider_path_with_floor_2(
         def paraphrase_preference(self, draft, chunk, *, preserve_tokens=None):
             return draft
 
-    from Trainforge.generators import _local_provider as lp_mod
-    monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _PassThroughProvider)
+    # Phase 3: patch the agnostic construction symbol (default-ON path).
+    from Trainforge.generators import _synthesis_provider as sp_mod
+    monkeypatch.setattr(sp_mod, "SynthesisProvider", _PassThroughProvider)
 
     stats = run_synthesis(
         corpus_dir=course_dir,
@@ -1214,8 +1265,9 @@ def test_run_synthesis_dedupes_duplicate_instruction_prompts(
         def paraphrase_preference(self, draft, chunk, *, preserve_tokens=None):
             return draft
 
-    from Trainforge.generators import _local_provider as lp_mod
-    monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _CollidingProvider)
+    # Phase 3: patch the agnostic construction symbol (default-ON path).
+    from Trainforge.generators import _synthesis_provider as sp_mod
+    monkeypatch.setattr(sp_mod, "SynthesisProvider", _CollidingProvider)
 
     stats = run_synthesis(
         corpus_dir=course_dir,
@@ -1265,8 +1317,9 @@ def test_run_synthesis_dedupes_duplicate_preference_prompts(
                 "prompt": "Universal collision preference prompt — every chunk yields this.",
             }
 
-    from Trainforge.generators import _local_provider as lp_mod
-    monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _CollidingPrefProvider)
+    # Phase 3: patch the agnostic construction symbol (default-ON path).
+    from Trainforge.generators import _synthesis_provider as sp_mod
+    monkeypatch.setattr(sp_mod, "SynthesisProvider", _CollidingPrefProvider)
 
     stats = run_synthesis(
         corpus_dir=course_dir,

@@ -781,15 +781,41 @@ def synthesize_preference_pair(
                 )
                 provider_instance = AnthropicSynthesisProvider()
             elif provider == "together":
-                from Trainforge.generators._together_provider import (
-                    TogetherSynthesisProvider,
+                # Phase 3: agnostic cutover (default ON) — route the
+                # hosted OpenAI-wire seat through the leaf-exact builder
+                # (verbose prompts, preserve disabled, hard 60s timeout).
+                # The leaf is the rollback path.
+                from Trainforge.generators._synthesis_provider import (
+                    agnostic_synthesis_enabled,
                 )
-                provider_instance = TogetherSynthesisProvider()
+                if agnostic_synthesis_enabled():
+                    from Trainforge.generators._synthesis_provider import (
+                        build_synthesis_provider,
+                    )
+                    provider_instance = build_synthesis_provider("together")
+                else:
+                    from Trainforge.generators._together_provider import (
+                        TogetherSynthesisProvider,
+                    )
+                    provider_instance = TogetherSynthesisProvider()
             elif provider == "local":
-                from Trainforge.generators._local_provider import (
-                    LocalSynthesisProvider,
+                # Phase 3: agnostic cutover (default ON) — route the
+                # local OpenAI-wire seat through the leaf-exact builder
+                # (terse prompts, preserve enabled, hard 60s timeout). The
+                # leaf is the rollback path.
+                from Trainforge.generators._synthesis_provider import (
+                    agnostic_synthesis_enabled,
                 )
-                provider_instance = LocalSynthesisProvider()
+                if agnostic_synthesis_enabled():
+                    from Trainforge.generators._synthesis_provider import (
+                        build_synthesis_provider,
+                    )
+                    provider_instance = build_synthesis_provider("local")
+                else:
+                    from Trainforge.generators._local_provider import (
+                        LocalSynthesisProvider,
+                    )
+                    provider_instance = LocalSynthesisProvider()
             else:
                 raise RuntimeError(
                     "provider='claude_session' requires paraphrase_provider "

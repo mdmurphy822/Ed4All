@@ -40,12 +40,14 @@ from Trainforge.generators._synthesis_provider import (  # noqa: E402
     DEFAULT_PROVIDER,
     SynthesisProvider,
     SynthesisProviderError,
+    build_synthesis_provider,
 )
 from Trainforge.generators._local_provider import (  # noqa: E402
     DEFAULT_SYNTHESIS_MODEL,
     LocalSynthesisProvider,
 )
 from Trainforge.generators._together_provider import (  # noqa: E402
+    DEFAULT_SYNTHESIS_MODEL as TOGETHER_DEFAULT_MODEL,
     TogetherSynthesisProvider,
 )
 
@@ -548,3 +550,342 @@ def test_surface_form_preservation_failed_after_retry_exhaustion():
             _instruction_draft(), _chunk(), preserve_tokens=["sh:NodeShape"],
         )
     assert excinfo.value.code == "surface_form_preservation_failed"
+
+
+# ---------------------------------------------------------------------------
+# Bug #1 — together NEVER injects a preserve directive (preserve_tokens_enabled
+# is the leaf-parity switch). With it False, preserve_tokens are IGNORED so the
+# rendered request is byte-identical to the 2-arg TogetherSynthesisProvider.
+# ---------------------------------------------------------------------------
+
+
+def _user_message(request: httpx.Request) -> str:
+    return json.loads(request.content)["messages"][-1]["content"]
+
+
+def test_together_preserve_disabled_ignores_tokens_byte_identical_to_2arg_leaf():
+    preserve = ["sh:NodeShape", "sh:datatype"]
+    seen_a: List[httpx.Request] = []
+    seen_l: List[httpx.Request] = []
+
+    def handler_a(request: httpx.Request) -> httpx.Response:
+        seen_a.append(request)
+        return httpx.Response(200, json=_success_body(_INSTRUCTION_COMPLETION))
+
+    def handler_l(request: httpx.Request) -> httpx.Response:
+        seen_l.append(request)
+        return httpx.Response(200, json=_success_body(_INSTRUCTION_COMPLETION))
+
+    agnostic = SynthesisProvider(
+        provider="together", terse_prompts=False, preserve_tokens_enabled=False,
+        client=_make_client(handler_a),
+    )
+    leaf = TogetherSynthesisProvider(
+        api_key="tg-test", client=_make_client(handler_l),
+    )
+
+    # Pass preserve_tokens to the agnostic provider; the 2-arg leaf can't take
+    # them. With preserve disabled the agnostic provider drops them entirely.
+    out_a = agnostic.paraphrase_instruction(
+        _instruction_draft(), _chunk(), preserve_tokens=preserve,
+    )
+    out_l = leaf.paraphrase_instruction(_instruction_draft(), _chunk())
+
+    user_a = _user_message(seen_a[0])
+    user_l = _user_message(seen_l[0])
+    # Bug #1: NO "MUST appear verbatim" preserve directive injected on the
+    # together seat (the 2-arg leaf never received one) — and the leaf, which
+    # cannot take preserve_tokens, never renders one either.
+    assert "PRESERVE THESE TOKENS VERBATIM" not in user_a
+    assert "PRESERVE THESE TOKENS VERBATIM" not in user_l
+    # The CURIE surface forms do not leak into the together request at all.
+    for tok in preserve:
+        assert tok not in user_a
+    # Emitted pair is byte-identical to the 2-arg leaf's.
+    assert out_a == out_l
+
+
+def test_local_preserve_enabled_does_inject_directive():
+    """The local seat keeps preserve_tokens_enabled=True (default): the
+    directive IS rendered when preserve_tokens are passed."""
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_success_body(_INSTRUCTION_COMPLETION))
+
+    p = SynthesisProvider(
+        provider="local", terse_prompts=True, client=_make_client(handler),
+    )
+    p.paraphrase_instruction(
+        _instruction_draft(), _chunk(), preserve_tokens=["sh:NodeShape"],
+    )
+    assert "PRESERVE THESE TOKENS VERBATIM" in _user_message(seen[0])
+
+
+# ---------------------------------------------------------------------------
+# Bug #2 — the constructor does NOT auto-read TRAINFORGE_SYNTHESIS_MODEL; the
+# resolved model is the per-provider registry default (model_env), matching
+# the leaves byte-for-byte.
+# ---------------------------------------------------------------------------
+
+
+def test_together_ignores_trainforge_synthesis_model_override(monkeypatch):
+    monkeypatch.setenv("TRAINFORGE_SYNTHESIS_MODEL", "some/override-model-99b")
+    p = SynthesisProvider(
+        provider="together", terse_prompts=False, preserve_tokens_enabled=False,
+        client=_fixed_client(_INSTRUCTION_COMPLETION),
+    )
+    # The TRAINFORGE_SYNTHESIS_MODEL override is NOT honored — the together
+    # registry default (TOGETHER_SYNTHESIS_MODEL / row default) wins.
+    assert p._model == TOGETHER_DEFAULT_MODEL
+    assert p._model != "some/override-model-99b"
+
+
+def test_together_honors_its_own_model_env(monkeypatch):
+    """Sanity: the per-provider model_env DOES resolve (proving only the
+    TRAINFORGE_SYNTHESIS_MODEL auto-read was removed, not all overrides)."""
+    monkeypatch.setenv("TOGETHER_SYNTHESIS_MODEL", "Qwen/Qwen2.5-72B-Instruct-Turbo")
+    p = SynthesisProvider(
+        provider="together", terse_prompts=False, preserve_tokens_enabled=False,
+        client=_fixed_client(_INSTRUCTION_COMPLETION),
+    )
+    assert p._model == "Qwen/Qwen2.5-72B-Instruct-Turbo"
+
+
+# ---------------------------------------------------------------------------
+# Bug #3 — the cutover builder pins the leaf's hard 60s timeout even when
+# ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS is set (often 300 in production).
+# ---------------------------------------------------------------------------
+
+
+def test_builder_pins_60s_timeout_over_env(monkeypatch):
+    monkeypatch.setenv("ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS", "300")
+    # local needs no key + makes no HTTP call at construction.
+    p = build_synthesis_provider("local")
+    assert p._oa_client._timeout == 60.0
+
+
+# ---------------------------------------------------------------------------
+# #5 — the shared cutover builder constructs the leaf-exact provider.
+# ---------------------------------------------------------------------------
+
+
+def test_build_synthesis_provider_local_mapping():
+    p = build_synthesis_provider("local")
+    assert p._terse_prompts is True
+    assert p._preserve_tokens_enabled is True
+    assert p._oa_client._timeout == 60.0
+    assert p._provider_name == "local"
+
+
+def test_build_synthesis_provider_together_mapping(monkeypatch):
+    monkeypatch.setenv("TOGETHER_API_KEY", "tg-test")
+    p = build_synthesis_provider("together")
+    assert p._terse_prompts is False
+    assert p._preserve_tokens_enabled is False
+    assert p._oa_client._timeout == 60.0
+    assert p._provider_name == "together"
+
+
+def test_build_synthesis_provider_threads_local_knobs():
+    """The local-path knobs (max_parse_retries / min_preserve_rate /
+    kind_bounds) flow through the builder verbatim."""
+    bounds = {
+        "prompt": (10, 4000), "completion": (10, 4000),
+        "chosen": (10, 4000), "rejected": (10, 4000),
+    }
+    p = build_synthesis_provider(
+        "local", max_parse_retries=2, min_preserve_rate=1.0, kind_bounds=bounds,
+    )
+    assert p._max_parse_retries == 2
+    assert p._min_preserve_rate == 1.0
+    assert p._kind_bounds == bounds
+
+
+def test_build_synthesis_provider_local_sets_local_user_directives():
+    p = build_synthesis_provider("local")
+    assert p._local_user_directives is True
+
+
+def test_build_synthesis_provider_together_clears_local_user_directives(monkeypatch):
+    monkeypatch.setenv("TOGETHER_API_KEY", "tg-test")
+    p = build_synthesis_provider("together")
+    assert p._local_user_directives is False
+
+
+# ---------------------------------------------------------------------------
+# P3 FULL-PROMPT PARITY — capture the ACTUAL rendered messages the provider
+# sends (system + user) via the injected MockTransport and assert BYTE-EQUALITY
+# with the leaf renderer for EVERY pair kind, INCLUDING a definition-kind chunk
+# (the case that exposed the local-only ``definition_directive`` leak onto the
+# hosted/together path). The output-dict parity tests above are mock-insensitive
+# and could not see this divergence.
+# ---------------------------------------------------------------------------
+
+
+def _system_message(request: httpx.Request) -> str:
+    return json.loads(request.content)["messages"][0]["content"]
+
+
+def _definition_instruction_draft() -> dict:
+    """A definition-kind instruction draft (content_type=definition AND
+    bloom_level=remember) — the local renderer injects the Wave-126
+    definition_directive on it; the lean together renderer must NOT."""
+    d = _instruction_draft()
+    d["content_type"] = "definition"
+    d["bloom_level"] = "remember"
+    d["template_id"] = "remember.definition"
+    return d
+
+
+def _agnostic_together(handler):
+    return SynthesisProvider(
+        provider="together", terse_prompts=False,
+        preserve_tokens_enabled=False, local_user_directives=False,
+        client=_make_client(handler),
+    )
+
+
+def _together_leaf(handler):
+    return TogetherSynthesisProvider(
+        api_key="tg-test", client=_make_client(handler),
+    )
+
+
+def _agnostic_local(handler):
+    return SynthesisProvider(
+        provider="local", terse_prompts=True,
+        preserve_tokens_enabled=True, local_user_directives=True,
+        client=_make_client(handler),
+    )
+
+
+def _local_leaf(handler):
+    return LocalSynthesisProvider(client=_make_client(handler))
+
+
+def _run_and_capture(provider_factory, method_name, draft, chunk, **kwargs):
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        content = (
+            _PREFERENCE_COMPLETION
+            if method_name == "paraphrase_preference"
+            else _INSTRUCTION_COMPLETION
+        )
+        return httpx.Response(200, json=_success_body(content))
+
+    provider = provider_factory(handler)
+    getattr(provider, method_name)(draft, chunk, **kwargs)
+    return _system_message(seen[0]), _user_message(seen[0])
+
+
+# --- together full-prompt parity (lean renderer; NO definition / preserve) ---
+
+
+@pytest.mark.parametrize("method_name", ["paraphrase_instruction", "paraphrase_preference"])
+def test_together_full_prompt_parity_byte_identical(method_name):
+    draft = (
+        _preference_draft() if method_name == "paraphrase_preference"
+        else _instruction_draft()
+    )
+    sys_a, user_a = _run_and_capture(_agnostic_together, method_name, draft, _chunk())
+    sys_l, user_l = _run_and_capture(_together_leaf, method_name, draft, _chunk())
+
+    assert sys_a == sys_l
+    assert user_a == user_l
+
+
+def test_together_definition_kind_full_prompt_parity_byte_identical():
+    """THE bug case: a definition-kind chunk. The lean together renderer never
+    sent a definition_directive; the agnostic together path must match it
+    byte-for-byte (system + user), and the directive text must be absent."""
+    draft = _definition_instruction_draft()
+    sys_a, user_a = _run_and_capture(
+        _agnostic_together, "paraphrase_instruction", draft, _chunk(),
+    )
+    sys_l, user_l = _run_and_capture(
+        _together_leaf, "paraphrase_instruction", draft, _chunk(),
+    )
+
+    assert sys_a == sys_l
+    assert user_a == user_l
+    # No local-only directives leaked onto the hosted path.
+    assert "definition / recall chunk" not in user_a
+    assert "PRESERVE THESE TOKENS VERBATIM" not in user_a
+
+
+def test_together_definition_kind_with_preserve_tokens_still_lean():
+    """Even when preserve_tokens are passed, the together path stays byte-
+    identical to the 2-arg leaf (no preserve directive, no definition
+    directive) on a definition-kind chunk."""
+    draft = _definition_instruction_draft()
+    sys_a, user_a = _run_and_capture(
+        _agnostic_together, "paraphrase_instruction", draft, _chunk(),
+        preserve_tokens=["sh:NodeShape", "sh:datatype"],
+    )
+    sys_l, user_l = _run_and_capture(
+        _together_leaf, "paraphrase_instruction", draft, _chunk(),
+    )
+    assert sys_a == sys_l
+    assert user_a == user_l
+    assert "definition / recall chunk" not in user_a
+    assert "PRESERVE THESE TOKENS VERBATIM" not in user_a
+    for tok in ("sh:NodeShape", "sh:datatype"):
+        assert tok not in user_a
+
+
+# --- local full-prompt parity (superset renderer; definition + preserve) ---
+
+
+@pytest.mark.parametrize("method_name", ["paraphrase_instruction", "paraphrase_preference"])
+def test_local_full_prompt_parity_byte_identical(method_name):
+    draft = (
+        _preference_draft() if method_name == "paraphrase_preference"
+        else _instruction_draft()
+    )
+    sys_a, user_a = _run_and_capture(_agnostic_local, method_name, draft, _chunk())
+    sys_l, user_l = _run_and_capture(_local_leaf, method_name, draft, _chunk())
+
+    assert sys_a == sys_l
+    assert user_a == user_l
+
+
+def test_local_definition_kind_full_prompt_parity_with_directive():
+    """The local superset renderer DOES inject the definition_directive on a
+    definition-kind chunk; the agnostic local path matches byte-for-byte AND
+    the directive text is present."""
+    draft = _definition_instruction_draft()
+    sys_a, user_a = _run_and_capture(
+        _agnostic_local, "paraphrase_instruction", draft, _chunk(),
+    )
+    sys_l, user_l = _run_and_capture(
+        _local_leaf, "paraphrase_instruction", draft, _chunk(),
+    )
+
+    assert sys_a == sys_l
+    assert user_a == user_l
+    # The local-leaf definition directive IS present where the leaf has it.
+    assert "definition / recall chunk" in user_a
+
+
+def test_local_definition_kind_with_preserve_full_prompt_parity():
+    """Both local-only user directives (definition + preserve) present and
+    byte-identical to the local leaf on a definition-kind chunk + tokens."""
+    draft = _definition_instruction_draft()
+    preserve = ["sh:NodeShape", "sh:datatype"]
+    sys_a, user_a = _run_and_capture(
+        _agnostic_local, "paraphrase_instruction", draft, _chunk(),
+        preserve_tokens=preserve,
+    )
+    sys_l, user_l = _run_and_capture(
+        _local_leaf, "paraphrase_instruction", draft, _chunk(),
+        preserve_tokens=preserve,
+    )
+
+    assert sys_a == sys_l
+    assert user_a == user_l
+    assert "definition / recall chunk" in user_a
+    assert "PRESERVE THESE TOKENS VERBATIM" in user_a

@@ -69,6 +69,9 @@ from Trainforge.generators.instruction_factory import (  # noqa: E402
 from Trainforge.generators.preference_factory import (  # noqa: E402
     synthesize_preference_pair,
 )
+from Trainforge.generators._synthesis_provider import (  # noqa: E402
+    agnostic_synthesis_enabled,
+)
 from Trainforge.curriculum import (  # noqa: E402
     DEFAULT_PREREQ_CONTEXT_TOKENS,
     build_curriculum_context,
@@ -1613,10 +1616,24 @@ def run_synthesis(
         # AI's hosted models. HTTP-driven (no SDK dependency); session-
         # budget tracking is unnecessary because the provider is paid-
         # per-call rather than rate-limited per Claude session.
-        from Trainforge.generators._together_provider import (
-            TogetherSynthesisProvider,
-        )
-        paraphrase_provider = TogetherSynthesisProvider(capture=capture)
+        #
+        # Phase 3: when TRAINFORGE_AGNOSTIC_SYNTHESIS is ON (default),
+        # route through the LLM-agnostic SynthesisProvider (verbose hosted
+        # prompts via terse_prompts=False) — golden-tested byte-identical
+        # to TogetherSynthesisProvider on well-formed responses. The leaf
+        # remains the rollback path when the flag is OFF.
+        if agnostic_synthesis_enabled():
+            from Trainforge.generators._synthesis_provider import (
+                build_synthesis_provider,
+            )
+            paraphrase_provider = build_synthesis_provider(
+                "together", capture=capture,
+            )
+        else:
+            from Trainforge.generators._together_provider import (
+                TogetherSynthesisProvider,
+            )
+            paraphrase_provider = TogetherSynthesisProvider(capture=capture)
     elif provider == "local":
         # Wave 113: third synthesis path — a local OpenAI-compatible
         # model server (Ollama / vLLM / llama.cpp / LM Studio). Same
@@ -1627,9 +1644,7 @@ def run_synthesis(
         # air-gapped friendly). Like ``together``, no session-budget
         # tracking — the provider is HTTP-driven, not Claude-session
         # rate-limited.
-        from Trainforge.generators._local_provider import (
-            LocalSynthesisProvider,
-        )
+        #
         # Wave 120: smoke-paraphrase caps parse retries at 1 so the
         # property-heavy stratified sample doesn't compound retry cost
         # × 20 chunks into an unbounded wall time. Production
@@ -1637,7 +1652,26 @@ def run_synthesis(
         local_kwargs: Dict[str, Any] = {"capture": capture}
         if smoke_mode == "paraphrase":
             local_kwargs["max_parse_retries"] = 1
-        paraphrase_provider = LocalSynthesisProvider(**local_kwargs)
+        # Phase 3: when TRAINFORGE_AGNOSTIC_SYNTHESIS is ON (default),
+        # route through the LLM-agnostic SynthesisProvider (terse local
+        # prompts via terse_prompts=True) — golden-tested byte-identical
+        # to LocalSynthesisProvider on well-formed responses. The leaf
+        # remains the rollback path when the flag is OFF. The same
+        # local_kwargs (capture + optional smoke max_parse_retries) flow
+        # into either class — SynthesisProvider accepts the identical
+        # knobs with identical defaults.
+        if agnostic_synthesis_enabled():
+            from Trainforge.generators._synthesis_provider import (
+                build_synthesis_provider,
+            )
+            paraphrase_provider = build_synthesis_provider(
+                "local", **local_kwargs,
+            )
+        else:
+            from Trainforge.generators._local_provider import (
+                LocalSynthesisProvider,
+            )
+            paraphrase_provider = LocalSynthesisProvider(**local_kwargs)
 
     instruction_records: List[Dict[str, Any]] = []
     preference_records: List[Dict[str, Any]] = []
