@@ -51,7 +51,9 @@ from typing import Any
 from dart_semantic.structure_graph import REGION_KINDS, Region, _get_signal, _top1
 from dart_semantic.types import FeatureBlock
 
+from . import block_review_cache
 from .endpoint_runtime import EndpointRuntimeError
+from .runtime import resolve_structure_review_model
 from .reviewer_prompt import (
     build_edge_input,
     build_reviewer_request,
@@ -1810,43 +1812,100 @@ def _run_windowed_block_review(
 
     win_max_tokens = _window_max_tokens(max_tokens, windows)
     review_temperature = resolve_structure_review_temperature()
-
-    # (3) Dispatch — ONE generate_batch over the window prompts (fail_soft so a
-    # down window comes back as the None sentinel, not a raise). Same TypeError
-    # fallback + fail-loud-degrade contract as the heading path.
-    try:
-        completions = runtime.generate_batch(
-            window_prompts,
-            max_tokens=win_max_tokens,
-            temperature=review_temperature,
-            fail_soft=True,
-        )
-    except TypeError:
-        try:
-            completions = runtime.generate_batch(
-                window_prompts, max_tokens=win_max_tokens, temperature=review_temperature
-            )
-        except EndpointRuntimeError as exc:
-            logger.warning(
-                "block-review runtime lacks fail_soft and the fail-loud call "
-                "failed (%s) -> degrading WHOLE review to unreviewed",
-                exc,
-            )
-            return _degrade_whole_review_unreviewed(
-                regions,
-                "endpoint failure without fail_soft; whole-review degraded to "
-                "unreviewed",
-            )
-
     w = len(window_prompts)
-    completions = list(completions)
-    if len(completions) < w:
-        completions = completions + [""] * (w - len(completions))
+
+    # (3) Content-hash window-op cache (Phase 4b). Gated on
+    # resolve_block_review_cache_mode() (default ON) — and the master
+    # SEMANTIK_BLOCK_REVIEW is already on here, so the whole stanza is
+    # unreachable flag-off. Pure memoization: a HIT reuses the SAME parsed
+    # op-list a MISS would have produced (the ops still flow through _admits +
+    # assert_token_conservation on apply), so cache-on / cache-off / cache-miss
+    # are byte-identical. The cache only changes WHETHER generate_batch fires.
+    cache_on = resolve_block_review_cache_mode()
+    cdir = block_review_cache.cache_dir() if cache_on else None
+    review_model = resolve_structure_review_model()
+    cache_flags = {
+        "window": resolve_block_review_window(),
+        "edge_tokens": resolve_block_review_edge_tokens(),
+        "conf": resolve_block_review_conf_floor(),
+    }
+    window_keys: list[str | None] = [None] * w
+    if cache_on:
+        for i, win in enumerate(windows):
+            window_keys[i] = block_review_cache.make_key(
+                prompt=window_prompts[i],
+                records=[record_by_idx[m] for m in win],
+                council_kinds=[record_by_idx[m].get("council_kind") for m in win],
+                model=review_model,
+                temperature=review_temperature,
+                flags=cache_flags,
+            )
+
+    # Per-window resolved ops: _ENDPOINT_FAILED for a None sentinel, else the
+    # parsed op-list (cache hit or fresh parse; None/[] -> no ops -> ok soft
+    # fallback). A leftover placeholder cannot survive (every window is hit or
+    # dispatched below).
+    _ENDPOINT_FAILED = object()
+    resolved_ops: list[Any] = [None] * w
+    miss_positions: list[int] = []
+    for i in range(w):
+        if cache_on:
+            cached = block_review_cache.get(window_keys[i], cdir)
+            if cached is not None:  # HIT -> skip dispatch for this window.
+                resolved_ops[i] = cached
+                continue
+        miss_positions.append(i)
+
+    # Dispatch — ONE generate_batch over the MISS prompts only (a fully-cached
+    # run fires ZERO calls). Same TypeError fallback + fail-loud-degrade
+    # contract as the heading path.
+    if miss_positions:
+        miss_prompts = [window_prompts[i] for i in miss_positions]
+        try:
+            miss_completions = runtime.generate_batch(
+                miss_prompts,
+                max_tokens=win_max_tokens,
+                temperature=review_temperature,
+                fail_soft=True,
+            )
+        except TypeError:
+            try:
+                miss_completions = runtime.generate_batch(
+                    miss_prompts, max_tokens=win_max_tokens, temperature=review_temperature
+                )
+            except EndpointRuntimeError as exc:
+                logger.warning(
+                    "block-review runtime lacks fail_soft and the fail-loud call "
+                    "failed (%s) -> degrading WHOLE review to unreviewed",
+                    exc,
+                )
+                return _degrade_whole_review_unreviewed(
+                    regions,
+                    "endpoint failure without fail_soft; whole-review degraded to "
+                    "unreviewed",
+                )
+        miss_completions = list(miss_completions)
+        if len(miss_completions) < len(miss_positions):
+            miss_completions = miss_completions + [""] * (
+                len(miss_positions) - len(miss_completions)
+            )
+        for pos, win_i in enumerate(miss_positions):
+            raw = miss_completions[pos]
+            if raw is None:
+                resolved_ops[win_i] = _ENDPOINT_FAILED
+                continue
+            ops = _extract_op_list(raw if isinstance(raw, str) else "")
+            resolved_ops[win_i] = ops
+            # Store the fresh parse (best-effort; never on an endpoint failure
+            # or a parse miss -> a re-run re-dispatches those deterministically).
+            if cache_on and ops is not None:
+                block_review_cache.put(window_keys[win_i], ops, cdir)
 
     # Anti-crawl: a clearly-dead endpoint (>= _ENDPOINT_DEAD_FAILURE_RATIO of
     # WINDOWS came back as the None sentinel) degrades the WHOLE review to the
     # byte-stable unreviewed floor rather than parsing window after window.
-    none_windows = sum(1 for c in completions[:w] if c is None)
+    # (Cache HITS are genuine successes, never counted as failures.)
+    none_windows = sum(1 for r in resolved_ops if r is _ENDPOINT_FAILED)
     if w > 0 and none_windows >= max(1, int(round(_ENDPOINT_DEAD_FAILURE_RATIO * w))):
         logger.warning(
             "block-review endpoint appears dead (%d/%d windows failed) -> "
@@ -1871,9 +1930,9 @@ def _run_windowed_block_review(
     applied: set[int] = set()
     escalation_indices: list[int] = []
     endpoint_failure_count = 0
-    for win, raw in zip(windows, completions[:w]):
+    for win, ops in zip(windows, resolved_ops):
         member_set = set(win)
-        if raw is None:
+        if ops is _ENDPOINT_FAILED:
             # Window endpoint failure -> its not-yet-applied members degrade to
             # UNREVIEWED (kept verbatim, reverted_for_endpoint_failure).
             for idx in win:
@@ -1885,7 +1944,6 @@ def _run_windowed_block_review(
                 )
                 endpoint_failure_count += 1
             continue
-        ops = _extract_op_list(raw if isinstance(raw, str) else "")
         op_by_idx: dict[int, dict[str, Any]] = {}
         if ops:
             for op in ops:
