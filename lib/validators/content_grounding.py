@@ -109,6 +109,28 @@ _DART_BLOCK_ID_RE = re.compile(
     re.IGNORECASE,
 )
 
+# FIX 1 — structural-page grounding exemption. The auto-generated learning
+# objectives map (``course_overview/learning_objectives.html``) renders CO
+# objective statements as ``<li>`` carrying no ``data-cf-source-ids`` —
+# legitimately, because an objective statement is a synthesized learning target
+# with no single DART source block. Mirrors the ``_COGNITIVE_LOAD_EXEMPT_TYPES``
+# precedent in ``lib/validators/content.py``. TIGHT by basename ONLY: the week
+# ``*_overview`` / ``*_summary`` pages ARE grounded and MUST keep being checked,
+# so this set is intentionally a single basename, not a path prefix or suffix.
+_GROUNDING_EXEMPT_BASENAMES = frozenset({"learning_objectives.html"})
+
+# FIX 2 — chunk-id namespace recognizer. The ``ED4ALL_KEY_TERMS_PAGE`` feature
+# stamps REAL chunk ids (shape ``{course}_chunk_NNNNN``, see
+# ``Trainforge/chunker/chunker.py::_generate_chunk_id``) as
+# ``data-cf-source-ids`` on its vocab cards in the canonical
+# ``dart:{slug}#{course}_chunk_NNNNN`` form — deep-linking to a chunk's
+# ``item_path``. Those ids live in the chunk-id namespace, NOT the DART
+# block-id universe, so they are resolved by exact membership against the run's
+# harvested chunkset (the primary path). The pattern below is used ONLY for the
+# harvest-unavailable fallback demotion (a genuinely-bogus DART block id has no
+# ``_chunk_N`` suffix, so it can never match here and stays critical).
+_CHUNK_ID_RE = re.compile(r"_chunk_\d+$")
+
 
 class ContentGroundingValidator:
     """Verifies Courseforge content traces back to DART source blocks.
@@ -189,19 +211,50 @@ class ContentGroundingValidator:
             )
 
         valid_block_ids = self._resolve_valid_block_ids(inputs)
-        resolution_enabled = len(valid_block_ids) > 0
+        # FIX 2 — also harvest the run's chunk-id universe so legitimately
+        # chunk-grounded key_terms source-ids (``dart:{slug}#{course}_chunk_N``)
+        # resolve instead of categorically failing UNRESOLVED_SOURCE_ID.
+        valid_chunk_ids = self._resolve_valid_chunk_ids(inputs)
+        resolution_enabled = bool(valid_block_ids) or bool(valid_chunk_ids)
 
         per_page_stats: List[Dict[str, Any]] = []
         empty_pages: List[str] = []
         critical_pages: List[str] = []
+        # FIX 1 — pages exempt from the per-page grounding check (the auto-
+        # generated objectives-list structural page) are excluded from BOTH the
+        # per-page checks AND the empty-page-fraction denominator.
+        exempt_pages = 0
 
         for page_path in page_paths:
-            stats = self._analyze_page(page_path, valid_block_ids, resolution_enabled)
+            # FIX 1 — skip the structural objectives-list page entirely (its
+            # ungrounded objective <li>s are legitimate, not a content defect).
+            if self._is_grounding_exempt_page(page_path):
+                exempt_pages += 1
+                continue
+
+            stats = self._analyze_page(
+                page_path, valid_block_ids, valid_chunk_ids, resolution_enabled
+            )
             per_page_stats.append(stats)
 
             if stats["is_empty"]:
                 empty_pages.append(str(page_path))
                 continue
+            # FIX 2 — chunk-namespace source-ids that could not be resolved
+            # against a harvested chunkset (harvest unavailable) demote to a
+            # warning rather than a categorical critical failure.
+            for soft in stats.get("soft_unresolved_ids", [])[:3]:
+                issues.append(GateIssue(
+                    severity="warning",
+                    code="UNRESOLVED_CHUNK_SOURCE_ID",
+                    message=(
+                        f"data-cf-source-ids references chunk-namespace id "
+                        f"{soft!r} which could not be confirmed against the "
+                        f"run chunkset (chunkset unavailable to harvest); "
+                        f"treating as warning, not a grounding failure."
+                    ),
+                    location=str(page_path),
+                ))
             if stats["ungrounded_fraction"] >= PAGE_CRITICAL_UNGROUNDED_FRACTION:
                 critical_pages.append(str(page_path))
                 issues.append(GateIssue(
@@ -234,8 +287,9 @@ class ContentGroundingValidator:
                     location=str(page_path),
                 ))
 
-        # Aggregate empty-page analysis.
-        total_pages = len(page_paths)
+        # Aggregate empty-page analysis. FIX 1 — exempt structural pages are not
+        # part of the denominator (they are never "content" pages to begin with).
+        total_pages = len(page_paths) - exempt_pages
         empty_fraction = len(empty_pages) / total_pages if total_pages else 0.0
         if empty_fraction >= AGGREGATE_EMPTY_CRITICAL_FRACTION:
             issues.append(GateIssue(
@@ -381,10 +435,84 @@ class ContentGroundingValidator:
             for item in data:
                 yield from ContentGroundingValidator._iter_sidecar_block_ids(item, stem)
 
+    @staticmethod
+    def _is_grounding_exempt_page(page_path: Path) -> bool:
+        """True for the auto-generated objectives-list structural page (FIX 1).
+
+        TIGHT: matches ONLY the ``learning_objectives.html`` basename (the page
+        the packager renders into ``course_overview/``). Week ``*_overview`` /
+        ``*_summary`` content pages are deliberately NOT matched — they carry
+        real grounded prose and must keep being checked.
+        """
+        return page_path.name.lower() in _GROUNDING_EXEMPT_BASENAMES
+
+    @staticmethod
+    def _resolve_dart_chunks_path(inputs: Dict[str, Any]) -> Optional[Path]:
+        """Resolve the run's ``dart_chunks/chunks.jsonl`` path for FIX 2.
+
+        The ``run_dart_chunking`` phase (which runs before content_generation)
+        emits ``dart_chunks_path`` in its output; the gate input builder
+        forwards it here. Returns ``None`` when no path is supplied.
+        """
+        raw = inputs.get("dart_chunks_path") or inputs.get("chunks_path")
+        if isinstance(raw, Path):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            return Path(raw.strip())
+        return None
+
+    def _resolve_valid_chunk_ids(self, inputs: Dict[str, Any]) -> Set[str]:
+        """Harvest the run's bare chunk ids from the chunkset (FIX 2).
+
+        The ``ED4ALL_KEY_TERMS_PAGE`` feature deep-links vocab cards to real
+        chunks via ``data-cf-source-ids="dart:{slug}#{chunk_id}"``. Those
+        chunk ids resolve against the run's chunkset (the SAME
+        ``dart_chunks/chunks.jsonl`` the feature reads), not the DART block-id
+        universe, so they are harvested separately and matched by their
+        post-``#`` component.
+
+        Source order: explicit ``valid_chunk_ids`` (tests) > the chunkset at
+        ``dart_chunks_path``. A missing / unreadable chunkset yields an empty
+        set (the validator then falls back to pattern-demotion of the
+        chunk-namespace unresolved case to a warning).
+        """
+        pre = inputs.get("valid_chunk_ids")
+        if pre is not None:
+            return {str(c) for c in pre}
+
+        out: Set[str] = set()
+        path = self._resolve_dart_chunks_path(inputs)
+        if path is None or not path.exists():
+            return out
+        import json as _json
+
+        try:
+            with path.open("r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = _json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    cid = obj.get("id") or obj.get("chunk_id")
+                    if isinstance(cid, str) and cid.strip():
+                        out.add(cid.strip())
+        except OSError as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "content_grounding: failed to read chunkset at %s: %s",
+                path, exc,
+            )
+        return out
+
     def _analyze_page(
         self,
         page_path: Path,
         valid_block_ids: Set[str],
+        valid_chunk_ids: Set[str],
         resolution_enabled: bool,
     ) -> Dict[str, Any]:
         """Per-page stats: non-trivial paragraph count + grounding coverage."""
@@ -398,6 +526,7 @@ class ContentGroundingValidator:
                 "ungrounded_paragraphs": 0,
                 "ungrounded_fraction": 0.0,
                 "unresolved_ids": [],
+                "soft_unresolved_ids": [],
             }
 
         soup = BeautifulSoup(html, "html.parser")
@@ -413,6 +542,7 @@ class ContentGroundingValidator:
         non_trivial = 0
         ungrounded = 0
         unresolved_ids: List[str] = []
+        soft_unresolved_ids: List[str] = []
         for el in candidate_elements:
             text = el.get_text(separator=" ", strip=True)
             word_count = len(text.split())
@@ -432,8 +562,26 @@ class ContentGroundingValidator:
                 continue
             if resolution_enabled:
                 for sid in ids:
-                    if sid not in valid_block_ids:
-                        unresolved_ids.append(sid)
+                    if sid in valid_block_ids:
+                        continue
+                    # FIX 2 — chunk-id namespace resolution. The key_terms
+                    # feature stamps ``dart:{slug}#{chunk_id}``; extract the
+                    # post-``#`` chunk-id component (or the bare id) and resolve
+                    # it by EXACT membership against the harvested chunkset. This
+                    # is tight: a genuinely-bogus chunk-shaped id is not in the
+                    # set, so it still flags critical.
+                    cid = sid.split("#", 1)[1] if "#" in sid else sid
+                    if valid_chunk_ids and cid in valid_chunk_ids:
+                        continue
+                    # FIX 2 fallback — when the chunkset is unavailable to
+                    # harvest, demote ONLY the chunk-id namespace (``_chunk_N``
+                    # suffix) to a soft warning. A bogus DART block id never
+                    # matches this pattern, so its unresolved case stays
+                    # critical (detection unweakened).
+                    if not valid_chunk_ids and _CHUNK_ID_RE.search(cid):
+                        soft_unresolved_ids.append(sid)
+                        continue
+                    unresolved_ids.append(sid)
 
         ungrounded_fraction = ungrounded / non_trivial if non_trivial else 0.0
         return {
@@ -443,6 +591,7 @@ class ContentGroundingValidator:
             "ungrounded_paragraphs": ungrounded,
             "ungrounded_fraction": ungrounded_fraction,
             "unresolved_ids": unresolved_ids,
+            "soft_unresolved_ids": soft_unresolved_ids,
         }
 
     @staticmethod
@@ -487,9 +636,24 @@ def _build_content_grounding(phase_outputs: Dict[str, Any], workflow_params: Dic
             staging = sd
             break
 
+    # FIX 2 — forward the run's DART chunkset so chunk-namespace key_terms
+    # source-ids resolve. The ``run_dart_chunking`` phase emits
+    # ``dart_chunks_path``; scan all phase outputs for it (it runs before
+    # content_generation, so it is present in the accumulated phase outputs).
+    dart_chunks_path = None
+    for phase_data in phase_outputs.values():
+        if not isinstance(phase_data, dict):
+            continue
+        dcp = phase_data.get("dart_chunks_path")
+        if isinstance(dcp, str) and dcp:
+            dart_chunks_path = dcp
+            break
+
     inputs: Dict[str, Any] = {"page_paths": pages}
     if staging:
         inputs["staging_dir"] = staging
+    if dart_chunks_path:
+        inputs["dart_chunks_path"] = dart_chunks_path
     if not pages:
         return inputs, ["page_paths"]
     return inputs, []

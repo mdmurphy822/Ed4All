@@ -239,6 +239,199 @@ class TestAncestorLookup:
 # ---------------------------------------------------------------------- #
 
 
+class TestObjectivesPageExemption:
+    """FIX 1 — the auto-generated objectives-list structural page is exempt.
+
+    Its CO objective statements render as ungrounded ``<li>`` legitimately
+    (objective statements carry no DART source block). The exemption is TIGHT:
+    only the ``learning_objectives.html`` basename — week overview/summary pages
+    stay checked (see ``test_week_overview_still_checked`` below).
+    """
+
+    def _objectives_body(self) -> str:
+        # Five ungrounded objective <li> (no data-cf-source-ids) — would be a
+        # 100%-ungrounded PAGE_UNGROUNDED critical on any non-exempt page.
+        return "<ul>" + "".join(
+            f"<li>{' '.join(f'objective{j}-word{i}' for i in range(40))}</li>"
+            for j in range(5)
+        ) + "</ul>"
+
+    def test_learning_objectives_page_is_exempt(self, tmp_path):
+        page = tmp_path / "learning_objectives.html"
+        page.write_text(_make_page(self._objectives_body()), encoding="utf-8")
+        result = ContentGroundingValidator().validate({
+            "page_paths": [str(page)],
+            "valid_block_ids": ["s1"],
+        })
+        # Exempt page → no PAGE_UNGROUNDED, passes for the right reason.
+        assert result.passed is True
+        codes = {i.code for i in result.issues}
+        assert "PAGE_UNGROUNDED" not in codes
+        # The exempt page is not counted as an empty content page either.
+        assert "AGGREGATE_EMPTY_PAGES" not in codes
+
+    def test_learning_objectives_under_course_overview_path_exempt(self, tmp_path):
+        overview = tmp_path / "course_overview"
+        overview.mkdir()
+        page = overview / "learning_objectives.html"
+        page.write_text(_make_page(self._objectives_body()), encoding="utf-8")
+        result = ContentGroundingValidator().validate({
+            "page_paths": [str(page)],
+            "valid_block_ids": ["s1"],
+        })
+        assert result.passed is True
+        codes = {i.code for i in result.issues}
+        assert "PAGE_UNGROUNDED" not in codes
+
+    def test_week_overview_still_checked_not_exempt(self, tmp_path):
+        """CONTROL: a genuinely-ungrounded week_NN_overview page STILL fails.
+
+        The exemption must NOT blanket *_overview / *_summary pages.
+        """
+        page = tmp_path / "week_03_overview.html"
+        page.write_text(_make_page(self._objectives_body()), encoding="utf-8")
+        result = ContentGroundingValidator().validate({
+            "page_paths": [str(page)],
+            "valid_block_ids": ["s1"],
+        })
+        assert result.passed is False
+        codes = {i.code for i in result.issues}
+        assert "PAGE_UNGROUNDED" in codes
+
+    def test_summary_page_still_checked_not_exempt(self, tmp_path):
+        """CONTROL: a *_summary page is NOT exempt and still fails ungrounded."""
+        page = tmp_path / "week_03_summary.html"
+        page.write_text(_make_page(self._objectives_body()), encoding="utf-8")
+        result = ContentGroundingValidator().validate({
+            "page_paths": [str(page)],
+            "valid_block_ids": ["s1"],
+        })
+        assert result.passed is False
+        assert "PAGE_UNGROUNDED" in {i.code for i in result.issues}
+
+
+class TestChunkIdNamespace:
+    """FIX 2 — chunk-id namespace source-ids resolve against the run chunkset.
+
+    The key_terms feature stamps ``dart:{slug}#{course}_chunk_NNNNN`` ids that
+    deep-link to real chunks. ``_resolve_valid_block_ids`` only harvests DART
+    block ids, so these were categorically UNRESOLVED_SOURCE_ID. FIX 2 admits
+    the chunk-id namespace by exact membership against the harvested chunkset.
+    """
+
+    def _write_chunks(self, tmp_path: Path, chunk_ids: list) -> Path:
+        path = tmp_path / "dart_chunks" / "chunks.jsonl"
+        path.parent.mkdir(parents=True)
+        import json
+        path.write_text(
+            "\n".join(json.dumps({"id": c, "text": "body"}) for c in chunk_ids),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_key_terms_chunk_id_resolves_against_chunkset(self, tmp_path):
+        chunks = self._write_chunks(
+            tmp_path, ["demo_chunk_00001", "demo_chunk_00002"]
+        )
+        # Vocab-card paragraph stamped with the canonical key_terms source-id.
+        body = _make_para(40, "dart:demo#demo_chunk_00001")
+        page = tmp_path / "week_01_key_terms.html"
+        page.write_text(_make_page(body), encoding="utf-8")
+        result = ContentGroundingValidator().validate({
+            "page_paths": [str(page)],
+            "valid_block_ids": ["s1"],  # DART block universe (irrelevant here)
+            "dart_chunks_path": str(chunks),
+        })
+        # Resolves against the chunkset → passes for the right reason.
+        assert result.passed is True
+        codes = {i.code for i in result.issues}
+        assert "UNRESOLVED_SOURCE_ID" not in codes
+        assert "UNRESOLVED_CHUNK_SOURCE_ID" not in codes
+
+    def test_valid_chunk_ids_precomputed_resolves(self, tmp_path):
+        body = _make_para(40, "dart:demo#demo_chunk_00007")
+        page = tmp_path / "week_01_key_terms.html"
+        page.write_text(_make_page(body), encoding="utf-8")
+        result = ContentGroundingValidator().validate({
+            "page_paths": [str(page)],
+            "valid_block_ids": ["s1"],
+            "valid_chunk_ids": ["demo_chunk_00007"],
+        })
+        assert result.passed is True
+        assert "UNRESOLVED_SOURCE_ID" not in {i.code for i in result.issues}
+
+    def test_bogus_chunk_id_still_flags_critical_when_harvested(self, tmp_path):
+        """CONTROL: a chunk-shaped id NOT in the harvested chunkset still fails.
+
+        FIX 2 must not blanket-pass anything matching the chunk pattern — only
+        ids that are REALLY in the run's chunkset resolve.
+        """
+        chunks = self._write_chunks(tmp_path, ["demo_chunk_00001"])
+        body = (
+            _make_para(40, "dart:demo#demo_chunk_99999")
+            + _make_para(40, "dart:demo#demo_chunk_88888")
+            + _make_para(40, "dart:demo#demo_chunk_77777")
+        )
+        page = tmp_path / "week_01_key_terms.html"
+        page.write_text(_make_page(body), encoding="utf-8")
+        result = ContentGroundingValidator().validate({
+            "page_paths": [str(page)],
+            "valid_block_ids": ["s1"],
+            "dart_chunks_path": str(chunks),
+        })
+        assert result.passed is False
+        assert "UNRESOLVED_SOURCE_ID" in {i.code for i in result.issues}
+
+    def test_bogus_dart_block_id_still_flags_when_chunkset_present(self, tmp_path):
+        """CONTROL: a genuinely-bogus DART block id STILL flags critical.
+
+        Even with a chunkset harvested, a non-chunk-shaped unresolved id is a
+        real grounding defect and must stay UNRESOLVED_SOURCE_ID critical.
+        """
+        chunks = self._write_chunks(tmp_path, ["demo_chunk_00001"])
+        body = (
+            _make_para(40, "ghost_block")
+            + _make_para(40, "ghost_block_2")
+            + _make_para(40, "ghost_block_3")
+        )
+        page = tmp_path / "week_01.html"
+        page.write_text(_make_page(body), encoding="utf-8")
+        result = ContentGroundingValidator().validate({
+            "page_paths": [str(page)],
+            "valid_block_ids": ["real_block"],
+            "dart_chunks_path": str(chunks),
+        })
+        assert result.passed is False
+        assert "UNRESOLVED_SOURCE_ID" in {i.code for i in result.issues}
+
+    def test_chunk_id_demoted_to_warning_when_chunkset_unavailable(self, tmp_path):
+        """Fallback: no harvestable chunkset → chunk-namespace id is a WARNING.
+
+        The chunk-pattern unresolved demotes to UNRESOLVED_CHUNK_SOURCE_ID
+        (warning), never blocking, while a real DART-block-id unresolved on the
+        same page stays critical.
+        """
+        body = (
+            _make_para(40, "dart:demo#demo_chunk_00001")  # chunk-shaped → warn
+            + _make_para(40, "ghost_block")               # bogus block → crit
+            + _make_para(40, "ghost_block_2")
+            + _make_para(40, "ghost_block_3")
+        )
+        page = tmp_path / "week_01_key_terms.html"
+        page.write_text(_make_page(body), encoding="utf-8")
+        result = ContentGroundingValidator().validate({
+            "page_paths": [str(page)],
+            "valid_block_ids": ["real_block"],
+            # No dart_chunks_path / valid_chunk_ids → harvest unavailable.
+        })
+        codes = {i.code for i in result.issues}
+        # Chunk-namespace id demoted to a warning.
+        assert "UNRESOLVED_CHUNK_SOURCE_ID" in codes
+        # Bogus DART block ids still flag critical (detection unweakened).
+        assert "UNRESOLVED_SOURCE_ID" in codes
+        assert result.passed is False
+
+
 class TestGateIntegration:
     def test_no_pages_returns_warning_not_crash(self):
         result = ContentGroundingValidator().validate({"page_paths": []})
