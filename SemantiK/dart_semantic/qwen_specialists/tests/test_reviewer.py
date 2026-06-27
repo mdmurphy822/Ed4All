@@ -124,6 +124,58 @@ def _assert_coverage_invariant(regions, n_fb):
 
 
 # ---------------------------------------------------------------------------
+# SEMANTIK_BLOCK_REVIEW flag-off byte-stability (behavioral).
+#
+# The durable form of the Phase-0 flag-off contract: with SEMANTIK_BLOCK_REVIEW
+# off, run_structure_review's output is byte-identical whether the block-review
+# envs are unset or explicitly off with arbitrary window/edge/cache values.
+# This replaces the original grep-for-references guard in test_block_review_flags
+# (which false-flagged the Phase-1 dead-but-callable edge-tokens consumer in
+# reviewer_prompt.py — a reference reachable ONLY from dead code, so it cannot
+# change flag-off behavior). Content-block re-types are not driver-reachable
+# until Phase 3, so the heading-only path must be unchanged and every
+# verdict.role_after (Phase 2) is None on the flag-off path.
+# ---------------------------------------------------------------------------
+
+
+def test_block_review_flag_off_byte_stable(monkeypatch):
+    fbs = [_fb("Answer Key 3.1"), _fb("Real body content here.")]
+
+    def _regions():
+        return [
+            Region(kind="heading", feature_block_indices=(0,),
+                   payload={"level_hint": 2, "text": "Answer Key 3.1"}),
+            Region(kind="paragraph", feature_block_indices=(1,),
+                   payload={"text": "Real body content here."}),
+        ]
+
+    def _completions():
+        return [
+            _verdict_json(0, verdict="drop_injected_header",
+                          kind="metadata_drop", note="answer-key"),
+            _verdict_json(1, verdict="ok"),
+        ]
+
+    for k in ("SEMANTIK_BLOCK_REVIEW", "SEMANTIK_BLOCK_REVIEW_WINDOW",
+              "SEMANTIK_BLOCK_REVIEW_EDGE_TOKENS", "SEMANTIK_BLOCK_REVIEW_CACHE"):
+        monkeypatch.delenv(k, raising=False)
+    out_unset, v_unset = run_structure_review(_regions(), fbs, _ScriptedRuntime(_completions()))
+
+    # Flag explicitly off + arbitrary values on the other three envs: none of
+    # them are consumed on the flag-off path, so output must be identical.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "0")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_WINDOW", "3")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_EDGE_TOKENS", "99")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_CACHE", "0")
+    out_off, v_off = run_structure_review(_regions(), fbs, _ScriptedRuntime(_completions()))
+
+    # frozen dataclasses -> value equality.
+    assert out_unset == out_off
+    assert v_unset == v_off
+    assert all(v.role_after is None for v in v_unset)
+
+
+# ---------------------------------------------------------------------------
 # Mode resolver.
 # ---------------------------------------------------------------------------
 
@@ -475,6 +527,177 @@ def test_review_verdict_shape():
     assert v.level_after == 1
     assert v.review_note == "re-level"
     assert v.reverted_for_invariant is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — content-block re-type verdict + invariant-guarded apply.
+#
+# Content blocks are NOT driver-reachable until Phase 3 widens the heading-only
+# review scope, so these exercise _apply_verdict DIRECTLY (mirroring the C1
+# promotion tests above). SEMANTIK_BLOCK_REVIEW=1 is set where role_after is
+# asserted (it is gated on the flag for flag-off audit byte-stability).
+# ---------------------------------------------------------------------------
+
+
+def test_retype_code_block_to_paragraph_applies(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("Try it: simplify 3(x+2).")]
+    region = Region(kind="code_block", feature_block_indices=(0,),
+                    payload={"text": "Try it: simplify 3(x+2)."})
+    before_text = rv._joined_source_text(region, fbs)
+    # The council mis-typed a "TRY IT" exercise as a code_block; re-type to
+    # paragraph and assign a doc_role.
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "paragraph",
+           "corrected_level": None, "corrected_doc_role": "example",
+           "review_note": "TRY-IT exercise, not code"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.kind == "paragraph"                  # re-typed
+    assert verdict.kind_before == "code_block"
+    assert verdict.kind_after == "paragraph"
+    assert verdict.verdict == "corrected"
+    assert not verdict.reverted_for_invariant
+    # verbatim source byte-identical (no text mutation through the re-type).
+    assert rv._joined_source_text(out_region, fbs) == before_text
+    assert out_region.payload["text"] == region.payload["text"]
+    # role_after mirrors the already-written doc_role.
+    assert out_region.payload["doc_role"] == "example"
+    assert verdict.role_after == "example"
+
+
+def test_retype_table_to_definition_list_applies(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("Term: a definition body")]
+    # Passthrough table region (source_region_id set) — a kind-only re-type
+    # must NOT move FBs and must NOT trip _admits.
+    region = Region(kind="table", feature_block_indices=(0,),
+                    payload={"text": "Term: a definition body"},
+                    source_region_id=7)
+    obj = {"block_id": 0, "verdict": "corrected",
+           "corrected_kind": "definition_list", "corrected_level": None,
+           "corrected_doc_role": None, "review_note": "key:value, not a grid"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.kind == "definition_list"
+    # Passthrough FB partition + source_region_id unchanged.
+    assert out_region.feature_block_indices == (0,)
+    assert out_region.source_region_id == 7
+    assert not verdict.reverted_for_invariant
+    # _admits does NOT reject a kind-only passthrough re-type.
+    assert rv._admits(region, out_region, fbs, is_promotion=False) is True
+
+
+def test_retype_text_mutating_verdict_reverts(monkeypatch):
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("Original code")]
+    region = Region(kind="code_block", feature_block_indices=(0,),
+                    payload={"text": "Original code", "extra": "keep"})
+    # A candidate that altered payload text is rejected outright by _admits.
+    text_tampered = region.__class__(
+        kind="paragraph", feature_block_indices=(0,),
+        payload={"text": "REWRITTEN words", "extra": "keep"},
+        source_region_id=region.source_region_id,
+    )
+    assert rv._admits(region, text_tampered, fbs, is_promotion=False) is False
+    # And _apply_verdict reverts on ANY admission failure: original kept
+    # verbatim, reverted_for_invariant=True, *_after == *_before.
+    monkeypatch.setattr(rv, "_admits", lambda *a, **k: False)
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "paragraph",
+           "corrected_level": None, "corrected_doc_role": None,
+           "review_note": "x"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region is region                            # original kept
+    assert verdict.reverted_for_invariant is True
+    assert verdict.kind_after == verdict.kind_before == "code_block"
+
+
+def test_retype_unknown_kind_drops_to_ok(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("some code")]
+    region = Region(kind="code_block", feature_block_indices=(0,),
+                    payload={"text": "some code"})
+    # 'exercise' is a deferred pedagogical kind, NOT in REGION_KINDS.
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "exercise",
+           "corrected_level": None, "corrected_doc_role": None,
+           "review_note": "pedagogical kind not in REGION_KINDS"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.kind == "code_block"                 # unknown kind dropped
+    assert verdict.kind_after == "code_block"
+    assert verdict.verdict == "ok"
+
+
+def test_retype_dataclasses_replace_round_trips(monkeypatch):
+    # A re-typed Region preserves feature_block_indices + source_region_id (and
+    # every other non-mutated frozen field / non-structural payload key).
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("grid or list body")]
+    region = Region(kind="table", feature_block_indices=(0,),
+                    payload={"text": "grid or list body", "cells": [[1]]},
+                    source_region_id=9, aria_hints=("h",),
+                    provenance={"p": "x"})
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "paragraph",
+           "corrected_level": None, "corrected_doc_role": None,
+           "review_note": "n"}
+    out_region, _ = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.kind == "paragraph"
+    assert out_region.feature_block_indices == (0,)
+    assert out_region.source_region_id == 9
+    assert out_region.aria_hints == ("h",)
+    assert out_region.provenance == {"p": "x"}
+    assert out_region.payload["cells"] == [[1]]            # non-structural key kept
+    assert region.kind == "table"                          # original unchanged
+
+
+def test_audit_asdict_byte_stable_flag_off(monkeypatch):
+    # The critic-flagged F1 regression: a bare new role_after field would make
+    # dataclasses.asdict emit `role_after: null` on EVERY verdict, breaking the
+    # flag-off byte-identical-audit contract. cascade.py excludes role_after
+    # ONLY when None, SCOPED so it does NOT drop the legitimately-None level_*
+    # keys that today's audit already emits for non-heading regions.
+    import dataclasses as _dc
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW", raising=False)
+
+    fbs = [_fb("Chapter 1"), _fb("body words")]
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 3, "text": "Chapter 1"}),
+        Region(kind="paragraph", feature_block_indices=(1,),
+               payload={"text": "body words"}),
+    ]
+    rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=1)])
+    _, verdicts = rv.run_structure_review(regions, fbs, rt)
+
+    # Mirror cascade.py's scoped None-exclusion (role_after ONLY).
+    def _row(v):
+        row = _dc.asdict(v)
+        if row.get("role_after") is None:
+            row.pop("role_after", None)
+        return row
+
+    PRE_PHASE2_KEYS = {
+        "block_id", "verdict", "kind_before", "kind_after",
+        "level_before", "level_after", "review_note",
+        "reverted_for_invariant", "reverted_for_endpoint_failure",
+    }
+    for v in verdicts:
+        assert v.role_after is None                        # flag-off -> never set
+        row = _row(v)
+        assert "role_after" not in row                     # excluded from audit
+        assert set(row) == PRE_PHASE2_KEYS                 # byte-identical key set
+    # The paragraph verdict's legitimately-None level_* keys SURVIVE the scoped
+    # exclusion (a blanket None-drop would wrongly strip them -> the F1 trap).
+    para_row = _row(verdicts[1])
+    assert "level_before" in para_row and para_row["level_before"] is None
+    assert "level_after" in para_row and para_row["level_after"] is None
 
 
 # ---------------------------------------------------------------------------

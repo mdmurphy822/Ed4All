@@ -10,8 +10,6 @@ non-test code path references the new symbols.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from dart_semantic.qwen_specialists.reviewer import (
     resolve_block_review_cache_mode,
     resolve_block_review_edge_tokens,
@@ -81,16 +79,19 @@ def test_block_review_edge_tokens_parse_with_fallback(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Byte-stability — the resolvers are pure reads, unreferenced by any live
-# code path (chosen over a full run_structure_review byte-diff because wiring
-# a real review call is heavy AND the hard contract for Phase 0 is precisely
-# that NOTHING existing calls these symbols yet).
+# Resolvers are pure env reads. Flag-off byte-stability itself is enforced
+# BEHAVIORALLY by test_reviewer.py::test_block_review_flag_off_byte_stable
+# (run_structure_review output identical flags-absent vs explicitly-off — the
+# form the Phase-0 spec preferred). The earlier grep-for-references guard was
+# retired: it false-flagged the Phase-1 dead-but-callable edge-tokens consumer
+# in reviewer_prompt.py (reachable only from dead code, so it cannot change
+# behavior), conflating "appears in source" with "reachable from a live path".
+# Per-phase deadness stays covered by each scaffolding phase's own no-live-caller
+# grep (e.g. test_edge_input).
 # ---------------------------------------------------------------------------
 
 
-def test_flag_off_byte_stable(monkeypatch):
-    # (a) pure reads: repeated calls with the env unset are stable, with no
-    # import-time side effects (the import above already succeeded).
+def test_resolvers_pure_reads(monkeypatch):
     monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW", raising=False)
     monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW_WINDOW", raising=False)
     monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW_EDGE_TOKENS", raising=False)
@@ -99,29 +100,3 @@ def test_flag_off_byte_stable(monkeypatch):
     assert resolve_block_review_window() == resolve_block_review_window() == 24
     assert resolve_block_review_edge_tokens() == 12
     assert resolve_block_review_cache_mode() is True
-
-    # (b) no LIVE (non-test) code path references the new resolvers or their
-    # env vars — the Phase-0 byte-stability guarantee.
-    pkg_root = Path(__file__).resolve().parents[3]  # SemantiK/
-    new_symbols = (
-        "resolve_block_review_mode",
-        "resolve_block_review_window",
-        "resolve_block_review_edge_tokens",
-        "resolve_block_review_cache_mode",
-        "SEMANTIK_BLOCK_REVIEW_WINDOW",
-        "SEMANTIK_BLOCK_REVIEW_EDGE_TOKENS",
-        "SEMANTIK_BLOCK_REVIEW_CACHE",
-    )
-    reviewer_def = "qwen_specialists/reviewer.py"
-    offenders: list[str] = []
-    for py in pkg_root.rglob("*.py"):
-        rel = py.relative_to(pkg_root).as_posix()
-        if "/tests/" in rel or rel.endswith("test_block_review_flags.py"):
-            continue
-        if rel.endswith(reviewer_def):
-            continue  # the definition site itself
-        text = py.read_text(encoding="utf-8", errors="ignore")
-        for sym in new_symbols:
-            if sym in text:
-                offenders.append(f"{rel}:{sym}")
-    assert not offenders, f"Phase-0 resolvers must be unreferenced: {offenders}"
