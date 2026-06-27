@@ -659,6 +659,7 @@ def make_runtime(
     mode: Literal["mock", "real", "endpoint"],
     *,
     config_path: Path | None = None,
+    model: str | None = None,
 ) -> QwenRuntime:
     """Return a fresh runtime instance for the requested mode.
 
@@ -673,6 +674,17 @@ def make_runtime(
     local-GGUF presence check is SKIPPED — there are no local weights to
     require. The strict-by-default GGUF check below applies ONLY to the
     local arm.
+
+    **Optional ``model`` override (endpoint arm only).** When ``model`` is
+    given, it is passed verbatim to
+    :class:`~.endpoint_runtime.OpenAICompatibleRuntime` so the seat resolves
+    to THAT model id instead of the Stage-6 specialist default — this is how
+    the Stage-5d structure reviewer pins its dedicated
+    ``SEMANTIK_STRUCTURE_REVIEW_MODEL`` seat (see
+    :func:`resolve_structure_review_model`). ``None`` (the default, used by
+    the Stage-6 specialist path) preserves the byte-stable env-resolved model
+    (``SEMANTIK_SPECIALIST_MODEL`` > ``NVIDIA_LARGE_MODEL`` > default). It is
+    ignored by the ``mock`` / local-``real`` arms (no hosted model to pin).
 
     **Strict-by-default for the LOCAL ``mode="real"`` arm.** If
     ``config.yaml`` has no adapter pointing at an on-disk GGUF,
@@ -695,7 +707,7 @@ def make_runtime(
             mode,
             resolve_specialist_provider(),
         )
-        return OpenAICompatibleRuntime()
+        return OpenAICompatibleRuntime(model=model)
     if mode == "real":
         cfg_path = Path(config_path) if config_path else _DEFAULT_QWEN_CONFIG_PATH
         paths, present = _scan_adapter_artifacts(cfg_path)

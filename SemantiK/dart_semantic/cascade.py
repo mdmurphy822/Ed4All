@@ -790,7 +790,10 @@ def run_full_cascade(
     pre_review_regions = list(structure_regions)
     if resolve_structure_review_mode():
         from .qwen_specialists.reviewer import run_structure_review
-        from .qwen_specialists.runtime import make_runtime
+        from .qwen_specialists.runtime import (
+            make_runtime,
+            resolve_structure_review_model,
+        )
 
         log(
             f"[cascade] running Stage 5d (70B structure review, "
@@ -799,8 +802,15 @@ def run_full_cascade(
         t = time.perf_counter()
         # The reviewer rides the SAME hosted-70B endpoint seat as the
         # Stage-6 endpoint specialists; it only needs generate_batch, which
-        # make_runtime('endpoint') supplies. NO local GGUF / GPU here.
-        review_runtime = make_runtime("endpoint")
+        # make_runtime('endpoint') supplies. NO local GGUF / GPU here. The
+        # reviewer pins its OWN model via resolve_structure_review_model()
+        # (SEMANTIK_STRUCTURE_REVIEW_MODEL > SEMANTIK_SPECIALIST_MODEL >
+        # NVIDIA_LARGE_MODEL > default) so the documented reviewer-specific
+        # seat actually routes the call — unset reviewer model falls back to
+        # the shared specialist model, identical to the legacy behaviour.
+        review_runtime = make_runtime(
+            "endpoint", model=resolve_structure_review_model()
+        )
         reviewed_regions, review_verdicts = run_structure_review(
             structure_regions,
             feature_blocks,

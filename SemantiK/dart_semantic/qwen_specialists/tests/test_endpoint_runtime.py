@@ -30,6 +30,7 @@ from dart_semantic.qwen_specialists.runtime import (
     MockRuntime,
     make_runtime,
     resolve_specialist_provider,
+    resolve_structure_review_model,
     specialist_provider_is_endpoint,
 )
 
@@ -603,6 +604,61 @@ def test_make_runtime_real_local_still_strict(monkeypatch):
     with pytest.raises(RuntimeError) as exc:
         make_runtime("real")
     assert "no Qwen LoRA adapters" in str(exc.value) or "MISSING" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Stage-5d structure-reviewer model seat (SEMANTIK_STRUCTURE_REVIEW_MODEL)
+#
+# The reviewer must honour its OWN model id (resolved by
+# resolve_structure_review_model) when set, falling back to the shared
+# SEMANTIK_SPECIALIST_MODEL otherwise. This is the precedence CLAUDE.md
+# documents; these tests pin that the documented knob actually ROUTES the
+# reviewer runtime's model (not just an audit string).
+# ---------------------------------------------------------------------------
+
+
+def test_make_runtime_endpoint_model_override(monkeypatch):
+    # An explicit model= (how the cascade passes the reviewer seat) wins
+    # over the env-resolved specialist model.
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MODEL", "specialist/model-x")
+    rt = make_runtime("endpoint", model="reviewer/model-y")
+    assert isinstance(rt, OpenAICompatibleRuntime)
+    assert rt._model == "reviewer/model-y"
+
+
+def test_make_runtime_endpoint_model_none_uses_specialist(monkeypatch):
+    # Stage-6 specialist path passes no model → byte-stable env resolution
+    # (SEMANTIK_SPECIALIST_MODEL). Confirms the new kwarg is opt-in only.
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MODEL", "specialist/model-x")
+    monkeypatch.delenv("NVIDIA_LARGE_MODEL", raising=False)
+    rt = make_runtime("endpoint")
+    assert isinstance(rt, OpenAICompatibleRuntime)
+    assert rt._model == "specialist/model-x"
+
+
+def test_reviewer_runtime_resolves_structure_review_model(monkeypatch):
+    # The reviewer seat (model=resolve_structure_review_model()) honours
+    # SEMANTIK_STRUCTURE_REVIEW_MODEL when set — the documented dedicated seat.
+    monkeypatch.setenv("SEMANTIK_STRUCTURE_REVIEW_MODEL", "reviewer/dedicated-70b")
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MODEL", "specialist/model-x")
+    rt = make_runtime("endpoint", model=resolve_structure_review_model())
+    assert rt._model == "reviewer/dedicated-70b"
+
+
+def test_reviewer_runtime_falls_back_to_specialist_model(monkeypatch):
+    # Reviewer model unset → falls back to SEMANTIK_SPECIALIST_MODEL (the
+    # shared seat), matching the legacy behaviour byte-for-byte.
+    monkeypatch.delenv("SEMANTIK_STRUCTURE_REVIEW_MODEL", raising=False)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MODEL", "specialist/model-x")
+    rt = make_runtime("endpoint", model=resolve_structure_review_model())
+    assert rt._model == "specialist/model-x"
+
+
+def test_make_runtime_mock_ignores_model(monkeypatch):
+    # The model override is endpoint-only; the mock arm ignores it (no
+    # hosted model to pin) and stays a MockRuntime.
+    rt = make_runtime("mock", model="reviewer/model-y")
+    assert isinstance(rt, MockRuntime)
 
 
 # ---------------------------------------------------------------------------
