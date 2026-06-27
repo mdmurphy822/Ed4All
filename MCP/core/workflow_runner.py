@@ -1676,6 +1676,13 @@ class WorkflowRunner:
                 phase_outputs=phase_outputs,
                 workflow_params=workflow_params,
                 extract_phase_outputs_fn=self._extract_phase_outputs,
+                # Plumb the per-phase YAML ``batch_timeout_minutes`` (e.g.
+                # content_generation_rewrite's 240) into execute_phase so a
+                # slow local-7B phase is not killed at the executor-wide
+                # env/30-min fallback. None (no YAML value) is byte-stable.
+                phase_batch_timeout_minutes=getattr(
+                    phase, "batch_timeout_minutes", None
+                ),
             )
             # VRAM doctor: capture free-VRAM AFTER the phase returns, stamped
             # with the gate verdict, so the trajectory shows the per-phase

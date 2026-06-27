@@ -45,6 +45,13 @@ class WorkflowPhase:
     depends_on: List[str] = field(default_factory=list)
     optional: bool = False
     timeout_minutes: int = 60
+    # Per-phase whole-batch (whole-phase) wall-clock timeout in minutes.
+    # Plumbed through ``WorkflowRunner.run_workflow`` into
+    # ``TaskExecutor.execute_phase`` so a phase that declares e.g.
+    # ``batch_timeout_minutes: 240`` (a slow local-7B rewrite) is honored
+    # without needing the ``ED4ALL_BATCH_TIMEOUT_MINUTES`` env override.
+    # ``None`` (unset in YAML) preserves the executor's env/30-min fallback.
+    batch_timeout_minutes: Optional[int] = None
     validation_gates: Optional[List[Dict[str, Any]]] = None
     description: str = ""
     # Phase 3 Subtask 2: env-driven enable predicate. Format
@@ -170,6 +177,7 @@ class OrchestratorConfig:
                             depends_on=p.get("depends_on", []),
                             optional=p.get("optional", False),
                             timeout_minutes=p.get("timeout_minutes", 60),
+                            batch_timeout_minutes=p.get("batch_timeout_minutes"),
                             validation_gates=p.get("validation_gates"),
                             description=p.get("description", ""),
                             # Phase 3 Subtask 2: pass through the

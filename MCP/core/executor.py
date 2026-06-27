@@ -601,14 +601,20 @@ class TaskExecutor:
                 except (TypeError, ValueError):
                     pass
             self.timeout_seconds = _task_min * 60
-        # Batch (whole-phase) timeout. The yaml ``batch_timeout_minutes`` is not
-        # plumbed through to every TaskExecutor construction site, so the
-        # default fallback is the only knob a local-7B operator can reach for a
-        # slow phase (e.g. content_generation_rewrite grinding ~30 blocks of
-        # per-block CURIE-preservation retries). Make that fallback overridable
-        # via ``ED4ALL_BATCH_TIMEOUT_MINUTES`` (default 30, preserving prior
-        # behavior when unset) so a long local authoring run is not killed
-        # mid-phase. Read at construction time so it applies to resumes too.
+        # Batch (whole-phase) timeout default. This is the executor-wide
+        # FALLBACK used by ``execute_phase`` when the phase config carries no
+        # per-phase ``batch_timeout_minutes``. The per-phase YAML value IS now
+        # plumbed through: ``WorkflowRunner.run_workflow`` reads
+        # ``WorkflowPhase.batch_timeout_minutes`` (parsed from workflows.yaml)
+        # and passes it to ``execute_phase`` as ``phase_batch_timeout_minutes``,
+        # which wins over this fallback for that call. Resolution precedence in
+        # ``execute_phase``: per-phase YAML ``batch_timeout_minutes`` (if set)
+        # → ``ED4ALL_BATCH_TIMEOUT_MINUTES`` env → 30. So a phase that declares
+        # ``batch_timeout_minutes: 240`` (a slow local-7B rewrite) gets 14400s
+        # even when the env is unset. The env knob remains the way to widen a
+        # phase that has NO YAML value (e.g. content_generation grinding
+        # per-block CURIE-preservation retries). Read at construction time so it
+        # applies to resumes too.
         _default_batch_min = 30
         _env_batch_min = os.environ.get("ED4ALL_BATCH_TIMEOUT_MINUTES")
         if _env_batch_min:
@@ -1587,6 +1593,7 @@ class TaskExecutor:
         extract_phase_outputs_fn: Optional[
             Callable[[str, Dict[str, "ExecutionResult"]], Dict[str, Any]]
         ] = None,
+        phase_batch_timeout_minutes: Optional[int] = None,
     ) -> Tuple[Dict[str, ExecutionResult], bool, Optional[List[Dict]]]:
         """
         Execute a workflow phase with checkpointing and validation gates.
@@ -1604,12 +1611,35 @@ class TaskExecutor:
             tasks: List of tasks to execute
             gate_configs: Optional list of validation gate configurations
             max_concurrent: Maximum concurrent tasks
+            phase_batch_timeout_minutes: Optional per-phase whole-batch
+                wall-clock timeout (minutes) sourced from the phase config
+                (workflows.yaml ``batch_timeout_minutes``). When set and
+                positive it OVERRIDES the executor-wide
+                ``self.batch_timeout_seconds`` fallback for THIS phase only,
+                so a phase that declares ``batch_timeout_minutes: 240`` gets
+                14400s even when ``ED4ALL_BATCH_TIMEOUT_MINUTES`` is unset.
+                ``None`` (no YAML value) preserves the prior env/30-min
+                fallback exactly.
 
         Returns:
             Tuple of (results dict, gates_passed bool, gate_results list)
         """
         task_ids = [t.get("id") for t in tasks]
         gate_results = None
+
+        # Resolve the effective whole-phase batch timeout. Precedence:
+        # per-phase YAML ``batch_timeout_minutes`` (if set & positive) →
+        # ``self.batch_timeout_seconds`` (which already resolved
+        # ``ED4ALL_BATCH_TIMEOUT_MINUTES`` env → 30 at construction). This is
+        # the plumbing that makes workflows.yaml's per-phase value live.
+        batch_timeout_seconds = self.batch_timeout_seconds
+        if phase_batch_timeout_minutes is not None:
+            try:
+                _phase_min = int(phase_batch_timeout_minutes)
+                if _phase_min > 0:
+                    batch_timeout_seconds = _phase_min * 60
+            except (TypeError, ValueError):
+                pass
 
         # W2: clear cross-phase poison-pill state at every phase boundary.
         # The poison detector accumulates errors keyed by pattern hash for
@@ -1646,15 +1676,15 @@ class TaskExecutor:
         try:
             results = await asyncio.wait_for(
                 self._execute_parallel(workflow_id, tasks, max_concurrent),
-                timeout=self.batch_timeout_seconds
+                timeout=batch_timeout_seconds
             )
         except asyncio.TimeoutError:
-            logger.error(f"[{self.run_id}] Phase {phase_name} timed out after {self.batch_timeout_seconds}s")
+            logger.error(f"[{self.run_id}] Phase {phase_name} timed out after {batch_timeout_seconds}s")
             results = {
                 t.get("id"): ExecutionResult(
                     task_id=t.get("id"),
                     status="TIMEOUT",
-                    error=f"Phase batch timeout after {self.batch_timeout_seconds}s"
+                    error=f"Phase batch timeout after {batch_timeout_seconds}s"
                 )
                 for t in tasks if t.get("status") == "PENDING"
             }
