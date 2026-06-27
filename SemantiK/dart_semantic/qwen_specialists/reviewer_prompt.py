@@ -398,14 +398,20 @@ def build_reviewer_request(
     )
     user_json = json.dumps(input_obj, ensure_ascii=False, separators=(",", ":"))
 
-    system = "\n\n".join(
-        [
-            _SYSTEM_REVIEWER,
-            _GLOBAL_WCAG_HEADER,
-            _rule_block_for(region.kind),
-            f"Conformant shape for this kind: {_exemplar_for(region.kind)}",
-        ]
-    )
+    system_parts = [
+        _SYSTEM_REVIEWER,
+        _GLOBAL_WCAG_HEADER,
+        _rule_block_for(region.kind),
+        f"Conformant shape for this kind: {_exemplar_for(region.kind)}",
+    ]
+    # CONTENT branch only: a non-heading (content) block additionally gets the
+    # content-type re-typing directive so the model can correct a mis-typed
+    # KIND (e.g. a 'TRY IT' exercise the council labeled code_block -> paragraph).
+    # The HEADING single-block prompt is left byte-identical (the legacy
+    # byte-stable path its tests assert against).
+    if str(region.kind) != "heading":
+        system_parts.append(_CONTENT_RETYPE_DIRECTIVE)
+    system = "\n\n".join(system_parts)
     return f"SYSTEM: {system}\nUSER: {user_json}"
 
 
@@ -446,6 +452,49 @@ _WINDOW_OPLIST_DIRECTIVE = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Content-type RE-TYPING directive (the Phase-6 root-cause fix). The heading-
+# oriented _SYSTEM_REVIEWER only ever asks "is this a heading?" — it makes the
+# model set corrected_doc_role but NEVER corrected_kind, so a mis-typed CONTENT
+# block (a 'TRY IT' exercise the council labeled code_block) is never re-typed.
+# This directive asks the model, for a CONTENT block, to judge whether its
+# council_kind is the correct CONTENT TYPE and return corrected_kind (a real
+# REGION_KINDS value) when it is wrong. It is appended ONLY to the content /
+# windowed prompts; the heading single-block prompt is left byte-identical so
+# the legacy heading path (and its byte-stability tests) is unaffected.
+# ---------------------------------------------------------------------------
+
+_CONTENT_RETYPE_DIRECTIVE = (
+    "CONTENT-TYPE RE-TYPING (content blocks). Each block is labeled with a "
+    "council_kind (its current content type). If that council_kind is the WRONG "
+    "type for the block's ACTUAL content, return corrected_kind set to the "
+    "correct kind (and verdict \"corrected\"). This is a CONTENT-TYPE judgment, "
+    "NOT only a heading / doc-role judgment: populate corrected_kind whenever "
+    "the TYPE is wrong — you still NEVER rewrite, add, or remove the source "
+    "text, you only change the structural KIND label.\n"
+    "Use ONLY these kinds for corrected_kind (there is NO 'exercise' kind): "
+    "paragraph, heading, list, definition_list, table, math, code_block, "
+    "blockquote, figure, form, metadata_drop.\n"
+    "Common council errors to correct:\n"
+    "  - A practice exercise (e.g. a \"TRY IT : : 1.27 ...\" item) or ordinary "
+    "running prose mislabeled as code_block -> return corrected_kind "
+    "\"paragraph\" (an exercise / prose is body text, not code; there is no "
+    "exercise kind, so it re-types to paragraph).\n"
+    "  - A definition / term list mislabeled as table -> return the correct "
+    "list kind: corrected_kind \"definition_list\" for term/definition pairs, "
+    "or \"list\" / \"paragraph\" as the content warrants (a table is a real "
+    "row/column grid, not a definition line).\n"
+    "Example: council_kind \"code_block\", text \"TRY IT : : 1.27 Simplify "
+    "3 + 7\" -> corrected_kind \"paragraph\", verdict \"corrected\" (a worked "
+    "exercise, not code).\n"
+    "Example: council_kind \"table\", text \"Commutative Property: a + b = "
+    "b + a\" -> corrected_kind \"paragraph\", verdict \"corrected\" (a "
+    "definition line, not a tabular grid).\n"
+    "When the council_kind is ALREADY the correct content type, leave it "
+    "(verdict \"ok\", corrected_kind null)."
+)
+
+
 def build_windowed_reviewer_request(
     records: list[dict[str, Any]],
     *,
@@ -469,7 +518,12 @@ def build_windowed_reviewer_request(
         enriched.append(item)
     user_json = json.dumps(enriched, ensure_ascii=False, separators=(",", ":"))
     system = "\n\n".join(
-        [_SYSTEM_REVIEWER, _GLOBAL_WCAG_HEADER, _WINDOW_OPLIST_DIRECTIVE]
+        [
+            _SYSTEM_REVIEWER,
+            _GLOBAL_WCAG_HEADER,
+            _WINDOW_OPLIST_DIRECTIVE,
+            _CONTENT_RETYPE_DIRECTIVE,
+        ]
     )
     return f"SYSTEM: {system}\nUSER: {user_json}"
 

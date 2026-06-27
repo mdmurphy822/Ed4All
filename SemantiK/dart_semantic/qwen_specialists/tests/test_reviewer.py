@@ -23,6 +23,7 @@ import pytest
 from dart_semantic.qwen_specialists.reviewer import (
     ReviewVerdict,
     TokenConservationError,
+    _content_block_dispatch_gate,
     assert_token_conservation,
     resolve_structure_review_mode,
     resolve_structure_review_temperature,
@@ -1275,17 +1276,113 @@ def test_cluster_signals_unaffected_by_scope_widen(monkeypatch):
 
 
 def test_high_confidence_block_skips_llm(monkeypatch):
+    # Deterministic-first for the gated kinds: a high-confidence PARAGRAPH (not
+    # a known-weak code_block/table) with no pedagogical prefix gets NO prompt.
+    # (code_block/table now dispatch unconditionally — see
+    # test_code_block_dispatched_regardless_of_confidence.)
     monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
-    fbs = [_fb("def f(): return 1")]
-    regions = [Region(kind="code_block", feature_block_indices=(0,),
-                      payload={"text": "def f(): return 1"})]
-    state = _council_state({0: ("code_block", 0.95)})  # well above the floor
+    fbs = [_fb("Ordinary body sentence with no exercise prefix.")]
+    regions = [Region(kind="paragraph", feature_block_indices=(0,),
+                      payload={"text": "Ordinary body sentence with no exercise prefix."})]
+    state = _council_state({0: ("paragraph", 0.95)})  # well above the floor
     rt = _ScriptedRuntime([_verdict_json(0, verdict="ok")])
     out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
-    # deterministic-first: a high-confidence code_block gets NO prompt.
+    # deterministic-first: a high-confidence paragraph gets NO prompt.
     assert rt.batch_calls == []
     assert out == regions
     assert verdicts[0].review_note == "non-heading; not reviewed"
+
+
+def test_code_block_dispatched_regardless_of_confidence(monkeypatch):
+    # A high-council-confidence code_block is STILL dispatched — the council
+    # mis-types content here systematically at high confidence, so the conf
+    # floor is bypassed for the known-weak kinds.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    fbs = [_fb("TRY IT : : 1.27 3 7")]
+    regions = [Region(kind="code_block", feature_block_indices=(0,),
+                      payload={"text": "TRY IT : : 1.27 3 7"})]
+    state = _council_state({0: ("code_block", 0.95)})  # well above the floor
+    assert _content_block_dispatch_gate(regions[0], state, fbs) is True
+    rt = _ScriptedRuntime([_verdict_json(0, verdict="ok")])
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    # the high-confidence code_block WAS dispatched (one prompt).
+    assert len(rt.batch_calls) == 1
+    assert len(rt.batch_calls[0]["prompts"]) == 1
+
+
+def test_table_dispatched_unconditionally(monkeypatch):
+    # A table region is dispatched even at high council confidence and with no
+    # council_state threaded (tables were NEVER dispatched before the recalibration).
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    fbs = [_fb("Commutative Property: a + b = b + a")]
+    regions = [Region(kind="table", feature_block_indices=(0,),
+                      payload={"text": "Commutative Property: a + b = b + a"})]
+    # gate True with no council_state at all (unconditional, conf-independent).
+    assert _content_block_dispatch_gate(regions[0], None, fbs) is True
+    # and True with a high-confidence council read.
+    state = _council_state({0: ("table", 0.99)})
+    assert _content_block_dispatch_gate(regions[0], state, fbs) is True
+    rt = _ScriptedRuntime([_verdict_json(0, verdict="ok")])
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    assert len(rt.batch_calls) == 1
+    assert len(rt.batch_calls[0]["prompts"]) == 1
+
+
+def test_paragraph_not_dispatched_without_prefix_or_lowconf(monkeypatch):
+    # A plain, high-confidence paragraph with no pedagogical prefix is NOT
+    # dispatched — we do not review every prose block in the document.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    fbs = [_fb("This is an ordinary paragraph of running prose.")]
+    regions = [Region(kind="paragraph", feature_block_indices=(0,),
+                      payload={"text": "This is an ordinary paragraph of running prose."})]
+    state = _council_state({0: ("paragraph", 0.95)})  # above the floor
+    assert _content_block_dispatch_gate(regions[0], state, fbs) is False
+    rt = _ScriptedRuntime([])
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    assert rt.batch_calls == []
+    assert verdicts[0].review_note == "non-heading; not reviewed"
+
+
+def test_code_block_retyped_to_paragraph_text_byte_identical(monkeypatch):
+    # End-to-end: a window op returning corrected_kind=paragraph for a
+    # code_block member is APPLIED (code_block -> paragraph) and the verbatim
+    # source text is byte-identical through the re-type (no text mutation).
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_WINDOW", "8")
+    src = "TRY IT : : 1.27 simplify the expression three plus seven"
+    fbs = [_fb(src), _fb("second exercise body text here")]
+    regions = [
+        Region(kind="code_block", feature_block_indices=(0,), payload={"text": src}),
+        Region(kind="code_block", feature_block_indices=(1,),
+               payload={"text": "second exercise body text here"}),
+    ]
+    state = _council_state({0: ("code_block", 0.95), 1: ("code_block", 0.95)})
+    rt = _ScriptedRuntime([_oplist([0, 1], kind="paragraph")])
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    assert out[0].kind == "paragraph"
+    assert out[1].kind == "paragraph"
+    assert verdicts[0].kind_after == "paragraph"
+    # verbatim source survived byte-identical (the reviewer never rewrites text).
+    assert fbs[0].raw.text == src
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_flag_off_no_dispatch(monkeypatch):
+    # Flag off -> no content block is in scope, so even a known-weak code_block
+    # / table gets NO prompt (byte-stable heading-only path).
+    monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW", raising=False)
+    fbs = [_fb("TRY IT : : 1.27 3 7"), _fb("a b c")]
+    regions = [
+        Region(kind="code_block", feature_block_indices=(0,),
+               payload={"text": "TRY IT : : 1.27 3 7"}),
+        Region(kind="table", feature_block_indices=(1,),
+               payload={"text": "a b c"}),
+    ]
+    rt = _ScriptedRuntime([])
+    out, verdicts = run_structure_review(regions, fbs, rt)
+    assert rt.batch_calls == []
+    assert out == regions
+    assert all(v.review_note == "non-heading; not reviewed" for v in verdicts)
 
 
 def test_pedagogical_label_block_dispatched_without_council(monkeypatch):
@@ -1497,8 +1594,13 @@ def test_op_out_of_window_dropped(monkeypatch):
                payload={"text": "real prose stays"}),
     ]
     # Only the two code_blocks are gated in; the plain paragraph (idx 2) is in
-    # CONTENT_REVIEW_KINDS but the gate skips it -> NOT dispatched (window={0,1}).
-    state = _council_state({0: ("code_block", 0.10), 1: ("code_block", 0.10)})
+    # CONTENT_REVIEW_KINDS but the gate skips it (HIGH council confidence, no
+    # pedagogical prefix) -> NOT dispatched (window={0,1}).
+    state = _council_state({
+        0: ("code_block", 0.10),
+        1: ("code_block", 0.10),
+        2: ("paragraph", 0.95),
+    })
     completion = json.dumps([
         {"idx": 0, "verdict": "corrected", "corrected_kind": "paragraph", "review_note": "ok"},
         {"idx": 2, "verdict": "drop_injected_header",

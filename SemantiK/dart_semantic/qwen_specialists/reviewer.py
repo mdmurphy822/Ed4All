@@ -1119,6 +1119,17 @@ def _neighbors_for(regions: list[Region], index: int) -> tuple[Region | None, Re
 # clean_structure pass — this set only routes CONTENT-block re-types.
 _PEDAGOGICAL_LABEL_PREFIXES: frozenset[str] = frozenset({"TRY", "EXAMPLE", "EXERCISE"})
 
+# Council's KNOWN-WEAK content kinds — dispatched UNCONDITIONALLY when block
+# review is on. The council systematically MIS-TYPES content here (on OpenStax
+# it labels ~35 "TRY IT" exercises as code_block at HIGH confidence, and a
+# definition line as a table), so its confidence is uninformative for these
+# kinds and the conf floor cannot catch the error. Re-typing these is the whole
+# point of the full-block reviewer, so they always get a prompt. Other content
+# kinds (paragraph / list / blockquote) stay gated on the pedagogical-label
+# prefix OR a sub-floor council confidence (keeping SEMANTIK_BLOCK_REVIEW_CONF
+# meaningful) so we do NOT review every paragraph in the document.
+_UNCONDITIONAL_DISPATCH_KINDS: frozenset[str] = frozenset({"code_block", "table"})
+
 # §3 single-shot escalation: an ambiguous content-block re-type is re-asked
 # ONCE with the FULL verbatim source (token-capped to fit n_ctx) instead of
 # the head/tail edge. No recursion (the re-ask is not itself re-escalated).
@@ -1156,30 +1167,45 @@ def _content_block_dispatch_gate(
     council_state: Any | None,
     feature_blocks: list[FeatureBlock],
 ) -> bool:
-    """Deterministic-first (§6.2): send a content block to the LLM only when uncertain.
+    """Recalibrated content-block dispatch (Phase-6 fix): always review the
+    council's known-weak kinds; gate everything else.
 
-    Dispatch iff EITHER
+    Dispatch iff ANY of:
+      * the council kind is a KNOWN-WEAK content kind (``code_block`` or
+        ``table``) — dispatched UNCONDITIONALLY, NOT gated on the conf floor,
+        because the council mis-types these systematically AT HIGH confidence
+        (so its confidence is uninformative here and re-typing them is the
+        whole point of the reviewer), OR
       * the block carries a pedagogical-label prefix (TRY/EXAMPLE/EXERCISE), OR
-      * the council kind is ``code_block`` AND the council ``structural_role``
-        top-1 confidence is below ``resolve_block_review_conf_floor()``.
+      * the council ``structural_role`` top-1 confidence is below
+        ``resolve_block_review_conf_floor()`` (the SECONDARY tightening — keeps
+        ``SEMANTIK_BLOCK_REVIEW_CONF`` meaningful for the other content kinds:
+        a low-confidence paragraph/list/blockquote is re-judged, a confident
+        one is trusted so we do NOT review every paragraph in the document).
 
-    A high-confidence content block returns ``False`` -> NO prompt (the
-    deterministic council kind is trusted). ``RoutingDecision.low_confidence``
-    is NOT consulted: ``run_structure_review`` is handed a ``CouncilState``
-    (per-head signals); RoutingDecisions live on a separate cross-reranker
-    object that is not threaded here, so the gate uses council confidence only
-    (documented). A missing structural_role signal reads as confidence 0.0
-    (``_top1`` default) -> treated as low-confidence -> dispatch (when-in-doubt
-    review).
+    ``RoutingDecision.low_confidence`` is NOT consulted: ``run_structure_review``
+    is handed a ``CouncilState`` (per-head signals); RoutingDecisions live on a
+    separate cross-reranker object that is not threaded here, so the gate uses
+    council confidence only (documented). A missing structural_role signal reads
+    as confidence 0.0 (``_top1`` default) -> below the floor -> dispatch
+    (when-in-doubt review); a confident gate read short-circuits BEFORE that for
+    the unconditional kinds, so a missing council_state never matters for them.
     """
+    # (1) Known-weak content kinds: ALWAYS review (conf-independent).
+    if str(region.kind) in _UNCONDITIONAL_DISPATCH_KINDS:
+        return True
     text = _joined_source_text(region, feature_blocks) or str(
         (region.payload or {}).get("text") or ""
     )
+    # (2) Pedagogical-label prefix on any OTHER content kind.
     if _has_pedagogical_label_prefix(text):
         return True
+    # (3) Secondary tightening — sub-floor council confidence on the remaining
+    #     content kinds (paragraph / list / blockquote). A high-confidence block
+    #     here gets NO prompt (the deterministic council kind is trusted).
     fb_indices = region.feature_block_indices or ()
     first_idx = fb_indices[0] if fb_indices else None
-    if str(region.kind) == "code_block" and council_state is not None and first_idx is not None:
+    if council_state is not None and first_idx is not None:
         _, conf = _top1(_get_signal(council_state, "structure", "structural_role", first_idx))
         if conf < resolve_block_review_conf_floor():
             return True

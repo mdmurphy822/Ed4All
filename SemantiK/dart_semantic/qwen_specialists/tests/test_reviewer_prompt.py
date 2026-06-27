@@ -15,6 +15,7 @@ from dart_semantic.qwen_specialists.reviewer_prompt import (
     _EXEMPLARS,
     _SYSTEM_REVIEWER,
     build_reviewer_request,
+    build_windowed_reviewer_request,
 )
 from dart_semantic.structure_graph import Region
 
@@ -34,6 +35,69 @@ def _table_region() -> Region:
         payload={"text": "a b c"},
         source_region_id=7,
     )
+
+
+# ---------------------------------------------------------------------------
+# Content-type RE-TYPING directive (Phase-6 fix). The CONTENT single-block
+# prompt and the WINDOWED prompt now instruct the model to return corrected_kind
+# for a mislabeled content block; the HEADING single-block prompt is byte-stable.
+# ---------------------------------------------------------------------------
+
+_RETYPE_SIGNATURE = "CONTENT-TYPE RE-TYPING"
+
+
+def _code_region(text: str = "TRY IT : : 1.27 3 7") -> Region:
+    return Region(
+        kind="code_block",
+        feature_block_indices=(0,),
+        payload={"text": text},
+    )
+
+
+def test_content_single_block_prompt_has_retype_instruction():
+    prompt = build_reviewer_request(_code_region(), (None, None), 0)
+    low = prompt.lower()
+    # Names the content-type re-typing job + corrected_kind.
+    assert _RETYPE_SIGNATURE in prompt
+    assert "corrected_kind" in prompt
+    # The code_block -> paragraph exercise example is present.
+    assert "code_block" in low and "paragraph" in low
+    assert "try it" in low
+    assert "exercise" in low
+    # Honesty: it is a KIND judgment, not a heading judgment, and still no rewrite.
+    assert "content-type judgment" in low
+    assert "no 'exercise' kind" in low
+    # Only REAL REGION_KINDS are offered (a definition list re-type example).
+    assert "definition_list" in low
+
+
+def test_windowed_prompt_has_retype_instruction():
+    records = [
+        {"idx": 0, "council_kind": "code_block", "role": "code_block",
+         "text": "TRY IT : : 1.27 3 7", "n_tokens": 6, "dup_count": 1},
+        {"idx": 1, "council_kind": "table", "role": "table",
+         "text": "Commutative Property: a + b = b + a", "n_tokens": 7, "dup_count": 1},
+    ]
+    prompt = build_windowed_reviewer_request(records)
+    low = prompt.lower()
+    assert _RETYPE_SIGNATURE in prompt
+    assert "corrected_kind" in prompt
+    # code_block -> paragraph + table -> definition_list/paragraph examples.
+    assert "try it" in low
+    assert "definition_list" in low
+    assert "no 'exercise' kind" in low
+
+
+def test_heading_single_block_prompt_byte_stable():
+    # The heading single-block prompt must NOT carry the content-type re-typing
+    # directive (the legacy byte-stable heading path). Snapshot the heading
+    # system: it is exactly the 4 legacy parts, with no retype directive.
+    prompt = build_reviewer_request(_heading_region(), (None, None), 0)
+    assert _RETYPE_SIGNATURE not in prompt
+    # The system turn is the legacy assembly (system + WCAG + heading rule +
+    # exemplar) — the retype directive's distinctive examples are absent.
+    assert "TRY IT" not in prompt
+    assert "council_kind" not in prompt
 
 
 # ---------------------------------------------------------------------------
