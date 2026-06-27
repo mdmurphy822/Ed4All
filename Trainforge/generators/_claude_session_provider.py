@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 
 from lib.utils import append_jsonl as _utils_append_jsonl
 
-from Trainforge.generators._anthropic_provider import (
+from Trainforge.generators._synthesis_common import (
     COMPLETION_MAX,
     COMPLETION_MIN,
     PROMPT_MAX,

@@ -54,7 +54,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from Trainforge.generators._anthropic_provider import (  # noqa: F401
+from Trainforge.generators._synthesis_common import (  # noqa: F401
     COMPLETION_MAX,
     COMPLETION_MIN,
     PROMPT_MAX,

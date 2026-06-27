@@ -64,7 +64,7 @@ from blocks import (  # noqa: E402  (Phase 2 intermediate format)
 from Courseforge.generators._base import (  # noqa: E402
     _BaseLLMProvider,
 )
-from Trainforge.generators._anthropic_provider import (  # noqa: E402
+from Trainforge.generators._synthesis_common import (  # noqa: E402
     SynthesisProviderError,
 )
 

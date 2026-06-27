@@ -39,7 +39,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 # stay where Courseforge / `_local_provider` / `_together_provider` /
 # `_curriculum_provider` / `_claude_session_provider` already import them
 # from.
-from Trainforge.generators._anthropic_provider import (  # noqa: F401
+from Trainforge.generators._synthesis_common import (  # noqa: F401
     SynthesisProviderError,
     _KIND_BOUNDS,
     _Usage,

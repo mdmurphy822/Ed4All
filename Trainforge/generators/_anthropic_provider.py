@@ -41,7 +41,6 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -54,51 +53,21 @@ ENV_MODEL = "ANTHROPIC_SYNTHESIS_MODEL"
 # Hard cap on retry attempts when the model returns malformed JSON.
 MAX_PARSE_RETRIES = 10
 
-# Length sentinels — match instruction_factory.py / preference_factory.py
-# so paraphrased output respects the same downstream gates.
-PROMPT_MIN, PROMPT_MAX = 40, 400
-COMPLETION_MIN, COMPLETION_MAX = 50, 600
-
-# Per-`kind` length bounds, used by ``_clamp`` to look up [lo, hi] without
-# the call site having to thread the bounds through. The ``chosen`` and
-# ``rejected`` arms of a preference pair share the completion bounds.
-_KIND_BOUNDS: Dict[str, tuple] = {
-    "prompt": (PROMPT_MIN, PROMPT_MAX),
-    "completion": (COMPLETION_MIN, COMPLETION_MAX),
-    "chosen": (COMPLETION_MIN, COMPLETION_MAX),
-    "rejected": (COMPLETION_MIN, COMPLETION_MAX),
-}
-
-
-# ---------------------------------------------------------------------------
-# Errors
-# ---------------------------------------------------------------------------
-
-
-class SynthesisProviderError(RuntimeError):
-    """Typed error raised on synthesis-provider validation failures.
-
-    Wave 112 Task 2: replaces the prior sentinel-injection branch in
-    ``_clamp`` (which silently appended a hardcoded filler phrase to any
-    short paraphrase, poisoning training data with a sentinel parrot
-    pattern). Raising a typed error instead lets the caller's retry path
-    fire and forces a re-paraphrase.
-
-    The ``code`` field is a stable string the caller can dispatch on
-    (e.g. ``completion_below_minimum``, ``prompt_below_minimum``);
-    ``chunk_id`` is optional context for log/audit correlation.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        code: Optional[str] = None,
-        chunk_id: Optional[str] = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.chunk_id = chunk_id
+# Length sentinels, per-`kind` length bounds, the typed
+# ``SynthesisProviderError``, and the ``_Usage`` token tally were relocated to
+# the neutral ``_synthesis_common`` module so non-anthropic providers don't
+# hard-import this module. Re-exported here (byte-identical values/signatures)
+# for backward compatibility — importers that still point at
+# ``_anthropic_provider`` keep working.
+from Trainforge.generators._synthesis_common import (  # noqa: F401
+    SynthesisProviderError,
+    _KIND_BOUNDS,
+    PROMPT_MIN,
+    PROMPT_MAX,
+    COMPLETION_MIN,
+    COMPLETION_MAX,
+    _Usage,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -127,29 +96,6 @@ _PREFERENCE_SYSTEM_PROMPT = (
     "Return ONLY a single valid JSON object with keys 'prompt', 'chosen', and "
     "'rejected' — no preamble, no markdown fences, no commentary."
 )
-
-
-# ---------------------------------------------------------------------------
-# Result types
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class _Usage:
-    """Token-usage tally extracted from the Anthropic response."""
-
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_creation_tokens: int = 0
-
-    def as_dict(self) -> Dict[str, int]:
-        return {
-            "input_tokens": self.input_tokens,
-            "output_tokens": self.output_tokens,
-            "cache_read_tokens": self.cache_read_tokens,
-            "cache_creation_tokens": self.cache_creation_tokens,
-        }
 
 
 # ---------------------------------------------------------------------------

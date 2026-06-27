@@ -51,7 +51,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-from Trainforge.generators._anthropic_provider import (  # noqa: F401
+from Trainforge.generators._synthesis_common import (  # noqa: F401
     COMPLETION_MAX,
     COMPLETION_MIN,
     PROMPT_MAX,
@@ -105,7 +105,7 @@ DEFAULT_MIN_PRESERVE_RATE = 0.0
 
 
 # Wave 114: local-class kind bounds — initially lowered the 40-char
-# prompt floor inherited from ``_anthropic_provider.py::_KIND_BOUNDS``
+# prompt floor inherited from ``_synthesis_common.py::_KIND_BOUNDS``
 # to 25 to accommodate 7B-Q4 paraphrase compression.
 #
 # Wave 122 follow-up (post-uncapped audit): the canonical

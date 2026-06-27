@@ -48,7 +48,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import httpx
 
-from Trainforge.generators._anthropic_provider import (  # noqa: F401
+from Trainforge.generators._synthesis_common import (  # noqa: F401
     SynthesisProviderError,
 )
 
