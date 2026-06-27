@@ -366,6 +366,90 @@ def resolve_structure_review_temperature() -> float:
 
 
 # ---------------------------------------------------------------------------
+# Mode resolvers — SEMANTIK_BLOCK_REVIEW quartet (Phase 0 scaffolding).
+#
+# The full-block structural-editor reviewer (re-type / merge / split / drop
+# over block IDs). These resolvers are DEAD-BUT-IMPORTABLE until Phase 2+
+# wires them into the cascade; landing them here keeps later phases to a pure
+# gate flip. Bodies are copied verbatim from resolve_structure_review_mode
+# (bool) and resolve_specialist_batch_regions (int parse-with-fallback).
+# ---------------------------------------------------------------------------
+
+# Falsey tokens for the default-ON cache gate (mirrors
+# deterministic_structure._FALSEY / runner._BATCH_FALSEY).
+_FALSEY = frozenset({"0", "false", "no", "off"})
+
+# Default edge-windowing budgets for the block reviewer.
+_DEFAULT_BLOCK_REVIEW_WINDOW = 24
+_DEFAULT_BLOCK_REVIEW_EDGE_TOKENS = 12
+
+
+def resolve_block_review_mode() -> bool:
+    """Return True when the Stage-5d full-block structural-editor reviewer is enabled.
+
+    Reads ``SEMANTIK_BLOCK_REVIEW``. Default OFF (unset / blank / falsey /
+    garbage) -> byte-identical to today (mirrors
+    ``resolve_structure_review_mode``). A truthy value
+    (``1``/``true``/``yes``/``on``, case-insensitive) enables it.
+    """
+    raw = (os.environ.get("SEMANTIK_BLOCK_REVIEW") or "").strip().lower()
+    return raw in _TRUTHY
+
+
+def resolve_block_review_window() -> int:
+    """Parse-with-fallback ``SEMANTIK_BLOCK_REVIEW_WINDOW`` (default 24).
+
+    The maximum number of blocks packed into ONE windowed block-review POST.
+    Garbage / non-positive values fall back to the default, mirroring
+    :func:`resolve_specialist_batch_regions`. Consumed in Phase 4 (windowed
+    dispatch); a pure read until then."""
+    raw = os.environ.get("SEMANTIK_BLOCK_REVIEW_WINDOW")
+    if not raw:
+        return _DEFAULT_BLOCK_REVIEW_WINDOW
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_BLOCK_REVIEW_WINDOW
+    if val <= 0:
+        return _DEFAULT_BLOCK_REVIEW_WINDOW
+    return val
+
+
+def resolve_block_review_edge_tokens() -> int:
+    """Parse-with-fallback ``SEMANTIK_BLOCK_REVIEW_EDGE_TOKENS`` (default 12).
+
+    The number of head / tail tokens kept per block in the edge-input record
+    fed to the reviewer (furniture-deduped, tractable on a 7B). Garbage /
+    non-positive values fall back to the default, mirroring
+    :func:`resolve_specialist_batch_regions`. Consumed in Phase 1 (edge-input
+    builder); a pure read until then."""
+    raw = os.environ.get("SEMANTIK_BLOCK_REVIEW_EDGE_TOKENS")
+    if not raw:
+        return _DEFAULT_BLOCK_REVIEW_EDGE_TOKENS
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_BLOCK_REVIEW_EDGE_TOKENS
+    if val <= 0:
+        return _DEFAULT_BLOCK_REVIEW_EDGE_TOKENS
+    return val
+
+
+def resolve_block_review_cache_mode() -> bool:
+    """Return True when the block-review content-hash window cache is enabled.
+
+    Reads ``SEMANTIK_BLOCK_REVIEW_CACHE``. Default ON (pure memoization,
+    output-identical) — explicit falsey (``0``/``false``/``no``/``off``,
+    case-insensitive) disables it; unset / blank / truthy / garbage -> on
+    (mirrors the project default-on parse-with-fallback pattern,
+    ``deterministic_structure.resolve_structure_clean_mode`` /
+    ``runner.resolve_batch_mode``). Consumed in Phase 4b; a pure read until
+    then."""
+    raw = (os.environ.get("SEMANTIK_BLOCK_REVIEW_CACHE") or "").strip().lower()
+    return raw not in _FALSEY
+
+
+# ---------------------------------------------------------------------------
 # Typed verdict result.
 # ---------------------------------------------------------------------------
 
@@ -1209,6 +1293,10 @@ __all__ = [
     "TokenConservationError",
     "assert_token_conservation",
     "compute_cluster_signals",
+    "resolve_block_review_cache_mode",
+    "resolve_block_review_edge_tokens",
+    "resolve_block_review_mode",
+    "resolve_block_review_window",
     "resolve_structure_review_mode",
     "resolve_structure_review_temperature",
     "run_structure_review",
