@@ -410,6 +410,71 @@ def build_reviewer_request(
 
 
 # ---------------------------------------------------------------------------
+# Windowed block-review prompt (Phase 4 — one prompt per window of M members).
+#
+# Packs many Phase-1 edge records into ONE prompt and asks for an idx-keyed
+# op-LIST out (a JSON array of ops, one per block the model wants to change),
+# mirroring the endpoint runtime's BATCHED delimited-envelope precedent
+# (``endpoint_runtime._BATCH_ENVELOPE_DIRECTIVE`` / ``generate_multi``). Reuses
+# the conservative structure-only / verbatim-text mandate of _SYSTEM_REVIEWER;
+# only the OUTPUT CARDINALITY contract differs (an array keyed by idx instead
+# of one object keyed by block_id). A window of a SINGLE member does NOT use
+# this builder — the driver degenerates to the byte-stable single-block
+# ``build_reviewer_request`` for size-1 windows (Phase-3 byte-stability).
+# ---------------------------------------------------------------------------
+
+_WINDOW_OPLIST_DIRECTIVE = (
+    "You are reviewing MULTIPLE document blocks in ONE response. The USER "
+    "message is a JSON ARRAY of compact EDGE RECORDS — each carries its idx, "
+    "council_kind, role, page, n_tokens, and EITHER the full verbatim text "
+    "(short blocks) OR head/tail token edges (long blocks). Apply the SAME "
+    "conservative, structure-only review to EACH block independently.\n"
+    "\n"
+    "OUTPUT — JSON ARRAY ONLY. Return EXACTLY ONE JSON array and nothing "
+    "else (NO Markdown, NO code fences, NO commentary, NO surrounding prose). "
+    "Emit ONE op object per block you want to CHANGE; OMIT any block you "
+    "would leave \"ok\". Each op object's keys are: idx (int — ECHO the "
+    "block's idx; this is how your op is matched back to the block, and an "
+    "idx NOT present in this window is DROPPED), verdict (one of \"ok\", "
+    "\"corrected\", \"drop_injected_header\"), corrected_kind (a RegionKind "
+    "string or null), corrected_level (int 1-6 or null), corrected_doc_role "
+    "(string or null), review_note (a short string), and OPTIONALLY ambiguous "
+    "(a boolean — true ONLY when the head/tail edge you were shown is "
+    "genuinely insufficient to decide the kind, so a fuller-text re-read is "
+    "warranted). You touch kind/role/level ONLY — NEVER rewrite the source "
+    "text."
+)
+
+
+def build_windowed_reviewer_request(
+    records: list[dict[str, Any]],
+    *,
+    cluster_signals_by_idx: dict[int, Any] | None = None,
+) -> str:
+    """Emit ONE windowed block-review prompt packing many edge records.
+
+    Each member is the Phase-1 ``build_edge_input`` record (idx-keyed). The
+    SYSTEM turn carries the conservative structure-only mandate + the global
+    WCAG header + the idx-keyed op-LIST output contract; the USER turn is the
+    JSON array of edge records (one per member), optionally enriched with each
+    member's four cluster signals. Pure formatter — no LLM, no mutation, no
+    env side effect. Used only for windows of >= 2 members (the driver routes
+    a single-member window to the byte-stable single-block prompt).
+    """
+    enriched: list[dict[str, Any]] = []
+    for rec in records:
+        item = dict(rec)
+        if cluster_signals_by_idx is not None:
+            item.update(_cluster_signal_fields(cluster_signals_by_idx.get(rec.get("idx"))))
+        enriched.append(item)
+    user_json = json.dumps(enriched, ensure_ascii=False, separators=(",", ":"))
+    system = "\n\n".join(
+        [_SYSTEM_REVIEWER, _GLOBAL_WCAG_HEADER, _WINDOW_OPLIST_DIRECTIVE]
+    )
+    return f"SYSTEM: {system}\nUSER: {user_json}"
+
+
+# ---------------------------------------------------------------------------
 # Edge-input builder (Phase 1 — design §3 record).
 #
 # Turns ONE region + its council signal into the head/tail-biased "edge"

@@ -52,7 +52,11 @@ from dart_semantic.structure_graph import REGION_KINDS, Region, _get_signal, _to
 from dart_semantic.types import FeatureBlock
 
 from .endpoint_runtime import EndpointRuntimeError
-from .reviewer_prompt import build_edge_input, build_reviewer_request
+from .reviewer_prompt import (
+    build_edge_input,
+    build_reviewer_request,
+    build_windowed_reviewer_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1211,6 +1215,148 @@ def _capped_source_text(region: Region, feature_blocks: list[FeatureBlock]) -> s
 
 
 # ---------------------------------------------------------------------------
+# Phase 4 — windowed dispatch + idx-keyed op-list parse + 1:1 output contract.
+# All reached ONLY when SEMANTIK_BLOCK_REVIEW is on (the flag-off heading-only
+# one-block-per-prompt path stays byte-identical — see run_structure_review).
+# ---------------------------------------------------------------------------
+
+# §11 window overlap: each window shares its FIRST block with the PREVIOUS
+# window's LAST block so a stitch group straddling a window boundary is seen
+# whole in at least one window. Stride = max(1, window - overlap); ops are
+# deduped on idx (FIRST window that yields an op for an idx wins) so the shared
+# block is never double-applied.
+_BLOCK_REVIEW_WINDOW_OVERLAP = 1
+
+# max_tokens budget per windowed op-list member. A re-type op object
+# (``{"idx":12,"verdict":"corrected","corrected_kind":"paragraph",...,"review_note":"..."}``)
+# is ~40-60 tokens; 96 leaves headroom so a max-size window's full op-list is
+# never silently truncated (the tolerant parser returns FEWER ops with no
+# fail-closed signal). Mirrors the resegment LLM's larger max_tokens
+# (block_resegment._llm_propose_ops uses 1024 for a whole-doc op-list).
+_PER_MEMBER_OP_MAX_TOKENS = 96
+
+
+def _build_windows(
+    indices: list[int], window: int, overlap: int
+) -> list[list[int]]:
+    """Group ``indices`` into overlapping windows of <= ``window`` members.
+
+    Stride = ``max(1, window - overlap)``; consecutive windows share
+    ``overlap`` members so a boundary-straddling group is whole in one window.
+    The final (partial) window covers the tail. Returns ``[]`` for empty input.
+    """
+    if not indices:
+        return []
+    w = max(1, int(window))
+    stride = max(1, w - max(0, int(overlap)))
+    n = len(indices)
+    windows: list[list[int]] = []
+    start = 0
+    while start < n:
+        windows.append(indices[start : start + w])
+        if start + w >= n:
+            break
+        start += stride
+    return windows
+
+
+def _window_max_tokens(base_max_tokens: int, windows: list[list[int]]) -> int:
+    """Scale the dispatch ``max_tokens`` to the LARGEST window's op-list size.
+
+    Budget = ``max(base_max_tokens, _PER_MEMBER_OP_MAX_TOKENS * max_window_len)``
+    so a fat window (~24 members) gets room for a full idx-keyed op-list and a
+    size-1 window keeps the byte-stable 512 default (96*1 < 512). One value
+    applies to the single ``generate_batch`` call, so it is sized for the
+    biggest window."""
+    if not windows:
+        return base_max_tokens
+    biggest = max((len(w) for w in windows), default=1)
+    return max(int(base_max_tokens), _PER_MEMBER_OP_MAX_TOKENS * biggest)
+
+
+def _first_balanced_array(text: str) -> str | None:
+    """Scan for the FIRST balanced ``[ … ]`` array and return it (string-aware).
+
+    Mirrors :func:`_first_balanced_object` for the windowed op-LIST completion.
+    Ignores brackets inside JSON string literals + escapes. Returns None when
+    no balanced array is found."""
+    if not text:
+        return None
+    start = text.find("[")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _extract_op_list(raw: str) -> list[dict[str, Any]] | None:
+    """Tolerant extract of an idx-keyed op LIST from a window completion.
+
+    Accepts (in order): a bare JSON array ``[{idx,...}, ...]``; a
+    ``{"ops": [...]}`` wrapper object; or a SINGLE verdict object (the size-1
+    window degenerate case, keyed by ``block_id`` or ``idx``) treated as a
+    1-op list. Returns the list of op dicts, or None on any parse miss (the
+    caller soft-falls-back to keeping the window's members verbatim). NEVER
+    raises — mirrors :func:`_extract_verdict_obj`."""
+    if not raw:
+        return None
+    try:
+        stripped = _strip_code_fences(raw)
+        arr = _first_balanced_array(stripped)
+        # Prefer an array ONLY when it appears before any object (so a
+        # ``{"ops":[...]}`` wrapper is read as the wrapper, not its inner array).
+        obj_pos = stripped.find("{")
+        arr_pos = stripped.find("[")
+        if arr is not None and (obj_pos == -1 or 0 <= arr_pos < obj_pos):
+            parsed = json.loads(arr)
+            if isinstance(parsed, list):
+                return [o for o in parsed if isinstance(o, dict)]
+        obj = _extract_verdict_obj(raw)
+        if obj is None:
+            return None
+        ops = obj.get("ops")
+        if isinstance(ops, list):
+            return [o for o in ops if isinstance(o, dict)]
+        # A single verdict object (size-1 window legacy shape).
+        return [obj]
+    except (ValueError, TypeError):
+        return None
+
+
+def _op_idx(op: dict[str, Any]) -> int | None:
+    """The op's target region index — ``idx`` (windowed) or ``block_id`` (legacy).
+
+    Returns None when neither key coerces to an int."""
+    for key in ("idx", "block_id"):
+        if key in op:
+            try:
+                return int(op[key])
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Driver.
 # ---------------------------------------------------------------------------
 
@@ -1267,6 +1413,21 @@ def run_structure_review(
     """
     if not regions:
         return regions, []
+
+    # Phase 4: SEMANTIK_BLOCK_REVIEW ON -> the windowed structural-editor path
+    # (one idx-keyed op-list prompt per window of in-scope blocks,
+    # O(blocks/window) calls). OFF -> the byte-stable heading-only,
+    # one-block-per-prompt path below is UNCHANGED. The split keeps flag-off
+    # byte-identical (this body is untouched) while collapsing the per-block
+    # dispatch behind the flag.
+    if resolve_block_review_mode():
+        return _run_windowed_block_review(
+            regions,
+            feature_blocks,
+            runtime,
+            max_tokens=max_tokens,
+            council_state=council_state,
+        )
 
     n = len(regions)
 
@@ -1554,6 +1715,296 @@ def run_structure_review(
     )
 
     return corrected, verdicts
+
+
+def _run_windowed_block_review(
+    regions: list[Region],
+    feature_blocks: list[FeatureBlock],
+    runtime: Any,
+    *,
+    max_tokens: int,
+    council_state: Any | None,
+) -> tuple[list[Region], list[ReviewVerdict]]:
+    """Phase-4 windowed full-block reviewer (SEMANTIK_BLOCK_REVIEW on path).
+
+    Collapses the per-block calls into ONE op-list prompt per window of
+    ``resolve_block_review_window()`` in-scope blocks (O(blocks/window) calls).
+    Reuses the SAME scoping (``_in_review_scope`` / ``_content_block_dispatch_gate``),
+    apply (``_apply_verdict`` / ``_admits``), fail-soft (``_endpoint_failure_verdict``),
+    anti-crawl (``_degrade_whole_review_unreviewed``), escalation
+    (``_capped_source_text``), and token-conservation machinery as the
+    heading-only path — only the dispatch SHAPE (windowed op-list) is new.
+
+    LOAD-BEARING 1:1 output contract: returns EXACTLY one corrected Region +
+    one ReviewVerdict per input region, index-stable (the cascade Stage-5d
+    ``zip(pre_review_regions, reviewed_regions)`` metadata-drop exemption and
+    the C2 ``_assert_fb_survival_through_cap`` baseline both zip positionally).
+    Asserted as a post-condition before return.
+    """
+    n = len(regions)
+
+    # (0) cluster-level signals over the FULL ordered list (model-free) — the
+    # SAME pre-pass the heading path runs (threaded into multi-member prompts).
+    cluster_signals = compute_cluster_signals(regions)
+
+    # (1) Scope: dispatched indices + per-member prompt material. Headings are
+    # always in scope; content blocks join only through the deterministic-first
+    # confidence gate. text_by_idx feeds the size-1 (byte-stable single-block)
+    # prompt; record_by_idx feeds the >=2 windowed envelope.
+    dispatched_indices: list[int] = []
+    text_by_idx: dict[int, str] = {}
+    record_by_idx: dict[int, dict[str, Any]] = {}
+    for index, region in enumerate(regions):
+        if not _in_review_scope(region):
+            continue
+        if str(region.kind) in HEADING_KINDS:
+            text_by_idx[index] = _resolve_region_text(region, feature_blocks)
+        else:
+            if not _content_block_dispatch_gate(region, council_state, feature_blocks):
+                continue
+            text_by_idx[index] = _content_edge_text(
+                region, index, feature_blocks, council_state
+            )
+        record_by_idx[index] = build_edge_input(
+            region,
+            block_id=index,
+            feature_blocks=feature_blocks,
+            council_state=council_state,
+        )
+        dispatched_indices.append(index)
+
+    # Nothing in scope -> pass everything through as ok (1:1 preserved).
+    if not dispatched_indices:
+        return regions, [
+            _ok_verdict(region, idx, "non-heading; not reviewed")
+            for idx, region in enumerate(regions)
+        ]
+
+    # (2) Window the in-scope indices (overlap so a boundary-straddling group is
+    # whole in one window) and build ONE prompt per window. A single-member
+    # window degenerates to the byte-stable single-block reviewer prompt; a
+    # >=2-member window uses the idx-keyed op-list envelope.
+    windows = _build_windows(
+        dispatched_indices, resolve_block_review_window(), _BLOCK_REVIEW_WINDOW_OVERLAP
+    )
+    window_prompts: list[str] = []
+    for win in windows:
+        if len(win) == 1:
+            idx = win[0]
+            window_prompts.append(
+                build_reviewer_request(
+                    regions[idx],
+                    _neighbors_for(regions, idx),
+                    idx,
+                    text=text_by_idx[idx],
+                    cluster_signals=cluster_signals[idx],
+                )
+            )
+        else:
+            window_prompts.append(
+                build_windowed_reviewer_request(
+                    [record_by_idx[i] for i in win],
+                    cluster_signals_by_idx={i: cluster_signals[i] for i in win},
+                )
+            )
+
+    win_max_tokens = _window_max_tokens(max_tokens, windows)
+    review_temperature = resolve_structure_review_temperature()
+
+    # (3) Dispatch — ONE generate_batch over the window prompts (fail_soft so a
+    # down window comes back as the None sentinel, not a raise). Same TypeError
+    # fallback + fail-loud-degrade contract as the heading path.
+    try:
+        completions = runtime.generate_batch(
+            window_prompts,
+            max_tokens=win_max_tokens,
+            temperature=review_temperature,
+            fail_soft=True,
+        )
+    except TypeError:
+        try:
+            completions = runtime.generate_batch(
+                window_prompts, max_tokens=win_max_tokens, temperature=review_temperature
+            )
+        except EndpointRuntimeError as exc:
+            logger.warning(
+                "block-review runtime lacks fail_soft and the fail-loud call "
+                "failed (%s) -> degrading WHOLE review to unreviewed",
+                exc,
+            )
+            return _degrade_whole_review_unreviewed(
+                regions,
+                "endpoint failure without fail_soft; whole-review degraded to "
+                "unreviewed",
+            )
+
+    w = len(window_prompts)
+    completions = list(completions)
+    if len(completions) < w:
+        completions = completions + [""] * (w - len(completions))
+
+    # Anti-crawl: a clearly-dead endpoint (>= _ENDPOINT_DEAD_FAILURE_RATIO of
+    # WINDOWS came back as the None sentinel) degrades the WHOLE review to the
+    # byte-stable unreviewed floor rather than parsing window after window.
+    none_windows = sum(1 for c in completions[:w] if c is None)
+    if w > 0 and none_windows >= max(1, int(round(_ENDPOINT_DEAD_FAILURE_RATIO * w))):
+        logger.warning(
+            "block-review endpoint appears dead (%d/%d windows failed) -> "
+            "degrading WHOLE review to unreviewed (anti-crawl short-circuit)",
+            none_windows,
+            w,
+        )
+        return _degrade_whole_review_unreviewed(
+            regions,
+            "endpoint unavailable; whole-review degraded to unreviewed",
+        )
+
+    # (4) Apply. Build the 1:1 index-stable output: every region keeps its slot.
+    # Non-dispatched regions pass through ok; dispatched regions take their
+    # window's op (first window to yield an op for an idx wins — overlap dedup).
+    corrected: list[Region] = list(regions)
+    verdicts: list[ReviewVerdict | None] = [None] * n
+    for idx, region in enumerate(regions):
+        if idx not in record_by_idx:
+            verdicts[idx] = _ok_verdict(region, idx, "non-heading; not reviewed")
+
+    applied: set[int] = set()
+    escalation_indices: list[int] = []
+    endpoint_failure_count = 0
+    for win, raw in zip(windows, completions[:w]):
+        member_set = set(win)
+        if raw is None:
+            # Window endpoint failure -> its not-yet-applied members degrade to
+            # UNREVIEWED (kept verbatim, reverted_for_endpoint_failure).
+            for idx in win:
+                if idx in applied:
+                    continue
+                applied.add(idx)
+                verdicts[idx] = _endpoint_failure_verdict(
+                    regions[idx], idx, "endpoint call failed; window kept unreviewed"
+                )
+                endpoint_failure_count += 1
+            continue
+        ops = _extract_op_list(raw if isinstance(raw, str) else "")
+        op_by_idx: dict[int, dict[str, Any]] = {}
+        if ops:
+            for op in ops:
+                oid = _op_idx(op)
+                # idx-bounds check: an op for an idx OUTSIDE this window's
+                # member set is DROPPED (anti-cross-contamination) — mirrors
+                # block_resegment._parse_llm_ops' bounds drop.
+                if oid is None or oid not in member_set:
+                    continue
+                op_by_idx.setdefault(oid, op)  # first op for an idx wins
+        for idx in win:
+            if idx in applied:
+                continue
+            applied.add(idx)
+            op = op_by_idx.get(idx)
+            if op is None:
+                # No op for this in-window member -> soft fallback ok.
+                verdicts[idx] = _ok_verdict(
+                    regions[idx], idx, "no op returned for in-window block; kept original"
+                )
+                continue
+            # §3 ambiguity escalation: an ambiguous CONTENT re-type is deferred
+            # for ONE fuller-text re-ask (headings never escalate — byte-stable).
+            if (
+                str(regions[idx].kind) not in HEADING_KINDS
+                and _is_ambiguous_verdict(op)
+            ):
+                escalation_indices.append(idx)
+                verdicts[idx] = _ok_verdict(
+                    regions[idx], idx, "ambiguous re-type; escalating to fuller text"
+                )
+                continue
+            region_out, verdict = _apply_verdict(regions[idx], idx, op, feature_blocks)
+            corrected[idx] = region_out
+            verdicts[idx] = verdict
+
+    # (4b) §3 single-shot fuller-text escalation — ONE extra batched call total
+    # (NOT per-block, NO recursion). Each deferred ambiguous content block is
+    # re-asked with its FULL capped source; the result is applied through the
+    # SAME _apply_verdict / _admits invariant. A parse miss / endpoint failure /
+    # out-of-idx re-ask keeps the placeholder original (never regresses).
+    if escalation_indices:
+        esc_prompts = [
+            build_reviewer_request(
+                regions[idx],
+                _neighbors_for(regions, idx),
+                idx,
+                text=_capped_source_text(regions[idx], feature_blocks),
+                cluster_signals=cluster_signals[idx],
+            )
+            for idx in escalation_indices
+        ]
+        try:
+            esc_completions = runtime.generate_batch(
+                esc_prompts,
+                max_tokens=win_max_tokens,
+                temperature=review_temperature,
+                fail_soft=True,
+            )
+        except TypeError:
+            try:
+                esc_completions = runtime.generate_batch(
+                    esc_prompts, max_tokens=win_max_tokens, temperature=review_temperature
+                )
+            except EndpointRuntimeError:
+                esc_completions = [None] * len(esc_prompts)
+        esc_completions = list(esc_completions)
+        for pos, idx in enumerate(escalation_indices):
+            raw = esc_completions[pos] if pos < len(esc_completions) else None
+            if not isinstance(raw, str):
+                continue  # endpoint failure -> keep placeholder original.
+            ops = _extract_op_list(raw)
+            if not ops:
+                continue  # parse miss -> keep placeholder original.
+            op = next((o for o in ops if _op_idx(o) == idx), None)
+            if op is None:
+                continue  # mismatched id -> keep placeholder original.
+            region_out, verdict = _apply_verdict(regions[idx], idx, op, feature_blocks)
+            corrected[idx] = region_out
+            verdicts[idx] = verdict
+
+    # (4c) Post-condition: 1:1 index-stable output (LOAD-BEARING — the cascade
+    # zip + cap-safety baseline both depend on it). Every slot filled.
+    assert len(corrected) == n, "windowed review changed the region count"
+    final_verdicts = [
+        v if v is not None else _ok_verdict(regions[i], i, "not reviewed")
+        for i, v in enumerate(verdicts)
+    ]
+
+    # (5) document-level token conservation — fail-closed to the flag-OFF list.
+    try:
+        assert_token_conservation(regions, corrected, feature_blocks)
+    except TokenConservationError as exc:
+        logger.warning(
+            "block-review reverting to flag-OFF region list (fail-closed): %s",
+            exc,
+        )
+        reverted_verdicts = [
+            _rejected(
+                region,
+                idx,
+                region.kind,
+                (region.payload or {}).get("level_hint"),
+                "token-conservation fail-closed; whole-stage revert",
+            )[1]
+            for idx, region in enumerate(regions)
+        ]
+        return regions, reverted_verdicts
+
+    reviewed_count = len(applied) - endpoint_failure_count
+    logger.info(
+        "block-review complete: %d windows, %d/%d in-scope blocks reviewed, "
+        "%d reverted-for-endpoint-failure",
+        w,
+        reviewed_count,
+        len(dispatched_indices),
+        endpoint_failure_count,
+    )
+    return corrected, final_verdicts
 
 
 __all__ = [

@@ -1361,3 +1361,242 @@ def test_flag_off_byte_stable_with_content_blocks(monkeypatch):
     rt = _ScriptedRuntime(comps)
     run_structure_review(_regions(), fbs, rt, council_state=state)
     assert len(rt.batch_calls[0]["prompts"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — windowed dispatch + idx-keyed op-list parse + 1:1 output contract.
+# All reached ONLY when SEMANTIK_BLOCK_REVIEW is on (the flag-off heading-only
+# single-block path stays byte-identical — covered by
+# test_block_review_flag_off_byte_stable above).
+# ---------------------------------------------------------------------------
+
+
+def _code_regions(n):
+    """N code_block regions + their FBs (each its own FeatureBlock index)."""
+    fbs = [_fb(f"code chunk {i} body text") for i in range(n)]
+    regions = [
+        Region(kind="code_block", feature_block_indices=(i,),
+               payload={"text": f"code chunk {i} body text"})
+        for i in range(n)
+    ]
+    return fbs, regions
+
+
+def _low_conf_state(n):
+    """Council state placing every FB's code_block role below the 0.4 floor."""
+    return _council_state({i: ("code_block", 0.10) for i in range(n)})
+
+
+def _oplist(window, *, kind="paragraph"):
+    """A windowed op-list re-typing every member of ``window`` to ``kind``."""
+    return json.dumps([
+        {"idx": i, "verdict": "corrected", "corrected_kind": kind,
+         "corrected_level": None, "corrected_doc_role": None, "review_note": "p"}
+        for i in window
+    ])
+
+
+def test_windowed_dispatch_call_count(monkeypatch):
+    # N in-scope blocks, window M, overlap stride -> ceil-based number of
+    # window PROMPTS in the single generate_batch call (NOT N per-block calls).
+    from dart_semantic.qwen_specialists.reviewer import (
+        _BLOCK_REVIEW_WINDOW_OVERLAP,
+        _build_windows,
+    )
+
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_WINDOW", "4")
+    n = 10
+    fbs, regions = _code_regions(n)
+    state = _low_conf_state(n)
+    windows = _build_windows(list(range(n)), 4, _BLOCK_REVIEW_WINDOW_OVERLAP)
+    assert len(windows) == 3  # ceil((10-1)/(4-1)) = 3 (window 4, overlap 1)
+    completions = [_oplist(win) for win in windows]
+    rt = _ScriptedRuntime(completions)
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    # ONE generate_batch call carrying ceil-based window prompts (not 10).
+    assert len(rt.batch_calls) == 1
+    assert len(rt.batch_calls[0]["prompts"]) == 3
+    # 1:1 output preserved.
+    assert len(out) == n
+    assert len(verdicts) == n
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_op_list_keyed_by_idx_applies(monkeypatch):
+    # A single window completion with two re-type ops -> both applied to the
+    # correct members (idx-keyed).
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_WINDOW", "8")  # one window holds both
+    fbs, regions = _code_regions(2)
+    state = _low_conf_state(2)
+    completion = json.dumps([
+        {"idx": 0, "verdict": "corrected", "corrected_kind": "paragraph", "review_note": "a"},
+        {"idx": 1, "verdict": "corrected", "corrected_kind": "paragraph", "review_note": "b"},
+    ])
+    rt = _ScriptedRuntime([completion])
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    assert len(rt.batch_calls) == 1
+    assert len(rt.batch_calls[0]["prompts"]) == 1  # one window, both members
+    assert out[0].kind == "paragraph"
+    assert out[1].kind == "paragraph"
+    assert verdicts[0].kind_after == "paragraph"
+    assert verdicts[1].kind_after == "paragraph"
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_op_out_of_window_dropped(monkeypatch):
+    # An op whose idx is OUTSIDE the window member set is dropped (no
+    # cross-contamination of another region).
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_WINDOW", "8")
+    fbs = [_fb("x=1"), _fb("y=2"), _fb("real prose stays")]
+    regions = [
+        Region(kind="code_block", feature_block_indices=(0,), payload={"text": "x=1"}),
+        Region(kind="code_block", feature_block_indices=(1,), payload={"text": "y=2"}),
+        Region(kind="paragraph", feature_block_indices=(2,),
+               payload={"text": "real prose stays"}),
+    ]
+    # Only the two code_blocks are gated in; the plain paragraph (idx 2) is in
+    # CONTENT_REVIEW_KINDS but the gate skips it -> NOT dispatched (window={0,1}).
+    state = _council_state({0: ("code_block", 0.10), 1: ("code_block", 0.10)})
+    completion = json.dumps([
+        {"idx": 0, "verdict": "corrected", "corrected_kind": "paragraph", "review_note": "ok"},
+        {"idx": 2, "verdict": "drop_injected_header",
+         "corrected_kind": "metadata_drop", "review_note": "stray"},
+    ])
+    rt = _ScriptedRuntime([completion])
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    assert out[0].kind == "paragraph"          # in-window op applied
+    assert out[2].kind == "paragraph"          # stray op DROPPED -> unchanged
+    assert verdicts[2].review_note == "non-heading; not reviewed"
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_output_region_count_and_index_stable(monkeypatch):
+    # len(reviewed) == len(regions) AND input region i maps to output region i
+    # for every i (the cascade zip + C2 cap-safety baseline depend on this).
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_WINDOW", "3")
+    fbs = [_fb("Chapter 1"), _fb("x=1"), _fb("prose"), _fb("y=2"), _fb("Chapter 2")]
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 2, "text": "Chapter 1"}),
+        Region(kind="code_block", feature_block_indices=(1,), payload={"text": "x=1"}),
+        Region(kind="paragraph", feature_block_indices=(2,), payload={"text": "prose"}),
+        Region(kind="code_block", feature_block_indices=(3,), payload={"text": "y=2"}),
+        Region(kind="heading", feature_block_indices=(4,),
+               payload={"level_hint": 2, "text": "Chapter 2"}),
+    ]
+    state = _council_state({1: ("code_block", 0.10), 3: ("code_block", 0.10)})
+    # dispatched = [0(heading), 1(code), 3(code), 4(heading)]; paragraph 2 not gated.
+    # window=3, overlap=1 -> windows [0,1,3], [3,4].
+    completions = [
+        json.dumps([{"idx": 1, "verdict": "corrected",
+                     "corrected_kind": "paragraph", "review_note": "p"}]),
+        json.dumps([{"idx": 4, "verdict": "drop_injected_header",
+                     "corrected_kind": "metadata_drop", "review_note": "phantom"}]),
+    ]
+    rt = _ScriptedRuntime(completions)
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    assert len(out) == len(regions) == 5
+    assert len(verdicts) == 5
+    # index-stable: verdict i is about region i.
+    assert all(verdicts[i].block_id == i for i in range(5))
+    # the ops landed on the right slots; untouched slots unchanged.
+    assert out[1].kind == "paragraph"      # re-typed code -> prose
+    assert out[2].kind == "paragraph"      # not dispatched, unchanged
+    assert out[4].kind == "metadata_drop"  # heading dropped
+    assert out[0].kind == "heading"        # heading 0 had no op -> ok
+    assert out[3].kind == "code_block"     # code 3 had no op -> ok
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_full_window_op_list_not_truncated(monkeypatch):
+    # A max-size window's op-list fits within the SCALED max_tokens (the
+    # dispatched max_tokens scales with window size; all ops parsed/applied).
+    from dart_semantic.qwen_specialists.reviewer import _PER_MEMBER_OP_MAX_TOKENS
+
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_WINDOW", "24")
+    n = 24
+    fbs, regions = _code_regions(n)
+    state = _low_conf_state(n)
+    completion = _oplist(list(range(n)))  # one window of 24, 24 ops
+    rt = _ScriptedRuntime([completion])
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    assert len(rt.batch_calls) == 1
+    assert len(rt.batch_calls[0]["prompts"]) == 1  # single 24-member window
+    md = rt.batch_calls[0]["max_tokens"]
+    # max_tokens scaled to the window size -> exceeds the legacy 512 default.
+    assert md == _PER_MEMBER_OP_MAX_TOKENS * n
+    assert md > 512
+    # every one of the 24 ops parsed + applied (none truncated away).
+    assert all(o.kind == "paragraph" for o in out)
+    assert all(v.kind_after == "paragraph" for v in verdicts)
+
+
+def test_window_fail_soft_keeps_deterministic(monkeypatch):
+    # A None window (endpoint failure) -> its members kept verbatim,
+    # reverted_for_endpoint_failure=True; sibling windows still reviewed.
+    from dart_semantic.qwen_specialists.reviewer import _build_windows
+
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_WINDOW", "3")
+    n = 6
+    fbs, regions = _code_regions(n)
+    state = _low_conf_state(n)
+    windows = _build_windows(list(range(n)), 3, 1)  # [0,1,2],[2,3,4],[4,5]
+    completions = [_oplist(win) for win in windows]
+    rt = _ScriptedRuntime(completions, fail_indices={0})  # window 0 -> None
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    # idx0 is unique to the failed window -> kept verbatim, endpoint-degraded.
+    assert out[0].kind == "code_block"
+    assert verdicts[0].reverted_for_endpoint_failure is True
+    # idx5 is unique to a SUCCESSFUL window -> reviewed (re-typed).
+    assert out[5].kind == "paragraph"
+    assert verdicts[5].reverted_for_endpoint_failure is False
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_anti_crawl_degrade(monkeypatch):
+    # >= 80% None windows -> whole review degraded to the byte-stable
+    # UNREVIEWED floor (original regions returned verbatim).
+    from dart_semantic.qwen_specialists.reviewer import _build_windows
+
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_WINDOW", "2")
+    n = 6
+    fbs, regions = _code_regions(n)
+    state = _low_conf_state(n)
+    windows = _build_windows(list(range(n)), 2, 1)  # 5 windows
+    completions = [_oplist(win) for win in windows]
+    rt = _ScriptedRuntime(completions, fail_indices=set(range(len(windows))))  # all None
+    out, verdicts = run_structure_review(regions, fbs, rt, council_state=state)
+    assert out is regions                       # byte-stable unreviewed floor
+    assert all(o.kind == "code_block" for o in out)  # nothing re-typed
+    _assert_coverage_invariant(out, len(fbs))
+
+
+def test_flag_off_single_block_path_byte_stable(monkeypatch):
+    # Flag off -> the windowed driver is NEVER entered; the legacy heading
+    # single-block path runs (one prompt per heading). Asserting the branch is
+    # not taken complements the committed behavioral byte-stability test.
+    import dart_semantic.qwen_specialists.reviewer as rv
+
+    def _boom(*a, **k):
+        raise AssertionError("windowed path must NOT run with the flag off")
+
+    monkeypatch.setattr(rv, "_run_windowed_block_review", _boom)
+    monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW", raising=False)
+    fbs = [_fb("Chapter 1"), _fb("body")]
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 2, "text": "Chapter 1"}),
+        Region(kind="paragraph", feature_block_indices=(1,), payload={"text": "body"}),
+    ]
+    rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=1, note="rl")])
+    out, verdicts = run_structure_review(regions, fbs, rt)
+    assert out[0].payload["level_hint"] == 1        # legacy heading path ran
+    assert len(rt.batch_calls[0]["prompts"]) == 1   # one heading prompt
+    _assert_coverage_invariant(out, len(fbs))
