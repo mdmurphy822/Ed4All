@@ -837,3 +837,44 @@ def test_absorb_flag_off_byte_identical(monkeypatch):
     assert on != absent
     m_on = _WE_DIV_RE.search(on)
     assert m_on is not None and "Solution body" in m_on.group(1)
+
+
+def test_absorb_output_byte_identical_after_hoist():
+    """compute_absorption_runs is byte-identical after the SoT hoist to the
+    neutral pedagogical_units module (covers the positional-call signature of
+    the re-exported _is_absorption_boundary).
+
+    The expected runs dict is the pre-hoist behavior pinned by value: a
+    worked_example anchor absorbs its solution + a plain-paragraph body, stops
+    at the next pedagogy-example (a unit-start boundary) AND at a heading.
+    """
+    regions = [
+        _heading_region(0, level=1),          # 0: heading (anchor scan skips)
+        _region(1, "worked_example"),         # 1: anchor
+        _css_region(2, "pedagogy-solution"),  # 2: body (absorbed)
+        _region(3, None),                     # 3: body (absorbed)
+        Region(                               # 4: next unit-start -> boundary
+            kind="paragraph",
+            feature_block_indices=(4,),
+            payload={
+                "text": "EXAMPLE 2",
+                "css_class": "pedagogy-example",
+                "semantic_class": "worked_example",
+            },
+        ),
+        _css_region(5, "pedagogy-solution"),  # 5: body of the 2nd unit
+        _heading_region(6, level=1),          # 6: heading -> boundary
+    ]
+    region_html = [
+        "<h2>Intro</h2>",
+        "<p>EXAMPLE 1</p>",
+        "<p>Solution body</p>",
+        "<p>step</p>",
+        "<p>EXAMPLE 2</p>",
+        "<p>Solution two</p>",
+        "<h2>Next</h2>",
+    ]
+    runs = compute_absorption_runs(regions, region_html)
+    # Anchor 1 absorbs indices 2,3 -> end 4 (stops at the unit-start at 4).
+    # Anchor 4 absorbs index 5 -> end 6 (stops at the heading at 6).
+    assert runs == {1: 4, 4: 6}

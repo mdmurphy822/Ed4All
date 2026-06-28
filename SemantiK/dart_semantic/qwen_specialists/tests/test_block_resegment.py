@@ -13,13 +13,16 @@ import dataclasses
 import pytest
 
 from dart_semantic.qwen_specialists.block_resegment import (
+    _UNIT_REGROUP_TOKEN_BUDGET,
     PartitionConservationError,
     ResegmentOp,
+    _detect_unit_merges,
     apply_resegment,
     assert_partition_conservation,
     resegment_blocks,
     resolve_block_resegment_llm_mode,
     resolve_block_resegment_mode,
+    resolve_unit_regroup_mode,
 )
 from dart_semantic.structure_graph import Region
 from dart_semantic.types import FeatureBlock, RawBlock
@@ -50,12 +53,25 @@ def _fb(text: str, page: int = 1) -> FeatureBlock:
     )
 
 
-def _region(kind, fb_indices, *, text=None, source_region_id=None, pages=None):
+def _region(
+    kind,
+    fb_indices,
+    *,
+    text=None,
+    source_region_id=None,
+    pages=None,
+    css_class=None,
+    semantic_class=None,
+):
     payload = {}
     if text is not None:
         payload["text"] = text
     if pages is not None:
         payload["pages"] = pages
+    if css_class is not None:
+        payload["css_class"] = css_class
+    if semantic_class is not None:
+        payload["semantic_class"] = semantic_class
     return Region(
         kind=kind,
         feature_block_indices=tuple(fb_indices),
@@ -478,3 +494,160 @@ def test_apply_skips_overlapping_ops():
     # Region 0+1 merged, region 2 untouched -> 2 output regions.
     assert len(out) == 2
     assert out[0].feature_block_indices == (0, 1)
+
+
+# ---------------------------------------------------------------------------
+# Phase 0 — SEMANTIK_UNIT_REGROUP resolver (mirrors the resegment resolver tests).
+# ---------------------------------------------------------------------------
+
+
+def test_unit_regroup_mode_off_by_default(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    assert resolve_unit_regroup_mode() is False
+    for v in ("", "  "):
+        monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", v)
+        assert resolve_unit_regroup_mode() is False
+
+
+def test_unit_regroup_mode_truthy_tokens(monkeypatch):
+    for v in ("1", "true", "yes", "on", "  On  ", "YES"):
+        monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", v)
+        assert resolve_unit_regroup_mode() is True
+
+
+def test_unit_regroup_mode_garbage_is_off(monkeypatch):
+    for v in ("banana", "0", "off", "false", "no", "maybe"):
+        monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", v)
+        assert resolve_unit_regroup_mode() is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — pure region-index-keyed unit-merge detector (UNCALLED, no behavior).
+# ---------------------------------------------------------------------------
+
+
+def test_detect_unit_merge_label_plus_body():
+    """label(pedagogy-example) + problem + Solution + step -> ONE regroup op
+    spanning (0,1,2,3), anchored at index 0."""
+    fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("Solution factor"), _fb("Step 1")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="solve x"),
+        _region("paragraph", [2], text="Solution factor", css_class="pedagogy-solution"),
+        _region("paragraph", [3], text="Step 1", css_class="pedagogy-step"),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    assert len(ops) == 1
+    op = ops[0]
+    assert op.op == "merge"
+    assert op.subtype == "regroup"
+    assert op.region_indices == (0, 1, 2, 3)
+    assert op.region_indices[0] == 0
+
+
+def test_detect_stops_at_next_unit_start():
+    """A SECOND pedagogy-example after the body is a boundary — the run stops
+    before it."""
+    fbs = [_fb("EXAMPLE 1"), _fb("body one"), _fb("EXAMPLE 2"), _fb("body two")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="body one"),
+        _region("paragraph", [2], text="EXAMPLE 2", css_class="pedagogy-example"),
+        _region("paragraph", [3], text="body two"),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    # First unit = (0,1); the second example starts its own run but has only
+    # its own body adjacency to absorb -> (2,3).
+    assert ops[0].region_indices == (0, 1)
+    assert all(idx not in ops[0].region_indices for idx in (2, 3))
+
+
+def test_detect_stops_at_heading():
+    """A heading region is a hard boundary."""
+    fbs = [_fb("EXAMPLE 1"), _fb("body"), _fb("Next Section"), _fb("after")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="body"),
+        _region("heading", [2], text="Next Section"),
+        _region("paragraph", [3], text="after"),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    assert len(ops) == 1
+    assert ops[0].region_indices == (0, 1)
+
+
+def test_detect_caps_at_absorb_max_run():
+    """A 12-region body absorbs at most ABSORB_MAX_RUN (8) followers."""
+    from dart_semantic.pedagogical_units import ABSORB_MAX_RUN
+
+    n_body = 12
+    fbs = [_fb("EXAMPLE 1")] + [_fb(f"p{i}") for i in range(1, 1 + n_body)]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example")
+    ] + [_region("paragraph", [i], text=f"p{i}") for i in range(1, 1 + n_body)]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    assert len(ops) == 1
+    # The run is the anchor + up to (ABSORB_MAX_RUN - 1) followers (j - i <
+    # ABSORB_MAX_RUN), so the run length is ABSORB_MAX_RUN.
+    assert len(ops[0].region_indices) == ABSORB_MAX_RUN
+    assert ops[0].region_indices[0] == 0
+
+
+def test_detect_caps_at_token_budget():
+    """A run whose summed FB text would exceed the token budget caps early."""
+    # Each body region ~ (budget // 2) + 1 words so the THIRD body would overflow.
+    big = " ".join(["w"] * ((_UNIT_REGROUP_TOKEN_BUDGET // 2) + 1))
+    fbs = [_fb("EXAMPLE 1"), _fb(big), _fb(big), _fb(big)]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text=big),
+        _region("paragraph", [2], text=big),
+        _region("paragraph", [3], text=big),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    assert len(ops) == 1
+    # anchor(small) + first big fits (~budget/2); the second big overflows ->
+    # run stops at (0, 1).
+    assert ops[0].region_indices == (0, 1)
+
+
+def test_detect_run_of_one_no_op():
+    """A lone anchor with an immediate boundary emits no op."""
+    fbs = [_fb("EXAMPLE 1"), _fb("Next")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("heading", [1], text="Next"),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    assert ops == []
+
+
+def test_detect_requires_fb_adjacency():
+    """A non-contiguous (kind-segregated) list yields no spurious run."""
+    fbs = [_fb(f"t{i}") for i in range(6)]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        # The body FB index is NOT prev_last+1 (the un-reordered, segregated
+        # case) -> adjacency fails -> no absorption.
+        _region("paragraph", [5], text="far away body"),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    assert ops == []
+
+
+def test_detect_anchor_is_index_zero():
+    """Every emitted op's first index is the unit anchor (semantic_class anchor
+    here), even when it is not region 0 of the document."""
+    fbs = [_fb("Intro"), _fb("EXAMPLE"), _fb("body a"), _fb("body b")]
+    regions = [
+        _region("heading", [0], text="Intro"),
+        _region("paragraph", [1], text="EXAMPLE", semantic_class="worked_example"),
+        _region("paragraph", [2], text="body a"),
+        _region("paragraph", [3], text="body b"),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    assert len(ops) == 1
+    first_idx = ops[0].region_indices[0]
+    assert first_idx == 1
+    anchor = regions[first_idx]
+    assert anchor.payload.get("semantic_class") == "worked_example"

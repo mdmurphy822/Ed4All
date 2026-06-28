@@ -113,6 +113,21 @@ def resolve_block_resegment_llm_mode() -> bool:
     return raw in _TRUTHY
 
 
+# ``resolve_unit_regroup_mode`` (the ``SEMANTIK_UNIT_REGROUP`` gate) is co-homed
+# in the neutral ``dart_semantic.pedagogical_units`` module (Phase 1) so the
+# assembler ``shell.py`` can import it cycle-free; re-exported here for
+# back-compat (Phase 0 lists it in this module's ``__all__``). The Phase-2
+# unit-merge detector also reuses the boundary SoT (``is_unit_boundary`` + the
+# two frozensets + ``ABSORB_MAX_RUN``) from that same neutral module.
+from dart_semantic.pedagogical_units import (  # noqa: E402
+    ABSORB_MAX_RUN,
+    BODY_BEARING_COMPONENT_CLASSES,
+    UNIT_START_PEDAGOGY_CLASSES,
+    is_unit_boundary,
+    resolve_unit_regroup_mode,
+)
+
+
 # ---------------------------------------------------------------------------
 # Detector thresholds.
 # ---------------------------------------------------------------------------
@@ -155,6 +170,13 @@ class ResegmentOp:
     split_at: tuple[int, ...] = ()
     source_ids: tuple[int, ...] = ()
     origin: str = "deterministic"
+    # Discriminator for a cross-kind pedagogical-unit regroup vs a same-kind
+    # merge/split. Default ``"merge"`` keeps EVERY existing op (and its
+    # hash/serialization/audit row) byte-identical; only the Phase-2
+    # ``_detect_unit_merges`` detector sets ``subtype="regroup"``. The
+    # ``apply_resegment`` dispatch still keys on ``op`` alone (no new op type),
+    # so this field drives only the breadcrumb / audit, never the apply path.
+    subtype: str = "merge"
 
 
 class PartitionConservationError(RuntimeError):
@@ -492,6 +514,150 @@ def _detect_splits(
 
 
 # ---------------------------------------------------------------------------
+# Cross-kind pedagogical-unit MERGE detection (Phase 2 — uncalled).
+# ---------------------------------------------------------------------------
+
+# Stage-6-serving-window budget (whitespace-token count) bounding a single
+# merged unit. Unlike the assembler-side absorb (which concatenates already-
+# generated ``region_html`` fragments POST-Stage-6), the regroup FUSES regions
+# at Stage-5e, so a merged unit becomes ONE Stage-6 specialist generation unit.
+# ``ABSORB_MAX_RUN`` caps region COUNT, not tokens — a long worked example could
+# exceed the local-7B serving window (the documented authoring head-truncation
+# failure mode). This token cap bounds the summed raw-FB text of the run; a unit
+# longer than the budget caps the run early (parity with the count cap, strictly
+# safer than orphaning the body). Mirrors the reviewer's
+# ``_ESCALATION_SOURCE_TOKEN_CAP`` (2048) "fit-n_ctx" rationale.
+_UNIT_REGROUP_TOKEN_BUDGET = 2048
+
+
+def _is_unit_anchor(region: Region) -> bool:
+    """Whether ``region`` OPENS a pedagogical unit — the regroup ANCHOR.
+
+    True when its always-on ``payload['css_class']`` is a unit-start pedagogy
+    hint (``pedagogy-example`` / ``-try-it`` / ``-how-to`` / ``-be-prepared`` /
+    ``-practice``, stamped by ``deterministic_structure._retag``) OR its
+    ``payload['semantic_class']`` is a body-bearing component
+    (``worked_example`` / ``definition_region`` / ``exercise``, stamped by the
+    Stage-5d reviewer). The css_class anchor is primary (always present); the
+    semantic_class anchor lights up only when the reviewer ran.
+    """
+    payload = getattr(region, "payload", None) or {}
+    return (
+        payload.get("css_class") in UNIT_START_PEDAGOGY_CLASSES
+        or payload.get("semantic_class") in BODY_BEARING_COMPONENT_CLASSES
+    )
+
+
+def _region_token_count(region: Region, feature_blocks: list[FeatureBlock]) -> int:
+    """Whitespace-token count of the region's summed raw-FB text (the budget
+    metric — re-derived from raw FBs, never ``payload['text']``)."""
+    total = 0
+    for idx in region.feature_block_indices or ():
+        total += len(_fb_text(feature_blocks, idx).split())
+    return total
+
+
+def _detect_unit_merges(
+    regions: list[Region],
+    feature_blocks: list[FeatureBlock],
+    state: Any,
+) -> list[ResegmentOp]:
+    """Deterministic CROSS-KIND pedagogical-unit MERGE detection (Phase 2).
+
+    A SIBLING of :func:`_detect_merges` (which is SAME-KIND only) — this one
+    fuses a unit's LABEL region with its following BODY regions across kinds.
+    Reuses the neutral boundary SoT (``is_unit_boundary`` + the two frozensets +
+    ``ABSORB_MAX_RUN``).
+
+    For each non-passthrough ANCHOR region (``_is_unit_anchor`` — a unit-start
+    ``css_class`` or a body-bearing ``semantic_class``), walk forward over the
+    contiguous following regions absorbing each (pedagogy-solution/-step, plain
+    paragraph, list) until the FIRST of:
+
+      * ``is_unit_boundary(region, html=None)`` — the next unit-start label, a
+        heading region, the next body-bearing component, or an empty region;
+      * a passthrough table/math region (``_is_passthrough`` — v1 stops here so
+        the Stage-4 ``source_region_id`` link is never orphaned; Phase 4 pins
+        this);
+      * ``ABSORB_MAX_RUN`` regions absorbed (the conservative count cap);
+      * the ``_UNIT_REGROUP_TOKEN_BUDGET`` token cap (the Stage-6 generation
+        window).
+
+    FB-adjacency (``cur_first == prev_last + 1``, the same test
+    :func:`_pair_is_continuation` uses) is REQUIRED at each step so a
+    non-reordered / kind-segregated list never produces a spurious cross-document
+    run (Phase 6 separately guards on the reading-order fix). Emits one
+    ``ResegmentOp(op='merge', subtype='regroup', …)`` per run of length >= 2
+    (mirrors ``compute_absorption_runs``' ``end > i+1`` guard); the ANCHOR is
+    ALWAYS ``region_indices[0]``.
+
+    UNCALLED in Phase 2 — no driver appends these ops yet (Phase 6 wires it),
+    so this function is pure / GPU-free / zero behavior change.
+    """
+    ops: list[ResegmentOp] = []
+    n = len(regions)
+    consumed: set[int] = set()
+    i = 0
+    while i < n:
+        if i in consumed:
+            i += 1
+            continue
+        anchor = regions[i]
+        if _is_passthrough(anchor) or not _is_unit_anchor(anchor):
+            i += 1
+            continue
+        run = [i]
+        acc_tokens = _region_token_count(anchor, feature_blocks)
+        j = i + 1
+        while j < n and (j - i) < ABSORB_MAX_RUN:
+            prev = regions[run[-1]]
+            cur = regions[j]
+            # FB-adjacency: cur must begin right after prev ends (the
+            # reading-order-fix-makes-this-contiguous assumption is NOT baked in
+            # — a non-adjacent follower ends the run).
+            prev_last = max(prev.feature_block_indices or (-1,))
+            cur_first = min(cur.feature_block_indices or (-1,))
+            if cur_first != prev_last + 1:
+                break
+            # v1 passthrough stop (Phase 4): never fuse a Stage-4 table/math
+            # region (would orphan its source_region_id link).
+            if _is_passthrough(cur):
+                break
+            if is_unit_boundary(cur, html=None):
+                break
+            cur_tokens = _region_token_count(cur, feature_blocks)
+            if acc_tokens + cur_tokens > _UNIT_REGROUP_TOKEN_BUDGET:
+                # The merged unit would overflow the Stage-6 serving window —
+                # cap the run here (the rest stays as separate regions; no FB is
+                # orphaned, R-PART holds).
+                break
+            run.append(j)
+            acc_tokens += cur_tokens
+            j += 1
+        if len(run) >= 2:
+            # Anchor-first invariant: region_indices[0] is the unit anchor (so
+            # the merged region inherits the LABEL's semantic_class/css_class in
+            # Phase 3). run[0] == i is the anchor by construction; assert it so a
+            # future body-first refactor fails loudly here, not silently.
+            assert _is_unit_anchor(regions[run[0]]), "regroup anchor must be run[0]"
+            source_ids = tuple(_region_first_raw(regions[k]) for k in run)
+            ops.append(
+                ResegmentOp(
+                    op="merge",
+                    subtype="regroup",
+                    region_indices=tuple(run),
+                    source_ids=source_ids,
+                    origin="deterministic",
+                )
+            )
+            consumed.update(run)
+            i = run[-1] + 1
+        else:
+            i += 1
+    return ops
+
+
+# ---------------------------------------------------------------------------
 # Op application.
 # ---------------------------------------------------------------------------
 
@@ -819,4 +985,5 @@ __all__ = [
     "resegment_blocks",
     "resolve_block_resegment_llm_mode",
     "resolve_block_resegment_mode",
+    "resolve_unit_regroup_mode",
 ]

@@ -182,60 +182,24 @@ _PASSTHROUGH_CLASSES = frozenset({"figure", "section"})
 # merge/regroup fix is designed separately and will supersede this.
 # ---------------------------------------------------------------------------
 
-# Component classes whose label region absorbs the following body regions.
-_BODY_BEARING_COMPONENT_CLASSES = frozenset(
-    {"worked_example", "definition_region", "exercise"}
+# Pedagogical-unit boundary single-source-of-truth — hoisted (Phase 1) to the
+# neutral ``dart_semantic.pedagogical_units`` module so the assembler absorb and
+# the Stage-5e cross-kind regroup share ONE boundary contract (and the
+# cross-package import is cycle-free). Re-exported here under the historical
+# private names so ``compute_absorption_runs`` is byte-identical. The positional
+# call ``_is_absorption_boundary(regions[end], region_html[end])`` below resolves
+# to ``is_unit_boundary(region, html)`` — html supplied -> the byte-emptiness
+# arm, exactly as before the hoist.
+from ..pedagogical_units import (  # noqa: E402
+    ABSORB_MAX_RUN as _ABSORB_MAX_RUN,
+    BODY_BEARING_COMPONENT_CLASSES as _BODY_BEARING_COMPONENT_CLASSES,
+    UNIT_START_PEDAGOGY_CLASSES as _UNIT_START_PEDAGOGY_CLASSES,
+    is_unit_boundary as _is_absorption_boundary,
 )
-
-# A following region carrying one of these ``payload['css_class']`` hints STARTS
-# A NEW UNIT, so it is a boundary (never absorbed). ``pedagogy-solution`` /
-# ``pedagogy-step`` are DELIBERATELY ABSENT — they are the example's BODY and DO
-# get absorbed (mirrors ``deterministic_structure._PEDAGOGICAL_LABEL_CLASSES``).
-_UNIT_START_PEDAGOGY_CLASSES = frozenset(
-    {
-        "pedagogy-example",
-        "pedagogy-try-it",
-        "pedagogy-how-to",
-        "pedagogy-be-prepared",
-        "pedagogy-practice",
-    }
-)
-
-# Conservative cap on a single absorption run — at most this many following
-# regions are pulled into one box, so a mis-detected boundary can never swallow
-# a whole section (a runaway absorb is bounded to a small bite).
-_ABSORB_MAX_RUN = 8
 
 
 def _region_payload_get(region: Any, key: str) -> Any:
     return (getattr(region, "payload", None) or {}).get(key)
-
-
-def _is_absorption_boundary(region: Any, html: str) -> bool:
-    """True when ``region`` STOPS an absorption run (it must NOT be pulled into
-    the preceding component box).
-
-    Boundaries (the FIRST one ends the run):
-      * a heading region (``region.kind == "heading"``);
-      * an empty / whitespace fragment (nothing to absorb — stop conservatively);
-      * a unit-opening pedagogical label (``payload['css_class']`` in
-        :data:`_UNIT_START_PEDAGOGY_CLASSES`);
-      * a region that itself starts a body-bearing component
-        (``payload['semantic_class']`` in :data:`_BODY_BEARING_COMPONENT_CLASSES`
-        — the NEXT example/definition/exercise opens its own unit).
-
-    Everything else — ``pedagogy-solution`` / ``pedagogy-step`` regions, plain
-    paragraphs, tables — is absorbable BODY.
-    """
-    if getattr(region, "kind", None) == "heading":
-        return True
-    if not html or not html.strip():
-        return True
-    if _region_payload_get(region, "css_class") in _UNIT_START_PEDAGOGY_CLASSES:
-        return True
-    if _region_payload_get(region, "semantic_class") in _BODY_BEARING_COMPONENT_CLASSES:
-        return True
-    return False
 
 
 def compute_absorption_runs(
