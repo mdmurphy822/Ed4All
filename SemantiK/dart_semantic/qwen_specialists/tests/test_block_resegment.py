@@ -18,8 +18,10 @@ from dart_semantic.qwen_specialists.block_resegment import (
     ResegmentOp,
     _detect_splits,
     _detect_unit_merges,
+    apply_proposed_regroups,
     apply_resegment,
     assert_partition_conservation,
+    build_resegment_audit_rows,
     resegment_blocks,
     resolve_block_resegment_llm_mode,
     resolve_block_resegment_mode,
@@ -1051,3 +1053,201 @@ def test_regroup_wins_overlapping_split(monkeypatch):
     assert any(o.op == "split" for o in ops)  # present in candidates...
     assert all(r.payload.get("resegment", {}).get("op") != "split" for r in out)  # ...not applied
     assert out[0].payload["semantic_class"] == "worked_example"
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 — provenance / block_id blast-radius (sourceId folds into label
+# min-FB). The merge REDUCES region count (N->1): the FB partition multiset
+# stays conserved (R-PART), but the sourceId SET shrinks — every body region's
+# id folds into the LABEL's min(feature_block_indices). NOT a stable multiset
+# like the reading-order reorder fix.
+# ---------------------------------------------------------------------------
+
+
+def _worked_example_unit():
+    """label(pedagogy-example, FB0) + problem(FB1) + Solution(FB2) + step(FB3)
+    -> a single regroup unit anchored at the label."""
+    fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("Solution factor"), _fb("Step 1")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="solve x"),
+        _region("paragraph", [2], text="Solution factor", css_class="pedagogy-solution"),
+        _region("paragraph", [3], text="Step 1", css_class="pedagogy-step"),
+    ]
+    return regions, fbs
+
+
+def test_merged_unit_sourceid_is_label_min_fb(unit_regroup_on, monkeypatch):
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)  # regroup-only
+    regions, fbs = _worked_example_unit()
+    out, ops = resegment_blocks(regions, fbs, _EmptyState())
+    assert len(out) == 1
+    merged = out[0]
+    # The unit's stable id = the LABEL's min-FB. Downstream first_raw resolves
+    # the same (cascade's first_raw = min(feature_block_indices)).
+    assert min(merged.feature_block_indices) == 0
+    assert min(merged.feature_block_indices) == min(regions[0].feature_block_indices) == 0
+
+
+def test_body_region_ids_absent_after_merge(unit_regroup_on, monkeypatch):
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    regions, fbs = _worked_example_unit()
+    body_ids = {min(regions[k].feature_block_indices) for k in (1, 2, 3)}  # {1,2,3}
+    out, _ = resegment_blocks(regions, fbs, _EmptyState())
+    surviving_ids = {min(r.feature_block_indices) for r in out}
+    # The honest fold: the body regions' former ids do NOT survive as their own
+    # provenance entries; only the label's id remains.
+    assert surviving_ids == {0}
+    assert body_ids.isdisjoint(surviving_ids)
+
+
+def test_provenance_one_entry_per_unit(unit_regroup_on, monkeypatch):
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    regions, fbs = _worked_example_unit()
+    out, _ = resegment_blocks(regions, fbs, _EmptyState())
+    regroup_regions = [
+        r for r in out if (r.payload or {}).get("resegment", {}).get("op") == "regroup"
+    ]
+    assert len(regroup_regions) == 1
+    breadcrumb = regroup_regions[0].payload["resegment"]
+    assert breadcrumb["op"] == "regroup"
+    assert breadcrumb["source_ids"] == [0, 1, 2, 3]
+
+
+def test_fb_multiset_conserved_provenance(unit_regroup_on, monkeypatch):
+    import collections
+
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    regions, fbs = _worked_example_unit()
+    out, _ = resegment_blocks(regions, fbs, _EmptyState())
+    in_fb = collections.Counter(
+        i for r in regions for i in (r.feature_block_indices or ())
+    )
+    out_fb = collections.Counter(
+        i for r in out for i in (r.feature_block_indices or ())
+    )
+    # R-PART at the provenance layer: no FB lost / duplicated under the N->1
+    # region-count reduction.
+    assert in_fb == out_fb
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — decision-capture audit-row enrichment (subtype='regroup' rides the
+# already-present block_resegment enum; NO schema change).
+# ---------------------------------------------------------------------------
+
+
+def test_regroup_op_in_audit_rows(unit_regroup_on, monkeypatch):
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    regions, fbs = _worked_example_unit()
+    _, ops = resegment_blocks(regions, fbs, _EmptyState())
+    rows = build_resegment_audit_rows(ops)
+    regroup_rows = [r for r in rows if r["op"] == "regroup"]
+    assert len(regroup_rows) == 1
+    row = regroup_rows[0]
+    assert row["semantic_class"] == "worked_example"   # pedagogy-example FLOOR
+    assert row["source_ids"] == [0, 1, 2, 3]
+    assert row["regions_folded"] == 3                   # 4 regions, 1 anchor
+    assert row["conservation_verified"] is True
+    # No decision_type leaks into the audit row (the bridge stamps it).
+    assert "decision_type" not in row
+
+
+def test_audit_row_byte_stable_flag_off():
+    # A same-kind op (subtype default 'merge') -> the original 4-key row,
+    # byte-identical to the pre-Phase-9 SEMANTIK_BLOCK_RESEGMENT-only baseline.
+    same_kind = ResegmentOp(
+        op="merge",
+        region_indices=(0, 1),
+        source_ids=(0, 1),
+        origin="deterministic",
+    )
+    split = ResegmentOp(
+        op="split",
+        region_indices=(2,),
+        split_at=(5,),
+        source_ids=(2,),
+        origin="llm",
+    )
+    rows = build_resegment_audit_rows([same_kind, split])
+    assert rows == [
+        {"op": "merge", "source_ids": [0, 1], "origin": "deterministic",
+         "conservation_verified": True},
+        {"op": "split", "source_ids": [2], "origin": "llm",
+         "conservation_verified": True},
+    ]
+    # No regroup-only keys on a same-kind row.
+    for row in rows:
+        assert "semantic_class" not in row
+        assert "regions_folded" not in row
+
+
+def test_no_decision_schema_change():
+    import json
+    from pathlib import Path
+
+    schema_path = (
+        Path(__file__).resolve().parents[4]
+        / "schemas" / "events" / "decision_event.schema.json"
+    )
+    schema = json.loads(schema_path.read_text())
+    enum = schema["properties"]["decision_type"]["enum"]
+    # The audit rides the ALREADY-present block_resegment enum member — no new
+    # decision_type was added for the regroup subtype.
+    assert "block_resegment" in enum
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 — verifier-drivable ResegmentOp seam (second-pass section_no_body
+# fix). An external proposer passes explicit region_indices into the SAME
+# apply_resegment + R-PART/token gates; a hallucinated/over-broad run is
+# dropped per-op.
+# ---------------------------------------------------------------------------
+
+
+def test_externally_proposed_merge_revalidated():
+    fbs = [_fb("EXAMPLE 1"), _fb("body one"), _fb("body two")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="body one"),
+        _region("paragraph", [2], text="body two"),
+    ]
+    # A GOOD contiguous run -> applied + gated.
+    out, ops = apply_proposed_regroups(regions, fbs, [[0, 1]])
+    assert len(ops) == 1 and ops[0].subtype == "regroup"
+    assert out[0].feature_block_indices == (0, 1)
+    assert len(out) == 2  # merged(0,1) + region 2
+
+    # A BAD non-contiguous run (skips region 1) -> apply_resegment would drop
+    # region 1's FB -> R-PART raises -> the op is dropped, input preserved.
+    out_bad, ops_bad = apply_proposed_regroups(regions, fbs, [[0, 2]])
+    assert ops_bad == []
+    assert out_bad is regions  # byte-identical input
+
+
+def test_section_no_body_unit_mergeable():
+    # section_no_body shape: a heading region with zero body, then the unit's
+    # real body in the next (adjacent, post-reading-order) region. The verifier
+    # proposes fusing them; the regroup op fixes it within the gates.
+    fbs = [_fb("Pythagorean Theorem"), _fb("a^2 + b^2 = c^2 explanation")]
+    regions = [
+        _region("heading", [0], text="Pythagorean Theorem"),
+        _region("paragraph", [1], text="a^2 + b^2 = c^2 explanation"),
+    ]
+    out, ops = apply_proposed_regroups(regions, fbs, [[0, 1]])
+    assert len(ops) == 1 and ops[0].subtype == "regroup"
+    assert len(out) == 1
+    assert out[0].feature_block_indices == (0, 1)
+    assert out[0].payload["resegment"]["op"] == "regroup"
+
+
+def test_seam_inert_without_driver():
+    fbs = [_fb("EXAMPLE 1"), _fb("body")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="body"),
+    ]
+    # No proposer (empty driver) -> byte-identical input, no ops.
+    out, ops = apply_proposed_regroups(regions, fbs, [])
+    assert ops == []
+    assert out is regions

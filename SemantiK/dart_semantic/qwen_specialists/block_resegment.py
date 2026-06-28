@@ -61,6 +61,7 @@ import dataclasses
 import logging
 import os
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -182,6 +183,14 @@ class ResegmentOp:
     # ``apply_resegment`` dispatch still keys on ``op`` alone (no new op type),
     # so this field drives only the breadcrumb / audit, never the apply path.
     subtype: str = "merge"
+    # Phase 9 audit enrichment: the merged unit's gold component
+    # ``semantic_class`` (the anchor's stamped class, else the deterministic
+    # css_class->component FLOOR — see ``_resolve_unit_semantic_class``). Set
+    # ONLY on a ``subtype='regroup'`` op (``_make_regroup_op`` /
+    # ``_build_regroup_op``); default ``None`` keeps every same-kind op + its
+    # audit row byte-identical (the audit row reads this only when
+    # ``subtype=='regroup'``). It does NOT enter the apply path / R-PART gates.
+    semantic_class: str | None = None
 
 
 class PartitionConservationError(RuntimeError):
@@ -562,6 +571,67 @@ def _region_token_count(region: Region, feature_blocks: list[FeatureBlock]) -> i
     return total
 
 
+def _resolve_unit_semantic_class(anchor: Region) -> str | None:
+    """The merged unit's gold component ``semantic_class``.
+
+    Single SoT for the merged region's stamp (:func:`_merged_region`) AND the
+    Phase-9 audit row (:func:`_make_regroup_op` / :func:`_build_regroup_op`):
+    the anchor's already-stamped ``semantic_class`` (Stage-5d reviewer) wins;
+    otherwise the always-on ``css_class`` is mapped through the deterministic
+    catalog FLOOR (``component_for_pedagogy_class``, catalog-validated so it
+    NEVER invents a component — anti-fabrication, mirrors the Stage-5d FLOOR).
+    Returns ``None`` when neither resolves. Lazy import keeps the
+    qwen_specialists->assembler edge off the module-top graph (mirrors
+    ``reviewer.py``'s lazy ``semantic_catalog`` imports)."""
+    payload = getattr(anchor, "payload", None) or {}
+    existing = payload.get("semantic_class")
+    if existing:
+        return existing
+    css_class = payload.get("css_class")
+    if not css_class:
+        return None
+    from dart_semantic.assembler.semantic_catalog import (
+        component_for_pedagogy_class,
+        valid_components,
+    )
+
+    component = component_for_pedagogy_class(css_class)
+    if component and component in valid_components():
+        return component
+    return None
+
+
+def _build_regroup_op(
+    run: list[int], regions: list[Region], *, origin: str = "deterministic"
+) -> ResegmentOp:
+    """Construct a ``subtype='regroup'`` merge op from a region-index run.
+
+    The LOW-LEVEL run->op factory shared by the deterministic detector
+    (:func:`_make_regroup_op`, which adds the anchor-first construction assert)
+    AND the Phase-10 verifier-drivable seam (:func:`apply_proposed_regroups`,
+    which supplies an EXTERNALLY-proposed run and re-validates it through the
+    same gates rather than asserting). ``run[0]`` is treated as the anchor by
+    payload inheritance; ``semantic_class`` is resolved off it for the audit.
+    No anchor-pedagogy assert here so a verifier-proposed run is dropped by the
+    R-PART/token gates (graceful) rather than raising.
+
+    **Provenance blast radius (Phase 8):** the merge REDUCES region count
+    (N->1), so the FB partition *multiset* stays conserved (R-PART) but the
+    ``source_ids`` / ``block_id`` *SET shrinks* — every BODY region's id folds
+    into the LABEL's ``min(feature_block_indices)`` (the unit's stable id =
+    ``source_ids[0]``). This is NOT a stable multiset like the reading-order
+    reorder fix; it matches the same-kind ``_detect_merges`` precedent."""
+    source_ids = tuple(_region_first_raw(regions[k]) for k in run)
+    return ResegmentOp(
+        op="merge",
+        subtype="regroup",
+        region_indices=tuple(run),
+        source_ids=source_ids,
+        origin=origin,
+        semantic_class=_resolve_unit_semantic_class(regions[run[0]]),
+    )
+
+
 def _make_regroup_op(run: list[int], regions: list[Region]) -> ResegmentOp:
     """Build a ``subtype='regroup'`` merge op from a contiguous run, asserting
     the ANCHOR-FIRST invariant at CONSTRUCTION (Phase 3).
@@ -574,19 +644,13 @@ def _make_regroup_op(run: list[int], regions: list[Region]) -> ResegmentOp:
     shared :func:`_merged_region`, which same-kind merges also call with a
     NON-anchor ``run[0]`` (an unconditional assert there would wrongly raise). A
     future refactor that builds a body-first regroup run fails loudly here
-    instead of silently mis-stamping.
+    instead of silently mis-stamping. Delegates the op construction to
+    :func:`_build_regroup_op` (the shared low-level factory).
     """
     assert _is_unit_anchor(
         regions[run[0]]
     ), "regroup anchor-first invariant: region_indices[0] must be the unit anchor"
-    source_ids = tuple(_region_first_raw(regions[k]) for k in run)
-    return ResegmentOp(
-        op="merge",
-        subtype="regroup",
-        region_indices=tuple(run),
-        source_ids=source_ids,
-        origin="deterministic",
-    )
+    return _build_regroup_op(run, regions, origin="deterministic")
 
 
 def _detect_unit_merges(
@@ -744,22 +808,14 @@ def _merged_region(
         # The anchor's pay['semantic_class'] (stamped by the Stage-5d reviewer)
         # already carries onto `payload` via the dict copy above. When the
         # reviewer was OFF but the always-on css_class is present, DERIVE the
-        # gold component deterministically so the wrap still fires. Validated
-        # against the catalog -> never invents a component (anti-fabrication;
-        # mirrors the Stage-5d FLOOR). Lazy import keeps the
-        # qwen_specialists->assembler edge off the module-top graph (mirrors
-        # reviewer.py's lazy semantic_catalog imports).
+        # gold component deterministically so the wrap still fires (the shared
+        # _resolve_unit_semantic_class SoT — catalog-validated, never invents;
+        # the SAME resolver feeds the Phase-9 audit row so the merged region's
+        # class and the op's audited class can never disagree).
         if not payload.get("semantic_class"):
-            css_class = payload.get("css_class")
-            if css_class:
-                from dart_semantic.assembler.semantic_catalog import (
-                    component_for_pedagogy_class,
-                    valid_components,
-                )
-
-                component = component_for_pedagogy_class(css_class)
-                if component and component in valid_components():
-                    payload["semantic_class"] = component
+            derived = _resolve_unit_semantic_class(first)
+            if derived:
+                payload["semantic_class"] = derived
 
     payload["resegment"] = {
         "op": breadcrumb_op,
@@ -875,6 +931,120 @@ def apply_resegment(
         out.append(regions[i])
         i += 1
     return out
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — decision-capture audit-row build (rides the block_resegment enum).
+# ---------------------------------------------------------------------------
+
+
+def build_resegment_audit_rows(ops: list[ResegmentOp]) -> list[dict[str, Any]]:
+    """Build the ``result['block_resegment']`` audit rows from the applied ops.
+
+    Single SoT for the cascade's audit section (``cascade.py`` consumes this).
+    A cross-kind pedagogical-unit op (``subtype=='regroup'``) records
+    ``op='regroup'`` + the merged unit's ``semantic_class`` + ``regions_folded``
+    (= len(region_indices) - 1) so the (bridge-owned, still-unwired)
+    ``block_resegment`` DecisionCapture can interpolate regroup counts/classes
+    into a dynamic, replayable rationale — with NO ``decision_event`` schema
+    change (``block_resegment`` is already in the enum). A same-kind op (subtype
+    default ``'merge'``) keeps ``op=op.op`` and the original 4-key row VERBATIM,
+    so a regroup-flag-off run (no regroup op exists) is BYTE-IDENTICAL to the
+    pre-Phase-9 audit. **Honest gap:** no DecisionCapture EVENT fires for a
+    regroup until the bridge TODO (``cascade.py``) is wired — the regroup is a
+    DETERMINISTIC transform (mirrors the chunker / reading-order
+    deterministic-transform posture, which also emit no capture), not an LLM
+    call site; the row only enriches the audit the bridge will consume."""
+    rows: list[dict[str, Any]] = []
+    for op in ops:
+        is_regroup = op.subtype == "regroup"
+        row = {
+            "op": "regroup" if is_regroup else op.op,
+            "source_ids": list(op.source_ids),
+            "origin": op.origin,
+            "conservation_verified": True,
+        }
+        if is_regroup:
+            row["semantic_class"] = op.semantic_class
+            row["regions_folded"] = max(0, len(op.region_indices) - 1)
+        rows.append(row)
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 — verifier-drivable regroup seam (second-pass section_no_body fix).
+# ---------------------------------------------------------------------------
+
+
+def apply_proposed_regroups(
+    regions: list[Region],
+    feature_blocks: list[FeatureBlock],
+    proposed_runs: list[Sequence[int]],
+) -> tuple[list[Region], list[ResegmentOp]]:
+    """Apply EXTERNALLY-proposed pedagogical-unit regroup runs through the SAME
+    ``apply_resegment`` + R-PART/token-conservation fail-closed gates the
+    deterministic detector rides (Phase 10 seam).
+
+    The second-pass verify-refine plan's ``section_no_body`` /
+    ``example_misordered_from_body`` modes were DETECT-ONLY for lack of a
+    MERGE/regroup op in the per-block vocabulary; this is that op channel. A
+    proposer (the verifier) passes explicit ``region_indices`` runs (a flagged
+    unit = heading/label + its real downstream body) and they are re-validated
+    HERE — a hallucinated / over-broad / non-contiguous run is DROPPED PER-OP by
+    the conservation gates (e.g. a non-contiguous run makes ``apply_resegment``
+    skip the in-between regions -> the FB multiset shrinks -> R-PART raises ->
+    that op is dropped), mirroring the ``SEMANTIK_BLOCK_RESEGMENT_LLM`` per-op
+    re-validation: a bad op is dropped individually, the good ops + the input
+    survive. Does NOT wire the verifier itself (that is the second-pass plan's
+    build); inert without a driver — an empty ``proposed_runs`` returns the
+    input unchanged + an EMPTY op list (byte-stable). NEVER raises.
+
+    Returns ``(out_regions, applied_ops)``; ``applied_ops`` is the subset that
+    survived the gates (``[]`` when none did or none were proposed)."""
+    candidate_ops: list[ResegmentOp] = []
+    for raw_run in proposed_runs or ():
+        run = [int(x) for x in raw_run]
+        if len(run) < 2:
+            continue  # a merge needs >=2 regions
+        if any(not (0 <= r < len(regions)) for r in run):
+            continue  # out-of-range proposal -> drop
+        # An external proposer owns run[0]=anchor ordering; build via the shared
+        # low-level factory (no anchor-pedagogy assert — graceful drop, not a
+        # raise) and tag origin='llm' (a non-deterministic proposer).
+        candidate_ops.append(_build_regroup_op(run, regions, origin="llm"))
+    if not candidate_ops:
+        return regions, []
+
+    # Per-op re-validation: keep only ops that survive BOTH conservation gates
+    # individually (a hallucinated run cannot ship; the good ones still apply).
+    valid_ops: list[ResegmentOp] = []
+    for op in candidate_ops:
+        try:
+            out = apply_resegment(regions, feature_blocks, [op])
+            assert_partition_conservation(regions, out)
+            assert_token_conservation(regions, out, feature_blocks)
+        except (PartitionConservationError, TokenConservationError) as exc:
+            logger.warning(
+                "verifier-proposed regroup op rejected (%s) -> dropped", exc
+            )
+            continue
+        valid_ops.append(op)
+    if not valid_ops:
+        return regions, []
+
+    # Apply the surviving set as a whole and re-gate (defensive: overlapping
+    # proposed runs collapse via apply_resegment's first-registered-wins guard).
+    try:
+        out = apply_resegment(regions, feature_blocks, valid_ops)
+        assert_partition_conservation(regions, out)
+        assert_token_conservation(regions, out, feature_blocks)
+    except (PartitionConservationError, TokenConservationError) as exc:
+        logger.warning(
+            "verifier-proposed regroup set rejected (%s) -> input preserved",
+            exc,
+        )
+        return regions, []
+    return out, list(valid_ops)
 
 
 # ---------------------------------------------------------------------------
@@ -1071,7 +1241,9 @@ __all__ = [
     "PartitionConservationError",
     "ResegmentOp",
     "apply_resegment",
+    "apply_proposed_regroups",
     "assert_partition_conservation",
+    "build_resegment_audit_rows",
     "resegment_blocks",
     "resolve_block_resegment_llm_mode",
     "resolve_block_resegment_mode",

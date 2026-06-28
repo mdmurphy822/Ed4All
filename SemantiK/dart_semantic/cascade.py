@@ -907,6 +907,7 @@ def run_full_cascade(
     # same R-PART + token-conservation gates. Fails closed to the input list.
     # ------------------------------------------------------------------
     from .qwen_specialists.block_resegment import (
+        build_resegment_audit_rows,
         resegment_blocks,
         resolve_block_resegment_llm_mode,
         resolve_block_resegment_mode,
@@ -944,15 +945,18 @@ def run_full_cascade(
         structure_regions = resegmented_regions
         # Audit section — the op list (op type, source ids, conservation flag).
         # Parallel to the structure_review audit (~L948). Stays None when off.
-        resegment_ops_audit = [
-            {
-                "op": op.op,
-                "source_ids": list(op.source_ids),
-                "origin": op.origin,
-                "conservation_verified": True,
-            }
-            for op in resegment_ops
-        ]
+        # Phase 9: a cross-kind pedagogical-unit op (subtype='regroup') records
+        # op='regroup' + the merged unit's semantic_class + regions_folded so
+        # the (bridge-owned, still-unwired) block_resegment DecisionCapture can
+        # interpolate regroup counts/classes into a dynamic, replayable
+        # rationale — with NO decision_event schema change (block_resegment is
+        # already in the enum). A same-kind op (subtype default 'merge') keeps
+        # op=op.op and the original 4-key row VERBATIM (byte-stable when the
+        # regroup flag is off — no regroup op exists so no row gains the extra
+        # keys). The capture EMIT stays the bridge TODO below; this only
+        # enriches the audit row the bridge will consume. Built via the single
+        # SoT helper so the cascade and its tests never drift.
+        resegment_ops_audit = build_resegment_audit_rows(resegment_ops)
         # TODO(decision-capture): emit block_resegment event from the bridge
         # (MCP/tools/pipeline_tools.py) off conformance_audit["block_resegment"]
         # — one DecisionCapture row per converted document, mirroring the
