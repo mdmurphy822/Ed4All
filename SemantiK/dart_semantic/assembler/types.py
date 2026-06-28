@@ -54,7 +54,10 @@ class AssembledDoc:
     gaps_fallback: list[GapSlot]  # what 9c filled with deterministic fallbacks
     heading_tree: list[tuple[int, str]]  # (level, text) in document order
     landmarks: dict[str, int]  # {"main": 1, "nav": 1, "footer": 0, "aside": 2, ...}
-    anchors: dict[str, str]  # {"sec-3-2": "<h2 id='sec-3-2'>...</h2>", ...}
+    anchors: dict[str, int]  # heading_id -> region_index int, e.g. {"sec-3-2": 7, ...}
+    # (runtime value is heading_id->region_index int, set in pass_9a; the prior
+    # ``dict[str, str]`` HTML-string annotation was stale — the verifier digest's
+    # heading-outline round-trip depends on the int value.)
     region_provenance: list[int]  # index back into Phase 8 top-1 regions per emitted block
     sub_task_log: dict[str, str]  # per sub-task one-liner diagnostics
 
