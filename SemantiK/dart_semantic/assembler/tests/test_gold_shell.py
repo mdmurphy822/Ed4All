@@ -386,3 +386,187 @@ def test_html5_wellformed_and_single_main(monkeypatch):
     # Exactly one <main>.
     assert html.count("<main") == 1
     assert html.count("</main>") == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — outer ``<section aria-labelledby>`` document-outline grouping over
+# the flat region list.
+# ---------------------------------------------------------------------------
+
+from dart_semantic.assembler.pass_9a import run_pass_9a  # noqa: E402
+from dart_semantic.gates.hard_document import _check_heading_hierarchy  # noqa: E402
+
+
+def _heading_region(idx: int, *, level: int = 1) -> Region:
+    """A structural heading region pinned to ``level`` via the level_hint."""
+    return Region(
+        kind="heading",
+        feature_block_indices=(idx,),
+        payload={"text": f"body {idx}", "level_hint": level},
+    )
+
+
+def _levels9(html: str) -> list[int]:
+    return [int(m.group(1)) for m in re.finditer(r"<h([1-6])\b", html, re.I)]
+
+
+def test_section_wraps_heading_and_following_blocks(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    fbs = [_fb("a"), _fb("p1"), _fb("p2"), _fb("b")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, None),
+        _region(2, None),
+        _heading_region(3, level=1),
+    ]
+    top = {
+        0: _stage6("<h2>Alpha</h2>"),
+        1: _stage6("<p>para one</p>"),
+        2: _stage6("<p>para two</p>"),
+        3: _stage6("<h2>Beta</h2>"),
+    }
+    doc = _assemble(top, regions, fbs)
+    html = doc.html
+    # One section labelled by the first heading id encloses the heading + both
+    # paragraphs, and is CLOSED before the next same-level heading.
+    m = re.search(r'<section aria-labelledby="alpha">(.*?)</section>', html, re.S)
+    assert m is not None, html
+    seg = m.group(1)
+    assert "Alpha</h1>" in seg
+    assert "para one" in seg and "para two" in seg
+    assert "Beta" not in seg  # closed at the next same-level heading
+    # The second heading opened its own section.
+    assert '<section aria-labelledby="beta">' in html
+    # Sections are balanced (open count == close count).
+    assert html.count("<section aria-labelledby=") == html.count("</section>") == 2
+
+
+def test_aria_labelledby_resolves_to_real_id(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    fbs = [_fb("h"), _fb("d"), _fb("w")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, "definition_region"),
+        _region(2, "worked_example"),
+    ]
+    top = {
+        0: _stage6("<h2>Chapter One</h2>"),
+        1: _stage6("<p>a definition</p>"),
+        2: _stage6("<p>EXAMPLE worked</p>"),
+    }
+    doc = _assemble(top, regions, fbs)
+    html = doc.html
+    # Every aria-labelledby (outer section + Phase-7 containers) points at an id
+    # that EXISTS in the doc — INCLUDING after the contiguity re-level demoted
+    # the container <h4>s.
+    targets = re.findall(r'aria-labelledby="([^"]+)"', html)
+    assert len(targets) >= 3  # outer section + definition + worked_example
+    ids = set(re.findall(r'\bid="([^"]+)"', html))
+    for t in targets:
+        assert t in ids, (t, sorted(ids))
+    # The container headings were re-leveled (h1 structural, h4 -> h3) and the
+    # outer section still labels the structural heading.
+    assert '<section aria-labelledby="chapter-one">' in html
+
+
+def test_container_label_id_unique(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    fbs = [_fb("d1"), _fb("d2")]
+    regions = [_region(0, "definition_region"), _region(1, "definition_region")]
+    top = {0: _stage6("<p>def one</p>"), 1: _stage6("<p>def two</p>")}
+    doc = _assemble(top, regions, fbs)
+    ids = re.findall(r'aria-labelledby="(dart-definition_region[^"]*)"', doc.html)
+    assert len(ids) == 2
+    assert len(set(ids)) == 2  # distinct
+
+
+def test_splice_keys_survive_section_wrap(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    fbs = [_fb("h"), _fb("legal"), _fb("cite")]
+    regions = [
+        _heading_region(0, level=1),
+        Region(
+            kind="paragraph",
+            feature_block_indices=(1,),
+            payload={
+                "text": "Copyright 2026 Ed4All. All rights reserved.",
+                "doc_role": "legal",
+            },
+        ),
+        Region(
+            kind="paragraph",
+            feature_block_indices=(2,),
+            payload={"text": "See Section 4.2 for the proof of this claim."},
+        ),
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6("<p>Copyright 2026 Ed4All. All rights reserved.</p>"),
+        2: _stage6("<p>See Section 4.2 for the proof of this claim.</p>"),
+    }
+    pre, gaps, _ = run_pass_9a(
+        top, regions, fbs, config=AssemblerConfig(skip_gap_fill=True),
+    )
+    body = pre.html
+    # Grouping happened.
+    assert "<section aria-labelledby=" in body
+    # Every per-region fragment (the pass_9c ``region_html[idx]`` splice key)
+    # is still a contiguous substring of the assembled body after the wrap.
+    for frag in pre.sub_task_log["region_html"]:
+        if frag:
+            assert frag in body, frag
+    # The legal gap's stashed ``region_html`` context + any match_text survive.
+    for g in gaps:
+        rh = (g.context or {}).get("region_html")
+        if rh:
+            assert rh in body, g.kind
+        mt = (g.context or {}).get("match_text")
+        if mt:
+            assert mt in body, g.kind
+
+
+def test_example_renders_as_region_not_h1(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    fbs = [_fb("h"), _fb("ex")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, "worked_example"),  # kind="paragraph" -> NOT a heading
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6("<p>EXAMPLE 1.3 solve x</p>"),
+    }
+    doc = _assemble(top, regions, fbs)
+    html = doc.html
+    # The EXAMPLE renders inside a worked_example role=region container.
+    assert 'class="algorithm worked-example"' in html
+    assert 'role="region"' in html
+    # It is NOT promoted to an <h1> (the indexing bug): only the structural
+    # heading is an <h1>, and only that heading opens an outer section.
+    assert html.count("<h1") == 1
+    assert ">Intro</h1>" in html
+    assert html.count("<section aria-labelledby=") == 1
+    # The example body is not a structural heading entry in the outline.
+    assert (1, "EXAMPLE 1.3 solve x") not in doc.heading_tree
+    assert all("EXAMPLE 1.3 solve x" != text for _lvl, text in doc.heading_tree)
+
+
+def test_flag_off_flat_concat_byte_identical(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_GOLD_SHELL", raising=False)
+    fbs = [_fb("a"), _fb("p1"), _fb("b")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, None),
+        _heading_region(2, level=1),
+    ]
+    top = {
+        0: _stage6("<h2>Alpha</h2>"),
+        1: _stage6("<p>para</p>"),
+        2: _stage6("<h2>Beta</h2>"),
+    }
+    doc = _assemble(top, regions, fbs)
+    # No outer-section grouping when off.
+    assert "<section aria-labelledby=" not in doc.html
+    # Body is the plain flat concat of the index-aligned fragments.
+    flat = "".join(f for f in doc.sub_task_log["region_html"] if f)
+    assert flat in doc.html

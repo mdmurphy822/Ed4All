@@ -142,3 +142,54 @@ def test_finalize_idempotent_byte_stable():
     assert out.html == clean
     assert out.heading_tree == original_tree
     assert "heading_contiguity" not in out.sub_task_log
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 — container-internal headings + the outer-section grouping must not
+# introduce a level skip; the downstream contiguity re-level covers them.
+# ---------------------------------------------------------------------------
+
+
+def test_heading_contiguity_holds_with_container_headings(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    from dart_semantic.assembler.api import AssemblerConfig, assemble_document
+    from dart_semantic.qwen_specialists.types import Candidate
+    from dart_semantic.soft_reranker.types import RankedCandidate
+    from dart_semantic.structure_graph import Region
+    from dart_semantic.types import FeatureBlock, RawBlock
+
+    def _fb(text: str) -> FeatureBlock:
+        raw = RawBlock(
+            text=text, page=1, bbox=(0.0, 0.0, 10.0, 10.0),
+            page_width=100.0, page_height=100.0,
+        )
+        return FeatureBlock(
+            raw=raw, size_bucket="md", gap_above=None, is_top_of_page=False,
+            is_centered=False, caps=None, indent_bucket=0,
+            relative_font_ratio=1.0,
+        )
+
+    def _cand(text: str) -> RankedCandidate:
+        return RankedCandidate(
+            candidate=Candidate(adapter="prose", request_id="r", text=text),
+            score=1.0,
+        )
+
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"text": "Chapter", "level_hint": 1}),
+        # A worked_example region carries a container <h4> label INSIDE a
+        # non-heading region body (Phase 7), which would skip h1 -> h4.
+        Region(kind="paragraph", feature_block_indices=(1,),
+               payload={"text": "ex", "semantic_class": "worked_example"}),
+    ]
+    top = {0: _cand("<h2>Chapter</h2>"), 1: _cand("<p>EXAMPLE solve</p>")}
+    doc = assemble_document(
+        top, regions, [_fb("c"), _fb("e")],
+        config=AssemblerConfig(skip_gap_fill=True),
+    )
+    outcome = _check_heading_hierarchy(doc.html)
+    assert outcome.passed, (outcome.message, _levels(doc.html))
+    # First heading is h1; the container <h4> auto-demoted to h2 (no skip).
+    assert _levels(doc.html)[0] == 1
+    assert _levels(doc.html) == [1, 2]

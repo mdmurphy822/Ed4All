@@ -135,6 +135,68 @@ _HEADING_HAS_ID_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Captures the id VALUE on the first ``<hN>`` opening tag (the resolvable
+# ``aria-labelledby`` target for the Phase-9 outer-section grouping).
+_HEADING_ID_VALUE_RE = re.compile(
+    r'<h[1-6]\b[^>]*\bid\s*=\s*"([^"]+)"',
+    re.IGNORECASE,
+)
+
+
+def _heading_id_value(html: str) -> str | None:
+    """Return the id on the fragment's first ``<hN>`` tag, or ``None``."""
+    if not html:
+        return None
+    m = _HEADING_ID_VALUE_RE.search(html)
+    return m.group(1) if m else None
+
+
+def _group_regions_into_sections(
+    region_html: Sequence[str],
+    heading_indices: Sequence[int],
+    normalized_levels: Sequence[int],
+) -> str:
+    """Phase 9 — outer ``<section aria-labelledby>`` document-outline grouping.
+
+    Reconstructs a nested document outline from the index-aligned flat
+    ``region_html`` list: open a ``<section aria-labelledby="{hid}">`` at each
+    HEADING region (``hid`` = the id already injected on that heading's
+    ``<hN>`` by Sub-task 2), and at each NEW heading close every open section
+    whose grouping level is ``>=`` the new heading's normalized level; close
+    all remaining open sections at EOF.
+
+    The wrap adds ``<section>`` tags BETWEEN whole fragments and NEVER mutates
+    a fragment's bytes, so every ``pass_9c`` flat string-replace splice key
+    (``region_html[idx]`` / ``fallback_html`` / the legal ``region_html`` /
+    ``match_text``) stays a contiguous substring of the assembled body, and the
+    P1 1:1 index-stable contract holds (the region LIST is untouched; only the
+    emitted HTML nests). A heading with no resolvable id is emitted un-sectioned
+    (defensive; every heading gets an id from Sub-task 2 in practice).
+    """
+    level_by_idx = dict(zip(heading_indices, normalized_levels))
+    parts: list[str] = []
+    open_levels: list[int] = []
+    for idx, html in enumerate(region_html):
+        if not html:
+            continue
+        if idx in level_by_idx:
+            lvl = level_by_idx[idx]
+            while open_levels and open_levels[-1] >= lvl:
+                parts.append("</section>")
+                open_levels.pop()
+            hid = _heading_id_value(html)
+            if hid:
+                safe = hid.replace('"', "&quot;")
+                parts.append(f'<section aria-labelledby="{safe}">')
+                open_levels.append(lvl)
+            parts.append(html)
+        else:
+            parts.append(html)
+    while open_levels:
+        parts.append("</section>")
+        open_levels.pop()
+    return "".join(parts)
+
 
 def _inject_heading_id(html: str, ident: str) -> str:
     """Add ``id="ident"`` to the first ``<hN>`` opening tag if absent."""
@@ -421,10 +483,24 @@ def run_pass_9a(
 
     # ------------------------------------------------------------------
     # Sub-task 6 — Reading-order DOM placement.
-    # The structure_graph already returned regions in reading order, so
-    # this is a no-op here — we just concatenate.
+    # The structure_graph already returned regions in reading order, so the
+    # flat lane is a straight concatenate. Under the gold shell
+    # (SEMANTIK_GOLD_SHELL) we additionally reconstruct the OUTER
+    # ``<section aria-labelledby>`` document-outline grouping over the
+    # index-aligned region list (Phase 9) — opening a section at each heading
+    # and closing sections of level >= the new heading. This MUST run AFTER
+    # Sub-task 2's heading-id injection (so ``aria-labelledby`` points at a
+    # real id) and after Sub-task 5's <address> wrap (so the grouped fragment
+    # bytes are final). The wrap nests emitted HTML, never the region list, and
+    # never mutates a fragment's bytes -> flag-off byte-identical + every
+    # pass_9c splice key survives.
     # ------------------------------------------------------------------
-    body_html = "".join(html for html in region_html if html)
+    if resolve_gold_shell_mode():
+        body_html = _group_regions_into_sections(
+            region_html, heading_indices, normalized,
+        )
+    else:
+        body_html = "".join(html for html in region_html if html)
 
     # ------------------------------------------------------------------
     # Sub-task 7 — Doc shell.
