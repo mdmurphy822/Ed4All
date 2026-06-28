@@ -835,6 +835,72 @@ def _round_is_better(
     return (not reasons), reasons
 
 
+#: The two verifier failure modes the Phase-6b MERGE channel graduates from
+#: DETECT-ONLY to FIXABLE (via ``block_resegment.apply_proposed_regroups``).
+#: ``FlaggedBlock.fixable`` is False for these (the per-block re-type vocabulary
+#: cannot merge), so they ride the SEPARATE merge channel, never the re-drive.
+_MERGE_FAILURE_MODES = frozenset({"section_no_body", "example_misordered_from_body"})
+
+
+def _merge_round_is_better(
+    *,
+    reverify: Any,
+    prior_lane_fast: dict[str, Any],
+    new_lane_fast: dict[str, Any],
+    prior_report: Any,
+    new_report: Any,
+) -> tuple[bool, list[str]]:
+    """MERGE-channel (Phase 6b) better-than predicate for the adopt gate.
+
+    The re-type channel's per-region BYTE-IDENTITY gate (``_round_is_better``
+    clause 2) CANNOT apply across a count-SHRINKING merge — the regions are
+    renumbered. So the load-bearing never-regress check here is DOCUMENT-LEVEL
+    visible-text conservation (``apply_proposed_regroups`` already
+    R-PART/token-conserves at the region level, so a merged region is the
+    verbatim concatenation of its members). Adopt iff EVERY clause holds (the
+    caller has already confirmed ``reverify.passed``):
+
+      1. no MERGE-mode failure remains — index-shift-SAFE: checked by
+         ``failure_mode`` token, NOT by index (the merge renumbers regions, so
+         the old flagged indices no longer map);
+      2. document-level visible text is CONSERVED (multiset equal) — the PRIMARY
+         load-bearing fail-safe for the merge channel;
+      3. the Stage-10 doc gate is NOT-WORSE — noise-tolerant SECONDARY;
+      4. theta is NOT-WORSE (None == no signal) — noise-tolerant SECONDARY.
+
+    Returns ``(better, reasons)`` (``reasons`` lists the FAILED clauses).
+    """
+    reasons: list[str] = []
+
+    # (1) merge-mode failures cleared (by mode — robust to the index shift).
+    remaining = {
+        getattr(fb, "failure_mode", None) for fb in getattr(reverify, "flagged", ())
+    }
+    if remaining & _MERGE_FAILURE_MODES:
+        reasons.append("merge_failure_not_cleared")
+
+    prior_asm = prior_lane_fast.get("assembled")
+    new_asm = new_lane_fast.get("assembled")
+    prior_html = getattr(prior_asm, "html", "") if prior_asm is not None else ""
+    new_html = getattr(new_asm, "html", "") if new_asm is not None else ""
+
+    # (2) document-level visible-text conservation (PRIMARY).
+    if Counter(_visible_text_tokens(prior_html)) != Counter(_visible_text_tokens(new_html)):
+        reasons.append("doc_text_not_conserved")
+
+    # (3) Stage-10 doc gate not-worse.
+    if _doc_gate_passed(prior_lane_fast) and not _doc_gate_passed(new_lane_fast):
+        reasons.append("doc_gate_worse")
+
+    # (4) theta not-worse.
+    prior_theta = _theta_score_of(prior_report)
+    new_theta = _theta_score_of(new_report)
+    if prior_theta is not None and new_theta is not None and new_theta < prior_theta:
+        reasons.append("theta_worse")
+
+    return (not reasons), reasons
+
+
 def _verify_refine_loop(
     capped: list[Region],
     review_verdicts: list[Any],
@@ -926,11 +992,131 @@ def _verify_refine_loop(
             signals["adopted"] = current_capped is not pass1_capped
             return current_capped, current_verdicts, current_report, signals
 
-        # (c) only DEFERRED (merge/reorder) modes -> nothing this re-type
-        # channel can re-drive (the Phase-6b merge channel handles those). Keep
-        # ``current`` (= Pass-1 unless an earlier round adopted).
+        # (c) No re-type-fixable flags remain. Either the Phase-6b MERGE
+        # channel handles the deferred merge modes, or there is nothing this
+        # index-keyed reviewer can do -> keep ``current`` (= Pass-1 unless an
+        # earlier round adopted).
         if not fixable:
-            row.update(adopted=False, deferred_only=True)
+            # --- Phase 6b MERGE channel ----------------------------------
+            # Runs as its OWN round (NEVER mixed with a re-type re-drive in one
+            # re-assemble): the round's flagged set carries ONLY deferred merge
+            # modes here (re-type rounds fire FIRST, while fixable flags exist).
+            # Gated on SEMANTIK_UNIT_REGROUP; the merge SHRINKS len(capped), so
+            # the re-type channel's len-invariant check above is scoped to the
+            # re-type branch and intentionally does NOT apply on this path.
+            from .qwen_specialists.block_resegment import (
+                apply_proposed_regroups,
+                resolve_unit_regroup_mode,
+            )
+
+            merge_runs = [
+                tuple(getattr(fb, "proposed_regroup_run", ()) or ())
+                for fb in deferred
+                if (getattr(fb, "proposed_regroup_run", ()) or ())
+                and getattr(fb, "failure_mode", None) in _MERGE_FAILURE_MODES
+            ]
+
+            if not (resolve_unit_regroup_mode() and merge_runs):
+                # No merge channel available (regroup off, or no proposed runs)
+                # -> the deferred modes are un-fixable here.
+                row.update(adopted=False, deferred_only=True)
+                lane_outputs["fast"] = dict(current_lane_fast)
+                signals["adopted"] = current_capped is not pass1_capped
+                return current_capped, current_verdicts, current_report, signals
+
+            row["merge_runs"] = [list(r) for r in merge_runs]
+
+            # (c1) Apply the proposed regroups through the SAME R-PART/token
+            # conservation gates the deterministic detector rides. NEVER raises;
+            # a hallucinated / over-broad / non-contiguous run is dropped per-op.
+            merged_capped, ops = apply_proposed_regroups(
+                current_capped, feature_blocks, merge_runs
+            )
+            if not ops or len(merged_capped) == len(current_capped):
+                # No op landed (every proposed run dropped by the gates) -> the
+                # merge didn't help. Keep ``current`` + STOP (re-applying a
+                # deterministic no-op is pointless) -> never ship worse.
+                log(
+                    f"[cascade] verify-refine r{round_idx}: merge produced no "
+                    f"landed op -> keep current"
+                )
+                row.update(adopted=False, merge_noop=True)
+                lane_outputs["fast"] = dict(current_lane_fast)
+                signals["adopted"] = current_capped is not pass1_capped
+                return current_capped, current_verdicts, current_report, signals
+
+            row["merge_ops"] = len(ops)
+
+            # (c2) Re-assemble the MERGED (shorter) list (overwrites fast).
+            merged_report = run_inner("fast", regions=merged_capped)
+            merged_lane_fast = dict(lane_outputs["fast"])
+
+            # (c3) Re-verify the new assembled doc.
+            try:
+                merge_reverify = run_second_pass_verify(
+                    merged_lane_fast.get("assembled"),
+                    merged_capped,
+                    feature_blocks,
+                    review_runtime,
+                    council_state=state,
+                )
+            except Exception as exc:  # noqa: BLE001 — fail-safe: keep current.
+                log(
+                    f"[cascade] verify-refine r{round_idx}: merge re-verify error "
+                    f"({exc}) -> keep current"
+                )
+                row.update(error=str(exc), adopted=False, merge_adopted=False)
+                lane_outputs["fast"] = dict(current_lane_fast)
+                signals["adopted"] = current_capped is not pass1_capped
+                return current_capped, current_verdicts, current_report, signals
+
+            if not merge_reverify.passed:
+                # Re-verify STILL failing -> the merge didn't fully resolve.
+                # Discard it, restore ``current`` for the next round, retry
+                # (bounded). On exhaustion the loop returns ``current``.
+                log(
+                    f"[cascade] verify-refine r{round_idx}: merge re-verify still "
+                    f"failing -> retry"
+                )
+                row.update(adopted=False, merge_adopted=False, retry=True)
+                lane_outputs["fast"] = dict(current_lane_fast)
+                continue
+
+            merge_better, merge_reasons = _merge_round_is_better(
+                reverify=merge_reverify,
+                prior_lane_fast=current_lane_fast,
+                new_lane_fast=merged_lane_fast,
+                prior_report=current_report,
+                new_report=merged_report,
+            )
+            row.update(merge_reverify_passed=True, merge_better=merge_better, merge_reasons=merge_reasons)
+
+            if merge_better:
+                # ADOPT the merge. The count SHRANK, so the prior verdict list no
+                # longer aligns 1:1 with the merged region list. SAFEST
+                # provenance handling (cannot corrupt): thread the verdicts back
+                # as None so ``_build_region_provenance`` attaches NO (stale)
+                # review sub-block to a merged region -> one entry per merged
+                # region keyed by its region_index, no IndexError, no
+                # misattribution. ``merge_adopted`` records the distinct action.
+                current_capped = merged_capped
+                current_verdicts = None
+                current_report = merged_report
+                current_lane_fast = merged_lane_fast
+                lane_outputs["fast"] = dict(merged_lane_fast)
+                row.update(adopted=True, merge_adopted=True)
+                signals["adopted"] = True
+                signals["merge_adopted"] = True
+                continue
+
+            # Re-verify PASSED but the merge is not-better (doc-text / gate /
+            # theta worse) -> a deterministic re-apply won't improve it. Keep
+            # ``current`` (best-known-good) + STOP -> never ship the merge.
+            log(
+                f"[cascade] verify-refine r{round_idx}: merge round not-better "
+                f"({merge_reasons}) -> keep current"
+            )
+            row.update(adopted=False, merge_adopted=False)
             lane_outputs["fast"] = dict(current_lane_fast)
             signals["adopted"] = current_capped is not pass1_capped
             return current_capped, current_verdicts, current_report, signals

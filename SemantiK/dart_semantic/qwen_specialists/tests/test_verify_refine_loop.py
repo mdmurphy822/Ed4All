@@ -543,6 +543,218 @@ def test_flag_off_loop_no_op_byte_identical(monkeypatch):
     assert "second_pass_signals is not None and second_pass_signals.get(\"rounds\")" in host_src
 
 
+# ---------------------------------------------------------------------------
+# 4. Phase 6b — MERGE channel (SEMANTIK_UNIT_REGROUP).
+# ---------------------------------------------------------------------------
+
+
+from dart_semantic.qwen_specialists import block_resegment as brs  # noqa: E402
+
+
+class _FakeAssembledFB:
+    """Merge-aware assembled stand-in: per-region visible text = the region's
+    OWNED feature-block tokens (``fb{j}``). A count-SHRINKING merge therefore
+    CONSERVES the document visible-text multiset (the merged region owns the
+    union of its members' FBs), so ``_merge_round_is_better``'s doc-text check
+    passes on a legitimate merge (and trips on a dropped/dup'd token)."""
+
+    def __init__(self, regions: list[Region]):
+        self.region_provenance = list(range(len(regions)))
+        frags = [
+            "<div>" + " ".join(f"fb{j}" for j in r.feature_block_indices) + "</div>"
+            for r in regions
+        ]
+        self._frags = frags
+        self.sub_task_log = {"region_html": list(frags)}
+        self.html = "<html>" + "".join(frags) + "</html>"
+        self.heading_tree = []
+        self.landmarks = {}
+
+
+def _make_run_inner_fb(lane_outputs: dict, *, gate_passed: bool = True, theta: float = 0.9):
+    """Merge-aware injected ``run_inner`` — assembles the PASSED ``regions`` into
+    an FB-token-derived fake doc (so a merge conserves document text)."""
+    calls: list[dict] = []
+
+    def run_inner(lane: str, regions=None):
+        rs = list(regions or [])
+        calls.append({"lane": lane, "n": None if regions is None else len(rs)})
+        lane_outputs[lane] = _lane_dict(_FakeAssembledFB(rs), gate_passed=gate_passed)
+        return _Report(theta_score=theta, lane=lane)
+
+    run_inner.calls = calls  # type: ignore[attr-defined]
+    return run_inner
+
+
+class _ScriptedMergeReviewer:
+    """Scripted Pass-2 verifier for the MERGE channel.
+
+    Flags ONE ``section_no_body`` merge mode (``fixable=False`` +
+    ``proposed_regroup_run``) while the region list is the ORIGINAL length;
+    PASSES once the merge has shrunk it. ``always_fail`` keeps flagging even
+    post-merge (the bounded-rounds path)."""
+
+    def __init__(self, *, orig_len: int, run, always_fail: bool = False):
+        self.orig_len = orig_len
+        self.run = tuple(run)
+        self.always_fail = always_fail
+        self.verify_calls: list[dict] = []
+
+    def verify(self, assembled, regions, feature_blocks, runtime, *, council_state=None):
+        self.verify_calls.append({"n": len(regions)})
+        if not self.always_fail and len(regions) < self.orig_len:
+            return VerifierVerdict(passed=True, flagged=())
+        fb = FlaggedBlock(
+            region_index=self.run[0],
+            failure_mode="section_no_body",
+            fix_hint="merge the heading with its orphaned body",
+            fixable=False,
+            proposed_regroup_run=self.run,
+        )
+        return VerifierVerdict(passed=False, flagged=(fb,))
+
+
+def _patch_merge(monkeypatch, scripted, *, rounds: int = 2, regroup_on: bool = True):
+    monkeypatch.setattr(rv, "run_second_pass_verify", scripted.verify)
+    monkeypatch.setattr(rv, "resolve_second_pass_rounds", lambda: rounds)
+    monkeypatch.setattr(brs, "resolve_unit_regroup_mode", lambda: regroup_on)
+
+
+def _merge_capped() -> list[Region]:
+    # A heading + three following body paragraphs, each owning ONE FB in
+    # document order (so run (0,1,2) is FB-contiguous and R-PART-valid).
+    return [
+        _region("heading", 0),
+        _region("paragraph", 1),
+        _region("paragraph", 2),
+        _region("paragraph", 3),
+    ]
+
+
+def test_merge_channel_fixes_section_no_body(monkeypatch):
+    """A FAIL flagging ``section_no_body`` with a contiguous
+    ``proposed_regroup_run=(0,1,2)`` + SEMANTIK_UNIT_REGROUP on -> the merge
+    channel fires, ``len(new_capped) < len(capped)``, re-verify passes, adopted;
+    the threaded-back verdicts are None (count-shrink provenance safety)."""
+    capped = _merge_capped()
+    lane_outputs = {"fast": _lane_dict(_FakeAssembledFB(capped))}
+    scripted = _ScriptedMergeReviewer(orig_len=4, run=(0, 1, 2))
+    _patch_merge(monkeypatch, scripted)
+    (new_capped, new_verdicts, _r, signals), _ri, _fbs = _drive(
+        capped, lane_outputs, scripted, run_inner=_make_run_inner_fb(lane_outputs)
+    )
+    assert len(new_capped) == 2 < len(capped)
+    assert signals["adopted"] is True
+    assert signals.get("merge_adopted") is True
+    assert signals["rounds"][0]["merge_adopted"] is True
+    assert signals["rounds"][0]["merge_ops"] >= 1
+    # SAFEST count-shrink thread-back: verdicts threaded back as None.
+    assert new_verdicts is None
+
+
+def test_merge_channel_gated_off_when_regroup_off(monkeypatch):
+    """Same flags but SEMANTIK_UNIT_REGROUP off -> merge channel DEAD; the round
+    is a deferred-only no-op (byte-identical to committed P6): no re-assemble,
+    Pass-1 kept, verdicts unchanged."""
+    capped = _merge_capped()
+    lane_outputs = {"fast": _lane_dict(_FakeAssembledFB(capped))}
+    scripted = _ScriptedMergeReviewer(orig_len=4, run=(0, 1, 2))
+    _patch_merge(monkeypatch, scripted, regroup_on=False)
+    run_inner = _make_run_inner_fb(lane_outputs)
+    pass1_verdicts = [
+        ReviewVerdict(i, "ok", r.kind, r.kind, None, None, "") for i, r in enumerate(capped)
+    ]
+    (new_capped, new_verdicts, _r, signals), _ri, _fbs = _drive(
+        capped, lane_outputs, scripted, run_inner=run_inner, pass1_verdicts=pass1_verdicts
+    )
+    assert [r.kind for r in new_capped] == ["heading", "paragraph", "paragraph", "paragraph"]
+    assert signals["adopted"] is False
+    assert signals["rounds"][0]["deferred_only"] is True
+    assert new_verdicts == pass1_verdicts  # NOT None — no merge adopted
+    assert run_inner.calls == []  # no re-assemble fired
+
+
+def test_merge_noop_keeps_prior(monkeypatch):
+    """A non-contiguous proposed run (0,2) is dropped by the R-PART gate ->
+    ``apply_proposed_regroups`` returns no ops -> merge no-op -> Pass-1 kept,
+    never regress."""
+    capped = _merge_capped()
+    pass1_assembled = _FakeAssembledFB(capped)
+    lane_outputs = {"fast": _lane_dict(pass1_assembled)}
+    scripted = _ScriptedMergeReviewer(orig_len=4, run=(0, 2))  # skips region 1 -> R-PART drop
+    _patch_merge(monkeypatch, scripted)
+    pass1_verdicts = [
+        ReviewVerdict(i, "ok", r.kind, r.kind, None, None, "") for i, r in enumerate(capped)
+    ]
+    (new_capped, new_verdicts, _r, signals), _ri, _fbs = _drive(
+        capped, lane_outputs, scripted, run_inner=_make_run_inner_fb(lane_outputs),
+        pass1_verdicts=pass1_verdicts,
+    )
+    assert [r.kind for r in new_capped] == [r.kind for r in capped]  # Pass-1 kept
+    assert signals["adopted"] is False
+    assert signals["rounds"][0].get("merge_noop") is True
+    assert new_verdicts == pass1_verdicts  # no adopt -> verdicts unchanged
+    assert lane_outputs["fast"]["assembled"] is pass1_assembled  # reverted
+
+
+def test_merge_adopt_provenance_not_corrupted(monkeypatch):
+    """An adopted merge -> ``_build_region_provenance`` over the MERGED list
+    emits one entry per merged region, NO IndexError, NO stale-verdict
+    misattribution (verdicts threaded back as None -> no ``review`` sub-block)."""
+    capped = _merge_capped()
+    lane_outputs = {"fast": _lane_dict(_FakeAssembledFB(capped))}
+    scripted = _ScriptedMergeReviewer(orig_len=4, run=(0, 1, 2))
+    _patch_merge(monkeypatch, scripted)
+    (merged_capped, new_verdicts, _r, signals), _ri, fbs = _drive(
+        capped, lane_outputs, scripted, run_inner=_make_run_inner_fb(lane_outputs)
+    )
+    assert signals["adopted"] is True
+    assert new_verdicts is None
+    order = list(range(len(merged_capped)))
+    prov = _build_region_provenance(
+        order, list(merged_capped), fbs, {}, review_verdicts=new_verdicts, review_regions=None
+    )
+    assert len(prov) == len(merged_capped)  # one entry per merged region
+    assert sorted(e["region_index"] for e in prov) == order
+    assert all("review" not in e for e in prov)  # no stale verdict attached
+
+
+def test_merge_doc_text_conserved(monkeypatch):
+    """An adopted merge -> converged HTML visible text == Pass-1 visible text
+    (no dropped / duplicated source token)."""
+    capped = _merge_capped()
+    pass1_assembled = _FakeAssembledFB(capped)
+    lane_outputs = {"fast": _lane_dict(pass1_assembled)}
+    scripted = _ScriptedMergeReviewer(orig_len=4, run=(0, 1, 2))
+    _patch_merge(monkeypatch, scripted)
+    (merged_capped, _v, _r, signals), _ri, _fbs = _drive(
+        capped, lane_outputs, scripted, run_inner=_make_run_inner_fb(lane_outputs)
+    )
+    assert signals["adopted"] is True
+    converged = lane_outputs["fast"]["assembled"]
+    pass1_tokens = sorted(cascade._visible_text_tokens(pass1_assembled.html))
+    conv_tokens = sorted(cascade._visible_text_tokens(converged.html))
+    assert conv_tokens == pass1_tokens
+
+
+def test_merge_channel_bounded(monkeypatch):
+    """A verifier that NEVER passes (always_fail) -> the merge lands each round
+    but re-verify keeps failing -> bounded to N rounds, then keep-Pass-1."""
+    capped = _merge_capped()
+    pass1_assembled = _FakeAssembledFB(capped)
+    lane_outputs = {"fast": _lane_dict(pass1_assembled)}
+    scripted = _ScriptedMergeReviewer(orig_len=4, run=(0, 1, 2), always_fail=True)
+    _patch_merge(monkeypatch, scripted, rounds=3)
+    (new_capped, new_verdicts, _r, signals), _ri, _fbs = _drive(
+        capped, lane_outputs, scripted, run_inner=_make_run_inner_fb(lane_outputs)
+    )
+    assert len(signals["rounds"]) == 3  # exactly the bound
+    assert all(row.get("retry") for row in signals["rounds"])
+    assert signals["adopted"] is False
+    assert [r.kind for r in new_capped] == [r.kind for r in capped]  # Pass-1 kept
+    assert lane_outputs["fast"]["assembled"] is pass1_assembled  # reverted to Pass-1
+
+
 def test_review_verdicts_none_guard(monkeypatch):
     """Pass-1 reviewer off (review_verdicts is None) -> the host guard short-
     circuits before referencing review_runtime, so the loop no-ops."""
