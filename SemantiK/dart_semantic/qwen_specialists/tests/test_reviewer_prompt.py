@@ -313,3 +313,109 @@ def test_system_directive_is_conservative_not_mass_demote():
     assert "weigh these structural signals above the local neighbor" not in low
     # And it must NOT instruct keeping/dropping purely on content_blocks_following.
     assert "content_blocks_following >= 1 is a real section" not in low
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — gold accessible semantic-class menu + optional semantic_class key +
+# EXAMPLE-is-a-component-not-heading rule, gated on SEMANTIK_SEMANTIC_CLASS.
+# Flag-off byte-identical is the load-bearing invariant.
+# ---------------------------------------------------------------------------
+
+_MENU_SIGNATURE = "AVAILABLE SEMANTIC COMPONENTS"
+
+
+def _window_records():
+    return [
+        {"idx": 0, "council_kind": "code_block", "role": "code_block",
+         "text": "TRY IT : : 1.27 3 7", "n_tokens": 6, "dup_count": 1},
+        {"idx": 1, "council_kind": "table", "role": "table",
+         "text": "Commutative Property: a + b = b + a", "n_tokens": 7, "dup_count": 1},
+    ]
+
+
+def test_menu_injected_when_flag_on(monkeypatch):
+    from dart_semantic.assembler.semantic_catalog import valid_components
+
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    content = build_reviewer_request(_code_region(), (None, None), 0)
+    windowed = build_windowed_reviewer_request(_window_records())
+    tokens = valid_components()
+    assert tokens  # catalog is non-empty
+    for prompt in (content, windowed):
+        assert _MENU_SIGNATURE in prompt
+        for token in tokens:
+            assert token in prompt, f"menu missing component token: {token}"
+
+
+def test_prompt_byte_identical_when_flag_off(monkeypatch):
+    # Capture the flag-off baseline for BOTH the content single-block builder
+    # and the windowed builder, then toggle the flag ON and back OFF and assert
+    # the OFF output is byte-identical across the round-trip (no global state
+    # leaks) and never carries any semantic-class artifact.
+    monkeypatch.delenv("SEMANTIK_SEMANTIC_CLASS", raising=False)
+    off_content = build_reviewer_request(_code_region(), (None, None), 0)
+    off_windowed = build_windowed_reviewer_request(_window_records())
+    off_heading = build_reviewer_request(_heading_region(), (None, None), 0)
+
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    on_content = build_reviewer_request(_code_region(), (None, None), 0)
+    on_windowed = build_windowed_reviewer_request(_window_records())
+    on_heading = build_reviewer_request(_heading_region(), (None, None), 0)
+
+    monkeypatch.delenv("SEMANTIK_SEMANTIC_CLASS", raising=False)
+    off_content_again = build_reviewer_request(_code_region(), (None, None), 0)
+    off_windowed_again = build_windowed_reviewer_request(_window_records())
+
+    # Byte-identical flag-off across the on->off round trip.
+    assert off_content == off_content_again
+    assert off_windowed == off_windowed_again
+    # No semantic-class artifacts leak into the flag-off prompts.
+    for prompt in (off_content, off_windowed):
+        assert _MENU_SIGNATURE not in prompt
+        assert "semantic_class" not in prompt
+    # Flag-on genuinely DIFFERS for the content + windowed builders.
+    assert on_content != off_content
+    assert on_windowed != off_windowed
+    # The HEADING single-block prompt is byte-identical regardless of the flag
+    # (it never reaches the content branch).
+    assert on_heading == off_heading
+    assert _MENU_SIGNATURE not in on_heading
+    assert "semantic_class" not in on_heading
+
+
+def test_example_rule_present(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    content = build_reviewer_request(_code_region(), (None, None), 0)
+    low = content.lower()
+    # The EXAMPLE -> worked_example mapping + verdict.
+    assert "example 1.3" in low
+    assert "worked_example" in content
+    assert 'verdict "corrected"' in content
+    # The NEVER-heading rule (an example is a component, not a heading).
+    assert "an example is a component, not a heading" in low
+    assert 'never corrected_kind "heading"' in low
+
+
+def test_semantic_class_key_in_both_contracts(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    content = build_reviewer_request(_code_region(), (None, None), 0)
+    windowed = build_windowed_reviewer_request(_window_records())
+    # semantic_class documented as an OPTIONAL key on BOTH review surfaces.
+    for prompt in (content, windowed):
+        assert "semantic_class" in prompt
+        assert "optional" in prompt.lower()
+        assert "from the menu, or null" in prompt
+
+
+def test_no_envelope_json_only_still_holds(monkeypatch):
+    # The existing no-envelope / JSON-only mandate must still hold with the
+    # menu injected (flag on) on the windowed builder.
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    prompt = build_windowed_reviewer_request(_window_records())
+    low = prompt.lower()
+    assert "into one accessible html5 fragment" not in low
+    assert "document-conversion specialist" not in low
+    assert "convert the single" not in low
+    # JSON-array-only mandate is intact.
+    assert "json array only" in low
+    assert "no code fences" in low or "no markdown" in low

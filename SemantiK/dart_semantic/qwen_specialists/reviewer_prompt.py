@@ -411,6 +411,13 @@ def build_reviewer_request(
     # byte-stable path its tests assert against).
     if str(region.kind) != "heading":
         system_parts.append(_CONTENT_RETYPE_DIRECTIVE)
+        # Phase 5 (flag-gated): offer the gold-component menu + the optional
+        # semantic_class key. Appended as an EXTRA part ONLY when the flag is
+        # on, so the flag-off content prompt is byte-identical (and the HEADING
+        # path never reaches here, so its legacy byte-stable prompt is
+        # untouched either way).
+        if _semantic_class_enabled():
+            system_parts.append(_semantic_class_directive())
     system = "\n\n".join(system_parts)
     return f"SYSTEM: {system}\nUSER: {user_json}"
 
@@ -495,6 +502,88 @@ _CONTENT_RETYPE_DIRECTIVE = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Gold accessible semantic-CLASS menu + assign directive (Phase 5, flag-gated
+# on ``SEMANTIK_SEMANTIC_CLASS`` via ``resolve_semantic_class_mode``).
+#
+# This adds a SECOND, orthogonal axis to the content / windowed review: in
+# addition to ``corrected_kind`` (the 11-member REGION_KINDS HTML structure)
+# the model MAY return an optional ``semantic_class`` (a gold accessible-
+# component token from the in-tree catalog). The menu is rendered from the
+# SemantiK-local ``semantic_catalog`` accessors (NEVER ``lib.*`` — the reviewer
+# runs out-of-process in SemantiK's bridge venv), mirroring how
+# ``lib/generation/block_planner._build_prompt`` renders its block catalog as
+# ``- {token}: {use_when}`` lines.
+#
+# HARD INVARIANT — flag-off byte-identical: the menu + directive are appended
+# to the content / windowed system turn ONLY when ``resolve_semantic_class_mode``
+# is True. Flag-off, neither builder appends anything, so every legacy prompt
+# (incl. the heading single-block path, which never reaches the content branch)
+# is byte-identical. The contract-key mention is carried WHOLLY inside this
+# flag-gated block (it documents the optional key against BOTH the single-object
+# contract of ``_SYSTEM_REVIEWER`` and the op-list contract of
+# ``_WINDOW_OPLIST_DIRECTIVE``), so the module-level constants are NOT edited and
+# stay byte-stable for the flag-off / heading paths.
+# ---------------------------------------------------------------------------
+
+
+def _semantic_class_enabled() -> bool:
+    """Return ``resolve_semantic_class_mode()`` (lazy import to break the
+    ``reviewer`` <-> ``reviewer_prompt`` cycle — ``reviewer`` imports THIS
+    module, mirroring ``build_edge_input``'s lazy ``from .reviewer import``)."""
+    from .reviewer import resolve_semantic_class_mode
+
+    return resolve_semantic_class_mode()
+
+
+def _semantic_component_menu() -> str:
+    """Render the gold-component menu — one terse ``- {component}: {use_when}``
+    line per catalog entry (mirrors ``block_planner._build_prompt``'s catalog
+    menu idiom). SemantiK-local accessors only; never imports ``lib.*``."""
+    from dart_semantic.assembler.semantic_catalog import load_semantic_catalog
+
+    lines = [
+        "AVAILABLE SEMANTIC COMPONENTS (choose at most ONE token as semantic_class):"
+    ]
+    for entry in load_semantic_catalog():
+        component = str(entry.get("component") or "").strip()
+        if not component:
+            continue
+        use_when = " ".join(str(entry.get("use_when") or "").split())
+        lines.append(f"  - {component}: {use_when}")
+    return "\n".join(lines)
+
+
+def _semantic_class_directive() -> str:
+    """The flag-gated semantic-class assign instruction + EXAMPLE-is-a-component
+    rule + the rendered component menu, appended to the content / windowed
+    system turn when ``resolve_semantic_class_mode`` is True. Rendered at call
+    time (the catalog read is cheap + lru-cached)."""
+    return (
+        "SEMANTIC CLASS (optional, additive — ORTHOGONAL to corrected_kind). In "
+        "ADDITION to corrected_kind you MAY assign the block a gold accessible-"
+        "component semantic_class: a single component token chosen from the "
+        "AVAILABLE SEMANTIC COMPONENTS menu below, or null when none fits. "
+        "corrected_kind is the block's HTML STRUCTURE "
+        "(paragraph/list/table/...); semantic_class is its PEDAGOGICAL / "
+        "STRUCTURAL role (worked_example, definition_region, callout_note, "
+        "exercise, ...) — the two are independent. Return semantic_class for any "
+        "pedagogical or structural component you recognize; omit it or set null "
+        "otherwise. Add semantic_class (a component-class string from the menu, "
+        "or null) as an OPTIONAL key to your JSON output — to the single object's "
+        "keys (single-block review) or to each op object's keys (windowed "
+        "review); an absent key is treated as null (backward-compatible). You "
+        "still NEVER rewrite, add, or remove the source text.\n"
+        "RULE — AN EXAMPLE IS A COMPONENT, NOT A HEADING. A labeled EXAMPLE / "
+        "worked instance is BODY content carrying a semantic_class; it is NEVER "
+        "a heading. EXAMPLE 1.3: a block whose text begins \"EXAMPLE 1.3 "
+        "Simplify 3 + 7\" -> corrected_kind \"paragraph\", semantic_class "
+        "\"worked_example\", verdict \"corrected\" — NEVER corrected_kind "
+        "\"heading\" (an EXAMPLE label is a component, not a section heading).\n"
+        + _semantic_component_menu()
+    )
+
+
 def build_windowed_reviewer_request(
     records: list[dict[str, Any]],
     *,
@@ -517,14 +606,18 @@ def build_windowed_reviewer_request(
             item.update(_cluster_signal_fields(cluster_signals_by_idx.get(rec.get("idx"))))
         enriched.append(item)
     user_json = json.dumps(enriched, ensure_ascii=False, separators=(",", ":"))
-    system = "\n\n".join(
-        [
-            _SYSTEM_REVIEWER,
-            _GLOBAL_WCAG_HEADER,
-            _WINDOW_OPLIST_DIRECTIVE,
-            _CONTENT_RETYPE_DIRECTIVE,
-        ]
-    )
+    system_parts = [
+        _SYSTEM_REVIEWER,
+        _GLOBAL_WCAG_HEADER,
+        _WINDOW_OPLIST_DIRECTIVE,
+        _CONTENT_RETYPE_DIRECTIVE,
+    ]
+    # Phase 5 (flag-gated): append the gold-component menu + optional
+    # semantic_class key ONLY when the flag is on, so the flag-off windowed
+    # prompt is byte-identical to the legacy assembly.
+    if _semantic_class_enabled():
+        system_parts.append(_semantic_class_directive())
+    system = "\n\n".join(system_parts)
     return f"SYSTEM: {system}\nUSER: {user_json}"
 
 
