@@ -129,8 +129,10 @@ from dart_semantic.pedagogical_units import (  # noqa: E402
     ABSORB_MAX_RUN,
     BODY_BEARING_COMPONENT_CLASSES,
     UNIT_START_PEDAGOGY_CLASSES,
+    is_passthrough_region,
     is_unit_boundary,
     resolve_unit_regroup_mode,
+    resolve_unit_regroup_table_mode,
 )
 
 
@@ -299,11 +301,14 @@ def _region_pages(region: Region, feature_blocks: list[FeatureBlock]) -> set[int
     return pages
 
 
-def _is_passthrough(region: Region) -> bool:
-    """Whether a region is a table/math Stage-4 passthrough (has a
-    ``source_region_id``). Merging/splitting one would orphan the Stage-4
-    link, so Stage-5e skips them (v1 scope cut)."""
-    return getattr(region, "source_region_id", None) is not None
+# Single-sourced passthrough predicate — aliased to the neutral
+# ``pedagogical_units.is_passthrough_region`` (table-v2 Phase 1) so the Stage-5e
+# resegment and the assembler-side narrow absorb share ONE definition (a future
+# passthrough-kind change updates one place). The cross-package import is
+# cycle-free (the neutral module is dependency-light). A region is a table/math/
+# figure Stage-4 passthrough iff it carries a non-null ``source_region_id``;
+# merging/splitting one would orphan the Stage-4 link, so Stage-5e skips them.
+_is_passthrough = is_passthrough_region
 
 
 def _merge_says_not_same_at(
@@ -1244,8 +1249,10 @@ __all__ = [
     "apply_proposed_regroups",
     "assert_partition_conservation",
     "build_resegment_audit_rows",
+    "is_passthrough_region",
     "resegment_blocks",
     "resolve_block_resegment_llm_mode",
     "resolve_block_resegment_mode",
     "resolve_unit_regroup_mode",
+    "resolve_unit_regroup_table_mode",
 ]

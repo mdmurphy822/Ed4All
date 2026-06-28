@@ -44,6 +44,38 @@ def resolve_unit_regroup_mode() -> bool:
     return raw in _TRUTHY
 
 
+def resolve_unit_regroup_table_mode() -> bool:
+    """Return True when the table-v2 narrow render-time passthrough absorb is
+    enabled (``SEMANTIK_UNIT_REGROUP_TABLE``).
+
+    Default OFF (unset / blank / falsey / garbage) -> byte-identical to the
+    committed v1 regroup (the trailing Solution table renders ADJACENT to the
+    worked-example box). A truthy value (``1``/``true``/``yes``/``on``,
+    case-insensitive) opts in. This resolver returns the RAW bool; the
+    effective no-op-unless-the-regroup-is-firing behaviour is enforced at the
+    Phase-2 call site by the composite
+    ``assembler.shell.resolve_narrow_table_absorb_mode`` (``SEMANTIK_UNIT_REGROUP``
+    AND ``SEMANTIK_READING_ORDER_FIX`` both on). Mirrors
+    ``resolve_unit_regroup_mode``'s parse-with-fallback body verbatim.
+    """
+    raw = (os.environ.get("SEMANTIK_UNIT_REGROUP_TABLE") or "").strip().lower()
+    return raw in _TRUTHY
+
+
+def is_passthrough_region(region: Any) -> bool:
+    """Whether ``region`` is a Stage-4 passthrough (table / math / figure) —
+    i.e. it carries a non-null ``source_region_id`` (set at
+    ``structure_graph.py`` for the table/math/figure passthrough emit).
+
+    Single source of truth for the passthrough predicate: the Stage-5e
+    ``block_resegment._is_passthrough`` aliases this so a future
+    passthrough-kind change updates ONE definition. The ``source_region_id``
+    test (not a ``kind`` check) covers table AND math AND figure passthrough
+    identically.
+    """
+    return getattr(region, "source_region_id", None) is not None
+
+
 # Component classes whose label region absorbs the following body regions.
 BODY_BEARING_COMPONENT_CLASSES = frozenset(
     {"worked_example", "definition_region", "exercise"}
@@ -169,6 +201,8 @@ __all__ = [
     "ABSORB_MAX_RUN",
     "BODY_BEARING_COMPONENT_CLASSES",
     "UNIT_START_PEDAGOGY_CLASSES",
+    "is_passthrough_region",
     "is_unit_boundary",
     "resolve_unit_regroup_mode",
+    "resolve_unit_regroup_table_mode",
 ]

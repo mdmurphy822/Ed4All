@@ -18,14 +18,17 @@ from dart_semantic.qwen_specialists.block_resegment import (
     ResegmentOp,
     _detect_splits,
     _detect_unit_merges,
+    _is_passthrough,
     apply_proposed_regroups,
     apply_resegment,
     assert_partition_conservation,
     build_resegment_audit_rows,
+    is_passthrough_region,
     resegment_blocks,
     resolve_block_resegment_llm_mode,
     resolve_block_resegment_mode,
     resolve_unit_regroup_mode,
+    resolve_unit_regroup_table_mode,
 )
 from dart_semantic.structure_graph import Region
 from dart_semantic.types import FeatureBlock, RawBlock
@@ -547,6 +550,43 @@ def test_unit_regroup_mode_garbage_is_off(monkeypatch):
     for v in ("banana", "0", "off", "false", "no", "maybe"):
         monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", v)
         assert resolve_unit_regroup_mode() is False
+
+
+# ---------------------------------------------------------------------------
+# table-v2 Phase 0 — SEMANTIK_UNIT_REGROUP_TABLE sub-flag resolver.
+# ---------------------------------------------------------------------------
+
+
+def test_unit_regroup_table_mode_off_by_default(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP_TABLE", raising=False)
+    assert resolve_unit_regroup_table_mode() is False
+    for v in ("", "  "):
+        monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", v)
+        assert resolve_unit_regroup_table_mode() is False
+
+
+def test_unit_regroup_table_mode_truthy_tokens(monkeypatch):
+    for v in ("1", "true", "yes", "on", "  On  ", "YES"):
+        monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", v)
+        assert resolve_unit_regroup_table_mode() is True
+
+
+def test_unit_regroup_table_mode_garbage_is_off(monkeypatch):
+    for v in ("banana", "0", "off", "false", "no", "maybe"):
+        monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", v)
+        assert resolve_unit_regroup_table_mode() is False
+
+
+def test_is_passthrough_region_aliases_single_source():
+    """``block_resegment._is_passthrough`` IS the neutral
+    ``is_passthrough_region`` (single-sourced; cycle-free)."""
+    assert _is_passthrough is is_passthrough_region
+    none_region = Region(kind="paragraph", feature_block_indices=(0,), payload={})
+    table_region = Region(
+        kind="table", feature_block_indices=(1,), payload={}, source_region_id=3
+    )
+    assert is_passthrough_region(none_region) is False
+    assert is_passthrough_region(table_region) is True
 
 
 # ---------------------------------------------------------------------------
