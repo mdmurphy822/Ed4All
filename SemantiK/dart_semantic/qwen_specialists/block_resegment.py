@@ -557,6 +557,33 @@ def _region_token_count(region: Region, feature_blocks: list[FeatureBlock]) -> i
     return total
 
 
+def _make_regroup_op(run: list[int], regions: list[Region]) -> ResegmentOp:
+    """Build a ``subtype='regroup'`` merge op from a contiguous run, asserting
+    the ANCHOR-FIRST invariant at CONSTRUCTION (Phase 3).
+
+    ``region_indices[0]`` MUST be the unit anchor (a unit-start ``css_class`` or
+    a body-bearing ``semantic_class``) — the merged region inherits ``run[0]``'s
+    payload (so the unit's ``semantic_class`` / ``css_class`` carry onto the
+    merged region for free), so a body-first run would silently lose the unit's
+    semantic class. The assert lives HERE, where the anchor is known — NOT in the
+    shared :func:`_merged_region`, which same-kind merges also call with a
+    NON-anchor ``run[0]`` (an unconditional assert there would wrongly raise). A
+    future refactor that builds a body-first regroup run fails loudly here
+    instead of silently mis-stamping.
+    """
+    assert _is_unit_anchor(
+        regions[run[0]]
+    ), "regroup anchor-first invariant: region_indices[0] must be the unit anchor"
+    source_ids = tuple(_region_first_raw(regions[k]) for k in run)
+    return ResegmentOp(
+        op="merge",
+        subtype="regroup",
+        region_indices=tuple(run),
+        source_ids=source_ids,
+        origin="deterministic",
+    )
+
+
 def _detect_unit_merges(
     regions: list[Region],
     feature_blocks: list[FeatureBlock],
@@ -594,6 +621,11 @@ def _detect_unit_merges(
     UNCALLED in Phase 2 — no driver appends these ops yet (Phase 6 wires it),
     so this function is pure / GPU-free / zero behavior change.
     """
+    # Self-gate (Phase 3): off -> no op emitted (Phase 6 ALSO gates inside the
+    # driver; this is the defensive belt so a stray direct call is inert when
+    # the flag is off).
+    if not resolve_unit_regroup_mode():
+        return []
     ops: list[ResegmentOp] = []
     n = len(regions)
     consumed: set[int] = set()
@@ -620,7 +652,15 @@ def _detect_unit_merges(
             if cur_first != prev_last + 1:
                 break
             # v1 passthrough stop (Phase 4): never fuse a Stage-4 table/math
-            # region (would orphan its source_region_id link).
+            # region — ``_merged_region`` cannot preserve a child's
+            # ``source_region_id``, so absorbing one would ORPHAN the Stage-4
+            # table/math link (the example box ends just before an embedded
+            # table; the table renders as its own adjacent region). The
+            # justification is source_region_id ORPHANING, NOT token
+            # conservation (which is kind-agnostic and re-derives from raw FBs).
+            # v2: a future split-then-regroup that RETAINS the absorbed
+            # passthrough child's ``source_region_id`` would let the table live
+            # INSIDE the box.
             if _is_passthrough(cur):
                 break
             if is_unit_boundary(cur, html=None):
@@ -635,21 +675,11 @@ def _detect_unit_merges(
             acc_tokens += cur_tokens
             j += 1
         if len(run) >= 2:
-            # Anchor-first invariant: region_indices[0] is the unit anchor (so
-            # the merged region inherits the LABEL's semantic_class/css_class in
-            # Phase 3). run[0] == i is the anchor by construction; assert it so a
-            # future body-first refactor fails loudly here, not silently.
-            assert _is_unit_anchor(regions[run[0]]), "regroup anchor must be run[0]"
-            source_ids = tuple(_region_first_raw(regions[k]) for k in run)
-            ops.append(
-                ResegmentOp(
-                    op="merge",
-                    subtype="regroup",
-                    region_indices=tuple(run),
-                    source_ids=source_ids,
-                    origin="deterministic",
-                )
-            )
+            # Anchor-first invariant asserted at CONSTRUCTION inside
+            # _make_regroup_op (region_indices[0] is the unit anchor, so the
+            # merged region inherits the LABEL's semantic_class/css_class in
+            # Phase 3).
+            ops.append(_make_regroup_op(run, regions))
             consumed.update(run)
             i = run[-1] + 1
         else:
@@ -663,15 +693,26 @@ def _detect_unit_merges(
 
 
 def _merged_region(
-    run_regions: list[Region], feature_blocks: list[FeatureBlock]
+    run_regions: list[Region],
+    feature_blocks: list[FeatureBlock],
+    *,
+    subtype: str = "merge",
 ) -> Region:
-    """Build the merged region from a doc-order run of same-kind regions.
+    """Build the merged region from a doc-order run of regions.
 
     ``feature_block_indices`` = doc-order concat; ``payload['text']`` =
     ``_joined_source_text`` of the union; ``pages`` (if the payload carries
     one) = union; kind = the shared kind; keeps the lowest source id by
     construction (min FB index is preserved). A ``resegment`` breadcrumb is
-    stamped on the payload (mirrors ``structure_clean``)."""
+    stamped on the payload (mirrors ``structure_clean``).
+
+    ``subtype`` (Phase 3) discriminates a cross-kind pedagogical-unit REGROUP
+    (``'regroup'``) from a same-kind merge (``'merge'``, the default). The
+    default keeps every EXISTING same-kind merge byte-identical. For a regroup
+    the merged region carries the unit's ``semantic_class`` (inherited from the
+    anchor ``run[0]`` for free, or DETERMINISTICALLY derived from the always-on
+    ``css_class`` when the reviewer was off) so the per-region gold wrap boxes
+    the WHOLE unit, and the breadcrumb records ``op='regroup'``."""
     first = run_regions[0]
     fb_union: list[int] = []
     for r in run_regions:
@@ -691,8 +732,32 @@ def _merged_region(
     if pages:
         payload["pages"] = sorted(pages)
 
+    # Regroup-subtype path ONLY (same-kind merges stay byte-identical):
+    breadcrumb_op = "merge"
+    if subtype == "regroup":
+        breadcrumb_op = "regroup"
+        # The anchor's pay['semantic_class'] (stamped by the Stage-5d reviewer)
+        # already carries onto `payload` via the dict copy above. When the
+        # reviewer was OFF but the always-on css_class is present, DERIVE the
+        # gold component deterministically so the wrap still fires. Validated
+        # against the catalog -> never invents a component (anti-fabrication;
+        # mirrors the Stage-5d FLOOR). Lazy import keeps the
+        # qwen_specialists->assembler edge off the module-top graph (mirrors
+        # reviewer.py's lazy semantic_catalog imports).
+        if not payload.get("semantic_class"):
+            css_class = payload.get("css_class")
+            if css_class:
+                from dart_semantic.assembler.semantic_catalog import (
+                    component_for_pedagogy_class,
+                    valid_components,
+                )
+
+                component = component_for_pedagogy_class(css_class)
+                if component and component in valid_components():
+                    payload["semantic_class"] = component
+
     payload["resegment"] = {
-        "op": "merge",
+        "op": breadcrumb_op,
         "source_ids": [_region_first_raw(r) for r in run_regions],
         "conservation_verified": True,
     }
@@ -794,7 +859,7 @@ def apply_resegment(
         if i in merge_by_start:
             op = merge_by_start[i]
             run_regions = [regions[k] for k in op.region_indices]
-            out.append(_merged_region(run_regions, feature_blocks))
+            out.append(_merged_region(run_regions, feature_blocks, subtype=op.subtype))
             i = op.region_indices[-1] + 1
             continue
         if i in split_by_index:

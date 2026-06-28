@@ -114,6 +114,16 @@ class _EmptyState:
     outputs = {}
 
 
+@pytest.fixture
+def unit_regroup_on(monkeypatch):
+    """Enable SEMANTIK_UNIT_REGROUP for a detector-direct test.
+
+    The Phase-3 self-gate makes ``_detect_unit_merges`` return ``[]`` when the
+    flag is off, so any test that calls the detector directly and expects ops
+    requests this fixture."""
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+
+
 class _DownRuntime:
     """A runtime whose generate_batch always raises (endpoint down)."""
 
@@ -526,7 +536,7 @@ def test_unit_regroup_mode_garbage_is_off(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_detect_unit_merge_label_plus_body():
+def test_detect_unit_merge_label_plus_body(unit_regroup_on):
     """label(pedagogy-example) + problem + Solution + step -> ONE regroup op
     spanning (0,1,2,3), anchored at index 0."""
     fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("Solution factor"), _fb("Step 1")]
@@ -545,7 +555,7 @@ def test_detect_unit_merge_label_plus_body():
     assert op.region_indices[0] == 0
 
 
-def test_detect_stops_at_next_unit_start():
+def test_detect_stops_at_next_unit_start(unit_regroup_on):
     """A SECOND pedagogy-example after the body is a boundary — the run stops
     before it."""
     fbs = [_fb("EXAMPLE 1"), _fb("body one"), _fb("EXAMPLE 2"), _fb("body two")]
@@ -562,7 +572,7 @@ def test_detect_stops_at_next_unit_start():
     assert all(idx not in ops[0].region_indices for idx in (2, 3))
 
 
-def test_detect_stops_at_heading():
+def test_detect_stops_at_heading(unit_regroup_on):
     """A heading region is a hard boundary."""
     fbs = [_fb("EXAMPLE 1"), _fb("body"), _fb("Next Section"), _fb("after")]
     regions = [
@@ -576,7 +586,7 @@ def test_detect_stops_at_heading():
     assert ops[0].region_indices == (0, 1)
 
 
-def test_detect_caps_at_absorb_max_run():
+def test_detect_caps_at_absorb_max_run(unit_regroup_on):
     """A 12-region body absorbs at most ABSORB_MAX_RUN (8) followers."""
     from dart_semantic.pedagogical_units import ABSORB_MAX_RUN
 
@@ -593,7 +603,7 @@ def test_detect_caps_at_absorb_max_run():
     assert ops[0].region_indices[0] == 0
 
 
-def test_detect_caps_at_token_budget():
+def test_detect_caps_at_token_budget(unit_regroup_on):
     """A run whose summed FB text would exceed the token budget caps early."""
     # Each body region ~ (budget // 2) + 1 words so the THIRD body would overflow.
     big = " ".join(["w"] * ((_UNIT_REGROUP_TOKEN_BUDGET // 2) + 1))
@@ -611,7 +621,7 @@ def test_detect_caps_at_token_budget():
     assert ops[0].region_indices == (0, 1)
 
 
-def test_detect_run_of_one_no_op():
+def test_detect_run_of_one_no_op(unit_regroup_on):
     """A lone anchor with an immediate boundary emits no op."""
     fbs = [_fb("EXAMPLE 1"), _fb("Next")]
     regions = [
@@ -622,7 +632,7 @@ def test_detect_run_of_one_no_op():
     assert ops == []
 
 
-def test_detect_requires_fb_adjacency():
+def test_detect_requires_fb_adjacency(unit_regroup_on):
     """A non-contiguous (kind-segregated) list yields no spurious run."""
     fbs = [_fb(f"t{i}") for i in range(6)]
     regions = [
@@ -635,7 +645,7 @@ def test_detect_requires_fb_adjacency():
     assert ops == []
 
 
-def test_detect_anchor_is_index_zero():
+def test_detect_anchor_is_index_zero(unit_regroup_on):
     """Every emitted op's first index is the unit anchor (semantic_class anchor
     here), even when it is not region 0 of the document."""
     fbs = [_fb("Intro"), _fb("EXAMPLE"), _fb("body a"), _fb("body b")]
@@ -651,3 +661,211 @@ def test_detect_anchor_is_index_zero():
     assert first_idx == 1
     anchor = regions[first_idx]
     assert anchor.payload.get("semantic_class") == "worked_example"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — cross-kind unit-MERGE op (subtype='regroup') + semantic_class carry.
+# ---------------------------------------------------------------------------
+
+
+def _unit_regions():
+    """label(pedagogy-example) + problem + Solution + step -> a 4-region unit."""
+    fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("Solution factor"), _fb("Step 1")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="solve x"),
+        _region("paragraph", [2], text="Solution factor", css_class="pedagogy-solution"),
+        _region("paragraph", [3], text="Step 1", css_class="pedagogy-step"),
+    ]
+    return regions, fbs
+
+
+def test_unit_merge_fuses_run_into_one_region(unit_regroup_on):
+    """Applying the regroup op fuses the 4-region unit into ONE region whose
+    FBs are the doc-order concat and whose pages are unioned."""
+    regions, fbs = _unit_regions()
+    # Give each region a page so the union is observable.
+    regions = [dataclasses.replace(r, payload={**r.payload, "pages": [i + 1]})
+               for i, r in enumerate(regions)]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    assert len(ops) == 1
+    out = apply_resegment(regions, fbs, ops)
+    assert len(out) == len(regions) - 3  # 4 -> 1
+    merged = out[0]
+    assert merged.feature_block_indices == (0, 1, 2, 3)  # doc-order concat
+    assert merged.payload["pages"] == [1, 2, 3, 4]  # unioned
+
+
+def test_merged_region_carries_label_semantic_class(unit_regroup_on):
+    """A label region already carrying semantic_class='worked_example' (reviewer
+    ran) -> the merged region carries it (anchor payload inherited for free)."""
+    fbs = [_fb("EXAMPLE 1"), _fb("body a"), _fb("body b")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1",
+                css_class="pedagogy-example", semantic_class="worked_example"),
+        _region("paragraph", [1], text="body a"),
+        _region("paragraph", [2], text="body b"),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    out = apply_resegment(regions, fbs, ops)
+    assert out[0].payload.get("semantic_class") == "worked_example"
+
+
+def test_deterministic_semantic_class_from_css_class(unit_regroup_on):
+    """Reviewer OFF: a label with ONLY css_class='pedagogy-example' gains
+    semantic_class='worked_example' via component_for_pedagogy_class."""
+    fbs = [_fb("EXAMPLE 1"), _fb("body a"), _fb("body b")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="body a"),
+        _region("paragraph", [2], text="body b"),
+    ]
+    assert regions[0].payload.get("semantic_class") is None  # reviewer off
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    out = apply_resegment(regions, fbs, ops)
+    assert out[0].payload.get("semantic_class") == "worked_example"
+
+
+def test_unknown_css_class_no_fabricated_component():
+    """A regroup merge whose anchor css_class has no catalog mapping (and no
+    prior semantic_class) gets NO semantic_class stamped — anti-fabrication,
+    never invents a component. Exercised directly on _merged_region (the carry
+    site) with an unmapped css that component_for_pedagogy_class returns None
+    for."""
+    from dart_semantic.qwen_specialists.block_resegment import _merged_region
+
+    fbs = [_fb("EXAMPLE 1"), _fb("body a")]
+    anchor = _region("paragraph", [0], text="EXAMPLE 1",
+                     css_class="pedagogy-bogus-unmapped")
+    body = _region("paragraph", [1], text="body a")
+    merged = _merged_region([anchor, body], fbs, subtype="regroup")
+    assert merged.payload.get("semantic_class") is None  # never invented
+    # The breadcrumb still records the regroup (the carry just had nothing to
+    # derive).
+    assert merged.payload["resegment"]["op"] == "regroup"
+
+
+def test_merged_region_breadcrumb_op_regroup(unit_regroup_on):
+    """A regroup-subtype merge stamps breadcrumb op='regroup'; a same-kind
+    merge keeps op='merge'."""
+    regions, fbs = _unit_regions()
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    out = apply_resegment(regions, fbs, ops)
+    assert out[0].payload["resegment"]["op"] == "regroup"
+
+    # Same-kind merge keeps 'merge'.
+    fbs2 = [_fb("the cat sat on the", page=1), _fb("warm mat by the fire", page=2)]
+    regions2 = [
+        _region("paragraph", [0], text="the cat sat on the", pages=[1]),
+        _region("paragraph", [1], text="warm mat by the fire", pages=[2]),
+    ]
+    out2, _ = resegment_blocks(regions2, fbs2, _EmptyState())
+    assert out2[0].payload["resegment"]["op"] == "merge"
+
+
+def test_subtype_default_merge_byte_stable():
+    """A same-kind _detect_merges op has subtype=='merge' (the default) and its
+    audit-shape fields are byte-identical to the pre-field op."""
+    op = ResegmentOp(op="merge", region_indices=(0, 1), source_ids=(0, 1))
+    assert op.subtype == "merge"
+    # The serialized audit shape the cascade builds reads op/source_ids/origin —
+    # all byte-identical to a no-subtype op.
+    assert op.op == "merge"
+    assert op.source_ids == (0, 1)
+    assert op.origin == "deterministic"
+
+
+def test_anchor_first_invariant_asserts():
+    """A hand-built body-first regroup run raises at construction; a same-kind
+    merge with a non-anchor run[0] does NOT raise."""
+    from dart_semantic.qwen_specialists.block_resegment import (
+        _make_regroup_op,
+        _merged_region,
+    )
+    # A body-first run (run[0] is a plain paragraph, not a unit anchor) raises.
+    fbs = [_fb("plain body"), _fb("EXAMPLE 1")]
+    body_first = [
+        _region("paragraph", [0], text="plain body"),
+        _region("paragraph", [1], text="EXAMPLE 1", css_class="pedagogy-example"),
+    ]
+    with pytest.raises(AssertionError):
+        _make_regroup_op([0, 1], body_first)
+
+    # A SAME-KIND merge through the shared _merged_region with a non-anchor
+    # run[0] does NOT raise (the assert is scoped to op construction).
+    same_kind = [
+        _region("paragraph", [0], text="plain a"),
+        _region("paragraph", [1], text="plain b"),
+    ]
+    merged = _merged_region(same_kind, fbs, subtype="merge")
+    assert merged.feature_block_indices == (0, 1)  # no raise
+
+
+def test_rpart_and_token_conservation_hold_cross_kind(unit_regroup_on):
+    """assert_partition_conservation + assert_token_conservation pass on the
+    cross-kind merge output."""
+    from dart_semantic.qwen_specialists.reviewer import assert_token_conservation
+
+    regions, fbs = _unit_regions()
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    out = apply_resegment(regions, fbs, ops)
+    assert_partition_conservation(regions, out)  # R-PART
+    assert_token_conservation(regions, out, fbs)  # C3 token conservation
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — passthrough (table/math) is a unit BOUNDARY (v1, no orphaning).
+# ---------------------------------------------------------------------------
+
+
+def test_regroup_stops_at_passthrough_table(unit_regroup_on):
+    """label + problem + Solution + table(source_region_id set) -> the merged
+    region is label+problem+Solution ONLY; the table stays a SEPARATE region
+    with its source_region_id intact."""
+    fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("Solution factor"), _fb("grid")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="solve x"),
+        _region("paragraph", [2], text="Solution factor", css_class="pedagogy-solution"),
+        _region("table", [3], text="grid", source_region_id="tbl-7"),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    assert len(ops) == 1
+    assert ops[0].region_indices == (0, 1, 2)  # table excluded
+    out = apply_resegment(regions, fbs, ops)
+    assert len(out) == 2  # merged unit + the standalone table
+    merged, table = out[0], out[1]
+    assert merged.feature_block_indices == (0, 1, 2)
+    assert table.source_region_id == "tbl-7"  # Stage-4 link intact
+    assert table.feature_block_indices == (3,)
+
+
+def test_passthrough_link_never_orphaned(unit_regroup_on):
+    """No merged region carries a fused-away source_region_id — the merged
+    unit's source_region_id == the label's (unchanged, None here)."""
+    fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("grid")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="solve x"),
+        _region("table", [2], text="grid", source_region_id="tbl-9"),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    out = apply_resegment(regions, fbs, ops)
+    merged = out[0]
+    assert merged.source_region_id is None  # label's, unchanged — not fused away
+    # The table survives standalone with its link.
+    assert any(r.source_region_id == "tbl-9" for r in out)
+
+
+def test_math_passthrough_also_boundary(unit_regroup_on):
+    """A math passthrough (source_region_id set) inside a body is a boundary,
+    parity with the table case."""
+    fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("x^2")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="solve x"),
+        _region("math", [2], text="x^2", source_region_id="math-3"),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    assert len(ops) == 1
+    assert ops[0].region_indices == (0, 1)  # math excluded
