@@ -107,22 +107,24 @@ from .types import FeatureBlock
 # Reading-order fix gate.
 # ---------------------------------------------------------------------------
 
-_READING_ORDER_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_READING_ORDER_FALSEY = frozenset({"0", "false", "no", "off"})
 
 
 def resolve_reading_order_fix() -> bool:
     """Return True when the Stage-5 region reading-order re-sort runs.
 
-    Reads ``SEMANTIK_READING_ORDER_FIX``. Default OFF (unset / blank /
-    falsey / garbage) -> byte-identical to today (the segregated pass-order
-    region list is returned unchanged; mirrors
-    ``reviewer.resolve_structure_review_mode``). A truthy value
-    (``1``/``true``/``yes``/``on``, case-insensitive) enables the final
-    stable sort of ``build_structure_graph``'s region list into document
-    reading order.
+    Reads ``SEMANTIK_READING_ORDER_FIX``. **Default ON** (unset / blank /
+    truthy / garbage -> on): the final stable sort of
+    ``build_structure_graph``'s region list into document reading order runs,
+    so the assembled HTML + ``region_provenance`` are in reading order. Only
+    an EXPLICIT falsey value (``0``/``false``/``no``/``off``, case-insensitive)
+    reverts to the legacy segregated pass-order list (the revert lever).
+    Default-on parse-with-fallback semantics mirror
+    ``deterministic_structure.resolve_structure_clean_mode`` /
+    ``toc_frontmatter_detector._flag_enabled``.
     """
     raw = (os.environ.get("SEMANTIK_READING_ORDER_FIX") or "").strip().lower()
-    return raw in _READING_ORDER_TRUTHY
+    return raw not in _READING_ORDER_FALSEY
 
 
 # ---------------------------------------------------------------------------

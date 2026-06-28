@@ -9,7 +9,8 @@ labels (council=heading) at byte-4% and their bodies (paragraph) at byte-40%.
 
 The fix is a final STABLE sort by ``min(feature_block_indices)`` at the exit
 of ``build_structure_graph``, gated behind ``SEMANTIK_READING_ORDER_FIX``
-(default off, byte-identical when off).
+(now **default ON**; an explicit falsey value is the byte-identical revert
+lever back to the segregated pass-order list).
 
 This test drives the REAL ``build_structure_graph`` path on a synthetic,
 GPU-free CouncilState (mirroring the harness in
@@ -171,9 +172,11 @@ def _first_index_of_kind(regions, kind: str) -> int:
 
 
 def test_segregated_when_flag_off(monkeypatch):
-    """Flag unset -> the legacy pass-order segregation: >0 inversions AND a
-    heading region precedes its body-paragraph region by list index."""
-    monkeypatch.delenv(_FLAG, raising=False)
+    """Explicit falsey (the revert lever) -> the legacy pass-order
+    segregation: >0 inversions AND a heading region precedes its
+    body-paragraph region by list index. (The fix is default-ON now, so this
+    pins the OFF behavior via an explicit ``0``.)"""
+    monkeypatch.setenv(_FLAG, "0")
     state, fbs, cands, decs = _build_interleaved_graph()
     regions = build_structure_graph(state, fbs, cands, decs)
 
@@ -220,10 +223,10 @@ def test_coverage_invariant_holds_both_states(monkeypatch, flag_value):
 
 
 def test_flag_off_region_order_byte_identical_to_baseline(monkeypatch):
-    """The flag-off region list is the EXACT segregated baseline (the sort is
-    gated). Pinned as the (kind, min-FB) sequence so a future accidental
-    always-on sort is caught."""
-    monkeypatch.delenv(_FLAG, raising=False)
+    """The explicit-falsey region list is the EXACT segregated baseline (the
+    sort is gated off by the revert lever). Pinned as the (kind, min-FB)
+    sequence so a future accidental always-on sort is caught."""
+    monkeypatch.setenv(_FLAG, "0")
     assert resolve_reading_order_fix() is False
     state, fbs, cands, decs = _build_interleaved_graph()
     regions = build_structure_graph(state, fbs, cands, decs)
@@ -244,13 +247,33 @@ def test_flag_off_region_order_byte_identical_to_baseline(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("raw", [None, "", "0", "false", "no", "off", "garbage", "2", "  "])
-def test_reading_order_flag_off_by_default(monkeypatch, raw):
+@pytest.mark.parametrize("raw", ["0", "false", "FALSE", "no", "No", "off", "OFF", " off "])
+def test_reading_order_flag_explicit_falsey_off(monkeypatch, raw):
+    """ONLY an explicit falsey value disables the (now default-on) sort —
+    the revert lever."""
+    monkeypatch.setenv(_FLAG, raw)
+    assert resolve_reading_order_fix() is False
+
+
+@pytest.mark.parametrize("raw", [None, "", "  ", "1", "true", "TRUE", "YES", "on", " on ", "Yes", "garbage", "2"])
+def test_reading_order_flag_on_by_default(monkeypatch, raw):
+    """Default ON: unset / blank / truthy / garbage all enable the sort
+    (parse-with-fallback, mirrors resolve_structure_clean_mode)."""
     if raw is None:
         monkeypatch.delenv(_FLAG, raising=False)
     else:
         monkeypatch.setenv(_FLAG, raw)
-    assert resolve_reading_order_fix() is False
+    assert resolve_reading_order_fix() is True
+
+
+def test_reading_order_default_on_sorts_when_unset(monkeypatch):
+    """With the flag UNSET (the production default), the region list is
+    reading-order sorted (0 inversions) — the default-on behavioral pin."""
+    monkeypatch.delenv(_FLAG, raising=False)
+    assert resolve_reading_order_fix() is True
+    state, fbs, cands, decs = _build_interleaved_graph()
+    regions = build_structure_graph(state, fbs, cands, decs)
+    assert _inversions(regions) == 0, [r.kind for r in regions]
 
 
 @pytest.mark.parametrize("raw", ["1", "true", "TRUE", "YES", "on", " on ", "Yes"])
