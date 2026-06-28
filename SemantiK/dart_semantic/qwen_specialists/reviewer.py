@@ -525,6 +525,57 @@ def resolve_semantic_class_mode() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Mode resolvers — SEMANTIK_SECOND_PASS pair (Phase 0 scaffolding).
+#
+# The Pass-2 verify-refine loop: a verifier judges the ASSEMBLED document and
+# bounces flagged regions back through the EXISTING Pass-1 reviewer. These
+# resolvers are DEAD-BUT-IMPORTABLE until Phase 3+ wires them into the prompt /
+# dispatch / cascade; landing them here keeps later phases to a pure gate flip.
+# Bodies are copied verbatim from resolve_structure_review_mode (bool) and
+# resolve_block_review_window (int parse-with-fallback, default 2).
+# ---------------------------------------------------------------------------
+
+# Default number of bounded verify-refine rounds (the Courseforge C4
+# refine_rounds=2 precedent — a too-weak fix_hint returns the identical greedy
+# op, so the bound + best-so-far fail-safe is load-bearing).
+_DEFAULT_SECOND_PASS_ROUNDS = 2
+
+
+def resolve_second_pass_mode() -> bool:
+    """Return True when the Stage-9 Pass-2 verify-refine loop is enabled.
+
+    Reads ``SEMANTIK_SECOND_PASS``. Default OFF (unset / blank / falsey /
+    garbage) -> byte-identical to today (mirrors
+    ``resolve_structure_review_mode``). A truthy value
+    (``1``/``true``/``yes``/``on``, case-insensitive) enables it.
+    Additionally requires ``SEMANTIK_STRUCTURE_REVIEW`` +
+    ``SEMANTIK_BLOCK_REVIEW`` on (the verifier judges + bounces a re-typed
+    post-assembly result). A pure read until Phase 3+ consumes it.
+    """
+    raw = (os.environ.get("SEMANTIK_SECOND_PASS") or "").strip().lower()
+    return raw in _TRUTHY
+
+
+def resolve_second_pass_rounds() -> int:
+    """Parse-with-fallback ``SEMANTIK_SECOND_PASS_ROUNDS`` (default 2).
+
+    The hard upper bound on verify-refine rounds (verify -> targeted
+    re-review -> re-assemble -> re-verify). Garbage / non-int / non-positive
+    values fall back to the default, mirroring :func:`resolve_block_review_window`.
+    Consumed in Phase 6 (the bounded loop); a pure read until then."""
+    raw = os.environ.get("SEMANTIK_SECOND_PASS_ROUNDS")
+    if not raw:
+        return _DEFAULT_SECOND_PASS_ROUNDS
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_SECOND_PASS_ROUNDS
+    if val <= 0:
+        return _DEFAULT_SECOND_PASS_ROUNDS
+    return val
+
+
+# ---------------------------------------------------------------------------
 # Typed verdict result.
 # ---------------------------------------------------------------------------
 
@@ -590,6 +641,66 @@ class ReviewVerdict:
     # every flag-off verdict, on the whole-stage revert/degrade floors, and on
     # the non-dispatched pass-through ``ok`` verdicts).
     block_review_window: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Pass-2 verifier verdict schema (Phase 3, SEMANTIK_SECOND_PASS).
+#
+# Frozen, pure-DATA records — the verifier judges the assembled digest and
+# emits per-flagged-region structure/order/semantic_class judgments keyed by
+# ``region_index`` (the ``region_provenance`` capped-index VALUE), NEVER text.
+# Mirrors the Courseforge ``router._CandidateVerdict`` frozen-record posture so
+# the verdict feeds BOTH the Phase-6 bounce decision and the Phase-7 capture.
+# Additive / audit-only: these are never serialized into the Pass-1
+# region/verdict snapshot, so a flag-off run is byte-identical.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FlaggedBlock:
+    """One region the verifier flagged, keyed by ``region_index``.
+
+    ``region_index`` is the ``region_provenance`` capped-index VALUE (the
+    ``capped`` index space, NOT ``structure_regions``). ``failure_mode`` is a
+    taxonomy token (``example_as_heading`` / ``mistyped_component`` /
+    ``wrong_semantic_class`` / ``under_firing`` /
+    ``no_context_answer_fragment_heading`` / ``section_no_body`` /
+    ``example_misordered_from_body``). ``fix_hint`` is the per-block feedback
+    the Phase-5 re-drive injects. ``fixable`` is False for the deferred
+    merge/reorder modes (``section_no_body`` / ``example_misordered_from_body``
+    / the merge-arm of ``no_context_answer_fragment_heading``) — the index-keyed
+    reviewer emits per-block re-type/re-stamp ONLY.
+
+    ``proposed_regroup_run`` (RECONCILIATION DELTA 2026-06-28) is an OPTIONAL
+    capped-index run, populated ONLY for the merge modes
+    (``section_no_body`` / ``example_misordered_from_body``) and consumed by the
+    later Phase-6b merge channel (``block_resegment.apply_proposed_regroups``);
+    the re-type modes leave it the empty tuple (byte-stable default).
+    """
+
+    region_index: int
+    failure_mode: str
+    fix_hint: str
+    fixable: bool
+    proposed_regroup_run: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class VerifierVerdict:
+    """The Pass-2 verifier's whole-document judgment.
+
+    ``passed`` is the overall pass/fail. ``flagged`` is the per-region
+    :class:`FlaggedBlock` tuple (empty on a pass). ``spot_html_requested`` is
+    the optional set of ``region_index`` values the verifier asked to confirm
+    against real assembled HTML before failing (the Phase-4 single bounded
+    spot-HTML re-ask). Pure data — mutates no region; a FAIL-SAFE default of
+    ``VerifierVerdict(passed=True, flagged=(), spot_html_requested=())`` means a
+    broken verifier never FAILS a good doc.
+    """
+
+    passed: bool
+    flagged: tuple[FlaggedBlock, ...] = ()
+    spot_html_requested: tuple[int, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -2368,9 +2479,11 @@ def _run_windowed_block_review(
 __all__ = [
     "CONTENT_REVIEW_KINDS",
     "ClusterSignals",
+    "FlaggedBlock",
     "HEADING_KINDS",
     "ReviewVerdict",
     "TokenConservationError",
+    "VerifierVerdict",
     "assert_token_conservation",
     "compute_cluster_signals",
     "resolve_block_review_cache_mode",
@@ -2378,6 +2491,8 @@ __all__ = [
     "resolve_block_review_edge_tokens",
     "resolve_block_review_mode",
     "resolve_block_review_window",
+    "resolve_second_pass_mode",
+    "resolve_second_pass_rounds",
     "resolve_semantic_class_mode",
     "resolve_structure_review_mode",
     "resolve_structure_review_temperature",

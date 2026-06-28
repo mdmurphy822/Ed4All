@@ -2212,3 +2212,39 @@ def test_flag_off_single_block_path_byte_stable(monkeypatch):
     assert out[0].payload["level_hint"] == 1        # legacy heading path ran
     assert len(rt.batch_calls[0]["prompts"]) == 1   # one heading prompt
     _assert_coverage_invariant(out, len(fbs))
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — frozen Pass-2 verifier verdict schema (SEMANTIK_SECOND_PASS).
+# ---------------------------------------------------------------------------
+
+
+def test_verdict_dataclass_frozen():
+    import dataclasses
+
+    from dart_semantic.qwen_specialists.reviewer import FlaggedBlock, VerifierVerdict
+
+    fb = FlaggedBlock(region_index=3, failure_mode="example_as_heading",
+                      fix_hint="re-type", fixable=True)
+    vv = VerifierVerdict(passed=False, flagged=(fb,), spot_html_requested=(5,))
+    assert dataclasses.is_dataclass(fb) and dataclasses.is_dataclass(vv)
+    for frozen_obj in (fb, vv):
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            frozen_obj.region_index = 9  # type: ignore[attr-defined]
+    # The verdict carries only index-keyed data, never source text.
+    assert vv.flagged[0].region_index == 3
+    assert vv.spot_html_requested == (5,)
+
+
+def test_flagged_block_proposed_regroup_run_optional():
+    from dart_semantic.qwen_specialists.reviewer import FlaggedBlock
+
+    # Defaults empty (re-type modes).
+    retype = FlaggedBlock(region_index=2, failure_mode="mistyped_component",
+                          fix_hint="re-type to paragraph", fixable=True)
+    assert retype.proposed_regroup_run == ()
+    # Populated for a merge mode (RECONCILIATION DELTA — Phase 6b channel).
+    merge = FlaggedBlock(region_index=4, failure_mode="section_no_body",
+                         fix_hint="merge", fixable=False,
+                         proposed_regroup_run=(4, 5, 6))
+    assert merge.proposed_regroup_run == (4, 5, 6)

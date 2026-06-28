@@ -625,6 +625,204 @@ def build_windowed_reviewer_request(
 
 
 # ---------------------------------------------------------------------------
+# Pass-2 VERIFIER prompt + parser (Phase 3, flag-gated on SEMANTIK_SECOND_PASS).
+#
+# A SECOND, orthogonal reviewer ROLE: it judges the ASSEMBLED-document digest
+# (heading outline + per-region {kind, semantic_class, aria_wrapper, head/tail})
+# and emits per-flagged-region judgments keyed by ``region_index`` (the
+# ``region_provenance`` capped-index VALUE), NEVER text. JSON-ARRAY-ONLY out,
+# echo region_index. The shipped Pass-1 constants (``_SYSTEM_REVIEWER`` /
+# ``_WINDOW_OPLIST_DIRECTIVE`` / ``_CONTENT_RETYPE_DIRECTIVE``) are NOT touched —
+# this is a NEW directive, built ONLY when ``_second_pass_enabled()`` so the
+# flag-off path is byte-identical.
+# ---------------------------------------------------------------------------
+
+
+def _second_pass_enabled() -> bool:
+    """Return ``resolve_second_pass_mode()`` (lazy import to break the
+    ``reviewer`` <-> ``reviewer_prompt`` cycle — mirrors
+    :func:`_semantic_class_enabled`)."""
+    from .reviewer import resolve_second_pass_mode
+
+    return resolve_second_pass_mode()
+
+
+_SECOND_PASS_VERIFY_DIRECTIVE = (
+    "You are a Pass-2 VERIFIER judging an ALREADY-ASSEMBLED document. The USER "
+    "message is a JSON object with a ``digest`` (a heading OUTLINE plus one "
+    "terse entry per emitted region — idx-keyed ``region_index``, council "
+    "``kind``, ``semantic_class``, ``aria_wrapper``, and head/tail token edges) "
+    "and, on a re-ask, a ``spot_html`` map of a flagged section's REAL assembled "
+    "HTML. You judge STRUCTURE, semantic_class, and reading ORDER ONLY — you "
+    "NEVER rewrite, add, or remove source text.\n"
+    "\n"
+    "OUTPUT — JSON ARRAY ONLY. Return EXACTLY ONE JSON array and nothing else "
+    "(NO Markdown, NO code fences, NO commentary, NO prose, NO rewritten text). "
+    "An EMPTY array ``[]`` means the document PASSES (no defects). Otherwise emit "
+    "ONE object per FLAGGED region. Each object's keys are: region_index (int — "
+    "ECHO the digest entry's region_index; this is how your flag is matched back "
+    "to the region, and a region_index NOT present in the digest is DROPPED), "
+    "failure_mode (one of the vocabulary below), fix_hint (a SHORT directive for "
+    "the re-typing reviewer — what the block should become), fixable (a boolean; "
+    "copy the FIXABLE column below), and OPTIONALLY proposed_regroup_run (a JSON "
+    "array of region_index ints — populate ONLY for section_no_body / "
+    "example_misordered_from_body).\n"
+    "\n"
+    "FAILURE-MODE VOCABULARY (failure_mode -> fixable):\n"
+    "  - example_as_heading (fixable=true): a labeled EXAMPLE / TRY IT appears "
+    "as a heading_outline node; it is BODY content, re-type to a worked_example "
+    "component.\n"
+    "  - mistyped_component (fixable=true): the council kind disagrees with the "
+    "assembled shape (a code_block that is really an exercise; a mis-routed "
+    "table); re-type the kind.\n"
+    "  - wrong_semantic_class (fixable=true): a worked-example/definition-shaped "
+    "region has a wrong/absent aria_wrapper (bare-<p> fall-through); re-stamp the "
+    "semantic_class.\n"
+    "  - under_firing (fixable=true): a known-weak code_block/table the Pass-1 "
+    "confidence gate skipped but the assembled shape needs re-typing.\n"
+    "  - no_context_answer_fragment_heading (fixable=true ONLY when the fix is a "
+    "per-block re-type to metadata_drop/paragraph; set fixable=false when it "
+    "needs a MERGE into a neighbor).\n"
+    "  - section_no_body (fixable=false): a heading node with zero following "
+    "content blocks; supply proposed_regroup_run (a merge channel handles it).\n"
+    "  - example_misordered_from_body (fixable=false): a worked-example region "
+    "separated from its body in reading order; supply proposed_regroup_run.\n"
+    "\n"
+    "SPOT-HTML RE-ASK. When a head/tail edge is genuinely insufficient to decide "
+    "and you must see a region's real assembled HTML before failing it, emit an "
+    "object with failure_mode \"need_spot_html\" and that region_index (no "
+    "fix_hint needed) INSTEAD of a flag; you will be re-asked once with that "
+    "section's HTML in ``spot_html``."
+)
+
+
+def build_second_pass_verify_request(
+    digest: dict[str, Any],
+    *,
+    spot_html_by_idx: dict[int, str] | None = None,
+) -> str:
+    """Emit the Pass-2 verifier prompt (digest-in / index-keyed-judgments-out).
+
+    Builds NOTHING (returns ``""``) when ``_second_pass_enabled()`` is False —
+    the flag-off byte-stable contract. The SYSTEM turn carries the verifier
+    directive + the global WCAG header; the USER turn is the JSON digest, plus
+    an optional ``spot_html`` map (region_index -> real assembled section HTML)
+    on the single bounded spot-HTML re-ask. Pure formatter — no LLM, no
+    mutation, no env side effect beyond the gate read.
+    """
+    if not _second_pass_enabled():
+        return ""
+    system = "\n\n".join([_SECOND_PASS_VERIFY_DIRECTIVE, _GLOBAL_WCAG_HEADER])
+    user_payload: dict[str, Any] = {"digest": digest}
+    if spot_html_by_idx:
+        user_payload["spot_html"] = {str(k): v for k, v in spot_html_by_idx.items()}
+    user_json = json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))
+    return f"SYSTEM: {system}\nUSER: {user_json}"
+
+
+def _extract_json_array(raw: str | None) -> list[Any] | None:
+    """Tolerant fail-soft extraction of a JSON ARRAY (fences/commentary stripped).
+
+    ``None`` on empty/whitespace/garbage (no raise), so a broken verifier never
+    crashes the loop."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if text.startswith("```"):
+        text = text[3:]
+        nl = text.find("\n")
+        if nl != -1 and text[:nl].strip().isalpha():
+            text = text[nl + 1 :]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    try:
+        val = json.loads(text)
+        if isinstance(val, list):
+            return val
+    except (ValueError, TypeError):
+        pass
+    i = text.find("[")
+    j = text.rfind("]")
+    if i != -1 and j != -1 and j > i:
+        try:
+            val = json.loads(text[i : j + 1])
+            if isinstance(val, list):
+                return val
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    """Tolerant int coercion (rejects bool, which is an ``int`` subclass)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
+
+
+def parse_verifier_response(raw: str | None):
+    """Parse a verifier raw response into a ``VerifierVerdict`` (fail-soft None).
+
+    Returns ``None`` on unparseable / empty / non-array input (mirroring the
+    windowed parse's fail-soft posture). An empty array ``[]`` is a WELL-FORMED
+    PASS (``passed=True``). A ``need_spot_html`` element adds its region_index to
+    ``spot_html_requested`` (not a flag); every other element is a
+    :class:`FlaggedBlock`. ``passed`` is True iff there are no flags AND no
+    spot-HTML requests.
+    """
+    from .reviewer import FlaggedBlock, VerifierVerdict  # lazy: break cycle
+
+    data = _extract_json_array(raw)
+    if data is None:
+        return None
+    flagged: list[Any] = []
+    spot: list[int] = []
+    for el in data:
+        if not isinstance(el, dict):
+            continue
+        ri = _coerce_int(el.get("region_index"))
+        if ri is None:
+            continue
+        mode = str(el.get("failure_mode") or "").strip()
+        if mode == "need_spot_html":
+            spot.append(ri)
+            continue
+        if not mode:
+            continue
+        fix_hint = str(el.get("fix_hint") or "")
+        fixable = bool(el.get("fixable", False))
+        prr_raw = el.get("proposed_regroup_run") or ()
+        prr_list: list[int] = []
+        if isinstance(prr_raw, (list, tuple)):
+            for x in prr_raw:
+                xi = _coerce_int(x)
+                if xi is not None:
+                    prr_list.append(xi)
+        flagged.append(
+            FlaggedBlock(
+                region_index=ri,
+                failure_mode=mode,
+                fix_hint=fix_hint,
+                fixable=fixable,
+                proposed_regroup_run=tuple(prr_list),
+            )
+        )
+    passed = not flagged and not spot
+    return VerifierVerdict(
+        passed=passed,
+        flagged=tuple(flagged),
+        spot_html_requested=tuple(spot),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Edge-input builder (Phase 1 — design §3 record).
 #
 # Turns ONE region + its council signal into the head/tail-biased "edge"
@@ -823,5 +1021,7 @@ __all__ = [
     "build_edge_input",
     "build_reviewer_input_json",
     "build_reviewer_request",
+    "build_second_pass_verify_request",
     "dedup_furniture_records",
+    "parse_verifier_response",
 ]
