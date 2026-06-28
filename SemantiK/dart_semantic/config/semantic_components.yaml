@@ -1,0 +1,252 @@
+# SemantiK gold-standard semantic-component catalog (gold-standard
+# semantic-class plan, Phase 2 — DATA ONLY; consumed by nobody yet).
+#
+# Machine-readable catalog of the gold accessible-component vocabulary the
+# Stage-5d reviewer assigns as a block's `semantic_class` (Phase 5 reads
+# `use_when` as the 7B discriminator menu) and the assembler renders as gold
+# ARIA markup (Phase 7 reads `label` / `html_shape` / `aria_markup` / `role` /
+# `css_class`). This axis is ORTHOGONAL to the 11-member `REGION_KINDS`
+# (`structure_graph.py::REGION_KINDS`): a block keeps `kind="paragraph"` AND
+# gains `semantic_class="worked_example"` in its payload — the token set
+# EXTENDS the vocabulary, it does NOT modify `REGION_KINDS`.
+#
+# Shape mirrors `Courseforge/config/block_catalog.yaml` (`version: 1` + a list
+# of entries) but is retargeted from block-planning to markup selection. NOT
+# imported from that file — independent data.
+#
+# Each entry:
+#   component:             the token — the 7B's `semantic_class` value.
+#   label:                 REQUIRED, non-empty — the literal container-heading
+#                          TEXT the assembler synthesizes (the re-typed source
+#                          is bare prose with no label of its own).
+#   use_when:              the discriminator string fed to the 7B prompt
+#                          (Phase 5); crisp + mutually-distinguishing.
+#   html_shape:            the markup pattern from `gold_standard.html`.
+#   aria_markup:           the ARIA attribute pattern.
+#   role:                  the ARIA role (`region` / `doc-footnote` /
+#                          `navigation` / null where implicit / none).
+#   css_class:             the CSS class the assembler emits — VERBATIM from the
+#                          vendored `assembler/wcag22_css.py::WCAG22_CSS`
+#                          (every value is substring-present there). null where
+#                          the gold markup carries no component class.
+#   maps_from_region_kind: the real `REGION_KINDS` member(s) this component
+#                          re-types from. Every value is a real `REGION_KINDS`
+#                          token.
+#   reconciles_with:       the matching `deterministic_structure.py
+#                          ::_PEDAGOGICAL_LABEL_CLASSES` value where one exists;
+#                          null otherwise (no invented `pedagogy-*` class).
+#
+# ADAPTATION (reported, not invented): the plan's catalog table lists the
+# `section` component's "maps_from kind" as "heading-group", which is NOT a
+# real `REGION_KINDS` member. A `section` is synthesized AROUND a real
+# `heading` region (the outline primitive wraps a heading + its following
+# blocks), so `maps_from_region_kind` is the real `heading` kind.
+version: 1
+components:
+  - component: section
+    label: Section
+    use_when: >-
+      a heading and the body blocks that follow it — the document-outline
+      grouping primitive (THE outline unit), NOT a boxed component.
+    html_shape: '<section id aria-labelledby>'
+    aria_markup: 'aria-labelledby -> hN id'
+    role: null            # implicit region (a labelled <section> is an implicit ARIA region)
+    css_class: null       # gold <section> carries no component class
+    maps_from_region_kind:
+      - heading           # ADAPT: plan table said "heading-group" (not a real REGION_KIND)
+    reconciles_with: null
+
+  - component: worked_example
+    label: Example
+    use_when: >-
+      a labeled EXAMPLE / TRY IT / Solution / Step N worked instance — NEVER a
+      heading.
+    html_shape: '<div class="algorithm" role="region" aria-labelledby><h4>...<pre|ol steps>'
+    aria_markup: 'aria-labelledby -> h4 id'
+    role: region
+    css_class: algorithm   # plan aliases worked-example onto .algorithm
+    maps_from_region_kind:
+      - paragraph
+      - code_block
+    reconciles_with: pedagogy-example
+
+  - component: definition_region
+    label: Definition
+    use_when: >-
+      a boxed formal definition or key-term explanation set off from the main
+      flow.
+    html_shape: '<div class="definition" role="region" aria-labelledby><h4>...<p>'
+    aria_markup: 'aria-labelledby -> h4 id'
+    role: region
+    css_class: definition
+    maps_from_region_kind:
+      - paragraph
+      - definition_list
+    reconciles_with: null
+
+  - component: callout_note
+    label: Note
+    use_when: >-
+      an informational aside / note set off from the main reading flow (neutral
+      severity).
+    html_shape: '<div class="callout callout-info"><h4>...<p>'
+    aria_markup: 'h4 label'
+    role: null            # DPUB doc-* role per kind; neutral note carries none
+    css_class: callout-info
+    maps_from_region_kind:
+      - paragraph
+      - blockquote
+    reconciles_with: null
+
+  - component: callout_tip
+    label: Tip
+    use_when: >-
+      a helpful tip / best-practice hint that aids the reader but is not a
+      warning.
+    html_shape: '<div class="callout callout-tip"><h4>...<p>'
+    aria_markup: 'h4 label'
+    role: null
+    css_class: callout-tip
+    maps_from_region_kind:
+      - paragraph
+      - blockquote
+    reconciles_with: null
+
+  - component: callout_warning
+    label: Warning
+    use_when: >-
+      a caution / warning the reader must heed before proceeding.
+    html_shape: '<div class="callout callout-warning"><h4>...<p>'
+    aria_markup: 'h4 label'
+    role: null
+    css_class: callout-warning
+    maps_from_region_kind:
+      - paragraph
+      - blockquote
+    reconciles_with: null
+
+  - component: callout_danger
+    label: Danger
+    use_when: >-
+      a critical danger / do-not-do alert — the highest-severity callout.
+    html_shape: '<div class="callout callout-danger"><h4>...<p>'
+    aria_markup: 'h4 label'
+    role: null
+    css_class: callout-danger
+    maps_from_region_kind:
+      - paragraph
+      - blockquote
+    reconciles_with: null
+
+  - component: figure
+    label: Figure
+    use_when: >-
+      an image / diagram accompanied by a caption.
+    html_shape: '<figure><img alt|alt="" role="presentation"><figcaption>'
+    aria_markup: 'alt text or decorative (role=presentation)'
+    role: null
+    css_class: figure
+    maps_from_region_kind:
+      - figure
+    reconciles_with: null
+
+  - component: footnote
+    label: Footnote
+    use_when: >-
+      a footnote or endnote referenced from the body text.
+    html_shape: '<aside role="doc-footnote" aria-label="Footnote N"><sup>N'
+    aria_markup: 'aria-label="Footnote N"'
+    role: doc-footnote
+    css_class: null       # gold footnote <aside> carries no component class
+    maps_from_region_kind:
+      - paragraph
+    reconciles_with: null
+
+  - component: references
+    label: References
+    use_when: >-
+      a bibliography / works-cited / further-reading list of sources.
+    html_shape: '<section class="references" aria-labelledby><ol><li id=ref-N>'
+    aria_markup: 'aria-labelledby -> h2 id + per-entry id'
+    role: null            # labelled <section> implicit region
+    css_class: references
+    maps_from_region_kind:
+      - list
+      - paragraph
+    reconciles_with: null
+
+  - component: abstract
+    label: Overview
+    use_when: >-
+      a chapter or section intro / overview paragraph that frames what follows.
+    html_shape: '<section class="abstract" aria-labelledby>'
+    aria_markup: 'aria-labelledby -> h2 id'
+    role: null
+    css_class: abstract
+    maps_from_region_kind:
+      - paragraph
+    reconciles_with: null
+
+  - component: toc
+    label: Table of Contents
+    use_when: >-
+      a table-of-contents list of links to the document's sections.
+    html_shape: '<nav class="toc" aria-labelledby><ul><li><a href=#...>'
+    aria_markup: 'aria-labelledby -> h2 id'
+    role: navigation
+    css_class: toc
+    maps_from_region_kind:
+      - list
+    reconciles_with: null
+
+  - component: exercise
+    label: Exercises
+    use_when: >-
+      an end-of-section EXERCISES / problem-set block of practice items.
+    html_shape: '<div class="exercise" role="region" aria-labelledby><h4>Exercises<ol>'
+    aria_markup: 'aria-labelledby -> h4 id'
+    role: region
+    css_class: exercise
+    maps_from_region_kind:
+      - list
+      - paragraph
+    reconciles_with: pedagogy-practice
+
+  - component: objectives
+    label: Learning Objectives
+    use_when: >-
+      a "by the end of this section you will be able to..." learning-objectives
+      list.
+    html_shape: '<section class="objectives" aria-labelledby><h3>Learning Objectives<ul>'
+    aria_markup: 'aria-labelledby -> h3 id'
+    role: null
+    css_class: objectives
+    maps_from_region_kind:
+      - list
+      - paragraph
+    reconciles_with: pedagogy-objectives
+
+  - component: pullquote
+    label: Pull Quote
+    use_when: >-
+      a highlighted pull quote drawn from (and re-emphasizing) the surrounding
+      prose.
+    html_shape: '<aside class="pullquote">'
+    aria_markup: null
+    role: null
+    css_class: pullquote
+    maps_from_region_kind:
+      - blockquote
+    reconciles_with: null
+
+  - component: code_region
+    label: Code
+    use_when: >-
+      a genuine code / pseudocode listing (NOT a labeled worked example).
+    html_shape: '<pre role="region"><code>'
+    aria_markup: null
+    role: region
+    css_class: null       # gold <pre role=region> carries no component class
+    maps_from_region_kind:
+      - code_block
+    reconciles_with: null
