@@ -815,6 +815,42 @@ def _apply_verdict(
     is_promotion = (kind_before != "heading" and new_kind == "heading")
     is_demotion_from_heading = (kind_before == "heading" and new_kind != "heading")
 
+    # --- Phase 6 (SEMANTIK_SEMANTIC_CLASS): parse + catalog-validate the gold
+    #     accessible semantic_class (orthogonal to REGION_KINDS). An unknown
+    #     token degrades to None (anti-fabrication — never an invalid ARIA
+    #     region), mirroring the corrected_kind validate-against-REGION_KINDS
+    #     drop above. Stored payload-only (NO Region field). The validate runs
+    #     regardless of the flag; the STAMP + audit-mirror below are flag-gated. ---
+    from dart_semantic.assembler.semantic_catalog import valid_components
+
+    semantic_class = obj.get("semantic_class")
+    if semantic_class is not None:
+        semantic_class = str(semantic_class)
+        if semantic_class not in valid_components():
+            semantic_class = None
+
+    # --- Phase 6 MAKE-OR-BREAK #2: the EXAMPLE->heading promotion guard (the
+    #     indexing-bug fix). A content block whose verbatim source begins with a
+    #     pedagogical label (TRY / EXAMPLE / EXERCISE) is a COMPONENT, not a
+    #     heading: a ->heading promotion would force normalize_heading_levels
+    #     rule-1 to <h1> and corrupt the document outline (the live-validated
+    #     "improperly indexed text" bug). When the semantic-class feature is on,
+    #     REFUSE the promotion BY CONSTRUCTION — keep the content kind and stamp
+    #     the gold component (TRY/EXAMPLE -> worked_example, EXERCISE ->
+    #     exercise) instead. GATED on resolve_semantic_class_mode() so the P1
+    #     SEMANTIK_BLOCK_REVIEW-only path keeps its CURRENT promotion behavior
+    #     byte-identical (the fix ships WITH the feature, not as a silent P1
+    #     change). Reuses _has_pedagogical_label_prefix / _joined_source_text /
+    #     _PEDAGOGICAL_LABEL_PREFIXES (no re-derivation). ---
+    if is_promotion and resolve_semantic_class_mode():
+        guard_source = _joined_source_text(region, feature_blocks)
+        if _has_pedagogical_label_prefix(guard_source):
+            new_kind = kind_before
+            is_promotion = False
+            guard_component = _pedagogical_label_component(guard_source)
+            if guard_component is not None:
+                semantic_class = guard_component
+
     # --- assemble the mutated payload (carry everything else forward) ---
     new_payload = dict(payload)
 
@@ -847,6 +883,16 @@ def _apply_verdict(
         if new_payload.get("level_hint") is None:
             new_payload["level_hint"] = corrected_level or 2
 
+    # --- Phase 6: stamp the validated gold semantic_class onto the payload (the
+    #     storage SoT — assembler/provenance read the payload, NOT a Region
+    #     field). Mirrors the corrected_doc_role -> payload['doc_role'] write
+    #     above + the deterministic_structure._retag css_class stamp. Gated on
+    #     resolve_semantic_class_mode() so flag-off the payload is byte-identical.
+    #     It admits trivially once 'semantic_class' is on the _admits allowlist
+    #     (payload-only — no FB move, no text change). ---
+    if semantic_class is not None and resolve_semantic_class_mode():
+        new_payload["semantic_class"] = semantic_class
+
     # --- build the candidate replacement region (frozen-safe) ---
     candidate = dataclasses.replace(region, kind=new_kind, payload=new_payload)
 
@@ -871,6 +917,14 @@ def _apply_verdict(
     # while the flag is off, so no content re-types ⇒ ``role_after`` is None
     # on every flag-off verdict.
     role_after = new_payload.get("doc_role") if resolve_block_review_mode() else None
+    # Phase 6: mirror the already-stamped payload['semantic_class'] onto the
+    # audit-only verdict field, gated on resolve_semantic_class_mode() (mirrors
+    # the role_after mirror above). None on every flag-off verdict, so the
+    # heading-only / flag-off audit dict stays byte-identical (the SCOPED
+    # None-drop in cascade.py excludes it when None).
+    semantic_class_after = (
+        new_payload.get("semantic_class") if resolve_semantic_class_mode() else None
+    )
     verdict = ReviewVerdict(
         block_id=block_id,
         verdict=final_verdict,
@@ -881,6 +935,7 @@ def _apply_verdict(
         review_note=note,
         reverted_for_invariant=False,
         role_after=role_after,
+        semantic_class_after=semantic_class_after,
     )
     return candidate, verdict
 
@@ -954,6 +1009,18 @@ def _degrade_whole_review_unreviewed(
     return regions, verdicts
 
 
+# §4 C4 allowlist: the ONLY payload keys a structural-review verdict may add /
+# change. Everything else must be byte-identical (anti-fabrication). Promoted to
+# a module-level frozenset so the Phase-6 make-or-break — ``'semantic_class'``'s
+# membership — is directly pinnable by a test that removes it and asserts the
+# stamp then reverts. ``'semantic_class'`` (Phase 6) rides here so the payload-
+# only gold-component stamp ADMITS (without it every stamp silently reverts
+# ``reverted_for_invariant`` — the exact class of bug as the P1 prompt gap).
+_ADMIT_STRUCTURAL_PAYLOAD_KEYS: frozenset[str] = frozenset(
+    {"level_hint", "doc_role", "text", "semantic_class"}
+)
+
+
 def _admits(
     original: Region,
     candidate: Region,
@@ -981,7 +1048,7 @@ def _admits(
     orig_payload = original.payload or {}
     cand_payload = candidate.payload or {}
 
-    _structural = {"level_hint", "doc_role", "text"}
+    _structural = _ADMIT_STRUCTURAL_PAYLOAD_KEYS
 
     # (2a) every NON-structural payload key is byte-identical.
     orig_keys = set(orig_payload) - _structural
@@ -1154,6 +1221,23 @@ def _neighbors_for(regions: list[Region], index: int) -> tuple[Region | None, Re
 # clean_structure pass — this set only routes CONTENT-block re-types.
 _PEDAGOGICAL_LABEL_PREFIXES: frozenset[str] = frozenset({"TRY", "EXAMPLE", "EXERCISE"})
 
+# Phase 6 EXAMPLE->heading guard: the gold semantic component a pedagogical-label
+# prefix re-types into when a ->heading promotion is REFUSED. TRY / EXAMPLE are
+# worked instances -> ``worked_example``; EXERCISE is an end-of-section problem
+# set -> ``exercise``. These two tokens are members of the Phase-2/3 catalog
+# ``valid_components()`` (so the stamp survives the apply-path catalog validate).
+# SCOPE: this set covers ONLY content->heading PROMOTIONS of TRY/EXAMPLE/EXERCISE
+# paragraphs. ``Solution`` / ``Step N`` label-HEADINGS are NOT here — they are
+# demoted UPSTREAM by the always-on deterministic structure-clean pass
+# (``deterministic_structure._retag`` / ``_PEDAGOGICAL_LABEL_CLASSES``), so the
+# reviewer guard never sees them as promotions. (Division of responsibility
+# pinned by ``test_solution_step_promotion_division``.)
+_PEDAGOGICAL_PREFIX_TO_COMPONENT: dict[str, str] = {
+    "TRY": "worked_example",
+    "EXAMPLE": "worked_example",
+    "EXERCISE": "exercise",
+}
+
 # Council's KNOWN-WEAK content kinds — dispatched UNCONDITIONALLY when block
 # review is on. The council systematically MIS-TYPES content here (on OpenStax
 # it labels ~35 "TRY IT" exercises as code_block at HIGH confidence, and a
@@ -1195,6 +1279,23 @@ def _has_pedagogical_label_prefix(text: str) -> bool:
         return False
     head = parts[0].strip(string.punctuation).upper()
     return head in _PEDAGOGICAL_LABEL_PREFIXES
+
+
+def _pedagogical_label_component(text: str) -> str | None:
+    """Gold semantic component for ``text``'s pedagogical-label prefix, else None.
+
+    Head-word extraction is byte-identical to ``_has_pedagogical_label_prefix``
+    (TRY/EXAMPLE -> ``worked_example``, EXERCISE -> ``exercise``); returns None
+    when the first word is not a pedagogical label. Used by the Phase-6
+    EXAMPLE->heading promotion guard to pick the component to stamp.
+    """
+    if not text:
+        return None
+    parts = text.split(None, 1)
+    if not parts:
+        return None
+    head = parts[0].strip(string.punctuation).upper()
+    return _PEDAGOGICAL_PREFIX_TO_COMPONENT.get(head)
 
 
 def _content_block_dispatch_gate(

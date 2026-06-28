@@ -104,15 +104,18 @@ class _ScriptedRuntime:
 
 
 def _verdict_json(block_id, *, verdict="corrected", kind=None, level=None,
-                  doc_role=None, note="n") -> str:
-    return json.dumps({
+                  doc_role=None, semantic_class=None, note="n") -> str:
+    obj = {
         "block_id": block_id,
         "verdict": verdict,
         "corrected_kind": kind,
         "corrected_level": level,
         "corrected_doc_role": doc_role,
         "review_note": note,
-    })
+    }
+    if semantic_class is not None:
+        obj["semantic_class"] = semantic_class
+    return json.dumps(obj)
 
 
 def _assert_coverage_invariant(regions, n_fb):
@@ -832,6 +835,228 @@ def test_provenance_byte_stable_no_region_field_added():
     assert len(prov) == 1
     assert "semantic_class" not in prov[0]
     assert "semantic_class_after" not in prov[0]
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — apply: parse/validate/stamp semantic_class, _admits allowlist,
+# EXAMPLE->heading promotion guard.
+# ---------------------------------------------------------------------------
+
+
+def test_semantic_class_stamped_on_payload(monkeypatch):
+    # Flag on: a scripted verdict carrying semantic_class='worked_example' on a
+    # re-typed content block stamps payload['semantic_class'] + mirrors the
+    # audit field, with the verbatim source byte-identical (payload-only — no
+    # text mutation).
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("Try it: simplify 3(x+2).")]
+    region = Region(kind="code_block", feature_block_indices=(0,),
+                    payload={"text": "Try it: simplify 3(x+2)."})
+    before_text = rv._joined_source_text(region, fbs)
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "paragraph",
+           "corrected_level": None, "corrected_doc_role": None,
+           "semantic_class": "worked_example",
+           "review_note": "TRY-IT worked instance"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.payload["semantic_class"] == "worked_example"
+    assert verdict.semantic_class_after == "worked_example"
+    assert not verdict.reverted_for_invariant
+    # verbatim source byte-identical through the stamp.
+    assert rv._joined_source_text(out_region, fbs) == before_text
+    assert out_region.payload["text"] == region.payload["text"]
+
+
+def test_unknown_semantic_class_drops_to_none(monkeypatch):
+    # An off-catalog token degrades to None (anti-fabrication) and is never
+    # stamped, even with the flag on.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("some prose body")]
+    region = Region(kind="code_block", feature_block_indices=(0,),
+                    payload={"text": "some prose body"})
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "paragraph",
+           "corrected_level": None, "corrected_doc_role": None,
+           "semantic_class": "made_up", "review_note": "bad class"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert "semantic_class" not in out_region.payload     # never stamped
+    assert verdict.semantic_class_after is None
+
+
+def test_admits_allowlist_permits_semantic_class(monkeypatch):
+    # MAKE-OR-BREAK #1: a semantic_class-only payload change is ADMITTED (not
+    # reverted_for_invariant). The sub-test monkeypatches the allowlist down to
+    # the legacy 3-key set and asserts the SAME change then REVERTS — pinning
+    # that 'semantic_class' membership is exactly what lets the stamp land.
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("worked example body")]
+    region = Region(kind="paragraph", feature_block_indices=(0,),
+                    payload={"text": "worked example body"})
+    candidate = region.__class__(
+        kind="paragraph", feature_block_indices=(0,),
+        payload={"text": "worked example body", "semantic_class": "worked_example"},
+        source_region_id=region.source_region_id,
+    )
+    # With 'semantic_class' on the allowlist (the shipped state) -> admitted.
+    assert "semantic_class" in rv._ADMIT_STRUCTURAL_PAYLOAD_KEYS
+    assert rv._admits(region, candidate, fbs, is_promotion=False) is True
+
+    # Remove it from the allowlist -> the SAME payload-only change is rejected
+    # as a non-structural mutation (the silent reverted_for_invariant no-op the
+    # allowlist line prevents).
+    monkeypatch.setattr(
+        rv, "_ADMIT_STRUCTURAL_PAYLOAD_KEYS",
+        frozenset({"level_hint", "doc_role", "text"}),
+    )
+    assert rv._admits(region, candidate, fbs, is_promotion=False) is False
+
+
+def test_example_label_not_promoted_to_heading(monkeypatch):
+    # THE indexing-bug regression test. A content block whose text begins
+    # "EXAMPLE 1.3" + a verdict corrected_kind='heading' (flag on) -> the
+    # ->heading promotion is REFUSED: kind stays content, semantic_class is
+    # stamped 'worked_example', and the verdict reflects no promotion.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("EXAMPLE 1.3 Simplify the expression 3(x + 2) - 5.")]
+    region = Region(kind="paragraph", feature_block_indices=(0,),
+                    payload={"text": "EXAMPLE 1.3 Simplify the expression 3(x + 2) - 5."})
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "heading",
+           "corrected_level": None, "corrected_doc_role": None,
+           "review_note": "model wanted to promote to heading"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.kind == "paragraph"                 # promotion refused
+    assert verdict.kind_after == "paragraph"
+    assert verdict.kind_before == "paragraph"
+    assert out_region.payload["semantic_class"] == "worked_example"
+    assert verdict.semantic_class_after == "worked_example"
+    # No promotion happened -> no minted heading level, no text rewrite.
+    assert out_region.payload.get("level_hint") is None
+    assert out_region.payload["text"] == region.payload["text"]
+
+
+def test_solution_step_promotion_division(monkeypatch):
+    # Division of responsibility: the reviewer guard's prefix set is
+    # {TRY, EXAMPLE, EXERCISE} and does NOT cover Solution / Step N — those
+    # label-HEADINGS are demoted UPSTREAM by the always-on deterministic
+    # structure-clean pass (deterministic_structure._retag). So a "Solution:"
+    # paragraph is NOT caught by _has_pedagogical_label_prefix and the guard
+    # does not fire on it.
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    assert "SOLUTION" not in rv._PEDAGOGICAL_LABEL_PREFIXES
+    assert "STEP" not in rv._PEDAGOGICAL_LABEL_PREFIXES
+    assert rv._has_pedagogical_label_prefix("Solution: combine like terms.") is False
+    assert rv._has_pedagogical_label_prefix("Step 3 add 5 to both sides.") is False
+    assert rv._pedagogical_label_component("Solution: x = 4") is None
+    # Confirm the always-on clean pass owns these label classes.
+    from dart_semantic.qwen_specialists import deterministic_structure as ds
+    label_classes = {css.lower() for _pat, css in ds._PEDAGOGICAL_LABEL_CLASSES}
+    assert any("solution" in c for c in label_classes)
+    assert any("step" in c for c in label_classes)
+
+
+def test_guard_byte_stable_when_semantic_class_off(monkeypatch):
+    # SEMANTIK_BLOCK_REVIEW on + SEMANTIK_SEMANTIC_CLASS OFF: the P1 promotion
+    # behavior is unchanged — an EXAMPLE paragraph that P1 would promote to a
+    # heading STILL promotes (the guard does not fire; the fix ships WITH the
+    # feature, not as a silent P1 change).
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.delenv("SEMANTIK_SEMANTIC_CLASS", raising=False)
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("EXAMPLE 1.3 Simplify the expression.")]
+    region = Region(kind="paragraph", feature_block_indices=(0,),
+                    payload={"text": "EXAMPLE 1.3 Simplify the expression."})
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "heading",
+           "corrected_level": None, "corrected_doc_role": None,
+           "semantic_class": "worked_example",
+           "review_note": "promote"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.kind == "heading"                   # P1 promotion preserved
+    assert verdict.kind_after == "heading"
+    # flag off -> no semantic_class stamped, audit field None.
+    assert "semantic_class" not in out_region.payload
+    assert verdict.semantic_class_after is None
+
+
+def test_class_only_run_html_byte_identical(monkeypatch):
+    # Decoupled-flag invariant: SEMANTIK_SEMANTIC_CLASS on + SEMANTIK_GOLD_SHELL
+    # absent -> the assembler does NOT read payload['semantic_class'], so a
+    # region carrying the class produces HTML byte-identical to the both-off
+    # baseline (the assembler change is Phase 7).
+    from dart_semantic.assembler.api import AssemblerConfig, assemble_document
+
+    def _para(text, idx, *, semantic_class=None):
+        payload = {"text": text}
+        if semantic_class is not None:
+            payload["semantic_class"] = semantic_class
+        return Region(kind="paragraph", feature_block_indices=(idx,),
+                      payload=payload, source_region_id=idx)
+
+    def _assemble(regions):
+        fbs = [_fb(r.payload["text"]) for r in regions]
+        top = {i: None for i in range(len(regions))}
+        return assemble_document(top, regions, fbs, runtime_mode="mock",
+                                 config=AssemblerConfig(skip_gap_fill=True))
+
+    monkeypatch.delenv("SEMANTIK_GOLD_SHELL", raising=False)
+    baseline = _assemble([_para("Worked example body.", 0),
+                          _para("Second paragraph.", 1)])
+
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    classed = _assemble([_para("Worked example body.", 0, semantic_class="worked_example"),
+                         _para("Second paragraph.", 1)])
+
+    assert classed == baseline                            # shell flag off -> identical
+
+
+def test_audit_byte_stable_flag_off(monkeypatch):
+    # The Phase-4 guard still holds at Phase 6: a heading-only / flag-off run's
+    # audit dict is byte-identical with the SCOPED semantic_class_after None-drop
+    # (None-key excluded; legitimately-None level_* keys survive).
+    import dataclasses as _dc
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW", raising=False)
+    monkeypatch.delenv("SEMANTIK_SEMANTIC_CLASS", raising=False)
+
+    fbs = [_fb("Chapter 1"), _fb("body words")]
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 3, "text": "Chapter 1"}),
+        Region(kind="paragraph", feature_block_indices=(1,),
+               payload={"text": "body words"}),
+    ]
+    rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=1)])
+    _, verdicts = rv.run_structure_review(regions, fbs, rt)
+
+    def _row(v):
+        row = _dc.asdict(v)
+        for k in ("role_after", "block_review_window", "semantic_class_after"):
+            if row.get(k) is None:
+                row.pop(k, None)
+        return row
+
+    PRE_PHASE2_KEYS = {
+        "block_id", "verdict", "kind_before", "kind_after",
+        "level_before", "level_after", "review_note",
+        "reverted_for_invariant", "reverted_for_endpoint_failure",
+    }
+    for v in verdicts:
+        assert v.semantic_class_after is None
+        row = _row(v)
+        assert "semantic_class_after" not in row
+        assert set(row) == PRE_PHASE2_KEYS
+    para_row = _row(verdicts[1])
+    assert "level_before" in para_row and para_row["level_before"] is None
 
 
 # ---------------------------------------------------------------------------
