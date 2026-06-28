@@ -12,10 +12,16 @@ from __future__ import annotations
 from dart_semantic.assembler.api import assemble_document, AssemblerConfig
 from dart_semantic.assembler.types import AssembledDoc
 from dart_semantic.assembler.verify_digest import (
+    _estimate_tokens,
+    _split_into_sections,
     build_verifier_digest,
     enclosing_section_heading_id,
     slice_region_html,
     slice_section_html,
+    window_verifier_digest,
+)
+from dart_semantic.qwen_specialists.reviewer_prompt import (
+    build_second_pass_verify_request,
 )
 from dart_semantic.soft_reranker.types import RankedCandidate
 from dart_semantic.qwen_specialists.types import Candidate
@@ -281,3 +287,150 @@ def test_empty_region_returns_empty():
         sub_task_log={"region_html": ["", "<p>kept</p>"]},
     )
     assert slice_region_html(doc, 0) == ""  # metadata_drop / empty -> '' (no raise)
+
+
+# ---------------------------------------------------------------------------
+# Section-aligned digest windowing (window_verifier_digest).
+# ---------------------------------------------------------------------------
+
+
+def _entry(region_index, kind, head="h", tail="t", semantic_class=None):
+    return {
+        "region_index": region_index,
+        "kind": kind,
+        "semantic_class": semantic_class,
+        "aria_wrapper": None,
+        "head": head,
+        "tail": tail,
+    }
+
+
+def _section_digest(n_sections=3):
+    """A digest of ``n_sections`` heading+paragraph sections (uniform size)."""
+    regions = []
+    outline = []
+    for s in range(n_sections):
+        h_idx, p_idx = 2 * s, 2 * s + 1
+        regions.append(_entry(h_idx, "heading", head=f"Head{s}", tail=f"Head{s}"))
+        regions.append(_entry(p_idx, "paragraph", head=f"Body{s}", tail=f"Body{s}"))
+        outline.append({"region_index": h_idx, "level": 2, "text": f"Head{s}",
+                        "heading_id": f"head-{s}"})
+    return {"regions": regions, "heading_outline": outline}
+
+
+def _one_section_budget(digest):
+    """The token budget that fits exactly ONE section (so each section becomes
+    its own window): the largest section's token estimate."""
+    return max(_estimate_tokens(sec) for sec in _split_into_sections(digest["regions"]))
+
+
+def _window_of(windows):
+    """region_index -> window position map across a windows list."""
+    out = {}
+    for wpos, win in enumerate(windows):
+        for e in win["regions"]:
+            out[e["region_index"]] = wpos
+    return out
+
+
+def test_window_packs_whole_sections():
+    digest = _section_digest(3)
+    budget = _one_section_budget(digest)
+    windows = window_verifier_digest(digest, window_tokens=budget)
+    # One window per whole section; a heading and its paragraph never split.
+    assert len(windows) == 3
+    for win in windows:
+        ids = [e["region_index"] for e in win["regions"]]
+        # Each window is exactly one heading (even idx) + its paragraph (odd).
+        assert ids == [ids[0], ids[0] + 1]
+        assert win["regions"][0]["kind"] == "heading"
+
+
+def test_window_never_splits_section():
+    digest = _section_digest(4)
+    budget = _one_section_budget(digest) * 2 + 1  # ~2 sections / window
+    windows = window_verifier_digest(digest, window_tokens=budget)
+    pos = _window_of(windows)
+    # Every section's heading + content land in the SAME window.
+    for sec in _split_into_sections(digest["regions"]):
+        win_positions = {pos[e["region_index"]] for e in sec}
+        assert len(win_positions) == 1, "a section was split across windows"
+
+
+def test_window_front_matter_initial():
+    # Two pre-first-heading entries form an initial front-matter pseudo-section.
+    regions = [
+        _entry(0, "paragraph", head="Front0"),
+        _entry(1, "paragraph", head="Front1"),
+        _entry(2, "heading", head="Head0"),
+        _entry(3, "paragraph", head="Body0"),
+    ]
+    digest = {"regions": regions, "heading_outline": [
+        {"region_index": 2, "level": 2, "text": "Head0", "heading_id": "head-0"}]}
+    budget = _one_section_budget(digest)
+    windows = window_verifier_digest(digest, window_tokens=budget)
+    # The first window is the front-matter section (no heading entry in it).
+    first_ids = [e["region_index"] for e in windows[0]["regions"]]
+    assert first_ids == [0, 1]
+    assert all(e["kind"] != "heading" for e in windows[0]["regions"])
+
+
+def test_window_over_budget_section_subsplits():
+    # One giant section (heading + 5 content) that alone exceeds the budget ->
+    # entry-range sub-split, no window over budget, no entries dropped.
+    regions = [_entry(0, "heading", head="H", tail="H")]
+    for i in range(1, 6):
+        regions.append(_entry(i, "paragraph", head=f"Body{i}", tail=f"Tail{i}"))
+    digest = {"regions": regions, "heading_outline": [
+        {"region_index": 0, "level": 2, "text": "H", "heading_id": "h"}]}
+    per_entry = max(_estimate_tokens(e) for e in regions)
+    budget = per_entry * 2 + 1  # ~2 entries per slice, section (6) far exceeds it
+    windows = window_verifier_digest(digest, window_tokens=budget)
+    assert len(windows) > 1  # the section was sub-split
+    seen = []
+    for win in windows:
+        # No window exceeds the budget (every entry here is < budget).
+        assert _estimate_tokens(win["regions"]) <= budget
+        seen.extend(e["region_index"] for e in win["regions"])
+    # No entry dropped: the union is every region.
+    assert sorted(seen) == [0, 1, 2, 3, 4, 5]
+
+
+def test_window_outline_capped():
+    # A huge full-doc outline (referencing out-of-window headings) -> capped at
+    # outline_token_cap with a truncation marker.
+    regions = [_entry(0, "heading", head="H"), _entry(1, "paragraph", head="B")]
+    outline = [{"region_index": 1000 + i, "level": 2, "text": f"Heading number {i}",
+                "heading_id": f"head-{i}"} for i in range(200)]
+    digest = {"regions": regions, "heading_outline": outline}
+    windows = window_verifier_digest(digest, window_tokens=100000, outline_token_cap=40)
+    assert len(windows) == 1
+    capped = windows[0]["heading_outline"]
+    assert _estimate_tokens(capped) <= 40
+    assert capped[-1].get("outline_truncated") is True
+    assert capped[-1]["omitted_headings"] == 200
+
+
+def test_window_allowed_ids_are_window_local():
+    digest = _section_digest(3)
+    budget = _one_section_budget(digest)
+    windows = window_verifier_digest(digest, window_tokens=budget)
+    assert len(windows) == 3
+    for win in windows:
+        entry_ids = sorted(e["region_index"] for e in win["regions"])
+        assert win["allowed_region_indices"] == entry_ids
+
+
+def test_single_window_equiv_to_full_digest(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS", "1")
+    digest = _section_digest(2)
+    windows = window_verifier_digest(digest, window_tokens=1_000_000)
+    assert len(windows) == 1
+    # The single window's prompt is byte-identical to the non-windowed digest.
+    assert build_second_pass_verify_request(windows[0]) == \
+        build_second_pass_verify_request(digest)
+
+
+def test_window_empty_digest_returns_empty():
+    assert window_verifier_digest({"regions": [], "heading_outline": []},
+                                  window_tokens=8000) == []

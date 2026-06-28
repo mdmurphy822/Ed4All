@@ -539,6 +539,11 @@ def resolve_semantic_class_mode() -> bool:
 # refine_rounds=2 precedent — a too-weak fix_hint returns the identical greedy
 # op, so the bound + best-so-far fail-safe is load-bearing).
 _DEFAULT_SECOND_PASS_ROUNDS = 2
+# Default per-window verifier prompt budget (tokens). Bounds a real-sized doc's
+# digest so it fits the local serving window — the 16k Ollama reviewer seat
+# head-truncated the single whole-doc digest. A very large value collapses the
+# windowing to a single whole-doc call (today's behaviour — the revert lever).
+_DEFAULT_SECOND_PASS_WINDOW_TOKENS = 8000
 
 
 def resolve_second_pass_mode() -> bool:
@@ -572,6 +577,28 @@ def resolve_second_pass_rounds() -> int:
         return _DEFAULT_SECOND_PASS_ROUNDS
     if val <= 0:
         return _DEFAULT_SECOND_PASS_ROUNDS
+    return val
+
+
+def resolve_second_pass_window_tokens() -> int:
+    """Parse-with-fallback ``SEMANTIK_SECOND_PASS_WINDOW_TOKENS`` (default 8000).
+
+    The per-window token budget the Pass-2 verifier digest is packed into
+    (section-aligned windows, one dispatch each) so a real-sized doc's digest
+    fits the local serving window instead of head-truncating a single whole-doc
+    prompt. Garbage / non-int / non-positive values fall back to the default,
+    mirroring :func:`resolve_second_pass_rounds`. A very large value collapses
+    the windowing to a single whole-doc call (the revert lever). No-op when
+    ``SEMANTIK_SECOND_PASS`` is off."""
+    raw = os.environ.get("SEMANTIK_SECOND_PASS_WINDOW_TOKENS")
+    if not raw:
+        return _DEFAULT_SECOND_PASS_WINDOW_TOKENS
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_SECOND_PASS_WINDOW_TOKENS
+    if val <= 0:
+        return _DEFAULT_SECOND_PASS_WINDOW_TOKENS
     return val
 
 
@@ -2218,6 +2245,7 @@ def run_second_pass_verify(
         enclosing_section_heading_id,
         slice_region_html,
         slice_section_html,
+        window_verifier_digest,
     )
     from .reviewer_prompt import (
         build_second_pass_verify_request,
@@ -2240,24 +2268,42 @@ def run_second_pass_verify(
         )
         return _PASS
 
-    prompt = build_second_pass_verify_request(digest)
-    if not prompt:
-        # Flag off (the builder returns "" when _second_pass_enabled() is
-        # False) -> nothing to verify; treat as clean.
+    # Section-aligned windowing: the committed path built ONE digest over the
+    # whole doc and head-truncated ~86% of a 1830-entry / ~112k-token prompt on
+    # the 16k serving window. Pack into section-aligned windows that each fit,
+    # dispatch ONE call per window, and aggregate. A fits-one-window doc returns
+    # a single window equivalent to the input digest, so the prompt + dispatch +
+    # parse are byte-identical to today (the byte-stable revert lever is a huge
+    # SEMANTIK_SECOND_PASS_WINDOW_TOKENS -> 1 window).
+    windows = window_verifier_digest(
+        digest, window_tokens=resolve_second_pass_window_tokens()
+    )
+    if not windows:
+        # Empty digest -> nothing to verify; treat as clean.
         return _PASS
 
     review_temperature = resolve_structure_review_temperature()
-    verdict = _dispatch_verify_once(
-        runtime, prompt, review_temperature, parse_verifier_response
-    )
-    if verdict is None:
-        return _PASS
 
-    # Single bounded spot-HTML re-ask: resolve each requested CONTENT region to
-    # its enclosing-section HTML and re-dispatch ONCE (no recursion).
-    if verdict.spot_html_requested:
+    def _verify_window(window: dict[str, Any]) -> "VerifierVerdict | None":
+        """Dispatch ONE window (+ its single bounded spot-HTML re-ask).
+
+        Returns the window's verdict, or ``None`` on flag-off / dispatch error /
+        unparseable response (the caller fail-safe-PASSES that window so a broken
+        window never FAILS the doc)."""
+        prompt = build_second_pass_verify_request(window)
+        if not prompt:
+            # Flag off (the builder returns "" when _second_pass_enabled() is
+            # False) -> nothing to verify for this window.
+            return None
+        wv = _dispatch_verify_once(
+            runtime, prompt, review_temperature, parse_verifier_response
+        )
+        if wv is None or not wv.spot_html_requested:
+            return wv
+        # Single bounded spot-HTML re-ask: resolve each requested CONTENT region
+        # to its enclosing-section HTML and re-dispatch ONCE (no recursion).
         spot_html_by_idx: dict[int, str] = {}
-        for ri in verdict.spot_html_requested:
+        for ri in wv.spot_html_requested:
             html = ""
             try:
                 hid = enclosing_section_heading_id(assembled, ri)
@@ -2270,18 +2316,46 @@ def run_second_pass_verify(
             if html:
                 spot_html_by_idx[ri] = html
         reask_prompt = build_second_pass_verify_request(
-            digest, spot_html_by_idx=spot_html_by_idx
+            window, spot_html_by_idx=spot_html_by_idx
         )
-        if reask_prompt:
-            reasked = _dispatch_verify_once(
-                runtime, reask_prompt, review_temperature, parse_verifier_response
-            )
-            if reasked is not None:
-                return reasked
-        # A broken / unparseable re-ask never blocks — fail-safe pass.
-        return _PASS
+        if not reask_prompt:
+            return None
+        # A broken / unparseable re-ask never blocks — fail-safe (None) PASS.
+        return _dispatch_verify_once(
+            runtime, reask_prompt, review_temperature, parse_verifier_response
+        )
 
-    return verdict
+    # Aggregate the per-window verdicts: passed=all(windows), flagged=union of
+    # all windows' flags deduped by region_index (first/strongest per index),
+    # spot_html_requested=union. Windows are dispatched SERIALLY (concurrency 1)
+    # — each is a single-prompt batch by construction.
+    overall_passed = True
+    flagged_by_idx: dict[int, "FlaggedBlock"] = {}
+    spot_union: list[int] = []
+    for window in windows:
+        allowed = set(window.get("allowed_region_indices") or ())
+        wv = _verify_window(window)
+        if wv is None:
+            # Per-window FAIL-SAFE: a broken window is treated passed=True,
+            # flagged=() — it never FAILS the doc (mirrors the whole-doc floor).
+            continue
+        if not wv.passed:
+            overall_passed = False
+        for fb in wv.flagged:
+            # The verifier may only flag ids it can SEE in THIS window.
+            if allowed and fb.region_index not in allowed:
+                continue
+            if fb.region_index not in flagged_by_idx:
+                flagged_by_idx[fb.region_index] = fb
+        for ri in wv.spot_html_requested:
+            if ri not in spot_union:
+                spot_union.append(ri)
+
+    return VerifierVerdict(
+        passed=overall_passed,
+        flagged=tuple(flagged_by_idx.values()),
+        spot_html_requested=tuple(spot_union),
+    )
 
 
 def _run_windowed_block_review(
@@ -2698,6 +2772,7 @@ __all__ = [
     "resolve_block_review_window",
     "resolve_second_pass_mode",
     "resolve_second_pass_rounds",
+    "resolve_second_pass_window_tokens",
     "resolve_semantic_class_mode",
     "resolve_structure_review_mode",
     "resolve_structure_review_temperature",

@@ -28,6 +28,7 @@ from dart_semantic.qwen_specialists.reviewer import (
     VerifierVerdict,
     _content_block_dispatch_gate,
     assert_token_conservation,
+    resolve_second_pass_window_tokens,
     resolve_structure_review_mode,
     resolve_structure_review_temperature,
     run_second_pass_verify,
@@ -2406,6 +2407,132 @@ def test_verify_no_text_emitted(monkeypatch):
         "proposed_regroup_run",
     }
     assert "EXAMPLE 1.3 solve x." not in flag.fix_hint
+
+
+# ---------------------------------------------------------------------------
+# Section-aligned digest WINDOWING (this session) — run_second_pass_verify now
+# windows the digest, dispatches one call per window, and aggregates. A
+# multi-section doc + a tiny per-window budget forces multiple windows.
+# ---------------------------------------------------------------------------
+
+
+def _multi_section_doc(n_sections=3):
+    """An assembled doc of ``n_sections`` heading+paragraph sections, identity
+    region_provenance — its digest splits into ``n_sections`` sections."""
+    regions = []
+    rh = []
+    for s in range(n_sections):
+        regions.append(Region(kind="heading", feature_block_indices=(2 * s,),
+                              payload={"level_hint": 2, "text": f"Head{s}"}))
+        regions.append(Region(kind="paragraph", feature_block_indices=(2 * s + 1,),
+                              payload={"text": f"Body para number {s}."}))
+        rh.append(f'<h2 id="head-{s}">Head{s}</h2>')
+        rh.append(f"<p>Body para number {s}.</p>")
+    fbs = []
+    for s in range(n_sections):
+        fbs.append(_fb(f"Head{s}"))
+        fbs.append(_fb(f"Body para number {s}."))
+    html = "".join(rh)
+    anchors = {f"head-{s}": 2 * s for s in range(n_sections)}
+    doc = AssembledDoc(
+        html=html, gaps_found=[], gaps_resolved=[], gaps_fallback=[],
+        heading_tree=[(2, f"Head{s}") for s in range(n_sections)],
+        landmarks={}, anchors=anchors,
+        region_provenance=list(range(2 * n_sections)),
+        sub_task_log={"region_html": rh},
+    )
+    return doc, regions, fbs
+
+
+def _set_one_section_budget(monkeypatch, doc, regions, fbs):
+    """Pin SEMANTIK_SECOND_PASS_WINDOW_TOKENS so each section is its own window."""
+    from dart_semantic.assembler.verify_digest import (
+        _estimate_tokens, _split_into_sections, build_verifier_digest,
+    )
+    digest = build_verifier_digest(doc, regions, fbs, edge_tokens=12)
+    budget = max(_estimate_tokens(s) for s in _split_into_sections(digest["regions"]))
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS_WINDOW_TOKENS", str(budget))
+
+
+def test_verify_aggregates_passed_all(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS", "1")
+    doc, regions, fbs = _multi_section_doc(3)
+    _set_one_section_budget(monkeypatch, doc, regions, fbs)
+    rt = _ScriptedRuntime([_verify_json(), _verify_json(), _verify_json()], queue=True)
+    verdict = run_second_pass_verify(doc, regions, fbs, rt)
+    assert verdict.passed is True
+    assert verdict.flagged == ()
+    assert len(rt.batch_calls) == 3  # one dispatch per window
+    for call in rt.batch_calls:
+        assert len(call["prompts"]) == 1  # serialized single-prompt batches
+
+
+def test_verify_aggregates_flagged_union_dedup(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS", "1")
+    doc, regions, fbs = _multi_section_doc(3)
+    _set_one_section_budget(monkeypatch, doc, regions, fbs)
+    # Window 0 (ids 0,1) flags idx 1 TWICE (a dup -> deduped); window 1 (ids 2,3)
+    # flags idx 3; window 2 passes.
+    win0 = _verify_json(flags=[
+        {"region_index": 1, "failure_mode": "mistyped_component",
+         "fix_hint": "first", "fixable": True},
+        {"region_index": 1, "failure_mode": "mistyped_component",
+         "fix_hint": "second", "fixable": True},
+    ])
+    win1 = _verify_json(flags=[{"region_index": 3, "failure_mode": "example_as_heading",
+                                "fix_hint": "B", "fixable": True}])
+    rt = _ScriptedRuntime([win0, win1, _verify_json()], queue=True)
+    verdict = run_second_pass_verify(doc, regions, fbs, rt)
+    assert verdict.passed is False
+    idxs = sorted(f.region_index for f in verdict.flagged)
+    assert idxs == [1, 3]  # union across windows, idx 1 deduped to one
+    by_idx = {f.region_index: f for f in verdict.flagged}
+    assert by_idx[1].fix_hint == "first"  # first/strongest per index kept
+
+
+def test_verify_one_window_fails_doc_fails(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS", "1")
+    doc, regions, fbs = _multi_section_doc(3)
+    _set_one_section_budget(monkeypatch, doc, regions, fbs)
+    win1 = _verify_json(flags=[{"region_index": 3, "failure_mode": "mistyped_component",
+                                "fix_hint": "x", "fixable": True}])
+    rt = _ScriptedRuntime([_verify_json(), win1, _verify_json()], queue=True)
+    verdict = run_second_pass_verify(doc, regions, fbs, rt)
+    assert verdict.passed is False  # one window failing fails the whole doc
+    assert sorted(f.region_index for f in verdict.flagged) == [3]
+
+
+def test_verify_window_error_is_failsafe_pass(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS", "1")
+    doc, regions, fbs = _multi_section_doc(3)
+    _set_one_section_budget(monkeypatch, doc, regions, fbs)
+    # Window 1 dispatch errors (None sentinel) -> that window treated passed;
+    # window 0 flags idx 1, window 2 passes -> the rest aggregate normally.
+    win0 = _verify_json(flags=[{"region_index": 1, "failure_mode": "mistyped_component",
+                                "fix_hint": "x", "fixable": True}])
+    rt = _ScriptedRuntime([win0, _verify_json(), _verify_json()],
+                          fail_indices={1}, queue=True)
+    verdict = run_second_pass_verify(doc, regions, fbs, rt)
+    assert verdict.passed is False
+    assert sorted(f.region_index for f in verdict.flagged) == [1]
+    # All windows error -> fail-safe PASS (never block a good doc).
+    doc2, regions2, fbs2 = _multi_section_doc(3)
+    _set_one_section_budget(monkeypatch, doc2, regions2, fbs2)
+    rt2 = _ScriptedRuntime([_verify_json(), _verify_json(), _verify_json()],
+                           fail_indices={0, 1, 2}, queue=True)
+    verdict2 = run_second_pass_verify(doc2, regions2, fbs2, rt2)
+    assert verdict2.passed is True
+    assert verdict2.flagged == ()
+
+
+def test_second_pass_window_tokens_flag(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_SECOND_PASS_WINDOW_TOKENS", raising=False)
+    assert resolve_second_pass_window_tokens() == 8000  # default
+    for bad in ("", "  ", "abc", "0", "-5", "3.5"):
+        monkeypatch.setenv("SEMANTIK_SECOND_PASS_WINDOW_TOKENS", bad)
+        assert resolve_second_pass_window_tokens() == 8000
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS_WINDOW_TOKENS", "16000")
+    assert resolve_second_pass_window_tokens() == 16000
 
 
 # ---------------------------------------------------------------------------

@@ -760,7 +760,35 @@ def build_second_pass_verify_request(
     if not _second_pass_enabled():
         return ""
     system = "\n\n".join([_SECOND_PASS_VERIFY_DIRECTIVE, _GLOBAL_WCAG_HEADER])
-    user_payload: dict[str, Any] = {"digest": digest}
+    # ``allowed_region_indices`` is a WINDOWING hint, not part of the digest the
+    # verifier reads — strip it from the serialized digest so a single-window
+    # sub-digest (which carries the full regions + full outline) is byte-
+    # identical to the non-windowed digest prompt.
+    serial_digest = {k: v for k, v in digest.items() if k != "allowed_region_indices"}
+    user_payload: dict[str, Any] = {"digest": serial_digest}
+    # Per-window allow-list: the shared full-doc outline is repeated in every
+    # window for context, so on a TRUE sub-window the model can SEE heading
+    # region_indices outside the window. Pin the allow-list ONLY when the
+    # outline references regions this window does not own — so the verifier
+    # cannot flag an id outside its window. When the outline references only
+    # in-window regions (the single-window / fits-one-window case), no allow-
+    # list is emitted and the prompt stays byte-identical to today.
+    entry_ids = {
+        e.get("region_index")
+        for e in serial_digest.get("regions", [])
+        if isinstance(e, dict)
+    }
+    entry_ids.discard(None)
+    allowed_raw = digest.get("allowed_region_indices")
+    allowed = set(allowed_raw) if allowed_raw is not None else set(entry_ids)
+    outline_ids = {
+        n.get("region_index")
+        for n in serial_digest.get("heading_outline", [])
+        if isinstance(n, dict)
+    }
+    outline_ids.discard(None)
+    if outline_ids - allowed:
+        user_payload["allowed_region_indices"] = sorted(allowed)
     if spot_html_by_idx:
         user_payload["spot_html"] = {str(k): v for k, v in spot_html_by_idx.items()}
     user_json = json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))
