@@ -657,6 +657,14 @@ def run_pass_9a(
         "footer": 0,
         "aside": 0,
     }
+    # Gold shell adds a STATIC ``<footer role="contentinfo">`` landmark
+    # (`gold_shell_markup.GOLD_DOC_CLOSE`). Account for it under the gold
+    # branch ONLY so the flag-off landmarks dict stays byte-identical. The
+    # dynamic ``nav``/``aside``/``region`` counts from the Phase-7/9 wraps
+    # already increment as those wraps emit, so they are NOT bumped here
+    # (no double-count).
+    if resolve_gold_shell_mode():
+        landmarks["footer"] = 1
 
     region_provenance = list(range(len(regions)))
 

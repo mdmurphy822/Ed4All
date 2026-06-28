@@ -18,6 +18,15 @@ import os
 from collections.abc import Sequence
 from typing import Any
 
+from .gold_shell_markup import (
+    GOLD_ACCESSIBILITY_JSONLD,
+    GOLD_DOC_CLOSE,
+    GOLD_DOC_OPEN,
+    GOLD_JSONLD_SLOT,
+    GOLD_STYLE_SLOT,
+)
+from .wcag22_css import WCAG22_CSS
+
 
 # Truthy tokens for the parse-with-fallback gate below. Replicated inline
 # (the assembler has no shared frozenset) to match the reviewer's
@@ -72,9 +81,31 @@ def build_shell(
     rather than extracted from the source document. Default ``False``
     keeps backward compatibility with existing callers.
     """
-    doc_open = DOC_OPEN.format(
-        lang=_escape_attr(lang), title=_escape(title),
-    )
+    if resolve_gold_shell_mode():
+        # Gold accessible shell branch — returns the NEW gold constants
+        # (authored in ``gold_shell_markup``), NEVER mutating the existing
+        # minimal ``DOC_OPEN``/``DOC_CLOSE`` constants in place. ``GOLD_DOC_OPEN``
+        # keeps the EXACT ``{lang}``/``{title}`` ``.format()`` contract, so the
+        # call below is byte-for-byte the same shape as the minimal branch.
+        doc_open = GOLD_DOC_OPEN.format(
+            lang=_escape_attr(lang), title=_escape(title),
+        )
+        # Splice the WCAG CSS + schema.org JSON-LD at the brace-free sentinels
+        # via ``str.replace`` (NOT ``.format`` — both payloads carry literal
+        # ``{}`` that would break ``str.format``).
+        doc_open = doc_open.replace(
+            GOLD_STYLE_SLOT, f"<style>{WCAG22_CSS}</style>", 1,
+        )
+        doc_open = doc_open.replace(
+            GOLD_JSONLD_SLOT, GOLD_ACCESSIBILITY_JSONLD, 1,
+        )
+        doc_close = GOLD_DOC_CLOSE
+    else:
+        doc_open = DOC_OPEN.format(
+            lang=_escape_attr(lang), title=_escape(title),
+        )
+        doc_close = DOC_CLOSE
+
     if fabricated_title:
         doc_open = doc_open.replace(
             f"<title>{_escape(title)}</title>\n",
@@ -84,7 +115,7 @@ def build_shell(
             ),
             1,
         )
-    return (doc_open, DOC_CLOSE)
+    return (doc_open, doc_close)
 
 
 def _escape(s: str) -> str:

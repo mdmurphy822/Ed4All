@@ -271,3 +271,118 @@ def test_flag_off_byte_identical(monkeypatch):
 def test_collect_doc_ids_seeds_from_fragments():
     frags = ['<h2 id="intro">A</h2>', '<p>no id</p>', '<div id="box">x</div>']
     assert collect_doc_ids(frags) == {"intro", "box"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 — gold-standard document shell + <style> + JSON-LD + landmarks
+# ---------------------------------------------------------------------------
+
+from dart_semantic.assembler.shell import (  # noqa: E402
+    DOC_CLOSE,
+    DOC_OPEN,
+    TITLE_SLOT_SENTINEL,
+    build_shell,
+)
+from dart_semantic.assembler.pass_9c import _splice_missing_title  # noqa: E402
+from dart_semantic.gates.hard_document import _check_html5_wellformed  # noqa: E402
+
+
+def test_gold_shell_injects_style_and_jsonld(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    doc_open, _ = build_shell(lang="en", title="Doc")
+    # The injected <style> carries the real WCAG component classes.
+    assert "<style>" in doc_open and "</style>" in doc_open
+    assert ".definition" in doc_open
+    assert ".callout-warning" in doc_open
+    # The schema.org accessibility JSON-LD landed in the head.
+    assert '<script type="application/ld+json">' in doc_open
+    assert '"@context": "https://schema.org"' in doc_open
+    # role=main present (the gold <main>).
+    assert '<main id="main-content" role="main">' in doc_open
+
+
+def test_gold_shell_emits_footer_contentinfo(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    _, doc_close = build_shell(lang="en", title="Doc")
+    assert '<footer role="contentinfo">' in doc_close
+    assert "</article>" in doc_close
+    assert "</main>" in doc_close
+
+
+def test_gold_doc_open_format_contract_unchanged(monkeypatch):
+    # The same (lang=, title=) kwargs drive build_shell in BOTH branches.
+    monkeypatch.delenv("SEMANTIK_GOLD_SHELL", raising=False)
+    off_open, off_close = build_shell(lang="es", title="Título & <x>")
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    on_open, on_close = build_shell(lang="es", title="Título & <x>")
+    # Identical kwargs accepted; lang + escaped title rendered in both.
+    for out in (off_open, on_open):
+        assert '<html lang="es">' in out
+        assert "Título &amp; &lt;x&gt;" in out
+    # Branches differ (gold adds style/jsonld/footer), proving the gold branch
+    # is selected rather than a no-op.
+    assert on_open != off_open
+    assert on_close != off_close
+
+
+def test_title_slot_sentinel_preserved(monkeypatch):
+    # The exact sentinel survives in BOTH branches, and a _splice_missing_title
+    # round-trip still lands the <h1> in the gold shell.
+    monkeypatch.delenv("SEMANTIK_GOLD_SHELL", raising=False)
+    off_open, _ = build_shell(lang="en", title="Doc")
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    on_open, _ = build_shell(lang="en", title="Doc")
+    assert TITLE_SLOT_SENTINEL in off_open
+    assert TITLE_SLOT_SENTINEL in on_open
+    # The sentinel string itself is the literal pass_9c splice key.
+    assert TITLE_SLOT_SENTINEL == "<!-- DART_TITLE_SLOT -->\n"
+    # Round-trip the title splice on the gold shell.
+    candidate = '<title>Real Title</title><h1>Real Title</h1>'
+    spliced = _splice_missing_title(on_open, candidate)
+    assert "<!-- DART_TITLE_SLOT -->" not in spliced
+    assert "<h1" in spliced and "Real Title</h1>" in spliced
+
+
+def test_landmarks_dict_reports_gold_footer(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    fbs = [_fb("h"), _fb("body")]
+    regions = [_region(0, None, kind="heading"), _region(1, None)]
+    top = {0: _stage6("<h2>Title</h2>"), 1: _stage6("<p>body</p>")}
+    doc = _assemble(top, regions, fbs)
+    assert doc.landmarks["footer"] == 1
+    assert doc.landmarks["main"] == 1
+
+
+def test_minimal_shell_byte_identical_flag_off(monkeypatch):
+    # build_shell output byte-identical with SEMANTIK_GOLD_SHELL absent vs off.
+    monkeypatch.delenv("SEMANTIK_GOLD_SHELL", raising=False)
+    absent_open, absent_close = build_shell(lang="en", title="Doc")
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "off")
+    off_open, off_close = build_shell(lang="en", title="Doc")
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "0")
+    zero_open, zero_close = build_shell(lang="en", title="Doc")
+    assert absent_open == off_open == zero_open
+    assert absent_close == off_close == zero_close
+    # And byte-identical to the untouched minimal constants.
+    assert absent_open == DOC_OPEN.format(lang="en", title="Doc")
+    assert absent_close == DOC_CLOSE
+
+
+def test_landmarks_dict_byte_identical_flag_off(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_GOLD_SHELL", raising=False)
+    fbs = [_fb("h"), _fb("body")]
+    regions = [_region(0, None, kind="heading"), _region(1, None)]
+    top = {0: _stage6("<h2>Title</h2>"), 1: _stage6("<p>body</p>")}
+    doc = _assemble(top, regions, fbs)
+    assert doc.landmarks["footer"] == 0
+
+
+def test_html5_wellformed_and_single_main(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    doc_open, doc_close = build_shell(lang="en", title="Doc")
+    html = doc_open + "<p>body</p>" + doc_close
+    outcome = _check_html5_wellformed(html)
+    assert outcome.passed, outcome.message
+    # Exactly one <main>.
+    assert html.count("<main") == 1
+    assert html.count("</main>") == 1

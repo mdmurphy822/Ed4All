@@ -171,19 +171,21 @@ def test_assembler_output_unchanged():
         assert marker not in html, f"vendored marker {marker!r} leaked into assembler output"
 
     import dart_semantic.assembler.api as api_mod
-    import dart_semantic.assembler.shell as shell_mod
     import dart_semantic.assembler.fallbacks as fallbacks_mod
     import dart_semantic.assembler.pass_9a as pass_9a_mod
 
-    # The vendored WCAG CSS (Phase 8) is still consumed by NObody.
-    for mod in (api_mod, shell_mod, fallbacks_mod, pass_9a_mod):
+    # The vendored WCAG CSS is consumed ONLY by the gold-shell branch of
+    # ``shell.build_shell`` (Phase 8), gated behind SEMANTIK_GOLD_SHELL. The
+    # other assembler modules must still not import it (no leakage into the
+    # flag-off path).
+    for mod in (api_mod, fallbacks_mod, pass_9a_mod):
         src = Path(inspect.getsourcefile(mod)).read_text(encoding="utf-8")
         assert "wcag22_css" not in src, f"{mod.__name__} already imports wcag22_css"
 
-    # Phase 7 wires gold_shell_markup into pass_9a (the per-region gold ARIA
-    # wrap), gated behind SEMANTIK_GOLD_SHELL. api/shell/fallbacks still must not
-    # import it.
-    for mod in (api_mod, shell_mod, fallbacks_mod):
+    # gold_shell_markup is wired into pass_9a (Phase 7 per-region ARIA wrap) and
+    # shell (Phase 8 gold document shell), both gated behind SEMANTIK_GOLD_SHELL.
+    # api/fallbacks still must not import it.
+    for mod in (api_mod, fallbacks_mod):
         src = Path(inspect.getsourcefile(mod)).read_text(encoding="utf-8")
         assert "gold_shell_markup" not in src, (
             f"{mod.__name__} already imports gold_shell_markup"
