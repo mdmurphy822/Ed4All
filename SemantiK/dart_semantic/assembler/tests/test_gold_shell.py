@@ -878,3 +878,104 @@ def test_absorb_output_byte_identical_after_hoist():
     # Anchor 1 absorbs indices 2,3 -> end 4 (stops at the unit-start at 4).
     # Anchor 4 absorbs index 5 -> end 6 (stops at the heading at 6).
     assert runs == {1: 4, 4: 6}
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 — SEMANTIK_UNIT_REGROUP supersedes SEMANTIK_GOLD_ABSORB when FIRING.
+#
+# When the Stage-5e cross-kind regroup is ACTUALLY firing (regroup-on AND
+# reading-order-on — the SAME composite condition the regroup fires under),
+# each unit's label+body is already ONE region carrying the unit's
+# semantic_class, so the per-region gold wrap boxes the WHOLE unit; the
+# assembler-side absorb is forced OFF (mutual exclusion — never double-box).
+# Regroup-INERT (reading-order off) leaves the absorb as the fallback.
+# ---------------------------------------------------------------------------
+
+
+def test_absorb_forced_off_when_regroup_firing(monkeypatch):
+    # Regroup ON + reading-order ON -> regroup is firing -> absorb forced off
+    # regardless of SEMANTIK_GOLD_ABSORB.
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
+    for v in ("1", "true", "on", "YES"):
+        monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", v)
+        assert resolve_gold_absorb_mode() is False
+    # Reading-order DEFAULT-ON (unset) also counts as firing.
+    monkeypatch.delenv("SEMANTIK_READING_ORDER_FIX", raising=False)
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    assert resolve_gold_absorb_mode() is False
+
+
+def test_absorb_stays_on_when_regroup_inert(monkeypatch):
+    # Regroup ON but reading-order OFF -> the regroup is INERT (its Phase-6
+    # driver guard), so the absorb MUST stay the fallback (no regression vs
+    # absorb-alone). Gating the short-circuit on unit_regroup alone would box
+    # NEITHER here.
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "off")
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    assert resolve_gold_absorb_mode() is True
+
+
+def test_no_double_box_regroup_plus_absorb(monkeypatch):
+    # The regroup is firing AND SEMANTIK_GOLD_ABSORB is on. The merged unit
+    # arrives as ONE worked_example region (Stage-5e already fused it); the
+    # per-region wrap boxes it EXACTLY ONCE and the absorb does NOT add a
+    # second box on top (it was forced off).
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    assert resolve_gold_absorb_mode() is False
+    fbs = [_fb("h"), _fb("unit"), _fb("h2")]
+    regions = [
+        _heading_region(0, level=1),
+        # The merged unit: ONE worked_example region whose Stage-6 HTML carries
+        # the label + Solution + body (Stage-5e fused them upstream).
+        _region(1, "worked_example"),
+        _heading_region(2, level=1),
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6(
+            "<p>EXAMPLE 1.3 solve x</p><p>Solution: factor</p><p>step a value</p>"
+        ),
+        2: _stage6("<h2>Next Section</h2>"),
+    }
+    html = _assemble(top, regions, fbs).html
+    # Exactly ONE worked-example box.
+    boxes = _WE_DIV_RE.findall(html)
+    assert len(boxes) == 1, html
+    box = boxes[0]
+    # The single box holds the WHOLE unit.
+    assert "EXAMPLE 1.3 solve x" in box
+    assert "Solution: factor" in box
+    assert "step a value" in box
+    # Each fragment appears EXACTLY ONCE in the whole document (no absorb-on-top
+    # double emit).
+    for frag in ("EXAMPLE 1.3 solve x", "Solution: factor", "step a value"):
+        assert html.count(frag) == 1, frag
+
+
+def test_absorb_unchanged_when_regroup_off(monkeypatch):
+    # Regroup OFF -> resolve_gold_absorb_mode is byte-identical to its baseline:
+    # absorb-on renders the absorbed body, absorb-off does not (the Phase-7
+    # short-circuit never engages when SEMANTIK_UNIT_REGROUP is off).
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
+
+    monkeypatch.delenv("SEMANTIK_GOLD_ABSORB", raising=False)
+    absent = _assemble(*_absorb_corpus()).html
+    assert resolve_gold_absorb_mode() is False
+
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    on = _assemble(*_absorb_corpus()).html
+    assert resolve_gold_absorb_mode() is True
+    assert on != absent
+    m_on = _WE_DIV_RE.search(on)
+    assert m_on is not None and "Solution body" in m_on.group(1)
+    m_off = _WE_DIV_RE.search(absent)
+    assert m_off is not None and "Solution body" not in m_off.group(1)

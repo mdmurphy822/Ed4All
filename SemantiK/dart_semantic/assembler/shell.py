@@ -64,11 +64,40 @@ def resolve_gold_absorb_mode() -> bool:
     ADDITIONALLY requires ``resolve_gold_shell_mode()`` on — absorption only
     matters when components are wrapped, so absorb-off-with-shell-on stays
     byte-identical to the v3 gold render.
+
+    **Phase 7 precedence — SUPERSEDED when the Stage-5e regroup is FIRING.**
+    When the cross-kind pedagogical-unit REGROUP is ACTUALLY firing — i.e.
+    ``resolve_unit_regroup_mode()`` AND ``resolve_reading_order_fix()`` (the
+    SAME composite condition the regroup fires under in
+    ``block_resegment.resegment_blocks``) — each unit's label+body has already
+    been fused into ONE region carrying the unit's ``semantic_class``, so the
+    per-region gold wrap boxes the WHOLE unit and the assembler-side absorb
+    would DOUBLE-box. This short-circuits the absorb OFF so the regroup is the
+    canonical, mutually-exclusive grouping. Gating on ``unit_regroup_mode``
+    ALONE would, in the reading-order-OFF case, make the regroup inert (its
+    Phase-6 driver guard) AND kill the absorb -> box NEITHER (a regression vs
+    absorb-alone); requiring BOTH keeps the absorb as the FALLBACK whenever the
+    regroup is inert. (Defense-in-depth only: after the merge the anchor has no
+    absorbable follower left, so ``compute_absorption_runs`` is a natural no-op
+    anyway.) Imports are cycle-free — ``resolve_unit_regroup_mode`` from the
+    neutral ``pedagogical_units`` and ``resolve_reading_order_fix`` from
+    ``structure_graph`` (both dependency-light, no assembler edge); kept
+    function-local as belt-and-braces against any future import cycle.
     """
     if not resolve_gold_shell_mode():
         return False
     raw = (os.environ.get("SEMANTIK_GOLD_ABSORB") or "").strip().lower()
-    return raw in _TRUTHY
+    if raw not in _TRUTHY:
+        return False
+    # Phase 7: regroup-firing (regroup-on AND reading-order-on) supersedes the
+    # absorb stopgap (mutual exclusion — never double-group). Regroup-inert
+    # (reading-order off) leaves the absorb as the fallback (no regression).
+    from ..pedagogical_units import resolve_unit_regroup_mode
+    from ..structure_graph import resolve_reading_order_fix
+
+    if resolve_unit_regroup_mode() and resolve_reading_order_fix():
+        return False
+    return True
 
 
 DOC_OPEN = (
