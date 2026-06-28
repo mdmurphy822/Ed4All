@@ -100,6 +100,42 @@ output) is in [`architecture.md`](architecture.md); the one-liner map:
   token-conservation check, and **fails closed** (reverts to the unreviewed
   region list) on any mismatch. The load-bearing front-matter fix is the
   always-on deterministic detector (see § Front-matter), not this reviewer.
+- **Stage-5d full-block reviewer — content-type re-typing (off by default).**
+  `SEMANTIK_BLOCK_REVIEW=1` (on top of `SEMANTIK_STRUCTURE_REVIEW=1`) widens the
+  reviewer from heading-only into a *structural editor over block IDs*: it
+  re-types the council's known-weak content kinds (`code_block`, `table` —
+  dispatched unconditionally) and drops furniture, emitting ops keyed by index,
+  **never text** (verbatim source rides deterministic assembly; token-conservation
+  fails closed). The 7B sees an edge-windowed view (head/tail tokens per block)
+  and returns `corrected_kind`. Live-validated on OpenStax Algebra ch1-3
+  (2026-06-27, commit `7e3f842`): **197 re-types, 0 text reverts** — all 35
+  council `code_block`s (which were "TRY IT" exercises) → `paragraph`/`math`;
+  over-detected `table`s (prose callouts, single definitions) → `paragraph`,
+  section titles → `heading`, while **real data tables stay `table`**.
+
+  **Canonical run config (default).** The reviewer rides the endpoint seat
+  (`make_runtime("endpoint", …)`), so point it at a LOCAL Ollama model:
+  ```bash
+  SEMANTIK_STRUCTURE_REVIEW=on SEMANTIK_BLOCK_REVIEW=on \
+  SEMANTIK_STRUCTURE_REVIEW_TEMPERATURE=0 \
+  SEMANTIK_SPECIALIST_BASE_URL=http://localhost:11434/v1 \
+  SEMANTIK_SPECIALIST_API_KEY=ollama \
+  SEMANTIK_STRUCTURE_REVIEW_MODEL=qwen2.5-7b-16k:latest \
+  SEMANTIK_SPECIALIST_CONCURRENCY=1     # serialize: one Ollama model can't run windows in parallel
+  ```
+  **On an 8GB dev box use the 16k model, NOT 32k, for the *reviewer*** — the
+  reviewer's windows are ~2k tokens, but `qwen2.5-7b-32k` allocates the full 32k
+  KV (≈8.7GB > 8GB → ~27% spills to CPU → 120s timeouts); `qwen2.5-7b-16k` is
+  fully GPU-resident (~6.3GB). 32k stays the *authoring* seat. `CONCURRENCY=1` is
+  load-bearing: the windowed dispatch fans all windows at once, but one Ollama
+  model serializes them, so concurrent windows trip the client timeout while
+  queued. **GPU lifecycle:** the cascade keeps the council BERTs resident until
+  Stage-5e (`release_council_gpu()` only fires before Stage-6), so a full-cascade
+  run on 8GB has council + reviewer coexisting at Stage-5d. For an isolated
+  reviewer run/validation that keeps one model on the card at a time
+  (council → `release_council_gpu()` → reviewer), see the council/structure/clean
+  → release → `run_structure_review` sequence. Run the council on GPU (sequential
+  cascade phases time-share the card — do NOT force the council to CPU).
 
 ## The cross-venv bridge
 
@@ -257,7 +293,7 @@ posture.
 | `SEMANTIK_BLOCK_REVIEW_WINDOW` | `24` | Max blocks packed into ONE windowed block-review POST (`reviewer.py::resolve_block_review_window`, ~L399). Parse-with-fallback: blank / non-int / non-positive / garbage → `24` (mirrors `resolve_specialist_batch_regions`). No-op until the Phase-4 windowed dispatch consumes it; the flag-off path is byte-identical. Gate only — rides the already-licensed specialist seat, no separate `docs/LICENSING.md` row. |
 | `SEMANTIK_BLOCK_REVIEW_EDGE_TOKENS` | `12` | Head / tail tokens kept per block in the edge-input record fed to the block reviewer (`reviewer.py::resolve_block_review_edge_tokens`, ~L418) — furniture-deduped edges keep full-document review tractable on a 7B. Parse-with-fallback: blank / non-int / non-positive / garbage → `12`. No-op until the Phase-1 edge-input builder consumes it; the flag-off path is byte-identical. Gate only — rides the already-licensed specialist seat, no separate `docs/LICENSING.md` row. |
 | `SEMANTIK_BLOCK_REVIEW_CACHE` | `1` (on) | Content-hash **window-op cache** gate for the block reviewer (`reviewer.py::resolve_block_review_cache_mode`, ~L438; consumed in Phase 4b). Default ON → pure memoization, output-identical (mirrors the extract / council disk-cache). Default-on parse semantics: explicit falsey (`0`/`false`/`no`/`off`) → off; unset / blank / truthy / garbage → on (mirrors `SEMANTIK_STRUCTURE_CLEAN` / `SEMANTIK_SPECIALIST_BATCH`). Gate only — rides the already-licensed specialist seat, no separate `docs/LICENSING.md` row. |
-| `SEMANTIK_BLOCK_REVIEW_CONF` | `0.4` | Council `structural_role` top-1 **confidence floor** for the Phase-3 deterministic-first content-block dispatch gate (`reviewer.py::resolve_block_review_conf_floor`). When `SEMANTIK_BLOCK_REVIEW` is on, a `code_block` content region is sent to the reviewer only when its council confidence is BELOW this floor (or it carries a TRY/EXAMPLE/EXERCISE pedagogical-label prefix) — a high-confidence content block gets NO prompt (the deterministic council kind is trusted). Mirrors `structure_graph._CODE_CONFIDENCE_FLOOR` (the council emits a code_block at ≥0.4, so a sub-floor code_block is a low-confidence type worth re-judging). Float parse-with-fallback: blank / non-float / NaN / Inf / out-of-`[0.0, 1.0]` → `0.4`. The Phase-6 calibration knob (a no-code env change). No-op when `SEMANTIK_BLOCK_REVIEW` is off. Gate threshold only — rides the already-licensed specialist seat, no separate `docs/LICENSING.md` row. |
+| `SEMANTIK_BLOCK_REVIEW_CONF` | `0.4` | Council `structural_role` top-1 **confidence floor** — the SECONDARY arm of the content-block dispatch gate (`reviewer.py::_content_block_dispatch_gate` / `resolve_block_review_conf_floor`). Per the Phase-6 live-validation recalibration (commit `7e3f842`), the council's **known-weak kinds `code_block` + `table` are dispatched UNCONDITIONALLY** (their high "confidence" is uninformative for systematic content-type errors — the council confidently mislabels "TRY IT" exercises as code_block), so this floor does NOT gate them. It applies only to the OTHER content kinds (`paragraph`/`list`/`blockquote`): such a block is dispatched when it carries a TRY/EXAMPLE/EXERCISE pedagogical-label prefix OR its council confidence is below this floor — a plain high-confidence paragraph gets NO prompt (so the reviewer doesn't re-judge all prose). Float parse-with-fallback: blank / non-float / NaN / Inf / out-of-`[0.0, 1.0]` → `0.4`. No-op when `SEMANTIK_BLOCK_REVIEW` is off. Gate threshold only — rides the already-licensed specialist seat, no separate `docs/LICENSING.md` row. |
 | `SEMANTIK_SPECIALIST_REFINE` | unset (off) | Hybrid two-phase Stage-6 refine gate (`SemantiK/dart_semantic/qwen_specialists/runner.py::resolve_refine_mode`, ~L105). Default OFF. Truthy (`1`/`true`/`yes`/`on`) → Phase-2 sends the local-adapter drafts + directive to the 70B endpoint for a polish pass (only meaningful when `SEMANTIK_SPECIALIST_PROVIDER` resolves to the endpoint). Falsey / garbage → off. Routes to the already-licensed specialist seat — no separate licensing row. |
 | `SEMANTIK_SPECIALIST_CONCURRENCY` | `8` (per-region path) / used as the explicit override on the batched path | Thread-pool `max_workers` for concurrent endpoint POSTs (`endpoint_runtime.py::resolve_specialist_concurrency`). On the legacy per-region path it bounds `generate_batch`'s region fan-out (default 8). On the BATCHED endpoint lane (`SEMANTIK_SPECIALIST_BATCH` on, the default) it is honoured ONLY when explicitly set — otherwise the batched lane uses a LOW default of **2** (`runner.py::resolve_batched_concurrency`), because each batched POST already packs ~12 regions so a high fan-out would re-create the rate-limit pressure batching removes. Parse-with-fallback: non-int / non-positive / garbage → `8`. No provider/model selection — no licensing row. |
 | `SEMANTIK_SPECIALIST_BATCH` | `1` (ON for the endpoint lane) | **Multi-region BATCHED Stage-6 endpoint gate** — defeats the hosted seat's ~40-requests/MINUTE rate cap (`runner.py::resolve_batch_mode`). Default **ON for the endpoint lane**: instead of one POST per region per candidate (~197×K POSTs that 429 on ~every call), the active regions are packed into a few large POSTs via `OpenAICompatibleRuntime.generate_multi` (one POST per batch — the limit is requests, not tokens). Each region travels in a delimited `<<<DART_REGION id="rN">>> … <<<DART_REGION_END id="rN">>>` block with its grounding payload verbatim; the response is split back per-region (a missing/malformed block → the same `None` fail-soft sentinel as `generate_batch`). The batched lane also caps candidate-K to **≤2** (see `SEMANTIK_SPECIALIST_BATCH_K`) and uses concurrency **2** by default, so a 16-page slice fires ~34 POSTs. Default-ON parse semantics: explicit falsey (`0`/`false`/`no`/`off`) → the EXACT legacy per-region `generate_batch` path (byte-stable); unset / truthy / garbage → on. Only consulted on the endpoint lane (Phase 2); the local Phase-1 path is unaffected (it always batches by adapter). A runtime lacking `generate_multi` falls back to the per-region path. No provider/model selection — no licensing row. |
