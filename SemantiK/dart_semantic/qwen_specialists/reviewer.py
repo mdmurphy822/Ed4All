@@ -1745,6 +1745,8 @@ def run_structure_review(
     *,
     max_tokens: int = 512,
     council_state: Any | None = None,
+    restrict_to: frozenset[int] | None = None,
+    feedback_by_idx: dict[int, str] | None = None,
 ) -> tuple[list[Region], list[ReviewVerdict]]:
     """Run the Stage-5d structure review over the full region list.
 
@@ -1804,6 +1806,8 @@ def run_structure_review(
             runtime,
             max_tokens=max_tokens,
             council_state=council_state,
+            restrict_to=restrict_to,
+            feedback_by_idx=feedback_by_idx,
         )
 
     n = len(regions)
@@ -1820,6 +1824,13 @@ def run_structure_review(
     for index, region in enumerate(regions):
         if not _in_review_scope(region):
             continue
+        # Phase 5 (targeted re-drive): narrow the scope to ``restrict_to`` AFTER
+        # _in_review_scope (a SEPARATE narrowing AND-composed with it — the
+        # load-bearing _in_review_scope / HEADING_KINDS predicates are unchanged).
+        # restrict_to=None -> whole-document (byte-stable).
+        if restrict_to is not None and index not in restrict_to:
+            continue
+        flagged_member = restrict_to is not None and index in restrict_to
         neighbors = _neighbors_for(regions, index)
         if str(region.kind) in HEADING_KINDS:
             text = _resolve_region_text(region, feature_blocks)
@@ -1827,7 +1838,12 @@ def run_structure_review(
             # Content block (flag on). Deterministic-first: high-confidence
             # blocks get NO prompt; only uncertain ones are dispatched. The
             # first-pass prompt carries the head/tail edge record (Phase 1).
-            if not _content_block_dispatch_gate(region, council_state, feature_blocks):
+            # A verifier-FLAGGED member SHORT-CIRCUITS the conf gate (the
+            # verifier already decided it needs re-review — the conf gate must
+            # not silently drop a flagged-but-confident block).
+            if not flagged_member and not _content_block_dispatch_gate(
+                region, council_state, feature_blocks
+            ):
                 continue
             text = _content_edge_text(region, index, feature_blocks, council_state)
         prompts.append(
@@ -1837,6 +1853,7 @@ def run_structure_review(
                 index,
                 text=text,
                 cluster_signals=cluster_signals[index],
+                feedback_by_idx=feedback_by_idx,
             )
         )
         dispatched_indices.append(index)
@@ -2094,6 +2111,179 @@ def run_structure_review(
     return corrected, verdicts
 
 
+# ---------------------------------------------------------------------------
+# Pass-2 verifier DISPATCH (Phase 4, SEMANTIK_SECOND_PASS).
+#
+# A driver that builds the assembled-document digest, dispatches ONE verifier
+# generate_batch over the SAME endpoint seat run_structure_review rides
+# (concurrency honoured by construction — a single-prompt batch never fans
+# out), parses the verdict, and — when the verifier asks for ``need_spot_html``
+# — re-dispatches ONCE with the flagged sections' real assembled HTML before
+# returning a FAIL. FAIL-SAFE by construction: ANY error / endpoint-soft-None /
+# unparseable response returns a clean PASS, so a broken verifier never FAILS a
+# good doc. UNCALLED until Phase 6 wires the orchestrator — by itself this
+# mutates nothing (pure read of the digest / assembled HTML).
+# ---------------------------------------------------------------------------
+
+# Generous output budget for the whole-document JSON-array verdict (one object
+# per flagged region). Mirrors the heading path's 512-default posture but wider
+# because the verifier judges the WHOLE document in one array.
+_SECOND_PASS_VERIFY_MAX_TOKENS = 2048
+
+
+def _dispatch_verify_once(
+    runtime: Any,
+    prompt: str,
+    temperature: float,
+    parse_fn: Any,
+) -> "VerifierVerdict | None":
+    """ONE single-prompt verify ``generate_batch`` -> parsed verdict | None.
+
+    Serialized by construction: a single-prompt batch never fans out, so
+    ``SEMANTIK_SPECIALIST_CONCURRENCY`` is honoured (the verify path never
+    re-creates the queued-window client-timeout the P6 validation fixed).
+    Mirrors run_structure_review's ``fail_soft`` + TypeError fallback contract.
+    FAIL-SAFE: ANY endpoint error / None sentinel / non-str / unparseable -> the
+    ``None`` return the caller fail-safe-passes on (a broken verifier never
+    FAILS a good doc).
+    """
+    try:
+        try:
+            completions = runtime.generate_batch(
+                [prompt],
+                max_tokens=_SECOND_PASS_VERIFY_MAX_TOKENS,
+                temperature=temperature,
+                fail_soft=True,
+            )
+        except TypeError:
+            # Older scripted mock without fail_soft — re-run without the kwarg.
+            completions = runtime.generate_batch(
+                [prompt],
+                max_tokens=_SECOND_PASS_VERIFY_MAX_TOKENS,
+                temperature=temperature,
+            )
+    except Exception as exc:  # noqa: BLE001 — fail-safe: ANY error -> treat-as-clean.
+        logger.warning(
+            "second-pass verify dispatch failed (%s) -> fail-safe pass", exc
+        )
+        return None
+    completions = list(completions)
+    raw = completions[0] if completions else None
+    if not isinstance(raw, str):
+        # None sentinel (endpoint-soft-None) or a malformed completion.
+        return None
+    return parse_fn(raw)
+
+
+def run_second_pass_verify(
+    assembled: Any,
+    regions: list[Region],
+    feature_blocks: list[FeatureBlock],
+    runtime: Any,
+    *,
+    council_state: Any | None = None,
+) -> "VerifierVerdict":
+    """Run the Pass-2 verifier over the ASSEMBLED document (digest-in, judgments-out).
+
+    Flow (§Phase 4):
+
+      1. Build the structured verifier digest (heading outline + per-region
+         ``{kind, semantic_class, aria_wrapper, head/tail}``) from the assembled
+         doc + post-cap region list.
+      2. ONE ``generate_batch([verify_prompt], temperature=0, fail_soft=True)``
+         over the SAME endpoint seat the Pass-1 reviewer rides.
+      3. ``parse_verifier_response`` -> :class:`VerifierVerdict`.
+      4. On a ``need_spot_html`` request, resolve each requested CONTENT region
+         to its enclosing-section HTML (``enclosing_section_heading_id`` ->
+         ``slice_section_html``, falling back to ``slice_region_html``) and ONE
+         bounded re-dispatch with that real HTML appended — NO recursion beyond
+         this single spot-HTML round.
+
+    FAIL-SAFE: a ``None`` parse / endpoint-soft-None / ANY error returns
+    ``VerifierVerdict(passed=True, flagged=())`` (a broken verifier never FAILS a
+    good doc). Pure read of the digest / assembled HTML — mutates no region.
+
+    ``council_state`` is accepted for signature parity with the Pass-1 reviewer
+    (the digest already carries the council-derived shape); it is reserved for a
+    later signal-enriched digest and is not required by this dispatch.
+
+    Gated / UNCALLED: only the Phase-6 orchestrator calls this (behind
+    ``resolve_second_pass_mode()``). NO model/GPU is loaded here; ``runtime`` is
+    the injected Pass-1 endpoint seat.
+    """
+    # Lazy imports — mirror build_edge_input's cycle-break idiom (verify_digest
+    # lazily imports back into this module).
+    from ..assembler.verify_digest import (
+        build_verifier_digest,
+        enclosing_section_heading_id,
+        slice_region_html,
+        slice_section_html,
+    )
+    from .reviewer_prompt import (
+        build_second_pass_verify_request,
+        parse_verifier_response,
+    )
+
+    # FAIL-SAFE default — a broken verifier never FAILS a good doc.
+    _PASS = VerifierVerdict(passed=True, flagged=(), spot_html_requested=())
+
+    try:
+        digest = build_verifier_digest(
+            assembled,
+            regions,
+            feature_blocks,
+            edge_tokens=resolve_block_review_edge_tokens(),
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-safe digest build.
+        logger.warning(
+            "second-pass verify: digest build failed (%s) -> fail-safe pass", exc
+        )
+        return _PASS
+
+    prompt = build_second_pass_verify_request(digest)
+    if not prompt:
+        # Flag off (the builder returns "" when _second_pass_enabled() is
+        # False) -> nothing to verify; treat as clean.
+        return _PASS
+
+    review_temperature = resolve_structure_review_temperature()
+    verdict = _dispatch_verify_once(
+        runtime, prompt, review_temperature, parse_verifier_response
+    )
+    if verdict is None:
+        return _PASS
+
+    # Single bounded spot-HTML re-ask: resolve each requested CONTENT region to
+    # its enclosing-section HTML and re-dispatch ONCE (no recursion).
+    if verdict.spot_html_requested:
+        spot_html_by_idx: dict[int, str] = {}
+        for ri in verdict.spot_html_requested:
+            html = ""
+            try:
+                hid = enclosing_section_heading_id(assembled, ri)
+                if hid:
+                    html = slice_section_html(assembled, hid)
+                if not html:
+                    html = slice_region_html(assembled, ri)
+            except Exception:  # noqa: BLE001 — a bad slice is just no spot HTML.
+                html = ""
+            if html:
+                spot_html_by_idx[ri] = html
+        reask_prompt = build_second_pass_verify_request(
+            digest, spot_html_by_idx=spot_html_by_idx
+        )
+        if reask_prompt:
+            reasked = _dispatch_verify_once(
+                runtime, reask_prompt, review_temperature, parse_verifier_response
+            )
+            if reasked is not None:
+                return reasked
+        # A broken / unparseable re-ask never blocks — fail-safe pass.
+        return _PASS
+
+    return verdict
+
+
 def _run_windowed_block_review(
     regions: list[Region],
     feature_blocks: list[FeatureBlock],
@@ -2101,6 +2291,8 @@ def _run_windowed_block_review(
     *,
     max_tokens: int,
     council_state: Any | None,
+    restrict_to: frozenset[int] | None = None,
+    feedback_by_idx: dict[int, str] | None = None,
 ) -> tuple[list[Region], list[ReviewVerdict]]:
     """Phase-4 windowed full-block reviewer (SEMANTIK_BLOCK_REVIEW on path).
 
@@ -2134,10 +2326,21 @@ def _run_windowed_block_review(
     for index, region in enumerate(regions):
         if not _in_review_scope(region):
             continue
+        # Phase 5 (targeted re-drive): SEPARATE narrowing AND-composed AFTER
+        # _in_review_scope (the predicate / HEADING_KINDS are unchanged).
+        # restrict_to=None -> whole-document (byte-stable).
+        if restrict_to is not None and index not in restrict_to:
+            continue
+        flagged_member = restrict_to is not None and index in restrict_to
         if str(region.kind) in HEADING_KINDS:
             text_by_idx[index] = _resolve_region_text(region, feature_blocks)
         else:
-            if not _content_block_dispatch_gate(region, council_state, feature_blocks):
+            # A verifier-FLAGGED member SHORT-CIRCUITS the conf gate (the
+            # verifier already decided it needs re-review — don't let the conf
+            # gate drop a flagged-but-confident block).
+            if not flagged_member and not _content_block_dispatch_gate(
+                region, council_state, feature_blocks
+            ):
                 continue
             text_by_idx[index] = _content_edge_text(
                 region, index, feature_blocks, council_state
@@ -2182,6 +2385,7 @@ def _run_windowed_block_review(
                     idx,
                     text=text_by_idx[idx],
                     cluster_signals=cluster_signals[idx],
+                    feedback_by_idx=feedback_by_idx,
                 )
             )
         else:
@@ -2189,6 +2393,7 @@ def _run_windowed_block_review(
                 build_windowed_reviewer_request(
                     [record_by_idx[i] for i in win],
                     cluster_signals_by_idx={i: cluster_signals[i] for i in win},
+                    feedback_by_idx=feedback_by_idx,
                 )
             )
 
@@ -2496,5 +2701,6 @@ __all__ = [
     "resolve_semantic_class_mode",
     "resolve_structure_review_mode",
     "resolve_structure_review_temperature",
+    "run_second_pass_verify",
     "run_structure_review",
 ]

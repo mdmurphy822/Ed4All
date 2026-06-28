@@ -14,6 +14,7 @@ from dart_semantic.qwen_specialists.reviewer_prompt import (
     NEIGHBOR_SNIPPET_CHARS,
     _EXEMPLARS,
     _SYSTEM_REVIEWER,
+    _VERIFIER_FEEDBACK_DIRECTIVE,
     build_reviewer_request,
     build_windowed_reviewer_request,
 )
@@ -437,3 +438,51 @@ def test_no_envelope_json_only_still_holds(monkeypatch):
     # JSON-array-only mandate is intact.
     assert "json array only" in low
     assert "no code fences" in low or "no markdown" in low
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — verifier-feedback injection (targeted Pass-1 re-drive). The
+# single-block builder appends _VERIFIER_FEEDBACK_DIRECTIVE; the windowed
+# builder stamps a DISTINCT review_feedback record key (no reserved-key
+# collision). feedback_by_idx=None / no-matching-index is byte-identical.
+# ---------------------------------------------------------------------------
+
+_RESERVED_RECORD_KEYS = {
+    "idx", "council_kind", "role", "confidence", "page", "n_tokens",
+    "dup_count", "text", "head", "tail", "pages",
+}
+
+
+def test_feedback_injected_single_block():
+    base = build_reviewer_request(_code_region(), (None, None), 3)
+    fed = build_reviewer_request(
+        _code_region(), (None, None), 3,
+        feedback_by_idx={3: "re-type to worked_example"},
+    )
+    assert _VERIFIER_FEEDBACK_DIRECTIVE in fed
+    assert "re-type to worked_example" in fed
+    # No matching index -> byte-identical to the no-feedback baseline.
+    other = build_reviewer_request(
+        _code_region(), (None, None), 3, feedback_by_idx={9: "irrelevant"},
+    )
+    assert other == base
+    assert _VERIFIER_FEEDBACK_DIRECTIVE not in base
+
+
+def test_feedback_injected_windowed_record():
+    records = _window_records()
+    prompt = build_windowed_reviewer_request(
+        records, feedback_by_idx={1: "mis-routed table -> definition_list"},
+    )
+    # The feedback travels in the USER JSON next to idx 1 (review_feedback key).
+    user = prompt.split("\nUSER: ", 1)[1]
+    arr = json.loads(user)
+    by_idx = {r["idx"]: r for r in arr}
+    assert by_idx[1]["review_feedback"] == "mis-routed table -> definition_list"
+    # An un-fed member carries NO review_feedback key.
+    assert "review_feedback" not in by_idx[0]
+    # review_feedback is a DISTINCT key — never a reserved edge-record key.
+    assert "review_feedback" not in _RESERVED_RECORD_KEYS
+    # No-feedback windowed prompt is byte-identical (no stray key).
+    assert build_windowed_reviewer_request(_window_records()) == \
+        build_windowed_reviewer_request(_window_records(), feedback_by_idx=None)

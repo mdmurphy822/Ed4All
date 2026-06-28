@@ -20,13 +20,17 @@ import json
 
 import pytest
 
+from dart_semantic.assembler.types import AssembledDoc
 from dart_semantic.qwen_specialists.reviewer import (
+    FlaggedBlock,
     ReviewVerdict,
     TokenConservationError,
+    VerifierVerdict,
     _content_block_dispatch_gate,
     assert_token_conservation,
     resolve_structure_review_mode,
     resolve_structure_review_temperature,
+    run_second_pass_verify,
     run_structure_review,
 )
 from dart_semantic.structure_graph import Region
@@ -78,9 +82,18 @@ class _ScriptedRuntime:
         completions: list[str],
         *,
         fail_indices: set[int] | None = None,
+        queue: bool = False,
     ) -> None:
         self._completions = completions
         self._fail_indices = fail_indices or set()
+        # Phase-4 verify dispatch sends a SINGLE-prompt batch per call and may
+        # re-dispatch (spot-HTML re-ask) — the default whole-list-per-call mode
+        # cannot model a 2-round re-ask. ``queue=True`` returns ONE crafted
+        # completion per CALL (so a re-ask gets the NEXT scripted response);
+        # ``fail_indices`` then keys on the CALL index. Default False keeps the
+        # legacy whole-list-per-call behaviour byte-identical.
+        self._queue = queue
+        self._call = 0
         self.batch_calls: list[dict] = []
 
     def generate_batch(self, prompts, *, max_tokens, temperature=0.6,
@@ -92,6 +105,13 @@ class _ScriptedRuntime:
             "temperature": temperature,
             "fail_soft": fail_soft,
         })
+        if self._queue:
+            i = self._call
+            self._call += 1
+            if i in self._fail_indices:
+                return [None]
+            raw = self._completions[i] if i < len(self._completions) else ""
+            return [raw]
         # Return the scripted completions, overriding any ``fail_indices``
         # slot with the None sentinel (only honoured under fail_soft, exactly
         # as the real endpoint runtime does — but the reviewer always passes
@@ -2248,3 +2268,307 @@ def test_flagged_block_proposed_regroup_run_optional():
                          fix_hint="merge", fixable=False,
                          proposed_regroup_run=(4, 5, 6))
     assert merge.proposed_regroup_run == (4, 5, 6)
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — verifier DISPATCH (run_second_pass_verify) over the shared seat.
+#
+# Builds the assembled-document digest, dispatches ONE single-prompt verify
+# batch (serialized by construction), parses the verdict, and on a need_spot_html
+# request re-dispatches ONCE with the section's real HTML. FAIL-SAFE: any error /
+# endpoint-soft-None / unparseable -> passed=True (a broken verifier never FAILS
+# a good doc). Gated on SEMANTIK_SECOND_PASS (the builder returns "" when off).
+# ---------------------------------------------------------------------------
+
+
+def _verify_json(flags=(), spot=()) -> str:
+    """A Pass-2 verifier JSON-array response (one object per flag/spot request)."""
+    arr: list = []
+    for f in flags:
+        arr.append({
+            "region_index": f["region_index"],
+            "failure_mode": f["failure_mode"],
+            "fix_hint": f.get("fix_hint", ""),
+            "fixable": f.get("fixable", True),
+        })
+    for ri in spot:
+        arr.append({"region_index": ri, "failure_mode": "need_spot_html"})
+    return json.dumps(arr)
+
+
+def _verify_doc():
+    """Minimal assembled doc: a heading (anchored 'sec-1') + a worked_example
+    body whose section HTML carries a unique token (BODYUNIQUE) so the spot-HTML
+    re-ask is observable. region_provenance=[0,1] (identity)."""
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 2, "text": "H"}),
+        Region(kind="paragraph", feature_block_indices=(1,),
+               payload={"text": "EXAMPLE 1.3 solve x.", "semantic_class": "worked_example"}),
+    ]
+    fbs = [_fb("H"), _fb("EXAMPLE 1.3 solve x.")]
+    doc = AssembledDoc(
+        html='<section aria-labelledby="sec-1"><h2 id="sec-1">H</h2>'
+             '<p>BODYUNIQUE solve x.</p></section>',
+        gaps_found=[], gaps_resolved=[], gaps_fallback=[],
+        heading_tree=[(2, "H")], landmarks={}, anchors={"sec-1": 0},
+        region_provenance=[0, 1],
+        sub_task_log={"region_html": ['<h2 id="sec-1">H</h2>',
+                                      "<p>BODYUNIQUE solve x.</p>"]},
+    )
+    return doc, regions, fbs
+
+
+def test_verify_pass_clean_doc(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS", "1")
+    doc, regions, fbs = _verify_doc()
+    rt = _ScriptedRuntime([_verify_json()], queue=True)  # empty array -> PASS
+    verdict = run_second_pass_verify(doc, regions, fbs, rt)
+    assert verdict.passed is True
+    assert verdict.flagged == ()
+    assert len(rt.batch_calls) == 1
+
+
+def test_verify_flags_seeded_example_as_heading(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS", "1")
+    doc, regions, fbs = _verify_doc()
+    rt = _ScriptedRuntime([_verify_json(flags=[{
+        "region_index": 1, "failure_mode": "example_as_heading",
+        "fix_hint": "re-type to worked_example", "fixable": True,
+    }])], queue=True)
+    verdict = run_second_pass_verify(doc, regions, fbs, rt)
+    assert verdict.passed is False
+    assert len(verdict.flagged) == 1
+    flag = verdict.flagged[0]
+    assert flag.region_index == 1
+    assert flag.failure_mode == "example_as_heading"
+    assert flag.fixable is True
+
+
+def test_verify_spot_html_reask_once(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS", "1")
+    doc, regions, fbs = _verify_doc()
+    # Round 1: need_spot_html for the content region; round 2: a real flag.
+    rt = _ScriptedRuntime([
+        _verify_json(spot=[1]),
+        _verify_json(flags=[{"region_index": 1,
+                             "failure_mode": "mistyped_component",
+                             "fix_hint": "x", "fixable": True}]),
+    ], queue=True)
+    verdict = run_second_pass_verify(doc, regions, fbs, rt)
+    # EXACTLY one re-dispatch (two calls total).
+    assert len(rt.batch_calls) == 2
+    # The 2nd prompt carries the enclosing SECTION's real HTML bytes.
+    second_prompt = rt.batch_calls[1]["prompts"][0]
+    assert "BODYUNIQUE" in second_prompt
+    # The re-ask's flag is returned.
+    assert verdict.passed is False
+    assert verdict.flagged[0].region_index == 1
+
+
+def test_verify_endpoint_error_is_failsafe_pass(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS", "1")
+    doc, regions, fbs = _verify_doc()
+    # Call 0 returns the None sentinel (endpoint soft-fail) -> fail-safe PASS.
+    rt = _ScriptedRuntime([_verify_json(flags=[{
+        "region_index": 1, "failure_mode": "mistyped_component",
+        "fix_hint": "x", "fixable": True,
+    }])], fail_indices={0}, queue=True)
+    verdict = run_second_pass_verify(doc, regions, fbs, rt)
+    assert verdict.passed is True  # never blocks a good doc
+    assert verdict.flagged == ()
+
+
+def test_verify_serialized_concurrency_one(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS", "1")
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_CONCURRENCY", "1")
+    doc, regions, fbs = _verify_doc()
+    rt = _ScriptedRuntime([_verify_json(spot=[1]), _verify_json()], queue=True)
+    run_second_pass_verify(doc, regions, fbs, rt)
+    # Every dispatch is a SINGLE-prompt batch -> serialized, never fanned out.
+    assert rt.batch_calls  # at least one call fired
+    for call in rt.batch_calls:
+        assert len(call["prompts"]) == 1
+
+
+def test_verify_no_text_emitted(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_SECOND_PASS", "1")
+    doc, regions, fbs = _verify_doc()
+    rt = _ScriptedRuntime([_verify_json(flags=[{
+        "region_index": 1, "failure_mode": "mistyped_component",
+        "fix_hint": "re-type the kind", "fixable": True,
+    }])], queue=True)
+    verdict = run_second_pass_verify(doc, regions, fbs, rt)
+    flag = verdict.flagged[0]
+    # The verdict carries ONLY index-keyed schema fields — no source text leaks.
+    assert set(vars(flag).keys()) == {
+        "region_index", "failure_mode", "fix_hint", "fixable",
+        "proposed_regroup_run",
+    }
+    assert "EXAMPLE 1.3 solve x." not in flag.fix_hint
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — targeted Pass-1 re-drive seam (restrict_to + feedback_by_idx).
+#
+# restrict_to narrows dispatch to the flagged subset (AND-composed AFTER
+# _in_review_scope); a flagged member short-circuits the conf gate; verifier
+# feedback is injected into the prompt (busting the round-1 cache). Default-None
+# is byte-identical; 1:1 index-stable is preserved.
+# ---------------------------------------------------------------------------
+
+
+def _dispatched_idxs(rt: _ScriptedRuntime) -> set[int]:
+    """Idx set dispatched across all calls (windowed 'idx' or single 'block_id')."""
+    out: set[int] = set()
+    for call in rt.batch_calls:
+        for prompt in call["prompts"]:
+            user = prompt.split("\nUSER: ", 1)[1]
+            data = json.loads(user)
+            if isinstance(data, list):
+                for rec in data:
+                    if isinstance(rec, dict) and "idx" in rec:
+                        out.add(rec["idx"])
+            elif isinstance(data, dict) and "block_id" in data:
+                out.add(data["block_id"])
+    return out
+
+
+def _mixed_regions():
+    """1 heading + 5 code_blocks (unconditional-dispatch content kind)."""
+    return [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 2, "text": "H0"}),
+        Region(kind="code_block", feature_block_indices=(1,),
+               payload={"text": "TRY IT 1.1 a"}),
+        Region(kind="code_block", feature_block_indices=(2,),
+               payload={"text": "TRY IT 1.2 b"}),
+        Region(kind="code_block", feature_block_indices=(3,),
+               payload={"text": "TRY IT 1.3 c"}),
+        Region(kind="code_block", feature_block_indices=(4,),
+               payload={"text": "TRY IT 1.4 d"}),
+        Region(kind="code_block", feature_block_indices=(5,),
+               payload={"text": "TRY IT 1.5 e"}),
+    ]
+
+
+def _mixed_fbs():
+    return [_fb("H0"), _fb("TRY IT 1.1 a"), _fb("TRY IT 1.2 b"),
+            _fb("TRY IT 1.3 c"), _fb("TRY IT 1.4 d"), _fb("TRY IT 1.5 e")]
+
+
+def test_restrict_to_dispatches_only_flagged(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_CACHE", "0")
+    regions, fbs = _mixed_regions(), _mixed_fbs()
+    rt = _ScriptedRuntime(["[]"])  # no ops -> all dispatched pass through ok
+    out, verdicts = run_structure_review(
+        regions, fbs, rt, restrict_to=frozenset({2, 5})
+    )
+    # Only the two flagged indices are dispatched.
+    assert _dispatched_idxs(rt) == {2, 5}
+    # 1:1 preserved + every non-flagged region passes through ok.
+    assert len(out) == len(regions)
+    for i, v in enumerate(verdicts):
+        if i not in (2, 5):
+            assert v.verdict == "ok"
+
+
+def test_restrict_to_bypasses_conf_gate(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_CACHE", "0")
+    # A plain paragraph + NO council_state -> the dispatch gate returns False
+    # (it would be SKIPPED on a whole-document review).
+    def _regions():
+        return [
+            Region(kind="heading", feature_block_indices=(0,),
+                   payload={"level_hint": 2, "text": "H"}),
+            Region(kind="paragraph", feature_block_indices=(1,),
+                   payload={"text": "plain confident prose body"}),
+        ]
+    fbs = [_fb("H"), _fb("plain confident prose body")]
+    # Whole-doc: the paragraph is gated OUT (only the heading is reviewed).
+    rt_all = _ScriptedRuntime(["[]"])
+    run_structure_review(_regions(), fbs, rt_all)
+    assert 1 not in _dispatched_idxs(rt_all)
+    # restrict_to={1}: the flagged paragraph IS dispatched despite the gate.
+    rt_r = _ScriptedRuntime(["[]"])
+    run_structure_review(_regions(), fbs, rt_r, restrict_to=frozenset({1}))
+    assert _dispatched_idxs(rt_r) == {1}
+
+
+def test_feedback_injected_redrive_in_prompt(monkeypatch):
+    # The injected feedback reaches the dispatched USER JSON (windowed records).
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_CACHE", "0")
+    regions, fbs = _mixed_regions(), _mixed_fbs()
+    rt = _ScriptedRuntime(["[]"])
+    run_structure_review(
+        regions, fbs, rt,
+        restrict_to=frozenset({2, 5}),
+        feedback_by_idx={2: "re-type to worked_example"},
+    )
+    prompt = rt.batch_calls[0]["prompts"][0]
+    assert "re-type to worked_example" in prompt
+    assert "review_feedback" in prompt
+
+
+def test_cache_miss_on_feedback_change(monkeypatch, tmp_path):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_CACHE", "1")  # cache ON
+    monkeypatch.setenv("SEMANTIK_CACHE_DIR", str(tmp_path))  # hermetic
+    regions, fbs = _mixed_regions(), _mixed_fbs()
+    op = json.dumps([{"idx": 2, "verdict": "corrected",
+                      "corrected_kind": "paragraph", "review_note": "n"}])
+    # Run A (no feedback) -> populates the cache.
+    rt_a = _ScriptedRuntime([op])
+    run_structure_review(regions, fbs, rt_a, restrict_to=frozenset({2, 5}))
+    assert rt_a.batch_calls  # A dispatched
+    # Run B (identical, no feedback) -> cache HIT, ZERO dispatch.
+    rt_b = _ScriptedRuntime([op])
+    run_structure_review(_mixed_regions(), fbs, rt_b, restrict_to=frozenset({2, 5}))
+    assert rt_b.batch_calls == []  # full cache hit
+    # Run C (feedback injected) -> prompt bytes differ -> cache MISS, re-dispatch.
+    rt_c = _ScriptedRuntime([op])
+    run_structure_review(
+        _mixed_regions(), fbs, rt_c,
+        restrict_to=frozenset({2, 5}),
+        feedback_by_idx={2: "verifier hint"},
+    )
+    assert rt_c.batch_calls  # feedback busted the cache
+
+
+def test_restrict_none_byte_identical(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_CACHE", "0")
+    fbs = _mixed_fbs()
+    op = json.dumps([{"idx": 2, "verdict": "corrected",
+                      "corrected_kind": "paragraph", "review_note": "n"}])
+    rt_base = _ScriptedRuntime([op])
+    base_regions, base_verdicts = run_structure_review(_mixed_regions(), fbs, rt_base)
+    rt_param = _ScriptedRuntime([op])
+    p_regions, p_verdicts = run_structure_review(
+        _mixed_regions(), fbs, rt_param, restrict_to=None, feedback_by_idx=None
+    )
+    # Prompts byte-identical.
+    base_prompts = [p for c in rt_base.batch_calls for p in c["prompts"]]
+    param_prompts = [p for c in rt_param.batch_calls for p in c["prompts"]]
+    assert base_prompts == param_prompts
+    # Verdicts byte-identical (kinds + per-verdict fields).
+    assert [r.kind for r in base_regions] == [r.kind for r in p_regions]
+    assert [v.verdict for v in base_verdicts] == [v.verdict for v in p_verdicts]
+    assert [v.kind_after for v in base_verdicts] == [v.kind_after for v in p_verdicts]
+
+
+def test_one_to_one_preserved_on_subset_redrive(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW_CACHE", "0")
+    regions, fbs = _mixed_regions(), _mixed_fbs()
+    n = len(regions)
+    op = json.dumps([{"idx": 2, "verdict": "corrected",
+                      "corrected_kind": "paragraph", "review_note": "n"}])
+    out, verdicts = run_structure_review(
+        regions, fbs, _ScriptedRuntime([op]), restrict_to=frozenset({2})
+    )
+    assert len(out) == n
+    assert len(verdicts) == n

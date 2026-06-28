@@ -373,6 +373,7 @@ def build_reviewer_request(
     *,
     text: str | None = None,
     cluster_signals: Any | None = None,
+    feedback_by_idx: dict[int, str] | None = None,
 ) -> str:
     """Emit a ``SYSTEM:\\nUSER:`` reviewer prompt for one block.
 
@@ -418,6 +419,14 @@ def build_reviewer_request(
         # untouched either way).
         if _semantic_class_enabled():
             system_parts.append(_semantic_class_directive())
+    # Phase 5 (targeted re-drive): inject the Pass-2 verifier's per-block
+    # feedback when THIS index was flagged. Gated on a non-empty dict carrying an
+    # entry for this index -> round-1 / no-feedback prompts (single-object
+    # contract, BOTH heading and content) are byte-identical.
+    if feedback_by_idx:
+        hint = feedback_by_idx.get(index)
+        if hint:
+            system_parts.append(_render_verifier_feedback(hint))
     system = "\n\n".join(system_parts)
     return f"SYSTEM: {system}\nUSER: {user_json}"
 
@@ -527,6 +536,33 @@ _CONTENT_RETYPE_DIRECTIVE = (
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Verifier-feedback directive (Phase 5 — targeted Pass-1 re-drive).
+#
+# When the Pass-2 verifier FLAGS a region, the Phase-6 orchestrator bounces that
+# index back through the Pass-1 reviewer with the verifier's per-block
+# ``fix_hint`` injected into the prompt. This directive is appended to the
+# SINGLE-block ``build_reviewer_request`` system turn ONLY when feedback for that
+# index exists; the windowed path instead travels the feedback in the USER JSON
+# (the ``review_feedback`` record key). Gated on a non-empty entry -> round-1 /
+# no-feedback prompts are byte-identical (mirrors the ``_semantic_class_directive``
+# / ``_CONTENT_RETYPE_DIRECTIVE`` flag-gated append idiom).
+# ---------------------------------------------------------------------------
+
+_VERIFIER_FEEDBACK_DIRECTIVE = (
+    "VERIFIER FEEDBACK (targeted re-review). A Pass-2 verifier judged the "
+    "ASSEMBLED document and flagged THIS block for re-typing. Treat the hint "
+    "below as the authoritative reason this block needs correction, and emit "
+    "the corrected kind / semantic_class accordingly — you still NEVER rewrite, "
+    "add, or remove the source text. Verifier hint: "
+)
+
+
+def _render_verifier_feedback(hint: str) -> str:
+    """Render the verifier-feedback system part (constant header + the hint)."""
+    return _VERIFIER_FEEDBACK_DIRECTIVE + " ".join(str(hint).split())
+
+
 def _semantic_class_enabled() -> bool:
     """Return ``resolve_semantic_class_mode()`` (lazy import to break the
     ``reviewer`` <-> ``reviewer_prompt`` cycle — ``reviewer`` imports THIS
@@ -591,6 +627,7 @@ def build_windowed_reviewer_request(
     records: list[dict[str, Any]],
     *,
     cluster_signals_by_idx: dict[int, Any] | None = None,
+    feedback_by_idx: dict[int, str] | None = None,
 ) -> str:
     """Emit ONE windowed block-review prompt packing many edge records.
 
@@ -607,6 +644,16 @@ def build_windowed_reviewer_request(
         item = dict(rec)
         if cluster_signals_by_idx is not None:
             item.update(_cluster_signal_fields(cluster_signals_by_idx.get(rec.get("idx"))))
+        # Phase 5 (targeted re-drive): stamp the Pass-2 verifier feedback onto
+        # the record under the DISTINCT key ``review_feedback`` (NOT a reserved
+        # edge-record key — idx/council_kind/role/confidence/page/n_tokens/
+        # dup_count/text/head/tail/pages) so it travels in the USER JSON next to
+        # that block's idx. Gated on a non-empty entry -> round-1 prompts are
+        # byte-identical.
+        if feedback_by_idx:
+            fb = feedback_by_idx.get(rec.get("idx"))
+            if fb:
+                item["review_feedback"] = " ".join(str(fb).split())
         enriched.append(item)
     user_json = json.dumps(enriched, ensure_ascii=False, separators=(",", ":"))
     system_parts = [
