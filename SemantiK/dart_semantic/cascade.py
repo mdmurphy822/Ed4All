@@ -1243,6 +1243,14 @@ def run_full_cascade(
         # never populates it, so its audit dict stays byte-identical to today.
         if row.get("block_review_window") is None:
             row.pop("block_review_window", None)
+        # Phase 4 (SEMANTIK_SEMANTIC_CLASS) byte-stability: the audit-only
+        # ``semantic_class_after`` field is Optional-default-None and EXCLUDED
+        # when None (SCOPED, exactly like ``role_after`` / ``block_review_window``
+        # — never a blanket None-key drop, which would strip the legitimately-None
+        # ``level_before`` / ``level_after`` keys). A flag-off / heading-only run
+        # never populates it, so its audit dict stays byte-identical to today.
+        if row.get("semantic_class_after") is None:
+            row.pop("semantic_class_after", None)
         return row
 
     structure_review_audit = (

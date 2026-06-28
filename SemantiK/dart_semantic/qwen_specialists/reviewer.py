@@ -565,6 +565,17 @@ class ReviewVerdict:
     # ONLY when block-review is on (no content re-types are produced with
     # the flag off, so this is None on every flag-off verdict).
     role_after: str | None = None
+    # Phase 4 (SEMANTIK_SEMANTIC_CLASS): the region's gold accessible
+    # ``semantic_class`` AFTER a block-review assignment, mirrored from the
+    # already-written ``payload['semantic_class']`` (the storage SoT; there is
+    # NO new ``Region`` dataclass field). Optional-default-None + audit-EXCLUDED
+    # when None (see cascade.py ``_verdict_audit_row``) so the heading-only /
+    # flag-off path's audit dict stays byte-identical to today, and
+    # hash/serialization safe. Populated ONLY when ``SEMANTIK_SEMANTIC_CLASS``
+    # is on (no assignment is produced with the flag off, so this is None on
+    # every flag-off verdict). Audit-only — the assembler/provenance read the
+    # payload, never this field.
+    semantic_class_after: str | None = None
     # Phase 5 (SEMANTIK_BLOCK_REVIEW): per-WINDOW reviewer-call metadata for
     # the per-window DecisionCapture in the MCP bridge. A dict carrying the
     # window's grouping identity (``window_index``) + replayable aggregates

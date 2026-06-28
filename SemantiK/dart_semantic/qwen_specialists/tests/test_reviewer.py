@@ -678,13 +678,16 @@ def test_audit_asdict_byte_stable_flag_off(monkeypatch):
     _, verdicts = rv.run_structure_review(regions, fbs, rt)
 
     # Mirror cascade.py's scoped None-exclusion (role_after + the Phase-5
-    # block_review_window field, each ONLY when None — never a blanket drop).
+    # block_review_window field + the Phase-4 semantic_class_after field, each
+    # ONLY when None — never a blanket drop).
     def _row(v):
         row = _dc.asdict(v)
         if row.get("role_after") is None:
             row.pop("role_after", None)
         if row.get("block_review_window") is None:
             row.pop("block_review_window", None)
+        if row.get("semantic_class_after") is None:
+            row.pop("semantic_class_after", None)
         return row
 
     PRE_PHASE2_KEYS = {
@@ -704,6 +707,131 @@ def test_audit_asdict_byte_stable_flag_off(monkeypatch):
     para_row = _row(verdicts[1])
     assert "level_before" in para_row and para_row["level_before"] is None
     assert "level_after" in para_row and para_row["level_after"] is None
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — ReviewVerdict.semantic_class_after (audit-only, None-drop, byte-stable)
+# ---------------------------------------------------------------------------
+
+
+def test_verdict_semantic_class_after_defaults_none():
+    # Mirror the role_after flag-off default assertion: a freshly-constructed
+    # verdict carries semantic_class_after=None (Optional-default-None posture,
+    # populated only when SEMANTIK_SEMANTIC_CLASS is on — no population yet).
+    v = ReviewVerdict(
+        block_id=0,
+        verdict="ok",
+        kind_before="paragraph",
+        kind_after="paragraph",
+        level_before=None,
+        level_after=None,
+        review_note="",
+    )
+    assert v.semantic_class_after is None
+    # the sibling audit-only fields keep their None default too.
+    assert v.role_after is None
+    assert v.block_review_window is None
+
+
+def test_audit_row_drops_none_semantic_class_after(monkeypatch):
+    # The new audit-only field must be EXCLUDED from the audit row when None
+    # (SCOPED drop, exactly like role_after / block_review_window) so a heading-
+    # only / flag-off run's audit dict stays byte-identical — while the
+    # legitimately-None level_before / level_after keys SURVIVE (a blanket
+    # None-drop would wrongly strip them: the F1 trap).
+    import dataclasses as _dc
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    monkeypatch.delenv("SEMANTIK_BLOCK_REVIEW", raising=False)
+
+    fbs = [_fb("Chapter 1"), _fb("body words")]
+    regions = [
+        Region(kind="heading", feature_block_indices=(0,),
+               payload={"level_hint": 3, "text": "Chapter 1"}),
+        Region(kind="paragraph", feature_block_indices=(1,),
+               payload={"text": "body words"}),
+    ]
+    rt = _ScriptedRuntime([_verdict_json(0, kind="heading", level=1)])
+    _, verdicts = rv.run_structure_review(regions, fbs, rt)
+
+    # Mirror cascade.py::_verdict_audit_row's THREE scoped None-exclusions
+    # (role_after + block_review_window + the Phase-4 semantic_class_after),
+    # each ONLY when None — never a blanket drop.
+    def _row(v):
+        row = _dc.asdict(v)
+        if row.get("role_after") is None:
+            row.pop("role_after", None)
+        if row.get("block_review_window") is None:
+            row.pop("block_review_window", None)
+        if row.get("semantic_class_after") is None:
+            row.pop("semantic_class_after", None)
+        return row
+
+    PRE_PHASE2_KEYS = {
+        "block_id", "verdict", "kind_before", "kind_after",
+        "level_before", "level_after", "review_note",
+        "reverted_for_invariant", "reverted_for_endpoint_failure",
+    }
+    for v in verdicts:
+        assert v.semantic_class_after is None              # flag-off -> never set
+        raw = _dc.asdict(v)
+        assert "semantic_class_after" in raw               # bare asdict emits it
+        assert raw["semantic_class_after"] is None         # ...as null
+        row = _row(v)
+        assert "semantic_class_after" not in row           # excluded from audit
+        assert set(row) == PRE_PHASE2_KEYS                 # byte-identical key set
+    # The paragraph verdict's legitimately-None level_* keys SURVIVE the scoped
+    # exclusion (the new drop is SCOPED to semantic_class_after only).
+    para_row = _row(verdicts[1])
+    assert "level_before" in para_row and para_row["level_before"] is None
+    assert "level_after" in para_row and para_row["level_after"] is None
+
+
+def test_snapshot_byte_stable_with_new_verdict_field():
+    # The cache-identity helper (_snapshot in test_block_review_cache.py) keys
+    # off dataclasses.asdict(verdict). A bare new field is emitted on BOTH the
+    # cache-on and cache-off sides, so the new field cannot break _snapshot
+    # equality (cache-on == cache-off). Sanity-check that two equal verdicts
+    # asdict-equal WITH the new field present-but-None on both sides.
+    import dataclasses as _dc
+
+    def _mk():
+        return ReviewVerdict(
+            block_id=3,
+            verdict="corrected",
+            kind_before="code_block",
+            kind_after="paragraph",
+            level_before=None,
+            level_after=None,
+            review_note="re-typed",
+        )
+
+    a, b = _dc.asdict(_mk()), _dc.asdict(_mk())
+    assert a == b                                          # identity holds
+    assert a["semantic_class_after"] is None and b["semantic_class_after"] is None
+
+
+def test_provenance_byte_stable_no_region_field_added():
+    # No Region dataclass field was added (storage is payload-only), so
+    # _build_region_provenance's hand-built key set is unchanged: no
+    # semantic_class / semantic_class_after key leaks into the provenance dict.
+    from dart_semantic.cascade import _build_region_provenance
+
+    fbs = [_fb("body words")]
+    regions = [
+        Region(kind="paragraph", feature_block_indices=(0,),
+               payload={"text": "body words"}),
+    ]
+    prov = _build_region_provenance(
+        region_order=[0],
+        regions=regions,
+        feature_blocks=fbs,
+        stage7_results={},
+        review_verdicts=None,
+    )
+    assert len(prov) == 1
+    assert "semantic_class" not in prov[0]
+    assert "semantic_class_after" not in prov[0]
 
 
 # ---------------------------------------------------------------------------
