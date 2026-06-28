@@ -48,6 +48,29 @@ def resolve_gold_shell_mode() -> bool:
     return raw in _TRUTHY
 
 
+def resolve_gold_absorb_mode() -> bool:
+    """Return True when a body-bearing gold component box ABSORBS the
+    following sibling body regions into its container.
+
+    Stopgap for the split EXAMPLE-label/body defect: the council emits an
+    example's LABEL ("EXAMPLE 1.3") and its BODY ("Solution" + steps) as
+    SEPARATE regions, so the Phase-7 per-region wrap boxes only the label.
+    When this is on, the body-bearing component region pulls the immediately
+    following non-boundary regions into the same box (see
+    ``gold_shell_markup.compute_absorption_runs``).
+
+    Reads ``SEMANTIK_GOLD_ABSORB``. Default OFF (unset / blank / falsey /
+    garbage), parse-with-fallback (mirrors ``resolve_gold_shell_mode``).
+    ADDITIONALLY requires ``resolve_gold_shell_mode()`` on — absorption only
+    matters when components are wrapped, so absorb-off-with-shell-on stays
+    byte-identical to the v3 gold render.
+    """
+    if not resolve_gold_shell_mode():
+        return False
+    raw = (os.environ.get("SEMANTIK_GOLD_ABSORB") or "").strip().lower()
+    return raw in _TRUTHY
+
+
 DOC_OPEN = (
     '<!DOCTYPE html>\n'
     '<html lang="{lang}">\n'
@@ -180,5 +203,6 @@ __all__ = [
     "TITLE_SLOT_SENTINEL",
     "build_shell",
     "detect_language",
+    "resolve_gold_absorb_mode",
     "resolve_gold_shell_mode",
 ]

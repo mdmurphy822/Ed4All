@@ -570,3 +570,270 @@ def test_flag_off_flat_concat_byte_identical(monkeypatch):
     # Body is the plain flat concat of the index-aligned fragments.
     flat = "".join(f for f in doc.sub_task_log["region_html"] if f)
     assert flat in doc.html
+
+
+# ---------------------------------------------------------------------------
+# Stopgap — SEMANTIK_GOLD_ABSORB body-region absorption.
+#
+# A body-bearing component label region (worked_example / definition_region /
+# exercise) ABSORBS the immediately-following sibling body regions (Solution /
+# steps / prose / tables) into its container box, stopping at the FIRST boundary
+# (heading / unit-opening pedagogical label / next body-bearing component /
+# empty), bounded by a conservative cap. Flag-off (incl. shell-on/absorb-off) is
+# byte-identical to the pre-absorption gold wrap.
+# ---------------------------------------------------------------------------
+
+from dart_semantic.assembler.gold_shell_markup import (  # noqa: E402
+    _ABSORB_MAX_RUN,
+    compute_absorption_runs,
+)
+from dart_semantic.assembler.shell import resolve_gold_absorb_mode  # noqa: E402
+
+_WE_DIV_RE = re.compile(
+    r'<div class="algorithm worked-example"[^>]*>(.*?)</div>', re.S,
+)
+
+
+def _css_region(idx: int, css_class: str, *, text: str | None = None) -> Region:
+    """A plain paragraph region carrying a deterministic ``css_class`` hint."""
+    return Region(
+        kind="paragraph",
+        feature_block_indices=(idx,),
+        payload={"text": text or f"body {idx}", "css_class": css_class},
+    )
+
+
+def test_gold_absorb_mode_flag(monkeypatch):
+    # Default OFF (shell on so the resolver's shell-gate isn't what zeroes it).
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.delenv("SEMANTIK_GOLD_ABSORB", raising=False)
+    assert resolve_gold_absorb_mode() is False
+    for v in ("", "  ", "0", "false", "no", "off", "garbage"):
+        monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", v)
+        assert resolve_gold_absorb_mode() is False
+    # Truthy tokens -> True, but ONLY while GOLD_SHELL is on.
+    for v in ("1", "true", "YES", "on", "  On  "):
+        monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", v)
+        assert resolve_gold_absorb_mode() is True
+    # Requires SEMANTIK_GOLD_SHELL — a truthy absorb with shell off is False.
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "0")
+    assert resolve_gold_absorb_mode() is False
+
+
+def test_worked_example_absorbs_solution_and_body(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    fbs = [_fb("h"), _fb("ex"), _fb("sol"), _fb("p1"), _fb("p2"), _fb("h2")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, "worked_example"),
+        _css_region(2, "pedagogy-solution"),
+        _region(3, None),
+        _region(4, None),
+        _heading_region(5, level=1),
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6("<p>EXAMPLE 1.3 solve x</p>"),
+        2: _stage6("<p>Solution: factor the expression</p>"),
+        3: _stage6("<p>step a value</p>"),
+        4: _stage6("<p>step b value</p>"),
+        5: _stage6("<h2>Next Section</h2>"),
+    }
+    html = _assemble(top, regions, fbs).html
+    m = _WE_DIV_RE.search(html)
+    assert m is not None, html
+    box = m.group(1)
+    # The box encloses the label + Solution + both body paragraphs.
+    assert "EXAMPLE 1.3 solve x" in box
+    assert "Solution: factor the expression" in box
+    assert "step a value" in box
+    assert "step b value" in box
+    # The following heading is OUTSIDE the box (a boundary).
+    assert "Next Section" not in box
+    assert "Next Section" in html
+    # Absorbed fragments appear EXACTLY ONCE in the whole document.
+    for frag in ("Solution: factor the expression", "step a value", "step b value"):
+        assert html.count(frag) == 1, frag
+
+
+def test_absorption_stops_at_next_example(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    fbs = [_fb("h"), _fb("ex1"), _fb("sol1"), _fb("ex2"), _fb("sol2")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, "worked_example"),
+        _css_region(2, "pedagogy-solution"),
+        # The SECOND example: a unit-opening pedagogy-example label AND its own
+        # body-bearing component -> a boundary that starts its own unit.
+        Region(
+            kind="paragraph",
+            feature_block_indices=(3,),
+            payload={
+                "text": "EXAMPLE 2",
+                "css_class": "pedagogy-example",
+                "semantic_class": "worked_example",
+            },
+        ),
+        _css_region(4, "pedagogy-solution"),
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6("<p>EXAMPLE 1 first</p>"),
+        2: _stage6("<p>Solution one body</p>"),
+        3: _stage6("<p>EXAMPLE 2 second</p>"),
+        4: _stage6("<p>Solution two body</p>"),
+    }
+    html = _assemble(top, regions, fbs).html
+    boxes = _WE_DIV_RE.findall(html)
+    # Two separate worked-example boxes (the second example started its own).
+    assert len(boxes) == 2, html
+    first = boxes[0]
+    assert "EXAMPLE 1 first" in first
+    assert "Solution one body" in first
+    # The first box STOPS before the second example.
+    assert "EXAMPLE 2 second" not in first
+    # The second box owns the second example + its own solution.
+    second = boxes[1]
+    assert "EXAMPLE 2 second" in second
+    assert "Solution two body" in second
+
+
+def test_absorption_stops_at_heading(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    fbs = [_fb("h"), _fb("ex"), _fb("sol"), _fb("h2"), _fb("p")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, "worked_example"),
+        _css_region(2, "pedagogy-solution"),
+        _heading_region(3, level=1),  # boundary
+        _region(4, None),
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6("<p>EXAMPLE here</p>"),
+        2: _stage6("<p>Solution body here</p>"),
+        3: _stage6("<h2>Another Heading</h2>"),
+        4: _stage6("<p>after the heading</p>"),
+    }
+    html = _assemble(top, regions, fbs).html
+    m = _WE_DIV_RE.search(html)
+    assert m is not None, html
+    box = m.group(1)
+    assert "Solution body here" in box
+    # The heading and everything after it is OUTSIDE the box.
+    assert "Another Heading" not in box
+    assert "after the heading" not in box
+    assert "Another Heading" in html and "after the heading" in html
+
+
+def test_absorption_cap():
+    # A long run with NO boundary -> absorption stops at the conservative cap.
+    n_paras = 12
+    regions = [_region(0, "worked_example")] + [
+        _region(i, None) for i in range(1, 1 + n_paras)
+    ]
+    region_html = ["<p>EXAMPLE label</p>"] + [
+        f"<p>pp{i}</p>" for i in range(1, 1 + n_paras)
+    ]
+    runs = compute_absorption_runs(regions, region_html)
+    # Anchor at 0 absorbs at most _ABSORB_MAX_RUN following regions:
+    # end = 1 + _ABSORB_MAX_RUN.
+    assert runs == {0: 1 + _ABSORB_MAX_RUN}
+    # The (cap)-th follower is absorbed; the (cap+1)-th is left outside.
+    absorbed = set(range(1, runs[0]))
+    assert _ABSORB_MAX_RUN in absorbed
+    assert (_ABSORB_MAX_RUN + 1) not in absorbed
+
+
+def test_splice_keys_survive_absorption(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    fbs = [_fb("h"), _fb("ex"), _fb("sol"), _fb("p1"), _fb("h2")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, "worked_example"),
+        _css_region(2, "pedagogy-solution"),
+        _region(3, None),
+        _heading_region(4, level=1),
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6("<p>EXAMPLE 9 here</p>"),
+        2: _stage6("<p>Solution splice body</p>"),
+        3: _stage6("<p>more body text</p>"),
+        4: _stage6("<h2>Tail</h2>"),
+    }
+    pre, gaps, _ = run_pass_9a(
+        top, regions, fbs, config=AssemblerConfig(skip_gap_fill=True),
+    )
+    body = pre.html
+    # Absorption happened (a worked-example box exists).
+    assert 'class="algorithm worked-example"' in body
+    # Every per-region fragment recorded for pass_9c (incl. the ABSORBED ones,
+    # which the test scope demands) is still a contiguous substring of the body.
+    for frag in pre.sub_task_log["region_html"]:
+        if frag:
+            assert frag in body, frag
+    # The absorbed Solution / body fragments specifically survive verbatim.
+    assert "<p>Solution splice body</p>" in body
+    assert "<p>more body text</p>" in body
+    # Any gap-stashed splice key also survives.
+    for g in gaps:
+        rh = (g.context or {}).get("region_html")
+        if rh:
+            assert rh in body, g.kind
+        mt = (g.context or {}).get("match_text")
+        if mt:
+            assert mt in body, g.kind
+
+
+def _absorb_corpus():
+    fbs = [_fb("h"), _fb("ex"), _fb("sol"), _fb("p1"), _fb("h2")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, "worked_example"),
+        _css_region(2, "pedagogy-solution"),
+        _region(3, None),
+        _heading_region(4, level=1),
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6("<p>EXAMPLE body</p>"),
+        2: _stage6("<p>Solution body</p>"),
+        3: _stage6("<p>tail body</p>"),
+        4: _stage6("<h2>End</h2>"),
+    }
+    return top, regions, fbs
+
+
+def test_absorb_flag_off_byte_identical(monkeypatch):
+    # GOLD_SHELL ON throughout; only SEMANTIK_GOLD_ABSORB toggles. Absorb-off
+    # (absent / off / 0) must be byte-identical to the pre-absorption gold wrap.
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+
+    monkeypatch.delenv("SEMANTIK_GOLD_ABSORB", raising=False)
+    absent = _assemble(*_absorb_corpus()).html
+
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "off")
+    off = _assemble(*_absorb_corpus()).html
+
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "0")
+    zero = _assemble(*_absorb_corpus()).html
+
+    assert absent == off == zero
+    # The pre-absorption gold render does NOT pull the Solution into the box:
+    # with absorb OFF the worked_example box wraps only its own label fragment.
+    m = _WE_DIV_RE.search(absent)
+    assert m is not None
+    assert "Solution body" not in m.group(1)
+
+    # And with absorb ON the body IS different (proves the flag actually fires).
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    on = _assemble(*_absorb_corpus()).html
+    assert on != absent
+    m_on = _WE_DIV_RE.search(on)
+    assert m_on is not None and "Solution body" in m_on.group(1)

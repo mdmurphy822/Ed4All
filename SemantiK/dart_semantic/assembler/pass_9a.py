@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING, Any
 
 from ..qwen_specialists.prompts import (
@@ -81,9 +82,18 @@ from .citation_detect import (
     find_references,
 )
 from .fallbacks import emit_fallback
-from .gold_shell_markup import _wrap_semantic_class, collect_doc_ids
+from .gold_shell_markup import (
+    _wrap_semantic_class,
+    collect_doc_ids,
+    compute_absorption_runs,
+)
 from .heading_tree import assign_heading_ids, normalize_heading_levels
-from .shell import build_shell, detect_language, resolve_gold_shell_mode
+from .shell import (
+    build_shell,
+    detect_language,
+    resolve_gold_absorb_mode,
+    resolve_gold_shell_mode,
+)
 from .types import AssembledDoc, GapKind, GapSlot
 
 if TYPE_CHECKING:
@@ -155,6 +165,8 @@ def _group_regions_into_sections(
     region_html: Sequence[str],
     heading_indices: Sequence[int],
     normalized_levels: Sequence[int],
+    *,
+    absorbed_indices: AbstractSet[int] | None = None,
 ) -> str:
     """Phase 9 — outer ``<section aria-labelledby>`` document-outline grouping.
 
@@ -172,12 +184,23 @@ def _group_regions_into_sections(
     P1 1:1 index-stable contract holds (the region LIST is untouched; only the
     emitted HTML nests). A heading with no resolvable id is emitted un-sectioned
     (defensive; every heading gets an id from Sub-task 2 in practice).
+
+    ``absorbed_indices`` (SEMANTIK_GOLD_ABSORB) are regions whose bytes were
+    already concatenated INTO an earlier body-bearing component's box; they are
+    SKIPPED here so they render exactly once (inside the box, in order), keeping
+    the 1:1-region->output intent. Empty / None -> no-op (byte-identical).
     """
     level_by_idx = dict(zip(heading_indices, normalized_levels))
+    absorbed = absorbed_indices or frozenset()
     parts: list[str] = []
     open_levels: list[int] = []
     for idx, html in enumerate(region_html):
         if not html:
+            continue
+        if idx in absorbed:
+            # Already enclosed inside an earlier body-bearing component's box
+            # (SEMANTIK_GOLD_ABSORB); its bytes were concatenated into the
+            # anchor fragment, so re-emitting here would double-render it.
             continue
         if idx in level_by_idx:
             lvl = level_by_idx[idx]
@@ -360,17 +383,50 @@ def run_pass_9a(
     # bytes, so the 1:1 index-stable emit order and every pass_9c flat
     # string-replace splice key are preserved. Flag-off -> byte-identical.
     # ------------------------------------------------------------------
+    #
+    # Body-region ABSORPTION (the stopgap; gated on SEMANTIK_GOLD_ABSORB, which
+    # additionally requires SEMANTIK_GOLD_SHELL) is a PRE-step here: for each
+    # body-bearing component region (worked_example / definition_region /
+    # exercise) it computes the contiguous run ``[i .. end)`` of following
+    # sibling regions to pull into the box, then the wrap encloses the
+    # CONCATENATION of ``region_html[i:end]`` (raw fragment bytes, never
+    # mutated). Absorbed indices keep their original bytes in ``region_html``
+    # (so every pass_9c splice key survives as a contiguous substring INSIDE the
+    # box) but are SKIPPED here (no per-region wrap) and skipped again by the
+    # Sub-task-6 section grouping (no double emit). Absorb OFF -> ``absorb_runs``
+    # / ``absorbed_indices`` empty -> this loop is byte-identical to today.
+    absorbed_indices: set[int] = set()
     if resolve_gold_shell_mode():
         doc_ids = collect_doc_ids(region_html)
+        absorb_runs: dict[int, int] = {}
+        if resolve_gold_absorb_mode():
+            absorb_runs = compute_absorption_runs(regions, region_html)
+            absorbed_indices = {
+                idx
+                for start, end in absorb_runs.items()
+                for idx in range(start + 1, end)
+            }
         n_wrapped = 0
         for idx, region in enumerate(regions):
-            wrapped = _wrap_semantic_class(
-                region_html[idx], region, doc_ids=doc_ids,
-            )
+            if idx in absorbed_indices:
+                # Already enclosed in an earlier anchor's box; do NOT wrap or
+                # emit separately. Original bytes are left untouched so they
+                # stay a contiguous substring of the box (splice-key safety).
+                continue
+            end = absorb_runs.get(idx)
+            if end is not None:
+                inner = "".join(region_html[i] for i in range(idx, end))
+            else:
+                inner = region_html[idx]
+            wrapped = _wrap_semantic_class(inner, region, doc_ids=doc_ids)
             if wrapped != region_html[idx]:
                 n_wrapped += 1
             region_html[idx] = wrapped
         sub_task_log["gold_shell_wrap"] = f"wrapped={n_wrapped}"
+        if absorbed_indices:
+            sub_task_log["gold_shell_absorb"] = (
+                f"anchors={len(absorb_runs)} absorbed={len(absorbed_indices)}"
+            )
 
     # ------------------------------------------------------------------
     # Sub-task 2 — Heading-tree normalization (over HEADING regions only).
@@ -498,6 +554,7 @@ def run_pass_9a(
     if resolve_gold_shell_mode():
         body_html = _group_regions_into_sections(
             region_html, heading_indices, normalized,
+            absorbed_indices=absorbed_indices,
         )
     else:
         body_html = "".join(html for html in region_html if html)

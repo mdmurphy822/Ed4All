@@ -35,7 +35,7 @@ Constants
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from html import escape
 from typing import Any
@@ -170,6 +170,115 @@ _CONTAINER_SPECS: dict[str, _ContainerSpec] = {
 _PASSTHROUGH_CLASSES = frozenset({"figure", "section"})
 
 
+# ---------------------------------------------------------------------------
+# Body-region absorption (the STOPGAP — SEMANTIK_GOLD_ABSORB).
+#
+# A live render exposed that a ``worked_example`` region wraps ONLY the example
+# LABEL ("EXAMPLE 1.3") because the council emits the example's label and body
+# (problem statement / "Solution" / steps) as SEPARATE following regions OUTSIDE
+# the box. This pre-step lets a body-bearing component region ABSORB the
+# immediately-following sibling regions into its container box, UNTIL a
+# boundary. It is a conservative, gated heuristic — the PROPER reviewer-side
+# merge/regroup fix is designed separately and will supersede this.
+# ---------------------------------------------------------------------------
+
+# Component classes whose label region absorbs the following body regions.
+_BODY_BEARING_COMPONENT_CLASSES = frozenset(
+    {"worked_example", "definition_region", "exercise"}
+)
+
+# A following region carrying one of these ``payload['css_class']`` hints STARTS
+# A NEW UNIT, so it is a boundary (never absorbed). ``pedagogy-solution`` /
+# ``pedagogy-step`` are DELIBERATELY ABSENT — they are the example's BODY and DO
+# get absorbed (mirrors ``deterministic_structure._PEDAGOGICAL_LABEL_CLASSES``).
+_UNIT_START_PEDAGOGY_CLASSES = frozenset(
+    {
+        "pedagogy-example",
+        "pedagogy-try-it",
+        "pedagogy-how-to",
+        "pedagogy-be-prepared",
+        "pedagogy-practice",
+    }
+)
+
+# Conservative cap on a single absorption run — at most this many following
+# regions are pulled into one box, so a mis-detected boundary can never swallow
+# a whole section (a runaway absorb is bounded to a small bite).
+_ABSORB_MAX_RUN = 8
+
+
+def _region_payload_get(region: Any, key: str) -> Any:
+    return (getattr(region, "payload", None) or {}).get(key)
+
+
+def _is_absorption_boundary(region: Any, html: str) -> bool:
+    """True when ``region`` STOPS an absorption run (it must NOT be pulled into
+    the preceding component box).
+
+    Boundaries (the FIRST one ends the run):
+      * a heading region (``region.kind == "heading"``);
+      * an empty / whitespace fragment (nothing to absorb — stop conservatively);
+      * a unit-opening pedagogical label (``payload['css_class']`` in
+        :data:`_UNIT_START_PEDAGOGY_CLASSES`);
+      * a region that itself starts a body-bearing component
+        (``payload['semantic_class']`` in :data:`_BODY_BEARING_COMPONENT_CLASSES`
+        — the NEXT example/definition/exercise opens its own unit).
+
+    Everything else — ``pedagogy-solution`` / ``pedagogy-step`` regions, plain
+    paragraphs, tables — is absorbable BODY.
+    """
+    if getattr(region, "kind", None) == "heading":
+        return True
+    if not html or not html.strip():
+        return True
+    if _region_payload_get(region, "css_class") in _UNIT_START_PEDAGOGY_CLASSES:
+        return True
+    if _region_payload_get(region, "semantic_class") in _BODY_BEARING_COMPONENT_CLASSES:
+        return True
+    return False
+
+
+def compute_absorption_runs(
+    regions: Sequence[Any],
+    region_html: Sequence[str],
+    *,
+    max_run: int = _ABSORB_MAX_RUN,
+) -> dict[int, int]:
+    """Map each body-bearing component anchor index -> EXCLUSIVE end index of the
+    contiguous following-region run it absorbs (``[anchor .. end)``).
+
+    For each region whose ``payload['semantic_class']`` is a body-bearing
+    component (and whose own fragment is non-empty), scan forward over the
+    following regions, absorbing each until the FIRST
+    :func:`_is_absorption_boundary` OR until ``max_run`` regions have been
+    absorbed (the conservative cap). Only anchors that absorb ≥1 region appear
+    in the result (``end > anchor + 1``); an anchor with no absorbable follower
+    is omitted (it wraps exactly as the non-absorb path). Absorbed indices are
+    never themselves re-used as anchors (a body-bearing follower is a boundary,
+    so this is belt-and-suspenders).
+    """
+    n = len(region_html)
+    runs: dict[int, int] = {}
+    absorbed: set[int] = set()
+    for i, region in enumerate(regions):
+        if i in absorbed:
+            continue
+        if _region_payload_get(region, "semantic_class") not in _BODY_BEARING_COMPONENT_CLASSES:
+            continue
+        frag = region_html[i] if i < n else ""
+        if not frag or not frag.strip():
+            continue
+        end = i + 1
+        while end < n and (end - (i + 1)) < max_run:
+            if _is_absorption_boundary(regions[end], region_html[end]):
+                break
+            end += 1
+        if end > i + 1:
+            runs[i] = end
+            absorbed.update(range(i + 1, end))
+    return runs
+
+
 def collect_doc_ids(fragments: Iterable[str]) -> set[str]:
     """Seed the accumulating doc-id set from already-emitted region fragments.
 
@@ -292,4 +401,5 @@ __all__ = (
     "GOLD_STYLE_SLOT",
     "GOLD_TITLE_SLOT",
     "collect_doc_ids",
+    "compute_absorption_runs",
 )
