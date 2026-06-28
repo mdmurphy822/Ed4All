@@ -78,6 +78,7 @@ silently drops content from the document.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -100,6 +101,28 @@ from .region_detection import (
     TableCandidate,
 )
 from .types import FeatureBlock
+
+
+# ---------------------------------------------------------------------------
+# Reading-order fix gate.
+# ---------------------------------------------------------------------------
+
+_READING_ORDER_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def resolve_reading_order_fix() -> bool:
+    """Return True when the Stage-5 region reading-order re-sort runs.
+
+    Reads ``SEMANTIK_READING_ORDER_FIX``. Default OFF (unset / blank /
+    falsey / garbage) -> byte-identical to today (the segregated pass-order
+    region list is returned unchanged; mirrors
+    ``reviewer.resolve_structure_review_mode``). A truthy value
+    (``1``/``true``/``yes``/``on``, case-insensitive) enables the final
+    stable sort of ``build_structure_graph``'s region list into document
+    reading order.
+    """
+    raw = (os.environ.get("SEMANTIK_READING_ORDER_FIX") or "").strip().lower()
+    return raw in _READING_ORDER_TRUTHY
 
 
 # ---------------------------------------------------------------------------
@@ -1884,6 +1907,24 @@ def build_structure_graph(
             f"{n_fb} expected; missing={missing[:10]}{'…' if len(missing) > 10 else ''}"
         )
 
+    # Reading-order restoration (gated). The six passes append regions in
+    # PASS order (headings, then tables/math, then lists, then paragraphs,
+    # then code) and never re-sort, so the region list is segregated by kind
+    # rather than monotone in document order. Restore reading order with a
+    # final STABLE sort by the region's first owned FeatureBlock index. The
+    # coverage invariant just verified guarantees disjoint FB sets, so the
+    # sort key is a TOTAL order with no ties -> deterministic. Off by default
+    # -> byte-identical to the legacy segregated list.
+    if resolve_reading_order_fix():
+        _pre_ids = {id(r) for r in regions_out}
+        regions_out.sort(
+            key=lambda r: min(r.feature_block_indices)
+            if r.feature_block_indices else len(feature_blocks)
+        )
+        assert {id(r) for r in regions_out} == _pre_ids, (
+            "reading-order sort dropped/added a region"
+        )
+
     return regions_out
 
 
@@ -2167,4 +2208,5 @@ __all__ = [
     "Region",
     "RegionKind",
     "build_structure_graph",
+    "resolve_reading_order_fix",
 ]
