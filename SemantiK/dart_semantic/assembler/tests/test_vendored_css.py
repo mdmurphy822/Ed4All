@@ -151,14 +151,16 @@ def test_no_dart_worktree_import():
 
 
 def test_assembler_output_unchanged():
-    # Nothing consumes the vendored modules yet, so assembly is deterministic
-    # AND free of any gold-shell / vendored-CSS leakage.
+    # The DEFAULT (flag-off SEMANTIK_GOLD_SHELL) assembly is deterministic AND
+    # free of any gold-shell / vendored-CSS leakage — byte-stable to pre-Phase-7
+    # output. (Phase 7 wires gold_shell_markup into pass_9a, but it is gated, so
+    # the flag-off path is unchanged.)
     doc_a = _assemble_fixture()
     doc_b = _assemble_fixture()
     assert doc_a.html == doc_b.html, "assemble_document is non-deterministic"
 
     html = doc_a.html
-    # The vendored gold shell / CSS must NOT have leaked into the output.
+    # The vendored gold shell / CSS must NOT have leaked into the flag-off output.
     for marker in (
         "WCAG22_CSS",
         ".exercise",
@@ -168,15 +170,21 @@ def test_assembler_output_unchanged():
     ):
         assert marker not in html, f"vendored marker {marker!r} leaked into assembler output"
 
-    # And the assembler package must not import either vendored module yet.
     import dart_semantic.assembler.api as api_mod
     import dart_semantic.assembler.shell as shell_mod
     import dart_semantic.assembler.fallbacks as fallbacks_mod
     import dart_semantic.assembler.pass_9a as pass_9a_mod
 
+    # The vendored WCAG CSS (Phase 8) is still consumed by NObody.
     for mod in (api_mod, shell_mod, fallbacks_mod, pass_9a_mod):
         src = Path(inspect.getsourcefile(mod)).read_text(encoding="utf-8")
         assert "wcag22_css" not in src, f"{mod.__name__} already imports wcag22_css"
+
+    # Phase 7 wires gold_shell_markup into pass_9a (the per-region gold ARIA
+    # wrap), gated behind SEMANTIK_GOLD_SHELL. api/shell/fallbacks still must not
+    # import it.
+    for mod in (api_mod, shell_mod, fallbacks_mod):
+        src = Path(inspect.getsourcefile(mod)).read_text(encoding="utf-8")
         assert "gold_shell_markup" not in src, (
             f"{mod.__name__} already imports gold_shell_markup"
         )

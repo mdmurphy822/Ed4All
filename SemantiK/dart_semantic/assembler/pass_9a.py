@@ -81,8 +81,9 @@ from .citation_detect import (
     find_references,
 )
 from .fallbacks import emit_fallback
+from .gold_shell_markup import _wrap_semantic_class, collect_doc_ids
 from .heading_tree import assign_heading_ids, normalize_heading_levels
-from .shell import build_shell, detect_language
+from .shell import build_shell, detect_language, resolve_gold_shell_mode
 from .types import AssembledDoc, GapKind, GapSlot
 
 if TYPE_CHECKING:
@@ -285,6 +286,29 @@ def run_pass_9a(
     sub_task_log["per_region_emit"] = (
         f"stage6={n_stage6} fallback={n_fallback} drop={len(regions) - n_stage6 - n_fallback}"
     )
+
+    # ------------------------------------------------------------------
+    # Sub-task 1b — Gold-standard per-region ARIA wrap (gated;
+    # SEMANTIK_GOLD_SHELL). POST-SELECTION step over the SELECTED
+    # ``region_html[idx]`` AFTER the stage6-LLM-HTML / deterministic-fallback
+    # two-lane if/else above, so the wrap covers BOTH lanes (the re-typed
+    # EXAMPLE/TRY-IT blocks return via the Stage-6 prose seat). Each container
+    # mints its own resolvable label id (deduped against the accumulating
+    # doc-id set). Wraps add tags AROUND the fragment and NEVER mutate fragment
+    # bytes, so the 1:1 index-stable emit order and every pass_9c flat
+    # string-replace splice key are preserved. Flag-off -> byte-identical.
+    # ------------------------------------------------------------------
+    if resolve_gold_shell_mode():
+        doc_ids = collect_doc_ids(region_html)
+        n_wrapped = 0
+        for idx, region in enumerate(regions):
+            wrapped = _wrap_semantic_class(
+                region_html[idx], region, doc_ids=doc_ids,
+            )
+            if wrapped != region_html[idx]:
+                n_wrapped += 1
+            region_html[idx] = wrapped
+        sub_task_log["gold_shell_wrap"] = f"wrapped={n_wrapped}"
 
     # ------------------------------------------------------------------
     # Sub-task 2 — Heading-tree normalization (over HEADING regions only).
