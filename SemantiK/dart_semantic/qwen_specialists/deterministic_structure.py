@@ -404,6 +404,16 @@ def _detect_front_matter_drops(
     # headings within a <= P page window on an early front-matter page is a
     # preface chapter-summary / chapter index; drop the phantom HEADINGS whole.
     drops |= _detect_dense_chapter_cluster(regions, first_pages)
+
+    # A pedagogical label (EXAMPLE N.M / TRY IT / Solution / HOW TO / Step N …)
+    # is NEVER front-matter — it anchors a worked-example unit and must survive
+    # to be tagged ``pedagogy-*`` in sub-pass (B) (→ worked_example box). Without
+    # this guard a TOC-SHAPED label like "EXAMPLE 1.16" (title + a "1.16" that
+    # looks like a trailing page number) is dropped — especially on a mid-chapter
+    # SLICE with no chapter anchor, where the front-matter zone spans the whole
+    # doc and every EXAMPLE label matches the TOC-drop. A real printed TOC line
+    # never matches ``_is_pedagogical_label``.
+    drops = {i for i in drops if not _is_pedagogical_label(regions[i])}
     return drops
 
 

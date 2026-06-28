@@ -551,3 +551,25 @@ def test_diagnostics_shape():
     assert diag["pedagogical_demoted"] == 1
     assert diag["pedagogical_classed"] == 1
     assert diag["pedagogical_class_counts"] == {"pedagogy-example": 1}
+
+
+def test_pedagogical_label_not_dropped_as_toc_in_frontmatter_zone():
+    """A TOC-SHAPED pedagogical label ("EXAMPLE 1.16") must NOT be metadata_dropped
+    even when the whole doc is the front-matter zone (a mid-chapter SLICE with no
+    chapter anchor) — it survives as a pedagogy-example paragraph (-> worked_example
+    box). Regression for the slice worked-example mis-grouping: "EXAMPLE 1.16"
+    matches the "title + trailing-1.16-page-number" TOC-drop shape and was dropped,
+    so the example lost its box."""
+    regions, fbs = _build([
+        ("heading", "EXAMPLE 1.16", 1),
+        ("paragraph", "Solution", 1),
+        ("paragraph", "Multiply first.", 1),
+        ("heading", "EXAMPLE 1.17", 2),
+        ("paragraph", "Solution", 2),
+    ])
+    out, _diag = clean_structure(regions, fbs)
+    ex = [r for r in out if (r.payload or {}).get("text", "").strip().startswith("EXAMPLE")]
+    assert len(ex) == 2, "EXAMPLE labels were dropped"
+    for r in ex:
+        assert r.kind != "metadata_drop", f"pedagogical label dropped as metadata: {r.payload}"
+        assert (r.payload or {}).get("css_class") == "pedagogy-example"
