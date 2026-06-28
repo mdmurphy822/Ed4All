@@ -1333,3 +1333,23 @@ def test_in_box_math_figure_source_region_id_parity(monkeypatch):
     # The figure's <img src> + the sidecar reference live INSIDE the box.
     assert '<img src="figs/fig-2.png"' in box
     assert html.count('<img src="figs/fig-2.png"') == 1
+
+
+def test_metadata_drop_dropped_even_with_stage6_candidate():
+    """A metadata_drop region routes to PROSE (routing.py) so Stage-6 may author
+    it, but it must ALWAYS be dropped from the render — the clean pass already
+    decided it is a running header / page number / phantom-TOC line, not content.
+    Regression: the real-Stage-6 path was emitting the authored "Chapter 1
+    Foundations 27" running header as a <p>."""
+    regions = [
+        Region(kind="metadata_drop", feature_block_indices=(0,),
+               payload={"text": "Chapter 1 Foundations 27"}),
+        Region(kind="paragraph", feature_block_indices=(1,),
+               payload={"text": "real body"}),
+    ]
+    fbs = [_fb("Chapter 1 Foundations 27"), _fb("real body")]
+    top = {0: _stage6("<p>Chapter 1 Foundations 27</p>"),
+           1: _stage6("<p>real body sentence.</p>")}
+    html = _assemble(top, regions, fbs).html
+    assert "Chapter 1 Foundations 27" not in html  # authored running header dropped
+    assert "real body sentence." in html            # real content survives

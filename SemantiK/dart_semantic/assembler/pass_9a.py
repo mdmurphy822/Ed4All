@@ -345,6 +345,17 @@ def run_pass_9a(
     n_fallback = 0
     n_stage6 = 0
     for idx, region in enumerate(regions):
+        if region.kind == "metadata_drop":
+            # A metadata_drop region is ALWAYS dropped from the render — even if
+            # Stage-6 authored prose for it. It routes to the PROSE adapter
+            # (routing.py) so Stage-6 sees it, but the clean pass already decided
+            # it is a running header / page number / phantom-TOC line, NOT content.
+            # Without this guard the real-Stage-6 path emits the AUTHORED running
+            # header ("Chapter 1 Foundations 27") as a <p> (the empty
+            # fallback_metadata_drop only fires when Stage-6 produced no candidate).
+            region_html.append("")
+            region_provenance_kinds.append("drop")
+            continue
         ranked = top_per_region.get(idx)
         if ranked is not None and ranked.candidate.text:
             region_html.append(ranked.candidate.text)
