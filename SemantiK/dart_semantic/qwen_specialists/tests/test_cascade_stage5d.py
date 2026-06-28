@@ -478,3 +478,154 @@ def _minimal_audit(*, structure_review):
         wcag_coverage=None,
         structure_review=structure_review,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — index-stability: re-key the cap exemption + verdict->provenance
+# join by stable min-FB so they survive a Stage-5e N->1 region merge.
+# ---------------------------------------------------------------------------
+
+
+def _mregion(kind, fb_indices, *, text=None):
+    """A region spanning MULTIPLE FBs (the merged-unit shape)."""
+    payload = {}
+    if text is not None:
+        payload["text"] = text
+    return Region(kind=kind, feature_block_indices=tuple(fb_indices), payload=payload)
+
+
+def test_metadata_drop_exempt_survives_regroup():
+    """Stage-5d metadata_drop + a Stage-5e regroup that shifts positions: the
+    cap exemption is keyed by the metadata_drop's STABLE min-FB, so it still
+    lands on it after the N->1 merge shifts its position — the drop survives
+    the (full) metadata bucket and no real-content FB is evicted (no spurious
+    CapSafetyError / revert)."""
+    # pre-5e (post-5d) reviewed list: a 2-region content unit + a pre-existing
+    # metadata_drop + a NEWLY-dropped metadata region.
+    before = [
+        _region("paragraph", 0, text="EXAMPLE 1"),
+        _region("paragraph", 1, text="body a"),
+        _region("metadata_drop", 2, text="pre-existing junk"),
+        _region("heading", 3, text="Answer Key"),  # becomes metadata_drop
+    ]
+    after = [
+        _region("paragraph", 0, text="EXAMPLE 1"),
+        _region("paragraph", 1, text="body a"),
+        _region("metadata_drop", 2, text="pre-existing junk"),
+        _region("metadata_drop", 3, text="Answer Key"),  # NEWLY dropped
+    ]
+    # Cascade Phase-5 exempt build: keyed by each NEWLY-dropped region's min-FB.
+    drop_ids = frozenset(
+        mf
+        for b, a in zip(before, after)
+        if a.kind == "metadata_drop"
+        and b.kind != "metadata_drop"
+        and (mf := cascade._region_min_fb(a)) is not None
+    )
+    assert drop_ids == frozenset({3})  # the newly-dropped region's min-FB
+
+    # A Stage-5e regroup fuses the 2 content regions into ONE (fb 0,1); both
+    # metadata_drops shift LEFT by one position. The newly-dropped region moves
+    # 3 -> 2, but its min-FB (3) is unchanged.
+    post_5e = [
+        _mregion("paragraph", (0, 1), text="EXAMPLE 1 body a"),  # merged unit
+        after[2],  # pre-existing metadata_drop (fb2), NOT exempt
+        after[3],  # newly-dropped metadata_drop (fb3), exempt by min-FB
+    ]
+    assert cascade._region_min_fb(post_5e[2]) == 3  # stale position 3 -> now 2
+
+    cap = 1  # tiny: the metadata bucket holds ONE unless exempt
+    capped = _cap_regions_per_kind(
+        post_5e, cap=cap, stage5d_metadata_drop_ids=drop_ids
+    )
+    survivors = {i for r in capped for i in r.feature_block_indices}
+    # The newly-dropped region (fb3) survives ONLY via the min-FB exemption
+    # (the pre-existing drop already consumed the cap=1 metadata bucket slot).
+    assert 3 in survivors
+
+    # FB-survival vs the pre-5e baseline holds (no real content evicted) -> the
+    # C2 cap-safety assertion is a clean pass (no spurious revert).
+    baseline = _cap_regions_per_kind(before, cap=cap)
+    _assert_fb_survival_through_cap(baseline, capped)  # must NOT raise
+
+
+def test_cap_exempt_byte_identical_no_merge():
+    """No merge fires -> the min-FB-keyed exemption is byte-identical to the
+    historical positional exemption (each region's min-FB == its index)."""
+    regions = [
+        _region("paragraph", 0),
+        _region("metadata_drop", 1),
+        _region("paragraph", 2),
+        _region("paragraph", 3),
+    ]
+    # Position == min-FB for every region (no merge), so the min-FB exempt set
+    # {1} targets the same region a positional {1} would.
+    for i, r in enumerate(regions):
+        assert cascade._region_min_fb(r) == i
+    capped = _cap_regions_per_kind(
+        regions, cap=3, stage5d_metadata_drop_ids=frozenset({1})
+    )
+    survived = {i for r in capped for i in r.feature_block_indices}
+    # Every real paragraph survives; the exempt metadata_drop rides along
+    # without consuming a paragraph slot — identical to the positional baseline.
+    assert {0, 2, 3} <= survived
+    assert 1 in survived
+
+
+def test_review_provenance_attaches_by_min_fb():
+    """A Stage-5d verdict + a Stage-5e regroup: the review sub-block lands on
+    the post-merge region whose stable min-FB matches the verdict's original
+    block (not its stale positional index)."""
+    fbs = [_fb("EXAMPLE 1"), _fb("body a"), _fb("body b"), _fb("tail")]
+    # pre-5e regions the verdict block_ids index into. Region 0 (the anchor)
+    # was corrected (heading -> paragraph).
+    pre_review = [
+        _region("paragraph", 0, text="EXAMPLE 1"),
+        _region("paragraph", 1, text="body a"),
+        _region("paragraph", 2, text="body b"),
+        _region("paragraph", 3, text="tail"),
+    ]
+    verdicts = [
+        ReviewVerdict(0, "corrected", "heading", "paragraph", 2, None, "demoted"),
+    ]
+    # A regroup fuses pre[0..2] into ONE region (the merged unit inherits the
+    # anchor's min-FB = 0); the tail stays separate. Post positions shift.
+    post = [
+        _mregion("paragraph", (0, 1, 2), text="EXAMPLE 1 body a body b"),
+        pre_review[3],
+    ]
+    order = list(range(len(post)))
+    prov = _build_region_provenance(
+        order, post, fbs, {},
+        review_verdicts=verdicts,
+        review_regions=pre_review,
+    )
+    merged_entry = next(e for e in prov if e["first_raw_block_index"] == 0)
+    assert "review" in merged_entry
+    assert merged_entry["review"]["corrected_from"] == "heading"
+    assert merged_entry["review"]["corrected_to"] == "paragraph"
+    # The tail region (min-FB 3) carries NO review (the verdict was for fb0).
+    tail_entry = next(e for e in prov if e["first_raw_block_index"] == 3)
+    assert "review" not in tail_entry
+
+
+def test_review_join_byte_identical_no_merge():
+    """No merge: the min-FB-rekeyed verdict->region join is byte-identical to
+    the legacy positional join (region_index == block_id == min-FB)."""
+    fbs = [_fb("intro"), _fb("Answer Key")]
+    regions = [
+        _region("paragraph", 0),
+        _region("metadata_drop", 1, text="Answer Key"),
+    ]
+    verdicts = [
+        ReviewVerdict(0, "ok", "paragraph", "paragraph", None, None, ""),
+        ReviewVerdict(1, "drop_injected_header", "heading", "metadata_drop", 2, None, "phantom"),
+    ]
+    order = [0, 1]
+    legacy = _build_region_provenance(
+        order, regions, fbs, {}, review_verdicts=verdicts
+    )  # review_regions=None -> positional join
+    rekeyed = _build_region_provenance(
+        order, regions, fbs, {}, review_verdicts=verdicts, review_regions=regions
+    )  # min-FB join
+    assert rekeyed == legacy

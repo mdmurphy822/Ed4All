@@ -113,6 +113,17 @@ def _figure_captioning_active() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _region_min_fb(region: Region) -> int | None:
+    """The region's STABLE FB-derived key = ``min(feature_block_indices)``.
+
+    Unique per surviving region (R-PART partitions FBs, never shared), so it is
+    a clean bijection that survives an N->1 Stage-5e region merge (a merged
+    region inherits the anchor LABEL's min-FB). ``None`` for an FB-less region
+    (pathological — used as the join key only when present)."""
+    fb = getattr(region, "feature_block_indices", ()) or ()
+    return min(fb) if fb else None
+
+
 def _cap_regions_per_kind(
     regions: list[Region],
     *,
@@ -121,16 +132,24 @@ def _cap_regions_per_kind(
 ) -> list[Region]:
     """Cap the region list to ``cap`` survivors PER KIND (lossy ``continue``).
 
-    ``stage5d_metadata_drop_ids`` (C2 cap-exemption): the set of POSITIONAL
-    indices into ``regions`` that the Stage-5d reviewer NEWLY re-tagged to
-    ``metadata_drop`` this run. A re-tagged-this-stage ``metadata_drop``
-    region is exempt from counting against ANY bucket's running cap — it
-    emits empty HTML and is filtered out of ``body_html`` downstream, so
-    counting it against a content bucket would needlessly evict real
-    content (a phantom heading re-roled to ``paragraph``/``metadata_drop``
-    must NOT push a real paragraph out of the cap). The region still SURVIVES
-    into the output list (coverage invariant: every FB stays owned); it just
-    does not consume a cap slot.
+    ``stage5d_metadata_drop_ids`` (C2 cap-exemption): the set of STABLE
+    ``min(feature_block_indices)`` KEYS (Phase 5 re-key — previously POSITIONAL
+    region indices) of the regions the Stage-5d reviewer NEWLY re-tagged to
+    ``metadata_drop`` this run. A re-tagged-this-stage ``metadata_drop`` region
+    is exempt from counting against ANY bucket's running cap — it emits empty
+    HTML and is filtered out of ``body_html`` downstream, so counting it against
+    a content bucket would needlessly evict real content (a phantom heading
+    re-roled to ``paragraph``/``metadata_drop`` must NOT push a real paragraph
+    out of the cap). The region still SURVIVES into the output list (coverage
+    invariant: every FB stays owned); it just does not consume a cap slot.
+
+    Keying by min-FB (not by position) means the exemption survives a Stage-5e
+    N->1 region merge that shifts every downstream position — the misaligned
+    positional exemption could otherwise let the cap evict a real surviving
+    region and trip the fail-closed cap-safety revert (silently discarding the
+    whole regroup). Byte-stable when no merge fires: with positions unchanged
+    each region's min-FB equals its old positional index, so the SET of exempt
+    regions is identical to the historical per-kind cap.
 
     When ``stage5d_metadata_drop_ids`` is None/empty (flag OFF, or no drops),
     this is byte-identical to the historical per-kind cap.
@@ -140,10 +159,12 @@ def _cap_regions_per_kind(
     exempt = stage5d_metadata_drop_ids or frozenset()
     counts: Counter[str] = Counter()
     out: list[Region] = []
-    for i, r in enumerate(regions):
+    for r in regions:
         # A Stage-5d metadata_drop re-tag is cap-exempt: keep it (empty-emit,
         # dropped from body_html) but never let it consume a bucket slot.
-        if i in exempt:
+        # Resolve the exemption by the region's STABLE min-FB key (Phase 5).
+        min_fb = _region_min_fb(r)
+        if min_fb is not None and min_fb in exempt:
             out.append(r)
             continue
         if counts[r.kind] >= cap:
@@ -399,18 +420,30 @@ def _region_wcag_status(stage7_results: dict[int, list[Any]], region_index: int)
     return "failed"
 
 
-def _review_by_region_index(verdicts: list[Any] | None) -> dict[int, dict[str, Any]]:
-    """Index Stage-5d ReviewVerdicts by their ``block_id`` (region index).
+def _review_by_region_index(
+    verdicts: list[Any] | None,
+    review_regions: list[Region] | None = None,
+) -> dict[int, dict[str, Any]]:
+    """Index Stage-5d ReviewVerdicts by their join key, for
+    ``_build_region_provenance``.
 
     Returns a terse per-region ``review`` payload (``corrected_from`` /
-    ``corrected_to`` / ``reason_code`` / ``reverted`` / ``note``) keyed on
-    region index, for joining into ``_build_region_provenance``. Only
+    ``corrected_to`` / ``reason_code`` / ``reverted`` / ``note``). Only
     NON-``ok`` (corrected or reverted) verdicts are surfaced — an ``ok``
     no-op carries no audit signal and would only bloat the provenance.
     Empty dict when ``verdicts`` is None (flag OFF) so the provenance dict
     stays byte-stable.
+
+    Join key (Phase 5): when ``review_regions`` (the pre-Stage-5e region list
+    the verdict ``block_id``s index into) is provided, the dict is keyed by the
+    STABLE ``min(feature_block_indices)`` of ``review_regions[block_id]`` so the
+    join survives a Stage-5e N->1 region merge that shifts every post-5e
+    position. When ``review_regions`` is None (legacy / direct callers) the dict
+    is keyed by ``block_id`` (the pre-5e positional region index) EXACTLY as
+    before — byte-identical for callers that don't opt into the re-key.
     """
     out: dict[int, dict[str, Any]] = {}
+    n_review = len(review_regions) if review_regions is not None else 0
     for v in (verdicts or ()):
         kind_before = getattr(v, "kind_before", None)
         kind_after = getattr(v, "kind_after", None)
@@ -430,7 +463,16 @@ def _review_by_region_index(verdicts: list[Any] | None) -> dict[int, dict[str, A
         bid = getattr(v, "block_id", None)
         if not isinstance(bid, int):
             continue
-        out[bid] = {
+        # Phase 5: re-key the verdict by the pre-5e region's stable min-FB so
+        # the join survives a Stage-5e N->1 merge. Falls back to the positional
+        # block_id (byte-identical legacy path) when no review_regions / the
+        # block has no resolvable min-FB.
+        key = bid
+        if review_regions is not None and 0 <= bid < n_review:
+            min_fb = _region_min_fb(review_regions[bid])
+            if min_fb is not None:
+                key = min_fb
+        out[key] = {
             "corrected_from": kind_before,
             "corrected_to": kind_after,
             "level_from": level_before,
@@ -505,6 +547,7 @@ def _build_region_provenance(
     feature_blocks: list[Any],
     stage7_results: dict[int, list[Any]],
     review_verdicts: list[Any] | None = None,
+    review_regions: list[Region] | None = None,
 ) -> list[dict[str, Any]]:
     """Distill one provenance dict per region in DOCUMENT (emission) order.
 
@@ -535,7 +578,11 @@ def _build_region_provenance(
     """
     provenance: list[dict[str, Any]] = []
     n = len(regions)
-    review_index = _review_by_region_index(review_verdicts)
+    # Phase 5: when ``review_regions`` (the pre-5e region list the verdict
+    # block_ids index into) is supplied, the verdict join is keyed by stable
+    # min-FB so it survives a Stage-5e N->1 merge; otherwise the legacy
+    # positional (region_index == block_id) join is used (byte-identical).
+    review_index = _review_by_region_index(review_verdicts, review_regions)
     for region_index in region_order:
         if not (0 <= region_index < n):
             # Defensive: a provenance index outside the region list is a
@@ -632,7 +679,11 @@ def _build_region_provenance(
         # when the reviewer ran AND corrected/reverted this region; absent
         # when the stage is off (review_verdicts is None) or the region was
         # a pure no-op — keeping the provenance dict byte-stable to baseline.
-        review = review_index.get(region_index)
+        # Phase 5 join key: stable min-FB when re-keyed, else positional index
+        # (byte-identical legacy path). first_raw already resolves the same
+        # min-FB-with-region_index-fallback, so reuse it under the re-key.
+        review_key = first_raw if review_regions is not None else region_index
+        review = review_index.get(review_key)
         if review is not None:
             entry["review"] = review
         # OPTIONAL pedagogy-class hint (additive). The deterministic
@@ -817,16 +868,20 @@ def run_full_cascade(
             review_runtime,
             council_state=state,
         )
-        # Which region indices did THIS stage NEWLY re-tag to metadata_drop?
+        # Which regions did THIS stage NEWLY re-tag to metadata_drop?
         # (a region that was already metadata_drop pre-review is not a
         # Stage-5d drop and is NOT cap-exempt). These are exempt from the
-        # per-kind cap's content buckets (C2).
+        # per-kind cap's content buckets (C2). Keyed by the region's STABLE
+        # min-FB (Phase 5) — NOT its positional index — so the exemption
+        # survives the Stage-5e N->1 regroup region-count reduction (a merged
+        # region inherits the anchor's min-FB; a metadata_drop region is never
+        # a regroup anchor/body, so its min-FB key is stable).
         stage5d_metadata_drop_ids = frozenset(
-            i
-            for i, (before, after) in enumerate(
-                zip(pre_review_regions, reviewed_regions)
-            )
-            if after.kind == "metadata_drop" and before.kind != "metadata_drop"
+            min_fb
+            for before, after in zip(pre_review_regions, reviewed_regions)
+            if after.kind == "metadata_drop"
+            and before.kind != "metadata_drop"
+            and (min_fb := _region_min_fb(after)) is not None
         )
         structure_regions = reviewed_regions
         stages["stage5d"] = time.perf_counter() - t
@@ -1201,6 +1256,10 @@ def run_full_cascade(
         feature_blocks,
         chosen["stage7_results"],
         review_verdicts=review_verdicts,
+        # Phase 5: the pre-5e region list the verdict block_ids index into, so
+        # the verdict->provenance join re-keys by stable min-FB and survives a
+        # Stage-5e N->1 regroup. Byte-stable when no merge fires.
+        review_regions=pre_review_regions,
     )
 
     elapsed_total = time.perf_counter() - t_total
