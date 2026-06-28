@@ -96,6 +96,35 @@ def test_table_role_reconciled_to_single_convention():
     assert "\n  table {" in WCAG22_CSS or " table {" in WCAG22_CSS
 
 
+def test_worked_example_is_not_monospace():
+    """A worked math example (`class="algorithm worked-example"`) must NOT
+    render as a code listing. The .algorithm rule sets a monospace/code-bg
+    style; an override that follows it un-monospaces the worked-example
+    variant. Pure .algorithm (real pseudocode) stays monospace."""
+    css = WCAG22_CSS
+    # The override selector exists and follows the base .algorithm rule.
+    assert ".algorithm.worked-example" in css or ".worked-example" in css, (
+        "missing .worked-example override"
+    )
+    algo_idx = css.index("\n  .algorithm {")
+    override_idx = css.index(".worked-example")
+    assert override_idx > algo_idx, (
+        ".worked-example override must come AFTER the base .algorithm rule to "
+        "win the cascade"
+    )
+    # The override block un-monospaces (font-family: inherit) — extract the
+    # first override rule body and confirm it restores a non-code font.
+    block = css[override_idx : override_idx + 400]
+    assert "font-family: inherit" in block, (
+        "worked-example override must reset font-family to inherit (not monospace)"
+    )
+    # Pure .algorithm stays a monospace code region (regression guard).
+    algo_block = css[algo_idx : algo_idx + 300]
+    assert "monospace" in algo_block and "var(--code-bg)" in algo_block, (
+        "pure .algorithm must remain monospace/code-bg"
+    )
+
+
 def test_gold_shell_markup_importable():
     assert isinstance(gold_shell_markup.GOLD_DOC_OPEN, str)
     assert isinstance(gold_shell_markup.GOLD_DOC_CLOSE, str)

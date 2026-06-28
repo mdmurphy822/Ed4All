@@ -218,6 +218,30 @@ WCAG22_CSS: str = """
 
   .algorithm h4 { margin-top: 0; }
 
+  /* === Worked-example variant: a math "example box", NOT a code listing ===
+     The assembler emits worked math examples with the combined
+     algorithm+worked-example class, so they would inherit .algorithm's
+     monospace/code-bg styling and read as code listings. This override
+     (which MUST follow .algorithm to win the cascade) un-monospaces the
+     worked-example variant and gives it a distinct accent box. PURE
+     .algorithm (real pseudocode / algorithm regions) stays monospace. */
+  .algorithm.worked-example,
+  .worked-example {
+    background: #f0f7ff;
+    border-left: 4px solid #0066cc;
+    border-radius: 0 8px 8px 0;
+    font-family: inherit;
+    font-size: 1rem;
+  }
+
+  .algorithm.worked-example h3,
+  .algorithm.worked-example h4,
+  .worked-example h3,
+  .worked-example h4 {
+    margin-top: 0;
+    color: #0066cc;
+  }
+
   /* === Net-new (Phase 1): exercise region — boxed like .definition === */
   .exercise {
     background-color: var(--blockquote-bg);
@@ -340,6 +364,13 @@ WCAG22_CSS: str = """
     .callout-tip { background: #16331a; }
     .callout-danger { background: #3a0f12; }
     pre[role="region"] { background: #262626; color: #e0e0e0; }
+    /* Worked-example: a dark blue tint (NOT the code bg), accent preserved. */
+    .algorithm.worked-example,
+    .worked-example { background: #14263d; border-left-color: #66b3ff; }
+    .algorithm.worked-example h3,
+    .algorithm.worked-example h4,
+    .worked-example h3,
+    .worked-example h4 { color: #66b3ff; }
     :focus, :focus-visible { outline-color: #66b3ff; }
   }
 
