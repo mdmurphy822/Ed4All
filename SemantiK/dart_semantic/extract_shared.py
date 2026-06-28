@@ -85,6 +85,85 @@ REPLACEMENT_MAX_FRAC = 0.10
 # large-font titles. See _pdfplumber_page / Plans/11 Stage 3.
 _X_TOLERANCE_RATIO = 0.15
 
+# Max horizontal gap (pt) under which a single-character leading word is
+# treated as a *styled first letter that was split off its word body* (an
+# OpenStax colored / bold drop-cap: the Bold "S" of "Subtraction" becomes its
+# own pdfplumber word, ABUTTING "ubtraction"). Measured on the OpenStax
+# PEMDAS chart (Elem-Algebra ch.1): every such split sits at a ~0pt gap
+# (-0.01..0.01) AND carries a font-name change (Bold→Regular), while every
+# genuine single-letter word ("I remember", "a way", articles "A"/"a"/"I"
+# across body pages) has a real word-space gap >= ~1.99pt. 0.5 is a safe
+# midpoint with a wide margin on both sides. See _merge_split_first_letters.
+_FIRST_LETTER_REJOIN_MAX_GAP = 0.5
+
+
+def _merge_split_first_letters(line: list[dict]) -> list[dict]:
+    """Rejoin a single-character leading word that a font/style change split
+    off from its word body.
+
+    pdfplumber's ``extract_words`` starts a new word at a font/style change,
+    so an OpenStax colored / bold drop-cap first letter (the Bold "S" of
+    "Subtraction") is emitted as its OWN word ABUTTING the rest
+    ("ubtraction"). The downstream space-join then fabricates "S ubtraction".
+
+    Conservative gate (BOTH required, calibrated on measured geometry —
+    extraction is load-bearing):
+
+    * the leading word is exactly ONE letter, AND
+    * it ABUTS the following word: x-gap <= ``_FIRST_LETTER_REJOIN_MAX_GAP``
+      (~0pt). A real inter-word space is >= ~2pt, so genuine single-letter
+      words ("I remember", "a way") are never merged, AND
+    * the two words carry DIFFERENT font names — the styling that caused the
+      split. Same-font adjacencies (which pdfplumber would not have split in
+      the first place) are left untouched.
+
+    Merge is text-only (``leader + follower``, no space); the merged word
+    keeps the FOLLOWER's font attributes (the word body, so heading / prose
+    font features stay stable) with a union bbox. Words ``line`` must already
+    be x-sorted. Returns a new list (input unmutated). A single left-to-right
+    pass handles mnemonic chains ("M y D ear" → "My" then "Dear") because a
+    merged word is multi-character and so can no longer act as a leader.
+    """
+    if len(line) < 2:
+        return line
+    out: list[dict] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        w = line[i]
+        text = w.get("text", "")
+        if i + 1 < n and len(text) == 1 and text.isalpha():
+            nxt = line[i + 1]
+            try:
+                gap = float(nxt.get("x0", 0)) - float(w.get("x1", 0))
+            except (TypeError, ValueError):
+                gap = None
+            fn_w = w.get("fontname")
+            fn_n = nxt.get("fontname")
+            font_changed = bool(fn_w) and bool(fn_n) and fn_w != fn_n
+            if (
+                gap is not None
+                and gap <= _FIRST_LETTER_REJOIN_MAX_GAP
+                and font_changed
+            ):
+                merged = dict(nxt)  # keep the body word's font/size attrs
+                merged["text"] = text + nxt.get("text", "")
+                try:
+                    merged["x0"] = min(float(w.get("x0", 0)), float(nxt.get("x0", 0)))
+                    merged["x1"] = max(float(w.get("x1", 0)), float(nxt.get("x1", 0)))
+                    merged["top"] = min(float(w.get("top", 0)), float(nxt.get("top", 0)))
+                    merged["bottom"] = max(
+                        float(w.get("bottom", 0)), float(nxt.get("bottom", 0))
+                    )
+                except (TypeError, ValueError):
+                    pass
+                out.append(merged)
+                i += 2
+                continue
+        out.append(w)
+        i += 1
+    return out
+
 
 # ---------- entry point ----------
 
@@ -117,7 +196,10 @@ def extract_shared(pdf_path: Path) -> dict:
 # sub-3pt LaTeX inter-word gaps into single words. v3: the 2026-06-17
 # pypdfium2 line-segment re-extraction fix — pre-fix caches garbled
 # letter-spaced small-caps ("M ARKWAYNE", "Before S YKES L EE").
-EXTRACT_CACHE_VERSION = 3
+# v4: the styled-drop-cap first-letter rejoin in _pdfplumber_page
+# (_merge_split_first_letters) — pre-fix caches split a bold/colored first
+# letter off its word body ("S ubtraction", "P arentheses", "m ultiplication").
+EXTRACT_CACHE_VERSION = 4
 
 
 def extract_shared_cached(pdf_path: Path, cache_dir: Path | str | None = None) -> dict:
@@ -584,6 +666,9 @@ def _pdfplumber_page(pdf_path: Path, page_num: int) -> dict:
             if not line:
                 continue
             line.sort(key=lambda w: float(w.get("x0", 0)))
+            # Rejoin styled drop-cap first letters that a font change split
+            # off their word body ("S" + "ubtraction" -> "Subtraction").
+            line = _merge_split_first_letters(line)
             x0 = min(float(w.get("x0", 0)) for w in line)
             x1 = max(float(w.get("x1", 0)) for w in line)
             top = min(float(w.get("top", 0)) for w in line)
