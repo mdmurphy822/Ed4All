@@ -73,6 +73,43 @@ def _region_payload_get(region: Any, key: str) -> Any:
     return (getattr(region, "payload", None) or {}).get(key)
 
 
+def _unit_start_text_boundary(text: Any) -> bool:
+    r"""True when ``text`` (the storage-SoT ``payload['text']``) BEGINS with a
+    UNIT-START pedagogical label — the text-pattern fallback for a following
+    unit-start region whose ``css_class`` was NEVER stamped.
+
+    The over-merge this closes: the unit-boundary detector keyed off
+    ``css_class`` alone, but the clean pass only stamps ``css_class`` on a
+    re-tagged (demoted) HEADING — a council-typed *paragraph* "EXAMPLE N.M" /
+    "TRY IT" label slips through unstamped, so the forward walk does NOT stop
+    and swallows the next unit (~22% of ``worked_example`` boxes fused two
+    examples).
+
+    Mirrors the css path by reusing the SAME single source of truth
+    (``deterministic_structure._pedagogical_class_for`` — the anchored
+    ``_PEDAGOGICAL_LABEL_CLASSES`` regex the clean pass uses to STAMP the
+    ``css_class``) and filtering its result to :data:`UNIT_START_PEDAGOGY_CLASSES`,
+    so the text fallback and the css arm can NEVER disagree on what opens a
+    unit. The lazy import keeps this module dependency-light (no module-load
+    cycle: ``deterministic_structure`` never imports this module) and mirrors
+    the ``block_resegment._pedagogical_label_at`` precedent.
+
+    SPECIFIC by construction (avoids UNDER-merge / false boundaries): the SoT
+    patterns are anchored at text start (``^\s*``), so a body sentence
+    mentioning "for example" mid-text never trips it; ``pedagogy-solution`` /
+    ``pedagogy-step`` / ``pedagogy-objectives`` map to BODY/other classes that
+    are NOT in :data:`UNIT_START_PEDAGOGY_CLASSES`, so "Solution" / "Step 1" /
+    plain prose are NOT boundaries (they remain absorbable body).
+    """
+    if not text:
+        return False
+    # Lazy import: the neutral module stays dependency-light and cycle-free
+    # (deterministic_structure does not import pedagogical_units).
+    from .qwen_specialists.deterministic_structure import _pedagogical_class_for
+
+    return _pedagogical_class_for(str(text)) in UNIT_START_PEDAGOGY_CLASSES
+
+
 def is_unit_boundary(region: Any, html: Any = None) -> bool:
     """True when ``region`` STOPS a pedagogical-unit run (it must NOT be pulled
     into the preceding unit's box / merged region).
@@ -87,6 +124,14 @@ def is_unit_boundary(region: Any, html: Any = None) -> bool:
         instead, keeping this module decoupled from the heavy renderer;
       * a unit-opening pedagogical label (``payload['css_class']`` in
         :data:`UNIT_START_PEDAGOGY_CLASSES`);
+      * (``html is None`` Stage-5e path ONLY) a region whose ``payload['text']``
+        text-STARTS a unit-opening label (``_unit_start_text_boundary`` —
+        "EXAMPLE N.M" / "TRY IT" / "HOW TO" / "BE PREPARED" / "PRACTICE MAKES
+        PERFECT") even when its ``css_class`` was never stamped — the
+        over-merge fix. Reuses the SAME SoT regex the clean pass stamps the
+        ``css_class`` with, filtered to :data:`UNIT_START_PEDAGOGY_CLASSES`, so
+        the text fallback and the css arm agree. Deliberately NOT consulted on
+        the assembler-absorb (``html`` supplied) path, which stays byte-identical;
       * a region that itself starts a body-bearing component
         (``payload['semantic_class']`` in :data:`BODY_BEARING_COMPONENT_CLASSES`
         — the NEXT example/definition/exercise opens its own unit).
@@ -103,6 +148,13 @@ def is_unit_boundary(region: Any, html: Any = None) -> bool:
     if html is None:
         text = _region_payload_get(region, "text")
         if not text or not str(text).strip():
+            return True
+        # Text-pattern unit-start fallback — Stage-5e path ONLY (html is None).
+        # A following region that text-STARTS a new unit is a boundary even
+        # when its css_class was never stamped (the over-merge fix). Gated to
+        # html is None so the assembler absorb (which always passes real html)
+        # is byte-identical (it keeps relying on css_class / semantic_class).
+        if _unit_start_text_boundary(text):
             return True
     elif not html or not html.strip():
         return True

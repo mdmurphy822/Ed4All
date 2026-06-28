@@ -87,6 +87,41 @@ def test_is_unit_boundary_html_optional():
     assert is_unit_boundary(heading, "<h2>Chapter 1</h2>") is True
 
 
+def test_is_unit_boundary_text_pattern():
+    """html=None: a region whose payload['text'] text-STARTS a unit-opening
+    label is a boundary even with NO css_class (the over-merge fix), while
+    body labels ('Solution'/'Step N') + plain prose are NOT boundaries."""
+    # Unit-start labels (no css_class) -> boundary on the html=None path.
+    ex = _region("paragraph", text="EXAMPLE 1.114 Simplify the expression")
+    tryit = _region("paragraph", text="TRY IT : : 1.2 Factor")
+    howto = _region("paragraph", text="HOW TO Solve a linear equation")
+    beprep = _region("paragraph", text="BE PREPARED 1.5 Evaluate")
+    assert is_unit_boundary(ex, html=None) is True
+    assert is_unit_boundary(tryit, html=None) is True
+    assert is_unit_boundary(howto, html=None) is True
+    assert is_unit_boundary(beprep, html=None) is True
+
+    # Body labels + plain prose -> NOT boundaries (absorbable body).
+    solution = _region("paragraph", text="Solution")
+    step = _region("paragraph", text="Step 1. Add 3 to both sides.")
+    midtext = _region("paragraph", text="This holds, for example, when x>0.")
+    assert is_unit_boundary(solution, html=None) is False
+    assert is_unit_boundary(step, html=None) is False
+    assert is_unit_boundary(midtext, html=None) is False
+
+
+def test_text_pattern_arm_html_path_unchanged():
+    """The text-pattern arm is gated to html is None, so the assembler-absorb
+    (html supplied) path is byte-identical: an EXAMPLE-text region with NO
+    css_class is NOT a boundary when html is supplied (the absorb keeps keying
+    off css_class / semantic_class only)."""
+    ex_no_css = _region("paragraph", text="EXAMPLE 1.5 Simplify")
+    # html supplied + non-empty + no css_class/semantic_class -> not a boundary.
+    assert is_unit_boundary(ex_no_css, "<p>EXAMPLE 1.5 Simplify</p>") is False
+    # html=None on the SAME region DOES trip (proves the gate is the only diff).
+    assert is_unit_boundary(ex_no_css, html=None) is True
+
+
 def test_resolve_unit_regroup_mode_parse_with_fallback(monkeypatch):
     monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
     assert resolve_unit_regroup_mode() is False

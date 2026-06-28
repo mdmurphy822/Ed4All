@@ -590,6 +590,27 @@ def test_detect_stops_at_next_unit_start(unit_regroup_on):
     assert all(idx not in ops[0].region_indices for idx in (2, 3))
 
 
+def test_detect_stops_at_uncss_stamped_example(unit_regroup_on):
+    """OVER-MERGE FIX: a following EXAMPLE region with NO css_class (the clean
+    pass only stamps a re-tagged heading, so a council-typed paragraph label
+    slips through unstamped) is a boundary via the text-pattern arm, so the
+    anchor TRY-IT unit's run STOPS before it. Pre-fix the unstamped EXAMPLE
+    was absorbed (two examples fused into one box)."""
+    fbs = [_fb("TRY IT 1.1"), _fb("body one"), _fb("EXAMPLE 1.114"), _fb("body two")]
+    regions = [
+        _region("paragraph", [0], text="TRY IT 1.1", css_class="pedagogy-try-it"),
+        _region("paragraph", [1], text="body one"),
+        # The over-merge bug: a real EXAMPLE label region whose css_class was
+        # NEVER stamped (no css_class set). The text-pattern arm catches it.
+        _region("paragraph", [2], text="EXAMPLE 1.114 Simplify"),
+        _region("paragraph", [3], text="body two"),
+    ]
+    ops = _detect_unit_merges(regions, fbs, _EmptyState())
+    # The TRY-IT run is (0,1) and STOPS before the unstamped EXAMPLE at 2.
+    assert ops[0].region_indices == (0, 1)
+    assert all(idx not in ops[0].region_indices for idx in (2, 3))
+
+
 def test_detect_stops_at_heading(unit_regroup_on):
     """A heading region is a hard boundary."""
     fbs = [_fb("EXAMPLE 1"), _fb("body"), _fb("Next Section"), _fb("after")]
