@@ -1363,6 +1363,22 @@ def run_full_cascade(
     # against). Captured AFTER the deterministic pass so the 70B reviewer's
     # baseline reflects the corrected region list.
     pre_review_regions = list(structure_regions)
+
+    # Phased GPU (one model resident at a time — the 8GB-card invariant): evict
+    # the council BERTs NOW. Their signals are already baked into ``state`` + the
+    # (det-corrected) structure regions, and NOTHING downstream needs the
+    # backbone WEIGHTS on the GPU — the Stage-5d reviewer + Stage-6 specialists
+    # ride the ollama/endpoint seat in a SEPARATE process, theta is its own
+    # DeBERTa, the rerankers are heuristic. Without this early eviction the
+    # in-process council backbones (~2-3 GB) coexist with the endpoint reviewer's
+    # resident 7B during Stage-5d (the first ollama call) and contend/OOM the
+    # card. The pre-Stage-6 eviction below then becomes an idempotent no-op
+    # safety net. (Proven safe by the standalone reviewer/render harnesses, which
+    # release here before any ollama call.)
+    from .council.base import release_council_gpu as _release_council_pre_review
+
+    _release_council_pre_review()
+
     if resolve_structure_review_mode():
         from .qwen_specialists.reviewer import run_structure_review
         from .qwen_specialists.runtime import (
