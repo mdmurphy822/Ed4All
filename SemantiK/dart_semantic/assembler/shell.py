@@ -14,8 +14,29 @@ land before any other body content).
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from typing import Any
+
+
+# Truthy tokens for the parse-with-fallback gate below. Replicated inline
+# (the assembler has no shared frozenset) to match the reviewer's
+# ``reviewer._TRUTHY`` set exactly — keep the two in sync.
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def resolve_gold_shell_mode() -> bool:
+    """Return True when the assembler emits the gold ARIA markup + shell.
+
+    Reads ``SEMANTIK_GOLD_SHELL``. Default OFF (unset / blank / falsey /
+    garbage) -> byte-identical to today (mirrors the reviewer's
+    ``resolve_block_review_mode`` parse-with-fallback posture). A truthy
+    value (``1``/``true``/``yes``/``on``, case-insensitive) gates the gold
+    per-region ARIA wrap + gold document shell/CSS. A pure read until Phase
+    7+ consumes it.
+    """
+    raw = (os.environ.get("SEMANTIK_GOLD_SHELL") or "").strip().lower()
+    return raw in _TRUTHY
 
 
 DOC_OPEN = (
@@ -128,4 +149,5 @@ __all__ = [
     "TITLE_SLOT_SENTINEL",
     "build_shell",
     "detect_language",
+    "resolve_gold_shell_mode",
 ]

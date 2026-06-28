@@ -501,6 +501,30 @@ def resolve_block_review_conf_floor() -> float:
 
 
 # ---------------------------------------------------------------------------
+# Mode resolver — SEMANTIK_SEMANTIC_CLASS (parse-with-fallback, default OFF).
+#
+# Gold-standard accessible semantic-class axis (orthogonal to REGION_KINDS):
+# the reviewer ALSO assigns a gold semantic_class per block. DEAD-BUT-IMPORTABLE
+# scaffolding until Phase 4+ wires it into the verdict/apply path; landing it
+# here keeps later phases to a pure gate flip. Body copied verbatim from
+# resolve_structure_review_mode / resolve_block_review_mode.
+# ---------------------------------------------------------------------------
+
+
+def resolve_semantic_class_mode() -> bool:
+    """Return True when the reviewer also assigns a gold semantic class.
+
+    Reads ``SEMANTIK_SEMANTIC_CLASS``. Default OFF (unset / blank / falsey /
+    garbage) -> byte-identical to today (mirrors ``resolve_block_review_mode``).
+    A truthy value (``1``/``true``/``yes``/``on``, case-insensitive) enables
+    it. Rides the P1 content-review dispatch, so it additionally requires
+    ``SEMANTIK_BLOCK_REVIEW`` on. A pure read until Phase 4+ consumes it.
+    """
+    raw = (os.environ.get("SEMANTIK_SEMANTIC_CLASS") or "").strip().lower()
+    return raw in _TRUTHY
+
+
+# ---------------------------------------------------------------------------
 # Typed verdict result.
 # ---------------------------------------------------------------------------
 
@@ -2207,6 +2231,7 @@ __all__ = [
     "resolve_block_review_edge_tokens",
     "resolve_block_review_mode",
     "resolve_block_review_window",
+    "resolve_semantic_class_mode",
     "resolve_structure_review_mode",
     "resolve_structure_review_temperature",
     "run_structure_review",
