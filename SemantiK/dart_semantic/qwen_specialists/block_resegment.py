@@ -64,7 +64,12 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-from dart_semantic.structure_graph import Region, _get_signal, _top1
+from dart_semantic.structure_graph import (
+    Region,
+    _get_signal,
+    _top1,
+    resolve_reading_order_fix,
+)
 from dart_semantic.types import FeatureBlock
 
 from .reviewer import (
@@ -1010,8 +1015,28 @@ def resegment_blocks(
     if not regions:
         return regions, []
 
-    det_ops = _detect_merges(regions, feature_blocks, state)
-    det_ops += _detect_splits(regions, feature_blocks, state)
+    # Per-flag gating INSIDE the driver (Phase 6): each flag owns ONLY its own
+    # detector(s). The cascade gate is widened to fire Stage-5e on EITHER flag,
+    # so gating here is what keeps the flags ORTHOGONAL — a regroup-on /
+    # block-resegment-off run must emit ZERO same-kind merge/split ops, and a
+    # block-resegment-on / regroup-off run must emit no regroup op.
+    det_ops: list[ResegmentOp] = []
+
+    # Regroup ops are emitted FIRST (regroup-FIRST precedence). apply_resegment's
+    # overlap guard is first-registered-wins + whole-op-drop, so prepending the
+    # regroup makes an overlapping same-kind merge OR an interior-label split the
+    # op that is DROPPED — never the regroup (which would leave the label-only
+    # box unfixed, the exact defect this feature exists to fix). Guarded on the
+    # reading-order fix: only then is a unit's label -> body contiguous for a
+    # clean forward-adjacency merge; with it OFF this is a guarded no-op so the
+    # regroup can never fuse a wrong (non-adjacent) body. The detector ALSO
+    # self-gates on resolve_unit_regroup_mode() (defense in depth).
+    if resolve_unit_regroup_mode() and resolve_reading_order_fix():
+        det_ops += _detect_unit_merges(regions, feature_blocks, state)
+
+    if resolve_block_resegment_mode():
+        det_ops += _detect_merges(regions, feature_blocks, state)
+        det_ops += _detect_splits(regions, feature_blocks, state)
 
     # Optional LLM op-proposal layer. Each proposed op is re-validated below by
     # the SAME conservation gates (we validate the deterministic+LLM op set as

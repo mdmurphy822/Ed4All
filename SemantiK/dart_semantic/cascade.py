@@ -910,9 +910,16 @@ def run_full_cascade(
         resegment_blocks,
         resolve_block_resegment_llm_mode,
         resolve_block_resegment_mode,
+        resolve_unit_regroup_mode,
     )
 
-    if resolve_block_resegment_mode():
+    # Widened gate (Phase 6): enter Stage-5e when EITHER the same-kind block
+    # resegment OR the cross-kind pedagogical-unit regroup is on. Because per-
+    # flag gating now lives INSIDE resegment_blocks, this gate only DECIDES
+    # WHETHER to enter Stage-5e — it does not leak the same-kind pass into a
+    # regroup-only run. Flag-off byte-stable: with BOTH flags off this is
+    # byte-identical to the legacy resolve_block_resegment_mode()-only gate.
+    if resolve_block_resegment_mode() or resolve_unit_regroup_mode():
         t = time.perf_counter()
         # The LLM layer rides the SAME hosted-70B endpoint seat as Stage-5d /
         # Stage-6; it only needs generate_batch. NO local GGUF / GPU here. The

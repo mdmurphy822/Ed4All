@@ -16,6 +16,7 @@ from dart_semantic.qwen_specialists.block_resegment import (
     _UNIT_REGROUP_TOKEN_BUDGET,
     PartitionConservationError,
     ResegmentOp,
+    _detect_splits,
     _detect_unit_merges,
     apply_resegment,
     assert_partition_conservation,
@@ -112,6 +113,21 @@ class _State:
 
 class _EmptyState:
     outputs = {}
+
+
+@pytest.fixture(autouse=True)
+def block_resegment_on_by_default(monkeypatch):
+    """Default the SAME-KIND Stage-5e pass ON for this module.
+
+    Phase 6 moved the per-flag gating INSIDE ``resegment_blocks`` —
+    ``_detect_merges`` / ``_detect_splits`` now run ONLY when
+    ``SEMANTIK_BLOCK_RESEGMENT`` is on. The same-kind merge/split unit tests
+    were written for the pre-gating world where those detectors ran
+    unconditionally, so default the flag ON here. Tests that exercise the gate
+    itself (orthogonality / flag-off byte-stability) explicitly
+    ``monkeypatch.delenv`` it in-body to override this (same monkeypatch
+    instance → in-body wins)."""
+    monkeypatch.setenv("SEMANTIK_BLOCK_RESEGMENT", "on")
 
 
 @pytest.fixture
@@ -869,3 +885,169 @@ def test_math_passthrough_also_boundary(unit_regroup_on):
     ops = _detect_unit_merges(regions, fbs, _EmptyState())
     assert len(ops) == 1
     assert ops[0].region_indices == (0, 1)  # math excluded
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — driver wiring: per-flag gating, reading-order guard,
+# regroup-FIRST precedence, fail-closed.
+# ---------------------------------------------------------------------------
+
+
+def test_regroup_fires_through_driver(monkeypatch):
+    """SEMANTIK_UNIT_REGROUP on (+ reading-order on, the default) + a contiguous
+    label->body unit -> resegment_blocks returns the merged list + the regroup
+    op (the detector is wired into the driver)."""
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.delenv("SEMANTIK_READING_ORDER_FIX", raising=False)  # default on
+    fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("Solution factor")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="solve x"),
+        _region("paragraph", [2], text="Solution factor", css_class="pedagogy-solution"),
+    ]
+    out, ops = resegment_blocks(regions, fbs, _EmptyState())
+    assert len(out) == 1
+    assert out[0].feature_block_indices == (0, 1, 2)
+    assert [o.op for o in ops] == ["merge"]
+    assert ops[0].subtype == "regroup"
+    assert ops[0].region_indices == (0, 1, 2)
+    # The merged unit carries the label's gold semantic_class.
+    assert out[0].payload["semantic_class"] == "worked_example"
+
+
+def test_regroup_only_emits_no_same_kind_ops(monkeypatch):
+    """SEMANTIK_UNIT_REGROUP on + SEMANTIK_BLOCK_RESEGMENT OFF -> ZERO same-kind
+    merge/split ops (orthogonality): the same input that WOULD trigger a
+    cross-page same-kind merge under block-resegment yields no such op here."""
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.delenv("SEMANTIK_READING_ORDER_FIX", raising=False)
+    # A pure same-kind cross-page continuation (a _detect_merges candidate) with
+    # NO unit anchor -> under regroup-only it must NOT merge.
+    fbs = [_fb("a clause that runs", page=1), _fb("over the page edge", page=2)]
+    regions = [
+        _region("paragraph", [0], text="a clause that runs", pages=[1]),
+        _region("paragraph", [1], text="over the page edge", pages=[2]),
+    ]
+    out, ops = resegment_blocks(regions, fbs, _EmptyState())
+    # No anchor -> no regroup; block-resegment off -> no same-kind merge.
+    assert out == regions
+    assert ops == []
+    # Directly: the same-kind detectors are never consulted -> no op of any kind.
+    assert all(o.subtype != "merge" for o in ops)
+
+
+def test_regroup_noop_when_reading_order_off(monkeypatch):
+    """resolve_reading_order_fix monkeypatched False + regroup on -> the driver
+    guard suppresses the regroup entirely; input byte-identical."""
+    import dart_semantic.qwen_specialists.block_resegment as mod
+
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.setattr(mod, "resolve_reading_order_fix", lambda: False)
+    fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("Solution factor")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="solve x"),
+        _region("paragraph", [2], text="Solution factor", css_class="pedagogy-solution"),
+    ]
+    out, ops = resegment_blocks(regions, fbs, _EmptyState())
+    assert out == regions
+    assert ops == []
+
+
+def test_bad_regroup_op_fails_closed_to_input(monkeypatch):
+    """A synthetic dropping/dup regroup op -> assert_partition_conservation
+    raises -> the driver reverts to the input region list (reuses the _bad_apply
+    monkeypatch pattern)."""
+    import dart_semantic.qwen_specialists.block_resegment as mod
+
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.delenv("SEMANTIK_READING_ORDER_FIX", raising=False)
+    fbs = [_fb("EXAMPLE 1"), _fb("solve x"), _fb("Solution factor")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1], text="solve x"),
+        _region("paragraph", [2], text="Solution factor", css_class="pedagogy-solution"),
+    ]
+
+    def _bad_apply(rs, fb, ops):
+        # Drop FB 2 entirely (content loss) -> partition multiset shrinks.
+        return [dataclasses.replace(regions[0], feature_block_indices=(0, 1))]
+
+    monkeypatch.setattr(mod, "apply_resegment", _bad_apply)
+    out, ops = resegment_blocks(regions, fbs, _EmptyState())
+    assert out == regions
+    assert ops == []
+
+
+def test_regroup_wins_overlapping_same_kind_merge(monkeypatch):
+    """BOTH flags on. A unit whose body has an adjacent same-kind cross-page
+    continuation (a _detect_merges candidate overlapping the unit run) -> the
+    regroup APPLIES (regroup-first), the merged unit carries the label's
+    semantic_class, and the overlapping same-kind merge is the op DROPPED."""
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_BLOCK_RESEGMENT", "on")
+    monkeypatch.delenv("SEMANTIK_READING_ORDER_FIX", raising=False)
+    # Anchor label (FB0), body paragraph that ends mid-sentence (FB1, p1),
+    # continued body paragraph starting lowercase (FB2, p2): the (1,2) pair is a
+    # _detect_merges cross-page continuation candidate; the regroup run is
+    # (0,1,2) and overlaps it.
+    fbs = [
+        _fb("EXAMPLE 1", page=1),
+        _fb("a clause that runs", page=1),
+        _fb("over the page edge", page=2),
+    ]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example", pages=[1]),
+        _region("paragraph", [1], text="a clause that runs", pages=[1]),
+        _region("paragraph", [2], text="over the page edge", pages=[2]),
+    ]
+    out, ops = resegment_blocks(regions, fbs, _EmptyState())
+    # Regroup WON the overlap: one merged unit spanning all three FBs, and its
+    # breadcrumb is 'regroup' (had the same-kind merge won instead, region 0
+    # would stand alone and a merged (1,2) would carry a 'merge' breadcrumb).
+    assert len(out) == 1
+    assert out[0].feature_block_indices == (0, 1, 2)
+    assert out[0].payload["resegment"]["op"] == "regroup"
+    # The regroup op is FIRST in the candidate set (regroup-first precedence);
+    # the overlapping same-kind merge is present but was DROPPED at apply time.
+    assert ops[0].subtype == "regroup"
+    assert ops[0].region_indices == (0, 1, 2)
+    same_kind = [o for o in ops if o.subtype != "regroup"]
+    assert len(same_kind) == 1 and same_kind[0].region_indices == (1, 2)
+    # The merged unit carries the LABEL's semantic_class (regroup, not same-kind).
+    assert out[0].payload["semantic_class"] == "worked_example"
+
+
+def test_regroup_wins_overlapping_split(monkeypatch):
+    """BOTH flags on. A unit body region carrying an interior pedagogical label
+    (a _detect_splits candidate inside the unit run) -> the regroup wins, the
+    split is dropped, and the body is kept whole inside the unit."""
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_BLOCK_RESEGMENT", "on")
+    monkeypatch.delenv("SEMANTIK_READING_ORDER_FIX", raising=False)
+    # Anchor label (FB0); body region with TWO FBs whose 2nd FB starts a
+    # pedagogical "Solution" label (a _detect_splits interior-cut candidate).
+    fbs = [_fb("EXAMPLE 1"), _fb("intro prose"), _fb("Solution factor it")]
+    regions = [
+        _region("paragraph", [0], text="EXAMPLE 1", css_class="pedagogy-example"),
+        _region("paragraph", [1, 2], text="intro prose Solution factor it"),
+    ]
+    # Sanity: the split detector WOULD fire on region 1 in isolation.
+    assert any(
+        o.op == "split" for o in _detect_splits(regions, fbs, _EmptyState())
+    )
+    out, ops = resegment_blocks(regions, fbs, _EmptyState())
+    # Regroup WON: one merged unit spanning (0,1,2); the body region was NOT
+    # split out (the overlapping split op was dropped at apply time).
+    assert len(out) == 1
+    assert out[0].feature_block_indices == (0, 1, 2)
+    assert out[0].payload["resegment"]["op"] == "regroup"
+    # The regroup is first in the candidate set; the split is present but dropped.
+    assert ops[0].subtype == "regroup"
+    assert any(o.op == "split" for o in ops)  # present in candidates...
+    assert all(r.payload.get("resegment", {}).get("op") != "split" for r in out)  # ...not applied
+    assert out[0].payload["semantic_class"] == "worked_example"
