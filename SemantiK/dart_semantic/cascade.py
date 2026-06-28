@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import time
 from collections import Counter
 from pathlib import Path
@@ -701,6 +702,343 @@ def _build_region_provenance(
 
 
 # ---------------------------------------------------------------------------
+# Phase 6 — bounded, FAIL-SAFE verify-refine loop (SEMANTIK_SECOND_PASS).
+#
+# Module-level (testable in isolation with a scripted ``run_inner`` + scripted
+# endpoint runtime) and lazily importing the reviewer entry points, mirroring
+# the cascade's ``clean_structure`` / ``resegment_blocks`` lazy-import posture.
+# NEVER ships worse: the Pass-1 snapshot is the structural default return on
+# every error / non-convergence / not-better branch (mirroring
+# ``lib/retrieval/grounded_answer.py::_apply_completeness_recheck``).
+# ---------------------------------------------------------------------------
+
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _visible_text_tokens(html: str | None) -> list[str]:
+    """Lowercased whitespace-token list of the VISIBLE text of an HTML string.
+
+    Strips tags, unescapes the five XML entities the assembler emits, then
+    lowercases + whitespace-splits — the document-level token-conservation
+    unit for the verify-refine fail-safe (mirrors the reviewer's
+    ``_normalize_tokens``). A multiset compare of two such lists answers "did
+    the re-assemble drop / duplicate any visible source token?".
+    """
+    if not html:
+        return []
+    text = _TAG_RE.sub(" ", str(html))
+    for ent, ch in (
+        ("&amp;", "&"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", '"'),
+        ("&#39;", "'"),
+    ):
+        text = text.replace(ent, ch)
+    return text.lower().split()
+
+
+def _theta_score_of(report: Any) -> float | None:
+    """The composite ``theta_score`` of a ThetaReport, or None when unmeasured.
+
+    ``None`` (stub / not-measured) is treated as "no signal" by the adopt
+    gate's not-worse check — theta is a noise-sensitive SECONDARY gate, never
+    the primary adopt signal.
+    """
+    score = getattr(report, "theta_score", None)
+    try:
+        return float(score) if score is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _doc_gate_passed(lane_fast: dict[str, Any]) -> bool:
+    """Stage-10 document-gate pass flag for a ``lane_outputs['fast']`` snapshot."""
+    gr = lane_fast.get("gate_result")
+    return bool(getattr(gr, "passed", False))
+
+
+def _round_is_better(
+    *,
+    reverify: Any,
+    restrict_to: frozenset[int],
+    prior_lane_fast: dict[str, Any],
+    new_lane_fast: dict[str, Any],
+    prior_report: Any,
+    new_report: Any,
+    n_regions: int,
+) -> tuple[bool, list[str]]:
+    """STRUCTURE-SCOPED better-than predicate for the verify-refine adopt gate.
+
+    Adopt a re-assembled round ONLY if EVERY clause holds (the caller has
+    already confirmed ``reverify.passed``):
+
+      1. the flagged regions' failure CLEARED — no region in ``restrict_to`` is
+         re-flagged by the re-verification;
+      2. the UNFLAGGED regions are BYTE-IDENTICAL to the prior round — the
+         primary guard against whole-doc Stage-6 re-author drift (a re-authored
+         unflagged region, even text-conserving, FAILS this and forces a
+         revert);
+      3. the Stage-10 document gate is NOT-WORSE (a prior pass must not become a
+         new fail) — noise-tolerant SECONDARY check;
+      4. the theta score is NOT-WORSE (None == no signal) — noise-tolerant
+         SECONDARY check;
+      5. document-level visible text is CONSERVED (multiset equal) — the final
+         fail-safe against a dropped / duplicated source token.
+
+    Returns ``(better, reasons)`` where ``reasons`` lists the FAILED clauses
+    (empty on adopt) for the audit arm.
+    """
+    from .assembler.verify_digest import slice_region_html
+
+    reasons: list[str] = []
+
+    # (1) flagged failure cleared.
+    reflagged = {
+        getattr(fb, "region_index", None) for fb in getattr(reverify, "flagged", ())
+    }
+    if restrict_to & {i for i in reflagged if isinstance(i, int)}:
+        reasons.append("flagged_failure_not_cleared")
+
+    prior_asm = prior_lane_fast.get("assembled")
+    new_asm = new_lane_fast.get("assembled")
+
+    # (2) UNFLAGGED regions byte-identical (the load-bearing drift guard).
+    for idx in range(n_regions):
+        if idx in restrict_to:
+            continue
+        try:
+            if slice_region_html(prior_asm, idx) != slice_region_html(new_asm, idx):
+                reasons.append("unflagged_region_drift")
+                break
+        except Exception:  # noqa: BLE001 — a bad slice is a conservative drift.
+            reasons.append("unflagged_region_slice_error")
+            break
+
+    # (3) Stage-10 doc gate not-worse.
+    if _doc_gate_passed(prior_lane_fast) and not _doc_gate_passed(new_lane_fast):
+        reasons.append("doc_gate_worse")
+
+    # (4) theta not-worse (None == no signal; secondary).
+    prior_theta = _theta_score_of(prior_report)
+    new_theta = _theta_score_of(new_report)
+    if prior_theta is not None and new_theta is not None and new_theta < prior_theta:
+        reasons.append("theta_worse")
+
+    # (5) document-level visible-text conservation.
+    prior_html = getattr(prior_asm, "html", "") if prior_asm is not None else ""
+    new_html = getattr(new_asm, "html", "") if new_asm is not None else ""
+    if Counter(_visible_text_tokens(prior_html)) != Counter(_visible_text_tokens(new_html)):
+        reasons.append("doc_text_not_conserved")
+
+    return (not reasons), reasons
+
+
+def _verify_refine_loop(
+    capped: list[Region],
+    review_verdicts: list[Any],
+    fast_report: Any,
+    lane_outputs: dict[str, dict[str, Any]],
+    review_runtime: Any,
+    feature_blocks: list[Any],
+    state: Any,
+    *,
+    run_inner: Callable[..., Any],
+    log: Callable[[str], None],
+) -> tuple[list[Region], list[Any], Any, dict[str, Any]]:
+    """Bounded, fail-safe Pass-2 verify-refine loop over the assembled fast lane.
+
+    Returns ``(converged_capped, merged_verdicts, report, signals)``. ``signals``
+    is the per-round audit accumulator (the ``second_pass_verify`` arm + the
+    Phase-7 capture source); ``signals['adopted']`` tells the cascade whether to
+    thread the converged verdicts back with ``review_regions=None`` (a re-typed
+    round's verdicts are CAPPED-space).
+
+    FAIL-SAFE: the Pass-1 snapshot (``capped`` + ``review_verdicts`` +
+    ``fast_report`` + ``dict(lane_outputs['fast'])``) is the default return on
+    every verifier error / non-convergence / not-better branch — the loop NEVER
+    ships a doc worse than Pass-1. ``run_inner`` overwrites ``lane_outputs['fast']``
+    every call, so the snapshot of ``dict(lane_outputs['fast'])`` is what a revert
+    restores.
+    """
+    from .qwen_specialists.reviewer import (
+        resolve_second_pass_rounds,
+        run_second_pass_verify,
+        run_structure_review,
+    )
+
+    # Pass-1 snapshot — the never-ship-worse default (taken BEFORE any re-drive).
+    pass1_capped = list(capped)
+    pass1_verdicts = list(review_verdicts)
+    pass1_report = fast_report
+    pass1_lane_fast = dict(lane_outputs["fast"])
+
+    signals: dict[str, Any] = {"adopted": False, "rounds": []}
+
+    def _restore_pass1() -> tuple[list[Region], list[Any], Any, dict[str, Any]]:
+        lane_outputs["fast"] = dict(pass1_lane_fast)
+        signals["adopted"] = False
+        return pass1_capped, pass1_verdicts, pass1_report, signals
+
+    rounds = resolve_second_pass_rounds()
+
+    # ``current_*`` tracks the best-known-good (starts at Pass-1). It is only
+    # ever advanced to a round that PASSED re-verification AND was structurally
+    # better, so returning ``current_*`` never ships worse.
+    current_capped = pass1_capped
+    current_verdicts = pass1_verdicts
+    current_report = pass1_report
+    current_lane_fast = pass1_lane_fast
+
+    for round_idx in range(1, rounds + 1):
+        row: dict[str, Any] = {"round": round_idx}
+        signals["rounds"].append(row)
+
+        # (a) verify the CURRENT assembled doc.
+        try:
+            verdict = run_second_pass_verify(
+                current_lane_fast.get("assembled"),
+                current_capped,
+                feature_blocks,
+                review_runtime,
+                council_state=state,
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-safe: keep Pass-1.
+            log(f"[cascade] verify-refine r{round_idx}: verifier error ({exc}) -> keep Pass-1")
+            row.update(error=str(exc), passed=None, adopted=False)
+            return _restore_pass1()
+
+        flagged = list(getattr(verdict, "flagged", ()) or ())
+        fixable = [fb for fb in flagged if getattr(fb, "fixable", False)]
+        deferred = [fb for fb in flagged if not getattr(fb, "fixable", False)]
+        row.update(
+            passed=bool(verdict.passed),
+            flagged=len(flagged),
+            fixable_indices=sorted(getattr(fb, "region_index", -1) for fb in fixable),
+            deferred_modes=sorted({getattr(fb, "failure_mode", "?") for fb in deferred}),
+        )
+
+        # (b) clean pass -> converged on ``current`` (Pass-1 or an adopted round).
+        if verdict.passed:
+            row["adopted"] = current_capped is not pass1_capped
+            lane_outputs["fast"] = dict(current_lane_fast)
+            signals["adopted"] = current_capped is not pass1_capped
+            return current_capped, current_verdicts, current_report, signals
+
+        # (c) only DEFERRED (merge/reorder) modes -> nothing this re-type
+        # channel can re-drive (the Phase-6b merge channel handles those). Keep
+        # ``current`` (= Pass-1 unless an earlier round adopted).
+        if not fixable:
+            row.update(adopted=False, deferred_only=True)
+            lane_outputs["fast"] = dict(current_lane_fast)
+            signals["adopted"] = current_capped is not pass1_capped
+            return current_capped, current_verdicts, current_report, signals
+
+        restrict_to = frozenset(
+            int(getattr(fb, "region_index")) for fb in fixable
+        )
+        feedback = {
+            int(getattr(fb, "region_index")): getattr(fb, "fix_hint", "") or ""
+            for fb in fixable
+        }
+        row["restrict_to"] = sorted(restrict_to)
+
+        # (d) targeted re-review over the CURRENT capped list (CAPPED space).
+        try:
+            new_capped, new_verdicts = run_structure_review(
+                current_capped,
+                feature_blocks,
+                review_runtime,
+                council_state=state,
+                restrict_to=restrict_to,
+                feedback_by_idx=feedback,
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-safe: keep Pass-1.
+            log(f"[cascade] verify-refine r{round_idx}: re-review error ({exc}) -> keep Pass-1")
+            row.update(error=str(exc), adopted=False)
+            return _restore_pass1()
+
+        # Re-type channel invariant: the region COUNT never changes (Phase-6b
+        # owns the count-shrinking merge channel). A drifted count -> keep
+        # ``current`` rather than risk a corrupt re-assemble.
+        if len(new_capped) != len(current_capped):
+            log(
+                f"[cascade] verify-refine r{round_idx}: region count changed "
+                f"({len(current_capped)} -> {len(new_capped)}) -> keep current"
+            )
+            row.update(adopted=False, len_changed=True)
+            lane_outputs["fast"] = dict(current_lane_fast)
+            signals["adopted"] = current_capped is not pass1_capped
+            return current_capped, current_verdicts, current_report, signals
+
+        # (e) re-assemble the re-reviewed list (overwrites lane_outputs['fast']).
+        new_report = run_inner("fast", regions=new_capped)
+        new_lane_fast = dict(lane_outputs["fast"])
+
+        # (f) re-verify the NEW assembled doc.
+        try:
+            reverify = run_second_pass_verify(
+                new_lane_fast.get("assembled"),
+                new_capped,
+                feature_blocks,
+                review_runtime,
+                council_state=state,
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-safe: keep Pass-1.
+            log(f"[cascade] verify-refine r{round_idx}: re-verify error ({exc}) -> keep Pass-1")
+            row.update(error=str(exc), adopted=False)
+            return _restore_pass1()
+
+        better, reasons = _round_is_better(
+            reverify=reverify,
+            restrict_to=restrict_to,
+            prior_lane_fast=current_lane_fast,
+            new_lane_fast=new_lane_fast,
+            prior_report=current_report,
+            new_report=new_report,
+            n_regions=len(new_capped),
+        )
+        row.update(reverify_passed=bool(reverify.passed), better=better, reasons=reasons)
+
+        if reverify.passed and better:
+            # ADOPT — advance ``current`` to the re-typed round; the next round's
+            # top-of-loop verify confirms it (passes) and returns it.
+            current_capped = new_capped
+            current_verdicts = new_verdicts
+            current_report = new_report
+            current_lane_fast = new_lane_fast
+            lane_outputs["fast"] = dict(new_lane_fast)
+            row["adopted"] = True
+            signals["adopted"] = True
+            continue
+
+        if reverify.passed and not better:
+            # Re-verify passed but the round DRIFTED an unflagged region / theta /
+            # text -> dangerous whole-doc re-author noise. REVERT to Pass-1 and
+            # stop (retrying won't help; never ship the drift).
+            log(
+                f"[cascade] verify-refine r{round_idx}: re-typed round not-better "
+                f"({reasons}) -> revert to Pass-1"
+            )
+            row["adopted"] = False
+            return _restore_pass1()
+
+        # (g) re-verify STILL failed -> the targeted fix didn't fully land.
+        # Discard the round, restore ``current`` for the next round's verify, and
+        # retry (bounded). On exhaustion the loop returns ``current`` (= Pass-1).
+        log(f"[cascade] verify-refine r{round_idx}: re-verify still failing -> retry")
+        row.update(adopted=False, retry=True)
+        lane_outputs["fast"] = dict(current_lane_fast)
+
+    # Exhausted the round bound without a clean converge. Keep the best-known-
+    # good (= Pass-1 unless an adopted round was already returned above).
+    lane_outputs["fast"] = dict(current_lane_fast)
+    signals["adopted"] = current_capped is not pass1_capped
+    return current_capped, current_verdicts, current_report, signals
+
+
+# ---------------------------------------------------------------------------
 # The cascade
 # ---------------------------------------------------------------------------
 
@@ -1117,23 +1455,36 @@ def run_full_cascade(
     # ------------------------------------------------------------------
     lane_outputs: dict[str, dict[str, Any]] = {}
 
-    def _run_inner(lane: str) -> Any:
+    def _run_inner(lane: str, regions: list[Region] | None = None) -> Any:
         """Stages 6-12 for a given lane. Returns a fresh ThetaReport.
 
         Side-effect: populates ``lane_outputs[lane]`` with the artifacts
         downstream code needs (axe summary, assembled doc, etc.).
         Per-stage timings are recorded with a ``_offline`` suffix on the
         offline pass so totals don't collide.
+
+        Phase 6 (verify-refine): ``regions`` defaults to the enclosing
+        post-cap ``capped``. ``regions is None`` is byte-identical to every
+        legacy call site (fast / offline lanes both pass no regions); the
+        verify-refine loop passes a RE-REVIEWED region list explicitly so the
+        returned ``lane_outputs[lane]['assembled']`` is provably the document
+        it just re-typed (the closure-rebind seam). EVERY ``capped`` read in
+        this body binds to ``regions`` — a missed read would silently
+        re-assemble the unchanged pass-1 regions against a re-typed list.
         """
         suffix = "" if lane == "fast" else "_offline"
+        # Phase 6 closure-rebind: default to the enclosing post-cap ``capped``
+        # (byte-identical legacy behaviour) or the explicitly-passed re-reviewed
+        # list. Bound ONCE here so every read below is the same list.
+        regions = capped if regions is None else regions
 
         log(
             f"[cascade] [{lane}] running Stage 6 ({runtime_mode} runtime, k={k}) "
-            f"on {len(capped)} regions"
+            f"on {len(regions)} regions"
         )
         t_inner = time.perf_counter()
         cands = run_qwen_specialists(
-            capped,
+            regions,
             feature_blocks,
             k=k,
             runtime_mode=runtime_mode,
@@ -1148,13 +1499,13 @@ def run_full_cascade(
         # id/headers association generated from grid arithmetic BEFORE
         # the gate, which now requires it on complex tables. Simple
         # tables pass through byte-identical.
-        cands = _apply_h43_to_table_candidates(cands, capped)
+        cands = _apply_h43_to_table_candidates(cands, regions)
 
         log(f"[cascade] [{lane}] running Stage 7 (per-region hard gate)")
         t_inner = time.perf_counter()
         survs, res = gate_per_region(
             cands,
-            capped,
+            regions,
             feature_blocks,
             validator=validator,
         )
@@ -1165,14 +1516,14 @@ def run_full_cascade(
 
         log(f"[cascade] [{lane}] running Stage 8 (per-region soft reranker)")
         t_inner = time.perf_counter()
-        top = rerank_per_region(survs, capped, feature_blocks)
+        top = rerank_per_region(survs, regions, feature_blocks)
         stages[f"stage8{suffix}"] = time.perf_counter() - t_inner
 
         log(f"[cascade] [{lane}] running Stage 9 (assembler, {runtime_mode} runtime)")
         t_inner = time.perf_counter()
         asm = assemble_document(
             top,
-            capped,
+            regions,
             feature_blocks,
             council_state=state,
             runtime_mode=runtime_mode,
@@ -1195,11 +1546,11 @@ def run_full_cascade(
         log(f"[cascade] [{lane}] running Stage 12 (ThetaEvaluator)")
         t_inner = time.perf_counter()
         wcag = "passed" if gr.passed else "failed"
-        ro_at_risk = _reading_order_at_risk_indices(top, list(capped))
+        ro_at_risk = _reading_order_at_risk_indices(top, list(regions))
         rep = evaluate(
             asm,
             feature_blocks=feature_blocks,
-            regions=capped,
+            regions=regions,
             wcag_status=wcag,
             lane=lane,  # type: ignore[arg-type]
             stage11_scored=sc,
@@ -1223,6 +1574,52 @@ def run_full_cascade(
         return rep
 
     fast_report = _run_inner("fast")
+
+    # ------------------------------------------------------------------
+    # Stage 9-verify (Phase 6) — bounded, FAIL-SAFE verify-refine loop.
+    #
+    # The single point where the post-cap region list (``capped``) and the
+    # assembled fast-lane document (``lane_outputs['fast']['assembled']``)
+    # coexist. Gated by SEMANTIK_SECOND_PASS AND a Pass-1 reviewer having run
+    # (``review_verdicts is not None`` — no Pass-1 verdicts means nothing to
+    # bounce back to). OFF -> byte-identical: no verifier prompt, no extra
+    # assemble round, no ``second_pass_verify`` audit arm.
+    #
+    # The loop verifies the assembled doc, bounces ONLY the FIXABLE flagged
+    # region indices back through the EXISTING Pass-1 reviewer (re-type keyed by
+    # index, never text), re-assembles via ``_run_inner('fast', regions=...)``,
+    # and ADOPTS a round only when it PASSES re-verification AND is structurally
+    # better (flagged failure cleared, UNFLAGGED regions byte-identical, doc gate
+    # / theta not-worse, visible text conserved). On any error / non-convergence
+    # / not-better it keeps the Pass-1 snapshot (never ships worse). ``capped``
+    # and ``review_verdicts`` are rebound to the converged values; the offline
+    # retry below reads the converged ``capped`` (INHERITS it).
+    # ------------------------------------------------------------------
+    second_pass_signals: dict[str, Any] | None = None
+    second_pass_adopted = False
+    from .qwen_specialists.reviewer import resolve_second_pass_mode
+
+    if resolve_second_pass_mode() and review_verdicts is not None:
+        log("[cascade] running Stage 9-verify (Pass-2 verify-refine loop)")
+        t = time.perf_counter()
+        (
+            capped,
+            review_verdicts,
+            fast_report,
+            second_pass_signals,
+        ) = _verify_refine_loop(
+            capped,
+            review_verdicts,
+            fast_report,
+            lane_outputs,
+            review_runtime,
+            feature_blocks,
+            state,
+            run_inner=_run_inner,
+            log=log,
+        )
+        stages["stage9_verify"] = time.perf_counter() - t
+        second_pass_adopted = bool(second_pass_signals.get("adopted"))
 
     # Stage 13 — orchestrate the offline retry first, THEN stamp.
     offline_retry_fired = False
@@ -1270,7 +1667,17 @@ def run_full_cascade(
         # Phase 5: the pre-5e region list the verdict block_ids index into, so
         # the verdict->provenance join re-keys by stable min-FB and survives a
         # Stage-5e N->1 regroup. Byte-stable when no merge fires.
-        review_regions=pre_review_regions,
+        #
+        # Phase 6 drift-fix (RECONCILIATION DELTA): when the verify-refine loop
+        # ADOPTED a re-typed round, ``review_verdicts`` came from
+        # ``run_structure_review(capped, ...)`` so its block_ids are in CAPPED
+        # space (NOT the pre-5e ``pre_review_regions`` space). Joining a capped
+        # block_id against the pre-5e list would corrupt the min-FB re-key, so
+        # the adopted path uses ``review_regions=None`` (the clean positional /
+        # capped-consistent join). On a clean / reverted / no-adopt run the
+        # verdicts are still the Pass-1 (pre-5e) snapshot -> keep
+        # ``pre_review_regions``.
+        review_regions=(None if second_pass_adopted else pre_review_regions),
     )
 
     elapsed_total = time.perf_counter() - t_total
@@ -1391,6 +1798,14 @@ def run_full_cascade(
     # to a no-Stage-5e run). Parallel to the structure_review audit.
     if resegment_ops_audit is not None:
         result["block_resegment"] = resegment_ops_audit
+    # Stage 9-verify (Phase 6) audit section — emitted ONLY when the verify-
+    # refine loop actually ran (SEMANTIK_SECOND_PASS on AND a Pass-1 reviewer
+    # produced verdicts AND >=1 round executed). Default OFF -> the key is
+    # absent, so the result dict is byte-stable to a no-second-pass run.
+    # Parallel to the structure_review / block_resegment audit sections; the
+    # bridge (Phase 7) resolves the per-round capture off this arm.
+    if second_pass_signals is not None and second_pass_signals.get("rounds"):
+        result["second_pass_verify"] = second_pass_signals
     if return_html:
         result["html"] = assembled.html
     return result
