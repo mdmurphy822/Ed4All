@@ -935,5 +935,285 @@ def test_cascade_ir_ignores_unknown_review_key_no_crash():
     assert not any("Answer Key" in ch.title for ch in chapters)
 
 
+# ---------------------------------------------------------------------------
+# Phase 7 — Stage-9 Pass-2 verify-refine per-round DecisionCapture.
+# ---------------------------------------------------------------------------
+
+
+def _verify_signals(*, adopted=True, merge_adopted=False) -> dict:
+    """A synthetic ``second_pass_verify`` audit arm matching the Phase-6
+    accumulator shape (``cascade._verify_refine_loop``): a doc-level
+    ``adopted`` / optional ``merge_adopted`` plus a ``rounds`` list whose rows
+    carry ``round, passed, flagged, fixable_indices, deferred_modes,
+    restrict_to, reverify_passed, better, adopted, merge_adopted``.
+
+    Round 1 fails verification (3 flagged: 2 re-type-fixable + a DETECTED-NOT-
+    FIXED deferred backlog of ``section_no_body`` / ``example_misordered_from_body``)
+    then adopts a better re-typed round; round 2 verifies clean (converged)."""
+    return {
+        "adopted": adopted,
+        "merge_adopted": merge_adopted,
+        "rounds": [
+            {
+                "round": 1,
+                "passed": False,
+                "flagged": 3,
+                "fixable_indices": [4, 7],
+                "deferred_modes": [
+                    "example_misordered_from_body",
+                    "section_no_body",
+                ],
+                "restrict_to": [4, 7],
+                "reverify_passed": True,
+                "better": True,
+                "reasons": [],
+                "adopted": True,
+            },
+            {
+                "round": 2,
+                "passed": True,
+                "flagged": 0,
+                "fixable_indices": [],
+                "deferred_modes": [],
+                "adopted": True,
+            },
+        ],
+    }
+
+
+def _verify_rows_for(captures_root, course: str) -> list[dict]:
+    """All Pass-2 verify capture rows for a course — filtered on the STRUCTURED
+    ``metadata.second_pass_verify`` field, not the free-text decision string."""
+    out = []
+    for r in _read_capture_rows(captures_root):
+        if r.get("decision_type") != "structure_review":
+            continue
+        meta = r.get("metadata") or {}
+        if not meta.get("second_pass_verify"):
+            continue
+        if r.get("course_id") in {course, course.replace("_", "-")}:
+            out.append(r)
+    return out
+
+
+def test_verify_capture_fires_dynamic_rationale(monkeypatch):
+    monkeypatch.setenv("VALIDATE_DECISIONS", "true")
+    # Strict mode: a non-canonical decision_type / tool would RAISE — this also
+    # proves the reused ``structure_review`` enum carries the verify rows with
+    # NO schema edit.
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+    monkeypatch.setenv("SEMANTIK_STRUCTURE_REVIEW_MODEL", "meta/llama-3.3-70b")
+
+    from lib.paths import get_training_captures_dir
+    from MCP.tools.pipeline_tools import _emit_second_pass_verify_captures
+
+    captures_root = get_training_captures_dir()
+
+    _emit_second_pass_verify_captures(
+        _verify_signals(),
+        canonical_course_code="SPV_CAP_101",
+        pdf_stem="mybook",
+    )
+
+    rows = _verify_rows_for(captures_root, "SPV_CAP_101")
+    assert len(rows) == 2, "expected one capture per verify round"
+
+    by_round = {r["metadata"]["round_index"]: r for r in rows}
+    assert set(by_round) == {1, 2}
+
+    r1 = by_round[1]
+    # Canonical reused decision_type + structured sub-tag in METADATA.
+    assert r1["decision_type"] == "structure_review"
+    assert r1["metadata"]["second_pass_verify"] is True
+    assert r1["metadata"]["round_index"] == 1
+    # Dynamic, replayable rationale >= 20 chars interpolating model + counts.
+    assert len(r1["rationale"]) >= 20
+    assert "meta/llama-3.3-70b" in r1["rationale"]
+    assert "max_tokens=2048" in r1["rationale"]
+    assert "round 1" in r1["rationale"]
+    assert "3 region(s) flagged" in r1["rationale"]
+    assert "2 re-reviewed" in r1["rationale"]
+    # Decision string carries the per-round tallies.
+    assert "round=1" in r1["decision"]
+    assert "flagged=3" in r1["decision"]
+
+
+def test_verify_capture_round_discriminator_field(monkeypatch):
+    """Pass-1 window captures and Pass-2 verify captures share
+    ``decision_type='structure_review'`` but are separable on a structured
+    FIELD (``metadata.second_pass_verify``), not the free-text decision."""
+    monkeypatch.setenv("VALIDATE_DECISIONS", "true")
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+    monkeypatch.setenv("SEMANTIK_STRUCTURE_REVIEW_MODEL", "meta/llama-3.3-70b")
+
+    from lib.paths import get_training_captures_dir
+    from MCP.tools.pipeline_tools import (
+        _emit_second_pass_verify_captures,
+        _emit_structure_review_capture,
+    )
+
+    captures_root = get_training_captures_dir()
+
+    # Pass-1: windowed full-block reviewer captures (no second_pass_verify tag).
+    _emit_structure_review_capture(
+        _block_review_windowed_audit(),
+        canonical_course_code="SPV_DISC_101",
+        pdf_stem="mybook",
+    )
+    # Pass-2: verify-refine per-round captures (carry the structured tag).
+    _emit_second_pass_verify_captures(
+        _verify_signals(),
+        canonical_course_code="SPV_DISC_101",
+        pdf_stem="mybook",
+    )
+
+    all_sr = [
+        r
+        for r in _read_capture_rows(captures_root)
+        if r.get("decision_type") == "structure_review"
+        and r.get("course_id") in {"SPV_DISC_101", "SPV-DISC-101"}
+    ]
+    pass2 = [r for r in all_sr if (r.get("metadata") or {}).get("second_pass_verify")]
+    pass1 = [
+        r for r in all_sr if not (r.get("metadata") or {}).get("second_pass_verify")
+    ]
+    # BOTH sets exist, share the decision_type, and split cleanly on the field.
+    assert len(pass2) == 2, "two Pass-2 verify rows"
+    assert pass1, "at least one Pass-1 window row"
+    # Pass-1 rows carry NO round_index discriminator; Pass-2 rows do.
+    assert all("round_index" not in (r.get("metadata") or {}) for r in pass1)
+    assert all(isinstance((r["metadata"]).get("round_index"), int) for r in pass2)
+
+
+def test_verify_capture_records_deferred_modes(monkeypatch):
+    """A ``section_no_body`` / ``example_misordered_from_body`` flag is recorded
+    as DETECTED-NOT-FIXED — in the rationale AND a structured metadata field."""
+    monkeypatch.setenv("VALIDATE_DECISIONS", "true")
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+    monkeypatch.setenv("SEMANTIK_STRUCTURE_REVIEW_MODEL", "meta/llama-3.3-70b")
+
+    from lib.paths import get_training_captures_dir
+    from MCP.tools.pipeline_tools import _emit_second_pass_verify_captures
+
+    captures_root = get_training_captures_dir()
+
+    _emit_second_pass_verify_captures(
+        _verify_signals(),
+        canonical_course_code="SPV_DEFER_101",
+        pdf_stem="mybook",
+    )
+
+    rows = _verify_rows_for(captures_root, "SPV_DEFER_101")
+    r1 = next(r for r in rows if r["metadata"]["round_index"] == 1)
+    # Recorded as a ground-truth backlog in the structured field.
+    assert r1["metadata"]["round_deferred_modes"] == [
+        "example_misordered_from_body",
+        "section_no_body",
+    ]
+    # And surfaced in the replayable rationale.
+    assert "2 detected-not-fixed backlog mode(s)" in r1["rationale"]
+    assert "section_no_body" in r1["rationale"]
+    assert "example_misordered_from_body" in r1["rationale"]
+
+
+def test_verify_capture_best_effort_no_raise(monkeypatch):
+    """A DecisionCapture failure must NOT raise out of the seam (best-effort)."""
+    import MCP.tools.pipeline_tools as pt
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("simulated capture init failure")
+
+    monkeypatch.setattr(
+        "lib.decision_capture.DecisionCapture", _Boom, raising=True
+    )
+    assert (
+        pt._emit_second_pass_verify_captures(
+            _verify_signals(),
+            canonical_course_code="X",
+            pdf_stem="y",
+        )
+        is None
+    )
+
+
+def test_verify_capture_absent_flag_off():
+    """Flag off (no ``second_pass_verify`` audit arm) => NO capture rows."""
+    from lib.paths import get_training_captures_dir
+    from MCP.tools.pipeline_tools import (
+        _emit_second_pass_verify_captures,
+        _semantik_resolve_second_pass_verify,
+    )
+
+    captures_root = Path(get_training_captures_dir())
+
+    def _count_for(course: str) -> int:
+        n = 0
+        for r in _read_capture_rows(captures_root):
+            meta = r.get("metadata") or {}
+            if (
+                r.get("decision_type") == "structure_review"
+                and meta.get("second_pass_verify")
+                and r.get("course_id") in {course, course.replace("_", "-")}
+            ):
+                n += 1
+        return n
+
+    before = _count_for("SPV_OFF_101")
+    # Flag off => the cascade emits no second_pass_verify arm => resolver None.
+    off = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    off.second_pass_verify = None
+    assert _semantik_resolve_second_pass_verify(off) is None
+    # signals=None => NO capture, NO exception.
+    _emit_second_pass_verify_captures(
+        None, canonical_course_code="SPV_OFF_101", pdf_stem="mybook"
+    )
+    # A ran-but-zero-rounds arm also emits nothing.
+    _emit_second_pass_verify_captures(
+        {"adopted": False, "rounds": []},
+        canonical_course_code="SPV_OFF_101",
+        pdf_stem="mybook",
+    )
+    assert _count_for("SPV_OFF_101") == before, (
+        "no verify capture should be written when the loop is off / no round ran"
+    )
+
+
+def test_verify_resolver_reads_both_arms():
+    """The seam resolver reads the verify arm off the bridge attribute, the
+    in-process conformance_audit nesting, AND the in-process result-dict
+    top-level key; returns None when none carries it."""
+    from MCP.tools.pipeline_tools import (
+        _SemantikBridgeResult,
+        _semantik_resolve_second_pass_verify,
+    )
+
+    # Bridge arm — top-level attribute.
+    bridge = _SemantikBridgeResult(
+        {"pdf": "x.pdf", "second_pass_verify": _verify_signals()}
+    )
+    resolved = _semantik_resolve_second_pass_verify(bridge)
+    assert resolved is not None and resolved["rounds"][0]["round"] == 1
+
+    # In-process arm A — cascade["conformance_audit"]["second_pass_verify"].
+    inproc = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    inproc.second_pass_verify = None
+    inproc.cascade["conformance_audit"]["second_pass_verify"] = _verify_signals()
+    resolved2 = _semantik_resolve_second_pass_verify(inproc)
+    assert resolved2 is not None and resolved2["adopted"] is True
+
+    # In-process arm B — cascade["second_pass_verify"] (result-dict top level).
+    inproc2 = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    inproc2.second_pass_verify = None
+    inproc2.cascade["second_pass_verify"] = _verify_signals(merge_adopted=True)
+    resolved3 = _semantik_resolve_second_pass_verify(inproc2)
+    assert resolved3 is not None and resolved3["merge_adopted"] is True
+
+    # None carries it => None (clean skip).
+    off = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    off.second_pass_verify = None
+    assert _semantik_resolve_second_pass_verify(off) is None
+
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(pytest.main([__file__, "-q"]))

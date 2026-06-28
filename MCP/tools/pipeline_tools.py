@@ -5799,6 +5799,14 @@ class _SemantikBridgeResult:
         self.block_resegment = (
             list(br) if isinstance(br, (list, tuple)) else None
         )
+        # Phase 6/7 — the Stage-9 Pass-2 verify-refine per-round audit arm the
+        # cascade surfaces at top level (``None`` when SEMANTIK_SECOND_PASS was
+        # off / no round ran). Unlike the structure_review / block_resegment
+        # arms (lists), this is a DICT (``{"adopted": ..., "rounds": [...]}``).
+        # The seam reads this to emit ONE ``structure_review`` DecisionCapture
+        # (``second_pass_verify`` sub-tag) PER verify round.
+        spv = bridge.get("second_pass_verify")
+        self.second_pass_verify = spv if isinstance(spv, dict) else None
 
 
 def _run_semantik_bridge_subprocess(
@@ -6497,6 +6505,195 @@ def _emit_block_resegment_capture(
         )
 
 
+# Mirror of ``SemantiK ... reviewer._SECOND_PASS_VERIFY_MAX_TOKENS`` (2048) —
+# the Pass-2 verifier's per-call token budget. Surfaced here only for the
+# replay rationale (the heavy SemantiK runtime is absent from this venv), never
+# to drive a call; identical posture to ``_semantik_structure_review_model``.
+_SEMANTIK_SECOND_PASS_VERIFY_MAX_TOKENS = 2048
+
+
+def _semantik_resolve_second_pass_verify(result: Any) -> Optional[Dict[str, Any]]:
+    """Pull the Stage-9 Pass-2 verify-refine audit arm off a cascade result,
+    from EITHER seam arm (Phase 6/7); mirrors ``_semantik_resolve_block_resegment``
+    except the arm is a DICT (``{"adopted": ..., "rounds": [...]}``), not a list.
+
+    Resolution order:
+      1. ``result.second_pass_verify`` — the bridge arm
+         (``_SemantikBridgeResult``) surfaces it as a top-level attribute.
+      2. ``result.cascade["conformance_audit"]["second_pass_verify"]`` — the
+         in-process telemetry-nested arm (parallel to ``structure_review`` /
+         ``block_resegment``).
+      3. ``result.cascade["second_pass_verify"]`` — the in-process
+         result-dict top-level arm (``cascade.py`` emits the key here at
+         ``result["second_pass_verify"]``), read defensively so the resolver
+         works regardless of which nesting the runtime chose.
+
+    Returns ``None`` when the verify-refine loop did NOT run (flag off / no
+    audit key) so the caller skips the captures cleanly.
+    """
+    spv = getattr(result, "second_pass_verify", None)
+    if spv is not None:
+        return spv if isinstance(spv, dict) else None
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            arm = conformance.get("second_pass_verify")
+            if isinstance(arm, dict):
+                return arm
+        arm = cascade.get("second_pass_verify")
+        if isinstance(arm, dict):
+            return arm
+    return None
+
+
+def _emit_second_pass_verify_captures(
+    signals: Optional[Dict[str, Any]],
+    *,
+    canonical_course_code: Optional[str],
+    pdf_stem: str,
+) -> None:
+    """Emit ONE ``structure_review`` DecisionCapture per Pass-2 VERIFY ROUND
+    when the Stage-9 verify-refine loop ran (Phase 7).
+
+    Reuses the canonical ``decision_type='structure_review'`` enum member (NO
+    schema/enum edit, byte-stable under ``DECISION_VALIDATION_STRICT``) but
+    carries a STRUCTURED round discriminator in the capture METADATA — a
+    ``second_pass_verify=True`` marker + a ``round_index`` field — so
+    ``analyze_training_data`` can separate Pass-1 windowed reviewer captures
+    (no such marker) from Pass-2 verify rows on a FIELD, not the free text.
+
+    Best-effort by contract: ANY failure (DecisionCapture init, write, schema)
+    logs a warning and returns — it NEVER breaks the conversion. Skips cleanly
+    (no captures) when ``signals is None`` (the loop was off / flag unset) or
+    when no round ran. The per-round rationale is DYNAMIC/replayable per the
+    CLAUDE.md contract: it interpolates the round index, blocks-flagged, the
+    fixable re-reviewed set, the failure-mode distribution incl. the
+    DETECTED-NOT-FIXED deferred backlog (``section_no_body`` /
+    ``example_misordered_from_body`` / merge-arm modes the index-keyed reviewer
+    cannot fix), converged-bool, adopted-vs-reverted (incl. ``merge_adopted``),
+    the resolved model id, and ``max_tokens``.
+    """
+    if signals is None:
+        return  # verify-refine loop did not run — skip cleanly
+    rounds = signals.get("rounds") if isinstance(signals, dict) else None
+    if not isinstance(rounds, list) or not rounds:
+        return  # no round executed — nothing to capture
+    try:
+        from lib.decision_capture import DecisionCapture, normalize_course_code
+
+        course_code = (
+            (canonical_course_code or "").strip()
+            or normalize_course_code(pdf_stem or "unknown")
+        )
+        model = _semantik_structure_review_model()
+        max_tokens = _SEMANTIK_SECOND_PASS_VERIFY_MAX_TOKENS
+        doc_adopted = bool(signals.get("adopted"))
+        doc_merge_adopted = bool(signals.get("merge_adopted"))
+
+        capture = DecisionCapture(
+            course_code=course_code,
+            phase="dart-conversion",
+            tool="dart",
+        )
+        for row in rounds:
+            if not isinstance(row, dict):
+                continue
+            round_index = row.get("round")
+            passed = row.get("passed")
+            flagged = int(row.get("flagged") or 0)
+            fixable_indices = list(row.get("fixable_indices") or [])
+            deferred_modes = list(row.get("deferred_modes") or [])
+            restrict_to = list(row.get("restrict_to") or [])
+            reverify_passed = row.get("reverify_passed")
+            better = row.get("better")
+            adopted = bool(row.get("adopted"))
+            merge_adopted = bool(row.get("merge_adopted"))
+            error = row.get("error")
+            n_fixable = len(fixable_indices) or len(restrict_to)
+
+            # converged/verdict state for the rationale (verifier verdict on the
+            # CURRENT assembled doc at the top of the round).
+            if error is not None:
+                verdict_word = f"errored ({error})"
+            elif passed is True:
+                verdict_word = "passed (converged)"
+            elif passed is False:
+                verdict_word = "failed"
+            else:
+                verdict_word = "unknown"
+
+            deferred_str = ", ".join(str(m) for m in deferred_modes) or "none"
+            disposition = (
+                "adopted via merge"
+                if merge_adopted
+                else "adopted"
+                if adopted
+                else "reverted/kept-pass1"
+            )
+
+            rationale = (
+                f"Stage-9 Pass-2 verify-refine ({model}, max_tokens={max_tokens}) "
+                f"round {round_index} on {pdf_stem}: verifier {verdict_word}; "
+                f"{flagged} region(s) flagged, {n_fixable} re-reviewed "
+                f"(fixable indices {fixable_indices or restrict_to}); "
+                f"{len(deferred_modes)} detected-not-fixed backlog mode(s) "
+                f"[{deferred_str}]; re-verify_passed={reverify_passed} "
+                f"better={better}; round {disposition}. Index-keyed verify pass "
+                f"(no words rewritten)."
+            )
+            capture.log_decision(
+                decision_type="structure_review",
+                decision=(
+                    f"second_pass_verify round={round_index} "
+                    f"flagged={flagged} fixable={n_fixable} "
+                    f"deferred={len(deferred_modes)} adopted={adopted} "
+                    f"merge_adopted={merge_adopted}"
+                ),
+                rationale=rationale,
+                alternatives_considered=[
+                    {
+                        "option": "single forward pass (no Pass-2 verifier)",
+                        "reason_rejected": (
+                            "the pre-assembly per-block reviewer cannot see "
+                            "post-assembly defects (mis-ordered worked examples, "
+                            "no-context answer-fragment headings); the verifier "
+                            "judges the ASSEMBLED doc and bounces flagged regions"
+                        ),
+                    },
+                    {
+                        "option": "re-drive the detected-not-fixed deferred modes",
+                        "reason_rejected": (
+                            "section_no_body / example_misordered_from_body / the "
+                            "merge-arm need a regroup/reorder op the index-keyed "
+                            "reviewer lacks; recorded as a ground-truth backlog "
+                            "instead of burning a round on the identical op"
+                        ),
+                    },
+                ],
+                # STRUCTURED round discriminator (lands in record metadata; the
+                # schema's metadata.additionalProperties is open) so downstream
+                # analysis separates Pass-2 verify rows from Pass-1 windows on a
+                # FIELD, not the free-text decision string.
+                second_pass_verify=True,
+                round_index=round_index,
+                round_passed=passed,
+                round_flagged=flagged,
+                round_fixable=n_fixable,
+                round_deferred_modes=deferred_modes,
+                round_adopted=adopted,
+                round_merge_adopted=merge_adopted,
+                doc_adopted=doc_adopted,
+                doc_merge_adopted=doc_merge_adopted,
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+        logger.warning(
+            "second_pass_verify DecisionCapture failed (non-fatal) on %s: %s",
+            pdf_stem,
+            exc,
+        )
+
+
 def _relocate_figure_sidecars(
     html: str,
     *,
@@ -6804,6 +7001,22 @@ def _run_semantik_v2_conversion(
     except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
         logger.warning(
             "block_resegment DecisionCapture failed (non-fatal): %s", exc
+        )
+
+    # 2d. SEMANTIK_SECOND_PASS verify-refine per-round DecisionCapture (Phase 7).
+    # Fires for BOTH the in-process and bridge arms (the resolver reads either
+    # shape); skips cleanly when the verify-refine loop was off (no
+    # second_pass_verify audit arm / no round ran). Best-effort — a capture
+    # failure logs a warning, never breaks conversion.
+    try:
+        _emit_second_pass_verify_captures(
+            _semantik_resolve_second_pass_verify(result),
+            canonical_course_code=canonical_course_code,
+            pdf_stem=pdf_stem,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+        logger.warning(
+            "second_pass_verify DecisionCapture failed (non-fatal): %s", exc
         )
 
     # 3. cascade result → chapters IR → output-contract adapter.
