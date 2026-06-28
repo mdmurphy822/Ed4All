@@ -979,3 +979,357 @@ def test_absorb_unchanged_when_regroup_off(monkeypatch):
     assert m_on is not None and "Solution body" in m_on.group(1)
     m_off = _WE_DIV_RE.search(absent)
     assert m_off is not None and "Solution body" not in m_off.group(1)
+
+
+# ===========================================================================
+# table-v2 (SEMANTIK_UNIT_REGROUP_TABLE) — narrow passthrough-only absorb.
+# ===========================================================================
+
+from dart_semantic.pedagogical_units import is_passthrough_region  # noqa: E402
+from dart_semantic.assembler.shell import (  # noqa: E402
+    resolve_narrow_table_absorb_mode,
+)
+from dart_semantic.qwen_specialists.block_resegment import (  # noqa: E402
+    _is_passthrough,
+)
+
+# A <table> fragment with a <th scope> header (mirrors the Stage-6 table
+# specialist's GLM-OCR-enriched output).
+_TABLE_HTML = (
+    '<table><thead><tr><th scope="col">x</th><th scope="col">y</th></tr>'
+    "</thead><tbody><tr><td>1</td><td>2</td></tr></tbody></table>"
+)
+
+
+def _pt_region(idx: int, *, kind: str = "table", fb: tuple[int, ...] | None = None) -> Region:
+    """A Stage-4 passthrough region (non-null ``source_region_id``) at FB ``idx``."""
+    return Region(
+        kind=kind,
+        feature_block_indices=fb if fb is not None else (idx,),
+        payload={"text": f"passthrough {idx}"},
+        source_region_id=100 + idx,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — compute_absorption_runs(passthrough_only=...) unit tests.
+# ---------------------------------------------------------------------------
+
+
+def test_is_passthrough_region_predicate():
+    none_region = _region(0, "worked_example")
+    assert is_passthrough_region(none_region) is False
+    assert is_passthrough_region(_pt_region(1)) is True
+    # block_resegment._is_passthrough aliases the same single source.
+    assert _is_passthrough is is_passthrough_region
+
+
+def test_compute_absorption_runs_passthrough_only_default_byte_identical():
+    """passthrough_only=False is byte-identical to the no-kwarg call."""
+    regions = [
+        _region(0, "worked_example"),
+        _css_region(1, "pedagogy-solution"),
+        _region(2, None),
+        _heading_region(3, level=1),
+    ]
+    html = ["<p>anchor</p>", "<p>sol</p>", "<p>tail</p>", "<h2>h</h2>"]
+    assert compute_absorption_runs(regions, html) == compute_absorption_runs(
+        regions, html, passthrough_only=False
+    )
+
+
+def test_passthrough_only_absorbs_only_trailing_table():
+    """anchor + FB-adjacent table + plain paragraph -> only the table is absorbed."""
+    regions = [
+        _region(0, "worked_example"),
+        _pt_region(1),
+        _region(2, None),
+    ]
+    html = ["<p>anchor</p>", _TABLE_HTML, "<p>plain</p>"]
+    runs = compute_absorption_runs(regions, html, passthrough_only=True)
+    # Run is {anchor: anchor+2} — the table only; the plain paragraph is a stop.
+    assert runs == {0: 2}
+
+
+def test_passthrough_only_stops_at_first_non_passthrough():
+    """anchor + plain-paragraph(non-passthrough) -> no run (immediate hard stop)."""
+    regions = [_region(0, "worked_example"), _region(1, None)]
+    html = ["<p>anchor</p>", "<p>plain</p>"]
+    assert compute_absorption_runs(regions, html, passthrough_only=True) == {}
+
+
+def test_passthrough_only_fb_adjacency_bounds_two_tables():
+    """anchor + FB-adjacent solution table + NON-FB-adjacent standalone table ->
+    only the FIRST (FB-contiguous) table is captured (the over-capture guard)."""
+    regions = [
+        _region(0, "worked_example"),          # FB 0
+        _pt_region(1, fb=(1,)),                 # FB 1 — adjacent to 0
+        _pt_region(5, fb=(5,)),                 # FB 5 — GAP after FB 1
+    ]
+    html = ["<p>anchor</p>", _TABLE_HTML, _TABLE_HTML]
+    runs = compute_absorption_runs(regions, html, passthrough_only=True)
+    assert runs == {0: 2}  # only the first table; the gapped one is not pulled in
+
+
+def test_passthrough_only_captures_math_and_figure():
+    """anchor + FB-adjacent math passthrough + FB-adjacent figure passthrough ->
+    both absorbed (source_region_id-keyed parity)."""
+    regions = [
+        _region(0, "worked_example"),          # FB 0
+        _pt_region(1, kind="math", fb=(1,)),   # FB 1
+        _pt_region(2, kind="figure", fb=(2,)), # FB 2
+    ]
+    html = ["<p>anchor</p>", "<math></math>", "<figure></figure>"]
+    runs = compute_absorption_runs(regions, html, passthrough_only=True)
+    assert runs == {0: 3}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — wire the narrow absorb at the pass_9a Sub-task-1b call site.
+# ---------------------------------------------------------------------------
+
+
+def _narrow_env(monkeypatch, *, sub_flag="on", gold_absorb=None):
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
+    if sub_flag is None:
+        monkeypatch.delenv("SEMANTIK_UNIT_REGROUP_TABLE", raising=False)
+    else:
+        monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", sub_flag)
+    if gold_absorb is None:
+        monkeypatch.delenv("SEMANTIK_GOLD_ABSORB", raising=False)
+    else:
+        monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", gold_absorb)
+
+
+def _we_table_corpus(anchor_class="worked_example"):
+    """merged-prose body-bearing anchor + trailing FB-adjacent passthrough table."""
+    fbs = [_fb("h"), _fb("unit"), _fb("table"), _fb("h2")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, anchor_class),                # FB 1
+        _pt_region(2, fb=(2,)),                  # FB 2 — adjacent passthrough table
+        _heading_region(3, level=1),
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6("<p>EXAMPLE 1.3 solve x</p><p>Solution: factor</p>"),
+        2: _stage6(_TABLE_HTML),
+        3: _stage6("<h2>Next Section</h2>"),
+    }
+    return top, regions, fbs
+
+
+def test_narrow_absorb_wraps_solution_table_inside_box(monkeypatch):
+    _narrow_env(monkeypatch)
+    html = _assemble(*_we_table_corpus()).html
+    m = _WE_DIV_RE.search(html)
+    assert m is not None, html
+    box = m.group(1)
+    # The box ENCLOSES the <table> fragment.
+    assert "<table>" in box
+    assert '<th scope="col">x</th>' in box
+    # And it is NOT a separate sibling region after the box.
+    after_box = html[m.end():]
+    assert "<table>" not in after_box
+
+
+def test_narrow_absorb_table_rendered_once(monkeypatch):
+    _narrow_env(monkeypatch)
+    html = _assemble(*_we_table_corpus()).html
+    # The rendered table body appears EXACTLY ONCE (bare "<table>" also occurs in
+    # the gold-style CSS comment, so count a unique rendered-cell substring).
+    assert html.count("<td>1</td>") == 1
+    # The table index landed in absorbed_indices (guards the hoist regression):
+    # it does not render as a standalone <section>/sibling outside the box.
+    m = _WE_DIV_RE.search(html)
+    assert "<table>" in m.group(1)
+
+
+def test_narrow_absorb_fires_with_gold_absorb_unset(monkeypatch):
+    """The REAL default deployment: regroup firing + sub-flag on + GOLD_ABSORB
+    UNSET -> the narrow path still boxes the table."""
+    _narrow_env(monkeypatch, gold_absorb=None)
+    assert resolve_narrow_table_absorb_mode() is True
+    html = _assemble(*_we_table_corpus()).html
+    m = _WE_DIV_RE.search(html)
+    assert m is not None and "<table>" in m.group(1)
+
+
+def test_narrow_absorb_non_merged_definition_anchor(monkeypatch):
+    """A non-merged definition_region anchor + trailing FB-adjacent table -> boxed
+    too (anchor scope is ALL body-bearing components)."""
+    _narrow_env(monkeypatch)
+    fbs = [_fb("h"), _fb("def"), _fb("table")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, "definition_region"),         # FB 1
+        _pt_region(2, fb=(2,)),                   # FB 2
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6("<p>A monomial is ...</p>"),
+        2: _stage6(_TABLE_HTML),
+    }
+    html = _assemble(top, regions, fbs).html
+    # The definition box encloses the table.
+    m = re.search(r'<div class="definition[^"]*"[^>]*>(.*?)</div>', html, re.S)
+    assert m is not None, html
+    assert "<table>" in m.group(1)
+    assert html.count("<td>1</td>") == 1
+
+
+def test_narrow_absorb_off_table_adjacent_byte_identical(monkeypatch):
+    """sub-flag OFF (regroup on) -> assembled HTML byte-identical to v1 (table
+    renders adjacent, OUTSIDE the box)."""
+    # sub-flag ON render.
+    _narrow_env(monkeypatch, sub_flag="on")
+    on_html = _assemble(*_we_table_corpus()).html
+    # sub-flag OFF render (the committed v1 baseline).
+    _narrow_env(monkeypatch, sub_flag=None)
+    off_html = _assemble(*_we_table_corpus()).html
+    # The two DIFFER (the feature does something) and the OFF render keeps the
+    # table OUTSIDE the worked-example box (the v1 table-adjacent shape).
+    assert on_html != off_html
+    m_off = _WE_DIV_RE.search(off_html)
+    assert m_off is not None and "<table>" not in m_off.group(1)
+    assert "<table>" in off_html  # still rendered, just adjacent
+
+
+def test_narrow_absorb_does_not_grab_trailing_prose(monkeypatch):
+    """merged-prose + table + closing-paragraph -> the box encloses prose+table
+    ONLY; the closing paragraph stays a sibling (passthrough-only stop)."""
+    _narrow_env(monkeypatch)
+    fbs = [_fb("h"), _fb("unit"), _fb("table"), _fb("concl"), _fb("h2")]
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, "worked_example"),            # FB 1
+        _pt_region(2, fb=(2,)),                  # FB 2 — adjacent table
+        _region(3, None),                        # FB 3 — closing prose (non-passthrough)
+        _heading_region(4, level=1),
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6("<p>EXAMPLE solve x</p>"),
+        2: _stage6(_TABLE_HTML),
+        3: _stage6("<p>conclusion prose</p>"),
+        4: _stage6("<h2>Next</h2>"),
+    }
+    html = _assemble(top, regions, fbs).html
+    box = _WE_DIV_RE.search(html).group(1)
+    assert "<table>" in box
+    assert "conclusion prose" not in box  # documented scope limit
+    assert "conclusion prose" in html      # still rendered, as a sibling
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — compose with the Phase-7 absorb-supersession.
+# ---------------------------------------------------------------------------
+
+
+def test_no_double_box_narrow_table_absorb(monkeypatch):
+    """regroup firing + sub-flag on + GOLD_ABSORB on -> the gold box appears
+    EXACTLY ONCE around the anchor+table span (no full-absorb-on-top)."""
+    _narrow_env(monkeypatch, gold_absorb="1")
+    html = _assemble(*_we_table_corpus()).html
+    boxes = _WE_DIV_RE.findall(html)
+    assert len(boxes) == 1, html
+    assert "<table>" in boxes[0]
+    assert html.count("<td>1</td>") == 1
+
+
+def test_full_absorb_stays_off_under_narrow(monkeypatch):
+    """regroup firing + sub-flag on -> resolve_gold_absorb_mode still False (the
+    full absorb never runs; only the narrow elif)."""
+    _narrow_env(monkeypatch, gold_absorb="1")
+    assert resolve_gold_absorb_mode() is False
+    assert resolve_narrow_table_absorb_mode() is True
+
+
+def test_narrow_inert_when_parent_regroup_off(monkeypatch):
+    """sub-flag on + SEMANTIK_UNIT_REGROUP off -> narrow branch dead; with
+    GOLD_ABSORB on the FULL absorb fires as the v1 fallback."""
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", "on")
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    assert resolve_narrow_table_absorb_mode() is False
+    # The full absorb is live (regroup not firing).
+    assert resolve_gold_absorb_mode() is True
+
+
+def test_narrow_inert_when_reading_order_off(monkeypatch):
+    """sub-flag on + reading-order OFF + regroup on -> narrow dead, full absorb
+    fires (no regression)."""
+    monkeypatch.setenv("SEMANTIK_GOLD_SHELL", "1")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "off")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", "on")
+    monkeypatch.setenv("SEMANTIK_GOLD_ABSORB", "1")
+    assert resolve_narrow_table_absorb_mode() is False
+    assert resolve_gold_absorb_mode() is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — assembler-level survival coverage (relocation, not mutation).
+# ---------------------------------------------------------------------------
+
+
+def test_in_box_table_enriched_bytes_byte_identical(monkeypatch):
+    """The in-box table's enriched <table>/<th scope> bytes are byte-identical
+    pre/post absorb — the absorb RELOCATES rendered bytes, never mutates them."""
+    # Baseline: the table fragment as the Stage-6 specialist emitted it.
+    _narrow_env(monkeypatch)
+    html = _assemble(*_we_table_corpus()).html
+    # The exact enriched table substring survives intact inside the box.
+    assert _TABLE_HTML in html
+    box = _WE_DIV_RE.search(html).group(1)
+    assert _TABLE_HTML in box
+
+
+def test_post_9a_passes_position_independent(monkeypatch):
+    """The byte-identical table fragment is relocated, not mutated: it is a
+    contiguous substring whether standalone (sub-flag off) or nested in the box
+    (sub-flag on). No post-9a pass keys on the table's top-level position."""
+    _narrow_env(monkeypatch, sub_flag="on")
+    on_html = _assemble(*_we_table_corpus()).html
+    _narrow_env(monkeypatch, sub_flag=None)
+    off_html = _assemble(*_we_table_corpus()).html
+    # The enriched fragment is a contiguous substring in BOTH renders.
+    assert _TABLE_HTML in on_html
+    assert _TABLE_HTML in off_html
+    # The document is well-formed + single-<main> in both (post-9a passes ran).
+    for h in (on_html, off_html):
+        assert h.count("<main") == 1
+
+
+def test_in_box_math_figure_source_region_id_parity(monkeypatch):
+    """A math/figure passthrough span-wrapped into a box keeps its source_region_id
+    parity; a figure additionally renders its <img src> + sidecar inside the box."""
+    _narrow_env(monkeypatch)
+    fbs = [_fb("h"), _fb("unit"), _fb("fig")]
+    fig_region = Region(
+        kind="figure",
+        feature_block_indices=(2,),
+        payload={"text": "figure", "image_src": "figs/fig-2.png"},
+        source_region_id=205,
+    )
+    regions = [
+        _heading_region(0, level=1),
+        _region(1, "worked_example"),            # FB 1
+        fig_region,                              # FB 2 — adjacent figure passthrough
+    ]
+    top = {
+        0: _stage6("<h2>Intro</h2>"),
+        1: _stage6("<p>EXAMPLE solve x</p>"),
+        2: _stage6('<figure><img src="figs/fig-2.png" alt="Figure."></figure>'),
+    }
+    html = _assemble(top, regions, fbs).html
+    # The figure region kept its source_region_id (never folded).
+    assert fig_region.source_region_id == 205
+    box = _WE_DIV_RE.search(html).group(1)
+    # The figure's <img src> + the sidecar reference live INSIDE the box.
+    assert '<img src="figs/fig-2.png"' in box
+    assert html.count('<img src="figs/fig-2.png"') == 1

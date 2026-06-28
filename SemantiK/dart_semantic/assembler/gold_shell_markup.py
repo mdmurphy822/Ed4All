@@ -194,8 +194,23 @@ from ..pedagogical_units import (  # noqa: E402
     ABSORB_MAX_RUN as _ABSORB_MAX_RUN,
     BODY_BEARING_COMPONENT_CLASSES as _BODY_BEARING_COMPONENT_CLASSES,
     UNIT_START_PEDAGOGY_CLASSES as _UNIT_START_PEDAGOGY_CLASSES,
+    is_passthrough_region as _is_passthrough_region,
     is_unit_boundary as _is_absorption_boundary,
 )
+
+
+def _region_fb_first(region: Any) -> int:
+    """``min(feature_block_indices)`` or ``-1`` when the region carries none —
+    mirrors ``block_resegment._pair_is_continuation``'s ``cur_first`` read."""
+    fbs = getattr(region, "feature_block_indices", None)
+    return min(fbs) if fbs else -1
+
+
+def _region_fb_last(region: Any) -> int:
+    """``max(feature_block_indices)`` or ``-1`` — mirrors
+    ``block_resegment._pair_is_continuation``'s ``prev_last`` read."""
+    fbs = getattr(region, "feature_block_indices", None)
+    return max(fbs) if fbs else -1
 
 
 def _region_payload_get(region: Any, key: str) -> Any:
@@ -207,6 +222,7 @@ def compute_absorption_runs(
     region_html: Sequence[str],
     *,
     max_run: int = _ABSORB_MAX_RUN,
+    passthrough_only: bool = False,
 ) -> dict[int, int]:
     """Map each body-bearing component anchor index -> EXCLUSIVE end index of the
     contiguous following-region run it absorbs (``[anchor .. end)``).
@@ -220,6 +236,18 @@ def compute_absorption_runs(
     is omitted (it wraps exactly as the non-absorb path). Absorbed indices are
     never themselves re-used as anchors (a body-bearing follower is a boundary,
     so this is belt-and-suspenders).
+
+    ``passthrough_only`` (table-v2, default ``False`` -> byte-identical to the
+    committed full absorb): when ``True`` the forward walk absorbs a follower
+    ONLY if it is a Stage-4 passthrough (``is_passthrough_region`` —
+    ``source_region_id`` set: table/math/figure) AND it is FB-CONTIGUOUS with
+    the previous region (``cur_first == prev_last + 1``, reading the same
+    FB-index fields ``block_resegment._pair_is_continuation`` uses). The first
+    NON-passthrough OR non-FB-adjacent follower is a hard stop, so the walk
+    captures only the unit's OWN contiguous trailing passthrough(s) — a
+    non-contiguous standalone section table, or the opening table of the NEXT
+    unit, is never pulled in. Still capped at ``max_run``. The anchor scan is
+    UNCHANGED (body-bearing components only).
     """
     n = len(region_html)
     runs: dict[int, int] = {}
@@ -234,8 +262,20 @@ def compute_absorption_runs(
             continue
         end = i + 1
         while end < n and (end - (i + 1)) < max_run:
-            if _is_absorption_boundary(regions[end], region_html[end]):
+            follower = regions[end]
+            if _is_absorption_boundary(follower, region_html[end]):
                 break
+            if passthrough_only:
+                # Narrow scope: absorb a follower only if it is a Stage-4
+                # passthrough AND FB-contiguous with the previous region. The
+                # first non-passthrough OR non-FB-adjacent follower hard-stops
+                # the walk (the over-capture guard).
+                if not _is_passthrough_region(follower):
+                    break
+                prev_last = _region_fb_last(regions[end - 1])
+                cur_first = _region_fb_first(follower)
+                if cur_first != prev_last + 1:
+                    break
             end += 1
         if end > i + 1:
             runs[i] = end

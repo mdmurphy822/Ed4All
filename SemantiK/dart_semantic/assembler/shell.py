@@ -100,6 +100,39 @@ def resolve_gold_absorb_mode() -> bool:
     return True
 
 
+def resolve_narrow_table_absorb_mode() -> bool:
+    """Return True when the table-v2 NARROW passthrough-only absorb should run
+    at the ``pass_9a`` Sub-task-1b call site.
+
+    Composite gate (table-v2 Phase 2): the sub-flag
+    ``SEMANTIK_UNIT_REGROUP_TABLE`` AND the regroup-firing condition
+    (``resolve_unit_regroup_mode()`` AND ``resolve_reading_order_fix()`` — the
+    SAME composite ``resolve_gold_absorb_mode`` short-circuits the full absorb
+    under at ``:98``). Single-sourcing the composite here keeps the narrow gate
+    in LOCKSTEP with the absorb-off short-circuit: if that composite ever gains
+    a third guard, both gates move together. ``SEMANTIK_GOLD_SHELL`` is NOT in
+    the composite because the call site already lives inside
+    ``if resolve_gold_shell_mode():`` (``pass_9a.py``). Reuses the EXACT
+    cycle-safe function-local imports of ``resolve_gold_absorb_mode``.
+
+    Effect: when the regroup is firing AND the sub-flag is on, the merged-prose
+    box ENCLOSES its trailing FB-adjacent passthrough table (the v1 passthrough
+    gap). Default off / regroup inert -> ``False`` -> byte-identical to v1
+    (table renders adjacent). Parse-with-fallback throughout.
+    """
+    from ..pedagogical_units import (
+        resolve_unit_regroup_mode,
+        resolve_unit_regroup_table_mode,
+    )
+    from ..structure_graph import resolve_reading_order_fix
+
+    return (
+        resolve_unit_regroup_table_mode()
+        and resolve_unit_regroup_mode()
+        and resolve_reading_order_fix()
+    )
+
+
 DOC_OPEN = (
     '<!DOCTYPE html>\n'
     '<html lang="{lang}">\n'

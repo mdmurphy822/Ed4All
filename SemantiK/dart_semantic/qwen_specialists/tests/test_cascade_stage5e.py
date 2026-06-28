@@ -260,3 +260,143 @@ def test_cascade_gate_closed_when_both_flags_off(monkeypatch):
     result = _stage5e_seam(regions, fbs, _EmptyState())
     assert "block_resegment" not in result
     assert result["n_regions"] == 2
+
+
+# ---------------------------------------------------------------------------
+# table-v2 Phase 4 — Stage-5e survival coverage (the table is NEVER folded).
+#
+# Option C's central claim at the cascade level: the SEMANTIK_UNIT_REGROUP_TABLE
+# sub-flag makes ZERO Stage-5e change — the v1 passthrough STOP stays, so the
+# trailing Solution table survives Stage-5e as a distinct
+# Region(kind='table', source_region_id=N). The render-time narrow absorb
+# (Phase 2) runs LATER, on bytes, so source_region_id / GLM-OCR enrichment /
+# table-adapter routing are never at risk.
+# ---------------------------------------------------------------------------
+
+from dart_semantic.qwen_specialists.block_resegment import (  # noqa: E402
+    assert_partition_conservation,
+    resolve_unit_regroup_table_mode,
+)
+
+
+def _unit_with_table():
+    """A worked-example unit (label + solution body) followed by a passthrough
+    Solution TABLE carrying a Stage-4 source_region_id, all FB-contiguous."""
+    fbs = [_fb("EXAMPLE 1"), _fb("Solution factor"), _fb("table cells")]
+    regions = [
+        Region(
+            kind="paragraph",
+            feature_block_indices=(0,),
+            payload={
+                "text": "EXAMPLE 1",
+                "css_class": "pedagogy-example",
+                "semantic_class": "worked_example",
+            },
+        ),
+        Region(
+            kind="paragraph",
+            feature_block_indices=(1,),
+            payload={"text": "Solution factor", "css_class": "pedagogy-solution"},
+        ),
+        Region(
+            kind="table",
+            feature_block_indices=(2,),
+            payload={"text": "table cells"},
+            source_region_id=7,
+        ),
+    ]
+    return regions, fbs
+
+
+def test_in_box_table_keeps_source_region_id(monkeypatch):
+    """Sub-flag on + a merged-prose unit + a passthrough table -> the
+    post-Stage-5e region list still carries the table as
+    Region(kind='table', source_region_id=N); the regroup fused only the prose."""
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", "on")
+    regions, fbs = _unit_with_table()
+    out, _ops = resegment_blocks(regions, fbs, _EmptyState(), runtime=None)
+    # The prose (label + solution) fused into one region; the table stayed distinct.
+    tables = [r for r in out if r.kind == "table"]
+    assert len(tables) == 1
+    assert tables[0].source_region_id == 7
+    assert tables[0].feature_block_indices == (2,)
+
+
+def test_in_box_table_rpart_untouched(monkeypatch):
+    """assert_partition_conservation on the Stage-5e output is byte-identical with
+    the sub-flag ON vs OFF — no FB folded (the table-v2 sub-flag is Stage-5e-agnostic)."""
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
+
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", "on")
+    on_regions, _ = resegment_blocks(*_unit_with_table(), _EmptyState(), runtime=None)
+    on_fb = [r.feature_block_indices for r in on_regions]
+
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", "off")
+    regions, fbs = _unit_with_table()
+    off_regions, _ = resegment_blocks(regions, fbs, _EmptyState(), runtime=None)
+    off_fb = [r.feature_block_indices for r in off_regions]
+
+    # Same partition (the sub-flag changes NOTHING at Stage-5e).
+    assert on_fb == off_fb
+    # And R-PART holds on the output (re-derives from raw FB indices).
+    assert_partition_conservation(regions, off_regions)
+
+
+def test_in_box_table_routes_to_table_adapter(monkeypatch):
+    """The in-box table's kind=='table' is preserved, so adapter_for routes it to
+    the TABLE specialist (not prose) — the <table>/<th scope> structure is generated."""
+    from dart_semantic.qwen_specialists.routing import adapter_for, AdapterID
+
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", "on")
+    regions, fbs = _unit_with_table()
+    out, _ = resegment_blocks(regions, fbs, _EmptyState(), runtime=None)
+    table = next(r for r in out if r.kind == "table")
+    assert adapter_for(table.kind) is AdapterID.TABLE
+
+
+def test_in_box_table_enriched_by_glm_ocr_predicate(monkeypatch):
+    """The Stage-5b enrich predicate (region.kind=='table' AND
+    source_region_id is not None) still matches the post-Stage-5e table, so
+    enrich_table_regions_with_glm_ocr would find + enrich it exactly as in v1."""
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", "on")
+    regions, fbs = _unit_with_table()
+    out, _ = resegment_blocks(regions, fbs, _EmptyState(), runtime=None)
+    # Mirror glm_ocr_enrich.py:421 exactly.
+    enrich_eligible = [
+        r for r in out if r.kind == "table" and r.source_region_id is not None
+    ]
+    assert len(enrich_eligible) == 1
+    assert enrich_eligible[0].source_region_id == 7
+
+
+def test_stage5e_partition_byte_identical_with_table_subflag(monkeypatch):
+    """resegment_blocks output is byte-identical with the sub-flag on vs off —
+    Stage-5e is SEMANTIK_UNIT_REGROUP_TABLE-agnostic (the hard byte-stability gate)."""
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP", "on")
+    monkeypatch.setenv("SEMANTIK_READING_ORDER_FIX", "on")
+
+    monkeypatch.setenv("SEMANTIK_UNIT_REGROUP_TABLE", "on")
+    on_regions, on_ops = resegment_blocks(*_unit_with_table(), _EmptyState(), runtime=None)
+
+    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP_TABLE", raising=False)
+    off_regions, off_ops = resegment_blocks(*_unit_with_table(), _EmptyState(), runtime=None)
+
+    assert [r.feature_block_indices for r in on_regions] == [
+        r.feature_block_indices for r in off_regions
+    ]
+    assert [(r.kind, r.source_region_id) for r in on_regions] == [
+        (r.kind, r.source_region_id) for r in off_regions
+    ]
+    assert len(on_ops) == len(off_ops)

@@ -93,6 +93,7 @@ from .shell import (
     detect_language,
     resolve_gold_absorb_mode,
     resolve_gold_shell_mode,
+    resolve_narrow_table_absorb_mode,
 )
 from .types import AssembledDoc, GapKind, GapSlot
 
@@ -399,13 +400,29 @@ def run_pass_9a(
     if resolve_gold_shell_mode():
         doc_ids = collect_doc_ids(region_html)
         absorb_runs: dict[int, int] = {}
+        # Branch precedence (table-v2 Phase 3): full-absorb (regroup inert) ->
+        # narrow-table-absorb (regroup firing + sub-flag) -> no absorb. The two
+        # are mutually exclusive — resolve_gold_absorb_mode short-circuits False
+        # whenever the regroup fires (shell.py), and resolve_narrow_table_absorb_mode
+        # requires the SAME regroup-firing composite, so they never co-fire. The
+        # narrow absorb runs POST-Stage-6 on RENDERED BYTES: the in-box passthrough
+        # table keeps its Stage-4 source_region_id (the absorb moves bytes, never
+        # the Region) and no post-9a document-level pass keys on the table's
+        # top-level position.
         if resolve_gold_absorb_mode():
             absorb_runs = compute_absorption_runs(regions, region_html)
-            absorbed_indices = {
-                idx
-                for start, end in absorb_runs.items()
-                for idx in range(start + 1, end)
-            }
+        elif resolve_narrow_table_absorb_mode():
+            absorb_runs = compute_absorption_runs(
+                regions, region_html, passthrough_only=True
+            )
+        # Hoisted out of the branches so absorbed_indices is derived from
+        # WHICHEVER absorb_runs resolved — else the narrow branch would leave it
+        # empty and the table would double-render (standalone + in-box).
+        absorbed_indices = {
+            idx
+            for start, end in absorb_runs.items()
+            for idx in range(start + 1, end)
+        }
         n_wrapped = 0
         for idx, region in enumerate(regions):
             if idx in absorbed_indices:
@@ -427,6 +444,19 @@ def run_pass_9a(
             sub_task_log["gold_shell_absorb"] = (
                 f"anchors={len(absorb_runs)} absorbed={len(absorbed_indices)}"
             )
+            if resolve_narrow_table_absorb_mode():
+                # table-v2 Phase 2 audit row: anchor region_index -> the
+                # source_region_ids of the passthrough regions it absorbed, so
+                # the Phase-5 in-box-table count + over-capture check are
+                # mechanical (not manual HTML grepping).
+                narrow_audit = {
+                    start: [
+                        getattr(regions[idx], "source_region_id", None)
+                        for idx in range(start + 1, end)
+                    ]
+                    for start, end in absorb_runs.items()
+                }
+                sub_task_log["narrow_table_absorb"] = str(narrow_audit)
 
     # ------------------------------------------------------------------
     # Sub-task 2 — Heading-tree normalization (over HEADING regions only).
