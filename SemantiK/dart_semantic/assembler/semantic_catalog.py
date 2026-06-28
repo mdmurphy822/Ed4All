@@ -52,6 +52,7 @@ __all__ = [
     "load_semantic_catalog",
     "valid_components",
     "semantic_component_for",
+    "component_for_pedagogy_class",
     "label_for",
 ]
 
@@ -146,6 +147,44 @@ def semantic_component_for(region_kind: str) -> Optional[str]:
     ``None`` for any kind no component maps from. Cached.
     """
     return _kind_to_component().get(region_kind)
+
+
+@lru_cache(maxsize=1)
+def _pedagogy_class_to_component() -> Dict[str, str]:
+    """Reverse of each component's ``reconciles_with`` -> the ``component`` token.
+
+    The always-on deterministic structure-clean pass
+    (``deterministic_structure._retag``) stamps a pedagogical CSS class on
+    ``payload['css_class']`` (``pedagogy-example`` / ``pedagogy-objectives`` /
+    ``pedagogy-practice`` / ...). This map lets the Stage-5d reviewer FLOOR turn
+    that already-detected class into its gold ``semantic_class`` token
+    (``worked_example`` / ``objectives`` / ``exercise``) WITHOUT a model call.
+    First-match-in-catalog-order wins (mirrors :func:`_kind_to_component`); a
+    component with ``reconciles_with: null`` contributes nothing.
+    """
+    mapping: Dict[str, str] = {}
+    for entry in _load_raw()["components"]:
+        component = entry.get("component")
+        if not component:
+            continue
+        reconciles = entry.get("reconciles_with")
+        if reconciles and str(reconciles) not in mapping:
+            mapping[str(reconciles)] = component
+    return mapping
+
+
+def component_for_pedagogy_class(pedagogy_class: str) -> Optional[str]:
+    """Return the gold ``component`` a clean-pass pedagogy CSS class reconciles to.
+
+    The REVERSE of the catalog ``reconciles_with`` link: ``pedagogy-example``
+    -> ``worked_example``, ``pedagogy-objectives`` -> ``objectives``,
+    ``pedagogy-practice`` -> ``exercise``. ``None`` for any class no component
+    declares (anti-fabrication — the reviewer floor never invents a token).
+    Cached via :func:`_pedagogy_class_to_component`.
+    """
+    if not pedagogy_class:
+        return None
+    return _pedagogy_class_to_component().get(pedagogy_class)
 
 
 @lru_cache(maxsize=1)

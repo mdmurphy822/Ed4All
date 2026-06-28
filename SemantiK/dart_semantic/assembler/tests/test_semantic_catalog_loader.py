@@ -102,6 +102,18 @@ def test_label_for_known_component() -> None:
     assert sc.label_for("__not_a_real_component__") is None
 
 
+def test_component_for_pedagogy_class() -> None:
+    """The REVERSE of ``reconciles_with``: a clean-pass pedagogy CSS class ->
+    its gold ``component`` token; an unmapped class -> None (no fabrication)."""
+    assert sc.component_for_pedagogy_class("pedagogy-example") == "worked_example"
+    assert sc.component_for_pedagogy_class("pedagogy-objectives") == "objectives"
+    assert sc.component_for_pedagogy_class("pedagogy-practice") == "exercise"
+    # A class no component declares ``reconciles_with`` -> None.
+    assert sc.component_for_pedagogy_class("pedagogy-solution") is None
+    assert sc.component_for_pedagogy_class("__not_a_real_class__") is None
+    assert sc.component_for_pedagogy_class("") is None
+
+
 def test_fail_loud_on_missing_yaml(monkeypatch) -> None:
     """An absent YAML raises (not a silent empty list)."""
     sc._load_raw.cache_clear()

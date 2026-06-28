@@ -851,6 +851,41 @@ def _apply_verdict(
             if guard_component is not None:
                 semantic_class = guard_component
 
+    # --- Change 1 (deterministic FLOOR — the high-coverage fix): when the gold
+    #     semantic-class feature is on AND the model supplied NO valid
+    #     semantic_class (``semantic_class`` is None after the catalog-validate
+    #     above + the EXAMPLE-promotion guard), DETERMINISTICALLY derive one from
+    #     signals the always-on clean pass already left on the region — covering
+    #     every example/objective the clean pass found WITHOUT relying on the 16k
+    #     7B to populate the OPTIONAL field. Precedence is model > pedagogy-class
+    #     > prefix: a model-supplied VALID semantic_class already won above (this
+    #     branch only runs when it is None — the floor NEVER overrides the model);
+    #     then (a) the region's EXISTING pedagogy CSS class
+    #     (``deterministic_structure._retag`` stamps ``payload['css_class']`` =
+    #     ``pedagogy-example`` / ``pedagogy-objectives`` / ``pedagogy-practice`` /
+    #     ...) -> its gold component via the catalog ``reconciles_with`` reverse
+    #     map; then (b) the pedagogical-label PREFIX (TRY/EXAMPLE ->
+    #     worked_example, EXERCISE -> exercise) via the existing
+    #     ``_pedagogical_label_component`` helper. Anti-fabrication: only a real
+    #     ``valid_components()`` token is ever assigned (both sources are
+    #     catalog-derived, re-checked here for robustness). Gated on
+    #     resolve_semantic_class_mode() so flag-off the payload is byte-identical.
+    if semantic_class is None and resolve_semantic_class_mode():
+        from dart_semantic.assembler.semantic_catalog import (
+            component_for_pedagogy_class,
+        )
+
+        floored: str | None = None
+        pedagogy_class = payload.get("css_class")
+        if pedagogy_class:
+            floored = component_for_pedagogy_class(str(pedagogy_class))
+        if floored is None:
+            floored = _pedagogical_label_component(
+                _joined_source_text(region, feature_blocks)
+            )
+        if floored is not None and floored in valid_components():
+            semantic_class = floored
+
     # --- assemble the mutated payload (carry everything else forward) ---
     new_payload = dict(payload)
 

@@ -347,6 +347,24 @@ def test_menu_injected_when_flag_on(monkeypatch):
             assert token in prompt, f"menu missing component token: {token}"
 
 
+def test_prompt_says_always_assign(monkeypatch):
+    # Change 2: the directive now instructs the model to ALWAYS assign a
+    # semantic_class for every content block (not the old MAY/optional framing).
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    from dart_semantic.qwen_specialists import reviewer_prompt as rp
+
+    directive = rp._semantic_class_directive()
+    low = directive.lower()
+    # Always-assign instruction present.
+    assert "must assign" in low
+    assert "for every content block" in low
+    # The old "you MAY assign ... optional key" framing is gone.
+    assert "you may assign" not in low
+    assert "as an optional key" not in low
+    # The dispatched-weak-kind nudge is present (the under-firing fix).
+    assert "code_block" in directive and "table" in directive
+
+
 def test_prompt_byte_identical_when_flag_off(monkeypatch):
     # Capture the flag-off baseline for BOTH the content single-block builder
     # and the windowed builder, then toggle the flag ON and back OFF and assert

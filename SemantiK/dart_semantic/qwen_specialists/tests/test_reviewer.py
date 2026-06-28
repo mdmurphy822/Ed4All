@@ -987,6 +987,124 @@ def test_guard_byte_stable_when_semantic_class_off(monkeypatch):
     assert verdict.semantic_class_after is None
 
 
+# ---------------------------------------------------------------------------
+# Change 1 — the deterministic FLOOR: when the model leaves semantic_class
+# empty, derive it from the clean-pass pedagogy css_class (precedence (a)) or
+# the pedagogical-label prefix (precedence (b)). Model > pedagogy-class > prefix.
+# ---------------------------------------------------------------------------
+
+
+def test_floor_assigns_from_pedagogy_class(monkeypatch):
+    # A region whose payload carries a clean-pass-stamped pedagogy css_class
+    # (deterministic_structure._retag) + a model verdict with NO semantic_class
+    # (flag on) -> the floor maps the css_class to its gold component.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("EXAMPLE 1.1 Simplify 3(x + 2).")]
+    region = Region(
+        kind="code_block", feature_block_indices=(0,),
+        payload={"text": "EXAMPLE 1.1 Simplify 3(x + 2).",
+                 "css_class": "pedagogy-example"},
+    )
+    # Model omits semantic_class entirely.
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "paragraph",
+           "corrected_level": None, "corrected_doc_role": None,
+           "review_note": "no class from model"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.payload["semantic_class"] == "worked_example"
+    assert verdict.semantic_class_after == "worked_example"
+    assert not verdict.reverted_for_invariant
+    # source byte-identical through the floored stamp (payload-only).
+    assert out_region.payload["text"] == region.payload["text"]
+    assert out_region.payload["css_class"] == "pedagogy-example"
+
+
+def test_floor_assigns_from_prefix_when_no_pedagogy_class(monkeypatch):
+    # No pedagogy css_class, but the verbatim source begins with a pedagogical
+    # label (TRY IT) + no model semantic_class -> precedence (b) prefix floor.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("TRY IT 1.5 simplify the expression 4(y - 1).")]
+    region = Region(
+        kind="code_block", feature_block_indices=(0,),
+        payload={"text": "TRY IT 1.5 simplify the expression 4(y - 1)."},
+    )
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "paragraph",
+           "corrected_level": None, "corrected_doc_role": None,
+           "review_note": "no class, no css_class"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.payload["semantic_class"] == "worked_example"
+    assert verdict.semantic_class_after == "worked_example"
+
+
+def test_floor_does_not_override_model_semantic_class(monkeypatch):
+    # Precedence model > pedagogy-class: a VALID model semantic_class is kept
+    # even when the css_class would floor to a DIFFERENT component.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("A term and its meaning.")]
+    region = Region(
+        kind="code_block", feature_block_indices=(0,),
+        payload={"text": "A term and its meaning.",
+                 "css_class": "pedagogy-example"},  # would floor to worked_example
+    )
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "paragraph",
+           "corrected_level": None, "corrected_doc_role": None,
+           "semantic_class": "definition_region",  # model wins
+           "review_note": "model supplied a valid class"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert out_region.payload["semantic_class"] == "definition_region"
+    assert verdict.semantic_class_after == "definition_region"
+
+
+def test_floor_only_assigns_valid_catalog_component(monkeypatch):
+    # Anti-fabrication: a pedagogy class with NO catalog reconciles_with (and no
+    # label prefix) floors to None -> NO semantic_class is stamped.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.setenv("SEMANTIK_SEMANTIC_CLASS", "1")
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("Just some ordinary prose body.")]
+    region = Region(
+        kind="code_block", feature_block_indices=(0,),
+        payload={"text": "Just some ordinary prose body.",
+                 "css_class": "pedagogy-solution"},  # no reconciles_with -> None
+    )
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "paragraph",
+           "corrected_level": None, "corrected_doc_role": None,
+           "review_note": "unmapped pedagogy class, no prefix"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert "semantic_class" not in out_region.payload
+    assert verdict.semantic_class_after is None
+
+
+def test_floor_byte_stable_when_off(monkeypatch):
+    # SEMANTIK_SEMANTIC_CLASS OFF: the floor does NOT run, even with a pedagogy
+    # css_class + no model semantic_class -> no class stamped, audit field None.
+    monkeypatch.setenv("SEMANTIK_BLOCK_REVIEW", "1")
+    monkeypatch.delenv("SEMANTIK_SEMANTIC_CLASS", raising=False)
+    from dart_semantic.qwen_specialists import reviewer as rv
+
+    fbs = [_fb("EXAMPLE 1.1 Simplify 3(x + 2).")]
+    region = Region(
+        kind="code_block", feature_block_indices=(0,),
+        payload={"text": "EXAMPLE 1.1 Simplify 3(x + 2).",
+                 "css_class": "pedagogy-example"},
+    )
+    obj = {"block_id": 0, "verdict": "corrected", "corrected_kind": "paragraph",
+           "corrected_level": None, "corrected_doc_role": None,
+           "review_note": "flag off -> no floor"}
+    out_region, verdict = rv._apply_verdict(region, 0, obj, fbs)
+    assert "semantic_class" not in out_region.payload
+    assert verdict.semantic_class_after is None
+
+
 def test_class_only_run_html_byte_identical(monkeypatch):
     # Decoupled-flag invariant: SEMANTIK_SEMANTIC_CLASS on + SEMANTIK_GOLD_SHELL
     # absent -> the assembler does NOT read payload['semantic_class'], so a
