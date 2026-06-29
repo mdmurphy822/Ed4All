@@ -19,8 +19,32 @@ because it's dispatched through pickle to each worker.
 from __future__ import annotations
 
 import atexit
+import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Callable, Iterable, Iterator
+
+_DEFAULT_WORKER_MAX_TASKS = 50
+
+
+def resolve_worker_max_tasks() -> int:
+    """Number of tasks a pool worker handles before it is recycled.
+
+    Recycling each worker every N tasks tears down its native allocator arenas
+    (the glibc malloc fragmentation that pypdfium2/pdfplumber per-page renders
+    leave behind and never return to the OS), its Chromium child, and its
+    per-process ``lru_cache`` state — bounding RSS growth on long builds.
+
+    Resolved from ``SEMANTIK_WORKER_MAX_TASKS`` (parse-with-fallback: blank /
+    non-int / non-positive / garbage → the default 50).
+    """
+    raw = os.environ.get("SEMANTIK_WORKER_MAX_TASKS", "")
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_WORKER_MAX_TASKS
+    if val <= 0:
+        return _DEFAULT_WORKER_MAX_TASKS
+    return val
 
 # Per-worker state. `_VALIDATOR` is populated once by `_initializer` in each
 # child process and reused across every task that process handles.
@@ -38,13 +62,28 @@ def _initializer() -> None:
 
 
 def _teardown() -> None:
-    global _VALIDATOR
-    if _VALIDATOR is not None:
-        try:
-            _VALIDATOR.__exit__(None, None, None)
-        except Exception:
-            pass
-        _VALIDATOR = None
+    # Runs at worker-process exit — i.e. at every pool-generation boundary in
+    # the batched run_in_pool below. A graceful Playwright stop here can hang
+    # the worker's interpreter shutdown (the sync driver's non-daemon dispatcher
+    # thread + node subprocess block the join), which in turn blocks the pool's
+    # shutdown(wait=True). So HARD-exit instead — the worker's results are
+    # already on the result queue. But a bare os._exit ORPHANS the worker's
+    # Playwright node driver + Chromium children (reparented to init, leaking
+    # ~3 procs/worker across generations), so kill the child process tree first.
+    try:
+        import psutil  # available in the SemantiK runtime venv
+
+        me = psutil.Process()
+        kids = me.children(recursive=True)
+        for c in kids:
+            try:
+                c.kill()
+            except Exception:
+                pass
+        psutil.wait_procs(kids, timeout=3)
+    except Exception:
+        pass
+    os._exit(0)
 
 
 def _task_entry(module_name: str, func_name: str, item: Any) -> Any:
@@ -80,7 +119,27 @@ def run_in_pool(task_fn: Callable[[Any, Any], Any],
 
     mod_name = task_fn.__module__
     fn_name = task_fn.__name__
-    with ProcessPoolExecutor(max_workers=workers, initializer=_initializer) as ex:
-        futures = [ex.submit(_task_entry, mod_name, fn_name, item) for item in items]
-        for fut in as_completed(futures):
-            yield fut.result()
+    # Recycle workers every N-tasks-per-worker by processing items in
+    # generations: a FRESH ProcessPoolExecutor per generation, torn down before
+    # the next. Tearing the pool down frees each worker's native glibc malloc
+    # arenas (the tracemalloc-invisible RSS ratchet that per-page
+    # pypdfium2/pdfplumber render+extract churn leaves fragmented), its Chromium
+    # child, and its per-process lru_cache — the primary fix for the
+    # build_structure_data --aligner global OOM.
+    #
+    # Why not ProcessPoolExecutor(max_tasks_per_child=...)? It is forbidden with
+    # the default 'fork' start method, and on this Python build the 'forkserver'
+    # / 'spawn' variants stall after the first generation of workers (replacement
+    # workers never pick up the remaining tasks — reproduced with a no-op
+    # initializer, so it is not Playwright-specific). Generational pools achieve
+    # the same recycling on the proven-working default (fork) path.
+    per_worker = resolve_worker_max_tasks()
+    generation = max(1, per_worker * workers)  # tasks per pool generation
+    for start in range(0, len(items), generation):
+        chunk = items[start:start + generation]
+        with ProcessPoolExecutor(max_workers=workers, initializer=_initializer) as ex:
+            futures = [ex.submit(_task_entry, mod_name, fn_name, item) for item in chunk]
+            for fut in as_completed(futures):
+                yield fut.result()
+        # Pool closed here → this generation's workers (+ arenas + Chromium +
+        # lru_cache) are gone before the next generation forks fresh.

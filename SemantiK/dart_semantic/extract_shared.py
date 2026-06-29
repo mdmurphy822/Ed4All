@@ -572,7 +572,14 @@ def _pypdfium2_render_page_to_image(pdf_path: Path, page_num: int, scale: float 
     pdf = pdfium.PdfDocument(str(pdf_path))
     try:
         page = pdf[page_num - 1]
-        return page.render(scale=scale).to_pil()
+        bm = page.render(scale=scale)
+        img = bm.to_pil()
+        # Close the native bitmap + page handles explicitly — leaving them to GC
+        # leaks pypdfium2 C-side buffers on the OCR render path (only the
+        # PdfDocument was being closed).
+        bm.close()
+        page.close()
+        return img
     finally:
         pdf.close()
 

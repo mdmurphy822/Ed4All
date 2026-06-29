@@ -88,6 +88,7 @@ from dart_semantic.classify import Role
 from dart_semantic.extract_shared import extract_shared, extract_shared_cached
 from dart_semantic.text_utils import jaccard_overlap
 from dart_semantic.worker_pool import run_in_pool
+from data import structure_align
 from data.balance import add_cap_args, apply_caps_and_report
 from data.structure_align import (
     SCHEMA_VERSION as STRUCTURE_ALIGN_SCHEMA_VERSION,
@@ -912,7 +913,10 @@ def process_pair_global(validator, work: tuple) -> dict:
     """Worker (global path): globally align extract_shared blocks to the HTML
     ground truth via :func:`data.structure_align.align_blocks` and emit the
     lossless ``structure_dataset/3`` rows + a per-pair ledger sidecar."""
-    pair_path_str, out_examples_dir_str = work
+    # Backward-compatible unpack: a 3rd element carries the rendered-path block
+    # cap (mirrors --realpdf-max-blocks); legacy 2-tuples disable the cap.
+    pair_path_str, out_examples_dir_str, *rest = work
+    max_blocks = int(rest[0]) if rest else 0
     pair_path = Path(pair_path_str)
     out_dir = Path(out_examples_dir_str)
     stats = {
@@ -921,6 +925,7 @@ def process_pair_global(validator, work: tuple) -> dict:
         "total_blocks": 0,
         "n_gold": 0,
         "gold_gap": 0,
+        "too_large": 0,
         "error": None,
     }
 
@@ -965,6 +970,13 @@ def process_pair_global(validator, work: tuple) -> dict:
     gold_views = [GoldView.from_html_block(rec, i) for i, rec in enumerate(gold_records)]
     source = pair.get("source", "unknown")
 
+    # Size guard (mirrors the real-PDF path): a freak huge page would spike the
+    # aligner's O(n_pdf * n_gold * max_run) DP (a transient memory/CPU balloon,
+    # not the monotonic leak). Record a too_large drop and skip.
+    if max_blocks and (len(pdf_views) > max_blocks or len(gold_views) > max_blocks):
+        stats["too_large"] = 1
+        return stats
+
     try:
         result = align_blocks(
             pdf_views,
@@ -980,6 +992,14 @@ def process_pair_global(validator, work: tuple) -> dict:
     except Exception as exc:
         stats["error"] = f"align: {exc}"
         return stats
+    finally:
+        # The aligner's sim() lru_cache (maxsize=None) grows ~750B/entry with
+        # ~0 cross-pair reuse — reset it to baseline each pair. The within-pair
+        # DP memoization is preserved (cleared only after this pair's align).
+        try:
+            structure_align._sim_cached.cache_clear()
+        except Exception:
+            pass
 
     kept = project_rows(result.rows, ROLE_NAMES, ledger=result.ledger)
     rows_out = [_enrich_v3_row(r, gold_records, in_table_by_order) for r in kept]
@@ -1013,6 +1033,16 @@ def process_pair_global(validator, work: tuple) -> dict:
             ensure_ascii=False,
         )
     )
+    # Return per-pair native allocator arenas to the OS. pypdfium2/pdfplumber
+    # free their per-page buffers, but glibc malloc keeps the freed arenas
+    # mapped (the tracemalloc-invisible RSS ratchet). malloc_trim(0) hands them
+    # back. Best-effort: a no-op on non-glibc / musl libc.
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
     return stats
 
 
@@ -1047,13 +1077,16 @@ def run_global_build(args) -> None:
     pair_paths = [p for p in pair_paths if p.stem not in done_stems]
     print(f"[plan][global] {len(pair_paths)} to process ({len(done_stems)} done)", file=sys.stderr)
 
-    work_items = [(str(p), str(examples_dir)) for p in pair_paths]
+    max_blocks = getattr(args, "global_max_blocks", 0) or 0
+    work_items = [(str(p), str(examples_dir), max_blocks) for p in pair_paths]
     start = time.time()
     done = 0
-    totals = {"aligned": 0, "total_blocks": 0, "n_gold": 0, "gold_gap": 0, "errors": 0}
+    totals = {"aligned": 0, "total_blocks": 0, "n_gold": 0, "gold_gap": 0, "errors": 0, "too_large": 0}
     for stats in run_in_pool(process_pair_global, work_items, workers=args.workers):
         done += 1
-        if stats.get("error"):
+        if stats.get("too_large"):
+            totals["too_large"] += 1
+        elif stats.get("error"):
             totals["errors"] += 1
             if done % 25 == 1:
                 print(
@@ -1068,6 +1101,7 @@ def run_global_build(args) -> None:
                 print(
                     f"[{done}/{len(work_items)}] rows={totals['aligned']}  "
                     f"gold_cov={cov * 100:.1f}%  errors={totals['errors']}  "
+                    f"too_large={totals['too_large']}  "
                     f"elapsed={(time.time() - start) / 60:.1f}min",
                     file=sys.stderr,
                 )
@@ -1742,6 +1776,13 @@ def stratified_split(
 
 
 def main() -> None:
+    # Cap glibc malloc arenas BEFORE any worker pool / ProcessPoolExecutor is
+    # spawned so child workers inherit it. Fewer arenas = far less per-thread
+    # arena fragmentation from the per-page pypdfium2/pdfplumber render+extract
+    # churn (the native RSS ratchet). std glibc env, not a SemantiK flag;
+    # setdefault so an operator can still override it.
+    os.environ.setdefault("MALLOC_ARENA_MAX", "2")
+
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--pair-dirs",
@@ -1855,6 +1896,14 @@ def main() -> None:
         default=500,
         help="Skip (drop=too_large) a doc with more than this many PDF or gold "
         "blocks — bounds the O(n*m*max_run) alignment DP. 0=off.",
+    )
+    ap.add_argument(
+        "--global-max-blocks",
+        type=int,
+        default=500,
+        help="Rendered-HTML global-aligner equivalent of --realpdf-max-blocks: "
+        "skip (drop=too_large) a pair whose PDF or gold block count exceeds this, "
+        "bounding the alignment DP on a freak huge page. 0=off.",
     )
     add_cap_args(ap)
     args = ap.parse_args()
