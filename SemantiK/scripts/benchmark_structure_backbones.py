@@ -911,12 +911,26 @@ def main() -> None:
                     label = f"{arm} {split} {partition}" + (f" heldout={corpus}" if corpus else "")
                     print(f"[cell] {label}  train={len(tr_rows)} test={len(te_rows)}",
                           flush=True)
-                    cell = _run_cell(
-                        arm=arm, split=split, partition=partition,
-                        held_out_corpus=corpus, train_rows=tr_rows,
-                        val_rows=va_rows, test_rows=te_rows,
-                        realpdf_rows=realpdf_rows, smoke=args.smoke,
-                        device=device, args=args)
+                    try:
+                        cell = _run_cell(
+                            arm=arm, split=split, partition=partition,
+                            held_out_corpus=corpus, train_rows=tr_rows,
+                            val_rows=va_rows, test_rows=te_rows,
+                            realpdf_rows=realpdf_rows, smoke=args.smoke,
+                            device=device, args=args)
+                    except Exception as exc:  # noqa: BLE001
+                        # One arm's failure (e.g. an 8GB OOM on an fp32 layout
+                        # backbone) must NOT abort the remaining arms. Record
+                        # nothing in `done` so a re-run (e.g. smaller --batch-size)
+                        # retries this cell; free the card and move on.
+                        import traceback
+                        print(f"[cell-error] {label}: {type(exc).__name__}: {exc}",
+                              flush=True)
+                        traceback.print_exc()
+                        gc.collect()
+                        if device.type == "cuda":
+                            torch.cuda.empty_cache()
+                        continue
                     report["per_cell"].append(cell)
                     done.add(key)
                     _write_report(report, args.output)
