@@ -284,6 +284,12 @@ SemantiK/data/*
 !SemantiK/data/balance.py
 !SemantiK/data/jats_tables.py
 !SemantiK/data/gpotable_tables.py
+# Phase-0 global aligner module + its unit tests are training-pipeline CODE
+# (not data) — track them. The data/tests/ dir is re-included so git descends
+# (dataset OUTPUT dirs stay ignored; __pycache__ stays ignored via global rules).
+!SemantiK/data/structure_align.py
+!SemantiK/data/tests/
+!SemantiK/data/tests/test_structure_align.py
 # extension belt-and-suspenders (model artifact zoo)
 SemantiK/**/*.gguf
 SemantiK/**/*.pt

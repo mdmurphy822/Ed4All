@@ -75,6 +75,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import sys
 import tempfile
@@ -83,14 +84,22 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from bs4 import BeautifulSoup, Tag
-
 from dart_semantic.classify import Role
 from dart_semantic.extract_shared import extract_shared, extract_shared_cached
 from dart_semantic.text_utils import jaccard_overlap
 from dart_semantic.worker_pool import run_in_pool
-
 from data.balance import add_cap_args, apply_caps_and_report
-
+from data.structure_align import (
+    SCHEMA_VERSION as STRUCTURE_ALIGN_SCHEMA_VERSION,
+)
+from data.structure_align import (
+    AlignRow,
+    FBView,
+    GoldView,
+    LedgerIncompleteError,
+    align_blocks,
+    project_rows,
+)
 
 # ---------------------------------------------------------------------------
 # Label vocabularies
@@ -659,6 +668,422 @@ def process_pair(validator, work: tuple) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Global aligner path (structure_dataset/3) — opt-in, off by default
+# ---------------------------------------------------------------------------
+#
+# The DEFAULT build path stays the greedy v2 loop above (byte-stable). Passing
+# ``--aligner global`` (or ``SEMANTIK_STRUCTURE_ALIGNER=global``) routes the
+# build through the lossless, split/merge-aware aligner in
+# ``data/structure_align.py`` and writes the additive ``structure_dataset/3``
+# rows to a SEPARATE ``data/structure_dataset_v3/`` tree — the greedy
+# ``data/structure_dataset/`` (and ``_v2/``) outputs are never touched.
+#
+# The greedy loop silently DROPS ~25.6% of the gold supervision (a gold block
+# no PDF block window-matches at >=0.30 just vanishes); the global path records
+# every gold + pdf position in a ledger (lossless, fail-closed) and recovers
+# 1-PDF->many-gold SPLIT supervision the greedy path cannot express.
+#
+# TODO(calibration): soft_floor=0.30 / max_run=6 are the frozen module
+# defaults; calibration against a real corpus is DEFERRED — do not tune here.
+GLOBAL_SOFT_FLOOR = 0.30
+GLOBAL_MAX_RUN = 6
+
+
+def resolve_aligner(cli_value: str | None) -> str:
+    """Parse-with-fallback aligner selector (mirrors the SEMANTIK_* posture):
+    explicit ``--aligner`` > ``SEMANTIK_STRUCTURE_ALIGNER`` env > ``greedy``.
+    Any value other than ``global`` (case-insensitive) resolves to ``greedy``."""
+    raw = cli_value if cli_value is not None else os.environ.get("SEMANTIK_STRUCTURE_ALIGNER", "")
+    return "global" if str(raw).strip().lower() == "global" else "greedy"
+
+
+def _pdf_views_for_pair(shared: dict) -> tuple[list[FBView], dict[int, bool]]:
+    """Build :class:`FBView` instances in document reading order.
+
+    Mirrors :func:`process_pair`'s per-page setup EXACTLY (per-page medians,
+    top-to-bottom/left-to-right sort, :func:`_block_in_any_table`, and the
+    SINGLE-source-of-truth :func:`compute_span_layout_features` 20-dim vector)
+    and PASSES the layout vector into ``FBView`` so the aligner never recomputes
+    geometry. Returns the FBView list plus an ``order_index -> in_table`` map
+    (the pdf-side table-region signal ``FBView`` does not carry)."""
+    views: list[FBView] = []
+    in_table_by_order: dict[int, bool] = {}
+    order_index = 0
+    for page_no, page in enumerate(shared.get("pages", [])):
+        merged = page.get("merged", {}).get("text_blocks", []) or []
+        if not merged:
+            continue
+        page_w = float(page.get("width", 612.0))
+        page_h = float(page.get("height", 792.0))
+        sizes = [b["font_size"] for b in merged if b.get("font_size") is not None]
+        page_median_fs = sorted(sizes)[len(sizes) // 2] if sizes else 12.0
+        heights = [
+            b["bbox"][3] - b["bbox"][1]
+            for b in merged
+            if (b.get("bbox") and b["bbox"][3] > b["bbox"][1])
+        ]
+        page_median_h = sorted(heights)[len(heights) // 2] if heights else 12.0
+        merged_sorted = sorted(merged, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+        for block in merged_sorted:
+            text = (block.get("text") or "").strip()
+            if not text:
+                continue
+            in_table = _block_in_any_table(block, page)
+            layout_vec = compute_span_layout_features(
+                block,
+                page_w=page_w,
+                page_h=page_h,
+                page_median_fs=page_median_fs,
+                page_median_h=page_median_h,
+                in_table=in_table,
+            )
+            views.append(
+                FBView.from_merged_text_block(
+                    block, page=page_no, order_index=order_index, layout=layout_vec
+                )
+            )
+            in_table_by_order[order_index] = in_table
+            order_index += 1
+    return views, in_table_by_order
+
+
+def _resolve_gold_record(row: AlignRow, gold_records: list[dict]) -> dict | None:
+    """Map an :class:`AlignRow` back to its source gold record for the
+    secondary-head labels.
+
+    MATCH/MERGE carry exactly one ``gold_index``; a SPLIT row carries the full
+    member-index list, but per the frozen module's SPLIT-uses-gold-member-text
+    contract its ``text`` IS the recovered member's text, so we resolve the
+    precise member by text equality (falling back to the first index)."""
+    gidx = [i for i in (row.align.get("gold_indices") or []) if 0 <= i < len(gold_records)]
+    if not gidx:
+        return None
+    if len(gidx) > 1:
+        for i in gidx:
+            if gold_records[i].get("text") == row.text:
+                return gold_records[i]
+    return gold_records[gidx[0]]
+
+
+def _enrich_v3_row(
+    row: AlignRow, gold_records: list[dict], in_table_by_order: dict[int, bool]
+) -> dict:
+    """Serialize an ``AlignRow`` to its ``structure_dataset/3`` dict and
+    backfill the secondary-head labels (``is_heading`` / ``table_region`` /
+    ``is_image_block`` / ``list_nesting``).
+
+    ``AlignRow.to_row()`` only fills ``labels.structural_role`` (at projection),
+    but ``training/train_structure.py::load_split`` hard-subscripts the other
+    head labels — so the glue enriches them here (NOT the frozen module),
+    deriving ``is_heading`` from the html tag (== greedy) and the remaining
+    heads from the resolved gold record + the pdf-side ``in_table`` signal
+    (== greedy's ``table_region`` rule)."""
+    rd = row.to_row()
+    labels = rd["labels"]  # carries structural_role from project_rows
+    tag = rd.get("html_tag") or ""
+    labels["is_heading"] = 1 if (tag.startswith("h") and tag[1:].isdigit()) else 0
+    gmeta = _resolve_gold_record(row, gold_records)
+    pdf_oi = rd.get("provenance", {}).get("pdf_order_index")
+    in_table_pdf = bool(in_table_by_order.get(pdf_oi, False))
+    in_table_html = bool(gmeta.get("in_table_html")) if gmeta else False
+    labels["table_region"] = 1 if (in_table_pdf or in_table_html) else 0
+    labels["is_image_block"] = 1 if (gmeta and gmeta.get("in_image_block_html")) else 0
+    labels["list_nesting"] = int(gmeta.get("list_nesting", 0)) if gmeta else 0
+    return rd
+
+
+def process_pair_global(validator, work: tuple) -> dict:
+    """Worker (global path): globally align extract_shared blocks to the HTML
+    ground truth via :func:`data.structure_align.align_blocks` and emit the
+    lossless ``structure_dataset/3`` rows + a per-pair ledger sidecar."""
+    pair_path_str, out_examples_dir_str = work
+    pair_path = Path(pair_path_str)
+    out_dir = Path(out_examples_dir_str)
+    stats = {
+        "pair": pair_path.name,
+        "aligned": 0,
+        "total_blocks": 0,
+        "n_gold": 0,
+        "gold_gap": 0,
+        "error": None,
+    }
+
+    try:
+        pair = json.loads(pair_path.read_text())
+    except Exception as exc:
+        stats["error"] = f"read pair: {exc}"
+        return stats
+
+    output_html = pair.get("output_html")
+    if not output_html:
+        stats["error"] = "no output_html"
+        return stats
+
+    gold_records = extract_html_blocks(output_html)
+    if not gold_records:
+        stats["error"] = "no html blocks"
+        return stats
+
+    local_pdf = pair.get("local_pdf")
+    with tempfile.TemporaryDirectory() as tmp:
+        if local_pdf and Path(local_pdf).exists():
+            try:
+                shared = extract_shared_cached(Path(local_pdf))
+            except Exception as exc:
+                stats["error"] = f"extract (cached): {exc}"
+                return stats
+        else:
+            tmp_pdf = Path(tmp) / "rendered.pdf"
+            try:
+                validator.render_pdf(output_html, tmp_pdf)
+            except Exception as exc:
+                stats["error"] = f"render: {exc}"
+                return stats
+            try:
+                shared = extract_shared(tmp_pdf)
+            except Exception as exc:
+                stats["error"] = f"extract: {exc}"
+                return stats
+
+    pdf_views, in_table_by_order = _pdf_views_for_pair(shared)
+    gold_views = [GoldView.from_html_block(rec, i) for i, rec in enumerate(gold_records)]
+    source = pair.get("source", "unknown")
+
+    try:
+        result = align_blocks(
+            pdf_views,
+            gold_views,
+            max_run=GLOBAL_MAX_RUN,
+            soft_floor=GLOBAL_SOFT_FLOOR,
+            source=source,
+            pair=pair_path.stem,
+        )
+    except LedgerIncompleteError as exc:
+        stats["error"] = f"align not lossless: {exc}"
+        return stats
+    except Exception as exc:
+        stats["error"] = f"align: {exc}"
+        return stats
+
+    kept = project_rows(result.rows, ROLE_NAMES, ledger=result.ledger)
+    rows_out = [_enrich_v3_row(r, gold_records, in_table_by_order) for r in kept]
+
+    n_pdf = len(pdf_views)
+    n_gold = len(gold_views)
+    summary = result.ledger.summary()
+    stats["aligned"] = len(rows_out)
+    stats["total_blocks"] = n_pdf
+    stats["n_gold"] = n_gold
+    stats["gold_gap"] = int(summary["counts"].get("gold_gap", 0))
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if rows_out:
+        out_path = out_dir / f"{pair_path.stem}.jsonl"
+        with out_path.open("w") as f:
+            for ex in rows_out:
+                f.write(json.dumps(ex, ensure_ascii=False) + "\n")
+    # Always write the ledger sidecar — even a 0-row pair consumed gold/pdf
+    # positions the coverage rollup must count (and it is the resume key).
+    sidecar = out_dir / f"{pair_path.stem}.ledger.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "pair": pair_path.stem,
+                "source": source,
+                "n_pdf": n_pdf,
+                "n_gold": n_gold,
+                "summary": summary,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return stats
+
+
+_LEDGER_SUFFIX = ".ledger.json"
+
+
+def run_global_build(args) -> None:
+    """Run the opt-in global-aligner build → ``data/structure_dataset_v3/``."""
+    examples_dir: Path = args.examples_dir
+    out_dir: Path = args.out_dir
+
+    pair_paths: list[Path] = []
+    for d in args.pair_dirs:
+        if not d.exists():
+            continue
+        files = sorted(d.glob("*.json"))
+        if args.limit_per_source:
+            files = files[: args.limit_per_source]
+        pair_paths.extend(files)
+    print(
+        f"[plan][global] {len(pair_paths)} pair files across {len(args.pair_dirs)} dirs",
+        file=sys.stderr,
+    )
+
+    # Resume key = the always-written ledger sidecar (a 0-row pair has no
+    # JSONL but still has a sidecar).
+    done_stems = (
+        {p.name[: -len(_LEDGER_SUFFIX)] for p in examples_dir.glob(f"*{_LEDGER_SUFFIX}")}
+        if examples_dir.exists()
+        else set()
+    )
+    pair_paths = [p for p in pair_paths if p.stem not in done_stems]
+    print(f"[plan][global] {len(pair_paths)} to process ({len(done_stems)} done)", file=sys.stderr)
+
+    work_items = [(str(p), str(examples_dir)) for p in pair_paths]
+    start = time.time()
+    done = 0
+    totals = {"aligned": 0, "total_blocks": 0, "n_gold": 0, "gold_gap": 0, "errors": 0}
+    for stats in run_in_pool(process_pair_global, work_items, workers=args.workers):
+        done += 1
+        if stats.get("error"):
+            totals["errors"] += 1
+            if done % 25 == 1:
+                print(
+                    f"[{done}/{len(work_items)}] {stats['pair'][:50]} ERR {stats['error'][:70]}",
+                    file=sys.stderr,
+                )
+        else:
+            for k in ("aligned", "total_blocks", "n_gold", "gold_gap"):
+                totals[k] += stats[k]
+            if done % 25 == 0 or done == len(work_items):
+                cov = 1.0 - totals["gold_gap"] / max(1, totals["n_gold"])
+                print(
+                    f"[{done}/{len(work_items)}] rows={totals['aligned']}  "
+                    f"gold_cov={cov * 100:.1f}%  errors={totals['errors']}  "
+                    f"elapsed={(time.time() - start) / 60:.1f}min",
+                    file=sys.stderr,
+                )
+
+    # Merge per-pair v3 JSONL into one corpus (the .ledger.json sidecars are
+    # NOT matched by *.jsonl).
+    all_examples: list[dict] = []
+    for p in sorted(examples_dir.glob("*.jsonl")):
+        for line in p.read_text().splitlines():
+            if line.strip():
+                all_examples.append(json.loads(line))
+    print(f"\n[merge][global] total v3 rows: {len(all_examples)}", file=sys.stderr)
+    if not all_examples:
+        raise SystemExit("no v3 examples produced")
+
+    # Roll up every per-pair ledger (covers resumed pairs too).
+    agg_counts: Counter = Counter()
+    per_role: Counter = Counter()
+    excluded_roles: Counter = Counter()
+    projected_roles: Counter = Counter()
+    by_source: dict[str, Counter] = defaultdict(Counter)
+    total_gold = 0
+    total_pdf = 0
+    n_pairs = 0
+    for sc in sorted(examples_dir.glob(f"*{_LEDGER_SUFFIX}")):
+        d = json.loads(sc.read_text())
+        n_pairs += 1
+        summ = d["summary"]
+        c = summ["counts"]
+        agg_counts.update(c)
+        per_role.update(summ["per_role"])
+        excluded_roles.update(summ["excluded_roles"])
+        projected_roles.update(summ["projected_roles"])
+        src = d.get("source", "unknown")
+        total_gold += int(d["n_gold"])
+        total_pdf += int(d["n_pdf"])
+        bs = by_source[src]
+        bs["n_gold"] += int(d["n_gold"])
+        bs["n_pdf"] += int(d["n_pdf"])
+        for k in ("matched", "split", "merge", "gold_gap", "pdf_gap", "low_sim", "role_filtered"):
+            bs[k] += c.get(k, 0)
+
+    train, val, test = stratified_split(all_examples, seed=args.seed)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name, rows in (("train", train), ("val", val), ("test", test)):
+        path = out_dir / f"{name}.jsonl"
+        with path.open("w") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        print(f"[write][global] {path}  {len(rows)} rows", file=sys.stderr)
+
+    # Confidence histogram + per-row tallies from the written rows.
+    conf_hist = [0] * 10
+    low_sim_rows = 0
+    role_counts: Counter = Counter()
+    source_counts: Counter = Counter()
+    for r in all_examples:
+        al = r.get("align", {})
+        conf = float(al.get("confidence", 0.0) or 0.0)
+        bin_idx = 9 if conf >= 1.0 else max(0, min(9, int(conf * 10)))
+        conf_hist[bin_idx] += 1
+        if al.get("low_sim"):
+            low_sim_rows += 1
+        role_counts[r["labels"]["structural_role"]] += 1
+        source_counts[r.get("source", "unknown")] += 1
+
+    gold_gap = agg_counts.get("gold_gap", 0)
+    gold_cov = 1.0 - gold_gap / max(1, total_gold)
+
+    drop_ledger = {
+        "by_reason": {
+            "gold_gap": gold_gap,
+            "pdf_gap": agg_counts.get("pdf_gap", 0),
+            "role_filtered": agg_counts.get("role_filtered", 0),
+        },
+        "role_filtered_by_role": dict(excluded_roles),
+        "by_source": {
+            src: {
+                "gold_total": bs["n_gold"],
+                "gold_gap": bs["gold_gap"],
+                "pdf_gap": bs["pdf_gap"],
+                "role_filtered": bs["role_filtered"],
+            }
+            for src, bs in sorted(by_source.items())
+        },
+    }
+    confidence_histogram = {
+        f"{i / 10:.1f}-{(i + 1) / 10:.1f}": conf_hist[i] for i in range(10)
+    }
+    move_counts = {k: agg_counts.get(k, 0) for k in ("matched", "split", "merge", "gold_gap", "pdf_gap")}
+
+    coverage = {
+        "schema_version": STRUCTURE_ALIGN_SCHEMA_VERSION,
+        "aligner": "global",
+        "soft_floor": GLOBAL_SOFT_FLOOR,
+        "max_run": GLOBAL_MAX_RUN,
+        "calibration_note": "TODO(calibration): soft_floor=0.30 / max_run=6 are frozen defaults, not tuned",
+        "n_pairs": n_pairs,
+        "n_examples_total": len(all_examples),
+        "train_size": len(train),
+        "val_size": len(val),
+        "test_size": len(test),
+        "gold_total_positions": total_gold,
+        "pdf_total_positions": total_pdf,
+        "gold_coverage_rate": round(gold_cov, 6),
+        "move_counts": move_counts,
+        "low_sim_moves": agg_counts.get("low_sim", 0),
+        "low_sim_rows": low_sim_rows,
+        "drop_ledger": drop_ledger,
+        "confidence_histogram": confidence_histogram,
+        "structural_role_counts": {ROLE_NAMES[k]: v for k, v in role_counts.items()},
+        "source_counts": dict(source_counts),
+        "projected_roles": dict(projected_roles),
+        "excluded_roles": dict(excluded_roles),
+        "by_source": {src: dict(bs) for src, bs in sorted(by_source.items())},
+        "layout_feature_dim": LAYOUT_FEATURE_DIM,
+        "layout_feature_names": LAYOUT_FEATURE_NAMES,
+        "role_names": list(ROLE_NAMES),
+    }
+    (out_dir / "coverage_report.json").write_text(json.dumps(coverage, indent=2))
+    print(f"[save][global] coverage report -> {out_dir / 'coverage_report.json'}", file=sys.stderr)
+    print(
+        f"[GLOBAL] gold_coverage_rate={gold_cov * 100:.2f}%  "
+        f"rows={len(all_examples)}  pairs={n_pairs}  "
+        f"matched={move_counts['matched']} split={move_counts['split']} "
+        f"merge={move_counts['merge']} gold_gap={move_counts['gold_gap']} "
+        f"pdf_gap={move_counts['pdf_gap']}  low_sim_rows={low_sim_rows}",
+        file=sys.stderr,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Stratified split + main
 # ---------------------------------------------------------------------------
 
@@ -708,8 +1133,20 @@ def main() -> None:
             Path("data/pairs/synthetic_blockquote_code"),
         ],
     )
-    ap.add_argument("--examples-dir", type=Path, default=Path("data/structure_dataset/per_pair"))
-    ap.add_argument("--out-dir", type=Path, default=Path("data/structure_dataset"))
+    # Defaults resolved AFTER --aligner so the greedy path keeps its exact
+    # historical dirs (data/structure_dataset[/per_pair]) byte-for-byte while
+    # the global path lands in a SEPARATE data/structure_dataset_v3/ tree.
+    ap.add_argument("--examples-dir", type=Path, default=None)
+    ap.add_argument("--out-dir", type=Path, default=None)
+    ap.add_argument(
+        "--aligner",
+        choices=["greedy", "global"],
+        default=None,
+        help="Block→gold aligner. 'greedy' (default) = the byte-stable v2 "
+        "monotonic-Jaccard loop → data/structure_dataset/. 'global' = the "
+        "lossless split/merge-aware aligner (data/structure_align.py) → "
+        "data/structure_dataset_v3/. Env override: SEMANTIK_STRUCTURE_ALIGNER.",
+    )
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument(
@@ -728,6 +1165,17 @@ def main() -> None:
     )
     add_cap_args(ap)
     args = ap.parse_args()
+
+    aligner = resolve_aligner(args.aligner)
+    default_out = (
+        Path("data/structure_dataset_v3") if aligner == "global" else Path("data/structure_dataset")
+    )
+    args.out_dir = args.out_dir or default_out
+    args.examples_dir = args.examples_dir or (args.out_dir / "per_pair")
+
+    if aligner == "global":
+        run_global_build(args)
+        return
 
     pair_paths: list[Path] = []
     for d in args.pair_dirs:
