@@ -96,7 +96,9 @@ if _SEMANTIK_ROOT not in sys.path:
 from data.build_structure_data import (  # noqa: E402  (after sys.path bootstrap)
     LAYOUT_FEATURE_DIM,
     LIST_NESTING_BUCKETS,
+    NUM_PEDAGOGICAL_ROLES,
     NUM_ROLES,
+    PEDAGOGICAL_ROLE_NAMES,
     ROLE_NAMES,
 )
 
@@ -109,6 +111,7 @@ IS_HEADING_LABELS = ("not_heading", "heading")
 TABLE_REGION_LABELS = ("not_table_region", "table_region")
 IS_IMAGE_BLOCK_LABELS = ("not_image_block", "image_block")
 LIST_NESTING_NAMES = [f"depth={d}" for d in LIST_NESTING_BUCKETS]
+PEDAGOGICAL_ROLE_LABELS = PEDAGOGICAL_ROLE_NAMES
 
 
 def _label_count_table(labels: list[int], names, *, ignore: int | None = None) -> str:
@@ -157,6 +160,10 @@ def load_split(path: Path) -> Dataset:
             # — but the dataset SHOULD be rebuilt for a real Phase 3f run.
             "y_is_image_block": int(labels.get("is_image_block", 0)),
             "y_list_nesting": int(labels["list_nesting"]),
+            # AXIS-2: backward-compat — pre-AXIS-2 rows (and the byte-stable
+            # greedy dataset) carry no pedagogical_role; default to 0 (none),
+            # mirroring is_image_block. A v3 row carries the real label.
+            "y_pedagogical_role": int(labels.get("pedagogical_role", 0)),
             "source": r.get("source", "unknown"),
         })
     if skipped:
@@ -244,6 +251,7 @@ class StructureModel(nn.Module):
         self.head_table_region = nn.Linear(head_in, 2)
         self.head_is_image_block = nn.Linear(head_in, 2)
         self.head_list_nesting = nn.Linear(head_in, NUM_LIST_NESTING)
+        self.head_pedagogical_role = nn.Linear(head_in, NUM_PEDAGOGICAL_ROLES)
 
     def forward(
         self,
@@ -262,6 +270,7 @@ class StructureModel(nn.Module):
             "table_region": self.head_table_region(h),
             "is_image_block": self.head_is_image_block(h),
             "list_nesting": self.head_list_nesting(h),
+            "pedagogical_role": self.head_pedagogical_role(h),
         }
 
     def save_adapter(self, out_dir: Path) -> None:
@@ -278,6 +287,8 @@ class StructureModel(nn.Module):
                     self.head_is_image_block.state_dict(),
                 "head_list_nesting.state_dict":
                     self.head_list_nesting.state_dict(),
+                "head_pedagogical_role.state_dict":
+                    self.head_pedagogical_role.state_dict(),
                 "layout_norm.state_dict": self.layout_norm.state_dict(),
                 "layout_mlp.state_dict": self.layout_mlp.state_dict(),
                 "layout_dim": self.layout_dim,
@@ -321,6 +332,9 @@ def _make_loader(
         out["y_list_nesting"] = torch.tensor(
             [b["y_list_nesting"] for b in batch], dtype=torch.long,
         )
+        out["y_pedagogical_role"] = torch.tensor(
+            [b["y_pedagogical_role"] for b in batch], dtype=torch.long,
+        )
         out["layout"] = torch.tensor(
             [b["layout"] for b in batch], dtype=torch.float32,
         )
@@ -349,6 +363,7 @@ def evaluate(
     tr_t, tr_p = [], []
     ib_t, ib_p = [], []
     ln_t, ln_p = [], []
+    pr_t, pr_p = [], []
     with torch.no_grad():
         for batch in loader:
             ids = batch["input_ids"].to(device)
@@ -360,11 +375,13 @@ def evaluate(
             p_tr = out["table_region"].argmax(-1).tolist()
             p_ib = out["is_image_block"].argmax(-1).tolist()
             p_ln = out["list_nesting"].argmax(-1).tolist()
+            p_pr = out["pedagogical_role"].argmax(-1).tolist()
             yr = batch["y_role"].tolist()
             yh = batch["y_is_heading"].tolist()
             ytr = batch["y_table_region"].tolist()
             yib = batch["y_is_image_block"].tolist()
             yln = batch["y_list_nesting"].tolist()
+            ypr = batch["y_pedagogical_role"].tolist()
             for i in range(len(yr)):
                 # -100 = masked synth table-cell role/is_heading: exclude from
                 # the metric so role macro-F1 is measured on real prose roles.
@@ -375,6 +392,7 @@ def evaluate(
                 tr_t.append(ytr[i]); tr_p.append(p_tr[i])
                 ib_t.append(yib[i]); ib_p.append(p_ib[i])
                 ln_t.append(yln[i]); ln_p.append(p_ln[i])
+                pr_t.append(ypr[i]); pr_p.append(p_pr[i])
     role_macro = f1_score(role_t, role_p, average="macro", zero_division=0)
     is_h_f1 = f1_score(is_h_t, is_h_p, pos_label=1, zero_division=0)
     tr_f1 = f1_score(tr_t, tr_p, pos_label=1, zero_division=0)
@@ -382,18 +400,27 @@ def evaluate(
     ln_mae = (
         sum(abs(t - p) for t, p in zip(ln_t, ln_p)) / max(1, len(ln_t))
     )
+    # pedagogical_role: macro-F1 over the NON-none classes only (class 0 is
+    # the overwhelming majority and its F1 would mask the rare-positive
+    # performance that matters). Empty positive set -> 0.0.
+    ped_pos_labels = list(range(1, NUM_PEDAGOGICAL_ROLES))
+    pr_macro = f1_score(
+        pr_t, pr_p, labels=ped_pos_labels, average="macro", zero_division=0
+    )
     return {
         "role_macro_f1": float(role_macro),
         "is_heading_pos_f1": float(is_h_f1),
         "table_region_pos_f1": float(tr_f1),
         "is_image_block_pos_f1": float(ib_f1),
         "list_nesting_mae": float(ln_mae),
+        "pedagogical_role_macro_f1": float(pr_macro),
         "raw": {
             "role": (role_t, role_p),
             "is_heading": (is_h_t, is_h_p),
             "table_region": (tr_t, tr_p),
             "is_image_block": (ib_t, ib_p),
             "list_nesting": (ln_t, ln_p),
+            "pedagogical_role": (pr_t, pr_p),
         },
     }
 
@@ -418,6 +445,12 @@ def main() -> None:
                          "multi-head sampler — lower than the CE class "
                          "weight cap to avoid the precision-crash that "
                          "killed Phase 3a's pair-level heading head.")
+    ap.add_argument("--pedagogical-sampler-cap", type=float, default=8.0,
+                    help="Cap on the per-positive-class pedagogical_role "
+                         "sample weight in the multi-head sampler (AXIS-2). "
+                         "Mirrors --is-heading-sampler-cap: oversamples the "
+                         "rare EXAMPLE/TRY-IT/Solution labels without letting "
+                         "them over-distort the role objective.")
     ap.add_argument("--patience", type=int, default=3)
     ap.add_argument("--no-oversample", action="store_true")
     ap.add_argument("--snapshot-policy",
@@ -452,6 +485,10 @@ def main() -> None:
     ))
     print("[balance] list_nesting (train):")
     print(_label_count_table(train_ds["y_list_nesting"], LIST_NESTING_NAMES))
+    print("[balance] pedagogical_role (train):")
+    print(_label_count_table(
+        train_ds["y_pedagogical_role"], PEDAGOGICAL_ROLE_LABELS,
+    ))
 
     tok = AutoTokenizer.from_pretrained(args.base_model)
 
@@ -483,11 +520,16 @@ def main() -> None:
         train_ds["y_list_nesting"], NUM_LIST_NESTING,
         weight_cap=args.weight_cap,
     ).to(device)
-    print(f"[weights] role:           {cw_role.tolist()}")
-    print(f"[weights] is_heading:     {cw_is_heading.tolist()}")
-    print(f"[weights] table_region:   {cw_table_region.tolist()}")
-    print(f"[weights] is_image_block: {cw_is_image_block.tolist()}")
-    print(f"[weights] list_nesting:   {cw_list_nesting.tolist()}")
+    cw_pedagogical_role = compute_class_weights(
+        train_ds["y_pedagogical_role"], NUM_PEDAGOGICAL_ROLES,
+        weight_cap=args.weight_cap,
+    ).to(device)
+    print(f"[weights] role:            {cw_role.tolist()}")
+    print(f"[weights] is_heading:      {cw_is_heading.tolist()}")
+    print(f"[weights] table_region:    {cw_table_region.tolist()}")
+    print(f"[weights] is_image_block:  {cw_is_image_block.tolist()}")
+    print(f"[weights] list_nesting:    {cw_list_nesting.tolist()}")
+    print(f"[weights] pedagogical_role:{cw_pedagogical_role.tolist()}")
 
     sample_w = None
     if not args.no_oversample:
@@ -500,10 +542,21 @@ def main() -> None:
         # the right balance).
         yr_arr = torch.tensor(train_ds["y_role"], dtype=torch.long)
         yh_arr = torch.tensor(train_ds["y_is_heading"], dtype=torch.long)
+        ypr_arr = torch.tensor(train_ds["y_pedagogical_role"], dtype=torch.long)
         cw_role_cpu = cw_role.detach().cpu()
         cw_h_cpu = cw_is_heading.detach().cpu().clone()
         cw_h_cpu[1] = min(float(cw_h_cpu[1]),
                           float(args.is_heading_sampler_cap))
+        # AXIS-2: oversample rare pedagogical_role POSITIVES (classes 1..N) so
+        # the new head sees TRY-IT/EXAMPLE/Solution at the rare-class rate; the
+        # `none` class (0) keeps weight 1.0 (it is the majority and must not be
+        # up-sampled). Capped (mirrors the is_heading sampler cap) so the rare
+        # pedagogical labels do not over-distort the role objective.
+        cw_pr_cpu = cw_pedagogical_role.detach().cpu().clone()
+        cw_pr_cpu[0] = 1.0
+        for c in range(1, NUM_PEDAGOGICAL_ROLES):
+            cw_pr_cpu[c] = min(float(cw_pr_cpu[c]),
+                               float(args.pedagogical_sampler_cap))
         # Masked rows (role/is_heading == -100, synth table cells) must not
         # index cw[-100] (silent negative-index of the last class). Clamp the
         # index to 0 for the lookup, then force those rows' role/heading
@@ -512,13 +565,19 @@ def main() -> None:
         # they don't supervise.
         role_w = cw_role_cpu[yr_arr.clamp(min=0)]
         head_w = cw_h_cpu[yh_arr.clamp(min=0)]
+        ped_w = cw_pr_cpu[ypr_arr.clamp(min=0)]
         role_w = torch.where(yr_arr < 0, torch.ones_like(role_w), role_w)
         head_w = torch.where(yh_arr < 0, torch.ones_like(head_w), head_w)
-        per_row = torch.stack([role_w, head_w], dim=0)
+        ped_w = torch.where(ypr_arr < 0, torch.ones_like(ped_w), ped_w)
+        per_row = torch.stack([role_w, head_w, ped_w], dim=0)
         sample_w = per_row.max(dim=0).values.to(torch.float32)
         print(f"[oversample] is_heading sampler cap = "
               f"{args.is_heading_sampler_cap}")
-        for nm, arr in (("y_role", yr_arr), ("y_is_heading", yh_arr)):
+        for nm, arr in (
+            ("y_role", yr_arr),
+            ("y_is_heading", yh_arr),
+            ("y_pedagogical_role", ypr_arr),
+        ):
             for cls in sorted(set(arr.tolist())):
                 mask = arr == cls
                 if mask.any():
@@ -568,7 +627,7 @@ def main() -> None:
         ep_t0 = time.time()
         sums = {"loss": 0.0, "role": 0.0, "is_heading": 0.0,
                 "table_region": 0.0, "is_image_block": 0.0,
-                "list_nesting": 0.0}
+                "list_nesting": 0.0, "pedagogical_role": 0.0}
         n_batches = 0
         for batch in train_loader:
             ids = batch["input_ids"].to(device)
@@ -579,6 +638,7 @@ def main() -> None:
             ytr = batch["y_table_region"].to(device)
             yib = batch["y_is_image_block"].to(device)
             yln = batch["y_list_nesting"].to(device)
+            ypr = batch["y_pedagogical_role"].to(device)
             out = model(ids, mask, layout)
             loss_role = F.cross_entropy(out["role"], yr, weight=cw_role)
             loss_h = F.cross_entropy(
@@ -593,7 +653,10 @@ def main() -> None:
             loss_ln = F.cross_entropy(
                 out["list_nesting"], yln, weight=cw_list_nesting,
             )
-            loss = loss_role + loss_h + loss_tr + loss_ib + loss_ln
+            loss_pr = F.cross_entropy(
+                out["pedagogical_role"], ypr, weight=cw_pedagogical_role,
+            )
+            loss = loss_role + loss_h + loss_tr + loss_ib + loss_ln + loss_pr
             optim.zero_grad()
             loss.backward()
             optim.step()
@@ -604,6 +667,7 @@ def main() -> None:
             sums["table_region"] += float(loss_tr.item())
             sums["is_image_block"] += float(loss_ib.item())
             sums["list_nesting"] += float(loss_ln.item())
+            sums["pedagogical_role"] += float(loss_pr.item())
             n_batches += 1
             if torch.cuda.is_available():
                 peak_vram_bytes = max(
@@ -620,11 +684,14 @@ def main() -> None:
         else:  # weighted_macro
             # MAE-to-score: ln_mae of 0 → 1.0, ln_mae of 3 → 0.0.
             ln_score = max(0.0, 1.0 - val_metrics["list_nesting_mae"] / 3.0)
+            # AXIS-2: pedagogical_role folded into the snapshot score (weights
+            # renormalized to sum to 1.0 with the new 0.12 term).
             score = (
-                0.45 * val_metrics["role_macro_f1"]
-                + 0.20 * val_metrics["is_heading_pos_f1"]
-                + 0.18 * val_metrics["table_region_pos_f1"]
-                + 0.12 * val_metrics["is_image_block_pos_f1"]
+                0.40 * val_metrics["role_macro_f1"]
+                + 0.18 * val_metrics["is_heading_pos_f1"]
+                + 0.15 * val_metrics["table_region_pos_f1"]
+                + 0.10 * val_metrics["is_image_block_pos_f1"]
+                + 0.12 * val_metrics["pedagogical_role_macro_f1"]
                 + 0.05 * ln_score
             )
 
@@ -633,11 +700,13 @@ def main() -> None:
             f"role={avg['role']:.4f} ih={avg['is_heading']:.4f} "
             f"tr={avg['table_region']:.4f} "
             f"ib={avg['is_image_block']:.4f} "
-            f"ln={avg['list_nesting']:.4f}  "
+            f"ln={avg['list_nesting']:.4f} "
+            f"pr={avg['pedagogical_role']:.4f}  "
             f"val role={val_metrics['role_macro_f1']:.4f} "
             f"ih_pos={val_metrics['is_heading_pos_f1']:.4f} "
             f"tr_pos={val_metrics['table_region_pos_f1']:.4f} "
             f"ib_pos={val_metrics['is_image_block_pos_f1']:.4f} "
+            f"pr_macro={val_metrics['pedagogical_role_macro_f1']:.4f} "
             f"ln_mae={val_metrics['list_nesting_mae']:.4f}  "
             f"score={score:.4f}  ({ep_dt:.1f}s)",
             flush=True,
@@ -649,11 +718,14 @@ def main() -> None:
             "loss_table_region": avg["table_region"],
             "loss_is_image_block": avg["is_image_block"],
             "loss_list_nesting": avg["list_nesting"],
+            "loss_pedagogical_role": avg["pedagogical_role"],
             "val_role_macro_f1": val_metrics["role_macro_f1"],
             "val_is_heading_pos_f1": val_metrics["is_heading_pos_f1"],
             "val_table_region_pos_f1": val_metrics["table_region_pos_f1"],
             "val_is_image_block_pos_f1":
                 val_metrics["is_image_block_pos_f1"],
+            "val_pedagogical_role_macro_f1":
+                val_metrics["pedagogical_role_macro_f1"],
             "val_list_nesting_mae": val_metrics["list_nesting_mae"],
             "snapshot_score": score,
             "epoch_time_s": ep_dt,
@@ -669,7 +741,7 @@ def main() -> None:
                 if any(s in k for s in (
                     "lora_", "head_role", "head_is_heading",
                     "head_table_region", "head_is_image_block",
-                    "head_list_nesting",
+                    "head_list_nesting", "head_pedagogical_role",
                     "layout_norm", "layout_mlp",
                 ))
             }
@@ -701,6 +773,8 @@ def main() -> None:
           f"{test_metrics['table_region_pos_f1']:.4f}")
     print(f"[test] is_image_block pos-F1        = "
           f"{test_metrics['is_image_block_pos_f1']:.4f}")
+    print(f"[test] pedagogical_role macro-F1    = "
+          f"{test_metrics['pedagogical_role_macro_f1']:.4f}")
     print(f"[test] list_nesting MAE             = "
           f"{test_metrics['list_nesting_mae']:.4f}")
 
@@ -745,6 +819,14 @@ def main() -> None:
         target_names=LIST_NESTING_NAMES,
         zero_division=0, digits=3,
     ))
+    pr_t, pr_p = test_metrics["raw"]["pedagogical_role"]
+    print("[test] pedagogical_role per-class:")
+    print(classification_report(
+        pr_t, pr_p,
+        labels=list(range(NUM_PEDAGOGICAL_ROLES)),
+        target_names=list(PEDAGOGICAL_ROLE_LABELS),
+        zero_division=0, digits=3,
+    ))
 
     # ------ Save ------
     final_dir = args.output_dir / "final"
@@ -763,6 +845,8 @@ def main() -> None:
         "best_epoch": best_epoch,
         "best_snapshot_score": best_val,
         "is_heading_sampler_cap": args.is_heading_sampler_cap,
+        "pedagogical_sampler_cap": args.pedagogical_sampler_cap,
+        "pedagogical_role_names": list(PEDAGOGICAL_ROLE_LABELS),
         "layout_feature_dim": LAYOUT_FEATURE_DIM,
         "layout_mlp_hidden": LAYOUT_MLP_HIDDEN,
         "test_role_macro_f1": test_metrics["role_macro_f1"],
@@ -770,6 +854,8 @@ def main() -> None:
         "test_table_region_pos_f1": test_metrics["table_region_pos_f1"],
         "test_is_image_block_pos_f1":
             test_metrics["is_image_block_pos_f1"],
+        "test_pedagogical_role_macro_f1":
+            test_metrics["pedagogical_role_macro_f1"],
         "test_list_nesting_mae": test_metrics["list_nesting_mae"],
         "total_train_time_s": total_dt,
         "epochs_run": len(train_log),

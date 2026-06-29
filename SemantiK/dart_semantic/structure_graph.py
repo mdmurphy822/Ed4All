@@ -199,6 +199,10 @@ _LIST_ITEM_CONFIDENCE_FLOOR = 0.4
 _PARAGRAPH_CONFIDENCE_FLOOR = 0.3
 _CODE_CONFIDENCE_FLOOR = 0.4
 _BLOCKQUOTE_CONFIDENCE_FLOOR = 0.4
+# AXIS-1: definition-list collapse floor. A span whose structural_role top-1
+# is definition_term / definition_def at/above this floor seeds/extends a
+# `definition_list` Region (the previously-dead REGION_KINDS member).
+_DEFINITION_CONFIDENCE_FLOOR = 0.4
 
 # Semantic doc_role labels that, when high-confidence, drop the
 # corresponding FB into a metadata_drop region (Stage 9 will surface
@@ -1775,6 +1779,46 @@ def build_structure_graph(
                 feature_block_indices=tuple(range(start, end)),
                 payload={"text": text},
                 provenance={"pass": "blockquote"},
+            )
+        )
+        for j in range(start, end):
+            claimed.add(j)
+
+    # AXIS-1: definition_list — collapse a contiguous run of FBs whose
+    # structural_role top-1 is a definition-list leaf (definition_term /
+    # definition_def, the new AXIS-1 roles) into one ``definition_list``
+    # Region (the previously-dead REGION_KINDS member). The payload carries
+    # the per-FB (role, text) items so the assembler can emit <dl><dt>/<dd>.
+    # A pre-AXIS-1 council (no definition_* logits) never fires this — the
+    # run is empty and this pass is a no-op (byte-stable on old adapters).
+    def _is_definition(idx: int) -> bool:
+        sig = _get_signal(state, "structure", "structural_role", idx)
+        label, conf = _top1(sig)
+        return (
+            label in ("definition_term", "definition_def")
+            and conf >= _DEFINITION_CONFIDENCE_FLOOR
+        )
+
+    for start, end in list(_iter_runs(_is_definition, feature_blocks, claimed)):
+        items = []
+        for j in range(start, end):
+            jlabel, _ = _top1(_get_signal(state, "structure", "structural_role", j))
+            items.append(
+                {
+                    "role": jlabel,
+                    "text": (
+                        getattr(getattr(feature_blocks[j], "raw", None), "text", "")
+                        or ""
+                    ).strip(),
+                }
+            )
+        text = " ".join(it["text"] for it in items)
+        regions_out.append(
+            Region(
+                kind="definition_list",
+                feature_block_indices=tuple(range(start, end)),
+                payload={"text": text, "items": items},
+                provenance={"pass": "definition_list"},
             )
         )
         for j in range(start, end):

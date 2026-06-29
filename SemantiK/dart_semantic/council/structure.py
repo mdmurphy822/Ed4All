@@ -72,11 +72,30 @@ ROLE_NAMES = (
     "form_label",
     "blockquote",
     "code_block",
+    # AXIS-1 expansion (must match data.build_structure_data.ROLE_NAMES).
+    "definition_term",
+    "definition_def",
+    "caption",
 )
 IS_HEADING_LABELS = ("not_heading", "heading")
 TABLE_REGION_LABELS = ("not_table_region", "table_region")
 IS_IMAGE_BLOCK_LABELS = ("not_image_block", "image_block")
 LIST_NESTING_LABELS = ("depth_0", "depth_1", "depth_2", "depth_3plus")
+# AXIS-2: NEW span-level pedagogical-function head (orthogonal to
+# structural_role). Must match data.build_structure_data.PEDAGOGICAL_ROLE_NAMES
+# exactly (same order — class 0 == "none").
+PEDAGOGICAL_ROLE_LABELS = (
+    "none",
+    "example_open",
+    "exercise_open",
+    "solution",
+    "try_it",
+    "how_to",
+    "objectives",
+    "be_prepared",
+    "practice",
+    "step",
+)
 
 ADAPTER_SPEC = LoRAAdapterSpec(
     bert_name="structure",
@@ -88,6 +107,7 @@ ADAPTER_SPEC = LoRAAdapterSpec(
         ("table_region", len(TABLE_REGION_LABELS)),
         ("is_image_block", len(IS_IMAGE_BLOCK_LABELS)),
         ("list_nesting", len(LIST_NESTING_LABELS)),
+        ("pedagogical_role", len(PEDAGOGICAL_ROLE_LABELS)),
     ),
 )
 
@@ -366,12 +386,42 @@ def _load_heads(heads_path: Path, hidden_size: int) -> dict[str, Any]:
     head_table_region = nn.Linear(head_in, len(TABLE_REGION_LABELS))
     head_is_image_block = nn.Linear(head_in, len(IS_IMAGE_BLOCK_LABELS))
     head_list_nesting = nn.Linear(head_in, len(LIST_NESTING_LABELS))
-    head_role.load_state_dict(state["head_role.state_dict"])
+    head_pedagogical_role = nn.Linear(head_in, len(PEDAGOGICAL_ROLE_LABELS))
+    # structural_role widened 6 -> 9 (AXIS-1). A v3-trained checkpoint carries
+    # a 9-row head_role weight and loads cleanly. A pre-AXIS-1 checkpoint
+    # carries only 6 rows: PARTIAL-load the trained rows into the first 6
+    # output classes (their order is preserved — paragraph..code_block) and
+    # leave the 3 new classes (definition_term/definition_def/caption) at
+    # random init, so the old adapter keeps its exact 6-class behavior and the
+    # runtime never crashes. ``has_role_weights`` reports a full match.
+    role_sd = state["head_role.state_dict"]
+    has_role_weights = (
+        tuple(role_sd["weight"].shape) == tuple(head_role.weight.shape)
+    )
+    if has_role_weights:
+        head_role.load_state_dict(role_sd)
+    else:
+        old_w = role_sd["weight"]
+        old_b = role_sd.get("bias")
+        n_old = int(old_w.shape[0])
+        if n_old <= head_role.weight.shape[0] and old_w.shape[1] == head_role.weight.shape[1]:
+            with torch.no_grad():
+                head_role.weight[:n_old].copy_(old_w)
+                if old_b is not None:
+                    head_role.bias[:n_old].copy_(old_b)
     head_is_heading.load_state_dict(state["head_is_heading.state_dict"])
     head_table_region.load_state_dict(state["head_table_region.state_dict"])
     if "head_is_image_block.state_dict" in state:
         head_is_image_block.load_state_dict(state["head_is_image_block.state_dict"])
     head_list_nesting.load_state_dict(state["head_list_nesting.state_dict"])
+    # AXIS-2 pedagogical_role head — backward-compat with pre-AXIS-2
+    # checkpoints (mirrors is_image_block): construct the module either way,
+    # load weights only when the checkpoint carries them, and suppress the
+    # signal at emission time when it doesn't.
+    if "head_pedagogical_role.state_dict" in state:
+        head_pedagogical_role.load_state_dict(
+            state["head_pedagogical_role.state_dict"]
+        )
     layout_norm = nn.LayerNorm(layout_dim)
     layout_norm.load_state_dict(state["layout_norm.state_dict"])
     layout_mlp = _build_layout_mlp(layout_dim, layout_hidden)
@@ -390,11 +440,14 @@ def _load_heads(heads_path: Path, hidden_size: int) -> dict[str, Any]:
         "table_region": head_table_region,
         "is_image_block": head_is_image_block,
         "list_nesting": head_list_nesting,
+        "pedagogical_role": head_pedagogical_role,
         "layout_norm": layout_norm,
         "layout_mlp": layout_mlp,
         "layout_dim": layout_dim,
         "layout_mlp_hidden": layout_hidden,
         "has_is_image_block_weights": "head_is_image_block.state_dict" in state,
+        "has_role_weights": has_role_weights,
+        "has_pedagogical_role_weights": "head_pedagogical_role.state_dict" in state,
         "is_heading_temperature": is_heading_temperature,
     }
 
@@ -546,9 +599,11 @@ def run_inputs(
     head_table_region = heads_bundle["table_region"].to(device)
     head_is_image_block = heads_bundle["is_image_block"].to(device)
     head_list_nesting = heads_bundle["list_nesting"].to(device)
+    head_pedagogical_role = heads_bundle["pedagogical_role"].to(device)
     layout_norm = heads_bundle["layout_norm"].to(device)
     layout_mlp = heads_bundle["layout_mlp"].to(device)
     has_image_weights = bool(heads_bundle.get("has_is_image_block_weights"))
+    has_pedagogical_weights = bool(heads_bundle.get("has_pedagogical_role_weights"))
     # Post-hoc calibration scalar for is_heading. Defaults to 1.0 on
     # pre-calibration checkpoints — same shape, no behavior change.
     is_heading_T = float(heads_bundle.get("is_heading_temperature", 1.0))
@@ -599,6 +654,7 @@ def run_inputs(
         logits_tr = head_table_region(h)
         logits_ib = head_is_image_block(h)
         logits_ln = head_list_nesting(h)
+        logits_pr = head_pedagogical_role(h)
 
     # Resolve per-head top_k. Missing keys default to 3 (legacy).
     tkph: dict[str, int | None] = dict(top_k_per_head or {})
@@ -685,6 +741,22 @@ def run_inputs(
                 feature_provenance=prov,
             )
         )
+        # pedagogical_role: like is_image_block, only emit when the loaded
+        # checkpoint carries trained weights. A pre-AXIS-2 adapter gives
+        # random predictions on this head; emitting them would mislead the
+        # Stage-5e regroup / structural-editor consumers. A v3-trained head
+        # auto-emits (the suppression self-lifts post-retrain).
+        if has_pedagogical_weights:
+            signals.append(
+                _softmax_signal(
+                    "pedagogical_role",
+                    i,
+                    logits_pr[i],
+                    PEDAGOGICAL_ROLE_LABELS,
+                    top_k=_tk("pedagogical_role"),
+                    feature_provenance=prov,
+                )
+            )
 
     return BertOutput(
         bert_name=name,
@@ -706,6 +778,7 @@ __all__ = [
     "IS_IMAGE_BLOCK_LABELS",
     "LAYOUT_FEATURE_DIM",
     "LIST_NESTING_LABELS",
+    "PEDAGOGICAL_ROLE_LABELS",
     "ROLE_NAMES",
     "TABLE_REGION_LABELS",
     "run_inputs",

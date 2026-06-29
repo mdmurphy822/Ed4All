@@ -53,8 +53,29 @@ __all__ = [
     "valid_components",
     "semantic_component_for",
     "component_for_pedagogy_class",
+    "component_for_pedagogical_role",
     "label_for",
 ]
+
+
+# AXIS-4: map the NEW span-level ``pedagogical_role`` head tokens
+# (data.build_structure_data.PEDAGOGICAL_ROLE_NAMES) onto EXISTING gold
+# semantic components — NO new components are invented. example/try-it/how-to/
+# solution/step are all parts of a worked instance (-> worked_example);
+# objectives -> objectives; exercise/practice/be-prepared are practice-item
+# blocks (-> exercise). ``none`` (and any unknown token) -> None. Every target
+# is asserted to be a real catalog component at lookup time (anti-fabrication).
+_PEDAGOGICAL_ROLE_TO_COMPONENT = {
+    "example_open": "worked_example",
+    "try_it": "worked_example",
+    "how_to": "worked_example",
+    "solution": "worked_example",
+    "step": "worked_example",
+    "objectives": "objectives",
+    "exercise_open": "exercise",
+    "practice": "exercise",
+    "be_prepared": "exercise",
+}
 
 
 def semantic_catalog_path() -> Path:
@@ -185,6 +206,26 @@ def component_for_pedagogy_class(pedagogy_class: str) -> Optional[str]:
     if not pedagogy_class:
         return None
     return _pedagogy_class_to_component().get(pedagogy_class)
+
+
+def component_for_pedagogical_role(pedagogical_role: str) -> Optional[str]:
+    """Return the gold ``component`` a ``pedagogical_role`` head token maps to.
+
+    AXIS-4 bridge from the new span-level ``pedagogical_role`` head
+    (``example_open`` / ``try_it`` / ``solution`` / ``objectives`` /
+    ``exercise_open`` / …) to an EXISTING semantic component token
+    (``worked_example`` / ``objectives`` / ``exercise``). ``None`` for
+    ``none`` / unknown tokens, and ``None`` (anti-fabrication) if the mapped
+    component is somehow not in the catalog — the bridge never invents a token.
+    Pairs with :func:`component_for_pedagogy_class` (the clean-pass CSS-class
+    bridge); both resolve to the same existing components.
+    """
+    if not pedagogical_role:
+        return None
+    component = _PEDAGOGICAL_ROLE_TO_COMPONENT.get(pedagogical_role)
+    if component is None:
+        return None
+    return component if component in valid_components() else None
 
 
 @lru_cache(maxsize=1)

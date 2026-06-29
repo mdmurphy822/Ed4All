@@ -32,6 +32,16 @@ class Role(str, Enum):
     PARAGRAPH = "paragraph"
     LIST = "list"
     LIST_ITEM = "list_item"
+    # Definition-list leaves (Axis-1 structural-shape expansion). A <dt> is a
+    # term, a <dd> its definition; they group into a Stage-5 definition_list
+    # Region. Distinct from the orthogonal Stage-5d definition_region
+    # semantic_class (a boxed formal definition), which is a markup axis.
+    DEFINITION_TERM = "definition_term"
+    DEFINITION_DEF = "definition_def"
+    # Table/figure CAPTION text shape (Axis-1). Previously collapsed onto
+    # PARAGRAPH; now a first-class structural_role so the head can EMIT what
+    # gold needs (a <caption>/<figcaption> is a caption, not body prose).
+    CAPTION = "caption"
     TABLE = "table"
     TABLE_ROW = "table_row"
     TABLE_HEADER_CELL = "table_header_cell"

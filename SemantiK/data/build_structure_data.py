@@ -118,6 +118,15 @@ from data.structure_align import (
 # Page artifacts are captured by the layout side-channel
 # (top_5pct/bottom_5pct/is_artifact) and post-processing. The 6
 # remaining classes describe span CONTENT shape only.
+#
+# AXIS-1 expansion (this wave): three roles were added so the head can EMIT
+# what gold needs instead of collapsing the shape onto `paragraph`:
+#   * definition_term / definition_def — <dt>/<dd> definition-list leaves
+#     (previously had no role; the dl family was simply not extracted).
+#   * caption — <caption>/<figcaption> text (previously collapsed onto
+#     `paragraph`, erasing the "this is a caption" signal Phase-1 measured as
+#     a real-PDF gap). The TABLE_* family + FIGURE stay dropped (table_region
+#     / is_image_block binary heads + downstream specialists own them).
 ROLE_LIST = (
     Role.PARAGRAPH,
     Role.HEADING,
@@ -125,6 +134,9 @@ ROLE_LIST = (
     Role.FORM_LABEL,
     Role.BLOCKQUOTE,
     Role.CODE_BLOCK,
+    Role.DEFINITION_TERM,
+    Role.DEFINITION_DEF,
+    Role.CAPTION,
 )
 ROLE_NAMES = (
     "paragraph",
@@ -133,6 +145,9 @@ ROLE_NAMES = (
     "form_label",
     "blockquote",
     "code_block",
+    "definition_term",
+    "definition_def",
+    "caption",
 )
 ROLE_TO_ID = {r: i for i, r in enumerate(ROLE_LIST)}
 NUM_ROLES = len(ROLE_LIST)
@@ -140,6 +155,87 @@ NUM_ROLES = len(ROLE_LIST)
 # list_nesting is 4-class for ALL spans (0 means "not in a list", which
 # is true for most spans).
 LIST_NESTING_BUCKETS = (0, 1, 2, 3)
+
+# ---------------------------------------------------------------------------
+# AXIS-2: pedagogical_role head vocabulary
+# ---------------------------------------------------------------------------
+#
+# A NEW span-level head ORTHOGONAL to structural_role: structural_role says
+# WHAT SHAPE a span is (paragraph / heading / …); pedagogical_role says WHAT
+# PEDAGOGICAL FUNCTION it opens (an EXAMPLE / a Solution / a TRY IT / …). The
+# council currently collapses these into code_block/heading, which Phase 1
+# measured as a major source of the real-PDF gap (43/62 "code_blocks" are
+# really exercises). Class 0 == `none` (the overwhelming majority of spans
+# carry no pedagogical-label function).
+#
+# Gold labels are extracted by REUSING the single-source-of-truth
+# `_PEDAGOGICAL_LABEL_CLASSES` regexes from
+# `dart_semantic.qwen_specialists.deterministic_structure` (so the gold-side
+# label predicate can never drift from the always-on clean pass) plus one
+# supplementary `exercise_open` regex (OpenStax "Exercises" has no pedagogy-*
+# CSS class of its own). Non-matches → `none`.
+PEDAGOGICAL_ROLE_NAMES = (
+    "none",
+    "example_open",
+    "exercise_open",
+    "solution",
+    "try_it",
+    "how_to",
+    "objectives",
+    "be_prepared",
+    "practice",
+    "step",
+)
+PEDAGOGICAL_ROLE_TO_ID = {r: i for i, r in enumerate(PEDAGOGICAL_ROLE_NAMES)}
+NUM_PEDAGOGICAL_ROLES = len(PEDAGOGICAL_ROLE_NAMES)
+
+# Map the deterministic clean-pass CSS-class hints
+# (`_PEDAGOGICAL_LABEL_CLASSES` values) onto pedagogical_role tokens. Every
+# value is a member of PEDAGOGICAL_ROLE_NAMES.
+_PEDAGOGY_CSS_TO_ROLE = {
+    "pedagogy-example": "example_open",
+    "pedagogy-solution": "solution",
+    "pedagogy-try-it": "try_it",
+    "pedagogy-how-to": "how_to",
+    "pedagogy-step": "step",
+    "pedagogy-objectives": "objectives",
+    "pedagogy-be-prepared": "be_prepared",
+    "pedagogy-practice": "practice",
+}
+
+# Supplementary gold-side regex for `exercise_open` — there is no
+# `pedagogy-exercise` CSS class in `_PEDAGOGICAL_LABEL_CLASSES`, but an
+# end-of-section "EXERCISES" / "Exercise N" block is a distinct pedagogical
+# function the head should learn. Checked AFTER the reused clean-pass classes
+# (which never match a bare "Exercises" label), so it only fires on a true
+# miss of the reused set.
+import re as _re  # noqa: E402  (local alias; module already imports re-free)
+
+_EXERCISE_OPEN_RE = _re.compile(r"^\s*Exercises?\b(?:\s+\d+(?:\.\d+)*)?", _re.IGNORECASE)
+
+
+def pedagogical_role_for(text: str) -> str:
+    """Gold-side pedagogical_role for a span's ``text``; ``none`` on no match.
+
+    Reuses the frozen ``_PEDAGOGICAL_LABEL_CLASSES`` regexes (via
+    ``_pedagogical_class_for``) so the gold label predicate is byte-identical
+    to the always-on deterministic clean pass, then falls back to the local
+    ``exercise_open`` regex. Anti-fabrication: only labels a span whose text
+    actually opens with a recognized pedagogical label."""
+    if not text:
+        return "none"
+    # Import lazily so build_structure_data has no import-time dependency on the
+    # qwen_specialists package (keeps the data builder importable in lean CI).
+    from dart_semantic.qwen_specialists.deterministic_structure import (
+        _pedagogical_class_for,
+    )
+
+    css = _pedagogical_class_for(text)
+    if css and css in _PEDAGOGY_CSS_TO_ROLE:
+        return _PEDAGOGY_CSS_TO_ROLE[css]
+    if _EXERCISE_OPEN_RE.match(text):
+        return "exercise_open"
+    return "none"
 
 
 # ---------------------------------------------------------------------------
@@ -163,12 +259,20 @@ TAG_TO_ROLE = {
     # cell-level role + scope downstream when table_region=1.
     "th": Role.PARAGRAPH,
     "td": Role.PARAGRAPH,
-    "caption": Role.PARAGRAPH,
-    # figcaption text content gets labeled paragraph for now. Phase 3f
-    # will introduce an is_image_block Structure head + ImageSpecialist
-    # that owns figure-caption emission (mirrors is_heading→
-    # HeadingSpecialist and table_region→TableSpecialist gating).
-    "figcaption": Role.PARAGRAPH,
+    # AXIS-1: <caption>/<figcaption> are CAPTION shape now (was PARAGRAPH).
+    # The text "is a caption" is a real structural signal gold needs; the
+    # is_image_block binary head + the future ImageSpecialist still gate the
+    # figure-caption EMISSION downstream, but the head can now recommend the
+    # caption shape directly.
+    "caption": Role.CAPTION,
+    "figcaption": Role.CAPTION,
+    # AXIS-1: definition-list leaves. <dt> = term, <dd> = definition. The <dl>
+    # CONTAINER is intentionally NOT a target tag (adding it would emit a
+    # duplicate whole-list block whose role can only be one of the two leaf
+    # shapes); dt/dd are added to OUTER_TAG_ALLOW_NESTED so they survive the
+    # nest-skip inside their <dl> parent and emit as the two distinct leaves.
+    "dt": Role.DEFINITION_TERM,
+    "dd": Role.DEFINITION_DEF,
     "blockquote": Role.BLOCKQUOTE,
     "pre": Role.CODE_BLOCK,
     "code": Role.CODE_BLOCK,
@@ -187,6 +291,10 @@ OUTER_TAG_ALLOW_NESTED = {
     "figcaption",
     "legend",
     "label",
+    # AXIS-1: dt/dd are natural-nest leaves inside <dl> — emit them as the two
+    # distinct definition-list shapes rather than skipping them under the dl.
+    "dt",
+    "dd",
 }
 
 LIST_PARENT_TAGS = {"ul", "ol"}
@@ -789,6 +897,14 @@ def _enrich_v3_row(
     labels["table_region"] = 1 if (in_table_pdf or in_table_html) else 0
     labels["is_image_block"] = 1 if (gmeta and gmeta.get("in_image_block_html")) else 0
     labels["list_nesting"] = int(gmeta.get("list_nesting", 0)) if gmeta else 0
+    # AXIS-2: pedagogical_role label. Derived from the SAME text the model
+    # reads at train time (``rd["text"]`` == ``_format_input``'s input) so the
+    # label and the input are consistent across MATCH/SPLIT/MERGE; the gold
+    # text is preferred where the row carries it (SPLIT members) but rd["text"]
+    # already is that text by the frozen aligner's SPLIT contract.
+    labels["pedagogical_role"] = PEDAGOGICAL_ROLE_TO_ID[
+        pedagogical_role_for(rd.get("text") or "")
+    ]
     return rd
 
 
@@ -1007,6 +1123,7 @@ def run_global_build(args) -> None:
     conf_hist = [0] * 10
     low_sim_rows = 0
     role_counts: Counter = Counter()
+    ped_role_counts: Counter = Counter()
     source_counts: Counter = Counter()
     for r in all_examples:
         al = r.get("align", {})
@@ -1016,6 +1133,7 @@ def run_global_build(args) -> None:
         if al.get("low_sim"):
             low_sim_rows += 1
         role_counts[r["labels"]["structural_role"]] += 1
+        ped_role_counts[r["labels"].get("pedagogical_role", 0)] += 1
         source_counts[r.get("source", "unknown")] += 1
 
     gold_gap = agg_counts.get("gold_gap", 0)
@@ -1063,6 +1181,9 @@ def run_global_build(args) -> None:
         "drop_ledger": drop_ledger,
         "confidence_histogram": confidence_histogram,
         "structural_role_counts": {ROLE_NAMES[k]: v for k, v in role_counts.items()},
+        "pedagogical_role_counts": {
+            PEDAGOGICAL_ROLE_NAMES[k]: v for k, v in ped_role_counts.items()
+        },
         "source_counts": dict(source_counts),
         "projected_roles": dict(projected_roles),
         "excluded_roles": dict(excluded_roles),
