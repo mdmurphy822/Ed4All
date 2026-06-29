@@ -222,7 +222,19 @@ class StructureModel(nn.Module):
         dtype: torch.dtype = torch.bfloat16,
     ) -> None:
         super().__init__()
-        base = AutoModel.from_pretrained(base_model_name, dtype=dtype)
+        # ModernBERT defaults reference_compile=True when CUDA is present, which
+        # routes the forward through torch.compile -> Triton -> a JIT gcc build
+        # of cuda_utils.c. That JIT build fails on some boxes (e.g. WSL2: the
+        # triton driver's `gcc ... -l:libcuda.so.1` returns non-zero), aborting
+        # training the instant the Trainer touches a compiled kernel. Load in
+        # eager mode so training never depends on the Triton JIT toolchain.
+        # Tolerate non-ModernBERT bases that don't carry the config field.
+        try:
+            base = AutoModel.from_pretrained(
+                base_model_name, dtype=dtype, reference_compile=False
+            )
+        except (TypeError, ValueError):
+            base = AutoModel.from_pretrained(base_model_name, dtype=dtype)
         target_modules = [
             "Wqkv", "Wo",
             "query_proj", "key_proj", "value_proj",

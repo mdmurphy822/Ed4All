@@ -112,12 +112,14 @@ def _predict_roles(model, tok, rows: list[dict], device: str, batch_size: int, m
     return y_true, y_pred
 
 
-def _macro_f1(y_true, y_pred):
+def _macro_f1(y_true, y_pred, labels=None):
     from sklearn.metrics import f1_score
 
     if not y_true:
         return None
-    return float(f1_score(y_true, y_pred, average="macro", zero_division=0))
+    return float(
+        f1_score(y_true, y_pred, average="macro", labels=labels, zero_division=0)
+    )
 
 
 def main() -> None:
@@ -176,11 +178,19 @@ def main() -> None:
         # ONE forward pass over the whole set; slice predictions by domain after.
         yt, yp = _predict_roles(model, tok, rows, args.device, args.batch_size, args.max_length)
         overall_f1 = _macro_f1(yt, yp)
+        # Gold-restricted macro: average ONLY over the role ids that occur in
+        # the gold. A superset-taxonomy model (the v3 9-class head) predicts
+        # classes the 6-class real-PDF gold can never contain (definition_term/
+        # def/caption); under the union default those enter the macro at F1=0
+        # and depress the score. The union number stays the comparable-to-0.271
+        # baseline; this is the fair "on the classes that actually occur" view.
+        overall_f1_gold = _macro_f1(yt, yp, labels=sorted(set(yt)))
         n_docs = len({(r.get("domain"), r.get("doc_id")) for r in rows})
         set_report = {
             "n_rows": len(rows),
             "n_docs": n_docs,
             "overall_role_macro_f1": overall_f1,
+            "overall_role_macro_f1_gold_restricted": overall_f1_gold,
             "delta_vs_in_distribution": (
                 round(overall_f1 - IN_DISTRIBUTION_ROLE_MACRO_F1, 6)
                 if overall_f1 is not None
@@ -226,6 +236,9 @@ def main() -> None:
         print(f"=== {label}  rows={sr['n_rows']} docs={sr['n_docs']} ===")
         print(f"  overall real-PDF role macro-F1: {sr['overall_role_macro_f1']:.4f}  "
               f"(Δ {sr['delta_vs_in_distribution']:+.4f})")
+        _gr = sr.get("overall_role_macro_f1_gold_restricted")
+        if _gr is not None:
+            print(f"  gold-restricted macro-F1 (fair, gold classes only): {_gr:.4f}")
         print(f"  {'domain':18} {'docs':>5} {'rows':>6} {'realF1':>8} {'Δ-vs-0.894':>11} {'align_cov':>10}")
         for dom, dd in sr["per_domain"].items():
             f1 = dd["role_macro_f1"]
