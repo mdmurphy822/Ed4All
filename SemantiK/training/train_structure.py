@@ -364,6 +364,52 @@ def _make_loader(
                       collate_fn=collate)
 
 
+def metrics_from_collected(
+    role_t, role_p,
+    is_h_t, is_h_p,
+    tr_t, tr_p,
+    ib_t, ib_p,
+    ln_t, ln_p,
+    pr_t, pr_p,
+) -> dict[str, object]:
+    """Compute the per-head metric dict from already-collected (true, pred)
+    label lists. Factored out of ``evaluate`` so an external benchmark harness
+    (``SemantiK/scripts/benchmark_structure_backbones.py``) can score every
+    backbone arm through the SAME metric path — apples-to-apples — without
+    re-implementing (and silently drifting from) this formula. No behaviour
+    change: ``evaluate`` delegates here."""
+    role_macro = f1_score(role_t, role_p, average="macro", zero_division=0)
+    is_h_f1 = f1_score(is_h_t, is_h_p, pos_label=1, zero_division=0)
+    tr_f1 = f1_score(tr_t, tr_p, pos_label=1, zero_division=0)
+    ib_f1 = f1_score(ib_t, ib_p, pos_label=1, zero_division=0)
+    ln_mae = (
+        sum(abs(t - p) for t, p in zip(ln_t, ln_p)) / max(1, len(ln_t))
+    )
+    # pedagogical_role: macro-F1 over the NON-none classes only (class 0 is
+    # the overwhelming majority and its F1 would mask the rare-positive
+    # performance that matters). Empty positive set -> 0.0.
+    ped_pos_labels = list(range(1, NUM_PEDAGOGICAL_ROLES))
+    pr_macro = f1_score(
+        pr_t, pr_p, labels=ped_pos_labels, average="macro", zero_division=0
+    )
+    return {
+        "role_macro_f1": float(role_macro),
+        "is_heading_pos_f1": float(is_h_f1),
+        "table_region_pos_f1": float(tr_f1),
+        "is_image_block_pos_f1": float(ib_f1),
+        "list_nesting_mae": float(ln_mae),
+        "pedagogical_role_macro_f1": float(pr_macro),
+        "raw": {
+            "role": (role_t, role_p),
+            "is_heading": (is_h_t, is_h_p),
+            "table_region": (tr_t, tr_p),
+            "is_image_block": (ib_t, ib_p),
+            "list_nesting": (ln_t, ln_p),
+            "pedagogical_role": (pr_t, pr_p),
+        },
+    }
+
+
 def evaluate(
     model: StructureModel,
     loader: DataLoader,
@@ -405,36 +451,10 @@ def evaluate(
                 ib_t.append(yib[i]); ib_p.append(p_ib[i])
                 ln_t.append(yln[i]); ln_p.append(p_ln[i])
                 pr_t.append(ypr[i]); pr_p.append(p_pr[i])
-    role_macro = f1_score(role_t, role_p, average="macro", zero_division=0)
-    is_h_f1 = f1_score(is_h_t, is_h_p, pos_label=1, zero_division=0)
-    tr_f1 = f1_score(tr_t, tr_p, pos_label=1, zero_division=0)
-    ib_f1 = f1_score(ib_t, ib_p, pos_label=1, zero_division=0)
-    ln_mae = (
-        sum(abs(t - p) for t, p in zip(ln_t, ln_p)) / max(1, len(ln_t))
+    return metrics_from_collected(
+        role_t, role_p, is_h_t, is_h_p, tr_t, tr_p,
+        ib_t, ib_p, ln_t, ln_p, pr_t, pr_p,
     )
-    # pedagogical_role: macro-F1 over the NON-none classes only (class 0 is
-    # the overwhelming majority and its F1 would mask the rare-positive
-    # performance that matters). Empty positive set -> 0.0.
-    ped_pos_labels = list(range(1, NUM_PEDAGOGICAL_ROLES))
-    pr_macro = f1_score(
-        pr_t, pr_p, labels=ped_pos_labels, average="macro", zero_division=0
-    )
-    return {
-        "role_macro_f1": float(role_macro),
-        "is_heading_pos_f1": float(is_h_f1),
-        "table_region_pos_f1": float(tr_f1),
-        "is_image_block_pos_f1": float(ib_f1),
-        "list_nesting_mae": float(ln_mae),
-        "pedagogical_role_macro_f1": float(pr_macro),
-        "raw": {
-            "role": (role_t, role_p),
-            "is_heading": (is_h_t, is_h_p),
-            "table_region": (tr_t, tr_p),
-            "is_image_block": (ib_t, ib_p),
-            "list_nesting": (ln_t, ln_p),
-            "pedagogical_role": (pr_t, pr_p),
-        },
-    }
 
 
 def main() -> None:
