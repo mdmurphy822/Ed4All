@@ -30,7 +30,7 @@ from collections import defaultdict
 from pathlib import Path
 
 # In-distribution reference (models/council/structure/final/summary.json).
-IN_DISTRIBUTION_ROLE_MACRO_F1 = 0.8939100527638849
+IN_DISTRIBUTION_ROLE_MACRO_F1 = 0.8709  # v3 9-class retrain (was 0.8939 for the 6-class baseline)
 
 ROLE_NAMES = (
     "paragraph",
@@ -39,6 +39,11 @@ ROLE_NAMES = (
     "form_label",
     "blockquote",
     "code_block",
+    # v3 additive taxonomy (ids 0-5 unchanged; 6-8 appended) — see
+    # training/train_structure.py:ROLE_NAMES (single source of truth).
+    "definition_term",
+    "definition_def",
+    "caption",
 )
 
 
