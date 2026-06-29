@@ -44,7 +44,7 @@ from .council.orchestrator import run_council
 from .gates import gate_document, gate_per_region, rerank_per_region
 from .qwen_specialists.runner import run_qwen_specialists
 from .qwen_specialists.reviewer import resolve_structure_review_mode
-from .qwen_specialists.runtime import specialist_provider_is_endpoint
+from .qwen_specialists.runtime import any_phase_provider_is_endpoint
 from .soft_reranker import score_document
 from .structure_graph import Region, build_structure_graph
 from .theta import decide_exit, evaluate, maybe_offline_retry
@@ -2104,12 +2104,12 @@ def run_pipeline_v2(
     """
     pdf_path = Path(pdf_path)
     if runtime_mode is None:
-        # An opted-in hosted specialist endpoint IS real generation (the
-        # 70B seat), so it forces "real" even when no LOCAL GGUF adapter is
-        # configured — make_runtime("real") then short-circuits to the
-        # endpoint runtime and skips the local-weight presence check. Only
-        # the Stage-6 specialists are affected; council/theta stay local.
-        if specialist_provider_is_endpoint() or config.is_qwen_specialist_loaded():
+        # A hosted endpoint on EITHER Stage-6 phase seat IS real generation,
+        # so it forces "real" even when no LOCAL GGUF adapter is configured —
+        # the per-phase runtime then resolves the endpoint runtime and skips
+        # the local-weight presence check for that phase. Only the Stage-6
+        # specialists are affected; council/theta stay local.
+        if any_phase_provider_is_endpoint() or config.is_qwen_specialist_loaded():
             runtime_mode = "real"
         else:
             runtime_mode = "mock"

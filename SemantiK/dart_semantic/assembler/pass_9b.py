@@ -34,7 +34,12 @@ from ..gates.hard_region import check_region
 from ..gates.types import GateResult
 from ..qwen_specialists.base import AdapterSwap, generate
 from ..qwen_specialists.prompts import build_gap_fill_request
-from ..qwen_specialists.runtime import QwenRuntime, make_runtime
+from ..qwen_specialists.runtime import (
+    QwenRuntime,
+    make_runtime,
+    resolve_endpoint_displaces_local,
+    specialist_provider_is_endpoint,
+)
 from ..qwen_specialists.types import AdapterID, Candidate
 from ..structure_graph import Region
 from ..validate import HtmlValidator
@@ -112,7 +117,23 @@ def run_pass_9b(
     sampling = _load_gap_fill_sampling(config_path)
     k = int(config.gap_fill_k or sampling["candidates_k"])
 
-    rt = runtime if runtime is not None else make_runtime(runtime_mode)
+    # Dereliction fix (mirrors the Stage-6 runner): the local gap_fill GGUF is
+    # the authoring tier by default. Force the local runtime when an endpoint
+    # PROVIDER is configured but the operator has NOT explicitly opted into
+    # pure-endpoint displacement, so gap_fill stays on the on-device
+    # specialist rather than silently routing to the hosted 70B. gap_fill is a
+    # single-pass synthesis (no hybrid refine), so only the DISPLACE opt-in
+    # routes it to the endpoint.
+    force_local = (
+        specialist_provider_is_endpoint() and not resolve_endpoint_displaces_local()
+    )
+    rt = (
+        runtime
+        if runtime is not None
+        else make_runtime(
+            runtime_mode, config_path=config_path, force_local=force_local
+        )
+    )
 
     out: dict[int, list[Candidate]] = {gi: [] for gi in range(len(gaps_found))}
 

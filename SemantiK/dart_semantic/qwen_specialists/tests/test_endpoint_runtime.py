@@ -27,6 +27,7 @@ from dart_semantic.qwen_specialists.endpoint_runtime import (
     split_specialist_prompt,
 )
 from dart_semantic.qwen_specialists.runtime import (
+    LlamaCppRuntime,
     MockRuntime,
     make_runtime,
     resolve_specialist_provider,
@@ -594,6 +595,32 @@ def test_make_runtime_real_routes_to_endpoint_when_provider_set(monkeypatch):
 def test_make_runtime_explicit_endpoint_mode(monkeypatch):
     monkeypatch.delenv("SEMANTIK_SPECIALIST_PROVIDER", raising=False)
     rt = make_runtime("endpoint")
+    assert isinstance(rt, OpenAICompatibleRuntime)
+
+
+def test_make_runtime_force_local_suppresses_endpoint_short_circuit(monkeypatch):
+    """force_local=True keeps mode='real' on the LOCAL GGUF arm even when an
+    endpoint PROVIDER is configured (the dereliction-fix escape hatch).
+
+    It must NEVER return the endpoint runtime; depending on whether GGUFs are
+    on disk it either returns the local LlamaCppRuntime or raises the strict
+    'no Qwen LoRA adapters' GGUF error — both prove it took the local arm."""
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    try:
+        rt = make_runtime("real", force_local=True)
+    except RuntimeError as exc:
+        # Local arm's strict GGUF presence check (no adapters on disk).
+        assert "no Qwen LoRA adapters" in str(exc) or "MISSING" in str(exc)
+    else:
+        assert not isinstance(rt, OpenAICompatibleRuntime)
+        assert isinstance(rt, LlamaCppRuntime)
+
+
+def test_make_runtime_explicit_endpoint_mode_ignores_force_local(monkeypatch):
+    """An explicit mode='endpoint' (reviewer / resegment seats) is NEVER
+    forced local — force_local only suppresses the mode='real' short-circuit."""
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_PROVIDER", raising=False)
+    rt = make_runtime("endpoint", force_local=True)
     assert isinstance(rt, OpenAICompatibleRuntime)
 
 

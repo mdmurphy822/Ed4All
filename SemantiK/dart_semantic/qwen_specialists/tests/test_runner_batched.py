@@ -31,7 +31,16 @@ from dart_semantic.qwen_specialists.runner import (
     resolve_refine_mode,
     run_qwen_specialists,
 )
-from dart_semantic.qwen_specialists.runtime import MockRuntime
+from dart_semantic.qwen_specialists import runtime as runtime_mod
+from dart_semantic.qwen_specialists.runtime import (
+    LlamaCppRuntime,
+    MockRuntime,
+    any_phase_provider_is_endpoint,
+    make_phase_runtime,
+    phase_provider_is_endpoint,
+    resolve_phase_model,
+    resolve_phase_provider,
+)
 from dart_semantic.qwen_specialists.types import AdapterID
 
 
@@ -178,10 +187,34 @@ def test_provider_local_runs_phase1_only_no_endpoint(monkeypatch):
     assert out[0][0].raw_metadata["stage6_phase"] == "local"
 
 
-def test_provider_endpoint_skips_phase1_runs_phase2(monkeypatch):
-    """provider=nvidia, refine off -> Phase 1 SKIPPED, Phase 2 generates."""
-    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+def test_provider_endpoint_alone_runs_local_specialists(monkeypatch):
+    """DERELICTION FIX: provider=nvidia ALONE (no refine, no displace) now
+    AUTHORS via the local specialists (Phase 1), NOT the endpoint.
+
+    Selecting an endpoint provider no longer silently displaces the
+    license-clean on-device specialists — the corrected default fires them."""
     monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", raising=False)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+
+    rt = _BatchSpyRuntime()
+    out = run_qwen_specialists(
+        [_region("math", "a"), _region("table", "b")], [], k=2, runtime=rt
+    )
+    # Phase 1 (local, batched-by-adapter) ran and produced LOCAL candidates;
+    # the endpoint was never the authoring tier.
+    assert rt.batch_calls, "local Phase 1 should have fired"
+    assert out[0][0].raw_metadata["stage6_phase"] == "local"
+    assert len(out[0]) == 2 and len(out[1]) == 2
+
+
+def test_provider_endpoint_displace_skips_phase1_runs_phase2(monkeypatch):
+    """provider=nvidia + DISPLACE -> Phase 1 SKIPPED, Phase 2 (pure-endpoint).
+
+    The explicit opt-in restores the pre-fix pure-endpoint behaviour."""
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "1")
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
 
     # An endpoint-shaped spy: generate_batch echoes a per-prompt fragment.
     class _EndpointSpy(MockRuntime):
@@ -202,6 +235,17 @@ def test_provider_endpoint_skips_phase1_runs_phase2(monkeypatch):
     # 2 regions x k=2 candidates, phase tagged "endpoint".
     assert out[0][0].raw_metadata["stage6_phase"] == "endpoint"
     assert len(out[0]) == 2 and len(out[1]) == 2
+
+
+def test_endpoint_displace_resolver_parse_with_fallback(monkeypatch):
+    from dart_semantic.qwen_specialists.runtime import resolve_endpoint_displaces_local
+
+    monkeypatch.delenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", raising=False)
+    assert resolve_endpoint_displaces_local() is False
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "garbage")
+    assert resolve_endpoint_displaces_local() is False
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "on")
+    assert resolve_endpoint_displaces_local() is True
 
 
 def test_refine_builds_prompt_plus_draft(monkeypatch):
@@ -403,6 +447,9 @@ def test_phase2_pure_endpoint_one_region_fails_degraded_skip(monkeypatch):
     candidate for THAT region, the others are fine."""
     monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    # Pure-endpoint path now requires the explicit displace opt-in (the local
+    # specialists author by default after the dereliction fix).
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "1")
 
     regions = [_region("math", "a"), _region("paragraph", "b")]
     # active: PROSE (paragraph) a_pos 0, MATH a_pos 1. Fail a_pos 1 (math).
@@ -429,6 +476,9 @@ def test_phase2_pure_endpoint_all_regions_fail_raises(monkeypatch):
     (fail-loud). We do not ship an empty document on a total failure."""
     monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    # Pure-endpoint path now requires the explicit displace opt-in (the local
+    # specialists author by default after the dereliction fix).
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "1")
 
     regions = [_region("math", "a"), _region("paragraph", "b")]
     rt = _FailSoftEndpointSpy(fail_indices={0, 1})  # every active region fails
@@ -442,6 +492,9 @@ def test_phase2_pure_endpoint_partial_slot_failure_keeps_good_slots(monkeypatch)
     candidates (no degraded skip), proving partial-slot resilience."""
     monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    # Pure-endpoint path now requires the explicit displace opt-in (the local
+    # specialists author by default after the dereliction fix).
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "1")
 
     # Fail the region only on EVEN slots: a stateful spy.
     class _AltSlotSpy(MockRuntime):
@@ -602,6 +655,9 @@ def test_phase2_batched_one_post_per_batch_default_on(monkeypatch):
     POST per batch — fewer calls than regions×K."""
     monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    # Pure-endpoint path now requires the explicit displace opt-in (the local
+    # specialists author by default after the dereliction fix).
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "1")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH", raising=False)
     monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH_REGIONS", "12")
 
@@ -623,6 +679,9 @@ def test_phase2_batched_failsoft_one_region_degrades_others_assemble(monkeypatch
     assemble. ALL regions failing still fails loud."""
     monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    # Pure-endpoint path now requires the explicit displace opt-in (the local
+    # specialists author by default after the dereliction fix).
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "1")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH", raising=False)
 
     regions = [_region("paragraph", "a"), _region("paragraph", "b")]
@@ -645,6 +704,9 @@ def test_phase2_batched_all_regions_fail_raises(monkeypatch):
 
     monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    # Pure-endpoint path now requires the explicit displace opt-in (the local
+    # specialists author by default after the dereliction fix).
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "1")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH", raising=False)
 
     regions = [_region("paragraph", "a"), _region("paragraph", "b")]
@@ -659,6 +721,9 @@ def test_phase2_batched_batch_dispatch_raise_degrades_that_batch(monkeypatch):
     (defensive) rather than aborting — the other batch still assembles."""
     monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    # Pure-endpoint path now requires the explicit displace opt-in (the local
+    # specialists author by default after the dereliction fix).
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "1")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_BATCH", raising=False)
     # Force one region per batch so the raising region is isolated.
     monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH_REGIONS", "1")
@@ -678,6 +743,9 @@ def test_phase2_byte_stable_when_off(monkeypatch):
     produces the identical Candidate shape the legacy path emits."""
     monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
     monkeypatch.delenv("SEMANTIK_SPECIALIST_REFINE", raising=False)
+    # Pure-endpoint path now requires the explicit displace opt-in (the local
+    # specialists author by default after the dereliction fix).
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE", "1")
     monkeypatch.setenv("SEMANTIK_SPECIALIST_BATCH", "0")
 
     # A runtime exposing BOTH generate_batch (used when off) and generate_multi
@@ -708,3 +776,189 @@ def test_phase2_byte_stable_when_off(monkeypatch):
     # Legacy Candidate shape: phase tagged "endpoint", real content.
     assert all(c.raw_metadata["stage6_phase"] == "endpoint" for c in out[0])
     assert all("endpoint" in c.text for c in out[0])
+
+
+# ---------------------------------------------------------------------------
+# Per-phase seat resolution — model-agnostic two-phase Stage 6
+# ---------------------------------------------------------------------------
+#
+# Phase 1 (draft) and Phase 2 (refine/generate) each resolve their OWN
+# {provider, model} seat. Phase 1 defaults to local (the dereliction default,
+# NOT inheriting the single seat); Phase 2 falls back to the single seat. The
+# hosted 70B is just one possible Phase-2 model, never a hardcoded tier.
+
+
+def _clear_phase_env(monkeypatch):
+    for k in (
+        "SEMANTIK_SPECIALIST_PROVIDER",
+        "SEMANTIK_SPECIALIST_MODEL",
+        "SEMANTIK_SPECIALIST_PHASE1_PROVIDER",
+        "SEMANTIK_SPECIALIST_PHASE1_MODEL",
+        "SEMANTIK_SPECIALIST_PHASE2_PROVIDER",
+        "SEMANTIK_SPECIALIST_PHASE2_MODEL",
+        "SEMANTIK_SPECIALIST_REFINE",
+        "SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE",
+        "NVIDIA_LARGE_MODEL",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+
+def test_phase_provider_defaults_local(monkeypatch):
+    _clear_phase_env(monkeypatch)
+    assert resolve_phase_provider("phase1") == "local"
+    assert resolve_phase_provider("phase2") == "local"
+    assert phase_provider_is_endpoint("phase1") is False
+    assert any_phase_provider_is_endpoint() is False
+
+
+def test_phase1_does_not_inherit_single_seat(monkeypatch):
+    """DERELICTION default: the single seat selects Phase 2, NOT Phase 1.
+
+    provider=nvidia alone leaves Phase 1 LOCAL; Phase 2 inherits it."""
+    _clear_phase_env(monkeypatch)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    assert resolve_phase_provider("phase1") == "local"
+    assert resolve_phase_provider("phase2") == "nvidia"
+    assert any_phase_provider_is_endpoint() is True
+
+
+def test_phase_provider_per_phase_overrides(monkeypatch):
+    """Each phase's PROVIDER env wins; PHASE2 overrides the single seat."""
+    _clear_phase_env(monkeypatch)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PROVIDER", "nvidia")
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PHASE1_PROVIDER", "local-openai")
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PHASE2_PROVIDER", "local")
+    assert resolve_phase_provider("phase1") == "local-openai"
+    # Explicit PHASE2=local overrides the single nvidia seat (local refine).
+    assert resolve_phase_provider("phase2") == "local"
+    # Phase 1 is the only endpoint here.
+    assert phase_provider_is_endpoint("phase1") is True
+    assert phase_provider_is_endpoint("phase2") is False
+    assert any_phase_provider_is_endpoint() is True
+
+
+def test_phase_model_fallback_chain(monkeypatch):
+    _clear_phase_env(monkeypatch)
+    # No envs -> the literal default.
+    assert resolve_phase_model("phase2") == "meta/llama-3.3-70b-instruct"
+    # Single seat model is the shared fallback for both phases.
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_MODEL", "shared-model")
+    assert resolve_phase_model("phase1") == "shared-model"
+    assert resolve_phase_model("phase2") == "shared-model"
+    # Per-phase model wins.
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PHASE2_MODEL", "qwen2.5:32b")
+    assert resolve_phase_model("phase2") == "qwen2.5:32b"
+    assert resolve_phase_model("phase1") == "shared-model"
+
+
+def test_make_phase_runtime_mock_is_mockruntime(monkeypatch):
+    _clear_phase_env(monkeypatch)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PHASE2_PROVIDER", "nvidia")
+    # mock mode never reads the provider -> deterministic MockRuntime.
+    rt = make_phase_runtime("mock", "phase2")
+    assert isinstance(rt, MockRuntime)
+
+
+def test_make_phase_runtime_local_seat_is_local_runtime_not_endpoint(monkeypatch):
+    """A LOCAL Phase-2 seat builds the local GGUF runtime — NO endpoint.
+
+    The key model-agnostic case: local-draft -> local-large-refine makes zero
+    hosted calls. Proven by: the runtime is LlamaCppRuntime (the local arm) and
+    OpenAICompatibleRuntime is NEVER constructed."""
+    _clear_phase_env(monkeypatch)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PHASE2_PROVIDER", "local")
+
+    # Report a present adapter so the local arm returns a runtime rather than
+    # the strict "no adapters on disk" raise (hermetic across boxes).
+    from pathlib import Path
+
+    monkeypatch.setattr(
+        runtime_mod,
+        "_scan_adapter_artifacts",
+        lambda cfg=None: ({"prose": Path("x.gguf")}, {"prose": True}),
+    )
+    # Detonate if the endpoint runtime is ever constructed on this path.
+    import dart_semantic.qwen_specialists.endpoint_runtime as ep_mod
+
+    def _boom(*a, **k):  # pragma: no cover - asserted not-called
+        raise AssertionError("OpenAICompatibleRuntime must NOT be built for a local seat")
+
+    monkeypatch.setattr(ep_mod, "OpenAICompatibleRuntime", _boom)
+
+    rt = make_phase_runtime("real", "phase2")
+    assert isinstance(rt, LlamaCppRuntime)
+
+
+def test_make_phase_runtime_endpoint_seat_resolves_model(monkeypatch):
+    """A non-local Phase-2 seat builds the OpenAI-compatible runtime pinned to
+    the per-phase model (base_url/api_key from the shared env)."""
+    _clear_phase_env(monkeypatch)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PHASE2_PROVIDER", "nvidia")
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PHASE2_MODEL", "phase2-model")
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_BASE_URL", "https://e.example/v1")
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_API_KEY", "UNIT-KEY")
+
+    rt = make_phase_runtime("real", "phase2")
+    assert isinstance(rt, OpenAICompatibleRuntime)
+    assert rt._model == "phase2-model"  # per-phase model resolved
+    assert rt._base_url == "https://e.example/v1"
+
+
+def test_runner_builds_separate_runtimes_per_phase_local_refine(monkeypatch):
+    """local-draft -> local-refine: Phase 1 and Phase 2 use SEPARATE runtimes
+    (the latent single-runtime bug fix), the refine prompt carrying the draft
+    goes to the Phase-2 runtime, and NO hosted endpoint is ever constructed.
+
+    This exercises the runner wiring with runtime=None so per-phase
+    construction fires; make_phase_runtime is patched to hand back a distinct
+    recording spy per phase (both LOCAL — the model-agnostic on-device case)."""
+    _clear_phase_env(monkeypatch)
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_REFINE", "1")
+    monkeypatch.setenv("SEMANTIK_SPECIALIST_PHASE2_PROVIDER", "local")  # local refine
+
+    class _PhaseSpy(MockRuntime):
+        def __init__(self, tag):
+            super().__init__()
+            self.tag = tag
+            self.batch_prompts: list[str] = []
+
+        def generate_batch(self, prompts, *, max_tokens, **kw):  # type: ignore[override]
+            self.batch_prompts.extend(prompts)
+            return super().generate_batch(prompts, max_tokens=max_tokens, **kw)
+
+    built: dict[str, _PhaseSpy] = {}
+    calls: list[tuple] = []
+
+    from dart_semantic.qwen_specialists import runner as runner_mod
+
+    def _fake_make(mode, phase, *, config_path=None):
+        calls.append((mode, phase))
+        spy = _PhaseSpy(phase)
+        built[phase] = spy
+        return spy
+
+    monkeypatch.setattr(runner_mod, "make_phase_runtime", _fake_make)
+
+    # Detonate if the real endpoint runtime is constructed anywhere.
+    import dart_semantic.qwen_specialists.endpoint_runtime as ep_mod
+
+    def _boom(*a, **k):  # pragma: no cover - asserted not-called
+        raise AssertionError("no hosted endpoint must be built for local refine")
+
+    monkeypatch.setattr(ep_mod, "OpenAICompatibleRuntime", _boom)
+
+    out = run_qwen_specialists(
+        [_region("math", "a")], [], k=1, runtime=None, runtime_mode="mock"
+    )
+
+    # Both phases built their OWN runtime (not one shared instance).
+    assert ("mock", "phase1") in calls and ("mock", "phase2") in calls
+    assert built["phase1"] is not built["phase2"]
+    # Phase 1 drafted with NO refine directive.
+    assert built["phase1"].batch_prompts
+    assert all("DRAFT_FRAGMENT" not in p for p in built["phase1"].batch_prompts)
+    # Phase 2 refined on its OWN (local) runtime — the draft travelled to it.
+    assert built["phase2"].batch_prompts
+    assert any("DRAFT_FRAGMENT" in p for p in built["phase2"].batch_prompts)
+    # Output is the refined candidate, phase tagged "refine".
+    assert out[0][0].raw_metadata["stage6_phase"] == "refine"

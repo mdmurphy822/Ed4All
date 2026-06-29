@@ -1,25 +1,35 @@
 """Stage 6 driver — BATCHED two-phase region → K-candidate generator.
 
 The driver buckets regions by their routed adapter, then runs up to two
-phases (provider/mode-gated) — replacing the old per-region swap loop:
+phases — replacing the old per-region swap loop. BOTH phases are
+**model-agnostic**: each independently resolves its own {provider, model,
+base_url, api_key} seat from the registry/env, so any composition works
+(local-draft→local-large-refine fully on-device, local-draft→hosted-refine,
+hosted-draft→hosted-refine, single-phase-any-provider, ...). The hosted 70B is
+just ONE possible Phase-2 model, never a hardcoded tier.
 
-    Phase 1 (local drafts, batched BY ADAPTER)
-        For each adapter group, ONE :class:`AdapterSwap` load, then a
-        single :meth:`QwenRuntime.generate_batch` over every region in
-        that group (run K times, one per candidate slot). The math
-        adapter loads ONCE for all math regions, etc. — the swap-thrash
-        fix. SKIPPED entirely when the specialist provider is an endpoint
-        (no local adapters to run).
+    Phase 1 (draft, batched BY ADAPTER)
+        Runs on the Phase-1 seat (default: the local GGUF specialists —
+        :func:`~.runtime.resolve_phase_provider` ``"phase1"`` defaults to
+        ``"local"``). For each adapter group, ONE :class:`AdapterSwap` load,
+        then a single :meth:`QwenRuntime.generate_batch` over every region in
+        that group (run K times, one per candidate slot). The math adapter
+        loads ONCE for all math regions, etc. — the swap-thrash fix. SKIPPED
+        entirely when Phase 2 is the sole authoring tier (DISPLACE).
 
-    Phase 2 (70B refine / generate, batched CONCURRENTLY)
-        Gated by ``SEMANTIK_SPECIALIST_PROVIDER`` + ``SEMANTIK_SPECIALIST_REFINE``:
-          * provider=local (default): Phase 1 ONLY. No endpoint calls.
-            Byte-stable behaviour + the swap-thrash win.
-          * provider=<endpoint> (no refine): SKIP Phase 1; build per-region
-            prompts; one concurrent :meth:`generate_batch` over ALL regions.
-          * provider=<endpoint> + REFINE=1 (hybrid): Phase 1 local drafts
-            THEN Phase 2 sends each region's (prompt + local draft) to the
-            70B with a refine directive; the 70B output REPLACES the draft.
+    Phase 2 (refine / generate)
+        Runs on the Phase-2 seat (default: the single ``SEMANTIK_SPECIALIST_*``
+        seat). Enabled by ``SEMANTIK_SPECIALIST_REFINE`` (hybrid) or
+        ``SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE`` (pure Phase-2). The Phase-2
+        seat may be local OR hosted — whatever the Phase-2 provider resolves
+        to (the refiner model, not a hardcoded 70B):
+          * neither opt-in (default): Phase 1 ONLY. Byte-stable + swap-thrash
+            win.
+          * DISPLACE: SKIP Phase 1; build per-region prompts; one batched pass
+            over ALL regions on the Phase-2 seat.
+          * REFINE (hybrid): Phase 1 drafts on the Phase-1 seat THEN Phase 2
+            sends each region's (prompt + draft) to the Phase-2 seat with a
+            refine directive; the Phase-2 output REPLACES the draft.
 
 Entry point::
 
@@ -68,7 +78,11 @@ from .endpoint_runtime import (
 )
 from .prompts import build_math_request, build_prose_request, build_table_request
 from .routing import adapter_for
-from .runtime import QwenRuntime, make_runtime, specialist_provider_is_endpoint
+from .runtime import (
+    QwenRuntime,
+    make_phase_runtime,
+    resolve_endpoint_displaces_local,
+)
 from .types import AdapterID, Candidate
 
 
@@ -88,8 +102,8 @@ _DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
 # other value is falsey/off).
 _REFINE_TRUTHY = frozenset({"1", "true", "yes", "on"})
 
-# Directive prepended to a region's prompt when the 70B is asked to REFINE
-# an existing local draft (the hybrid Phase 2 flow). Keeps the same bare-
+# Directive prepended to a region's prompt when the Phase-2 seat is asked to
+# REFINE an existing Phase-1 draft (the hybrid flow). Keeps the same bare-
 # fragment output envelope the assembler parses — the endpoint runtime's
 # own _ENVELOPE_DIRECTIVE still applies; this adds the refine instruction
 # into the USER turn so the draft travels with the region.
@@ -222,8 +236,8 @@ def _refine_prompt(region_prompt: str, draft: str) -> str:
     The local region prompt (a ``SYSTEM: ...\\nUSER: <json>`` string) is
     kept intact so the endpoint runtime's :func:`split_specialist_prompt`
     still pulls the specialist role; the local DRAFT and the refine
-    directive are appended to the USER turn so the 70B sees both the region
-    spec and the fragment it must improve."""
+    directive are appended to the USER turn so the Phase-2 refiner sees both
+    the region spec and the fragment it must improve."""
     return (
         f"{region_prompt}\n\n"
         f"DRAFT_FRAGMENT:\n{draft}\n\n"
@@ -677,21 +691,50 @@ def run_qwen_specialists(
 
     sampling = _load_sampling(config_path, lane=lane)
 
-    # Resolve the runtime once: a single instance threads through both
-    # phases. For provider=local this is the LlamaCppRuntime; for an
-    # endpoint provider make_runtime("real") short-circuits to the
-    # OpenAICompatibleRuntime (see runtime.make_runtime).
-    rt = runtime if runtime is not None else make_runtime(runtime_mode)
-
-    # Provider/mode routing: decide which phase set runs.
-    #   provider_is_endpoint == False -> Phase 1 only (local, batched).
-    #   provider_is_endpoint == True  -> Phase 2 over all regions; Phase 1
-    #                                    runs FIRST only when REFINE is set
-    #                                    (hybrid: local drafts -> 70B refine).
-    provider_is_endpoint = specialist_provider_is_endpoint()
+    # Phase routing: decide which phase set runs.
+    #
+    # Phase 2 (refine/generate) is enabled by an EXPLICIT opt-in — REFINE
+    # (hybrid: Phase-1 drafts THEN Phase-2 refine) or DISPLACE (Phase 2 is the
+    # sole authoring tier). Without either, Phase 1 is the only tier (the
+    # dereliction default — the license-clean Phase-1 seat authors). This is
+    # decoupled from the provider: Phase 2 runs whenever enabled regardless of
+    # whether its seat is local or hosted (the model-agnostic generalization).
+    #
+    # Truth table (the seats are resolved per-phase below):
+    #   neither REFINE nor DISPLACE -> Phase 1 only.
+    #   REFINE                      -> Phase 1 + Phase 2 (hybrid).
+    #   DISPLACE                    -> Phase 2 only.
     refine = resolve_refine_mode()
-    run_phase1 = (not provider_is_endpoint) or refine
-    run_phase2 = provider_is_endpoint
+    displace = resolve_endpoint_displaces_local()
+    phase2_active = refine or displace
+    run_phase1 = (not phase2_active) or refine
+    run_phase2 = phase2_active
+
+    # Resolve a runtime PER PHASE from its own seat (model-agnostic). When the
+    # caller injects an explicit ``runtime`` it is used for BOTH phases (the
+    # byte-stable test/back-compat path). Otherwise Phase 1 builds from the
+    # Phase-1 seat (default local GGUF specialists) and Phase 2 from the
+    # Phase-2 seat (default the single ``SEMANTIK_SPECIALIST_*`` seat) — each
+    # may independently be local or hosted, so e.g. local-draft→local-large-
+    # refine makes zero hosted calls. Only the phases that run are built.
+    if runtime is not None:
+        rt_phase1: QwenRuntime | None = runtime
+        rt_phase2: QwenRuntime | None = runtime
+    else:
+        rt_phase1 = (
+            make_phase_runtime(runtime_mode, "phase1", config_path=config_path)
+            if run_phase1
+            else None
+        )
+        rt_phase2 = (
+            make_phase_runtime(runtime_mode, "phase2", config_path=config_path)
+            if run_phase2
+            else None
+        )
+    # The skip-guard's local-n_ctx tokenizer check only applies to a local
+    # LlamaCppRuntime; the relevant runtime is Phase 1's when it runs (Phase 2
+    # endpoint runtimes have no _ensure_tokenizer so the check no-ops).
+    guard_rt = rt_phase1 if rt_phase1 is not None else rt_phase2
 
     def _defaults_for(adapter: AdapterID) -> dict[str, Any]:
         return sampling.get(
@@ -745,7 +788,7 @@ def run_qwen_specialists(
             request=request_with_id,
             defaults=defaults,
             prompt=prompt,
-            rt=rt,
+            rt=guard_rt,
         )
         buckets[adapter].append(
             _RegionJob(
@@ -773,7 +816,7 @@ def run_qwen_specialists(
     # When refine is on, the drafts are stashed on each job for Phase 2.
     # ------------------------------------------------------------------
     if run_phase1:
-        version = getattr(rt, "_adapter_version", "unknown")
+        version = getattr(rt_phase1, "_adapter_version", "unknown")
         for adapter in _PASS_ORDER:
             bucket = buckets.get(adapter, [])
             if not bucket:
@@ -791,8 +834,8 @@ def run_qwen_specialists(
             )
             defaults = _defaults_for(adapter)
             # ONE swap (one load/free) for the whole adapter group.
-            with AdapterSwap(adapter, runtime=rt, config_path=config_path):
-                version = getattr(rt, "_adapter_version", version)
+            with AdapterSwap(adapter, runtime=rt_phase1, config_path=config_path):
+                version = getattr(rt_phase1, "_adapter_version", version)
                 # K batched passes — slot j across all active regions.
                 # per_slot[k_idx] is a list aligned to ``active``.
                 per_slot: list[list[str]] = []
@@ -808,7 +851,7 @@ def run_qwen_specialists(
                         # refine mode runs Phase 1 too) degrades only that
                         # slot. A None slot becomes an empty draft below —
                         # Stage 7 then drops it, same as a skip.
-                        texts = rt.generate_batch(
+                        texts = rt_phase1.generate_batch(
                             prompts,
                             max_tokens=defaults["max_new_tokens"],
                             temperature=defaults["temperature"],
@@ -851,11 +894,13 @@ def run_qwen_specialists(
                         )
 
     # ------------------------------------------------------------------
-    # Phase 2 — 70B refine/generate, batched CONCURRENTLY over ALL regions.
-    # The endpoint runtime's generate_batch fans the per-region POSTs out
-    # through a ThreadPoolExecutor (SEMANTIK_SPECIALIST_CONCURRENCY) and
-    # re-orders results to inputs. Run K times for K candidates per region.
-    #   - no-refine: prompt is the region prompt (endpoint generates fresh).
+    # Phase 2 — refine/generate on the Phase-2 seat (whatever provider/model
+    # it resolves to — local or hosted). When that seat is a hosted endpoint,
+    # generate_batch fans the per-region POSTs out through a ThreadPoolExecutor
+    # (SEMANTIK_SPECIALIST_CONCURRENCY) and re-orders results to inputs; a local
+    # Phase-2 seat runs the same prompts through its generate_batch. Run K times
+    # for K candidates per region.
+    #   - no-refine: prompt is the region prompt (Phase-2 seat generates fresh).
     #   - refine:    prompt is (region prompt + Phase-1 draft + directive).
     # ------------------------------------------------------------------
     if run_phase2:
@@ -909,11 +954,11 @@ def run_qwen_specialists(
                 # identical regardless of batching.
                 if batched:
                     texts = _phase2_slot_texts_batched(
-                        rt, active, k_idx=k_idx, slot_seed=slot_seed, refine=refine
+                        rt_phase2, active, k_idx=k_idx, slot_seed=slot_seed, refine=refine
                     )
                 else:
                     texts = _phase2_slot_texts_per_region(
-                        rt, active, k_idx=k_idx, slot_seed=slot_seed, refine=refine
+                        rt_phase2, active, k_idx=k_idx, slot_seed=slot_seed, refine=refine
                     )
                 for a_pos, job in enumerate(active):
                     text = texts[a_pos]

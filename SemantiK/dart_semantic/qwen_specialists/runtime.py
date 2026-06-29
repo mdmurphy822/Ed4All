@@ -86,23 +86,153 @@ logger = logging.getLogger(__name__)
 # Provider values that explicitly mean "stay local on the GGUF".
 _LOCAL_PROVIDER_VALUES = frozenset({"", "local", "gguf", "llama_cpp", "llamacpp"})
 
+# Sane literal default model for the OpenAI-compatible seat — mirrors
+# endpoint_runtime._DEFAULT_MODEL and resolve_structure_review_model. Kept as a
+# literal (not imported) to avoid pulling endpoint_runtime in at module load.
+_DEFAULT_SEAT_MODEL = "meta/llama-3.3-70b-instruct"
+
+
+def _normalize_provider(raw: str | None) -> str:
+    """Normalize a raw provider string → ``"local"`` or the lowercased value.
+
+    ``""`` / ``"local"`` (and the GGUF aliases in ``_LOCAL_PROVIDER_VALUES``)
+    collapse to ``"local"``; anything else is the lower-cased, stripped
+    provider name (e.g. ``"nvidia"``, ``"local-openai"``, ``"endpoint"``)."""
+    v = (raw or "").strip().lower()
+    return "local" if v in _LOCAL_PROVIDER_VALUES else v
+
 
 def resolve_specialist_provider() -> str:
-    """Return the normalized specialist provider string.
+    """Return the normalized single-seat specialist provider string.
 
     ``"local"`` when ``SEMANTIK_SPECIALIST_PROVIDER`` is unset / blank /
     ``"local"`` (and aliases); otherwise the lower-cased provider value
     (e.g. ``"nvidia"``, ``"local-openai"``, ``"endpoint"``).
-    """
-    raw = (os.environ.get("SEMANTIK_SPECIALIST_PROVIDER") or "").strip().lower()
-    if raw in _LOCAL_PROVIDER_VALUES:
-        return "local"
-    return raw
+
+    Post per-phase-seat redesign this is the **Phase-2 (refine/generate) seat
+    default** — the single seat selects WHICH provider/model the Phase-2 tier
+    (and the Stage-5d reviewer / Stage-5e resegment seats) use. Phase 1
+    (draft) defaults to ``"local"`` regardless of this value (the dereliction
+    default — see :func:`resolve_phase_provider`)."""
+    return _normalize_provider(os.environ.get("SEMANTIK_SPECIALIST_PROVIDER"))
 
 
 def specialist_provider_is_endpoint() -> bool:
-    """True when an endpoint provider is selected (NOT the local GGUF arm)."""
+    """True when the single-seat provider is an endpoint (NOT the local GGUF)."""
     return resolve_specialist_provider() != "local"
+
+
+# ---------------------------------------------------------------------------
+# Per-phase seat resolution (model-agnostic two-phase Stage-6)
+# ---------------------------------------------------------------------------
+#
+# Stage 6 has two phases — Phase 1 (draft) and Phase 2 (refine/generate). Each
+# phase resolves its OWN {provider, model} seat from the registry/env, so any
+# composition works: local-draft→local-large-refine (fully on-device),
+# local-draft→hosted-refine, hosted-draft→hosted-refine, single-phase-any-
+# provider, etc. The hosted 70B is just ONE possible Phase-2 model, never a
+# hardcoded tier. base_url / api_key are resolved by the OpenAI-compatible
+# endpoint runtime from the shared SEMANTIK_SPECIALIST_BASE_URL/API_KEY (>
+# NVIDIA_*) env — per-phase provider + model are the per-phase knobs.
+#
+# Resolution (parse-with-fallback everywhere):
+#
+#   Phase-1 provider : SEMANTIK_SPECIALIST_PHASE1_PROVIDER > "local"
+#                      (does NOT inherit the single seat — the dereliction
+#                       default keeps Phase 1 on the license-clean on-device
+#                       specialists unless EXPLICITLY pointed elsewhere).
+#   Phase-2 provider : SEMANTIK_SPECIALIST_PHASE2_PROVIDER
+#                      > SEMANTIK_SPECIALIST_PROVIDER (single seat) > "local".
+#   Phase-N model    : SEMANTIK_SPECIALIST_PHASE{N}_MODEL
+#                      > SEMANTIK_SPECIALIST_MODEL > NVIDIA_LARGE_MODEL
+#                      > the literal default (only consulted on a non-local
+#                        seat — the local GGUF arm picks its model from the
+#                        adapter config, not this string).
+
+_VALID_PHASES = ("phase1", "phase2")
+
+
+def resolve_phase_provider(phase: str) -> str:
+    """Return the normalized provider for ``"phase1"`` / ``"phase2"``.
+
+    Phase 1 defaults to ``"local"`` (the dereliction default — it does NOT
+    inherit ``SEMANTIK_SPECIALIST_PROVIDER``); Phase 2 falls back to the
+    single seat. See the module comment above for the full chain."""
+    if phase == "phase1":
+        # _normalize_provider("" / unset) -> "local"; explicit value honored.
+        return _normalize_provider(os.environ.get("SEMANTIK_SPECIALIST_PHASE1_PROVIDER"))
+    if phase == "phase2":
+        raw = os.environ.get("SEMANTIK_SPECIALIST_PHASE2_PROVIDER")
+        if raw and raw.strip():
+            return _normalize_provider(raw)
+        return resolve_specialist_provider()
+    raise ValueError(f"unknown phase {phase!r} (expected one of {_VALID_PHASES})")
+
+
+def resolve_phase_model(phase: str) -> str:
+    """Return the model id for ``"phase1"`` / ``"phase2"`` on the endpoint seat.
+
+    Only consulted when the phase's provider is non-local (the local GGUF arm
+    resolves its model from the adapter config). Resolution: the per-phase env
+    > the shared ``SEMANTIK_SPECIALIST_MODEL`` > ``NVIDIA_LARGE_MODEL`` > the
+    literal default."""
+    if phase == "phase1":
+        per_phase = os.environ.get("SEMANTIK_SPECIALIST_PHASE1_MODEL")
+    elif phase == "phase2":
+        per_phase = os.environ.get("SEMANTIK_SPECIALIST_PHASE2_MODEL")
+    else:
+        raise ValueError(f"unknown phase {phase!r} (expected one of {_VALID_PHASES})")
+    return (
+        per_phase
+        or os.environ.get("SEMANTIK_SPECIALIST_MODEL")
+        or os.environ.get("NVIDIA_LARGE_MODEL")
+        or _DEFAULT_SEAT_MODEL
+    )
+
+
+def phase_provider_is_endpoint(phase: str) -> bool:
+    """True when the phase's resolved provider is an endpoint (not local GGUF)."""
+    return resolve_phase_provider(phase) != "local"
+
+
+def any_phase_provider_is_endpoint() -> bool:
+    """True when EITHER phase's seat resolves to an endpoint provider.
+
+    Used by the cascade entry to decide ``runtime_mode`` (an endpoint on
+    either phase forces ``"real"``). Subsumes
+    :func:`specialist_provider_is_endpoint` because the Phase-2 seat falls
+    back to the single seat."""
+    return any(phase_provider_is_endpoint(p) for p in _VALID_PHASES)
+
+
+# Truthy strings for SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE (parse-with-
+# fallback; any other value is falsey/off).
+_ENDPOINT_DISPLACE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def resolve_endpoint_displaces_local() -> bool:
+    """True when a selected endpoint provider should DISPLACE the local
+    specialists as the Stage-6 authoring tier (pure-endpoint generation).
+
+    **Default OFF — the dereliction fix.** Selecting an endpoint provider via
+    ``SEMANTIK_SPECIALIST_PROVIDER`` alone no longer silently skips the local
+    GGUF specialists; the license-clean on-device specialists remain the
+    authoring tier and the hosted 70B is reachable only on an EXPLICIT opt-in:
+
+      * ``SEMANTIK_SPECIALIST_REFINE`` — the hybrid flow (local drafts → 70B
+        polish), OR
+      * ``SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE`` (this flag) — full
+        pure-endpoint displacement (the pre-fix ``provider=<endpoint>``
+        behaviour, now gated behind an intentional flag).
+
+    Parse-with-fallback: only the truthy set enables displacement; anything
+    else (unset / blank / garbage) is off. No provider/model selection — no
+    ``docs/LICENSING.md`` row (the seat it unlocks is already covered by the
+    ``SEMANTIK_SPECIALIST_PROVIDER`` licensing row)."""
+    raw = (
+        os.environ.get("SEMANTIK_SPECIALIST_ENDPOINT_DISPLACE") or ""
+    ).strip().lower()
+    return raw in _ENDPOINT_DISPLACE_TRUTHY
 
 
 def resolve_structure_review_model() -> str:
@@ -660,6 +790,7 @@ def make_runtime(
     *,
     config_path: Path | None = None,
     model: str | None = None,
+    force_local: bool = False,
 ) -> QwenRuntime:
     """Return a fresh runtime instance for the requested mode.
 
@@ -698,7 +829,16 @@ def make_runtime(
         return MockRuntime()
     # Endpoint arm: explicit "endpoint" mode, OR "real" mode while an
     # endpoint provider is selected. No local GGUF is needed or checked.
-    if mode == "endpoint" or (mode == "real" and specialist_provider_is_endpoint()):
+    #
+    # ``force_local`` (dereliction fix): the Stage-6 caller sets this when the
+    # local GGUF specialists are the active authoring tier even though an
+    # endpoint PROVIDER is configured (the corrected default — see
+    # :func:`resolve_endpoint_displaces_local`). It only suppresses the
+    # ``mode="real"`` short-circuit; an explicit ``mode="endpoint"`` (the
+    # Stage-5d reviewer / Stage-5e resegment seats) is never forced local.
+    if mode == "endpoint" or (
+        mode == "real" and not force_local and specialist_provider_is_endpoint()
+    ):
         from .endpoint_runtime import OpenAICompatibleRuntime  # noqa: WPS433
 
         logger.info(
@@ -744,11 +884,68 @@ def make_runtime(
     )
 
 
+def make_phase_runtime(
+    mode: Literal["mock", "real"],
+    phase: str,
+    *,
+    config_path: Path | None = None,
+) -> QwenRuntime:
+    """Build the runtime for a Stage-6 phase from its OWN resolved seat.
+
+    Model-agnostic: each phase independently resolves ``{provider, model}``
+    (:func:`resolve_phase_provider` / :func:`resolve_phase_model`) and the
+    runtime is chosen from the SAME registry mechanism as everything else —
+
+      * ``mode="mock"``           -> :class:`MockRuntime` (tests / smoke; no
+        provider read — never a GPU/network touch).
+      * provider ``"local"``      -> the local GGUF arm (:class:`LlamaCppRuntime`
+        via ``make_runtime("real", force_local=True)``, including the strict
+        on-disk-adapter presence check). This is the byte-stable default for
+        Phase 1; a LOCAL Phase-2 seat is equally valid (local-draft→local-
+        refine with NO hosted call).
+      * any other provider        -> the OpenAI-compatible endpoint runtime
+        (:class:`~.endpoint_runtime.OpenAICompatibleRuntime`) pointed at that
+        seat's ``model`` (base_url / api_key resolved from the shared
+        ``SEMANTIK_SPECIALIST_BASE_URL`` / ``_API_KEY`` > ``NVIDIA_*`` env). The
+        hosted 70B is just one possible value of ``model`` here — never a
+        special-cased tier.
+
+    The phase's provider decides local-vs-endpoint; ``mode`` only chooses the
+    deterministic mock for tests. No ``"70B"`` is hardcoded anywhere on this
+    path."""
+    if phase not in _VALID_PHASES:
+        raise ValueError(f"unknown phase {phase!r} (expected one of {_VALID_PHASES})")
+    if mode == "mock":
+        return MockRuntime()
+    provider = resolve_phase_provider(phase)
+    if provider == "local":
+        # Local GGUF arm — strict presence check, never the endpoint
+        # short-circuit (force_local suppresses it).
+        return make_runtime("real", config_path=config_path, force_local=True)
+    # Any OpenAI-compatible provider: one backend, driven by the seat's model
+    # (+ the shared base_url/api_key the endpoint runtime resolves from env).
+    logger.info(
+        "make_phase_runtime(%s): routing to endpoint seat (provider=%s, model=%s)",
+        phase,
+        provider,
+        resolve_phase_model(phase),
+    )
+    return make_runtime(
+        "endpoint", config_path=config_path, model=resolve_phase_model(phase)
+    )
+
+
 __all__ = [
     "LlamaCppRuntime",
     "MockRuntime",
     "QwenRuntime",
+    "any_phase_provider_is_endpoint",
+    "make_phase_runtime",
     "make_runtime",
+    "phase_provider_is_endpoint",
+    "resolve_endpoint_displaces_local",
+    "resolve_phase_model",
+    "resolve_phase_provider",
     "resolve_specialist_provider",
     "resolve_structure_review_model",
     "specialist_provider_is_endpoint",
