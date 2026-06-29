@@ -240,6 +240,37 @@ def fallback_table(
 def fallback_math(region: Region, feature_blocks: Sequence[FeatureBlock]) -> str:
     payload = region.payload or {}
     src = payload.get("src_text") or _source_text(region, feature_blocks)
+    # T4 — DETERMINISTIC-FIRST math reconstruction. When
+    # SEMANTIK_MATH_RECONSTRUCT is on, NEVER emit the raw glyph-soup
+    # <span class="math-source"> (it linearises 2-D structure into a flat,
+    # screen-reader-hostile string). Prefer the Stage-5 gate-valid
+    # deterministic candidate; else emit the uniform accessible
+    # <math><mtext>/<merror> last resort (source carried as alttext). Flag
+    # OFF -> the legacy soup (byte-identical).
+    try:
+        from ..math_reconstruct.policy import resolve_math_reconstruct_mode
+
+        reconstruct_on = resolve_math_reconstruct_mode()
+    except Exception:
+        reconstruct_on = False
+    if reconstruct_on:
+        mr = payload.get("math_reconstruct")
+        if isinstance(mr, dict):
+            mathml = mr.get("mathml")
+            if isinstance(mathml, str) and mathml.strip():
+                return mathml
+        try:
+            from ..math_reconstruct.mathml_emit import accessible_uniform_mathml
+
+            return accessible_uniform_mathml(
+                src, display=bool(payload.get("display", True))
+            )
+        except Exception:
+            # Even on an import failure, do not regress to glyph soup —
+            # emit a minimal valid <math> with the source as alttext/mtext.
+            safe = escape(src or "math expression")
+            safe_attr = escape(src or "math expression", quote=True)
+            return f'<math alttext="{safe_attr}"><mtext>{safe}</mtext></math>'
     return f'<span class="math-source">{escape(src)}</span>'
 
 

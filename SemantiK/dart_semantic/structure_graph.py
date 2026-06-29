@@ -932,6 +932,7 @@ def build_structure_graph(
     same_logical_block_threshold: float = 0.5,
     is_heading_threshold: float = 0.8,
     doc_role_threshold: float = 0.5,
+    pdf_path: Any = None,
 ) -> list[Region]:
     """Run the six deterministic passes described in the module
     docstring. Returns a flat list of :class:`Region` covering every
@@ -1378,6 +1379,30 @@ def build_structure_graph(
                 "display": True,  # v1: math detector pre-gates display only.
                 "glyph_density_features": dict(mc.glyph_density_features or {}),
             }
+            # T4 — deterministic MathML reconstruction (gated, default OFF ->
+            # byte-identical: no stamp). When SEMANTIK_MATH_RECONSTRUCT is on,
+            # recover per-glyph geometry (pdfplumber chars when ``pdf_path`` is
+            # threaded; else the flat src_text) and stamp a gate-valid
+            # deterministic <math> candidate on the payload. Stage-6's
+            # local-by-default specialist + the assembler fallback own the
+            # generative / accessible-uniform tiers (DETERMINISTIC-FIRST).
+            try:
+                from .math_reconstruct.policy import (
+                    resolve_math_reconstruct_mode,
+                    stamp_math_reconstruction,
+                )
+
+                if resolve_math_reconstruct_mode():
+                    _page = (mc.pages or [None])[0]
+                    _bbox = tuple(float(x) for x in mc.bbox) if mc.bbox else None
+                    stamp_math_reconstruction(
+                        payload,
+                        page_num=_page,
+                        bbox=_bbox,
+                        pdf_path=pdf_path,
+                    )
+            except Exception:  # opt-in pass must never crash the cascade
+                pass
             regions_out.append(
                 Region(
                     kind="math",

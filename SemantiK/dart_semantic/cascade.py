@@ -1301,6 +1301,7 @@ def run_full_cascade(
         feature_blocks,
         council_regions,
         decisions,
+        pdf_path=pdf_path,
     )
     stages["stage1_5"] = time.perf_counter() - t
 

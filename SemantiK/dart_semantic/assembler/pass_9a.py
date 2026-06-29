@@ -293,6 +293,29 @@ def _payload_doc_role(region: Region) -> str | None:
     return None
 
 
+def _math_reconstruct_html(region: Region) -> str | None:
+    """Return the Stage-5 deterministic-reconstruction <math> fragment for a
+    math region, when SEMANTIK_MATH_RECONSTRUCT is on AND Stage-5 stamped a
+    gate-valid deterministic candidate. ``None`` for every other case
+    (non-math region, flag off, no stamp), keeping the flag-off path
+    byte-identical."""
+    if getattr(region, "kind", None) != "math":
+        return None
+    try:
+        from ..math_reconstruct.policy import resolve_math_reconstruct_mode
+
+        if not resolve_math_reconstruct_mode():
+            return None
+    except Exception:
+        return None
+    mr = (region.payload or {}).get("math_reconstruct")
+    if isinstance(mr, dict) and mr.get("method") == "deterministic":
+        mathml = mr.get("mathml")
+        if isinstance(mathml, str) and mathml.strip():
+            return mathml
+    return None
+
+
 def run_pass_9a(
     top_per_region: dict[int, RankedCandidate | None],
     regions: Sequence[Region],
@@ -355,6 +378,19 @@ def run_pass_9a(
             # fallback_metadata_drop only fires when Stage-6 produced no candidate).
             region_html.append("")
             region_provenance_kinds.append("drop")
+            continue
+        # T4 — DETERMINISTIC-FIRST math. When SEMANTIK_MATH_RECONSTRUCT is on
+        # and Stage-5 stamped a gate-valid deterministic <math> candidate on
+        # this math region, prefer it over the Stage-6 generative candidate
+        # (owner directive: deterministic-first). Counted in the fallback
+        # family (a deterministic, non-LLM emitter) so the per_region_emit
+        # drop arithmetic stays correct. Flag OFF -> no stamp -> this is a
+        # no-op and the legacy selection runs (byte-identical).
+        det_math = _math_reconstruct_html(region)
+        if det_math is not None:
+            region_html.append(det_math)
+            region_provenance_kinds.append("fallback")
+            n_fallback += 1
             continue
         ranked = top_per_region.get(idx)
         if ranked is not None and ranked.candidate.text:
