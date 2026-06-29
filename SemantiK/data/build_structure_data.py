@@ -1084,6 +1084,509 @@ def run_global_build(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Real-PDF eval-set build path (Phase 1) — opt-in, off by default
+# ---------------------------------------------------------------------------
+#
+# Today's training + eval live on RENDERED-HTML-PDF gold (output_html -> a
+# Playwright-rendered PDF -> extract_shared). The real deploy gap is therefore
+# UNMEASURED. This path builds a real-PDF eval set: it emits ``FBView``s from a
+# REAL source PDF (a born-digital arXiv paper on disk, an IRS form PDF, a
+# Federal Register PDF) and aligns them against the EXISTING gold ``output_html``
+# via the SAME frozen ``data/structure_align.py`` aligner the rendered path uses
+# (nothing in the aligner changes — it consumes input-agnostic views). The v3
+# rows it writes are then scored by the CURRENT committed structure head to
+# measure real-PDF gold-reproduction F1 vs the in-distribution 0.894.
+#
+# Three load-bearing guarantees:
+#   * LICENSE PARTITION — two physically separate roots. SHIPPABLE (PMC OA /
+#     federal_register / CFR / gov_forms + arXiv papers whose cached license is
+#     commercial-OK) vs INTERNAL-ONLY (OpenStax NC-SA + arXiv papers whose
+#     license is non-commercial OR unknown). Gated per pair on source+license.
+#   * ZERO LEAKAGE — ``--eval-holdout-by-docid`` holds the eval set out by
+#     DOCUMENT id against the head's actual training corpus
+#     (``data/structure_dataset/{train,val}.jsonl``): a doc whose rendered rows
+#     touched train/val is EXCLUDED from the emitted (clean) test.jsonl and
+#     routed to a clearly-named ``test_in_training.jsonl`` sidecar instead.
+#   * ALIGNMENT-QUALITY GATE — a real-PDF doc whose aligned-gold fraction is
+#     below ``--align-quality-floor`` is DROPPED (never mislabeled); drops are
+#     counted per source/domain so a low head score is attributable to
+#     aligner-vs-head, not silent contamination.
+
+# Domain taxonomy for the per-domain real-PDF F1 table.
+SOURCE_DOMAIN = {
+    "arxiv": "scientific",
+    "pmc": "scientific",
+    "cfr": "regulatory_legal",
+    "federal_register": "regulatory_legal",
+    "pdf_form": "forms",
+    "forms": "forms",
+    "openstax": "math",
+}
+
+# Sources whose corpus license permits redistribution unconditionally. arXiv is
+# gated PER PAPER on the cached license map (see ``_license_partition``).
+_SHIPPABLE_SOURCES = {"pmc", "federal_register", "cfr", "pdf_form", "forms"}
+
+# data/pairs/<dir> -> the canonical ``source`` field carried INSIDE the pair
+# JSON (used for leakage keying; only ``forms`` differs from its dir name).
+_DIR_TO_SOURCE = {"forms": "pdf_form"}
+
+_ARXIV_LICENSE_MAP_PATH = Path("data/figure_images/_arxiv_license_map.json")
+_RENDERED_TRAIN_CORPUS = Path("data/structure_dataset")  # the head's training data
+
+
+def _domain_for(source: str) -> str:
+    return SOURCE_DOMAIN.get(source, "other")
+
+
+def _doc_id_for(source: str, pair_stem: str) -> str:
+    """Stable per-document id. arXiv/OpenStax stems are
+    ``<docid>__<NN>_<section_slug>`` (one doc -> many section pairs); the others
+    are one pair per document."""
+    if source in ("arxiv", "openstax"):
+        return pair_stem.split("__")[0]
+    return pair_stem
+
+
+def _load_arxiv_license_map() -> dict:
+    try:
+        return json.loads(_ARXIV_LICENSE_MAP_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _license_partition(source: str, doc_id: str, arxiv_lic: dict) -> str:
+    """Return ``"shippable"`` or ``"internal"`` for one document."""
+    if source in _SHIPPABLE_SOURCES:
+        return "shippable"
+    if source == "arxiv":
+        rec = arxiv_lic.get(doc_id.replace("_", "."))
+        if rec and rec.get("commercial_ok"):
+            return "shippable"
+        return "internal"  # non-commercial OR unknown -> cannot prove shippable
+    return "internal"  # OpenStax NC-SA et al.
+
+
+def _train_val_docids(corpus_dir: Path = _RENDERED_TRAIN_CORPUS) -> set:
+    """The (source, doc_id) set the committed head actually trained on, read
+    from the rendered train+val splits — the leakage exclusion set."""
+    seen: set = set()
+    for split in ("train", "val"):
+        p = corpus_dir / f"{split}.jsonl"
+        if not p.exists():
+            continue
+        for line in p.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            src = r.get("source", "?")
+            seen.add((src, _doc_id_for(src, r.get("pair", ""))))
+    return seen
+
+
+def _federal_register_pdf_url(pair: dict, *, timeout: float = 30.0) -> str | None:
+    """Resolve a Federal Register document's authoritative PDF url via the FR
+    API (``pdf_url`` field). Best-effort — returns None on any failure."""
+    docnum = pair.get("document_number")
+    if not docnum:
+        return None
+    try:
+        import requests
+
+        api = f"https://www.federalregister.gov/api/v1/documents/{docnum}.json"
+        r = requests.get(api, timeout=timeout, params={"fields[]": "pdf_url"})
+        r.raise_for_status()
+        return r.json().get("pdf_url")
+    except Exception:
+        return None
+
+
+def _resolve_real_pdf(
+    pair: dict, source: str, doc_id: str, cache_dir: Path, *, timeout: float = 60.0
+) -> tuple[Path | None, tuple | None, str | None]:
+    """Resolve the REAL source PDF for a pair. Returns
+    ``(pdf_path, page_range_or_None, error_or_None)``.
+
+    * On-disk ``local_pdf`` (arXiv) is used directly; its ``page_range`` (1-based
+      inclusive) restricts extraction to the section's physical pages.
+    * Downloadable PDFs (IRS forms, Federal Register) are fetched once into
+      ``cache_dir`` (whole document; no page_range). Network failure -> deferred.
+    """
+    local_pdf = pair.get("local_pdf")
+    if local_pdf and Path(local_pdf).exists():
+        pr = pair.get("page_range")
+        return Path(local_pdf), (tuple(pr) if pr else None), None
+
+    url: str | None = None
+    if source in ("pdf_form", "forms"):
+        u = (pair.get("url") or "").strip()
+        url = u if u.lower().endswith(".pdf") else None
+    elif source == "federal_register":
+        url = _federal_register_pdf_url(pair, timeout=timeout)
+    if not url:
+        return None, None, "no real PDF (no local_pdf, no resolvable download url)"
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    dest = cache_dir / f"{source}__{doc_id}.pdf"
+    if not dest.exists():
+        try:
+            import requests
+
+            r = requests.get(
+                url, timeout=timeout, headers={"User-Agent": "SemantiK-realpdf-eval/1.0"}
+            )
+            r.raise_for_status()
+            if not r.content[:5].startswith(b"%PDF"):
+                return None, None, f"download is not a PDF: {url}"
+            dest.write_bytes(r.content)
+        except Exception as exc:
+            return None, None, f"download failed ({url}): {exc}"
+    return dest, None, None
+
+
+class _ExtractTimeout(Exception):
+    """A single PDF's extract_shared exceeded the per-pair wall-clock budget
+    (pdfplumber can stall on pathological dense-vector pages)."""
+
+
+def _extract_child(pdf_path_str: str) -> None:
+    """Child-process entry: populate the on-disk extract cache for one PDF."""
+    extract_shared_cached(Path(pdf_path_str))
+
+
+def _extract_with_timeout(pdf_path: Path, seconds: int) -> dict:
+    """Run ``extract_shared_cached`` under a HARD process-level wall-clock guard.
+
+    pdfplumber/pdfminer can stall at the C level on pathological dense-vector
+    pages, where a Python SIGALRM never fires. So the extraction runs in a
+    forked child that writes the deterministic disk cache; on timeout the child
+    is terminated and ``_ExtractTimeout`` is raised (the doc is skipped, not
+    fatal). On success the parent re-reads via ``extract_shared_cached`` (now a
+    cache hit). Disabled (``seconds<=0``) -> plain in-process call."""
+    if seconds <= 0:
+        return extract_shared_cached(pdf_path)
+    import multiprocessing as mp
+
+    ctx = mp.get_context("fork")
+    proc = ctx.Process(target=_extract_child, args=(str(pdf_path),))
+    proc.start()
+    proc.join(seconds)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(5)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(5)
+        raise _ExtractTimeout()
+    if proc.exitcode != 0:
+        raise RuntimeError(f"extract child exited {proc.exitcode}")
+    return extract_shared_cached(pdf_path)
+
+
+def _filter_shared_pages(shared: dict, page_range: tuple | None) -> dict:
+    """Restrict an ``extract_shared`` result to a 1-based-inclusive page range
+    (used for arXiv section pairs whose gold covers only some pages of the whole
+    paper PDF). No-op when ``page_range`` is None."""
+    if not page_range:
+        return shared
+    s, e = int(page_range[0]), int(page_range[1])
+    pages = [
+        p
+        for p in shared.get("pages", [])
+        if s <= int(p.get("page_num", p.get("page", -1))) <= e
+    ]
+    return {**shared, "pages": pages}
+
+
+def run_realpdf_build(args) -> None:
+    """Build the real-PDF structure eval set (Phase 1) -> two license roots."""
+    arxiv_lic = _load_arxiv_license_map()
+    train_val = _train_val_docids() if args.eval_holdout_by_docid else set()
+    floor = float(args.align_quality_floor)
+    cache_root: Path = args.realpdf_cache
+    soft_floor = GLOBAL_SOFT_FLOOR
+    max_run = GLOBAL_MAX_RUN
+
+    # Output roots: clean (held-out) test.jsonl per license partition; the
+    # contaminated real-PDF rows land in a leakage-flagged sidecar so the
+    # supplementary per-domain measurement stays reproducible without polluting
+    # the zero-leakage eval set.
+    roots = {
+        "shippable": args.out_dir,
+        "internal": args.internal_out_dir,
+    }
+    for r in roots.values():
+        r.mkdir(parents=True, exist_ok=True)
+
+    clean_rows: dict[str, list[dict]] = {"shippable": [], "internal": []}
+    contam_rows: dict[str, list[dict]] = {"shippable": [], "internal": []}
+    doc_records: list[dict] = []
+    drops: Counter = Counter()
+    per_domain_docs: Counter = Counter()
+    total_kept = 0
+
+    start = time.time()
+    for source in args.realpdf_sources:
+        src_dir = Path("data/pairs") / source
+        if not src_dir.exists():
+            print(f"[realpdf] source dir missing, skipping: {src_dir}", file=sys.stderr)
+            continue
+        cap = args.realpdf_limit_per_source
+        kept_for_source = 0
+        files = sorted(src_dir.glob("*.json"))
+        # Process HELD-OUT (clean) docs FIRST so the per-source cap fills the
+        # zero-leakage headline set before spending budget on contaminated docs
+        # (which only matter for the supplementary leakage-flagged table). The
+        # leakage key uses the pair's canonical source field (dir->source map).
+        if train_val:
+            canon_src = _DIR_TO_SOURCE.get(source, source)
+            files = sorted(
+                files,
+                key=lambda pf: (
+                    1 if (canon_src, _doc_id_for(canon_src, pf.stem)) in train_val else 0,
+                    pf.name,
+                ),
+            )
+        for pf in files:
+            if cap and kept_for_source >= cap:
+                break
+            try:
+                pair = json.loads(pf.read_text())
+            except Exception as exc:
+                drops["read_error"] += 1
+                continue
+            # The pair's INTERNAL source field is canonical for domain / license /
+            # leakage keying (e.g. dir ``forms`` carries source ``pdf_form``);
+            # the directory name (``source``) is only the glob root.
+            psource = pair.get("source") or source
+            domain = _domain_for(psource)
+            doc_id = _doc_id_for(psource, pf.stem)
+            contaminated = (psource, doc_id) in train_val
+            if (
+                args.eval_holdout_by_docid
+                and contaminated
+                and not args.include_contaminated
+            ):
+                drops["holdout_excluded"] += 1
+                continue
+
+            output_html = pair.get("output_html")
+            if not output_html:
+                drops["no_output_html"] += 1
+                continue
+            gold_records = extract_html_blocks(output_html)
+            if not gold_records:
+                drops["no_gold_blocks"] += 1
+                continue
+
+            pdf_path, page_range, err = _resolve_real_pdf(
+                pair, psource, doc_id, cache_root / psource
+            )
+            if pdf_path is None:
+                drops["no_real_pdf"] += 1
+                continue
+            try:
+                shared = _extract_with_timeout(pdf_path, args.realpdf_extract_timeout)
+            except _ExtractTimeout:
+                drops["extract_timeout"] += 1
+                continue
+            except Exception as exc:
+                drops["extract_error"] += 1
+                continue
+            shared = _filter_shared_pages(shared, page_range)
+            pdf_views, in_table_by_order = _pdf_views_for_pair(shared)
+            if not pdf_views:
+                drops["no_pdf_blocks"] += 1
+                continue
+
+            gold_views = [
+                GoldView.from_html_block(rec, i) for i, rec in enumerate(gold_records)
+            ]
+            # Size guard: the global aligner DP is O(n_pdf * n_gold * max_run);
+            # an oversized whole-paper doc stalls the (single-process) align for
+            # minutes. Skip + record rather than block the build.
+            maxb = args.realpdf_max_blocks
+            if maxb and (len(pdf_views) > maxb or len(gold_views) > maxb):
+                drops["too_large"] += 1
+                continue
+            try:
+                result = align_blocks(
+                    pdf_views,
+                    gold_views,
+                    max_run=max_run,
+                    soft_floor=soft_floor,
+                    source=psource,
+                    pair=pf.stem,
+                )
+            except LedgerIncompleteError as exc:
+                drops["align_not_lossless"] += 1
+                continue
+            except Exception as exc:
+                drops["align_error"] += 1
+                continue
+
+            n_gold = len(gold_views)
+            gold_gap = int(result.ledger.counts.get("gold_gap", 0))
+            aligned_frac = (n_gold - gold_gap) / max(1, n_gold)
+
+            license_part = _license_partition(psource, doc_id, arxiv_lic)
+            doc_rec = {
+                "source": psource,
+                "domain": domain,
+                "doc_id": doc_id,
+                "pair": pf.stem,
+                "license": license_part,
+                "holdout_clean": not contaminated,
+                "page_range": list(page_range) if page_range else None,
+                "n_gold": n_gold,
+                "gold_gap": gold_gap,
+                "aligned_gold_fraction": round(aligned_frac, 6),
+                "n_pdf_blocks": len(pdf_views),
+            }
+
+            if aligned_frac < floor:
+                drops["low_alignment"] += 1
+                doc_rec["dropped"] = "low_alignment"
+                doc_records.append(doc_rec)
+                continue
+
+            kept = project_rows(result.rows, ROLE_NAMES, ledger=result.ledger)
+            rows = [_enrich_v3_row(r, gold_records, in_table_by_order) for r in kept]
+            for rr in rows:
+                rr["realpdf"] = True
+                rr["domain"] = domain
+                rr["license"] = license_part
+                rr["doc_id"] = doc_id
+                rr["holdout_clean"] = not contaminated
+                rr["aligned_gold_fraction"] = round(aligned_frac, 6)
+
+            bucket = clean_rows if not contaminated else contam_rows
+            bucket[license_part].extend(rows)
+            doc_rec["n_rows"] = len(rows)
+            doc_rec["dropped"] = None
+            doc_records.append(doc_rec)
+            per_domain_docs[domain] += 1
+            kept_for_source += 1
+            total_kept += 1
+            # Incremental flush (crash-safe for a long, slow extraction job —
+            # extract is the bottleneck at minutes/paper on dense PDFs).
+            if total_kept % 5 == 0:
+                _flush_realpdf_outputs(
+                    roots, clean_rows, contam_rows, doc_records, drops, args
+                )
+                print(
+                    f"[realpdf] kept {total_kept} docs "
+                    f"(last source={source}; elapsed {(time.time() - start) / 60:.1f}min)",
+                    file=sys.stderr,
+                )
+
+    _flush_realpdf_outputs(roots, clean_rows, contam_rows, doc_records, drops, args)
+    for part, root in roots.items():
+        print(
+            f"[realpdf][{part}] -> {root}  clean_rows={len(clean_rows[part])}  "
+            f"contaminated_rows={len(contam_rows[part])}",
+            file=sys.stderr,
+        )
+    print(
+        f"[REALPDF] docs_kept={sum(per_domain_docs.values())}  "
+        f"by_domain={dict(per_domain_docs)}  drops={dict(drops)}",
+        file=sys.stderr,
+    )
+
+
+def _flush_realpdf_outputs(roots, clean_rows, contam_rows, doc_records, drops, args) -> None:
+    """Write both license roots (clean test.jsonl + leakage-flagged sidecar +
+    coverage report) and the flat per-doc ledger. Called periodically so a
+    long-running build is crash-safe."""
+    for part, root in roots.items():
+        clean = clean_rows[part]
+        contam = contam_rows[part]
+        with (root / "test.jsonl").open("w") as f:
+            for r in clean:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        with (root / "test_in_training.jsonl").open("w") as f:
+            for r in contam:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        report = _realpdf_coverage_report(part, clean, contam, doc_records, drops, args)
+        (root / "coverage_report.json").write_text(json.dumps(report, indent=2))
+    args.out_dir.joinpath("realpdf_docs.jsonl").write_text(
+        "\n".join(json.dumps(d, ensure_ascii=False) for d in doc_records) + "\n"
+    )
+
+
+def _realpdf_coverage_report(
+    part: str,
+    clean: list[dict],
+    contam: list[dict],
+    doc_records: list[dict],
+    drops: Counter,
+    args,
+) -> dict:
+    """Per-license-root coverage report with per-domain doc/row counts +
+    alignment coverage and the drop ledger."""
+
+    def _slice(rows, holdout):
+        by_domain: dict[str, Counter] = defaultdict(Counter)
+        for r in rows:
+            if r.get("license") != part:
+                continue
+            d = r.get("domain", "other")
+            by_domain[d]["rows"] += 1
+        return by_domain
+
+    # Per-domain doc-level alignment coverage (mean aligned_gold_fraction over
+    # KEPT docs of this license partition).
+    dom_cov: dict[str, list[float]] = defaultdict(list)
+    dom_docs: dict[str, Counter] = defaultdict(Counter)
+    for d in doc_records:
+        if d.get("license") != part:
+            continue
+        dom = d.get("domain", "other")
+        kind = "clean" if d.get("holdout_clean") else "contaminated"
+        if d.get("dropped"):
+            dom_docs[dom][f"dropped_{d['dropped']}"] += 1
+            continue
+        dom_docs[dom][f"docs_{kind}"] += 1
+        dom_cov[dom].append(float(d.get("aligned_gold_fraction", 0.0)))
+
+    per_domain = {}
+    all_domains = set(dom_docs) | set(dom_cov)
+    for dom in sorted(all_domains):
+        covs = dom_cov.get(dom, [])
+        per_domain[dom] = {
+            **dict(dom_docs.get(dom, {})),
+            "mean_aligned_gold_fraction": round(sum(covs) / len(covs), 6) if covs else None,
+            "clean_rows": sum(
+                1 for r in clean if r.get("domain") == dom and r.get("license") == part
+            ),
+            "contaminated_rows": sum(
+                1 for r in contam if r.get("domain") == dom and r.get("license") == part
+            ),
+        }
+
+    return {
+        "schema_version": STRUCTURE_ALIGN_SCHEMA_VERSION,
+        "build": "realpdf",
+        "license_partition": part,
+        "soft_floor": GLOBAL_SOFT_FLOOR,
+        "max_run": GLOBAL_MAX_RUN,
+        "align_quality_floor": float(args.align_quality_floor),
+        "eval_holdout_by_docid": bool(args.eval_holdout_by_docid),
+        "rendered_train_corpus": str(_RENDERED_TRAIN_CORPUS),
+        "sources": list(args.realpdf_sources),
+        "clean_rows_total": len(clean),
+        "contaminated_rows_total": len(contam),
+        "per_domain": per_domain,
+        "drop_ledger": dict(drops),
+        "role_names": list(ROLE_NAMES),
+        "layout_feature_dim": LAYOUT_FEATURE_DIM,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Stratified split + main
 # ---------------------------------------------------------------------------
 
@@ -1163,8 +1666,82 @@ def main() -> None:
         "data/build_courtlistener_pseudo_structure.py) AFTER source-capping, so its rare "
         "legal headings are not re-subsampled away (Plan 14).",
     )
+    # --- Real-PDF eval-set build path (Phase 1) ---
+    ap.add_argument(
+        "--realpdf-only",
+        action="store_true",
+        help="Build the REAL-PDF eval set (FBViews from real source PDFs aligned "
+        "against the existing gold output_html) instead of the rendered-HTML-PDF "
+        "training build. Emits two license roots (shippable / internal) each with "
+        "a test.jsonl. See run_realpdf_build.",
+    )
+    ap.add_argument(
+        "--eval-holdout-by-docid",
+        action="store_true",
+        help="Hold the real-PDF eval set out by DOCUMENT id against the head's "
+        "rendered train+val corpus (zero leakage): contaminated docs are excluded "
+        "from test.jsonl and routed to test_in_training.jsonl.",
+    )
+    ap.add_argument(
+        "--include-contaminated",
+        action="store_true",
+        help="With --eval-holdout-by-docid, STILL process train/val-contaminated "
+        "docs (routed to the leakage-flagged test_in_training.jsonl) so the "
+        "supplementary per-domain measurement is reproducible.",
+    )
+    ap.add_argument(
+        "--realpdf-sources",
+        nargs="+",
+        default=["arxiv", "pdf_form", "federal_register"],
+        help="Pair sources to source real PDFs from (data/pairs/<source>).",
+    )
+    ap.add_argument(
+        "--realpdf-cache",
+        type=Path,
+        default=Path("data/realpdf_cache"),
+        help="Where downloaded (forms / federal_register) real PDFs are cached.",
+    )
+    ap.add_argument(
+        "--internal-out-dir",
+        type=Path,
+        default=Path("data/structure_dataset_realpdf_internal"),
+        help="INTERNAL-ONLY license root (OpenStax NC-SA + non-commercial/unknown "
+        "arXiv). Physically separate from the shippable --out-dir.",
+    )
+    ap.add_argument(
+        "--align-quality-floor",
+        type=float,
+        default=0.50,
+        help="Drop (never mislabel) a real-PDF doc whose aligned-gold fraction is "
+        "below this floor.",
+    )
+    ap.add_argument(
+        "--realpdf-limit-per-source",
+        type=int,
+        default=None,
+        help="Cap kept docs per source (smoke / sampling the contaminated set).",
+    )
+    ap.add_argument(
+        "--realpdf-extract-timeout",
+        type=int,
+        default=90,
+        help="Per-PDF extract_shared wall-clock budget (SIGALRM); a pathological "
+        "PDF that exceeds it is skipped (drop=extract_timeout), not fatal. 0=off.",
+    )
+    ap.add_argument(
+        "--realpdf-max-blocks",
+        type=int,
+        default=500,
+        help="Skip (drop=too_large) a doc with more than this many PDF or gold "
+        "blocks — bounds the O(n*m*max_run) alignment DP. 0=off.",
+    )
     add_cap_args(ap)
     args = ap.parse_args()
+
+    if args.realpdf_only:
+        args.out_dir = args.out_dir or Path("data/structure_dataset_realpdf")
+        run_realpdf_build(args)
+        return
 
     aligner = resolve_aligner(args.aligner)
     default_out = (
