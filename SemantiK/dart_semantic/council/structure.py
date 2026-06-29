@@ -23,9 +23,22 @@ Two specialist-gating signals mirror the same pattern:
     * is_heading=1   → HeadingSpecialist emits h1..h6.
     * table_region=1 → TableSpecialist parses cell-level role + scope.
 The Structure model only DETECTS membership; it never parses tables
-or assigns heading levels. structural_role itself is a non-
-authoritative recommendation — downstream specialists override per
-their domain.
+or assigns heading levels.
+
+Precedence of ``structural_role`` (Phase 5, gated by
+``SEMANTIK_BERT_AUTHORITATIVE``):
+    * **Default OFF — recommendation only.** ``structural_role`` is a
+      non-authoritative recommendation; downstream deterministic passes
+      and the Stage-5d LLM reviewer override per their domain (the legacy
+      contract, byte-identical).
+    * **Flag ON — authoritative.** The head's ``structural_role`` argmax
+      IS the region kind (mapped in
+      ``structure_graph._ROLE_TO_REGION_KIND`` and stamped with
+      ``payload['role_confidence']``); the Stage-5d LLM reviewer is demoted
+      to a confidence-gated span adjuster that touches ONLY spans flagged
+      by low top-1 confidence / low top1-top2 margin / a cross-head
+      conflict. Heading membership + heading LEVEL stay deterministic
+      (``is_heading`` + the heading-tree normalizer) in BOTH modes.
 
 The 20-dim numeric layout side-channel and the 64-dim layout MLP
 mirror Phase 3a v4 MergeOrSplit. Order of layout dims MUST match
@@ -60,11 +73,13 @@ DEFAULT_ADAPTER_DIR = (
 # active-class subset). Duplicated here so the runtime stays
 # self-contained (same pattern as merge_or_split.py).
 #
-# This head is a NON-AUTHORITATIVE recommendation; downstream council
-# logic should override it per-domain. table_region and is_heading are
-# the two binary gating signals that route a span to its specialist
-# (TableSpecialist / HeadingSpecialist) — the structural_role logits
-# only describe span CONTENT shape, not table/heading membership.
+# By default this head is a NON-AUTHORITATIVE recommendation; downstream
+# council logic overrides it per-domain. Under SEMANTIK_BERT_AUTHORITATIVE
+# the argmax is AUTHORITATIVE (it becomes the region kind; the LLM reviewer
+# adjusts only confidence-flagged spans — see structure_graph). table_region
+# and is_heading remain the two binary gating signals that route a span to
+# its specialist (TableSpecialist / HeadingSpecialist) — the structural_role
+# logits only describe span CONTENT shape, not table/heading membership.
 ROLE_NAMES = (
     "paragraph",
     "heading",

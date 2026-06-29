@@ -48,7 +48,13 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-from dart_semantic.structure_graph import REGION_KINDS, Region, _get_signal, _top1
+from dart_semantic.structure_graph import (
+    REGION_KINDS,
+    Region,
+    _get_signal,
+    _top1,
+    resolve_bert_authoritative,
+)
 from dart_semantic.types import FeatureBlock
 
 from . import block_review_cache
@@ -1427,6 +1433,86 @@ _UNCONDITIONAL_DISPATCH_KINDS: frozenset[str] = frozenset({"code_block", "table"
 # the head/tail edge. No recursion (the re-ask is not itself re-escalated).
 _ESCALATION_SOURCE_TOKEN_CAP = 2048
 
+# ---------------------------------------------------------------------------
+# Phase 5 — confidence-gated dispatch (SEMANTIK_BERT_AUTHORITATIVE on).
+#
+# When the council head is authoritative, the reviewer is a span ADJUSTER, not
+# a re-typer: a span is dispatched to the LLM IFF the head is genuinely
+# uncertain about it — top-1 confidence below tau, OR the top1-top2 margin below
+# delta, OR a cross-head conflict (is_heading disagrees with the structural_role
+# argmax on heading membership). The blanket _UNCONDITIONAL_DISPATCH_KINDS
+# code_block/table re-typing is NOT used in this mode (the head's argmax is now
+# trusted). Defaults are conservative (trust the head; dispatch rarely) and are
+# # TODO(calibration): calibrate tau/delta against the real-PDF gold corpus.
+# ---------------------------------------------------------------------------
+_AUTHORITATIVE_DISPATCH_TAU = 0.5  # TODO(calibration): top-1 confidence floor
+_AUTHORITATIVE_DISPATCH_DELTA = 0.15  # TODO(calibration): top1-top2 margin floor
+
+
+def _top1_top2_confidences(signal: Any) -> tuple[float, float]:
+    """Return ``(top1_conf, top2_conf)`` from a TypedSignal; (0.0, 0.0) if none.
+
+    Mirrors :func:`_top1` but also surfaces the runner-up confidence so the
+    authoritative gate can measure the decision MARGIN. A signal with a single
+    class reads top2 as 0.0 (max margin)."""
+    if signal is None:
+        return (0.0, 0.0)
+    confs = getattr(signal, "top_k_confidences", None) or []
+    if not confs:
+        return (0.0, 0.0)
+    top1 = float(confs[0])
+    top2 = float(confs[1]) if len(confs) > 1 else 0.0
+    return (top1, top2)
+
+
+def _authoritative_dispatch_gate(
+    region: Region,
+    council_state: Any | None,
+    feature_blocks: list[FeatureBlock],
+) -> bool:
+    """Confidence-gated span-adjuster predicate (authoritative mode).
+
+    Dispatch ``region`` to the LLM reviewer IFF the council Structure head is
+    UNCERTAIN about its representative FeatureBlock:
+
+      * ``structural_role`` top-1 confidence < ``_AUTHORITATIVE_DISPATCH_TAU``, OR
+      * the top1-top2 ``structural_role`` margin < ``_AUTHORITATIVE_DISPATCH_DELTA``, OR
+      * a CROSS-HEAD conflict: the ``is_heading`` head and the
+        ``structural_role`` argmax disagree on heading membership.
+
+    A confident, unambiguous, internally-consistent span is TRUSTED (no prompt)
+    — the head's argmax already set the kind. A missing council_state / signal
+    reads as confidence 0.0 -> below tau -> dispatch (when-in-doubt review)."""
+    fb_indices = region.feature_block_indices or ()
+    if not fb_indices:
+        return True
+    rep_idx = min(fb_indices)
+    role_sig = (
+        _get_signal(council_state, "structure", "structural_role", rep_idx)
+        if council_state is not None
+        else None
+    )
+    role_label, _ = _top1(role_sig)
+    top1, top2 = _top1_top2_confidences(role_sig)
+    if top1 < _AUTHORITATIVE_DISPATCH_TAU:
+        return True
+    if (top1 - top2) < _AUTHORITATIVE_DISPATCH_DELTA:
+        return True
+    # Cross-head conflict on heading membership (is_heading vs structural_role).
+    heading_sig = (
+        _get_signal(council_state, "structure", "is_heading_calibrated", rep_idx)
+        or _get_signal(council_state, "structure", "is_heading", rep_idx)
+        if council_state is not None
+        else None
+    )
+    heading_label, _ = _top1(heading_sig)
+    if heading_label is not None:
+        is_heading_vote = heading_label == "heading"
+        role_says_heading = role_label == "heading"
+        if is_heading_vote != role_says_heading:
+            return True
+    return False
+
 
 def _in_review_scope(region: Region) -> bool:
     """True when ``region`` is eligible for a Stage-5d reviewer prompt.
@@ -1499,7 +1585,15 @@ def _content_block_dispatch_gate(
     as confidence 0.0 (``_top1`` default) -> below the floor -> dispatch
     (when-in-doubt review); a confident gate read short-circuits BEFORE that for
     the unconditional kinds, so a missing council_state never matters for them.
+
+    Phase 5: under ``SEMANTIK_BERT_AUTHORITATIVE`` the head's argmax is trusted,
+    so the blanket ``_UNCONDITIONAL_DISPATCH_KINDS`` code_block/table re-typing
+    is RETIRED — dispatch is delegated to the confidence-gated
+    :func:`_authoritative_dispatch_gate` (sub-tau / low-margin / cross-head
+    conflict only).
     """
+    if resolve_bert_authoritative():
+        return _authoritative_dispatch_gate(region, council_state, feature_blocks)
     # (1) Known-weak content kinds: ALWAYS review (conf-independent).
     if str(region.kind) in _UNCONDITIONAL_DISPATCH_KINDS:
         return True
@@ -1860,6 +1954,19 @@ def run_structure_review(
         flagged_member = restrict_to is not None and index in restrict_to
         neighbors = _neighbors_for(regions, index)
         if str(region.kind) in HEADING_KINDS:
+            # Phase 5: when the head is authoritative, headings are NO LONGER
+            # always-in-scope — they pass through the same confidence gate (a
+            # confident, conflict-free heading is trusted, not re-judged). A
+            # verifier-flagged member still short-circuits the gate. Flag OFF
+            # -> byte-stable (headings always dispatched).
+            if (
+                resolve_bert_authoritative()
+                and not flagged_member
+                and not _content_block_dispatch_gate(
+                    region, council_state, feature_blocks
+                )
+            ):
+                continue
             text = _resolve_region_text(region, feature_blocks)
         else:
             # Content block (flag on). Deterministic-first: high-confidence
@@ -2407,6 +2514,16 @@ def _run_windowed_block_review(
             continue
         flagged_member = restrict_to is not None and index in restrict_to
         if str(region.kind) in HEADING_KINDS:
+            # BERT-authoritative: headings pass through the same confidence gate
+            # (no longer always-in-scope). Flag OFF -> byte-stable.
+            if (
+                resolve_bert_authoritative()
+                and not flagged_member
+                and not _content_block_dispatch_gate(
+                    region, council_state, feature_blocks
+                )
+            ):
+                continue
             text_by_idx[index] = _resolve_region_text(region, feature_blocks)
         else:
             # A verifier-FLAGGED member SHORT-CIRCUITS the conf gate (the

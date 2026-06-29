@@ -81,7 +81,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 # RELATIVE imports (``.`` = the ``dart_semantic`` package) so the typed
@@ -125,6 +125,135 @@ def resolve_reading_order_fix() -> bool:
     """
     raw = (os.environ.get("SEMANTIK_READING_ORDER_FIX") or "").strip().lower()
     return raw not in _READING_ORDER_FALSEY
+
+
+# ---------------------------------------------------------------------------
+# BERT-authoritative precedence flip (Phase 5).
+#
+# Default OFF. When SEMANTIK_BERT_AUTHORITATIVE is truthy, the council
+# Structure head's ``structural_role`` argmax IS the region kind (authoritative)
+# rather than a non-authoritative recommendation that downstream band-aids
+# override. The flip consumes the Phase-2 expanded taxonomy (9-role
+# ``structural_role`` + the AXIS-2 ``pedagogical_role`` head) and the per-label
+# confidence distribution. Byte-identical to the legacy passes when off (the
+# post-pass short-circuits before touching a single region).
+# ---------------------------------------------------------------------------
+
+_BERT_AUTHORITATIVE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def resolve_bert_authoritative() -> bool:
+    """Return True when the council Structure head's role is authoritative.
+
+    Reads ``SEMANTIK_BERT_AUTHORITATIVE``. **Default OFF** (unset / blank /
+    falsey / garbage -> off; byte-identical to the legacy recommendation-only
+    contract). A truthy value (``1``/``true``/``yes``/``on``, case-insensitive)
+    flips the precedence so the ``structural_role`` argmax becomes the region
+    kind and the Stage-5d LLM reviewer demotes to a confidence-gated span
+    adjuster. Parse-with-fallback, mirroring ``resolve_structure_review_mode``.
+    """
+    raw = (os.environ.get("SEMANTIK_BERT_AUTHORITATIVE") or "").strip().lower()
+    return raw in _BERT_AUTHORITATIVE_TRUTHY
+
+
+# The role->kind table over the 9-role ``structural_role`` taxonomy (must match
+# ``council/structure.ROLE_NAMES``). table / math / figure are NEVER produced
+# here — those kinds are Stage-4 passthrough regions with structured payloads
+# (cell_grid / glyph features) and are skipped by the post-pass entirely.
+_ROLE_TO_REGION_KIND: dict[str, str] = {
+    "paragraph": "paragraph",
+    "heading": "heading",
+    "list_item": "list",
+    "form_label": "form",
+    "blockquote": "blockquote",
+    "code_block": "code_block",
+    "definition_term": "definition_list",
+    "definition_def": "definition_list",
+    "caption": "paragraph",
+}
+
+# Region kinds the authoritative re-type MAY rewrite. Prose-built content kinds
+# only — passthrough (table/math/figure) regions are skipped via
+# ``source_region_id``; metadata_drop / form stay as emitted.
+_AUTHORITATIVE_RETYPE_KINDS: frozenset[str] = frozenset(
+    {"paragraph", "list", "code_block", "blockquote", "definition_list"}
+)
+
+# AXIS-2 pedagogical_role label -> gold accessible semantic_class component.
+# Only the unambiguous pedagogical containers map; "none" / "solution" / "step"
+# stay unmapped (a body fragment, not its own container) so no semantic_class is
+# stamped. Must reference real ``gold_shell_markup._CONTAINER_SPECS`` keys.
+_PEDAGOGICAL_ROLE_TO_SEMANTIC_CLASS: dict[str, str] = {
+    "example_open": "worked_example",
+    "how_to": "worked_example",
+    "exercise_open": "exercise",
+    "try_it": "exercise",
+    "practice": "exercise",
+    "be_prepared": "exercise",
+    "objectives": "objectives",
+}
+
+
+def _apply_bert_authoritative_kinds(
+    regions: list[Region], state: Any
+) -> list[Region]:
+    """Re-derive each prose region's kind from the council Structure head.
+
+    GATED by :func:`resolve_bert_authoritative` (the caller short-circuits when
+    off, so this is byte-identical pass-through when the flag is unset). For
+    every non-passthrough content region (``source_region_id is None`` and
+    ``kind in _AUTHORITATIVE_RETYPE_KINDS``):
+
+    * the region's representative FeatureBlock (its ``min`` claimed index) is
+      looked up in the council ``structural_role`` signal; its argmax label is
+      mapped through :data:`_ROLE_TO_REGION_KIND` and becomes the region kind
+      (heading membership is NEVER changed here — that stays with the
+      deterministic ``is_heading`` pass and the heading-level normalizer, so an
+      argmax of ``heading`` leaves the kind untouched);
+    * ``payload['role_confidence']`` is stamped from the head's top-1
+      confidence (the per-label distribution the gate consumes);
+    * when the AXIS-2 ``pedagogical_role`` head is present and its argmax maps
+      to a gold component, ``payload['semantic_class']`` is stamped so the
+      pedagogical kind routes through ``gold_shell_markup._wrap_semantic_class``
+      (NOT the retired ``<p class="…">`` band-aid).
+
+    The FeatureBlock partition (``feature_block_indices``) is immutable, so the
+    coverage invariant + reading-order sort are unaffected.
+    """
+    out: list[Region] = []
+    for region in regions:
+        if region.source_region_id is not None or (
+            str(region.kind) not in _AUTHORITATIVE_RETYPE_KINDS
+        ):
+            out.append(region)
+            continue
+        fb_indices = region.feature_block_indices or ()
+        if not fb_indices:
+            out.append(region)
+            continue
+        rep_idx = min(fb_indices)
+        role_label, role_conf = _top1(
+            _get_signal(state, "structure", "structural_role", rep_idx)
+        )
+        if role_label is None:
+            out.append(region)
+            continue
+        payload = dict(region.payload or {})
+        payload["role_confidence"] = role_conf
+        new_kind = _ROLE_TO_REGION_KIND.get(role_label, str(region.kind))
+        # Heading membership is owned by the deterministic is_heading pass; the
+        # authoritative role flip never promotes a content region TO heading.
+        if new_kind == "heading":
+            new_kind = str(region.kind)
+        ped_label, _ = _top1(
+            _get_signal(state, "structure", "pedagogical_role", rep_idx)
+        )
+        if ped_label is not None and ped_label != "none":
+            semantic_class = _PEDAGOGICAL_ROLE_TO_SEMANTIC_CLASS.get(ped_label)
+            if semantic_class:
+                payload["semantic_class"] = semantic_class
+        out.append(replace(region, kind=new_kind, payload=payload))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1978,6 +2107,15 @@ def build_structure_graph(
             f"{n_fb} expected; missing={missing[:10]}{'…' if len(missing) > 10 else ''}"
         )
 
+    # BERT-authoritative precedence flip (gated, default OFF). When on, the
+    # council Structure head's structural_role argmax IS the region kind and
+    # role_confidence / pedagogical semantic_class are stamped. Runs AFTER the
+    # coverage invariant (the FB partition is immutable, so coverage holds) and
+    # BEFORE the reading-order sort (which keys off feature_block_indices,
+    # unaffected by a kind/payload-only rewrite). Byte-identical when off.
+    if resolve_bert_authoritative():
+        regions_out = _apply_bert_authoritative_kinds(regions_out, state)
+
     # Reading-order restoration (gated). The six passes append regions in
     # PASS order (headings, then tables/math, then lists, then paragraphs,
     # then code) and never re-sort, so the region list is segregated by kind
@@ -2279,5 +2417,6 @@ __all__ = [
     "Region",
     "RegionKind",
     "build_structure_graph",
+    "resolve_bert_authoritative",
     "resolve_reading_order_fix",
 ]

@@ -57,7 +57,7 @@ import os
 import re
 from typing import Any
 
-from ..structure_graph import Region
+from ..structure_graph import Region, resolve_bert_authoritative
 from ..types import FeatureBlock
 from .reviewer import (
     TokenConservationError,
@@ -657,11 +657,21 @@ def clean_structure(
 
     # (B) Pedagogical-label headings -> paragraph (only those NOT already
     # being dropped in (A) — a dropped phantom never needs demoting).
-    peda_demote = {
-        i
-        for i, region in enumerate(regions)
-        if i not in fm_drops and _is_pedagogical_label(region)
-    }
+    #
+    # RETIRED under SEMANTIK_BERT_AUTHORITATIVE: this sub-pass is a band-aid for
+    # the old under-scoped council head — it demotes pedagogical-label headings
+    # to <p class="pedagogy-…">. With the authoritative head the
+    # pedagogical/role kind is emitted directly (and the AXIS-2 pedagogical_role
+    # head stamps payload['semantic_class'] in structure_graph), so the demotion
+    # is no longer needed. Flag OFF -> byte-identical (sub-pass B runs).
+    if resolve_bert_authoritative():
+        peda_demote: set[int] = set()
+    else:
+        peda_demote = {
+            i
+            for i, region in enumerate(regions)
+            if i not in fm_drops and _is_pedagogical_label(region)
+        }
 
     # (B') Bullet / list-item headings -> paragraph. A list item the council
     # mis-typed as a heading ("◦ Yes–add 1 …") is demoted to a non-heading

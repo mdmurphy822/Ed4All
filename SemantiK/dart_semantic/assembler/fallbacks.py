@@ -16,7 +16,7 @@ from collections.abc import Callable, Sequence
 from html import escape
 from typing import Any
 
-from ..structure_graph import Region
+from ..structure_graph import Region, resolve_bert_authoritative
 from ..types import FeatureBlock
 
 
@@ -57,7 +57,16 @@ def _css_class_attr(region: Region) -> str:
     (every non-demoted paragraph), this returns the empty string so the emit
     is byte-identical to the prior plain-``<p>`` behaviour. A class attr on
     ``<p>`` is valid HTML5 and WCAG-neutral.
+
+    RETIRED under ``SEMANTIK_BERT_AUTHORITATIVE``: this ``<p class="…">`` path is
+    a band-aid for the old deterministic pedagogical-demotion (which is itself
+    retired under the flag). With the authoritative head, a pedagogical kind
+    carries ``payload['semantic_class']`` and is routed through the gold
+    semantic-class wrapper (``_wrap_semantic_class``) instead, so this returns
+    the empty string (no ``class`` attr on ``<p>``). Flag OFF -> byte-identical.
     """
+    if resolve_bert_authoritative():
+        return ""
     payload = region.payload or {}
     css_class = payload.get("css_class")
     if isinstance(css_class, str) and css_class.strip():
