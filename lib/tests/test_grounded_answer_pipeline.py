@@ -291,6 +291,76 @@ def test_pre_llm_refusal_emits_capture_with_dynamic_rationale(mini_libv2: Path):
 
 
 # --------------------------------------------------------------------------- #
+# Cross-encoder reranker hook (ED4ALL_RERANK_PROVIDER, default OFF)
+# --------------------------------------------------------------------------- #
+
+
+def test_rerank_off_byte_identical(mini_libv2: Path, monkeypatch: pytest.MonkeyPatch):
+    """Unset ED4ALL_RERANK_PROVIDER → byte-identical happy-path result and NO
+    grounded_answer_rerank capture (the byte-identical-when-off contract)."""
+    monkeypatch.delenv("ED4ALL_RERANK_PROVIDER", raising=False)
+    spy = SpyCapture()
+    client = FakeAnswerClient([
+        _envelope("A vector store indexes embedding vectors.",
+                  ["mini_alpha_chunk_001"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "What does a vector store index?",
+        client=client, refusal_policy=_PERMISSIVE_LEXICAL, capture=spy,
+    )
+    assert result.status == STATUS_ANSWERED
+    assert result.answer_text == "A vector store indexes embedding vectors."
+    assert result.citations[0].chunk_id == "mini_alpha_chunk_001"
+    assert not [e for e in spy.events
+                if e["decision_type"] == "grounded_answer_rerank"]
+
+
+def test_rerank_on_emits_capture(mini_libv2: Path, monkeypatch: pytest.MonkeyPatch):
+    """With the fake reranker on (+ allow-fake), a grounded_answer_rerank
+    DecisionCapture row fires with a dynamic >=20-char rationale, and the answer
+    still resolves (reorder+trim never drops the only candidates here)."""
+    monkeypatch.setenv("ED4ALL_RERANK_PROVIDER", "fake")
+    monkeypatch.setenv("ED4ALL_RERANK_ALLOW_FAKE", "1")
+    spy = SpyCapture()
+    client = FakeAnswerClient([
+        _envelope("A vector store indexes embedding vectors.",
+                  ["mini_alpha_chunk_001"])
+    ])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "What does a vector store index?",
+        client=client, refusal_policy=_PERMISSIVE_LEXICAL, capture=spy,
+    )
+    assert result.status == STATUS_ANSWERED
+    rows = [e for e in spy.events
+            if e["decision_type"] == "grounded_answer_rerank"]
+    assert len(rows) == 1
+    rationale = rows[0]["rationale"]
+    assert len(rationale) >= 20
+    assert "provider=fake" in rationale
+    assert "top_k=" in rationale
+    assert "fallback_used=" in rationale
+    assert rows[0]["decision_type"] in _enum_members()
+
+
+def test_rerank_does_not_change_refusal_verdict_for_same_set(
+    mini_libv2: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    """Reorder-only (pool==limit so no over-fetch/trim) never rescues a
+    refusal: native scores are preserved so the verdict is identical on/off."""
+    monkeypatch.setenv("ED4ALL_RERANK_PROVIDER", "fake")
+    monkeypatch.setenv("ED4ALL_RERANK_ALLOW_FAKE", "1")
+    monkeypatch.setenv("ED4ALL_RERANK_CANDIDATE_POOL", "8")
+    client = FakeAnswerClient([_envelope("never used", ["x"])])
+    result = answer_course_question(
+        mini_libv2, COURSE_SLUG, "What does a vector store index?",
+        client=client, refusal_policy=_STRICT_LEXICAL, limit=8,
+    )
+    # Strict policy refuses regardless of reorder (top score unchanged).
+    assert result.status == STATUS_REFUSED_LOW_CONFIDENCE
+    assert len(client.calls) == 0
+
+
+# --------------------------------------------------------------------------- #
 # Model-side not_in_course refusal
 # --------------------------------------------------------------------------- #
 

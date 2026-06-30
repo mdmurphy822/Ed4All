@@ -35,6 +35,7 @@ path so the caller can log structured skip reasons.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -1157,6 +1158,39 @@ def _build_block_input(
         inputs["reflection_calibration_enabled"] = resolve_reflection_calibration()
     except Exception:  # noqa: BLE001 — never let the resolver import break routing
         inputs["reflection_calibration_enabled"] = False
+
+    # Mayer-CTML — thread the ED4ALL_MAYER_CTML resolution into the Block-input
+    # surface so MayerCtmlValidator's signaling/contiguity/redundancy/segmenting
+    # arms fire only when the flag is on. Harmless for the other validators
+    # sharing this builder — they ignore the key. Default OFF → byte-stable.
+    try:
+        from lib.validators.mayer_ctml import resolve_mayer_ctml
+
+        inputs["mayer_ctml_enabled"] = resolve_mayer_ctml()
+    except Exception:  # noqa: BLE001 — never let the resolver import break routing
+        inputs["mayer_ctml_enabled"] = False
+
+    # recall_self_check — thread the ED4ALL_RECALL_SELF_CHECK resolution into the
+    # Block-input surface so RecallSelfCheckFormatValidator fires only when the
+    # flag is on. Harmless for the other validators sharing this builder — they
+    # ignore the key. Default OFF → byte-stable.
+    try:
+        from lib.generation.recall_self_check import resolve_recall_self_check
+
+        inputs["recall_self_check_enabled"] = resolve_recall_self_check()
+    except Exception:  # noqa: BLE001 — never let the resolver import break routing
+        inputs["recall_self_check_enabled"] = False
+
+    # misconception_rich — thread the ED4ALL_MISCONCEPTION_RICH resolution into
+    # the Block-input surface so MisconceptionProductiveFailureValidator fires
+    # only when the flag is on. Harmless for the other validators sharing this
+    # builder — they ignore the key. Default OFF → byte-stable.
+    try:
+        from lib.generation.misconception_rich import resolve_misconception_rich
+
+        inputs["misconception_rich_enabled"] = resolve_misconception_rich()
+    except Exception:  # noqa: BLE001 — never let the resolver import break routing
+        inputs["misconception_rich_enabled"] = False
 
     objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
     if objectives_path:
@@ -2387,6 +2421,87 @@ def _build_course_level_qa(
     return inputs, []
 
 
+def _build_bloom_distribution(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Input builder for BloomDistributionValidator.
+
+    Mirrors :func:`_build_course_level_qa`: surfaces the rewrite-tier ``blocks``
+    set (the SECONDARY corroborating ``target_bloom`` signal, surfaced in
+    metadata only) PLUS the synthesized objectives universe (the PRIMARY signal —
+    the course's intended cognitive demand). The objectives path drives the gate;
+    blocks are corroborating, so a missing block set is NOT a hard skip — the
+    validator can still audit the objective Bloom mix.
+
+    The validator no-ops byte-stable when ED4ALL_BLOOM_DISTRIBUTION is unset
+    (reads the flag itself), so this builder always populates whatever it can.
+    """
+    inputs, missing = _build_block_input_rewrite(phase_outputs, workflow_params)
+    # Blocks are a SECONDARY signal; if absent, keep going with objectives only.
+    if missing:
+        inputs = {}
+    synthesized = _resolve_objectives_path(phase_outputs, workflow_params)
+    if synthesized:
+        inputs["synthesized_objectives_path"] = synthesized
+    return inputs, []
+
+
+def _build_prereq_sequencing(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Input builder for PrereqSequencingValidator (inter_tier_validation).
+
+    Surfaces the synthesized objectives universe (the emitted TO order +
+    ``key_concepts``) and the archived ``concept_graph_semantic.json`` path so
+    the validator can project the TO->TO prerequisite graph. Both are optional:
+    the validator graceful-skips (``passed=True``) when either is absent, so a
+    missing graph / objectives is never a hard failure.
+
+    The validator no-ops byte-stable when ED4ALL_PREREQ_SEQUENCING is unset
+    (reads the flag itself), so this builder always populates whatever it can.
+    """
+    inputs: Dict[str, Any] = {}
+    synthesized = _resolve_objectives_path(phase_outputs, workflow_params)
+    if synthesized:
+        inputs["synthesized_objectives_path"] = synthesized
+        # Prefer the POST-sequencing TO order (the emitted order) when the
+        # outline phase persisted it. The prereq sequencer reorders TOs in
+        # memory and does NOT rewrite synthesized_objectives.json, so auditing
+        # the planning artifact would flag prerequisites the sequencer fixed.
+        # The sidecar carries the full reordered terminal_objectives list (with
+        # ``key_concepts``), which the validator prefers over the path.
+        sequenced = Path(synthesized).with_name(
+            "synthesized_objectives.sequenced.json"
+        )
+        if sequenced.exists() and sequenced.is_file():
+            try:
+                seq_doc = json.loads(sequenced.read_text(encoding="utf-8"))
+                seq_tos = (seq_doc or {}).get("terminal_objectives")
+                if isinstance(seq_tos, list) and seq_tos:
+                    inputs["terminal_objectives"] = [
+                        t for t in seq_tos if isinstance(t, dict)
+                    ]
+            except (OSError, ValueError, TypeError):
+                pass
+    # Prefer the typed SEMANTIC graph (carries the ``prerequisite`` edges) over
+    # the untyped concept_graph.json; fall back to whatever concept graph path
+    # is threaded. A non-semantic graph simply projects zero prereq edges →
+    # graceful NO_EDGES skip.
+    graph = _locate(
+        phase_outputs,
+        "concept_graph_semantic_path",
+        "concept_graph_path",
+    )
+    if graph:
+        sib = Path(graph).with_name("concept_graph_semantic.json")
+        if sib.exists():
+            graph = str(sib)
+        inputs["concept_graph_path"] = graph
+    return inputs, []
+
+
 def _build_cross_week_spacing(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -2558,6 +2673,14 @@ def default_router() -> GateInputRouter:
         "lib.validators.libv2_packet_integrity.PacketIntegrityValidator",
         _build_libv2_manifest,
     )
+    # Honest IRT difficulty-calibration scaffold: the DifficultyProvenance
+    # validator reads the archived chunkset from course_dir, so it reuses the
+    # manifest builder's {course_dir, manifest_path} input shape (the
+    # validator resolves <course_dir>/{imscc,dart}_chunks/chunks.jsonl).
+    r.register(
+        "lib.validators.difficulty_provenance.DifficultyProvenanceValidator",
+        _build_libv2_manifest,
+    )
     r.register(
         "lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator",
         _build_assessment_objective_alignment,
@@ -2659,6 +2782,24 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.course_level_qa.CourseLevelQaValidator",
         _build_course_level_qa,
+    )
+    # Course-level Bloom-distribution-vs-target-curve gate. Surfaces the
+    # synthesized objectives universe (PRIMARY signal — the course's intended
+    # cognitive demand) + the optional rewrite-tier ``blocks`` (SECONDARY
+    # ``target_bloom`` corroboration). No-op + byte-stable when
+    # ED4ALL_BLOOM_DISTRIBUTION is unset (the validator reads the flag itself).
+    r.register(
+        "lib.validators.bloom_distribution.BloomDistributionValidator",
+        _build_bloom_distribution,
+    )
+    # Prerequisite-sequencing gate (inter_tier_validation). Surfaces the
+    # synthesized objectives universe (emitted TO order + key_concepts) + the
+    # archived concept_graph_semantic.json so the validator can audit
+    # dependent-before-prerequisite ordering. Graceful skip when either is
+    # absent; no-op + byte-stable when ED4ALL_PREREQ_SEQUENCING is unset.
+    r.register(
+        "lib.validators.prereq_sequencing.PrereqSequencingValidator",
+        _build_prereq_sequencing,
     )
     # C3-6 — course-level CROSS-WEEK distributed-practice (spacing) gate. Reuses
     # the broadest post_rewrite Block surface: the per-block objective ids /
@@ -2786,6 +2927,35 @@ def default_router() -> GateInputRouter:
     # the typed callout renderer emit the redundant label/icon/border).
     r.register(
         "lib.validators.callout_structure.CalloutStructureValidator",
+        _build_block_input_rewrite,
+    )
+    # Mayer-CTML — MayerCtmlValidator audits text+visual blocks (B04/B06/B05 or
+    # any block whose rendered HTML carries <figure>/<img>/<video>) over a
+    # precision-first subset of Mayer's CTML principles (signaling / spatial
+    # contiguity / redundancy / segmenting). Consumes only ``inputs['blocks']``
+    # (+ the threaded ``mayer_ctml_enabled``) so it reuses the rewrite-tier Block
+    # surface (no-ops + byte-stable when ED4ALL_MAYER_CTML is unset).
+    r.register(
+        "lib.validators.mayer_ctml.MayerCtmlValidator",
+        _build_block_input_rewrite,
+    )
+    # recall_self_check — RecallSelfCheckFormatValidator audits free-recall /
+    # cloze self_check_question blocks (no pre-enumerated options + no inline
+    # answer reveal). Consumes only ``inputs['blocks']`` (+ the threaded
+    # ``recall_self_check_enabled``) so it reuses the rewrite-tier Block surface
+    # (no-ops + byte-stable when ED4ALL_RECALL_SELF_CHECK is unset).
+    r.register(
+        "lib.validators.recall_self_check.RecallSelfCheckFormatValidator",
+        _build_block_input_rewrite,
+    )
+    # misconception_productive_failure — MisconceptionProductiveFailureValidator
+    # audits B03/B12 misconception blocks for a named faulty model + a
+    # predict-then-reveal-then-reconcile productive-failure scaffold. Consumes
+    # only ``inputs['blocks']`` (+ the threaded ``misconception_rich_enabled``)
+    # so it reuses the rewrite-tier Block surface (no-ops + byte-stable when
+    # ED4ALL_MISCONCEPTION_RICH is unset).
+    r.register(
+        "lib.validators.misconception_productive_failure.MisconceptionProductiveFailureValidator",
         _build_block_input_rewrite,
     )
     # FR-COURSE-02 — BlockSequenceOrderValidator audits the worked-example ->

@@ -54,9 +54,12 @@ class ContentProfile:
     language: str = "en"
     difficulty_distribution: dict[str, int] = field(default_factory=dict)
     chunk_type_distribution: dict[str, int] = field(default_factory=dict)
+    # Honest IRT difficulty-calibration scaffold descriptor. Optional → omitted
+    # from to_dict() when empty so legacy manifests stay byte-identical.
+    difficulty_distribution_descriptor: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "total_chunks": self.total_chunks,
             "total_tokens": self.total_tokens,
             "total_concepts": self.total_concepts,
@@ -64,6 +67,9 @@ class ContentProfile:
             "difficulty_distribution": self.difficulty_distribution,
             "chunk_type_distribution": self.chunk_type_distribution,
         }
+        if self.difficulty_distribution_descriptor:
+            out["difficulty_distribution_descriptor"] = self.difficulty_distribution_descriptor
+        return out
 
     @classmethod
     def from_dict(cls, data: dict) -> "ContentProfile":
@@ -74,6 +80,7 @@ class ContentProfile:
             language=data.get("language", "en"),
             difficulty_distribution=data.get("difficulty_distribution", {}),
             chunk_type_distribution=data.get("chunk_type_distribution", {}),
+            difficulty_distribution_descriptor=data.get("difficulty_distribution_descriptor", {}),
         )
 
 

@@ -759,6 +759,43 @@ workflows:
               on_error: warn
             description: FR-A11Y-03 — typed B12 callout non-color coding + overflow + motion. Warning day-1; deferred critical-flip; no-op when ED4ALL_CALLOUT_TYPED unset.
 
+          # Mayer-CTML — structural multimedia-learning check on text+visual
+          # blocks (B04 multimedia / B06 diagram / B05 worked_example, or any
+          # block whose rendered HTML carries <figure>/<img>/<video>). Audits a
+          # precision-first subset of Mayer's CTML principles reachable from
+          # static HTML: SIGNALING / SPATIAL_CONTIGUITY / REDUNDANCY /
+          # SEGMENTING. Consumes inputs['blocks']. Rides ED4ALL_MAYER_CTML —
+          # strict no-op + byte-stable when the flag is unset.
+          # TODO(calibration) — flip the CTML_* codes to critical after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          - gate_id: mayer_ctml
+            validator: lib.validators.mayer_ctml.MayerCtmlValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Mayer CTML 12-principles structural check on text+visual blocks (signaling/contiguity/redundancy/segmenting). Warning day-1; TODO(calibration) deferred critical-flip.
+
+          # recall_self_check — free-recall / cloze produce-the-answer gate on
+          # recall-marked self_check_question blocks. Flags
+          # RECALL_SELF_CHECK_OPTIONS_VISIBLE (still pre-enumerates options) /
+          # RECALL_SELF_CHECK_ANSWER_INLINE (answer not behind a <details>
+          # reveal). Consumes inputs['blocks']. Rides ED4ALL_RECALL_SELF_CHECK —
+          # strict no-op + byte-stable when the flag is unset.
+          # TODO(calibration) — flip the RECALL_SELF_CHECK_* codes to critical
+          # after a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          - gate_id: recall_self_check_format
+            validator: lib.validators.recall_self_check.RecallSelfCheckFormatValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: recall_self_check — free-recall / cloze produce-the-answer self-check gate. Warning day-1; TODO(calibration) deferred critical-flip; no-op when ED4ALL_RECALL_SELF_CHECK unset.
+
           # IB6.6 — block->module->course quality-rollup GATE (framework
           # FR-07/13, §6.5). Surfaces the BlockQualityRollupAggregator's
           # course_pass / per-block-fail signal (the 3 hard gates: Accessibility
@@ -815,6 +852,38 @@ workflows:
               on_fail: warn
               on_error: warn
             description: FR-COURSE-01 — course-level §6.5 emergent-quality (interaction-mix keystone / integration-close / cumulative-coverage / retrieval-rhythm). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
+
+          # Course-level Bloom-distribution-vs-target-curve gate. Counts the
+          # DECLARED Bloom level of every synthesized objective (bloom_level /
+          # bloom_verb — null skipped, never imputed) onto the canonical
+          # lib/ontology/bloom.py::BLOOM_LEVELS axis and compares the observed
+          # per-level shares to a checked-in GENERIC target curve
+          # (schemas/taxonomies/bloom_target_distribution.json, operator-
+          # overridable via ED4ALL_BLOOM_DISTRIBUTION_TARGET). Flags
+          # BLOOM_DISTRIBUTION_NO_HIGHER_ORDER (recall-only course) /
+          # BLOOM_DISTRIBUTION_RECALL_HEAVY (remember+understand above
+          # recall_ceiling) / BLOOM_DISTRIBUTION_TOP_HEAVY (evaluate+create above
+          # top_heavy_ceiling) / BLOOM_DISTRIBUTION_OFF_TARGET (L1 deviation above
+          # ED4ALL_BLOOM_DISTRIBUTION_TOLERANCE). Small-N floor
+          # (ED4ALL_BLOOM_DISTRIBUTION_MIN_LOS) suppresses share-based verdicts on
+          # tiny courses. Anti-fabrication: counts only declared levels. No-op +
+          # byte-stable when ED4ALL_BLOOM_DISTRIBUTION is unset (the validator
+          # reads the flag itself).
+          # TODO(calibration) — flip BLOOM_DISTRIBUTION_NO_HIGHER_ORDER to
+          # critical (severity: critical + on_fail: block, and set passed
+          # accordingly in the validator) AFTER scripts/calibration_harness.py
+          # confirms the course-level FP rate on >=2 corpora (WS3/W4 deferred-flip
+          # pattern; IB3 is the single documented fastest-flip exception, this is
+          # NOT IB3).
+          - gate_id: bloom_distribution
+            validator: lib.validators.bloom_distribution.BloomDistributionValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Course-level Bloom-distribution-vs-target-curve gate (recall-only / recall-heavy / top-heavy / off-target). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOOM_DISTRIBUTION unset.
           # C3-6 — course-level CROSS-WEEK distributed-practice (spacing) gate.
           # The framework §6.5 spacing axis wants a substantive concept/objective
           # REVISITED across weeks, not massed in one. Composes the per-block
@@ -1963,7 +2032,11 @@ workflows:
         # the handler accepts a ``week_range`` kwarg.
         parallel: false
         max_concurrent: 1
-        depends_on: [course_planning, source_mapping, staging]
+        # concept_extraction added so the archived concept_graph_semantic.json
+        # (the prerequisite-edge graph) is guaranteed present before outline,
+        # enabling ED4ALL_PREREQ_SEQUENCING. Ordering-only change — output is
+        # byte-identical when the flag is off (the sequencer is a strict no-op).
+        depends_on: [course_planning, source_mapping, staging, concept_extraction]
         timeout_minutes: 30
         batch_timeout_minutes: 10
         description: Phase 3 — outline-tier Block emit (terse provider, no HTML body)
@@ -2462,6 +2535,31 @@ workflows:
               on_fail: warn
               on_error: warn
             description: IB7.6c — per-type Bloom-range ceiling (block Bloom <= type bloom_ceiling). Warning day-1; deferred critical-flip.
+          # Prerequisite-sequencing gate. Projects the concept ``prerequisite``
+          # edges from the archived concept_graph_semantic.json onto a TO->TO
+          # dependency graph (concept<->TO binding via objective key_concepts)
+          # and flags PREREQ_ORDER_VIOLATION when a DEPENDENT terminal objective
+          # precedes its PREREQUISITE in the emitted order (a cycle-broken /
+          # unsatisfied prerequisite, or a run with ED4ALL_PREREQ_SEQUENCING
+          # off). Companion to lib/generation/prereq_sequencer.py (the macro
+          # reorder hooked in _run_content_generation_outline). Graceful skip
+          # (passed=True + info issue) when off / no graph / no edges / no
+          # objectives. Anti-fabrication: only audits real TO edges projected
+          # from real key_concepts + real prereq edges.
+          # TODO(calibration) — flip PREREQ_ORDER_VIOLATION to critical
+          # (severity: critical + on_fail: block, set passed=n_violations==0)
+          # AFTER scripts/calibration_harness.py confirms the FP rate on >=2
+          # corpora (WS3/W4 deferred-flip pattern; IB3 is the single documented
+          # fastest-flip exception, this is NOT IB3).
+          - gate_id: prerequisite_sequencing
+            validator: lib.validators.prereq_sequencing.PrereqSequencingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Prerequisite-sequencing gate — flags a dependent terminal objective taught before its prerequisite. Warning day-1; deferred critical-flip; no-op when ED4ALL_PREREQ_SEQUENCING unset.
 
       - name: content_generation_rewrite
         agents: [content-generator]
@@ -3317,6 +3415,61 @@ workflows:
               on_error: warn
             description: FR-A11Y-03 — typed B12 callout non-color coding + overflow + motion. Warning day-1; deferred critical-flip; no-op when ED4ALL_CALLOUT_TYPED unset.
 
+          # Mayer-CTML — structural multimedia-learning check on text+visual
+          # blocks (B04 multimedia / B06 diagram / B05 worked_example, or any
+          # block whose rendered HTML carries <figure>/<img>/<video>). Audits a
+          # precision-first subset of Mayer's CTML principles reachable from
+          # static HTML: SIGNALING / SPATIAL_CONTIGUITY / REDUNDANCY /
+          # SEGMENTING. Consumes inputs['blocks']. Rides ED4ALL_MAYER_CTML —
+          # strict no-op + byte-stable when the flag is unset.
+          # TODO(calibration) — flip the CTML_* codes to critical after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          - gate_id: mayer_ctml
+            validator: lib.validators.mayer_ctml.MayerCtmlValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Mayer CTML 12-principles structural check on text+visual blocks (signaling/contiguity/redundancy/segmenting). Warning day-1; TODO(calibration) deferred critical-flip.
+
+          # recall_self_check — free-recall / cloze produce-the-answer gate on
+          # recall-marked self_check_question blocks. Flags
+          # RECALL_SELF_CHECK_OPTIONS_VISIBLE (still pre-enumerates options) /
+          # RECALL_SELF_CHECK_ANSWER_INLINE (answer not behind a <details>
+          # reveal). Consumes inputs['blocks']. Rides ED4ALL_RECALL_SELF_CHECK —
+          # strict no-op + byte-stable when the flag is unset.
+          # TODO(calibration) — flip the RECALL_SELF_CHECK_* codes to critical
+          # after a >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          - gate_id: recall_self_check_format
+            validator: lib.validators.recall_self_check.RecallSelfCheckFormatValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: recall_self_check — free-recall / cloze produce-the-answer self-check gate. Warning day-1; TODO(calibration) deferred critical-flip; no-op when ED4ALL_RECALL_SELF_CHECK unset.
+
+          # misconception_rich — named subject-specific misconception +
+          # productive-failure (predict -> reveal -> reconcile) gate on the B03/B12
+          # misconception block. Flags MISCONCEPTION_NO_NAMED_CONCEPT (no grounded
+          # named target) / MISCONCEPTION_NO_PRODUCTIVE_FAILURE (generic
+          # claim->correction card). Consumes inputs['blocks']. Rides
+          # ED4ALL_MISCONCEPTION_RICH — strict no-op + byte-stable when unset.
+          # TODO(calibration) — flip the MISCONCEPTION_* codes to critical after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          - gate_id: misconception_productive_failure
+            validator: lib.validators.misconception_productive_failure.MisconceptionProductiveFailureValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: misconception_rich — named misconception + productive-failure (predict->reveal->reconcile) gate. Warning day-1; TODO(calibration) deferred critical-flip; no-op when ED4ALL_MISCONCEPTION_RICH unset.
+
           # IB6.6 — block->module->course quality-rollup GATE (framework
           # FR-07/13, §6.5). Surfaces the BlockQualityRollupAggregator's
           # course_pass / per-block-fail signal (the 3 hard gates: Accessibility
@@ -3373,6 +3526,38 @@ workflows:
               on_fail: warn
               on_error: warn
             description: FR-COURSE-01 — course-level §6.5 emergent-quality (interaction-mix keystone / integration-close / cumulative-coverage / retrieval-rhythm). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOCK_QUALITY_RUBRIC unset.
+
+          # Course-level Bloom-distribution-vs-target-curve gate. Counts the
+          # DECLARED Bloom level of every synthesized objective (bloom_level /
+          # bloom_verb — null skipped, never imputed) onto the canonical
+          # lib/ontology/bloom.py::BLOOM_LEVELS axis and compares the observed
+          # per-level shares to a checked-in GENERIC target curve
+          # (schemas/taxonomies/bloom_target_distribution.json, operator-
+          # overridable via ED4ALL_BLOOM_DISTRIBUTION_TARGET). Flags
+          # BLOOM_DISTRIBUTION_NO_HIGHER_ORDER (recall-only course) /
+          # BLOOM_DISTRIBUTION_RECALL_HEAVY (remember+understand above
+          # recall_ceiling) / BLOOM_DISTRIBUTION_TOP_HEAVY (evaluate+create above
+          # top_heavy_ceiling) / BLOOM_DISTRIBUTION_OFF_TARGET (L1 deviation above
+          # ED4ALL_BLOOM_DISTRIBUTION_TOLERANCE). Small-N floor
+          # (ED4ALL_BLOOM_DISTRIBUTION_MIN_LOS) suppresses share-based verdicts on
+          # tiny courses. Anti-fabrication: counts only declared levels. No-op +
+          # byte-stable when ED4ALL_BLOOM_DISTRIBUTION is unset (the validator
+          # reads the flag itself).
+          # TODO(calibration) — flip BLOOM_DISTRIBUTION_NO_HIGHER_ORDER to
+          # critical (severity: critical + on_fail: block, and set passed
+          # accordingly in the validator) AFTER scripts/calibration_harness.py
+          # confirms the course-level FP rate on >=2 corpora (WS3/W4 deferred-flip
+          # pattern; IB3 is the single documented fastest-flip exception, this is
+          # NOT IB3).
+          - gate_id: bloom_distribution
+            validator: lib.validators.bloom_distribution.BloomDistributionValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Course-level Bloom-distribution-vs-target-curve gate (recall-only / recall-heavy / top-heavy / off-target). Warning day-1; deferred critical-flip; no-op when ED4ALL_BLOOM_DISTRIBUTION unset.
           # C3-6 — course-level CROSS-WEEK distributed-practice (spacing) gate.
           # The framework §6.5 spacing axis wants a substantive concept/objective
           # REVISITED across weeks, not massed in one. Composes the per-block
@@ -4251,6 +4436,26 @@ workflows:
               on_fail: block
               on_error: fail_closed
             description: Validate LibV2 manifest JSON, schema, and on-disk artifact integrity
+
+          # Honest IRT difficulty-calibration scaffold
+          # (TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD). Anti-fabrication gate:
+          # when the scaffold is on, asserts every archived chunk carries a
+          # difficulty_provenance tag and NO chunk carries a difficulty_irt
+          # block without backing learner responses (provenance=='calibrated'
+          # AND n_responses>=min). Strict no-op (passed=True + info issue) when
+          # the flag is off, so legacy heuristic-only corpora never fail.
+          # TODO(calibration): deferred critical-flip once the proportion-
+          # correct -> band mapping is calibrated against >=2 corpora with
+          # real response volume.
+          - gate_id: difficulty_provenance
+            validator: lib.validators.difficulty_provenance.DifficultyProvenanceValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Anti-fabrication audit of chunk difficulty provenance (no IRT block without real responses)
 
           # Wave 78: fail-closed packet integrity. Promotes the Wave 75
           # PacketIntegrityValidator from a post-hoc operator tool to a

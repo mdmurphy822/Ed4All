@@ -26,6 +26,10 @@ from lib.paths import PROJECT_ROOT  # noqa: E402
 from lib.paths import courseforge_exports_dir as _lib_courseforge_exports_dir  # noqa: E402
 from lib.secure_paths import validate_path_within_root  # noqa: E402
 from Trainforge.chunker import CHUNKER_SCHEMA_VERSION  # noqa: E402
+from Trainforge.chunker import (  # noqa: E402
+    apply_chunk_overlap as _apply_chunk_overlap,
+    resolve_chunk_overlap_words as _resolve_chunk_overlap_words,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1307,6 +1311,48 @@ def _render_block_fallback_html(
             f"<p>{esc(stem)}</p>"
             f"<ol>{li_html}</ol></div>"
         )
+
+    elif block_type == "misconception":
+        # Deterministic misconception-card render (the rewrite tier is the
+        # primary author; this is the exhausted-budget / LLM-free fallback).
+        # ``content`` is the ``{misconception, correction}`` dict, NOT a
+        # ``key_claims`` list, so read it directly (``_fallback_claim_texts``
+        # returns [] for this shape). When ``ED4ALL_MISCONCEPTION_RICH`` is on
+        # AND the planner stamped the mc_* fields, append the predict-then-
+        # reconcile productive-failure scaffold (mirrors how the recall body
+        # render hooks into the deterministic self-check render). Off / no
+        # fields → the scaffold returns "" and the card is byte-stable.
+        _mc_content = getattr(block, "content", None)
+        _mis_text = ""
+        _cor_text = ""
+        if isinstance(_mc_content, dict):
+            _mis_text = str(_mc_content.get("misconception") or "").strip()
+            _cor_text = str(_mc_content.get("correction") or "").strip()
+        if not _mis_text and claims:
+            _mis_text = claims[0]
+        card_parts: List[str] = ['<div class="misconception-card">']
+        if _mis_text:
+            card_parts.append(
+                f'<p class="misconception-claim">{esc(_mis_text)}</p>'
+            )
+        if _cor_text:
+            card_parts.append(
+                f'<p class="misconception-correction">{esc(_cor_text)}</p>'
+            )
+        if not _mis_text and not _cor_text:
+            card_parts.append("<p>Content unavailable.</p>")
+        card_parts.append("</div>")
+        body_parts.append("".join(card_parts))
+        try:
+            from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+                _render_misconception_productive_failure,
+            )
+
+            scaffold = _render_misconception_productive_failure(block)
+            if scaffold:
+                body_parts.append(scaffold)
+        except Exception:  # noqa: BLE001 — scaffold is additive; never break render
+            pass
 
     else:
         # Generic styled fallback: each concise claim as a paragraph.
@@ -3323,6 +3369,70 @@ from lib.validators.source_refs import (
 # imported from process_course) so the inline path has no CourseProcessor
 # instance dependency.
 _SEMANTIK_WCAG_BLOCK_STATUSES = frozenset({"passed", "flagged", "skipped"})
+
+
+def _emit_irt_difficulty_calibration_event(
+    *,
+    chunks: List[Dict[str, Any]],
+    course_code: str,
+    phase: str,
+    calibrated_map: Optional[Dict[str, Any]],
+    response_present: bool,
+) -> None:
+    """Emit exactly one ``difficulty_calibration`` decision event for an
+    IRT-scaffold chunk-emit run (the DART ``_run_dart_chunking`` + IMSCC
+    ``_run_imscc_chunking`` paths).
+
+    Mirrors the canonical ``Trainforge.process_course.CourseProcessor.
+    _maybe_add_difficulty_descriptor`` emit so the
+    ``TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD`` flag-row claim ("emitted ... by the
+    chunk-emit path") is TRUE for the pipeline_tools chunk emitters too. The
+    rationale interpolates the run's dynamic signals (chunks tagged, the
+    calibrated-vs-heuristic split, the min-responses floor, whether a learner-
+    response seam file was present). Best-effort — any failure is logged at
+    debug and never breaks chunk emit. The caller guards on ``_irt_enabled`` so
+    this is never reached on the byte-stable flag-off path.
+    """
+    try:
+        from lib.assessment.irt_difficulty import (
+            DEFAULT_MIN_RESPONSES,
+            DIFFICULTY_PROVENANCE_CALIBRATED,
+            describe_difficulty_distribution,
+        )
+        from lib.decision_capture import DecisionCapture
+
+        total = len(chunks)
+        counts: Dict[str, int] = {}
+        calibrated_count = 0
+        for _ch in chunks:
+            _band = _ch.get("difficulty")
+            if isinstance(_band, str) and _band:
+                counts[_band] = counts.get(_band, 0) + 1
+            if _ch.get("difficulty_provenance") == DIFFICULTY_PROVENANCE_CALIBRATED:
+                calibrated_count += 1
+        calibrated_fraction = (calibrated_count / total) if total else 0.0
+        descriptor = describe_difficulty_distribution(counts, calibrated_fraction)
+        capture = DecisionCapture(
+            course_code=course_code,
+            phase=phase,
+            tool="trainforge",
+        )
+        capture.log_decision(
+            decision_type="difficulty_calibration",
+            decision=f"provenance={descriptor['provenance']}",
+            rationale=(
+                f"IRT difficulty scaffold ({phase}): chunks_tagged={total}, "
+                f"calibrated_chunk_count={calibrated_count}, "
+                f"heuristic_chunk_count={total - calibrated_count}, "
+                f"calibrated_fraction={calibrated_fraction:.4f}, "
+                f"calibrated_item_count={len(calibrated_map or {})}, "
+                f"response_file_present={response_present}, "
+                f"min_responses={DEFAULT_MIN_RESPONSES}, "
+                f"modal_level={descriptor['modal_level']}."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — capture must never break chunking
+        logger.debug("difficulty_calibration decision capture failed: %s", exc)
 
 
 def _recover_figure_alt(html: str) -> Optional[str]:
@@ -10713,6 +10823,88 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 )
                 _key_terms_vocab = None
 
+    # ------------------------------------------------------------------ #
+    # Prerequisite-DAG-driven TO sequencing (opt-in ED4ALL_PREREQ_SEQUENCING).
+    # ------------------------------------------------------------------ #
+    # Runs BEFORE the per-week assignment + the ceil-stride chunk-id slice so
+    # both key off the post-reorder list. Strict no-op (byte-identical) when the
+    # flag is off; best-effort when on — a missing/unloadable concept graph
+    # keeps the WS1.1 Ward order (logged, never crashes the build).
+    try:
+        from lib.generation.prereq_sequencer import (
+            resolve_prereq_sequencing,
+            sequence_terminal_objectives,
+        )
+        if resolve_prereq_sequencing() and terminal_objectives:
+            _cg = None
+            _cg_course_dir = (
+                _resolve_libv2_root(kwargs.get("libv2_root"))
+                / "courses"
+                / course_slug
+            )
+            for _cand in (
+                _cg_course_dir / "graph" / "concept_graph_semantic.json",
+                _cg_course_dir / "imscc_chunks" / "concept_graph_semantic.json",
+                _cg_course_dir / "dart_chunks" / "concept_graph_semantic.json",
+                _cg_course_dir / "corpus" / "concept_graph_semantic.json",
+            ):
+                if _cand.exists() and _cand.is_file():
+                    try:
+                        _cg = json.loads(_cand.read_text(encoding="utf-8"))
+                        break
+                    except (OSError, ValueError):
+                        continue
+            if _cg is None:
+                logger.warning(
+                    "prereq_sequencing on but no concept_graph_semantic.json "
+                    "under %s — keeping WS1.1 Ward order.", _cg_course_dir,
+                )
+            else:
+                terminal_objectives, _seq_signals = sequence_terminal_objectives(
+                    terminal_objectives,
+                    _cg,
+                    capture=capture,
+                    course_code=course_code,
+                )
+                logger.info(
+                    "prereq_sequencing: reordered=%s n_reordered=%s "
+                    "to_edges=%s cycles_broken=%s",
+                    _seq_signals.get("reordered"),
+                    _seq_signals.get("n_reordered"),
+                    _seq_signals.get("to_edges_used"),
+                    _seq_signals.get("cycles_broken"),
+                )
+                # Persist the post-sequencing TO order to a sidecar so the
+                # inter_tier_validation prereq gate audits the EMITTED order
+                # (not the pre-reorder Ward order on synthesized_objectives.json,
+                # which this phase deliberately does NOT rewrite). The gate's
+                # input builder prefers this sidecar. Best-effort: a write error
+                # never breaks the build (the gate falls back to the planning
+                # artifact). The sidecar lands next to synthesized_objectives.json
+                # so the gate's _resolve_objectives_path locates it.
+                try:
+                    _seq_dir = (
+                        Path(objectives_path).parent
+                        if objectives_path
+                        else (project_path / "01_learning_objectives")
+                    )
+                    _seq_dir.mkdir(parents=True, exist_ok=True)
+                    (_seq_dir / "synthesized_objectives.sequenced.json").write_text(
+                        json.dumps(
+                            {"terminal_objectives": terminal_objectives},
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                except (OSError, TypeError, ValueError) as _seq_write_exc:
+                    logger.warning(
+                        "prereq_sequencing: failed to persist sequenced TO "
+                        "sidecar: %s", _seq_write_exc,
+                    )
+    except Exception as _seq_exc:  # noqa: BLE001 — never break the build
+        logger.warning("prereq_sequencing hook failed: %s", _seq_exc)
+
     # Build the per-week objective -> chunk_ids index. Terminal-objective
     # chunk_ids are gathered per-week inside the loop below (the terminal
     # slice is week-scoped there); chapter objectives are grouped by their
@@ -11229,14 +11421,17 @@ async def _run_content_generation_outline(**kwargs) -> str:
             else:
                 _page_plan_specs = _page_block_plan_for(page_type)
             page_block_specs: List[
-                Tuple[str, int, str, Tuple[str, ...], Optional[str], Optional[str]]
+                Tuple[str, int, str, Tuple[str, ...], Optional[str], Optional[str], Dict[str, Any]]
             ] = []
             for spec_offset, _spec in enumerate(_page_plan_specs):
                 # Arity-tolerant: planner 3-tuple carries per-block
                 # ``target_co_ids``; the fixed 2-tuple has none → empty. A
                 # planner 4-tuple (FR-PLAN-01) also carries the selected
                 # ``interaction_type``; a 5-tuple (FR-INT-01) also carries the
-                # ``fade_state``. The 2/3-tuple paths leave both None.
+                # ``fade_state``. A 6-tuple's trailing dict (Track-A:
+                # ED4ALL_RECALL_SELF_CHECK / ED4ALL_MISCONCEPTION_RICH) carries
+                # ``recall_format`` / ``mc_named_concept`` / ``mc_predict_prompt``
+                # / ``mc_reconcile``. The 2/3-tuple paths leave all None/empty.
                 spec_type = _spec[0]
                 spec_bloom = _spec[1]
                 spec_co_ids: Tuple[str, ...] = (
@@ -11248,12 +11443,15 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 spec_fade: Optional[str] = (
                     str(_spec[4]) if len(_spec) > 4 and _spec[4] else None
                 )
+                spec_extras: Dict[str, Any] = (
+                    _spec[5] if len(_spec) > 5 and isinstance(_spec[5], dict) else {}
+                )
                 page_block_specs.append(
-                    (spec_type, spec_offset, spec_bloom, spec_co_ids, spec_itype, spec_fade)
+                    (spec_type, spec_offset, spec_bloom, spec_co_ids, spec_itype, spec_fade, spec_extras)
                 )
 
             page_block_added = False
-            for spec_type, spec_idx, spec_bloom, spec_co_ids, spec_itype, spec_fade in page_block_specs:
+            for spec_type, spec_idx, spec_bloom, spec_co_ids, spec_itype, spec_fade, spec_extras in page_block_specs:
                 # CO-id fan-out fix: stamp the block with the SPECIFIC CO id(s)
                 # the planner targeted (filtered to the valid CO set), falling
                 # back to the week-TO ``objective_ids`` when the planner gave no
@@ -11297,6 +11495,13 @@ async def _run_content_generation_outline(**kwargs) -> str:
                         # FR-INT-01: carry the planner-stamped fade_state for the
                         # B08 faded-practice ladder (None when flag off).
                         fade_state=spec_fade,
+                        # Track-A: carry the planner-stamped recall_self_check /
+                        # misconception_rich fields (all None when their flags are
+                        # off → byte-stable; extras dict is empty then).
+                        recall_format=spec_extras.get("recall_format"),
+                        mc_named_concept=spec_extras.get("mc_named_concept"),
+                        mc_predict_prompt=spec_extras.get("mc_predict_prompt"),
+                        mc_reconcile=spec_extras.get("mc_reconcile"),
                     )
                 except (TypeError, ValueError) as exc:
                     logger.warning(
@@ -20753,6 +20958,34 @@ def _build_tool_registry() -> dict:
         course_slug = course_name.lower().replace("_", "-").replace(" ", "-")
         course_code = course_name.upper().replace("-", "_")
 
+        # Honest IRT difficulty-calibration scaffold
+        # (TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD). Build the calibrated-difficulty
+        # map ONCE per run from the optional learner-response seam; threaded
+        # into the chunk-emit site below so these chunks get difficulty
+        # provenance parity with the IMSCC (process_course) path. Empty +
+        # no-op when the flag is off (byte-identical legacy emit) or no
+        # response file exists.
+        _irt_enabled = False
+        _irt_calibrated_map: Dict[str, Any] = {}
+        _irt_response_present = False
+        try:
+            from lib.assessment.irt_difficulty import (
+                irt_scaffold_enabled as _irt_scaffold_enabled,
+                load_calibrated_difficulty as _irt_load_calibrated,
+                resolve_response_data_path as _irt_resolve_responses,
+                tag_chunk_difficulty_provenance as _irt_tag_chunk,
+            )
+            _irt_enabled = _irt_scaffold_enabled()
+            if _irt_enabled:
+                _irt_resp_path = _irt_resolve_responses(
+                    course_slug, libv2_root=kwargs.get("libv2_root")
+                )
+                _irt_response_present = _irt_resp_path is not None
+                _irt_calibrated_map = _irt_load_calibrated(_irt_resp_path)
+        except Exception as _irt_exc:  # noqa: BLE001 — scaffold never breaks chunking
+            logger.warning("IRT difficulty scaffold setup failed: %s", _irt_exc)
+            _irt_enabled = False
+
         # Resolve staging dir from the explicit kwarg only. We deliberately
         # do NOT fall back to the global COURSEFORGE_INPUTS dir: on a
         # workflow resume that drops the carried-forward staging path, that
@@ -21282,6 +21515,14 @@ def _build_tool_registry() -> dict:
             if bloom_source in ("verbs", "default"):
                 chunk["bloom_level_source"] = bloom_source
 
+            # IRT difficulty-calibration scaffold: stamp provenance (+ optional
+            # IRT block from real responses). No-op + byte-identical when off.
+            if _irt_enabled:
+                try:
+                    _irt_tag_chunk(chunk, _irt_calibrated_map)
+                except Exception:  # noqa: BLE001 — never break chunk emit
+                    logger.warning("IRT chunk tagging failed for %s", chunk.get("id"))
+
             # SemantiK migration §4 — chunk-accompanying provenance enrichment.
             # The INLINE mirror of the P2b
             # ``CourseProcessor._stamp_semantik_chunk_enrichment`` 6-field
@@ -21514,6 +21755,32 @@ def _build_tool_registry() -> dict:
                                 )
                 chunks = kept_chunks
 
+        # Track K: optional verbatim chunk overlap. When
+        # ``TRAINFORGE_CHUNK_OVERLAP_WORDS`` > 0, prepend the verbatim
+        # trailing N words of each chunk's prior EMITTED chunk onto the
+        # next so boundary content that split across a chunk break is
+        # recoverable at retrieval time (anti-fabrication — never
+        # synthesized). Default 0 → no-op, byte-identical legacy emit.
+        # Applied AFTER every drop/filter pass so overlap bleeds only
+        # between the FINAL emitted chunks; recorded in the manifest for
+        # replay below.
+        _overlap_words = _resolve_chunk_overlap_words()
+        if _overlap_words > 0:
+            chunks = _apply_chunk_overlap(chunks, _overlap_words)
+
+        # IRT difficulty-calibration scaffold: emit ONE difficulty_calibration
+        # decision event per run (parity with process_course's chunk-emit
+        # path). Guarded by _irt_enabled → byte-stable no-op when the flag is
+        # off. Uses the gathered response-present + calibrated-map signals.
+        if _irt_enabled:
+            _emit_irt_difficulty_calibration_event(
+                chunks=chunks,
+                course_code=course_code,
+                phase="textbook-ingestor",
+                calibrated_map=_irt_calibrated_map,
+                response_present=_irt_response_present,
+            )
+
         # Persist chunks + manifest to LibV2/courses/<slug>/dart_chunks/.
         # Phase 8 ST 3: route through `_resolve_libv2_root` (see helper
         # docstring for resolution chain). Default behaviour unchanged.
@@ -21585,6 +21852,10 @@ def _build_tool_registry() -> dict:
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "source_coverage": source_coverage_block,
         }
+        # Track K: record the overlap budget for replay (omitted when off
+        # so the manifest stays byte-identical to the legacy emit).
+        if _overlap_words > 0:
+            manifest["overlap_words"] = _overlap_words
         manifest_path = chunks_dir / "manifest.json"
         manifest_path.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False),
@@ -22141,6 +22412,34 @@ def _build_tool_registry() -> dict:
         course_slug = course_name.lower().replace("_", "-").replace(" ", "-")
         course_code = course_name.upper().replace("-", "_")
 
+        # Honest IRT difficulty-calibration scaffold
+        # (TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD). Build the calibrated-difficulty
+        # map ONCE per run from the optional learner-response seam; threaded
+        # into the chunk-emit site below so these chunks get difficulty
+        # provenance parity with the IMSCC (process_course) path. Empty +
+        # no-op when the flag is off (byte-identical legacy emit) or no
+        # response file exists.
+        _irt_enabled = False
+        _irt_calibrated_map: Dict[str, Any] = {}
+        _irt_response_present = False
+        try:
+            from lib.assessment.irt_difficulty import (
+                irt_scaffold_enabled as _irt_scaffold_enabled,
+                load_calibrated_difficulty as _irt_load_calibrated,
+                resolve_response_data_path as _irt_resolve_responses,
+                tag_chunk_difficulty_provenance as _irt_tag_chunk,
+            )
+            _irt_enabled = _irt_scaffold_enabled()
+            if _irt_enabled:
+                _irt_resp_path = _irt_resolve_responses(
+                    course_slug, libv2_root=kwargs.get("libv2_root")
+                )
+                _irt_response_present = _irt_resp_path is not None
+                _irt_calibrated_map = _irt_load_calibrated(_irt_resp_path)
+        except Exception as _irt_exc:  # noqa: BLE001 — scaffold never breaks chunking
+            logger.warning("IRT difficulty scaffold setup failed: %s", _irt_exc)
+            _irt_enabled = False
+
         # Resolve IMSCC path. Honor explicit kwarg first; emit an empty
         # shell + log a warning when the upstream phase didn't surface
         # a real path so the manifest is still schema-valid (mirroring
@@ -22593,6 +22892,13 @@ def _build_tool_registry() -> dict:
             }
             if bloom_source in ("verbs", "default"):
                 chunk["bloom_level_source"] = bloom_source
+            # IRT difficulty-calibration scaffold: stamp provenance (+ optional
+            # IRT block from real responses). No-op + byte-identical when off.
+            if _irt_enabled:
+                try:
+                    _irt_tag_chunk(chunk, _irt_calibrated_map)
+                except Exception:  # noqa: BLE001 — never break chunk emit
+                    logger.warning("IRT chunk tagging failed for %s", chunk.get("id"))
             return chunk
 
         # Dispatch to the canonical chunker. ``chunk_content`` is
@@ -22644,6 +22950,28 @@ def _build_tool_registry() -> dict:
                     exc,
                 )
                 chunks = []
+
+        # Track K: optional verbatim chunk overlap (mirrors the DART
+        # path). When ``TRAINFORGE_CHUNK_OVERLAP_WORDS`` > 0, prepend the
+        # verbatim trailing N words of each chunk's prior EMITTED chunk
+        # onto the next (anti-fabrication — never synthesized). Default
+        # 0 → no-op, byte-identical legacy emit; recorded in the manifest.
+        _overlap_words = _resolve_chunk_overlap_words()
+        if _overlap_words > 0:
+            chunks = _apply_chunk_overlap(chunks, _overlap_words)
+
+        # IRT difficulty-calibration scaffold: emit ONE difficulty_calibration
+        # decision event per run (parity with process_course's chunk-emit
+        # path). Guarded by _irt_enabled → byte-stable no-op when the flag is
+        # off. Uses the gathered response-present + calibrated-map signals.
+        if _irt_enabled:
+            _emit_irt_difficulty_calibration_event(
+                chunks=chunks,
+                course_code=course_code,
+                phase="trainforge-content-analysis",
+                calibrated_map=_irt_calibrated_map,
+                response_present=_irt_response_present,
+            )
 
         # Persist chunks + manifest to LibV2/courses/<slug>/imscc_chunks/.
         # Phase 8 ST 3: route through `_resolve_libv2_root` (see helper
@@ -22743,6 +23071,10 @@ def _build_tool_registry() -> dict:
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "source_coverage": _imscc_source_coverage,
         }
+        # Track K: record the overlap budget for replay (omitted when off
+        # so the manifest stays byte-identical to the legacy emit).
+        if _overlap_words > 0:
+            manifest["overlap_words"] = _overlap_words
         manifest_path = chunks_dir / "manifest.json"
         manifest_path.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False),

@@ -120,6 +120,9 @@ __all__ = [
     "merge_section_source_ids",
     "type_from_heading",
     "split_by_sentences",
+    "apply_chunk_overlap",
+    "resolve_chunk_overlap_words",
+    "CHUNK_OVERLAP_WORDS_ENV",
 ]
 
 
@@ -156,6 +159,95 @@ CANONICAL_CHUNK_TYPES: frozenset = frozenset({
     "common_pitfall",
     "problem_solution",
 })
+
+
+# ---------------------------------------------------------------------------
+# Chunk overlap — verbatim trailing-word recovery (Track K, default off)
+# ---------------------------------------------------------------------------
+
+#: Env var gating the optional verbatim chunk-overlap pass. Default off
+#: (unset / non-positive / garbage → 0 → byte-identical legacy emit).
+CHUNK_OVERLAP_WORDS_ENV: str = "TRAINFORGE_CHUNK_OVERLAP_WORDS"
+
+#: Sentinel distinguishing an absent ``follows_chunk`` key (generic dicts
+#: in tests → pure sequential overlap) from an explicit ``None`` linkage
+#: (a real chunk at a lesson boundary → no cross-lesson bleed).
+_OVERLAP_FOLLOWS_MISSING = object()
+
+
+def resolve_chunk_overlap_words(env: Optional[Dict[str, str]] = None) -> int:
+    """Resolve ``TRAINFORGE_CHUNK_OVERLAP_WORDS`` (parse-with-fallback).
+
+    Returns the number of verbatim trailing words to prepend from each
+    chunk's prior emitted chunk onto the next. Default ``0`` (feature
+    off → byte-identical legacy emit). Garbage / non-integer /
+    non-positive values fall back to ``0`` (mirrors the other
+    ``TRAINFORGE_*`` numeric knobs).
+    """
+    import os
+
+    src = env if env is not None else os.environ
+    raw = src.get(CHUNK_OVERLAP_WORDS_ENV)
+    if raw is None:
+        return 0
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 0
+    return val if val > 0 else 0
+
+
+def apply_chunk_overlap(
+    chunks: List[Dict[str, Any]], overlap_words: int
+) -> List[Dict[str, Any]]:
+    """Prepend the verbatim trailing ``overlap_words`` of each chunk's
+    prior emitted chunk onto the next chunk's ``text`` (in place).
+
+    Anti-fabrication: the prepended prefix is composed solely from the
+    PRIOR chunk's existing words — never synthesized, never invented.
+    The trailing words are read from a pre-mutation snapshot of every
+    chunk's text so the overlap never compounds across the sequence (the
+    prefix is always the prior chunk's OWN tail, not a tail that already
+    carries an earlier chunk's bleed).
+
+    Continuity guard: when a chunk carries the canonical ``follows_chunk``
+    linkage, the prefix is bled only when this chunk genuinely follows
+    the prior one (``follows_chunk == prev["id"]``) — so overlap never
+    crosses a lesson / module boundary where ``follows_chunk`` resets to
+    ``None``. Generic chunk dicts that carry no ``follows_chunk`` key
+    fall back to pure sequential overlap.
+
+    ``overlap_words <= 0`` (or fewer than two chunks) → no-op; the list
+    is returned unchanged (byte-identical legacy emit). ``word_count`` /
+    ``tokens_estimate`` are recomputed for any mutated chunk so the
+    derived counts stay consistent with the new text.
+    """
+    if overlap_words <= 0 or len(chunks) < 2:
+        return chunks
+
+    original_texts = [str(c.get("text", "")) for c in chunks]
+    for i in range(1, len(chunks)):
+        cur = chunks[i]
+        prev = chunks[i - 1]
+        follows = cur.get("follows_chunk", _OVERLAP_FOLLOWS_MISSING)
+        if follows is not _OVERLAP_FOLLOWS_MISSING:
+            if follows is None or follows != prev.get("id"):
+                continue
+        prev_words = original_texts[i - 1].split()
+        if not prev_words:
+            continue
+        tail = prev_words[-overlap_words:]
+        if not tail:
+            continue
+        prefix = " ".join(tail)
+        cur_text = str(cur.get("text", ""))
+        cur["text"] = (prefix + " " + cur_text) if cur_text else prefix
+        new_word_count = len(cur["text"].split())
+        if "word_count" in cur:
+            cur["word_count"] = new_word_count
+        if "tokens_estimate" in cur:
+            cur["tokens_estimate"] = int(new_word_count * 1.3)
+    return chunks
 
 
 # ---------------------------------------------------------------------------

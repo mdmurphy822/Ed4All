@@ -69,6 +69,21 @@
       "enum": ["foundational", "intermediate", "advanced"],
       "description": "Difficulty classification from process_course.py::_determine_difficulty."
     },
+    "difficulty_provenance": {
+      "type": "string",
+      "enum": ["heuristic", "calibrated"],
+      "description": "Provenance tag for `difficulty` (honest IRT scaffold, gated by TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD). 'heuristic' = the Bloom->difficulty / keyword cascade in _determine_difficulty; 'calibrated' = overridden from real learner responses via lib/assessment/irt_difficulty.py. Optional + hash-excluded; absent on legacy corpora and on every chunk when the scaffold flag is off (mirrors bloom_level_source)."
+    },
+    "difficulty_irt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "difficulty_b": {"type": "number", "description": "Rasch (1PL) difficulty from observed proportion-correct (b = ln((1-p)/p)); higher = harder. The only calibrated quantity."},
+        "discrimination_a": {"type": "number", "description": "Fixed Rasch (1PL) discrimination convention value (1.0). NOT a fitted 2PL discrimination — the honest scaffold ships no 2PL fit."},
+        "n_responses": {"type": "integer", "minimum": 0, "description": "Number of real learner responses backing this calibration."}
+      },
+      "description": "Honest IRT difficulty-calibration block (TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD). Written ONLY when difficulty_provenance=='calibrated' with real backing responses; never fabricated for an item with no data. Optional + hash-excluded; absent on legacy corpora and on heuristic-provenance chunks."
+    },
     "tokens_estimate": {
       "type": "integer",
       "minimum": 0,

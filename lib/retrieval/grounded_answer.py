@@ -84,6 +84,11 @@ from lib.retrieval.refusal import (
     resolve_policy,
     should_refuse,
 )
+from lib.retrieval.reranker import (
+    maybe_rerank,
+    reranker_configured,
+    resolve_candidate_pool,
+)
 
 __all__ = [
     "Citation",
@@ -1628,12 +1633,34 @@ def answer_course_question(
             chunkset_kind = _infer_chunkset_kind(libv2_root, course_slug)
 
     # 1) Retrieve (typed errors propagate; no silent downgrade).
+    #
+    # Cross-encoder reranker hook (ED4ALL_RERANK_PROVIDER, default OFF). When
+    # unset/empty this is a strict no-op: ``reranker_configured()`` returns
+    # None, the over-fetch is skipped (retrieve_limit == limit), and the
+    # retrieved order + native scores are byte-identical to the legacy path.
+    # When configured, we over-fetch a candidate pool, re-score (query, passage)
+    # pairs, and REORDER + TRIM back to ``limit`` STRICTLY BEFORE the refusal
+    # gate — preserving each passage's native first-stage score so the per-
+    # engine refusal threshold stays calibrated. Fail-OPEN.
+    rerank_provider = reranker_configured()
+    retrieve_limit = limit
+    if rerank_provider is not None:
+        retrieve_limit = max(limit, resolve_candidate_pool())
     results = _retrieve(
-        libv2_root, course_slug, query, engine=engine, limit=limit
+        libv2_root, course_slug, query, engine=engine, limit=retrieve_limit
     )
     passages = [
         RetrievedPassage.from_retrieval_result(r, engine=engine) for r in results
     ]
+    if rerank_provider is not None:
+        passages = maybe_rerank(
+            query,
+            passages,
+            top_k=limit,
+            capture=capture,
+            course_slug=course_slug,
+            query_sha=query_sha,
+        )
 
     # 2) Pre-LLM refusal on low confidence (zero client calls on refusal).
     verdict = evaluate_confidence(passages, policy)

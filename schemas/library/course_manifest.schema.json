@@ -201,6 +201,17 @@
             "advanced": {"type": "integer", "minimum": 0}
           }
         },
+        "difficulty_distribution_descriptor": {
+          "type": "object",
+          "description": "Deterministic descriptor over the 3 ordered difficulty bands (honest IRT scaffold, gated by TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD). Mirrors corpus_stats.difficulty_distribution_descriptor; emitted by lib/assessment/irt_difficulty.py::describe_difficulty_distribution. Optional -> legacy manifests still validate.",
+          "properties": {
+            "modal_level": {"type": ["string", "null"], "enum": ["foundational", "intermediate", "advanced", null]},
+            "ordinal_entropy": {"type": "number"},
+            "balance_ratio": {"type": "number"},
+            "calibrated_fraction": {"type": "number"},
+            "provenance": {"type": "string", "enum": ["heuristic", "mixed", "calibrated"]}
+          }
+        },
         "chunk_type_distribution": {
           "type": "object",
           "additionalProperties": {"type": "integer", "minimum": 0}

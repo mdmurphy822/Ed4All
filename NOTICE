@@ -60,6 +60,16 @@ metadata; mirrored here).
   - Qwen/Qwen3-Embedding-0.6B — Apache-2.0
   - sentence-transformers/all-MiniLM-L6-v2 — Apache-2.0
 
+The optional grounded-answer cross-encoder reranker (ED4ALL_RERANK_PROVIDER,
+default off; lib/retrieval/reranker.py::RERANKER_MODEL_REGISTRY) re-orders
+already-retrieved passages with a local cross-encoder. All candidates are
+license-clean:
+
+  - BAAI/bge-reranker-base — MIT (default model)
+    https://huggingface.co/BAAI/bge-reranker-base
+  - BAAI/bge-reranker-large — MIT
+  - BAAI/bge-reranker-v2-m3 — Apache-2.0
+
 ================================================================================
 Python dependencies requiring attribution (Apache-2.0)
 ================================================================================

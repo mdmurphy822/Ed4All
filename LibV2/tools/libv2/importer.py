@@ -238,12 +238,16 @@ def extract_content_profile(source_dir: Path, sf_manifest: dict) -> ContentProfi
         corpus_stats_path = source_dir / "corpus" / "corpus_stats.json"
     chunk_type_dist = {}
     difficulty_dist = {}
+    difficulty_descriptor = {}
 
     if corpus_stats_path.exists():
         with open(corpus_stats_path) as f:
             corpus_stats = json.load(f)
             chunk_type_dist = corpus_stats.get("chunk_type_distribution", {})
             difficulty_dist = corpus_stats.get("difficulty_distribution", {})
+            # Honest IRT difficulty-calibration scaffold descriptor (optional;
+            # mirrors how difficulty_distribution is carried). Absent → {}.
+            difficulty_descriptor = corpus_stats.get("difficulty_distribution_descriptor", {}) or {}
 
     # Try training specs for token count
     training_specs_path = source_dir / "training_specs" / "dataset_config.json"
@@ -260,6 +264,7 @@ def extract_content_profile(source_dir: Path, sf_manifest: dict) -> ContentProfi
         language="en",
         difficulty_distribution=difficulty_dist,
         chunk_type_distribution=chunk_type_dist,
+        difficulty_distribution_descriptor=difficulty_descriptor,
     )
 
 

@@ -41,6 +41,11 @@
       "format": "date-time",
       "description": "ISO 8601 timestamp (UTC) recording when the chunkset was emitted. Optional. Mirrors the import_timestamp / export_timestamp shape used elsewhere in the LibV2 manifest family."
     },
+    "overlap_words": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Track K (corpus-grounded pipeline improvements): the verbatim chunk-overlap budget that produced this chunkset. When TRAINFORGE_CHUNK_OVERLAP_WORDS > 0, the chunk emitters (MCP/tools/pipeline_tools.py::_run_dart_chunking / _run_imscc_chunking) prepend the verbatim trailing N words of each chunk's prior emitted chunk onto the next (anti-fabrication — never synthesized) so boundary content that split across a chunk break is recoverable. Recorded here for replay. OPTIONAL and OMITTED when the feature is off (overlap_words == 0) so a default-off chunkset's manifest stays byte-identical to the legacy emit. Resolver: Trainforge.chunker.resolve_chunk_overlap_words."
+    },
     "source_coverage": {
       "type": "object",
       "description": "W3.H sub-task H1: per-stage source-coverage telemetry for the DART (or IMSCC) blocks-to-chunks transformation. Records how many upstream blocks were seen, how many chunks were emitted, and the per-reason breakdown of dropped blocks. Optional for back-compat with pre-W3.H manifests; W3.G's master promotion-chain aggregator consumes this field when present and falls back to a `coverage_pct: null` arrow when absent. Canonical shape: lib/governance/source_coverage.py::build_source_coverage. Drop reason codes for DART chunkset: boilerplate, dedup, image_only. The `internal_drop_reason_missing` bucket fires when the silent-gaming check trips (drops attributed without a reason code).",

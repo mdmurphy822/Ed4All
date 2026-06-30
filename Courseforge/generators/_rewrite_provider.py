@@ -1273,6 +1273,76 @@ def _block_type_output_contract(
     return base + _relocated_contract_suffix(block_type)
 
 
+def _recall_self_check_contract_suffix(block: Any) -> str:
+    """recall_self_check — flag-gated cloze / free-recall authoring suffix.
+
+    Read at author time behind ``resolve_recall_self_check()`` (mirroring the
+    ``ED4ALL_REWRITE_FIT_WINDOW`` conditional-contract pattern), NEVER appended
+    unconditionally. Returns ``""`` when the flag is off OR the block carries no
+    ``recall_format`` → off-path output bytes are unchanged.
+    """
+    try:
+        from lib.generation.recall_self_check import (
+            resolve_recall_format,
+            resolve_recall_self_check,
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+    if not resolve_recall_self_check():
+        return ""
+    fmt = resolve_recall_format(getattr(block, "recall_format", None))
+    if fmt is None:
+        return ""
+    if fmt == "cloze":
+        return (
+            " RECALL VARIANT — CLOZE: author this self-check as a "
+            "fill-in-the-blank retrieval item. Elide ONE key term (grounded in "
+            "the source) from a sentence with a `____` blank instead of "
+            "enumerating options; put the elided term's answer behind the "
+            "`<details>` reveal. Do NOT pre-enumerate answer choices — the "
+            "learner must RECALL the term, not recognize it."
+        )
+    return (
+        " RECALL VARIANT — FREE RECALL: author this self-check as a "
+        "produce-the-answer question (no enumerated options). Ask the learner "
+        "to write the answer from memory; put the source-grounded answer behind "
+        "the `<details>` reveal. Do NOT list answer choices — the learner must "
+        "RECALL, not recognize."
+    )
+
+
+def _misconception_productive_failure_contract_suffix(block: Any) -> str:
+    """misconception_rich — flag-gated productive-failure authoring suffix.
+
+    Read at author time behind ``resolve_misconception_rich()`` (mirroring the
+    ``ED4ALL_REWRITE_FIT_WINDOW`` conditional-contract pattern), NEVER appended
+    unconditionally. Returns ``""`` when the flag is off OR the block carries no
+    ``mc_named_concept`` → off-path output bytes are unchanged.
+    """
+    try:
+        from lib.generation.misconception_rich import resolve_misconception_rich
+    except Exception:  # noqa: BLE001
+        return ""
+    if not resolve_misconception_rich():
+        return ""
+    named = getattr(block, "mc_named_concept", None)
+    if not (isinstance(named, str) and named.strip()):
+        return ""
+    label = named.replace("_", " ").replace("-", " ").strip()
+    return (
+        f" PRODUCTIVE FAILURE — NAME the targeted faulty mental model "
+        f"({label!r}) explicitly. BEFORE the correction, add a "
+        f"`<p class=\"misconception-predict\">` predict-then-reveal prompt asking "
+        f"the learner to PREDICT what the faulty model expects. AFTER the "
+        f"`misconception-correction` <p>, add a distinct "
+        f"`<p class=\"misconception-reconcile\">` RECONCILE step: explain why the "
+        f"named model fails (reconcile the prediction with the correct "
+        f"understanding), grounded in the source. The `misconception-predict` and "
+        f"`misconception-reconcile` paragraphs are BOTH required. Do not fabricate "
+        f"a concept the source does not discuss."
+    )
+
+
 def _required_attrs_directive(block_type: str, block_id: str) -> str:
     """Return the gate-enforced required-attribute directive line.
 
@@ -2998,6 +3068,8 @@ class RewriteProvider(_BaseLLMProvider):
         output_contract = _block_type_output_contract(
             block.block_type, fit_window=getattr(self, "_fit_window", False)
         )
+        output_contract += _recall_self_check_contract_suffix(block)
+        output_contract += _misconception_productive_failure_contract_suffix(block)
         required_attrs_line = _required_attrs_directive(
             block.block_type, block.block_id
         )
@@ -3095,6 +3167,8 @@ class RewriteProvider(_BaseLLMProvider):
         output_contract = _block_type_output_contract(
             block.block_type, fit_window=getattr(self, "_fit_window", False)
         )
+        output_contract += _recall_self_check_contract_suffix(block)
+        output_contract += _misconception_productive_failure_contract_suffix(block)
         required_attrs_line = _required_attrs_directive(
             block.block_type, block.block_id
         )

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/assessment/v1/item_response.schema.json",
+  "title": "Learner item-response record (IRT difficulty-calibration seam)",
+  "description": "One learner response to one assessable item, the record shape read by the response-ingestion seam at lib/assessment/irt_difficulty.py::load_calibrated_difficulty (resolved from <libv2>/courses/<slug>/responses/item_responses.jsonl, one record per line). The seam computes a deterministic proportion-correct -> difficulty band ONLY for items with >= min_responses real records; it NEVER fabricates IRT parameters. This file documents the contract ONLY — no response data is committed to the repository.",
+  "type": "object",
+  "required": ["learner_id", "correct"],
+  "anyOf": [
+    {"required": ["item_id"]},
+    {"required": ["chunk_id"]}
+  ],
+  "properties": {
+    "item_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Id of the assessable item the response is for. Either item_id or chunk_id MUST be present; chunk_id is preferred when the item is anchored to a chunk."
+    },
+    "chunk_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Id of the chunk the assessable item is anchored to (the calibrated-map key consumed by tag_chunk_difficulty_provenance). Preferred over item_id when present."
+    },
+    "learner_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque learner identifier (pseudonymous). Used only to count distinct responses; never resolved to a person."
+    },
+    "correct": {
+      "type": "boolean",
+      "description": "Whether the learner answered the item correctly. Required and strictly boolean — a non-boolean grade is dropped by the seam, never coerced."
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "Optional ISO-8601 response timestamp."
+    },
+    "score": {
+      "type": "number",
+      "description": "Optional raw/partial score for the response (not consumed by the binary proportion-correct calibrator; reserved for a future graded-response model)."
+    }
+  },
+  "additionalProperties": false
+}

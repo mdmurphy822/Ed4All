@@ -112,6 +112,26 @@ The default model pin (`BAAI/bge-large-en-v1.5`, re-pinned 2026-06-10 from the
 one-line registry change in `lib/embedding/providers.py::_EMBEDDING_PROVIDERS`
 plus an update to this table's default row.
 
+## Reranker providers (retrieval re-ranking)
+
+The `ED4ALL_RERANK_*` family (root `CLAUDE.md` § "Cross-cutting flags") selects
+the optional cross-encoder reranker that re-scores the first-stage retrieval
+candidate pool on the grounded-answer path (resolver
+`lib/retrieval/reranker.py`). **This is NOT training-data synthesis** — it
+re-orders already-retrieved grounded passages and emits no corpus content; the
+passages' native scores are preserved verbatim. Default OFF
+(`ED4ALL_RERANK_PROVIDER` unset → no client built). The maintenance contract
+still requires a row per provider/model-selecting flag, so they are documented
+here in their own table. All candidates are license-clean (MIT / Apache-2.0);
+jina / mxbai rerankers are deliberately EXCLUDED (CC-BY-NC / non-clean).
+
+| Flag/value | Default model | Model license | ToS layer | Notes |
+|------------|---------------|---------------|-----------|-------|
+| `ED4ALL_RERANK_PROVIDER=st-cross-encoder` | `BAAI/bge-reranker-base` | MIT | N/A (local in-process) | runtime Q&A retrieval re-ranking; in-process `sentence-transformers` `CrossEncoder`; offline/loopback; NOT training-data synthesis (re-orders already-retrieved grounded passages, emits no corpus content) |
+| `ED4ALL_RERANK_PROVIDER=fake` | deterministic hash scores | N/A | N/A | test-only; production read path refused without `ED4ALL_RERANK_ALLOW_FAKE` (anti-poisoning) |
+| benchmark candidate | `BAAI/bge-reranker-large` | MIT | N/A (local in-process) | larger bge cross-encoder |
+| benchmark candidate | `BAAI/bge-reranker-v2-m3` | Apache-2.0 | N/A (local in-process) | multilingual headroom |
+
 ## Grounded-answer provider (runtime inference — not training data)
 
 The `ED4ALL_ANSWER_*` family (root `CLAUDE.md` § "Cross-cutting flags") selects
@@ -140,6 +160,9 @@ land with a row here.
 - nomic-ai/nomic-embed-text-v1.5 LICENSE (Apache 2.0): https://huggingface.co/nomic-ai/nomic-embed-text-v1.5
 - Qwen3-Embedding LICENSE (Apache 2.0): https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
 - all-MiniLM-L6-v2 LICENSE (Apache 2.0): https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+- BAAI/bge-reranker-base LICENSE (MIT): https://huggingface.co/BAAI/bge-reranker-base
+- BAAI/bge-reranker-large LICENSE (MIT): https://huggingface.co/BAAI/bge-reranker-large
+- BAAI/bge-reranker-v2-m3 LICENSE (Apache 2.0): https://huggingface.co/BAAI/bge-reranker-v2-m3
 - Anthropic Consumer Terms: https://www.anthropic.com/legal/consumer-terms
 - Anthropic Commercial Terms: https://www.anthropic.com/legal/commercial-terms
 - OpenAI Services Terms: https://openai.com/policies/services-terms/

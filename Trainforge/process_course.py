@@ -1204,6 +1204,12 @@ class CourseProcessor:
         }
         self._all_concept_tags: set = set()
 
+        # Honest IRT difficulty-calibration scaffold
+        # (TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD). Lazily built once per run from
+        # the optional learner-response seam; None until first resolved.
+        self._irt_calibrated_map: Optional[Dict[str, Any]] = None
+        self._irt_response_file_present: bool = False
+
         # Populated during processing; consumed by quality-report generation.
         self._boilerplate_spans: List[str] = []
         self._valid_outcome_ids: Set[str] = set()
@@ -2264,6 +2270,22 @@ class CourseProcessor:
             chunk_type=chunk_type,
         )
 
+        # Honest IRT difficulty-calibration scaffold: stamp difficulty
+        # provenance (+ optional IRT block from real learner responses) on the
+        # chunk. No-op + byte-identical when TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD
+        # is off. The override can change the difficulty band, so re-read it for
+        # the distribution counter below.
+        try:
+            from lib.assessment.irt_difficulty import (
+                irt_scaffold_enabled,
+                tag_chunk_difficulty_provenance,
+            )
+            if irt_scaffold_enabled():
+                tag_chunk_difficulty_provenance(chunk, self._get_irt_calibrated_map())
+                difficulty = chunk.get("difficulty", difficulty)
+        except Exception as exc:  # noqa: BLE001 — scaffold must never break emit
+            logger.warning("IRT difficulty provenance tagging failed: %s", exc)
+
         self.stats["total_words"] += word_count
         self.stats["total_tokens_estimate"] += tokens_estimate
         self.stats["chunk_types"][chunk_type] += 1
@@ -2271,6 +2293,29 @@ class CourseProcessor:
         self._all_concept_tags.update(concept_tags)
 
         return chunk
+
+    def _get_irt_calibrated_map(self) -> Dict[str, Any]:
+        """Build the IRT calibrated-difficulty map once per run (lazy).
+
+        Resolves the optional learner-response seam for ``self.course_code`` and
+        computes a calibrated band only for items with real backing responses.
+        Returns ``{}`` when no response file exists or no item clears the floor
+        (anti-fabrication: never invents IRT parameters).
+        """
+        if self._irt_calibrated_map is not None:
+            return self._irt_calibrated_map
+        try:
+            from lib.assessment.irt_difficulty import (
+                load_calibrated_difficulty,
+                resolve_response_data_path,
+            )
+            response_path = resolve_response_data_path(self.course_code)
+            self._irt_response_file_present = response_path is not None
+            self._irt_calibrated_map = load_calibrated_difficulty(response_path)
+        except Exception as exc:  # noqa: BLE001 — scaffold must never break emit
+            logger.warning("IRT calibrated-map build failed: %s", exc)
+            self._irt_calibrated_map = {}
+        return self._irt_calibrated_map
 
     # SemantiK migration §4 — WCAG block status enum (Stage-7 per-region gate).
     _SEMANTIK_WCAG_BLOCK_STATUSES = frozenset({"passed", "flagged", "skipped"})
@@ -3395,7 +3440,7 @@ class CourseProcessor:
 
     def _generate_corpus_stats(self) -> Dict[str, Any]:
         total = self.stats["total_chunks"]
-        return {
+        stats: Dict[str, Any] = {
             "total_chunks": total,
             "total_words": self.stats["total_words"],
             "total_tokens_estimate": self.stats["total_tokens_estimate"],
@@ -3407,6 +3452,48 @@ class CourseProcessor:
             "sections_processed": self.stats["sections_processed"],
             "generated_at": datetime.now().isoformat(),
         }
+        # Honest IRT difficulty-calibration scaffold: add the deterministic
+        # difficulty-distribution descriptor + emit one difficulty_calibration
+        # decision event per run. No-op + byte-identical when the flag is off.
+        self._maybe_add_difficulty_descriptor(stats)
+        return stats
+
+    def _maybe_add_difficulty_descriptor(self, stats: Dict[str, Any]) -> None:
+        """Add difficulty_distribution_descriptor + emit one decision event.
+
+        Gated by TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD; flag-off path untouched.
+        """
+        try:
+            from lib.assessment.irt_difficulty import (
+                DEFAULT_MIN_RESPONSES,
+                describe_difficulty_distribution,
+                irt_scaffold_enabled,
+            )
+            if not irt_scaffold_enabled():
+                return
+            counts = dict(self.stats["difficulty_distribution"])
+            calibrated_map = self._get_irt_calibrated_map()
+            total = self.stats["total_chunks"] or 0
+            calibrated_fraction = (len(calibrated_map) / total) if total else 0.0
+            descriptor = describe_difficulty_distribution(counts, calibrated_fraction)
+            stats["difficulty_distribution_descriptor"] = descriptor
+            try:
+                self.capture.log_decision(
+                    decision_type="difficulty_calibration",
+                    decision=f"provenance={descriptor['provenance']}",
+                    rationale=(
+                        f"IRT difficulty scaffold: chunks_tagged={total}, "
+                        f"calibrated_fraction={calibrated_fraction:.4f}, "
+                        f"calibrated_item_count={len(calibrated_map)}, "
+                        f"response_file_present={self._irt_response_file_present}, "
+                        f"min_responses={DEFAULT_MIN_RESPONSES}, "
+                        f"modal_level={descriptor['modal_level']}."
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("difficulty_calibration decision capture failed: %s", exc)
+        except Exception as exc:  # noqa: BLE001 — scaffold must never break stats
+            logger.warning("IRT difficulty descriptor build failed: %s", exc)
 
     def _generate_concept_graph(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Build the domain concept co-occurrence graph.

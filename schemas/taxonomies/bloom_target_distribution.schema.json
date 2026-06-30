@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/bloom_target_distribution.schema.json",
+  "title": "Bloom Target Distribution",
+  "description": "Validates the checked-in generic Bloom target curve (schemas/taxonomies/bloom_target_distribution.json) AND an operator-supplied override curve passed via ED4ALL_BLOOM_DISTRIBUTION_TARGET. The target_shares map keys must be a subset of the canonical six BLOOM_LEVELS and every share must sit in [0,1]; the three band knobs (recall_ceiling / higher_order_floor / top_heavy_ceiling) are in [0,1].",
+  "$defs": {
+    "BloomLevel": {
+      "type": "string",
+      "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+    },
+    "Share": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    }
+  },
+  "type": "object",
+  "required": ["target_shares"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "title": { "type": "string" },
+    "description": { "type": "string" },
+    "target_shares": {
+      "type": "object",
+      "description": "Per-level target share over the six canonical BLOOM_LEVELS. Keys must be a subset of BLOOM_LEVELS; values in [0,1].",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/BloomLevel" },
+      "additionalProperties": { "$ref": "#/$defs/Share" }
+    },
+    "recall_ceiling": { "$ref": "#/$defs/Share" },
+    "higher_order_floor": { "$ref": "#/$defs/Share" },
+    "top_heavy_ceiling": { "$ref": "#/$defs/Share" }
+  },
+  "additionalProperties": false
+}

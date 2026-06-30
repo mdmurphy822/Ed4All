@@ -235,6 +235,8 @@ Each describes an inline HTML component produced by Courseforge (accordions for 
 
 **Enrichment fields (post-base chunk):** `bloom_level`, `bloom_level_source`, `content_type_label`, `key_terms`, `misconceptions`, `_metadata_trace` (Worker M1 diagnostic, `process_course.py:1219`).
 
+**Honest IRT difficulty-calibration scaffold (optional, `TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD`):** `difficulty_provenance` (`heuristic` | `calibrated`) mirrors the `bloom_level_source` provenance-tag idiom, and `difficulty_irt` (`difficulty_b` / `discrimination_a` / `n_responses`) is written ONLY for a chunk calibrated from real learner responses (never fabricated). Both optional + hash-excluded → absent on legacy corpora and byte-stable when the flag is off. The response-ingestion SEAM the calibrator reads is contracted at `schemas/assessment/item_response.schema.json` (one learner-response record per line at `<libv2>/courses/<slug>/responses/item_responses.jsonl`; no response data is committed). See `lib/assessment/irt_difficulty.py`.
+
 **Discriminators:** `chunk_type` string; `schema_version` version stamp.
 
 ### Concept

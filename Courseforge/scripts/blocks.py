@@ -140,6 +140,44 @@ def _reflection_calibration_emit_enabled() -> bool:
     return os.environ.get(_REFLECTION_CALIBRATION_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
 
 
+# recall_self_check — free-recall / cloze self-check variant emit flag
+# (ED4ALL_RECALL_SELF_CHECK). Default OFF: with this unset the new
+# ``recall_format`` Block field (hash-excluded) is not projected and
+# ``_UDL_RESPONSE_BY_BLOCK_TYPE`` still returns ``select`` for
+# self_check_question. Canonical resolver: lib/generation/recall_self_check.py.
+_RECALL_SELF_CHECK_EMIT_ENV = "ED4ALL_RECALL_SELF_CHECK"
+
+
+def _recall_self_check_emit_enabled() -> bool:
+    """Read ``ED4ALL_RECALL_SELF_CHECK`` each call so tests can toggle it.
+
+    Default off — the new ``recall_format`` field + the corrected UDL
+    response-format are purely additive and must not break byte-stable emit.
+    Falsey / garbage values → off (parse-with-fallback, mirroring
+    :func:`_reflection_calibration_emit_enabled`).
+    """
+    return os.environ.get(_RECALL_SELF_CHECK_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
+
+
+# misconception_rich — named subject-specific misconception + productive-failure
+# emit flag (ED4ALL_MISCONCEPTION_RICH). Default OFF: with this unset the three
+# new Block fields (``mc_named_concept`` / ``mc_predict_prompt`` /
+# ``mc_reconcile``, hash-excluded) are not projected to HTML/JSON-LD, so every
+# existing snapshot / contentHash stays byte-identical. Canonical resolver:
+# lib/generation/misconception_rich.py.
+_MISCONCEPTION_RICH_EMIT_ENV = "ED4ALL_MISCONCEPTION_RICH"
+
+
+def _misconception_rich_emit_enabled() -> bool:
+    """Read ``ED4ALL_MISCONCEPTION_RICH`` each call so tests can toggle it.
+
+    Default off — the three productive-failure fields are purely additive and
+    must not break byte-stable emit. Falsey / garbage values → off
+    (parse-with-fallback, mirroring :func:`_reflection_calibration_emit_enabled`).
+    """
+    return os.environ.get(_MISCONCEPTION_RICH_EMIT_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
+
+
 # IB6.5 — universal (verb · level · knowledge-type) triple chip emit flag
 # (ED4ALL_BLOCK_QUALITY_RUBRIC, the IB6 keystone). Default OFF: with this unset
 # the cognitive-domain chip stays objectives-only (``_objective_attrs``) and no
@@ -759,6 +797,18 @@ def _derive_udl_coverage(
 
     response_formats: Tuple[str, ...] = ()
     rf = _UDL_RESPONSE_BY_BLOCK_TYPE.get(block.block_type)
+    # recall_self_check — a recall-marked self_check_question is NO LONGER
+    # recognition ("select"); its learner action is retrieval-practice. cloze →
+    # "recall" (produce a single term); free_recall → "construct" (produce the
+    # answer). Double-gated behind ED4ALL_RECALL_SELF_CHECK AND only-when-set, so
+    # default-off resolution is byte-identical ("select").
+    if (
+        block.block_type == "self_check_question"
+        and _recall_self_check_emit_enabled()
+        and isinstance(block.recall_format, str)
+        and block.recall_format.strip()
+    ):
+        rf = "recall" if block.recall_format.strip() == "cloze" else "construct"
     if rf:
         response_formats = (rf,)
 
@@ -1154,6 +1204,37 @@ class Block:
     # (SCENARIO_DEBRIEF_MISSING) + the scenario renderer's debrief scaffold, both
     # gated by ED4ALL_NEW_BLOCK_TYPES. Not projected to HTML/JSON-LD here.
     scenario_mode: Optional[str] = None
+    # recall_self_check — B07 self-check RECALL-format variant. A self-check can
+    # be recognition (MCQ, the legacy radio render) OR retrieval-practice:
+    # ``free_recall`` (produce the answer, reveal behind a ``<details>``) or
+    # ``cloze`` (a ``____`` fill-in-the-blank). The deterministic planner pass
+    # ``lib/generation/recall_self_check.py::apply_recall_self_check`` stamps this
+    # on already-taught-CO self_check_question blocks (spaced retrieval). Additive
+    # Optional/None default and INTENTIONALLY excluded from compute_content_hash()
+    # (the hash payload is an explicit 5-key allowlist; mirrors scenario_mode /
+    # the IB5 fields) so a recall retro-fit never drifts an existing block hash;
+    # the default-None state keeps legacy / flag-off blocks byte-identical. Read
+    # by the structured renderer's recall branch + the rewrite-tier cloze contract
+    # + the corrected UDL response-format map + the recall_self_check_format gate,
+    # all gated by ED4ALL_RECALL_SELF_CHECK.
+    recall_format: Optional[str] = None     # B07 recall variant: free_recall | cloze
+    # misconception_rich — B03/B12 named subject-specific misconception +
+    # productive-failure (predict → reveal → reconcile). ``mc_named_concept`` =
+    # the grounded faulty-model concept slug (named ONLY from the block's own
+    # concept_tags / domain vocabulary — None when unresolved, never invented);
+    # ``mc_predict_prompt`` = the predict-then-reveal prompt before the
+    # correction; ``mc_reconcile`` = the reconcile step (why the named model
+    # fails). All three additive Optional/None defaults and INTENTIONALLY excluded
+    # from compute_content_hash() (the hash payload is an explicit 5-key
+    # allowlist; mirrors scenario_mode / the FR-INT-03 calibration fields) so a
+    # misconception retro-fit never drifts an existing block hash; the default-None
+    # state keeps legacy / flag-off blocks byte-identical. Read by the misconception
+    # render scaffold + the rewrite-tier productive-failure contract + the
+    # _misconception_jsonld conceptId/productiveFailure emit + the
+    # misconception_productive_failure gate, all gated by ED4ALL_MISCONCEPTION_RICH.
+    mc_named_concept: Optional[str] = None
+    mc_predict_prompt: Optional[str] = None
+    mc_reconcile: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -1231,8 +1312,11 @@ class Block:
         protocol fields, and the FR-INT-03 ``prediction_prompt`` /
         ``reveal_content`` / ``calibration_feedback`` B11 predict-then-reveal
         calibration fields, the C3-3 ``self_rating_prompt`` /
-        ``objective_assessment_thread`` B01 objective-enrichment fields, and the
-        C3-4 ``confidence_prompt`` B07 self-check confidence-capture field so a
+        ``objective_assessment_thread`` B01 objective-enrichment fields, the
+        C3-4 ``confidence_prompt`` B07 self-check confidence-capture field, the
+        recall_self_check ``recall_format`` B07 recall variant, and the
+        misconception_rich ``mc_named_concept`` / ``mc_predict_prompt`` /
+        ``mc_reconcile`` B03/B12 productive-failure fields so a
         touch-only / budget-only / classifier-retrofit / objective-
         delivery-retrofit / anatomy-slot-back-derivation / rubric-scoring /
         anchored-rubric-attach / udl-coverage-retrofit / ib5-field-attach /
@@ -1657,6 +1741,20 @@ class Block:
             entry["bloomLevel"] = self.bloom_level
             if self.cognitive_domain:
                 entry["cognitiveDomain"] = self.cognitive_domain
+        # misconception_rich — emit the named-concept link + productive-failure
+        # object ONLY when ED4ALL_MISCONCEPTION_RICH is on AND the fields are set
+        # (double-gated, mirroring the worked_example fade_state attr posture), so
+        # flag-off / legacy emit is byte-identical.
+        if _misconception_rich_emit_enabled():
+            if isinstance(self.mc_named_concept, str) and self.mc_named_concept.strip():
+                entry["conceptId"] = self.mc_named_concept.strip()
+            pf: Dict[str, Any] = {}
+            if isinstance(self.mc_predict_prompt, str) and self.mc_predict_prompt.strip():
+                pf["predict"] = self.mc_predict_prompt.strip()
+            if isinstance(self.mc_reconcile, str) and self.mc_reconcile.strip():
+                pf["reconcile"] = self.mc_reconcile.strip()
+            if pf:
+                entry["productiveFailure"] = pf
         return entry
 
     def _minimal_block_jsonld(self) -> Dict[str, Any]:
@@ -1779,6 +1877,16 @@ class Block:
                 entry["longDescription"] = self.long_description
             if self.block_type == "multimedia" and self.media_a11y:
                 entry["mediaA11y"] = list(self.media_a11y)
+        # recall_self_check — emit the recall variant on a self_check_question.
+        # DOUBLE-gated behind ED4ALL_RECALL_SELF_CHECK AND only-when-set, so
+        # default-OFF emit is byte-identical (additive camelCase key).
+        if (
+            self.block_type == "self_check_question"
+            and _recall_self_check_emit_enabled()
+            and isinstance(self.recall_format, str)
+            and self.recall_format.strip()
+        ):
+            entry["recallFormat"] = self.recall_format.strip()
         # W3 — optional pointer to the sidecar block_synthesis_manifest.jsonl
         # line keyed on this block_id. We do NOT inline the whole manifest into
         # the JSON-LD (it would bloat the IMSCC payload + duplicate the

@@ -335,6 +335,20 @@
         "cognitiveDomain": {
           "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_domain.schema.json#/$defs/CognitiveDomain",
           "description": "Wave 60: knowledge domain derived from bloomLevel via lib.ontology.bloom.bloom_to_cognitive_domain. Emitted iff bloomLevel is populated."
+        },
+        "conceptId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "misconception_rich: the named subject-specific faulty-model concept slug the misconception targets, grounded in the block's own concept_tags / domain vocabulary. Optional + additive; emitted only when set AND ED4ALL_MISCONCEPTION_RICH is on. Excluded from contentHash."
+        },
+        "productiveFailure": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "misconception_rich: the predict -> reveal -> reconcile productive-failure scaffold. Optional + additive; emitted only when set AND ED4ALL_MISCONCEPTION_RICH is on.",
+          "properties": {
+            "predict": { "type": "string", "minLength": 1 },
+            "reconcile": { "type": "string", "minLength": 1 }
+          }
         }
       }
     },
@@ -623,6 +637,11 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "IB5: B04 multimedia present time-based-media track tokens (captions, audio_description, transcript, controls). Optional + additive; emitted only when non-empty AND ED4ALL_NEW_BLOCK_TYPES is on. Excluded from contentHash."
+        },
+        "recallFormat": {
+          "type": "string",
+          "enum": ["free_recall", "cloze"],
+          "description": "recall_self_check: B07 self_check_question recall variant (free_recall produce-the-answer / cloze fill-in-the-blank). Optional + additive; emitted only when set AND ED4ALL_RECALL_SELF_CHECK is on. Excluded from contentHash."
         }
       }
     },

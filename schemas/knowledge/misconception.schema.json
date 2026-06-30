@@ -24,7 +24,26 @@
     },
     "concept_id": {
       "type": "string",
-      "description": "Optional typed link to the concept this misconception targets. Populated when upstream emit provides it (future wave may wire from JSON-LD)."
+      "description": "Optional typed link to the concept this misconception targets. misconception_rich wires it from the block's grounded concept_tags / domain vocabulary (named-concept link)."
+    },
+    "named_concept": {
+      "type": "string",
+      "description": "misconception_rich: optional surface form of the named subject-specific faulty model this misconception targets. Grounded in the block's own concept_tags / domain vocabulary (anti-fabrication: absent when none resolves)."
+    },
+    "productive_failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "misconception_rich: optional predict -> reveal -> reconcile productive-failure scaffold. Additive; legacy {misconception, correction} records validate unchanged.",
+      "properties": {
+        "predict": {
+          "type": "string",
+          "description": "The predict-then-reveal prompt asked BEFORE the correction."
+        },
+        "reconcile": {
+          "type": "string",
+          "description": "The reconcile step: why the named faulty model fails."
+        }
+      }
     },
     "lo_id": {
       "type": "string",

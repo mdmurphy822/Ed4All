@@ -1834,6 +1834,103 @@ def _apply_alignment_floors(
     return selected
 
 
+def _concept_tags_by_co(
+    chapter_objectives: Sequence[Dict[str, Any]],
+) -> Dict[str, List[str]]:
+    """Map CO id → its grounded concept tags (for misconception grounding).
+
+    Reads ``concept_tags`` / ``keyConcepts`` / ``key_concepts`` off each CO dict
+    (whichever is present). Anti-fabrication: only the CO's OWN declared tags —
+    never a course-wide vocabulary the CO doesn't reference.
+    """
+    out: Dict[str, List[str]] = {}
+    for co in chapter_objectives or []:
+        if not isinstance(co, dict):
+            continue
+        cid = str(co.get("id") or "")
+        if not cid:
+            continue
+        tags: List[str] = []
+        for key in ("concept_tags", "keyConcepts", "key_concepts"):
+            v = co.get(key)
+            if isinstance(v, (list, tuple)):
+                tags.extend(str(t) for t in v if t)
+        if tags:
+            out[cid] = tags
+    return out
+
+
+def _apply_post_floor_field_stamps(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    capture: Optional[Any],
+    course_code: str,
+    to_id: str,
+) -> List[Dict[str, Any]]:
+    """Run the late STAMP-ONLY planner passes (recall_self_check, misconception_rich).
+
+    Both run LAST — AFTER :func:`_apply_alignment_floors` — so a check/misconception
+    injected by the retrieval / triangle floors is covered. STAMP-ONLY: each pass
+    annotates an existing descriptor's dict (no block added, no CO id invented, no
+    re-order), so the page projection is unchanged in COUNT/ORDER. Each pass is a
+    strict identity no-op when its env flag is off (byte-stable default).
+    """
+    # recall_self_check — stamp recall_format onto already-taught-CO checks.
+    try:
+        from lib.generation.recall_self_check import apply_recall_self_check
+
+        selected, marked, fmt_counts = apply_recall_self_check(selected)
+        if capture is not None and marked:
+            try:
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=f"recall_self_check_marked={marked}",
+                    rationale=(
+                        f"recall_self_check stamped recall_format on {marked} "
+                        f"already-taught-CO self_check_question block(s) for "
+                        f"{to_id or 'TO'} (spaced retrieval): "
+                        + ", ".join(f"{k}×{v}" for k, v in sorted(fmt_counts.items()))
+                        + ". Stamp-only — no block added, no CO id invented."
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                logger.debug("recall_self_check capture raised: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — never break the planner
+        logger.debug("recall_self_check pass skipped: %s", exc)
+
+    # misconception_rich — stamp mc_named_concept onto grounded misconceptions.
+    try:
+        from lib.generation.misconception_rich import apply_misconception_grounding
+
+        counts = apply_misconception_grounding(
+            selected,
+            concept_tags_by_co=_concept_tags_by_co(chapter_objectives),
+        )
+        if capture is not None and counts.get("seen"):
+            try:
+                capture.log_decision(
+                    decision_type="content_selection",
+                    decision=(
+                        f"misconception_named={counts['named']}/"
+                        f"{counts['seen']}"
+                    ),
+                    rationale=(
+                        f"misconception_rich grounded {counts['named']} of "
+                        f"{counts['seen']} misconception block(s) for "
+                        f"{to_id or 'TO'} to a named concept "
+                        f"({counts['generic']} left generic). Named ONLY from the "
+                        f"block's own concept_tags — none invented."
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                logger.debug("misconception_rich capture raised: %s", exc)
+    except Exception as exc:  # noqa: BLE001 — never break the planner
+        logger.debug("misconception_rich pass skipped: %s", exc)
+
+    return selected
+
+
 def _apply_page_floors(
     *,
     selected: List[Dict[str, Any]],
@@ -2922,7 +3019,27 @@ def _to_page_plan(
         # consumer's unpack is arity-tolerant.
         itype = blk.get("interaction_type")
         fade = blk.get("fade_state")
-        if fade:
+        # Track-A stamp fields (ED4ALL_RECALL_SELF_CHECK / ED4ALL_MISCONCEPTION_RICH):
+        # carried as a SINGLE trailing optional dict at tuple index 5, appended
+        # ONLY when at least one is set, so a flag-off run stays byte-stable at
+        # the legacy 3/4/5-tuple shape. When the extras dict is present, indices
+        # 3 (interaction_type-or-None) and 4 (fade_state-or-None) are forced
+        # present so positional consistency holds (extras at 5 implies 3,4 exist).
+        extras: Dict[str, Any] = {}
+        for _field in ("recall_format", "mc_named_concept", "mc_predict_prompt", "mc_reconcile"):
+            _val = blk.get(_field)
+            if _val:
+                extras[_field] = _val
+        if extras:
+            plan[ptype].append(
+                (
+                    blk["block_type"], blk["target_bloom"], target_co_ids,
+                    str(itype) if itype else None,
+                    str(fade) if fade else None,
+                    extras,
+                )
+            )
+        elif fade:
             plan[ptype].append(
                 (
                     blk["block_type"], blk["target_bloom"], target_co_ids,
@@ -3154,6 +3271,17 @@ def plan_week_blocks(
         co_bloom=co_bloom,
     )
 
+    # Late STAMP-ONLY passes (recall_self_check / misconception_rich) run AFTER
+    # the alignment floors so a floor-injected check / misconception is covered.
+    # Each is a strict identity no-op when its flag is off → byte-stable default.
+    selected = _apply_post_floor_field_stamps(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        capture=capture,
+        course_code=course_code,
+        to_id=to_id,
+    )
+
     page_plan = _to_page_plan(selected)
     _emit_block_plan_decision(
         capture=capture,
@@ -3268,6 +3396,17 @@ def _fallback_plan(
             co_bloom=_co_bloom_fb,
         )
         page_plan = _to_page_plan(selected)
+    # Late STAMP-ONLY passes ALSO run on the fallback path (stamp-only → no
+    # count/order change, so page_plan needs no re-derive; identity no-op when
+    # both flags off). On the all-empty-CO fixed plan they find no taught CO /
+    # concept tag and no-op even when on.
+    selected = _apply_post_floor_field_stamps(
+        selected=selected,
+        chapter_objectives=chapter_objectives or [],
+        capture=capture,
+        course_code=course_code,
+        to_id=to_id,
+    )
     _emit_block_plan_decision(
         capture=capture,
         course_code=course_code,

@@ -1,0 +1,16 @@
+{
+  "$schema": "./bloom_target_distribution.schema.json",
+  "title": "Bloom target distribution (generic pedagogical default curve)",
+  "description": "A GENERIC instructional-design default target curve for the course-level Bloom-level mix consumed by lib/validators/bloom_distribution.py::BloomDistributionValidator. Contains ZERO corpus content — only six canonical-level -> share floats (understand+apply-weighted with a small evaluate+create tail) plus three derived band ceilings/floors. Operator overrides arrive via ED4ALL_BLOOM_DISTRIBUTION_TARGET (path or inline JSON), never a hardcoded path. Shares sum to ~1.0 over the canonical lib/ontology/bloom.py::BLOOM_LEVELS axis.",
+  "target_shares": {
+    "remember": 0.15,
+    "understand": 0.25,
+    "apply": 0.25,
+    "analyze": 0.20,
+    "evaluate": 0.10,
+    "create": 0.05
+  },
+  "recall_ceiling": 0.50,
+  "higher_order_floor": 0.30,
+  "top_heavy_ceiling": 0.35
+}

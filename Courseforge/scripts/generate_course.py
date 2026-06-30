@@ -53,8 +53,14 @@ from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: 
 from blocks import (  # noqa: E402  (Phase 2 intermediate format)
     Block,
     _anatomy_emit_enabled,
+    _misconception_rich_emit_enabled,
     _new_block_types_emit_enabled,
+    _recall_self_check_emit_enabled,
     _reflection_calibration_emit_enabled,
+)
+from lib.generation.recall_self_check import (  # noqa: E402
+    resolve_recall_format,
+    resolve_recall_self_check as _resolve_recall_self_check,
 )
 
 # Phase 2: sentinel page_id for renderer call sites that don't yet thread
@@ -441,6 +447,17 @@ def _callout_typed_enabled() -> bool:
     off (parse-with-fallback, mirroring :func:`_courseforge_emit_blocks_enabled`).
     """
     return os.getenv(_CALLOUT_TYPED_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
+
+
+def _recall_self_check_enabled() -> bool:
+    """Return True when ``ED4ALL_RECALL_SELF_CHECK`` is set to a truthy value.
+
+    Default off → the structured self-check renderer emits its legacy MCQ radio
+    markup byte-identical. Falsey / garbage → off (parse-with-fallback,
+    mirroring :func:`_callout_typed_enabled`). Delegates to the canonical
+    resolver so blocks.py + generate_course.py read one source of truth.
+    """
+    return _resolve_recall_self_check()
 
 
 # Phase 0 of the richer-visual-system plan (richer-visual-system-plan-2026-06.md
@@ -2611,8 +2628,17 @@ def _render_self_check(
     bound_page_id = page_id or _LEGACY_PAGE_ID
     # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
     sc_role = _map_teaching_role("self-check", "formative-assessment")
+    recall_on = _recall_self_check_enabled()
     blocks: List[str] = []
     for i, q in enumerate(questions, 1):
+        # recall_self_check — a recall-marked question drops the radio
+        # enumeration for a produce-the-answer prompt (free_recall) OR a cloze
+        # ``____`` blank, with the answer behind a <details> reveal reusing the
+        # question's EXISTING correct option text (no fabricated answer). Gated
+        # behind ED4ALL_RECALL_SELF_CHECK AND only-when-marked → byte-stable off.
+        q_recall_format = (
+            resolve_recall_format(q.get("recall_format")) if recall_on else None
+        )
         opts = []
         for _j, opt in enumerate(q["options"]):
             correct = "true" if opt.get("correct") else "false"
@@ -2654,6 +2680,9 @@ def _render_self_check(
             # None unless the question supplies one, so flag-off / legacy emit is
             # byte-identical (the renderer is gated separately).
             confidence_prompt=(q.get("confidence_prompt") or None),
+            # recall_self_check — carry the planner-stamped recall_format (None
+            # unless the question supplies one + the flag is on → byte-stable off).
+            recall_format=q_recall_format,
         )
         sc_attrs = block.to_html_attrs()
         # C3-4 — confidence-capture control (gated by ED4ALL_REFLECTION_
@@ -2669,6 +2698,17 @@ def _render_self_check(
                 '\n      <span class="stakes-label stakes-formative">'
                 'Self-check &middot; not graded</span>'
             )
+        # recall_self_check — produce-the-answer body REPLACES the radio
+        # enumeration for a recall-marked question. The reveal reuses the
+        # question's EXISTING correct option text (anti-fabrication).
+        if q_recall_format is not None:
+            recall_html = _render_recall_self_check_body(q, q_recall_format, idx=i)
+            blocks.append(f"""
+    <div class="self-check"{sc_attrs}>
+      <h3>Question {i}</h3>{stakes_block}
+{recall_html}{confidence_block}
+    </div>""")
+            continue
         blocks.append(f"""
     <div class="self-check"{sc_attrs}>
       <h3>Question {i}</h3>{stakes_block}
@@ -2676,6 +2716,64 @@ def _render_self_check(
 {options_html}{confidence_block}
     </div>""")
     return "\n".join(blocks)
+
+
+def _recall_correct_option_text(q: Dict) -> str:
+    """Return the question's EXISTING correct-option text (no fabrication).
+
+    Reuses the radio-question's marked-correct option as the reveal answer.
+    Falls back to the first option when none is flagged correct, and to ``""``
+    when the question carries no options.
+    """
+    options = q.get("options") or []
+    for opt in options:
+        if isinstance(opt, dict) and opt.get("correct"):
+            return str(opt.get("text", ""))
+    if options and isinstance(options[0], dict):
+        return str(options[0].get("text", ""))
+    return ""
+
+
+def _render_recall_self_check_body(q: Dict, recall_format: str, *, idx: int) -> str:
+    """recall_self_check — render the produce-the-answer / cloze body.
+
+    ``free_recall`` → a text-input prompt the learner types into; ``cloze`` → the
+    question prose with a ``____`` blank. BOTH put the answer behind a
+    ``<details>`` reveal reusing the question's EXISTING correct-option text — the
+    answer is NEVER in the visible body. No radio enumeration is emitted.
+    """
+    question_text = str(q.get("question", ""))
+    answer = _recall_correct_option_text(q)
+    parts: List[str] = []
+    if recall_format == "cloze":
+        # Replace the answer substring in the question with a ____ blank when it
+        # occurs; otherwise append a blank line so the learner fills it in.
+        cloze_text = question_text
+        if answer and answer in question_text:
+            cloze_text = question_text.replace(answer, "____", 1)
+        else:
+            cloze_text = f"{question_text} ____"
+        parts.append(
+            f'      <p class="sc-cloze">{html_mod.escape(cloze_text)}</p>'
+        )
+    else:  # free_recall
+        parts.append(
+            f'      <p class="sc-recall-prompt">{html_mod.escape(question_text)}</p>'
+        )
+        parts.append(
+            f'      <label class="sc-recall-input">Your answer: '
+            f'<input type="text" name="recall{idx}" '
+            f'aria-label="Your answer"></label>'
+        )
+    if answer:
+        parts.append('      <details class="sc-recall-reveal">')
+        parts.append('        <summary>Show answer</summary>')
+        parts.append(
+            f'        <div class="sc-recall-answer" aria-live="polite">'
+            f'{html_mod.escape(answer)}</div>'
+        )
+        parts.append('      </details>')
+    return "\n".join(parts)
 
 
 def _infer_content_type_raw(section: Dict) -> str:
@@ -3086,6 +3184,47 @@ def _render_reflection_calibration(block: "Block") -> str:
         parts.append(
             f'      <p class="calibration-feedback"><strong>Calibrate:</strong> '
             f'{html_mod.escape(calibration.strip())}</p>'
+        )
+    parts.append('    </div>')
+    return "\n".join(parts)
+
+
+def _render_misconception_productive_failure(block: "Block") -> str:
+    """misconception_rich — render the B03/B12 productive-failure scaffold.
+
+    A productive-failure misconception NAMES its targeted faulty model, asks the
+    learner to PREDICT before revealing the correction, then RECONCILES (why the
+    named model fails). Reads ``Block.mc_named_concept`` / ``mc_predict_prompt`` /
+    ``mc_reconcile``. Gated by ``ED4ALL_MISCONCEPTION_RICH`` (default OFF) —
+    returns ``""`` when the flag is unset OR no field is populated, so default /
+    legacy output is byte-identical (mirrors ``_render_reflection_calibration``).
+    """
+    if not _misconception_rich_emit_enabled():
+        return ""
+    named = getattr(block, "mc_named_concept", None)
+    predict = getattr(block, "mc_predict_prompt", None)
+    reconcile = getattr(block, "mc_reconcile", None)
+    if not any(
+        isinstance(v, str) and v.strip() for v in (named, predict, reconcile)
+    ):
+        return ""
+    parts = ['    <div class="misconception-productive-failure" role="group" '
+             'aria-label="Predict then reconcile">']
+    if isinstance(named, str) and named.strip():
+        label = named.replace("_", " ").replace("-", " ").strip()
+        parts.append(
+            f'      <p class="mc-named-concept"><strong>Targeted idea:</strong> '
+            f'{html_mod.escape(label)}</p>'
+        )
+    if isinstance(predict, str) and predict.strip():
+        parts.append(
+            f'      <p class="mc-predict"><strong>Predict:</strong> '
+            f'{html_mod.escape(predict.strip())}</p>'
+        )
+    if isinstance(reconcile, str) and reconcile.strip():
+        parts.append(
+            f'      <p class="mc-reconcile"><strong>Reconcile:</strong> '
+            f'{html_mod.escape(reconcile.strip())}</p>'
         )
     parts.append('    </div>')
     return "\n".join(parts)
@@ -3630,6 +3769,12 @@ def _build_misconception_blocks(
             content={"misconception": mis_text, "correction": cor_text},
             bloom_level=bloom_level or None,
             cognitive_domain=domain or None,
+            # misconception_rich — carry the planner-grounded named concept +
+            # productive-failure seams (None unless supplied + the flag is on →
+            # byte-stable off; the render scaffold + JSON-LD emit are gated).
+            mc_named_concept=(m.get("mc_named_concept") or None),
+            mc_predict_prompt=(m.get("mc_predict_prompt") or None),
+            mc_reconcile=(m.get("mc_reconcile") or None),
         )
         blocks.append(block)
     return blocks
