@@ -86,7 +86,10 @@ from pathlib import Path
 from bs4 import BeautifulSoup, Tag
 from dart_semantic.classify import Role
 from dart_semantic.extract_shared import extract_shared, extract_shared_cached
-from dart_semantic.reading_order import resolve_column_order_mode
+from dart_semantic.reading_order import (
+    column_ids_for_bboxes,
+    resolve_column_order_mode,
+)
 from dart_semantic.text_utils import jaccard_overlap
 from dart_semantic.validate import HtmlValidator
 from dart_semantic.worker_pool import run_in_pool
@@ -610,6 +613,30 @@ def _block_in_any_table(block: dict, page: dict) -> bool:
     return False
 
 
+def _reading_order_sorted(merged: list[dict], page_w: float) -> list[dict]:
+    """Order one page's merged text blocks for alignment / feature extraction.
+
+    Default (``SEMANTIK_COLUMN_ORDER`` off, ``resolve_column_order_mode()`` ->
+    False) is the byte-identical legacy raster key ``(y0, x0)``. When the flag
+    is on, the blocks are clustered into columns by left-edge ``x0`` (reusing
+    the committed cascade core ``dart_semantic.reading_order.column_ids_for_bboxes``)
+    and sorted column-major ``(column_index, y0, x0)`` so a two-column page is
+    read down one column then the next instead of line-interleaved across the
+    gutter. On a single-column page the clustering yields one column for every
+    block, so the column-major key collapses to the raster key -> identical
+    output on/off. Operates per page (the caller iterates pages), matching the
+    cascade's per-page column detection."""
+    if not resolve_column_order_mode():
+        return sorted(merged, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    bboxes = [b.get("bbox") or (0.0, 0.0, 0.0, 0.0) for b in merged]
+    col_ids = column_ids_for_bboxes(bboxes, page_w)
+    order = sorted(
+        range(len(merged)),
+        key=lambda i: (col_ids[i], merged[i]["bbox"][1], merged[i]["bbox"][0]),
+    )
+    return [merged[i] for i in order]
+
+
 # ---------------------------------------------------------------------------
 # Realistic-render augmentation hook (presentation only; default OFF)
 # ---------------------------------------------------------------------------
@@ -725,8 +752,9 @@ def process_pair(validator, work: tuple) -> dict:
 
         # Sort top-to-bottom, left-to-right (same as Phase 3a — keeps
         # alignment stable + preserves natural reading order for
-        # context-windowed Jaccard).
-        merged_sorted = sorted(merged, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+        # context-windowed Jaccard). Column-aware when SEMANTIK_COLUMN_ORDER
+        # is on (byte-identical raster sort when off — the default).
+        merged_sorted = _reading_order_sorted(merged, page_w)
 
         for block in merged_sorted:
             stats["total_blocks"] += 1
@@ -877,7 +905,10 @@ def _pdf_views_for_pair(shared: dict) -> tuple[list[FBView], dict[int, bool]]:
             if (b.get("bbox") and b["bbox"][3] > b["bbox"][1])
         ]
         page_median_h = sorted(heights)[len(heights) // 2] if heights else 12.0
-        merged_sorted = sorted(merged, key=lambda b: (b["bbox"][1], b["bbox"][0]))
+        # Column-aware when SEMANTIK_COLUMN_ORDER is on; byte-identical raster
+        # sort when off (the default) — closes the "eval build ignores the
+        # flag" gap (the build previously raster-sorted unconditionally here).
+        merged_sorted = _reading_order_sorted(merged, page_w)
         for block in merged_sorted:
             text = (block.get("text") or "").strip()
             if not text:
