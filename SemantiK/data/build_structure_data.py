@@ -677,6 +677,45 @@ def _augment_html_for_render(output_html: str, pair_stem: str) -> tuple[str, str
 # ---------------------------------------------------------------------------
 
 
+def _exact_render_extract_label(validator, output_html: str, pair_stem: str, stats: dict):
+    """Shared EXACT render+extract+label core for both the greedy
+    (:func:`_process_pair_exact`) and global (:func:`_process_pair_global_exact`)
+    exact arms.
+
+    Renders the gold HTML through the box-capturing single-tall-page Playwright
+    path (REUSING the worker's existing Chromium context — sync Playwright
+    cannot be nested), extracts the rendered PDF, and assigns each extracted PDF
+    block the role of the gold element whose mapped bbox contains it. Applies
+    the SEMANTIK_RENDER_AUGMENT profile to the rendered HTML exactly as the
+    realistic-eval / process_pair exact path does (deploy-like renders).
+
+    Returns the :class:`~data.render_capture.LabelResult` on success, or
+    ``None`` with ``stats['error']`` set on render/extract failure."""
+    from data.render_capture import label_blocks_by_overlap, render_with_boxes
+
+    html_to_render, _profile, _seed = _augment_html_for_render(output_html, pair_stem)
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            capture = render_with_boxes(
+                html_to_render,
+                context=getattr(validator, "_context", None),
+                tmpdir=Path(tmp),
+            )
+        except Exception as exc:
+            stats["error"] = f"render (exact): {exc}"
+            return None
+        try:
+            shared = extract_shared(capture.pdf_path)
+        except Exception as exc:
+            stats["error"] = f"extract (exact): {exc}"
+            return None
+        result = label_blocks_by_overlap(shared, capture)
+    # Surface the single-tall-page overflow flag (capture lives only inside the
+    # tmpdir scope, so stash it on the result for the caller).
+    result.overflowed_single_page = bool(capture.overflowed_single_page)
+    return result
+
+
 def _process_pair_exact(
     validator, pair: dict, pair_path: Path, out_dir: Path, output_html: str, stats: dict
 ) -> dict:
@@ -692,25 +731,9 @@ def _process_pair_exact(
     head labels + pedagogical_role + html_tag/source/pair). UNMATCHED blocks
     (and blocks whose role is outside the head vocab) are EXCLUDED from emitted
     rows; the unmatched rate is reported on ``stats``."""
-    from data.render_capture import label_blocks_by_overlap, render_with_boxes
-
-    html_to_render, _profile, _seed = _augment_html_for_render(output_html, pair_path.stem)
-    with tempfile.TemporaryDirectory() as tmp:
-        try:
-            capture = render_with_boxes(
-                html_to_render,
-                context=getattr(validator, "_context", None),
-                tmpdir=Path(tmp),
-            )
-        except Exception as exc:
-            stats["error"] = f"render (exact): {exc}"
-            return stats
-        try:
-            shared = extract_shared(capture.pdf_path)
-        except Exception as exc:
-            stats["error"] = f"extract (exact): {exc}"
-            return stats
-        result = label_blocks_by_overlap(shared, capture)
+    result = _exact_render_extract_label(validator, output_html, pair_path.stem, stats)
+    if result is None:
+        return stats
 
     source = pair.get("source", "unknown")
     examples: list[dict] = []
@@ -745,7 +768,7 @@ def _process_pair_exact(
     stats["unmatched"] = result.n_unmatched
     stats["unmatched_rate"] = round(result.unmatched_rate, 6)
     stats["exact"] = True
-    stats["overflowed_single_page"] = bool(capture.overflowed_single_page)
+    stats["overflowed_single_page"] = bool(getattr(result, "overflowed_single_page", False))
 
     if examples:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -785,15 +808,18 @@ def process_pair(validator, work: tuple) -> dict:
     local_pdf = pair.get("local_pdf")
 
     # EXACT render-time bbox->role labeling (opt-in SEMANTIK_EXACT_RENDER_LABELS,
-    # default OFF). Applies ONLY to the RENDERED-pair path (no usable local_pdf):
-    # SemantiK controls that render, so the gold role of every extracted PDF
+    # default OFF). In exact mode the gold HTML is ALWAYS rendered (exact needs a
+    # render to capture element boxes), so the gold role of every extracted PDF
     # block is recoverable EXACTLY by geometry instead of fuzzily by text
-    # overlap. The real-PDF (local_pdf) path has no render control and STAYS on
-    # the fuzzy aligner below. Default off -> this branch is skipped and the
-    # path below is byte-identical to today.
+    # overlap. The `not local_pdf` guard is DELIBERATELY DROPPED for the exact
+    # path: arxiv pairs all carry a local_pdf, but the realistic EVAL renders
+    # arxiv gold HTML — so to MATCH the eval, exact-mode training must render the
+    # gold too (it does NOT consume local_pdf). Default off -> this branch is
+    # skipped and the fuzzy path below (which still PREFERS local_pdf) is
+    # byte-identical to today.
     from data.render_capture import exact_render_labels_enabled  # lazy: avoids circular import
 
-    if exact_render_labels_enabled() and not (local_pdf and Path(local_pdf).exists()):
+    if exact_render_labels_enabled():
         return _process_pair_exact(validator, pair, pair_path, out_dir, output_html, stats)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -1077,6 +1103,136 @@ def _enrich_v3_row(
     return rd
 
 
+def _process_pair_global_exact(
+    validator,
+    pair: dict,
+    pair_path: Path,
+    out_dir: Path,
+    output_html: str,
+    gold_records: list,
+    stats: dict,
+) -> dict:
+    """EXACT-labeling arm of the GLOBAL build path (SEMANTIK_EXACT_RENDER_LABELS).
+
+    Mirrors :func:`_process_pair_exact` but emits the GLOBAL per-pair shard
+    contract verbatim — the ``structure_dataset/3`` row shape
+    (``to_row``-shaped: text + 20-dim layout + the 6 head labels + html_tag +
+    source + pair + schema_version + provenance + align) PLUS the always-written
+    ``{stem}.ledger.json`` sidecar (the resume key + rollup input). The fuzzy
+    aligner / ledger is REPLACED by exact geometric containment, so the rows
+    carry exact provenance (``align.exact=True``, ``align.confidence=1.0``, NO
+    ``low_sim`` key) instead of a similarity. ``load_split`` consumes the rows
+    unchanged (it reads only ``labels`` / ``layout`` / ``text`` / ``source``)."""
+    result = _exact_render_extract_label(validator, output_html, pair_path.stem, stats)
+    if result is None:
+        return stats
+
+    source = pair.get("source", "unknown")
+    rows_out: list[dict] = []
+    per_role: Counter = Counter()
+    for r in result.rows:
+        labels = r.get("labels")
+        # Exclude unmatched blocks (labels is None) AND matched blocks whose
+        # role is outside the structural_role head vocab (structural_role is
+        # None) — mirrors _process_pair_exact / process_pair's ROLE_TO_ID filter.
+        if not labels or labels.get("structural_role") is None:
+            continue
+        match = r.get("match") or {}
+        match_kind = match.get("kind") or "contained"
+        rows_out.append(
+            {
+                "text": r["text"],
+                "layout": r["layout"],
+                "labels": {
+                    "structural_role": labels["structural_role"],
+                    "is_heading": int(labels["is_heading"]),
+                    "table_region": int(labels["table_region"]),
+                    "is_image_block": int(labels["is_image_block"]),
+                    "list_nesting": int(labels["list_nesting"]),
+                    "pedagogical_role": int(labels["pedagogical_role"]),
+                },
+                "html_tag": r["html_tag"],
+                "source": source,
+                "pair": pair_path.stem,
+                "schema_version": STRUCTURE_ALIGN_SCHEMA_VERSION,
+                "exact_label": True,
+                "provenance": {"rc_id": r.get("rc_id")},
+                # Exact provenance markers (NOT a fuzzy similarity): confidence
+                # is 1.0 (containment IS the match) and there is deliberately NO
+                # `low_sim` key — run_global_build's confidence histogram lands
+                # every exact row in the 1.0 bin and low_sim_rows stays 0.
+                "align": {
+                    "kind": f"exact_{match_kind}",
+                    "exact": True,
+                    "confidence": 1.0,
+                    "overlap": match.get("overlap"),
+                },
+            }
+        )
+        role_name = r.get("role")
+        if role_name is not None:
+            per_role[str(role_name)] += 1
+
+    n_pdf = result.n_blocks
+    n_gold = len(gold_records)
+    stats["aligned"] = len(rows_out)
+    stats["total_blocks"] = n_pdf
+    stats["n_gold"] = n_gold
+    stats["gold_gap"] = 0  # exact has no gold-side ledger; PDF-block centric
+    stats["exact"] = True
+    stats["unmatched"] = result.n_unmatched
+    stats["unmatched_rate"] = round(result.unmatched_rate, 6)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if rows_out:
+        out_path = out_dir / f"{pair_path.stem}.jsonl"
+        with out_path.open("w") as f:
+            for ex in rows_out:
+                f.write(json.dumps(ex, ensure_ascii=False) + "\n")
+
+    # Always write the ledger sidecar — it is the resume key AND the rollup
+    # input in run_global_build (a 0-row pair still consumed positions). The
+    # exact summary carries exact markers; the fuzzy buckets (split/merge/
+    # gold_gap/pdf_gap/low_sim/role_filtered) are absent → counted as 0 by the
+    # rollup's `.get(..., 0)`, which is the honest exact value.
+    summary = {
+        "counts": {
+            "matched": result.n_matched,
+            "exact": 1,
+            "exact_contained": result.n_contained,
+            "exact_overlap": result.n_overlap_only,
+            "exact_unmatched": result.n_unmatched,
+        },
+        "per_role": dict(per_role),
+        "per_source": {source: len(rows_out)} if rows_out else {},
+        "projected_roles": {},
+        "excluded_roles": {},
+    }
+    sidecar = out_dir / f"{pair_path.stem}.ledger.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "pair": pair_path.stem,
+                "source": source,
+                "n_pdf": n_pdf,
+                "n_gold": n_gold,
+                "exact": True,
+                "summary": summary,
+            },
+            ensure_ascii=False,
+        )
+    )
+    # Hand per-pair native allocator arenas back to the OS (mirrors the fuzzy
+    # global path's malloc_trim).
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+    return stats
+
+
 def process_pair_global(validator, work: tuple) -> dict:
     """Worker (global path): globally align extract_shared blocks to the HTML
     ground truth via :func:`data.structure_align.align_blocks` and emit the
@@ -1112,6 +1268,21 @@ def process_pair_global(validator, work: tuple) -> dict:
     if not gold_records:
         stats["error"] = "no html blocks"
         return stats
+
+    # EXACT render-time bbox->role labeling (opt-in SEMANTIK_EXACT_RENDER_LABELS,
+    # default OFF). When on, the GLOBAL path routes through the exact arm — it
+    # ALWAYS renders the gold HTML (exact needs a render; the `not local_pdf`
+    # guard is dropped so arxiv renders gold+exact, matching the realistic eval)
+    # and emits the SAME global per-pair shard contract (v3 rows + ledger
+    # sidecar) with exact provenance instead of the fuzzy aligner's ledger.
+    # Default off -> this branch is skipped and the fuzzy global path below
+    # (which still PREFERS local_pdf) is byte-identical to today.
+    from data.render_capture import exact_render_labels_enabled  # lazy: avoids circular import
+
+    if exact_render_labels_enabled():
+        return _process_pair_global_exact(
+            validator, pair, pair_path, out_dir, output_html, gold_records, stats
+        )
 
     local_pdf = pair.get("local_pdf")
     with tempfile.TemporaryDirectory() as tmp:
