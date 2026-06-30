@@ -280,6 +280,7 @@ SemantiK/.ruff_cache/
 # (not data/) so git descends to honor the !-allow re-includes below.
 SemantiK/data/*
 !SemantiK/data/build_*.py
+!SemantiK/data/ingest_*.py
 !SemantiK/data/_splits.py
 !SemantiK/data/balance.py
 !SemantiK/data/jats_tables.py
@@ -288,8 +289,12 @@ SemantiK/data/*
 # (not data) — track them. The data/tests/ dir is re-included so git descends
 # (dataset OUTPUT dirs stay ignored; __pycache__ stays ignored via global rules).
 !SemantiK/data/structure_align.py
+# Realistic-rendering presentation augmenter — training-pipeline CODE (the
+# build pins its render profiles), not data. Track it + its unit tests.
+!SemantiK/data/render_augment.py
 !SemantiK/data/tests/
 !SemantiK/data/tests/test_structure_align.py
+!SemantiK/data/tests/test_render_augment.py
 # extension belt-and-suspenders (model artifact zoo)
 SemantiK/**/*.gguf
 SemantiK/**/*.pt

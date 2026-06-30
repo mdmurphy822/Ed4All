@@ -86,9 +86,16 @@ from pathlib import Path
 from bs4 import BeautifulSoup, Tag
 from dart_semantic.classify import Role
 from dart_semantic.extract_shared import extract_shared, extract_shared_cached
+from dart_semantic.reading_order import resolve_column_order_mode
 from dart_semantic.text_utils import jaccard_overlap
+from dart_semantic.validate import HtmlValidator
 from dart_semantic.worker_pool import run_in_pool
 from data import structure_align
+from data.render_augment import (
+    augment_html,
+    resolve_render_augment_mode,
+    resolve_render_profile_for,
+)
 from data.balance import add_cap_args, apply_caps_and_report
 from data.structure_align import (
     SCHEMA_VERSION as STRUCTURE_ALIGN_SCHEMA_VERSION,
@@ -604,6 +611,41 @@ def _block_in_any_table(block: dict, page: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Realistic-render augmentation hook (presentation only; default OFF)
+# ---------------------------------------------------------------------------
+#
+# When SEMANTIK_RENDER_AUGMENT is on, the gold output_html is rendered through a
+# realistic PRESENTATION profile (2-column / serif / dense) BEFORE Playwright
+# renders the PDF, so the extracted training/eval blocks look deploy-LIKE while
+# the labels (read from the ORIGINAL output_html) stay clean. Default OFF =>
+# augment_html is the identity => byte-identical render to today.
+
+
+def _stable_doc_index(pair_stem: str) -> int:
+    """Deterministic non-negative int per pair stem (the seed/profile key).
+
+    Independent of process / iteration order so a worker-pool build assigns the
+    same profile to a pair on every run (reproducible domain randomization)."""
+    import hashlib
+
+    h = hashlib.sha1((pair_stem or "").encode("utf-8")).digest()
+    return int.from_bytes(h[:4], "big") & 0x7FFFFFFF
+
+
+def _augment_html_for_render(output_html: str, pair_stem: str) -> tuple[str, str, int]:
+    """Resolve the render profile for one pair and return
+    ``(html_to_render, profile, seed)``.
+
+    Default (``SEMANTIK_RENDER_AUGMENT`` off) -> ``(output_html, "clean", 0)``,
+    i.e. the input is returned UNCHANGED so the render is byte-identical."""
+    mode = resolve_render_augment_mode()
+    if mode == "off":
+        return output_html, "clean", 0
+    profile, seed = resolve_render_profile_for(_stable_doc_index(pair_stem), mode)
+    return augment_html(output_html, profile, seed), profile, seed
+
+
+# ---------------------------------------------------------------------------
 # Worker — process one pair file
 # ---------------------------------------------------------------------------
 
@@ -645,8 +687,11 @@ def process_pair(validator, work: tuple) -> dict:
                 return stats
         else:
             tmp_pdf = Path(tmp) / "rendered.pdf"
+            html_to_render, _profile, _seed = _augment_html_for_render(
+                output_html, pair_path.stem
+            )
             try:
-                validator.render_pdf(output_html, tmp_pdf)
+                validator.render_pdf(html_to_render, tmp_pdf)
             except Exception as exc:
                 stats["error"] = f"render: {exc}"
                 return stats
@@ -955,8 +1000,11 @@ def process_pair_global(validator, work: tuple) -> dict:
                 return stats
         else:
             tmp_pdf = Path(tmp) / "rendered.pdf"
+            html_to_render, _profile, _seed = _augment_html_for_render(
+                output_html, pair_path.stem
+            )
             try:
-                validator.render_pdf(output_html, tmp_pdf)
+                validator.render_pdf(html_to_render, tmp_pdf)
             except Exception as exc:
                 stats["error"] = f"render: {exc}"
                 return stats
@@ -1742,6 +1790,289 @@ def _realpdf_coverage_report(
 
 
 # ---------------------------------------------------------------------------
+# Realistic-render eval-set build path — opt-in, off by default
+# ---------------------------------------------------------------------------
+#
+# Today's eval lives on either CLEAN rendered-HTML-PDF gold (in-distribution,
+# the training render path) or REAL PDFs (--realpdf-only, where alignment is
+# noisy: <0.30 per-block sim on the wild docs). This path is the third leg: it
+# renders the held-out gold output_html through a REALISTIC presentation
+# profile (2-column / serif / dense — data/render_augment.py) so the extracted
+# blocks look deploy-LIKE, then aligns the extraction back to the SAME gold HTML
+# (the labels are the HTML tags, unchanged by presentation) via the SAME frozen
+# aligner. Because only PRESENTATION changed, the alignment stays clean (high
+# per-block sim, >> the wild 0.30) -> FREE, correctly-aligned deploy-like labels
+# with NO hand-labeling.
+#
+# The extraction MUST run with SEMANTIK_COLUMN_ORDER=1 so the column-aware
+# reading-order re-sort fires on the 2-column renders.
+#
+# Output: a single root (default data/structure_dataset_realistic/) with a
+# test.jsonl in the EXACT eval row schema eval/measure_realpdf_structure.py
+# reads via --realpdf-roots (rows carry realpdf=True + domain + doc_id +
+# aligned_gold_fraction, plus the additive render_profile / render_seed
+# provenance). No eval-code change is needed.
+
+
+def run_realistic_eval_build(args) -> None:
+    """Build the realistic-render eval set: render held-out gold HTML through
+    realistic presentation profiles, align back to the gold, emit deploy-like
+    eval rows with clean labels + per-block alignment-similarity reporting."""
+    mode = (getattr(args, "render_mode", None) or "").strip().lower() or None
+    if mode is None:
+        mode = resolve_render_augment_mode()
+    if mode == "off":
+        # The realistic build IS the augmentation; an off mode would render
+        # clean (== the in-distribution path), defeating the point. Default to
+        # the mixed domain-randomization distribution and say so.
+        print(
+            "[realistic] SEMANTIK_RENDER_AUGMENT off / no --render-mode; "
+            "defaulting to 'mixed' (the realistic build needs a non-clean profile)",
+            file=sys.stderr,
+        )
+        mode = "mixed"
+
+    if not resolve_column_order_mode():
+        print(
+            "[realistic] WARNING: SEMANTIK_COLUMN_ORDER is OFF — the column-aware "
+            "reading-order re-sort will NOT fire on 2-column renders. Set "
+            "SEMANTIK_COLUMN_ORDER=1 for a faithful realistic build.",
+            file=sys.stderr,
+        )
+
+    train_val = _train_val_docids() if args.eval_holdout_by_docid else set()
+    floor = float(args.align_quality_floor)
+    out_dir: Path = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    clean_rows: list[dict] = []
+    contam_rows: list[dict] = []
+    doc_records: list[dict] = []
+    drops: Counter = Counter()
+    profile_counts: Counter = Counter()
+    per_domain_docs: Counter = Counter()
+    block_sims: list[float] = []  # per-block align confidence over CLEAN rows
+    total_kept = 0
+    start = time.time()
+
+    with HtmlValidator() as validator:
+        for source in args.realpdf_sources:
+            src_dir = Path("data/pairs") / source
+            if not src_dir.exists():
+                print(f"[realistic] source dir missing, skipping: {src_dir}", file=sys.stderr)
+                continue
+            cap = args.realpdf_limit_per_source
+            kept_for_source = 0
+            files = sorted(src_dir.glob("*.json"))
+            if train_val:
+                canon_src = _DIR_TO_SOURCE.get(source, source)
+                files = sorted(
+                    files,
+                    key=lambda pf: (
+                        1 if (canon_src, _doc_id_for(canon_src, pf.stem)) in train_val else 0,
+                        pf.name,
+                    ),
+                )
+            for pf in files:
+                if cap and kept_for_source >= cap:
+                    break
+                try:
+                    pair = json.loads(pf.read_text())
+                except Exception:
+                    drops["read_error"] += 1
+                    continue
+                psource = pair.get("source") or source
+                domain = _domain_for(psource)
+                doc_id = _doc_id_for(psource, pf.stem)
+                contaminated = (psource, doc_id) in train_val
+                if (
+                    args.eval_holdout_by_docid
+                    and contaminated
+                    and not args.include_contaminated
+                ):
+                    drops["holdout_excluded"] += 1
+                    continue
+
+                output_html = pair.get("output_html")
+                if not output_html:
+                    drops["no_output_html"] += 1
+                    continue
+                gold_records = extract_html_blocks(output_html)
+                if not gold_records:
+                    drops["no_gold_blocks"] += 1
+                    continue
+
+                # Render the gold HTML through the realistic profile.
+                profile, seed = resolve_render_profile_for(_stable_doc_index(pf.stem), mode)
+                rendered_html = augment_html(output_html, profile, seed)
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp_pdf = Path(tmp) / "realistic.pdf"
+                    try:
+                        validator.render_pdf(rendered_html, tmp_pdf)
+                    except Exception:
+                        drops["render_error"] += 1
+                        continue
+                    try:
+                        shared = extract_shared(tmp_pdf)
+                    except Exception:
+                        drops["extract_error"] += 1
+                        continue
+
+                pdf_views, in_table_by_order = _pdf_views_for_pair(shared)
+                if not pdf_views:
+                    drops["no_pdf_blocks"] += 1
+                    continue
+                gold_views = [
+                    GoldView.from_html_block(rec, i) for i, rec in enumerate(gold_records)
+                ]
+                maxb = args.realpdf_max_blocks
+                if maxb and (len(pdf_views) > maxb or len(gold_views) > maxb):
+                    drops["too_large"] += 1
+                    continue
+                try:
+                    result = align_blocks(
+                        pdf_views,
+                        gold_views,
+                        max_run=GLOBAL_MAX_RUN,
+                        soft_floor=GLOBAL_SOFT_FLOOR,
+                        source=psource,
+                        pair=pf.stem,
+                    )
+                except LedgerIncompleteError:
+                    drops["align_not_lossless"] += 1
+                    continue
+                except Exception:
+                    drops["align_error"] += 1
+                    continue
+                finally:
+                    try:
+                        structure_align._sim_cached.cache_clear()
+                    except Exception:
+                        pass
+
+                n_gold = len(gold_views)
+                gold_gap = int(result.ledger.counts.get("gold_gap", 0))
+                aligned_frac = (n_gold - gold_gap) / max(1, n_gold)
+
+                doc_rec = {
+                    "source": psource,
+                    "domain": domain,
+                    "doc_id": doc_id,
+                    "pair": pf.stem,
+                    "render_profile": profile,
+                    "render_seed": seed,
+                    "holdout_clean": not contaminated,
+                    "n_gold": n_gold,
+                    "gold_gap": gold_gap,
+                    "aligned_gold_fraction": round(aligned_frac, 6),
+                    "n_pdf_blocks": len(pdf_views),
+                }
+                if aligned_frac < floor:
+                    drops["low_alignment"] += 1
+                    doc_rec["dropped"] = "low_alignment"
+                    doc_records.append(doc_rec)
+                    continue
+
+                kept = project_rows(result.rows, ROLE_NAMES, ledger=result.ledger)
+                rows = [_enrich_v3_row(r, gold_records, in_table_by_order) for r in kept]
+                doc_block_sims: list[float] = []
+                for rr in rows:
+                    rr["realpdf"] = True  # eval reader buckets realpdf rows by domain
+                    rr["realistic_render"] = True
+                    rr["domain"] = domain
+                    rr["doc_id"] = doc_id
+                    rr["holdout_clean"] = not contaminated
+                    rr["aligned_gold_fraction"] = round(aligned_frac, 6)
+                    rr["render_profile"] = profile
+                    rr["render_seed"] = seed
+                    doc_block_sims.append(float(rr.get("align", {}).get("confidence", 0.0)))
+
+                if not contaminated:
+                    clean_rows.extend(rows)
+                    block_sims.extend(doc_block_sims)
+                else:
+                    contam_rows.extend(rows)
+                profile_counts[profile] += 1
+                doc_rec["n_rows"] = len(rows)
+                doc_rec["mean_block_sim"] = (
+                    round(sum(doc_block_sims) / len(doc_block_sims), 6) if doc_block_sims else None
+                )
+                doc_rec["dropped"] = None
+                doc_records.append(doc_rec)
+                per_domain_docs[domain] += 1
+                kept_for_source += 1
+                total_kept += 1
+                print(
+                    f"[realistic] {pf.stem[:42]:42}  profile={profile:24}  "
+                    f"rows={len(rows):4}  align_frac={aligned_frac:.3f}  "
+                    f"mean_block_sim={doc_rec['mean_block_sim']}",
+                    file=sys.stderr,
+                )
+
+    # Write the eval rows + coverage report.
+    with (out_dir / "test.jsonl").open("w") as f:
+        for r in clean_rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    with (out_dir / "test_in_training.jsonl").open("w") as f:
+        for r in contam_rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+    mean_block_sim = round(sum(block_sims) / len(block_sims), 6) if block_sims else None
+    per_domain = {}
+    dom_cov: dict[str, list[float]] = defaultdict(list)
+    dom_docs: Counter = Counter()
+    for d in doc_records:
+        if d.get("dropped") or not d.get("holdout_clean"):
+            continue
+        dom_docs[d["domain"]] += 1
+        dom_cov[d["domain"]].append(float(d.get("aligned_gold_fraction", 0.0)))
+    for dom in sorted(set(dom_docs) | set(dom_cov)):
+        covs = dom_cov.get(dom, [])
+        per_domain[dom] = {
+            "docs_clean": dom_docs.get(dom, 0),
+            "clean_rows": sum(1 for r in clean_rows if r.get("domain") == dom),
+            "mean_aligned_gold_fraction": round(sum(covs) / len(covs), 6) if covs else None,
+        }
+
+    report = {
+        "schema_version": STRUCTURE_ALIGN_SCHEMA_VERSION,
+        "build": "realistic",
+        "render_mode": mode,
+        "column_order_on": resolve_column_order_mode(),
+        "soft_floor": GLOBAL_SOFT_FLOOR,
+        "max_run": GLOBAL_MAX_RUN,
+        "align_quality_floor": floor,
+        "eval_holdout_by_docid": bool(args.eval_holdout_by_docid),
+        "rendered_train_corpus": str(_RENDERED_TRAIN_CORPUS),
+        "sources": list(args.realpdf_sources),
+        "clean_rows_total": len(clean_rows),
+        "contaminated_rows_total": len(contam_rows),
+        "docs_kept": total_kept,
+        # The headline: per-block alignment similarity on the CLEAN held-out
+        # set vs the wild-PDF <0.30 baseline (proves the free labels are clean).
+        "mean_per_block_align_sim": mean_block_sim,
+        "wild_pdf_baseline_block_sim": 0.30,
+        "render_profile_counts": dict(profile_counts),
+        "per_domain": per_domain,
+        "drop_ledger": dict(drops),
+        "role_names": list(ROLE_NAMES),
+        "layout_feature_dim": LAYOUT_FEATURE_DIM,
+    }
+    (out_dir / "coverage_report.json").write_text(json.dumps(report, indent=2))
+    out_dir.joinpath("realistic_docs.jsonl").write_text(
+        "\n".join(json.dumps(d, ensure_ascii=False) for d in doc_records) + "\n"
+    )
+    print(
+        f"\n[REALISTIC] docs_kept={total_kept}  clean_rows={len(clean_rows)}  "
+        f"mean_per_block_align_sim={mean_block_sim}  (wild-PDF baseline 0.30)\n"
+        f"  profiles={dict(profile_counts)}  by_domain={dict(per_domain_docs)}  "
+        f"drops={dict(drops)}  elapsed={(time.time() - start) / 60:.1f}min",
+        file=sys.stderr,
+    )
+    print(f"[realistic] wrote {out_dir / 'test.jsonl'} + coverage_report.json", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Stratified split + main
 # ---------------------------------------------------------------------------
 
@@ -1838,6 +2169,24 @@ def main() -> None:
         "a test.jsonl. See run_realpdf_build.",
     )
     ap.add_argument(
+        "--realistic-eval",
+        action="store_true",
+        help="Build the REALISTIC-RENDER eval set: render held-out gold "
+        "output_html through realistic presentation profiles (2-column / serif "
+        "/ dense, data/render_augment.py), align back to the gold HTML, and emit "
+        "deploy-like eval rows with CLEAN labels into --out-dir (default "
+        "data/structure_dataset_realistic). Run with SEMANTIK_COLUMN_ORDER=1. "
+        "See run_realistic_eval_build.",
+    )
+    ap.add_argument(
+        "--render-mode",
+        default=None,
+        help="Render-augmentation mode for --realistic-eval (overrides "
+        "SEMANTIK_RENDER_AUGMENT): 'mixed' (default), or a pinned profile "
+        "('two_column' / 'serif_embed' / 'dense_layout' / "
+        "'two_column+serif_embed' / 'clean').",
+    )
+    ap.add_argument(
         "--eval-holdout-by-docid",
         action="store_true",
         help="Hold the real-PDF eval set out by DOCUMENT id against the head's "
@@ -1907,6 +2256,11 @@ def main() -> None:
     )
     add_cap_args(ap)
     args = ap.parse_args()
+
+    if args.realistic_eval:
+        args.out_dir = args.out_dir or Path("data/structure_dataset_realistic")
+        run_realistic_eval_build(args)
+        return
 
     if args.realpdf_only:
         args.out_dir = args.out_dir or Path("data/structure_dataset_realpdf")
