@@ -53,6 +53,12 @@ from pathlib import Path
 from typing import Any
 
 from . import paths as _semantik_paths
+from .reading_order import (
+    _DEFAULT_PAGE_WIDTH,
+    column_ids_for_bboxes,
+    resolve_column_order_mode,
+)
+from .region_detection import CID_RE
 
 logger = logging.getLogger(__name__)
 
@@ -894,8 +900,32 @@ def _merge_page(page: dict, text_layer_ok: bool) -> dict:
         for b in page.get("tesseract", {}).get("text_blocks", []):
             merged_blocks.append({**b, "provenance": ["tesseract"]})
 
-    # Sort top-to-bottom, left-to-right.
-    merged_blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
+    # Sort the page's blocks. Column-major (Fix A) when SEMANTIK_COLUMN_ORDER
+    # is on — cluster into columns by left-edge gutter and order
+    # (column, y0, x0), with pdfplumber tables as float bboxes excluded from
+    # seeding the gutter detection so a table's internal cells don't spawn a
+    # spurious column. Single-column -> one column -> byte-identical to the
+    # raster (y0, x0) key. Default OFF -> the legacy raster sort.
+    if resolve_column_order_mode() and merged_blocks:
+        page_w = float(page.get("width") or _DEFAULT_PAGE_WIDTH)
+        table_bboxes = [
+            t.get("bbox")
+            for t in page.get("pdfplumber", {}).get("tables", [])
+            if t.get("bbox")
+        ]
+        col = column_ids_for_bboxes(
+            [b["bbox"] for b in merged_blocks],
+            page_w,
+            float_bboxes=table_bboxes or None,
+        )
+        order = sorted(
+            range(len(merged_blocks)),
+            key=lambda k: (col[k], merged_blocks[k]["bbox"][1], merged_blocks[k]["bbox"][0]),
+        )
+        merged_blocks = [merged_blocks[k] for k in order]
+    else:
+        # Sort top-to-bottom, left-to-right.
+        merged_blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
 
     return {
         "text_blocks": merged_blocks,
@@ -1040,9 +1070,15 @@ def _text_layer_quality_ok(text: str) -> bool:
     """Heuristic: does the text layer look like real human-readable content?"""
     if len(text) < TEXT_LAYER_MIN_CHARS:
         return False
-    if REPLACEMENT_CHAR in text:
+    # Corruption fraction: Unicode replacement chars AND undecoded `(cid:N)`
+    # glyph tokens (a font with no ToUnicode CMap surfaces every glyph as
+    # `(cid:NN)` rather than `�`, so a CID-blind check let CID-corrupt text
+    # layers pass). Count the CHARS spanned by cid tokens so numerator and
+    # denominator share a unit. Conservative 0.10 threshold unchanged.
+    if REPLACEMENT_CHAR in text or "(cid:" in text:
         n_repl = text.count(REPLACEMENT_CHAR)
-        if n_repl / max(1, len(text)) > REPLACEMENT_MAX_FRAC:
+        n_cid_chars = sum(len(m) for m in CID_RE.findall(text))
+        if (n_repl + n_cid_chars) / max(1, len(text)) > REPLACEMENT_MAX_FRAC:
             return False
     # At least 30% of chars should be letters.
     word_chars = len(_WORD_CHAR_RE.findall(text))

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths as _semantik_paths
+from ..reading_order import column_ids_for_x0s as _column_ids_for_x0s
 from .base import LoRAAdapter, LoRAAdapterSpec, load_local_tokenizer
 from .registry import register_adapter
 from .runner import register_runner
@@ -82,33 +83,20 @@ def _is_artifact_for_block(fb: Any) -> bool:
 
 
 def _column_ids_for_page(spans: list[Any], page_w: float) -> list[int]:
+    """Per-span column index via the shared gutter-clustering core.
+
+    Delegates to :func:`dart_semantic.reading_order.column_ids_for_x0s` (the
+    lifted single-linkage ``0.06 * page_width`` gutter clustering) so the
+    Fix-A reading-order reorder and this trained-time BERT feature share ONE
+    algorithm. Output is byte-identical to the prior inline bin-walk.
+    """
     if not spans:
         return []
-    if page_w <= 0:
-        page_w = 612.0
-    gap_thresh = 0.06 * page_w
-    indexed = []
-    for i, fb in enumerate(spans):
-        bbox = getattr(getattr(fb, "raw", None), "bbox", None) or [0, 0, 0, 0]
-        indexed.append((float(bbox[0]), i))
-    indexed.sort()
-    bins: list[list[int]] = []
-    cur: list[int] = []
-    last_x: float | None = None
-    for x, i in indexed:
-        if last_x is None or x - last_x <= gap_thresh:
-            cur.append(i)
-        else:
-            bins.append(cur)
-            cur = [i]
-        last_x = x
-    if cur:
-        bins.append(cur)
-    cid_by_idx = [0] * len(spans)
-    for cid, b in enumerate(bins):
-        for i in b:
-            cid_by_idx[i] = cid
-    return cid_by_idx
+    x0s = [
+        float((getattr(getattr(fb, "raw", None), "bbox", None) or [0, 0, 0, 0])[0])
+        for fb in spans
+    ]
+    return _column_ids_for_x0s(x0s, page_w)
 
 
 def _bucket_size(fs: float) -> str:

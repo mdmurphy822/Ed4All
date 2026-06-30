@@ -27,6 +27,11 @@ from pathlib import Path
 
 from .extract import blocks_from_shared, extract_blocks
 from .extract_shared import extract_shared
+from .reading_order import (
+    _DEFAULT_PAGE_WIDTH,
+    column_ids_for_x0s,
+    resolve_column_order_mode,
+)
 from .region_detection import (
     detect_image_region_candidates,
     detect_math_region_candidates,
@@ -50,9 +55,26 @@ def featurize(raw_blocks: list[RawBlock]) -> list[FeatureBlock]:
         by_page.setdefault(b.page, []).append(b)
 
     out: list[FeatureBlock] = []
+    column_order = resolve_column_order_mode()
     for page_num in sorted(by_page.keys()):
         page_blocks = by_page[page_num]
-        page_blocks = sorted(page_blocks, key=lambda b: (b.bbox[1], b.bbox[0]))
+        if column_order:
+            # Column-major reading order (Fix A): cluster the page's blocks
+            # into columns by left-edge gutter, then sort
+            # (column_index, y0, x0) so a 2-column page reads left-column-
+            # then-right-column instead of line-interleaved across the gutter.
+            # Single-column -> one column -> byte-identical to the raster key.
+            page_w = page_blocks[0].page_width if page_blocks else _DEFAULT_PAGE_WIDTH
+            col = column_ids_for_x0s([b.bbox[0] for b in page_blocks], page_w)
+            page_blocks = [
+                page_blocks[k]
+                for k in sorted(
+                    range(len(page_blocks)),
+                    key=lambda k: (col[k], page_blocks[k].bbox[1], page_blocks[k].bbox[0]),
+                )
+            ]
+        else:
+            page_blocks = sorted(page_blocks, key=lambda b: (b.bbox[1], b.bbox[0]))
 
         sizes = [b.font_size or 1.0 for b in page_blocks if b.font_size]
         page_median_size = _median(sizes) if sizes else 1.0
@@ -257,6 +279,26 @@ def _interleave_image_feature_blocks(
         synth_for_cand[ci] = synth_fb
         # is_image sorts AFTER text at the same coordinate (4th key=1).
         entries.append(((page, bbox[1], bbox[0], 1, ci), "image", synth_fb))
+
+    if resolve_column_order_mode():
+        # Column-major reading order (Fix A): insert a per-page column_index
+        # after the page key so a 2-column page reads column-by-column. Cluster
+        # over EVERY block on the page (text + synthetic image FBs) so an image
+        # sorts within its column. Single-column -> one column -> the key
+        # collapses to the original (page, y0, x0, is_image, idx).
+        by_page_pos: dict[int, list[int]] = {}
+        for pos, (key, _kind, _fb) in enumerate(entries):
+            by_page_pos.setdefault(key[0], []).append(pos)
+        col_by_pos: dict[int, int] = {}
+        for page, positions in by_page_pos.items():
+            page_w = page_dims.get(page, (_DEFAULT_PAGE_WIDTH, 792.0))[0]
+            x0s = [entries[p][0][2] for p in positions]
+            for p, c in zip(positions, column_ids_for_x0s(x0s, page_w)):
+                col_by_pos[p] = c
+        entries = [
+            ((key[0], col_by_pos[pos], key[1], key[2], key[3], key[4]), kind, fb)
+            for pos, (key, kind, fb) in enumerate(entries)
+        ]
 
     entries.sort(key=lambda e: e[0])
 

@@ -2124,6 +2124,12 @@ def build_structure_graph(
     # coverage invariant just verified guarantees disjoint FB sets, so the
     # sort key is a TOTAL order with no ties -> deterministic. Off by default
     # -> byte-identical to the legacy segregated list.
+    #
+    # Column-aware reading order (Fix A, SEMANTIK_COLUMN_ORDER): this sort keys
+    # off feature_block_indices, NOT bboxes. When the FB stream was reordered
+    # column-major upstream (features.py), min(feature_block_indices) already
+    # reflects column-major order, so regions sort column-correctly here with
+    # NO change to this logic.
     if resolve_reading_order_fix():
         _pre_ids = {id(r) for r in regions_out}
         regions_out.sort(
