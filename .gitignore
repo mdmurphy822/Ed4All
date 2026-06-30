@@ -292,6 +292,8 @@ SemantiK/data/*
 # Realistic-rendering presentation augmenter — training-pipeline CODE (the
 # build pins its render profiles), not data. Track it + its unit tests.
 !SemantiK/data/render_augment.py
+# Exact render-time element->bbox role labeler — training-pipeline CODE.
+!SemantiK/data/render_capture.py
 !SemantiK/data/tests/
 !SemantiK/data/tests/test_structure_align.py
 !SemantiK/data/tests/test_render_augment.py

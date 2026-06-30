@@ -677,6 +677,85 @@ def _augment_html_for_render(output_html: str, pair_stem: str) -> tuple[str, str
 # ---------------------------------------------------------------------------
 
 
+def _process_pair_exact(
+    validator, pair: dict, pair_path: Path, out_dir: Path, output_html: str, stats: dict
+) -> dict:
+    """EXACT-labeling worker arm (SEMANTIK_EXACT_RENDER_LABELS).
+
+    Replaces validator.render_pdf + the greedy text aligner with
+    render_capture.render_with_boxes + label_blocks_by_overlap: the gold HTML is
+    rendered through the box-capturing single-tall-page Playwright path
+    (REUSING the worker's existing Chromium context — sync Playwright cannot be
+    nested) and each extracted PDF block is assigned the role of the gold
+    element whose mapped bbox contains it. Emits the SAME structure_dataset row
+    shape (text + 20-dim ``compute_span_layout_features`` layout + the 5 hard
+    head labels + pedagogical_role + html_tag/source/pair). UNMATCHED blocks
+    (and blocks whose role is outside the head vocab) are EXCLUDED from emitted
+    rows; the unmatched rate is reported on ``stats``."""
+    from data.render_capture import label_blocks_by_overlap, render_with_boxes
+
+    html_to_render, _profile, _seed = _augment_html_for_render(output_html, pair_path.stem)
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            capture = render_with_boxes(
+                html_to_render,
+                context=getattr(validator, "_context", None),
+                tmpdir=Path(tmp),
+            )
+        except Exception as exc:
+            stats["error"] = f"render (exact): {exc}"
+            return stats
+        try:
+            shared = extract_shared(capture.pdf_path)
+        except Exception as exc:
+            stats["error"] = f"extract (exact): {exc}"
+            return stats
+        result = label_blocks_by_overlap(shared, capture)
+
+    source = pair.get("source", "unknown")
+    examples: list[dict] = []
+    for r in result.rows:
+        labels = r.get("labels")
+        # Exclude unmatched blocks (labels is None) AND matched blocks whose
+        # role falls outside the structural_role head vocab (structural_role is
+        # None) — mirrors process_pair's `if role not in ROLE_TO_ID: continue`.
+        if not labels or labels.get("structural_role") is None:
+            continue
+        examples.append(
+            {
+                "text": r["text"],
+                "layout": r["layout"],
+                "labels": {
+                    "structural_role": labels["structural_role"],
+                    "is_heading": int(labels["is_heading"]),
+                    "table_region": int(labels["table_region"]),
+                    "is_image_block": int(labels["is_image_block"]),
+                    "list_nesting": int(labels["list_nesting"]),
+                    "pedagogical_role": int(labels["pedagogical_role"]),
+                },
+                "html_tag": r["html_tag"],
+                "source": source,
+                "pair": pair_path.stem,
+            }
+        )
+
+    stats["total_blocks"] = result.n_blocks
+    stats["aligned"] = len(examples)
+    stats["matched"] = result.n_matched
+    stats["unmatched"] = result.n_unmatched
+    stats["unmatched_rate"] = round(result.unmatched_rate, 6)
+    stats["exact"] = True
+    stats["overflowed_single_page"] = bool(capture.overflowed_single_page)
+
+    if examples:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{pair_path.stem}.jsonl"
+        with out_path.open("w") as f:
+            for ex in examples:
+                f.write(json.dumps(ex, ensure_ascii=False) + "\n")
+    return stats
+
+
 def process_pair(validator, work: tuple) -> dict:
     """Worker: align extract_shared blocks to HTML ground truth and emit
     one labeled row per aligned block."""
@@ -704,6 +783,19 @@ def process_pair(validator, work: tuple) -> dict:
     # Source PDF: use local_pdf when available; otherwise render
     # output_html via Playwright (same pattern as v1 builder).
     local_pdf = pair.get("local_pdf")
+
+    # EXACT render-time bbox->role labeling (opt-in SEMANTIK_EXACT_RENDER_LABELS,
+    # default OFF). Applies ONLY to the RENDERED-pair path (no usable local_pdf):
+    # SemantiK controls that render, so the gold role of every extracted PDF
+    # block is recoverable EXACTLY by geometry instead of fuzzily by text
+    # overlap. The real-PDF (local_pdf) path has no render control and STAYS on
+    # the fuzzy aligner below. Default off -> this branch is skipped and the
+    # path below is byte-identical to today.
+    from data.render_capture import exact_render_labels_enabled  # lazy: avoids circular import
+
+    if exact_render_labels_enabled() and not (local_pdf and Path(local_pdf).exists()):
+        return _process_pair_exact(validator, pair, pair_path, out_dir, output_html, stats)
+
     with tempfile.TemporaryDirectory() as tmp:
         if local_pdf and Path(local_pdf).exists():
             pdf_path = Path(local_pdf)
@@ -1871,6 +1963,18 @@ def run_realistic_eval_build(args) -> None:
             file=sys.stderr,
         )
 
+    # EXACT render-time labeling (SEMANTIK_EXACT_RENDER_LABELS, default off):
+    # replace the global text aligner with render_capture's bbox-overlap
+    # labeler. The realistic eval renders gold HTML SemantiK controls, so the
+    # exact-geometry path applies; off => the byte-identical global-aligner path.
+    from data.render_capture import (
+        RenderCaptureSession,
+        exact_render_labels_enabled,
+        label_blocks_by_overlap,
+    )
+
+    use_exact = exact_render_labels_enabled()
+
     train_val = _train_val_docids() if args.eval_holdout_by_docid else set()
     floor = float(args.align_quality_floor)
     out_dir: Path = args.out_dir
@@ -1886,7 +1990,10 @@ def run_realistic_eval_build(args) -> None:
     total_kept = 0
     start = time.time()
 
-    with HtmlValidator() as validator:
+    # Exact mode renders through RenderCaptureSession (one Chromium, batched);
+    # fuzzy mode keeps the HtmlValidator (its render_pdf + Letter multi-page).
+    render_cm = RenderCaptureSession() if use_exact else HtmlValidator()
+    with render_cm as validator:
         for source in args.realpdf_sources:
             src_dir = Path("data/pairs") / source
             if not src_dir.exists():
@@ -1936,6 +2043,114 @@ def run_realistic_eval_build(args) -> None:
                 # Render the gold HTML through the realistic profile.
                 profile, seed = resolve_render_profile_for(_stable_doc_index(pf.stem), mode)
                 rendered_html = augment_html(output_html, profile, seed)
+
+                if use_exact:
+                    # EXACT render-time bbox->role labeling: render with boxes,
+                    # extract, assign each PDF block its gold role by geometric
+                    # containment (no fuzzy alignment). Emits the SAME eval row
+                    # schema (text + layout + labels.structural_role + domain +
+                    # doc_id + aligned_gold_fraction) measure_realpdf_structure
+                    # reads; UNMATCHED blocks are EXCLUDED. aligned_gold_fraction
+                    # is repurposed to the matched fraction (1 - unmatched_rate).
+                    with tempfile.TemporaryDirectory() as tmp:
+                        try:
+                            capture = validator.render(rendered_html, tmpdir=Path(tmp))
+                        except Exception:
+                            drops["render_error"] += 1
+                            continue
+                        try:
+                            shared = extract_shared(capture.pdf_path)
+                        except Exception:
+                            drops["extract_error"] += 1
+                            continue
+                    lr = label_blocks_by_overlap(shared, capture)
+                    n_gold = len(gold_records)
+                    n_pdf = lr.n_blocks
+                    if n_pdf == 0:
+                        drops["no_pdf_blocks"] += 1
+                        continue
+                    maxb = args.realpdf_max_blocks
+                    if maxb and (n_pdf > maxb or n_gold > maxb):
+                        drops["too_large"] += 1
+                        continue
+                    matched_frac = (n_pdf - lr.n_unmatched) / max(1, n_pdf)
+                    doc_rec = {
+                        "source": psource,
+                        "domain": domain,
+                        "doc_id": doc_id,
+                        "pair": pf.stem,
+                        "render_profile": profile,
+                        "render_seed": seed,
+                        "holdout_clean": not contaminated,
+                        "n_gold": n_gold,
+                        "n_pdf_blocks": n_pdf,
+                        "n_unmatched": lr.n_unmatched,
+                        "unmatched_rate": round(lr.unmatched_rate, 6),
+                        "aligned_gold_fraction": round(matched_frac, 6),
+                        "exact_label": True,
+                        "overflowed_single_page": bool(capture.overflowed_single_page),
+                    }
+                    if matched_frac < floor:
+                        drops["low_alignment"] += 1
+                        doc_rec["dropped"] = "low_alignment"
+                        doc_records.append(doc_rec)
+                        continue
+                    rows = []
+                    for rr in lr.rows:
+                        lbl = rr.get("labels")
+                        if not lbl or lbl.get("structural_role") is None:
+                            continue
+                        rows.append(
+                            {
+                                "text": rr["text"],
+                                "layout": rr["layout"],
+                                "labels": {
+                                    "structural_role": lbl["structural_role"],
+                                    "is_heading": int(lbl["is_heading"]),
+                                    "table_region": int(lbl["table_region"]),
+                                    "is_image_block": int(lbl["is_image_block"]),
+                                    "list_nesting": int(lbl["list_nesting"]),
+                                    "pedagogical_role": int(lbl["pedagogical_role"]),
+                                },
+                                "html_tag": rr["html_tag"],
+                                "schema_version": STRUCTURE_ALIGN_SCHEMA_VERSION,
+                                "source": psource,
+                                "pair": pf.stem,
+                                "realpdf": True,
+                                "realistic_render": True,
+                                "exact_label": True,
+                                "domain": domain,
+                                "doc_id": doc_id,
+                                "holdout_clean": not contaminated,
+                                "aligned_gold_fraction": round(matched_frac, 6),
+                                "render_profile": profile,
+                                "render_seed": seed,
+                            }
+                        )
+                    # Exact containment IS the match — no per-block text-sim. Use
+                    # 1.0 so the mean-block-sim column stays well-defined.
+                    doc_block_sims = [1.0] * len(rows)
+                    if not contaminated:
+                        clean_rows.extend(rows)
+                        block_sims.extend(doc_block_sims)
+                    else:
+                        contam_rows.extend(rows)
+                    profile_counts[profile] += 1
+                    doc_rec["n_rows"] = len(rows)
+                    doc_rec["mean_block_sim"] = 1.0 if rows else None
+                    doc_rec["dropped"] = None
+                    doc_records.append(doc_rec)
+                    per_domain_docs[domain] += 1
+                    kept_for_source += 1
+                    total_kept += 1
+                    print(
+                        f"[realistic-exact] {pf.stem[:42]:42}  profile={profile:24}  "
+                        f"rows={len(rows):4}  unmatched={lr.unmatched_rate:.3f}  "
+                        f"matched_frac={matched_frac:.3f}",
+                        file=sys.stderr,
+                    )
+                    continue
+
                 with tempfile.TemporaryDirectory() as tmp:
                     tmp_pdf = Path(tmp) / "realistic.pdf"
                     try:
@@ -2089,6 +2304,11 @@ def run_realistic_eval_build(args) -> None:
         "role_names": list(ROLE_NAMES),
         "layout_feature_dim": LAYOUT_FEATURE_DIM,
     }
+    # Exact-mode provenance — appended only when on, so a flag-OFF realistic
+    # build's coverage_report.json stays byte-identical to today.
+    if use_exact:
+        report["build"] = "realistic_exact"
+        report["exact_label"] = True
     (out_dir / "coverage_report.json").write_text(json.dumps(report, indent=2))
     out_dir.joinpath("realistic_docs.jsonl").write_text(
         "\n".join(json.dumps(d, ensure_ascii=False) for d in doc_records) + "\n"
