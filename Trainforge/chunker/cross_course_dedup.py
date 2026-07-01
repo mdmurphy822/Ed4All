@@ -1,6 +1,6 @@
 """W1b.4 — reusable cross-course boilerplate dedup for chunk ingestion.
 
-A multi-course import batch (e.g. the multi-course 10-course mkdocs corpus) ships
+A multi-course import batch (e.g. a multi-course mkdocs documentation corpus) ships
 the SAME site chrome on every course: a shared footer, a licence banner, an
 "Edit this page" nav strip, a boilerplate "About" blurb. Ingested verbatim,
 each of those becomes an identical chunk in EVERY course's chunkset — retrieval
