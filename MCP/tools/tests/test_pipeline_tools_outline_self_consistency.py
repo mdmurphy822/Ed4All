@@ -891,8 +891,15 @@ def test_outline_block_plan_emits_prose_blocks_topic_rich_week(
         f"page; got {sorted(distinct)}"
     )
 
-    # Every page that carries an objective also carries a prose block —
-    # no page is hollow.
+    # No page is hollow — every page carries at least one instructional
+    # (non-objective) block. The week now emits five canonical page types
+    # (overview / content / application / self_check / summary; see
+    # ``_WEEK_PAGE_TYPES``), so a page need not carry ``explanation``/
+    # ``example`` specifically — a self_check page's ``self_check_question``
+    # or a summary page's ``summary_takeaway``/``recap`` is substantive
+    # instructional content, not the hollow LO-sentence-only defect. The
+    # course-level prose assertion above still guarantees explanation/example
+    # are present somewhere.
     by_page: Dict[str, set] = {}
     blocks_path = Path(payload["blocks_outline_path"])
     for ln in blocks_path.read_text(encoding="utf-8").splitlines():
@@ -903,9 +910,9 @@ def test_outline_block_plan_emits_prose_blocks_topic_rich_week(
             entry.get("block_type")
         )
     for page_id, page_types in by_page.items():
-        assert page_types & {"explanation", "example"}, (
-            f"page {page_id!r} carries no prose block (hollow page): "
-            f"{sorted(page_types)}"
+        assert page_types - {"objective"}, (
+            f"page {page_id!r} is hollow — it carries only an objective "
+            f"block with no instructional content: {sorted(page_types)}"
         )
 
 
@@ -1145,10 +1152,24 @@ def test_outline_page_offered_only_its_objectives_chunks(tmp_path, monkeypatch):
     assert payload["success"] is True, payload
 
     by_page = _chunks_sidecar_by_page(payload)
-    # Two pages, each scoped to its own CO's chunks.
-    assert len(by_page) == 2, by_page
-    page0 = by_page["week_01_content_01"]
-    page1 = by_page["week_01_content_02"]
+    # Fix 2A scopes the per-topic CONTENT pages to their positional CO's
+    # chunks. The week also emits overview/application/self_check/summary
+    # pages (see ``_WEEK_PAGE_TYPES``) that legitimately span the whole
+    # week's TO and therefore see the full week union — they are NOT
+    # positional-CO content pages, so they are out of scope for this
+    # grab-bag guard. Restrict the assertion to the two content pages.
+    content_pages = {
+        pid: chunks
+        for pid, chunks in by_page.items()
+        if re.fullmatch(r"week_\d+_content_\d+", pid or "")
+    }
+    assert set(content_pages) == {"week_01_content_01", "week_01_content_02"}, (
+        f"expected exactly the two positional content pages "
+        f"(week_01_content_01 / week_01_content_02); got "
+        f"{sorted(content_pages)}"
+    )
+    page0 = content_pages["week_01_content_01"]
+    page1 = content_pages["week_01_content_02"]
     co1 = {"course_chunk_00001", "course_chunk_00002", "course_chunk_00003"}
     co2 = {"course_chunk_00004", "course_chunk_00005", "course_chunk_00006"}
     assert page0 == co1, (

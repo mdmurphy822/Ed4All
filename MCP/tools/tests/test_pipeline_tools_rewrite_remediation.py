@@ -543,18 +543,25 @@ def test_rewrite_phase_routes_pre_escalated_block_and_preserves_marker(
 
 
 def test_escalated_and_empty_blocks_dropped_from_imscc(tmp_path, monkeypatch):
-    """W5 under the 65b02cd contract: a block is dropped from the per-page
-    HTML emit ONLY when it carries an escalation_marker AND the rewrite
-    tier left its content empty (pipeline_tools.py ~5127 — the filter is
-    ``escalation_marker is not None AND not content.strip()``). A
-    ``block_packaging_skipped`` capture fires for that drop. A
+    """W5 escalated-AND-empty branch: when a block carries an
+    escalation_marker AND the rewrite tier left its content empty
+    (the filter ``escalation_marker is not None AND not content.strip()``),
+    the emit loop does NOT silently drop it — since 2ec8a6e it renders a
+    deterministic, LLM-free STYLED TEMPLATE FALLBACK from the outline
+    block's already-concise content, stamped ``data-cf-fallback="template"``
+    for audit, and fires a ``block_template_fallback`` capture. Dropping the
+    block was the pre-2ec8a6e behavior (commit 3fa545d); it was superseded
+    because dropping loses grounded content and breaks the page.
+
+    So the escalated-AND-empty block's ``block_id`` DOES appear in the
+    per-page HTML — but only via the audited template-fallback path
+    (``data-cf-fallback="template"``), never as LLM-authored content. A
     non-escalated sibling on the same page rides through normally so the
     page itself is still emitted.
 
-    The 65b02cd pivot means an escalated block whose rewrite DID produce
-    content is NOT dropped (see
-    test_rewrite_phase_routes_pre_escalated_block_and_preserves_marker);
-    this test exercises the escalated-AND-empty branch that is dropped.
+    The 2ec8a6e/65b02cd pivot also means an escalated block whose rewrite
+    DID produce content is authored from scratch, not fallback-rendered
+    (see test_rewrite_phase_routes_pre_escalated_block_and_preserves_marker).
     """
     project_id = "TEST_W5_ESCALATION_FILTER"
     project_path = _seed_project(tmp_path, project_id)
@@ -627,20 +634,31 @@ def test_escalated_and_empty_blocks_dropped_from_imscc(tmp_path, monkeypatch):
     payload = json.loads(result)
     assert payload["success"] is True, payload
 
-    # The escalated block ID must NOT appear in any per-page HTML.
+    # The escalated-AND-empty block is rendered via the deterministic
+    # template FALLBACK — its block_id appears, but ONLY under the audited
+    # ``data-cf-fallback="template"`` marker (never LLM-authored content).
     page_paths = payload.get("page_paths") or []
     assert page_paths, payload
+    page_with_block = None
     for pp in page_paths:
         page_html = Path(pp).read_text(encoding="utf-8")
-        assert escalated_blk.block_id not in page_html, (
-            f"Escalated block_id={escalated_blk.block_id!r} leaked "
-            f"into per-page HTML at {pp}: {page_html}"
-        )
-        # Fresh sibling is still emitted on the same page.
+        if escalated_blk.block_id in page_html:
+            page_with_block = page_html
+            # The escalated block only reaches HTML via the template fallback.
+            assert 'data-cf-fallback="template"' in page_html, (
+                f"Escalated block_id={escalated_blk.block_id!r} appears in "
+                f"per-page HTML at {pp} but was NOT stamped as a "
+                f"template fallback: {page_html}"
+            )
+        # Fresh sibling is emitted (as authored rewrite content) on the page.
         assert fresh_blk.block_id in page_html, (
             f"Fresh sibling block_id={fresh_blk.block_id!r} is missing "
             f"from per-page HTML at {pp}: {page_html}"
         )
+    assert page_with_block is not None, (
+        f"Escalated block_id={escalated_blk.block_id!r} should be rendered "
+        f"via the template fallback but was absent from every page emit"
+    )
 
     # The escalated block IS persisted on disk in blocks_final.jsonl
     # so the audit / re-execution pass can find it.
@@ -656,20 +674,25 @@ def test_escalated_and_empty_blocks_dropped_from_imscc(tmp_path, monkeypatch):
         for entry in parsed
     ), parsed
 
-    # The block_packaging_skipped decision capture fires for the
-    # skipped block — gate_id matches W5's emit-loop sentinel.
-    skip_events = [
+    # The block_template_fallback decision capture fires for the
+    # escalated-AND-empty block — gate_id matches W5's emit-loop sentinel.
+    fallback_events = [
         e for e in captured_events
-        if e.get("decision_type") == "block_packaging_skipped"
+        if e.get("decision_type") == "block_template_fallback"
     ]
-    assert len(skip_events) >= 1, captured_events
-    skip = skip_events[0]
-    feats = skip.get("ml_features") or {}
-    assert feats.get("block_id") == escalated_blk.block_id, skip
+    assert len(fallback_events) >= 1, captured_events
+    fb = next(
+        e for e in fallback_events
+        if (e.get("ml_features") or {}).get("block_id")
+        == escalated_blk.block_id
+    )
+    feats = fb.get("ml_features") or {}
+    assert feats.get("block_id") == escalated_blk.block_id, fb
     assert feats.get("escalation_marker") == "outline_budget_exhausted"
     assert feats.get("gate_id") == "_run_content_generation_rewrite"
+    assert feats.get("fallback") == "template", fb
     # Rationale honours the >=20-char contract.
-    assert len(skip.get("rationale", "")) >= 20, skip
+    assert len(fb.get("rationale", "")) >= 20, fb
 
 
 def test_resolve_post_rewrite_validators_returns_empty_on_unknown_workflow():
