@@ -178,12 +178,6 @@ _CURATED_GATE_FAMILIES: tuple[GateFamily, ...] = (
         ),
     ),
     GateFamily(
-        family="IB6.2 anatomy slot presence",
-        gate_ids=("anatomy_slot_presence",),
-        expected_band=(0.0, 0.10),
-        band_source="config/workflows.yaml IB6 marker (~line 218): same deferred 0-3 calibration block.",
-    ),
-    GateFamily(
         family="IB6.3 interaction-feedback presence",
         gate_ids=("interaction_feedback",),
         expected_band=(0.0, 0.10),
@@ -215,15 +209,6 @@ _CURATED_GATE_FAMILIES: tuple[GateFamily, ...] = (
         scope="module",
     ),
     GateFamily(
-        family="IB7.6c per-type Bloom-range ceiling",
-        gate_ids=("bloom_type_range",),
-        expected_band=(0.0, 0.05),
-        band_source=(
-            "config/workflows.yaml IB7.6c marker (~line 295): flip BLOCK_BLOOM_OVER_CEILING "
-            "to critical after a >=2-corpus FP measurement."
-        ),
-    ),
-    GateFamily(
         family="WS3 CO<->TO semantic alignment",
         gate_ids=("co_terminal_alignment",),
         expected_band=(0.0, 0.10),
@@ -241,26 +226,6 @@ _CURATED_GATE_FAMILIES: tuple[GateFamily, ...] = (
             "config/workflows.yaml WS6a marker (~line 1460): de-risk proof shows 135/135 "
             "sections covered (clean pass); calibrate floor UP toward ~0.55 on >=2 corpora "
             "before any critical flip. Low band = clean corpus rarely fires."
-        ),
-    ),
-    GateFamily(
-        family="Numeric-literal grounding (math-fabrication control)",
-        gate_ids=("numeric_literal_grounding",),
-        expected_band=(0.0, 0.05),
-        band_source=(
-            "root CLAUDE.md numeric-literal-grounding landing note: measured CLEAN on a real "
-            "algebra corpus (grounded blocks 0% source-absent, zero false positives); flip "
-            "to critical after a >=2-corpus FP-rate measurement."
-        ),
-    ),
-    GateFamily(
-        family="W4 NLI grounding (block prose entailment / objective entailment / claim support)",
-        gate_ids=("block_prose_entailment", "objective_entailment", "claim_support"),
-        expected_band=(0.0, 0.10),
-        band_source=(
-            "config/workflows.yaml W4 SHADOW marker + plans/finegrain/w4-nli-grounding-gate.md "
-            "§4: calibration-gated critical flip deferred; promotes claim_support + "
-            "rewrite_source_grounding to critical."
         ),
     ),
 )
