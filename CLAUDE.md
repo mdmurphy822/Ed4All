@@ -6,6 +6,11 @@ Unified orchestration system for SemantiK, Courseforge, Trainforge, and LibV2.
 
 ### Canonical entry point
 
+> **Per-stage invocation** (stop-after / reuse / stage subcommands), **the timeout knobs
+> that actually fire** (`ED4ALL_TASK_TIMEOUT_MINUTES` for slow in-process synthesis, not
+> the batch/mailbox ones), the **outline-vs-rewrite naming trap**, and the **pure-local
+> constrained-VRAM env recipe**: see [`docs/operations/pipeline-invocation.md`](docs/operations/pipeline-invocation.md).
+
 ```bash
 # Primary: run any workflow end-to-end via the unified CLI
 ed4all run <workflow_name> --corpus <PATH> --course-name <NAME> [--mode local|api]

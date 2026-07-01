@@ -167,6 +167,7 @@ This recipe documents a license-clean COURSEWARE / TRAINING-CORPUS run for every
 
 ## See also
 
+- `docs/operations/pipeline-invocation.md` — the **operational** companion: per-stage invocation (stop-after / reuse / stage subcommands), the timeout knobs that actually fire (`ED4ALL_TASK_TIMEOUT_MINUTES` for a slow in-process `course_planning`), the outline-vs-rewrite naming, and the pure-local constrained-VRAM (≈8 GB) env recipe. This licensing doc covers *which* seats to pin; that one covers *how* to invoke each stage.
 - `docs/LICENSING.md` — canonical ToS posture, per-provider terms, per-model license matrix.
 - `Courseforge/CLAUDE.md` § "Opt-In Behavior Flags" — full env-var table for the Courseforge two-pass router.
 - `Courseforge/config/block_routing.license_clean.yaml` — the sibling YAML this recipe pins via `COURSEFORGE_BLOCK_ROUTING_PATH`.
