@@ -3,145 +3,167 @@
 The settings UI renders from this catalog so the frontend never hardcodes
 knobs. Every entry is derived from the real codebase:
 
-* ``PROVIDERS`` mirrors ``_OPENAI_COMPATIBLE_PROVIDERS`` in
-  ``MCP/orchestrator/llm_backend.py`` (the W-D12 dynamic-provider registry),
-  plus the built-in ``anthropic`` and ``mock`` backends. **No invented
-  providers** — adding one is a registry-entry change there, mirrored here.
+* ``PROVIDERS`` — the shared OpenAI-wire provider entries (``local`` /
+  ``together`` / ``together-vision`` / ``groq`` / ``fireworks`` /
+  ``deepseek``) are **DERIVED** from the canonical endpoint registry
+  (``config/endpoints.yaml`` via ``lib/llm/endpoints.py``) — the SINGLE
+  source of truth. This module no longer hand-maintains a second copy of
+  their ``api_key_env`` / ``base_url`` / ``model_env`` / ``model_default``
+  (W9.3-next: the historical drift source is eliminated by construction).
+  Only GUI-facing metadata (``label`` and the ``local`` routing-dropdown
+  ``vision_capable`` overlay) is added on top. The non-HTTP GUI-explicit
+  seats — ``anthropic`` (SDK backend; its GUI ``model_env`` is the
+  operator-facing ``LLM_MODEL`` knob, a documented divergence from the
+  synthesis ``ANTHROPIC_SYNTHESIS_MODEL`` on the canonical row) and
+  ``mock`` (a no-network convenience entry with no canonical endpoint) —
+  stay explicit. **No invented providers** — a new OpenAI-wire provider is
+  a one-row change in ``config/endpoints.yaml``, mirrored here for free.
 * ``CATALOG`` covers every env var enumerated in the GUI build spec §4,
   grouped by ``category``.
 * ``BASE_MODELS`` mirrors ``BaseModelRegistry.list_supported()`` when
   importable, else the documented static five.
 
-This module imports cleanly WITHOUT FastAPI/uvicorn (and without the heavy
-``MCP``/``Trainforge`` deps — the provider list is reproduced literally rather
-than imported, and the base-model import is guarded). MCP tools can therefore
-read the catalog without web deps.
+This module imports cleanly WITHOUT FastAPI/uvicorn. The endpoint-registry
+import (``lib.llm.endpoints``) pulls only stdlib + ``yaml`` + ``jsonschema``
++ ``lib.paths`` (no heavy ``MCP``/``Trainforge`` deps — those import FROM
+the registry, not the reverse), and the base-model import is guarded. MCP
+tools can therefore read the catalog without web deps.
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from lib.llm.endpoints import openai_compatible_legacy_registry
+
 # ---------------------------------------------------------------------------
-# Provider registry mirror.
+# Provider registry — DERIVED from the canonical endpoint registry.
 #
-# Reproduced literally from ``MCP/orchestrator/llm_backend.py``'s
-# ``_OPENAI_COMPATIBLE_PROVIDERS`` (the OpenAI-compatible backends), plus the
-# native ``anthropic`` and ``mock`` backends which live outside that dict.
-# Keep this in lockstep with the registry: provider names, api_key_env,
-# base_url_env/default, model_env/default, api_key_required, vision_capable,
-# unverified.
+# ``config/endpoints.yaml`` (loaded by ``lib/llm/endpoints.py``) is the ONE
+# source of truth for the OpenAI-wire seats. Its
+# ``openai_compatible_legacy_registry()`` projection carries the exact legacy
+# per-entry shape (base_url_env / base_url_default / api_key_env /
+# api_key_default / model_env / model_default / api_key_required + optional
+# vision_capable / vision_capable_env / unverified), so the shared providers
+# below are BUILT from that projection rather than re-typed here.
+#
+# GUI-facing overlay applied per derived provider:
+#   * ``label``          human-facing string the settings UI renders.
+#   * ``vision_capable`` (``local`` only) forced True so the routing dropdown
+#     offers the local/Ollama seat; the real gate is LOCAL_VISION_CAPABLE +
+#     LOCAL_SYNTHESIS_MODEL at resolve time. All other providers inherit the
+#     canonical row's vision_capable (default False when the row omits it).
+#
+# GUI-explicit (NOT OpenAI-wire) seats stay hand-declared:
+#   * ``anthropic`` — SDK backend (kind=anthropic on the canonical row, not
+#     openai-wire); its GUI ``model_env`` is the operator-facing LLM_MODEL
+#     knob (a documented divergence from ANTHROPIC_SYNTHESIS_MODEL on the
+#     canonical row — see the drift-guard test).
+#   * ``mock`` — no-network convenience entry with no canonical endpoint.
 # ---------------------------------------------------------------------------
-PROVIDERS: List[Dict[str, Any]] = [
-    {
-        "name": "anthropic",
-        "label": "Anthropic (Claude)",
-        "api_key_env": "ANTHROPIC_API_KEY",
-        "base_url_env": None,
-        "base_url_default": None,
-        "model_env": "LLM_MODEL",
-        "model_default": "claude-opus-4-7",
-        "api_key_required": True,
-        "vision_capable": True,
-        "unverified": False,
-    },
-    {
-        "name": "local",
-        # ``local`` IS Ollama by default (base_url_default points at the
-        # Ollama OpenAI-compat port 11434). The registry name stays
-        # ``"local"`` because DART / Trainforge / the W-D12 resolver all
-        # key on that literal; ``label`` is the human-facing string the
-        # GUI shows.
-        "label": "Ollama (local)",
-        "api_key_env": "LOCAL_SYNTHESIS_API_KEY",
-        "base_url_env": "LOCAL_SYNTHESIS_BASE_URL",
-        "base_url_default": "http://localhost:11434/v1",
-        "model_env": "LOCAL_SYNTHESIS_MODEL",
-        "model_default": "qwen2.5:7b-instruct-q4_K_M",
-        "api_key_required": False,
-        # Registry default is text-only; the operator flips
-        # LOCAL_VISION_CAPABLE=true (or loads a model whose name contains
-        # vision / llava / -vl) to make this entry vision-capable. The UI
-        # filters on this flag, so we mark the local entry vision-capable
-        # for the routing dropdown and rely on LOCAL_VISION_CAPABLE +
-        # LOCAL_SYNTHESIS_MODEL to actually enable it at resolve time.
-        "vision_capable": True,
-        "vision_capable_env": "LOCAL_VISION_CAPABLE",
-        "unverified": False,
-    },
-    {
-        "name": "together",
-        "label": "Together AI (text)",
-        "api_key_env": "TOGETHER_API_KEY",
-        "base_url_env": None,
-        "base_url_default": "https://api.together.xyz/v1",
-        "model_env": "TOGETHER_SYNTHESIS_MODEL",
-        "model_default": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        "api_key_required": True,
-        "vision_capable": False,
-        "unverified": False,
-    },
-    {
-        "name": "together-vision",
-        "label": "Together AI (vision)",
-        "api_key_env": "TOGETHER_API_KEY",
-        "base_url_env": None,
-        "base_url_default": "https://api.together.xyz/v1",
-        "model_env": "TOGETHER_VISION_MODEL",
-        "model_default": "meta-llama/Llama-3.2-90B-Vision-Instruct-Turbo",
-        "api_key_required": True,
-        "vision_capable": True,
-        "unverified": False,
-    },
-    {
-        "name": "groq",
-        "label": "Groq",
-        "api_key_env": "GROQ_API_KEY",
-        "base_url_env": None,
-        "base_url_default": "https://api.groq.com/openai/v1",
-        "model_env": "GROQ_SYNTHESIS_MODEL",
-        "model_default": "llama-3.3-70b-versatile",
-        "api_key_required": True,
-        "vision_capable": False,
-        "unverified": True,
-    },
-    {
-        "name": "fireworks",
-        "label": "Fireworks",
-        "api_key_env": "FIREWORKS_API_KEY",
-        "base_url_env": None,
-        "base_url_default": "https://api.fireworks.ai/inference/v1",
-        "model_env": "FIREWORKS_SYNTHESIS_MODEL",
-        "model_default": "accounts/fireworks/models/llama-v3p3-70b-instruct",
-        "api_key_required": True,
-        "vision_capable": False,
-        "unverified": True,
-    },
-    {
-        "name": "deepseek",
-        "label": "DeepSeek",
-        "api_key_env": "DEEPSEEK_API_KEY",
-        "base_url_env": None,
-        "base_url_default": "https://api.deepseek.com/v1",
-        "model_env": "DEEPSEEK_SYNTHESIS_MODEL",
-        "model_default": "deepseek-chat",
-        "api_key_required": True,
-        "vision_capable": False,
-        "unverified": True,
-    },
-    {
-        "name": "mock",
-        "label": "Mock (no network)",
-        "api_key_env": None,
-        "base_url_env": None,
-        "base_url_default": None,
-        "model_env": None,
-        "model_default": None,
-        "api_key_required": False,
-        "vision_capable": False,
-        "unverified": False,
-    },
+
+# Ordered shared OpenAI-wire providers the GUI exposes, with their GUI
+# overlay. Order is preserved in the final PROVIDERS list. The canonical
+# registry may carry additional openai_compatible rows (e.g. ``nvidia`` /
+# ``nvidia-deepseek``) the GUI does not surface; they are intentionally NOT
+# listed here so no default selection changes.
+_DERIVED_PROVIDER_META: List[Dict[str, Any]] = [
+    # ``local`` IS Ollama by default (base_url points at the Ollama
+    # OpenAI-compat port 11434). The registry name stays ``"local"`` because
+    # DART / Trainforge / the resolver all key on that literal. The GUI marks
+    # it vision-capable for the routing dropdown (overlay); the real enable is
+    # LOCAL_VISION_CAPABLE + a vision LOCAL_SYNTHESIS_MODEL at resolve time.
+    {"name": "local", "label": "Ollama (local)", "vision_capable": True},
+    {"name": "together", "label": "Together AI (text)"},
+    {"name": "together-vision", "label": "Together AI (vision)"},
+    {"name": "groq", "label": "Groq"},
+    {"name": "fireworks", "label": "Fireworks"},
+    {"name": "deepseek", "label": "DeepSeek"},
 ]
+
+# GUI-explicit seats with no OpenAI-wire canonical projection.
+_ANTHROPIC_PROVIDER: Dict[str, Any] = {
+    "name": "anthropic",
+    "label": "Anthropic (Claude)",
+    "api_key_env": "ANTHROPIC_API_KEY",
+    "base_url_env": None,
+    "base_url_default": None,
+    # GUI-facing model knob (LLM_MODEL) — deliberately NOT the canonical
+    # ANTHROPIC_SYNTHESIS_MODEL synthesis env (documented divergence).
+    "model_env": "LLM_MODEL",
+    "model_default": "claude-opus-4-7",
+    "api_key_required": True,
+    "vision_capable": True,
+    "unverified": False,
+}
+_MOCK_PROVIDER: Dict[str, Any] = {
+    "name": "mock",
+    "label": "Mock (no network)",
+    "api_key_env": None,
+    "base_url_env": None,
+    "base_url_default": None,
+    "model_env": None,
+    "model_default": None,
+    "api_key_required": False,
+    "vision_capable": False,
+    "unverified": False,
+}
+
+
+def _derive_shared_provider(
+    meta: Dict[str, Any], legacy: Dict[str, Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Build one GUI provider entry from the canonical legacy projection.
+
+    ``meta`` supplies the GUI overlay (``name`` + ``label`` + optional
+    ``vision_capable`` force). Every wire field (api_key_env / base_url /
+    model_env / model_default / api_key_required) flows from the canonical
+    row so the GUI can never drift from ``config/endpoints.yaml``.
+    """
+    name = meta["name"]
+    row = legacy[name]
+    entry: Dict[str, Any] = {
+        "name": name,
+        "label": meta["label"],
+        "api_key_env": row.get("api_key_env"),
+        "base_url_env": row.get("base_url_env"),
+        "base_url_default": row.get("base_url_default"),
+        "model_env": row.get("model_env"),
+        "model_default": row.get("model_default"),
+        "api_key_required": bool(row.get("api_key_required", False)),
+        # GUI overlay wins when present; else the canonical flag (default
+        # False when the row omits it — mirrors the legacy literal).
+        "vision_capable": bool(
+            meta["vision_capable"]
+            if "vision_capable" in meta
+            else row.get("vision_capable", False)
+        ),
+        "unverified": bool(row.get("unverified", False)),
+    }
+    # Only surface vision_capable_env when the canonical row declares it
+    # (today: ``local`` → LOCAL_VISION_CAPABLE), matching the legacy shape.
+    vision_env = row.get("vision_capable_env")
+    if vision_env:
+        entry["vision_capable_env"] = vision_env
+    return entry
+
+
+def _build_providers() -> List[Dict[str, Any]]:
+    """Assemble PROVIDERS: anthropic (explicit) + derived shared + mock.
+
+    Order matches the historical hand-maintained list exactly. Shared
+    OpenAI-wire seats are DERIVED from the canonical registry; the two
+    non-wire seats stay explicit.
+    """
+    legacy = openai_compatible_legacy_registry()
+    providers: List[Dict[str, Any]] = [dict(_ANTHROPIC_PROVIDER)]
+    for meta in _DERIVED_PROVIDER_META:
+        providers.append(_derive_shared_provider(meta, legacy))
+    providers.append(dict(_MOCK_PROVIDER))
+    return providers
+
+
+PROVIDERS: List[Dict[str, Any]] = _build_providers()
 
 
 def provider_names() -> List[str]:
