@@ -861,6 +861,179 @@ def test_resolve_evict_for_cuda_parse_with_fallback(
     assert resolve_evict_for_cuda(True) is True
 
 
+# --------------------------------------------------------------------- #
+# Mid-inference CUDA JIT/nvrtc fallback: a torch↔nvrtc version mismatch
+# raises a JIT compile RuntimeError during the forward pass (NOT at load).
+# The classifier must transparently retry on CPU, stick to CPU, record the
+# downgrade, and NOT swallow OOM / unrelated errors.
+# --------------------------------------------------------------------- #
+
+
+def test_is_cuda_jit_error_detection() -> None:
+    """The JIT detector matches nvrtc/PTX/CUDA-compile but NOT OOM/unrelated."""
+    from lib.classifiers.nli_classifier import is_cuda_jit_error
+
+    # JIT / nvrtc / PTX compile failures → True.
+    assert is_cuda_jit_error(
+        RuntimeError("nvrtc: error: failed to open libnvrtc-builtins.so.13.0")
+    )
+    assert is_cuda_jit_error(RuntimeError("PTX JIT compilation failed"))
+    assert is_cuda_jit_error(RuntimeError("CUDA kernel compilation error"))
+    # A genuine OOM is NOT a JIT error (owned by the load-time VRAM guards).
+    assert not is_cuda_jit_error(RuntimeError("CUDA out of memory. Tried to..."))
+    # Unrelated errors are NOT swallowed.
+    assert not is_cuda_jit_error(ValueError("bad shape"))
+    assert not is_cuda_jit_error(RuntimeError("shape mismatch in linear layer"))
+
+
+def _make_jit_failing_torch(*, fail_first: bool) -> Tuple[Any, dict]:
+    """Fake torch whose forward-pass softmax raises a JIT error on the first
+    (cuda) call and succeeds afterward. Returns (fake_torch, call_state).
+
+    The model forward is a plain MagicMock; the JIT failure is injected at
+    ``softmax`` (a torch op inside the forward loop) so the RuntimeError
+    escapes the ``with torch.no_grad()`` block exactly as a real nvrtc JIT
+    failure would.
+    """
+    fake_torch = MagicMock()
+    fake_torch.no_grad.return_value.__enter__ = MagicMock()
+    fake_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+    state = {"softmax_calls": 0}
+
+    def _make_probs() -> Any:
+        probs = MagicMock()
+        probs.shape = (1, 3)
+        row_mock = MagicMock()
+
+        def _idx(idx: int) -> Any:
+            prob_map = {0: 0.85, 1: 0.10, 2: 0.05}
+            item_mock = MagicMock()
+            item_mock.item.return_value = prob_map[idx]
+            return item_mock
+
+        row_mock.__getitem__.side_effect = _idx
+        probs.__getitem__.side_effect = lambda i: row_mock
+        probs.cpu.return_value = probs
+        return probs
+
+    def _softmax(logits: Any, dim: Any) -> Any:
+        state["softmax_calls"] += 1
+        # Fail only the very first forward pass (the cuda attempt).
+        if fail_first and state["softmax_calls"] == 1:
+            raise RuntimeError(
+                "nvrtc: error: failed to load builtins "
+                "'libnvrtc-builtins.so.13.0'"
+            )
+        return _make_probs()
+
+    fake_torch.softmax.side_effect = _softmax
+    return fake_torch, state
+
+
+def _build_cuda_classifier(fake_torch: Any, monkeypatch: pytest.MonkeyPatch) -> NliClassifier:
+    """Build a classifier resolved onto cuda (ample VRAM, cuda available)."""
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    fake_torch.cuda.is_available.return_value = True
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib",
+        lambda _torch, _device: 6144,
+    )
+    return _build_classifier(fake_torch)
+
+
+def test_cuda_jit_error_falls_back_to_cpu_and_scores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """nvrtc JIT error on the cuda forward → retry on CPU, correct verdict,
+    device downgraded, downgrade recorded."""
+    fake_torch, _state = _make_jit_failing_torch(fail_first=True)
+    classifier = _build_cuda_classifier(fake_torch, monkeypatch)
+    assert classifier.device == "cuda"  # started on cuda
+
+    with patch("lib.classifiers.nli_classifier.logger.warning") as warn:
+        score = classifier.score_pair(premise="A", hypothesis="B")
+
+    # Correct verdict returned from the CPU retry.
+    assert isinstance(score, NliScore)
+    assert score.entailment == pytest.approx(0.85)
+    # Downgraded to CPU (fp32) and recorded for provenance.
+    assert classifier.device == "cpu"
+    assert classifier.dtype == "float32"
+    assert classifier.cuda_jit_downgraded is True
+    # Model moved to cpu + fp32-restored during the downgrade.
+    classifier._model.to.assert_any_call("cpu")
+    classifier._model.float.assert_called_once_with()
+    assert warn.called  # one-time downgrade warning fired
+
+
+def test_cuda_jit_downgrade_sticks_no_cuda_retry_next_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After the downgrade, the next batch scores on CPU without re-trying
+    cuda (no re-move, no second warning)."""
+    fake_torch, state = _make_jit_failing_torch(fail_first=True)
+    classifier = _build_cuda_classifier(fake_torch, monkeypatch)
+
+    # First batch: triggers the fallback (softmax call #1 raises, #2 succeeds).
+    classifier.score_pair(premise="A", hypothesis="B")
+    assert classifier.device == "cpu"
+    move_calls_after_first = classifier._model.to.call_count
+    float_calls_after_first = classifier._model.float.call_count
+
+    # Second batch: already on cpu → single clean forward, no new downgrade.
+    with patch("lib.classifiers.nli_classifier.logger.warning") as warn:
+        score = classifier.score_pair(premise="C", hypothesis="D")
+    assert score.entailment == pytest.approx(0.85)
+    assert classifier.device == "cpu"
+    # No additional .to()/.float() calls on the second batch (didn't re-move).
+    assert classifier._model.to.call_count == move_calls_after_first
+    assert classifier._model.float.call_count == float_calls_after_first
+    assert not warn.called  # no second downgrade warning
+
+
+def test_cuda_oom_error_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CUDA out-of-memory error propagates (owned by the VRAM guards),
+    it is NOT rerouted to the CPU fallback."""
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib",
+        lambda _torch, _device: 6144,
+    )
+    fake_torch.softmax.side_effect = RuntimeError(
+        "CUDA out of memory. Tried to allocate 512 MiB"
+    )
+    classifier = _build_classifier(fake_torch)
+
+    with pytest.raises(RuntimeError, match="out of memory"):
+        classifier.score_pair(premise="A", hypothesis="B")
+    # Not downgraded — OOM is a different failure class.
+    assert classifier.cuda_jit_downgraded is False
+    classifier._model.float.assert_not_called()
+
+
+def test_unrelated_runtime_error_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-JIT RuntimeError (e.g. a shape bug) propagates unchanged."""
+    fake_torch = _make_scoring_fake_torch()
+    fake_torch.cuda.is_available.return_value = True
+    monkeypatch.setenv(ENV_DEVICE, "cuda")
+    monkeypatch.setattr(
+        "lib.classifiers.nli_classifier.probe_free_vram_mib",
+        lambda _torch, _device: 6144,
+    )
+    fake_torch.softmax.side_effect = RuntimeError("size mismatch in matmul")
+    classifier = _build_classifier(fake_torch)
+
+    with pytest.raises(RuntimeError, match="size mismatch"):
+        classifier.score_pair(premise="A", hypothesis="B")
+    assert classifier.cuda_jit_downgraded is False
+
+
 @pytest.mark.slow
 def test_get_or_load_loads_real_model() -> None:
     """Smoke test: real DeBERTa-v3-base load + score a known pair.

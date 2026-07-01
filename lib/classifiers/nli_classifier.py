@@ -277,6 +277,40 @@ def resolve_min_free_vram_mib(value: Optional[int] = None) -> int:
         return _DEFAULT_MIN_FREE_VRAM_MIB
 
 
+def is_cuda_jit_error(exc: BaseException) -> bool:
+    """True iff ``exc`` is a CUDA JIT / nvrtc / PTX *compilation* failure.
+
+    The failure mode this guards against: torch built against one CUDA
+    runtime (e.g. ``2.11.0+cu130``) on a box whose JIT path can't discover
+    the matching ``libnvrtc-builtins.so.*``, so the DeBERTa forward pass on
+    CUDA raises a ``RuntimeError`` naming ``nvrtc`` / ``libnvrtc`` / ``PTX``
+    (a JIT/PTX compile error) rather than a memory error. That is a
+    device-capability problem the CPU path sidesteps entirely, so the
+    classifier degrades to CPU on it.
+
+    Deliberately SPECIFIC so it never swallows the two errors handled
+    elsewhere:
+
+    * a genuine CUDA **out-of-memory** (``CUDA out of memory``) — owned by
+      the load-time VRAM/eviction guards (``ED4ALL_NLI_MIN_FREE_VRAM_MIB`` /
+      ``ED4ALL_NLI_EVICT_FOR_CUDA``); OOM is checked FIRST and returns False;
+    * any unrelated ``RuntimeError`` / ``ValueError`` — re-raised untouched.
+    """
+    msg = str(exc).lower()
+    # OOM is NOT a JIT error — the load-time VRAM guards own it. Check first
+    # so a message that somehow mentions both never routes to the JIT path.
+    if "out of memory" in msg:
+        return False
+    # nvrtc / libnvrtc / PTX name the JIT runtime-compiler explicitly.
+    if "nvrtc" in msg or "libnvrtc" in msg or "ptx" in msg:
+        return True
+    # A generic CUDA kernel *compilation* failure (JIT compile error) that
+    # doesn't spell out nvrtc but pairs "cuda" with a compile verb.
+    if "cuda" in msg and "compil" in msg:
+        return True
+    return False
+
+
 def resolve_nli_device(device: Optional[str] = None) -> str:
     """Resolve the NLI torch device string.
 
@@ -397,6 +431,12 @@ class NliClassifier:
         self._device, self._dtype = self._place_model_on_device(
             model, torch_module, resolve_nli_device(device)
         )
+        # Sticky mid-inference CUDA→CPU downgrade latch (see
+        # :meth:`_downgrade_to_cpu`). Set when a forward pass raises a CUDA
+        # JIT/nvrtc/PTX compile error (a torch↔nvrtc version mismatch); once
+        # set, every subsequent batch scores on CPU without re-attempting
+        # cuda, so the classifier never thrashes cuda→cpu per batch.
+        self._cuda_jit_downgraded = False
         # Build a label -> index map so we can read the three scores
         # back from the model output regardless of the canonical
         # (entailment / neutral / contradiction) ordering. The
@@ -589,6 +629,81 @@ class NliClassifier:
         """Resolved model dtype (``"float32"`` on CPU, ``"float16"`` on CUDA)."""
         return self._dtype
 
+    @property
+    def cuda_jit_downgraded(self) -> bool:
+        """True iff a CUDA JIT/nvrtc error downgraded this instance to CPU.
+
+        Recorded for provenance: a run that started on cuda but degraded to
+        CPU mid-inference has ``device == "cpu"`` AND this flag set, so a
+        mixed-provenance comparison stays detectable even after the device
+        string has flipped back to ``"cpu"``.
+        """
+        return self._cuda_jit_downgraded
+
+    def _downgrade_to_cpu(self, exc: BaseException) -> None:
+        """Move the model to CPU (fp32) after a CUDA JIT/nvrtc forward-pass
+        failure and latch the downgrade so it sticks for the process.
+
+        Called once, from :meth:`score_batch`, when a forward pass on a CUDA
+        device raises a JIT/nvrtc/PTX compile error (:func:`is_cuda_jit_error`).
+        Casts fp16→fp32 because fp16 on CPU is slow/unsupported. Idempotent:
+        a second call is a no-op (the flag is already set), so repeated
+        batches never re-log or re-move.
+        """
+        if self._cuda_jit_downgraded:
+            return
+        logger.warning(
+            "NliClassifier: CUDA forward pass raised a JIT/nvrtc/PTX compile "
+            "error (%s) — likely a torch↔nvrtc runtime mismatch. Degrading to "
+            "CPU (fp32) for the remainder of this process and retrying the "
+            "batch. Set %s=cpu to select CPU up front and silence this.",
+            exc, ENV_DEVICE,
+        )
+        try:
+            self._model.to("cpu")
+            # fp16→fp32: the model was .half()'d on cuda; fp16 on CPU is
+            # slow/unsupported, so restore fp32 for the CPU path.
+            self._model.float()
+        except Exception as move_exc:  # noqa: BLE001 — best-effort; still flip
+            logger.warning(
+                "NliClassifier: error moving model to CPU during JIT "
+                "downgrade (%s); proceeding — the forward pass retry will "
+                "surface any residual failure.",
+                move_exc,
+            )
+        # Disable torch's TensorExpr (NNC) JIT fuser. The nvrtc/PTX failure
+        # comes from the fuser JIT-compiling a fused pointwise kernel through
+        # the mismatched CUDA runtime-compiler; that JIT path is attempted
+        # even on the CPU retry (the fuser is a global torch setting), so the
+        # move-to-CPU alone does NOT clear it. Turning the fuser off sidesteps
+        # JIT compilation entirely — correctness is unchanged (fusion is a
+        # pure performance optimization). Best-effort: these are private torch
+        # APIs that may differ across versions, so every call is guarded.
+        self._disable_jit_fuser()
+        self._device = "cpu"
+        self._dtype = "float32"
+        self._cuda_jit_downgraded = True
+
+    def _disable_jit_fuser(self) -> None:
+        """Best-effort disable of torch's JIT pointwise fusers.
+
+        Turning off the TensorExpr fuser (and the on-CPU/on-GPU fuse
+        overrides) stops torch from JIT-compiling fused kernels via the
+        broken nvrtc runtime-compiler on the CPU retry. Every call is
+        individually guarded because these are private, version-varying
+        ``torch._C`` APIs.
+        """
+        torch = self._torch
+        for setter, arg in (
+            ("_jit_set_texpr_fuser_enabled", False),
+            ("_jit_override_can_fuse_on_cpu", False),
+            ("_jit_override_can_fuse_on_gpu", False),
+        ):
+            try:
+                getattr(torch._C, setter)(arg)
+            except Exception:  # noqa: BLE001 — private API, version-dependent
+                pass
+
     @classmethod
     def get_or_load(cls) -> Optional["NliClassifier"]:
         """Return the process-singleton instance; lazy-load on first call.
@@ -745,11 +860,43 @@ class NliClassifier:
         Returns a list of :class:`NliScore` of the same length as
         ``pairs``. Empty input is a no-op pass that returns an empty
         list.
+
+        Mid-inference CUDA-fallback safety net: when the forward pass runs
+        on a CUDA device and raises a JIT/nvrtc/PTX *compile* error (a
+        torch↔nvrtc runtime mismatch — see :func:`is_cuda_jit_error`), the
+        model is transparently moved to CPU (fp32) and the batch is retried
+        there; the downgrade sticks for the process (:meth:`_downgrade_to_cpu`)
+        so subsequent batches don't thrash cuda→cpu. A CUDA out-of-memory
+        (owned by the load-time VRAM guards) and any unrelated error are NOT
+        swallowed — they propagate unchanged.
         """
         if not pairs:
             return []
 
         size = int(batch_size) if batch_size and batch_size > 0 else _DEFAULT_BATCH_SIZE
+        try:
+            return self._run_forward(pairs, size)
+        except RuntimeError as exc:
+            # Only rescue a CUDA JIT/nvrtc compile failure while still on a
+            # GPU device. OOM and unrelated RuntimeErrors fall through and
+            # re-raise (``is_cuda_jit_error`` excludes OOM by construction).
+            if self._device != "cpu" and is_cuda_jit_error(exc):
+                self._downgrade_to_cpu(exc)
+                return self._run_forward(pairs, size)
+            raise
+
+    def _run_forward(
+        self,
+        pairs: List[Tuple[str, str]],
+        size: int,
+    ) -> List[NliScore]:
+        """Run the batched forward pass on the current ``self._device``.
+
+        Split out of :meth:`score_batch` so the caller can retry it on CPU
+        after a CUDA JIT/nvrtc downgrade without duplicating the tokenize →
+        forward → softmax loop. Reads ``self._device`` on every call, so a
+        retry after :meth:`_downgrade_to_cpu` transparently runs on CPU.
+        """
         results: List[NliScore] = []
         torch = self._torch
 
