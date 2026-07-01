@@ -78,8 +78,8 @@ def _build_executor(state_runs_isolated):
     executor.checkpoint_manager = None
     # Stub the parallel executor so execute_phase doesn't touch the
     # tool registry / workflow state file.
-    async def _noop_parallel(workflow_id, tasks, max_concurrent):
-        return {}
+    async def _noop_parallel(workflow_id, tasks, max_concurrent, results_sink=None):
+        return {} if results_sink is None else results_sink
 
     executor._execute_parallel = _noop_parallel  # type: ignore[assignment]
     return executor

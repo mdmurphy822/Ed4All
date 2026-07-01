@@ -72,6 +72,7 @@
         "alt_text_generation",
         "anchored_rubric_check",
         "approach_selection",
+        "archival_objectives_projection",
         "assessment_design",
         "assessment_generation",
         "assessment_generator_call",

@@ -188,3 +188,79 @@ class TestRunVectorIndexingFailClosed:
         assert not (
             tmp_path / "courses" / slug / "vector_index"
         ).exists()
+
+
+# --------------------------------------------------------------------------- #
+# W2.4: idempotency + fake-provider anti-poisoning
+# --------------------------------------------------------------------------- #
+
+
+class TestRunVectorIndexingIdempotency:
+    def test_reindex_fresh_index_is_idempotent_success(self, registry, tmp_path):
+        """W2.4: re-running the indexing phase over a still-fresh index is a
+        clean no-op (success + index_strategy=idempotent_reuse), NOT a phase
+        failure. The old behaviour returned success=False/fresh_index_exists."""
+        pytest.importorskip("numpy")
+        slug = "mini-idem-101"
+        _materialize_course(tmp_path, slug)
+        tool = registry["run_vector_indexing"]
+
+        first = json.loads(asyncio.run(
+            tool(course_name=slug, libv2_root=str(tmp_path))
+        ))
+        assert first["success"] is True, first
+        assert first["index_strategy"] == "built", first
+
+        # Re-run WITHOUT force over the now-fresh index.
+        second = json.loads(asyncio.run(
+            tool(course_name=slug, libv2_root=str(tmp_path))
+        ))
+        assert second["success"] is True, second
+        assert second["index_strategy"] == "idempotent_reuse", second
+        # Same manifest facts surfaced on the idempotent path.
+        assert second["chunks_count"] == first["chunks_count"]
+        assert second["source_chunks_sha256"] == first["source_chunks_sha256"]
+
+
+class TestRunVectorIndexingFakeRefusal:
+    def test_fake_provider_refused_without_allow_flag(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """W2.4: with the fake provider and ED4ALL_EMBEDDING_ALLOW_FAKE unset,
+        the phase FAILS (fake_provider_refused) and writes NO index — a fake
+        index must never masquerade as a real one on a read path."""
+        pytest.importorskip("numpy")
+        monkeypatch.setenv("ED4ALL_EMBEDDING_PROVIDER", "fake")
+        monkeypatch.delenv("ED4ALL_EMBEDDING_ALLOW_FAKE", raising=False)
+        slug = "mini-fake-101"
+        _materialize_course(tmp_path, slug)
+        tool = registry["run_vector_indexing"]
+
+        env = json.loads(asyncio.run(
+            tool(course_name=slug, libv2_root=str(tmp_path))
+        ))
+        assert env["success"] is False, env
+        assert env["error_type"] == "fake_provider_refused", env
+        assert env.get("error_code") == "FAKE_INDEX_REFUSED", env
+        # No poisoned index written to disk.
+        assert not (
+            tmp_path / "courses" / slug / "vector_index"
+        ).exists()
+
+    def test_fake_provider_allowed_with_flag(
+        self, registry, tmp_path, monkeypatch
+    ):
+        """W2.4 back-compat: ED4ALL_EMBEDDING_ALLOW_FAKE=true still builds a
+        fake index and reports success (tests / offline dev)."""
+        pytest.importorskip("numpy")
+        monkeypatch.setenv("ED4ALL_EMBEDDING_PROVIDER", "fake")
+        monkeypatch.setenv("ED4ALL_EMBEDDING_ALLOW_FAKE", "true")
+        slug = "mini-fakeok-101"
+        _materialize_course(tmp_path, slug)
+        tool = registry["run_vector_indexing"]
+
+        env = json.loads(asyncio.run(
+            tool(course_name=slug, libv2_root=str(tmp_path))
+        ))
+        assert env["success"] is True, env
+        assert env["embedding_provider"] == "fake", env

@@ -9,12 +9,51 @@ Phase 0 Hardening - Requirement 3: Hard Validation Gates
 
 import importlib
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple
 
 logger = logging.getLogger(__name__)
+
+# W2.1: shared CUDA-OOM detection + free-VRAM probe. A CUDA OOM raised inside a
+# validator was previously caught by the broad ``except`` in ``run_gate`` and,
+# under ``behavior_on_error=warn``, rewritten to ``passed=True`` — a SILENT
+# auto-pass that hid a broken (never-ran) gate. These helpers let the gate
+# runner recognise the OOM and emit a DISTINCT ``VALIDATOR_OOM`` issue instead.
+# Imported from ``lib.llm.oom`` (not ``MCP.core.executor``) to avoid a circular
+# import — executor imports this module. Guarded so a stripped ``lib`` never
+# breaks gate import; a failed import degrades OOM detection to off (the
+# pre-W2.1 behaviour), never a crash.
+try:
+    from lib.llm.oom import is_cuda_oom, probe_free_vram_mib
+except Exception:  # pragma: no cover - lib.llm always present in this repo
+    def is_cuda_oom(exc: Optional[BaseException]) -> bool:  # type: ignore
+        return False
+
+    def probe_free_vram_mib() -> Optional[int]:  # type: ignore
+        return None
+
+
+# W2.1 opt-in escalation. Default OFF → a validator CUDA-OOM surfaces a
+# DISTINCT warning-severity ``VALIDATOR_OOM`` issue but still honours the
+# gate's configured ``behavior_on_error`` for pass/block (so it is no longer a
+# SILENT pass, but it does not newly block a run that used to pass). ON → the
+# OOM fails the gate closed (blocks) regardless of ``behavior_on_error``.
+# Parse-with-fallback: only the explicit truthy tokens enable it.
+_VALIDATOR_FAIL_CLOSED_ON_OOM_ENV = "ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM"
+
+
+def _validator_fail_closed_on_oom() -> bool:
+    """Return True iff ``ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM`` is truthy.
+
+    Read at call time (not import) so tests can toggle it per-run. Accepts
+    ``1`` / ``true`` / ``yes`` / ``on`` (case-insensitive); anything else —
+    including unset / garbage — is off.
+    """
+    raw = os.environ.get(_VALIDATOR_FAIL_CLOSED_ON_OOM_ENV, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 class GateSeverity(Enum):
@@ -313,26 +352,36 @@ class ValidationGateManager:
             result = self._apply_thresholds(result, gate_config.threshold)
 
         except Exception as e:
-            logger.error(f"Validator error for gate {gate_config.gate_id}: {e}")
+            # W2.1: a CUDA out-of-memory raised INSIDE a validator (NLI /
+            # embedding forward pass on a VRAM-starved box) was previously
+            # indistinguishable from any other validator bug here — and under
+            # ``behavior_on_error=warn`` it became a SILENT auto-pass. Detect
+            # the OOM and emit a DISTINCT, greppable ``VALIDATOR_OOM`` issue
+            # (plus a DecisionCapture) so the OOM is never invisible; honour
+            # the opt-in ``ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM`` to block.
+            if is_cuda_oom(e):
+                result = self._build_oom_gate_result(gate_config, e)
+            else:
+                logger.error(f"Validator error for gate {gate_config.gate_id}: {e}")
 
-            # Fail-closed on error by default
-            result = GateResult(
-                gate_id=gate_config.gate_id,
-                validator_name=gate_config.validator_path,
-                validator_version="error",
-                passed=False,
-                error=str(e),
-                issues=[GateIssue(
-                    severity="critical",
-                    code="VALIDATOR_ERROR",
-                    message=f"Validator threw exception: {e}"
-                )]
-            )
+                # Fail-closed on error by default
+                result = GateResult(
+                    gate_id=gate_config.gate_id,
+                    validator_name=gate_config.validator_path,
+                    validator_version="error",
+                    passed=False,
+                    error=str(e),
+                    issues=[GateIssue(
+                        severity="critical",
+                        code="VALIDATOR_ERROR",
+                        message=f"Validator threw exception: {e}"
+                    )]
+                )
 
-            # Check behavior on error
-            if gate_config.behavior_on_error == GateBehavior.WARN:
-                result.passed = True
-                logger.warning(f"Gate {gate_config.gate_id} error treated as warning")
+                # Check behavior on error
+                if gate_config.behavior_on_error == GateBehavior.WARN:
+                    result.passed = True
+                    logger.warning(f"Gate {gate_config.gate_id} error treated as warning")
 
         end_time = datetime.now()
         result.execution_time_ms = int((end_time - start_time).total_seconds() * 1000)
@@ -359,6 +408,111 @@ class ValidationGateManager:
 
         # Store result
         self._results_history.append(result)
+
+        return result
+
+    def _build_oom_gate_result(
+        self,
+        gate_config: GateConfig,
+        exc: BaseException,
+    ) -> GateResult:
+        """Build the ``VALIDATOR_OOM`` gate result for a validator CUDA-OOM.
+
+        W2.1: replaces the pre-fix behaviour where a CUDA OOM inside a
+        validator was caught by the generic ``except`` and, under
+        ``behavior_on_error=warn``, silently auto-passed. Pass/block is
+        resolved so:
+
+        * ``ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM`` ON → always fail closed
+          (``passed=False``, critical issue) regardless of the gate's
+          ``behavior_on_error``.
+        * flag OFF → honour ``behavior_on_error`` for pass/block (WARN →
+          ``passed=True``; BLOCK / FAIL_CLOSED → ``passed=False``), but ALWAYS
+          emit a DISTINCT ``VALIDATOR_OOM`` issue + a DecisionCapture, so even
+          the non-blocking case is greppable and never a silent pass.
+        """
+        fail_closed = _validator_fail_closed_on_oom()
+        if fail_closed:
+            passed = False
+        else:
+            passed = gate_config.behavior_on_error == GateBehavior.WARN
+
+        free_mib = probe_free_vram_mib()
+        free_desc = (
+            f"{free_mib} MiB free"
+            if free_mib is not None
+            else "free VRAM unprobeable"
+        )
+        severity = "warning" if passed else "critical"
+
+        logger.error(
+            f"GPU OUT OF MEMORY during validation gate {gate_config.gate_id} "
+            f"({gate_config.validator_path}): {free_desc} at failure — a "
+            f"resident model (likely the local 7B) is starving NLI/embedding "
+            f"scoring. "
+            + (
+                "Failing the gate closed (blocking)"
+                if not passed
+                else "Emitting a VALIDATOR_OOM warning (non-blocking, NOT a "
+                "silent pass)"
+            )
+            + (
+                " [ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM=on]" if fail_closed else ""
+            )
+            + f". Exception: {exc}"
+        )
+
+        result = GateResult(
+            gate_id=gate_config.gate_id,
+            validator_name=gate_config.validator_path,
+            validator_version="oom",
+            passed=passed,
+            error=str(exc),
+            issues=[GateIssue(
+                severity=severity,
+                code="VALIDATOR_OOM",
+                message=(
+                    f"Validator hit CUDA out-of-memory ({free_desc} at "
+                    f"failure): {exc}. The gate did NOT run to completion — "
+                    f"this is a GPU OOM, not a pass."
+                ),
+                suggestion=(
+                    "Free VRAM before re-running (evict the resident local "
+                    "LLM, raise the free-VRAM floor via "
+                    "ED4ALL_NLI_MIN_FREE_VRAM_MIB, or pin NLI/embeddings to "
+                    "CPU). Set ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM=1 to block "
+                    "the phase on any validator OOM."
+                ),
+            )],
+        )
+
+        # DecisionCapture on the OOM branch (dynamic, replayable rationale).
+        if self._capture is not None:
+            try:
+                self._capture.log_decision(
+                    decision_type="validation_result",
+                    decision=(
+                        f"Gate {gate_config.gate_id} hit CUDA OOM; emitted a "
+                        f"distinct VALIDATOR_OOM issue "
+                        + (
+                            "(fail-closed/block)"
+                            if not passed
+                            else "(warning/non-blocking)"
+                        )
+                    ),
+                    rationale=(
+                        f"Validator {gate_config.validator_path} raised a CUDA "
+                        f"out-of-memory ({free_desc} at failure); surfacing a "
+                        f"distinct VALIDATOR_OOM issue instead of the pre-W2.1 "
+                        f"silent auto-pass. "
+                        f"ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM="
+                        f"{'on' if fail_closed else 'off'}, "
+                        f"behavior_on_error={gate_config.behavior_on_error.value}, "
+                        f"resolved passed={passed}"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - capture must never break a gate
+                pass
 
         return result
 

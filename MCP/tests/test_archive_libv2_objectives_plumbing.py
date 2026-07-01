@@ -210,6 +210,149 @@ def test_archive_objectives_pass_co_has_parent_rule(monkeypatch, tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# W2.3: fail-closed objectives plumbing (no silent no-op)
+# --------------------------------------------------------------------------- #
+
+
+def _make_trainforge(export: Path, chunk_prefix: str) -> Path:
+    """Build a minimal export/trainforge dir with a course-matching chunk so
+    the chunks-freshness gate passes (mirrors the passing tests above)."""
+    trainforge_dir = export / "trainforge"
+    (trainforge_dir / "corpus").mkdir(parents=True)
+    (trainforge_dir / "corpus" / "chunks.jsonl").write_text(
+        json.dumps({
+            "id": f"{chunk_prefix}_chunk_00001",
+            "chunk_type": "explanation",
+            "text": "A prime number has exactly two divisors.",
+            "learning_outcome_refs": ["to-01", "co-01"],
+        }) + "\n",
+        encoding="utf-8",
+    )
+    return trainforge_dir
+
+
+def test_missing_source_emits_warning_but_succeeds_by_default(
+    monkeypatch, tmp_path
+):
+    """W2.3: when no synthesized_objectives.json resolves, archival still
+    succeeds (default OFF) but surfaces COURSE_JSON_OBJECTIVES_MISSING and
+    objectives_status=missing_source (the historical silent no-op is gone)."""
+    monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES", raising=False)
+
+    export = tmp_path / "export"
+    trainforge_dir = _make_trainforge(export, "objplumb_miss")
+    # NOTE: deliberately NO synthesized_objectives.json.
+
+    registry = _build_tool_registry()
+    tool = registry["archive_to_libv2"]
+    result = json.loads(asyncio.run(tool(
+        course_name="OBJPLUMB_MISS",
+        project_workspace=str(trainforge_dir),
+        pdf_paths="",
+        html_paths="",
+    )))
+    assert result.get("success") is True, result
+    assert result["objectives_status"] == "missing_source", result
+    codes = {w["code"] for w in result.get("warnings", [])}
+    assert "COURSE_JSON_OBJECTIVES_MISSING" in codes, result
+    # No objectives.json written.
+    slug = "objplumb-miss"
+    assert not (tmp_path / "LibV2" / "courses" / slug / "objectives.json").exists()
+
+
+def test_empty_projection_does_not_write_empty_objectives(monkeypatch, tmp_path):
+    """W2.3: a synthesized file that projects to ZERO objectives is a no-op —
+    we must NOT write an empty objectives.json, and status=empty is surfaced."""
+    monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES", raising=False)
+
+    export = tmp_path / "export"
+    trainforge_dir = _make_trainforge(export, "objplumb_empty")
+    synth_path = export / "01_learning_objectives" / "synthesized_objectives.json"
+    synth_path.parent.mkdir(parents=True, exist_ok=True)
+    synth_path.write_text(
+        json.dumps({"terminal_objectives": [], "chapter_objectives": []}),
+        encoding="utf-8",
+    )
+
+    registry = _build_tool_registry()
+    tool = registry["archive_to_libv2"]
+    result = json.loads(asyncio.run(tool(
+        course_name="OBJPLUMB_EMPTY",
+        project_workspace=str(trainforge_dir),
+        pdf_paths="",
+        html_paths="",
+    )))
+    assert result.get("success") is True, result
+    assert result["objectives_status"] == "empty", result
+    codes = {w["code"] for w in result.get("warnings", [])}
+    assert "COURSE_JSON_OBJECTIVES_MISSING" in codes, result
+    slug = "objplumb-empty"
+    assert not (
+        tmp_path / "LibV2" / "courses" / slug / "objectives.json"
+    ).exists()
+
+
+def test_fail_closed_flag_blocks_manifest_on_missing_objectives(
+    monkeypatch, tmp_path
+):
+    """W2.3: with ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES set, a no-op objectives
+    projection fails closed — success=False, error_code
+    COURSE_JSON_OBJECTIVES_MISSING, and NO manifest is written."""
+    monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES", "1")
+
+    export = tmp_path / "export"
+    trainforge_dir = _make_trainforge(export, "objplumb_fc")
+    # No synthesized_objectives.json → plumbing no-ops → fail closed.
+
+    registry = _build_tool_registry()
+    tool = registry["archive_to_libv2"]
+    result = json.loads(asyncio.run(tool(
+        course_name="OBJPLUMB_FC",
+        project_workspace=str(trainforge_dir),
+        pdf_paths="",
+        html_paths="",
+    )))
+    assert result.get("success") is False, result
+    assert result.get("error_code") == "COURSE_JSON_OBJECTIVES_MISSING", result
+    slug = "objplumb-fc"
+    assert not (
+        tmp_path / "LibV2" / "courses" / slug / "manifest.json"
+    ).exists(), "manifest must not be written when failing closed"
+
+
+def test_valid_objectives_still_archived_and_no_warning(monkeypatch, tmp_path):
+    """W2.3 back-compat: a valid synthesized file still archives objectives
+    and emits status=archived with an empty warnings list."""
+    monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES", raising=False)
+
+    export = tmp_path / "export"
+    trainforge_dir = _make_trainforge(export, "objplumb_ok")
+    _make_synthesized(
+        export / "01_learning_objectives" / "synthesized_objectives.json"
+    )
+
+    registry = _build_tool_registry()
+    tool = registry["archive_to_libv2"]
+    result = json.loads(asyncio.run(tool(
+        course_name="OBJPLUMB_OK",
+        project_workspace=str(trainforge_dir),
+        pdf_paths="",
+        html_paths="",
+    )))
+    assert result.get("success") is True, result
+    assert result["objectives_status"] == "archived", result
+    assert result.get("warnings") == [], result
+    slug = "objplumb-ok"
+    assert (
+        tmp_path / "LibV2" / "courses" / slug / "objectives.json"
+    ).exists()
+
+
+# --------------------------------------------------------------------------- #
 # Tier-2: real archive (dynamic discovery, skip if absent)
 # --------------------------------------------------------------------------- #
 

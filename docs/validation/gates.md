@@ -328,3 +328,18 @@ warning, `textbook_to_course` 69→71 warning — consistent with the live yaml
 totals (`course_generation` 17 critical / 29 warning / 46; `textbook_to_course`
 39 critical / 73 warning / 112; `rag_training` 4 / 3 / 7; `trainforge_train`
 2 / 0 / 2; **Total 62 critical / 105 warning / 167**).
+
+## W2.1 validator CUDA-OOM error-handling (no new gate)
+
+`ED4ALL_VALIDATOR_FAIL_CLOSED_ON_OOM` (default OFF) rides the EXISTING gate
+error-handling path in `MCP/hardening/validation_gates.py::ValidationGateManager`
+— it registers NO new gate row and changes NO Active-Gates count. When a
+validation gate raises a CUDA out-of-memory error (NLI / embedding validators
+contending for the shared 8GB card), `lib/llm/oom.py::is_cuda_oom` detects it and
+`_build_oom_gate_result` emits a DISTINCT, greppable warning-severity
+`VALIDATOR_OOM` `GateIssue` plus a `validation_result` DecisionCapture instead of
+the pre-fix SILENT auto-pass under `behavior_on_error=warn`. Default OFF still
+honours the gate's declared `behavior_on_error` for pass/block (the OOM is merely
+made visible); truthy (`1`/`true`/`yes`/`on`) fails the gate CLOSED (critical,
+blocks) regardless of `behavior_on_error`. Parse-with-fallback (garbage → off).
+No workflow gate-count change.

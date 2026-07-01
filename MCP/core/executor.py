@@ -392,87 +392,23 @@ def _agent_dispatch_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
-def _is_cuda_oom(exc: Optional[BaseException]) -> bool:
-    """Return True iff ``exc`` is (or looks like) a CUDA out-of-memory error.
-
-    A ``torch.cuda.OutOfMemoryError`` raised during an NLI / embedding
-    forward pass on a VRAM-starved box (a resident local 7B holding the
-    card) is otherwise swallowed by the broad ``except Exception`` in
-    ``_execute_with_retries`` and logged as a generic, hard-to-grep
-    warning. This predicate lets the executor recognise the OOM and emit a
-    LOUD, attributable diagnostic.
-
-    Scope note: this predicate now governs LOGGING ONLY. The OOM branch in
-    ``_execute_with_retries`` uses it to decide whether to emit the loud
-    GPU-OOM diagnostic, then FALLS THROUGH to the unchanged
-    ``ErrorClassifier`` path — and a CUDA OOM message already matches the
-    classifier's ``out of memory`` POISON_PATTERN, so it is classified
-    POISON_PILL and stops the batch via the existing runaway-VRAM circuit
-    breaker. Because this gates only the extra log line, an over-broad
-    match here is harmless (it costs at most one spurious diagnostic, never
-    a behaviour change).
-
-    Deliberately does NOT require torch to be importable (torch may be
-    absent in CI / on a CPU box). Detection is three-pronged:
-
-      1. ``isinstance`` against ``torch.cuda.OutOfMemoryError`` when torch
-         imports cleanly (the precise check).
-      2. The exception class name is ``OutOfMemoryError`` (covers a torch
-         OOM seen through a different import path, and any builtin
-         ``OutOfMemoryError``).
-      3. The message contains "cuda out of memory", or BOTH "out of
-         memory" AND "cuda" (robust against driver / runtime variants).
-
-    Never raises.
-    """
-    if exc is None:
-        return False
-    # 1) Precise isinstance when torch is importable.
-    try:  # pragma: no cover - torch presence is environment-dependent
-        import torch  # type: ignore
-
-        oom_cls = getattr(getattr(torch, "cuda", None), "OutOfMemoryError", None)
-        if oom_cls is not None and isinstance(exc, oom_cls):
-            return True
-    except Exception:  # noqa: BLE001 - torch absent / broken build
-        pass
-    # 2) Class-name fallback (torch absent / different import path).
-    if type(exc).__name__ == "OutOfMemoryError":
-        return True
-    # 3) Message-content fallback.
-    msg = str(exc).lower()
-    if "cuda out of memory" in msg:
-        return True
-    if "out of memory" in msg and "cuda" in msg:
-        return True
-    return False
-
-
-def _probe_free_vram_mib() -> Optional[int]:
-    """Best-effort free-VRAM (MiB) snapshot for the OOM diagnostic.
-
-    Cheap and GPU-process-free: reads the NLI classifier's
-    ``probe_free_vram_mib`` (NVML-first, so it reports the correct
-    cross-process free VRAM on WSL2) DIRECTLY. It deliberately does NOT go
-    through ``lib/llm/vram_doctor.snapshot_vram`` — that helper does a
-    blocking ollama ``/api/ps`` HTTP round-trip plus a total-VRAM probe to
-    build a full snapshot, which is far too heavy for a diagnostic that
-    only needs one free-MiB int. ``torch`` and the probe are imported
-    lazily inside the guard so neither is a hard dependency (torch may be
-    absent in CI / on a CPU box). Returns ``None`` on any failure; never
-    raises (the diagnostic path must not itself blow up).
-    """
-    try:
-        import torch  # type: ignore
-
-        from lib.classifiers.nli_classifier import probe_free_vram_mib
-
-        free = probe_free_vram_mib(torch, "cuda")
-        if free is not None:
-            return int(free)
-    except Exception:  # noqa: BLE001 - torch / probe unavailable
-        pass
-    return None
+# W2.1: CUDA-OOM detection + free-VRAM probe were factored into the shared
+# ``lib.llm.oom`` module so the validation-gate path
+# (``MCP/hardening/validation_gates.py``) can recognise an OOM raised inside a
+# validator WITHOUT a circular import (executor imports validation_gates). The
+# module-level ``_is_cuda_oom`` / ``_probe_free_vram_mib`` names are retained as
+# aliases so existing call sites and tests that patch
+# ``MCP.core.executor._probe_free_vram_mib`` keep working unchanged.
+#
+# Scope note for the executor's use of ``_is_cuda_oom``: here it governs
+# LOGGING ONLY. The OOM branch in ``_execute_with_retries`` uses it to decide
+# whether to emit the loud GPU-OOM diagnostic, then FALLS THROUGH to the
+# unchanged ``ErrorClassifier`` path — a CUDA OOM message already matches the
+# classifier's ``out of memory`` POISON_PATTERN, so it is classified
+# POISON_PILL and stops the batch via the runaway-VRAM circuit breaker. Because
+# it gates only the extra log line, an over-broad match here is harmless.
+from lib.llm.oom import is_cuda_oom as _is_cuda_oom  # noqa: E402
+from lib.llm.oom import probe_free_vram_mib as _probe_free_vram_mib  # noqa: E402
 
 
 @dataclass
@@ -1477,10 +1413,55 @@ class TaskExecutor:
         workflow_id: str,
         tasks: List[Dict[str, Any]],
         max_concurrent: int,
+        results_sink: Optional[Dict[str, "ExecutionResult"]] = None,
     ) -> Dict[str, ExecutionResult]:
-        """Execute tasks in parallel batches."""
-        results = {}
+        """Execute tasks in parallel batches.
+
+        Args:
+            results_sink: W2.2 — optional caller-owned dict that this method
+                writes each finished task's ``ExecutionResult`` into as it
+                goes (in addition to returning it). ``execute_phase`` passes
+                one so that when ``asyncio.wait_for`` CANCELS this coroutine
+                on a whole-phase batch timeout — discarding the local return
+                value — the results of tasks that ALREADY completed before
+                the deadline survive in the caller's sink instead of being
+                thrown away. ``None`` (the default) preserves the legacy
+                behaviour byte-for-byte: a fresh local dict is used and
+                returned. Each task's result is recorded into the sink the
+                INSTANT that task finishes (not after the whole batch's
+                gather), so a batch-timeout cancellation preserves even the
+                tasks that already completed within the in-flight batch — only
+                the tasks still awaiting ``execute_task`` are abandoned.
+        """
+        results = results_sink if results_sink is not None else {}
         completed_ids = set()
+
+        # W2.2: record each task's result into ``results`` the instant it
+        # finishes rather than after the whole batch's ``gather`` returns.
+        # When ``execute_phase`` wraps this coroutine in ``asyncio.wait_for``
+        # and the batch deadline fires, the cancellation is delivered to the
+        # in-flight ``gather``; tasks that already ran this helper to
+        # completion have ALREADY written their result to the sink and are
+        # preserved, while a task cancelled mid-flight raises
+        # ``CancelledError`` (a BaseException, deliberately NOT caught by the
+        # ``except Exception`` below) so it propagates uncaught and is left
+        # unrecorded → correctly abandoned.
+        async def _run_and_record(task: Dict[str, Any]) -> None:
+            tid = task["id"]
+            try:
+                res = await self.execute_task(workflow_id, tid)
+            except Exception as exc:  # noqa: BLE001 - mirror return_exceptions
+                results[tid] = ExecutionResult(
+                    task_id=tid,
+                    status="ERROR",
+                    error=str(exc),
+                )
+                task["status"] = "ERROR"
+                return
+            results[tid] = res
+            if res.status == "COMPLETE":
+                completed_ids.add(tid)
+            task["status"] = res.status
 
         while True:
             # Find tasks that can run (pending + dependencies met)
@@ -1499,29 +1480,17 @@ class TaskExecutor:
             if not runnable:
                 break
 
-            # Execute batch
+            # Execute batch. Each ``_run_and_record`` writes its own result
+            # into ``results`` as it finishes (W2.2), so no post-gather
+            # zip-and-record pass is needed. ``return_exceptions=True`` keeps
+            # a single task's raised exception from cancelling its siblings;
+            # the helper itself already funnels non-cancellation exceptions
+            # into an ERROR ExecutionResult.
             batch = runnable[:max_concurrent]
-            batch_tasks = [
-                self.execute_task(workflow_id, t["id"])
-                for t in batch
-            ]
-
-            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-
-            for task, result in zip(batch, batch_results):
-                task_id = task["id"]
-                if isinstance(result, Exception):
-                    results[task_id] = ExecutionResult(
-                        task_id=task_id,
-                        status="ERROR",
-                        error=str(result),
-                    )
-                    task["status"] = "ERROR"
-                else:
-                    results[task_id] = result
-                    if result.status == "COMPLETE":
-                        completed_ids.add(task_id)
-                    task["status"] = result.status
+            await asyncio.gather(
+                *[_run_and_record(t) for t in batch],
+                return_exceptions=True,
+            )
 
             # Wave 38: stop the batch loop as soon as any task emits
             # POISON_PILL so subsequent batches don't waste work.
@@ -1672,22 +1641,69 @@ class TaskExecutor:
                 rationale=f"Phase {phase_index}, {len(tasks)} tasks, max_concurrent={max_concurrent}",
             )
 
-        # Execute tasks with batch timeout
+        # Execute tasks with batch timeout.
+        #
+        # W2.2: a whole-phase batch timeout must NOT discard the results (and
+        # checkpoints) of tasks that ALREADY completed before the deadline.
+        # ``asyncio.wait_for`` cancels ``_execute_parallel`` and throws away
+        # its local return value, so pre-fix the ``except`` rebuilt a fresh
+        # ``results`` dict marking every still-PENDING task TIMEOUT — every
+        # finished task's real ExecutionResult (and its checkpoint) was lost.
+        # We thread a caller-owned ``results_sink`` so completed results
+        # survive the cancellation; on timeout we PRESERVE those and mark only
+        # the still-unfinished tasks TIMEOUT (abandoned / retried later).
+        partial_results: Dict[str, ExecutionResult] = {}
         try:
             results = await asyncio.wait_for(
-                self._execute_parallel(workflow_id, tasks, max_concurrent),
+                self._execute_parallel(
+                    workflow_id, tasks, max_concurrent,
+                    results_sink=partial_results,
+                ),
                 timeout=batch_timeout_seconds
             )
         except asyncio.TimeoutError:
-            logger.error(f"[{self.run_id}] Phase {phase_name} timed out after {batch_timeout_seconds}s")
-            results = {
-                t.get("id"): ExecutionResult(
-                    task_id=t.get("id"),
+            # Keep every task that finished before the deadline (its real
+            # status + result payload) from the sink, then TIMEOUT-mark only
+            # the tasks that never finished. A task that was already non-PENDING
+            # (e.g. pre-completed on resume) and never ran this phase is left
+            # untouched, matching the prior ``status == "PENDING"`` filter.
+            results = dict(partial_results)
+            timed_out_ids: List[Any] = []
+            for t in tasks:
+                tid = t.get("id")
+                if tid in results:
+                    continue  # finished before the deadline — preserve it
+                if t.get("status") != "PENDING":
+                    continue  # not part of this phase's run
+                results[tid] = ExecutionResult(
+                    task_id=tid,
                     status="TIMEOUT",
-                    error=f"Phase batch timeout after {batch_timeout_seconds}s"
+                    error=f"Phase batch timeout after {batch_timeout_seconds}s",
                 )
-                for t in tasks if t.get("status") == "PENDING"
-            }
+                timed_out_ids.append(tid)
+            logger.error(
+                f"[{self.run_id}] Phase {phase_name} timed out after "
+                f"{batch_timeout_seconds}s — preserved {len(partial_results)} "
+                f"completed task result(s)/checkpoint(s); marked "
+                f"{len(timed_out_ids)} unfinished task(s) TIMEOUT"
+            )
+            if self.capture:
+                self.capture.log_decision(
+                    decision_type="phase_completion",
+                    decision=(
+                        f"Phase {phase_name} batch timeout: preserved "
+                        f"{len(partial_results)} completed, abandoned "
+                        f"{len(timed_out_ids)} unfinished"
+                    ),
+                    rationale=(
+                        f"Batch wall-clock deadline {batch_timeout_seconds}s hit "
+                        f"on phase {phase_name} (index {phase_index}); completed "
+                        f"task results + their checkpoints preserved via the "
+                        f"results_sink instead of discarded, only the "
+                        f"{len(timed_out_ids)} unfinished task(s) abandoned for "
+                        f"retry (ids={timed_out_ids})"
+                    ),
+                )
 
         # Update checkpoint with task results
         if self.checkpoint_manager:

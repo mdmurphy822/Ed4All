@@ -18066,6 +18066,7 @@ def _build_tool_registry() -> dict:
             "html": [],
             "imscc": None,
             "assessment": None,
+            "objectives": None,
             "trainforge": {
                 "chunks": None,
                 "graph": None,
@@ -18074,6 +18075,16 @@ def _build_tool_registry() -> dict:
                 "quality_report": None,
             },
         }
+
+        # W2.3: opt-in fail-closed for the objectives->course.json archival
+        # plumbing. Default OFF (parse-with-fallback: only the explicit truthy
+        # tokens flip it on) preserves the historical best-effort behaviour;
+        # when set, a no-op objectives projection refuses to write the manifest
+        # (see the COURSE_JSON_OBJECTIVES_MISSING block below).
+        _require_archived_objectives = (
+            os.environ.get("ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES", "")
+            .strip().lower() in {"1", "true", "yes", "on"}
+        )
 
         # --- Copy raw PDFs -------------------------------------------------
         if pdf_paths_str:
@@ -18386,6 +18397,17 @@ def _build_tool_registry() -> dict:
                     _objectives_src = _cand
                     break
 
+        # W2.3: track the objectives-plumbing outcome so a silent no-op is
+        # surfaced (not swallowed). The projection can no-op three ways — the
+        # synthesized source never resolves (path mismatch), the projection
+        # raises, or it yields an EMPTY objectives doc — and historically no
+        # gate noticed because the packet-integrity validator then falls back
+        # to the parent-less course.json. Each no-op now emits the distinct
+        # COURSE_JSON_OBJECTIVES_MISSING code.
+        _objectives_status = "archived"
+        _objectives_detail = ""
+        _obj_terminal_n = 0
+        _obj_component_n = 0
         if _objectives_src is not None:
             try:
                 from lib.libv2_storage import (
@@ -18396,35 +18418,135 @@ def _build_tool_registry() -> dict:
                     _objectives_src.read_text(encoding="utf-8")
                 )
                 _objectives = project_objectives_for_archive(_synth)
-                _obj_dest = course_dir / OBJECTIVES_ARCHIVE_FILENAME
-                _obj_dest.write_text(
-                    json.dumps(_objectives, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
+                _obj_terminal_n = len(
+                    _objectives.get("terminal_outcomes", [])
                 )
-                archived["objectives"] = str(_obj_dest)
-                logger.info(
-                    "archive_to_libv2: projected %s -> %s "
-                    "(%d terminal_outcomes + %d component_objectives).",
-                    _objectives_src,
-                    _obj_dest,
-                    len(_objectives.get("terminal_outcomes", [])),
-                    len(_objectives.get("component_objectives", [])),
+                _obj_component_n = len(
+                    _objectives.get("component_objectives", [])
                 )
+                if _obj_terminal_n == 0 and _obj_component_n == 0:
+                    # Projection ran but produced nothing archivable — a
+                    # silent no-op that historically wrote an empty
+                    # objectives.json and let the gate fall back to
+                    # course.json. Refuse to paper over it: do NOT write an
+                    # empty objectives.json.
+                    _objectives_status = "empty"
+                    _objectives_detail = (
+                        f"projection of {_objectives_src} yielded zero "
+                        f"terminal_outcomes and zero component_objectives"
+                    )
+                    logger.warning(
+                        "archive_to_libv2: %s "
+                        "(COURSE_JSON_OBJECTIVES_MISSING); the packet-"
+                        "integrity gate would fall back to the (parent-less) "
+                        "course.json.",
+                        _objectives_detail,
+                    )
+                else:
+                    _obj_dest = course_dir / OBJECTIVES_ARCHIVE_FILENAME
+                    _obj_dest.write_text(
+                        json.dumps(
+                            _objectives, indent=2, ensure_ascii=False
+                        ),
+                        encoding="utf-8",
+                    )
+                    archived["objectives"] = str(_obj_dest)
+                    logger.info(
+                        "archive_to_libv2: projected %s -> %s "
+                        "(%d terminal_outcomes + %d component_objectives).",
+                        _objectives_src,
+                        _obj_dest,
+                        _obj_terminal_n,
+                        _obj_component_n,
+                    )
             except (OSError, ValueError) as _exc:
+                _objectives_status = "projection_failed"
+                _objectives_detail = (
+                    f"failed to project {_objectives_src}: {_exc}"
+                )
                 logger.warning(
                     "archive_to_libv2: failed to project objectives.json "
-                    "from %s (%s); packet-integrity gate will fall back to "
-                    "course.json.",
+                    "from %s (%s) (COURSE_JSON_OBJECTIVES_MISSING); "
+                    "packet-integrity gate will fall back to course.json.",
                     _objectives_src, _exc,
                 )
         else:
-            logger.warning(
-                "archive_to_libv2: no synthesized_objectives.json located "
-                "for course %s — archive will lack objectives.json; the "
-                "packet-integrity gate falls back to the (parent-less) "
-                "course.json learning_outcomes.",
-                course_name,
+            _objectives_status = "missing_source"
+            _objectives_detail = (
+                f"no synthesized_objectives.json located for course "
+                f"{course_name}"
             )
+            logger.warning(
+                "archive_to_libv2: %s (COURSE_JSON_OBJECTIVES_MISSING) — "
+                "archive will lack objectives.json; the packet-integrity "
+                "gate falls back to the (parent-less) course.json "
+                "learning_outcomes.",
+                _objectives_detail,
+            )
+
+        # W2.3: distinct warning surfaced on the return envelope + a
+        # DecisionCapture on every archival-objectives decision (replayable,
+        # dynamic rationale). Capture failure must never break archival.
+        _archival_warnings: List[Dict[str, Any]] = []
+        if _objectives_status != "archived":
+            _archival_warnings.append({
+                "code": "COURSE_JSON_OBJECTIVES_MISSING",
+                "status": _objectives_status,
+                "detail": _objectives_detail,
+            })
+        try:
+            from lib.decision_capture import (
+                DecisionCapture as _DecisionCapture,  # noqa: PLC0415
+            )
+            _obj_capture = _DecisionCapture(
+                course_code=course_name,
+                phase="libv2_archival",
+                tool="pipeline",
+            )
+            _obj_capture.log_decision(
+                decision_type="archival_objectives_projection",
+                decision=f"objectives_status={_objectives_status}",
+                rationale=(
+                    f"archive_to_libv2 objectives plumbing for course "
+                    f"{course_name}: status={_objectives_status}, "
+                    f"source="
+                    f"{_objectives_src if _objectives_src else 'unresolved'}, "
+                    f"terminal_outcomes={_obj_terminal_n}, "
+                    f"component_objectives={_obj_component_n}, "
+                    f"require_archived_objectives="
+                    f"{_require_archived_objectives}, "
+                    f"detail={_objectives_detail or 'ok'}."
+                ),
+            )
+        except Exception as _cap_exc:  # noqa: BLE001 — capture must not break archival
+            logger.debug(
+                "archival_objectives_projection decision capture failed: %s",
+                _cap_exc,
+            )
+
+        # W2.3 opt-in fail-closed: when the plumbing no-op'd AND the operator
+        # set ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES, refuse to write the manifest
+        # (mirrors the TRAINFORGE_OUTPUT_STALE fail-closed posture). Default
+        # OFF keeps the historical best-effort behaviour.
+        if _objectives_status != "archived" and _require_archived_objectives:
+            logger.error(
+                "archive_to_libv2: refusing to write manifest — objectives "
+                "plumbing no-op'd (%s) for course %s and "
+                "ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES is set.",
+                _objectives_status, course_name,
+            )
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"objectives.json was not archived ({_objectives_detail}); "
+                    f"the packet-integrity gate would fall back to the "
+                    f"parent-less course.json"
+                ),
+                "error_code": "COURSE_JSON_OBJECTIVES_MISSING",
+                "objectives_status": _objectives_status,
+                "course_name": course_name,
+                "course_slug": slug,
+            })
 
         # --- Wave 74 fail-closed: chunks-freshness gate -------------------
         # When a chunks.jsonl exists at the archive destination, it MUST
@@ -18710,11 +18832,16 @@ def _build_tool_registry() -> dict:
             "trainforge_workspace": (
                 str(trainforge_dir) if trainforge_dir is not None else None
             ),
+            # W2.3: surface the objectives-plumbing outcome so a caller (and a
+            # warning gate) can see a no-op instead of it being swallowed.
+            "objectives_status": _objectives_status,
+            "warnings": _archival_warnings,
             "artifact_counts": {
                 "pdfs": len(archived["pdfs"]),
                 "html_files": len(archived["html"]),
                 "imscc": 1 if archived["imscc"] else 0,
                 "assessment": 1 if archived["assessment"] else 0,
+                "objectives": 1 if archived["objectives"] else 0,
                 "trainforge": sum(
                     1 for v in archived["trainforge"].values() if v is not None
                 ),
@@ -23316,6 +23443,44 @@ def _build_tool_registry() -> dict:
         text_field_policy = kwargs.get("text_field_policy") or "text+heading"
         force = bool(kwargs.get("force", False))
 
+        # W2.4: anti-poisoning — a ``fake``-provider index carries
+        # non-semantic vectors and must never masquerade as a real index on
+        # a production read path. Mirror the read-side ``FakeIndexRefused``
+        # guard at BUILD time, reusing the existing ED4ALL_EMBEDDING_ALLOW_FAKE
+        # flag (parse-with-fallback: only the explicit truthy tokens allow it).
+        _allow_fake = (
+            os.environ.get("ED4ALL_EMBEDDING_ALLOW_FAKE", "")
+            .strip().lower() in {"1", "true", "yes", "on"}
+        )
+
+        def _emit_index_decision(strategy: str, detail: str) -> None:
+            """W2.4: best-effort DecisionCapture for the (re)index strategy
+            (``built`` / ``idempotent_reuse`` / ``fake_provider_refused``).
+            Capture failure must never break the indexing phase."""
+            try:
+                from lib.decision_capture import (
+                    DecisionCapture as _DecisionCapture,  # noqa: PLC0415
+                )
+                _cap = _DecisionCapture(
+                    course_code=course_name,
+                    phase="vector_indexing",
+                    tool="pipeline",
+                )
+                _cap.log_decision(
+                    decision_type="index_strategy",
+                    decision=f"index_strategy={strategy}",
+                    rationale=(
+                        f"run_vector_indexing for course {course_slug}: "
+                        f"strategy={strategy}, provider={provider or 'env'}, "
+                        f"model={model_id or 'default'}, force={force}, "
+                        f"allow_fake={_allow_fake}, detail={detail}."
+                    ),
+                )
+            except Exception as _cap_exc:  # noqa: BLE001 — capture must not break indexing
+                logger.debug(
+                    "index_strategy decision capture failed: %s", _cap_exc
+                )
+
         course_dir = (
             _resolve_libv2_root(kwargs.get("libv2_root"))
             / "courses"
@@ -23331,6 +23496,7 @@ def _build_tool_registry() -> dict:
             )
             from LibV2.tools.libv2.vector_index import (
                 SemanticIndexMissing,
+                VectorIndexManifest,
                 build_vector_index,
             )
         except Exception as exc:  # noqa: BLE001 — missing index/embedding deps
@@ -23359,10 +23525,42 @@ def _build_tool_registry() -> dict:
         # Build the embedding client from the env-configured provider. The
         # build path is provision-time, so offline=False (a real provider may
         # download weights here — never on the query path).
+        _index_strategy = "built"
         try:
             client = build_embedding_client(
                 provider, model_id, offline=False
             )
+            # W2.4: refuse to WRITE a fake-provider index into a production
+            # course dir unless ED4ALL_EMBEDDING_ALLOW_FAKE is set. Checked
+            # BEFORE build_vector_index so no poisoned index is written to
+            # disk (the read path already refuses to load one).
+            _client_provider = ""
+            try:
+                _client_provider = str(
+                    dict(client.model_fingerprint()).get("provider_name")
+                    or ""
+                )
+            except Exception:  # noqa: BLE001 — fingerprint probe best-effort
+                _client_provider = ""
+            if _client_provider == "fake" and not _allow_fake:
+                _emit_index_decision(
+                    "fake_provider_refused",
+                    "fake provider resolved and ED4ALL_EMBEDDING_ALLOW_FAKE "
+                    "unset — refused before build",
+                )
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"refusing to build a fake-provider vector index for "
+                        f"{course_slug}: the deterministic 'fake' embedding "
+                        f"provider produces non-semantic vectors. Set "
+                        f"ED4ALL_EMBEDDING_ALLOW_FAKE=true to permit it "
+                        f"(tests only), or select a real embedding provider."
+                    ),
+                    "error_type": "fake_provider_refused",
+                    "error_code": "FAKE_INDEX_REFUSED",
+                    "course_slug": course_slug,
+                })
             manifest = build_vector_index(
                 course_dir,
                 client=client,
@@ -23389,12 +23587,60 @@ def _build_tool_registry() -> dict:
                 "course_slug": course_slug,
             })
         except FileExistsError as exc:
-            return json.dumps({
-                "success": False,
-                "error": str(exc),
-                "error_type": "fresh_index_exists",
-                "course_slug": course_slug,
-            })
+            # W2.4 idempotency: a still-fresh pre-existing index is NOT a
+            # phase failure. Re-running the indexing phase over an
+            # already-current index (its source_chunks_sha256 still matches
+            # the live chunkset) is a clean no-op — load the existing
+            # manifest and return success. A forced rebuild that still hit
+            # FileExistsError would be a genuine surprise (force bypasses the
+            # freshness guard), so surface it.
+            if force:
+                return json.dumps({
+                    "success": False,
+                    "error": str(exc),
+                    "error_type": "fresh_index_exists",
+                    "course_slug": course_slug,
+                })
+            try:
+                manifest = VectorIndexManifest.from_file(
+                    course_dir / "vector_index" / "manifest.json"
+                )
+            except Exception as _load_exc:  # noqa: BLE001 — manifest re-read
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"a fresh vector index exists at {course_dir}/"
+                        f"vector_index but its manifest could not be re-loaded "
+                        f"for idempotent success: {_load_exc}"
+                    ),
+                    "error_type": "build_error",
+                    "course_slug": course_slug,
+                })
+            # W2.4: even on the idempotent path, an on-disk fake index must
+            # not report success unless explicitly allowed (it may have been
+            # built earlier under ED4ALL_EMBEDDING_ALLOW_FAKE).
+            if (
+                str(getattr(manifest, "embedding_provider", "")) == "fake"
+                and not _allow_fake
+            ):
+                _emit_index_decision(
+                    "fake_provider_refused",
+                    "existing fresh index is fake-provider and "
+                    "ED4ALL_EMBEDDING_ALLOW_FAKE unset",
+                )
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"a fresh vector index exists for {course_slug} but "
+                        f"was built with the 'fake' embedding provider; set "
+                        f"ED4ALL_EMBEDDING_ALLOW_FAKE=true or rebuild with a "
+                        f"real provider (--force)."
+                    ),
+                    "error_type": "fake_provider_refused",
+                    "error_code": "FAKE_INDEX_REFUSED",
+                    "course_slug": course_slug,
+                })
+            _index_strategy = "idempotent_reuse"
         except Exception as exc:  # noqa: BLE001 — surface, never silently degrade
             return json.dumps({
                 "success": False,
@@ -23403,6 +23649,11 @@ def _build_tool_registry() -> dict:
                 "course_slug": course_slug,
             })
 
+        _emit_index_decision(
+            _index_strategy,
+            f"chunks_count={getattr(manifest, 'chunks_count', '?')}, "
+            f"provider={getattr(manifest, 'embedding_provider', '?')}",
+        )
         index_dir = course_dir / "vector_index"
         try:
             fingerprint = dict(client.model_fingerprint())
@@ -23423,6 +23674,9 @@ def _build_tool_registry() -> dict:
             "chunkset_kind": manifest.chunkset_kind,
             "source_chunks_sha256": manifest.source_chunks_sha256,
             "course_slug": course_slug,
+            # W2.4: "built" on a fresh build, "idempotent_reuse" when a
+            # still-fresh index was re-used instead of failing the phase.
+            "index_strategy": _index_strategy,
         })
 
     registry["run_vector_indexing"] = _run_vector_indexing

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from MCP.core.config import OrchestratorConfig
@@ -31,6 +32,38 @@ from MCP.core.executor import TaskExecutor
 from .worker_contracts import PhaseInput, PhaseOutput
 
 logger = logging.getLogger(__name__)
+
+# Env flag: set truthy to allow the stub ``APIDispatcher.dispatch_task`` path
+# to return a fake ``success=True`` envelope without doing real work. Default
+# off so production ``--mode api`` runs (Wave 74 per-task subagent dispatch,
+# ``ED4ALL_AGENT_DISPATCH=true``) fail loudly instead of silently succeeding
+# with empty outputs. Reuses ``LocalDispatcher``'s stub-allow env so the two
+# dispatchers share one opt-in. Tests set this to exercise the stub path.
+_ALLOW_STUB_ENV = "LOCAL_DISPATCHER_ALLOW_STUB"
+
+
+def _stub_allowed() -> bool:
+    """Return True when the ungated-stub opt-in env is truthy.
+
+    Parse-with-fallback: any non-truthy / garbage token → False (off).
+    """
+    return os.environ.get(_ALLOW_STUB_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+class APIDispatcherStubNotAllowed(RuntimeError):
+    """Raised when ``dispatch_task`` would emit an ungated fake-success stub.
+
+    The Session-1 ``dispatch_task`` has no real per-agent LLM round-trip yet
+    (Session 2 wires the prompt templates). Returning ``success=True`` with
+    empty outputs on a real run silently fakes success. This guard makes that
+    path opt-in via ``LOCAL_DISPATCHER_ALLOW_STUB``; without it, dispatch
+    fails closed.
+    """
 
 
 class APIDispatcher:
@@ -134,18 +167,36 @@ class APIDispatcher:
     ) -> Dict[str, Any]:
         """Dispatch one phase task to an in-process agent coroutine.
 
-        Wave 74 Session 1: returns a stub envelope because the agent-
-        prompt templates + LLMBackend round-trip land in Session 2.
-        The stub shape matches what ``LocalDispatcher.dispatch_task``
-        emits when ``LOCAL_DISPATCHER_ALLOW_STUB=1`` — just enough to
-        let the executor routing fork round-trip without requiring
-        Session 2's prompt infrastructure.
+        Wave 74 Session 1: the agent-prompt templates + LLMBackend
+        round-trip land in Session 2, so there is no real per-agent work
+        to do here yet. Rather than silently return a fake ``success``
+        envelope (which makes a real ``--mode api`` run appear to succeed
+        with empty outputs), this path is gated behind
+        ``LOCAL_DISPATCHER_ALLOW_STUB`` (mirroring ``LocalDispatcher``):
+
+        * flag truthy → emit the stub envelope (shape matches what
+          ``LocalDispatcher.dispatch_task`` emits under the same flag),
+          letting the executor routing fork round-trip in dry-run / CI.
+        * flag off (default) → raise ``APIDispatcherStubNotAllowed`` so
+          the run fails loudly instead of faking success.
         """
         self._dispatched.append(f"{agent_type}:{task_name}")
+
+        if not _stub_allowed():
+            msg = (
+                "APIDispatcher.dispatch_task has no real agent round-trip "
+                f"(Session-1 stub) for agent={agent_type} tool={task_name} "
+                f"run_id={run_id}; refusing to fake success with empty "
+                f"outputs. Set {_ALLOW_STUB_ENV}=1 to accept the stub "
+                "envelope (dry-run / CI only)."
+            )
+            logger.error(msg)
+            raise APIDispatcherStubNotAllowed(msg)
+
         logger.info(
             "APIDispatcher.dispatch_task (Session-1 stub) — "
-            "agent=%s tool=%s run_id=%s",
-            agent_type, task_name, run_id,
+            "%s set — agent=%s tool=%s run_id=%s",
+            _ALLOW_STUB_ENV, agent_type, task_name, run_id,
         )
         return {
             "success": True,

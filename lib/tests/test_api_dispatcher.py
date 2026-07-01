@@ -5,7 +5,11 @@ import asyncio
 
 import pytest
 
-from MCP.orchestrator.api_dispatcher import APIDispatcher
+from MCP.orchestrator.api_dispatcher import (
+    APIDispatcher,
+    APIDispatcherStubNotAllowed,
+    _ALLOW_STUB_ENV,
+)
 from MCP.orchestrator.llm_backend import MockBackend
 from MCP.orchestrator.worker_contracts import PhaseInput, PhaseOutput
 
@@ -38,6 +42,53 @@ class TestAPIDispatcherStub:
         await dispatcher.dispatch_phase(_phase_input(phase="p2"))
         dispatched = await dispatcher.after_run(workflow_id="W1", result={})
         assert dispatched == ["p1", "p2"]
+
+
+class TestAPIDispatcherTaskStubGate:
+    """W2.5: dispatch_task's fake-success stub must be gated behind
+    LOCAL_DISPATCHER_ALLOW_STUB so a real run never silently succeeds
+    with empty outputs."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_task_raises_when_stub_flag_off(self, monkeypatch):
+        monkeypatch.delenv(_ALLOW_STUB_ENV, raising=False)
+        dispatcher = APIDispatcher()
+        with pytest.raises(APIDispatcherStubNotAllowed):
+            await dispatcher.dispatch_task(
+                task_name="generate_content",
+                agent_type="content-generator",
+                task_params={"week": 1},
+                run_id="RUN_API_002",
+            )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_task_raises_on_garbage_flag(self, monkeypatch):
+        # Parse-with-fallback: a non-truthy token stays off → still raises.
+        monkeypatch.setenv(_ALLOW_STUB_ENV, "banana")
+        dispatcher = APIDispatcher()
+        with pytest.raises(APIDispatcherStubNotAllowed):
+            await dispatcher.dispatch_task(
+                task_name="generate_content",
+                agent_type="content-generator",
+                task_params={},
+                run_id="RUN_API_003",
+            )
+
+    @pytest.mark.asyncio
+    async def test_dispatch_task_stub_when_flag_on(self, monkeypatch):
+        monkeypatch.setenv(_ALLOW_STUB_ENV, "1")
+        dispatcher = APIDispatcher()
+        result = await dispatcher.dispatch_task(
+            task_name="generate_content",
+            agent_type="content-generator",
+            task_params={"week": 1},
+            run_id="RUN_API_004",
+        )
+        assert result["success"] is True
+        assert result["dispatch_mode"] == "api_stub"
+        assert result["agent_type"] == "content-generator"
+        assert result["tool_name"] == "generate_content"
+        assert result["outputs"] == {}
 
 
 class TestAPIDispatcherWorker:
