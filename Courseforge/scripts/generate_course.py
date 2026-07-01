@@ -2124,6 +2124,64 @@ def _render_key_terms_section(
     )
 
 
+def _render_faq_section(
+    entries: List[Dict],
+    *,
+    page_id: str = "",
+) -> str:
+    """W6.4 — render a FAQ section of deterministic grounded Q/A cards.
+
+    Each ``entries`` item is ``{question, answer, source_link? | sourceLink?}``.
+    Emits one ``data-cf-content-type="faq"`` FAQ card ``<div>`` per entry (via
+    the single-source ``lib.generation.faq_page.render_faq_card`` helper)
+    carrying the question, its grounded answer, and (when present) a source
+    deep-link. Reuses the existing ``.callout`` styles; no new CSS is required.
+    Returns an empty string when ``entries`` is empty. The builder
+    (``build_faq_blocks``) is gated by ``ED4ALL_FAQ_PAGE`` (default OFF) at the
+    call site, so a flag-off run never reaches this renderer with FAQ entries.
+    """
+    if not entries:
+        return ""
+    from lib.generation.faq_page import render_faq_card  # noqa: PLC0415
+
+    bound_page_id = page_id or _LEGACY_PAGE_ID
+    cards: List[str] = []
+    for i, e in enumerate(entries):
+        question = str(e.get("question", ""))
+        answer = str(e.get("answer", ""))
+        link = e.get("source_link") or e.get("sourceLink")
+        card_html = render_faq_card(
+            question=question,
+            answer=answer,
+            source_link=link if isinstance(link, str) and link else None,
+        )
+        term_slug = _slugify(str(e.get("slug") or question)) or f"q{i}"
+        block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "vocab_card", term_slug, i
+            ),
+            block_type="vocab_card",
+            page_id=bound_page_id,
+            sequence=i,
+            content={"question": question, "answer": answer},
+            template_type="faq",
+        )
+        # Splice the Block wrapper's data-cf-* attrs onto the pre-rendered card
+        # (mirrors _render_key_terms_section's block-attr splice) so the FAQ card
+        # carries the stable block id for cross-referencing.
+        block_attrs = block.to_html_attrs()
+        card_html = card_html.replace(
+            'data-cf-content-type="faq">',
+            f'data-cf-content-type="faq"{block_attrs}>',
+            1,
+        )
+        cards.append(card_html)
+    return (
+        '    <section class="faq" data-cf-content-type="faq">\n'
+        '    ' + "\n    ".join(cards) + '\n    </section>'
+    )
+
+
 # ---------------------------------------------------------------------------
 # IB5 — deterministic renderers for the four framework-aligned pedagogical
 # block types (hook B02 / multimedia B04 / worked_example B05 / diagram B06).
@@ -3270,13 +3328,33 @@ _CONFIDENCE_SCALE = (
 )
 
 
+# W6.6 — the calibration-COMPARISON note appended to a GRADED assessment_item
+# (B14) confidence capture. A graded item has a KNOWN correct answer, so the
+# learner can compare their STATED confidence against their CORRECTNESS (the
+# calibration loop). Deterministic, generic guidance — no per-item content, so
+# it never fabricates. Reveal-gated (``<details>``) so it reads AFTER the answer.
+_CALIBRATION_COMPARISON_NOTE = (
+    "Compare your confidence with your result: high confidence and correct "
+    "means you are well calibrated; high confidence but incorrect signals "
+    "overconfidence — revisit this idea; low confidence but correct means "
+    "you knew more than you thought."
+)
+
+
 def _render_confidence_capture(block: "Block") -> str:
-    """C3-4 — render the B07 self-check CONFIDENCE-capture control.
+    """C3-4 / W6.6 — render the CONFIDENCE-capture control for a check/assessment.
 
     The framework wants a knowledge-check to capture the learner's CONFIDENCE /
     certainty alongside their answer (supports calibration + metacognition; the
     same theme as the B11 predict-then-reveal work). Renders a radio-group
     "how sure are you?" scale from the ``Block.confidence_prompt`` field.
+
+    W6.6 — for a GRADED ``assessment_item`` (B14) block (which has a known
+    correct answer), ALSO appends a calibration-COMPARISON note inside a
+    ``<details>`` reveal so the learner can compare their STATED confidence
+    against their CORRECTNESS. The note is deterministic generic guidance (no
+    per-item content) so it never fabricates. Self-check (B07) blocks keep the
+    fieldset-only output byte-identical.
 
     Gated by ``ED4ALL_REFLECTION_CALIBRATION`` (reused — confidence capture is
     the same calibration theme) — returns ``""`` when the flag is unset OR the
@@ -3301,6 +3379,17 @@ def _render_confidence_capture(block: "Block") -> str:
             f'{html_mod.escape(label)}</label>'
         )
     parts.append('      </fieldset>')
+    # W6.6 — graded assessment_item (B14): add the calibration-comparison reveal.
+    if getattr(block, "block_type", "") == "assessment_item":
+        parts.append('      <details class="calibration-comparison">')
+        parts.append(
+            '        <summary>Compare your confidence with your result</summary>'
+        )
+        parts.append(
+            f'        <p class="calibration-note">'
+            f'{html_mod.escape(_CALIBRATION_COMPARISON_NOTE)}</p>'
+        )
+        parts.append('      </details>')
     return "\n".join(parts)
 
 

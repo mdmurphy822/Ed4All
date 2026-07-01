@@ -123,7 +123,8 @@ def _iter_week_groups(content_dir: Path) -> List[Tuple[str, int, Path, List[Path
 
     order = {
         "overview": 0, "content": 1, "application": 2,
-        "self_check": 3, "key_terms": 4, "summary": 5, "discussion": 6,
+        "self_check": 3, "key_terms": 4, "faq": 5, "summary": 6,
+        "discussion": 7,
     }
 
     def _sort_key(f: Path):

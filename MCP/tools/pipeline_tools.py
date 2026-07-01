@@ -1105,6 +1105,52 @@ def _assessment_item_payload_structurally_empty(content: str) -> bool:
     return len(_ASSESSMENT_ITEM_DISTRACTOR_LI_RE.findall(content)) < 2
 
 
+# W6.6 — default confidence-capture prompt stamped on a content-tier
+# ``assessment_item`` (B14) block when ``ED4ALL_REFLECTION_CALIBRATION`` is on.
+# A graded item has a KNOWN correct answer, so capturing the learner's stated
+# confidence lets ``generate_course._render_confidence_capture`` append the
+# calibration-comparison reveal (confidence vs correctness). Deterministic
+# generic text (no per-item content) so it never fabricates.
+_ASSESSMENT_CONFIDENCE_PROMPT = "How confident are you in your answer?"
+
+
+def _assessment_confidence_capture_html(block: Any) -> str:
+    """Return the confidence-capture HTML for an ``assessment_item`` block, else "".
+
+    W6.6 (flag ``ED4ALL_REFLECTION_CALIBRATION``, reused). When the flag is off
+    (default) returns ``""`` so the assessment_item emit is BYTE-IDENTICAL. When
+    on, stamps a default ``confidence_prompt`` on the block (only when it carries
+    none — a hash-excluded Optional field) and delegates to
+    ``generate_course._render_confidence_capture``, which renders the
+    "how sure are you?" scale PLUS the graded-B14 calibration-comparison reveal.
+    No-op for every non-``assessment_item`` block type. Fail-soft: any
+    import/render error yields ``""`` (additive; never breaks the page render).
+    """
+    if getattr(block, "block_type", "") != "assessment_item":
+        return ""
+    try:
+        from lib.generation.reflection_calibration import (  # noqa: PLC0415
+            resolve_reflection_calibration,
+        )
+
+        if not resolve_reflection_calibration():
+            return ""
+        import dataclasses as _dc_conf  # noqa: PLC0415
+        from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+            _render_confidence_capture,
+        )
+
+        existing = getattr(block, "confidence_prompt", None)
+        blk = block
+        if not (isinstance(existing, str) and existing.strip()):
+            blk = _dc_conf.replace(
+                block, confidence_prompt=_ASSESSMENT_CONFIDENCE_PROMPT
+            )
+        return _render_confidence_capture(blk)
+    except Exception:  # noqa: BLE001 — additive; never break render
+        return ""
+
+
 def _render_block_fallback_html(
     block: Any,
     *,
@@ -1311,6 +1357,12 @@ def _render_block_fallback_html(
             f"<p>{esc(stem)}</p>"
             f"<ol>{li_html}</ol></div>"
         )
+        # W6.6 — graded-B14 confidence capture + calibration-comparison reveal
+        # (ED4ALL_REFLECTION_CALIBRATION, reused). "" when the flag is off →
+        # byte-identical (mirrors the misconception productive-failure scaffold).
+        _conf_html = _assessment_confidence_capture_html(block)
+        if _conf_html:
+            body_parts.append(_conf_html)
 
     elif block_type == "misconception":
         # Deterministic misconception-card render (the rewrite tier is the
@@ -2968,10 +3020,15 @@ _PAGE_TYPE_LABELS: Dict[str, str] = {
     # Feature I5 — deterministic per-TO "Key Terms" page (opt-in via
     # ED4ALL_KEY_TERMS_PAGE; default OFF keeps the five-type list intact).
     "key_terms": "Key Terms",
+    # W6.4 — deterministic per-week "FAQ" page (opt-in via ED4ALL_FAQ_PAGE;
+    # default OFF keeps the five-type list intact). Builder + renderer are
+    # owned by Lane B (lib/generation/faq_page.py + generate_course.py); this
+    # is the page-type REGISTRATION half.
+    "faq": "Frequently Asked Questions",
 }
 
 _PAGE_ID_TYPE_RE = re.compile(
-    r"^week[_-]?\d+(?:_(?P<ptype>overview|content|application|self_check|summary|key_terms))?",
+    r"^week[_-]?\d+(?:_(?P<ptype>overview|content|application|self_check|summary|key_terms|faq))?",
     re.IGNORECASE,
 )
 
@@ -7803,6 +7860,21 @@ def _dynamic_block_plan_enabled() -> bool:
     )
 
 
+# W6.1 cross-week cumulative-retrieval gate. Default OFF → byte-identical (the
+# per-week planner stays stateless; no cross-week blocks scheduled). Active only
+# on the dynamic-planner path (a WeekBlockPlan must exist to inject into).
+_ED4ALL_CROSS_WEEK_RETRIEVAL_ENV = "ED4ALL_PLANNER_CROSS_WEEK_RETRIEVAL"
+_ED4ALL_CROSS_WEEK_RETRIEVAL_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _cross_week_retrieval_enabled() -> bool:
+    """Read ``ED4ALL_PLANNER_CROSS_WEEK_RETRIEVAL`` each call (parse-with-fallback)."""
+    return (
+        os.environ.get(_ED4ALL_CROSS_WEEK_RETRIEVAL_ENV, "").strip().lower()
+        in _ED4ALL_CROSS_WEEK_RETRIEVAL_TRUTHY
+    )
+
+
 # Feature I5: per-TO deterministic "Key Terms" page gate. Default OFF → no
 # key-terms page is emitted, every existing snapshot / chunk-count / Studio-nav
 # list stays BYTE-IDENTICAL. When truthy, ``_build_key_terms_blocks`` authors a
@@ -7824,6 +7896,32 @@ def _key_terms_page_enabled() -> bool:
     return (
         os.environ.get(_ED4ALL_KEY_TERMS_PAGE_ENV, "").strip().lower()
         in _ED4ALL_KEY_TERMS_PAGE_TRUTHY
+    )
+
+
+# W6.4: per-week deterministic "FAQ" page gate. Default OFF → no FAQ page is
+# emitted, every existing snapshot / chunk-count / Studio-nav list stays
+# BYTE-IDENTICAL (mirrors ED4ALL_KEY_TERMS_PAGE). When truthy,
+# ``lib.generation.faq_page.build_faq_blocks`` (owned by Lane B) authors a
+# ``week_NN_faq.html`` page of grounded Q/A blocks (no LLM). This lane owns the
+# page-type REGISTRATION + the outline-phase CALL only.
+_ED4ALL_FAQ_PAGE_ENV = "ED4ALL_FAQ_PAGE"
+_ED4ALL_FAQ_PAGE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+# Mirror of ``lib.generation.faq_page.FAQ_TEMPLATE_TYPE`` — the
+# ``Block.template_type`` marker the rewrite tier reads to short-circuit the
+# LLM dispatch for a pre-authored, grounded FAQ card. Kept as a local literal
+# so the hot rewrite path needs no import (mirrors ``_KEY_TERMS_TEMPLATE_TYPE``).
+_FAQ_TEMPLATE_TYPE = "faq"
+
+
+def _faq_page_enabled() -> bool:
+    """Read ``ED4ALL_FAQ_PAGE`` each call (tests toggle inline).
+
+    Default OFF (parse-with-fallback: only the canonical truthy tokens enable).
+    """
+    return (
+        os.environ.get(_ED4ALL_FAQ_PAGE_ENV, "").strip().lower()
+        in _ED4ALL_FAQ_PAGE_TRUTHY
     )
 
 
@@ -10921,6 +11019,15 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 )
                 _key_terms_vocab = None
 
+    # W6.4 — deterministic per-week FAQ page (opt-in via ED4ALL_FAQ_PAGE). Built
+    # OUTSIDE the LLM block loop (grounded Q/A cards, no dispatch). Load the
+    # per-chunk detail map lazily ONLY when the flag is on (reuse if key_terms
+    # already loaded it), so a default-off run is byte-identical.
+    _faq_on = _faq_page_enabled()
+    _faq_blocks: List[Any] = []
+    if _faq_on and not _chunk_detail_map:
+        _chunk_detail_map = _load_dart_chunkset_detail_map(chunkset_path)
+
     # ------------------------------------------------------------------ #
     # Prerequisite-DAG-driven TO sequencing (opt-in ED4ALL_PREREQ_SEQUENCING).
     # ------------------------------------------------------------------ #
@@ -11189,6 +11296,15 @@ async def _run_content_generation_outline(**kwargs) -> str:
     block_planner_provider = None
     n_weeks_planner_used = 0
     n_weeks_planner_fallback = 0
+    # W6.1 — cross-week cumulative retrieval. The per-TO planner is stateless, so
+    # a CO taught earlier is never re-retrieved later. Accumulate the CO ids seen
+    # in PRIOR weeks and, when ED4ALL_PLANNER_CROSS_WEEK_RETRIEVAL is on, schedule
+    # expanding-interval cumulative-retrieval blocks over them into each week's
+    # plan (only on the dynamic-planner path, where a WeekBlockPlan exists). Ships
+    # dark: OFF → the accumulator is inert and every plan is byte-identical.
+    _cross_week_on = _cross_week_retrieval_enabled()
+    _prior_week_co_ids: List[str] = []
+    _n_cross_week_blocks = 0
     # IB7.1 — thread the source-chunk HEADING into the planner digest. The
     # text-only ``chunk_text_map`` starves the planner prompt's ``[{heading}] ``
     # prefix + the content-shape detectors of the structural heading signal.
@@ -11300,6 +11416,52 @@ async def _run_content_generation_outline(**kwargs) -> str:
                 n_weeks_planner_fallback += 1
             else:
                 n_weeks_planner_used += 1
+
+            # W6.1 — merge cumulative cross-week retrieval blocks (over PRIOR
+            # weeks' COs) into this week's plan. No-op / byte-identical when
+            # ED4ALL_PLANNER_CROSS_WEEK_RETRIEVAL is off (the helper returns []).
+            # Anti-fabrication: only the real prior-week CO ids accumulated so
+            # far are targeted. The blocks carry page_type='self_check' so they
+            # land on the week's cumulative-check page; page_plan is re-derived so
+            # ``page_block_plan_for`` surfaces them.
+            if _cross_week_on and _prior_week_co_ids:
+                try:
+                    from lib.generation.block_planner import (
+                        build_cross_week_retrieval_blocks,
+                        _resolve_block_types,
+                        _to_page_plan,
+                    )
+
+                    _xw_blocks = build_cross_week_retrieval_blocks(
+                        prior_week_co_ids=_prior_week_co_ids,
+                        week_index=week_num,
+                        block_types=_resolve_block_types(),
+                        enabled=True,
+                    )
+                    if _xw_blocks:
+                        week_block_plan.selected.extend(_xw_blocks)
+                        week_block_plan.page_plan = _to_page_plan(
+                            week_block_plan.selected
+                        )
+                        _n_cross_week_blocks += len(_xw_blocks)
+                except Exception as _xw_exc:  # noqa: BLE001 — never break build
+                    logger.warning(
+                        "cross-week retrieval: week %d merge failed (%s); "
+                        "skipping", week_num, _xw_exc,
+                    )
+
+        # W6.1 — accumulate THIS week's CO ids for later weeks' cumulative
+        # retrieval (the prior-week CO pool). De-duplicated, order-preserving;
+        # inert when the flag is off (only the merge above consumes it). Prefer
+        # the week's chapter objectives (COs); fall back to the assigned terminal
+        # objectives when no CO index entry exists for the week.
+        _this_week_objs = (
+            week_co_objectives_index.get(week_num, []) or week_objectives
+        )
+        for _obj in _this_week_objs:
+            _oid = str(_obj.get("id") or "")
+            if _oid and _oid not in _prior_week_co_ids:
+                _prior_week_co_ids.append(_oid)
 
         # P3: FIVE page TYPES per week. Build the per-week page descriptors
         # in canonical order (overview, content_01..content_NN,
@@ -11688,6 +11850,47 @@ async def _run_content_generation_outline(**kwargs) -> str:
             )
             _key_terms_blocks.extend(_kt_week_blocks)
 
+        # W6.4 — deterministic per-week FAQ page (opt-in). Built OUTSIDE the LLM
+        # loop; the grounded Q/A cards carry pre-rendered HTML + template_type
+        # "faq" so the rewrite tier short-circuits them (appended straight to
+        # outline_blocks below). Builder + renderer are owned by Lane B; this
+        # lane only CALLS it, gated on ED4ALL_FAQ_PAGE (no-op / byte-identical
+        # when off). Misconception seed blocks are not yet authored at plan time,
+        # so the builder degrades to objective-seeded FAQs (its documented
+        # fallback). Fail-soft: a builder/import error degrades the FAQ page
+        # without breaking the outline phase.
+        if _faq_on:
+            try:
+                from lib.generation.faq_page import build_faq_blocks
+
+                _wk_union_cids = week_chunk_id_index.get(week_num, [])
+                _faq_chunks: List[Dict[str, Any]] = []
+                for _cid in _wk_union_cids:
+                    _detail = _chunk_detail_map.get(_cid) or {}
+                    _txt = chunk_text_map.get(_cid) or _detail.get("text") or ""
+                    if not _txt:
+                        continue
+                    _faq_chunks.append({
+                        "id": _cid,
+                        "text": _txt,
+                        "heading": str(_detail.get("heading") or ""),
+                        "item_path": _detail.get("item_path"),
+                    })
+                _faq_page_id = _page_id_for(week_num, "faq")
+                _faq_week_blocks = build_faq_blocks(
+                    week_co_objectives_index.get(week_num, []),
+                    [],  # misconception blocks unauthored at plan time
+                    _faq_chunks,
+                    course_slug=course_slug,
+                    page_id=_faq_page_id,
+                )
+                _faq_blocks.extend(_faq_week_blocks)
+            except Exception as _faq_exc:  # noqa: BLE001 — never break the phase
+                logger.warning(
+                    "faq_page: week %d FAQ build failed (%s); skipping FAQ page",
+                    week_num, _faq_exc,
+                )
+
     # Page-per-CO coverage assertion (review fix 2): the union of emitted CO
     # ids MUST equal the set of valid CO ids that landed in some iterated week's
     # objectives index — every such CO got its own content page (zero-stranded
@@ -12001,6 +12204,11 @@ async def _run_content_generation_outline(**kwargs) -> str:
     # NON-canonical refs (their objective_ids are the week's canonical TO ids).
     if _key_terms_blocks:
         outline_blocks.extend(_key_terms_blocks)
+
+    # W6.4 — flush the deterministic FAQ-page blocks into the outline set (no-op
+    # when ED4ALL_FAQ_PAGE is off; ``_faq_blocks`` stays empty → byte-identical).
+    if _faq_blocks:
+        outline_blocks.extend(_faq_blocks)
 
     # ------------------------------------------------------------------ #
     # FIX 2 — drop hallucinated objective refs.
@@ -13760,6 +13968,20 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 == _kt_sc.DEFINITION_QUALITY_HIGH
             ):
                 return _apply_str_backstops(blk)
+        # W6.4 — UNCONDITIONALLY short-circuit the LLM rewrite for the
+        # deterministic FAQ cards (``template_type="faq"``). Every FAQ answer
+        # was LIFTED verbatim from a grounded source chunk (or a real
+        # misconception correction) in the outline tier; re-authoring it with
+        # the 7B/cloud model would discard that grounding, so it is passed
+        # straight through the same str backstops (no LLM dispatch). No quality
+        # split (unlike key-terms) — a FAQ card only exists when its answer
+        # already resolved to a real chunk (anti-fabrication OMISSION upstream).
+        if (
+            getattr(blk, "template_type", None) == _FAQ_TEMPLATE_TYPE
+            and isinstance(blk.content, str)
+            and blk.content.strip()
+        ):
+            return _apply_str_backstops(blk)
         block_chunks = chunks_lookup.get(blk.block_id, []) if isinstance(
             chunks_lookup, dict
         ) else []
@@ -13913,6 +14135,16 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 ):
                     _finished_by_idx[_idx] = _apply_str_backstops(blk)
                     continue
+            # FAQ unconditional short-circuit (mirror _process_one_block). The
+            # grounded FAQ card is passed straight through the str backstops —
+            # never batched to the LLM (its answer is already grounded verbatim).
+            if (
+                getattr(blk, "template_type", None) == _FAQ_TEMPLATE_TYPE
+                and isinstance(blk.content, str)
+                and blk.content.strip()
+            ):
+                _finished_by_idx[_idx] = _apply_str_backstops(blk)
+                continue
             # Dict-objective lift (mirror _process_one_block) so the rewrite
             # carries the real LO refs into str content.
             if not blk.objective_ids and isinstance(blk.content, dict):
@@ -14489,10 +14721,17 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             teaching_role_attr = (
                 f' data-cf-teaching-role="{_role}"' if _role else ""
             )
+            # W6.6 — append the graded-B14 confidence capture + calibration-
+            # comparison reveal to the assessment_item section (gated by
+            # ED4ALL_REFLECTION_CALIBRATION; "" when off → byte-identical).
+            _confidence_html = _assessment_confidence_capture_html(b)
+            _confidence_suffix = (
+                f"\n{_confidence_html}" if _confidence_html else ""
+            )
             body_parts.append(
                 f'<section data-cf-block-id="{b.block_id}"'
                 f'{source_ids_attr}{objective_attr}{teaching_role_attr}>'
-                f'{content}{cite_html}</section>'
+                f'{content}{cite_html}{_confidence_suffix}</section>'
             )
         # P1 — route the per-page shell through generate_course.py::_wrap_page
         # so every two-pass page inherits the FULL Courseforge stylesheet

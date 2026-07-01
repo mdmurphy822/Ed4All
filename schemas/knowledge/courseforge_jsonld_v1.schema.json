@@ -107,6 +107,11 @@
       "pattern": "^[a-f0-9]{64}$",
       "description": "Phase 2: sha256 hex of the canonical Block payload list for re-execution drift detection. Same content -> same hash regardless of which tier authored the page."
     },
+    "faq": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/FaqEntry" },
+      "description": "W6.4 (optional, additive): deterministic grounded FAQ cards for a week's faq page. Emitted only when ED4ALL_FAQ_PAGE is on and the deterministic builder (lib/generation/faq_page.py::build_faq_blocks) resolved >=1 grounded question. Each entry's answer is grounded to a real source chunk (misconception correction or definitional sentence); ungrounded questions are OMITTED (anti-fabrication). Absent (byte-identical) by default."
+    },
     "timeRequired": {
       "type": "string",
       "pattern": "^PT(?:\\d+H)?(?:\\d+M)?(?:\\d+S)?$",
@@ -290,6 +295,21 @@
           "type": "string",
           "minLength": 1,
           "description": "Feature I5 (optional, additive): a /api/learn/source/... deep-link to the source chunk that grounds this term's definition. Backward-compatible — absent on legacy emits."
+        }
+      }
+    },
+    "FaqEntry": {
+      "type": "object",
+      "required": ["question", "answer"],
+      "additionalProperties": false,
+      "description": "W6.4: one deterministic grounded FAQ card. The question is seeded from a misconception block ('Is it true that ...?') or an objective key concept ('What is ...?'); the answer is grounded to a real source chunk (the misconception's correction or a definitional sentence lifted from the chunk). An ungrounded question is OMITTED upstream (anti-fabrication), so every emitted entry carries a real answer.",
+      "properties": {
+        "question": { "type": "string", "minLength": 1 },
+        "answer": { "type": "string", "minLength": 1 },
+        "sourceLink": {
+          "type": "string",
+          "minLength": 1,
+          "description": "W6.4 (optional, additive): a /api/learn/source/... deep-link to the source chunk that grounds this answer. Resolved via the frozen heading_slug algorithm (same shape as KeyTerm.sourceLink). Absent when the grounding chunk has no resolvable item_path."
         }
       }
     },

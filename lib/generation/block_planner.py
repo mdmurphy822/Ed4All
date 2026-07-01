@@ -108,6 +108,11 @@ __all__ = [
     "_apply_triangle_floor",
     "_apply_retrieval_interleave_floor",
     "_apply_alignment_floors",
+    "_apply_interleave",
+    "_apply_far_transfer_floor",
+    "_apply_dual_coding_floor",
+    "_apply_w6_within_week_passes",
+    "build_cross_week_retrieval_blocks",
 ]
 
 # System prompt for the dedicated planner provider — frames the 70B as an
@@ -519,10 +524,70 @@ _IB7_FLAG_ENVS: Tuple[str, ...] = (
     _FADING_ENV,
 )
 
+# W6 (Round-2) planner-pedagogy passes — ALL default OFF (parse-with-fallback)
+# so the planner output is BYTE-STABLE / identity-no-op unless an operator opts
+# in (mirrors the IB7 flags above). Each gates a pure within-week post-pass that
+# returns identity when off; the cross-week pass (W6.1) is a standalone helper
+# the per-week orchestration loop calls with prior-week context.
+#   ED4ALL_PLANNER_INTERLEAVE     — W6.2 TRUE interleaving: a deterministic,
+#       partition-invariant reorder that mixes practice/problem blocks ACROSS
+#       COs (ABAB, not AABB) so the learner discriminates which schema applies.
+#       Adds/drops NO block (pure permutation of the practice-block slots).
+#   ED4ALL_PLANNER_FAR_TRANSFER   — W6.3 per-TO floor guaranteeing >= 1
+#       novel-context application block (scenario/problem in a context DISTINCT
+#       from the worked example); leans on the rewrite tier via ``content_focus``
+#       for the "novel context" (deterministic novelty detection is hard).
+#   ED4ALL_PLANNER_DUAL_CODING    — W6.5 per-CO floor ensuring a verbal-only CO
+#       gets a co-located visual (diagram/multimedia) block. COMPOSES with the
+#       existing QA-10 dual_coding_contiguity check (does NOT reimplement it —
+#       just injects the missing pairing).
+_INTERLEAVE_ENV = "ED4ALL_PLANNER_INTERLEAVE"
+_FAR_TRANSFER_ENV = "ED4ALL_PLANNER_FAR_TRANSFER"
+_DUAL_CODING_ENV = "ED4ALL_PLANNER_DUAL_CODING"
+# W6.1 cross-week cumulative retrieval — the ONE W6 pass that needs prior-week
+# context (the per-week planner is stateless), so it is a standalone helper the
+# orchestration loop feeds prior-week CO ids. Default OFF; ships dark.
+_CROSS_WEEK_RETRIEVAL_ENV = "ED4ALL_PLANNER_CROSS_WEEK_RETRIEVAL"
+
+# W6.2 — the "practice / problem" block types the interleave reorder permutes
+# (classic interleaved-practice: mix problem SCHEMAS so retrieval is
+# discriminative). Checks (self_check_question / assessment_item) are NOT
+# practice and stay fixed in place.
+_INTERLEAVE_PRACTICE_TYPES: frozenset = frozenset(
+    {"problem", "activity", "worked_example", "example", "scenario"}
+)
+# W6.3 — novel-context application block candidates (first present-in-palette).
+_FAR_TRANSFER_TYPES: Tuple[str, ...] = ("scenario", "problem")
+# W6.5 — co-located visual (dual-coding) block candidates (first present).
+_DUAL_CODING_VISUAL_TYPES: Tuple[str, ...] = ("diagram", "multimedia", "table")
+# W6.5 — verbal exposition block types a dual-coding pairing checks for (a CO
+# taught ONLY by these, with no visual, is a verbal-only CO).
+_DUAL_CODING_VERBAL_TYPES: frozenset = frozenset(
+    {"concept", "explanation", "vocab_card", "key_idea", "callout", "formula",
+     "acronym", "flip_card_grid", "misconception"}
+)
+# W6.5 — block types that already carry a visual (so a CO taught by one needs no
+# dual-coding pairing).
+_DUAL_CODING_VISUAL_PRESENT_TYPES: frozenset = frozenset(
+    {"diagram", "multimedia", "table", "worked_example"}
+)
+
 
 def _any_ib7_flag_on() -> bool:
     """True iff ANY IB7 planner-pedagogy flag is truthy (read each call)."""
     return any(_env_floor_on(env) for env in _IB7_FLAG_ENVS)
+
+
+def _any_w6_within_week_flag_on() -> bool:
+    """True iff ANY within-week W6 flag is truthy (read each call).
+
+    The cross-week W6.1 flag is NOT included — it runs from the orchestration
+    loop, not the per-week ``_apply_w6_within_week_passes`` helper.
+    """
+    return any(
+        _env_floor_on(env)
+        for env in (_INTERLEAVE_ENV, _FAR_TRANSFER_ENV, _DUAL_CODING_ENV)
+    )
 
 # IB7.3 canonical lifecycle-phase TEMPLATE order (the 100%-frequency
 # objectives→activation→exposition→worked-example→case→check→summary template,
@@ -2904,6 +2969,356 @@ def _enrich_objective_blocks(
     return out
 
 
+def _first_referenced_co(
+    selected: Sequence[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+) -> str:
+    """Return the first CO id referenced by a block, else the first CO id.
+
+    Anti-fabrication grounding: prefers a CO id ALREADY on a block, falling back
+    to the TO's first declared CO. Empty string when there is no CO at all.
+    """
+    for blk in selected:
+        for cid in blk.get("target_co_ids") or ():
+            sc = str(cid)
+            if sc:
+                return sc
+    for co in chapter_objectives or ():
+        if isinstance(co, dict):
+            cid = str(co.get("id") or "")
+            if cid:
+                return cid
+    return ""
+
+
+def _apply_interleave(
+    *, selected: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """W6.2 — TRUE cross-CO practice interleaving (partition-invariant reorder).
+
+    Gated on ``ED4ALL_PLANNER_INTERLEAVE``; a strict identity NO-OP when off so a
+    default-off run is byte-stable (mirrors :func:`_apply_spacing`). Unlike the
+    ``retrieval_presence`` "interleave" (which is only about a retrieval block
+    being PRESENT on a content page), this is true interleaved PRACTICE: it mixes
+    the practice/problem blocks ACROSS COs so the sequence reads ABAB rather than
+    AABB — forcing the learner to discriminate WHICH schema applies (interleaving
+    effect) instead of grooving one procedure.
+
+    Deterministic + bounded + PARTITION-INVARIANT: the multiset of blocks is
+    unchanged (no add / drop / re-type); ONLY the positions of the practice
+    blocks are permuted among the practice slots. Non-practice blocks keep their
+    exact positions. A round-robin over the per-CO practice groups (in each CO's
+    first-appearance order) produces the interleaved order; when the practice
+    blocks span < 2 distinct COs there is nothing to interleave → identity.
+    Returns a NEW list.
+    """
+    if not _env_floor_on(_INTERLEAVE_ENV):
+        return selected
+
+    # The practice-block slots (positions) and, per slot, the block.
+    practice_slots: List[int] = [
+        i for i, b in enumerate(selected)
+        if str(b.get("block_type") or "") in _INTERLEAVE_PRACTICE_TYPES
+    ]
+    if len(practice_slots) < 2:
+        return selected
+
+    # Group practice blocks by their primary CO (first target_co_id), preserving
+    # first-appearance order of both the groups and the blocks within a group.
+    group_order: List[str] = []
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for i in practice_slots:
+        blk = selected[i]
+        cos = [str(c) for c in (blk.get("target_co_ids") or []) if str(c)]
+        key = cos[0] if cos else ""
+        if key not in groups:
+            groups[key] = []
+            group_order.append(key)
+        groups[key].append(blk)
+
+    # Nothing to interleave unless the practice blocks span >= 2 distinct COs.
+    if len(group_order) < 2:
+        return selected
+
+    # Round-robin flatten: one block from each group per round (group order is
+    # the first-appearance order), until every group is exhausted.
+    interleaved: List[Dict[str, Any]] = []
+    cursors = {k: 0 for k in group_order}
+    remaining = sum(len(v) for v in groups.values())
+    while remaining > 0:
+        for key in group_order:
+            c = cursors[key]
+            if c < len(groups[key]):
+                interleaved.append(groups[key][c])
+                cursors[key] = c + 1
+                remaining -= 1
+
+    # Re-place the interleaved practice blocks into the original practice slots
+    # (non-practice blocks are untouched). Partition invariant by construction.
+    out = list(selected)
+    for slot, blk in zip(practice_slots, interleaved):
+        out[slot] = blk
+    return out
+
+
+def _apply_far_transfer_floor(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    block_types: frozenset,
+) -> List[Dict[str, Any]]:
+    """W6.3 — guarantee >= 1 novel-context (far-transfer) application block per TO.
+
+    Gated on ``ED4ALL_PLANNER_FAR_TRANSFER``; a strict identity NO-OP when off so
+    a default-off run is byte-stable (mirrors :func:`_apply_worked_example_floor`).
+    Deep learning needs transfer to a NOVEL context distinct from the worked
+    example, but detecting "is this context novel?" deterministically is not
+    feasible — so this floor GUARANTEES the seat and leans on the rewrite tier
+    via an explicit ``content_focus`` directive to author the novel context.
+
+    If no block is already stamped ``far_transfer=True``, APPEND one
+    ``scenario`` (or ``problem`` — first present-in-palette) application block
+    targeting a REAL referenced CO id (anti-fabrication), stamped
+    ``far_transfer=True`` (Optional field, hash-excluded) and a ``content_focus``
+    that instructs the rewrite tier to place the task in a context DISTINCT from
+    any worked example. No-op when there is no CO to ground it (never invents an
+    id). Returns a NEW list.
+    """
+    if not _env_floor_on(_FAR_TRANSFER_ENV):
+        return selected
+
+    # Already satisfied — a block explicitly marked as a far-transfer task.
+    if any(bool(b.get("far_transfer")) for b in selected):
+        return selected
+
+    ft_type = next((bt for bt in _FAR_TRANSFER_TYPES if bt in block_types), None)
+    if ft_type is None:
+        return selected
+
+    co_id = _first_referenced_co(selected, chapter_objectives)
+    if not co_id:
+        return selected
+
+    return list(selected) + [{
+        "block_type": ft_type,
+        "page_type": _BLOCK_TYPE_DEFAULT_PAGE.get(ft_type, "application"),
+        "target_co_ids": [co_id],
+        "content_focus": (
+            "W6.3 far-transfer: apply the skill in a NOVEL real-world context "
+            "DISTINCT from any worked example on this objective, so the learner "
+            "transfers the schema rather than pattern-matching the trained "
+            f"surface (target CO {co_id})"
+        ),
+        "target_bloom": "apply",
+        "far_transfer": True,
+    }]
+
+
+def _apply_dual_coding_floor(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    block_types: frozenset,
+) -> List[Dict[str, Any]]:
+    """W6.5 — pair a co-located visual with each verbal-only CO (dual coding).
+
+    Gated on ``ED4ALL_PLANNER_DUAL_CODING``; a strict identity NO-OP when off so
+    a default-off run is byte-stable (mirrors :func:`_apply_worked_example_floor`).
+    COMPOSES with the existing QA-10 ``dual_coding_contiguity`` check — it does
+    NOT reimplement that validator; it just INJECTS the missing verbal↔visual
+    pairing so the check has something to pass.
+
+    For every CO that is taught by >= 1 VERBAL exposition block
+    (``_DUAL_CODING_VERBAL_TYPES``) but has NO visual block
+    (``_DUAL_CODING_VISUAL_PRESENT_TYPES``) targeting it, INSERT a
+    ``diagram`` (or ``multimedia`` / ``table`` — first present-in-palette) block
+    targeting that CO, CO-LOCATED immediately AFTER the CO's last verbal block
+    (contiguity — the dual-coding pairing is adjacent to the words it depicts).
+    Anti-fabrication: the injected visual targets the REAL CO id (never invents
+    one). Returns a NEW list.
+
+    NOTE: ``diagram`` / ``multimedia`` render their full a11y contract only under
+    ``ED4ALL_NEW_BLOCK_TYPES``; ``table`` renders unconditionally. The floor
+    prefers ``diagram`` per the framework but degrades to ``table`` when the new
+    types are not in the effective palette.
+    """
+    if not _env_floor_on(_DUAL_CODING_ENV):
+        return selected
+
+    visual_type = next(
+        (bt for bt in _DUAL_CODING_VISUAL_TYPES if bt in block_types), None
+    )
+    if visual_type is None:
+        return selected
+
+    # CO ids that already carry a visual block (no pairing needed).
+    has_visual: set = set()
+    for blk in selected:
+        if str(blk.get("block_type") or "") in _DUAL_CODING_VISUAL_PRESENT_TYPES:
+            has_visual.update(str(c) for c in (blk.get("target_co_ids") or []))
+
+    # For each verbal-only CO, remember the index of its LAST verbal block and
+    # the page_type of that block (so the visual is co-located on the same page).
+    last_verbal_idx: Dict[str, int] = {}
+    verbal_page: Dict[str, str] = {}
+    for i, blk in enumerate(selected):
+        if str(blk.get("block_type") or "") not in _DUAL_CODING_VERBAL_TYPES:
+            continue
+        for cid in (str(c) for c in (blk.get("target_co_ids") or []) if str(c)):
+            last_verbal_idx[cid] = i
+            verbal_page[cid] = str(blk.get("page_type") or "content")
+
+    # Injection targets: verbal-only COs with no visual, ordered by their last
+    # verbal block position (so we splice from LAST to FIRST without invalidating
+    # earlier anchors).
+    targets = [
+        (idx, cid) for cid, idx in last_verbal_idx.items()
+        if cid not in has_visual
+    ]
+    if not targets:
+        return selected
+    targets.sort(key=lambda t: t[0], reverse=True)
+
+    out = list(selected)
+    for idx, cid in targets:
+        visual_block = {
+            "block_type": visual_type,
+            "page_type": verbal_page.get(cid, "content"),
+            "target_co_ids": [cid],
+            "content_focus": (
+                "W6.5 dual coding: a co-located visual model paired with the "
+                f"verbal explanation of CO {cid} (verbal + visual channels, "
+                "adjacent for contiguity — QA-10)"
+            ),
+            "target_bloom": "understand",
+        }
+        out.insert(idx + 1, visual_block)
+    return out
+
+
+def build_cross_week_retrieval_blocks(
+    *,
+    prior_week_co_ids: Sequence[str],
+    week_index: int,
+    block_types: Optional[frozenset] = None,
+    enabled: Optional[bool] = None,
+    max_targets: int = 5,
+) -> List[Dict[str, Any]]:
+    """W6.1 — build EXPANDING-INTERVAL cumulative cross-week retrieval blocks.
+
+    The per-week planner (:func:`plan_week_blocks`) is stateless, so a CO taught
+    in an earlier week is never re-retrieved later — defeating spaced /
+    cumulative retrieval. This helper (called by the per-week orchestration loop,
+    which alone holds prior-week context) schedules a small cumulative-retrieval
+    checkpoint over PRIOR-week COs so earlier material is revisited at expanding
+    intervals.
+
+    Gated on ``ED4ALL_PLANNER_CROSS_WEEK_RETRIEVAL`` (``enabled`` overrides for
+    tests); returns an EMPTY list when off so the orchestration wiring is a
+    strict no-op / byte-stable when the flag is off. Ships dark.
+
+    EXPANDING-INTERVAL schedule (deterministic): the retrieval targets the COs
+    from the weeks at expanding look-back distances ``1, 2, 4, 8, …`` before
+    ``week_index`` (so week 5 revisits weeks 4, 3, 1; week 9 revisits 8, 7, 5,
+    1) — the classic expanding-retrieval-practice ladder. The caller supplies the
+    already-selected prior CO ids (a flat, de-duplicated list is accepted — the
+    schedule is realized caller-side by choosing which prior weeks' COs to pass
+    in, OR this helper simply revisits the flat prior set capped at
+    ``max_targets``). Anti-fabrication: ONLY the real prior CO ids passed in are
+    targeted (never invents an id); an empty ``prior_week_co_ids`` → empty list.
+
+    Returns a list of retrieval block dicts (``self_check_question`` — the first
+    present-in-palette low-stakes retrieval type) each targeting a distinct prior
+    CO, stamped ``cumulative_retrieval=True`` (Optional field, hash-excluded) and
+    a ``content_focus`` naming the cross-week cumulative intent. The blocks carry
+    ``page_type='self_check'`` so they land on the week's cumulative check page.
+    """
+    on = enabled if enabled is not None else _env_floor_on(_CROSS_WEEK_RETRIEVAL_ENV)
+    if not on:
+        return []
+
+    bt = block_types if block_types is not None else _resolve_block_types()
+    retrieval_type = next(
+        (t for t in _RETRIEVAL_INTERLEAVE_TYPES if t in bt), None
+    )
+    if retrieval_type is None:
+        return []
+
+    # De-duplicate the prior CO ids preserving order; cap the fan-out.
+    seen: set = set()
+    prior: List[str] = []
+    for cid in prior_week_co_ids or ():
+        sc = str(cid)
+        if sc and sc not in seen:
+            seen.add(sc)
+            prior.append(sc)
+    if not prior:
+        return []
+    if max_targets > 0:
+        prior = prior[:max_targets]
+
+    blocks: List[Dict[str, Any]] = []
+    for cid in prior:
+        blocks.append({
+            "block_type": retrieval_type,
+            "page_type": "self_check",
+            "target_co_ids": [cid],
+            "content_focus": (
+                f"W6.1 cumulative cross-week retrieval: revisit CO {cid} from an "
+                f"earlier week at an expanding interval (week {week_index}), so "
+                "prior material is retrieved from memory, not just this week's"
+            ),
+            "target_bloom": "understand",
+            "cumulative_retrieval": True,
+        })
+    return blocks
+
+
+def _apply_w6_within_week_passes(
+    *,
+    selected: List[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    block_types: frozenset,
+    signals: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Run the three within-week W6 passes in dependency order.
+
+    far-transfer floor → dual-coding floor → interleave. Each pass is a strict
+    identity no-op when its env flag is off, so a default-off run returns
+    ``selected`` byte-identical (the keystone byte-stability contract). The
+    floors run BEFORE the interleave so the interleave permutes the final
+    practice set (including a far-transfer scenario). Records per-pass signals
+    into ``signals`` (extra keys are harmless — the decision emit reads a fixed
+    allowlist).
+    """
+    ft_on = _env_floor_on(_FAR_TRANSFER_ENV)
+    n_before = len(selected)
+    selected = _apply_far_transfer_floor(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        block_types=block_types,
+    )
+    signals["far_transfer_injected"] = (len(selected) - n_before) if ft_on else 0
+
+    dc_on = _env_floor_on(_DUAL_CODING_ENV)
+    n_before = len(selected)
+    selected = _apply_dual_coding_floor(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        block_types=block_types,
+    )
+    signals["dual_coding_injected"] = (len(selected) - n_before) if dc_on else 0
+
+    interleave_on = _env_floor_on(_INTERLEAVE_ENV)
+    order_before = [id(b) for b in selected]
+    selected = _apply_interleave(selected=selected)
+    signals["interleave_moves"] = (
+        sum(1 for a, b in zip(order_before, [id(x) for x in selected]) if a != b)
+        if interleave_on else 0
+    )
+    return selected
+
+
 def _apply_ib7_passes(
     *,
     selected: List[Dict[str, Any]],
@@ -3319,6 +3734,17 @@ def plan_week_blocks(
         signals=ib7_signals,
     )
 
+    # W6 within-week pedagogy passes (far-transfer / dual-coding floors +
+    # cross-CO practice interleave). Each gated by its own flag; default-off ⇒
+    # identity, so the planner output stays byte-stable. Run AFTER the IB7 passes
+    # and BEFORE the alignment floors (which must stay last).
+    selected = _apply_w6_within_week_passes(
+        selected=selected,
+        chapter_objectives=chapter_objectives,
+        block_types=block_types,
+        signals=ib7_signals,
+    )
+
     # GAP D / GAP C alignment floors run LAST — after every IB7 pass (climb,
     # lifecycle, spacing, bloom-ceiling, fading) — so nothing re-routes or
     # re-pages the gate-closing blocks they inject (F3a / F4). Both default OFF →
@@ -3432,6 +3858,20 @@ def _fallback_plan(
             catalog_by_type=_catalog_by_type,
             block_types=_resolve_block_types(),
             signals=ib7_signals,
+        )
+        page_plan = _to_page_plan(selected)
+    # W6 within-week passes ALSO run on the fallback path (each gated by its own
+    # flag; a strict NO-OP when off so the fixed-plan fallback stays
+    # byte-identical). The fixed plan's blocks carry empty target_co_ids, so the
+    # CO-grounded floors (far-transfer / dual-coding) find no CO and no-op even
+    # when ON unless an upstream injection added a CO-targeted block.
+    if _any_w6_within_week_flag_on():
+        _w6_signals: Dict[str, Any] = {}
+        selected = _apply_w6_within_week_passes(
+            selected=selected,
+            chapter_objectives=chapter_objectives or [],
+            block_types=_resolve_block_types(),
+            signals=_w6_signals,
         )
         page_plan = _to_page_plan(selected)
     # GAP D / GAP C alignment floors ALSO run on the fallback path — LAST, after
