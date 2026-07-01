@@ -121,9 +121,12 @@ Outputs:
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
@@ -131,6 +134,55 @@ logger = logging.getLogger(__name__)
 
 
 _DIMENSIONS = ("completeness", "consistency", "accuracy", "coverage")
+
+# --------------------------------------------------------------------------- #
+# W3.2 / W3.4 / W3.6 — prereq-DAG health signals (topological, no model).
+#
+# Gated behind ``ED4ALL_KG_PREREQ_HEALTH`` (default OFF → byte-identical: no
+# ``prereq_health`` metadata key, no new warning issues, no decision event, so
+# every existing snapshot / test stays unchanged). When truthy, three
+# deterministic stdlib passes run over the just-emitted
+# ``concept_graph_semantic.json``:
+#
+#   * W3.2 ACYCLICITY — Tarjan SCC over the ``prerequisite`` edge set (dependency
+#     direction: source=dependent → target=prerequisite). A non-trivial SCC (or a
+#     self-loop) is a circular-prerequisite defect; reported as a kg_quality
+#     dimension-shaped signal (``acyclicity.score``) — NOT folded into the 4-dim
+#     composite mean (that stays byte-stable). Warning-day-1.
+#   * W3.4 (kg half) CENTRALITY — concept in-degree centrality recomputed over
+#     the concept sub-graph (LO/TO endpoints excluded), top-K surfaced in the
+#     report metadata. Informational (no warning).
+#   * W3.6 DANGLING BACKGROUND — a prerequisite concept (edge TARGET) that is
+#     never taught/introduced: no grounded graph node (empty ``occurrences[]``
+#     AND non-positive ``frequency``), or not a node at all. Warning-day-1.
+#
+# All warning-severity with ``# TODO(calibration)`` deferred critical-flip.
+# Anti-fabrication: reads only real graph node ids / edge endpoints; never
+# invents a concept, edge, or objective.
+# --------------------------------------------------------------------------- #
+
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+ENV_KG_PREREQ_HEALTH = "ED4ALL_KG_PREREQ_HEALTH"
+
+#: Top-K most-central concepts surfaced in the metadata (informational).
+_CENTRALITY_TOP_K = 10
+#: Cap on the distinct dangling-prerequisite concept ids listed in metadata.
+_DANGLING_REPORT_CAP = 25
+#: Cap on the ids listed for the first detected cycle (for the warning message).
+_CYCLE_EXAMPLE_CAP = 8
+
+
+def resolve_kg_prereq_health(value: object = None) -> bool:
+    """Return True iff the prereq-DAG health signals are enabled (default OFF).
+
+    ``value`` overrides the env when not ``None``. Falsey / garbage / unset →
+    False (parse-with-fallback, mirroring the other ``ED4ALL_*`` toggles).
+    """
+    if value is None:
+        raw = os.environ.get(ENV_KG_PREREQ_HEALTH, "")
+    else:
+        raw = str(value)
+    return raw.strip().lower() in _TRUTHY
 
 
 def _emit_decision(
@@ -194,6 +246,399 @@ def _emit_decision(
             "DecisionCapture.log_decision raised on "
             "kg_quality_report_check: %s",
             exc,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Prereq-DAG health helpers (pure, stdlib-only, deterministic).
+# --------------------------------------------------------------------------- #
+
+
+def _norm_endpoint(raw: Any) -> str:
+    """Normalize a graph node id / edge endpoint to a canonical comparison key.
+
+    Endpoints may be a bare slug or ``{course_id}:{slug}`` (scoped-id mode);
+    strip a single ``:`` namespace prefix then ``canonical_slug`` so node ids
+    and edge endpoints from the same emit compare equal.
+    """
+    if not isinstance(raw, str) or not raw:
+        return ""
+    from lib.ontology.slugs import canonical_slug
+
+    s = raw.split(":", 1)[1] if ":" in raw else raw
+    return canonical_slug(s)
+
+
+def _is_lo_endpoint(raw: Any) -> bool:
+    """Return True iff ``raw`` is a canonical learning-objective id (``TO-NN`` /
+    ``CO-...``). Federation ``TO -> TO`` prerequisite endpoints are objectives,
+    not concepts, so they are excluded from the CONCEPT-level centrality +
+    dangling-background passes (but NOT from cycle detection — a cycle among
+    objectives is a defect too).
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return False
+    try:
+        from lib.ontology.learning_objectives import validate_lo_id
+
+        return bool(validate_lo_id(raw.strip().upper()))
+    except Exception:  # noqa: BLE001 — never let id detection break the pass
+        return False
+
+
+def _prerequisite_pairs(edges: List[Any]) -> List[Tuple[str, str]]:
+    """Extract RAW ``(source=dependent, target=prerequisite)`` prerequisite
+    edge endpoints from the semantic graph edge list."""
+    out: List[Tuple[str, str]] = []
+    for e in edges:
+        if not isinstance(e, dict) or e.get("type") != "prerequisite":
+            continue
+        s = e.get("source")
+        t = e.get("target")
+        if not isinstance(s, str) or not isinstance(t, str) or not s or not t:
+            continue
+        out.append((s, t))
+    return out
+
+
+def _tarjan_sccs(adj: Dict[str, List[str]]) -> List[List[str]]:
+    """Iterative Tarjan strongly-connected-components (no recursion limit).
+
+    ``adj`` must carry every node as a key (targets materialized by the caller).
+    Deterministic: nodes are visited in insertion order and each SCC is returned
+    in the order the algorithm pops it.
+    """
+    index_counter = [0]
+    index: Dict[str, int] = {}
+    lowlink: Dict[str, int] = {}
+    on_stack: Dict[str, bool] = {}
+    stack: List[str] = []
+    sccs: List[List[str]] = []
+
+    for start in list(adj.keys()):
+        if start in index:
+            continue
+        work: List[Tuple[str, int]] = [(start, 0)]
+        while work:
+            v, pi = work[-1]
+            if pi == 0:
+                index[v] = index_counter[0]
+                lowlink[v] = index_counter[0]
+                index_counter[0] += 1
+                stack.append(v)
+                on_stack[v] = True
+            recurse = False
+            neighbors = adj.get(v, [])
+            i = pi
+            while i < len(neighbors):
+                w = neighbors[i]
+                if w not in index:
+                    work[-1] = (v, i + 1)
+                    work.append((w, 0))
+                    recurse = True
+                    break
+                if on_stack.get(w):
+                    lowlink[v] = min(lowlink[v], index[w])
+                i += 1
+            if recurse:
+                continue
+            if lowlink[v] == index[v]:
+                comp: List[str] = []
+                while True:
+                    w = stack.pop()
+                    on_stack[w] = False
+                    comp.append(w)
+                    if w == v:
+                        break
+                sccs.append(comp)
+            work.pop()
+            if work:
+                parent = work[-1][0]
+                lowlink[parent] = min(lowlink[parent], lowlink[v])
+    return sccs
+
+
+def _detect_prereq_cycles(
+    prereq_pairs: List[Tuple[str, str]],
+) -> Dict[str, Any]:
+    """W3.2 — acyclicity signal over the prerequisite dependency graph.
+
+    Dependency edge: ``dependent -> prerequisite``. A non-trivial SCC (or a
+    self-loop) is a circular-prerequisite defect.
+    """
+    adj: Dict[str, List[str]] = defaultdict(list)
+    display: Dict[str, str] = {}
+    self_loops: set = set()
+    for s_raw, t_raw in prereq_pairs:
+        s = _norm_endpoint(s_raw)
+        t = _norm_endpoint(t_raw)
+        if not s or not t:
+            continue
+        display.setdefault(s, s_raw)
+        display.setdefault(t, t_raw)
+        adj[s].append(t)
+        _ = adj[t]  # materialize target as a node (defaultdict)
+        if s == t:
+            self_loops.add(s)
+
+    total_nodes = len(adj)
+    sccs = _tarjan_sccs(dict(adj))
+    cyclic_nodes: set = set()
+    cycle_count = 0
+    example_cycle: List[str] = []
+    for comp in sccs:
+        is_cycle = len(comp) > 1 or (len(comp) == 1 and comp[0] in self_loops)
+        if not is_cycle:
+            continue
+        cycle_count += 1
+        cyclic_nodes.update(comp)
+        if not example_cycle:
+            example_cycle = sorted(display.get(n, n) for n in comp)[
+                :_CYCLE_EXAMPLE_CAP
+            ]
+
+    is_acyclic = cycle_count == 0
+    if is_acyclic or not total_nodes:
+        score = 1.0
+    else:
+        score = max(0.0, 1.0 - (len(cyclic_nodes) / total_nodes))
+    return {
+        "metric": (
+            "1 - (nodes in circular-prerequisite SCCs / prerequisite nodes)"
+        ),
+        "is_acyclic": is_acyclic,
+        "score": round(score, 4),
+        "prerequisite_node_count": total_nodes,
+        "cycle_count": cycle_count,
+        "nodes_in_cycles": len(cyclic_nodes),
+        "example_cycle": example_cycle,
+    }
+
+
+def _concept_in_degree_centrality(edges: List[Any]) -> Dict[str, Any]:
+    """W3.4 (kg half) — concept in-degree centrality over the concept subgraph.
+
+    In-degree of a concept = how many concepts point AT it (a proxy for
+    foundationality). Edges touching a learning-objective endpoint are excluded
+    (centrality is a concept-graph measure). Top-K surfaced for the report.
+    """
+    indeg: Dict[str, int] = defaultdict(int)
+    display: Dict[str, str] = {}
+    nodes: set = set()
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        s = e.get("source")
+        t = e.get("target")
+        if not isinstance(s, str) or not isinstance(t, str):
+            continue
+        if _is_lo_endpoint(s) or _is_lo_endpoint(t):
+            continue
+        sn = _norm_endpoint(s)
+        tn = _norm_endpoint(t)
+        if not sn or not tn:
+            continue
+        nodes.add(sn)
+        nodes.add(tn)
+        display.setdefault(sn, s)
+        display.setdefault(tn, t)
+        indeg[tn] += 1
+    top = sorted(indeg.items(), key=lambda kv: (-kv[1], kv[0]))[
+        :_CENTRALITY_TOP_K
+    ]
+    return {
+        "method": "in_degree",
+        "concept_count": len(nodes),
+        "top": [
+            {"concept": display.get(k, k), "in_degree": int(v)}
+            for k, v in top
+        ],
+    }
+
+
+def _dangling_prerequisites(
+    nodes: List[Any], prereq_pairs: List[Tuple[str, str]],
+) -> Dict[str, Any]:
+    """W3.6 — dangling / unmet-background prerequisites.
+
+    A prerequisite (edge TARGET) concept is "dangling" when the course
+    references it as required background but never teaches/introduces it: it has
+    no grounded graph node (empty ``occurrences[]`` AND non-positive
+    ``frequency``), or is not a declared node at all. Learning-objective
+    prerequisite targets (federation ``TO -> TO`` edges) are excluded — a TO is
+    not a taught concept.
+    """
+    introduced: set = set()
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        nid = n.get("id")
+        if not isinstance(nid, str) or not nid:
+            continue
+        occ = n.get("occurrences") or []
+        grounded = any(isinstance(o, str) and o for o in occ)
+        if not grounded:
+            freq = n.get("frequency")
+            if (
+                isinstance(freq, (int, float))
+                and not isinstance(freq, bool)
+                and freq > 0
+            ):
+                grounded = True
+        if grounded:
+            introduced.add(_norm_endpoint(nid))
+
+    distinct_targets: set = set()
+    dangling: Dict[str, str] = {}
+    for _s_raw, t_raw in prereq_pairs:
+        if _is_lo_endpoint(t_raw):
+            continue
+        tn = _norm_endpoint(t_raw)
+        if not tn:
+            continue
+        distinct_targets.add(tn)
+        if tn not in introduced and tn not in dangling:
+            dangling[tn] = t_raw
+
+    concepts = sorted(dangling.values())
+    return {
+        "count": len(dangling),
+        "prereq_target_count": len(distinct_targets),
+        "concepts": concepts[:_DANGLING_REPORT_CAP],
+    }
+
+
+def _load_graph_dict(path_raw: Any) -> Dict[str, Any]:
+    """Best-effort load of the semantic graph JSON. Returns ``{}`` on any error."""
+    try:
+        p = Path(path_raw)
+        if not p.exists():
+            return {}
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:  # noqa: BLE001 — never break the gate
+        logger.debug("kg_prereq_health: graph load failed: %s", exc)
+        return {}
+
+
+def _compute_prereq_health(graph: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute the three prereq-DAG health signals over a semantic graph dict."""
+    nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+    prereq_pairs = _prerequisite_pairs(edges)
+    return {
+        "prerequisite_edge_count": len(prereq_pairs),
+        "acyclicity": _detect_prereq_cycles(prereq_pairs),
+        "centrality": _concept_in_degree_centrality(edges),
+        "dangling_prerequisites": _dangling_prerequisites(nodes, prereq_pairs),
+    }
+
+
+def _prereq_health_issues(signals: Dict[str, Any]) -> List[GateIssue]:
+    """Build warning-day-1 GateIssues from the prereq-health signals.
+
+    # TODO(calibration): deferred critical-flip — a circular prerequisite and a
+    # dangling background concept are real defects, but the anchored severity
+    # awaits a >=2-corpus false-positive measurement (WS3/W4 deferred-flip
+    # pattern). Centrality is informational (no issue).
+    """
+    issues: List[GateIssue] = []
+    acyc = signals.get("acyclicity", {})
+    if acyc.get("cycle_count", 0) > 0:
+        example = ", ".join(acyc.get("example_cycle", [])) or "(unavailable)"
+        issues.append(GateIssue(
+            severity="warning",
+            code="KG_PREREQ_CYCLE_DETECTED",
+            message=(
+                f"Prerequisite DAG is cyclic: {acyc.get('cycle_count', 0)} "
+                f"circular-prerequisite cluster(s) span "
+                f"{acyc.get('nodes_in_cycles', 0)} node(s) "
+                f"(acyclicity score {acyc.get('score', 0.0):.4f}). "
+                f"First cycle: {example}."
+            ),
+            suggestion=(
+                "A circular prerequisite means no valid teaching order exists; "
+                "inspect the prerequisite edges among the listed nodes and "
+                "break the weakest back-pointing dependency."
+            ),
+        ))
+    dangling = signals.get("dangling_prerequisites", {})
+    if dangling.get("count", 0) > 0:
+        concepts = ", ".join(dangling.get("concepts", [])) or "(none listed)"
+        issues.append(GateIssue(
+            severity="warning",
+            code="KG_PREREQ_DANGLING_BACKGROUND",
+            message=(
+                f"{dangling.get('count', 0)} of "
+                f"{dangling.get('prereq_target_count', 0)} prerequisite "
+                f"concept(s) are referenced as required background but never "
+                f"taught/introduced (no grounded chunk). Concepts: {concepts}."
+            ),
+            suggestion=(
+                "Either add source content that introduces the missing "
+                "background concept(s), or drop the prerequisite edge if the "
+                "dependency is spurious."
+            ),
+        ))
+    return issues
+
+
+def _emit_prereq_decision(
+    capture: Any,
+    signals: Dict[str, Any],
+    *,
+    course_slug: Optional[str],
+    run_id: Optional[str],
+) -> None:
+    """Emit one ``validation_result`` decision per validate() call when the
+    prereq-health pass runs (distinct decision_type from the primary
+    ``kg_quality_report_check`` so the two never collide)."""
+    if capture is None:
+        return
+    acyc = signals.get("acyclicity", {})
+    dangling = signals.get("dangling_prerequisites", {})
+    centrality = signals.get("centrality", {})
+    rationale = (
+        f"KG prereq-DAG health for course={course_slug or 'n/a'} "
+        f"run_id={run_id or 'n/a'}: "
+        f"{signals.get('prerequisite_edge_count', 0)} prerequisite edge(s); "
+        f"acyclic={acyc.get('is_acyclic')} "
+        f"(cycles={acyc.get('cycle_count', 0)}, "
+        f"nodes_in_cycles={acyc.get('nodes_in_cycles', 0)}, "
+        f"score={acyc.get('score', 1.0):.4f}); "
+        f"dangling_background={dangling.get('count', 0)}/"
+        f"{dangling.get('prereq_target_count', 0)}; "
+        f"concept_centrality over {centrality.get('concept_count', 0)} "
+        f"concept node(s)."
+    )
+    try:
+        capture.log_decision(
+            decision_type="validation_result",
+            decision=(
+                "kg_prereq_health "
+                f"acyclic={acyc.get('is_acyclic')} "
+                f"dangling={dangling.get('count', 0)}"
+            ),
+            rationale=rationale,
+            context=str(signals),
+            metrics={
+                "prerequisite_edge_count": int(
+                    signals.get("prerequisite_edge_count", 0)
+                ),
+                "is_acyclic": bool(acyc.get("is_acyclic", True)),
+                "cycle_count": int(acyc.get("cycle_count", 0)),
+                "nodes_in_cycles": int(acyc.get("nodes_in_cycles", 0)),
+                "acyclicity_score": float(acyc.get("score", 1.0)),
+                "dangling_prerequisite_count": int(dangling.get("count", 0)),
+                "prereq_target_count": int(
+                    dangling.get("prereq_target_count", 0)
+                ),
+                "concept_count": int(centrality.get("concept_count", 0)),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort
+        logger.debug(
+            "DecisionCapture.log_decision raised on kg_prereq_health: %s", exc
         )
 
 
@@ -474,7 +919,34 @@ class KGQualityValidator:
             run_id=str(run_id),
         )
 
+        # W3.2 / W3.4 / W3.6 — prereq-DAG health signals (gated, default OFF →
+        # byte-identical). Best-effort: any failure logs and leaves scores /
+        # issues / metadata unchanged. Warning-day-1; NEVER flips ``passed``
+        # (those signals emit warning-severity issues only, and the composite
+        # mean stays over the four canonical dimensions).
+        prereq_health: Optional[Dict[str, Any]] = None
+        if resolve_kg_prereq_health():
+            try:
+                graph = _load_graph_dict(semantic_graph_raw)
+                prereq_health = _compute_prereq_health(graph)
+                issues.extend(_prereq_health_issues(prereq_health))
+                _emit_prereq_decision(
+                    capture,
+                    prereq_health,
+                    course_slug=str(course_slug),
+                    run_id=str(run_id),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                logger.warning(
+                    "kg_prereq_health signals failed (%s); "
+                    "leaving gate result unchanged.",
+                    exc,
+                )
+                prereq_health = None
+
         result_metadata: Dict[str, Any] = {}
+        if prereq_health is not None:
+            result_metadata["prereq_health"] = prereq_health
         if consensus_rate is not None:
             result_metadata["edge_consensus_rate"] = round(consensus_rate, 4)
         if contradiction_rate is not None:
@@ -493,4 +965,8 @@ class KGQualityValidator:
         )
 
 
-__all__ = ["KGQualityValidator"]
+__all__ = [
+    "KGQualityValidator",
+    "ENV_KG_PREREQ_HEALTH",
+    "resolve_kg_prereq_health",
+]

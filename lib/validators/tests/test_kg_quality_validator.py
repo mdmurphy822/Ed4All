@@ -19,7 +19,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from lib.validators.kg_quality import KGQualityValidator  # noqa: E402
+from lib.validators.kg_quality import (  # noqa: E402
+    KGQualityValidator,
+    resolve_kg_prereq_health,
+)
+from lib.validators import kg_quality as _kgq  # noqa: E402
 
 
 class _MockReporter:
@@ -435,3 +439,247 @@ def test_all_four_dimensions_can_breach(tmp_path: Path):
         "KG_QUALITY_CONSISTENCY_BELOW_THRESHOLD",
         "KG_QUALITY_COVERAGE_BELOW_THRESHOLD",
     ]
+
+
+# --------------------------------------------------------------------------- #
+# W3.2 / W3.4 / W3.6 — prereq-DAG health signals.
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_kg_prereq_health_parse_with_fallback():
+    """Flag resolver: truthy tokens on, everything else off (default OFF)."""
+    assert resolve_kg_prereq_health("1") is True
+    assert resolve_kg_prereq_health("true") is True
+    assert resolve_kg_prereq_health("ON") is True
+    assert resolve_kg_prereq_health("yes") is True
+    assert resolve_kg_prereq_health("0") is False
+    assert resolve_kg_prereq_health("false") is False
+    assert resolve_kg_prereq_health("garbage") is False
+    assert resolve_kg_prereq_health("") is False
+    assert resolve_kg_prereq_health(None) is False  # env unset in test env
+
+
+def test_detect_prereq_cycles_acyclic():
+    """A linear prerequisite chain has no cycle → score 1.0."""
+    pairs = [("b", "a"), ("c", "b")]  # c->b->a dependency chain
+    sig = _kgq._detect_prereq_cycles(pairs)
+    assert sig["is_acyclic"] is True
+    assert sig["cycle_count"] == 0
+    assert sig["nodes_in_cycles"] == 0
+    assert sig["score"] == 1.0
+
+
+def test_detect_prereq_cycles_two_node_cycle():
+    """A -> B and B -> A is a 2-node circular prerequisite."""
+    pairs = [("a", "b"), ("b", "a")]
+    sig = _kgq._detect_prereq_cycles(pairs)
+    assert sig["is_acyclic"] is False
+    assert sig["cycle_count"] == 1
+    assert sig["nodes_in_cycles"] == 2
+    # 2 of 2 prereq nodes are cyclic → score 1 - 2/2 = 0.0
+    assert sig["score"] == 0.0
+    assert len(sig["example_cycle"]) == 2
+
+
+def test_detect_prereq_cycles_self_loop():
+    """A concept that is its own prerequisite is a (self-loop) cycle."""
+    pairs = [("x", "x")]
+    sig = _kgq._detect_prereq_cycles(pairs)
+    assert sig["is_acyclic"] is False
+    assert sig["cycle_count"] == 1
+    assert sig["nodes_in_cycles"] == 1
+
+
+def test_concept_in_degree_centrality_excludes_los():
+    """In-degree centrality ranks the most-referenced concept; TO endpoints
+    are excluded (a federation TO->TO edge is not a concept edge)."""
+    edges = [
+        {"source": "arithmetic", "target": "algebra", "type": "related-to"},
+        {"source": "variables", "target": "algebra", "type": "related-to"},
+        {"source": "functions", "target": "algebra", "type": "is-a"},
+        # federation TO->TO edge — excluded from concept centrality.
+        {"source": "TO-02", "target": "TO-01", "type": "prerequisite"},
+    ]
+    sig = _kgq._concept_in_degree_centrality(edges)
+    assert sig["method"] == "in_degree"
+    # algebra is the hub with in-degree 3; TO ids are absent.
+    assert sig["top"][0]["concept"] == "algebra"
+    assert sig["top"][0]["in_degree"] == 3
+    concepts = {c["concept"] for c in sig["top"]}
+    assert "TO-01" not in concepts
+    assert "TO-02" not in concepts
+
+
+def test_dangling_prerequisites_detects_untaught_background():
+    """A prereq TARGET that is never grounded (empty occurrences + freq 0) is
+    dangling; a grounded target and a TO target are not."""
+    nodes = [
+        {"id": "algebra", "occurrences": ["c1"]},
+        {"id": "arithmetic", "occurrences": ["c0"]},
+        {"id": "calculus", "occurrences": [], "frequency": 0},
+    ]
+    pairs = [
+        ("algebra", "arithmetic"),  # arithmetic taught → not dangling
+        ("algebra", "calculus"),    # calculus never taught → dangling
+        ("TO-02", "TO-01"),         # LO target → excluded
+    ]
+    sig = _kgq._dangling_prerequisites(nodes, pairs)
+    assert sig["count"] == 1
+    assert sig["concepts"] == ["calculus"]
+    # arithmetic + calculus are the distinct non-LO prereq targets.
+    assert sig["prereq_target_count"] == 2
+
+
+def _prereq_graph_payload() -> Dict[str, Any]:
+    """A semantic graph with a cycle, a dangling background concept, and a
+    centrality hub."""
+    return {
+        "kind": "concept_semantic",
+        "nodes": [
+            {"id": "algebra", "occurrences": ["c1"], "class": "DomainConcept"},
+            {"id": "arithmetic", "occurrences": ["c0"], "class": "DomainConcept"},
+            {"id": "variables", "occurrences": ["c2"], "class": "DomainConcept"},
+            {"id": "functions", "occurrences": ["c3"], "class": "DomainConcept"},
+            {"id": "calculus", "occurrences": [], "frequency": 0,
+             "class": "DomainConcept"},
+        ],
+        "edges": [
+            # dangling: calculus is a prereq target never taught.
+            {"source": "algebra", "target": "calculus",
+             "type": "prerequisite", "confidence": 0.7},
+            # 2-node cycle variables <-> functions.
+            {"source": "variables", "target": "functions",
+             "type": "prerequisite"},
+            {"source": "functions", "target": "variables",
+             "type": "prerequisite"},
+            # centrality edges pointing at the hub.
+            {"source": "arithmetic", "target": "algebra", "type": "related-to"},
+            {"source": "variables", "target": "algebra", "type": "related-to"},
+            {"source": "functions", "target": "algebra", "type": "is-a"},
+        ],
+    }
+
+
+def _inputs_with_graph(tmp_path: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
+    import json
+    semantic = tmp_path / "concept_graph_semantic.json"
+    semantic.write_text(json.dumps(payload), encoding="utf-8")
+    concept = tmp_path / "concept_graph.json"
+    concept.write_text("{}", encoding="utf-8")
+    return {
+        "course_slug": "test-course",
+        "run_id": "test-run-001",
+        "output_dir": str(tmp_path / "out"),
+        "concept_graph_path": str(concept),
+        "semantic_graph_path": str(semantic),
+    }
+
+
+def test_prereq_health_flag_off_byte_identical(tmp_path: Path, monkeypatch):
+    """Default OFF → no prereq_health metadata, no new issues (byte-identical)."""
+    monkeypatch.delenv("ED4ALL_KG_PREREQ_HEALTH", raising=False)
+    validator = KGQualityValidator(reporter_factory=_factory({
+        "completeness": 1.0, "consistency": 1.0,
+        "accuracy": 1.0, "coverage": 1.0,
+    }))
+    result = validator.validate(_inputs_with_graph(tmp_path, _prereq_graph_payload()))
+    assert result.passed is True
+    assert result.issues == []
+    assert result.metadata is None or "prereq_health" not in result.metadata
+
+
+def test_prereq_health_flag_on_surfaces_signals(tmp_path: Path, monkeypatch):
+    """Flag ON → metadata carries the three signals, warning issues fire,
+    ``passed`` stays True (warnings never block the composite gate)."""
+    monkeypatch.setenv("ED4ALL_KG_PREREQ_HEALTH", "1")
+    validator = KGQualityValidator(reporter_factory=_factory({
+        "completeness": 1.0, "consistency": 1.0,
+        "accuracy": 1.0, "coverage": 1.0,
+    }))
+    result = validator.validate(_inputs_with_graph(tmp_path, _prereq_graph_payload()))
+
+    # Warnings never flip the composite-gate verdict.
+    assert result.passed is True
+    assert result.action is None
+
+    health = result.metadata["prereq_health"]
+    assert health["prerequisite_edge_count"] == 3
+
+    # W3.2 acyclicity: variables<->functions cycle.
+    acyc = health["acyclicity"]
+    assert acyc["is_acyclic"] is False
+    assert acyc["cycle_count"] == 1
+    assert acyc["nodes_in_cycles"] == 2
+    # 2 of 4 prereq nodes (algebra/calculus/variables/functions) are cyclic.
+    assert acyc["score"] == 0.5
+
+    # W3.4 centrality: algebra is the hub (in-degree 3).
+    assert health["centrality"]["top"][0]["concept"] == "algebra"
+    assert health["centrality"]["top"][0]["in_degree"] == 3
+
+    # W3.6 dangling: calculus never taught.
+    dangling = health["dangling_prerequisites"]
+    assert dangling["count"] == 1
+    assert dangling["concepts"] == ["calculus"]
+
+    codes = sorted(i.code for i in result.issues)
+    assert codes == [
+        "KG_PREREQ_CYCLE_DETECTED",
+        "KG_PREREQ_DANGLING_BACKGROUND",
+    ]
+    assert all(i.severity == "warning" for i in result.issues)
+
+
+def test_prereq_health_flag_on_clean_graph_no_warnings(tmp_path: Path, monkeypatch):
+    """Flag ON over an acyclic, fully-taught graph → metadata present but no
+    prereq warning issues."""
+    monkeypatch.setenv("ED4ALL_KG_PREREQ_HEALTH", "1")
+    payload = {
+        "kind": "concept_semantic",
+        "nodes": [
+            {"id": "algebra", "occurrences": ["c1"]},
+            {"id": "arithmetic", "occurrences": ["c0"]},
+        ],
+        "edges": [
+            {"source": "algebra", "target": "arithmetic",
+             "type": "prerequisite"},
+        ],
+    }
+    validator = KGQualityValidator(reporter_factory=_factory({
+        "completeness": 1.0, "consistency": 1.0,
+        "accuracy": 1.0, "coverage": 1.0,
+    }))
+    result = validator.validate(_inputs_with_graph(tmp_path, payload))
+    assert result.passed is True
+    health = result.metadata["prereq_health"]
+    assert health["acyclicity"]["is_acyclic"] is True
+    assert health["dangling_prerequisites"]["count"] == 0
+    prereq_codes = [
+        i.code for i in result.issues if i.code.startswith("KG_PREREQ_")
+    ]
+    assert prereq_codes == []
+
+
+def test_prereq_health_flag_on_emits_decision(tmp_path: Path, monkeypatch):
+    """Flag ON emits exactly one ``validation_result`` prereq-health event
+    (distinct from the primary ``kg_quality_report_check``)."""
+    monkeypatch.setenv("ED4ALL_KG_PREREQ_HEALTH", "1")
+    capture = _MockCapture()
+    validator = KGQualityValidator(
+        reporter_factory=_factory({
+            "completeness": 1.0, "consistency": 1.0,
+            "accuracy": 1.0, "coverage": 1.0,
+        }),
+        decision_capture=capture,
+    )
+    validator.validate(_inputs_with_graph(tmp_path, _prereq_graph_payload()))
+    prereq_calls = [
+        c for c in capture.calls
+        if c["decision_type"] == "validation_result"
+        and str(c.get("decision", "")).startswith("kg_prereq_health")
+    ]
+    assert len(prereq_calls) == 1
+    metrics = prereq_calls[0]["metrics"]
+    assert metrics["is_acyclic"] is False
+    assert metrics["cycle_count"] == 1
+    assert metrics["dangling_prerequisite_count"] == 1

@@ -80,6 +80,16 @@ _RULE_KIND_REGISTRY: Final[Dict[str, str]] = {
     "is_a_from_key_terms": EDGE_KIND_INFERRED,
     "exemplifies_from_example_chunks": EDGE_KIND_INFERRED,
     "prerequisite_from_lo_order": EDGE_KIND_INFERRED,
+    # W3.1 — content-dependency (definition-in-TO_a assumed-in-TO_b) TO->TO
+    # prerequisite edges. A deterministic no-LLM CONTENT signal (concept
+    # first-mention/definition anchor), NOT an explicit upstream pointer, so
+    # it classifies as inferred alongside prerequisite_from_lo_order. Producer:
+    # lib/generation/prerequisite_from_definition_mention.py (gated by
+    # TRAINFORGE_PREREQ_DEFINITION_MENTION). NB: this rule module lives under
+    # lib/generation/ (a lib-side edge producer feeding the concept graph),
+    # not Trainforge/rag/inference_rules/, so the inference_rules-discovery
+    # test does not auto-cover it; the entry is asserted directly here.
+    "prerequisite_from_definition_mention": EDGE_KIND_INFERRED,
     "related_from_cooccurrence": EDGE_KIND_INFERRED,
     "llm_typed_edge": EDGE_KIND_INFERRED,
 }

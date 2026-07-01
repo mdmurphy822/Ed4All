@@ -68,6 +68,9 @@ from Trainforge.rag.inference_rules import related_from_cooccurrence as _related
 from Trainforge.rag.inference_rules import targets_concept_from_lo as _targets_concept_mod
 from Trainforge.rag import shacl_rule_runner as _shacl_runner
 
+from lib.generation import (
+    prerequisite_from_definition_mention as _prereq_def_mention_mod,
+)
 from lib.ontology.edge_kind import edge_kind_for_rule
 
 logger = logging.getLogger(__name__)
@@ -581,6 +584,7 @@ def build_semantic_graph_with_dataset(
     misconceptions: Optional[List[Dict[str, Any]]] = None,
     questions: Optional[List[Dict[str, Any]]] = None,
     objectives_metadata: Optional[List[Dict[str, Any]]] = None,
+    terminal_objectives: Optional[List[Dict[str, Any]]] = None,
     emit_trig: Optional[bool] = None,
     course_package_version: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Optional[Any]]:
@@ -618,6 +622,7 @@ def build_semantic_graph_with_dataset(
         misconceptions=misconceptions,
         questions=questions,
         objectives_metadata=objectives_metadata,
+        terminal_objectives=terminal_objectives,
         course_package_version=course_package_version,
     )
 
@@ -660,6 +665,7 @@ def build_semantic_graph(
     misconceptions: Optional[List[Dict[str, Any]]] = None,
     questions: Optional[List[Dict[str, Any]]] = None,
     objectives_metadata: Optional[List[Dict[str, Any]]] = None,
+    terminal_objectives: Optional[List[Dict[str, Any]]] = None,
     course_package_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the typed-edge concept graph.
@@ -717,6 +723,7 @@ def build_semantic_graph(
         misconceptions=misconceptions,
         questions=questions,
         objectives_metadata=objectives_metadata,
+        terminal_objectives=terminal_objectives,
         course_package_version=course_package_version,
     )
     return json_dict
@@ -782,6 +789,7 @@ def _build_semantic_graph_internal(
     misconceptions: Optional[List[Dict[str, Any]]],
     questions: Optional[List[Dict[str, Any]]],
     objectives_metadata: Optional[List[Dict[str, Any]]],
+    terminal_objectives: Optional[List[Dict[str, Any]]] = None,
     course_package_version: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], List[Any]]:
     """Phase 3 internal: compute the JSON artifact AND the per-rule
@@ -835,7 +843,7 @@ def _build_semantic_graph_internal(
     # related-to) fire first to preserve Wave 4 behaviour on their output
     # shape; Wave 5.2 pedagogical rules (REC-LNK-04, Worker U) follow
     # alphabetically by EDGE_TYPE.
-    for fn, rule_mod, kwargs in (
+    rule_specs: List[Tuple[Any, Any, Dict[str, Any]]] = [
         (infer_is_a, _is_a_mod, {}),
         (infer_prerequisite, _prereq_mod, {}),
         (infer_related, _related_mod, {"threshold": related_threshold}),
@@ -863,7 +871,38 @@ def _build_semantic_graph_internal(
             _interferes_with_outcome_mod,
             {"misconceptions": misconceptions},
         ),
-    ):
+    ]
+
+    # W3.1 content-dependency prerequisite rule
+    # (``prerequisite_from_definition_mention``). CONDITIONALLY registered —
+    # ONLY when ``TRAINFORGE_PREREQ_DEFINITION_MENTION`` is on. The rule name is
+    # folded into ``rule_versions`` (below), which is serialized into
+    # ``graph_build_hash`` / the downstream ``concept_graph_sha256``; an
+    # UNCONDITIONAL registration would add a ``rule_versions`` key even on a
+    # zero-edge run and change the hash. Gating the registration itself keeps
+    # a flag-off (and even a flag-on-but-zero-edge) run byte-identical unless
+    # the flag is on AND the rule produces edges. Emits federation TO->TO
+    # ``prerequisite`` edges; ``infer`` self-gates on the same flag and
+    # degrades to [] on any error, so appending it is safe.
+    if _prereq_def_mention_mod.resolve_prereq_definition_mention():
+        rule_specs.append(
+            (
+                _prereq_def_mention_mod.infer,
+                _prereq_def_mention_mod,
+                {
+                    "terminal_objectives": terminal_objectives,
+                    "capture": decision_capture,
+                    "course_code": (
+                        course.get("course_id")
+                        if isinstance(course, dict)
+                        else ""
+                    )
+                    or "",
+                },
+            )
+        )
+
+    for fn, rule_mod, kwargs in rule_specs:
         try:
             produced = fn(chunks, course, concept_graph, **kwargs) or []
         except Exception as exc:

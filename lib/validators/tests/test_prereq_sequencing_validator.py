@@ -85,6 +85,101 @@ def test_validator_no_violation_when_ordered(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# W3.5 — transitive reachability
+# --------------------------------------------------------------------------- #
+
+
+def test_transitive_multi_hop_violation(monkeypatch):
+    monkeypatch.setenv("ED4ALL_PREREQ_SEQUENCING", "1")
+    # Chain A -> B -> C (a is prereq of b, b is prereq of c). Emitted order
+    # [B, C, A]: only the DIRECT edge A->B is inverted, but C ALSO transitively
+    # requires A (which is emitted after C). The strengthened gate flags BOTH.
+    result = PrereqSequencingValidator().validate(
+        {
+            "terminal_objectives": [
+                _to("TO-B", ["b"]),
+                _to("TO-C", ["c"]),
+                _to("TO-A", ["a"]),
+            ],
+            "concept_graph": _graph(("b", "a", 0.6), ("c", "b", 0.6)),
+        }
+    )
+    assert result.passed is True  # warning-day-1
+    meta = result.metadata["prerequisite_sequencing"]
+    # B-before-A (direct) + C-before-A (transitive, multi-hop) = 2 violations.
+    assert meta["n_violations"] == 2
+    assert meta["n_direct_violations"] == 1
+    # A has 0 ancestors, B has {A}, C has {A,B} → 3 transitive pairs.
+    assert meta["n_transitive_prereq_pairs"] == 3
+    # The multi-hop violation message names the path.
+    msgs = [i.message for i in result.issues if i.code == "PREREQ_ORDER_VIOLATION"]
+    assert any("via" in m and "TO-A -> TO-B -> TO-C" in m for m in msgs)
+
+
+def test_transitive_chain_when_ordered_no_violation(monkeypatch):
+    monkeypatch.setenv("ED4ALL_PREREQ_SEQUENCING", "1")
+    # Same chain emitted in the correct order [A, B, C] → zero violations even
+    # though there are 3 transitive prerequisite pairs to audit.
+    result = PrereqSequencingValidator().validate(
+        {
+            "terminal_objectives": [
+                _to("TO-A", ["a"]),
+                _to("TO-B", ["b"]),
+                _to("TO-C", ["c"]),
+            ],
+            "concept_graph": _graph(("b", "a", 0.6), ("c", "b", 0.6)),
+        }
+    )
+    assert "PREREQ_ORDER_VIOLATION" not in _codes(result)
+    meta = result.metadata["prerequisite_sequencing"]
+    assert meta["n_violations"] == 0
+    assert meta["n_transitive_prereq_pairs"] == 3
+    assert result.score == 1.0
+
+
+def test_transitive_federation_edges(monkeypatch):
+    monkeypatch.setenv("ED4ALL_PREREQ_SEQUENCING", "1")
+    # Lane P federation TO->TO edges (endpoints already TO ids): TO-B depends on
+    # TO-A, TO-C depends on TO-B. Emitted [C, B, A] inverts the whole chain.
+    result = PrereqSequencingValidator().validate(
+        {
+            "terminal_objectives": [
+                _to("TO-C", ["c"]),
+                _to("TO-B", ["b"]),
+                _to("TO-A", ["a"]),
+            ],
+            "concept_graph": _graph(
+                ("TO-B", "TO-A", 0.7), ("TO-C", "TO-B", 0.7)
+            ),
+        }
+    )
+    meta = result.metadata["prerequisite_sequencing"]
+    # C requires {A,B}; B requires {A} — all emitted after their dependent.
+    assert meta["n_violations"] == 3
+    assert meta["n_transitive_prereq_pairs"] == 3
+
+
+def test_transitive_cycle_does_not_hang(monkeypatch):
+    monkeypatch.setenv("ED4ALL_PREREQ_SEQUENCING", "1")
+    # A 2-cycle (federation edges TO-A<->TO-B). DFS visited-tracking must
+    # terminate and never make a TO its own prerequisite.
+    result = PrereqSequencingValidator().validate(
+        {
+            "terminal_objectives": [_to("TO-A", ["a"]), _to("TO-B", ["b"])],
+            "concept_graph": _graph(
+                ("TO-B", "TO-A", 0.7), ("TO-A", "TO-B", 0.7)
+            ),
+        }
+    )
+    assert result.passed is True
+    meta = result.metadata["prerequisite_sequencing"]
+    # Each TO is a prereq of the other → 2 pairs; whichever sits later is a
+    # violation for exactly one direction.
+    assert meta["n_transitive_prereq_pairs"] == 2
+    assert meta["n_violations"] == 1
+
+
+# --------------------------------------------------------------------------- #
 # Graceful skips
 # --------------------------------------------------------------------------- #
 

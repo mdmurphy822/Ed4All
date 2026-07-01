@@ -20684,6 +20684,67 @@ def _build_tool_registry() -> dict:
 
                 misconceptions = _derive_misconceptions(chunks)
                 questions = _derive_questions(chunks)
+
+                # W3.1 content-dependency prerequisite rule
+                # (prerequisite_from_definition_mention). Default-OFF and
+                # gated on TRAINFORGE_PREREQ_DEFINITION_MENTION: when off we
+                # pass NEITHER the decision_capture NOR the terminal-objective
+                # set, so build_semantic_graph is byte-identical to the legacy
+                # call (decision_capture feeds the per-node/edge run_id
+                # fallback, so passing it unconditionally would change the
+                # graph bytes even off). When on, we thread the real synthesized
+                # TERMINAL objectives (pins the canonical TO-NN id form the
+                # rule emits) + the phase DecisionCapture (one
+                # typed_edge_inference event per edge-producing call). The rule
+                # is CONDITIONALLY registered inside build_semantic_graph on the
+                # same flag so rule_versions / concept_graph_sha256 stay
+                # byte-identical when off. Fail-soft: any error resolving the
+                # flag or filtering the terminal set degrades to the legacy call.
+                _prereq_def_mention_capture = None
+                _prereq_terminal_objectives = None
+                try:
+                    from lib.generation.prerequisite_from_definition_mention import (
+                        resolve_prereq_definition_mention as _resolve_prereq_dm,
+                    )
+
+                    if _resolve_prereq_dm():
+                        _prereq_def_mention_capture = _capture_concept
+                        if course_for_graph is not None:
+                            from lib.ontology.learning_objectives import (
+                                hierarchy_from_id,
+                                validate_lo_id,
+                            )
+
+                            _terminals: List[Dict[str, Any]] = []
+                            for _lo in (
+                                course_for_graph.get("learning_outcomes") or []
+                            ):
+                                if not isinstance(_lo, dict):
+                                    continue
+                                _lid = _lo.get("id")
+                                if not isinstance(_lid, str) or not validate_lo_id(
+                                    _lid.strip().upper()
+                                ):
+                                    continue
+                                try:
+                                    _is_terminal = (
+                                        hierarchy_from_id(_lid.strip().upper())
+                                        == "terminal"
+                                    )
+                                except ValueError:
+                                    _is_terminal = False
+                                if _is_terminal:
+                                    _terminals.append(_lo)
+                            _prereq_terminal_objectives = _terminals or None
+                except Exception as exc:  # noqa: BLE001 — fail-soft
+                    logger.warning(
+                        "concept_extraction: prereq-definition-mention wiring "
+                        "resolve failed (%s); running the legacy graph build.",
+                        exc,
+                    )
+                    _prereq_def_mention_capture = None
+                    _prereq_terminal_objectives = None
+
                 graph = build_semantic_graph(
                     chunks,
                     course=course_for_graph,
@@ -20691,6 +20752,8 @@ def _build_tool_registry() -> dict:
                     misconceptions=misconceptions or None,
                     questions=questions or None,
                     objectives_metadata=objectives_meta_for_graph,
+                    terminal_objectives=_prereq_terminal_objectives,
+                    decision_capture=_prereq_def_mention_capture,
                 )
                 # ``build_semantic_graph`` stamps ``kind: "concept_semantic"``;
                 # add ``course_id`` for parity with the legacy shell shape.
