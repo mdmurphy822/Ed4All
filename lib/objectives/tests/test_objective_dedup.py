@@ -802,3 +802,97 @@ def test_guards_single_cluster_and_empty_inputs():
     empty, sig = od.apply_cluster_guards([], [], enable_consolidate=True)
     assert empty == []
     assert sig["clusters_before"] == 0 and sig["clusters_after"] == 0
+
+
+# ---------------------------------------------------------------------------
+# dissolve_singletons — the unconditional anti-hallucinated-TO backstop.
+#
+# Topic-free synthetic vectors (no bag-of-words strings): 5 balanced 2-member
+# clusters on orthogonal axes + ONE clear far-outlier singleton that leans
+# slightly toward the third cluster so its nearest neighbor is deterministic.
+# ---------------------------------------------------------------------------
+_BALANCED_VECS = [
+    [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],   # 0  cluster A
+    [1.0, 0.0, 0.0, 0.0, 0.0, 0.05],  # 1  cluster A
+    [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],   # 2  cluster B
+    [0.0, 1.0, 0.0, 0.0, 0.0, 0.05],  # 3  cluster B
+    [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],   # 4  cluster C
+    [0.0, 0.0, 1.0, 0.0, 0.0, 0.05],  # 5  cluster C
+    [0.0, 0.0, 0.0, 1.0, 0.0, 0.0],   # 6  cluster D
+    [0.0, 0.0, 0.0, 1.0, 0.0, 0.05],  # 7  cluster D
+    [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],   # 8  cluster E
+    [0.0, 0.0, 0.0, 0.0, 1.0, 0.05],  # 9  cluster E
+    [0.0, 0.0, 0.2, 0.0, 0.0, 1.0],   # 10 far outlier, leans toward cluster C
+]
+_BALANCED_CLUSTERS = [[0, 1], [2, 3], [4, 5], [6, 7], [8, 9], [10]]
+
+
+def test_dissolve_singletons_folds_outlier_into_nearest():
+    """A far-outlier singleton is folded into its nearest cluster; none remain."""
+    new_clusters, n_dissolved = od.dissolve_singletons(
+        _BALANCED_CLUSTERS, _BALANCED_VECS
+    )
+    assert n_dissolved == 1
+    # No size-1 cluster survives.
+    assert all(len(c) > 1 for c in new_clusters)
+    # The outlier (index 10) merged into cluster C ([4, 5]).
+    assert [4, 5, 10] in new_clusters
+    # Partition invariant: flattened output is a permutation of range(n).
+    assert sorted(_flat(new_clusters)) == list(range(11))
+    _assert_partition_invariant(new_clusters, _BALANCED_CLUSTERS)
+
+
+def test_dissolve_singletons_tiny_course_protection():
+    """<=min_clusters clusters with singletons are LEFT (never collapsed)."""
+    # 3 clusters (two singletons); default min_clusters == 3 → any fold would
+    # drop below the floor, so nothing is dissolved.
+    tiny = [[0, 1], [2], [3]]
+    new_clusters, n_dissolved = od.dissolve_singletons(tiny, _BALANCED_VECS)
+    assert n_dissolved == 0
+    assert new_clusters == [[0, 1], [2], [3]]
+    _assert_partition_invariant(new_clusters, tiny)
+
+
+def test_dissolve_singletons_determinism():
+    """Same input → same partition (deterministic fold order)."""
+    a, na = od.dissolve_singletons(_BALANCED_CLUSTERS, _BALANCED_VECS)
+    b, nb = od.dissolve_singletons(_BALANCED_CLUSTERS, _BALANCED_VECS)
+    assert a == b
+    assert na == nb
+
+
+def test_dissolve_singletons_partition_invariant_multi():
+    """Multiple singletons all fold; partition invariant holds throughout."""
+    # cluster A (0,1) + three singletons (2, 3, 4) → dissolve down to the floor.
+    clusters = [[0, 1], [2], [3], [4], [8, 9]]
+    new_clusters, n_dissolved = od.dissolve_singletons(
+        clusters, _BALANCED_VECS, min_clusters=2
+    )
+    assert n_dissolved >= 1
+    assert sorted(_flat(new_clusters)) == sorted(_flat(clusters))
+    # Floor honored: never fewer than min_clusters surviving clusters.
+    assert len(new_clusters) >= 2
+
+
+def test_resolve_to_allow_singleton_to_parse_with_fallback(monkeypatch):
+    monkeypatch.delenv("ED4ALL_TO_ALLOW_SINGLETON_TO", raising=False)
+    assert od.resolve_to_allow_singleton_to() is False  # default OFF → fix ON
+    monkeypatch.setenv("ED4ALL_TO_ALLOW_SINGLETON_TO", "1")
+    assert od.resolve_to_allow_singleton_to() is True
+    monkeypatch.setenv("ED4ALL_TO_ALLOW_SINGLETON_TO", "on")
+    assert od.resolve_to_allow_singleton_to() is True
+    monkeypatch.setenv("ED4ALL_TO_ALLOW_SINGLETON_TO", "garbage")
+    assert od.resolve_to_allow_singleton_to() is False  # garbage → default
+    assert od.resolve_to_allow_singleton_to(True) is True  # explicit arg wins
+
+
+def test_resolve_to_min_clusters_parse_with_fallback(monkeypatch):
+    monkeypatch.delenv("ED4ALL_TO_MIN_CLUSTERS", raising=False)
+    assert od.resolve_to_min_clusters() == od._DEFAULT_TO_MIN_CLUSTERS
+    monkeypatch.setenv("ED4ALL_TO_MIN_CLUSTERS", "5")
+    assert od.resolve_to_min_clusters() == 5
+    monkeypatch.setenv("ED4ALL_TO_MIN_CLUSTERS", "garbage")
+    assert od.resolve_to_min_clusters() == od._DEFAULT_TO_MIN_CLUSTERS
+    monkeypatch.setenv("ED4ALL_TO_MIN_CLUSTERS", "-1")
+    assert od.resolve_to_min_clusters() == od._DEFAULT_TO_MIN_CLUSTERS
+    assert od.resolve_to_min_clusters(7) == 7

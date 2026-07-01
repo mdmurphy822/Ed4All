@@ -103,6 +103,13 @@ ENV_DISTINCT_SKILL_SPLIT = "ED4ALL_OBJECTIVE_DISTINCT_SKILL_SPLIT"
 #: its nearest-centroid neighbor. Master gate; default OFF so every current run
 #: stays byte-identical/reproducible — the operator opts in. Mirrors the
 #: ``_DEFAULT_DISTINCT_SKILL_SPLIT`` opt-in posture exactly.
+#:
+#: NOTE (backstop supersedes this for size-1 clusters): the "a genuinely
+#: distinct singleton REMAINS standing" philosophy below is SUPERSEDED for
+#: SIZE-1 clusters by the unconditional :func:`dissolve_singletons` backstop —
+#: a lone CO is never a valid terminal objective (a TO aggregates >=2 COs), so
+#: it always folds into its nearest neighbor regardless of this floor. The
+#: absorb floor here still governs MULTI-member runts (2..min_size-1).
 _DEFAULT_TO_CLUSTER_GUARDS = False
 ENV_TO_CLUSTER_GUARDS = "ED4ALL_TO_CLUSTER_GUARDS"
 
@@ -117,7 +124,9 @@ ENV_TO_OUTLIER_MIN_SIZE = "ED4ALL_TO_OUTLIER_MIN_SIZE"
 #: when that neighbor's centroid cosine is >= this floor; below it the cluster
 #: may remain standing (a genuinely distinct competency with no good home).
 #: Env-overridable; default 0.20 (deliberately low — a tiny cluster that is
-#: closest to SOME sibling almost always belongs there).
+#: closest to SOME sibling almost always belongs there). SUPERSEDED for SIZE-1
+#: clusters by the unconditional :func:`dissolve_singletons` backstop (a lone CO
+#: is never a valid TO); this floor now governs only MULTI-member runts.
 _DEFAULT_TO_OUTLIER_ABSORB_FLOOR = 0.20
 ENV_TO_OUTLIER_ABSORB_FLOOR = "ED4ALL_TO_OUTLIER_ABSORB_FLOOR"
 
@@ -132,6 +141,27 @@ _DEFAULT_TO_MERGE_NEAR_DUP = False
 ENV_TO_MERGE_NEAR_DUP = "ED4ALL_TO_MERGE_NEAR_DUP"
 _DEFAULT_TO_MERGE_COSINE = 0.85
 ENV_TO_MERGE_COSINE = "ED4ALL_TO_MERGE_COSINE"
+
+#: Anti-hallucinated-TO backstop — OPT-OUT (default OFF → singletons ARE
+#: dissolved = fix ON). A terminal objective is definitionally an AGGREGATE of
+#: >=2 chapter objectives, so a size-1 cluster must never author a standalone
+#: TO: a lone semantic-outlier CO would otherwise be promoted into a
+#: wholesale course-wide terminal competency that content generation weaves
+#: through many pages. Unlike the opt-in CONSOLIDATE guard (which DELIBERATELY
+#: leaves a genuinely-distinct singleton standing when no neighbor clears the
+#: absorb floor), :func:`dissolve_singletons` runs UNCONDITIONALLY and with NO
+#: floor — a lone CO always folds UNDER its nearest neighbor (the concept it
+#: exemplifies). Truthy (``1``/``true``/``yes``/``on``) restores the legacy
+#: keep-singleton behavior (a byte-stable escape hatch).
+_DEFAULT_TO_ALLOW_SINGLETON_TO = False
+ENV_TO_ALLOW_SINGLETON_TO = "ED4ALL_TO_ALLOW_SINGLETON_TO"
+
+#: Tiny-course floor for :func:`dissolve_singletons`. Folding halts before the
+#: surviving cluster count would drop below this, so a genuinely tiny course
+#: (few themes, mostly singletons) is not collapsed into one mega-TO. Default
+#: 3; garbage / < 1 → 3 (parse-with-fallback).
+_DEFAULT_TO_MIN_CLUSTERS = 3
+ENV_TO_MIN_CLUSTERS = "ED4ALL_TO_MIN_CLUSTERS"
 
 
 @dataclass(frozen=True)
@@ -705,6 +735,42 @@ def resolve_to_merge_cosine(floor: Optional[float] = None) -> float:
     return _DEFAULT_TO_MERGE_COSINE
 
 
+def resolve_to_allow_singleton_to(enabled: Optional[bool] = None) -> bool:
+    """Resolve the singleton-TO opt-OUT gate: arg → env → default.
+
+    Default OFF (``False``) → singletons ARE dissolved (the fix is ON). Truthy
+    env values (``1``/``true``/``yes``/``on``) → ``True`` → the legacy
+    keep-singleton behavior. Anything else (incl. garbage / unset) → the
+    default. Mirrors :func:`resolve_to_cluster_guards`' parse-with-fallback.
+    """
+    if enabled is not None:
+        return bool(enabled)
+    raw = str(os.environ.get(ENV_TO_ALLOW_SINGLETON_TO, "")).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return _DEFAULT_TO_ALLOW_SINGLETON_TO
+
+
+def resolve_to_min_clusters(value: Optional[int] = None) -> int:
+    """Resolve the dissolve tiny-course floor: explicit arg → env → default.
+
+    Garbage / non-positive env values fall back to the default (a misconfigured
+    floor must never crash or collapse a course to one TO). Mirrors
+    :func:`resolve_to_outlier_min_size`'s parse-with-fallback posture.
+    """
+    if value is not None:
+        return max(1, int(value))
+    raw = os.environ.get(ENV_TO_MIN_CLUSTERS)
+    if raw:
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            return _DEFAULT_TO_MIN_CLUSTERS
+        if val >= 1:
+            return val
+    return _DEFAULT_TO_MIN_CLUSTERS
+
+
 def _cluster_centroid(
     vecs: List[List[float]], member_idxs: List[int]
 ) -> List[float]:
@@ -807,6 +873,11 @@ def consolidate_small_clusters(
     >= ``min_size`` OR no further absorption is possible (no eligible neighbor /
     one cluster left).
 
+    NOTE: the "REMAINS standing" behavior is SUPERSEDED for SIZE-1 clusters by
+    the unconditional :func:`dissolve_singletons` backstop (a lone CO is never a
+    valid terminal objective, so it always folds into its nearest neighbor). The
+    ``absorb_floor`` here still governs MULTI-member runts (2..min_size-1).
+
     Returns ``(new_clusters, outliers_absorbed, undersize_merged)`` where
     ``outliers_absorbed`` counts absorbed SINGLETONS (the outlier-guard arm) and
     ``undersize_merged`` counts absorbed multi-member runts (2..min_size-1). Both
@@ -859,6 +930,67 @@ def consolidate_small_clusters(
     return _reorder_clusters(work), outliers_absorbed, undersize_merged
 
 
+def dissolve_singletons(
+    clusters: List[List[int]],
+    vecs: List[List[float]],
+    *,
+    min_clusters: Optional[int] = None,
+) -> Tuple[List[List[int]], int]:
+    """Fold every remaining size-1 cluster into its NEAREST-centroid neighbor.
+
+    The anti-hallucinated-TO backstop. A terminal objective is definitionally
+    an AGGREGATE of >=2 chapter objectives, so a size-1 cluster must never
+    author a standalone TO — a lone semantic-outlier CO would otherwise be
+    promoted into a wholesale course-wide terminal competency. Unlike
+    :func:`consolidate_small_clusters` (which DELIBERATELY leaves a
+    genuinely-distinct singleton standing when no neighbor clears the absorb
+    floor), this runs with NO floor: a lone CO ALWAYS folds UNDER the concept it
+    exemplifies — its nearest embedding neighbor. Folds SMALLEST-min-index-first,
+    one at a time, deterministically (reusing :func:`_nearest_centroid_neighbor`
+    with ties broken to the lower cluster index).
+
+    The ONLY thing that halts a fold is the ``min_clusters`` tiny-course floor:
+    folding stops before the surviving cluster count would drop BELOW it, so a
+    genuinely tiny course (few themes, mostly singletons) is not collapsed into
+    one mega-TO.
+
+    Returns ``(new_clusters, n_dissolved)``. PARTITION INVARIANT: the flattened
+    output indices are a permutation of the flattened input indices — never
+    drops, adds, or invents a CO. (Essentially
+    :func:`consolidate_small_clusters` with ``min_size=2`` + ``absorb_floor=0.0``
+    PLUS the new ``min_clusters`` tiny-course protection.)
+    """
+    resolved_min = resolve_to_min_clusters(min_clusters)
+
+    work: List[List[int]] = [list(c) for c in clusters if c]
+    n_dissolved = 0
+
+    while True:
+        # Halt before a fold would drop the surviving count below the floor
+        # (and never fold with only one cluster left).
+        if len(work) <= 1 or len(work) <= resolved_min:
+            break
+        singletons = [i for i, c in enumerate(work) if len(c) == 1]
+        if not singletons:
+            break
+        # Smallest-first is trivially satisfied (all size 1); order by min member
+        # index for deterministic selection.
+        singletons.sort(key=lambda i: min(work[i]))
+        ci = singletons[0]
+        neighbor_idx, _neighbor_cos = _nearest_centroid_neighbor(
+            work[ci], work, vecs, skip_index=ci
+        )
+        if neighbor_idx < 0:
+            break  # no neighbor (shouldn't happen with >1 cluster) → give up
+        work[neighbor_idx].extend(work[ci])
+        work[ci] = []
+        # Drop the emptied cluster and restart the scan (indices shift).
+        work = [c for c in work if c]
+        n_dissolved += 1
+
+    return _reorder_clusters(work), n_dissolved
+
+
 def absorb_outlier_clusters(
     clusters: List[List[int]],
     vecs: List[List[float]],
@@ -874,6 +1006,10 @@ def absorb_outlier_clusters(
     neighbor; an outlier with NO neighbor above the floor remains (a genuinely
     distinct competency). Returns ``(new_clusters, n_absorbed)``. PARTITION
     INVARIANT preserved (see :func:`consolidate_small_clusters`).
+
+    NOTE: for SIZE-1 clusters this floor-gated "remains standing" behavior is
+    SUPERSEDED by the unconditional :func:`dissolve_singletons` backstop (a lone
+    CO is never a valid terminal objective); the floor governs multi-member runts.
     """
     new_clusters, outliers, runts = consolidate_small_clusters(
         clusters, vecs, min_size=min_size, absorb_floor=absorb_floor

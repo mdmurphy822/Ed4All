@@ -4241,6 +4241,44 @@ def _derive_terminals_bottom_up(
     except Exception:  # noqa: BLE001 — never break TO derivation on the guards
         guard_signals = {}
 
+    # UNCONDITIONAL anti-hallucinated-TO backstop (runs even when the opt-in
+    # ED4ALL_TO_CLUSTER_GUARDS above are OFF). A terminal objective is
+    # definitionally an AGGREGATE of >=2 chapter objectives; a size-1 cluster
+    # that survives clustering (and the guards, which DELIBERATELY leave a
+    # genuinely-distinct singleton standing) would be promoted into a standalone
+    # course-wide TERMINAL objective that content generation weaves through many
+    # pages — even though it rests on a single idiosyncratic CO. Fold every
+    # remaining singleton into its nearest-centroid neighbor (pre-id-mint,
+    # partition-preserving → downstream learning_outcome_refs continuity holds).
+    # Default ON (correctness); the operator restores the legacy keep-singleton
+    # behavior via ED4ALL_TO_ALLOW_SINGLETON_TO. try/except like the guard block
+    # so it never breaks TO derivation.
+    singletons_dissolved = 0
+    _singleton_targets: List[int] = []
+    try:
+        from lib.objectives.objective_dedup import (  # noqa: PLC0415
+            _nearest_centroid_neighbor,
+            dissolve_singletons,
+            resolve_to_allow_singleton_to,
+        )
+
+        if not resolve_to_allow_singleton_to():
+            # Record each singleton's pre-dissolve nearest-neighbor cluster
+            # min-index for the decision-capture rationale (approximate — the
+            # iterative fold shifts centroids; used only for the audit string).
+            for _si, _sc in enumerate(clusters):
+                if len(_sc) == 1:
+                    _nidx, _ = _nearest_centroid_neighbor(
+                        _sc, clusters, vecs, skip_index=_si
+                    )
+                    if _nidx >= 0 and clusters[_nidx]:
+                        _singleton_targets.append(min(clusters[_nidx]))
+            clusters, singletons_dissolved = dissolve_singletons(clusters, vecs)
+    except Exception:  # noqa: BLE001 — never break TO derivation on the backstop
+        singletons_dissolved = 0
+        _singleton_targets = []
+    singletons_remaining = sum(1 for c in clusters if len(c) == 1)
+
     terminals: List[Dict[str, Any]] = []
     intra_cosines: List[float] = []
     # W7.5 (M-TO) — surface the REAL cluster->source-chunk assignment so the
@@ -4328,6 +4366,39 @@ def _derive_terminals_bottom_up(
                     "keep the raw fixed-K Ward clusters (singleton outlier "
                     "becomes a hallucinated TO; runts + duplicate themes "
                     "survive)",
+                ],
+            )
+        except Exception:  # noqa: BLE001 — capture must not break derivation
+            pass
+
+    # Surface the unconditional singleton-dissolve backstop counters onto the
+    # run's grounding_signals (singletons_dissolved == 0 when the opt-out env is
+    # set or the K-result carried no singletons).
+    cluster_signals["singletons_dissolved"] = int(singletons_dissolved)
+    cluster_signals["singletons_remaining"] = int(singletons_remaining)
+    if capture is not None and singletons_dissolved:
+        try:
+            capture.log_decision(
+                decision_type="content_selection",
+                decision=(
+                    f"dissolve_singletons:{singletons_dissolved} lone-CO "
+                    f"cluster(s) folded -> {len(clusters)} TOs"
+                ),
+                rationale=(
+                    "Unconditional anti-hallucinated-TO backstop: a terminal "
+                    "objective aggregates >=2 chapter objectives, so "
+                    f"{singletons_dissolved} size-1 cluster(s) that would each "
+                    "author a standalone course-wide terminal objective were "
+                    "folded into their nearest-centroid neighbor cluster(s) "
+                    f"(min member indices {sorted(_singleton_targets)}), "
+                    "pre-id-mint and partition-preserving, taking the TO count "
+                    f"to {len(clusters)} with {singletons_remaining} singleton(s) "
+                    "remaining (tiny-course floor). Every CO keeps a cluster "
+                    "(never dropped/invented)."
+                ),
+                alternatives_considered=[
+                    "keep the size-1 cluster (a lone outlier CO becomes a "
+                    "hallucinated course-wide terminal objective)",
                 ],
             )
         except Exception:  # noqa: BLE001 — capture must not break derivation

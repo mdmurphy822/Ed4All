@@ -573,3 +573,90 @@ def test_cluster_guards_off_outlier_keeps_its_own_to(monkeypatch):
     assert outlier_to not in cohort_tos             # outlier is standalone
     # The outlier TO has exactly one member CO (the singleton pathology).
     assert sum(1 for co in cos if co["terminal_id"] == outlier_to) == 1
+
+
+# ---------------------------------------------------------------------------
+# Unconditional anti-hallucinated-TO backstop (dissolve_singletons) wiring
+# ---------------------------------------------------------------------------
+
+
+def _neutral_cohort_plus_outlier() -> List[Dict[str, Any]]:
+    """Five cohesive COs (shared linear-equation vocab) + ONE disjoint outlier.
+
+    Topic-free of any specific leaked content: the outlier's vocabulary simply
+    shares no tokens with the cohort, so under a pinned ``ED4ALL_TO_CLUSTER_K=2``
+    it lands in its OWN singleton cluster — the shape the backstop must fold.
+    """
+    return [
+        _co("Solve a linear equation in one variable."),
+        _co("Solve the linear equation for its single variable."),
+        _co("Solve a two-step linear equation in one variable."),
+        _co("Isolate the variable to solve a linear equation."),
+        _co("Rearrange and solve a linear equation for the variable."),
+        # Disjoint outlier — no shared tokens with the linear-equation cohort.
+        _co("Label the organelles of a plant cell under a microscope."),
+    ]
+
+
+def test_dissolve_singletons_default_on_folds_outlier(monkeypatch):
+    """DEFAULT (opt-out UNSET) — the outlier singleton is DISSOLVED (fix ON), so
+    no standalone lone-CO terminal objective survives id-minting.
+
+    Pins ``ED4ALL_TO_CLUSTER_K=2`` (2-cluster [cohort, singleton] partition) and
+    ``ED4ALL_TO_MIN_CLUSTERS=1`` so the tiny-course floor permits the 2->1 fold.
+    The opt-in cluster GUARDS stay OFF — the backstop, not the guards, acts.
+    """
+    monkeypatch.setenv("ED4ALL_TO_CLUSTER_K", "2")
+    monkeypatch.setenv("ED4ALL_TO_MIN_CLUSTERS", "1")
+    monkeypatch.delenv("ED4ALL_TO_ALLOW_SINGLETON_TO", raising=False)
+    for var in ("ED4ALL_TO_CLUSTER_GUARDS", "ED4ALL_TO_MERGE_NEAR_DUP"):
+        monkeypatch.delenv(var, raising=False)
+
+    cos = _neutral_cohort_plus_outlier()
+    terminals, signals = pt._derive_terminals_bottom_up(
+        provider=_FakeProvider(),
+        chapter_cos=cos,
+        embed=FakeEmbed(),
+        course_name="MATH_101",
+        mint_lo_id=_mint,
+    )
+
+    # The singleton was folded → exactly ONE TO; no standalone lone-CO TO.
+    assert len(terminals) == 1
+    assert signals.get("singletons_dissolved", 0) == 1
+    assert signals.get("singletons_remaining", -1) == 0
+    minted = {t["id"] for t in terminals}
+    assert all(co.get("terminal_id") in minted for co in cos)
+    assert len({co["terminal_id"] for co in cos}) == 1
+    # Partition invariant: 6 COs in, 6 placed (none dropped / duplicated).
+    assert len(cos) == 6
+
+
+def test_dissolve_singletons_opt_out_keeps_singleton(monkeypatch):
+    """OPT-OUT (ED4ALL_TO_ALLOW_SINGLETON_TO=1) — legacy keep-singleton: the SAME
+    outlier cohort still produces a standalone singleton TO (byte-stable escape
+    hatch). Confirms the backstop, not the cohort, is what changes behavior.
+    """
+    monkeypatch.setenv("ED4ALL_TO_CLUSTER_K", "2")
+    monkeypatch.setenv("ED4ALL_TO_MIN_CLUSTERS", "1")
+    monkeypatch.setenv("ED4ALL_TO_ALLOW_SINGLETON_TO", "1")
+    for var in ("ED4ALL_TO_CLUSTER_GUARDS", "ED4ALL_TO_MERGE_NEAR_DUP"):
+        monkeypatch.delenv(var, raising=False)
+
+    cos = _neutral_cohort_plus_outlier()
+    terminals, signals = pt._derive_terminals_bottom_up(
+        provider=_FakeProvider(),
+        chapter_cos=cos,
+        embed=FakeEmbed(),
+        course_name="MATH_101",
+        mint_lo_id=_mint,
+    )
+
+    # Legacy: two clusters → two TOs; the outlier owns its own singleton TO.
+    assert len(terminals) == 2
+    assert signals.get("singletons_dissolved", 0) == 0
+    cohort_tos = {cos[i]["terminal_id"] for i in range(5)}
+    outlier_to = cos[5]["terminal_id"]
+    assert len(cohort_tos) == 1
+    assert outlier_to not in cohort_tos
+    assert sum(1 for co in cos if co["terminal_id"] == outlier_to) == 1
