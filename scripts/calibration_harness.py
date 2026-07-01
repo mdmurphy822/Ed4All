@@ -34,22 +34,47 @@ For every discovered corpus (a LibV2 course slug or a Courseforge project export
 A corpus missing ALL four sources for a gate is SKIPPED for that gate with a logged
 reason (no fabricated data).
 
+MULTI-CORPUS DISCOVERY (W8.3)
+-----------------------------
+The whole point of the harness is the >=2-DISTINCT-corpora precondition every deferred
+flip is blocked on. Discovery enumerates every LibV2 course + Courseforge export that
+carries a readable artifact (reusing the W0.8 master catalog to seed the LibV2 slug set
+where present, unioned with the filesystem scan so an un-cataloged course is never
+missed), collapses run-variants of one textbook to a single ``corpus_key``, and is
+DISCOVER-OR-SKIP: a corpus with no readable artifact is skipped with a logged reason,
+and when fewer than 2 DISTINCT corpora contribute, ``sufficient_corpora`` is False and
+every gate stays ``flip_ready=false`` with a clear message (a 2nd-corpus run unblocks
+the flips). The operator can point the harness at ADDITIONAL local corpus roots via the
+``ED4ALL_CALIB_EXTRA_CORPORA`` env var (os.pathsep/comma-separated dirs; the ``--corpora``
+CLI flag wins when both are set) — each extra root's immediate children are treated as
+corpora (export-shaped, mirroring ``--runs-dir``). ``--max-corpora`` caps the distinct
+set (keeps the highest-coverage corpora). Both are opt-in, parse-with-fallback (a
+missing/garbage path is skipped, never fatal). No hardcoded slug; no tracked bytes.
+
 WHAT IT EMITS
 -------------
 ``calibration_report.json`` (path overridable) + a readable stdout summary. Per gate:
-  {fire_rate, corpora[], sample[], expected_band, corpora_count, flip_ready,
-   flip_blocked_reason}
+  {fire_rate, corpora[], sample[], expected_band, corpora_count, across_corpora,
+   flip_ready, flip_blocked_reason}
+
+``across_corpora`` is the W8.3 per-gate ACROSS-CORPORA aggregate — {n_corpora,
+max_fire_rate, min_fire_rate, mean_fire_rate, pooled_fire_rate, max_in_band,
+worst_corpus}. The MAX per-corpus fire-rate (worst-corpus FP signal) is the number an
+operator reads to decide a flip: a gate can look clean POOLED yet spike on ONE corpus,
+which is exactly the per-corpus false-positive a flip must not miss.
 
 ``flip_ready`` is a HEURISTIC, not an automatic FP verdict — FP rate needs ground truth
-the harness cannot synthesize. It is True only when (corpora_count >= 2 AND the observed
-fire_rate falls within the gate's DOCUMENTED expected band). The harness surfaces the
-measurement + the criterion; a downstream human/adjudication step decides the flip.
+the harness cannot synthesize. It is True only when (corpora_count >= 2 AND the pooled
+fire_rate is in the gate's DOCUMENTED expected band AND the WORST-corpus fire_rate is
+also in band). The harness surfaces the measurement + the criterion; a downstream
+human/adjudication step decides the flip.
 
 USAGE
 -----
     python3 scripts/calibration_harness.py
     python3 scripts/calibration_harness.py --course sample-course-a
     python3 scripts/calibration_harness.py --runs-dir Courseforge/exports
+    python3 scripts/calibration_harness.py --corpora /data/extra_lib --max-corpora 4
     python3 scripts/calibration_harness.py --out /tmp/calibration_report.json
 """
 from __future__ import annotations
@@ -57,6 +82,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -453,6 +479,90 @@ def _training_captures_root() -> Path:
         return Path(get_training_captures_dir())
     except Exception:
         return _repo_root() / "training-captures"
+
+
+def _libv2_root() -> Path:
+    try:
+        from lib.paths import get_libv2_root  # type: ignore
+
+        return Path(get_libv2_root())
+    except Exception:
+        return _repo_root() / "LibV2"
+
+
+# --------------------------------------------------------------------------------------
+# W8.3 — extra-corpora env knob + W0.8 master-catalog reuse (multi-corpus discovery)
+# --------------------------------------------------------------------------------------
+ENV_EXTRA_CORPORA = "ED4ALL_CALIB_EXTRA_CORPORA"
+#: Separators accepted inside ED4ALL_CALIB_EXTRA_CORPORA (os.pathsep + comma + newline).
+_EXTRA_CORPORA_SEP_RE = re.compile(r"[,\n" + re.escape(os.pathsep) + r"]")
+
+
+def resolve_extra_corpora_roots(
+    explicit: Iterable[str] | None = None,
+) -> list[Path]:
+    """Resolve extra corpus-discovery roots (opt-in, parse-with-fallback).
+
+    Precedence (high -> low): the ``--corpora`` CLI list (``explicit``) > the
+    ``ED4ALL_CALIB_EXTRA_CORPORA`` env var (os.pathsep/comma/newline-separated). Every
+    entry is expanded + resolved; a path that is not an existing directory is skipped
+    with a warning (never fatal — mirrors the other ED4ALL_* parse-with-fallback knobs).
+    De-duplicates while preserving first-seen order. Returns ``[]`` when unset.
+    """
+    raw_items: list[str] = []
+    if explicit:
+        raw_items.extend(str(x) for x in explicit)
+    else:
+        env = os.environ.get(ENV_EXTRA_CORPORA)
+        if env:
+            raw_items.extend(_EXTRA_CORPORA_SEP_RE.split(env))
+
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for item in raw_items:
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            rp = Path(item).expanduser().resolve()
+        except Exception:  # noqa: BLE001 — a malformed path is skipped, never fatal
+            LOG.warning("ignoring unparseable extra-corpora path: %r", item)
+            continue
+        if rp in seen:
+            continue
+        seen.add(rp)
+        if rp.is_dir():
+            roots.append(rp)
+        else:
+            LOG.warning(
+                "%s path is not a directory, skipping: %s", ENV_EXTRA_CORPORA, rp
+            )
+    return roots
+
+
+def _catalog_course_names(libv2_root: Path) -> list[str]:
+    """W0.8 master-catalog course slugs (empty on absence/error). Graceful.
+
+    Reuses ``LibV2.tools.libv2.catalog.load_master_catalog`` (the same loader
+    ``lib/retrieval/library_wide._catalog_slugs`` consults) to SEED the LibV2 course set
+    from the built catalog. Unioned with the filesystem scan by the caller, so a course
+    present in the catalog but not yet on disk (or vice-versa) is still discovered. Any
+    import/read error returns ``[]`` — the filesystem scan remains the source of truth.
+    """
+    try:
+        from LibV2.tools.libv2.catalog import load_master_catalog  # type: ignore
+
+        catalog = load_master_catalog(libv2_root)
+    except Exception:  # noqa: BLE001 — catalog absence is expected; degrade to fs scan
+        return []
+    if catalog is None:
+        return []
+    names: list[str] = []
+    for entry in getattr(catalog, "courses", []) or []:
+        slug = getattr(entry, "slug", None)
+        if slug:
+            names.append(str(slug))
+    return names
 
 
 # --------------------------------------------------------------------------------------
@@ -1125,8 +1235,13 @@ def discover_corpora(
     *,
     course_filter: str | None,
     runs_dir: Path | None,
+    extra_roots: Iterable[Path] | None = None,
 ) -> list[CorpusResult]:
-    """Discover corpora dynamically from LibV2 + Courseforge exports (+ optional override).
+    """Discover corpora dynamically from LibV2 + Courseforge exports (+ optional overrides).
+
+    ``extra_roots`` (from ``--corpora`` / ``ED4ALL_CALIB_EXTRA_CORPORA``) are additional
+    operator-supplied corpus roots; each root's immediate children are treated as
+    export-shaped corpora (mirroring ``--runs-dir``), unioned onto the default discovery.
 
     Returns CorpusResult shells (paths resolved, sources not yet read).
     """
@@ -1218,8 +1333,35 @@ def discover_corpora(
                 _add_courseforge_export(child)
         lv_root = _libv2_courses_root()
         if lv_root.is_dir():
-            for child in sorted(lv_root.iterdir()):
-                _add_libv2_course(child)
+            # Union the filesystem course dirs with the W0.8 master-catalog slugs so a
+            # cataloged course is never missed (and vice-versa). Both are course NAMES;
+            # only names whose dir exists on disk are added.
+            names: set[str] = {
+                child.name for child in lv_root.iterdir() if child.is_dir()
+            }
+            for slug in _catalog_course_names(_libv2_root()):
+                if (lv_root / slug).is_dir():
+                    names.add(slug)
+            for name in sorted(names):
+                _add_libv2_course(lv_root / name)
+
+    # W8.3 — extra operator-supplied corpus roots (opt-in; unioned onto discovery).
+    # Each root's immediate children are treated as export-shaped corpora (like
+    # --runs-dir). A root with no child dirs is itself treated as one export.
+    for root in extra_roots or []:
+        root = Path(root)
+        if not root.is_dir():
+            continue
+        try:
+            children = [c for c in sorted(root.iterdir()) if c.is_dir()]
+        except OSError as exc:
+            LOG.warning("could not enumerate extra-corpora root %s: %s", root, exc)
+            continue
+        if children:
+            for child in children:
+                _add_courseforge_export(child)
+        else:
+            _add_courseforge_export(root)
 
     return list(corpora.values())
 
@@ -1227,7 +1369,9 @@ def discover_corpora(
 # --------------------------------------------------------------------------------------
 # Aggregation across corpora
 # --------------------------------------------------------------------------------------
-def aggregate(corpora: list[CorpusResult]) -> dict[str, Any]:
+def aggregate(
+    corpora: list[CorpusResult], *, max_corpora: int | None = None
+) -> dict[str, Any]:
     """Roll per-corpus observations up into the per-gate-family calibration report.
 
     Corpus IDENTITY for the ">=2 corpora" requirement is keyed on the underlying source
@@ -1267,6 +1411,14 @@ def aggregate(corpora: list[CorpusResult]) -> dict[str, Any]:
         by_key[c.corpus_key] = c  # most-coverage, then latest-timestamp, overwrites
     representatives = list(by_key.values())
 
+    # W8.3 --max-corpora cap: keep the highest-coverage distinct corpora (tie-broken by
+    # corpus_key for determinism). Parse-with-fallback: a non-positive cap is ignored.
+    if max_corpora is not None and max_corpora > 0 and len(representatives) > max_corpora:
+        representatives = sorted(
+            representatives, key=lambda c: (-_coverage(c), c.corpus_key)
+        )[:max_corpora]
+        by_key = {c.corpus_key: c for c in representatives}
+
     gates_out: dict[str, Any] = {}
     for fam in GATE_FAMILIES:
         per_corpus: list[dict[str, Any]] = []
@@ -1300,7 +1452,34 @@ def aggregate(corpora: list[CorpusResult]) -> dict[str, Any]:
         band_lo, band_hi = fam.expected_band
         in_band = band_lo <= fire_rate <= band_hi
 
+        # W8.3 ACROSS-CORPORA aggregate — the per-corpus fire-rate distribution. The MAX
+        # (worst-corpus) rate is the operator's per-corpus false-positive signal: a gate
+        # can look clean POOLED yet spike on ONE corpus. Computed from the per-corpus rows
+        # already assembled above (each corpus's own fire_rate), so it needs no re-read.
+        per_corpus_rates = [pc["fire_rate"] for pc in per_corpus]
+        if per_corpus_rates:
+            max_fire_rate = max(per_corpus_rates)
+            min_fire_rate = min(per_corpus_rates)
+            mean_fire_rate = sum(per_corpus_rates) / len(per_corpus_rates)
+            worst = max(per_corpus, key=lambda pc: pc["fire_rate"])
+            worst_corpus = worst["corpus"]
+        else:
+            max_fire_rate = min_fire_rate = mean_fire_rate = 0.0
+            worst_corpus = None
+        max_in_band = band_lo <= max_fire_rate <= band_hi
+        across_corpora = {
+            "n_corpora": contributing_corpora,
+            "max_fire_rate": round(max_fire_rate, 6),
+            "min_fire_rate": round(min_fire_rate, 6),
+            "mean_fire_rate": round(mean_fire_rate, 6),
+            "pooled_fire_rate": round(fire_rate, 6),
+            "max_in_band": max_in_band,
+            "worst_corpus": worst_corpus,
+        }
+
         # flip_ready HEURISTIC — see module docstring. Never an automatic FP verdict.
+        # Requires >=2 corpora AND the POOLED rate in band AND the WORST-corpus rate in
+        # band (a per-corpus spike must not hide behind a clean pool).
         if contributing_corpora == 0:
             flip_ready = False
             blocked = "no corpus produced an observation for this gate family"
@@ -1316,6 +1495,14 @@ def aggregate(corpora: list[CorpusResult]) -> dict[str, Any]:
                 f"fire_rate {fire_rate:.4f} outside documented expected band "
                 f"[{band_lo}, {band_hi}] — manual FP audit required before flip"
             )
+        elif not max_in_band:
+            flip_ready = False
+            blocked = (
+                f"pooled fire_rate {fire_rate:.4f} in band but worst-corpus rate "
+                f"{max_fire_rate:.4f} ({worst_corpus}) exceeds band "
+                f"[{band_lo}, {band_hi}] — a per-corpus spike needs a manual FP audit "
+                "before flip"
+            )
         else:
             flip_ready = True
             blocked = None
@@ -1328,6 +1515,7 @@ def aggregate(corpora: list[CorpusResult]) -> dict[str, Any]:
             "total_evaluated": total_eval,
             "corpora_count": contributing_corpora,
             "corpora": per_corpus,
+            "across_corpora": across_corpora,
             "sample": samples,
             "expected_band": {"min": band_lo, "max": band_hi, "in_band": in_band},
             "band_source": fam.band_source,
@@ -1360,6 +1548,9 @@ def aggregate(corpora: list[CorpusResult]) -> dict[str, Any]:
         ],
         # Distinct underlying-corpus count — the number that gates the >=2 requirement.
         "distinct_corpus_count": len(representatives),
+        # W8.3 discover-or-skip signal: True iff >=2 DISTINCT corpora contributed data
+        # (the precondition for ANY flip). False => every gate stays flip_ready=false.
+        "sufficient_corpora": len(representatives) >= 2,
         "distinct_corpus_keys": sorted(by_key),
         # Raw run count that contributed data (informational; NOT the flip gate).
         "contributing_run_count": len(contributing),
@@ -1425,14 +1616,16 @@ def print_summary(report: dict[str, Any]) -> None:
         )
     print("-" * 88)
     print(
-        f"{'GATE FAMILY':<52}{'fire_rate':>11}{'corpora':>9}{'flip?':>8}"
+        f"{'GATE FAMILY':<46}{'pooled':>9}{'maxFR':>9}{'corpora':>9}{'flip?':>7}"
     )
     print("-" * 88)
     for name, g in report["gate_families"].items():
         ready = "YES" if g["flip_ready"] else "no"
-        short = name if len(name) <= 50 else name[:49] + "…"
+        short = name if len(name) <= 44 else name[:43] + "…"
+        max_fr = g.get("across_corpora", {}).get("max_fire_rate", g["fire_rate"])
         print(
-            f"{short:<52}{g['fire_rate']:>11.4f}{g['corpora_count']:>9}{ready:>8}"
+            f"{short:<46}{g['fire_rate']:>9.4f}{max_fr:>9.4f}"
+            f"{g['corpora_count']:>9}{ready:>7}"
         )
     print("-" * 88)
     print("Per-gate flip-blocked reasons:")
@@ -1459,6 +1652,22 @@ def main(argv: list[str] | None = None) -> int:
         "(Courseforge-export shape). Overrides default LibV2 + Courseforge discovery.",
     )
     parser.add_argument(
+        "--corpora",
+        action="append",
+        default=None,
+        metavar="DIR",
+        help="Additional corpus root(s) to UNION onto discovery (repeatable). Each "
+        "root's immediate children are treated as export-shaped corpora. Wins over the "
+        f"{ENV_EXTRA_CORPORA} env var. Parse-with-fallback: a non-directory is skipped.",
+    )
+    parser.add_argument(
+        "--max-corpora",
+        type=int,
+        default=None,
+        help="Cap the number of DISTINCT corpora used (keeps the highest-coverage ones). "
+        "Non-positive values are ignored (parse-with-fallback).",
+    )
+    parser.add_argument(
         "--out",
         default=str(_repo_root() / "calibration_report.json"),
         help="Output path for calibration_report.json.",
@@ -1471,8 +1680,11 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     runs_dir = Path(args.runs_dir).resolve() if args.runs_dir else None
-    corpora = discover_corpora(course_filter=args.course, runs_dir=runs_dir)
-    report = aggregate(corpora)
+    extra_roots = resolve_extra_corpora_roots(args.corpora)
+    corpora = discover_corpora(
+        course_filter=args.course, runs_dir=runs_dir, extra_roots=extra_roots
+    )
+    report = aggregate(corpora, max_corpora=args.max_corpora)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
