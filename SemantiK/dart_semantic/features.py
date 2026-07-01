@@ -65,7 +65,12 @@ def featurize(raw_blocks: list[RawBlock]) -> list[FeatureBlock]:
             # then-right-column instead of line-interleaved across the gutter.
             # Single-column -> one column -> byte-identical to the raster key.
             page_w = page_blocks[0].page_width if page_blocks else _DEFAULT_PAGE_WIDTH
-            col = column_ids_for_x0s([b.bbox[0] for b in page_blocks], page_w)
+            # W7.2 single-column guard: a stray wide gap (indent / centered
+            # figure / page number) must NOT invent a column on the reorder
+            # path (reorder only — never the council BERT feature).
+            col = column_ids_for_x0s(
+                [b.bbox[0] for b in page_blocks], page_w, single_column_guard=True,
+            )
             page_blocks = [
                 page_blocks[k]
                 for k in sorted(
@@ -293,7 +298,11 @@ def _interleave_image_feature_blocks(
         for page, positions in by_page_pos.items():
             page_w = page_dims.get(page, (_DEFAULT_PAGE_WIDTH, 792.0))[0]
             x0s = [entries[p][0][2] for p in positions]
-            for p, c in zip(positions, column_ids_for_x0s(x0s, page_w)):
+            # W7.2 single-column guard (reorder path only).
+            for p, c in zip(
+                positions,
+                column_ids_for_x0s(x0s, page_w, single_column_guard=True),
+            ):
                 col_by_pos[p] = c
         entries = [
             ((key[0], col_by_pos[pos], key[1], key[2], key[3], key[4]), kind, fb)

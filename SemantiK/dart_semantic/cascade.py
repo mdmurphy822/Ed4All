@@ -45,6 +45,7 @@ from .gates import gate_document, gate_per_region, rerank_per_region
 from .qwen_specialists.runner import run_qwen_specialists
 from .qwen_specialists.reviewer import resolve_structure_review_mode
 from .qwen_specialists.runtime import any_phase_provider_is_endpoint
+from .reading_order import resolve_deploy_profile
 from .soft_reranker import score_document
 from .structure_graph import Region, build_structure_graph
 from .theta import decide_exit, evaluate, maybe_offline_retry
@@ -65,14 +66,18 @@ _FIG_FALSEY = {"0", "false", "no", "off"}
 def resolve_detect_figures() -> bool:
     """Whether the Part F figure-detection path (Stages A-D) runs.
 
-    Reads ``SEMANTIK_DETECT_FIGURES``, DEFAULT OFF (byte-stable).
-    Parse-with-fallback: truthy (``1``/``true``/``yes``/``on``) → on;
-    unset / falsey / garbage → off. Resolver of record; the extract-side
-    mirror ``extract_shared._detect_figures_enabled`` reads the same env
-    (extract runs inside the council orchestrator, off the cascade's
-    thread). Mirrors ``ED4ALL_BLOCK_ANATOMY``'s default-off posture.
+    Reads ``SEMANTIK_DETECT_FIGURES`` OR the bundled ``SEMANTIK_DEPLOY_PROFILE``
+    (W7.1 — the deploy profile turns figure detection AND column reading-order
+    on together). DEFAULT OFF (byte-stable). Parse-with-fallback: truthy
+    (``1``/``true``/``yes``/``on``) on EITHER flag → on; unset / falsey /
+    garbage → off. Resolver of record; the extract-side mirror
+    ``extract_shared._detect_figures_enabled`` reads the same envs (extract
+    runs inside the council orchestrator, off the cascade's thread). Mirrors
+    ``ED4ALL_BLOCK_ANATOMY``'s default-off posture.
     """
-    return os.environ.get(_DETECT_FIGURES_ENV, "").strip().lower() in _FIG_TRUTHY
+    if os.environ.get(_DETECT_FIGURES_ENV, "").strip().lower() in _FIG_TRUTHY:
+        return True
+    return resolve_deploy_profile()
 
 
 def resolve_figure_caption_mode() -> str:

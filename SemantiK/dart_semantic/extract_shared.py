@@ -57,6 +57,7 @@ from .reading_order import (
     _DEFAULT_PAGE_WIDTH,
     column_ids_for_bboxes,
     resolve_column_order_mode,
+    resolve_deploy_profile,
 )
 from .region_detection import CID_RE
 
@@ -77,8 +78,14 @@ _FIG_TRUTHY = {"1", "true", "yes", "on"}
 
 
 def _detect_figures_enabled() -> bool:
-    """Whether per-page IMAGE page-object extraction runs (default OFF)."""
-    return os.environ.get(_DETECT_FIGURES_ENV, "").strip().lower() in _FIG_TRUTHY
+    """Whether per-page IMAGE page-object extraction runs (default OFF).
+
+    Reads ``SEMANTIK_DETECT_FIGURES`` OR the bundled ``SEMANTIK_DEPLOY_PROFILE``
+    (W7.1), mirroring ``cascade.resolve_detect_figures``.
+    """
+    if os.environ.get(_DETECT_FIGURES_ENV, "").strip().lower() in _FIG_TRUTHY:
+        return True
+    return resolve_deploy_profile()
 
 
 # Minimum text-layer chars below which we assume the page is scanned.
@@ -917,6 +924,10 @@ def _merge_page(page: dict, text_layer_ok: bool) -> dict:
             [b["bbox"] for b in merged_blocks],
             page_w,
             float_bboxes=table_bboxes or None,
+            # W7.2 — only reorder for a GENUINE gutter; a single-column page
+            # with indents / floats must stay in raster order (no invented
+            # column). Reorder path only (never the council BERT feature).
+            single_column_guard=True,
         )
         order = sorted(
             range(len(merged_blocks)),

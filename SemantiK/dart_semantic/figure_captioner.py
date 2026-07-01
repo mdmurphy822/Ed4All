@@ -30,11 +30,16 @@ the failure rather than producing empty alt downstream.
 """
 from __future__ import annotations
 
+import hashlib
+import logging
+import os
 import re
 from dataclasses import replace
 from functools import lru_cache
 from io import BytesIO
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class FigureCaptionError(RuntimeError):
@@ -207,6 +212,99 @@ def _run_smolvlm_caption(image_bytes: bytes, prompt: str,
     return text
 
 
+# ---------------------------------------------------------------------------
+# Decision capture for the VLM call site (W7.6)
+# ---------------------------------------------------------------------------
+# Every LLM/VLM call site must wire up a DecisionCapture and emit at least one
+# decision per call (per-figure here) with a DYNAMIC, replayable rationale (root
+# /CLAUDE.md § LLM call-site instrumentation). Best-effort: a capture failure
+# (lib not on path in the SemantiK subprocess venv, disk error, …) must NEVER
+# break captioning — mirrors the "structure_review DecisionCapture failed
+# (non-fatal)" posture in MCP/tools/pipeline_tools.py.
+
+
+def _figure_caption_course_code() -> str:
+    """Course code for the figure-caption capture (best-effort context)."""
+    raw = (
+        os.environ.get("SEMANTIK_COURSE_CODE")
+        or os.environ.get("ED4ALL_COURSE_CODE")
+        or ""
+    ).strip()
+    return raw or "SEMANTIK"
+
+
+def _build_caption_capture():
+    """Construct a best-effort DecisionCapture for the VLM caption call site.
+
+    Returns ``None`` (captioning proceeds unaffected) when ``lib.decision_capture``
+    is unavailable or construction fails. Lands under the canonical ``dart`` tool
+    / ``dart-conversion`` phase, matching the Stage-5d ``structure_review``
+    capture in ``MCP/tools/pipeline_tools.py``.
+    """
+    try:
+        from lib.decision_capture import DecisionCapture
+
+        return DecisionCapture(
+            course_code=_figure_caption_course_code(),
+            phase="dart-conversion",
+            tool="dart",
+        )
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort
+        logger.debug("figure-caption DecisionCapture unavailable (non-fatal): %s", exc)
+        return None
+
+
+def _log_caption_decision(
+    capture,
+    *,
+    region_index: int,
+    feature_block_indices: tuple,
+    image_bytes: bytes,
+    px_size,
+    alt: str,
+    extended: str,
+    alt_max_new_tokens: int,
+    extended_max_new_tokens: int,
+) -> None:
+    """Emit ONE ``alt_text_generation`` decision for a captioned figure.
+
+    Rationale is dynamic + replayable (image content hash, figure geometry /
+    stable FB id, model + per-prompt max_tokens, produced caption lengths) so a
+    post-hoc replay can attribute the alt/extended text to its exact input.
+    Best-effort: never raises into the caption path.
+    """
+    if capture is None:
+        return
+    try:
+        img_sha = hashlib.sha256(image_bytes or b"").hexdigest()[:16]
+        min_fb = min(feature_block_indices) if feature_block_indices else None
+        try:
+            px = tuple(int(v) for v in (px_size or ()))
+        except (TypeError, ValueError):
+            px = ()
+        rationale = (
+            f"SmolVLM2 alt-text for figure region {region_index} "
+            f"(min_fb={min_fb}, img_sha256={img_sha}, px_size={px}, "
+            f"bytes={len(image_bytes or b'')}): model={SMOLVLM_MODEL_ID} "
+            f"alt_max_new_tokens={alt_max_new_tokens} "
+            f"extended_max_new_tokens={extended_max_new_tokens}; produced "
+            f"alt_len={len(alt or '')} extended_len={len(extended or '')} chars "
+            f"(numeric-hallucination guard applied downstream at emit)."
+        )
+        capture.log_decision(
+            decision_type="alt_text_generation",
+            decision=(
+                f"caption figure region {region_index}: alt={(alt or '')[:80]!r}"
+            ),
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort
+        logger.debug(
+            "figure-caption DecisionCapture log failed (non-fatal) on region %s: %s",
+            region_index, exc,
+        )
+
+
 def caption_figure_regions(regions: list[Any], *,
                            run_extended: bool = True) -> list[Any]:
     """Stage 6b — attach ``alt_text`` (+ optional ``extended_description``) to
@@ -241,6 +339,8 @@ def caption_figure_regions(regions: list[Any], *,
         return regions
 
     out = list(regions)
+    # One capture per Stage-6b invocation; one decision per captioned figure.
+    capture = _build_caption_capture()
     for i in fig_idxs:
         region = out[i]
         payload = region.payload or {}
@@ -265,6 +365,20 @@ def caption_figure_regions(regions: list[Any], *,
             raise FigureCaptionError(
                 f"figure region {i}: {type(exc).__name__}: {exc}"
             ) from exc
+
+        _log_caption_decision(
+            capture,
+            region_index=i,
+            feature_block_indices=tuple(
+                getattr(region, "feature_block_indices", ()) or ()
+            ),
+            image_bytes=img_bytes,
+            px_size=payload.get("px_size"),
+            alt=alt,
+            extended=ext,
+            alt_max_new_tokens=_ALT_MAX_NEW_TOKENS,
+            extended_max_new_tokens=_EXTENDED_MAX_NEW_TOKENS,
+        )
 
         new_payload = {
             **payload,
