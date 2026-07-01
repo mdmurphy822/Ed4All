@@ -32,11 +32,23 @@
 #
 # Provenance: the closed Touch.provider set is DERIVED from the union of
 # every row's provenance_provider + the sentinel "deterministic". Many
-# endpoints can map to one provenance value (groq/fireworks/deepseek ->
-# local, together-vision -> together). The union here MUST stay equal to
-# the historical hand-maintained set
+# endpoints can map to one provenance value (together-vision -> together).
+# The union here MUST stay equal to the historical hand-maintained set
 # {anthropic, claude_session, deterministic, local, nvidia, together} —
 # the provenance set is FROZEN across this refactor.
+#
+# LICENSING-CORRECTNESS (W9.1): a CLOUD endpoint MUST NOT stamp the
+# license-clean "local" provenance. "local" tells a licensing auditor the
+# artifact came from an Apache-2.0 local OSS model (training-permitted,
+# clean); recording a hosted-cloud seat as "local" is a licensing LIE.
+# The hosted-OSS cloud seats (groq / fireworks / deepseek — Llama-3.3-70B
+# and DeepSeek served over a remote API) therefore map their provenance
+# onto the existing CLOUD "together" value ("hosted OSS teacher, ToS-gated,
+# NOT clean-local"), never "local". Mapping onto an existing Touch value
+# keeps the provenance set frozen (no codegen churn) while telling the
+# truth about corpus origin. Regression net:
+# Trainforge/tests/test_synthesis_provenance_stamp.py + the cross-registry
+# drift guard tests/test_endpoint_registry_drift_guard.py.
 version: 1
 endpoints:
   anthropic:
@@ -127,8 +139,9 @@ endpoints:
   # Migrated verbatim from MCP/orchestrator/llm_backend.py::
   # _OPENAI_COMPATIBLE_PROVIDERS (keeps together-vision + the illustrative
   # groq/fireworks/deepseek stubs). These map their provenance onto an
-  # existing Touch value (together / local) so the closed provenance set
-  # does NOT grow.
+  # existing CLOUD Touch value ("together") so the closed provenance set
+  # does NOT grow — and, per W9.1, so a hosted-cloud seat never falsely
+  # stamps the license-clean "local" provenance (see the header note).
   # ---------------------------------------------------------------------
   together-vision:
     kind: openai_compatible
@@ -149,7 +162,9 @@ endpoints:
     api_key_required: true
     model_env: GROQ_SYNTHESIS_MODEL
     default_model: llama-3.3-70b-versatile
-    provenance_provider: local
+    # W9.1: hosted-cloud Llama-3.3-70B seat — maps to the CLOUD "together"
+    # provenance, NEVER the license-clean "local" (see header note).
+    provenance_provider: together
     unverified: true
 
   fireworks:
@@ -160,7 +175,9 @@ endpoints:
     api_key_required: true
     model_env: FIREWORKS_SYNTHESIS_MODEL
     default_model: accounts/fireworks/models/llama-v3p3-70b-instruct
-    provenance_provider: local
+    # W9.1: hosted-cloud Llama-3.3-70B seat — maps to the CLOUD "together"
+    # provenance, NEVER the license-clean "local" (see header note).
+    provenance_provider: together
     unverified: true
 
   deepseek:
@@ -171,5 +188,7 @@ endpoints:
     api_key_required: true
     model_env: DEEPSEEK_SYNTHESIS_MODEL
     default_model: deepseek-chat
-    provenance_provider: local
+    # W9.1: hosted-cloud DeepSeek seat — maps to the CLOUD "together"
+    # provenance, NEVER the license-clean "local" (see header note).
+    provenance_provider: together
     unverified: true

@@ -28,6 +28,7 @@ LLM call-site test surfaces stay parallel.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List
@@ -70,6 +71,16 @@ def _make_client(
     handler: Callable[[httpx.Request], httpx.Response]
 ) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def _capturing_client(sink: List[Dict[str, Any]]) -> httpx.Client:
+    """A mock client that records each POST's JSON body into ``sink``."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sink.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json=_success_body("ok"))
+
+    return _make_client(handler)
 
 
 class _FakeCapture:
@@ -203,6 +214,122 @@ def test_dispatch_call_routes_to_oa_client_for_local_provider(monkeypatch):
     assert retries == 0
     assert len(seen) == 1
     assert str(seen[0].url) == "http://localhost:11434/v1/chat/completions"
+
+
+# ---------------------------------------------------------------------------
+# W9.2 — unified endpoint-registry migration
+# ---------------------------------------------------------------------------
+
+
+def test_local_seat_resolves_byte_identical_client_config(monkeypatch):
+    """The local/default seat, now built via the unified registry
+    (``build_openai_compatible_client``), resolves to the SAME client
+    config (base_url / model / api_key / provider_label) as the legacy
+    per-vendor branch — and threads NO extra_body into the payload
+    (byte-identical dispatch for the already-reachable seat)."""
+    monkeypatch.delenv("COURSEFORGE_PROVIDER", raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_MODEL", raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_BASE_URL", raising=False)
+
+    bodies: List[Dict[str, Any]] = []
+    p = _MinimalProvider(
+        provider="local",
+        client=_capturing_client(bodies),
+        system_prompt="SYS",
+    )
+
+    # Registry-resolved identity matches the pre-migration local defaults.
+    assert p._oa_client.base_url == "http://localhost:11434/v1"
+    assert p._oa_client.model == "qwen2.5:7b-instruct-q4_K_M"
+    assert p._model == "qwen2.5:7b-instruct-q4_K_M"
+    assert p._base_url == "http://localhost:11434/v1"
+    assert p._api_key == "local"
+    assert p._oa_client.provider_label == "local"
+    # The ``local`` row declares no extra_body → nothing threaded.
+    assert p._extra_body is None
+
+    p._dispatch_call("hello")
+    assert bodies, "handler observed a POST"
+    body = bodies[0]
+    assert body["model"] == "qwen2.5:7b-instruct-q4_K_M"
+    for key in ("model", "messages", "temperature", "max_tokens"):
+        assert key in body
+    # No vendor-specific request-body extras leaked onto the local seat.
+    assert "chat_template_kwargs" not in body
+
+
+def test_previously_unreachable_seat_resolves_and_threads_extra_body(
+    monkeypatch,
+):
+    """A registry endpoint the legacy 4-branch tuple never reached
+    (``nvidia-deepseek`` — the NVIDIA-hosted large reasoning seat) now
+    resolves through the base, AND its row-declared ``extra_body``
+    (``chat_template_kwargs:{thinking:false}`` — reasoning suppression)
+    is threaded into the dispatched request body."""
+    monkeypatch.delenv("COURSEFORGE_PROVIDER", raising=False)
+    monkeypatch.delenv("NVIDIA_DEEPSEEK_MODEL", raising=False)
+    monkeypatch.delenv("NVIDIA_BASE_URL", raising=False)
+
+    bodies: List[Dict[str, Any]] = []
+    p = _MinimalProvider(
+        provider="nvidia-deepseek",
+        client=_capturing_client(bodies),
+        system_prompt="SYS",
+    )
+
+    # The seat resolves entirely from the endpoint row.
+    assert p._provider == "nvidia-deepseek"
+    assert p._oa_client.base_url == "https://integrate.api.nvidia.com/v1"
+    assert p._oa_client.model == "deepseek-ai/deepseek-v4-pro"
+    # The row's extra_body is captured and threaded on dispatch.
+    assert p._extra_body == {"chat_template_kwargs": {"thinking": False}}
+
+    p._dispatch_call("hello")
+    assert bodies, "handler observed a POST"
+    assert bodies[0]["chat_template_kwargs"] == {"thinking": False}
+
+
+def test_caller_extra_payload_wins_over_registry_extra_body(monkeypatch):
+    """A caller-supplied ``extra_payload`` overrides the registry
+    ``extra_body`` for the same key (per-call override precedence)."""
+    monkeypatch.delenv("COURSEFORGE_PROVIDER", raising=False)
+    monkeypatch.delenv("NVIDIA_DEEPSEEK_MODEL", raising=False)
+    monkeypatch.delenv("NVIDIA_BASE_URL", raising=False)
+
+    bodies: List[Dict[str, Any]] = []
+    p = _MinimalProvider(
+        provider="nvidia-deepseek",
+        client=_capturing_client(bodies),
+        system_prompt="SYS",
+    )
+    p._dispatch_call(
+        "hello",
+        extra_payload={"chat_template_kwargs": {"thinking": True}},
+    )
+    assert bodies[-1]["chat_template_kwargs"] == {"thinking": True}
+
+
+def test_default_supported_providers_reaches_all_registry_endpoints():
+    """The base's default provider allow-list now spans EVERY
+    ``openai_compatible`` registry endpoint (reach-all), plus the
+    ``anthropic`` SDK seat, while excluding the ``claude_session``
+    dispatcher (not an HTTP endpoint)."""
+    from Courseforge.generators._base import _DEFAULT_SUPPORTED_PROVIDERS
+
+    for name in (
+        "anthropic",
+        "local",
+        "together",
+        "nvidia",
+        "nvidia-deepseek",
+        "together-vision",
+        "groq",
+        "fireworks",
+        "deepseek",
+    ):
+        assert name in _DEFAULT_SUPPORTED_PROVIDERS
+    assert "claude_session" not in _DEFAULT_SUPPORTED_PROVIDERS
 
 
 # ---------------------------------------------------------------------------

@@ -85,6 +85,38 @@ ENV_MODEL = "TRAINFORGE_SYNTHESIS_MODEL"
 DEFAULT_PROVIDER = "local"
 
 
+def _resolve_provenance_provider(provider: str) -> str:
+    """Return the canonical ``provenance_provider`` for an endpoint name.
+
+    W9.1 (licensing-correctness): the value stamped onto a synthesized
+    pair's ``out["provider"]`` must be the closed ``Touch.provider``
+    provenance value the endpoint row declares — NOT the raw endpoint
+    name. This keeps a hosted-cloud seat (groq/fireworks/deepseek →
+    ``together``) from falsely recording the license-clean ``local``
+    provenance, and guarantees the stamp is a valid closed provenance
+    value. For the canonical local/together/nvidia seats the endpoint name
+    already equals its provenance value, so the stamp is byte-identical.
+
+    Pure registry lookup (``load_endpoint_registry``) — no key resolution,
+    no HTTP, transport-free. A name absent from the registry (a test
+    double, ``mock``) falls back to the raw name so callers outside the
+    registry keep working.
+    """
+    try:
+        from lib.llm.endpoints import (  # noqa: PLC0415 — lazy, transport-free
+            load_endpoint_registry,
+        )
+
+        row = load_endpoint_registry().get(provider)
+    except Exception:  # noqa: BLE001 — registry unavailable → keep raw name
+        row = None
+    if row:
+        prov = row.get("provenance_provider")
+        if prov:
+            return str(prov)
+    return provider
+
+
 # Phase 3 rollback flag. When ON (the DEFAULT), the run_synthesis
 # construction + the instruction/preference factory dispatch arms route
 # the OpenAI-compatible synthesis providers (``local`` / ``together``)
@@ -190,9 +222,20 @@ class SynthesisProvider:
         preserve_tokens_enabled: bool = True,
         local_user_directives: bool = True,
     ) -> None:
-        # Provider tag written to ``out["provider"]`` and surfaced in the
-        # decision-capture event for audit.
+        # The raw endpoint NAME — surfaced in the decision-capture rationale
+        # + error messages so the audit trail records WHICH endpoint row was
+        # attached (e.g. "groq" / "fireworks"), preserving audit fidelity.
         self._provider_name = provider
+
+        # W9.1 (licensing-correctness): the value written to ``out["provider"]``
+        # is the CANONICAL provenance value from the registry row
+        # (``provenance_provider``), NOT the raw endpoint name. A cloud seat
+        # (groq/fireworks/deepseek → "together") must never falsely stamp the
+        # license-clean "local" provenance, and the stamp must be a valid
+        # closed Touch.provider value rather than the bare endpoint name.
+        # Pure registry lookup — no key resolution, no HTTP. Falls back to the
+        # raw name for any name absent from the registry (e.g. a test double).
+        self._provenance_provider = _resolve_provenance_provider(provider)
 
         # Model resolution: explicit arg > (let the registry row's
         # per-provider ``model_env`` / default fill when None). The
@@ -328,7 +371,7 @@ class SynthesisProvider:
         out["completion"] = self._clamp(
             parsed["completion"], kind="completion", chunk_id=chunk_id
         )
-        out["provider"] = self._provider_name
+        out["provider"] = self._provenance_provider
 
         # Thread structured-claim arrays through emit when the LLM
         # produced them. Optional emit; absent on the today-default shape.
@@ -387,7 +430,7 @@ class SynthesisProvider:
         out["rejected"] = self._clamp(
             parsed["rejected"], kind="rejected", chunk_id=chunk_id
         )
-        out["provider"] = self._provider_name
+        out["provider"] = self._provenance_provider
 
         for k in ("key_claims", "per_claim_support"):
             if k in parsed:

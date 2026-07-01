@@ -148,17 +148,44 @@ logger = logging.getLogger(__name__)
 # Defaults shared across Courseforge LLM tiers.
 # ---------------------------------------------------------------------------
 
-_DEFAULT_SUPPORTED_PROVIDERS: Tuple[str, ...] = (
-    "anthropic",
-    "together",
-    "local",
-    # NVIDIA hosted OpenAI-compatible inference API. Selected as the
-    # Courseforge rewrite LARGE / escalation tier via the capability-tier
-    # chain in ``block_routing.license_clean.yaml`` (a YAML tier with
-    # ``provider: nvidia``). Wires the shared ``OpenAICompatibleClient``
-    # at the NVIDIA base_url with the key from ``NVIDIA_API_KEY``.
-    "nvidia",
-)
+def _default_supported_providers() -> Tuple[str, ...]:
+    """Compose the base's default provider allow-list from the registry.
+
+    ``anthropic`` (SDK transport) plus EVERY ``openai_compatible`` endpoint
+    row in ``config/endpoints.yaml`` — so a vanilla ``_BaseLLMProvider``
+    can reach ALL registry endpoints (``nvidia-deepseek``, ``together-
+    vision``, ``groq``, ``fireworks``, ``deepseek``, …), not just the four
+    per-vendor branches the legacy hardcoded tuple admitted. The
+    ``claude_session`` dispatcher row is intentionally EXCLUDED — it is not
+    an HTTP endpoint and the base has no dispatcher plumbing (the rewrite
+    tier intercepts it before ``super().__init__``). Subclasses that pin a
+    narrower ``supported_providers`` (e.g. the rewrite / outline tiers'
+    ``("anthropic", "together", "local", "nvidia")``) keep restricting;
+    this only widens the DEFAULT used when a subclass passes none.
+
+    Anti-cycle / missing-file hardening: a registry read failure falls back
+    to the legacy trio so a vanilla provider never crashes at import.
+    """
+    providers = ["anthropic"]
+    try:
+        from lib.llm.endpoints import load_endpoint_registry  # noqa: PLC0415
+
+        for name, row in load_endpoint_registry().items():
+            if str(row.get("kind")) == "openai_compatible":
+                providers.append(name)
+    except Exception:  # noqa: BLE001 — defensive; never crash on registry I/O
+        providers.extend(["together", "local", "nvidia"])
+    # De-dupe preserving registry order (``anthropic`` first).
+    seen: set = set()
+    out: List[str] = []
+    for p in providers:
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return tuple(out)
+
+
+_DEFAULT_SUPPORTED_PROVIDERS: Tuple[str, ...] = _default_supported_providers()
 
 
 class _BaseLLMProvider(ABC):
@@ -272,6 +299,9 @@ class _BaseLLMProvider(ABC):
             self._anthropic_client = anthropic_client
             self._oa_client: Optional[OpenAICompatibleClient] = None
             self._base_url: Optional[str] = None
+            # Anthropic SDK path forwards no OpenAI-compatible request-body
+            # extras (the SDK does not accept arbitrary top-level fields).
+            self._extra_body: Optional[Dict[str, Any]] = None
 
         elif resolved_provider == "together":
             self._model = (
@@ -290,45 +320,37 @@ class _BaseLLMProvider(ABC):
             self._base_url = (
                 base_url or TOGETHER_DEFAULT_BASE_URL
             ).rstrip("/")
-            # Plan §3.2 companion: opt into ``json_mode=True`` so the
-            # OpenAICompatibleClient injects both the OpenAI-spec
-            # ``response_format: {"type": "json_object"}`` and the
-            # Ollama-style ``format: "json"`` literal. Servers that
-            # don't recognise either field ignore it; servers that do
-            # see the JSON-only constraint at sample time. Mirrors the
-            # Trainforge `_local_provider.py` default.
-            self._oa_client = OpenAICompatibleClient(
-                base_url=self._base_url,
+            # W9.2: build the client via the unified endpoint registry
+            # (``build_openai_compatible_client``) instead of a direct
+            # ``OpenAICompatibleClient(...)`` construction. The identity
+            # (base_url / model / api_key) is PRE-RESOLVED above on the same
+            # env vars + registry defaults and passed as explicit overrides,
+            # so dispatch stays byte-identical for this already-reachable
+            # seat; the registry ALSO surfaces the row's optional
+            # ``extra_body`` (None for ``together``) which is threaded into
+            # every request payload. Plan §3.2 ``json_mode`` opt-in is
+            # forwarded verbatim.
+            self._oa_client, self._extra_body = self._build_registry_oa_client(
+                "together",
                 model=self._model,
                 api_key=self._api_key,
-                capture=None,
-                provider_label="together",
-                client=client,
+                base_url=self._base_url,
                 json_mode=json_mode,
-                # ``self._timeout is None`` (no explicit per-tier
-                # timeout) is forwarded verbatim so the
-                # OpenAICompatibleClient resolves its default from
-                # ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (falling back to
-                # DEFAULT_TIMEOUT_SECONDS). A tier that passes an explicit
-                # timeout (e.g. the outline / rewrite tiers, or textbook
-                # synthesis) still wins.
-                timeout=self._timeout,
+                client=client,
             )
             self._anthropic_client = None
 
         elif resolved_provider == "nvidia":
             # NVIDIA hosted OpenAI-compatible inference API. Same wire
             # shape as ``together`` (a hosted ``/chat/completions``
-            # endpoint behind a required bearer key), so it composes the
-            # SAME ``OpenAICompatibleClient`` — only the identity
-            # constants differ. Model resolution honors the per-tier env
-            # override (``COURSEFORGE_REWRITE_MODEL`` is applied upstream
-            # in the router projector for LOCAL tiers only, so the
-            # NVIDIA tier keeps its YAML-pinned model; here we resolve
-            # the NVIDIA-specific ``NVIDIA_LARGE_MODEL`` env override and
-            # the default nemotron model). The API key is REQUIRED — the
-            # hosted endpoint authenticates every request — and is read
-            # from ``NVIDIA_API_KEY`` (never hardcoded).
+            # endpoint behind a required bearer key). Model resolution
+            # honors the per-tier env override (``COURSEFORGE_REWRITE_MODEL``
+            # is applied upstream in the router projector for LOCAL tiers
+            # only, so the NVIDIA tier keeps its YAML-pinned model; here we
+            # resolve the NVIDIA-specific ``NVIDIA_LARGE_MODEL`` env override
+            # and the default nemotron model). The API key is REQUIRED — the
+            # hosted endpoint authenticates every request — and is read from
+            # ``NVIDIA_API_KEY`` (never hardcoded).
             self._model = (
                 model
                 or os.environ.get(NVIDIA_ENV_MODEL)
@@ -346,25 +368,19 @@ class _BaseLLMProvider(ABC):
             self._base_url = (
                 base_url or env_base_url or NVIDIA_DEFAULT_BASE_URL
             ).rstrip("/")
-            self._oa_client = OpenAICompatibleClient(
-                base_url=self._base_url,
+            # W9.2: registry-built client (pre-resolved identity passed as
+            # explicit overrides → byte-identical) + row ``extra_body``.
+            self._oa_client, self._extra_body = self._build_registry_oa_client(
+                "nvidia",
                 model=self._model,
                 api_key=self._api_key,
-                capture=None,
-                provider_label="nvidia",
-                client=client,
+                base_url=self._base_url,
                 json_mode=json_mode,
-                # ``self._timeout is None`` (no explicit per-tier
-                # timeout) forwards verbatim so the
-                # OpenAICompatibleClient resolves its default from
-                # ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS``; a tier that
-                # passes an explicit timeout (the rewrite tier sources a
-                # generous default) still wins.
-                timeout=self._timeout,
+                client=client,
             )
             self._anthropic_client = None
 
-        else:  # local
+        elif resolved_provider == "local":
             self._model = (
                 model
                 or os.environ.get(LOCAL_ENV_MODEL)
@@ -380,30 +396,105 @@ class _BaseLLMProvider(ABC):
             self._base_url = (
                 base_url or env_base_url or local_base_url_baseline
             ).rstrip("/")
-            # Plan §3.2 companion: same ``json_mode=True`` opt-in for
-            # the local backend (Ollama / vLLM / llama.cpp / LM Studio).
-            # Without this, Ollama doesn't even see ``format: "json"``,
-            # let alone the schema-aware ``format: <schema_dict>`` the
-            # outline-tier grammar payload now emits in the autodetect
-            # path.
-            self._oa_client = OpenAICompatibleClient(
-                base_url=self._base_url,
+            # W9.2: registry-built client. Identity is pre-resolved on the
+            # SAME ``LOCAL_SYNTHESIS_*`` env vars + registry defaults (incl.
+            # the ``default_base_url_local`` / ``default_model_local``
+            # subclass baselines) and passed as explicit overrides, so the
+            # local/default seat's dispatch (base_url / model / headers)
+            # stays BYTE-IDENTICAL; ``extra_body`` is None for ``local``.
+            self._oa_client, self._extra_body = self._build_registry_oa_client(
+                "local",
                 model=self._model,
                 api_key=self._api_key,
-                capture=None,
-                provider_label="local",
-                client=client,
+                base_url=self._base_url,
                 json_mode=json_mode,
-                # ``self._timeout is None`` (no explicit per-tier
-                # timeout) is forwarded verbatim so the
-                # OpenAICompatibleClient resolves its default from
-                # ``ED4ALL_LLM_REQUEST_TIMEOUT_SECONDS`` (falling back to
-                # DEFAULT_TIMEOUT_SECONDS). A tier that passes an explicit
-                # timeout (e.g. the outline / rewrite tiers, or textbook
-                # synthesis) still wins.
-                timeout=self._timeout,
+                client=client,
             )
             self._anthropic_client = None
+
+        else:
+            # W9.2 generic openai-compatible seat: any OTHER registry
+            # endpoint the legacy hardcoded branches never reached
+            # (``nvidia-deepseek``, ``together-vision``, ``groq``,
+            # ``fireworks``, ``deepseek``, …). Identity (base_url / model /
+            # api_key) resolves ENTIRELY from the endpoint row — the base
+            # holds no per-vendor env constants for these — via
+            # ``build_openai_compatible_client`` (kwarg overrides win when
+            # supplied). The row's optional ``extra_body`` (e.g.
+            # ``nvidia-deepseek``'s ``chat_template_kwargs:{thinking:false}``
+            # reasoning-suppression) is captured and threaded into every
+            # request payload.
+            self._oa_client, self._extra_body = self._build_registry_oa_client(
+                resolved_provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                json_mode=json_mode,
+                client=client,
+            )
+            self._model = self._oa_client.model
+            self._base_url = self._oa_client.base_url
+            self._api_key = api_key
+            self._anthropic_client = None
+
+    # ------------------------------------------------------------------
+    # Registry-driven client construction (W9.2)
+    # ------------------------------------------------------------------
+
+    def _build_registry_oa_client(
+        self,
+        endpoint_name: str,
+        *,
+        model: Optional[str],
+        api_key: Optional[str],
+        base_url: Optional[str],
+        json_mode: bool,
+        client: Optional[Any],
+    ) -> Tuple[OpenAICompatibleClient, Optional[Dict[str, Any]]]:
+        """Build an OpenAI-compatible client from the unified registry.
+
+        The ONE constructor for every openai-compatible Courseforge seat:
+        resolves ``endpoint_name`` through
+        :func:`lib.llm.endpoints.build_openai_compatible_client` (kwarg
+        overrides win with the frozen ``explicit > *_env > registry
+        default`` precedence) and ALSO returns the endpoint row's optional
+        ``extra_body`` request-body extras (``None`` when the row declares
+        none — byte-stable). Consumers thread the returned ``extra_body``
+        into every request payload (see :meth:`_dispatch_call_with_usage`)
+        so vendor-specific fields (e.g. a reasoning model's
+        ``chat_template_kwargs:{thinking:false}``) are no longer dropped.
+
+        ``provider_label`` is pinned to the endpoint name so decision-
+        capture rationales keep naming the seat exactly as the legacy
+        per-vendor branches did. ``timeout`` is forwarded from
+        ``self._timeout`` (``None`` → the client resolves its own default).
+        """
+        from lib.llm.endpoints import (  # noqa: PLC0415 — lazy, transport-free
+            build_openai_compatible_client,
+            load_endpoint_registry,
+        )
+
+        oa_client = build_openai_compatible_client(
+            endpoint_name,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            capture=None,
+            provider_label=endpoint_name,
+            client=client,
+            json_mode=json_mode,
+            timeout=self._timeout,
+        )
+        # Read the row's optional ``extra_body`` directly (a copy so a caller
+        # mutating the resolved view can't poison the cached registry).
+        # Reading the row avoids re-running ``resolve_endpoint``'s
+        # api_key_required check on an injected-client seat.
+        row = load_endpoint_registry().get(endpoint_name) or {}
+        raw_extra_body = row.get("extra_body")
+        extra_body = (
+            dict(raw_extra_body) if isinstance(raw_extra_body, dict) else None
+        )
+        return oa_client, extra_body
 
     # ------------------------------------------------------------------
     # Abstract surface (subclass MUST override)
@@ -504,6 +595,15 @@ class _BaseLLMProvider(ABC):
             "temperature": self._temperature,
             "max_tokens": self._max_tokens,
         }
+        # W9.2: thread the resolved endpoint row's ``extra_body`` request-
+        # body extras (e.g. a reasoning model's
+        # ``chat_template_kwargs:{thinking:false}``) at the top level of the
+        # body. ``None`` for every legacy seat → byte-stable no-op. Applied
+        # BEFORE ``extra_payload`` so a caller-supplied per-call override
+        # still wins.
+        if self._extra_body:
+            for key, value in self._extra_body.items():
+                payload[key] = value
         if extra_payload:
             # Caller-supplied values win — mirrors
             # ``OpenAICompatibleClient.chat_completion`` (`:252-256`)
