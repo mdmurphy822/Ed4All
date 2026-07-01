@@ -342,7 +342,11 @@ libv2 retrieval-benchmark --course <slug>                # BM25 vs semantic vs h
 libv2 answer-grounded "<q>" --course <slug>              # Grounded + citation-gated answer (local-only)
 libv2 answer-eval --course <slug>                        # Grounded-answer eval harness over the gold set
 libv2 refusal-calibrate --course <slug>                  # Calibrate the refusal threshold (measure-then-pin)
+libv2 cross-index                                        # Build the cross-package concept index (catalog/cross_package_concepts.json)
+libv2 cross-discover "<query>"                           # Route a topic query to candidate courses via the cross-package concept index
 ```
+
+W4.5: the cross-package concept index (`catalog/cross_package_concepts.json`, written by `libv2 cross-index`) is now CONSUMED by `LibV2/tools/libv2/cross_package_discovery.py` (via the additive `libv2 cross-discover` command) — no longer dead data. Additive read-only consumption: no env flag, no config/workflows.yaml/gate/schema change, and the `cross-index` writer path stays byte-identical.
 
 ### ChunkFilter notes
 

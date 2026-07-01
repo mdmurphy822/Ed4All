@@ -4,9 +4,15 @@ The router's seam to the grounded-answer stack. ``ask()`` resolves the engine
 ("auto" → hybrid-rrf when a vector index exists, else lexical — a cheap fs check,
 never a silent downgrade for an explicit semantic/hybrid request), wires one
 ``DecisionCapture`` handle per request (capture failure never blocks the answer),
-calls ``answer_course_question`` with ``with_groundedness=False`` (the learner
+calls ``answer_library_question`` with ``with_groundedness=False`` (the learner
 path never loads the ~750 MB NLI model — groundedness is operator-only
 calibration metadata), and returns ``GroundedAnswer.to_dict()``.
+
+``answer_library_question`` is the library-wide seam (W4.2): with
+``ED4ALL_ANSWER_LIBRARY_WIDE`` off (default) it delegates VERBATIM to the
+single-course ``answer_course_question`` on ``slug`` (byte-identical); with the
+flag on it unions retrieval across the catalog's courses, keeping per-course
+provenance on every citation.
 
 Heavy imports (LibV2 / Trainforge / the grounded-answer stack) are LAZY — kept
 inside the function bodies so this module imports cleanly without those
@@ -74,8 +80,8 @@ def ask(slug: str, query: str, engine: str = "auto") -> Dict[str, Any]:
     ``answer_course_question(..., with_groundedness=False)`` (D4). Typed pipeline
     errors propagate to the router untouched.
     """
-    from lib.retrieval.grounded_answer import (  # noqa: PLC0415
-        answer_course_question,
+    from lib.retrieval.library_wide import (  # noqa: PLC0415
+        answer_library_question,
     )
 
     libv2_root = _libv2_root()
@@ -83,13 +89,20 @@ def ask(slug: str, query: str, engine: str = "auto") -> Dict[str, Any]:
 
     capture = _build_capture(slug)
 
-    result = answer_course_question(
+    # ``answer_library_question`` is the library-wide seam: when
+    # ``ED4ALL_ANSWER_LIBRARY_WIDE`` is off (default) AND no explicit course set
+    # is passed, it delegates VERBATIM to ``answer_course_question`` on ``slug``
+    # (byte-identical single-course path). When the flag is on it unions
+    # retrieval across the catalog's courses, keeping per-course provenance on
+    # every citation. ``library_wide=None`` => resolve from the env flag.
+    result = answer_library_question(
         libv2_root,
         slug,
         query,
         engine=resolved_engine,
         capture=capture,
         with_groundedness=False,
+        library_wide=None,
     )
     return result.to_dict()
 

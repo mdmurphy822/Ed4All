@@ -16367,6 +16367,111 @@ def _build_tool_registry() -> dict:
                 encoding="utf-8",
             )
 
+            # W4.3 — cross-course objective-library EXEMPLARS (default OFF via
+            # ``ED4ALL_OBJECTIVE_LIBRARY_EXEMPLARS``). Surface exemplar
+            # objectives drawn from OTHER catalog-enabled LibV2 courses as
+            # advisory, provenance-labeled SUGGESTIONS/priors — written to a
+            # SEPARATE ``objective_library_exemplars.json`` sidecar. Hard
+            # anti-fabrication: exemplars are advisory context only, are never
+            # injected as THIS course's canonical objectives, and
+            # ``synthesized_objectives.json`` (written above) is untouched.
+            # Default-OFF is a strict no-op: no sidecar written, no discovery,
+            # byte-identical output. Best-effort — any failure logs a warning
+            # and never blocks the phase.
+            try:
+                from lib.objectives.library_exemplars import (  # noqa: PLC0415
+                    build_query_terms as _build_exemplar_query_terms,
+                    resolve_library_exemplars_enabled as _exemplars_enabled,
+                    surface_exemplars as _surface_exemplars,
+                )
+
+                if _exemplars_enabled():
+                    _ex_current_slug = (
+                        (course_name or "")
+                        .lower()
+                        .replace("_", "-")
+                        .replace(" ", "-")
+                    )
+                    _ex_query_terms = _build_exemplar_query_terms(
+                        terminal, chapter
+                    )
+                    _ex_result = _surface_exemplars(
+                        course_name=course_name,
+                        query_terms=_ex_query_terms,
+                        libv2_root=kwargs.get("libv2_root"),
+                        current_slug=_ex_current_slug or None,
+                    )
+                    _ex_sidecar = (
+                        project_path
+                        / "01_learning_objectives"
+                        / "objective_library_exemplars.json"
+                    )
+                    _ex_sidecar.write_text(
+                        json.dumps(_ex_result, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    logger.info(
+                        "objective-library exemplars surfaced: %d exemplars "
+                        "from %d source course(s) (%d candidates scanned) -> %s",
+                        _ex_result.get("exemplar_count", 0),
+                        _ex_result.get("source_course_count", 0),
+                        _ex_result.get("candidate_count", 0),
+                        _ex_sidecar,
+                    )
+                    try:
+                        from lib.decision_capture import (  # noqa: PLC0415
+                            DecisionCapture as _ExDecisionCapture,
+                        )
+
+                        _ex_capture = _ExDecisionCapture(
+                            course_code=course_name,
+                            phase="course-outliner",
+                            tool="courseforge",
+                            streaming=True,
+                        )
+                        _ex_provs = [
+                            e.get("provenance")
+                            for e in _ex_result.get("exemplars", [])
+                        ]
+                        _ex_capture.log_decision(
+                            decision_type="content_selection",
+                            decision=(
+                                "surfaced "
+                                f"{_ex_result.get('exemplar_count', 0)} "
+                                "cross-course objective exemplar(s) as advisory "
+                                "priors"
+                            ),
+                            rationale=(
+                                "ED4ALL_OBJECTIVE_LIBRARY_EXEMPLARS on: ranked "
+                                f"{_ex_result.get('candidate_count', 0)} library "
+                                "objective(s) by lexical overlap against "
+                                f"{_ex_result.get('query_term_count', 0)} query "
+                                "term(s) from this course's own grounded "
+                                "objectives; kept top "
+                                f"{_ex_result.get('exemplar_count', 0)} from "
+                                f"{_ex_result.get('source_course_count', 0)} "
+                                "source course(s) as advisory, provenance-"
+                                "labeled suggestions only (never injected as "
+                                "canonical); min_overlap="
+                                f"{_ex_result.get('min_overlap')}, limit="
+                                f"{_ex_result.get('limit')}."
+                            ),
+                            alternatives_considered=_ex_provs or None,
+                            confidence=0.5,
+                        )
+                    except Exception as _ex_cap_exc:  # noqa: BLE001
+                        logger.warning(
+                            "objective-library exemplar DecisionCapture failed "
+                            "(non-fatal): %s",
+                            _ex_cap_exc,
+                        )
+            except Exception as _ex_exc:  # noqa: BLE001 — advisory, never fatal
+                logger.warning(
+                    "objective-library exemplar surfacing raised (%s); "
+                    "proceeding without exemplar sidecar.",
+                    _ex_exc,
+                )
+
             # Thread the path back into project_config so
             # _generate_course_content + Trainforge's CourseProcessor
             # (_invoke_trainforge) pick it up automatically.

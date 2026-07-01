@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/aggregators/v1/concept_coverage.schema.json",
+  "title": "Ed4All concept_coverage.json",
+  "description": "Top-level concept-keyed coverage table. Concept-graph analogue of coverage_map.json: for every DomainConcept node, tallies which pedagogical SURFACES touch it (explained / defined-in-glossary / assessed / demonstrated / prereq-scaffolded). Built by lib/aggregators/concept_coverage.py::ConceptCoverageAggregator post-workflow and emitted at <libv2_course>/concept_coverage.json. Gated by ED4ALL_CONCEPT_COVERAGE (default OFF => no file). Worker W4.1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "course_code",
+    "run_id",
+    "generated_at",
+    "concepts",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version. 1.0 == Wave 4 W4.1 land."
+    },
+    "course_code": {
+      "type": "string",
+      "description": "Operator-facing course code so cross-run diffs key cleanly."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Workflow ID."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp of the build call."
+    },
+    "concepts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ConceptCoverageRow" },
+      "description": "Per-concept coverage rows, sorted by concept_id."
+    },
+    "summary": {
+      "$ref": "#/$defs/Summary"
+    }
+  },
+  "$defs": {
+    "ConceptCoverageRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "concept_id",
+        "label",
+        "surfaces",
+        "surface_count",
+        "touching_chunks"
+      ],
+      "properties": {
+        "concept_id": {
+          "type": "string",
+          "description": "Concept-graph node id (canonical slug, or {course_id}:{slug} when scoped)."
+        },
+        "label": {
+          "type": "string",
+          "description": "Human-readable concept label (node.label, falls back to concept_id)."
+        },
+        "surfaces": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "explained",
+            "defined_in_glossary",
+            "assessed",
+            "demonstrated",
+            "prereq_scaffolded"
+          ],
+          "properties": {
+            "explained": {
+              "type": "boolean",
+              "description": "True when the concept is touched by a defined-by edge (defined_by_from_first_mention) OR carries any occurrence chunk (content prose mentions it)."
+            },
+            "defined_in_glossary": {
+              "type": "boolean",
+              "description": "True when the concept is touched by an is-a edge (is_a_from_key_terms — the key-terms/glossary definition rule)."
+            },
+            "assessed": {
+              "type": "boolean",
+              "description": "True when the concept is touched by a targets-concept edge (a learning objective explicitly targets the concept at a Bloom level)."
+            },
+            "demonstrated": {
+              "type": "boolean",
+              "description": "True when the concept is touched by an exemplifies edge (an example / worked-example chunk exemplifies the concept)."
+            },
+            "prereq_scaffolded": {
+              "type": "boolean",
+              "description": "True when the concept is an endpoint of a prerequisite edge in the concept graph (concept-level prerequisite scaffolding). Course-level content-derived prerequisite edges (W3.1 prerequisite_from_definition_mention) are additionally surfaced in summary.content_derived_prereq_edges."
+            }
+          }
+        },
+        "surface_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Count of the five surfaces that touch this concept."
+        },
+        "touching_chunks": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Chunk ids that reference this concept (node.occurrences[]), sorted."
+        }
+      }
+    },
+    "Summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_concepts",
+        "concepts_explained",
+        "concepts_defined_in_glossary",
+        "concepts_assessed",
+        "concepts_demonstrated",
+        "concepts_prereq_scaffolded",
+        "fully_covered_concepts",
+        "uncovered_concepts",
+        "content_derived_prereq_edges",
+        "surface_count_histogram"
+      ],
+      "properties": {
+        "total_concepts": { "type": "integer", "minimum": 0 },
+        "concepts_explained": { "type": "integer", "minimum": 0 },
+        "concepts_defined_in_glossary": { "type": "integer", "minimum": 0 },
+        "concepts_assessed": { "type": "integer", "minimum": 0 },
+        "concepts_demonstrated": { "type": "integer", "minimum": 0 },
+        "concepts_prereq_scaffolded": { "type": "integer", "minimum": 0 },
+        "fully_covered_concepts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Concept ids touched by all five surfaces."
+        },
+        "uncovered_concepts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Concept ids touched by zero surfaces (a node the corpus mints but never explains/defines/assesses/demonstrates/scaffolds)."
+        },
+        "content_derived_prereq_edges": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of prerequisite edges whose provenance.rule is the W3.1 content-derived rule (prerequisite_from_definition_mention). A course-level richness signal for the prereq-scaffolded axis."
+        },
+        "surface_count_histogram": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Map of surface-count (0..5, string keys) -> number of concepts with that many touching surfaces.",
+          "properties": {
+            "0": { "type": "integer", "minimum": 0 },
+            "1": { "type": "integer", "minimum": 0 },
+            "2": { "type": "integer", "minimum": 0 },
+            "3": { "type": "integer", "minimum": 0 },
+            "4": { "type": "integer", "minimum": 0 },
+            "5": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}

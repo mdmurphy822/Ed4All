@@ -1969,6 +1969,32 @@ class WorkflowRunner:
             phase_outputs=phase_outputs,
         )
 
+        # Wave 4 (W4.1): post-loop concept-coverage aggregator. Concept-
+        # graph analogue of coverage_map — per concept node, tallies which
+        # pedagogical surfaces touch it (explained / defined-in-glossary /
+        # assessed / demonstrated / prereq-scaffolded). Gated OFF by default
+        # (ED4ALL_CONCEPT_COVERAGE) so a default run is byte-identical (no
+        # file). Best-effort — aggregator failure does NOT alter
+        # ``final_status``.
+        concept_coverage_path = self._maybe_write_concept_coverage(
+            workflow_id=workflow_id,
+            workflow_params=workflow_params,
+            phase_outputs=phase_outputs,
+        )
+
+        # Wave 4 (W4.6): post-loop course-intelligence-level aggregator. A
+        # deterministic (no-model) 0-5 self-assessment tallying PRESENT
+        # capability artifacts (key-terms glossary, concept graph,
+        # assessment density, prereq cross-links, FAQ-if-present). Gated OFF
+        # by default (ED4ALL_INTELLIGENCE_RUBRIC) so a default run is
+        # byte-identical (no file). Best-effort — aggregator failure does
+        # NOT alter ``final_status``.
+        intelligence_level_path = self._maybe_write_intelligence_level(
+            workflow_id=workflow_id,
+            workflow_params=workflow_params,
+            phase_outputs=phase_outputs,
+        )
+
         return {
             "workflow_id": workflow_id,
             "status": final_status,
@@ -2002,6 +2028,14 @@ class WorkflowRunner:
             ),
             "promotion_chain_report_path": (
                 str(promotion_chain_path) if promotion_chain_path else None
+            ),
+            "concept_coverage_path": (
+                str(concept_coverage_path) if concept_coverage_path else None
+            ),
+            "intelligence_level_report_path": (
+                str(intelligence_level_path)
+                if intelligence_level_path
+                else None
             ),
         }
 
@@ -2764,6 +2798,185 @@ class WorkflowRunner:
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning(
                 "coverage_map aggregator failed (non-fatal, run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return None
+
+    def _maybe_write_concept_coverage(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Path]:
+        """Worker W4.1 helper — write top-level concept_coverage.json if enabled.
+
+        Gated OFF by default via ``ED4ALL_CONCEPT_COVERAGE``: when the
+        flag is falsey the helper short-circuits BEFORE resolving any
+        path or constructing the aggregator, so a default run is
+        byte-identical (no file emitted).
+
+        Output root resolution (concept-graph-driven — needs a LibV2
+        course dir or a direct concept_graph_path):
+
+        1. ``phase_outputs.libv2_archival.course_dir`` — the canonical
+           LibV2 course root. Output lands at
+           ``<course_dir>/concept_coverage.json``.
+        2. ``phase_outputs.concept_extraction.concept_graph_path`` — the
+           concept-graph path emitted by the concept_extraction phase
+           (covers partial runs that stop before ``libv2_archival``);
+           output lands next to the graph.
+
+        Returns ``None`` when the flag is off, neither source resolves,
+        or the aggregator raises. Best-effort — failure logs a warning
+        and never fails the workflow.
+        """
+        try:
+            from lib.aggregators.concept_coverage import (
+                ConceptCoverageAggregator,
+                resolve_concept_coverage,
+            )
+
+            if not resolve_concept_coverage():
+                return None
+
+            archival = phase_outputs.get("libv2_archival") or {}
+            course_dir_str = archival.get("course_dir")
+            libv2_course_path: Optional[Path] = None
+            concept_graph_path: Optional[Path] = None
+            output_path: Optional[Path] = None
+
+            if course_dir_str:
+                libv2_course_path = Path(course_dir_str)
+                output_path = libv2_course_path / "concept_coverage.json"
+
+            ce = phase_outputs.get("concept_extraction") or {}
+            ce_graph_str = ce.get("concept_graph_path")
+            if ce_graph_str:
+                concept_graph_path = Path(ce_graph_str)
+                if output_path is None:
+                    output_path = (
+                        concept_graph_path.parent / "concept_coverage.json"
+                    )
+
+            if output_path is None:
+                logger.debug(
+                    "concept_coverage: no libv2_archival.course_dir / "
+                    "concept_extraction.concept_graph_path resolvable; "
+                    "skipping aggregator (run_id=%s)",
+                    workflow_id,
+                )
+                return None
+
+            course_code = (workflow_params or {}).get("course_name") or ""
+            aggregator = ConceptCoverageAggregator(
+                course_code=course_code,
+                run_id=workflow_id,
+                libv2_course_path=libv2_course_path,
+                concept_graph_path=concept_graph_path,
+            )
+            aggregator.write(output_path)
+            logger.info(
+                "concept_coverage: wrote %s (run_id=%s, course_code=%s)",
+                output_path, workflow_id, course_code,
+            )
+            return output_path
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "concept_coverage aggregator failed (non-fatal, "
+                "run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return None
+
+    def _maybe_write_intelligence_level(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Path]:
+        """Worker W4.6 helper — write intelligence_level_report.json if enabled.
+
+        Gated OFF by default via ``ED4ALL_INTELLIGENCE_RUBRIC``: when the
+        flag is falsey the helper short-circuits BEFORE resolving any
+        path or constructing the aggregator, so a default run is
+        byte-identical (no file emitted).
+
+        Output root resolution:
+
+        1. ``phase_outputs.libv2_archival.course_dir`` — canonical LibV2
+           course root; output lands at
+           ``<course_dir>/intelligence_level_report.json``.
+        2. Fallback to
+           ``phase_outputs.trainforge_assessment.trainforge_dir`` /
+           ``phase_outputs.training_synthesis.corpus_dir`` — emit at the
+           Trainforge workspace root when archival hasn't run.
+
+        Returns ``None`` when the flag is off, neither source resolves,
+        or the aggregator raises. Best-effort — failure logs a warning
+        and never fails the workflow.
+        """
+        try:
+            from lib.aggregators.intelligence_level import (
+                IntelligenceLevelAggregator,
+                resolve_intelligence_rubric,
+            )
+
+            if not resolve_intelligence_rubric():
+                return None
+
+            archival = phase_outputs.get("libv2_archival") or {}
+            course_dir_str = archival.get("course_dir")
+            libv2_course_path: Optional[Path] = None
+            trainforge_dir: Optional[Path] = None
+            output_path: Optional[Path] = None
+
+            if course_dir_str:
+                libv2_course_path = Path(course_dir_str)
+                output_path = (
+                    libv2_course_path / "intelligence_level_report.json"
+                )
+
+            ta = phase_outputs.get("trainforge_assessment") or {}
+            tdir_str = ta.get("trainforge_dir")
+            if not tdir_str:
+                ts = phase_outputs.get("training_synthesis") or {}
+                tdir_str = ts.get("corpus_dir") or ts.get("trainforge_dir")
+            if tdir_str:
+                trainforge_dir = Path(tdir_str)
+
+            if output_path is None and trainforge_dir is not None:
+                output_path = (
+                    trainforge_dir / "intelligence_level_report.json"
+                )
+
+            if output_path is None:
+                logger.debug(
+                    "intelligence_level: no libv2_archival.course_dir / "
+                    "trainforge_dir resolvable; skipping aggregator "
+                    "(run_id=%s)",
+                    workflow_id,
+                )
+                return None
+
+            course_code = (workflow_params or {}).get("course_name") or ""
+            aggregator = IntelligenceLevelAggregator(
+                course_code=course_code,
+                run_id=workflow_id,
+                libv2_course_path=libv2_course_path,
+                trainforge_dir=trainforge_dir,
+            )
+            aggregator.write(output_path)
+            logger.info(
+                "intelligence_level: wrote %s (run_id=%s, course_code=%s)",
+                output_path, workflow_id, course_code,
+            )
+            return output_path
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "intelligence_level aggregator failed (non-fatal, "
+                "run_id=%s): %s",
                 workflow_id, exc,
             )
             return None

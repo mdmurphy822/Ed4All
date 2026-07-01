@@ -73,6 +73,11 @@ class RetrievedPassage:
     section_heading: Optional[str]
     module_id: Optional[str]
     source: Dict[str, Any] = field(default_factory=dict)
+    # Library-wide provenance (W4.2, additive). The course whose index this
+    # passage was retrieved from. Empty on the default single-course path
+    # (``from_retrieval_result`` never sets it) — stamped only by the
+    # library-wide union so every citation keeps per-course provenance.
+    course_slug: str = ""
 
     @classmethod
     def from_retrieval_result(cls, result: Any, *, engine: str) -> "RetrievedPassage":

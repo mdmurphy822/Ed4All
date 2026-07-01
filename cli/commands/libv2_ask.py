@@ -35,6 +35,10 @@ from typing import Any, Dict, List, Optional
 import click
 
 from LibV2.tools.intent_router import dispatch
+from lib.retrieval.library_wide import (
+    answer_library_question,
+    list_library_courses,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -173,6 +177,79 @@ def _format_json(envelope: Dict[str, Any], show_routing: bool) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Library-wide grounded-answer rendering (opt-in --library-wide)              #
+# --------------------------------------------------------------------------- #
+
+
+def _resolve_libv2_root(courses_root: Optional[Path]) -> Path:
+    """Resolve the LibV2 root for a library-wide ask.
+
+    ``--courses-root`` (a ``.../courses`` dir) → its parent is the LibV2 root.
+    Otherwise defer to :func:`lib.paths.libv2_path` (which honors
+    ``ED4ALL_LIBV2_ROOT`` / ``ED4ALL_HOME``). ``answer_library_question`` /
+    ``list_library_courses`` both take the LibV2 root (the dir holding
+    ``courses/``).
+    """
+    if courses_root is not None:
+        return Path(courses_root).parent
+    from lib.paths import libv2_path  # noqa: PLC0415 — read at call time (env seam)
+
+    return libv2_path()
+
+
+def _format_library_json(result: Any) -> str:
+    """JSON rendering of a library-wide :class:`GroundedAnswer` (its ``to_dict``)."""
+    return json.dumps(result.to_dict(), indent=2, ensure_ascii=False)
+
+
+def _format_library_text(result: Any) -> str:
+    """Human-readable rendering of a library-wide grounded answer.
+
+    Surfaces the per-course provenance stamped on every citation (the whole
+    point of library-wide mode) so an operator sees which course each cited
+    passage came from.
+    """
+    payload = result.to_dict()
+    lines: List[str] = []
+    status = payload.get("status", "?")
+    citations = payload.get("citations") or []
+    courses = sorted({c.get("course_slug") for c in citations if c.get("course_slug")})
+    course_str = ", ".join(courses) if courses else "(none)"
+    lines.append(
+        f"[LIBRARY-WIDE] status={status} "
+        f"engine={payload.get('engine')} home={payload.get('course_slug')}"
+    )
+    lines.append(f"  courses: {course_str}")
+
+    answer_text = payload.get("answer_text")
+    lines.append("")
+    if answer_text:
+        lines.append("Answer:")
+        lines.append(f"  {answer_text.strip()}")
+    else:
+        refusal = payload.get("refusal") or {}
+        reason = refusal.get("reason_code") or status
+        lines.append(f"(no answer — {reason})")
+
+    lines.append("")
+    lines.append(f"Citations ({len(citations)}):")
+    if not citations:
+        lines.append("  (none)")
+        return "\n".join(lines)
+    for i, c in enumerate(citations, 1):
+        course = c.get("course_slug") or "?"
+        heading = c.get("section_heading") or c.get("page_label") or "?"
+        lines.append("")
+        lines.append(
+            f"  [{i}] {c.get('chunk_id')}  course={course}  {heading}"
+        )
+        quote = c.get("text_quote") or c.get("supporting_excerpt")
+        if quote:
+            lines.append(f"      {_truncate(quote)}")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
 # Click command                                                               #
 # --------------------------------------------------------------------------- #
 
@@ -217,6 +294,17 @@ def _format_json(envelope: Dict[str, Any], show_routing: bool) -> str:
     default=None,
     help="Override LibV2 courses root (tests). Defaults to LibV2/courses/.",
 )
+@click.option(
+    "--library-wide",
+    is_flag=True,
+    default=False,
+    help=(
+        "Answer grounded across ALL catalog courses (union retrieval with "
+        "per-course provenance on every citation), not just --slug. Local-only, "
+        "fail-open to the single course. Default off => the byte-identical "
+        "single-course intent-routed path."
+    ),
+)
 def ask_command(
     slug: str,
     query_text: str,
@@ -224,10 +312,33 @@ def ask_command(
     show_routing: bool,
     output_format: str,
     courses_root: Optional[Path],
+    library_wide: bool,
 ) -> None:
     """Intent-routed natural-language query over a LibV2 archive."""
     if top_k < 0:
         raise click.UsageError("--top-k must be >= 0")
+
+    fmt = output_format.lower()
+
+    if library_wide:
+        # Opt-in: grounded answer unioned across the resolved catalog course set
+        # (reuses list_library_courses' load_master_catalog / filesystem
+        # fallback). Explicit library_wide=True wins over the env flag.
+        libv2_root = _resolve_libv2_root(courses_root)
+        resolved_courses = list_library_courses(libv2_root, slug)
+        result = answer_library_question(
+            libv2_root,
+            slug,
+            query_text,
+            limit=top_k,
+            course_slugs=resolved_courses,
+            library_wide=True,
+        )
+        if fmt == "json":
+            click.echo(_format_library_json(result))
+        else:
+            click.echo(_format_library_text(result))
+        return
 
     envelope = dispatch(
         query_text,
@@ -236,7 +347,6 @@ def ask_command(
         courses_root=courses_root,
     )
 
-    fmt = output_format.lower()
     if fmt == "json":
         click.echo(_format_json(envelope, show_routing))
     else:

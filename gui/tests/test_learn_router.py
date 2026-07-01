@@ -308,20 +308,26 @@ def test_ask_path_wires_capture_and_disables_groundedness(client, monkeypatch):
     grounded-answer emit sites consume it) AND always calls with
     ``with_groundedness=False`` (D4: the learner path never loads the NLI model).
     """
-    import sys
-    import types
-
     import gui.services.answer_service as svc
+    import lib.retrieval.library_wide as lw_mod
 
     seen = {}
+
+    # library-wide flag off (default) => answer_library_question delegates
+    # verbatim to answer_course_question on the single course.
+    monkeypatch.delenv(lw_mod.ENV_LIBRARY_WIDE, raising=False)
 
     # Avoid the real LibV2 path resolution + index probe.
     monkeypatch.setattr(svc, "_resolve_engine", lambda engine, root, slug: "lexical")
     monkeypatch.setattr(svc, "_build_capture", lambda slug: ("CAPTURE", seen.setdefault("capture_slug", slug))[0])
 
-    def fake_answer_course_question(libv2_root, slug, query, *, engine, capture, with_groundedness):
-        seen["capture"] = capture
-        seen["with_groundedness"] = with_groundedness
+    # Patch the grounded-answer boundary at the seam library_wide delegates to
+    # (its module-bound ``answer_course_question``). answer_service now routes
+    # through ``answer_library_question``; with the flag off it forwards every
+    # kwarg (capture, with_groundedness) to this delegate unchanged.
+    def fake_answer_course_question(libv2_root, slug, query, **kwargs):
+        seen["capture"] = kwargs.get("capture")
+        seen["with_groundedness"] = kwargs.get("with_groundedness")
 
         class _R:
             def to_dict(self_inner):
@@ -329,9 +335,7 @@ def test_ask_path_wires_capture_and_disables_groundedness(client, monkeypatch):
 
         return _R()
 
-    grounded_mod = types.ModuleType("lib.retrieval.grounded_answer")
-    grounded_mod.answer_course_question = fake_answer_course_question
-    monkeypatch.setitem(sys.modules, "lib.retrieval.grounded_answer", grounded_mod)
+    monkeypatch.setattr(lw_mod, "answer_course_question", fake_answer_course_question)
 
     resp = client.post("/api/learn/ask", json={"slug": "phys-101", "query": "x"})
     assert resp.status_code == 200

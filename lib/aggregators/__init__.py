@@ -31,13 +31,34 @@ Worker W3.G (GPT Feedback v2 Wave 3 — governance G1):
       chain, reads each per-stage report best-effort, and produces
       ``<libv2_course>/courseforge_promotion_chain_report.json`` with
       a top-level ``course_status`` enum + ``chain_hash``.
+
+Worker W4.1 (Wave 4 — capability aggregators):
+    - :class:`concept_coverage.ConceptCoverageAggregator` builds a
+      concept-keyed coverage table (concept-graph analogue of
+      coverage_map) surfacing which pedagogical surfaces touch each
+      concept, emitted at ``<libv2_course>/concept_coverage.json``.
+      Opt-in via ``ED4ALL_CONCEPT_COVERAGE`` (default OFF => no file).
+
+Worker W4.6 (Wave 4 — capability aggregators):
+    - :class:`intelligence_level.IntelligenceLevelAggregator` scores a
+      built course on a deterministic 0-5 capability rubric, emitted at
+      ``<libv2_course>/intelligence_level_report.json``. Opt-in via
+      ``ED4ALL_INTELLIGENCE_RUBRIC`` (default OFF => no file).
 """
 
+from .concept_coverage import (  # noqa: F401
+    ConceptCoverageAggregator,
+    resolve_concept_coverage,
+)
 from .courseforge_validation_report import (  # noqa: F401
     CourseforgeValidationReport,
 )
 from .coverage_map import (  # noqa: F401
     CoverageMapAggregator,
+)
+from .intelligence_level import (  # noqa: F401
+    IntelligenceLevelAggregator,
+    resolve_intelligence_rubric,
 )
 from .edge_consensus import (  # noqa: F401
     EdgeConsensusAggregator,

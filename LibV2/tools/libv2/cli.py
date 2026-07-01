@@ -1518,6 +1518,82 @@ def cross_index(ctx, repo_root: Optional[str], output: Optional[str]):
             print(f"  {cid} ({entry['total_courses']} courses): {slugs}")
 
 
+@main.command("cross-discover")
+@click.argument("query")
+@click.option("--repo-root", type=click.Path(exists=True, file_okay=False),
+              help="Repository root (auto-detected if omitted)")
+@click.option("--index", "index_path", type=click.Path(exists=True, dir_okay=False),
+              help="Explicit path to cross_package_concepts.json (default: "
+                   "<repo-root>/LibV2/catalog/cross_package_concepts.json)")
+@click.option("--limit", type=int, default=10, show_default=True,
+              help="Max candidate courses to list")
+@click.option("--min-courses", type=int, default=1, show_default=True,
+              help="Only match concepts taught in at least this many courses")
+@click.option("--output", "-o", type=click.Choice(["text", "json"]), default="text",
+              show_default=True, help="Output format")
+@click.pass_context
+def cross_discover(ctx, query: str, repo_root: Optional[str], index_path: Optional[str],
+                   limit: int, min_courses: int, output: str):
+    """Discover which library courses teach a concept (consumes the cross index).
+
+    Reads the cross-package concept index built by ``libv2 cross-index`` and
+    routes a topic QUERY to the candidate courses a library-wide ask should fan
+    out over. Read-only: surfaces only associations the index already recorded
+    (provenance-preserved by slug), never fabricates a course.
+
+    \b
+    Examples:
+        libv2 cross-discover accessibility
+        libv2 cross-discover "universal design" --limit 5 --min-courses 2 -o json
+    """
+    from .cross_package_discovery import (
+        CrossPackageIndexError,
+        discover_courses,
+        load_cross_package_index,
+    )
+
+    if repo_root is not None:
+        root = Path(repo_root).resolve()
+    else:
+        root = Path(ctx.obj["repo_root"]).resolve()
+
+    try:
+        index = load_cross_package_index(
+            root, path=Path(index_path) if index_path else None
+        )
+    except CrossPackageIndexError as e:
+        print_error(str(e))
+        sys.exit(1)
+
+    result = discover_courses(index, query, limit=limit, min_courses=min_courses)
+
+    if output == "json":
+        print(json.dumps(result, indent=2, sort_keys=False))
+        return
+
+    concepts = result["matched_concepts"]
+    courses = result["courses"]
+    if not concepts:
+        print_error(f"No indexed concepts match: {query!r}")
+        return
+    print_success(
+        f"Matched {len(concepts)} concept(s); {len(courses)} candidate course(s) "
+        f"for: {query!r}"
+    )
+    print("\nCandidate courses (route a library-wide ask here):")
+    for c in courses:
+        print(
+            f"  {c['slug']}  "
+            f"(concepts={c['matched_concept_count']}, freq={c['total_frequency']})"
+        )
+    print("\nMatched concepts:")
+    for concept in concepts:
+        print(
+            f"  {concept['concept_id']} "
+            f"({concept['total_courses']} course(s)): {concept['label']}"
+        )
+
+
 @main.command("retrieval-eval")
 @click.option("--course", "-c", required=True, help="Course slug to evaluate")
 @click.option("--gold-queries", type=click.Path(exists=True), help="Path to gold queries JSONL")

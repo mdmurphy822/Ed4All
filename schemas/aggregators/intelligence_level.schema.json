@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/aggregators/v1/intelligence_level.schema.json",
+  "title": "Ed4All intelligence_level_report.json",
+  "description": "Top-level 0-5 course-intelligence self-assessment. Deterministic (no model): tallies PRESENT capability artifacts across five axes (key-terms glossary / concept graph / assessment density / prerequisite cross-links / FAQ). Built by lib/aggregators/intelligence_level.py::IntelligenceLevelAggregator post-workflow and emitted at <libv2_course>/intelligence_level_report.json. Gated by ED4ALL_INTELLIGENCE_RUBRIC (default OFF => no file). Worker W4.6.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "course_code",
+    "run_id",
+    "generated_at",
+    "score",
+    "max_score",
+    "axes",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version. 1.0 == Wave 4 W4.6 land."
+    },
+    "course_code": {
+      "type": "string",
+      "description": "Operator-facing course code so cross-run diffs key cleanly."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Workflow ID."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp of the build call."
+    },
+    "score": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5,
+      "description": "Count of PRESENT axes (0-5). One point per capability artifact present."
+    },
+    "max_score": {
+      "type": "integer",
+      "const": 5,
+      "description": "Total addressable axes. 5 == Wave 4 W4.6 rubric size."
+    },
+    "axes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Axis" },
+      "description": "Per-axis capability rows, in canonical axis order."
+    },
+    "summary": {
+      "$ref": "#/$defs/Summary"
+    }
+  },
+  "$defs": {
+    "Axis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["axis", "present", "evidence"],
+      "properties": {
+        "axis": {
+          "type": "string",
+          "enum": [
+            "key_terms_glossary",
+            "concept_graph",
+            "assessment_density",
+            "prereq_cross_links",
+            "faq"
+          ],
+          "description": "Capability axis name."
+        },
+        "present": {
+          "type": "boolean",
+          "description": "True when the capability artifact is present. FAQ is always absent (not built yet)."
+        },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Per-axis deterministic evidence counters that drove the present/absent verdict (glossary edge counts, graph node/edge counts, assessment-item counts + density, prerequisite-edge counts, FAQ-absent note)."
+        }
+      }
+    },
+    "Summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "max_score",
+        "present_axes",
+        "absent_axes"
+      ],
+      "properties": {
+        "score": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "max_score": { "type": "integer", "const": 5 },
+        "present_axes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Axis names scored present."
+        },
+        "absent_axes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Axis names scored absent."
+        }
+      }
+    }
+  }
+}

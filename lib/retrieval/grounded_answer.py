@@ -182,9 +182,15 @@ class Citation:
     # ``supporting_excerpt`` over the legacy whole-answer ``text_quote``.
     supporting_excerpt: Optional[str] = None
     supported_claim_count: int = 0
+    # Library-wide provenance (W4.2, additive/optional). The course this cited
+    # chunk belongs to. ``None`` on the default single-course path — the key is
+    # then OMITTED from ``to_dict`` so the single-course rendering contract stays
+    # byte-identical. Populated only by the library-wide union so a renderer can
+    # attribute every citation to its source course.
+    course_slug: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out = {
             "chunk_id": self.chunk_id,
             "item_path": self.item_path,
             "section_heading": self.section_heading,
@@ -200,6 +206,12 @@ class Citation:
             "supporting_excerpt": self.supporting_excerpt,
             "supported_claim_count": self.supported_claim_count,
         }
+        # Additive: only surface course_slug when set (library-wide mode), so the
+        # default single-course citation dict is byte-identical to the frozen
+        # WS4 contract.
+        if self.course_slug is not None:
+            out["course_slug"] = self.course_slug
+        return out
 
 
 @dataclass

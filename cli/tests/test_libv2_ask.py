@@ -333,3 +333,132 @@ def test_ask_live_concept_query_returns_results(live_archive_present):
     payload = json.loads(result.output)
     assert payload["intent_class"] == "concept_query"
     assert len(payload["results"]) >= 1
+
+
+# ---------------------------------------------------------------------- #
+# --library-wide (W4.2): opt-in grounded ask unioned across the catalog   #
+# ---------------------------------------------------------------------- #
+
+
+class _FakeGroundedAnswer:
+    """Stand-in for a library-wide GroundedAnswer (only ``to_dict`` is used)."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def to_dict(self):
+        return self._payload
+
+
+def _fake_library_payload():
+    return {
+        "status": "answered",
+        "query": "q?",
+        "course_slug": "course-a",
+        "engine": "lexical",
+        "answer_text": "Unioned answer across courses.",
+        "citations": [
+            {"chunk_id": "course-a-c01", "course_slug": "course-a",
+             "section_heading": "Intro A", "text_quote": "body from course-a"},
+            {"chunk_id": "course-b-c01", "course_slug": "course-b",
+             "section_heading": "Intro B", "text_quote": "body from course-b"},
+        ],
+    }
+
+
+def test_ask_help_lists_library_wide_flag():
+    result = _run(["--help"])
+    assert result.exit_code == 0
+    assert "--library-wide" in result.output
+
+
+def test_ask_library_wide_routes_to_answer_library_question(tmp_path, monkeypatch):
+    """--library-wide routes to answer_library_question with the resolved set."""
+    courses_root = tmp_path / "courses"
+    courses_root.mkdir()
+    _make_synthetic_archive(courses_root, "course-a")
+    _make_synthetic_archive(courses_root, "course-b")
+
+    seen = {}
+
+    def _spy(libv2_root, slug, query, **kwargs):
+        seen["libv2_root"] = libv2_root
+        seen["slug"] = slug
+        seen["query"] = query
+        seen["kwargs"] = kwargs
+        return _FakeGroundedAnswer(_fake_library_payload())
+
+    monkeypatch.setattr("cli.commands.libv2_ask.answer_library_question", _spy)
+
+    result = _run([
+        "--slug", "course-a",
+        "--query", "q?",
+        "--courses-root", str(courses_root),
+        "--library-wide",
+        "--format", "json",
+    ])
+    assert result.exit_code == 0, result.output
+    # Routed to the library-wide grounded-answer path (explicit flag wins).
+    assert seen["slug"] == "course-a"
+    assert seen["query"] == "q?"
+    assert seen["kwargs"]["library_wide"] is True
+    # The resolved catalog/filesystem course set is threaded through: home
+    # first, both courses present (list_library_courses over the fs fallback).
+    resolved = list(seen["kwargs"]["course_slugs"])
+    assert resolved[0] == "course-a"
+    assert set(resolved) == {"course-a", "course-b"}
+    # Output is the grounded-answer envelope (NOT the intent-router envelope).
+    out = json.loads(result.output)
+    assert out["status"] == "answered"
+    assert {c["course_slug"] for c in out["citations"]} == {"course-a", "course-b"}
+
+
+def test_ask_library_wide_text_renders_per_course_provenance(tmp_path, monkeypatch):
+    courses_root = tmp_path / "courses"
+    courses_root.mkdir()
+    _make_synthetic_archive(courses_root, "course-a")
+    _make_synthetic_archive(courses_root, "course-b")
+
+    monkeypatch.setattr(
+        "cli.commands.libv2_ask.answer_library_question",
+        lambda *a, **k: _FakeGroundedAnswer(_fake_library_payload()),
+    )
+
+    result = _run([
+        "--slug", "course-a",
+        "--query", "q?",
+        "--courses-root", str(courses_root),
+        "--library-wide",
+        "--format", "text",
+    ])
+    assert result.exit_code == 0, result.output
+    assert "[LIBRARY-WIDE]" in result.output
+    assert "Unioned answer across courses." in result.output
+    # Per-course provenance is surfaced for each citation.
+    assert "course=course-a" in result.output
+    assert "course=course-b" in result.output
+
+
+def test_ask_without_library_wide_uses_single_course_dispatch(tmp_path, monkeypatch):
+    """Default (flag off) is byte-identical: intent-routed dispatch, never lw."""
+    courses_root = tmp_path / "courses"
+    courses_root.mkdir()
+    _make_synthetic_archive(courses_root, "demo")
+
+    def _must_not_run(*a, **k):  # pragma: no cover - asserts non-invocation
+        raise AssertionError("answer_library_question ran with the flag off")
+
+    monkeypatch.setattr("cli.commands.libv2_ask.answer_library_question", _must_not_run)
+
+    result = _run([
+        "--slug", "demo",
+        "--query", "Which chunks assess to-04?",
+        "--courses-root", str(courses_root),
+        "--format", "json",
+    ])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    # Byte-identical intent-router envelope (see test_ask_json_envelope_*).
+    assert payload["intent_class"] == "objective_lookup"
+    assert payload["slug"] == "demo"
+    assert payload["entities"]["objective_ids"] == ["to-04"]
