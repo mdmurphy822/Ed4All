@@ -316,16 +316,13 @@ class DecisionCapture:
 
         # Use LibV2 storage for training captures (primary location).
         #
-        # W0.5: optionally route through the idempotent course-identity
-        # resolver to avoid the split-brain where this capture (handed a
-        # ``normalize_course_code`` hashed form) auto-creates an EMPTY course
-        # skeleton (``courses/ed-472/``) next to the populated verbatim-name
-        # course (``courses/ed4all/``). Default OFF → byte-identical legacy
-        # path (the ``else`` branch below). When ON: resolve ONE canonical
-        # slug + course_id, gate skeleton creation on whether a populated twin
-        # already resolves (so we never mint a fresh empty hashed twin), emit a
-        # COURSE_IDENTITY_SPLIT_BRAIN warning, and run a one-shot cleanup of
-        # empty-skeleton twins (strictly gated on a populated twin existing).
+        # ROOT FIX: the storage handle is built with ``auto_create=False`` (see
+        # ``_build_storage``) so logging a decision NEVER creates an empty
+        # ``LibV2/courses/<slug>/`` skeleton — the recurring split-brain "empty
+        # twin" collateral. The capture write location is unchanged: the next
+        # line's ``get_training_capture_path`` mkdir's its own dir under
+        # ``self.training_path`` (``catalog/<course_id>/training/…``), which
+        # ``LibV2Storage.__init__`` sets independent of ``auto_create``.
         self._storage = self._build_storage(course_code, tool, phase)
         self.output_dir = self._storage.get_training_capture_path(tool, phase)
 
@@ -427,63 +424,28 @@ class DecisionCapture:
     def _build_storage(
         self, course_code: str, tool: str, phase: Optional[str]
     ) -> LibV2Storage:
-        """Construct the LibV2 storage handle, honoring W0.5 identity dedup.
+        """Construct the LibV2 storage handle for decision capture.
 
-        Default path (flag off) is byte-identical to the legacy
-        ``LibV2Storage(course_code, auto_create=True)``. When
-        ``ED4ALL_COURSE_IDENTITY_DEDUP`` is truthy, resolve a single canonical
-        identity and avoid auto-creating an empty hashed-twin course skeleton.
-        Best-effort: any failure in the dedup path falls back to the legacy
-        construction so a capture is never lost.
+        ROOT FIX (supersedes the W0.5 ``ED4ALL_COURSE_IDENTITY_DEDUP`` dedup
+        layer): construct with ``auto_create=False`` so logging a decision
+        NEVER creates an empty ``LibV2/courses/<slug>/`` skeleton (the recurring
+        split-brain "empty twin"). Decision capture writes only to
+        ``catalog/<course_id>/training/…``; :meth:`LibV2Storage.get_training_capture_path`
+        (called immediately after this in ``__init__``) mkdir's its own phase
+        dir under ``self.training_path`` — which is set unconditionally at
+        ``LibV2Storage.__init__`` regardless of ``auto_create`` — so the CAPTURE
+        write location + behavior are byte-identical to the legacy path; the
+        only change is the absence of the collateral course skeleton
+        (``imscc_chunks/`` / ``sources/`` / ``concept_graph/``).
+
+        Because a decision capture no longer creates a twin, the
+        ``ED4ALL_COURSE_IDENTITY_DEDUP`` branch that used to clean up its OWN
+        collateral is obsolete here — the flag is now a no-op from
+        ``decision_capture``. The ``lib/course_identity.py`` resolver + cleanup
+        helpers are retained for any future caller that needs to consolidate
+        PRE-EXISTING twins from other sources.
         """
-        try:
-            from .course_identity import (  # noqa: PLC0415
-                cleanup_empty_skeletons,
-                course_identity_dedup_enabled,
-                resolve_course_identity,
-            )
-
-            if not course_identity_dedup_enabled():
-                return LibV2Storage(course_code, auto_create=True)
-
-            from .paths import libv2_path  # noqa: PLC0415
-
-            root = libv2_path()
-            # The hashed form THIS module would mint for the same name is the
-            # alternate whose empty skeleton we want to detect + clean.
-            alt = normalize_course_code(course_code)
-            identity = resolve_course_identity(
-                course_code, alt_course_codes=[alt], libv2_root=root
-            )
-            if identity.split_brain_detected:
-                logger.warning(
-                    "COURSE_IDENTITY_SPLIT_BRAIN: course_code=%r resolves to "
-                    "canonical slug %r with empty-skeleton twin(s) %r; "
-                    "consolidating onto the canonical identity.",
-                    course_code,
-                    identity.slug,
-                    identity.empty_skeleton_twins,
-                )
-            # Gate skeleton creation: when a populated twin already resolves,
-            # reuse it and do NOT auto-create a fresh empty skeleton.
-            auto_create = identity.populated_twin is None
-            storage = LibV2Storage(
-                identity.course_id,
-                course_slug=identity.slug,
-                auto_create=auto_create,
-                libv2_root=root,
-            )
-            # One-shot cleanup (strictly gated on a populated twin existing).
-            if identity.empty_skeleton_twins:
-                cleanup_empty_skeletons(identity, libv2_root=root)
-            return storage
-        except Exception as exc:  # noqa: BLE001 — never lose a capture
-            logger.warning(
-                "W0.5 course-identity dedup failed (%s); falling back to "
-                "legacy LibV2Storage construction.",
-                exc,
-            )
-            return LibV2Storage(course_code, auto_create=True)
+        return LibV2Storage(course_code, auto_create=False)
 
     def _infer_operation(self, decision_type: str) -> str:
         """Infer operation from decision type for ML labeling."""

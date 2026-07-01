@@ -1,29 +1,33 @@
 """Course-identity resolution — one canonical slug + course_id per run.
 
-W0.5: the LibV2 archive can SPLIT-BRAIN a single course across two directories:
+The LibV2 archive can SPLIT-BRAIN a single course across two directories:
 
 * The chunk-write path (``MCP/tools/pipeline_tools.py::_run_dart_chunking``)
   names the course dir from the VERBATIM lowercased course name
   (``"Ed4All"`` → ``courses/ed4all/``) and populates it with real chunks.
-* The decision-capture path (``lib/decision_capture.py``) can be handed the
-  ``normalize_course_code`` form, which mints a ``sha256(name) % 1000`` numeric
-  suffix (``"Ed4All"`` → ``"ED_472"`` → ``courses/ed-472/``) and creates an
-  EMPTY skeleton there via ``LibV2Storage(auto_create=True)``.
+* Historically the decision-capture path (``lib/decision_capture.py``) could be
+  handed the ``normalize_course_code`` form, which mints a ``sha256(name) %
+  1000`` numeric suffix (``"Ed4All"`` → ``"ED_472"`` → ``courses/ed-472/``) and
+  created an EMPTY skeleton there via ``LibV2Storage(auto_create=True)``.
 
-Both land in the master catalog, so an operator sees one populated course and
-one empty hashed twin for the same content.
+The decision-capture side of that split-brain is now FIXED AT THE ROOT:
+``DecisionCapture._build_storage`` constructs ``LibV2Storage(auto_create=False)``
+unconditionally, so logging a decision never creates a ``courses/<slug>/``
+skeleton at all (captures write only to ``catalog/<course_id>/training/``).
+The ``ED4ALL_COURSE_IDENTITY_DEDUP`` flag is therefore a no-op from decision
+capture — there is no longer a collateral twin to clean up.
 
-This module is the single, idempotent resolver: from the verbatim course name
-(plus any alternate course-code variants a caller knows about) it produces ONE
-canonical slug + course_id, detects whether an empty-skeleton twin exists
-alongside the populated course, and offers a one-shot cleanup that is gated
-STRICTLY on "a populated twin already exists" so an in-progress, legitimately
-empty course is never deleted.
+This module is retained as the single, idempotent resolver for any OTHER caller
+that needs to consolidate PRE-EXISTING split-brain twins (e.g. legacy archives
+created before the root fix, or a future write path): from the verbatim course
+name (plus any alternate course-code variants) it produces ONE canonical slug +
+course_id, detects whether an empty-skeleton twin exists alongside the populated
+course, and offers a one-shot cleanup gated STRICTLY on "a populated twin
+already exists" so an in-progress, legitimately empty course is never deleted.
 
 All behaviour here is opt-in: callers gate on
 :func:`course_identity_dedup_enabled` (env ``ED4ALL_COURSE_IDENTITY_DEDUP``,
-default OFF, parse-with-fallback). With the flag unset the caller takes its
-legacy path and this module is never consulted.
+default OFF, parse-with-fallback).
 """
 
 from __future__ import annotations
