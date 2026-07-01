@@ -2285,6 +2285,80 @@ def _course_chunk_id_prefix(course_name: str) -> str:
     return f"{code}_chunk_"
 
 
+def _normalize_chunk_course_code(course_name: str) -> str:
+    """Return the ``course_code`` the chunker prefixes chunk IDs with.
+
+    W0.6: the two chunking helpers (``_run_dart_chunking`` /
+    ``_run_imscc_chunking``) computed ``course_name.upper().replace("-", "_")``
+    — which OMITS the space→underscore replacement the adjacent ``course_slug``
+    line does — so a space-bearing course name (``"My Course"``) produced a
+    course_code carrying a literal space (``"MY COURSE"``) and therefore chunk
+    IDs like ``"my course_chunk_00000"`` with whitespace baked into the id (the
+    id-prefix gate ``^{course_code_lower}_chunk_`` then can't match, and the
+    whitespace breaks downstream slug/path assumptions).
+
+    This routes both sites through one helper that mirrors
+    :func:`_course_chunk_id_prefix`'s normalisation in upper-case: dashes →
+    underscores, every whitespace RUN → a single underscore, then collapse
+    repeated underscores so ``"My - Course"`` → ``"MY_COURSE"`` rather than
+    ``"MY___COURSE"``. Empty / whitespace-only input falls back to
+    ``"UNKNOWN"`` (the historical sentinel the call sites already used).
+    """
+    raw = (course_name or "").strip().upper()
+    if not raw:
+        return "UNKNOWN"
+    code = raw.replace("-", "_")
+    code = re.sub(r"\s+", "_", code)
+    code = re.sub(r"_+", "_", code).strip("_")
+    return code or "UNKNOWN"
+
+
+def _assert_no_whitespace_chunk_ids(chunks: List[Dict[str, Any]]) -> List[str]:
+    """Return the list of emitted chunk IDs that contain whitespace.
+
+    W0.6 emit-time tripwire: a non-empty return means the chunk-ID
+    normalisation upstream let whitespace leak into an id. Callers log a loud
+    warning and stamp a manifest field so the defect is observable post-hoc
+    instead of silently corrupting the id-prefix grounding gate.
+    """
+    offenders: List[str] = []
+    for chunk in chunks:
+        cid = chunk.get("id") or chunk.get("chunk_id")
+        if isinstance(cid, str) and re.search(r"\s", cid):
+            offenders.append(cid)
+    return offenders
+
+
+def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
+
+    W0.7: per-course + pipeline ``manifest.json`` writes were a bare
+    ``write_text`` / ``open("w")`` — a crash (or a concurrent reader) mid-write
+    leaves a truncated, unparseable manifest on disk. Writing to a sibling temp
+    file and ``os.replace``-ing it onto the target makes the swap atomic on
+    POSIX (same-directory rename), so a reader sees either the old or the new
+    manifest, never a half-written one.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding=encoding) as fh:
+            fh.write(text)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
 def _check_chunks_freshness(
     *,
     chunks_path: Path,
@@ -2489,6 +2563,20 @@ def _resolve_libv2_root(explicit: Optional[str] = None) -> Path:
     env_val = os.environ.get("ED4ALL_LIBV2_ROOT", "").strip()
     if env_val:
         return Path(env_val)
+    # W0.3: honor the relocatable ``ED4ALL_HOME`` data root BEFORE the in-tree
+    # default, matching the centralized precedence in
+    # ``lib.paths.libv2_path`` (ED4ALL_LIBV2_ROOT > ED4ALL_HOME/libv2 >
+    # repo-relative). The previous inline resolver ignored ``ED4ALL_HOME``
+    # entirely, so an ``ED4ALL_HOME`` deployment archived a course under one
+    # tree (``$ED4ALL_HOME/libv2`` via every other consumer's ``libv2_path``)
+    # while these chunking/archival helpers wrote under another
+    # (``_PROJECT_ROOT/LibV2``) — a split-brain across two trees for the same
+    # course. We keep ``_PROJECT_ROOT`` as the bare default (so the legacy
+    # in-tree behaviour is byte-identical when no env var is set).
+    from lib.paths import ed4all_home as _ed4all_home  # noqa: PLC0415
+    _home = _ed4all_home()
+    if _home is not None:
+        return _home / "libv2"
     return _PROJECT_ROOT / "LibV2"
 
 
@@ -5497,8 +5585,17 @@ def register_pipeline_tools(mcp):
         try:
             libv2_root = PROJECT_ROOT / "LibV2"
 
-            # Generate slug from course name
-            slug = course_name.lower().replace("_", "-").replace(" ", "-")
+            # Generate slug from course name. W0.4: route through the
+            # canonical archive-directory slug helper (single source of truth
+            # used by the LibV2 importer) instead of a raw inline transform, so
+            # an archive dir and every other consumer of the slug agree
+            # byte-for-byte. ``libv2_course_slug`` is byte-identical to the old
+            # inline ``.lower().replace("_","-").replace(" ","-")`` for the
+            # common ``PHYS_101`` / spaced-name cases AND additionally
+            # normalises punctuation (e.g. a stray ``:``) that the inline
+            # transform leaked into the dir name.
+            from lib.ontology.slugs import libv2_course_slug as _libv2_course_slug  # noqa: PLC0415
+            slug = _libv2_course_slug(course_name)
 
             # Create course directory structure
             course_dir = libv2_root / "courses" / slug
@@ -5750,8 +5847,9 @@ def register_pipeline_tools(mcp):
                             manifest["course_package_version"] = _cpv
 
             manifest_path = course_dir / "manifest.json"
-            with open(manifest_path, "w") as f:
-                json.dump(manifest, f, indent=2)
+            # W0.7: atomic temp-then-replace so a crash mid-write never leaves a
+            # truncated course manifest (the LibV2ManifestValidator parses it).
+            _atomic_write_text(manifest_path, json.dumps(manifest, indent=2))
 
             # F6: register the course in the LibV2 master catalog so that
             # ``libv2 catalog list`` / ``libv2 info <slug>`` see it immediately
@@ -17949,7 +18047,11 @@ def _build_tool_registry() -> dict:
         if not course_name:
             return json.dumps({"error": "archive_to_libv2 requires course_name"})
 
-        slug = course_name.lower().replace("_", "-").replace(" ", "-")
+        # W0.4: canonical archive-directory slug (single source of truth used by
+        # the LibV2 importer) — see the parity note at the ``archive_to_libv2``
+        # MCP-tool variant above.
+        from lib.ontology.slugs import libv2_course_slug as _libv2_course_slug  # noqa: PLC0415
+        slug = _libv2_course_slug(course_name)
         libv2_root = PROJECT_ROOT / "LibV2"
         course_dir = libv2_root / "courses" / slug
 
@@ -18579,8 +18681,9 @@ def _build_tool_registry() -> dict:
                             manifest["course_package_version"] = _cpv
 
         manifest_path = course_dir / "manifest.json"
-        with open(manifest_path, "w") as f:
-            json.dump(manifest, f, indent=2)
+        # W0.7: atomic temp-then-replace so a crash mid-write never leaves a
+        # truncated course manifest (the LibV2ManifestValidator parses it).
+        _atomic_write_text(manifest_path, json.dumps(manifest, indent=2))
 
         # F6: register the course in the LibV2 master catalog so that
         # ``libv2 catalog list`` / ``libv2 info <slug>`` see it immediately
@@ -20719,9 +20822,10 @@ def _build_tool_registry() -> dict:
             "phase": "concept_extraction",
         }
         manifest_path = graph_dir / "manifest.json"
-        manifest_path.write_text(
+        # W0.7: atomic temp-then-replace manifest write.
+        _atomic_write_text(
+            manifest_path,
             json.dumps(manifest, indent=2, ensure_ascii=False),
-            encoding="utf-8",
         )
 
         # Sibling edge_consensus_report.json (GPT-fb-12-may item 2). Written
@@ -20956,7 +21060,10 @@ def _build_tool_registry() -> dict:
 
         course_name = course_name or "UNKNOWN"
         course_slug = course_name.lower().replace("_", "-").replace(" ", "-")
-        course_code = course_name.upper().replace("-", "_")
+        # W0.6: normalise the chunk-ID course_code WITH the space→underscore
+        # replacement (the bare ``.upper().replace("-", "_")`` omitted it, so a
+        # space-bearing course name leaked whitespace into every chunk id).
+        course_code = _normalize_chunk_course_code(course_name)
 
         # Honest IRT difficulty-calibration scaffold
         # (TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD). Build the calibrated-difficulty
@@ -21838,6 +21945,18 @@ def _build_tool_registry() -> dict:
             label="dart_chunking",
         )
 
+        # W0.6 emit-time tripwire: no emitted chunk id may carry whitespace
+        # (the course_code normalisation above prevents it; this catches any
+        # future regression). Log loudly + stamp the manifest so the defect is
+        # observable post-hoc instead of silently breaking the id-prefix gate.
+        _ws_chunk_ids = _assert_no_whitespace_chunk_ids(chunks)
+        if _ws_chunk_ids:
+            logger.warning(
+                "W0.6: %d DART chunk id(s) contain whitespace for course_code=%r "
+                "(e.g. %r); the id-prefix grounding gate will not match.",
+                len(_ws_chunk_ids), course_code, _ws_chunk_ids[0],
+            )
+
         # Sibling manifest.json — must validate against
         # ``schemas/library/chunkset_manifest.schema.json`` per ST 12.
         # Required: chunks_sha256, chunker_version, chunkset_kind,
@@ -21856,10 +21975,18 @@ def _build_tool_registry() -> dict:
         # so the manifest stays byte-identical to the legacy emit).
         if _overlap_words > 0:
             manifest["overlap_words"] = _overlap_words
+        # W0.6: surface the whitespace-id defect in the manifest (omitted when
+        # clean so the manifest stays byte-identical to the legacy emit).
+        if _ws_chunk_ids:
+            manifest["chunk_id_whitespace_warning"] = {
+                "count": len(_ws_chunk_ids),
+                "sample_ids": _ws_chunk_ids[:5],
+            }
         manifest_path = chunks_dir / "manifest.json"
-        manifest_path.write_text(
+        # W0.7: atomic temp-then-replace manifest write.
+        _atomic_write_text(
+            manifest_path,
             json.dumps(manifest, indent=2, ensure_ascii=False),
-            encoding="utf-8",
         )
 
         return json.dumps({
@@ -22410,7 +22537,10 @@ def _build_tool_registry() -> dict:
 
         course_name = course_name or "UNKNOWN"
         course_slug = course_name.lower().replace("_", "-").replace(" ", "-")
-        course_code = course_name.upper().replace("-", "_")
+        # W0.6: normalise the chunk-ID course_code WITH the space→underscore
+        # replacement (the bare ``.upper().replace("-", "_")`` omitted it, so a
+        # space-bearing course name leaked whitespace into every chunk id).
+        course_code = _normalize_chunk_course_code(course_name)
 
         # Honest IRT difficulty-calibration scaffold
         # (TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD). Build the calibrated-difficulty
@@ -23062,6 +23192,16 @@ def _build_tool_registry() -> dict:
         # chunks_sha256, chunker_version, chunkset_kind,
         # source_imscc_sha256 (conditional on chunkset_kind=imscc).
         # Optional: chunks_count, generated_at, source_coverage (W3.H H1).
+        # W0.6 emit-time tripwire (mirrors the DART path): scan emitted chunk
+        # ids for whitespace, log loudly, and stamp the manifest.
+        _ws_chunk_ids = _assert_no_whitespace_chunk_ids(chunks)
+        if _ws_chunk_ids:
+            logger.warning(
+                "W0.6: %d IMSCC chunk id(s) contain whitespace for "
+                "course_code=%r (e.g. %r); the id-prefix grounding gate will "
+                "not match.",
+                len(_ws_chunk_ids), course_code, _ws_chunk_ids[0],
+            )
         manifest = {
             "chunks_sha256": chunks_sha256,
             "chunker_version": chunker_version,
@@ -23075,10 +23215,18 @@ def _build_tool_registry() -> dict:
         # so the manifest stays byte-identical to the legacy emit).
         if _overlap_words > 0:
             manifest["overlap_words"] = _overlap_words
+        # W0.6: surface the whitespace-id defect in the manifest (omitted when
+        # clean so the manifest stays byte-identical to the legacy emit).
+        if _ws_chunk_ids:
+            manifest["chunk_id_whitespace_warning"] = {
+                "count": len(_ws_chunk_ids),
+                "sample_ids": _ws_chunk_ids[:5],
+            }
         manifest_path = chunks_dir / "manifest.json"
-        manifest_path.write_text(
+        # W0.7: atomic temp-then-replace manifest write.
+        _atomic_write_text(
+            manifest_path,
             json.dumps(manifest, indent=2, ensure_ascii=False),
-            encoding="utf-8",
         )
 
         return json.dumps({

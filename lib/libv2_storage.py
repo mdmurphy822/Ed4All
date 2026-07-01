@@ -608,13 +608,34 @@ class LibV2Storage:
         return {}
 
     def save_manifest(self, manifest: Dict[str, Any]) -> None:
-        """Save course manifest."""
+        """Save course manifest.
+
+        W0.7: written via temp-file + ``os.replace`` so a crash (or a
+        concurrent reader / validator) mid-write never observes a truncated,
+        unparseable ``manifest.json``.
+        """
         self.course_path.mkdir(parents=True, exist_ok=True)
 
         manifest["updated_at"] = datetime.now().isoformat()
 
-        with open(self.manifest_path, 'w', encoding='utf-8') as f:
-            json.dump(manifest, f, indent=2)
+        tmp_path = self.manifest_path.with_name(
+            f"{self.manifest_path.name}.{os.getpid()}.tmp"
+        )
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, indent=2)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp_path, self.manifest_path)
+        finally:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
 
     # ===== Utility Methods =====
 

@@ -96,9 +96,19 @@ class LibV2Fsck:
             libv2_root: Path to LibV2 directory
             state_root: Path to state directory (defaults to sibling of LibV2)
         """
-        self.libv2_root = libv2_root
-        self.state_root = state_root or libv2_root.parent / "state"
-        self.content_store = ContentStore(libv2_root)
+        # Resolve to an ABSOLUTE root up front. course_index.json stores course
+        # ``path`` values RELATIVE to this root (e.g. ``courses/<slug>``), so a
+        # cwd-relative root would make every entry resolve against the caller's
+        # working directory — turning a ``--fix`` run from any other cwd into a
+        # whole-index wipe (W0.1). Anchoring the root absolutely (and resolving
+        # each entry against it in ``_check_catalog``) makes the destructive
+        # path cwd-independent.
+        self.libv2_root = Path(libv2_root).resolve()
+        self.state_root = (
+            Path(state_root).resolve() if state_root is not None
+            else self.libv2_root.parent / "state"
+        )
+        self.content_store = ContentStore(self.libv2_root)
 
     def check_all(self, fix: bool = False) -> FsckResult:
         """
@@ -205,7 +215,15 @@ class LibV2Fsck:
                 for course_id, entry in list(index.items()):
                     course_path = entry.get('path')
                     if course_path:
+                        # Course paths are stored RELATIVE to the LibV2 root
+                        # (``courses/<slug>``). Anchor them against the resolved
+                        # absolute root rather than the process cwd, so a
+                        # ``--fix`` run from a different working directory cannot
+                        # mistake every (real) course for a dangling reference
+                        # and delete the whole index (W0.1).
                         path = Path(course_path)
+                        if not path.is_absolute():
+                            path = self.libv2_root / path
                         if not path.exists():
                             result.issues.append(FsckIssue(
                                 severity="warning",
@@ -524,8 +542,11 @@ def run_fsck(
         FsckResult
     """
     if libv2_root is None:
-        from .paths import LIBV2_PATH
-        libv2_root = LIBV2_PATH
+        # Resolve through the canonical resolver so ED4ALL_LIBV2_ROOT /
+        # ED4ALL_HOME are honored and the (destructive) --fix is always anchored
+        # to the operator-configured absolute root, never a cwd-relative guess.
+        from .paths import libv2_path
+        libv2_root = libv2_path()
 
     fsck = LibV2Fsck(libv2_root)
     result = fsck.check_all(fix=fix)

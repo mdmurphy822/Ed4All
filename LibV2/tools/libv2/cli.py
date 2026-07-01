@@ -368,6 +368,27 @@ def catalog_search(ctx, query: str, domain: Optional[str], difficulty: Optional[
         print(f"  {entry.division}/{entry.primary_domain} | {entry.chunk_count} chunks")
 
 
+@catalog.command("backfill")
+@click.pass_context
+def catalog_backfill(ctx):
+    """Enumerate every archived course dir into the master catalog (repair).
+
+    W0.8 repair entry point: walks every ``courses/<slug>/manifest.json`` and
+    upserts a catalog entry, merging with the existing catalog. Idempotent and
+    lock-guarded — safe to run while archives are in flight.
+    """
+    from .catalog import backfill_master_catalog
+
+    repo_root = ctx.obj["repo_root"]
+    print("Backfilling master catalog from courses/ ...")
+    summary = backfill_master_catalog(repo_root)
+    print_success(
+        f"Catalog backfill complete: discovered={summary['discovered']} "
+        f"added={summary['added']} updated={summary['updated']} "
+        f"total={summary['total']}"
+    )
+
+
 @catalog.command("stats")
 @click.pass_context
 def catalog_stats(ctx):
