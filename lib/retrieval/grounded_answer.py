@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from dataclasses import replace as _dc_replace
 
@@ -89,6 +89,23 @@ from lib.retrieval.reranker import (
     reranker_configured,
     resolve_candidate_pool,
 )
+from lib.retrieval.query_augment import (
+    bias_passages_by_intent,
+    decompose_and_merge,
+    decompose_enabled,
+    enrich_passage_facets,
+    generate_hypothetical_answer,
+    hyde_augment,
+    hyde_enabled,
+    intent_route_enabled,
+    merge_passage_candidates,
+    multiturn_enabled,
+    rewrite_query_with_context,
+)
+from lib.retrieval.graph_expand import (
+    expand_passages_via_graph,
+    graph_expand_enabled,
+)
 
 __all__ = [
     "Citation",
@@ -98,6 +115,7 @@ __all__ = [
     "DECISION_TYPE_CITATION_PRUNE",
     "DECISION_TYPE_NLI_CITATION_ADD",
     "DECISION_TYPE_COMPLETENESS_RECHECK",
+    "DECISION_TYPE_HEDGE",
     # Status constants (WS4 + CLI map these to display copy / exit codes).
     "STATUS_ANSWERED",
     "STATUS_ANSWERED_WITH_WARNINGS",
@@ -126,7 +144,21 @@ DECISION_TYPE_CITATION_GATE = "grounded_answer_citation_gate"
 DECISION_TYPE_CITATION_PRUNE = "grounded_answer_citation_prune"
 DECISION_TYPE_NLI_CITATION_ADD = "grounded_answer_nli_citation_add"
 DECISION_TYPE_COMPLETENESS_RECHECK = "grounded_answer_completeness_recheck"
+DECISION_TYPE_HEDGE = "grounded_answer_hedge"
 DECISION_PHASE = "libv2-answer"
+
+# W5.5 — confidence-graded HEDGE tier env flag + margin (default OFF / 0.15).
+ENV_HEDGE_TIER = "ED4ALL_ANSWER_HEDGE_TIER"
+ENV_HEDGE_MARGIN = "ED4ALL_ANSWER_HEDGE_MARGIN"
+_DEFAULT_HEDGE_MARGIN = 0.15
+_HEDGE_WARNING = "low_confidence_hedge"
+#: Prepended to the answer prose when the hedge tier fires (an explicit, honest
+#: low-confidence caveat — never fabricated content, never a refusal).
+_HEDGE_CAVEAT = (
+    "Note: retrieval confidence for this question is low, so this answer may be "
+    "incomplete or only partially grounded in the course material. Please verify "
+    "against the cited sources.\n\n"
+)
 
 # Citation-prune/add outcomes (the capture `decision` suffix, plan §2.5).
 _PRUNE_OUTCOME_PRUNED = "pruned"
@@ -1470,6 +1502,21 @@ def _merge_completed_answer(
     )
 
 
+def _resolve_completeness_reretrieve() -> bool:
+    """Resolve the completeness RE-RETRIEVE toggle (``ED4ALL_ANSWER_COMPLETENESS_RERETRIEVE``).
+
+    W5.4. Default OFF. When on, the completeness recheck ALSO re-retrieves for the
+    unaddressed-but-grounded sub-question(s) and re-asks over the enriched passage
+    pool (vs. today's re-ask over the original passages only). Parse-with-fallback,
+    default OFF (mirrors the other answer-path augmentation knobs).
+    """
+    import os
+
+    return os.environ.get(
+        "ED4ALL_ANSWER_COMPLETENESS_RERETRIEVE", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _apply_completeness_recheck(
     *,
     query: str,
@@ -1481,7 +1528,9 @@ def _apply_completeness_recheck(
     query_sha: str,
     engine: str,
     max_passages: int,
-) -> Tuple[ComposedAnswer, List[str]]:
+    reretrieve_fn: Optional[Callable[[str, int], List[Any]]] = None,
+    retrieve_limit: int = 0,
+) -> Tuple[ComposedAnswer, List[str], List[Any]]:
     """Single bounded re-ask when a multi-part question left a grounded part unanswered.
 
     Pure-lexical detection (no model load): a sub-question that the answer does
@@ -1489,9 +1538,21 @@ def _apply_completeness_recheck(
     composer with the additive completeness directive. NEVER regresses — a
     re-ask that refuses / returns no citations / errors keeps the original
     answered response. The re-ask is itself NOT rechecked (no recursion).
+
+    W5.4: when ``reretrieve_fn`` is provided, the recheck FIRST re-retrieves per
+    uncovered sub-question and merges the fresh passages (verdict-safe union) into
+    the re-ask's evidence pool, then re-asks over that enriched pool. The freshly
+    surfaced passages that were not already present are returned as the third
+    tuple element so the caller can fold them into the main passage set (their
+    citations then survive the citation gate). Fully fail-open: a per-part
+    retrieval error is swallowed and the recheck proceeds over the original pool.
+
+    Returns ``(composed_or_merged, warnings, added_passages)``. ``added_passages``
+    is always empty unless W5.4 re-retrieval surfaced NEW passages that the
+    ADOPTED re-ask could cite.
     """
     if not composed.answer_text:
-        return composed, []
+        return composed, [], []
 
     result = analyze_completeness(query, composed.answer_text, passages)
     uncovered = result.uncovered_but_grounded
@@ -1508,7 +1569,35 @@ def _apply_completeness_recheck(
             reasked=False,
             adopted=False,
         )
-        return composed, []
+        return composed, [], []
+
+    # W5.4 — re-retrieve for each uncovered sub-question and enrich the re-ask
+    # pool (verdict-safe union; the original passages are always retained).
+    reask_passages: List[Any] = list(passages)
+    added_passages: List[Any] = []
+    if reretrieve_fn is not None:
+        n = retrieve_limit if retrieve_limit and retrieve_limit > 0 else len(passages)
+        n = max(1, int(n or 8))
+        flat_ids = {str(getattr(p, "chunk_id", "") or "") for p in passages}
+        extra_lists: List[List[Any]] = []
+        for part in uncovered:
+            try:
+                extra_lists.append(list(reretrieve_fn(part, n)))
+            except Exception:  # noqa: BLE001 - per-part fail-open
+                continue
+        if extra_lists:
+            # Union+dedup; keep ALL original passages (they lead the flat list)
+            # plus any freshly surfaced chunks, capped so the pool stays bounded.
+            merged_pool = merge_passage_candidates(
+                passages, extra_lists, limit=len(passages) + n
+            )
+            # Preserve original passages verbatim, then append only the new ids.
+            added_passages = [
+                p
+                for p in merged_pool
+                if str(getattr(p, "chunk_id", "") or "") not in flat_ids
+            ]
+            reask_passages = list(passages) + added_passages
 
     directive = COMPLETENESS_REMEDIATION_DIRECTIVE.format(
         uncovered_parts="; ".join(uncovered)
@@ -1516,7 +1605,7 @@ def _apply_completeness_recheck(
     try:
         reask = compose_answer(
             query,
-            passages,
+            reask_passages,
             client=client,
             capture=capture,
             course_code=course_slug,
@@ -1537,7 +1626,7 @@ def _apply_completeness_recheck(
             adopted=False,
             reason=type(exc).__name__,
         )
-        return composed, ["completeness_reask_failed"]
+        return composed, ["completeness_reask_failed"], []
 
     # Never regress an answered response: adopt only a strictly-valid re-ask.
     if reask.not_in_course or not reask.cited_chunk_ids or not reask.answer_text:
@@ -1553,10 +1642,19 @@ def _apply_completeness_recheck(
             reasked=True,
             adopted=False,
         )
-        return composed, []
+        return composed, [], []
 
     merged = _merge_completed_answer(composed, reask)
-    post = analyze_completeness(query, merged.answer_text, passages)
+    # Only fold in freshly retrieved passages the ADOPTED re-ask actually cited
+    # (keeps the main pool minimal + anti-fabrication: no uncited fresh chunk is
+    # smuggled into the gate-eligible set).
+    reask_cited = set(reask.cited_chunk_ids)
+    adopted_added = [
+        p
+        for p in added_passages
+        if str(getattr(p, "chunk_id", "") or "") in reask_cited
+    ]
+    post = analyze_completeness(query, merged.answer_text, reask_passages)
     still = post.uncovered_but_grounded
     _emit_completeness_recheck(
         capture,
@@ -1570,7 +1668,110 @@ def _apply_completeness_recheck(
         reasked=True,
         adopted=True,
     )
-    return merged, ["completeness_reasked"]
+    return merged, ["completeness_reasked"], adopted_added
+
+
+# --------------------------------------------------------------------------- #
+# W5.5 — confidence-graded HEDGE tier (between a confident answer and a refusal)
+# --------------------------------------------------------------------------- #
+def _resolve_hedge_tier() -> bool:
+    """Resolve the hedge-tier toggle (``ED4ALL_ANSWER_HEDGE_TIER``). Default OFF."""
+    import os
+
+    return os.environ.get(ENV_HEDGE_TIER, "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def _resolve_hedge_margin(default: float = _DEFAULT_HEDGE_MARGIN) -> float:
+    """Resolve the hedge band width (``ED4ALL_ANSWER_HEDGE_MARGIN``).
+
+    The band is the top of the confident region: ``min_top_score <= top_score <
+    min_top_score * (1 + margin)``. Out-of-range / garbage → ``default``
+    (parse-with-fallback, mirroring the other answer-path float knobs).
+    """
+    import os
+
+    raw = os.environ.get(ENV_HEDGE_MARGIN)
+    if raw is None:
+        return default
+    try:
+        val = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return val if val > 0.0 else default
+
+
+def _hedge_active(verdict: Any, margin: float) -> bool:
+    """True iff a CONFIDENT verdict sits in the borderline (hedge) band.
+
+    Only ever fires on an already-confident verdict (the gate has NOT refused),
+    so the hedge can never turn a confident answer into a refusal nor rescue a
+    hard refusal — it only SOFTENS the band just above the refusal floor. The
+    band is ``min_top_score <= top_score < min_top_score * (1 + margin)``. When
+    ``min_top_score <= 0`` (a permissive v0 floor of 0.0 — the whole positive
+    axis is "comfortable") the band is empty, so the hedge never fires.
+    """
+    if not getattr(verdict, "confident", False):
+        return False
+    policy = getattr(verdict, "policy", None)
+    signals = getattr(verdict, "signals", {}) or {}
+    floor = float(getattr(policy, "min_top_score", 0.0) or 0.0)
+    if floor <= 0.0:
+        return False
+    top = float(signals.get("top_score", 0.0) or 0.0)
+    return floor <= top < floor * (1.0 + margin)
+
+
+def _hedge_answer(
+    answer_text: Optional[str],
+    warnings: Sequence[str],
+    status: str,
+    *,
+    active: bool,
+) -> Tuple[Optional[str], List[str], str]:
+    """Apply the hedge caveat + warning + status to a FINAL answered result.
+
+    No-op when the hedge is inactive or there is no answer text. When active,
+    prepends the explicit low-confidence caveat to the displayed answer, appends
+    the ``low_confidence_hedge`` warning, and sets the status to
+    ``answered_with_warnings`` (still an ANSWERED status — never a refusal). The
+    caveat is applied ONLY to the returned display text, never to the
+    ``composed.answer_text`` used by the citation gate / groundedness / attribution.
+    """
+    out_warnings = list(warnings)
+    if not active or not answer_text:
+        return answer_text, out_warnings, status
+    if _HEDGE_WARNING not in out_warnings:
+        out_warnings.append(_HEDGE_WARNING)
+    return _HEDGE_CAVEAT + answer_text, out_warnings, STATUS_ANSWERED_WITH_WARNINGS
+
+
+def _emit_hedge(
+    capture: Optional[Any],
+    *,
+    course_slug: str,
+    query_sha: str,
+    engine: str,
+    outcome: str,
+    top_score: float,
+    floor: float,
+    margin: float,
+) -> None:
+    rationale = (
+        f"hedge tier {outcome} for query {query_sha} (course={course_slug or '?'}, "
+        f"engine={engine}); top_score={top_score:.6f} min_top_score={floor:.6f} "
+        f"margin={margin:.4f} band=[{floor:.6f},{floor * (1.0 + margin):.6f}); "
+        f"answer retained with an explicit low-confidence caveat (never a refusal; "
+        f"a confident answer is never downgraded to refuse)"
+    )
+    _safe_log(
+        capture,
+        decision_type=DECISION_TYPE_HEDGE,
+        decision=f"hedge:{outcome}",
+        rationale=rationale,
+        context=f"top={top_score:.4f} floor={floor:.4f}",
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1596,6 +1797,7 @@ def answer_course_question(
     prune_mode: Optional[str] = None,
     prune_min_overlap: Optional[float] = None,
     completeness_recheck: Optional[bool] = None,
+    prior_turns: Optional[Sequence[str]] = None,
 ) -> GroundedAnswer:
     """Answer a single-course question, grounded + citation-gated.
 
@@ -1654,21 +1856,124 @@ def answer_course_question(
     # pairs, and REORDER + TRIM back to ``limit`` STRICTLY BEFORE the refusal
     # gate — preserving each passage's native first-stage score so the per-
     # engine refusal threshold stays calibrated. Fail-OPEN.
+    #
+    # Pre-retrieval query / retrieval augmentation arms (all opt-in, default OFF,
+    # fail-open, byte-identical-when-off; see lib/retrieval/query_augment.py):
+    #   - W5.2 multi-turn antecedent rewrite BIASES the RETRIEVAL query only (the
+    #     original `query` still drives compose + the grounding gate below). When
+    #     the rewrite changes the query it retrieves with BOTH the rewritten and
+    #     the ORIGINAL query and UNIONs them (verdict-safe merge), so an off-topic
+    #     prior-turn rewrite can never evict the original's best hits.
+    #   - W5.6 decompose + W5.7 HyDE UNION extra retrievals into the candidate set
+    #     (verdict-safe merge: flat top-scorer always retained, so the refusal gate
+    #     can only improve, never worsen).
+    #   - W5.1 intent-route stable-reorders (no set change) so the refusal verdict
+    #     is byte-identical.
+    _intent_on = intent_route_enabled()
+
+    # W5.2 — retrieval-only query rewrite (does NOT touch compose / grounding).
+    retrieval_query = query
+    if multiturn_enabled() and prior_turns:
+        retrieval_query = rewrite_query_with_context(
+            query, prior_turns, capture=capture,
+            course_slug=course_slug, query_sha=query_sha,
+        )
+
     rerank_provider = reranker_configured()
     retrieve_limit = limit
     if rerank_provider is not None:
         retrieve_limit = max(limit, resolve_candidate_pool())
-    results = _retrieve(
-        libv2_root, course_slug, query, engine=engine, limit=retrieve_limit
-    )
-    passages = [
-        RetrievedPassage.from_retrieval_result(r, engine=engine) for r in results
-    ]
+
+    def _retrieve_passages(q: str, n: int) -> List[RetrievedPassage]:
+        raw = _retrieve(libv2_root, course_slug, q, engine=engine, limit=n)
+        out: List[RetrievedPassage] = []
+        for r in raw:
+            p = RetrievedPassage.from_retrieval_result(r, engine=engine)
+            if _intent_on:
+                # Fold the result's facet fields into the passage source so the
+                # W5.1 intent-bias reorder can read them (opt-in path only).
+                p = enrich_passage_facets(p, r)
+            out.append(p)
+        return out
+
+    passages = _retrieve_passages(retrieval_query, retrieve_limit)
+
+    # W5.2 verdict-safety — when the multi-turn rewrite actually changed the
+    #   query, retrieve with the ORIGINAL query too and UNION (verdict-safe
+    #   merge, same as W5.6 decompose / W5.7 HyDE) so the original-query top
+    #   passages are always retained. On a short but self-contained follow-up
+    #   with OFF-TOPIC prior_turns the additive rewrite can rank worse passages
+    #   ahead of the good ones and push them out of the top-`limit` window,
+    #   which could turn a would-be answer into a refusal (a verdict
+    #   regression). Passing the ORIGINAL-query passages as the ``flat`` base
+    #   makes the merged set a superset-in-spirit of the original's best hits,
+    #   so the refusal/confidence verdict can only improve or stay equal —
+    #   never worsen. The ORIGINAL query still drives compose + the grounding
+    #   gate + GroundedAnswer.query; only retrieval consumes the union.
+    if retrieval_query != query:
+        original_passages = _retrieve_passages(query, retrieve_limit)
+        passages = merge_passage_candidates(
+            original_passages, [passages], limit=retrieve_limit
+        )
+
+    # W5.6 — decompose a multi-part question, retrieve per sub-query, merge.
+    if decompose_enabled():
+        passages = decompose_and_merge(
+            query, passages, _retrieve_passages,
+            limit=retrieve_limit, capture=capture,
+            course_slug=course_slug, query_sha=query_sha,
+        )
+
+    # W5.7 — HyDE: generate a hypothetical answer (LOCAL), retrieve with it, union.
+    if hyde_enabled():
+        if client is None:
+            try:
+                from lib.retrieval.answer_backend import build_answer_client
+
+                client = build_answer_client(capture=capture)
+            except Exception:  # noqa: BLE001 - HyDE fails open below on gen error
+                client = None
+        if client is not None:
+            hyde_client = client
+
+            def _gen_hypothetical(q: str) -> str:
+                return generate_hypothetical_answer(hyde_client, q)
+
+            passages = hyde_augment(
+                retrieval_query, passages, _retrieve_passages, _gen_hypothetical,
+                limit=retrieve_limit, capture=capture,
+                course_slug=course_slug, query_sha=query_sha,
+            )
+
+    # W5.1 — intent-route bias: stable reorder (NO set change → verdict-safe).
+    if _intent_on:
+        passages = bias_passages_by_intent(
+            query, passages, capture=capture,
+            course_slug=course_slug, query_sha=query_sha,
+        )
+
     if rerank_provider is not None:
         passages = maybe_rerank(
-            query,
+            retrieval_query,
             passages,
             top_k=limit,
+            capture=capture,
+            course_slug=course_slug,
+            query_sha=query_sha,
+        )
+
+    # W5.3 — graph-expand: append graph-reachable NEIGHBOR chunks (verdict-safe).
+    #   Runs LAST, strictly AFTER rerank's trim, so neighbors are appended at
+    #   score 0.0 to the END of the passage list — no retrieved passage is evicted
+    #   or reordered, and a 0.0 neighbor clears no refusal floor, so the verdict
+    #   below is byte-identical. Neighbors are real chunkset records (never a
+    #   fabricated id) that fill residual composer slots left by a thin retrieval.
+    if graph_expand_enabled():
+        passages = expand_passages_via_graph(
+            passages,
+            course_dir,
+            chunkset_kind,
+            engine=engine,
             capture=capture,
             course_slug=course_slug,
             query_sha=query_sha,
@@ -1700,6 +2005,32 @@ def answer_course_question(
             prompt_version=None,
             start=start,
         )
+
+    # W5.5 — confidence-graded HEDGE tier (only reachable on a CONFIDENT verdict;
+    #   the hard-refuse path above already returned). Fires only in the borderline
+    #   band just above the refusal floor and only ADDS a low-confidence caveat +
+    #   warning to the (still answered) response — it never turns a confident
+    #   answer into a refusal. Marks the confidence payload for the caller.
+    hedge_on = _resolve_hedge_tier()
+    hedge_active = False
+    if hedge_on:
+        hedge_margin = _resolve_hedge_margin()
+        hedge_active = _hedge_active(verdict, hedge_margin)
+        _hedge_floor = float(getattr(policy, "min_top_score", 0.0) or 0.0)
+        _hedge_top = float(verdict.signals.get("top_score", 0.0) or 0.0)
+        _emit_hedge(
+            capture,
+            course_slug=course_slug,
+            query_sha=query_sha,
+            engine=engine,
+            outcome="hedged" if hedge_active else "confident",
+            top_score=_hedge_top,
+            floor=_hedge_floor,
+            margin=hedge_margin,
+        )
+        if hedge_active:
+            confidence_payload = dict(confidence_payload)
+            confidence_payload["hedged"] = True
 
     # 3) Compose the answer (THE LLM call site, owned by the composer).
     if client is None:
@@ -1775,7 +2106,13 @@ def answer_course_question(
         else completeness_recheck
     )
     if do_recheck:
-        composed, recheck_warnings = _apply_completeness_recheck(
+        # W5.4 — pass a re-retrieval closure so the recheck can retrieve fresh
+        #   passages for the unaddressed sub-question(s) before re-asking. Default
+        #   OFF (reretrieve_fn stays None) → byte-identical to the re-ask-only path.
+        reretrieve_fn = (
+            _retrieve_passages if _resolve_completeness_reretrieve() else None
+        )
+        composed, recheck_warnings, recheck_added = _apply_completeness_recheck(
             query=query,
             composed=composed,
             passages=passages,
@@ -1785,7 +2122,18 @@ def answer_course_question(
             query_sha=query_sha,
             engine=engine,
             max_passages=max_passages,
+            reretrieve_fn=reretrieve_fn,
+            retrieve_limit=retrieve_limit,
         )
+        # Fold any freshly retrieved + adopted-cited passages into the main pool
+        #   so their citations survive the gate below. This happens AFTER the
+        #   refusal verdict + hedge were already computed, so the verdict is
+        #   unaffected (verdict-safe). Empty on the re-ask-only (default) path.
+        if recheck_added:
+            existing_ids = {p.chunk_id for p in passages}
+            passages = list(passages) + [
+                p for p in recheck_added if p.chunk_id not in existing_ids
+            ]
 
     cited_set = set(composed.cited_chunk_ids)
     by_id = {p.chunk_id: p for p in passages}
@@ -1808,18 +2156,25 @@ def answer_course_question(
             )
             for p in cited_passages
         ]
+        bypass_text, bypass_warnings, bypass_status = _hedge_answer(
+            composed.answer_text,
+            list(recheck_warnings),
+            STATUS_ANSWERED,
+            active=hedge_active,
+        )
         return _answered(
             query=query,
             course_slug=course_slug,
             engine=engine,
-            answer_text=composed.answer_text,
+            answer_text=bypass_text,
             citations=citations,
             confidence=confidence_payload,
             model_id=composed.model_id,
             prompt_version=composed.prompt_version,
             groundedness=None,
-            warnings=list(recheck_warnings),
+            warnings=bypass_warnings,
             start=start,
+            status=bypass_status,
         )
 
     citations, blocked, statuses, failure_containment = _run_citation_gate(
@@ -1944,11 +2299,18 @@ def answer_course_question(
     if not citations and "pruned_all_claimless_citations" in warnings:
         status = STATUS_ANSWERED_WITH_WARNINGS
 
+    # W5.5 — apply the hedge caveat + warning to the FINAL display answer only
+    #   (composed.answer_text was used verbatim by the gate / groundedness /
+    #   attribution above). Never a refusal — answered_with_warnings at worst.
+    final_answer_text, warnings, status = _hedge_answer(
+        composed.answer_text, warnings, status, active=hedge_active
+    )
+
     return _answered(
         query=query,
         course_slug=course_slug,
         engine=engine,
-        answer_text=composed.answer_text,
+        answer_text=final_answer_text,
         citations=citations,
         confidence=confidence_payload,
         model_id=composed.model_id,
