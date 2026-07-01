@@ -2929,6 +2929,16 @@ def default_router() -> GateInputRouter:
         "lib.validators.callout_structure.CalloutStructureValidator",
         _build_block_input_rewrite,
     )
+    # W1.5 — KeyTermsDefinitionQualityValidator audits key-terms vocab cards
+    # (template_type == "key_terms" or block_type == "vocab_card") for circular /
+    # too-long / not-distinct glossary definitions. Consumes only
+    # ``inputs['blocks']`` so it reuses the rewrite-tier Block surface (reads its
+    # own ED4ALL_KEYTERM_DEF_QUALITY flag + vocab_card body ceiling; no-ops +
+    # byte-stable when the flag is unset).
+    r.register(
+        "lib.validators.key_terms_definition_quality.KeyTermsDefinitionQualityValidator",
+        _build_block_input_rewrite,
+    )
     # Mayer-CTML — MayerCtmlValidator audits text+visual blocks (B04/B06/B05 or
     # any block whose rendered HTML carries <figure>/<img>/<video>) over a
     # precision-first subset of Mayer's CTML principles (signaling / spatial

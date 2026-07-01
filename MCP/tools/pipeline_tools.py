@@ -21975,6 +21975,19 @@ def _build_tool_registry() -> dict:
         # so the manifest stays byte-identical to the legacy emit).
         if _overlap_words > 0:
             manifest["overlap_words"] = _overlap_words
+        # W1b.5: honest learning-outcome-linkage marker. The DART chunking
+        # phase emits chunks BEFORE course-planning mints the TO-NN/CO-NN id
+        # set (``_backfill_dart_chunk_lo_refs`` runs later against the on-disk
+        # chunks), so a fresh dart_chunks manifest legitimately advertises that
+        # linkage was skipped. Stamp ONLY when every chunk's
+        # ``learning_outcome_refs`` is empty (mirrors the whitespace-warning
+        # "stamp only on the gap" precedent); a populated / back-filled
+        # chunkset omits the field → byte-identical legacy emit.
+        if chunks and not any(
+            (c.get("learning_outcome_refs") or []) for c in chunks
+        ):
+            manifest["lo_linkage"] = "skipped"
+            manifest["lo_refs_unpopulated"] = True
         # W0.6: surface the whitespace-id defect in the manifest (omitted when
         # clean so the manifest stays byte-identical to the legacy emit).
         if _ws_chunk_ids:

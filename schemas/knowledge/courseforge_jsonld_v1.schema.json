@@ -106,6 +106,11 @@
       "type": "string",
       "pattern": "^[a-f0-9]{64}$",
       "description": "Phase 2: sha256 hex of the canonical Block payload list for re-execution drift detection. Same content -> same hash regardless of which tier authored the page."
+    },
+    "timeRequired": {
+      "type": "string",
+      "pattern": "^PT(?:\\d+H)?(?:\\d+M)?(?:\\d+S)?$",
+      "description": "W1.6: schema.org timeRequired ISO 8601 duration (e.g. PT25M) for the page's estimated learning time. Emitted only when ED4ALL_PAGE_EST_MINUTES is truthy; absent (byte-identical) by default."
     }
   },
   "$comment": "Phase 2 migration window: blocks[] is the stable intermediate projection of learningObjectives[]/sections[]/misconceptions[]. The redundancy is intentional and will be collapsed in a follow-up wave once Trainforge consumers prefer blocks[].",

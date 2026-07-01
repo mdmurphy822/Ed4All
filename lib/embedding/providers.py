@@ -66,7 +66,7 @@ import logging
 import os
 import struct
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     import numpy as np  # noqa: F401 — type-only
@@ -97,8 +97,24 @@ ENV_DEVICE = "ED4ALL_EMBEDDING_DEVICE"
 ENV_BATCH_SIZE = "ED4ALL_EMBEDDING_BATCH_SIZE"
 ENV_ALLOW_FAKE = "ED4ALL_EMBEDDING_ALLOW_FAKE"
 
+# --- W1b.1 embed-overflow guard env names -------------------------------
+#: Master switch for the over-window chunk guard (default OFF → byte-identical:
+#: no manifest overflow block, no max_seq_length pin, no sub-window split).
+ENV_OVERFLOW_GUARD = "ED4ALL_EMBED_OVERFLOW_GUARD"
+#: Optional split arm — when the guard is on AND this is truthy, over-window
+#: chunks are additionally split into parent-resolving sub-window pieces.
+ENV_OVERFLOW_SPLIT = "ED4ALL_EMBED_OVERFLOW_SPLIT"
+#: Serving-window token ceiling (default 512 — the bge / BERT wordpiece window).
+ENV_MAX_SEQ_TOKENS = "ED4ALL_EMBED_MAX_SEQ_TOKENS"
+
 DEFAULT_PROVIDER = "st"
 _FAKE_DIM = 32
+
+#: Default token window for the guard. The st default `BAAI/bge-large-en-v1.5`
+#: is a 512-token BERT-family model; the chunker permits ~800-word chunks
+#: (`Trainforge.chunker.MAX_CHUNK_SIZE`), so an ~800-word chunk silently
+#: overflows the encoder window and its tail is truncated before embedding.
+DEFAULT_MAX_SEQ_TOKENS = 512
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +565,22 @@ class EmbeddingClient:
                     os.environ.pop("HF_HUB_OFFLINE", None)
                 else:
                     os.environ["HF_HUB_OFFLINE"] = prev_offline
+        # W1b.1: when the overflow guard is on, pin the model's serving window
+        # so over-window chunks truncate EXPLICITLY at the configured ceiling
+        # rather than at whatever the checkpoint config happens to carry.
+        # Default OFF → the model's native max_seq_length is left untouched
+        # (byte-identical). Best-effort — a model without the attribute is a
+        # no-op.
+        if resolve_embed_overflow_guard():
+            try:
+                max_tokens = resolve_embed_max_seq_tokens()
+                native = getattr(self._st_model, "max_seq_length", None)
+                if isinstance(native, int) and native > 0:
+                    self._st_model.max_seq_length = min(native, max_tokens)
+                elif native is not None:
+                    self._st_model.max_seq_length = max_tokens
+            except Exception as exc:  # noqa: BLE001 — pin is best-effort
+                logger.debug("embed-overflow max_seq_length pin skipped: %s", exc)
         return self._st_model
 
     def _st_revision(self) -> Optional[str]:
@@ -693,6 +725,215 @@ def allow_fake_enabled() -> bool:
     return _env_truthy(ENV_ALLOW_FAKE)
 
 
+# ---------------------------------------------------------------------------
+# W1b.1 — embed-overflow guard (opt-in, default OFF)
+#
+# The chunker emits chunks up to ~800 words (``Trainforge.chunker.
+# MAX_CHUNK_SIZE``) but the st default ``BAAI/bge-large-en-v1.5`` is a
+# 512-token wordpiece model, so a long chunk silently truncates before it is
+# embedded — its tail never influences the vector and can never be retrieved.
+# The guard (a) COUNTS the over-window chunks into the index manifest so the
+# defect is observable, (b) optionally SPLITS them into parent-resolving
+# sub-window pieces (anti-fabrication: every sub-id resolves back to its
+# parent and every sub-text is a strict contiguous word-slice of the parent),
+# and (c) pins ``max_seq_length`` on the st model so truncation is explicit.
+#
+# Default OFF → byte-identical: no manifest block, no split, no model pin.
+# All resolvers are parse-with-fallback (garbage → the safe default).
+# ---------------------------------------------------------------------------
+
+
+def resolve_embed_overflow_guard(env: Optional[Dict[str, str]] = None) -> bool:
+    """Return True when ``ED4ALL_EMBED_OVERFLOW_GUARD`` is truthy (default OFF)."""
+    src = env if env is not None else os.environ
+    return src.get(ENV_OVERFLOW_GUARD, "").strip().lower() in _TRUTHY_VALUES
+
+
+def resolve_embed_overflow_split(env: Optional[Dict[str, str]] = None) -> bool:
+    """Return True when ``ED4ALL_EMBED_OVERFLOW_SPLIT`` is truthy (default OFF).
+
+    The split arm is a no-op unless :func:`resolve_embed_overflow_guard` is
+    also on — the master switch gates the whole feature.
+    """
+    src = env if env is not None else os.environ
+    return src.get(ENV_OVERFLOW_SPLIT, "").strip().lower() in _TRUTHY_VALUES
+
+
+def resolve_embed_max_seq_tokens(env: Optional[Dict[str, str]] = None) -> int:
+    """Resolve the serving-window token ceiling (parse-with-fallback → 512).
+
+    Garbage / non-integer / non-positive values fall back to
+    :data:`DEFAULT_MAX_SEQ_TOKENS` (mirrors ``ED4ALL_ANSWER_NUM_CTX``).
+    """
+    src = env if env is not None else os.environ
+    raw = src.get(ENV_MAX_SEQ_TOKENS)
+    if raw is None:
+        return DEFAULT_MAX_SEQ_TOKENS
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_SEQ_TOKENS
+    return val if val > 0 else DEFAULT_MAX_SEQ_TOKENS
+
+
+def estimate_token_count(text: str) -> int:
+    """Cheap upper-ish estimate of wordpiece tokens for ``text``.
+
+    No model load — a whitespace word count scaled by a fixed 1.3
+    words→subword-tokens factor (BERT-family wordpiece averages ~1.3 tokens
+    per whitespace word on English prose). Deliberately deterministic +
+    stdlib-only so the overflow accounting is replayable and the manifest
+    count is stable across machines. Consumers wanting exact tokenization
+    inject a real ``count_tokens`` callable (e.g. ``model.tokenizer``).
+    """
+    words = len((text or "").split())
+    if words == 0:
+        return 0
+    return int(words * 1.3 + 0.5)
+
+
+def _resolve_counter(
+    count_tokens: Optional[Callable[[str], int]],
+) -> Callable[[str], int]:
+    return count_tokens if count_tokens is not None else estimate_token_count
+
+
+def count_overflow_records(
+    records: List[Dict[str, Any]],
+    max_tokens: int,
+    *,
+    count_tokens: Optional[Callable[[str], int]] = None,
+    id_key: str = "id",
+    text_key: str = "text",
+    sample_limit: int = 10,
+) -> Dict[str, Any]:
+    """Count records whose ``text`` exceeds ``max_tokens`` in the encoder window.
+
+    Pure accounting — never mutates ``records``. Returns a manifest-ready
+    block:
+
+        {"max_seq_tokens", "records_scanned", "overflow_count",
+         "overflow_rate", "max_observed_tokens", "overflow_chunk_ids"}
+
+    ``count_tokens`` defaults to :func:`estimate_token_count`; tests inject a
+    stub (e.g. ``str.split`` length) so the logic is exercised with zero model
+    weights. ``overflow_chunk_ids`` is capped at ``sample_limit`` (post-hoc
+    triage sample, not a full dump).
+    """
+    counter = _resolve_counter(count_tokens)
+    overflow_ids: List[str] = []
+    overflow_count = 0
+    max_observed = 0
+    scanned = 0
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        scanned += 1
+        toks = counter(str(rec.get(text_key, "") or ""))
+        if toks > max_observed:
+            max_observed = toks
+        if toks > max_tokens:
+            overflow_count += 1
+            if len(overflow_ids) < sample_limit:
+                cid = rec.get(id_key) or rec.get("chunk_id")
+                overflow_ids.append(str(cid) if cid is not None else "")
+    return {
+        "max_seq_tokens": int(max_tokens),
+        "records_scanned": scanned,
+        "overflow_count": overflow_count,
+        "overflow_rate": (overflow_count / scanned) if scanned else 0.0,
+        "max_observed_tokens": max_observed,
+        "overflow_chunk_ids": overflow_ids,
+    }
+
+
+def split_overflow_records(
+    records: List[Dict[str, Any]],
+    max_tokens: int,
+    *,
+    count_tokens: Optional[Callable[[str], int]] = None,
+    id_key: str = "id",
+    text_key: str = "text",
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Split over-window records into parent-resolving sub-window pieces.
+
+    Anti-fabrication contract:
+
+    - Every sub-piece's ``text`` is a STRICT contiguous whitespace-word slice
+      of the parent's text — never synthesized, never reworded. Concatenating a
+      parent's sub-pieces in order reproduces the parent word sequence.
+    - Every sub-piece carries ``parent_chunk_id`` == the parent's id and an id
+      of the form ``f"{parent_id}#p{n}"`` (n = 0-based), so a sub-id always
+      resolves back to a real parent chunk.
+    - Non-overflow records pass through UNCHANGED (same object identity), so a
+      corpus with no over-window chunk is byte-identical.
+
+    Returns ``(new_records, stats)`` where stats carries ``overflow_count`` and
+    ``sub_pieces_created``. ``count_tokens`` defaults to
+    :func:`estimate_token_count`; a stub is injected in tests.
+    """
+    counter = _resolve_counter(count_tokens)
+    out: List[Dict[str, Any]] = []
+    overflow_count = 0
+    sub_pieces = 0
+    for rec in records:
+        if not isinstance(rec, dict):
+            out.append(rec)
+            continue
+        text = str(rec.get(text_key, "") or "")
+        if counter(text) <= max_tokens:
+            out.append(rec)
+            continue
+        words = text.split()
+        pieces = _slice_words_to_window(words, max_tokens, counter)
+        if len(pieces) <= 1:
+            # Degenerate (a single word already over-window, or empty) —
+            # keep the original whole rather than emit a lone identical piece.
+            out.append(rec)
+            continue
+        overflow_count += 1
+        parent_id = rec.get(id_key) or rec.get("chunk_id")
+        parent_id = str(parent_id) if parent_id is not None else ""
+        for n, piece_words in enumerate(pieces):
+            sub = dict(rec)
+            sub[text_key] = " ".join(piece_words)
+            sub[id_key] = f"{parent_id}#p{n}"
+            sub["parent_chunk_id"] = parent_id
+            sub["overflow_split"] = True
+            out.append(sub)
+            sub_pieces += 1
+    stats = {
+        "max_seq_tokens": int(max_tokens),
+        "overflow_count": overflow_count,
+        "sub_pieces_created": sub_pieces,
+    }
+    return out, stats
+
+
+def _slice_words_to_window(
+    words: List[str],
+    max_tokens: int,
+    counter: Callable[[str], int],
+) -> List[List[str]]:
+    """Greedily pack ``words`` into contiguous windows each ≤ ``max_tokens``.
+
+    A single word wider than the window is emitted alone (it cannot be split
+    without corrupting content — anti-fabrication). Deterministic.
+    """
+    windows: List[List[str]] = []
+    current: List[str] = []
+    for word in words:
+        candidate = current + [word]
+        if current and counter(" ".join(candidate)) > max_tokens:
+            windows.append(current)
+            current = [word]
+        else:
+            current = candidate
+    if current:
+        windows.append(current)
+    return windows
+
+
 __all__ = [
     "EmbeddingBackendUnavailable",
     "ResolvedEmbeddingProvider",
@@ -701,4 +942,11 @@ __all__ = [
     "build_embedding_client",
     "allow_fake_enabled",
     "EMBEDDING_MODEL_REGISTRY",
+    "resolve_embed_overflow_guard",
+    "resolve_embed_overflow_split",
+    "resolve_embed_max_seq_tokens",
+    "estimate_token_count",
+    "count_overflow_records",
+    "split_overflow_records",
+    "DEFAULT_MAX_SEQ_TOKENS",
 ]

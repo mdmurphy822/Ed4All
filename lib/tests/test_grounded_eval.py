@@ -139,7 +139,7 @@ def test_report_shape_and_headline(libv2_course):
         answer_fn=_gold_answer_fn(_GROUNDED_OK),
         with_groundedness=True, write=False,
     )
-    assert report["schema_version"] == "1.4"
+    assert report["schema_version"] == "1.5"
     assert report["course_slug"] == slug
     assert report["engine"] == "lexical"
     assert report["model_id"] == "fake-model"
@@ -292,6 +292,123 @@ def test_shadow_nli_add_aggregates_would_adds_and_recovery(libv2_course):
     assert block["total_would_adds"] == 2
     # Exactly the zero-citation answer is counted as recovered.
     assert block["zero_citation_answers_recovered"] == 1
+
+
+# ===========================================================================
+# W1.9 — groundedness breakdown (macro + per-stratum + per-question-type)
+# ===========================================================================
+
+def test_groundedness_breakdown_helper_slices_by_stratum_and_type():
+    from lib.retrieval.grounded_eval import _groundedness_breakdown
+
+    records = [
+        {"difficulty": "easy", "question_type": "factual_recall",
+         "g_rate": 1.0, "scored": 2, "entailed": 2},
+        {"difficulty": "hard", "question_type": "factual_recall",
+         "g_rate": 0.0, "scored": 2, "entailed": 0},
+        {"difficulty": "hard", "question_type": "conceptual_synthesis",
+         "g_rate": 0.5, "scored": 4, "entailed": 2},
+    ]
+    b = _groundedness_breakdown(records)
+    assert b["questions_scored"] == 3
+    # macro = unweighted mean of g_rate = (1.0 + 0.0 + 0.5)/3.
+    assert b["macro_groundedness"] == pytest.approx(0.5)
+    # micro = total entailed / total scored = 4/8.
+    assert b["micro_groundedness"] == pytest.approx(0.5)
+    assert set(b["by_stratum"]) == {"easy", "hard"}
+    assert b["by_stratum"]["easy"]["questions"] == 1
+    assert b["by_stratum"]["easy"]["macro_groundedness"] == pytest.approx(1.0)
+    # hard stratum: macro (0.0+0.5)/2=0.25; micro (0+2)/(2+4)=2/6.
+    assert b["by_stratum"]["hard"]["macro_groundedness"] == pytest.approx(0.25)
+    assert b["by_stratum"]["hard"]["micro_groundedness"] == pytest.approx(2 / 6)
+    assert set(b["by_question_type"]) == {"factual_recall", "conceptual_synthesis"}
+    assert b["by_question_type"]["factual_recall"]["questions"] == 2
+
+
+def test_groundedness_breakdown_empty_records_is_null_not_zero():
+    from lib.retrieval.grounded_eval import _groundedness_breakdown
+
+    b = _groundedness_breakdown([])
+    assert b["questions_scored"] == 0
+    assert b["macro_groundedness"] is None
+    assert b["micro_groundedness"] is None
+    assert b["by_stratum"] == {}
+    assert b["by_question_type"] == {}
+
+
+def test_groundedness_breakdown_in_report(libv2_course):
+    repo_root, slug, _ = libv2_course
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_gold_answer_fn(_GROUNDED_OK),
+        with_groundedness=True, write=False,
+    )
+    b = report["headline"]["groundedness_breakdown"]
+    # 3 answered questions, each scored 2 / entailed 2 (rate 1.0).
+    assert b["questions_scored"] == 3
+    assert b["macro_groundedness"] == pytest.approx(1.0)
+    assert b["micro_groundedness"] == pytest.approx(1.0)
+    # Fixture questions carry no difficulty (v1.0 seed) → single 'unknown' stratum.
+    assert set(b["by_stratum"]) == {"unknown"}
+    # Fixture types: 2 factual_recall + 1 where_covered.
+    assert set(b["by_question_type"]) == {"factual_recall", "where_covered"}
+    assert b["by_question_type"]["factual_recall"]["questions"] == 2
+    assert b["by_question_type"]["where_covered"]["questions"] == 1
+
+
+def test_groundedness_breakdown_null_when_groundedness_off(libv2_course):
+    repo_root, slug, _ = libv2_course
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_gold_answer_fn(grounded_block=None),
+        with_groundedness=False, write=False,
+    )
+    b = report["headline"]["groundedness_breakdown"]
+    assert b["questions_scored"] == 0
+    assert b["macro_groundedness"] is None
+    assert b["by_question_type"] == {}
+
+
+def test_computational_numeric_check_rollup_zero_on_off_default(libv2_course):
+    # Default off path: no answer carries a computational_numeric_check block →
+    # the headline roll-up is present and all-zero (byte-stable additive).
+    repo_root, slug, _ = libv2_course
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_gold_answer_fn(_GROUNDED_OK),
+        with_groundedness=True, write=False,
+    )
+    block = report["headline"]["computational_numeric_check"]
+    assert block["enabled"] is False
+    assert block["computational_claims_checked"] == 0
+    assert block["claims_with_ungrounded_numeric"] == 0
+    assert block["ungrounded_numeric_count"] == 0
+
+
+def test_computational_numeric_check_rollup_aggregates_when_present(libv2_course):
+    # An answer carrying a W1.8 computational_numeric_check block rolls up into
+    # the headline (enabled True + non-zero counts).
+    repo_root, slug, _ = libv2_course
+    grounded = dict(_GROUNDED_OK)
+    grounded["computational_numeric_check"] = {
+        "enabled": True,
+        "cited_pool_size": 1,
+        "computational_claims_checked": 2,
+        "claims_with_ungrounded_numeric": 1,
+        "ungrounded_numeric_count": 3,
+        "claims": [],
+    }
+    report = run_grounded_eval(
+        repo_root, slug, engine="lexical",
+        answer_fn=_gold_answer_fn(grounded),
+        with_groundedness=True, write=False,
+    )
+    block = report["headline"]["computational_numeric_check"]
+    assert block["enabled"] is True
+    # 3 answered questions each carry the same block → 3× the per-answer counts.
+    assert block["computational_claims_checked"] == 6
+    assert block["claims_with_ungrounded_numeric"] == 3
+    assert block["ungrounded_numeric_count"] == 9
 
 
 # ===========================================================================

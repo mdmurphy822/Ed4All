@@ -71,7 +71,14 @@ from lib.retrieval.gold_set import (
 #: on EVERY ``questions`` row (previously the cited chunk_ids lived only inside
 #: the 25-question review sample). Both are prerequisites for measuring the
 #: NLI-ADD flip + the multi-passage gold enrichment over all questions.
-EVAL_SCHEMA_VERSION = "1.4"
+#: ``EVAL_SCHEMA_VERSION`` 1.4 → 1.5 (additive only — every 1.4 key unchanged;
+#: W1.9): adds ``headline.groundedness_breakdown`` (macro + micro groundedness
+#: sliced by difficulty stratum AND by question_type, over answered questions
+#: whose groundedness report was available) and ``headline.computational_numeric_check``
+#: (a roll-up of the W1.8 per-answer numeric-grounding diagnostic — all-zero on
+#: the default path where ``ED4ALL_GROUNDEDNESS_COMPUTATIONAL`` is off). Both are
+#: diagnostics, NOT pinned milestones.
+EVAL_SCHEMA_VERSION = "1.5"
 RETRIEVAL_EVAL_SUBDIR = "retrieval_eval"
 
 #: Progress-writer arm name for the grounded eval (matches eval_arms.ARM_GROUNDED
@@ -515,6 +522,66 @@ def _percentile(values: Sequence[float], pct: float) -> float:
     return float(ordered[lo] + (ordered[hi] - ordered[lo]) * frac)
 
 
+def _breakdown_agg(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate one slice of per-question groundedness records (W1.9).
+
+    ``rows`` = ``[{"g_rate": float, "scored": int, "entailed": int}, ...]``.
+    Returns the MACRO (unweighted per-question mean of ``groundedness_rate``,
+    matching ``headline.groundedness_rate_mean`` semantics) AND the MICRO
+    (claim-weighted: total entailed / total scored) groundedness for the slice.
+    Both are ``None`` when the slice has no basis (no questions / no scored
+    claims) — never a fabricated 0.0.
+    """
+    n = len(rows)
+    scored = sum(r["scored"] for r in rows)
+    entailed = sum(r["entailed"] for r in rows)
+    return {
+        "questions": n,
+        "macro_groundedness": (
+            (sum(r["g_rate"] for r in rows) / n) if n else None
+        ),
+        "micro_groundedness": (entailed / scored) if scored else None,
+        "scored_claims": scored,
+        "entailed_claims": entailed,
+    }
+
+
+def _groundedness_breakdown(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Macro + per-stratum + per-question-type groundedness breakdown (W1.9).
+
+    ``records`` carries one row per ANSWERED gold question whose groundedness
+    report was available: ``{"difficulty", "question_type", "g_rate", "scored",
+    "entailed"}``. The overall block reports macro (per-question mean) AND micro
+    (claim-weighted) groundedness; ``by_stratum`` slices by the question's
+    difficulty band (missing → ``"unknown"``) and ``by_question_type`` by its
+    declared type. Additive diagnostic — NOT a pinned milestone.
+    """
+    overall = _breakdown_agg(records)
+    by_stratum: Dict[str, List[Dict[str, Any]]] = {}
+    by_type: Dict[str, List[Dict[str, Any]]] = {}
+    for r in records:
+        by_stratum.setdefault(r["difficulty"], []).append(r)
+        by_type.setdefault(r["question_type"], []).append(r)
+    return {
+        "questions_scored": overall["questions"],
+        "macro_groundedness": overall["macro_groundedness"],
+        "micro_groundedness": overall["micro_groundedness"],
+        "scored_claims": overall["scored_claims"],
+        "entailed_claims": overall["entailed_claims"],
+        "by_stratum": {
+            k: _breakdown_agg(v) for k, v in sorted(by_stratum.items())
+        },
+        "by_question_type": {
+            k: _breakdown_agg(v) for k, v in sorted(by_type.items())
+        },
+        "_diagnostic": (
+            "macro = unweighted per-question mean (matches "
+            "groundedness_rate_mean); micro = claim-weighted (entailed/scored). "
+            "Diagnostic breakdown, NOT a pinned milestone."
+        ),
+    }
+
+
 def _citations_list(answer: Any) -> List[Dict[str, Any]]:
     """Read a pipeline answer's citations as a list of dicts (duck-typed)."""
     cites = getattr(answer, "citations", None)
@@ -727,6 +794,17 @@ def run_grounded_eval(
     computational_claim_count = 0
     filtered_claim_count = 0
     entailed_uncited_count = 0
+    # W1.8 roll-up (additive; all-zero on the default off path where no answer
+    # carries a ``computational_numeric_check`` block): computational sentences
+    # whose numeric literals were verified against the cited chunks, and how
+    # many carried an ungrounded (fabricated-looking) numeric literal.
+    comp_numeric_claims_checked = 0
+    comp_numeric_ungrounded_claims = 0
+    comp_numeric_ungrounded_total = 0
+    # W1.9 per-question groundedness records (difficulty stratum + question_type
+    # + macro/micro basis). One row per answered question whose groundedness
+    # report was available.
+    groundedness_breakdown_records: List[Dict[str, Any]] = []
     # NLI-ADD shadow diagnostics (NOT a pinned milestone): how many answers the
     # NLI-ADD arm WOULD have credited an uncited supporter on, the total would-add
     # count, and how many zero-citation answers it would have recovered. Rolls up
@@ -907,16 +985,42 @@ def run_grounded_eval(
         if isinstance(grounded, dict) and grounded.get("available"):
             scored = int(grounded.get("scored_count", 0) or 0)
             g_rate = float(grounded.get("groundedness_rate", 0.0) or 0.0)
+            unsupported_n = int(grounded.get("unsupported_count", 0) or 0)
+            contradicted_n = int(grounded.get("contradicted_count", 0) or 0)
             if scored:
-                u_rate = float(grounded.get("unsupported_count", 0) or 0) / scored
+                u_rate = unsupported_n / scored
             else:
                 u_rate = 0.0
             groundedness_rates.append(g_rate)
             unsupported_rates.append(u_rate)
             per_claim = list(grounded.get("claims", []) or [])
+            # W1.9 breakdown record: entailed = scored − unsupported − contradicted
+            # (the three exhaustive scored verdicts; clamped ≥0 defensively).
+            groundedness_breakdown_records.append(
+                {
+                    "difficulty": str(q.get("difficulty") or "unknown"),
+                    "question_type": str(q.get("question_type") or "unknown"),
+                    "g_rate": g_rate,
+                    "scored": scored,
+                    "entailed": max(0, scored - unsupported_n - contradicted_n),
+                }
+            )
             # Scorer-v2 additive diagnostics (absent / 0 on a v1 report).
             computational_claim_count += int(grounded.get("computational_count", 0) or 0)
             filtered_claim_count += int(grounded.get("filtered_count", 0) or 0)
+            # W1.8 numeric-grounding roll-up (present only when the opt-in check
+            # ran; absent → contributes 0 → byte-stable on the default path).
+            cnc = grounded.get("computational_numeric_check")
+            if isinstance(cnc, dict):
+                comp_numeric_claims_checked += int(
+                    cnc.get("computational_claims_checked", 0) or 0
+                )
+                comp_numeric_ungrounded_claims += int(
+                    cnc.get("claims_with_ungrounded_numeric", 0) or 0
+                )
+                comp_numeric_ungrounded_total += int(
+                    cnc.get("ungrounded_numeric_count", 0) or 0
+                )
             for claim in per_claim:
                 if (
                     claim.get("verdict") == "entailed"
@@ -1345,6 +1449,29 @@ def run_grounded_eval(
                 "scorer-v2 counters (2026-06-12 audit response); diagnostics, "
                 "not pinned milestones — re-pin unsupported_claim_rate after the "
                 "first v2 run"
+            ),
+        },
+        # W1.9 additive: macro + micro groundedness sliced by difficulty stratum
+        # AND by question_type over answered questions whose groundedness report
+        # was available. Diagnostic breakdown (NOT a pinned milestone) — surfaces
+        # where grounding is weak (which stratum / question shape) rather than
+        # only the single headline mean.
+        "groundedness_breakdown": _groundedness_breakdown(
+            groundedness_breakdown_records
+        ),
+        # W1.8 roll-up (additive; all-zero on the default off path): the
+        # computational-sentence numeric-grounding diagnostic aggregated over all
+        # answered questions. WARNING-only — never fed any pinned metric.
+        "computational_numeric_check": {
+            "enabled": comp_numeric_claims_checked > 0
+            or comp_numeric_ungrounded_total > 0,
+            "computational_claims_checked": comp_numeric_claims_checked,
+            "claims_with_ungrounded_numeric": comp_numeric_ungrounded_claims,
+            "ungrounded_numeric_count": comp_numeric_ungrounded_total,
+            "_diagnostic": (
+                "W1.8 numeric-grounding of NLI-exempt computational sentences "
+                "(ED4ALL_GROUNDEDNESS_COMPUTATIONAL); warning-only, never feeds "
+                "a pinned metric — all-zero when the flag is off"
             ),
         },
         # NLI-ADD shadow diagnostics (NOT a pinned milestone — measure-then-

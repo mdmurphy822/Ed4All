@@ -80,6 +80,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -89,6 +91,130 @@ from lib.ontology.learning_objectives import BLOOMS_VERBS
 from lib.validators._block_rubric_helpers import block_quality_rubric_enabled as _block_quality_rubric_enabled
 
 logger = logging.getLogger(__name__)
+
+
+#: Truthy tokens for the opt-in behaviour flags below (mirrors the
+#: parse-with-fallback convention shared by ``_block_rubric_helpers``).
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+#: W1.1 — deterministic observable-verb scan of the objective STATEMENT
+#: (the legacy no-ABCD path). Default OFF → byte-identical.
+OBSERVABLE_VERB_ENV = "ED4ALL_OBJECTIVE_OBSERVABLE_VERB"
+
+#: W1.4 — infer a null ``bloom_level`` from the declared ABCD verb rather
+#: than skipping the verb-alignment audit. Default OFF → byte-identical
+#: (the ``ABCD_NO_BLOOM_LEVEL`` warning-skip posture is preserved).
+INFER_BLOOM_ENV = "ED4ALL_OBJECTIVE_INFER_BLOOM"
+
+
+def _flag_enabled(env_var: str) -> bool:
+    """Parse-with-fallback truthiness for an opt-in env flag.
+
+    Read on every call so tests can toggle via ``monkeypatch.setenv``.
+    Garbage / unset / falsey → ``False`` (default-off byte-stability).
+    """
+    return os.environ.get(env_var, "").strip().lower() in _TRUTHY
+
+
+def _observable_verb_scan_enabled() -> bool:
+    """True when ``ED4ALL_OBJECTIVE_OBSERVABLE_VERB`` is truthy (W1.1)."""
+    return _flag_enabled(OBSERVABLE_VERB_ENV)
+
+
+def _infer_bloom_enabled() -> bool:
+    """True when ``ED4ALL_OBJECTIVE_INFER_BLOOM`` is truthy (W1.4)."""
+    return _flag_enabled(INFER_BLOOM_ENV)
+
+
+#: W1.1 — curated non-observable ("fuzzy") verb → nearest canonical Bloom
+#: level map. These verbs name an internal mental state that cannot be
+#: directly observed / assessed (the classic Mager / ABCD anti-pattern);
+#: each maps to the Bloom band a real objective would most likely intend
+#: so the gate can suggest a same-level observable replacement from
+#: ``BLOOMS_VERBS``. Single lowercase tokens; multi-word phrases
+#: (``be aware of`` / ``be familiar with``) are covered by their head
+#: token (``aware`` / ``familiar``) under whole-word matching.
+_NON_OBSERVABLE_VERBS: Dict[str, str] = {
+    "know": "remember",
+    "aware": "remember",
+    "familiar": "remember",
+    "memorize": "remember",
+    "understand": "understand",
+    "comprehend": "understand",
+    "learn": "understand",
+    "grasp": "understand",
+    "realize": "understand",
+    "perceive": "understand",
+    "believe": "understand",
+    "internalize": "understand",
+    "appreciate": "evaluate",
+    "value": "evaluate",
+}
+
+
+#: Reverse verb → canonical Bloom level lookup for W1.4 inference. Verbs
+#: are unique across the six levels in ``bloom_verbs.json`` (verified in
+#: ``lib.ontology.bloom``), so the first-writer-wins ``setdefault`` never
+#: collides. Built once at import (``BLOOMS_VERBS`` is already resolved).
+def _build_verb_to_level() -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for level, verbs in BLOOMS_VERBS.items():
+        for v in verbs:
+            out.setdefault(v, level)
+    return out
+
+
+_VERB_TO_LEVEL: Dict[str, str] = _build_verb_to_level()
+
+
+#: Objective-stem main-verb extractors. An ABCD/Mager objective reads
+#: ``<audience> will [be able to] <verb> …`` or ``… to <verb> …``; we pull
+#: the verb token following the modal so the scan targets the MAIN verb
+#: rather than any fuzzy word buried later in the sentence (precision-first).
+_MODAL_MAIN_VERB_RE = re.compile(
+    r"\bwill\s+(?:be\s+able\s+to\s+|be\s+)?([a-z]+)", re.IGNORECASE
+)
+_TO_MAIN_VERB_RE = re.compile(r"\bto\s+([a-z]+)", re.IGNORECASE)
+
+
+def _statement_main_verb(statement: Any) -> Optional[str]:
+    """Return the lowercase main verb of an objective statement, or None.
+
+    Heuristic (deterministic, no model): the token after ``will``
+    (skipping ``be`` / ``be able to``), else the token after ``to``, else
+    the statement's first word. Tolerates non-string / empty input.
+    """
+    if not isinstance(statement, str) or not statement.strip():
+        return None
+    s = statement.strip().lower()
+    m = _MODAL_MAIN_VERB_RE.search(s)
+    if m:
+        return m.group(1)
+    m = _TO_MAIN_VERB_RE.search(s)
+    if m:
+        return m.group(1)
+    toks = re.findall(r"[a-z]+", s)
+    return toks[0] if toks else None
+
+
+def _scan_non_observable(statement: Any) -> Optional[str]:
+    """Return the flagged non-observable main verb of ``statement``, or None."""
+    mv = _statement_main_verb(statement)
+    if mv is not None and mv in _NON_OBSERVABLE_VERBS:
+        return mv
+    return None
+
+
+def _infer_level_from_verb(verb: str) -> Optional[str]:
+    """Return the canonical Bloom level for a declared ABCD verb, or None."""
+    if not isinstance(verb, str):
+        return None
+    return _VERB_TO_LEVEL.get(verb.strip().lower())
+
+
+def _abcd_str_field_present(value: Any) -> bool:
+    """True iff ``value`` is a non-empty string (W1.3 field-presence)."""
+    return isinstance(value, str) and bool(value.strip())
 
 
 #: Cap the number of issues emitted so a uniformly-broken LO batch
@@ -103,6 +229,12 @@ _ISSUE_LIST_CAP: int = 50
 #: alphabetical ordering contract (Phase 4.5 cleanup, commit ``3184f1a``).
 _DECISION_TYPE_MISMATCH: str = "abcd_verb_bloom_mismatch"
 _DECISION_TYPE_PASS: str = "abcd_authored"
+#: W1.1 vague-verb scan on the objective statement.
+_DECISION_TYPE_VAGUE_VERB: str = "objective_vague_verb"
+#: W1.3 ABCD field-presence completeness scan.
+_DECISION_TYPE_ABCD_INCOMPLETE: str = "abcd_incomplete"
+#: W1.4 bloom-level inference from the declared verb.
+_DECISION_TYPE_BLOOM_INFERRED: str = "abcd_bloom_inferred"
 
 
 def _bloom_level(lo: Mapping[str, Any]) -> Optional[str]:
@@ -376,7 +508,64 @@ class AbcdObjectiveValidator:
                 else:
                     # Legacy LO without ABCD on a non-strict run is a
                     # silent pass — preserves backward compatibility
-                    # with pre-Phase-6 corpora.
+                    # with pre-Phase-6 corpora. W1.1: when the
+                    # observable-verb scan is enabled, still INSPECT the
+                    # statement's main verb for a non-observable ("fuzzy")
+                    # verb (understand / know / appreciate / …) and emit a
+                    # warning suggesting a same-level observable
+                    # replacement. Default OFF → byte-identical.
+                    # TODO(calibration): OBJECTIVE_VAGUE_VERB lands
+                    # warning-day-1; flip to a regenerate/critical action
+                    # after a >=2-corpus false-positive measurement of the
+                    # non-observable main-verb scan.
+                    if _observable_verb_scan_enabled():
+                        vague_verb = _scan_non_observable(lo.get("statement"))
+                        if vague_verb is not None:
+                            sug_level = _NON_OBSERVABLE_VERBS[vague_verb]
+                            if len(issues) < _ISSUE_LIST_CAP:
+                                issues.append(
+                                    GateIssue(
+                                        severity="warning",
+                                        code="OBJECTIVE_VAGUE_VERB",
+                                        message=(
+                                            f"LO {lo_id!r} statement main verb "
+                                            f"{vague_verb!r} is non-observable / "
+                                            f"unmeasurable (an internal mental "
+                                            f"state). Replace it with an "
+                                            f"observable verb from the "
+                                            f"{sug_level!r} band."
+                                        ),
+                                        location=lo_id,
+                                        suggestion=(
+                                            f"Rewrite the objective with a "
+                                            f"measurable {sug_level!r}-level verb, "
+                                            f"e.g. {_format_valid_verbs(sug_level)}."
+                                        ),
+                                    )
+                                )
+                            _emit_decision(
+                                capture,
+                                decision_type=_DECISION_TYPE_VAGUE_VERB,
+                                decision=(
+                                    f"Flagged LO {lo_id} statement main verb "
+                                    f"{vague_verb!r} as non-observable."
+                                ),
+                                rationale=(
+                                    f"AbcdObjectiveValidator scanned LO {lo_id}'s "
+                                    f"statement main verb against the curated "
+                                    f"non-observable set; {vague_verb!r} is "
+                                    f"unmeasurable, so a same-level observable "
+                                    f"replacement from the {sug_level!r} band "
+                                    f"(e.g. {_format_valid_verbs(sug_level)}) is "
+                                    f"suggested. Warning-only — the legacy "
+                                    f"no-ABCD LO still passes."
+                                ),
+                                context=(
+                                    f"lo_id={lo_id}; main_verb={vague_verb}; "
+                                    f"suggested_level={sug_level}"
+                                ),
+                            )
+                    # Warning-only: a legacy LO still counts as passing.
                     passed_count += 1
                 continue
 
@@ -440,27 +629,127 @@ class AbcdObjectiveValidator:
 
             verb = verb_raw.strip().lower()
 
-            # 3. Bloom-level absent on a LO that has ABCD — can't audit.
+            # 2b. W1.3 — ABCD Condition + Degree (+ Audience + action_object)
+            # presence. The ABCD_MALFORMED branch above only guards
+            # behavior.verb; a well-formed-but-INCOMPLETE ABCD (missing the
+            # A / C / D clauses or the behavior action object) is a warning,
+            # NOT a critical block. Gated by the existing ``require_abcd``
+            # input so legacy (require_abcd=False) runs stay byte-identical.
+            # TODO(calibration): ABCD_INCOMPLETE lands warning-day-1; flip
+            # to critical after a >=2-corpus false-positive measurement of
+            # the A/C/D + action_object presence audit.
+            if require_abcd:
+                missing_fields: List[str] = []
+                if not _abcd_str_field_present(abcd.get("audience")):
+                    missing_fields.append("audience")
+                if not _abcd_str_field_present(behavior.get("action_object")):
+                    missing_fields.append("behavior.action_object")
+                if not _abcd_str_field_present(abcd.get("condition")):
+                    missing_fields.append("condition")
+                if not _abcd_str_field_present(abcd.get("degree")):
+                    missing_fields.append("degree")
+                if missing_fields:
+                    if len(issues) < _ISSUE_LIST_CAP:
+                        issues.append(
+                            GateIssue(
+                                severity="warning",
+                                code="ABCD_INCOMPLETE",
+                                message=(
+                                    f"LO {lo_id!r} ABCD is well-formed but "
+                                    f"incomplete — missing / empty "
+                                    f"{', '.join(missing_fields)}. A complete "
+                                    f"ABCD objective declares Audience, "
+                                    f"Behavior (verb + action_object), "
+                                    f"Condition, and Degree."
+                                ),
+                                location=lo_id,
+                                suggestion=(
+                                    "Emit every ABCD clause per "
+                                    "$defs.AbcdObjective; see compose_abcd_prose."
+                                ),
+                            )
+                        )
+                    _emit_decision(
+                        capture,
+                        decision_type=_DECISION_TYPE_ABCD_INCOMPLETE,
+                        decision=(
+                            f"Flagged LO {lo_id} ABCD as incomplete: missing "
+                            f"{', '.join(missing_fields)}."
+                        ),
+                        rationale=(
+                            f"AbcdObjectiveValidator checked ABCD field "
+                            f"presence for LO {lo_id} under require_abcd=True; "
+                            f"{', '.join(missing_fields)} is/are missing or "
+                            f"empty, so the objective lacks a full "
+                            f"Audience-Behavior-Condition-Degree shape. "
+                            f"Warning-only — behavior.verb was well-formed so "
+                            f"this is not an ABCD_MALFORMED block."
+                        ),
+                        context=(
+                            f"lo_id={lo_id}; missing={','.join(missing_fields)}"
+                        ),
+                    )
+
+            # 3. Bloom-level absent on a LO that has ABCD.
             level = _bloom_level(lo)
             if level is None:
-                if len(issues) < _ISSUE_LIST_CAP:
-                    issues.append(
-                        GateIssue(
-                            severity="warning",
-                            code="ABCD_NO_BLOOM_LEVEL",
-                            message=(
-                                f"LO {lo_id!r} has ``abcd`` set but no "
-                                f"``bloom_level`` to audit verb alignment "
-                                f"against. Skipping verb-Bloom check."
-                            ),
-                            location=lo_id,
+                # W1.4 — rather than skipping the verb-Bloom audit, INFER
+                # the level from the declared ABCD verb (verbs are unique
+                # across the six canonical levels). Default OFF → the
+                # legacy ABCD_NO_BLOOM_LEVEL warning-skip is byte-identical.
+                inferred = _infer_level_from_verb(verb) if _infer_bloom_enabled() else None
+                if inferred is not None:
+                    level = inferred
+                    if len(issues) < _ISSUE_LIST_CAP:
+                        issues.append(
+                            GateIssue(
+                                severity="info",
+                                code="ABCD_BLOOM_LEVEL_INFERRED",
+                                message=(
+                                    f"LO {lo_id!r} declared no ``bloom_level``; "
+                                    f"inferred {level!r} from the declared verb "
+                                    f"{verb!r} for the verb-Bloom audit."
+                                ),
+                                location=lo_id,
+                            )
                         )
+                    _emit_decision(
+                        capture,
+                        decision_type=_DECISION_TYPE_BLOOM_INFERRED,
+                        decision=(
+                            f"Inferred bloom_level={level!r} for LO {lo_id} "
+                            f"from declared verb {verb!r}."
+                        ),
+                        rationale=(
+                            f"AbcdObjectiveValidator found LO {lo_id} carries "
+                            f"ABCD but no declared bloom_level; the declared "
+                            f"verb {verb!r} maps uniquely to the {level!r} "
+                            f"Bloom band, so that level is used for the "
+                            f"verb-alignment audit instead of skipping."
+                        ),
+                        context=f"lo_id={lo_id}; verb={verb}; inferred_level={level}",
                     )
-                # No actionable signal — count as passing for the
-                # score denominator so a corpus of legacy LOs missing
-                # bloom_level doesn't drag the score to 0.
-                passed_count += 1
-                continue
+                    # Fall through to the verb-alignment audit with the
+                    # inferred level (will align by construction).
+                else:
+                    if len(issues) < _ISSUE_LIST_CAP:
+                        issues.append(
+                            GateIssue(
+                                severity="warning",
+                                code="ABCD_NO_BLOOM_LEVEL",
+                                message=(
+                                    f"LO {lo_id!r} has ``abcd`` set but no "
+                                    f"``bloom_level`` to audit verb alignment "
+                                    f"against. Skipping verb-Bloom check."
+                                ),
+                                location=lo_id,
+                            )
+                        )
+                    # No actionable signal — count as passing for the
+                    # score denominator so a corpus of legacy LOs missing
+                    # bloom_level doesn't drag the score to 0.
+                    passed_count += 1
+                    continue
 
             valid_verbs = BLOOMS_VERBS.get(level)
             if valid_verbs is None or not valid_verbs:

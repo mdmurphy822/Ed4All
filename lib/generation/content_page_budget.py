@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
@@ -306,6 +307,148 @@ def cap_page_chunks(
     return kept_ordered, dropped_cited, stats
 
 
+# ---------------------------------------------------------------------------
+# W1.6 — per-page estimated learning-time (ED4ALL_PAGE_EST_MINUTES)
+# ---------------------------------------------------------------------------
+#
+# A deterministic, GPU-free per-page reading-time estimate:
+#
+#     minutes = ceil(visible_words / WPM + interactions * per_interaction)
+#
+# Gated entirely at the emit call site (``Courseforge/scripts/generate_course.py``
+# ``_wrap_page``) by ``ED4ALL_PAGE_EST_MINUTES`` (default OFF → byte-identical).
+# All resolvers are parse-with-fallback so a misconfigured knob never disables
+# the estimate (it falls back to the calibrated default). No model, no env
+# side-effects at import.
+ENV_PAGE_EST_MINUTES = "ED4ALL_PAGE_EST_MINUTES"
+ENV_PAGE_WPM = "ED4ALL_PAGE_WPM"
+ENV_PAGE_INTERACTION_MINUTES = "ED4ALL_PAGE_INTERACTION_MINUTES"
+
+#: Default adult silent-reading rate (words / minute). 200 is the widely-cited
+#: instructional-design median for prose learning material.
+_DEFAULT_PAGE_WPM = 200
+
+#: Default per-interaction time cost (minutes) added on top of the reading time
+#: for each interactive component (self-check, activity, assessment item, …).
+_DEFAULT_PER_INTERACTION_MINUTES = 1.0
+
+_PAGE_TAG_RE = re.compile(r"<[^>]+>")
+_PAGE_WS_RE = re.compile(r"\s+")
+
+#: Interactive components that carry a ``data-cf-component`` attr (flip-card /
+#: self-check / activity-card) — one interaction each.
+_INTERACTION_COMPONENT_RE = re.compile(r"data-cf-component\s*=", re.IGNORECASE)
+#: Interactive block markers that do NOT carry ``data-cf-component`` (so they are
+#: counted separately without double-counting the component-attr elements).
+_INTERACTION_CLASS_RE = re.compile(
+    r'class="[^"]*\b(?:assessment-item|guided-practice|reflection-calibration'
+    r"|inline-quiz)\b",
+    re.IGNORECASE,
+)
+
+
+def page_est_minutes_enabled() -> bool:
+    """Read ``ED4ALL_PAGE_EST_MINUTES`` each call (tests toggle inline).
+
+    Default OFF — only the canonical truthy tokens enable. Falsey / garbage →
+    off (parse-with-fallback).
+    """
+    return os.environ.get(ENV_PAGE_EST_MINUTES, "").strip().lower() in _TRUTHY
+
+
+def resolve_page_wpm(value: Optional[int] = None) -> int:
+    """Resolve the words-per-minute rate: arg → ``ED4ALL_PAGE_WPM`` → 200.
+
+    Non-positive / garbage values fall back to the default (a misconfigured WPM
+    must never zero-divide or disable the estimate).
+    """
+    if value is not None:
+        try:
+            ival = int(value)
+        except (TypeError, ValueError):
+            return _DEFAULT_PAGE_WPM
+        return ival if ival > 0 else _DEFAULT_PAGE_WPM
+    raw = os.environ.get(ENV_PAGE_WPM, "").strip()
+    if raw:
+        try:
+            ival = int(raw)
+            if ival > 0:
+                return ival
+        except (TypeError, ValueError):
+            pass
+    return _DEFAULT_PAGE_WPM
+
+
+def resolve_per_interaction_minutes(value: Optional[float] = None) -> float:
+    """Resolve the per-interaction minute cost: arg → env → 1.0.
+
+    Negative / garbage values fall back to the default. Zero is honored (an
+    operator may explicitly disable the interaction term).
+    """
+    if value is not None:
+        try:
+            fval = float(value)
+        except (TypeError, ValueError):
+            return _DEFAULT_PER_INTERACTION_MINUTES
+        return fval if fval >= 0 else _DEFAULT_PER_INTERACTION_MINUTES
+    raw = os.environ.get(ENV_PAGE_INTERACTION_MINUTES, "").strip()
+    if raw:
+        try:
+            fval = float(raw)
+            if fval >= 0:
+                return fval
+        except (TypeError, ValueError):
+            pass
+    return _DEFAULT_PER_INTERACTION_MINUTES
+
+
+def count_visible_words(html: str) -> int:
+    """Count whitespace-delimited words in the visible (tag-stripped) text."""
+    if not html:
+        return 0
+    text = _PAGE_WS_RE.sub(" ", _PAGE_TAG_RE.sub(" ", html)).strip()
+    if not text:
+        return 0
+    return len([w for w in text.split(" ") if w])
+
+
+def count_interactions(html: str) -> int:
+    """Count interactive components on the page (deterministic, markup-based).
+
+    ``data-cf-component``-bearing elements (flip-card / self-check /
+    activity-card) plus the non-component interactive markers (assessment-item /
+    guided-practice / reflection-calibration / inline-quiz). The two marker sets
+    are disjoint so no interaction is double-counted.
+    """
+    if not html:
+        return 0
+    return len(_INTERACTION_COMPONENT_RE.findall(html)) + len(
+        _INTERACTION_CLASS_RE.findall(html)
+    )
+
+
+def estimate_page_minutes(
+    html: str,
+    *,
+    wpm: Optional[int] = None,
+    per_interaction_minutes: Optional[float] = None,
+) -> int:
+    """Estimate a page's learning time in whole minutes (ceil).
+
+    ``ceil(visible_words / WPM + interactions * per_interaction_minutes)``.
+    Returns ``0`` for an empty page (no words, no interactions) so a chrome-only
+    page carries no misleading estimate; any content rounds up to ≥1 minute.
+    """
+    resolved_wpm = resolve_page_wpm(wpm)
+    resolved_per = resolve_per_interaction_minutes(per_interaction_minutes)
+    words = count_visible_words(html)
+    interactions = count_interactions(html)
+    if words == 0 and interactions == 0:
+        return 0
+    total = (words / resolved_wpm) + (interactions * resolved_per)
+    return max(0, int(math.ceil(total)))
+
+
 def _cosine_rank(
     *,
     statement: str,
@@ -361,4 +504,13 @@ __all__ = [
     "page_chunk_token_budget",
     "chunk_token_weight",
     "cap_page_chunks",
+    "ENV_PAGE_EST_MINUTES",
+    "ENV_PAGE_WPM",
+    "ENV_PAGE_INTERACTION_MINUTES",
+    "page_est_minutes_enabled",
+    "resolve_page_wpm",
+    "resolve_per_interaction_minutes",
+    "count_visible_words",
+    "count_interactions",
+    "estimate_page_minutes",
 ]

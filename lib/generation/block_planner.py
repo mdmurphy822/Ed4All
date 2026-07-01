@@ -2708,26 +2708,66 @@ _FADE_LADDER: Tuple[str, str, str] = ("worked", "completion", "independent")
 _FADING_B08_TYPES: Tuple[str, ...] = ("problem", "activity", "checklist")
 
 
+def _make_fading_block(
+    *,
+    fade_state: str,
+    b08_type: str,
+    b08_page: str,
+    target_co_ids: List[str],
+    target_bloom: str,
+) -> Dict[str, Any]:
+    """Build one injected B08 faded-practice block for the fade ladder.
+
+    ``fade_state`` is ``"completion"`` (partially-scaffolded) or
+    ``"independent"`` (unscaffolded). The block inherits the worked_example's
+    ``target_co_ids`` verbatim (anti-fabrication — no CO id invented).
+    """
+    if fade_state == "independent":
+        focus = (
+            "FR-INT-01 faded practice: independent step after the completion "
+            "problem (guided-practice fade ladder worked→completion→"
+            "independent) — full scaffold removed"
+        )
+    else:
+        focus = (
+            "FR-INT-01 faded practice: completion step after the worked "
+            "example (guided-practice fade ladder worked→completion→"
+            "independent)"
+        )
+    return {
+        "block_type": b08_type,
+        "page_type": b08_page,
+        "target_co_ids": list(target_co_ids),
+        "content_focus": focus,
+        "target_bloom": target_bloom,
+        "fade_state": fade_state,
+    }
+
+
 def _apply_fading_sequence(
     *,
     selected: List[Dict[str, Any]],
     chapter_objectives: Sequence[Dict[str, Any]],
     block_types: frozenset,
 ) -> List[Dict[str, Any]]:
-    """FR-INT-01 — inject a B08 faded-practice block after a worked_example (B05).
+    """FR-INT-01 — inject B08 faded-practice blocks after a worked_example (B05).
 
     Gated on ``ED4ALL_PLANNER_FADING``; a strict identity NO-OP when off so a
     default-off run is byte-stable (mirrors the IB7 planner passes' posture). The
     framework's guided-practice fading sequence (worked → completion →
     independent, p.139) is realized by: for each ``worked_example`` block that is
-    not already FOLLOWED by a faded-practice (B08) block, inject ONE B08
-    completion block (``problem`` / ``activity`` / ``checklist`` — the first in
-    the palette) right after it and stamp its ``fade_state="completion"`` so the
-    practice is partially-scaffolded (the reused IB5 ``fade_state`` field). The
-    worked_example itself is stamped ``fade_state="worked"`` when it carries
-    none. Anti-fabrication: the injected block inherits the worked_example's
-    ``target_co_ids`` (or the TO's first real CO id) — no CO id is invented.
-    Returns a NEW list.
+    not already FOLLOWED by a faded-practice (B08) block, inject a B08
+    ``completion`` block (``problem`` / ``activity`` / ``checklist`` — the first
+    in the palette) right after it and stamp its ``fade_state="completion"`` so
+    the practice is partially-scaffolded, THEN append a second B08 block (the
+    same palette type) stamped ``fade_state="independent"`` — the unscaffolded
+    independent rung that closes the fade ladder (the reused IB5 ``fade_state``
+    field). The worked_example itself is stamped ``fade_state="worked"`` when it
+    carries none. Anti-fabrication: every injected block inherits the
+    worked_example's ``target_co_ids`` (or the TO's first real CO id) — no CO id
+    is invented. Idempotent: a worked_example already followed by a completion
+    B08 gets an independent rung only when one is not already present. Returns a
+    NEW list.
     """
     if not _env_floor_on(_FADING_ENV):
         return selected
@@ -2751,34 +2791,53 @@ def _apply_fading_sequence(
 
     b08_page = _BLOCK_TYPE_DEFAULT_PAGE.get(b08_type, "application")
 
+    def _is_b08(block: Optional[Dict[str, Any]]) -> bool:
+        return block is not None and str(block.get("block_type") or "") in _FADING_B08_TYPES
+
     out: List[Dict[str, Any]] = []
-    for idx, blk in enumerate(selected):
+    n = len(selected)
+    i = 0
+    while i < n:
+        blk = selected[i]
         out.append(blk)
         if str(blk.get("block_type") or "") != "worked_example":
+            i += 1
             continue
         # Stamp the worked stage on the worked_example when it has none.
         if not blk.get("fade_state"):
             blk["fade_state"] = "worked"
-        # Skip injection when the NEXT block is already a faded-practice B08.
-        nxt = selected[idx + 1] if idx + 1 < len(selected) else None
-        if nxt is not None and str(nxt.get("block_type") or "") in _FADING_B08_TYPES:
-            # Ensure the existing follow-on carries a completion fade_state.
+        target_co_ids = [str(c) for c in (blk.get("target_co_ids") or [])] or list(fallback_co)
+        target_bloom = str(blk.get("target_bloom") or "apply")
+
+        nxt = selected[i + 1] if i + 1 < n else None
+        if _is_b08(nxt):
+            # An existing completion follow-on — do NOT re-inject a completion.
             if not nxt.get("fade_state"):
                 nxt["fade_state"] = "completion"
+            out.append(nxt)
+            nxt2 = selected[i + 2] if i + 2 < n else None
+            if _is_b08(nxt2):
+                # Independent rung already present; just ensure its fade_state.
+                if not nxt2.get("fade_state"):
+                    nxt2["fade_state"] = "independent"
+                # blk + completion appended; nxt2 handled by its own iteration.
+                i += 2
+                continue
+            # Append the independent rung after the existing completion block.
+            out.append(_make_fading_block(
+                fade_state="independent", b08_type=b08_type, b08_page=b08_page,
+                target_co_ids=target_co_ids, target_bloom=target_bloom))
+            # blk + completion appended (2 consumed); advance past both.
+            i += 2
             continue
-        target_co_ids = [str(c) for c in (blk.get("target_co_ids") or [])] or list(fallback_co)
-        out.append({
-            "block_type": b08_type,
-            "page_type": b08_page,
-            "target_co_ids": target_co_ids,
-            "content_focus": (
-                "FR-INT-01 faded practice: completion step after the worked "
-                "example (guided-practice fade ladder worked→completion→"
-                "independent)"
-            ),
-            "target_bloom": str(blk.get("target_bloom") or "apply"),
-            "fade_state": "completion",
-        })
+        # No completion follow-on: inject completion THEN independent.
+        out.append(_make_fading_block(
+            fade_state="completion", b08_type=b08_type, b08_page=b08_page,
+            target_co_ids=target_co_ids, target_bloom=target_bloom))
+        out.append(_make_fading_block(
+            fade_state="independent", b08_type=b08_type, b08_page=b08_page,
+            target_co_ids=target_co_ids, target_bloom=target_bloom))
+        i += 1
     return out
 
 

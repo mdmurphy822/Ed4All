@@ -184,8 +184,10 @@ def test_eval_schema_bumped_to_1_1():
     # refusal-safety axis: answered-probe groundedness rolled into
     # headline.refusal + a top-level probe_results key. 1.4 (additive) added
     # headline.citation_precision_preadd + per-row cited_chunk_ids/cited_pages.
+    # 1.5 (additive) added headline.groundedness_breakdown +
+    # headline.computational_numeric_check (W1.9 / W1.8 roll-up).
     # The report schema_version moves with it.
-    assert EVAL_SCHEMA_VERSION == "1.4"
+    assert EVAL_SCHEMA_VERSION == "1.5"
 
 
 def test_gold_pin_block_carries_section4_fields(v1_1_course):
@@ -283,7 +285,7 @@ def test_report_json_round_trips(v1_1_course):
     )
     written = Path(report["_written"]["report_path"])
     doc = json.loads(written.read_text(encoding="utf-8"))
-    assert doc["schema_version"] == "1.4"
+    assert doc["schema_version"] == "1.5"
     assert doc["gold"]["question_count"] == 2
     assert "key_point_coverage" in doc["questions"][0]
     assert "part_coverage" in doc["questions"][1]

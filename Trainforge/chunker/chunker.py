@@ -123,6 +123,13 @@ __all__ = [
     "apply_chunk_overlap",
     "resolve_chunk_overlap_words",
     "CHUNK_OVERLAP_WORDS_ENV",
+    "resolve_chunk_code_split",
+    "looks_like_code_listing",
+    "split_code_by_lines",
+    "CHUNK_CODE_SPLIT_ENV",
+    "resolve_merge_fragment_floor",
+    "MERGE_FRAGMENT_FLOOR_ENV",
+    "fold_fragment_results",
 ]
 
 
@@ -248,6 +255,181 @@ def apply_chunk_overlap(
         if "tokens_estimate" in cur:
             cur["tokens_estimate"] = int(new_word_count * 1.3)
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# W1b.2 — code-listing split (opt-in, default off)
+#
+# A large fenced code listing (a notebook cell, a full class, a config file)
+# lands as a single ``explanation`` chunk. When it exceeds ``max_chunk_size``
+# the legacy path sentence-splits it — but code has almost no sentence
+# punctuation, so ``split_by_sentences`` returns ONE giant sub-chunk that
+# still overflows. When ``ED4ALL_CHUNK_CODE_SPLIT`` is on, an oversized chunk
+# whose body reads as a code listing is split on LINE boundaries instead, so
+# each piece fits the window. Default off → byte-identical legacy emit.
+# ---------------------------------------------------------------------------
+
+#: Env var gating the code-listing line-split path.
+CHUNK_CODE_SPLIT_ENV: str = "ED4ALL_CHUNK_CODE_SPLIT"
+
+#: Minimum non-blank line count before a block is even a code candidate.
+_CODE_MIN_LINES: int = 6
+
+#: Fraction of non-blank lines that must read as code for the block to split
+#: on line boundaries rather than sentences.
+_CODE_LINE_FRACTION: float = 0.55
+
+#: Per-line code signatures (any hit → the line reads as code).
+_CODE_LINE_RE = re.compile(
+    r"(?:^\s{2,}\S)"                       # indented continuation
+    r"|(?:[;{}]\s*$)"                      # trailing brace / semicolon
+    r"|(?:\)\s*:?\s*$)"                    # trailing paren / def colon
+    r"|(?:^\s*(?:def|class|import|from|return|for|while|if|elif|else|"
+    r"try|except|with|async|await|print|package|public|private|const|"
+    r"let|var|function|#include|@)\b)"
+    r"|(?:=>|::|->|>>>|\$\s)"              # arrows / REPL / shell prompt
+    r"|(?:\w+\s*\([^)]*\)\s*[:{;]?\s*$)"  # call/def-ish line
+)
+
+
+def resolve_chunk_code_split(env: Optional[Dict[str, str]] = None) -> bool:
+    """Resolve ``ED4ALL_CHUNK_CODE_SPLIT`` (parse-with-fallback, default OFF)."""
+    import os
+
+    src = env if env is not None else os.environ
+    return src.get(CHUNK_CODE_SPLIT_ENV, "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def looks_like_code_listing(text: str) -> bool:
+    """Heuristically decide whether ``text`` is a code listing (not prose).
+
+    Conservative: requires at least :data:`_CODE_MIN_LINES` non-blank lines
+    AND that :data:`_CODE_LINE_FRACTION` of them carry a code signature. Pure /
+    deterministic; no dependency. Real running prose (few indented lines, no
+    braces/def keywords) returns False, so the code-split path never fires on
+    ordinary explanation chunks.
+    """
+    if not text:
+        return False
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) < _CODE_MIN_LINES:
+        return False
+    code_lines = sum(1 for ln in lines if _CODE_LINE_RE.search(ln))
+    return (code_lines / len(lines)) >= _CODE_LINE_FRACTION
+
+
+def split_code_by_lines(text: str, target_words: int) -> List[str]:
+    """Split a code listing into line-grouped pieces of up to ``target_words``.
+
+    Breaks on LINE boundaries (preferring blank-line separators between
+    logical blocks) so no piece exceeds the word budget and no line is cut
+    mid-token. Anti-fabrication: every emitted piece is a contiguous run of
+    the original lines — nothing synthesized. A single line wider than the
+    budget is emitted alone. Mirrors :func:`split_by_sentences`'s
+    accumulate-then-flush shape but over lines.
+    """
+    lines = text.splitlines()
+    pieces: List[str] = []
+    current: List[str] = []
+    current_wc = 0
+    for line in lines:
+        lwc = len(line.split())
+        if current and current_wc + lwc > target_words:
+            pieces.append("\n".join(current))
+            current = [line]
+            current_wc = lwc
+        else:
+            current.append(line)
+            current_wc += lwc
+    if current:
+        pieces.append("\n".join(current))
+    # Drop empty trailing pieces (all-blank runs) but keep ≥1.
+    non_empty = [p for p in pieces if p.strip()]
+    return non_empty or ([text] if text.strip() else [])
+
+
+# ---------------------------------------------------------------------------
+# W1b.3 — sub-N-word fragment floor for the small-section merger (opt-in)
+#
+# ``merge_small_sections`` can still emit a runt result: a tiny trailing
+# section (measured as low as 2 words) that overflowed the buffer becomes its
+# own ``MergedSectionResult``, and that fragment survives into the chunkset as
+# a near-empty chunk. When ``ED4ALL_CHUNK_MERGE_FRAGMENT_FLOOR`` is a positive
+# int, a post-merge pass FOLDS any result whose combined body is below the
+# floor into the PREVIOUS result (unioning its provenance), or drops it when
+# it is the only/leading result with nowhere to fold. Normal chunks (bodies
+# above the floor) are untouched, so default off (0) is byte-identical and a
+# small positive floor only rescues genuine fragments.
+# ---------------------------------------------------------------------------
+
+#: Env var gating the fragment-floor fold. Default 0 → OFF → byte-identical.
+MERGE_FRAGMENT_FLOOR_ENV: str = "ED4ALL_CHUNK_MERGE_FRAGMENT_FLOOR"
+
+
+def resolve_merge_fragment_floor(env: Optional[Dict[str, str]] = None) -> int:
+    """Resolve ``ED4ALL_CHUNK_MERGE_FRAGMENT_FLOOR`` (parse-with-fallback → 0).
+
+    Returns the minimum word count a merged result must carry to stand alone.
+    ``0`` (default / garbage / non-positive) disables the fold entirely
+    (byte-identical legacy merge). A recommended operator value is ``5``.
+    """
+    import os
+
+    src = env if env is not None else os.environ
+    raw = src.get(MERGE_FRAGMENT_FLOOR_ENV)
+    if raw is None:
+        return 0
+    try:
+        val = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 0
+    return val if val > 0 else 0
+
+
+def fold_fragment_results(
+    merged: List["MergedSectionResult"], fragment_floor: int
+) -> List["MergedSectionResult"]:
+    """Fold sub-``fragment_floor``-word merged results into the prior result.
+
+    A result whose ``combined_text`` word count is below ``fragment_floor`` is
+    appended (text + provenance) onto the PREVIOUS surviving result. A leading
+    fragment with no prior result to fold into is dropped (it is by definition
+    below the useful-chunk floor). ``fragment_floor <= 0`` → no-op (returns the
+    input list unchanged). Provenance union mirrors the merger's own buffer
+    accumulation (``merge_section_source_ids`` +
+    ``_merge_objective_alignment_dedup`` + heading/claim concat).
+    """
+    if fragment_floor <= 0 or not merged:
+        return merged
+    out: List[MergedSectionResult] = []
+    for result in merged:
+        wc = len(str(result.combined_text or "").split())
+        if wc >= fragment_floor or not out:
+            if wc >= fragment_floor:
+                out.append(result)
+            elif not out:
+                # Leading fragment, nowhere to fold — drop it.
+                continue
+            else:  # pragma: no cover - unreachable (guarded above)
+                out.append(result)
+            continue
+        prev = out[-1]
+        prev.combined_text = (
+            f"{prev.combined_text}\n\n{result.combined_text}"
+            if prev.combined_text
+            else result.combined_text
+        )
+        merge_section_source_ids(prev.merged_source_ids, result.merged_source_ids)
+        for h in result.merged_headings:
+            if h not in prev.merged_headings:
+                prev.merged_headings.append(h)
+        prev.merged_key_claims.extend(result.merged_key_claims)
+        _merge_objective_alignment_dedup(
+            prev.merged_objective_alignment, result.merged_objective_alignment
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -622,6 +804,7 @@ def merge_small_sections(
     *,
     max_chunk_size: int = MAX_CHUNK_SIZE,
     type_from_heading_fn: Optional[Callable[[str], str]] = None,
+    fragment_floor: int = 0,
 ) -> List[MergedSectionResult]:
     """Merge adjacent sections under MIN_CHUNK_SIZE into combined blocks.
 
@@ -758,6 +941,12 @@ def merge_small_sections(
 
     if buffer_text.strip():
         merged.append(_flush())
+
+    # W1b.3: fold sub-``fragment_floor``-word runt results into the prior
+    # result so a 2-word fragment can't survive into the chunkset. No-op when
+    # ``fragment_floor <= 0`` (default) → byte-identical.
+    if fragment_floor > 0:
+        merged = fold_fragment_results(merged, fragment_floor)
 
     return merged
 
@@ -987,7 +1176,13 @@ def chunk_text_block(
             dart_source_refs=_refs_for_chunk(text),
         ))
     else:
-        sub_texts = split_by_sentences(text, target_chunk_size)
+        # W1b.2: an oversized code listing has no sentence punctuation, so
+        # sentence-splitting leaves ONE over-window piece. When the flag is on
+        # and the body reads as code, split on line boundaries instead.
+        if resolve_chunk_code_split() and looks_like_code_listing(text):
+            sub_texts = split_code_by_lines(text, target_chunk_size)
+        else:
+            sub_texts = split_by_sentences(text, target_chunk_size)
         prev_end = 0
         last_chunk_id = follows_chunk_id
         for i, sub_text in enumerate(sub_texts):
@@ -1166,6 +1361,10 @@ def chunk_content(
 
     boilerplate = boilerplate_spans or []
 
+    # W1b.3: resolve the sub-N-word fragment floor once per invocation and
+    # thread it into every merge_small_sections call. 0 (default) → no-op.
+    _fragment_floor = resolve_merge_fragment_floor()
+
     chunks: List[Dict[str, Any]] = []
     chunk_counter = 1
     prefix = f"{course_code.lower()}_chunk_"
@@ -1239,6 +1438,7 @@ def chunk_content(
             item["sections"],
             max_chunk_size=max_chunk_size,
             type_from_heading_fn=ctx.type_from_heading_fn if ctx else None,
+            fragment_floor=_fragment_floor,
         )
 
         for merged_result in merged:

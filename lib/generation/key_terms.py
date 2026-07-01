@@ -404,6 +404,24 @@ def extract_card_definition_html(content: str) -> str:
     return _html_mod.unescape(_strip_tags(paras[1])).strip()
 
 
+def extract_card_term_html(content: str) -> str:
+    """Extract the TERM display text from a rendered vocab-card HTML string.
+
+    The card shape (see :func:`render_term_card`) is
+    ``<div …><p><span class="key-term">TERM</span></p><p>DEFINITION</p>…</div>``
+    — the FIRST ``<p>`` carries the term span. Returns the un-escaped text of
+    that paragraph (best-effort; empty string if the shape is unrecognised).
+    Pure string ops, deterministic, no parser dependency (mirrors
+    :func:`extract_card_definition_html`).
+    """
+    if not isinstance(content, str) or not content:
+        return ""
+    paras = re.findall(r"<p[^>]*>(.*?)</p>", content, flags=re.IGNORECASE | re.S)
+    if not paras:
+        return ""
+    return _html_mod.unescape(_strip_tags(paras[0])).strip()
+
+
 def block_definition_quality(
     *,
     content: str,

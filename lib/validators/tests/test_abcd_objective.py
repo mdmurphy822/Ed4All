@@ -587,3 +587,235 @@ def test_ib6_camelcase_cognitive_domain_accepted(monkeypatch):
     result = validator.validate({"objectives": [lo]})
     codes = [i.code for i in result.issues]
     assert "OBJECTIVE_KNOWLEDGE_TYPE_MISSING" not in codes
+
+
+# --------------------------------------------------------------------- #
+# W1.1 — ED4ALL_OBJECTIVE_OBSERVABLE_VERB: non-observable ("fuzzy") main
+# verb scan on the legacy no-ABCD path. Default-off byte-stable.
+# --------------------------------------------------------------------- #
+
+
+def _legacy_lo(statement: str, lo_id: str = "TO-01") -> Dict[str, Any]:
+    """A legacy (no-ABCD) LO carrying just id + statement."""
+    return {"id": lo_id, "statement": statement}
+
+
+def test_observable_verb_off_by_default_byte_stable(monkeypatch):
+    monkeypatch.delenv("ED4ALL_OBJECTIVE_OBSERVABLE_VERB", raising=False)
+    validator = AbcdObjectiveValidator()
+    lo = _legacy_lo("Students will understand the water cycle.")
+    result = validator.validate({"objectives": [lo]})
+    # Default-off: legacy LO silently passes, no vague-verb issue.
+    assert result.passed is True
+    assert result.action is None
+    assert result.issues == []
+    assert result.score == 1.0
+
+
+def test_observable_verb_flags_vague_main_verb(monkeypatch):
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_OBSERVABLE_VERB", "1")
+    validator = AbcdObjectiveValidator()
+    lo = _legacy_lo("Students will understand the water cycle.")
+    result = validator.validate({"objectives": [lo]})
+    codes = [i.code for i in result.issues]
+    assert "OBJECTIVE_VAGUE_VERB" in codes
+    # Warning-only: the legacy LO still passes.
+    assert result.passed is True
+    assert result.action is None
+    issue = next(i for i in result.issues if i.code == "OBJECTIVE_VAGUE_VERB")
+    assert issue.severity == "warning"
+    assert "understand" in issue.message
+    # Suggestion names a same-level (understand) observable replacement.
+    assert issue.suggestion
+
+
+def test_observable_verb_flags_be_aware_phrase(monkeypatch):
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_OBSERVABLE_VERB", "on")
+    validator = AbcdObjectiveValidator()
+    lo = _legacy_lo("Learners will be aware of the safety protocols.")
+    result = validator.validate({"objectives": [lo]})
+    codes = [i.code for i in result.issues]
+    assert "OBJECTIVE_VAGUE_VERB" in codes
+
+
+def test_observable_verb_no_flag_on_observable_verb(monkeypatch):
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_OBSERVABLE_VERB", "1")
+    validator = AbcdObjectiveValidator()
+    lo = _legacy_lo("Students will identify the parts of a cell.")
+    result = validator.validate({"objectives": [lo]})
+    codes = [i.code for i in result.issues]
+    assert "OBJECTIVE_VAGUE_VERB" not in codes
+    assert result.passed is True
+
+
+def test_observable_verb_decision_capture_fires(monkeypatch):
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_OBSERVABLE_VERB", "1")
+    validator = AbcdObjectiveValidator()
+    lo = _legacy_lo("Students will appreciate the beauty of algebra.")
+    capture = _StubDecisionCapture()
+    validator.validate({"objectives": [lo], "decision_capture": capture})
+    types = [e["decision_type"] for e in capture.events]
+    assert "objective_vague_verb" in types
+    event = next(
+        e for e in capture.events if e["decision_type"] == "objective_vague_verb"
+    )
+    assert len(event["rationale"]) >= 20
+
+
+def test_observable_verb_not_scanned_on_require_abcd_missing(monkeypatch):
+    # require_abcd routes a no-ABCD LO to the ABCD_MISSING branch, NOT the
+    # legacy silent-pass branch — the vague-verb scan must not fire there.
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_OBSERVABLE_VERB", "1")
+    validator = AbcdObjectiveValidator()
+    lo = _legacy_lo("Students will understand the water cycle.")
+    result = validator.validate({"objectives": [lo], "require_abcd": True})
+    codes = [i.code for i in result.issues]
+    assert "ABCD_MISSING" in codes
+    assert "OBJECTIVE_VAGUE_VERB" not in codes
+
+
+# --------------------------------------------------------------------- #
+# W1.3 — ABCD field-presence completeness (ABCD_INCOMPLETE), gated by
+# the existing require_abcd input. Byte-stable for legacy runs.
+# --------------------------------------------------------------------- #
+
+
+def _incomplete_abcd(verb: str) -> Dict[str, Any]:
+    """A well-formed-but-incomplete ABCD (verb OK, C+D empty)."""
+    return {
+        "audience": "Students",
+        "behavior": {"verb": verb, "action_object": "the parts of a cell"},
+        "condition": "",
+        "degree": "",
+    }
+
+
+def test_abcd_incomplete_flagged_when_require_abcd(monkeypatch):
+    validator = AbcdObjectiveValidator()
+    lo = _make_lo(abcd=_incomplete_abcd(_pick_verb("remember")))
+    result = validator.validate({"objectives": [lo], "require_abcd": True})
+    codes = [i.code for i in result.issues]
+    assert "ABCD_INCOMPLETE" in codes
+    issue = next(i for i in result.issues if i.code == "ABCD_INCOMPLETE")
+    assert issue.severity == "warning"
+    assert "condition" in issue.message and "degree" in issue.message
+    # Warning-only + verb is aligned → gate still passes.
+    assert result.passed is True
+
+
+def test_abcd_incomplete_not_flagged_by_default(monkeypatch):
+    # require_abcd defaults False → legacy byte-identical (no ABCD_INCOMPLETE).
+    validator = AbcdObjectiveValidator()
+    lo = _make_lo(abcd=_incomplete_abcd(_pick_verb("remember")))
+    result = validator.validate({"objectives": [lo]})
+    codes = [i.code for i in result.issues]
+    assert "ABCD_INCOMPLETE" not in codes
+    assert result.passed is True
+
+
+def test_abcd_complete_no_incomplete_flag(monkeypatch):
+    validator = AbcdObjectiveValidator()
+    lo = _make_lo(verb=_pick_verb("remember"))  # _make_abcd is complete
+    result = validator.validate({"objectives": [lo], "require_abcd": True})
+    codes = [i.code for i in result.issues]
+    assert "ABCD_INCOMPLETE" not in codes
+
+
+def test_abcd_incomplete_missing_action_object(monkeypatch):
+    validator = AbcdObjectiveValidator()
+    abcd = {
+        "audience": "Students",
+        "behavior": {"verb": _pick_verb("remember"), "action_object": ""},
+        "condition": "from a diagram",
+        "degree": "with 90% accuracy",
+    }
+    lo = _make_lo(abcd=abcd)
+    result = validator.validate({"objectives": [lo], "require_abcd": True})
+    codes = [i.code for i in result.issues]
+    assert "ABCD_INCOMPLETE" in codes
+    issue = next(i for i in result.issues if i.code == "ABCD_INCOMPLETE")
+    assert "behavior.action_object" in issue.message
+
+
+def test_abcd_incomplete_decision_capture_fires(monkeypatch):
+    validator = AbcdObjectiveValidator()
+    lo = _make_lo(abcd=_incomplete_abcd(_pick_verb("remember")))
+    capture = _StubDecisionCapture()
+    validator.validate(
+        {"objectives": [lo], "require_abcd": True, "decision_capture": capture}
+    )
+    types = [e["decision_type"] for e in capture.events]
+    assert "abcd_incomplete" in types
+    event = next(e for e in capture.events if e["decision_type"] == "abcd_incomplete")
+    assert len(event["rationale"]) >= 20
+
+
+# --------------------------------------------------------------------- #
+# W1.4 — ED4ALL_OBJECTIVE_INFER_BLOOM: infer a null bloom_level from the
+# declared ABCD verb rather than skipping the audit. Default-off byte-stable.
+# --------------------------------------------------------------------- #
+
+
+def _abcd_lo_no_bloom(verb: str, lo_id: str = "TO-05") -> Dict[str, Any]:
+    return {
+        "id": lo_id,
+        "statement": "Students will do something.",
+        "abcd": _make_abcd(verb),
+        # deliberately no bloom_level
+    }
+
+
+def test_infer_bloom_off_by_default_emits_no_bloom_level(monkeypatch):
+    monkeypatch.delenv("ED4ALL_OBJECTIVE_INFER_BLOOM", raising=False)
+    validator = AbcdObjectiveValidator()
+    lo = _abcd_lo_no_bloom(_pick_verb("apply"))
+    result = validator.validate({"objectives": [lo]})
+    codes = [i.code for i in result.issues]
+    # Default-off byte-identical: legacy warning-skip.
+    assert "ABCD_NO_BLOOM_LEVEL" in codes
+    assert "ABCD_BLOOM_LEVEL_INFERRED" not in codes
+    assert result.passed is True
+
+
+def test_infer_bloom_infers_level_from_verb(monkeypatch):
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_INFER_BLOOM", "1")
+    validator = AbcdObjectiveValidator()
+    lo = _abcd_lo_no_bloom(_pick_verb("apply"))
+    result = validator.validate({"objectives": [lo]})
+    codes = [i.code for i in result.issues]
+    assert "ABCD_BLOOM_LEVEL_INFERRED" in codes
+    assert "ABCD_NO_BLOOM_LEVEL" not in codes
+    # Inferred level aligns with the verb by construction → passes.
+    assert result.passed is True
+    assert result.action is None
+    inferred = next(
+        i for i in result.issues if i.code == "ABCD_BLOOM_LEVEL_INFERRED"
+    )
+    assert inferred.severity == "info"
+    assert "apply" in inferred.message
+
+
+def test_infer_bloom_decision_capture_fires(monkeypatch):
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_INFER_BLOOM", "1")
+    validator = AbcdObjectiveValidator()
+    lo = _abcd_lo_no_bloom(_pick_verb("apply"))
+    capture = _StubDecisionCapture()
+    validator.validate({"objectives": [lo], "decision_capture": capture})
+    types = [e["decision_type"] for e in capture.events]
+    assert "abcd_bloom_inferred" in types
+    event = next(
+        e for e in capture.events if e["decision_type"] == "abcd_bloom_inferred"
+    )
+    assert len(event["rationale"]) >= 20
+
+
+def test_infer_bloom_falls_back_when_verb_not_canonical(monkeypatch):
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_INFER_BLOOM", "1")
+    validator = AbcdObjectiveValidator()
+    # A non-canonical verb can't be mapped to a Bloom level.
+    lo = _abcd_lo_no_bloom("flibber")
+    result = validator.validate({"objectives": [lo]})
+    codes = [i.code for i in result.issues]
+    assert "ABCD_NO_BLOOM_LEVEL" in codes
+    assert "ABCD_BLOOM_LEVEL_INFERRED" not in codes
+    assert result.passed is True

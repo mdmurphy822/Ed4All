@@ -460,6 +460,20 @@ def _recall_self_check_enabled() -> bool:
     return _resolve_recall_self_check()
 
 
+def _page_est_minutes_enabled() -> bool:
+    """Return True when ``ED4ALL_PAGE_EST_MINUTES`` is set to a truthy value.
+
+    W1.6 per-page estimated learning-time gate. Default OFF → no
+    ``data-cf-est-minutes`` attr and no JSON-LD ``timeRequired`` are emitted, so
+    every existing page is byte-identical. Falsey / garbage → off
+    (parse-with-fallback). Delegates to the canonical resolver in
+    ``lib.generation.content_page_budget`` so one source of truth is read.
+    """
+    from lib.generation.content_page_budget import page_est_minutes_enabled
+
+    return page_est_minutes_enabled()
+
+
 # Phase 0 of the richer-visual-system plan (richer-visual-system-plan-2026-06.md
 # §4). Default OFF: with this unset the emitted page <style> is BYTE-IDENTICAL
 # to HEAD — the token prelude + token-consuming component re-statement + the
@@ -1770,6 +1784,21 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
     Schema's flat enum check can't express.
     """
     safe_title = html_mod.escape(title)
+
+    # W1.6 — per-page estimated learning-time (ED4ALL_PAGE_EST_MINUTES, default
+    # OFF → byte-identical). When on, stamp ``data-cf-est-minutes`` on <main>
+    # and the schema.org ``timeRequired`` (ISO 8601 ``PT{n}M``) into the page
+    # JSON-LD BEFORE it is validated + serialized.
+    est_attr = ""
+    if _page_est_minutes_enabled():
+        from lib.generation.content_page_budget import estimate_page_minutes
+
+        est_minutes = estimate_page_minutes(body_html)
+        if est_minutes > 0:
+            est_attr = f' data-cf-est-minutes="{est_minutes}"'
+            if isinstance(page_metadata, dict):
+                page_metadata["timeRequired"] = f"PT{est_minutes}M"
+
     json_ld = ""
     if page_metadata:
         page_id = page_metadata.get("pageId") or "<unknown>"
@@ -1793,7 +1822,7 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
   <header role="banner" data-cf-role="template-chrome">
     <p>{course_code} &mdash; Week {week_num}</p>
   </header>
-  <main id="main-content" role="main">
+  <main id="main-content" role="main"{est_attr}>
     <h1>{safe_title}</h1>
 {body_html}
   </main>

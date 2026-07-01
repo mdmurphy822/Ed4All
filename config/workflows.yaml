@@ -759,6 +759,25 @@ workflows:
               on_error: warn
             description: FR-A11Y-03 — typed B12 callout non-color coding + overflow + motion. Warning day-1; deferred critical-flip; no-op when ED4ALL_CALLOUT_TYPED unset.
 
+          # W1.5 — key-terms glossary definition-quality gate. Audits key-terms
+          # vocab cards (template_type == key_terms / block_type == vocab_card)
+          # for KEYTERM_DEF_CIRCULAR (term restated in its own gloss) /
+          # KEYTERM_DEF_TOO_LONG (definition over the ~200-char vocab_card
+          # ceiling) / KEYTERM_DEF_NOT_DISTINCT (two terms share one gloss).
+          # Consumes inputs['blocks']. Rides ED4ALL_KEYTERM_DEF_QUALITY — strict
+          # no-op + byte-stable when the flag is unset. action=regenerate on miss.
+          # TODO(calibration) — flip the KEYTERM_DEF_* codes to critical after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          - gate_id: key_terms_definition_quality
+            validator: lib.validators.key_terms_definition_quality.KeyTermsDefinitionQualityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W1.5 — key-terms glossary definition-quality (circular / too-long / not-distinct). Warning day-1; TODO(calibration) deferred critical-flip; no-op when ED4ALL_KEYTERM_DEF_QUALITY unset.
+
           # Mayer-CTML — structural multimedia-learning check on text+visual
           # blocks (B04 multimedia / B06 diagram / B05 worked_example, or any
           # block whose rendered HTML carries <figure>/<img>/<video>). Audits a
@@ -3414,6 +3433,25 @@ workflows:
               on_fail: warn
               on_error: warn
             description: FR-A11Y-03 — typed B12 callout non-color coding + overflow + motion. Warning day-1; deferred critical-flip; no-op when ED4ALL_CALLOUT_TYPED unset.
+
+          # W1.5 — key-terms glossary definition-quality gate. Audits key-terms
+          # vocab cards (template_type == key_terms / block_type == vocab_card)
+          # for KEYTERM_DEF_CIRCULAR (term restated in its own gloss) /
+          # KEYTERM_DEF_TOO_LONG (definition over the ~200-char vocab_card
+          # ceiling) / KEYTERM_DEF_NOT_DISTINCT (two terms share one gloss).
+          # Consumes inputs['blocks']. Rides ED4ALL_KEYTERM_DEF_QUALITY — strict
+          # no-op + byte-stable when the flag is unset. action=regenerate on miss.
+          # TODO(calibration) — flip the KEYTERM_DEF_* codes to critical after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          - gate_id: key_terms_definition_quality
+            validator: lib.validators.key_terms_definition_quality.KeyTermsDefinitionQualityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W1.5 — key-terms glossary definition-quality (circular / too-long / not-distinct). Warning day-1; TODO(calibration) deferred critical-flip; no-op when ED4ALL_KEYTERM_DEF_QUALITY unset.
 
           # Mayer-CTML — structural multimedia-learning check on text+visual
           # blocks (B04 multimedia / B06 diagram / B05 worked_example, or any

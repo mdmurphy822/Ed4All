@@ -66,6 +66,34 @@ THRESHOLDS_PROVENANCE_DEFAULTS = "claim_support_defaults"
 #: missing NLI model raises rather than degrading to ``available=False``.
 ENV_REQUIRE_EMBEDDINGS = "TRAINFORGE_REQUIRE_EMBEDDINGS"
 
+#: W1.8 opt-in gate for the computational-sentence numeric-grounding check.
+#: Default OFF => the historical exemption is byte-identical (a computational
+#: claim is skipped from NLI + excluded from the denominator, and NO
+#: ``computational_numeric_check`` block is written). When truthy, the scorer
+#: ADDITIONALLY verifies that each computational sentence's numeric literals
+#: appear in a cited chunk and records the ungrounded ones as a WARNING-ONLY
+#: diagnostic that never changes ``groundedness_rate`` / ``scored_count`` /
+#: any verdict (a textbook premise still cannot ENTAIL a computation, so the
+#: exemption from the NLI denominator is preserved — this only surfaces
+#: fabricated numeric literals that the exemption otherwise hides).
+ENV_GROUNDEDNESS_COMPUTATIONAL = "ED4ALL_GROUNDEDNESS_COMPUTATIONAL"
+
+
+def resolve_groundedness_computational(env: Optional[Dict[str, str]] = None) -> bool:
+    """True when ``ED4ALL_GROUNDEDNESS_COMPUTATIONAL`` is set to a truthy value.
+
+    Parse-with-fallback: only the explicit truthy tokens enable the check;
+    anything else (unset / falsey / garbage) leaves it OFF so the historical
+    computational exemption is byte-identical.
+    """
+    src = env if env is not None else os.environ
+    return str(src.get(ENV_GROUNDEDNESS_COMPUTATIONAL, "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
 
 @dataclass(frozen=True)
 class ClaimVerdict:
@@ -124,9 +152,15 @@ class GroundednessReport:
     filtered_count: int = 0
     #: v2 additive — scorer surface version (see :data:`SCORER_VERSION`).
     scorer_version: str = SCORER_VERSION
+    #: W1.8 additive — the computational-sentence numeric-grounding diagnostic.
+    #: ``None`` (and OMITTED from :meth:`to_dict`) unless
+    #: ``ED4ALL_GROUNDEDNESS_COMPUTATIONAL`` is on AND ≥1 computational claim was
+    #: seen, so the report is byte-identical on the default (flag-off) path.
+    #: WARNING-ONLY — never feeds any verdict / rate / count.
+    computational_numeric_check: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             "available": self.available,
             "claims": [c.to_dict() for c in self.claims],
             "groundedness_rate": round(self.groundedness_rate, 6),
@@ -143,6 +177,12 @@ class GroundednessReport:
             "filtered_count": self.filtered_count,
             "scorer_version": self.scorer_version,
         }
+        # W1.8 additive: present ONLY when the opt-in numeric check produced a
+        # block (flag on + ≥1 computational claim). Omitted otherwise so the
+        # default-off report stays byte-identical.
+        if self.computational_numeric_check is not None:
+            out["computational_numeric_check"] = self.computational_numeric_check
+        return out
 
 
 def split_claims(answer_text: str) -> List[str]:
@@ -249,6 +289,78 @@ def _is_computational(sentence: str) -> bool:
     if _RESULT_PHRASE_RE.search(sentence):
         return True
     return False
+
+
+#: A bare numeric literal (integer or decimal). Thousands separators are stripped
+#: before matching (``1,000`` → ``1000``) so ``25,000`` and ``25000`` compare
+#: equal. Sign/operator context is irrelevant to the membership test.
+_NUMERIC_LITERAL_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _numeric_literals(text: str) -> List[str]:
+    """Ordered list of normalized numeric literals in ``text``.
+
+    Commas are removed first (thousands separators) so ``1,024`` matches
+    ``1024`` in a source chunk. Returns the raw string forms (e.g. ``"3"``,
+    ``"3.14"``) so the ungrounded set is human-readable in the report.
+    """
+    if not text:
+        return []
+    return _NUMERIC_LITERAL_RE.findall(text.replace(",", ""))
+
+
+def _compute_computational_numeric_check(
+    comp_claims: List[str],
+    passages: Sequence[Any],
+    cited_chunk_ids: Optional[set],
+) -> Optional[Dict[str, Any]]:
+    """W1.8 numeric-grounding diagnostic for computational sentences.
+
+    For each computational claim (exempted from NLI), extract its numeric
+    literals and flag the ones NOT present in any CITED chunk's text. When
+    ``cited_chunk_ids`` is supplied the pool is restricted to those passages
+    (the model's actual citations); otherwise the whole evidence pool is used.
+
+    WARNING-ONLY: the returned block is pure diagnostic — the caller never lets
+    it change a verdict / rate / count. Returns ``None`` when there are no
+    computational claims (nothing to check → no block, keeps the report
+    byte-identical to the pre-W1.8 shape on computation-free answers).
+    """
+    if not comp_claims:
+        return None
+    if cited_chunk_ids is not None:
+        pool = [p for p in passages if _passage_chunk_id(p) in cited_chunk_ids]
+    else:
+        pool = list(passages)
+    corpus_numerics: set = set()
+    for passage in pool:
+        corpus_numerics.update(_numeric_literals(_passage_text(passage)))
+
+    claim_rows: List[Dict[str, Any]] = []
+    claims_with_ungrounded = 0
+    ungrounded_total = 0
+    for claim in comp_claims:
+        nums = _numeric_literals(claim)
+        ungrounded = [n for n in nums if n not in corpus_numerics]
+        if ungrounded:
+            claims_with_ungrounded += 1
+            ungrounded_total += len(ungrounded)
+        claim_rows.append(
+            {
+                "claim_text": claim,
+                "numeric_literals": nums,
+                "ungrounded_numeric_literals": ungrounded,
+                "grounded": not ungrounded,
+            }
+        )
+    return {
+        "enabled": True,
+        "cited_pool_size": len(pool),
+        "computational_claims_checked": len(comp_claims),
+        "claims_with_ungrounded_numeric": claims_with_ungrounded,
+        "ungrounded_numeric_count": ungrounded_total,
+        "claims": claim_rows,
+    }
 
 
 def _split_claims_for_scoring(answer_text: str) -> Tuple[List[str], int]:
@@ -366,6 +478,7 @@ def score_groundedness(
     entailment_floor: float = _DEFAULT_ENTAILMENT_FLOOR,
     contradiction_floor: float = _DEFAULT_CONTRADICTION_FLOOR,
     cited_chunk_ids: Optional[set] = None,
+    capture: Optional[Any] = None,
 ) -> GroundednessReport:
     """Score each answer sentence against the evidence pool via NLI (v2).
 
@@ -402,6 +515,15 @@ def score_groundedness(
     model actually cited (the pool is wider than the citations so a corpus
     supporter the model under-cited can still entail a claim); ``None`` when the
     kwarg is omitted.
+
+    W1.8 (opt-in ``ED4ALL_GROUNDEDNESS_COMPUTATIONAL``, default OFF): computational
+    claims stay NLI-exempt + out of the denominator exactly as before, but the
+    report ALSO gains a ``computational_numeric_check`` block flagging any numeric
+    literal in a computational sentence that is absent from a cited chunk. It is
+    WARNING-ONLY — it never changes a verdict / rate / count — and is omitted
+    entirely when the flag is off (byte-identical to the historical exemption).
+    When ``capture`` is supplied AND the check ran on ≥1 computational claim, one
+    ``groundedness_computational_check`` decision is logged.
 
     Degrade: ``nli`` resolves to ``None`` → ``GroundednessReport(available=
     False, ...)`` with a ``reason``, UNLESS ``TRAINFORGE_REQUIRE_EMBEDDINGS`` is
@@ -452,6 +574,41 @@ def score_groundedness(
 
     passages = [p for p in cited_passages if _passage_text(p).strip()]
 
+    # W1.8 (opt-in) — verify each computational sentence's numeric literals are
+    # present in a cited chunk. Default OFF ⇒ ``comp_check`` stays None and the
+    # report is byte-identical to the historical exemption. WARNING-ONLY: this
+    # block never feeds a verdict / rate / count below.
+    comp_check: Optional[Dict[str, Any]] = None
+    if resolve_groundedness_computational():
+        comp_claims = [claim for kind, claim in order if kind == "comp"]
+        comp_check = _compute_computational_numeric_check(
+            comp_claims, passages, cited_chunk_ids
+        )
+        if comp_check is not None and capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="groundedness_computational_check",
+                    decision=(
+                        f"checked {comp_check['computational_claims_checked']} "
+                        f"computational claim(s); "
+                        f"{comp_check['claims_with_ungrounded_numeric']} carried "
+                        f"ungrounded numeric literals"
+                    ),
+                    rationale=(
+                        "ED4ALL_GROUNDEDNESS_COMPUTATIONAL on: verified the "
+                        f"numeric literals of "
+                        f"{comp_check['computational_claims_checked']} "
+                        f"NLI-exempt computational sentence(s) against "
+                        f"{comp_check['cited_pool_size']} cited chunk(s); flagged "
+                        f"{comp_check['ungrounded_numeric_count']} ungrounded "
+                        "numeric literal(s) as a warning (answer verdict + "
+                        "groundedness_rate unchanged)."
+                    ),
+                    is_default=False,
+                )
+            except Exception:  # noqa: BLE001 — capture must never abort scoring
+                pass
+
     if not scorable or not passages:
         # NLI is available but there are no SCORABLE claims (empty answer, only
         # computational/artifact claims) or no evidence passages. Still emit any
@@ -484,6 +641,7 @@ def score_groundedness(
             reason=None if all_claims else "no_scorable_claims",
             computational_count=computational_count,
             filtered_count=filtered_count,
+            computational_numeric_check=comp_check,
         )
 
     # Stage 1: full (premise, hypothesis) grid — every pool passage × every
@@ -616,6 +774,7 @@ def score_groundedness(
         reason=None,
         computational_count=computational_count,
         filtered_count=filtered_count,
+        computational_numeric_check=comp_check,
     )
 
 
@@ -631,4 +790,6 @@ __all__ = [
     "SCORER_VERSION",
     "THRESHOLDS_PROVENANCE_DEFAULTS",
     "ENV_REQUIRE_EMBEDDINGS",
+    "ENV_GROUNDEDNESS_COMPUTATIONAL",
+    "resolve_groundedness_computational",
 ]

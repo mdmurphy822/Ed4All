@@ -520,6 +520,165 @@ def test_report_carries_scorer_version_two():
 
 
 # ===========================================================================
+# W1.8 — ED4ALL_GROUNDEDNESS_COMPUTATIONAL numeric-grounding check
+# ===========================================================================
+
+from lib.retrieval.groundedness import (  # noqa: E402
+    ENV_GROUNDEDNESS_COMPUTATIONAL,
+    VERDICT_COMPUTATIONAL,
+    resolve_groundedness_computational,
+)
+
+# A computational sentence with >= 4 content tokens (survives split_claims) whose
+# numeric literals are 3, 10 and 27.
+_COMP_CLAIM = "The computed sum is 3 plus 10 equals 27 for this problem."
+
+
+def test_resolve_computational_flag_parse_with_fallback():
+    assert resolve_groundedness_computational({}) is False
+    assert resolve_groundedness_computational(
+        {ENV_GROUNDEDNESS_COMPUTATIONAL: "garbage"}
+    ) is False
+    for tok in ("1", "true", "YES", "On"):
+        assert resolve_groundedness_computational(
+            {ENV_GROUNDEDNESS_COMPUTATIONAL: tok}
+        ) is True
+
+
+def test_computational_check_absent_when_flag_off(monkeypatch):
+    monkeypatch.delenv(ENV_GROUNDEDNESS_COMPUTATIONAL, raising=False)
+    passage = _passage("c1", "Add the numbers 3 and 10 in this worked section.")
+    report = score_groundedness(_COMP_CLAIM, [passage], nli=FakeNli())
+    # Historical exemption byte-identical: no block written, verdict unchanged,
+    # denominator untouched.
+    assert report.computational_numeric_check is None
+    assert "computational_numeric_check" not in report.to_dict()
+    assert report.computational_count == 1
+    assert report.scored_count == 0
+    assert report.claims[0].verdict == VERDICT_COMPUTATIONAL
+
+
+def test_computational_check_flags_ungrounded_numeric_when_on(monkeypatch):
+    monkeypatch.setenv(ENV_GROUNDEDNESS_COMPUTATIONAL, "1")
+    # Cited chunk carries 3 and 10 but NOT the derived result 27.
+    passage = _passage("c1", "Add the numbers 3 and 10 in this worked section.")
+    report = score_groundedness(_COMP_CLAIM, [passage], nli=FakeNli())
+    block = report.computational_numeric_check
+    assert block is not None
+    assert block["enabled"] is True
+    assert block["computational_claims_checked"] == 1
+    assert block["claims_with_ungrounded_numeric"] == 1
+    assert block["ungrounded_numeric_count"] == 1
+    assert block["claims"][0]["ungrounded_numeric_literals"] == ["27"]
+    assert block["claims"][0]["grounded"] is False
+    # The block round-trips through to_dict only when present.
+    assert "computational_numeric_check" in report.to_dict()
+    # WARNING-ONLY: verdict + denominator unchanged vs the off path.
+    assert report.claims[0].verdict == VERDICT_COMPUTATIONAL
+    assert report.scored_count == 0
+    assert report.groundedness_rate == 0.0
+
+
+def test_computational_check_grounded_when_numerics_in_chunk(monkeypatch):
+    monkeypatch.setenv(ENV_GROUNDEDNESS_COMPUTATIONAL, "on")
+    # Cited chunk carries all three literals 3, 10 and 27.
+    passage = _passage(
+        "c1", "The section states 3, 10 and 27 as the relevant example values."
+    )
+    report = score_groundedness(_COMP_CLAIM, [passage], nli=FakeNli())
+    block = report.computational_numeric_check
+    assert block is not None
+    assert block["claims_with_ungrounded_numeric"] == 0
+    assert block["ungrounded_numeric_count"] == 0
+    assert block["claims"][0]["grounded"] is True
+
+
+def test_computational_check_restricts_to_cited_chunk(monkeypatch):
+    monkeypatch.setenv(ENV_GROUNDEDNESS_COMPUTATIONAL, "true")
+    # The literal 27 lives ONLY in an UNCITED passage; restricting to the cited
+    # chunk makes it ungrounded (the check is about CITED support).
+    cited = _passage("c1", "Add the numbers 3 and 10 in this worked section.")
+    uncited = _passage("c2", "Elsewhere the value 27 appears out of context.")
+    report = score_groundedness(
+        _COMP_CLAIM, [cited, uncited], nli=FakeNli(), cited_chunk_ids={"c1"}
+    )
+    block = report.computational_numeric_check
+    assert block["cited_pool_size"] == 1
+    assert block["claims"][0]["ungrounded_numeric_literals"] == ["27"]
+
+
+def test_computational_check_never_flips_scorable_verdict(monkeypatch):
+    monkeypatch.setenv(ENV_GROUNDEDNESS_COMPUTATIONAL, "1")
+    passage = _passage(
+        "c1",
+        "A vector store indexes embedding vectors for similarity search here.",
+    )
+    answer = (
+        "A vector store indexes embedding vectors for similarity search here. "
+        + _COMP_CLAIM
+    )
+    report = score_groundedness(answer, [passage], nli=FakeNli())
+    # The scorable claim is still entailed; groundedness_rate reflects ONLY the
+    # scorable claim (the computational one stays out of the denominator).
+    assert report.scored_count == 1
+    assert report.groundedness_rate == 1.0
+    assert report.claims[0].verdict == VERDICT_ENTAILED
+    assert report.claims[1].verdict == VERDICT_COMPUTATIONAL
+    # The numeric check ran on the one computational claim.
+    assert report.computational_numeric_check["computational_claims_checked"] == 1
+
+
+class _RecordingCapture:
+    """Minimal DecisionCapture stand-in recording log_decision calls."""
+
+    def __init__(self):
+        self.calls = []
+
+    def log_decision(self, *, decision_type, decision, rationale, **kwargs):
+        self.calls.append(
+            {"decision_type": decision_type, "decision": decision,
+             "rationale": rationale}
+        )
+
+
+def test_capture_fires_when_flag_on(monkeypatch):
+    monkeypatch.setenv(ENV_GROUNDEDNESS_COMPUTATIONAL, "1")
+    cap = _RecordingCapture()
+    passage = _passage("c1", "Add the numbers 3 and 10 in this worked section.")
+    score_groundedness(_COMP_CLAIM, [passage], nli=FakeNli(), capture=cap)
+    assert len(cap.calls) == 1
+    call = cap.calls[0]
+    assert call["decision_type"] == "groundedness_computational_check"
+    assert len(call["rationale"]) >= 20
+
+
+def test_capture_silent_when_flag_off(monkeypatch):
+    monkeypatch.delenv(ENV_GROUNDEDNESS_COMPUTATIONAL, raising=False)
+    cap = _RecordingCapture()
+    passage = _passage("c1", "Add the numbers 3 and 10 in this worked section.")
+    score_groundedness(_COMP_CLAIM, [passage], nli=FakeNli(), capture=cap)
+    assert cap.calls == []
+
+
+def test_capture_silent_when_no_computational_claim(monkeypatch):
+    monkeypatch.setenv(ENV_GROUNDEDNESS_COMPUTATIONAL, "1")
+    cap = _RecordingCapture()
+    passage = _passage(
+        "c1",
+        "A vector store indexes embedding vectors for similarity search here.",
+    )
+    # No computational claim → nothing to check → no decision, no block.
+    report = score_groundedness(
+        "A vector store indexes embedding vectors for similarity search here.",
+        [passage],
+        nli=FakeNli(),
+        capture=cap,
+    )
+    assert cap.calls == []
+    assert report.computational_numeric_check is None
+
+
+# ===========================================================================
 # Opt-in real-model DeBERTa smoke (skipped without weights/extras)
 # ===========================================================================
 

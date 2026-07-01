@@ -148,7 +148,45 @@ def test_fading_injects_b08_when_flag_on(monkeypatch):
     assert out[0]["fade_state"] == "worked"
 
 
-def test_fading_no_dup_when_b08_already_present(monkeypatch):
+def test_fading_injects_independent_rung_after_completion(monkeypatch):
+    # W1.7 — the fade ladder closes with an independent rung after the
+    # completion block: worked → completion → independent.
+    monkeypatch.setenv("ED4ALL_PLANNER_FADING", "1")
+    out = _apply_fading_sequence(
+        selected=_worked_then_concept(), chapter_objectives=[{"id": "CO-01"}],
+        block_types=_resolve_block_types())
+    types = [b["block_type"] for b in out]
+    # worked_example, completion B08, independent B08, then the original concept.
+    assert types[0] == "worked_example"
+    assert types[1] in ("problem", "activity", "checklist")
+    assert types[2] in ("problem", "activity", "checklist")
+    assert types[3] == "concept"
+    fades = [b.get("fade_state") for b in out]
+    assert fades[:3] == ["worked", "completion", "independent"]
+    # anti-fabrication: the independent rung inherits the worked_example CO ids.
+    assert out[2]["target_co_ids"] == ["CO-01"]
+
+
+def test_fading_independent_rung_grounds_on_fallback_co(monkeypatch):
+    # anti-fabrication: a worked_example with no target_co_ids grounds both
+    # injected rungs on the TO's first real CO — never invents an id.
+    monkeypatch.setenv("ED4ALL_PLANNER_FADING", "1")
+    sel = [
+        {"block_type": "worked_example", "page_type": "content",
+         "target_bloom": "apply", "target_co_ids": []},
+    ]
+    out = _apply_fading_sequence(
+        selected=sel, chapter_objectives=[{"id": "CO-07"}],
+        block_types=_resolve_block_types())
+    assert [b.get("fade_state") for b in out] == ["worked", "completion", "independent"]
+    assert out[1]["target_co_ids"] == ["CO-07"]
+    assert out[2]["target_co_ids"] == ["CO-07"]
+
+
+def test_fading_no_dup_completion_but_appends_independent(monkeypatch):
+    # An existing completion B08 is NOT duplicated (still exactly one completion
+    # right after the worked_example); it gets a completion fade_state and an
+    # independent rung is appended to close the ladder.
     monkeypatch.setenv("ED4ALL_PLANNER_FADING", "1")
     sel = [
         {"block_type": "worked_example", "page_type": "content",
@@ -159,9 +197,45 @@ def test_fading_no_dup_when_b08_already_present(monkeypatch):
     out = _apply_fading_sequence(
         selected=sel, chapter_objectives=[{"id": "CO-01"}],
         block_types=_resolve_block_types())
-    # no extra block injected; existing B08 gets a completion fade_state.
-    assert [b["block_type"] for b in out] == ["worked_example", "problem"]
-    assert out[1]["fade_state"] == "completion"
+    types = [b["block_type"] for b in out]
+    # exactly one pre-existing completion (no completion re-inject) + independent.
+    assert types[0] == "worked_example"
+    assert types[1] == "problem"
+    assert types[2] in ("problem", "activity", "checklist")
+    assert [b.get("fade_state") for b in out] == ["worked", "completion", "independent"]
+    assert out[2]["target_co_ids"] == ["CO-01"]
+
+
+def test_fading_is_idempotent(monkeypatch):
+    # Re-running the pass over its own output injects nothing new (the ladder is
+    # already complete: worked → completion → independent).
+    monkeypatch.setenv("ED4ALL_PLANNER_FADING", "1")
+    first = _apply_fading_sequence(
+        selected=_worked_then_concept(), chapter_objectives=[{"id": "CO-01"}],
+        block_types=_resolve_block_types())
+    second = _apply_fading_sequence(
+        selected=first, chapter_objectives=[{"id": "CO-01"}],
+        block_types=_resolve_block_types())
+    assert [b["block_type"] for b in second] == [b["block_type"] for b in first]
+    assert [b.get("fade_state") for b in second] == [b.get("fade_state") for b in first]
+
+
+def test_fading_no_dup_when_full_ladder_already_present(monkeypatch):
+    # worked → completion → independent already present: no injection, fades set.
+    monkeypatch.setenv("ED4ALL_PLANNER_FADING", "1")
+    sel = [
+        {"block_type": "worked_example", "page_type": "content",
+         "target_bloom": "apply", "target_co_ids": ["CO-01"], "fade_state": "worked"},
+        {"block_type": "problem", "page_type": "application",
+         "target_bloom": "apply", "target_co_ids": ["CO-01"], "fade_state": "completion"},
+        {"block_type": "activity", "page_type": "application",
+         "target_bloom": "apply", "target_co_ids": ["CO-01"], "fade_state": "independent"},
+    ]
+    out = _apply_fading_sequence(
+        selected=sel, chapter_objectives=[{"id": "CO-01"}],
+        block_types=_resolve_block_types())
+    assert [b["block_type"] for b in out] == ["worked_example", "problem", "activity"]
+    assert [b.get("fade_state") for b in out] == ["worked", "completion", "independent"]
 
 
 # --------------------------------------------------------------------------- #

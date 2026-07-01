@@ -393,6 +393,248 @@ def test_validator_metadata() -> None:
     assert v.version == "0.1.0"
 
 
+def _source_coverage(
+    *, consumed: int, emitted: int, dropped: int = 0,
+    drop_reasons: Optional[Dict[str, int]] = None,
+) -> Dict[str, Any]:
+    """Build a schema-valid source_coverage sub-object."""
+    reasons = drop_reasons or ({} if dropped == 0 else {"boilerplate": dropped})
+    cov = (emitted / consumed) if consumed else 0.0
+    return {
+        "consumed_count": consumed,
+        "emitted_count": emitted,
+        "dropped_count": dropped,
+        "drop_reasons": reasons,
+        "coverage_pct": cov,
+    }
+
+
+class _RecordingCapture:
+    """Minimal DecisionCapture stand-in that records log_decision calls."""
+
+    def __init__(self) -> None:
+        self.calls: List[Dict[str, Any]] = []
+
+    def log_decision(self, **kwargs: Any) -> None:
+        self.calls.append(kwargs)
+
+
+# ---------------------------------------------------------------------------
+# W1.2 import-coverage gate
+# ---------------------------------------------------------------------------
+
+
+def test_coverage_gate_off_is_byte_identical_no_op(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unset flags → the coverage gate adds no issue even on a thin,
+    low-coverage chunkset. GateResult identical to the no-source_coverage
+    happy path."""
+    monkeypatch.delenv("ED4ALL_CHUNK_COVERAGE_FLOOR", raising=False)
+    monkeypatch.delenv("ED4ALL_MIN_CHUNKS", raising=False)
+    chunks = _make_chunks_jsonl(tmp_path, n_chunks=1)
+    payload = _make_manifest_dict(
+        chunks_sha=_sha256_of(chunks),
+        chunkset_kind="dart",
+        chunks_count=1,
+        extra={"source_coverage": _source_coverage(
+            consumed=100, emitted=1, dropped=99,
+        )},
+    )
+    manifest_path = _write_manifest(tmp_path, payload)
+
+    result = ChunksetManifestValidator().validate(
+        {"chunkset_manifest_path": str(manifest_path)},
+    )
+
+    assert result.passed is True, [i.code for i in result.issues]
+    assert not any(
+        i.code in {"CHUNKSET_COVERAGE_LOW", "CHUNKSET_TOO_THIN"}
+        for i in result.issues
+    )
+
+
+def test_coverage_low_fires_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """coverage_pct below ED4ALL_CHUNK_COVERAGE_FLOOR → warning, still passes."""
+    monkeypatch.setenv("ED4ALL_CHUNK_COVERAGE_FLOOR", "0.80")
+    monkeypatch.delenv("ED4ALL_MIN_CHUNKS", raising=False)
+    chunks = _make_chunks_jsonl(tmp_path, n_chunks=5)
+    payload = _make_manifest_dict(
+        chunks_sha=_sha256_of(chunks),
+        chunkset_kind="dart",
+        extra={"source_coverage": _source_coverage(
+            consumed=100, emitted=50, dropped=50,
+        )},  # 0.5 coverage < 0.80 floor
+    )
+    manifest_path = _write_manifest(tmp_path, payload)
+
+    result = ChunksetManifestValidator().validate(
+        {"chunkset_manifest_path": str(manifest_path)},
+    )
+
+    warn = [i for i in result.issues if i.code == "CHUNKSET_COVERAGE_LOW"]
+    assert len(warn) == 1
+    assert warn[0].severity == "warning"
+    # Warning-day-1: does NOT block.
+    assert result.passed is True
+    assert result.action is None
+
+
+def test_coverage_ok_no_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """coverage_pct at/above the floor → no CHUNKSET_COVERAGE_LOW."""
+    monkeypatch.setenv("ED4ALL_CHUNK_COVERAGE_FLOOR", "0.80")
+    monkeypatch.delenv("ED4ALL_MIN_CHUNKS", raising=False)
+    chunks = _make_chunks_jsonl(tmp_path, n_chunks=5)
+    payload = _make_manifest_dict(
+        chunks_sha=_sha256_of(chunks),
+        chunkset_kind="dart",
+        extra={"source_coverage": _source_coverage(
+            consumed=100, emitted=90, dropped=10,
+        )},  # 0.9 >= 0.80
+    )
+    manifest_path = _write_manifest(tmp_path, payload)
+
+    result = ChunksetManifestValidator().validate(
+        {"chunkset_manifest_path": str(manifest_path)},
+    )
+
+    assert not any(i.code == "CHUNKSET_COVERAGE_LOW" for i in result.issues)
+    assert result.passed is True
+
+
+def test_too_thin_fires_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """emitted_count below ED4ALL_MIN_CHUNKS → CHUNKSET_TOO_THIN warning."""
+    monkeypatch.setenv("ED4ALL_MIN_CHUNKS", "10")
+    monkeypatch.delenv("ED4ALL_CHUNK_COVERAGE_FLOOR", raising=False)
+    chunks = _make_chunks_jsonl(tmp_path, n_chunks=3)
+    payload = _make_manifest_dict(
+        chunks_sha=_sha256_of(chunks),
+        chunkset_kind="dart",
+        extra={"source_coverage": _source_coverage(
+            consumed=3, emitted=3,
+        )},  # 3 < 10
+    )
+    manifest_path = _write_manifest(tmp_path, payload)
+
+    result = ChunksetManifestValidator().validate(
+        {"chunkset_manifest_path": str(manifest_path)},
+    )
+
+    thin = [i for i in result.issues if i.code == "CHUNKSET_TOO_THIN"]
+    assert len(thin) == 1
+    assert thin[0].severity == "warning"
+    assert result.passed is True
+
+
+def test_coverage_gate_no_op_when_source_coverage_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flags ON but pre-W3.H manifest lacks source_coverage → graceful no-op."""
+    monkeypatch.setenv("ED4ALL_CHUNK_COVERAGE_FLOOR", "0.99")
+    monkeypatch.setenv("ED4ALL_MIN_CHUNKS", "1000")
+    chunks = _make_chunks_jsonl(tmp_path, n_chunks=2)
+    payload = _make_manifest_dict(
+        chunks_sha=_sha256_of(chunks),
+        chunkset_kind="dart",
+    )  # no source_coverage
+    manifest_path = _write_manifest(tmp_path, payload)
+
+    result = ChunksetManifestValidator().validate(
+        {"chunkset_manifest_path": str(manifest_path)},
+    )
+
+    assert result.passed is True
+    assert not any(
+        i.code in {"CHUNKSET_COVERAGE_LOW", "CHUNKSET_TOO_THIN"}
+        for i in result.issues
+    )
+
+
+@pytest.mark.parametrize("raw", ["", "garbage", "-0.5", "1.5", "0", "0.0"])
+def test_coverage_floor_parse_with_fallback(
+    monkeypatch: pytest.MonkeyPatch, raw: str,
+) -> None:
+    """Garbage / out-of-range / non-positive ED4ALL_CHUNK_COVERAGE_FLOOR → 0.0 (off)."""
+    from lib.validators.chunkset_manifest import resolve_coverage_floor
+
+    monkeypatch.setenv("ED4ALL_CHUNK_COVERAGE_FLOOR", raw)
+    assert resolve_coverage_floor() == 0.0
+
+
+@pytest.mark.parametrize("raw", ["", "garbage", "-3", "0", "0.5"])
+def test_min_chunks_parse_with_fallback(
+    monkeypatch: pytest.MonkeyPatch, raw: str,
+) -> None:
+    """Garbage / non-positive / non-int ED4ALL_MIN_CHUNKS → 0 (off)."""
+    from lib.validators.chunkset_manifest import resolve_min_chunks
+
+    monkeypatch.setenv("ED4ALL_MIN_CHUNKS", raw)
+    assert resolve_min_chunks() == 0
+
+
+def test_coverage_floor_valid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lib.validators.chunkset_manifest import resolve_coverage_floor
+
+    monkeypatch.setenv("ED4ALL_CHUNK_COVERAGE_FLOOR", "0.75")
+    assert resolve_coverage_floor() == 0.75
+
+
+def test_min_chunks_valid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    from lib.validators.chunkset_manifest import resolve_min_chunks
+
+    monkeypatch.setenv("ED4ALL_MIN_CHUNKS", "25")
+    assert resolve_min_chunks() == 25
+
+
+def test_coverage_gate_emits_decision_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The chunkset_manifest_check decision fires and carries coverage metrics."""
+    monkeypatch.setenv("ED4ALL_CHUNK_COVERAGE_FLOOR", "0.80")
+    monkeypatch.setenv("ED4ALL_MIN_CHUNKS", "10")
+    chunks = _make_chunks_jsonl(tmp_path, n_chunks=2)
+    payload = _make_manifest_dict(
+        chunks_sha=_sha256_of(chunks),
+        chunkset_kind="dart",
+        extra={"source_coverage": _source_coverage(
+            consumed=100, emitted=2, dropped=98,
+        )},
+    )
+    manifest_path = _write_manifest(tmp_path, payload)
+    capture = _RecordingCapture()
+
+    result = ChunksetManifestValidator().validate(
+        {
+            "chunkset_manifest_path": str(manifest_path),
+            "decision_capture": capture,
+        },
+    )
+
+    # Both warning arms fired.
+    assert {i.code for i in result.issues} >= {
+        "CHUNKSET_COVERAGE_LOW", "CHUNKSET_TOO_THIN",
+    }
+    # A chunkset_manifest_check decision was emitted with coverage metrics.
+    checks = [
+        c for c in capture.calls
+        if c.get("decision_type") == "chunkset_manifest_check"
+    ]
+    assert checks, "expected a chunkset_manifest_check decision"
+    metrics = checks[-1]["metrics"]
+    assert metrics["coverage_floor"] == 0.80
+    assert metrics["min_chunks_floor"] == 10
+    assert metrics["coverage_low"] is True
+    assert metrics["too_thin"] is True
+    assert metrics["coverage_pct_observed"] == 0.02
+    assert metrics["emitted_count_observed"] == 2
+
+
 def test_chunker_version_with_local_suffix(tmp_path: Path) -> None:
     """`0.0.0+missing` (the schema-valid sentinel emitted by
     ``_resolve_chunker_version`` when the package isn't importable)
