@@ -3161,6 +3161,20 @@ def default_router() -> GateInputRouter:
         "lib.validators.qti_well_formed.QtiWellFormedValidator",
         _build_qti_well_formed,
     )
+    # W7.3 — SynthesizedQuizDistractorValidator fires at the
+    # ``assessment_synthesis`` phase (both course_generation and
+    # textbook_to_course) as the warning-severity
+    # ``synthesized_quiz_distractor`` gate. It audits every synthesized MCQ's
+    # distractors (equals-key / duplicate / too-few / placeholder) — the QTI
+    # item shape the authored-block distractor_* gates never reach. Its input
+    # contract is IDENTICAL to QtiWellFormedValidator (it globs
+    # ``inputs["qti_dir"] = <export>/06_assessments`` for ``*.xml``), so it
+    # reuses that builder verbatim; no new builder. Warning day-1; deferred
+    # critical-flip.
+    r.register(
+        "lib.validators.synthesized_quiz_distractor.SynthesizedQuizDistractorValidator",
+        _build_qti_well_formed,
+    )
     # ConceptGraphValidator fires at ``concept_extraction`` and needs
     # the path to concept_graph_semantic.json (a declared YAML output).
     r.register(
@@ -3223,6 +3237,21 @@ def default_router() -> GateInputRouter:
     # verbatim — no new builder.
     r.register(
         "lib.validators.source_coverage.SourceCoverageValidator",
+        _build_chapter_objective_coverage_inputs,
+    )
+    # W7.5 (M-TO) — TerminalObjectiveSourceGroundingValidator fires at
+    # ``course_planning`` as the opt-in (``ED4ALL_TO_SOURCE_GROUNDING``)
+    # warning-severity ``terminal_objective_source_grounding`` gate. It embeds
+    # each TO statement + the source chunks its cluster cites and flags a TO
+    # whose best supporting chunk is below the cosine floor (the
+    # coherent-but-hallucinated-TO class). It reads the SAME two inputs this
+    # builder already surfaces — ``synthesized_objectives_path`` (for the TO/CO
+    # statements + source_refs/source_chunk_ids the cluster->chunk map is
+    # reconstructed from) and ``dart_chunks_path`` (the source-chunk text
+    # universe) — so it reuses that builder verbatim; no new builder. Default
+    # OFF → the validator's own no-op skip-with-pass fires.
+    r.register(
+        "lib.validators.terminal_objective_source_grounding.TerminalObjectiveSourceGroundingValidator",
         _build_chapter_objective_coverage_inputs,
     )
     # Three-stage textbook synthesis (Wave A/B): TextbookOutlineValidator

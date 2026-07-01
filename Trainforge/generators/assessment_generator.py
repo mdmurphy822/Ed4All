@@ -769,13 +769,66 @@ class AssessmentGenerator:
                 correct_stmt = statements[0]
                 stem = "<p>Which of the following statements is correct?</p>"
 
+                # W7.4 — a regex-negated "false" distractor can be accidentally
+                # TRUE (double-negation of an already-negative source, or a
+                # no-op negation). Verify each negation is non-trivially false
+                # and DROP the ones that aren't, drawing from ALL remaining
+                # factual statements so a bad negation is regenerated rather
+                # than silently emitted as a true option.
+                distractor_texts: List[str] = []
+                dropped_negations = 0
+                for other in statements[1:]:
+                    if len(distractor_texts) >= 3:
+                        break
+                    negated = self._safe_negate_statement(other.statement)
+                    if negated is None:
+                        dropped_negations += 1
+                        continue
+                    distractor_texts.append(negated)
+
+                if dropped_negations and self.capture is not None:
+                    try:
+                        self.capture.log_decision(
+                            decision_type="distractor_generation",
+                            decision=(
+                                f"Dropped {dropped_negations} unverifiable "
+                                f"negated distractor(s) for MCQ {question_id}"
+                            ),
+                            rationale=(
+                                f"negation_rejected on question_id="
+                                f"{question_id!r}, objective_id="
+                                f"{objective_id!r}, bloom_level={bloom_level!r}: "
+                                f"{dropped_negations} regex-negated distractor(s) "
+                                f"were not verifiably false (double-negation / "
+                                f"vacuous negation) and were dropped; "
+                                f"{len(distractor_texts)} verifiably-false "
+                                f"distractor(s) kept."
+                            ),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "DecisionCapture.log_decision raised on "
+                            "distractor_generation (negation_rejected): %s",
+                            exc,
+                        )
+
+                # Need >=2 verifiably-false distractors for a non-degenerate
+                # MCQ (1 correct + 2 distractors). Fewer → skip-emit rather
+                # than ship a quiz whose "wrong" options may be true.
+                if len(distractor_texts) < 2:
+                    return SkippedItem(
+                        question_id=question_id,
+                        question_type="multiple_choice",
+                        bloom_level=bloom_level,
+                        objective_id=objective_id,
+                        reason="negation_unverifiable",
+                    )
+
                 choices = [
                     {"text": f"<p>{correct_stmt.statement}</p>", "is_correct": True},
                 ]
-                for other in statements[1:4]:
-                    # Negate the statement for distractors
-                    negated = self._negate_statement(other.statement)
-                    choices.append({"text": f"<p>{negated}</p>", "is_correct": False})
+                for d in distractor_texts:
+                    choices.append({"text": f"<p>{d}</p>", "is_correct": False})
 
                 return QuestionData(
                     question_id=question_id,
@@ -789,7 +842,8 @@ class AssessmentGenerator:
                     source_chunks=[correct_stmt.source_chunk_id],
                     generation_rationale=(
                         f"MCQ using correct-statement selection at {bloom_level} "
-                        f"level; distractors are negated content statements"
+                        f"level; distractors are verifiably-false negated "
+                        f"content statements (W7.4 correctness-checked)"
                     ),
                 )
 
@@ -831,8 +885,43 @@ class AssessmentGenerator:
                 # Randomly decide true vs false (use question_id hash for determinism)
                 make_false = hash(question_id) % 2 == 0
 
+                # W7.4 — a regex-negated T/F "false" stem can be accidentally
+                # TRUE. Verify the negation is non-trivially false; if it isn't,
+                # fall back to the TRUE variant rather than ship a "false" item
+                # whose stem may be true (never emit an unverifiable false).
+                negated: Optional[str] = None
                 if make_false:
-                    negated = self._negate_statement(stmt.statement)
+                    negated = self._safe_negate_statement(stmt.statement)
+                    if negated is None:
+                        if self.capture is not None:
+                            try:
+                                self.capture.log_decision(
+                                    decision_type="question_generation",
+                                    decision=(
+                                        f"T/F {question_id}: negation "
+                                        f"unverifiable — emitting TRUE variant"
+                                    ),
+                                    rationale=(
+                                        f"negation_rejected on question_id="
+                                        f"{question_id!r}, objective_id="
+                                        f"{objective_id!r}, subject="
+                                        f"{stmt.key_subject!r}: regex negation of "
+                                        f"the source statement was not verifiably "
+                                        f"false (double-negation / vacuous "
+                                        f"negation); fell back to the TRUE T/F "
+                                        f"variant so no accidentally-true 'false' "
+                                        f"item ships."
+                                    ),
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.debug(
+                                    "DecisionCapture.log_decision raised on "
+                                    "question_generation (negation_rejected): %s",
+                                    exc,
+                                )
+                        make_false = False
+
+                if make_false:
                     return QuestionData(
                         question_id=question_id,
                         question_type="true_false",
@@ -848,8 +937,9 @@ class AssessmentGenerator:
                         feedback=f"<p>The correct statement is: {stmt.statement}</p>",
                         source_chunks=[stmt.source_chunk_id],
                         generation_rationale=(
-                            f"T/F (false) at {bloom_level} level; negated factual "
-                            f"statement about '{stmt.key_subject}'"
+                            f"T/F (false) at {bloom_level} level; verifiably-false "
+                            f"negated factual statement about '{stmt.key_subject}' "
+                            f"(W7.4 correctness-checked)"
                         ),
                     )
                 else:
@@ -1141,12 +1231,96 @@ class AssessmentGenerator:
             reason=reason,
         )
 
+    #: W7.4 — negation cue tokens. When the SOURCE claim already carries one,
+    #: a naive regex negation risks a double-negative (net-TRUE) statement, so
+    #: the correctness check rejects it. When the NEGATED string carries two or
+    #: more, the negation itself double-negated (also risks net-TRUE).
+    _NEGATION_CUES: frozenset = frozenset({
+        "not", "no", "never", "none", "cannot", "cant", "wont", "dont",
+        "doesnt", "isnt", "arent", "wasnt", "werent", "hasnt", "havent",
+        "without", "neither", "nor", "nothing", "nowhere", "nobody",
+    })
+
+    @staticmethod
+    def _negation_cue_count(text: str) -> int:
+        """Count negation cue tokens in ``text`` (apostrophes stripped).
+
+        ``don't`` / ``isn't`` normalise to ``dont`` / ``isnt`` so the
+        contraction forms are counted alongside the bare ``not``.
+        """
+        toks = re.findall(r"[a-z']+", text.lower())
+        cues = 0
+        for tok in toks:
+            bare = tok.replace("'", "")
+            if bare in AssessmentGenerator._NEGATION_CUES:
+                cues += 1
+        return cues
+
+    @classmethod
+    def _negation_is_verifiably_false(
+        cls, original: str, negated: str
+    ) -> bool:
+        """W7.4 — deterministic check that ``negated`` is non-trivially false.
+
+        ``_negate_statement`` flips a claim's polarity with a regex; with ZERO
+        correctness check a regex-negated statement can be accidentally TRUE
+        (a double-negation of an already-negative source, or a no-op that
+        changed nothing). This gate rejects those so the caller drops the bad
+        negation and regenerates from another statement.
+
+        Rejects (→ ``False``) when:
+          * the negation is empty / whitespace, or (case-insensitively) equal
+            to the source — a VACUOUS negation that changed nothing;
+          * the SOURCE claim already carries a negation cue (not/never/no/…) —
+            negating an already-negative statement risks a net-TRUE
+            double-negative that can't be cheaply verified as false;
+          * the NEGATED string carries ≥2 negation cues, or an adjacent
+            ``not … not`` — the negation introduced a DOUBLE negation.
+
+        Accepts (→ ``True``) a single-cue insert (``is`` → ``is not``), a
+        polar-qualifier swap that adds one cue (``always`` → ``never``), or a
+        cue-free polarity swap (``increases`` → ``decreases``,
+        ``before`` → ``after``) — each is a checkable falsification of a
+        positive source claim.
+        """
+        if not negated or not negated.strip():
+            return False
+        if negated.strip().lower() == (original or "").strip().lower():
+            return False
+        # Source already negative → double-negation / unverifiable-truth risk.
+        if cls._negation_cue_count(original or "") >= 1:
+            return False
+        # Negation introduced a double negation.
+        if cls._negation_cue_count(negated) >= 2:
+            return False
+        if re.search(r"\bnot\s+not\b", negated.lower()):
+            return False
+        return True
+
+    @classmethod
+    def _safe_negate_statement(cls, statement: str) -> Optional[str]:
+        """Negate ``statement`` and return it ONLY if verifiably false.
+
+        Wraps :meth:`_negate_statement` with the W7.4 correctness check.
+        Returns ``None`` when the produced negation could be accidentally
+        TRUE (so the caller drops it and regenerates), else the negated text.
+        """
+        negated = cls._negate_statement(statement)
+        if cls._negation_is_verifiably_false(statement, negated):
+            return negated
+        return None
+
     @staticmethod
     def _negate_statement(statement: str) -> str:
         """Negate a factual statement for T/F false items or MCQ distractors.
 
         Uses simple verb-aware negation: inserts 'not' after the first
         auxiliary/copula verb, or swaps key qualifiers.
+
+        NOTE: this is the RAW negation — it has no correctness check and can
+        emit a statement that is accidentally TRUE. Callers that need a
+        verifiably-false statement (T/F "false" stems, negated MCQ
+        distractors) MUST route through :meth:`_safe_negate_statement`.
         """
         # Try qualifier swaps first (more natural sounding)
         swaps = [

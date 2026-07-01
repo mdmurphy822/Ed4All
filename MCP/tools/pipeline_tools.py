@@ -4243,6 +4243,11 @@ def _derive_terminals_bottom_up(
 
     terminals: List[Dict[str, Any]] = []
     intra_cosines: List[float] = []
+    # W7.5 (M-TO) — surface the REAL cluster->source-chunk assignment so the
+    # TerminalObjectiveSourceGroundingValidator can score each TO statement
+    # against the chunks its cluster's COs actually cite (anti-fabrication:
+    # union of the member COs' own ``source_chunk_ids`` — never invented).
+    to_source_chunk_assignments: Dict[str, List[str]] = {}
     for c_idx, member_idxs in enumerate(clusters, start=1):
         cluster_cos = [chapter_cos[i] for i in member_idxs]
         authored = provider.author_terminal_for_cluster(
@@ -4252,8 +4257,18 @@ def _derive_terminals_bottom_up(
             authored = _fallback_terminal_from_cluster(cluster_cos)
         authored["id"] = mint_lo_id("terminal", c_idx)
         terminals.append(authored)
+        _cluster_chunk_ids: List[str] = []
+        _seen_chunk_ids: set = set()
         for i in member_idxs:
             chapter_cos[i]["terminal_id"] = authored["id"]
+            _raw = chapter_cos[i].get("source_chunk_ids")
+            if isinstance(_raw, list):
+                for _ch in _raw:
+                    _cs = str(_ch).strip()
+                    if _cs and _cs not in _seen_chunk_ids:
+                        _seen_chunk_ids.add(_cs)
+                        _cluster_chunk_ids.append(_cs)
+        to_source_chunk_assignments[authored["id"]] = _cluster_chunk_ids
         intra_cosines.append(_mean_intra_cluster_cosine(vecs, member_idxs))
 
     cluster_signals: Dict[str, Any] = {
@@ -4269,6 +4284,9 @@ def _derive_terminals_bottom_up(
         "min_intra_cluster_cosine": (
             round(min(intra_cosines), 6) if intra_cosines else 0.0
         ),
+        # W7.5 (M-TO) — REAL cluster->chunk assignment ({to_id: [chunk_ids]})
+        # consumed by TerminalObjectiveSourceGroundingValidator.
+        "to_source_chunk_assignments": to_source_chunk_assignments,
     }
     # P1 — surface the cluster-guard counters (outliers_absorbed /
     # undersize_merged / near_dup_clusters_merged / clusters_before /

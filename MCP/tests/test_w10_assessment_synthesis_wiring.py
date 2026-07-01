@@ -6,9 +6,10 @@ Covers the Phase-5 wiring slice of
 * the new ``assessment_synthesis`` phase exists in BOTH ``textbook_to_course``
   and ``course_generation``, sits BEFORE ``packaging``, and is declared
   ``agents: []`` (the validator-only-phase / phase-name-dispatch pattern);
-* the phase wires exactly the four contracted gates
+* the phase wires exactly the five contracted gates
   (``qti_well_formed`` critical, ``assessment_objective_alignment`` critical,
-  ``discussion_assignment_grounded`` warning, ``cumulative_assessment`` warning);
+  ``discussion_assignment_grounded`` warning, ``cumulative_assessment`` warning,
+  ``synthesized_quiz_distractor`` warning);
 * ``packaging`` depends on ``assessment_synthesis`` (both the default and the
   two-pass ``depends_on_when_env_value`` dep list);
 * ``MCP/core/executor.py::_PHASE_TOOL_MAPPING['assessment_synthesis']`` routes
@@ -56,6 +57,14 @@ EXPECTED_GATES = {
         "warning",
         "lib.validators.cumulative_assessment.CumulativeAssessmentValidator",
     ),
+    # W7.3: synthesized-quiz distractor-quality gate — audits the QTI item
+    # distractor surface the authored-block distractor_* gates never reach.
+    # Warning-day-1; reuses the qti_well_formed input builder.
+    "synthesized_quiz_distractor": (
+        "warning",
+        "lib.validators.synthesized_quiz_distractor."
+        "SynthesizedQuizDistractorValidator",
+    ),
 }
 
 
@@ -99,7 +108,7 @@ def test_phase_is_validator_only_routed_by_name(workflows_data, wf_name):
 
 
 @pytest.mark.parametrize("wf_name", ["textbook_to_course", "course_generation"])
-def test_phase_declares_four_contracted_gates(workflows_data, wf_name):
+def test_phase_declares_contracted_gates(workflows_data, wf_name):
     phase = _phase(workflows_data, wf_name, PHASE_NAME)
     gates = {g["gate_id"]: g for g in phase.get("validation_gates", [])}
     assert set(gates) == set(EXPECTED_GATES), (

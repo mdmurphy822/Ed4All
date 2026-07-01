@@ -1040,6 +1040,26 @@ workflows:
               on_error: warn
             description: FR-COURSE-03 — B14 final graded assessment must span >= 2 TOs when course has >= 4 TOs. Warning day-1; deferred critical-flip; no-op when < 4 TOs.
 
+          # W7.3 — synthesized-quiz distractor-quality gate. The W10 QTI items
+          # are gated for well-formedness + objective grounding, but their
+          # DISTRACTORS bypass every distractor-quality validator (the
+          # lib/validators/distractor_* gates run on Courseforge Block objects
+          # at the rewrite tier, NOT the Trainforge QTI item shape). This gate
+          # audits every synthesized MCQ's distractors for equals-key /
+          # duplicate / too-few / placeholder degeneracy. Reuses the
+          # _build_qti_well_formed builder (inputs["qti_dir"] = 06_assessments).
+          # Warning day-1; # TODO(calibration) deferred critical-flip after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          - gate_id: synthesized_quiz_distractor
+            validator: lib.validators.synthesized_quiz_distractor.SynthesizedQuizDistractorValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "W7.3 — synthesized-quiz MCQ distractor-quality gate (equals-key / duplicate / too-few / placeholder). Warning day-1; deferred critical-flip."
+
       - name: packaging
         agents: [brightspace-packager]
         parallel: true
@@ -1773,6 +1793,32 @@ workflows:
               max_uncovered_rate: 0.15
               max_uncited_chunk_rate: 0.10   # I3 chunk arm — DISTINCT from max_uncovered_rate
             description: "WS6a section arm (section->nearest-objective cosine) + I3 chunk arm (content-chunk citation set-membership, embedding-free, DISTINCT codes). Warning day-1; surfaces source material no objective covers/cites. Critical flips DEFERRED (TODO calibration)."
+
+          # W7.5 (M-TO) — TERMINAL-objective source-grounding gate. No existing
+          # gate scores a TO against its SOURCE text: terminal_objective_coverage
+          # is a structural roll-up, co_terminal_alignment scores a CO against
+          # its TO STATEMENT (statement<->statement, not statement<->source). So
+          # a coherent-but-HALLUCINATED TO (the "insurance TO-15" class where a
+          # semantic-outlier CO seeds an invented course-wide competency) passes
+          # every gate. This gate embeds each TO statement + the source chunks
+          # its cluster cites (the union of child COs' cited chunk ids — REAL
+          # assignments only, anti-fabrication) and flags TO_SOURCE_UNGROUNDED
+          # when the max cosine is below floor. Opt-in via ED4ALL_TO_SOURCE_
+          # GROUNDING (default OFF -> byte-identical no-op pass). Reuses the
+          # _build_chapter_objective_coverage_inputs builder (surfaces
+          # synthesized_objectives_path + dart_chunks_path; the validator
+          # reconstructs the cluster->chunk map from the objectives doc).
+          # Warning day-1; # TODO(calibration) deferred critical-flip after a
+          # >=2-corpus FP measurement (WS3/W4 deferred-flip pattern; NOT IB3).
+          - gate_id: terminal_objective_source_grounding
+            validator: lib.validators.terminal_objective_source_grounding.TerminalObjectiveSourceGroundingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn        # embedding-validator convention (cf. co_terminal_alignment), NOT fail_closed
+            description: "W7.5 — TO<->source-chunk grounding gate (opt-in ED4ALL_TO_SOURCE_GROUNDING; default OFF no-op). Flags TO_SOURCE_UNGROUNDED when a terminal objective's best supporting cited chunk is below the cosine floor. Warning day-1; critical flip DEFERRED (TODO calibration)."
 
       # concept_extraction phase — builds the pedagogy/concept graph from
       # the staged DART output + DART chunkset. Phase-ordering fix
@@ -3774,6 +3820,23 @@ workflows:
               on_fail: warn
               on_error: warn
             description: FR-COURSE-03 — B14 final graded assessment must span >= 2 TOs when course has >= 4 TOs. Warning day-1; deferred critical-flip; no-op when < 4 TOs.
+
+          # W7.3 — synthesized-quiz distractor-quality gate (see the identical
+          # gate on course_generation::assessment_synthesis). Audits every
+          # synthesized MCQ's distractors for equals-key / duplicate / too-few /
+          # placeholder degeneracy — the QTI item shape that the authored-block
+          # distractor_* gates never reach. Reuses the _build_qti_well_formed
+          # builder (inputs["qti_dir"] = 06_assessments). Warning day-1;
+          # # TODO(calibration) deferred critical-flip (WS3/W4 pattern; NOT IB3).
+          - gate_id: synthesized_quiz_distractor
+            validator: lib.validators.synthesized_quiz_distractor.SynthesizedQuizDistractorValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "W7.3 — synthesized-quiz MCQ distractor-quality gate (equals-key / duplicate / too-few / placeholder). Warning day-1; deferred critical-flip."
 
       - name: packaging
         agents: [brightspace-packager]
