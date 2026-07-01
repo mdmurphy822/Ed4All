@@ -105,10 +105,10 @@ def _make_chunks() -> List[Dict[str, Any]]:
                 "bloom_level": "understand",
                 "difficulty": "intermediate",
                 "source": {
-                    "module_id": "alg-9",
+                    "module_id": "demo-course",
                     "lesson_id": page_id,
-                    "item_path": f"alg-9#{page_id}",
-                    "course_id": "OPENSTAX_ALG_9_7B",
+                    "item_path": f"demo-course#{page_id}",
+                    "course_id": "DEMO_COURSE_1",
                 },
             })
     return chunks
@@ -118,7 +118,7 @@ def _coverage(graph: Dict[str, Any], out_dir) -> float:
     from Trainforge.rag.kg_quality_report import KGQualityReporter
 
     reporter = KGQualityReporter(
-        course_slug="sample-course-b", run_id="test", output_dir=out_dir
+        course_slug="demo-course-1", run_id="test", output_dir=out_dir
     )
     report = reporter.compute_metrics_only(graph)
     dims = report.get("dimensions") or {}
@@ -149,8 +149,8 @@ def test_stage3_retags_chunks_with_synthesized_concepts(tmp_path):
     vocab = build.run_stage3_concept_synthesis(
         chunks=chunks,
         textbook_structure_path=ts_path,
-        course_name="OPENSTAX_ALG_9_7B",
-        course_slug="sample-course-b",
+        course_name="DEMO_COURSE_1",
+        course_slug="demo-course-1",
         provider_factory=_FakeSynthesisProvider,
     )
 
@@ -175,7 +175,7 @@ def test_stage3_retags_chunks_with_synthesized_concepts(tmp_path):
 # re-tag the slugs land on ≥2 chunks → mint grounded co-occurrence nodes →
 # coverage clears the floor.
 _OBJECTIVES = {
-    "course_code": "OPENSTAX_ALG_9_7B",
+    "course_code": "DEMO_COURSE_1",
     "learning_outcomes": [
         {"id": "CO-01", "statement": "Solve a linear equation",
          "bloom_level": "apply",
@@ -201,7 +201,7 @@ def test_stage3_retag_lifts_coverage_above_floor(tmp_path):
     chunks_before = _make_chunks()
     graph_before = build.build_kg(
         chunks=chunks_before,
-        course_slug="sample-course-b",
+        course_slug="demo-course-1",
         objectives_payload=_OBJECTIVES,
         run_id="test-before",
     )
@@ -225,15 +225,15 @@ def test_stage3_retag_lifts_coverage_above_floor(tmp_path):
     vocab = build.run_stage3_concept_synthesis(
         chunks=chunks_after,
         textbook_structure_path=ts_path,
-        course_name="OPENSTAX_ALG_9_7B",
-        course_slug="sample-course-b",
+        course_name="DEMO_COURSE_1",
+        course_slug="demo-course-1",
         provider_factory=_FakeSynthesisProvider,
     )
     assert vocab is not None and vocab["concept_count"] > 0
 
     graph_after = build.build_kg(
         chunks=chunks_after,
-        course_slug="sample-course-b",
+        course_slug="demo-course-1",
         objectives_payload=_OBJECTIVES,
         run_id="test-after",
     )

@@ -462,14 +462,14 @@ def _curie_dense_block(curies: List[str]) -> Block:
 
 
 _M3_DENSE_CURIES = [
-    "samplecoursea:multiple",
-    "samplecoursea:prime_factorization",
-    "samplecoursea:least_common_multiple",
-    "samplecoursea:prime_factors_method",
-    "samplecoursea:least_common_multiple_lcm",
-    "samplecoursea:order_of_operations",
-    "samplecoursea:evaluation",
-    "samplecoursea:prime_factors",
+    "democourse:multiple",
+    "democourse:prime_factorization",
+    "democourse:least_common_multiple",
+    "democourse:prime_factors_method",
+    "democourse:least_common_multiple_lcm",
+    "democourse:order_of_operations",
+    "democourse:evaluation",
+    "democourse:prime_factors",
 ]
 
 
@@ -500,18 +500,18 @@ def test_m3_tolerant_preservation_enforces_only_used_terms(monkeypatch):
 
     # The two USED terms are enforced -> survive (force-injected because the
     # model didn't echo the token).
-    assert _curie_survives_validator_path(out.content, "samplecoursea:multiple")
+    assert _curie_survives_validator_path(out.content, "democourse:multiple")
     assert _curie_survives_validator_path(
-        out.content, "samplecoursea:prime_factors"
+        out.content, "democourse:prime_factors"
     )
     # The six UNUSED CURIEs are pruned -> not injected.
     for unused in (
-        "samplecoursea:prime_factorization",
-        "samplecoursea:least_common_multiple",
-        "samplecoursea:prime_factors_method",
-        "samplecoursea:least_common_multiple_lcm",
-        "samplecoursea:order_of_operations",
-        "samplecoursea:evaluation",
+        "democourse:prime_factorization",
+        "democourse:least_common_multiple",
+        "democourse:prime_factors_method",
+        "democourse:least_common_multiple_lcm",
+        "democourse:order_of_operations",
+        "democourse:evaluation",
     ):
         assert not _curie_survives_validator_path(out.content, unused), (
             f"unused CURIE {unused!r} was forced into the prose — M3 should "
@@ -535,8 +535,8 @@ def test_m3_used_terms_do_not_trigger_force_all_retry(monkeypatch):
         # Carry BOTH used CURIE tokens in code-voice so they're already
         # anchored in pedagogical context on the first emit.
         body = (
-            "<section><p>The <code>samplecoursea:multiple</code> and "
-            "<code>samplecoursea:prime_factors</code> concepts.</p>"
+            "<section><p>The <code>democourse:multiple</code> and "
+            "<code>democourse:prime_factors</code> concepts.</p>"
             "</section>"
         )
         return httpx.Response(200, json=_success_body(body))

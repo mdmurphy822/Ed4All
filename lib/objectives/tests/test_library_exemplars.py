@@ -65,7 +65,7 @@ def test_resolve_min_overlap(value, expected):
 def _make_library(root: Path) -> None:
     courses = root / "courses"
     # Archive form (terminal_outcomes / component_objectives).
-    a = courses / "rdf-shacl-551"
+    a = courses / "demo-course-1"
     a.mkdir(parents=True)
     (a / "objectives.json").write_text(
         json.dumps(
@@ -155,14 +155,14 @@ def test_surface_ranks_and_labels_exemplars(tmp_path):
     assert res["exemplar_count"] >= 1
     # RDF exemplars must rank above the photosynthesis ones.
     top = res["exemplars"][0]
-    assert top["source_course"] == "rdf-shacl-551"
+    assert top["source_course"] == "demo-course-1"
     # Provenance label is present + immutable-shaped, anti-fabrication.
-    assert top["provenance"].startswith("libv2:rdf-shacl-551#")
+    assert top["provenance"].startswith("libv2:demo-course-1#")
     assert "relevance" in top
     # Photosynthesis objectives (from the group form) are discoverable at all
     # (proves both shapes are read) — but only if they clear the floor.
     all_sources = {e["source_course"] for e in res["exemplars"]}
-    assert "rdf-shacl-551" in all_sources
+    assert "demo-course-1" in all_sources
 
 
 def test_current_course_excluded_from_own_exemplars(tmp_path):
@@ -172,13 +172,13 @@ def test_current_course_excluded_from_own_exemplars(tmp_path):
         chapter_objectives=[],
     )
     res = surface_exemplars(
-        course_name="RDF SHACL 551",
+        course_name="Demo Course 1",
         query_terms=terms,
         libv2_root=str(tmp_path),
-        current_slug="rdf-shacl-551",  # exclude self
+        current_slug="demo-course-1",  # exclude self
     )
     sources = {e["source_course"] for e in res["exemplars"]}
-    assert "rdf-shacl-551" not in sources
+    assert "demo-course-1" not in sources
 
 
 def test_limit_and_min_overlap_bounds(tmp_path):

@@ -1139,7 +1139,7 @@ def test_mixed_key_claims_rejected_before_repair():
     payload = _valid_explanation_outline()
     # Inject the live failure: a bare chunk-id string appended to the
     # otherwise all-object key_claims array.
-    payload["key_claims"].append("sample_course_a_chunk_00001")
+    payload["key_claims"].append("democourse_chunk_00001")
     with pytest.raises(jsonschema.ValidationError):
         _validate_explanation(payload)
 
@@ -1150,7 +1150,7 @@ def test_repair_mixed_key_claims_passes_explanation_schema():
     The stray bare chunk-id (which names a real block chunk) is DROPPED;
     no claim is fabricated."""
     payload = _valid_explanation_outline()
-    stray_id = "sample_course_a_chunk_00001"
+    stray_id = "democourse_chunk_00001"
     payload["key_claims"].append(stray_id)
     valid_ids = ["chunk_a", stray_id]
 
@@ -1273,7 +1273,7 @@ def test_combined_repairs_normalize_both_failures_end_to_end():
     PASSES the strict explanation schema — the end-to-end contract the
     outline-tier call site relies on."""
     payload = _valid_explanation_outline()
-    stray_id = "sample_course_a_chunk_00001"
+    stray_id = "democourse_chunk_00001"
     payload["key_claims"].append(stray_id)
     payload["curies"] = ["foo:bar", "schema:https://example.com/vocab"]
     valid_ids = ["chunk_a", stray_id]
@@ -1630,7 +1630,7 @@ def test_all_five_repairs_normalize_every_failure_end_to_end():
     PASSES the strict explanation schema — the end-to-end contract the
     outline-tier call site relies on after the two new repairs land."""
     payload = _valid_explanation_outline()
-    stray_id = "sample_course_a_chunk_00001"
+    stray_id = "democourse_chunk_00001"
     payload["key_claims"].append(stray_id)
     payload["curies"] = ["foo:bar", "schema:https://example.com/vocab"]
     payload["source_refs"] = ["dart:slug#chunk_a", {"sourceId": "dart:slug#chunk_b"}]

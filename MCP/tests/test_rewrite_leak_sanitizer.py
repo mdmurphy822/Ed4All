@@ -23,53 +23,53 @@ import MCP.tools.pipeline_tools as pt
 
 def test_code_voice_minted_curie_replaced_with_surface_term():
     html = (
-        "<p>The set of <code>samplecoursea:integers</code> includes "
+        "<p>The set of <code>democourse:integers</code> includes "
         "negative numbers.</p>"
     )
     out = pt._curie_visible_to_surface(
-        html, "samplecoursea:integers", "integers",
+        html, "democourse:integers", "integers",
     )
-    assert "<code>samplecoursea:integers</code>" not in out
-    assert "samplecoursea:integers" not in out
+    assert "<code>democourse:integers</code>" not in out
+    assert "democourse:integers" not in out
     assert "The set of integers includes" in out
 
 
 def test_data_cf_term_full_curie_reduced_to_localname():
-    html = '<span data-cf-term="samplecoursea:integers">integers</span>'
+    html = '<span data-cf-term="democourse:integers">integers</span>'
     out = pt._curie_visible_to_surface(
-        html, "samplecoursea:integers", "integers",
+        html, "democourse:integers", "integers",
     )
     assert 'data-cf-term="integers"' in out
-    assert 'data-cf-term="samplecoursea:integers"' not in out
+    assert 'data-cf-term="democourse:integers"' not in out
 
 
 def test_bare_prose_token_replaced():
-    html = "<p>We will study samplecoursea:integers today.</p>"
+    html = "<p>We will study democourse:integers today.</p>"
     out = pt._curie_visible_to_surface(
-        html, "samplecoursea:integers", "integers",
+        html, "democourse:integers", "integers",
     )
-    assert "samplecoursea:integers" not in out
+    assert "democourse:integers" not in out
     assert "study integers today" in out
 
 
 def test_hidden_curie_span_token_preserved():
     """The hidden anchoring span MUST keep the literal CURIE token."""
     html = (
-        "<p>About samplecoursea:integers.</p>"
-        '<span hidden data-cf-curie="samplecoursea:integers">'
-        "samplecoursea:integers</span>"
+        "<p>About democourse:integers.</p>"
+        '<span hidden data-cf-curie="democourse:integers">'
+        "democourse:integers</span>"
     )
     out = pt._curie_visible_to_surface(
-        html, "samplecoursea:integers", "integers",
+        html, "democourse:integers", "integers",
     )
     # Visible prose cleaned.
     visible = out.split("<span hidden")[0]
-    assert "samplecoursea:integers" not in visible
+    assert "democourse:integers" not in visible
     assert "About integers." in visible
     # Hidden span token survives (curie-anchoring gate signal).
     assert (
-        'data-cf-curie="samplecoursea:integers">'
-        "samplecoursea:integers</span>" in out
+        'data-cf-curie="democourse:integers">'
+        "democourse:integers</span>" in out
     )
 
 
@@ -179,8 +179,8 @@ def test_post_hoc_wrapper_cleans_both_leak_classes():
 # P0 — VISIBLE provenance-id leak sanitizer (CLASS 1/2/3 identifier leakage)
 # ---------------------------------------------------------------------------
 
-_DART_ID = "dart:sample-algebra-2e-ch1-3_accessible#af6e8d9fc7932ce6"
-_DART_ID2 = "dart:sample-algebra-2e-ch1-3_accessible#7bb8524612ed155d"
+_DART_ID = "dart:demo-textbook-ch1_accessible#af6e8d9fc7932ce6"
+_DART_ID2 = "dart:demo-textbook-ch1_accessible#7bb8524612ed155d"
 
 
 def test_class1_source_attribution_cite_stripped():
@@ -205,7 +205,7 @@ def test_class1_bare_dart_id_run_in_prose_stripped():
         "<p>This follows from %s; %s in the source.</p>" % (_DART_ID, _DART_ID2)
     )
     out = pt._strip_visible_provenance_ids(html)
-    assert "dart:sample-algebra" not in out
+    assert "dart:demo-textbook" not in out
     assert "This follows from" in out
 
 
@@ -218,7 +218,7 @@ def test_class1_dart_id_inside_attribute_preserved():
 def test_class2_according_to_source_chunk_cleaned():
     html = (
         "<p>According to the source, "
-        "<cite>sample_course_a_chunk_00013</cite>, the LCM of two "
+        "<cite>democourse_chunk_00013</cite>, the LCM of two "
         "numbers can be found by listing multiples.</p>"
     )
     out = pt._strip_visible_provenance_ids(html)
@@ -230,7 +230,7 @@ def test_class2_according_to_source_chunk_cleaned():
 def test_class2_according_to_source_chunk_variant_cleaned():
     html = (
         "<p>According to the source chunk "
-        "<cite>sample_course_a_chunk_00016</cite>, the equal sign "
+        "<cite>democourse_chunk_00016</cite>, the equal sign "
         "indicates equality.</p>"
     )
     out = pt._strip_visible_provenance_ids(html)

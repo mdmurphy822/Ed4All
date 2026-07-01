@@ -132,12 +132,12 @@ def test_objective_fallback_renders_statement_not_bare_id():
 
 def test_no_visible_curie_or_lo_id_tokens_leak():
     minted = {
-        "samplecoursea:integers": {"surface_forms": ["integers"]},
+        "democourse:integers": {"surface_forms": ["integers"]},
     }
     blk = _make_block(
         "concept",
         [
-            "The set of samplecoursea:integers includes negatives.",
+            "The set of democourse:integers includes negatives.",
             "An integer is defined as a whole number or its negation.",
         ],
     )
@@ -145,7 +145,7 @@ def test_no_visible_curie_or_lo_id_tokens_leak():
         blk, objective_statements={}, minted_curie_map=minted,
     )
     # The minted CURIE token must NOT appear in visible prose.
-    assert "samplecoursea:integers" not in out
+    assert "democourse:integers" not in out
     assert "integers includes negatives" in out  # surface term substituted
     # No stray bare TO-NN / CO-NN token in visible body.
     assert not re.search(r"\bTO-\d{2}\b", out)

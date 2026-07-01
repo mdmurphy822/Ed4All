@@ -207,11 +207,11 @@ def test_repair_stray_code_closers():
 
 
 def test_repair_bare_pseudo_tag_curie():
-    bad = "<p>The fraction <samplecoursea:fraction>1/2 is shown.</p>"
+    bad = "<p>The fraction <democourse:fraction>1/2 is shown.</p>"
     fixed = _assert_repaired_and_idempotent(bad)
     # The CURIE-as-tag is escaped to literal text, not left as a tag.
-    assert "<samplecoursea:fraction>" not in fixed
-    assert "&lt;samplecoursea:fraction&gt;" in fixed
+    assert "<democourse:fraction>" not in fixed
+    assert "&lt;democourse:fraction&gt;" in fixed
 
 
 def test_repair_idempotent_on_valid_html():
@@ -234,7 +234,7 @@ def test_repair_preserves_valid_tags_and_attrs():
 def test_cb2_strips_leaked_chunk_token_and_leading_space():
     """A visible ``[..._chunk_NNNNN]`` token (and its leading space) is removed
     from learner prose; the surrounding prose stays intact; second run no-op."""
-    bad = "<p>multiply by the reciprocal. [sample_course_a_chunk_00043]</p>"
+    bad = "<p>multiply by the reciprocal. [democourse_chunk_00043]</p>"
     fixed = _pt._repair_rewrite_html(bad)
     # Token gone; the leading space consumed (no trailing double space).
     assert "chunk_00043" not in fixed
@@ -248,12 +248,12 @@ def test_cb2_does_not_touch_source_id_attribute():
     """The bare (non-bracketed) chunk id inside a ``data-cf-source-ids``
     attribute value is NEVER stripped — only the bracketed form is removed."""
     good = (
-        '<section data-cf-source-ids="sample_course_a_chunk_00043">'
+        '<section data-cf-source-ids="democourse_chunk_00043">'
         "<p>Clean prose.</p></section>"
     )
     fixed = _pt._repair_rewrite_html(good)
     assert (
-        'data-cf-source-ids="sample_course_a_chunk_00043"' in fixed
+        'data-cf-source-ids="democourse_chunk_00043"' in fixed
     )
     assert fixed == good  # untouched + idempotent
     assert _pt._repair_rewrite_html(fixed) == fixed
@@ -291,7 +291,7 @@ def test_cb2_strips_non_chunk_source_id_token_and_leading_space():
 def test_cb2_broadened_still_strips_chunk_token():
     """The original ``[..._chunk_NNNNN]`` form is still stripped by the
     broadened pass (the chunk-only regex is subsumed, behavior preserved)."""
-    bad = "<p>multiply by the reciprocal. [sample_course_a_chunk_00043]</p>"
+    bad = "<p>multiply by the reciprocal. [democourse_chunk_00043]</p>"
     fixed = _pt._repair_rewrite_html(bad)
     assert "chunk_00043" not in fixed
     assert fixed == "<p>multiply by the reciprocal.</p>"
