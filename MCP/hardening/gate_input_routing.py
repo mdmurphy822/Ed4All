@@ -2681,6 +2681,15 @@ def default_router() -> GateInputRouter:
         "lib.validators.difficulty_provenance.DifficultyProvenanceValidator",
         _build_libv2_manifest,
     )
+    # "True full course" archival-completeness gate. Inspects the archived
+    # course dir (chunks + vector index integrity), so it reuses the same
+    # {course_dir, manifest_path} input shape as the manifest validator —
+    # the validator resolves <course_dir>/{imscc,dart}_chunks/chunks.jsonl
+    # and <course_dir>/vector_index/.
+    r.register(
+        "lib.validators.libv2.course_completeness.CourseCompletenessValidator",
+        _build_libv2_manifest,
+    )
     r.register(
         "lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator",
         _build_assessment_objective_alignment,

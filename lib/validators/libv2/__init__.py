@@ -12,11 +12,13 @@ modules (``lib/validators/libv2_manifest.py``,
 shim files for one minor-version cycle.
 """
 
+from lib.validators.libv2.course_completeness import CourseCompletenessValidator
 from lib.validators.libv2.manifest import LibV2ManifestValidator
 from lib.validators.libv2.model import LibV2ModelValidator
 from lib.validators.libv2.packet_integrity import PacketIntegrityValidator
 
 __all__ = [
+    "CourseCompletenessValidator",
     "LibV2ManifestValidator",
     "LibV2ModelValidator",
     "PacketIntegrityValidator",

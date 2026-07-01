@@ -4545,6 +4545,35 @@ workflows:
               on_error: warn
             description: Wave 3 W3.D — drift detector across DART vs. IMSCC chunksets
 
+          # "True full course" archival-completeness gate. Catches the
+          # incomplete-archive shapes that pollute LibV2/courses/ (empty
+          # shells, timestamped skeletons, 2-file slices, degenerate
+          # imports, truncated/fake indexes) WITHOUT failing the two
+          # archive shapes the operator keeps: a full generated course OR a
+          # chunk-only retrieval import (both PASS clean). Emits
+          # ARCHIVE_NO_CHUNKS / ARCHIVE_TOO_THIN / ARCHIVE_NO_INDEX /
+          # ARCHIVE_INDEX_MISMATCH / ARCHIVE_FAKE_INDEX. Warning-day-1
+          # (on_fail: warn) with a TODO(calibration) deferred critical-flip;
+          # the opt-in ED4ALL_ARCHIVE_REQUIRE_FULL_COURSE strict mode flips
+          # the incompleteness issues to critical/blocking (mirrors the W2.3
+          # ED4ALL_REQUIRE_ARCHIVED_OBJECTIVES posture). Does NOT require
+          # objectives/content-pages (that would wrongly fail chunk-only
+          # imports). Min-chunk floor reuses ED4ALL_MIN_CHUNKS (default 20).
+          # NOTE: on this path vector_indexing runs AFTER libv2_archival, so
+          # a fresh full-course archive may surface a non-blocking
+          # ARCHIVE_NO_INDEX warning until it is indexed — acceptable day-1
+          # noise for the default warning posture (see the validator docstring).
+          # TODO(calibration): promote to critical after a >=2-corpus FP measurement.
+          - gate_id: course_completeness
+            validator: lib.validators.libv2.course_completeness.CourseCompletenessValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "True full course archival-completeness gate (chunks + vector-index integrity; warning day-1, ED4ALL_ARCHIVE_REQUIRE_FULL_COURSE strict opt-in)"
+
       # Marketable-v1 A2: build the per-course on-device vector index so a
       # freshly-built course is askable (retrieval-ready) the moment the run
       # completes. Runs AFTER libv2_archival (the handler resolves the chunkset
