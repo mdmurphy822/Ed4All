@@ -633,6 +633,13 @@ class AssessmentRetrievalGroundingValidator:
                 calibration_signal=calibration_signal,
                 threshold=calibration_threshold,
                 libv2_root=calibration_libv2_root,
+                # W8.1 — the canonical ``answerability_alignment_rate`` field
+                # has no home in the schema-locked report summary, so read the
+                # schema-present ``answerable_rate`` sibling (same
+                # retrieval-grounding score) when the canonical field is
+                # absent. Makes the previously-dead flip fire on a real
+                # calibration build while staying calibration-gated.
+                fallback_signals=("answerable_rate",),
             )
         )
         # Track whether the flip event has already fired against a
@@ -1023,6 +1030,19 @@ class AssessmentRetrievalGroundingValidator:
         # Score: grounded / audited; 1.0 when nothing was audited.
         score = 1.0 if audited == 0 else round(grounded / audited, 4)
 
+        # W8.1 — EMIT the calibration signal the calibration-gated severity flip
+        # reads. Before this, ``resolve_severity_flip`` read
+        # ``trainforge_assessment_quality_report.json::summary.answerability_alignment_rate``
+        # but NO producer ever wrote that field, so the flip was DEAD (it could
+        # only ever defer). This validator's answer-text↔source-chunk alignment
+        # score (grounded / audited) IS that answerability-alignment rate, so we
+        # stamp it onto the GateResult metadata here; the
+        # TrainforgeAssessmentQualityReport aggregator surfaces it into
+        # ``summary.answerability_alignment_rate``, giving the flip a real input.
+        # The flip stays calibration-gated (only fires when a calibration-corpus
+        # report exists AND clears the 0.85 floor), so nothing flips by default.
+        answerability_alignment_rate = score
+
         _emit_decision(
             capture,
             audited=audited,
@@ -1045,6 +1065,17 @@ class AssessmentRetrievalGroundingValidator:
             score=score,
             issues=issues,
             action=None if passed else "regenerate",
+            metadata={
+                "assessment_retrieval_grounding": {
+                    # W8.1 calibration signal — the real input for the
+                    # calibration-gated severity flip (see comment above).
+                    "answerability_alignment_rate": answerability_alignment_rate,
+                    "audited": audited,
+                    "grounded": grounded,
+                    "failed": failed,
+                    "severity_flip_applied": self._severity_flip_applied,
+                }
+            },
         )
 
 

@@ -304,6 +304,20 @@ TRAINABLE_GATE_IDS: frozenset = frozenset({
 # Wave 1 5-arrow boundary).
 _NON_CERTIFIED_ARCHIVE_BOUNDARY_ARROW = 5
 
+# Canonical anti-silent-degradation sentinel gate ID. Kept as a module
+# constant so the non-training-run relaxation below can recognise a
+# legitimately-skipped stage (an arrow whose ONLY failure signal is the
+# missing-stage-report sentinel) without importing the aggregator.
+_MISSING_STAGE_REPORT = "missing_stage_report"
+
+# First arrow of the assessment / training cohort. Arrows at or beyond this
+# ordinal (6: assessment items, 7: training pairs, 8: adapter, 9: eval) only
+# run on a TRAINING build. On a non-training run (``--skip-training`` /
+# ``--stop-after imscc_chunking``) they are legitimately absent, so a
+# ``missing_stage_report`` sentinel on them must NOT short-circuit the whole
+# course to ``failed`` — see W8.5 and ``derive_course_status``.
+_TRAINING_COHORT_MIN_ARROW = 6
+
 # Promotion-decision values that signal a hard failure at the arrow level.
 _HARD_FAIL_DECISIONS = frozenset({"fail"})
 
@@ -385,8 +399,29 @@ def derive_course_status(
     arrows: Iterable[Mapping[str, Any]],
     *,
     critical_gate_ids: Optional[Iterable[str]] = None,
+    training_expected: Optional[bool] = None,
 ) -> str:
     """Walk the per-arrow rows and return the canonical course_status enum.
+
+    ``training_expected`` (W8.5): three-valued run-scope hint.
+
+      * ``None`` (default) — strict legacy behaviour: a ``missing_stage_report``
+        sentinel on ANY arrow (including the assessment/training cohort,
+        arrows 6-9) is treated as a critical failure and short-circuits to
+        ``failed``. This preserves the byte-identical Wave-3 contract for
+        every existing caller that does not pass the hint.
+      * ``False`` — a NON-training run (``--skip-training`` /
+        ``--stop-after imscc_chunking``): the assessment/training arrows
+        (``arrow_id >= 6``) were never dispatched, so a
+        ``missing_stage_report`` sentinel on them is a legitimate skip, NOT a
+        broken audit trail. Those arrows no longer short-circuit to
+        ``failed``; the course certifies at whatever tier the completed
+        arrows (1-5) support (e.g. ``certified_instructional``). A genuine
+        failure in the core pipeline (a missing/failed arrow 1-5, or a real
+        critical-gate fail) STILL returns ``failed``.
+      * ``True`` — a training run: identical to the strict ``None`` path (a
+        missing training report on a build that WAS supposed to train is a
+        real regression).
 
     Decision logic per plan §"Worker W3.G" (the 5-branch tree):
 
@@ -431,6 +466,21 @@ def derive_course_status(
         if arrow.get("promotion_decision") not in _HARD_FAIL_DECISIONS:
             continue
         vs = _validator_set(arrow)
+        # W8.5 — non-training run relaxation: an assessment/training arrow
+        # (``arrow_id >= 6``) whose ONLY failure signal is the
+        # missing-stage-report sentinel was legitimately skipped (the
+        # training phases were never dispatched). It must NOT force the
+        # whole course to ``failed`` — the completed core-pipeline arrows
+        # decide the certified tier below. Any OTHER failing gate on those
+        # arrows (a real assessment/eval fail) falls through to the normal
+        # criticality test, which does not mark them critical either (they
+        # are not in the accessibility cohort) — it just caps the tier.
+        if (
+            training_expected is False
+            and int(arrow.get("arrow_id") or 0) >= _TRAINING_COHORT_MIN_ARROW
+            and vs <= {_MISSING_STAGE_REPORT}
+        ):
+            continue
         # A failing arrow with no validator_set rows is treated as
         # critical by construction (the missing-stage-report sentinel
         # falls into this bucket because the composer can't tell which

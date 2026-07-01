@@ -39,7 +39,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +101,7 @@ def resolve_severity_flip(
     threshold: float,
     course_slug: str = DEFAULT_CALIBRATION_COURSE_SLUG,
     libv2_root: Optional[Path] = None,
+    fallback_signals: Sequence[str] = (),
 ) -> Tuple[bool, Dict[str, Any]]:
     """Decide whether a calibration-gated severity flip should fire.
 
@@ -160,6 +161,19 @@ def resolve_severity_flip(
             to ``calibration_textbook`` (the W2.B canonical fixture).
         libv2_root: Override the LibV2 root path. Test-only; production
             callers use the default.
+        fallback_signals: Ordered sibling summary fields to try when
+            ``calibration_signal`` is absent / non-numeric. W8.1: the
+            ``trainforge_assessment_quality_report.json`` schema
+            (``schemas/aggregators/…`` — ``summary.additionalProperties:
+            false``) has no ``answerability_alignment_rate`` field, so a
+            real calibration build cannot carry it directly; the
+            equivalent value is emitted under the schema-present
+            ``answerable_rate`` (itself sourced verbatim from the
+            ``AssessmentRetrievalGroundingValidator`` answer↔source
+            alignment score). Passing ``("answerable_rate",)`` lets the
+            flip read that REAL input instead of the never-written
+            canonical field, so the flip is no longer dead. Defaults to
+            empty (byte-identical to the pre-W8.1 single-signal read).
 
     Returns:
         ``(apply_flip, decision_payload)``. The caller fans out:
@@ -195,7 +209,7 @@ def resolve_severity_flip(
         }
 
     summary = payload.get("summary")
-    if not isinstance(summary, Mapping) or calibration_signal not in summary:
+    if not isinstance(summary, Mapping):
         rationale = (
             f"Calibration signal {calibration_signal!r} not present in "
             f"{report_path}::summary; holding severity at warning."
@@ -211,12 +225,28 @@ def resolve_severity_flip(
             },
         }
 
-    observed = summary.get(calibration_signal)
-    if not isinstance(observed, (int, float)):
+    # W8.1 — try the canonical signal first, then any fallback siblings.
+    # A fallback that resolves records BOTH the field actually read
+    # (``calibration_signal``) and the canonical name requested
+    # (``requested_signal``) so the audit trail is honest about which
+    # summary field drove the flip.
+    resolved_signal: Optional[str] = None
+    observed: Any = None
+    for candidate in (calibration_signal, *fallback_signals):
+        val = summary.get(candidate)
+        if isinstance(val, bool):
+            # bool is an int subclass but never a valid rate.
+            continue
+        if isinstance(val, (int, float)):
+            resolved_signal = candidate
+            observed = val
+            break
+
+    if resolved_signal is None:
+        tried = ", ".join(repr(s) for s in (calibration_signal, *fallback_signals))
         rationale = (
-            f"Calibration signal {calibration_signal!r} at {report_path} is "
-            f"not numeric (got {type(observed).__name__}); holding severity "
-            "at warning."
+            f"Calibration signal(s) {tried} not present / not numeric in "
+            f"{report_path}::summary; holding severity at warning."
         )
         return False, {
             "decision_type": "severity_flip_deferred",
@@ -229,6 +259,13 @@ def resolve_severity_flip(
             },
         }
 
+    # Reflect the field actually read (may be a fallback sibling) while
+    # preserving the requested canonical name for provenance.
+    base_features = {
+        **base_features,
+        "calibration_signal": resolved_signal,
+        "requested_signal": calibration_signal,
+    }
     observed_f = float(observed)
     if observed_f < threshold_f:
         rationale = (

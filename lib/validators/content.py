@@ -360,7 +360,7 @@ class BlockCognitiveLoadValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         from lib.validators._block_rubric_helpers import (
-            block_quality_rubric_enabled,
+            block_quality_scoring_active,
             block_type_of,
             body_text_of,
             count_idea_chunks,
@@ -373,7 +373,8 @@ class BlockCognitiveLoadValidator:
         # Default-off byte-stable no-op (unless explicitly forced on for tests).
         enabled = inputs.get("rubric_enabled")
         if enabled is None:
-            enabled = block_quality_rubric_enabled()
+            # W8.8 — also run under the shadow-collect flag (measurement only).
+            enabled = block_quality_scoring_active()
         if not enabled:
             return GateResult(
                 gate_id=gate_id,

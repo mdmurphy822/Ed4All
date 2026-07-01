@@ -22,6 +22,7 @@ if str(_REPO_ROOT) not in sys.path:
 from lib.validators.kg_quality import (  # noqa: E402
     KGQualityValidator,
     resolve_kg_prereq_health,
+    resolve_kg_real_floors,
 )
 from lib.validators import kg_quality as _kgq  # noqa: E402
 
@@ -658,6 +659,203 @@ def test_prereq_health_flag_on_clean_graph_no_warnings(tmp_path: Path, monkeypat
         i.code for i in result.issues if i.code.startswith("KG_PREREQ_")
     ]
     assert prereq_codes == []
+
+
+# --------------------------------------------------------------------------- #
+# W8.4 — real (non-vacuous) completeness + accuracy floors.
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_kg_real_floors_parse_with_fallback():
+    """Flag resolver: truthy tokens on, everything else off (default OFF)."""
+    assert resolve_kg_real_floors("1") is True
+    assert resolve_kg_real_floors("true") is True
+    assert resolve_kg_real_floors("ON") is True
+    assert resolve_kg_real_floors("yes") is True
+    assert resolve_kg_real_floors("0") is False
+    assert resolve_kg_real_floors("false") is False
+    assert resolve_kg_real_floors("garbage") is False
+    assert resolve_kg_real_floors("") is False
+    assert resolve_kg_real_floors(None) is False  # env unset in test env
+
+
+def test_real_completeness_penalizes_ungrounded_nodes():
+    """A frequency-0 / empty-occurrences concept node is INCOMPLETE — the
+    vacuous id+label ratio would score it 1.0."""
+    graph = {
+        "nodes": [
+            {"id": "a", "label": "A", "occurrences": ["c1"]},
+            {"id": "b", "label": "B", "frequency": 3},
+            # asserted-but-ungrounded lo_key_concept — incomplete.
+            {"id": "c", "label": "C", "occurrences": [], "frequency": 0},
+            {"id": "d", "label": "D"},  # no grounding fields — incomplete.
+        ],
+    }
+    detail = _kgq._real_completeness(graph)
+    assert detail["denominator"] == 4
+    assert detail["numerator"] == 2
+    assert detail["score"] == 0.5
+
+
+def test_real_completeness_excludes_non_concept_classes():
+    """Only DomainConcept-or-classless nodes count toward the denominator."""
+    graph = {
+        "nodes": [
+            {"id": "a", "label": "A", "occurrences": ["c1"]},
+            {"id": "chk", "label": "Chunk", "class": "Chunk"},  # excluded
+            {"id": "out", "label": "Outcome", "class": "Outcome"},  # excluded
+        ],
+    }
+    detail = _kgq._real_completeness(graph)
+    assert detail["denominator"] == 1
+    assert detail["numerator"] == 1
+    assert detail["score"] == 1.0
+
+
+def test_real_accuracy_detects_dangling_edge_endpoints():
+    """A concept edge endpoint pointing at a non-node id is a dangling
+    reference; LO endpoints are excluded from the denominator."""
+    graph = {
+        "nodes": [
+            {"id": "algebra", "label": "Algebra"},
+            {"id": "arithmetic", "label": "Arithmetic"},
+        ],
+        "edges": [
+            # both endpoints resolve.
+            {"source": "algebra", "target": "arithmetic", "type": "related-to"},
+            # target dangles (no such node).
+            {"source": "algebra", "target": "ghost", "type": "related-to"},
+            # federation TO->TO — both endpoints excluded (not counted).
+            {"source": "TO-02", "target": "TO-01", "type": "prerequisite"},
+        ],
+    }
+    detail = _kgq._real_accuracy(graph)
+    # 4 concept endpoints counted (algebra, arithmetic, algebra, ghost);
+    # TO-01/TO-02 excluded. 3 resolve, 1 dangles.
+    assert detail["endpoint_count"] == 4
+    assert detail["resolved_endpoints"] == 3
+    assert detail["dangling_endpoints"] == 1
+    assert detail["score"] == 0.75
+
+
+def _degraded_graph_payload() -> Dict[str, Any]:
+    """A graph whose REAL completeness + accuracy fall below 0.95 but whose
+    id+label ratio (vacuous completeness) is 1.0 and whose SHACL warning
+    count (vacuous accuracy) is 0."""
+    return {
+        "kind": "concept_semantic",
+        "nodes": [
+            {"id": "a", "label": "A", "occurrences": ["c1"]},
+            {"id": "b", "label": "B", "frequency": 2},
+            # ungrounded → drops real completeness.
+            {"id": "c", "label": "C", "occurrences": [], "frequency": 0},
+        ],
+        "edges": [
+            {"source": "a", "target": "b", "type": "related-to"},
+            # dangling target → drops real accuracy.
+            {"source": "a", "target": "ghost", "type": "related-to"},
+        ],
+    }
+
+
+def test_real_floors_flag_off_byte_identical(tmp_path: Path, monkeypatch):
+    """Default OFF → the reporter's vacuous 1.0 scores flow through, no
+    real_floors metadata, gate passes (byte-identical to the historical
+    behaviour)."""
+    monkeypatch.delenv("ED4ALL_KG_REAL_FLOORS", raising=False)
+    validator = KGQualityValidator(reporter_factory=_factory({
+        "completeness": 1.0, "consistency": 1.0,
+        "accuracy": 1.0, "coverage": 1.0,
+    }))
+    inputs = _inputs_with_graph(tmp_path, _degraded_graph_payload())
+    inputs["min_completeness"] = 0.95
+    inputs["min_accuracy"] = 0.95
+    result = validator.validate(inputs)
+    # Reporter's vacuous 1.0 clears the 0.95 floors → passes.
+    assert result.passed is True
+    assert result.action is None
+    assert result.issues == []
+    assert result.metadata is None or "real_floors" not in result.metadata
+
+
+def test_real_floors_flag_on_fails_degraded_graph(tmp_path: Path, monkeypatch):
+    """Flag ON → real completeness (2/3=0.667) + real accuracy (3/4=0.75)
+    both breach the 0.95 floor and fail the critical gate closed."""
+    monkeypatch.setenv("ED4ALL_KG_REAL_FLOORS", "1")
+    validator = KGQualityValidator(reporter_factory=_factory({
+        "completeness": 1.0, "consistency": 1.0,
+        "accuracy": 1.0, "coverage": 1.0,
+    }))
+    inputs = _inputs_with_graph(tmp_path, _degraded_graph_payload())
+    inputs["min_completeness"] = 0.95
+    inputs["min_accuracy"] = 0.95
+    result = validator.validate(inputs)
+    assert result.passed is False
+    assert result.action == "block"
+    codes = sorted(i.code for i in result.issues)
+    assert codes == [
+        "KG_QUALITY_ACCURACY_BELOW_THRESHOLD",
+        "KG_QUALITY_COMPLETENESS_BELOW_THRESHOLD",
+    ]
+    assert all(i.severity == "critical" for i in result.issues)
+    # Real scores surfaced in metadata for audit.
+    rf = result.metadata["real_floors"]
+    assert rf["completeness"]["score"] == round(2 / 3, 4)
+    assert rf["accuracy"]["score"] == 0.75
+
+
+def test_real_floors_flag_on_clean_graph_passes(tmp_path: Path, monkeypatch):
+    """Flag ON over a fully-grounded, referentially-intact graph → real
+    scores are 1.0 and the gate passes."""
+    monkeypatch.setenv("ED4ALL_KG_REAL_FLOORS", "1")
+    payload = {
+        "kind": "concept_semantic",
+        "nodes": [
+            {"id": "a", "label": "A", "occurrences": ["c1"]},
+            {"id": "b", "label": "B", "frequency": 2},
+        ],
+        "edges": [
+            {"source": "a", "target": "b", "type": "related-to"},
+        ],
+    }
+    validator = KGQualityValidator(reporter_factory=_factory({
+        "completeness": 1.0, "consistency": 1.0,
+        "accuracy": 1.0, "coverage": 1.0,
+    }))
+    inputs = _inputs_with_graph(tmp_path, payload)
+    inputs["min_completeness"] = 0.95
+    inputs["min_accuracy"] = 0.95
+    result = validator.validate(inputs)
+    assert result.passed is True
+    rf = result.metadata["real_floors"]
+    assert rf["completeness"]["score"] == 1.0
+    assert rf["accuracy"]["score"] == 1.0
+
+
+def test_real_floors_flag_on_emits_decision(tmp_path: Path, monkeypatch):
+    """Flag ON emits exactly one ``validation_result`` real-floors event
+    (distinct from the primary + prereq events)."""
+    monkeypatch.setenv("ED4ALL_KG_REAL_FLOORS", "1")
+    monkeypatch.delenv("ED4ALL_KG_PREREQ_HEALTH", raising=False)
+    capture = _MockCapture()
+    validator = KGQualityValidator(
+        reporter_factory=_factory({
+            "completeness": 1.0, "consistency": 1.0,
+            "accuracy": 1.0, "coverage": 1.0,
+        }),
+        decision_capture=capture,
+    )
+    validator.validate(_inputs_with_graph(tmp_path, _degraded_graph_payload()))
+    real_calls = [
+        c for c in capture.calls
+        if c["decision_type"] == "validation_result"
+        and str(c.get("decision", "")).startswith("kg_real_floors")
+    ]
+    assert len(real_calls) == 1
+    metrics = real_calls[0]["metrics"]
+    assert metrics["real_completeness"] == round(2 / 3, 4)
+    assert metrics["real_accuracy"] == 0.75
+    assert metrics["accuracy_dangling_endpoints"] == 1
 
 
 def test_prereq_health_flag_on_emits_decision(tmp_path: Path, monkeypatch):

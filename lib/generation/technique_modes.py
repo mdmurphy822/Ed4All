@@ -178,6 +178,57 @@ def resolve_select_by(env: Optional[Mapping[str, str]] = None) -> str:
     )
 
 
+#: Truthy tokens shared by the C1/C3/C4 lever resolvers below. Mirrors the
+#: case-insensitive match used elsewhere (``blocks._EMIT_BLOCKS_TRUTHY`` /
+#: ``resolve_select_by``): only these explicit tokens enable a lever; anything
+#: else (unset / blank / ``false`` / garbage) resolves OFF (parse-with-fallback).
+_LEVER_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def resolve_chunk_scoped(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Read the C1 chunk-scoping lever from the env (router-side helper).
+
+    Returns ``True`` only when ``COURSEFORGE_CHUNK_SCOPED`` is one of the
+    canonical truthy tokens (projected by the C1+ technique modes via
+    :func:`apply_mode_to_env`). Any unset / blank / ``false`` / garbage value
+    yields ``False`` so the consumer runs its legacy whole-input path unchanged
+    (additive: an un-projected env is byte-identical). parse-with-fallback.
+    """
+    source = env if env is not None else os.environ
+    return str(source.get(_ENV_CHUNK_SCOPED, "") or "").strip().lower() in _LEVER_TRUTHY
+
+
+def resolve_self_verify(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Read the C3 self-verify lever from the env (router-side helper).
+
+    Returns ``True`` only when ``COURSEFORGE_SELF_VERIFY`` is a canonical truthy
+    token (projected by the C3+ technique modes). Unset / blank / ``false`` /
+    garbage → ``False`` (the consumer skips the self-verify micro-pass — legacy
+    behaviour, byte-identical). parse-with-fallback.
+    """
+    source = env if env is not None else os.environ
+    return str(source.get(_ENV_SELF_VERIFY, "") or "").strip().lower() in _LEVER_TRUTHY
+
+
+def resolve_refine_rounds(env: Optional[Mapping[str, str]] = None) -> int:
+    """Read the C4 bounded-refine-rounds lever from the env (router-side helper).
+
+    Returns the parsed positive int from ``COURSEFORGE_REFINE_ROUNDS`` (projected
+    as ``2`` by the C4+ technique modes) or ``0`` when unset / ``0`` / negative /
+    non-int / garbage — so the consumer runs zero refine rounds by default (legacy
+    behaviour, byte-identical). parse-with-fallback (mirrors ``resolve_best_of_n``).
+    """
+    source = env if env is not None else os.environ
+    raw = source.get(_ENV_REFINE_ROUNDS)
+    if raw is None:
+        return 0
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 0
+    return n if n > 0 else 0
+
+
 def resolve_best_of_n(
     env: Optional[Mapping[str, str]] = None, *, tier: str = "outline"
 ) -> Optional[int]:
@@ -212,6 +263,9 @@ __all__ = [
     "apply_mode_to_env",
     "resolve_select_by",
     "resolve_best_of_n",
+    "resolve_chunk_scoped",
+    "resolve_self_verify",
+    "resolve_refine_rounds",
     "ENV_GENERATION_TECHNIQUE",
     "DEFAULT_MODE",
     "MODE_NAMES",

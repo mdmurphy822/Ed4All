@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -83,6 +84,79 @@ SCHEMA_VERSION = "1.0"
 # field when a per-stage report is missing from disk so an operator scanning
 # the report sees the silent-skip class.
 MISSING_STAGE_REPORT = "missing_stage_report"
+
+# ---------------------------------------------------------------------------
+# W8.5 — non-training run scope detection
+# ---------------------------------------------------------------------------
+# phase_outputs keys that only exist on a build that actually ran the
+# assessment / training cohort (arrows 6-9). Their presence flips the chain
+# into the strict "training expected" course-status branch; their absence
+# (combined with all-missing training arrows) marks a non-training run so the
+# legitimately-skipped training arrows do not force course_status="failed".
+_TRAINING_PHASE_KEYS = (
+    "trainforge_assessment",
+    "training_synthesis",
+    "trainforge_train",
+)
+# First arrow of the assessment / training cohort (mirrors
+# lib.governance.course_status._TRAINING_COHORT_MIN_ARROW).
+_TRAINING_COHORT_MIN_ARROW = 6
+
+# ---------------------------------------------------------------------------
+# W8.6 — source-coverage drop signal (COVERAGE_DROP)
+# ---------------------------------------------------------------------------
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+# Warning-day-1 coverage floor. When an arrow's source_coverage.coverage_pct
+# (or the coverage_map objective-coverage ratio) falls below this AND the
+# stage actually consumed something, a COVERAGE_DROP warning signal is
+# surfaced on the arrow. Operator-overridable; parse-with-fallback.
+_COVERAGE_FLOOR_ENV = "ED4ALL_COVERAGE_FLOOR"
+_DEFAULT_COVERAGE_FLOOR = 0.80
+
+# Opt-in stricter gating: when truthy, a COVERAGE_DROP flips the affected
+# arrow's promotion_decision to "fail" and is threaded into the critical
+# cohort so course_status resolves to "failed". Default OFF (warning-day-1).
+# TODO(calibration): flip the default to strict once the coverage floor is
+# calibrated against >=2 corpora (WS/W deferred-flip pattern).
+_COVERAGE_STRICT_ENV = "ED4ALL_COVERAGE_DROP_STRICT"
+
+# Canonical coverage-drop signal string appended to an arrow's validator_set.
+COVERAGE_DROP = "COVERAGE_DROP"
+
+# The arrow the coverage_map objective-coverage ratio is attributed to
+# (imscc_to_imscc_chunks — coverage_map reads the imscc chunkset the same
+# arrow represents).
+_COVERAGE_MAP_ARROW_ID = 5
+
+
+def _resolve_coverage_floor(value: object = None) -> float:
+    """Resolve the COVERAGE_DROP warning floor (parse-with-fallback).
+
+    Precedence: explicit ``value`` arg > ``ED4ALL_COVERAGE_FLOOR`` env > the
+    ``_DEFAULT_COVERAGE_FLOOR``. Out-of-range ``(0.0, 1.0]`` / garbage falls
+    back to the default so a misconfigured env never crashes the aggregator.
+    """
+    raw = value if value is not None else os.environ.get(_COVERAGE_FLOOR_ENV)
+    if raw is None or str(raw).strip() == "":
+        return _DEFAULT_COVERAGE_FLOOR
+    try:
+        parsed = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_COVERAGE_FLOOR
+    if not (0.0 < parsed <= 1.0):
+        return _DEFAULT_COVERAGE_FLOOR
+    return parsed
+
+
+def _resolve_coverage_strict(value: object = None) -> bool:
+    """Resolve the opt-in stricter COVERAGE_DROP gating flag.
+
+    Truthy ``1`` / ``true`` / ``yes`` / ``on`` (case-insensitive) enables the
+    fail-on-drop escalation. Falsey / garbage / unset → False (warning-day-1).
+    """
+    raw = value if value is not None else os.environ.get(_COVERAGE_STRICT_ENV, "")
+    return str(raw).strip().lower() in _TRUTHY
 
 # Wave W-D11 T11.5 — gate IDs whose ``GateResult.metadata`` carries the
 # ``evidence_quote_*`` aggregate rates stamped by T11.1 (block-side) and
@@ -247,6 +321,11 @@ class PromotionChainAggregator:
         self.run_id = run_id or ""
         self.phase_outputs = phase_outputs or {}
         self.decision_capture = decision_capture
+        # W8.6 — populated by :meth:`_apply_coverage_signals` during build so
+        # the decision-capture emit can surface the coverage rollup. Shape:
+        # {"floor", "strict", "min_coverage_pct", "coverage_drop_count",
+        #  "objective_coverage_pct", "critical_gate_ids"}.
+        self._coverage_meta: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -281,13 +360,31 @@ class PromotionChainAggregator:
                 for arrow_id in range(1, 10)
             ]
 
+        # W8.6 — read source-coverage (per-arrow + coverage_map) and surface
+        # a warning-day-1 COVERAGE_DROP signal on any sub-floor arrow. This
+        # mutates the arrow rows (validator_set / warnings_count and, when the
+        # opt-in strict flag is set, promotion_decision) BEFORE the chain hash
+        # + course_status are derived so the drop is auditable and (in strict
+        # mode) gate-blocking.
+        coverage_meta = self._apply_coverage_signals(arrows)
+        self._coverage_meta = coverage_meta
+
         chain_hash = self._compute_chain_hash(arrows)
+
+        # W8.5 — a non-training run legitimately skips arrows 6-9; tell the
+        # composer so it certifies at the completed-arrow tier instead of
+        # forcing "failed" on the missing training reports.
+        training_expected = self._resolve_training_expected(arrows)
 
         # Local import keeps the module import-time dependency surface
         # narrow for non-libv2 runs.
         from lib.governance.course_status import derive_course_status
         try:
-            course_status = derive_course_status(arrows)
+            course_status = derive_course_status(
+                arrows,
+                training_expected=training_expected,
+                critical_gate_ids=coverage_meta.get("critical_gate_ids") or None,
+            )
         except Exception as exc:  # noqa: BLE001 — defensive
             logger.warning(
                 "promotion_chain: derive_course_status raised "
@@ -309,6 +406,11 @@ class PromotionChainAggregator:
             "course_status": course_status,
             "evidence_quote_summary": evidence_quote_summary,
         }
+
+        # W8.5 — stamp the derived course_status onto the LibV2 course
+        # manifest (additive) so downstream consumers (catalog, audits) can
+        # read the certified tier without re-deriving the chain. Best-effort.
+        self._stamp_course_status_on_manifest(course_status)
 
         self._emit_aggregator_decision(report)
         return report
@@ -808,6 +910,222 @@ class PromotionChainAggregator:
             return Path(staging_dir) / "staging_manifest.json"
         return None
 
+    # ------------------------------------------------------------------
+    # W8.5 — non-training run scope
+    # ------------------------------------------------------------------
+    def _resolve_training_expected(
+        self, arrows: Sequence[Mapping[str, Any]]
+    ) -> bool:
+        """Return True when the run was SUPPOSED to run the training cohort.
+
+        Two independent signals, either sufficient:
+
+        1. A training-cohort phase key (``trainforge_assessment`` /
+           ``training_synthesis`` / ``trainforge_train``) is present in
+           ``phase_outputs`` — the workflow declared the phase, so a missing
+           report on arrows 6-9 is a real regression (strict).
+        2. Any assessment/training arrow (``arrow_id >= 6``) carries a REAL
+           (non-``missing_stage_report``) report on disk — training clearly
+           ran even if ``phase_outputs`` wasn't threaded through.
+
+        When neither holds (no training phase declared AND every training
+        arrow is a missing-stage-report sentinel), the run is a non-training
+        build — the training arrows were legitimately skipped, so they must
+        not force ``course_status="failed"``.
+        """
+        for key in _TRAINING_PHASE_KEYS:
+            if key in self.phase_outputs:
+                return True
+        for arrow in arrows:
+            if int(arrow.get("arrow_id") or 0) < _TRAINING_COHORT_MIN_ARROW:
+                continue
+            vs = arrow.get("validator_set") or []
+            if MISSING_STAGE_REPORT not in vs:
+                return True
+        return False
+
+    def _stamp_course_status_on_manifest(self, course_status: str) -> None:
+        """Additively stamp ``course_status`` onto the LibV2 course manifest.
+
+        Writes ``manifest.json::quality_metadata.final_status`` (the canonical
+        location declared by ``schemas/governance/course_status.schema.json``)
+        AND a sibling top-level ``course_status`` field so a flat reader
+        (catalog / audit) can find it without walking into quality_metadata.
+        Additive only — no existing manifest field is touched.
+
+        Fully best-effort: a missing course_path / manifest, an unreadable or
+        malformed manifest, or a write failure is logged and swallowed so the
+        aggregator (already best-effort in the runner) never perturbs the run.
+        """
+        course = self.course_path
+        if course is None:
+            return
+        manifest_path = course / "manifest.json"
+        if not manifest_path.exists():
+            return
+        payload = _read_json(manifest_path)
+        if not isinstance(payload, dict):
+            logger.debug(
+                "promotion_chain: manifest %s not a JSON object; "
+                "skipping course_status stamp",
+                manifest_path,
+            )
+            return
+        try:
+            payload["course_status"] = course_status
+            qm = payload.get("quality_metadata")
+            if not isinstance(qm, dict):
+                qm = {}
+            qm["final_status"] = course_status
+            payload["quality_metadata"] = qm
+            manifest_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning(
+                "promotion_chain: failed to stamp course_status onto %s: %s",
+                manifest_path, exc,
+            )
+
+    # ------------------------------------------------------------------
+    # W8.6 — source-coverage drop signal
+    # ------------------------------------------------------------------
+    def _read_coverage_map(self) -> Optional[Mapping[str, Any]]:
+        """Best-effort read of the W3.E ``coverage_map.json`` summary.
+
+        Makes the (previously write-only) coverage_map an input to the
+        promotion chain. Resolves ``<course_path>/coverage_map.json`` first,
+        then ``<trainforge_dir>/coverage_map.json``. Returns the parsed
+        ``summary`` mapping (or None when absent / malformed).
+        """
+        candidates: List[Path] = []
+        if self.course_path is not None:
+            candidates.append(self.course_path / "coverage_map.json")
+        if self.trainforge_dir is not None:
+            candidates.append(self.trainforge_dir / "coverage_map.json")
+        for cand in candidates:
+            if not cand.exists():
+                continue
+            payload = _read_json(cand)
+            if isinstance(payload, Mapping):
+                summary = payload.get("summary")
+                if isinstance(summary, Mapping):
+                    return summary
+        return None
+
+    def _apply_coverage_signals(
+        self, arrows: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Surface COVERAGE_DROP warnings on sub-floor arrows (W8.6).
+
+        Reads two coverage sources the chain previously ignored:
+
+        * each arrow's own ``source_coverage.coverage_pct`` — the per-stage
+          consumed→emitted retention (a 99% drop = coverage_pct 0.01 that
+          today still passes because ``_coverage_passes`` only checks
+          ``emitted_count > 0``);
+        * the W3.E ``coverage_map.json`` objective-coverage ratio
+          (``objectives_with_chunks / total_objectives``), attributed to
+          arrow 5 (imscc chunks).
+
+        For any coverage below the resolved floor (and where the stage
+        actually consumed input), appends the ``COVERAGE_DROP`` gate id to
+        the arrow's ``validator_set`` and bumps ``warnings_count``
+        (warning-day-1 — ``promotion_decision`` is left untouched). When the
+        opt-in ``ED4ALL_COVERAGE_DROP_STRICT`` flag is truthy, the drop also
+        flips the arrow to ``promotion_decision="fail"`` and ``COVERAGE_DROP``
+        is threaded into the critical cohort so ``derive_course_status``
+        resolves ``failed``.
+
+        Returns a metadata dict consumed by the decision-capture emit. Pure
+        no-op (byte-identical arrows) when every coverage_pct is at/above the
+        floor.
+        """
+        floor = _resolve_coverage_floor()
+        strict = _resolve_coverage_strict()
+
+        # Objective-coverage from coverage_map (course-level), attributed to
+        # arrow 5 so it lands on a real chain row rather than a synthetic one.
+        objective_coverage_pct: Optional[float] = None
+        summary = self._read_coverage_map()
+        if isinstance(summary, Mapping):
+            try:
+                total = int(summary.get("total_objectives") or 0)
+                with_chunks = int(summary.get("objectives_with_chunks") or 0)
+            except (TypeError, ValueError):
+                total, with_chunks = 0, 0
+            if total > 0:
+                objective_coverage_pct = with_chunks / total
+
+        min_coverage_pct: Optional[float] = None
+        drop_count = 0
+
+        def _mark(arrow: Dict[str, Any], pct: float, origin: str) -> None:
+            nonlocal drop_count
+            vs = arrow.get("validator_set")
+            if not isinstance(vs, list):
+                vs = list(vs) if vs else []
+                arrow["validator_set"] = vs
+            if COVERAGE_DROP not in vs:
+                vs.append(COVERAGE_DROP)
+            try:
+                arrow["warnings_count"] = int(arrow.get("warnings_count") or 0) + 1
+            except (TypeError, ValueError):
+                arrow["warnings_count"] = 1
+            if strict:
+                arrow["promotion_decision"] = "fail"
+                arrow["passed"] = False
+            drop_count += 1
+            logger.warning(
+                "promotion_chain: COVERAGE_DROP on arrow %s (%s) — "
+                "coverage_pct=%.4f below floor=%.4f (strict=%s)",
+                arrow.get("arrow_id"), origin, pct, floor, strict,
+            )
+
+        for arrow in arrows:
+            cov = arrow.get("source_coverage")
+            if not isinstance(cov, Mapping):
+                continue
+            try:
+                consumed = int(cov.get("consumed_count") or 0)
+                pct = float(cov.get("coverage_pct") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            # Only a stage that actually consumed input can "drop" coverage;
+            # a zero-consumed stage is handled by the existing pass heuristic.
+            if consumed <= 0:
+                continue
+            if min_coverage_pct is None or pct < min_coverage_pct:
+                min_coverage_pct = pct
+            if pct < floor:
+                _mark(arrow, pct, "source_coverage")
+
+        if objective_coverage_pct is not None:
+            if min_coverage_pct is None or objective_coverage_pct < min_coverage_pct:
+                min_coverage_pct = objective_coverage_pct
+            if objective_coverage_pct < floor:
+                target = next(
+                    (
+                        a for a in arrows
+                        if int(a.get("arrow_id") or 0) == _COVERAGE_MAP_ARROW_ID
+                    ),
+                    None,
+                )
+                if target is not None:
+                    _mark(target, objective_coverage_pct, "coverage_map")
+
+        return {
+            "floor": floor,
+            "strict": strict,
+            "min_coverage_pct": min_coverage_pct,
+            "coverage_drop_count": drop_count,
+            "objective_coverage_pct": objective_coverage_pct,
+            "critical_gate_ids": (
+                [COVERAGE_DROP] if (strict and drop_count > 0) else []
+            ),
+        }
+
     def _extract_evidence_quote_metrics(
         self, phase_name: str, gate_id: str
     ) -> Optional[Dict[str, float]]:
@@ -974,11 +1292,18 @@ class PromotionChainAggregator:
             )
             chain_hash = report.get("chain_hash")
             course_status = report.get("course_status")
+            cov = self._coverage_meta or {}
+            coverage_drop_count = int(cov.get("coverage_drop_count") or 0)
+            min_coverage_pct = cov.get("min_coverage_pct")
             rationale = (
                 f"Promotion-chain aggregated: chain_hash={chain_hash}, "
                 f"course_status={course_status}, total_arrows={total_arrows}, "
                 f"passed_arrows={passed_arrows}, failed_arrows={failed_arrows}, "
-                f"missing_arrows={missing_arrows}"
+                f"missing_arrows={missing_arrows}, "
+                f"coverage_drop_count={coverage_drop_count}, "
+                f"min_coverage_pct={min_coverage_pct}, "
+                f"coverage_floor={cov.get('floor')}, "
+                f"coverage_strict={cov.get('strict')}"
             )
             capture.log_decision(
                 decision_type="promotion_chain_aggregated",
@@ -995,6 +1320,14 @@ class PromotionChainAggregator:
                     "passed_arrows": passed_arrows,
                     "failed_arrows": failed_arrows,
                     "missing_arrows": missing_arrows,
+                    "coverage_drop_count": coverage_drop_count,
+                    "min_coverage_pct": (
+                        float(min_coverage_pct)
+                        if isinstance(min_coverage_pct, (int, float))
+                        else None
+                    ),
+                    "coverage_floor": cov.get("floor"),
+                    "objective_coverage_pct": cov.get("objective_coverage_pct"),
                 },
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
@@ -1007,6 +1340,7 @@ class PromotionChainAggregator:
 
 __all__ = [
     "ARROW_NAMES",
+    "COVERAGE_DROP",
     "MISSING_STAGE_REPORT",
     "PromotionChainAggregator",
     "SCHEMA_VERSION",

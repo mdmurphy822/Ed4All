@@ -82,6 +82,7 @@ class QaChecklistValidator:
         from lib.validators._block_rubric_helpers import (
             block_attr,
             block_quality_rubric_enabled,
+            block_quality_scoring_active,
             block_type_of,
             count_idea_chunks,
             framework_block_of,
@@ -93,7 +94,8 @@ class QaChecklistValidator:
 
         enabled = inputs.get("rubric_enabled")
         if enabled is None:
-            enabled = block_quality_rubric_enabled()
+            # W8.8 — also run under the shadow-collect flag (measurement only).
+            enabled = block_quality_scoring_active()
         if not enabled:
             return GateResult(
                 gate_id=gate_id,

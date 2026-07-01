@@ -858,6 +858,159 @@ def remove_course_cmd(ctx, slug: str, yes: bool):
         print("  No catalog entries referenced this course (nothing to prune).")
 
 
+def _resolve_libv2_root(ctx) -> Path:
+    """Resolve the LibV2 root the same way ``remove`` does.
+
+    Honors the canonical ``ED4ALL_LIBV2_ROOT`` / ``ED4ALL_HOME`` resolver unless
+    the operator pinned an explicit ``--repo`` on the top-level group.
+    """
+    if ctx.obj.get("repo_explicit"):
+        return ctx.obj["repo_root"]
+    try:
+        from lib.paths import libv2_path  # noqa: PLC0415
+
+        return libv2_path()
+    except Exception:  # pragma: no cover — fall back to the auto-detected root
+        return ctx.obj["repo_root"]
+
+
+@main.command("backup")
+@click.option(
+    "--out", "-o", "out",
+    type=click.Path(),
+    help="Backup destination (tarball or dir). Default: "
+    "libv2_backup_<UTC-timestamp>.tar.gz in the current directory.",
+)
+@click.option(
+    "--format", "-F", "fmt",
+    type=click.Choice(["tar", "dir"]),
+    default="tar",
+    help="Snapshot format: 'tar' (gzip tarball, default) or 'dir' (directory).",
+)
+@click.option("--force", "-f", is_flag=True, help="Overwrite an existing destination.")
+@click.pass_context
+def backup_cmd(ctx, out, fmt, force):
+    """Snapshot the LibV2 metadata spine (catalog + per-course manifests).
+
+    Read-only over the live store: captures the whole ``catalog/`` tree (the
+    library manifest ``master_catalog.json`` + derived indexes) and each
+    course's small metadata sidecars (``manifest.json`` + ``course.json``). The
+    multi-MB chunk bodies / vector indexes / adapters are NEVER read — a
+    metadata-only disaster-recovery snapshot.
+
+    \b
+    Examples:
+        libv2 backup
+        libv2 backup --out /mnt/backups/libv2-2026-07-01.tar.gz
+        libv2 backup --format dir --out ./libv2_snapshot --force
+    """
+    from .backup import BackupError, create_backup
+
+    libv2_root = _resolve_libv2_root(ctx)
+
+    if out:
+        dest = Path(out)
+    else:
+        from datetime import datetime, timezone
+
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        suffix = "" if fmt == "dir" else ".tar.gz"
+        dest = Path.cwd() / f"libv2_backup_{ts}{suffix}"
+
+    try:
+        result = create_backup(libv2_root, dest, fmt=fmt, force=force)
+    except BackupError as exc:
+        print_error(f"{exc.code}: {exc.detail}")
+        sys.exit(1)
+
+    m = result.manifest
+    print_success(f"Backed up LibV2 metadata to: {result.dest}")
+    print(f"  Format:  {result.fmt}")
+    print(f"  Courses: {m.course_count}")
+    print(f"  Files:   {m.file_count}")
+    print(f"  Root:    {libv2_root}")
+
+
+@main.command("restore")
+@click.argument("backup_path", type=click.Path(exists=True))
+@click.option(
+    "--overwrite", is_flag=True,
+    help="Overwrite live files that diverge from the backup (default: skip + report).",
+)
+@click.option(
+    "--dry-run", is_flag=True,
+    help="Verify + report what would be restored without writing anything.",
+)
+@click.option(
+    "--verify-only", is_flag=True,
+    help="Only re-hash the backup members against its manifest; restore nothing.",
+)
+@click.pass_context
+def restore_cmd(ctx, backup_path, overwrite, dry_run, verify_only):
+    """Verify + restore a LibV2 metadata backup into the library.
+
+    Verify-first (every member is re-hashed against the backup manifest before
+    any write), idempotent + resumable (a target already present with the
+    recorded checksum is skipped), and non-clobbering (a divergent live file is
+    left as-is unless ``--overwrite``).
+
+    \b
+    Examples:
+        libv2 restore libv2_backup_20260701T120000Z.tar.gz --verify-only
+        libv2 restore ./libv2_snapshot --dry-run
+        libv2 restore libv2_backup.tar.gz --overwrite
+    """
+    from .backup import BackupError, restore_backup, verify_backup
+
+    libv2_root = _resolve_libv2_root(ctx)
+    src = Path(backup_path)
+
+    if verify_only:
+        try:
+            v = verify_backup(src)
+        except BackupError as exc:
+            print_error(f"{exc.code}: {exc.detail}")
+            sys.exit(1)
+        print(f"Verified {len(v.ok)} member(s) OK.")
+        if v.mismatched:
+            print_error(f"  Checksum mismatch: {len(v.mismatched)} member(s)")
+            for rel in v.mismatched:
+                print(f"    - {rel}")
+        if v.missing:
+            print_error(f"  Missing: {len(v.missing)} member(s)")
+            for rel in v.missing:
+                print(f"    - {rel}")
+        if v.passed:
+            print_success("Backup verification passed.")
+            sys.exit(0)
+        print_error("Backup verification FAILED.")
+        sys.exit(1)
+
+    try:
+        result = restore_backup(
+            libv2_root, src, overwrite=overwrite, dry_run=dry_run
+        )
+    except BackupError as exc:
+        print_error(f"{exc.code}: {exc.detail}")
+        sys.exit(1)
+
+    if dry_run:
+        print(f"[dry-run] Would restore {len(result.planned)} file(s) into {libv2_root}")
+        for rel in result.planned:
+            print(f"    + {rel}")
+    else:
+        print_success(f"Restored {len(result.restored)} file(s) into {libv2_root}")
+    if result.skipped:
+        print(f"  Skipped (already up to date): {len(result.skipped)}")
+    if result.conflicted:
+        print_warning(
+            f"  Conflicted (live file diverges, left as-is; pass --overwrite to "
+            f"replace): {len(result.conflicted)}"
+        )
+        for rel in result.conflicted:
+            print(f"    ! {rel}")
+
+
 @main.command("link-outcomes")
 @click.argument("slug")
 @click.option("--objectives", "-o", type=click.Path(exists=True), required=True,

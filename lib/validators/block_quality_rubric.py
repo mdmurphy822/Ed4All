@@ -79,6 +79,8 @@ class BlockQualityRubricValidator:
         from lib.validators._block_rubric_helpers import (
             block_attr,
             block_quality_rubric_enabled,
+            block_quality_scoring_active,
+            block_quality_shadow_enabled,
             block_type_of,
             framework_block_of,
             is_interactive_block,
@@ -89,7 +91,18 @@ class BlockQualityRubricValidator:
 
         enabled = inputs.get("rubric_enabled")
         if enabled is None:
-            enabled = block_quality_rubric_enabled()
+            # W8.8 — run the scoring path under the keystone rubric flag OR the
+            # shadow-collect flag (measurement only, warning-day-1, no emit, no
+            # verdict change).
+            enabled = block_quality_scoring_active()
+        # Shadow-only ⇒ triggered by ED4ALL_BLOCK_QUALITY_SHADOW while the keystone
+        # rubric flag is off (recorded in metadata so the calibration harness /
+        # operator can tell shadow telemetry from a real rubric run).
+        shadow_only = (
+            enabled
+            and not block_quality_rubric_enabled()
+            and block_quality_shadow_enabled()
+        )
         if not enabled:
             return GateResult(
                 gate_id=gate_id,
@@ -212,6 +225,7 @@ class BlockQualityRubricValidator:
             metadata={
                 "block_quality_rubric": {
                     "enabled": True,
+                    "shadow": shadow_only,
                     "blocks_scored": scored_count,
                     "blocks_pass": block_pass_count,
                     "per_block": per_block_report,

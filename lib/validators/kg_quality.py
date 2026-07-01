@@ -164,6 +164,49 @@ _DIMENSIONS = ("completeness", "consistency", "accuracy", "coverage")
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 ENV_KG_PREREQ_HEALTH = "ED4ALL_KG_PREREQ_HEALTH"
 
+# --------------------------------------------------------------------------- #
+# W8.4 — real (non-vacuous) completeness + accuracy floors.
+#
+# The reporter's ``completeness`` + ``accuracy`` dimensions are STRUCTURALLY
+# VACUOUS on the ``textbook_to_course::libv2_archival`` path (the only place
+# this gate is wired critical):
+#
+#   * completeness = ratio of nodes carrying every required predicate
+#     (default ``id`` + ``label``). Every semantic-graph node carries both by
+#     construction, so the ratio is ALWAYS 1.0 — the 0.95 floor never bites.
+#   * accuracy = ``1 - (SHACL warning_count / focus_nodes)``. The archival
+#     path passes NO ``validation_report`` (SHACL runs on the rdf_shacl path
+#     only), so ``warning_count == 0`` → accuracy is ALWAYS 1.0 — the 0.95
+#     floor never bites.
+#
+# ``ED4ALL_KG_REAL_FLOORS`` (default OFF → byte-identical: the recompute never
+# runs, the reporter's vacuous 1.0 scores flow through unchanged, no metadata
+# key, no decision event, every existing snapshot / test stays green). When
+# truthy, the validator RECOMPUTES completeness + accuracy from the semantic
+# graph itself — two deterministic, stdlib-only, model-free measures that CAN
+# score below 1.0 on a degraded graph — and substitutes them BEFORE the
+# per-dimension floor check, so a real regression fails the critical gate
+# closed instead of passing vacuously:
+#
+#   * REAL completeness — grounding-provenance completeness: the share of
+#     concept nodes (DomainConcept-or-classless) whose provenance is populated
+#     (non-empty ``occurrences[]`` OR positive ``frequency``) in addition to
+#     carrying ``id`` + ``label``. A frequency-0 ``lo_key_concept`` node (an
+#     LO-asserted concept the chunks never grounded) is INCOMPLETE, so a graph
+#     stuffed with ungrounded asserted nodes drops below the floor.
+#   * REAL accuracy — referential integrity: the share of non-LO edge
+#     endpoints that resolve to a declared graph node id. A concept edge that
+#     points at an id which is not a declared node is a dangling reference — a
+#     structural inaccuracy. Federation ``TO -> TO`` / ``CO`` endpoints are
+#     excluded (they legitimately reference objectives that are not concept
+#     nodes) to avoid false positives.
+#
+# Anti-fabrication: reads only real node ids / edge endpoints; never invents a
+# node, edge, or score. Opt-in default-OFF preserves every currently-passing
+# course's promotion verdict (governance: no silent gate flip).
+# --------------------------------------------------------------------------- #
+ENV_KG_REAL_FLOORS = "ED4ALL_KG_REAL_FLOORS"
+
 #: Top-K most-central concepts surfaced in the metadata (informational).
 _CENTRALITY_TOP_K = 10
 #: Cap on the distinct dangling-prerequisite concept ids listed in metadata.
@@ -183,6 +226,188 @@ def resolve_kg_prereq_health(value: object = None) -> bool:
     else:
         raw = str(value)
     return raw.strip().lower() in _TRUTHY
+
+
+def resolve_kg_real_floors(value: object = None) -> bool:
+    """Return True iff the real (non-vacuous) completeness+accuracy floors are
+    enabled (default OFF).
+
+    ``value`` overrides the env when not ``None``. Falsey / garbage / unset →
+    False (parse-with-fallback, mirroring the other ``ED4ALL_*`` toggles). When
+    False the reporter's structurally-vacuous 1.0 completeness/accuracy scores
+    flow through unchanged (byte-identical to the historical gate).
+    """
+    if value is None:
+        raw = os.environ.get(ENV_KG_REAL_FLOORS, "")
+    else:
+        raw = str(value)
+    return raw.strip().lower() in _TRUTHY
+
+
+def _is_concept_node_local(node: Any) -> bool:
+    """A node counts toward the real-completeness denominator iff it is a
+    ``DomainConcept`` (or classless / legacy node with no ``class``).
+
+    Local mirror of ``Trainforge.rag.kg_quality_report._is_concept_node`` kept
+    dependency-free so the validator does not import the reporter module for
+    the recompute path.
+    """
+    if not isinstance(node, dict):
+        return False
+    klass = node.get("class")
+    if klass is None or klass == "":
+        return True
+    return klass == "DomainConcept"
+
+
+def _node_is_grounded(node: Dict[str, Any]) -> bool:
+    """A concept node's provenance is populated iff it carries ≥1 chunk
+    back-reference (``occurrences[]``) OR a positive ``frequency``."""
+    occ = node.get("occurrences") or []
+    if isinstance(occ, list) and any(isinstance(o, str) and o for o in occ):
+        return True
+    freq = node.get("frequency")
+    return (
+        isinstance(freq, (int, float))
+        and not isinstance(freq, bool)
+        and freq > 0
+    )
+
+
+def _real_completeness(graph: Dict[str, Any]) -> Dict[str, Any]:
+    """W8.4 REAL completeness — grounding-provenance completeness.
+
+    Share of concept nodes (DomainConcept-or-classless) that carry ``id`` +
+    ``label`` AND populated provenance (non-empty ``occurrences[]`` OR positive
+    ``frequency``). An ungrounded asserted concept (e.g. a frequency-0
+    ``lo_key_concept`` node) is INCOMPLETE, so this scores below 1.0 on a graph
+    of asserted-but-ungrounded nodes — unlike the vacuous id+label ratio.
+    Empty concept-node set → 1.0 (vacuously complete; the missing-graph arm
+    already fails closed separately).
+    """
+    nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    concept_nodes = [n for n in nodes if _is_concept_node_local(n)]
+    denominator = len(concept_nodes)
+    numerator = 0
+    for n in concept_nodes:
+        nid = n.get("id")
+        label = n.get("label")
+        has_id = isinstance(nid, str) and bool(nid)
+        has_label = isinstance(label, str) and bool(label)
+        if has_id and has_label and _node_is_grounded(n):
+            numerator += 1
+    score = (numerator / denominator) if denominator else 1.0
+    return {
+        "metric": (
+            "share of concept nodes with id+label AND populated grounding "
+            "provenance (occurrences[] non-empty OR frequency>0)"
+        ),
+        "score": round(score, 4),
+        "numerator": numerator,
+        "denominator": denominator,
+    }
+
+
+def _real_accuracy(graph: Dict[str, Any]) -> Dict[str, Any]:
+    """W8.4 REAL accuracy — edge referential integrity.
+
+    Share of NON-LO edge endpoints that resolve to a declared graph node id. A
+    concept edge pointing at an id that is not a declared node is a dangling
+    reference (a structural inaccuracy). Federation ``TO -> TO`` / ``CO``
+    endpoints are excluded — they legitimately reference objectives that are
+    not concept nodes. No non-LO endpoints → 1.0 (nothing to disprove).
+    """
+    nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    edges = graph.get("edges") if isinstance(graph.get("edges"), list) else []
+    node_ids = {
+        n.get("id")
+        for n in nodes
+        if isinstance(n, dict) and isinstance(n.get("id"), str) and n.get("id")
+    }
+    total = 0
+    resolved = 0
+    dangling = 0
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        for endpoint in (e.get("source"), e.get("target")):
+            if not isinstance(endpoint, str) or not endpoint:
+                continue
+            if _is_lo_endpoint(endpoint):
+                continue
+            total += 1
+            if endpoint in node_ids:
+                resolved += 1
+            else:
+                dangling += 1
+    score = (resolved / total) if total else 1.0
+    return {
+        "metric": (
+            "share of non-LO edge endpoints resolving to a declared node id "
+            "(1 - dangling-reference rate)"
+        ),
+        "score": round(score, 4),
+        "resolved_endpoints": resolved,
+        "dangling_endpoints": dangling,
+        "endpoint_count": total,
+    }
+
+
+def _emit_real_floors_decision(
+    capture: Any,
+    detail: Dict[str, Any],
+    *,
+    course_slug: Optional[str],
+    run_id: Optional[str],
+) -> None:
+    """Emit one ``validation_result`` decision when the real-floor recompute
+    runs, so post-hoc replay can tell a real-floor verdict from the vacuous
+    reporter one (distinct decision text from the primary
+    ``kg_quality_report_check`` and the prereq-health event)."""
+    if capture is None:
+        return
+    comp = detail.get("completeness", {})
+    acc = detail.get("accuracy", {})
+    rationale = (
+        f"KG real-floor recompute for course={course_slug or 'n/a'} "
+        f"run_id={run_id or 'n/a'}: "
+        f"real_completeness={comp.get('score')} "
+        f"({comp.get('numerator')}/{comp.get('denominator')} concept nodes "
+        f"grounded); real_accuracy={acc.get('score')} "
+        f"({acc.get('resolved_endpoints')}/{acc.get('endpoint_count')} "
+        f"non-LO edge endpoints resolve, "
+        f"{acc.get('dangling_endpoints')} dangling). These substitute the "
+        f"reporter's structurally-vacuous 1.0 completeness/accuracy before "
+        f"the floor check."
+    )
+    try:
+        capture.log_decision(
+            decision_type="validation_result",
+            decision=(
+                "kg_real_floors "
+                f"completeness={comp.get('score')} "
+                f"accuracy={acc.get('score')}"
+            ),
+            rationale=rationale,
+            context=str(detail),
+            metrics={
+                "real_completeness": float(comp.get("score", 0.0)),
+                "real_accuracy": float(acc.get("score", 0.0)),
+                "completeness_numerator": int(comp.get("numerator", 0)),
+                "completeness_denominator": int(comp.get("denominator", 0)),
+                "accuracy_resolved_endpoints": int(
+                    acc.get("resolved_endpoints", 0)
+                ),
+                "accuracy_dangling_endpoints": int(
+                    acc.get("dangling_endpoints", 0)
+                ),
+                "accuracy_endpoint_count": int(acc.get("endpoint_count", 0)),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort
+        logger.debug(
+            "DecisionCapture.log_decision raised on kg_real_floors: %s", exc
+        )
 
 
 def _emit_decision(
@@ -872,6 +1097,40 @@ class KGQualityValidator:
                 exc,
             )
 
+        # W8.4 — real (non-vacuous) completeness + accuracy floors (gated,
+        # default OFF → byte-identical: the reporter's structurally-vacuous
+        # 1.0 completeness/accuracy scores flow through unchanged). When ON,
+        # RECOMPUTE both dimensions from the semantic graph and SUBSTITUTE
+        # them BEFORE the per-dimension floor check, so a real regression
+        # fails the critical gate closed instead of passing vacuously. Runs
+        # ONLY when explicitly opted in (governance: no silent gate flip).
+        # Best-effort: any failure logs and leaves the reporter scores intact.
+        real_floors_detail: Optional[Dict[str, Any]] = None
+        if resolve_kg_real_floors():
+            try:
+                graph = _load_graph_dict(semantic_graph_raw)
+                comp = _real_completeness(graph)
+                acc = _real_accuracy(graph)
+                scores["completeness"] = float(comp["score"])
+                scores["accuracy"] = float(acc["score"])
+                real_floors_detail = {
+                    "completeness": comp,
+                    "accuracy": acc,
+                }
+                _emit_real_floors_decision(
+                    capture,
+                    real_floors_detail,
+                    course_slug=str(course_slug),
+                    run_id=str(run_id),
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                logger.warning(
+                    "kg_real_floors recompute failed (%s); leaving the "
+                    "reporter's completeness/accuracy scores unchanged.",
+                    exc,
+                )
+                real_floors_detail = None
+
         breached = False
         for dim in _DIMENSIONS:
             score = scores[dim]
@@ -945,6 +1204,8 @@ class KGQualityValidator:
                 prereq_health = None
 
         result_metadata: Dict[str, Any] = {}
+        if real_floors_detail is not None:
+            result_metadata["real_floors"] = real_floors_detail
         if prereq_health is not None:
             result_metadata["prereq_health"] = prereq_health
         if consensus_rate is not None:
@@ -969,4 +1230,6 @@ __all__ = [
     "KGQualityValidator",
     "ENV_KG_PREREQ_HEALTH",
     "resolve_kg_prereq_health",
+    "ENV_KG_REAL_FLOORS",
+    "resolve_kg_real_floors",
 ]

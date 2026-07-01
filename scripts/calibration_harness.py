@@ -93,7 +93,7 @@ class GateFamily:
     notes: str = ""
 
 
-GATE_FAMILIES: tuple[GateFamily, ...] = (
+_CURATED_GATE_FAMILIES: tuple[GateFamily, ...] = (
     GateFamily(
         family="IB3 verb-triple / anchored-rubric / triangle (constructive-alignment keystone)",
         gate_ids=(
@@ -237,6 +237,149 @@ GATE_FAMILIES: tuple[GateFamily, ...] = (
             "rewrite_source_grounding to critical."
         ),
     ),
+)
+
+# --------------------------------------------------------------------------------------
+# W8.2 — reconcile GATE_FAMILIES with the LIVE deferred-flip gates in
+# config/workflows.yaml so the curated table above can NEVER silently drift behind the
+# config again. The config is the source of truth: every gate carrying a
+# ``# TODO(calibration)`` deferred-flip marker MUST be measured. Curated families (with a
+# documented ``expected_band``) are preferred; any deferred gate the curated table does
+# NOT cover is auto-synthesized into a one-gate fallback family (uncalibrated default
+# band) so it still accrues fire-rate data. This is measurement wiring only — it NEVER
+# flips a gate (the harness has no flip authority); a human still adjudicates every flip.
+# --------------------------------------------------------------------------------------
+
+#: Deferred gates the curated table intentionally does NOT own as a standalone family but
+#: that ARE covered as a sibling gate_id inside a curated family (so they are NOT
+#: "missing" and must not be double-counted as an auto family). Kept explicit so the
+#: reconcile test can assert curated coverage is deliberate, not accidental.
+#: (Populated at import from the curated families' gate_ids — see below.)
+
+#: Module/course-scoped auto-synthesized gates. Their GateResults surface at the
+#: phase level (course/module rollups), NOT per-block, so the reader must treat them as
+#: module-scoped or it will look for them in ``per_block[]`` and never observe them.
+_AUTO_MODULE_SCOPED_GATES: frozenset[str] = frozenset(
+    {
+        "course_level_qa",
+        "cross_week_spacing",
+        "cumulative_assessment",
+        "bloom_distribution",
+        "prerequisite_sequencing",
+        "block_quality_rollup",
+        "terminal_objective_coverage",
+        "terminal_objective_source_grounding",
+        "chunkset_manifest",
+        "manifest_completeness",
+        "libv2_manifest",
+        "page_objectives_shacl",
+        "difficulty_provenance",
+    }
+)
+
+# Regex reused by the config parser (module scope so it compiles once).
+_GATE_ID_RE = re.compile(r"gate_id:\s*([A-Za-z0-9_\-]+)")
+_CAL_MARKER = "TODO(calibration)"
+
+
+def _workflows_config_path() -> Path:
+    """Resolve config/workflows.yaml relative to the repo root.
+
+    Computes the repo root inline (``scripts/`` is a direct child of the repo root)
+    rather than calling ``_repo_root`` — this runs at import time, BEFORE that helper is
+    defined further down the module.
+    """
+    return Path(__file__).resolve().parent.parent / "config" / "workflows.yaml"
+
+
+def deferred_flip_gate_ids_from_config(
+    config_path: Path | None = None,
+) -> frozenset[str]:
+    """Parse config/workflows.yaml for every gate carrying a deferred-flip marker.
+
+    A gate is "deferred" when a ``# TODO(calibration)`` marker is associated with its
+    entry — either in the contiguous comment block IMMEDIATELY above its ``- gate_id:``
+    line, or inside its own (non-comment) ``description:`` field. The trailing comment
+    block that precedes the NEXT gate is deliberately excluded (it belongs to that next
+    gate), so a gate is never falsely tagged from its neighbour's marker.
+
+    Text-based (no PyYAML dependency, no ordering assumptions beyond the file's own
+    "comment-above-the-gate" convention). Fully graceful: any read/parse error returns an
+    empty set so the harness degrades to the curated table rather than crashing.
+    """
+    path = config_path or _workflows_config_path()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception as exc:  # noqa: BLE001 — degrade, never crash the harness
+        LOG.warning("could not read %s for deferred-gate reconciliation: %s", path, exc)
+        return frozenset()
+
+    gate_line_idx = [
+        i for i, ln in enumerate(lines) if re.match(r"\s*- gate_id:", ln)
+    ]
+    deferred: set[str] = set()
+    for k, gi in enumerate(gate_line_idx):
+        m = _GATE_ID_RE.search(lines[gi])
+        if not m:
+            continue
+        gid = m.group(1)
+        end = gate_line_idx[k + 1] if k + 1 < len(gate_line_idx) else len(lines)
+        # Contiguous preceding comment block (this gate's own comment).
+        p = gi - 1
+        pre: list[str] = []
+        while p >= 0 and lines[p].strip().startswith("#"):
+            pre.append(lines[p])
+            p -= 1
+        # Non-comment body of THIS entry (excludes trailing comments = next gate's).
+        body_noncomment = [
+            ln for ln in lines[gi:end] if not ln.strip().startswith("#")
+        ]
+        assoc = "\n".join(pre) + "\n" + "\n".join(body_noncomment)
+        if _CAL_MARKER in assoc:
+            deferred.add(gid)
+    return frozenset(deferred)
+
+
+def _synthesize_missing_families(
+    curated: tuple[GateFamily, ...],
+    config_deferred_ids: frozenset[str],
+) -> tuple[GateFamily, ...]:
+    """Auto-build a fallback family per config-deferred gate the curated table misses.
+
+    Prevents GATE_FAMILIES from drifting behind config: every deferred gate is measured,
+    even before someone curates a documented band for it. The auto family carries a
+    conservative default band + a ``band_source`` that flags it as UNCALIBRATED so the
+    report never implies a real band was established.
+    """
+    covered = {gid for fam in curated for gid in fam.gate_ids}
+    out: list[GateFamily] = []
+    for gid in sorted(config_deferred_ids - covered):
+        out.append(
+            GateFamily(
+                family=f"(auto) {gid} — deferred critical-flip",
+                gate_ids=(gid,),
+                # UNCALIBRATED default — a documented band must be curated before a flip.
+                expected_band=(0.0, 0.10),
+                band_source=(
+                    "AUTO-DERIVED from config/workflows.yaml # TODO(calibration) marker "
+                    f"on gate {gid!r} (W8.2 drift-guard). expected_band is a placeholder "
+                    "(0.0-0.10) — NOT a documented calibration target; curate a real band "
+                    "in _CURATED_GATE_FAMILIES before any flip adjudication."
+                ),
+                scope="module" if gid in _AUTO_MODULE_SCOPED_GATES else "block",
+                notes="auto-synthesized to keep GATE_FAMILIES reconciled with config (W8.2).",
+            )
+        )
+    return tuple(out)
+
+
+#: The LIVE deferred-flip gate set (empty if config is unreadable — degrade to curated).
+CONFIG_DEFERRED_GATE_IDS: frozenset[str] = deferred_flip_gate_ids_from_config()
+
+#: The final, drift-reconciled family table: curated (documented bands) + auto-synthesized
+#: fallbacks for any config-deferred gate the curated table does not already cover.
+GATE_FAMILIES: tuple[GateFamily, ...] = _CURATED_GATE_FAMILIES + _synthesize_missing_families(
+    _CURATED_GATE_FAMILIES, CONFIG_DEFERRED_GATE_IDS
 )
 
 # Flat gate_id -> family lookup for the aggregation pass.
@@ -1220,7 +1363,37 @@ def aggregate(corpora: list[CorpusResult]) -> dict[str, Any]:
         "distinct_corpus_keys": sorted(by_key),
         # Raw run count that contributed data (informational; NOT the flip gate).
         "contributing_run_count": len(contributing),
+        # W8.2 — config<->table reconciliation audit. ``uncovered_deferred_gates``
+        # MUST be empty: every config/workflows.yaml # TODO(calibration) gate is either
+        # curated or auto-synthesized into a family here. A non-empty list means the
+        # config parser could not read the config (degraded to curated-only).
+        "gate_family_reconciliation": _reconciliation_summary(),
         "gate_families": gates_out,
+    }
+
+
+def _reconciliation_summary() -> dict[str, Any]:
+    """Audit block proving GATE_FAMILIES is reconciled with config deferred-flip gates."""
+    curated_ids = {gid for fam in _CURATED_GATE_FAMILIES for gid in fam.gate_ids}
+    auto_families = [f for f in GATE_FAMILIES if f.family.startswith("(auto) ")]
+    auto_ids = {gid for fam in auto_families for gid in fam.gate_ids}
+    covered = {gid for fam in GATE_FAMILIES for gid in fam.gate_ids}
+    uncovered = sorted(CONFIG_DEFERRED_GATE_IDS - covered)
+    return {
+        "config_source": str(_workflows_config_path()),
+        "config_deferred_gate_count": len(CONFIG_DEFERRED_GATE_IDS),
+        "config_readable": bool(CONFIG_DEFERRED_GATE_IDS),
+        "curated_family_count": len(_CURATED_GATE_FAMILIES),
+        "curated_gate_ids": sorted(curated_ids),
+        "auto_synthesized_family_count": len(auto_families),
+        "auto_synthesized_gate_ids": sorted(auto_ids),
+        # Deferred gates covered as a SIBLING inside a curated family (not their own
+        # family, and not auto-synthesized) — deliberate, documented coverage.
+        "deferred_covered_by_curated": sorted(
+            CONFIG_DEFERRED_GATE_IDS & curated_ids
+        ),
+        # INVARIANT: must be empty. Non-empty ⇒ config unreadable (degraded).
+        "uncovered_deferred_gates": uncovered,
     }
 
 

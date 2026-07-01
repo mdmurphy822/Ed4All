@@ -379,6 +379,89 @@ def test_report_has_all_gate_families():
 
 
 # --------------------------------------------------------------------------------------
+# W8.2 — GATE_FAMILIES reconciled with config/workflows.yaml deferred-flip gates.
+# --------------------------------------------------------------------------------------
+def test_config_deferred_parser_associates_marker_with_own_gate_only():
+    # Synthesize a tiny two-gate config where the FIRST gate has NO marker and the
+    # SECOND gate's preceding comment carries TODO(calibration). The trailing comment
+    # of gate-1's region (which is gate-2's leading comment) must NOT tag gate-1.
+    import tempfile
+    cfg = (
+        "validation_gates:\n"
+        "          - gate_id: plain_gate\n"
+        "            severity: critical\n"
+        "          # TODO(calibration) — flip DEFERRED after a >=2-corpus measurement.\n"
+        "          - gate_id: deferred_gate\n"
+        "            severity: warning\n"
+        "            description: warning day-1.\n"
+    )
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "workflows.yaml"
+        p.write_text(cfg, encoding="utf-8")
+        ids = ch.deferred_flip_gate_ids_from_config(p)
+    assert "deferred_gate" in ids
+    assert "plain_gate" not in ids  # trailing comment must not bleed onto the prior gate
+
+
+def test_config_deferred_parser_reads_description_marker():
+    import tempfile
+    cfg = (
+        "          - gate_id: desc_marked\n"
+        "            severity: warning\n"
+        "            description: X. Warning day-1; TODO(calibration) deferred flip.\n"
+    )
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "workflows.yaml"
+        p.write_text(cfg, encoding="utf-8")
+        assert "desc_marked" in ch.deferred_flip_gate_ids_from_config(p)
+
+
+def test_config_deferred_parser_graceful_on_missing_file(tmp_path):
+    # Unreadable config -> empty set (harness degrades to curated, never crashes).
+    assert ch.deferred_flip_gate_ids_from_config(tmp_path / "nope.yaml") == frozenset()
+
+
+def test_gate_families_reconciled_with_live_config_no_drift():
+    # The keystone anti-drift invariant: EVERY deferred-flip gate in the live
+    # config/workflows.yaml is covered by SOME family in GATE_FAMILIES (curated or
+    # auto-synthesized). Zero uncovered.
+    config_ids = ch.deferred_flip_gate_ids_from_config()
+    assert config_ids, "live config must parse to a non-empty deferred-gate set"
+    covered = {gid for fam in ch.GATE_FAMILIES for gid in fam.gate_ids}
+    uncovered = sorted(config_ids - covered)
+    assert uncovered == [], f"GATE_FAMILIES drifted behind config; uncovered: {uncovered}"
+
+
+def test_reconciliation_summary_invariant_in_report():
+    report = ch.aggregate([])
+    rec = report["gate_family_reconciliation"]
+    assert rec["config_readable"] is True
+    assert rec["uncovered_deferred_gates"] == []
+    # Auto + curated coverage together account for every deferred gate.
+    assert rec["config_deferred_gate_count"] == len(
+        ch.deferred_flip_gate_ids_from_config()
+    )
+
+
+def test_uncurated_deferred_gate_is_auto_synthesized():
+    # A deferred gate NOT in the curated table gets a one-gate auto family so it is
+    # still measured (drift-guard).
+    auto = ch._synthesize_missing_families(
+        ch._CURATED_GATE_FAMILIES, frozenset({"brand_new_deferred_gate"})
+    )
+    assert len(auto) == 1
+    fam = auto[0]
+    assert fam.gate_ids == ("brand_new_deferred_gate",)
+    assert fam.family.startswith("(auto) ")
+    assert "AUTO-DERIVED" in fam.band_source
+    # A gate ALREADY covered by curated is NOT re-synthesized.
+    curated_gid = ch._CURATED_GATE_FAMILIES[0].gate_ids[0]
+    assert ch._synthesize_missing_families(
+        ch._CURATED_GATE_FAMILIES, frozenset({curated_gid})
+    ) == ()
+
+
+# --------------------------------------------------------------------------------------
 # schema-v2 attribution: per-block fire_rate from per-block issue_count, NOT the
 # smeared phase-level ``passed`` flag (the bug this fix removes).
 # --------------------------------------------------------------------------------------

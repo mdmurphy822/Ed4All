@@ -17,7 +17,10 @@ from lib.generation.technique_modes import (  # noqa: E402
     SELECT_GATE_PASS,
     apply_mode_to_env,
     resolve_best_of_n,
+    resolve_chunk_scoped,
+    resolve_refine_rounds,
     resolve_select_by,
+    resolve_self_verify,
     resolve_technique_mode,
 )
 
@@ -93,3 +96,40 @@ def test_resolve_best_of_n_none_when_unset():
 
 def test_mode_names_complete():
     assert MODE_NAMES == ("C0", "C1", "C2", "C3", "C4", "C5")
+
+
+def test_lever_resolvers_default_off():
+    # Unset / blank / false / garbage → OFF (parse-with-fallback).
+    for env in ({}, {"COURSEFORGE_CHUNK_SCOPED": ""}, {"COURSEFORGE_CHUNK_SCOPED": "false"},
+                {"COURSEFORGE_CHUNK_SCOPED": "nonsense"}):
+        assert resolve_chunk_scoped(env) is False
+    for env in ({}, {"COURSEFORGE_SELF_VERIFY": "no"}, {"COURSEFORGE_SELF_VERIFY": "x"}):
+        assert resolve_self_verify(env) is False
+    for env in ({}, {"COURSEFORGE_REFINE_ROUNDS": "0"},
+                {"COURSEFORGE_REFINE_ROUNDS": "-4"}, {"COURSEFORGE_REFINE_ROUNDS": "junk"}):
+        assert resolve_refine_rounds(env) == 0
+
+
+def test_lever_resolvers_on():
+    assert resolve_chunk_scoped({"COURSEFORGE_CHUNK_SCOPED": "true"}) is True
+    assert resolve_self_verify({"COURSEFORGE_SELF_VERIFY": "YES"}) is True
+    assert resolve_refine_rounds({"COURSEFORGE_REFINE_ROUNDS": "2"}) == 2
+
+
+def test_lever_resolvers_consume_projected_env():
+    # apply_mode_to_env's projection must round-trip through the resolvers so
+    # the C1/C3/C4 levers are live (W8.9 — no longer dead).
+    expected = {
+        "C0": (False, False, 0),
+        "C1": (True, False, 0),
+        "C2": (True, False, 0),
+        "C3": (True, True, 0),
+        "C4": (True, True, 2),
+        "C5": (True, True, 2),
+    }
+    for mode, (cs, sv, rr) in expected.items():
+        env = {}
+        apply_mode_to_env(resolve_technique_mode(mode), env)
+        assert resolve_chunk_scoped(env) is cs, mode
+        assert resolve_self_verify(env) is sv, mode
+        assert resolve_refine_rounds(env) == rr, mode

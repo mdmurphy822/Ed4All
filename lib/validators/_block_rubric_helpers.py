@@ -25,6 +25,9 @@ from lib.ontology.framework_blocks import framework_block_for
 __all__ = [
     "BLOCK_QUALITY_RUBRIC_ENV",
     "block_quality_rubric_enabled",
+    "BLOCK_QUALITY_SHADOW_ENV",
+    "block_quality_shadow_enabled",
+    "block_quality_scoring_active",
     "BLOCK_BODY_CHAR_CEILING_ENV",
     "resolve_body_char_ceiling",
     "INTERACTIVE_FRAMEWORK_BLOCKS",
@@ -42,6 +45,18 @@ _TRUTHY = frozenset({"1", "true", "yes", "on"})
 # IB6 keystone flag. Default OFF → the whole IB6 scoring / rollup / chip surface
 # is inert and snapshots stay byte-identical (read each call so tests toggle).
 BLOCK_QUALITY_RUBRIC_ENV = "ED4ALL_BLOCK_QUALITY_RUBRIC"
+
+# W8.8 SHADOW-COLLECT flag. Default OFF. Chicken-and-egg fix: the IB6 gates are
+# default-OFF (keystone rubric flag), so they never COMPUTE and never generate the
+# fire-rate data the calibration harness needs to justify a critical-flip. When this
+# flag is truthy (and the keystone rubric flag is off), the IB6 validators run their
+# MEASUREMENT path — computing + recording the per-block signals (metadata + warning
+# GateIssues + decision captures the calibration harness reads) — WITHOUT any verdict
+# change: these gates are warning-day-1 (severity: warning, on_fail: warn), so they
+# already never block, and shadow adds no critical issue. The emit-side render (the
+# ``ED4ALL_BLOCK_QUALITY_RUBRIC``-gated chip / rubric-field HTML) stays OFF, so product
+# bytes / snapshots remain byte-identical — only validator telemetry accrues.
+BLOCK_QUALITY_SHADOW_ENV = "ED4ALL_BLOCK_QUALITY_SHADOW"
 
 # IB6.4 D2 body ceiling (chars). Default 200 ("~200char single idea" target).
 BLOCK_BODY_CHAR_CEILING_ENV = "ED4ALL_BLOCK_BODY_CHAR_CEILING"
@@ -144,6 +159,27 @@ INTERACTIVE_FRAMEWORK_BLOCKS: frozenset = frozenset({"B07", "B08", "B10", "B14"}
 def block_quality_rubric_enabled() -> bool:
     """True iff ``ED4ALL_BLOCK_QUALITY_RUBRIC`` is truthy (read each call)."""
     return os.environ.get(BLOCK_QUALITY_RUBRIC_ENV, "").strip().lower() in _TRUTHY
+
+
+def block_quality_shadow_enabled() -> bool:
+    """True iff ``ED4ALL_BLOCK_QUALITY_SHADOW`` is truthy (W8.8, read each call).
+
+    Shadow-collect is measurement-only: the IB6 gates compute + record their signals
+    without gating (they are warning-day-1, so no verdict changes) so calibration
+    fire-rate data can accrue while the keystone rubric flag — and its emit-side
+    rendering — stays off. Parse-with-fallback: garbage / unset → False.
+    """
+    return os.environ.get(BLOCK_QUALITY_SHADOW_ENV, "").strip().lower() in _TRUTHY
+
+
+def block_quality_scoring_active() -> bool:
+    """True iff the IB6 scoring/measurement path should run (W8.8).
+
+    ``ED4ALL_BLOCK_QUALITY_RUBRIC`` (the keystone: scoring + emit + rollup) OR
+    ``ED4ALL_BLOCK_QUALITY_SHADOW`` (measurement only, no emit, no verdict change).
+    Default (both unset) → False → byte-identical to the pre-W8.8 disabled no-op.
+    """
+    return block_quality_rubric_enabled() or block_quality_shadow_enabled()
 
 
 def resolve_body_char_ceiling(

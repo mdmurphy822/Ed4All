@@ -240,6 +240,13 @@ _DEFAULT_OUTLINE_REGEN_BUDGET = 10
 # and gives up. Default 10 mirrors the bumped outline-tier default.
 _DEFAULT_REWRITE_REGEN_BUDGET = 10
 
+# W8.9 C3/C4 lever bound: hard ceiling on the number of post-winner
+# self-verify + refine passes ``_apply_refine_verify`` will dispatch, so a
+# misconfigured ``COURSEFORGE_REFINE_ROUNDS`` cannot fan out unbounded LLM
+# calls. The C4 mode projects 2 refine rounds (+1 verify at C3) — well under
+# this ceiling. Default OFF (both levers unset) skips the pass entirely.
+_MAX_REFINE_VERIFY_ROUNDS = 4
+
 # Subtask 48: validator-action priority. The router dispatches on the
 # highest-priority action across all validator results in a candidate's
 # gate-results list. Order: ``block`` is the most severe (the block is
@@ -1091,6 +1098,15 @@ class CourseforgeRouter:
         WHICH layer of the resolution chain governed the dispatch.
         """
         spec = self._resolve_spec(block, tier, **overrides)
+
+        # C1 chunk-scoping lever (W8.9): when COURSEFORGE_CHUNK_SCOPED is
+        # projected on, narrow the per-block source_chunks to the block's own
+        # cited chunks before the provider prompt is built. Default OFF →
+        # byte-identical (the full list is passed through unchanged). Filter-only
+        # + always-keep-grounding (see _scope_source_chunks).
+        source_chunks = self._scope_source_chunks(
+            block, source_chunks, enabled=self._resolve_chunk_scoped()
+        )
 
         # 2. escalate_immediately short-circuit (outline tier only).
         if tier == "outline" and spec.escalate_immediately:
@@ -2071,6 +2087,22 @@ class CourseforgeRouter:
             outcome_block = last_candidate
             failed_count = resolved_n
 
+        # C3/C4 refine+verify pass (W8.9): applied ONLY to a clean
+        # validator-PASSING winner (no escalation marker). Default OFF (both
+        # levers unset) → no-op, byte-identical. Never-regress: a refined
+        # candidate is kept only when it re-passes the validator chain.
+        if winner is not None and outcome_block.escalation_marker is None:
+            outcome_block = self._apply_refine_verify(
+                outcome_block,
+                tier="outline",
+                source_chunks=source_chunks,
+                objectives=objectives,
+                validators=validator_list,
+                spec=spec,
+                overrides=overrides,
+                minted_curie_map=minted_curie_map,
+            )
+
         # 5. Emit the per-self-consistency-loop decision-capture event
         # (Subtask 39 lands the ml_features payload). For Subtask 37
         # we already emit the audit event with the winning index +
@@ -2557,6 +2589,20 @@ class CourseforgeRouter:
             outcome_block = last_candidate
             failed_count = resolved_n
 
+        # C3/C4 refine+verify pass (W8.9): applied ONLY to a clean
+        # validator-PASSING rewrite winner. Default OFF → no-op, byte-identical.
+        # Never-regress (see route_with_self_consistency).
+        if winner is not None and outcome_block.escalation_marker is None:
+            outcome_block = self._apply_refine_verify(
+                outcome_block,
+                tier="rewrite",
+                source_chunks=source_chunks,
+                objectives=objectives,
+                validators=validator_list,
+                spec=spec,
+                overrides=overrides,
+            )
+
         # 5. Per-loop decision-capture event. Reuse the
         # _emit_self_consistency_decision helper but tag it as the
         # rewrite-tier loop via the spec.tier field; the helper's
@@ -2875,6 +2921,314 @@ class CourseforgeRouter:
             return resolve_select_by(os.environ)
         except Exception:  # noqa: BLE001 — never break dispatch on a helper import
             return "gate_pass"
+
+    def _resolve_chunk_scoped(self) -> bool:
+        """Resolve the C1 chunk-scoping lever (``COURSEFORGE_CHUNK_SCOPED``).
+
+        Reads the projected env knob via the technique-mode helper. Default OFF
+        (unset / ``false`` / garbage) → :meth:`route` feeds the provider the full
+        per-block ``source_chunks`` unchanged (byte-identical legacy path). When
+        the C1+ mode projects ``true``, :meth:`_scope_source_chunks` narrows the
+        grounding to the block's own cited chunks. Never breaks dispatch on a
+        helper import failure.
+        """
+        try:
+            from lib.generation.technique_modes import (  # noqa: PLC0415
+                resolve_chunk_scoped,
+            )
+
+            return resolve_chunk_scoped(os.environ)
+        except Exception:  # noqa: BLE001 — never break dispatch on a helper import
+            return False
+
+    def _resolve_self_verify(self) -> bool:
+        """Resolve the C3 self-verify lever (``COURSEFORGE_SELF_VERIFY``).
+
+        Default OFF → no self-verify micro-pass runs (byte-identical). When the
+        C3+ mode projects ``true``, the self-consistency winner is bounced through
+        one additional verify-against-source pass in :meth:`_apply_refine_verify`.
+        """
+        try:
+            from lib.generation.technique_modes import (  # noqa: PLC0415
+                resolve_self_verify,
+            )
+
+            return resolve_self_verify(os.environ)
+        except Exception:  # noqa: BLE001 — never break dispatch on a helper import
+            return False
+
+    def _resolve_refine_rounds(self) -> int:
+        """Resolve the C4 bounded-refine-rounds lever (``COURSEFORGE_REFINE_ROUNDS``).
+
+        Default ``0`` → no refine rounds run (byte-identical). When the C4+ mode
+        projects ``2``, the self-consistency winner is refined that many bounded
+        rounds in :meth:`_apply_refine_verify` (never-regress: an improved
+        candidate is kept only when it still passes the validator chain).
+        """
+        try:
+            from lib.generation.technique_modes import (  # noqa: PLC0415
+                resolve_refine_rounds,
+            )
+
+            return resolve_refine_rounds(os.environ)
+        except Exception:  # noqa: BLE001 — never break dispatch on a helper import
+            return 0
+
+    @staticmethod
+    def _scope_source_chunks(
+        block: Block, source_chunks: Optional[List[Any]], *, enabled: bool
+    ) -> Optional[List[Any]]:
+        """Narrow ``source_chunks`` to the block's own cited chunks (C1 lever).
+
+        The C1 chunk-scoping mode wants "one chunk-set/block in-context" rather
+        than the whole-corpus grab-bag. When ``enabled`` (the
+        ``COURSEFORGE_CHUNK_SCOPED`` knob is projected on), this returns only the
+        chunks the block actually references (``source_ids`` / ``source_primary``
+        / ``source_references[].sourceId``), so the provider prompt is grounded on
+        the block's own evidence instead of every chunk that leaked into the
+        per-block list.
+
+        Anti-fabrication / grounding-safety guardrails — this NEVER strips the
+        block below its real grounding:
+
+        * ``enabled`` off → return the input list unchanged (byte-identical).
+        * block declares no referenced ids (e.g. an outline first draft before
+          references exist) → return unchanged (can't scope safely).
+        * the filter would drop EVERY chunk (no id overlap) → return unchanged
+          (feeding zero chunks would push the model to fabricate).
+
+        Filter-only: the kept set is a strict SUBSET of the input; no chunk is
+        ever invented or reordered.
+        """
+        if not enabled or not source_chunks:
+            return source_chunks
+        referenced: set = set()
+        for sid in getattr(block, "source_ids", ()) or ():
+            if isinstance(sid, str) and sid:
+                referenced.add(sid)
+        primary = getattr(block, "source_primary", None)
+        if isinstance(primary, str) and primary:
+            referenced.add(primary)
+        for ref in getattr(block, "source_references", ()) or ():
+            if isinstance(ref, dict):
+                rid = ref.get("sourceId") or ref.get("id")
+                if isinstance(rid, str) and rid:
+                    referenced.add(rid)
+        if not referenced:
+            return source_chunks
+        scoped: List[Any] = []
+        for chunk in source_chunks:
+            if isinstance(chunk, dict):
+                cid = (
+                    chunk.get("id")
+                    or chunk.get("sourceId")
+                    or chunk.get("chunk_id")
+                )
+            else:
+                cid = getattr(chunk, "id", None) or getattr(
+                    chunk, "sourceId", None
+                )
+            if isinstance(cid, str) and cid in referenced:
+                scoped.append(chunk)
+        # Never strip all grounding — an empty scope means no id overlap, in
+        # which case the un-scoped list is the honest grounding surface.
+        return scoped if scoped else source_chunks
+
+    def _apply_refine_verify(
+        self,
+        winner: Block,
+        *,
+        tier: Literal["outline", "rewrite"],
+        source_chunks: Optional[List[Any]],
+        objectives: Optional[List[Any]],
+        validators: List[Any],
+        spec: "BlockProviderSpec",
+        overrides: Dict[str, Any],
+        minted_curie_map: Optional[Dict[str, Any]] = None,
+    ) -> Block:
+        """Bounded C3 self-verify + C4 refine pass over a clean winner block.
+
+        Runs strictly AFTER the self-consistency loop has selected a
+        validator-PASSING winner. Order (cumulative, matching the C-stack): one
+        self-verify micro-pass (C3, when ``COURSEFORGE_SELF_VERIFY`` is projected
+        on) followed by ``COURSEFORGE_REFINE_ROUNDS`` bounded refine rounds (C4).
+        Each pass re-dispatches the SAME tier through :meth:`route` with a
+        self-critique ``remediation_suffix`` and re-runs the validator chain.
+
+        Never-regress contract: a refined candidate REPLACES the current winner
+        ONLY when it still passes the full validator chain; any validator failure
+        or dispatch error keeps the prior passing block (so C3/C4 can only improve
+        or no-op a passing winner, never degrade it or a gate verdict). Bounded by
+        :data:`_MAX_REFINE_VERIFY_ROUNDS` so a misconfigured env can't fan out
+        unbounded LLM calls.
+
+        Default OFF (both levers unset) → returns ``winner`` untouched with no
+        extra dispatch (byte-identical fast path).
+        """
+        self_verify = self._resolve_self_verify()
+        refine_rounds = self._resolve_refine_rounds()
+        if not self_verify and refine_rounds <= 0:
+            return winner
+
+        validator_tier: Literal["outline_val", "rewrite_val"] = (
+            "outline_val" if tier == "outline" else "rewrite_val"
+        )
+        # Ordered pass plan: verify first (C3), then the C4 refine rounds.
+        plan: List[str] = (["verify"] if self_verify else []) + (
+            ["refine"] * refine_rounds
+        )
+        plan = plan[:_MAX_REFINE_VERIFY_ROUNDS]
+
+        current = winner
+        accepted = 0
+        for phase in plan:
+            suffix = self._build_refine_verify_suffix(phase, current)
+            try:
+                candidate = self.route(
+                    current,
+                    tier=tier,
+                    source_chunks=source_chunks,
+                    objectives=objectives,
+                    remediation_suffix=suffix,
+                    **overrides,
+                )
+            except Exception as exc:  # noqa: BLE001 — never regress on dispatch error
+                logger.warning(
+                    "refine/verify %s pass dispatch failed for block_id=%s: "
+                    "%s (keeping prior winner)",
+                    phase, getattr(current, "block_id", "?"), exc,
+                )
+                break
+            all_passed, _gate_results, candidate = self._run_validator_chain(
+                candidate,
+                validators,
+                fast_fail=True,
+                validator_tier=validator_tier,
+                objectives=objectives,
+                source_chunks_by_block_id=(
+                    {candidate.block_id: source_chunks}
+                    if source_chunks else None
+                ),
+                minted_curie_map=minted_curie_map,
+            )
+            if all_passed:
+                current = candidate
+                accepted += 1
+            # else: never-regress — keep the prior passing ``current``.
+
+        if accepted or self_verify or refine_rounds > 0:
+            timestamp = (
+                _dt.datetime.now(_dt.timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+            touch = Touch(
+                model=spec.model,
+                provider=_collapse_to_touch_provider(spec.provider),
+                tier=tier,
+                timestamp=timestamp,
+                decision_capture_id=self._build_router_capture_id(
+                    current, f"refine_verify_{tier}"
+                ),
+                purpose="refine_verify",
+            )
+            current = current.with_touch(touch)
+            self._emit_refine_verify_decision(
+                block=current,
+                tier=tier,
+                spec=spec,
+                self_verify=self_verify,
+                refine_rounds=refine_rounds,
+                passes_run=len(plan),
+                passes_accepted=accepted,
+            )
+        return current
+
+    @staticmethod
+    def _build_refine_verify_suffix(phase: str, block: Block) -> str:
+        """Build the self-critique suffix appended to a refine/verify dispatch.
+
+        ``phase`` is ``"verify"`` (C3 self-verify — re-check the block against its
+        source chunks and correct any unsupported claim) or ``"refine"`` (C4 —
+        tighten clarity / pedagogy while staying grounded). The directive re-
+        asserts the anti-fabrication contract so a refine pass cannot introduce
+        ungrounded content.
+        """
+        if phase == "verify":
+            return (
+                "SELF-VERIFY PASS: Re-read your draft above against ONLY the "
+                "supplied source_chunks. Remove or correct any sentence not "
+                "directly supported by a source chunk. Do NOT add facts absent "
+                "from the sources. Preserve every source citation and objective "
+                "reference. Return the corrected block in the same shape."
+            )
+        return (
+            "REFINE PASS: Improve the clarity, precision, and pedagogical "
+            "quality of your draft above WITHOUT adding any fact absent from the "
+            "supplied source_chunks. Preserve every source citation and "
+            "objective reference. Return the improved block in the same shape."
+        )
+
+    def _emit_refine_verify_decision(
+        self,
+        *,
+        block: Block,
+        tier: str,
+        spec: "BlockProviderSpec",
+        self_verify: bool,
+        refine_rounds: int,
+        passes_run: int,
+        passes_accepted: int,
+    ) -> None:
+        """Emit one decision-capture event for a refine/verify pass.
+
+        Reuses the canonical per-tier call decision_type
+        (``block_outline_call`` / ``block_rewrite_call``) rather than minting a
+        new enum value — the ``decision`` string + ``ml_features`` carry the
+        refine/verify provenance. Best-effort: a capture failure never breaks
+        dispatch.
+        """
+        if self._capture is None:
+            return
+        decision_type = (
+            "block_outline_call" if tier == "outline" else "block_rewrite_call"
+        )
+        rationale = "; ".join(
+            [
+                "router_refine_verify",
+                f"block_id={block.block_id}",
+                f"block_type={block.block_type}",
+                f"tier={tier}",
+                f"provider={spec.provider}",
+                f"model={spec.model}",
+                f"self_verify={self_verify}",
+                f"refine_rounds={refine_rounds}",
+                f"passes_run={passes_run}",
+                f"passes_accepted={passes_accepted}",
+            ]
+        )
+        try:
+            self._capture.log_decision(
+                decision_type=decision_type,
+                decision=(
+                    f"refine_verify:{block.block_type}:{block.block_id}:"
+                    f"accepted_{passes_accepted}_of_{passes_run}"
+                ),
+                rationale=rationale,
+                ml_features={
+                    "phase_kind": "refine_verify",
+                    "tier": tier,
+                    "self_verify": self_verify,
+                    "refine_rounds": refine_rounds,
+                    "passes_run": passes_run,
+                    "passes_accepted": passes_accepted,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive; never break dispatch
+            logger.warning(
+                "router refine/verify decision-capture emit failed: %s", exc
+            )
 
     def _resolve_best_of_n_nli(self) -> Optional[Any]:
         """Lazy-resolve the NLI verifier for the entailment-argmax selector.
