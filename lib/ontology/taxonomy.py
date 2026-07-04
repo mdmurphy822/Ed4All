@@ -33,9 +33,10 @@ Downstream consumers:
 from __future__ import annotations
 
 import json
+import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 __all__ = [
     "load_taxonomy",
@@ -44,6 +45,16 @@ __all__ = [
     "get_valid_subdomains",
     "get_valid_topics",
     "validate_classification",
+    # SemantiK pedagogical lexicon (Wave #22).
+    "load_semantik_lexicon",
+    "resolve_lexicon_profile",
+    "get_lexicon_openers",
+    "get_lexicon_apparatus_names",
+    "get_lexicon_interior_apparatus_names",
+    "get_lexicon_apparatus_whitelist",
+    "get_lexicon_confusables",
+    "DEFAULT_LEXICON_PROFILE",
+    "LEXICON_PROFILE_ENV",
 ]
 
 
@@ -150,6 +161,167 @@ def get_valid_topics(division: str, domain: str, subdomain: str) -> Set[str]:
 # ---------------------------------------------------------------------------
 # Validator
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# SemantiK pedagogical lexicon (Wave #22 — tiers 1-2 semantic enrichment).
+#
+# The opener / apparatus / confusable vocabularies the SemantiK adapter seam
+# consumes live in ``schemas/taxonomies/semantik_lexicon.json`` as PROFILES so a
+# new corpus is onboarded by a lexicon entry, never a code edit (owner directive
+# 3: lexicon profiles, not corpus-specific code). Profile selection is env-driven
+# (``SEMANTIK_LEXICON_PROFILE``); the default is the ``generic-academic`` base
+# overlaid by the ``openstax`` overlay. The loader is a single-shot ``lru_cache``
+# read (mirrors :func:`load_taxonomy`); the per-profile getters take a resolved
+# profile spec so a caller can cache the merged view at module import.
+# ---------------------------------------------------------------------------
+
+_SEMANTIK_LEXICON_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "schemas"
+    / "taxonomies"
+    / "semantik_lexicon.json"
+)
+
+#: Env var selecting the active lexicon profile spec (``+``-joined profile keys,
+#: merged left-to-right, later profile overlays earlier). Default combines the
+#: generic-academic base with the OpenStax overlay so the sample-algebra
+#: scan corpus (TRY IT / BE PREPARED / trvit) keeps working out of the box.
+LEXICON_PROFILE_ENV = "SEMANTIK_LEXICON_PROFILE"
+DEFAULT_LEXICON_PROFILE = "generic-academic+openstax"
+
+
+@lru_cache(maxsize=1)
+def load_semantik_lexicon() -> Dict:
+    """Load and cache ``schemas/taxonomies/semantik_lexicon.json``.
+
+    Raises:
+        FileNotFoundError: the lexicon schema is missing.
+        ValueError: the schema shape is invalid (missing ``profiles`` root).
+    """
+    if not _SEMANTIK_LEXICON_PATH.exists():
+        raise FileNotFoundError(
+            f"SemantiK lexicon not found at {_SEMANTIK_LEXICON_PATH}. "
+            "Expected the Wave #22 pedagogical-lexicon taxonomy."
+        )
+    with open(_SEMANTIK_LEXICON_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    if "profiles" not in data or not isinstance(data["profiles"], dict):
+        raise ValueError(
+            f"Malformed SemantiK lexicon at {_SEMANTIK_LEXICON_PATH}: "
+            "missing or non-dict 'profiles' root."
+        )
+    return data
+
+
+def resolve_lexicon_profile(env: Optional[Dict[str, str]] = None) -> str:
+    """Resolve the active lexicon profile spec (``SEMANTIK_LEXICON_PROFILE``).
+
+    Returns the raw ``+``-joined spec string (default
+    :data:`DEFAULT_LEXICON_PROFILE`). An unknown / empty value falls back to the
+    default rather than yielding an empty vocabulary.
+    """
+    src = env if env is not None else os.environ
+    val = (src.get(LEXICON_PROFILE_ENV) or "").strip()
+    return val or DEFAULT_LEXICON_PROFILE
+
+
+def _profile_keys(profile_spec: str) -> List[str]:
+    """Split a ``+``-joined profile spec into known profile keys (in order).
+
+    Unknown profile keys are skipped (defensive — a typo yields the remaining
+    known profiles rather than a hard failure). An empty result falls back to
+    the default spec's keys so a caller never gets a silently-empty vocabulary.
+    """
+    lex = load_semantik_lexicon()
+    known = lex.get("profiles", {})
+    keys = [k.strip() for k in (profile_spec or "").split("+") if k.strip()]
+    keys = [k for k in keys if k in known]
+    if not keys:
+        keys = [
+            k.strip()
+            for k in DEFAULT_LEXICON_PROFILE.split("+")
+            if k.strip() in known
+        ]
+    return keys
+
+
+def _merged_profile_field(profile_spec: str, field: str) -> List:
+    """Concatenate one list-valued field across the merged profiles, in order."""
+    lex = load_semantik_lexicon()
+    profiles = lex.get("profiles", {})
+    out: List = []
+    for key in _profile_keys(profile_spec):
+        out.extend(profiles.get(key, {}).get(field, []) or [])
+    return out
+
+
+def get_lexicon_openers(
+    profile_spec: Optional[str] = None,
+) -> Tuple[Dict, ...]:
+    """Return the merged opener specs for ``profile_spec``, ordered by ``order``.
+
+    Each entry is a dict ``{role, pattern, display, numbered, interior_split,
+    association_role, order}``. Ordering by the explicit ``order`` key
+    reproduces the canonical ``opener_classifier._OPENERS`` sequence so the
+    refactor is behavior-preserving. ``profile_spec`` defaults to the resolved
+    env profile.
+    """
+    spec = profile_spec if profile_spec is not None else resolve_lexicon_profile()
+    openers = _merged_profile_field(spec, "openers")
+    return tuple(sorted(openers, key=lambda o: o.get("order", 1_000)))
+
+
+def get_lexicon_apparatus_names(
+    profile_spec: Optional[str] = None,
+) -> Tuple[str, ...]:
+    """Return the merged apparatus-section display names for ``profile_spec``.
+
+    Concatenation order across merged profiles reproduces
+    ``heading_classifier.APPARATUS_HEADING_NAMES``.
+    """
+    spec = profile_spec if profile_spec is not None else resolve_lexicon_profile()
+    return tuple(
+        s["display"]
+        for s in _merged_profile_field(spec, "apparatus_sections")
+        if s.get("display")
+    )
+
+
+def get_lexicon_interior_apparatus_names(
+    profile_spec: Optional[str] = None,
+) -> Tuple[str, ...]:
+    """Return the ALL-CAPS interior-banner apparatus names for ``profile_spec``.
+
+    The ``interior_banner``-flagged subset (uppercased) reproduces
+    ``heading_classifier._INTERIOR_APPARATUS_NAMES``.
+    """
+    spec = profile_spec if profile_spec is not None else resolve_lexicon_profile()
+    return tuple(
+        s["display"].upper()
+        for s in _merged_profile_field(spec, "apparatus_sections")
+        if s.get("display") and s.get("interior_banner")
+    )
+
+
+def get_lexicon_apparatus_whitelist(
+    profile_spec: Optional[str] = None,
+) -> frozenset:
+    """Return the merged short-heading apparatus whitelist for ``profile_spec``."""
+    spec = profile_spec if profile_spec is not None else resolve_lexicon_profile()
+    return frozenset(
+        str(w).strip().lower()
+        for w in _merged_profile_field(spec, "apparatus_whitelist")
+        if str(w).strip()
+    )
+
+
+def get_lexicon_confusables(
+    profile_spec: Optional[str] = None,
+) -> Tuple[Dict, ...]:
+    """Return the merged OCR-confusable ``{pattern, canonical}`` entries."""
+    spec = profile_spec if profile_spec is not None else resolve_lexicon_profile()
+    return tuple(_merged_profile_field(spec, "confusables"))
 
 
 def validate_classification(classification: Optional[Dict]) -> List[str]:
