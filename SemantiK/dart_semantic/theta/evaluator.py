@@ -92,6 +92,80 @@ _TABLE_QWEN_INFERRED_RE = re.compile(
 STUB_SEMANTIC_METHOD: str = "stub_v1"
 
 
+#: Canonical ``breakdown["method"]`` value the semantic-preservation dimension
+#: carries when the OCR-confusable repair-stats proxy (channel 3) REPLACED the
+#: stub_v1 placeholder. Distinct from a real cross-encoder method string and
+#: from STUB_SEMANTIC_METHOD, so an amended report is self-describing.
+OCR_REPAIR_STATS_METHOD: str = "ocr_repair_stats_v1"
+
+
+def apply_repair_stats(report: ThetaReport, stats: dict | None) -> ThetaReport:
+    """Amend a STUBBED theta report's semantic-preservation with repair stats.
+
+    Channel 3 of the scan-conversion plan: replace the flat-0.7 ``stub_v1``
+    placeholder with the OCR-confusable pass's ``repair_stats_score`` (an honest
+    residual-garble-density proxy, ceilinged < 1.0), recompute the composite with
+    the SAME cached ``load_theta_config()`` weights, and re-derive the
+    ``MEANING_PRESERVATION_LOW`` floor flag against the config floor.
+
+    Fires ONLY when BOTH hold: :func:`theta_is_stubbed` is True (a real-model run
+    is NEVER overridden) AND ``stats`` carries a ``repair_stats_score``. Any
+    other case returns ``report`` UNCHANGED (byte-stable) — so a flag-off /
+    no-stats / real-model run is untouched. The amended dimension's method is
+    :data:`OCR_REPAIR_STATS_METHOD`, so ``theta_is_stubbed`` (which keys off
+    ``stub_v1`` only) reports the amended report as NO LONGER stubbed → the
+    Stage-13 exit-decider naturally takes the real tau threshold path.
+    """
+    if not theta_is_stubbed(report):
+        return report
+    if not isinstance(stats, dict):
+        return report
+    raw_score = stats.get("repair_stats_score")
+    if raw_score is None:
+        return report
+    try:
+        repair_score = float(raw_score)
+    except (TypeError, ValueError):
+        return report
+
+    dims = dict(report.dimensions or {})
+    sem_key = ThetaDimension.SEMANTIC_PRESERVATION.value
+    sem = dims.get(sem_key)
+    if not isinstance(sem, dict):
+        return report
+
+    new_sem = dict(sem)
+    new_sem["score"] = _clamp(repair_score)
+    new_sem["breakdown"] = {
+        "method": OCR_REPAIR_STATS_METHOD,
+        "unrepairable_defect_density": stats.get("unrepairable_defect_density"),
+        "flagged": stats.get("flagged_blocks"),
+        "accepted": stats.get("accepted"),
+    }
+    dims[sem_key] = new_sem
+
+    # Recompute the composite with the SAME calibrated weights.
+    cfg = load_theta_config()
+    weights = cfg.weights
+    theta_score = 0.0
+    for name, d in dims.items():
+        score = d.get("score", 0.0) if isinstance(d, dict) else 0.0
+        theta_score += weights.get(name, 0.0) * float(score)
+    theta_score = round(_clamp(theta_score), 4)
+
+    # Re-derive the MEANING_PRESERVATION_LOW floor flag (drop a stale one, add
+    # it back only when the repaired score is below the config floor).
+    floors = floors_from_config(cfg)
+    sem_floor = floors.get("semantic_preservation")
+    flags = [f for f in (report.flags or []) if f != ThetaFlag.MEANING_PRESERVATION_LOW.value]
+    if sem_floor is not None and _clamp(repair_score) < sem_floor:
+        flags.append(ThetaFlag.MEANING_PRESERVATION_LOW.value)
+
+    return dataclasses.replace(
+        report, dimensions=dims, theta_score=theta_score, flags=flags
+    )
+
+
 def theta_is_stubbed(report: ThetaReport | None) -> bool:
     """True iff this report's semantic_preservation dimension was STUBBED.
 
@@ -678,4 +752,10 @@ def _score_hallucinated_structure(
     }
 
 
-__all__ = ["evaluate", "theta_is_stubbed", "STUB_SEMANTIC_METHOD"]
+__all__ = [
+    "evaluate",
+    "theta_is_stubbed",
+    "STUB_SEMANTIC_METHOD",
+    "OCR_REPAIR_STATS_METHOD",
+    "apply_repair_stats",
+]

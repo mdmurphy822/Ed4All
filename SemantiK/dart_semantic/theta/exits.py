@@ -29,6 +29,24 @@ the only valid combinations are:
     "we never tried the offline lane"). See
     feedback_no_silent_fallbacks.md.
 
+OCR-confusable repair-stats amendment (channel 3, SEMANTIK_OCR_CONFUSABLE_REPAIR)
+---------------------------------------------------------------------------------
+
+When the repair pass ran, the cascade driver applies
+:func:`dart_semantic.theta.evaluator.apply_repair_stats` to the FINAL report
+AFTER :func:`dart_semantic.theta.offline_retry.maybe_offline_retry` and BEFORE
+:func:`decide_exit`. The amendment replaces the stub_v1 semantic-preservation
+placeholder with the pass's ``repair_stats_score`` and re-derives the composite
++ ``MEANING_PRESERVATION_LOW`` floor. It is applied POST-retry deliberately: the
+repair score informs the exit STAMP but does NOT gate the offline retry (the
+retry stays stub-skipped, exactly today's ``_needs_retry`` semantics) — minimal
+blast radius. Because the amended report is no longer ``theta_is_stubbed`` (its
+method is ``ocr_repair_stats_v1``, not ``stub_v1``), :func:`decide_exit` needs
+ZERO change here: it naturally takes the tau_confidence / tau_retry threshold
+path instead of the unconditional SHIP_WITH_FLAG + THETA_UNVERIFIED_STUB bypass.
+When theta is a REAL model, or the repair pass is off / produced no stats, the
+report is untouched and this seam is byte-stable.
+
 The :class:`StageThirteenStubRequired` exception class is retained
 (deprecated) for callers that don't yet wire the retry orchestrator;
 they will hit it on any fast-lane WCAG-failed input and can degrade

@@ -1327,6 +1327,25 @@ def attach_cascade_vectors(
                 + [float(p_is_heading[k][1].item())]
                 + [float(p_table[k][1].item())]
             )
+            # ``p_role`` is emitted RAW from the deployed structure adapter,
+            # so a 9-class (AXIS-1) adapter would silently write 11-dim
+            # TRAINING rows here — poisoning the Semantic head's cascade
+            # contract (CASCADE_DIM == 8). Fail LOUD on the offline data-build
+            # path: unlike the runtime orchestrator (which folds 9→6 by name
+            # for a DEPLOYED Semantic head trained on 6 roles), the trainer
+            # must NOT silently fold — training rows and the Semantic head's
+            # cascade dim must be rebuilt together. If you intend an 11-dim
+            # Semantic head, bump CASCADE_DIM + retrain; do not fold here.
+            if len(vec) != CASCADE_DIM:
+                raise ValueError(
+                    f"cascade vector has wrong dim: {len(vec)} != {CASCADE_DIM} "
+                    f"(structure adapter emitted {len(p_role[k])} roles). The "
+                    "offline data builder does NOT fold AXIS-1 roles (unlike "
+                    "council.orchestrator._derive_cascades, which folds 9→6 for "
+                    "the deployed 6-role Semantic head). Rebuild the Semantic "
+                    "head + CASCADE_DIM for the widened role set before "
+                    "regenerating training rows."
+                )
             rows[row_idx]["cascade"] = vec
         if (start // batch_size) % 50 == 0:
             print(

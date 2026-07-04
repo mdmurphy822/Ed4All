@@ -346,6 +346,23 @@ def caption_figure_regions(regions: list[Any], *,
         payload = region.payload or {}
         img_bytes = payload.get("image_png_bytes")
         if not img_bytes:
+            # A figure Stage 5c DELIBERATELY skipped (bad-geometry crop /
+            # Part F per-region render failure) carries a skip marker — it
+            # must never be chapter-fatal here: skip with a warning; the
+            # assembler ships the honest type-level alt. A payload-less
+            # figure WITHOUT the marker still fails closed (genuine
+            # "Stage 5c didn't run" — the no-silent-fallback discipline).
+            skip_reason = payload.get("figure_render_skipped") or payload.get(
+                "figure_render_degraded"
+            )
+            if skip_reason:
+                logger.warning(
+                    "figure region %d has no image_png_bytes (render "
+                    "skipped: %s) — captioning skipped, type-level alt "
+                    "ships",
+                    i, skip_reason,
+                )
+                continue
             raise FigureCaptionError(
                 f"figure region {i} has no payload['image_png_bytes'] — "
                 f"did Stage 5c (image_extract) run?"

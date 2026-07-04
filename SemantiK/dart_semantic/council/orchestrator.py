@@ -59,6 +59,80 @@ from .types import (
 # ---------------------------------------------------------------------------
 # Cascade derivation — Structure → Semantic
 # ---------------------------------------------------------------------------
+#
+# AXIS-1 role expansion vs. the Semantic head's cascade contract.
+#
+# ``council.structure.ROLE_NAMES`` was widened 6 → 9 (AXIS-1 appended
+# ``definition_term`` / ``definition_def`` / ``caption``) and a 9-class
+# structure adapter is deployed. But the Semantic head's cascade contract is
+# still the LEGACY 8-dim = [P(role)x6, P(is_heading=1), P(table_region=1)]
+# (``data.build_semantic_data.CASCADE_DIM = 6 + 1 + 1``; validated at
+# ``council.semantic.CASCADE_DIM``). The Semantic adapter was trained on the
+# 6-role cascade, so the vector fed to it MUST stay 6-role until Semantic is
+# retrained on the 11-dim shape. We therefore project the 9-role structural
+# distribution back onto the 6 legacy slots by NAME before concatenation,
+# folding the 3 AXIS-1 roles' probability mass into ``paragraph`` (under the
+# 6-role era those spans were classified predominantly as paragraph, so the
+# fold reproduces the training-time input distribution for the Semantic head).
+# The 3 AXIS-1 roles still carry region-typing value ELSEWHERE in the council
+# (structure_graph / reviewer); this fold is scoped to the Semantic cascade
+# only and must not widen this vector until the Semantic head is retrained.
+_LEGACY_ROLE_NAMES: tuple[str, ...] = ROLE_NAMES[:6]
+_EXPECTED_LEGACY_ROLE_NAMES: tuple[str, ...] = (
+    "paragraph",
+    "heading",
+    "list_item",
+    "form_label",
+    "blockquote",
+    "code_block",
+)
+# Fail loud at import if the legacy 6-role slot order ever drifts — the fold
+# below is name-keyed but the Semantic head consumes the vector POSITIONALLY,
+# so the first-6 order of ROLE_NAMES is load-bearing.
+if _LEGACY_ROLE_NAMES != _EXPECTED_LEGACY_ROLE_NAMES:
+    raise RuntimeError(
+        "council.structure.ROLE_NAMES[:6] changed order/contents: "
+        f"{_LEGACY_ROLE_NAMES!r} != {_EXPECTED_LEGACY_ROLE_NAMES!r}. The "
+        "Semantic cascade fold (_derive_cascades) consumes these 6 slots "
+        "positionally; re-derive the fold before shipping."
+    )
+# AXIS-1 roles (present only when len(ROLE_NAMES) == 9) → the legacy slot
+# their mass folds into. Under the 6-role era these spans classified
+# predominantly as paragraph.
+_AXIS1_ROLE_FOLD: dict[str, str] = {
+    "definition_term": "paragraph",
+    "definition_def": "paragraph",
+    "caption": "paragraph",
+}
+_LEGACY_CASCADE_DIM = len(_LEGACY_ROLE_NAMES) + 2  # 6 role + is_heading + table_region
+
+
+def _fold_role_to_legacy(role_full: list[float]) -> list[float]:
+    """Project a full per-role distribution onto the 6 LEGACY role slots.
+
+    ``role_full`` is a ``len(ROLE_NAMES)``-dim vector in canonical role
+    order (from :func:`_signal_to_full`). Returns a 6-dim vector in
+    ``_LEGACY_ROLE_NAMES`` order, folding each AXIS-1 role's probability
+    mass into the legacy slot named by ``_AXIS1_ROLE_FOLD`` (paragraph).
+    When ``len(ROLE_NAMES) == 6`` (an older checkout / a pre-AXIS-1
+    adapter) this is a straight passthrough — the loop finds no AXIS-1
+    roles and the first 6 entries copy 1:1.
+    """
+    legacy_idx = {name: i for i, name in enumerate(_LEGACY_ROLE_NAMES)}
+    legacy = [0.0] * len(_LEGACY_ROLE_NAMES)
+    for role_name, mass in zip(ROLE_NAMES, role_full):
+        target = role_name if role_name in legacy_idx else _AXIS1_ROLE_FOLD.get(role_name)
+        idx = legacy_idx.get(target) if target is not None else None
+        if idx is None:
+            # A role that is neither a legacy slot nor a known AXIS-1 fold
+            # target — drop its mass loudly rather than silently mis-slot.
+            raise ValueError(
+                f"structural_role {role_name!r} has no legacy-slot mapping "
+                f"(legacy slots={_LEGACY_ROLE_NAMES}, "
+                f"AXIS-1 fold={_AXIS1_ROLE_FOLD})"
+            )
+        legacy[idx] += float(mass)
+    return legacy
 
 
 def _signal_to_full(
@@ -103,9 +177,25 @@ def _derive_cascades(
     that span's cascade is zero-filled — this will trip Semantic's
     loud cascade validator. Caller should skip Semantic entirely when
     Structure failed.
+
+    9→6 role FOLD (AXIS-1). The deployed structure adapter emits a
+    9-class ``structural_role`` distribution (AXIS-1 added
+    ``definition_term`` / ``definition_def`` / ``caption``), but the
+    Semantic head was trained on the LEGACY 6-role cascade and consumes
+    this vector positionally at a fixed 8-dim = 6 role + 2 gates. We
+    therefore project the full role distribution onto the 6 legacy slots
+    by NAME (via :func:`_fold_role_to_legacy`), folding the 3 AXIS-1
+    roles' probability mass into ``paragraph`` — reproducing the
+    training-time input distribution (those spans were 6-role-era
+    paragraphs) rather than widening the vector the Semantic head cannot
+    consume. The 3 AXIS-1 roles keep their region-typing value elsewhere
+    in the council; this fold must NOT widen the cascade until the
+    Semantic head is retrained on the 11-dim shape. On an older /
+    pre-AXIS-1 checkout (``len(ROLE_NAMES) == 6``) the fold is a straight
+    passthrough (no AXIS-1 roles to fold).
     """
     n = len(spans)
-    cascades: list[list[float]] = [[0.0] * 8 for _ in range(n)]
+    cascades: list[list[float]] = [[0.0] * _LEGACY_CASCADE_DIM for _ in range(n)]
     if structure_out is None:
         return cascades
     # Index Structure signals by (head_name, region_id) for O(1) lookup.
@@ -116,13 +206,27 @@ def _derive_cascades(
     ih_sigs = by_head.get("is_heading", {})
     tr_sigs = by_head.get("table_region", {})
     for i in range(n):
+        # Full role distribution in ROLE_NAMES order (9-dim on the deployed
+        # adapter), then fold onto the 6 legacy slots the Semantic head expects.
         role_full = _signal_to_full(role_sigs.get(i), ROLE_NAMES)
+        role_legacy = _fold_role_to_legacy(role_full)
         ih_full = _signal_to_full(ih_sigs.get(i), IS_HEADING_LABELS)
         tr_full = _signal_to_full(tr_sigs.get(i), TABLE_REGION_LABELS)
         # IS_HEADING_LABELS = ("not_heading", "heading") → index 1.
         # TABLE_REGION_LABELS = ("not_table_region", "table_region") → 1.
-        cascades[i] = list(role_full) + [ih_full[1], tr_full[1]]
-        assert len(cascades[i]) == 8, len(cascades[i])
+        cascades[i] = list(role_legacy) + [ih_full[1], tr_full[1]]
+        if len(cascades[i]) != _LEGACY_CASCADE_DIM:
+            # Descriptive failure — the bare ``assert len == 8`` this
+            # replaced rendered as "AssertionError: 11" in phase logs and
+            # cost a diagnosis round-trip when ROLE_NAMES widened to 9.
+            raise ValueError(
+                "cascade vector has wrong dim: "
+                f"{len(cascades[i])} != {_LEGACY_CASCADE_DIM} "
+                f"(ROLE_NAMES has {len(ROLE_NAMES)} roles, folded onto "
+                f"{len(_LEGACY_ROLE_NAMES)} legacy slots via {_AXIS1_ROLE_FOLD}; "
+                "the Semantic head expects the legacy 6-role cascade — "
+                "retrain Semantic on the 11-dim shape before widening this)"
+            )
     return cascades
 
 

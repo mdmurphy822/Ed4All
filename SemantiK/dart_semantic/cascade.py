@@ -48,9 +48,46 @@ from .qwen_specialists.runtime import any_phase_provider_is_endpoint
 from .reading_order import resolve_deploy_profile
 from .soft_reranker import score_document
 from .structure_graph import Region, build_structure_graph
-from .theta import decide_exit, evaluate, maybe_offline_retry
+from .theta import apply_repair_stats, decide_exit, evaluate, maybe_offline_retry
 from .v2_config import DEFAULT_V2_CONFIG, V2Config
 from .validate import HtmlValidator
+
+
+# ---------------------------------------------------------------------------
+# Deterministic GPU-lifecycle lease (ED4ALL_GPU_LIFECYCLE, default ON)
+# ---------------------------------------------------------------------------
+
+
+def _gpu_lifecycle_release(
+    *, ollama: bool = False, torch: bool = False, stage: str = ""
+) -> None:
+    """Fire a gated, fail-soft GPU-lifecycle release at a cascade stage seam.
+
+    Deterministic lease semantics (owner directive): a GPU model stays resident
+    for its stage's batch and releases the card at the SEAM to the next stage
+    (post-Stage-5e ollama hand-off before the Stage-6 GGUF; post-captioner /
+    post-Stage-6 / post-theta torch; post second-pass+ocr_repair ollama). Uses
+    the SELF-CONTAINED SemantiK twin (``dart_semantic.gpu_lifecycle``) because
+    the out-of-process cascade bridge cannot import Ed4All's ``lib/``.
+
+    No-op (ZERO release calls) when ``ED4ALL_GPU_LIFECYCLE`` is off — the
+    flag-off cascade path is byte-identical. Wraps the already-fail-soft twin in
+    a final belt so a seam release can NEVER crash a cascade stage. Every seam
+    is idempotent + lazy-reload-safe (ollama auto-loads; the Stage-6 AdapterSwap
+    reloads; theta reloads on the next evaluate), so ``maybe_offline_retry``'s
+    re-entry of ``_run_inner`` is safe.
+    """
+    try:
+        from . import gpu_lifecycle
+
+        if not gpu_lifecycle.resolve_gpu_lifecycle_mode():
+            return
+        if ollama:
+            gpu_lifecycle.release_ollama_models(stage=stage or None)
+        if torch:
+            gpu_lifecycle.release_torch(stage=stage or None)
+    except Exception:  # noqa: BLE001 — a seam release must never crash the cascade
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +591,7 @@ def _build_region_provenance(
     stage7_results: dict[int, list[Any]],
     review_verdicts: list[Any] | None = None,
     review_regions: list[Region] | None = None,
+    ocr_repair_edits: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Distill one provenance dict per region in DOCUMENT (emission) order.
 
@@ -657,6 +695,14 @@ def _build_region_provenance(
         # with the figure path off.
         if image_src is not None:
             entry["image_src"] = image_src
+        # OPTIONAL P2 ``vlm_corroborated`` key (additive audit signal). Stamped
+        # on the payload ONLY when a whole-block VLM heading hint corroborated a
+        # heading candidate that had already cleared every deterministic gate
+        # (structure_graph Pass-2). Absent (byte-stable to baseline) for every
+        # region when the VLM struct-hints flags are off. The boosted
+        # ``confidence`` above rides the existing key — no new confidence field.
+        if payload.get("vlm_corroborated"):
+            entry["vlm_corroborated"] = True
         # OPTIONAL caption text (additive). Present only for a figure/table
         # region whose ``caption_fb_index`` resolved to non-empty text;
         # absent for every other region (byte-stable to baseline). The adapter
@@ -702,6 +748,18 @@ def _build_region_provenance(
         css_class = payload.get("css_class")
         if isinstance(css_class, str) and css_class.strip():
             entry["pedagogy_class"] = css_class.strip()
+        # OPTIONAL OCR-confusable repair (additive; keyed by region_index). The
+        # repair pass NEVER mutates ``raw_text`` (the content-hash sourceId basis
+        # stays verbatim); it carries the ADDITIVE ``repaired_text`` + ``ocr_repair``
+        # edit map so the adapter substitutes the repaired string at render and
+        # stamps ``data-dart-repair``. Present ONLY for a region that GAINED >=1
+        # gated edit — byte-stable to baseline (both keys absent) when the flag is
+        # off or the region was untouched.
+        if ocr_repair_edits:
+            repair = ocr_repair_edits.get(region_index)
+            if isinstance(repair, dict) and repair.get("repaired_text"):
+                entry["repaired_text"] = repair["repaired_text"]
+                entry["ocr_repair"] = repair["ocr_repair"]
         provenance.append(entry)
     return provenance
 
@@ -1341,6 +1399,7 @@ def run_full_cascade(
     # ------------------------------------------------------------------
     from .qwen_specialists.deterministic_structure import (
         clean_structure,
+        resolve_promote_section_headings_mode,
         resolve_structure_clean_mode,
     )
 
@@ -1457,16 +1516,23 @@ def run_full_cascade(
         resegment_blocks,
         resolve_block_resegment_llm_mode,
         resolve_block_resegment_mode,
+        resolve_split_fused_section_titles_mode,
         resolve_unit_regroup_mode,
     )
 
-    # Widened gate (Phase 6): enter Stage-5e when EITHER the same-kind block
-    # resegment OR the cross-kind pedagogical-unit regroup is on. Because per-
-    # flag gating now lives INSIDE resegment_blocks, this gate only DECIDES
-    # WHETHER to enter Stage-5e — it does not leak the same-kind pass into a
-    # regroup-only run. Flag-off byte-stable: with BOTH flags off this is
-    # byte-identical to the legacy resolve_block_resegment_mode()-only gate.
-    if resolve_block_resegment_mode() or resolve_unit_regroup_mode():
+    # Widened gate (Phase 6 + lane B): enter Stage-5e when the same-kind block
+    # resegment OR the cross-kind pedagogical-unit regroup OR the fused-section-
+    # title split is on. Because per-flag gating lives INSIDE resegment_blocks,
+    # this gate only DECIDES WHETHER to enter Stage-5e — it does not leak one
+    # flag's arm into another flag's run (new-flag-on / others-off emits ONLY
+    # fused-title ops, and vice versa). Flag-off byte-stable: with ALL flags off
+    # this is byte-identical to the legacy resolve_block_resegment_mode()-only
+    # gate.
+    if (
+        resolve_block_resegment_mode()
+        or resolve_unit_regroup_mode()
+        or resolve_split_fused_section_titles_mode()
+    ):
         t = time.perf_counter()
         # The LLM layer rides the SAME hosted-70B endpoint seat as Stage-5d /
         # Stage-6; it only needs generate_batch. NO local GGUF / GPU here. The
@@ -1513,6 +1579,42 @@ def run_full_cascade(
         log(
             f"[cascade] Stage 5e applied {n_merges} merge(s), "
             f"{n_splits} split(s)"
+        )
+
+    # ------------------------------------------------------------------
+    # Post-Stage-5e — fused-title child PROMOTION (lane B; default OFF x2).
+    #
+    # The clean_structure sub-pass E promotion runs at Stage-5d-det (BEFORE
+    # Stage-5e), so it can never see a title child the Stage-5e fused-title
+    # SPLIT only just carved off. This narrow hook promotes that split-off
+    # title child (child_index==0 of a subtype='fused_title' split) to a
+    # section heading. Gated on BOTH SEMANTIK_SPLIT_FUSED_SECTION_TITLES (the
+    # split that created the child) AND SEMANTIK_PROMOTE_SECTION_HEADINGS (the
+    # promotion opt-in): split-on/promote-off leaves the title child a
+    # paragraph (still an improvement; promotable later by rerender);
+    # promote-on/split-off is byte-identical to today (no fused-title child
+    # exists, so this is a natural no-op). Fail-closed whole-revert on
+    # token-conservation (mirrors clean_structure).
+    # ------------------------------------------------------------------
+    if (
+        resolve_split_fused_section_titles_mode()
+        and resolve_promote_section_headings_mode()
+    ):
+        from .qwen_specialists.deterministic_structure import (
+            promote_fused_title_children,
+        )
+
+        structure_regions, fused_promote_diag = promote_fused_title_children(
+            structure_regions, feature_blocks
+        )
+        log(
+            "[cascade] post-5e fused-title promotion: "
+            f"promoted={fused_promote_diag.get('promoted')}"
+            + (
+                " (REVERTED: token-conservation)"
+                if fused_promote_diag.get("reverted_for_invariant")
+                else ""
+            )
         )
 
     # Stage 5b — optional GLM-OCR table enrichment. Runs ONLY on
@@ -1623,6 +1725,10 @@ def run_full_cascade(
 
         capped = caption_figure_regions(capped)
         stages["stage6b"] = time.perf_counter() - t
+        # TORCH LEASE — reclaim the SmolVLM2 captioner's allocator cache after
+        # captioning completes (its weights drop by scope; this hands the card
+        # cleanly to the Stage-6 GGUF). Gated on ED4ALL_GPU_LIFECYCLE, fail-soft.
+        _gpu_lifecycle_release(torch=True, stage="post-Stage-6b-captioner")
     elif n_figs_capped:
         log(
             f"[cascade] Stage 6b DEFERRED (figure captioning off; "
@@ -1653,6 +1759,17 @@ def run_full_cascade(
     from .council.base import release_council_gpu
 
     release_council_gpu()
+
+    # OLLAMA LEASE #1 — hand the card off from the Stage-5d reviewer +
+    # Stage-5e resegment-LLM ollama seat BEFORE the Stage-6 GGUF loads. The
+    # 5d+5e run is ONE ollama-consumer window (same seat/model): releasing
+    # between 5d and 5e would be exactly the cold-reload churn the lease
+    # directive forbids, so the release fires here, at the END of that window
+    # (the missing piece the lane names "after the Stage-5d reviewer
+    # completes"). No-op unless SEMANTIK_STRUCTURE_REVIEW / _BLOCK_RESEGMENT
+    # actually loaded a model (otherwise the /api/ps sweep finds nothing);
+    # gated on ED4ALL_GPU_LIFECYCLE, fail-soft, lazy-reload-safe.
+    _gpu_lifecycle_release(ollama=True, stage="post-Stage-5e/pre-Stage-6")
 
     # ------------------------------------------------------------------
     # Stages 6-12 are encapsulated so the offline-retry orchestrator can
@@ -1699,6 +1816,13 @@ def run_full_cascade(
             lane=lane,  # type: ignore[arg-type]
         )
         stages[f"stage6{suffix}"] = time.perf_counter() - t_inner
+        # TORCH LEASE (belt-and-suspenders) — the Stage-6 llama-cpp AdapterSwap
+        # already frees each GGUF adapter group on __exit__ (runtime.free →
+        # del+gc+empty_cache, including the last group); this reclaims any
+        # residual allocator cache before the deterministic Stages 7-11. Gated +
+        # fail-soft; lazy-reload-safe on the offline-retry re-entry of this
+        # closure.
+        _gpu_lifecycle_release(torch=True, stage=f"post-Stage-6[{lane}]")
 
         n_in = sum(len(v) for v in cands.values())
 
@@ -1765,6 +1889,12 @@ def run_full_cascade(
             reading_order_at_risk=ro_at_risk,
         )
         stages[f"stage12{suffix}"] = time.perf_counter() - t_inner
+        # TORCH LEASE — reclaim the theta DeBERTa cross-encoder's allocator
+        # cache after Stage-12 evaluate. Theta loads per-evaluate and drops its
+        # refs by scope; this hands the card over at the seam. Idempotent +
+        # lazy-reload-safe: maybe_offline_retry re-enters this closure and theta
+        # reloads on the next evaluate. Gated on ED4ALL_GPU_LIFECYCLE, fail-soft.
+        _gpu_lifecycle_release(torch=True, stage=f"post-Stage-12-theta[{lane}]")
 
         lane_outputs[lane] = {
             "n_cand_in": n_in,
@@ -1829,6 +1959,52 @@ def run_full_cascade(
         stages["stage9_verify"] = time.perf_counter() - t
         second_pass_adopted = bool(second_pass_signals.get("adopted"))
 
+    # ------------------------------------------------------------------
+    # OCR-confusable micro-repair (plan Phase 5 channels 2+3;
+    # SEMANTIK_OCR_CONFUSABLE_REPAIR). Runs on the CONVERGED post-cap/verify
+    # ``capped`` regions (text is FB-derived, so this covers both fast/offline
+    # lanes) and BEFORE Stage 13. It NEVER mutates region text: it emits an
+    # ADDITIVE per-region edits map (threaded into region_provenance) + a
+    # repair-stats object that amends the theta exit signal. OFF -> byte-
+    # identical: no detector work, no LLM call, no ``ocr_repair`` result key.
+    # ------------------------------------------------------------------
+    ocr_repair_result = None
+    from .qwen_specialists.ocr_repair import resolve_ocr_confusable_repair_mode
+
+    if resolve_ocr_confusable_repair_mode():
+        from .qwen_specialists.ocr_repair import run_ocr_confusable_repair
+        from .qwen_specialists.reviewer import resolve_structure_review_temperature
+        from .qwen_specialists.runtime import (
+            make_runtime,
+            resolve_structure_review_model,
+        )
+
+        log("[cascade] running OCR-confusable micro-repair pass")
+        t = time.perf_counter()
+        # Rides the SAME already-licensed hosted/ollama specialist seat as the
+        # Stage-5d reviewer (make_runtime('endpoint'), the reviewer model pin).
+        repair_runtime = make_runtime(
+            "endpoint", model=resolve_structure_review_model()
+        )
+        ocr_repair_result = run_ocr_confusable_repair(
+            list(capped),
+            feature_blocks,
+            repair_runtime,
+            temperature=resolve_structure_review_temperature(),
+            log=log,
+        )
+        stages["ocr_repair"] = time.perf_counter() - t
+
+    # OLLAMA LEASE #2 — hand the card off from the Stage-9 second-pass verifier
+    # + the SEMANTIK_OCR_CONFUSABLE_REPAIR pass (both ride the SAME ollama
+    # specialist seat) AFTER ocr_repair completes and BEFORE Stage 13. Covering
+    # both same-seat consumers in ONE lease window avoids a cold 7B reload
+    # between them — the repair pass runs post-verify-loop, so this is the
+    # correct end-of-window seam. No-op unless a model was resident; gated on
+    # ED4ALL_GPU_LIFECYCLE, fail-soft. (Stage 13's offline retry may re-enter
+    # _run_inner → Stages 6-12, which reload lazily.)
+    _gpu_lifecycle_release(ollama=True, stage="post-second-pass+ocr_repair")
+
     # Stage 13 — orchestrate the offline retry first, THEN stamp.
     offline_retry_fired = False
 
@@ -1841,6 +2017,12 @@ def run_full_cascade(
     log("[cascade] running Stage 13 (offline retry orchestration)")
     t = time.perf_counter()
     final_report = maybe_offline_retry(fast_report, run_lane=_run_lane)
+    # Channel 3: amend the FINAL report's stubbed semantic-preservation with the
+    # repair-stats proxy (no-op when theta is real / stats absent). Applied AFTER
+    # maybe_offline_retry so the repair score informs the exit STAMP but does NOT
+    # gate the offline retry (documented in theta/exits.py). Byte-stable off.
+    if ocr_repair_result is not None:
+        final_report = apply_repair_stats(final_report, ocr_repair_result.stats)
     report = decide_exit(final_report)
     stages["stage13"] = time.perf_counter() - t
 
@@ -1886,6 +2068,11 @@ def run_full_cascade(
         # verdicts are still the Pass-1 (pre-5e) snapshot -> keep
         # ``pre_review_regions``.
         review_regions=(None if second_pass_adopted else pre_review_regions),
+        # OCR-confusable repair edits (keyed by region_index; None when the pass
+        # is off / made no accepted edit). Additive → byte-stable when absent.
+        ocr_repair_edits=(
+            ocr_repair_result.edits_by_region if ocr_repair_result else None
+        ),
     )
 
     elapsed_total = time.perf_counter() - t_total
@@ -1964,6 +2151,9 @@ def run_full_cascade(
         assembled=assembled,
         wcag_coverage=_coverage_map(),
         structure_review=structure_review_audit,
+        # OCR-confusable repair audit (None when the pass is off → key absent,
+        # byte-stable). Parallel to the structure_review / second_pass arms.
+        ocr_repair=(ocr_repair_result.stats if ocr_repair_result else None),
     )
 
     result: dict[str, Any] = {
@@ -2014,6 +2204,11 @@ def run_full_cascade(
     # bridge (Phase 7) resolves the per-round capture off this arm.
     if second_pass_signals is not None and second_pass_signals.get("rounds"):
         result["second_pass_verify"] = second_pass_signals
+    # OCR-confusable repair audit arm — emitted ONLY when the pass ran (default
+    # OFF → key absent, byte-stable). Parallel to structure_review /
+    # block_resegment / second_pass_verify; the bridge reads it for the capture.
+    if ocr_repair_result is not None and ocr_repair_result.stats:
+        result["ocr_repair"] = ocr_repair_result.stats
     if return_html:
         result["html"] = assembled.html
     return result

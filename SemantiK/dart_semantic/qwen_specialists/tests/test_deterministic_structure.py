@@ -573,3 +573,314 @@ def test_pedagogical_label_not_dropped_as_toc_in_frontmatter_zone():
     for r in ex:
         assert r.kind != "metadata_drop", f"pedagogical label dropped as metadata: {r.payload}"
         assert (r.payload or {}).get("css_class") == "pedagogy-example"
+
+
+# ---------------------------------------------------------------------------
+# Defect 3(a) — running-header text backstop.
+# ---------------------------------------------------------------------------
+
+
+def test_running_header_with_page_number_dropped_in_body():
+    """A 'Chapter N <words> <3-4 digit page>' heading that escaped the
+    FB-position running-header detector is page furniture ANYWHERE in the doc
+    and is re-tagged metadata_drop (defect 3a — 39 such strings became bogus
+    <h2> on the EA2e scan)."""
+    regions, fbs = _build([
+        ("heading", "9.1 Simplify Expressions with Roots", 30, 2),  # real anchor
+        ("paragraph", "The nth root generalizes the square root.", 30),
+        ("heading", "Chapter 9 Roots and Radicals 1039", 31, 2),     # furniture
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[0].kind == "heading"               # real section survives
+    assert out[2].kind == "metadata_drop"         # running header dropped
+    assert diag["running_header_dropped"] == 1
+
+
+def test_real_chapter_title_without_page_number_kept():
+    """A real chapter title with NO trailing page number is never dropped by
+    the running-header backstop (anti-FP)."""
+    regions, fbs = _build([
+        ("heading", "Chapter 9 Roots and Radicals", 30, 1),
+        ("paragraph", "Body content.", 30),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[0].kind == "heading"
+    assert diag["running_header_dropped"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Defect 3(b) — OCR-garbled pedagogical labels routed to the pedagogy path.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "label,expected_class",
+    [
+        ("| EXAMPLE9.9 | PLE 9.9", "pedagogy-example"),
+        ("[y] EXAMPLE 3", "pedagogy-example"),
+        ("TRYIT::", "pedagogy-try-it"),
+        ("| TRY IT 9.5", "pedagogy-try-it"),
+    ],
+)
+def test_ocr_garbled_pedagogical_labels_demoted(label, expected_class):
+    """OCR-garbled EXAMPLE / TRY IT labels (leading gutter glyphs, fused words)
+    the council mis-promoted to <h2> are demoted to a pedagogy-* paragraph, not
+    left as section headings (defect 3b — 20 garbled EXAMPLE labels became
+    <h2>)."""
+    regions, fbs = _build([
+        ("heading", "9.1 Introduction", 30, 2),   # real anchor (protects zone)
+        ("heading", label, 31, 4),
+        ("paragraph", "body under the label", 31),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[1].kind == "paragraph"                       # demoted
+    assert out[1].payload.get("css_class") == expected_class
+    assert out[1].payload["text"] == label                  # text verbatim
+
+
+# ---------------------------------------------------------------------------
+# Defect 3(c) — gated inline N.M section-heading promotion.
+# ---------------------------------------------------------------------------
+
+
+def test_section_promotion_off_by_default():
+    """Without SEMANTIK_PROMOTE_SECTION_HEADINGS, a mis-typed 'N.M Title'
+    paragraph stays a paragraph (byte-identical default path)."""
+    regions, fbs = _build([
+        ("heading", "Chapter 9 Roots and Radicals", 30, 1),
+        ("paragraph", "9.2 Simplify Square Roots", 31),
+        ("paragraph", "9.3 Add and Subtract Square Roots", 32),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[1].kind == "paragraph"
+    assert out[2].kind == "paragraph"
+    assert diag["section_promoted"] == 0
+
+
+def test_section_promotion_gated_on_promotes_dominant_chapter_sections(monkeypatch):
+    """With the flag on, a STANDALONE 'N.M Title-Case' paragraph whose N equals
+    the document's dominant chapter number is promoted paragraph→heading
+    (defect 3c — real section headings '9.2 …' / '9.3 …' were demoted to <p>)."""
+    monkeypatch.setenv("SEMANTIK_PROMOTE_SECTION_HEADINGS", "on")
+    regions, fbs = _build([
+        ("heading", "Chapter 9 Roots and Radicals", 30, 1),
+        ("paragraph", "9.2 Simplify Square Roots", 31),
+        ("paragraph", "9.3 Add and Subtract Square Roots", 32),
+        ("paragraph", "This is ordinary body prose that is not a section title.", 33),
+        ("paragraph", "3.1 A Section From A Different Chapter", 34),  # N != dominant
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[1].kind == "heading"                       # 9.2 promoted
+    assert out[1].payload["level_hint"] == 2
+    assert out[2].kind == "heading"                       # 9.3 promoted
+    assert out[3].kind == "paragraph"                     # body prose untouched
+    assert out[4].kind == "paragraph"                     # 3.1 (wrong chapter) untouched
+    assert diag["section_promoted"] == 2
+    # Text preserved verbatim on the promoted regions.
+    assert out[1].payload["text"] == "9.2 Simplify Square Roots"
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-03 scan audit — conversion-path (Region-level) heading fixes.
+# ---------------------------------------------------------------------------
+
+
+def test_decorated_solution_label_demoted():
+    # OCR-decorated run-in "Solution" labels (defect 3a) demote to a
+    # pedagogy-solution paragraph instead of surviving as spurious <h3>.
+    for decorated in [") Solution", "™ Solution", "“ Solution"]:
+        regions, fbs = _build([
+            ("heading", "1.1 Introduction to Whole Numbers", 30, 2),
+            ("heading", decorated, 31, 3),
+            ("paragraph", "steps under the label", 31),
+        ])
+        out, diag = clean_structure(regions, fbs)
+        assert out[1].kind == "paragraph", decorated
+        assert out[1].payload.get("css_class") == "pedagogy-solution"
+        assert out[1].payload["text"] == decorated  # verbatim
+
+
+def test_running_header_leading_page_dropped():
+    # Leading-page-number running header (defect 3b) dropped anywhere in doc.
+    regions, fbs = _build([
+        ("heading", "1.1 Anchor Section", 30, 2),
+        ("heading", "188 Chapter 1 Foundations", 31, 2),
+        ("paragraph", "body", 31),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[1].kind == "metadata_drop"
+    assert diag["running_header_dropped"] >= 1
+
+
+def test_repeat_count_running_header_keeps_first_drops_rest():
+    # A bare "Chapter 4 Graphs" recurring >3× is per-page furniture: keep the
+    # FIRST (real opener), drop the rest (defect 3b repeat-count rule).
+    specs = [("heading", "1.1 Anchor", 30, 2)]
+    for pg in range(31, 37):  # 6 repeats
+        specs.append(("heading", "Chapter 4 Graphs", pg, 2))
+        specs.append(("paragraph", f"body {pg}", pg))
+    regions, fbs = _build(specs)
+    out, diag = clean_structure(regions, fbs)
+    header_kinds = [out[i].kind for i in range(1, len(out), 2)]
+    assert header_kinds[0] == "heading"          # first kept
+    assert all(k == "metadata_drop" for k in header_kinds[1:])  # rest dropped
+    assert diag["repeated_furniture_dropped"] == 5
+
+
+def test_repeat_count_below_threshold_keeps_all():
+    # 3 repeats (== threshold) → all kept (no furniture drop).
+    specs = [("heading", "1.1 Anchor", 30, 2)]
+    for pg in range(31, 34):
+        specs.append(("heading", "Chapter 4 Graphs", pg, 2))
+    regions, fbs = _build(specs)
+    out, diag = clean_structure(regions, fbs)
+    assert diag["repeated_furniture_dropped"] == 0
+
+
+# ---------------------------------------------------------------------------
+# P2 — VLM structural hints (NON-AUTHORITATIVE): sub-pass E audit breadcrumb +
+# demotion immunity. The promotable SET is invariant to hints (set-equality);
+# a hint can only add an audit breadcrumb and can never veto a demotion.
+# ---------------------------------------------------------------------------
+
+
+def _vlm_heading_hint(coverage: str = "whole_block", level: int = 2) -> dict:
+    return {"kind": "heading", "level": level, "marker": None, "coverage": coverage}
+
+
+def test_section_promotion_set_equality_with_vlm_hints(monkeypatch):
+    """The promoted index SET is identical with VLM hints on vs off — the
+    deterministic _STANDALONE_SECTION_RE + dominant-ordinal is the SOLE
+    trigger; a hint never widens (or narrows) the set."""
+    monkeypatch.setenv("SEMANTIK_PROMOTE_SECTION_HEADINGS", "on")
+    specs = [
+        ("heading", "Chapter 9 Roots and Radicals", 30, 1),
+        ("paragraph", "9.2 Simplify Square Roots", 31),
+        ("paragraph", "This is ordinary body prose, not a section title.", 32),
+        ("paragraph", "9.3 Add and Subtract Square Roots", 33),
+    ]
+
+    # Hints OFF.
+    regions, fbs = _build(specs)
+    out_off, diag_off = clean_structure(regions, fbs)
+    promoted_off = {i for i, r in enumerate(out_off) if r.kind == "heading" and i != 0}
+
+    # Hints ON — put a heading hint even on the BODY-PROSE fb (index 2), which
+    # must NOT be promoted (proves a hint can't widen the set).
+    monkeypatch.setenv("SEMANTIK_VLM_EXTRACT", "1")
+    monkeypatch.setenv("SEMANTIK_VLM_STRUCT_HINTS", "1")
+    regions2, fbs2 = _build(specs)
+    for fb in fbs2:
+        fb.vlm_hint = _vlm_heading_hint()
+    out_on, diag_on = clean_structure(regions2, fbs2)
+    promoted_on = {i for i, r in enumerate(out_on) if r.kind == "heading" and i != 0}
+
+    assert promoted_off == promoted_on == {1, 3}
+    assert diag_off["section_promoted"] == diag_on["section_promoted"] == 2
+
+
+def test_section_promotion_vlm_breadcrumb_audit_only(monkeypatch):
+    """A promoted section whose seed FB carries a whole-block VLM heading hint
+    gets an audit breadcrumb (structure_clean.vlm_corroborated); without a hint
+    the breadcrumb is absent. The kind decision is invariant either way."""
+    monkeypatch.setenv("SEMANTIK_PROMOTE_SECTION_HEADINGS", "on")
+    monkeypatch.setenv("SEMANTIK_VLM_EXTRACT", "1")
+    monkeypatch.setenv("SEMANTIK_VLM_STRUCT_HINTS", "1")
+    specs = [
+        ("heading", "Chapter 9 Roots and Radicals", 30, 1),
+        ("paragraph", "9.2 Simplify Square Roots", 31),
+        ("paragraph", "9.3 Add and Subtract Square Roots", 32),
+    ]
+    regions, fbs = _build(specs)
+    fbs[1].vlm_hint = _vlm_heading_hint()          # corroborated
+    # fbs[2] gets a PREFIX-coverage hint -> must NOT corroborate.
+    fbs[2].vlm_hint = _vlm_heading_hint(coverage="prefix")
+    out, _ = clean_structure(regions, fbs)
+    assert out[1].kind == "heading"
+    assert out[1].payload["structure_clean"].get("vlm_corroborated") is True
+    assert out[2].kind == "heading"
+    assert "vlm_corroborated" not in out[2].payload.get("structure_clean", {})
+
+
+def test_demotion_immunity_pedagogical_label_with_vlm_hint(monkeypatch):
+    """A pedagogical label ('EXAMPLE 2') carrying a VLM heading hint is STILL
+    demoted by sub-pass B — a hint can never veto a deterministic demotion
+    (VLM markdown reliably '##'s pedagogical labels, exactly the class
+    clean_structure demotes)."""
+    monkeypatch.setenv("SEMANTIK_VLM_EXTRACT", "1")
+    monkeypatch.setenv("SEMANTIK_VLM_STRUCT_HINTS", "1")
+    regions, fbs = _build([
+        ("heading", "1.1 Introduction to Whole Numbers", 30, 2),
+        ("heading", "EXAMPLE 2", 31, 3),
+        ("paragraph", "steps under the label", 31),
+    ])
+    fbs[1].vlm_hint = _vlm_heading_hint()          # a heading hint on the label
+    out, _ = clean_structure(regions, fbs)
+    assert out[1].kind == "paragraph"              # demoted despite the hint
+    assert out[1].payload.get("css_class") == "pedagogy-example"
+
+
+# ---------------------------------------------------------------------------
+# Defect 3 — obviously-fused heading demoted to paragraph (refuse-as-heading).
+# ---------------------------------------------------------------------------
+
+
+def test_fused_heading_multiple_math_runs_demoted():
+    # A page-top mega-heading swallowing exercise math (>=2 $...$ runs).
+    regions, fbs = _build([
+        ("heading", r"Chapter 9 $\sqrt[4]{9c^8}$ Denise wants $\sqrt{81}$ tiles", 3, 2),
+        ("paragraph", "Ordinary body prose about square roots follows here.", 3),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[0].kind == "paragraph"  # demoted
+    assert diag["fused_heading_demoted"] == 1
+    # Text preserved verbatim.
+    assert out[0].payload["text"] == regions[0].payload["text"]
+
+
+def test_fused_heading_sentence_prose_demoted():
+    regions, fbs = _build([
+        ("heading", "This heading actually swallowed a whole sentence of real body prose text.", 4, 2),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[0].kind == "paragraph"
+    assert diag["fused_heading_demoted"] == 1
+
+
+def test_real_heading_not_demoted():
+    regions, fbs = _build([
+        ("heading", "9.3 Add and Subtract Square Roots", 5, 2),
+        ("heading", "Chapter 9 Roots and Radicals", 5, 1),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[0].kind == "heading"
+    assert out[1].kind == "heading"
+    assert diag["fused_heading_demoted"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Defect 4 — apparatus paragraph promoted to a heading (gated).
+# ---------------------------------------------------------------------------
+
+
+def test_apparatus_paragraph_promoted_when_flag_on(monkeypatch):
+    monkeypatch.setenv("SEMANTIK_PROMOTE_SECTION_HEADINGS", "1")
+    regions, fbs = _build([
+        ("heading", "9.1 Simplify Square Roots", 5, 2),  # anchors dominant ord=9
+        ("paragraph", "PRACTICE TEST", 40),
+        ("paragraph", "Review Exercises", 41),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[1].kind == "heading"  # PRACTICE TEST promoted
+    assert out[2].kind == "heading"  # Review Exercises promoted
+    assert diag["section_promoted"] == 2
+
+
+def test_apparatus_paragraph_untouched_when_flag_off(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_PROMOTE_SECTION_HEADINGS", raising=False)
+    regions, fbs = _build([
+        ("paragraph", "PRACTICE TEST", 40),
+    ])
+    out, diag = clean_structure(regions, fbs)
+    assert out[0].kind == "paragraph"
+    assert diag["section_promoted"] == 0

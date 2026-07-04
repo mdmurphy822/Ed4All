@@ -72,6 +72,16 @@ def blocks_from_shared(shared: dict) -> list[RawBlock]:
                 is_italic=b.get("is_italic"),
                 confidence=float(b.get("confidence", 1.0)),
                 source=source_tag,
+                # P2 VLM hint carriage. The merged block dict gains a
+                # ``vlm_hint`` key ONLY when extract_shared's fusion attached
+                # one under SEMANTIK_VLM_STRUCT_HINTS; a block without the key
+                # -> None (no KeyError, byte-identical when the flag is off).
+                vlm_hint=b.get("vlm_hint"),
+                # P1 fusion provenance. The merged block dict gains a
+                # ``fusion`` key ONLY when extract_shared's P1 fusion rewrote
+                # the tesseract blocks (SEMANTIK_VLM_FUSION); absent -> None
+                # (byte-identical when the flag is off).
+                fusion=b.get("fusion"),
             ))
     return out
 

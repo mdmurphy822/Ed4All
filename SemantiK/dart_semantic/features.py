@@ -159,6 +159,12 @@ def featurize_from_shared(shared: dict) -> list[FeatureBlock]:
         # for callers that consume FeatureBlock without reaching through to raw.
         fb.provenance = fb.raw.source
 
+        # P2 — mirror the VLM structural hint from the raw block so the
+        # heading-candidate consumers (structure_graph Pass-2, deterministic
+        # sub-pass E) can read it without reaching through to ``raw``. None
+        # when the VLM struct-hints flag is off -> byte-identical FeatureBlock.
+        fb.vlm_hint = fb.raw.vlm_hint
+
     return feature_blocks
 
 

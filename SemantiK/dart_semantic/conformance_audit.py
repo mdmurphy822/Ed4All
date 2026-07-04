@@ -212,6 +212,7 @@ def build_conformance_audit(
     reading_order_at_risk: list[int] | None = None,
     wcag_coverage: list[dict[str, Any]] | None = None,
     structure_review: list[dict[str, Any]] | None = None,
+    ocr_repair: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the audit dict from cascade state.
 
@@ -330,6 +331,12 @@ def build_conformance_audit(
         # distinction).
         "structure_review": structure_review,
     }
+    # OCR-confusable repair audit section (channels 2+3). OPTIONAL — added ONLY
+    # when the pass ran (None → key absent, byte-stable to a no-repair run,
+    # deliberately NOT in AUDIT_REQUIRED_KEYS). Carries flagged/accepted/rejected
+    # counts + the residual defect density + the repair-stats proxy score.
+    if ocr_repair is not None:
+        audit["ocr_repair"] = _jsonable(ocr_repair)
     return audit
 
 

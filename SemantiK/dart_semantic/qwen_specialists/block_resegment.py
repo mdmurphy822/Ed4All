@@ -119,6 +119,23 @@ def resolve_block_resegment_llm_mode() -> bool:
     return raw in _TRUTHY
 
 
+def resolve_split_fused_section_titles_mode() -> bool:
+    """Return True when the Stage-5e fused-section-title SPLIT arm is enabled.
+
+    Reads ``SEMANTIK_SPLIT_FUSED_SECTION_TITLES``. Default OFF (unset / blank /
+    falsey / garbage) -> byte-identical to today (no fused-title op emitted; the
+    detector never runs). A truthy value (``1``/``true``/``yes``/``on``,
+    case-insensitive) enables it. Copied posture from
+    :func:`resolve_block_resegment_mode`; the detector is a THIRD orthogonal
+    Stage-5e arm gated per-flag INSIDE :func:`resegment_blocks`, so a new-flag-on
+    / others-off run emits ONLY fused-title ops (and vice versa).
+    """
+    raw = (
+        os.environ.get("SEMANTIK_SPLIT_FUSED_SECTION_TITLES") or ""
+    ).strip().lower()
+    return raw in _TRUTHY
+
+
 # ``resolve_unit_regroup_mode`` (the ``SEMANTIK_UNIT_REGROUP`` gate) is co-homed
 # in the neutral ``dart_semantic.pedagogical_units`` module (Phase 1) so the
 # assembler ``shell.py`` can import it cycle-free; re-exported here for
@@ -533,6 +550,231 @@ def _detect_splits(
 
 
 # ---------------------------------------------------------------------------
+# Fused-section-title SPLIT detection (lane B — SEMANTIK_SPLIT_FUSED_SECTION_TITLES).
+#
+# A scan often fuses a section's title into its first body paragraph
+# ("[y| Introduction Suppose a stone falls ..." / "4.2 Solve Linear Systems A
+# system of two linear equations ...") so no standalone heading candidate
+# survives. This detector SPLITS the region at the FeatureBlock boundary between
+# the fused title and the prose body; the post-Stage-5e promotion hook
+# (``deterministic_structure.promote_fused_title_children``, gated on
+# SEMANTIK_PROMOTE_SECTION_HEADINGS) then promotes the split-off title child to a
+# section heading. The FB is the atom: a title fused with prose INSIDE ONE
+# FeatureBlock is structurally unsplittable (R-PART forbids intra-FB cuts) and is
+# recorded as a detect-only ``fused_title_intra_fb`` diagnostic.
+# ---------------------------------------------------------------------------
+
+# Title may wrap over up to this many leading OCR-line FeatureBlocks.
+_FUSED_TITLE_MAX_PREFIX_FBS = 3
+# Prose remainder floor (">= 1 sentence of prose").
+_FUSED_TITLE_MIN_REMAINDER_WORDS = 8
+# N.M section-title word ceiling / section-index (M) ceiling.
+_FUSED_TITLE_SECTION_MAX_WORDS = 10
+_FUSED_TITLE_SECTION_M_MAX = 40
+# Sentence-terminal punctuation the prose remainder must carry.
+_SENTENCE_TERMINALS = (".", "!", "?")
+
+
+def _has_sentence_terminal(text: str) -> bool:
+    """Whether ``text`` carries a sentence-terminal ``.``/``!``/``?``."""
+    return any(p in (text or "") for p in _SENTENCE_TERMINALS)
+
+
+def _is_prose_remainder(text: str) -> bool:
+    """Whether ``text`` is ">= 1 sentence of prose" (the fused-title body cue).
+
+    Requires >= ``_FUSED_TITLE_MIN_REMAINDER_WORDS`` whitespace tokens AND a
+    sentence-terminal — so a title split off a genuine prose paragraph, never a
+    second short title / label.
+    """
+    if not text:
+        return False
+    if len(text.split()) < _FUSED_TITLE_MIN_REMAINDER_WORDS:
+        return False
+    return _has_sentence_terminal(text)
+
+
+def _fused_title_prefix_kind(prefix: str, dominant_ordinal: int | None) -> str | None:
+    """Classify ``prefix`` as a WHOLE fused-title shape: 'section' / 'apparatus'.
+
+    Returns ``"section"`` when ``prefix`` is WHOLLY a chapter-consistent
+    ``"N.M Title-Case"`` (N == ``dominant_ordinal``, M in 1..40, <= 10 words),
+    ``"apparatus"`` when it is a whole-match apparatus opener, else ``None``. The
+    N.M arm is disabled when ``dominant_ordinal`` is None (ambiguous doc). Reuses
+    the deterministic_structure SoT (``_STANDALONE_SECTION_RE`` +
+    ``_matches_apparatus_opener``) via a lazy import (mirrors the
+    ``_pedagogical_label_at`` idiom) so the split shape never drifts from the
+    promotion re-verify.
+    """
+    from .deterministic_structure import (
+        _STANDALONE_SECTION_RE,
+        _matches_apparatus_opener,
+    )
+
+    text = (prefix or "").strip()
+    if not text:
+        return None
+    if dominant_ordinal is not None:
+        m = _STANDALONE_SECTION_RE.match(text)
+        if m and m.group(0).strip() == text:
+            try:
+                n, mm = int(m.group(1)), int(m.group(2))
+            except (TypeError, ValueError):
+                n = mm = -1
+            if (
+                n == dominant_ordinal
+                and 1 <= mm <= _FUSED_TITLE_SECTION_M_MAX
+                and len(text.split()) <= _FUSED_TITLE_SECTION_MAX_WORDS
+            ):
+                return "section"
+    if _matches_apparatus_opener(text):
+        return "apparatus"
+    return None
+
+
+def _region_intra_fb_fusion(
+    region: Region,
+    feature_blocks: list[FeatureBlock],
+    dominant_ordinal: int | None,
+) -> bool:
+    """Whether the region's FIRST FB fuses a title shape WITH in-FB prose.
+
+    The unsplittable case: the title and its following prose live inside ONE
+    FeatureBlock, so no FB boundary separates them (R-PART forbids intra-FB
+    cuts). Fires when FB0 OPENS with an apparatus opener followed by >= the prose
+    floor of trailing words + a sentence-terminal, OR opens with a
+    chapter-consistent ``N.M`` ordinal, carries more than a title's worth of
+    words, and has a sentence-terminal. Detect-only (the caller counts it).
+    """
+    fb_indices = list(region.feature_block_indices or ())
+    if not fb_indices:
+        return False
+    first = _fb_text(feature_blocks, fb_indices[0])
+    if not first:
+        return False
+    from .deterministic_structure import (
+        _ANY_SECTION_ORDINAL_RE,
+        _apparatus_opener_match_len,
+    )
+
+    n = _apparatus_opener_match_len(first)
+    if n is not None:
+        tail = first[n:]
+        if (
+            len(tail.split()) >= _FUSED_TITLE_MIN_REMAINDER_WORDS
+            and _has_sentence_terminal(tail)
+        ):
+            return True
+    if dominant_ordinal is not None:
+        m = _ANY_SECTION_ORDINAL_RE.match(first)
+        if m:
+            try:
+                same = int(m.group(1)) == dominant_ordinal
+            except (TypeError, ValueError):
+                same = False
+            if (
+                same
+                and len(first.split()) > _FUSED_TITLE_SECTION_MAX_WORDS
+                and _has_sentence_terminal(first)
+            ):
+                return True
+    return False
+
+
+def _detect_fused_title_splits(
+    regions: list[Region],
+    feature_blocks: list[FeatureBlock],
+) -> tuple[list[ResegmentOp], int]:
+    """Deterministic fused-section-title SPLIT detection (lane B).
+
+    For each NON-heading, NON-passthrough region with >= 2 FBs, try prefix
+    lengths k=1..3 (the title may wrap over 2-3 OCR line FBs): the prefix is the
+    whitespace-joined text of FBs[0..k-1], the remainder is FBs[k..]. Emit a
+    single split at the FB boundary ``fb_indices[k]`` (subtype ``fused_title``)
+    when the prefix is WHOLLY a title shape (:func:`_fused_title_prefix_kind`)
+    AND the remainder is >= 1 sentence of prose (:func:`_is_prose_remainder`).
+    First matching k wins; at most one cut per region (the title is at region
+    START by contract). A region whose title is fused with prose INSIDE ONE FB
+    (no k aligns) increments the returned ``intra_fb`` counter (detect-only —
+    the FB is the atom).
+
+    Returns ``(ops, intra_fb_count)``. NO model / GPU is loaded.
+    """
+    ops: list[ResegmentOp] = []
+    intra_fb = 0
+    from .deterministic_structure import _dominant_chapter_ordinal
+
+    dominant = _dominant_chapter_ordinal(regions)
+    for region_index, region in enumerate(regions):
+        if _is_passthrough(region) or str(region.kind) == "heading":
+            continue
+        fb_indices = list(region.feature_block_indices or ())
+        if not fb_indices:
+            continue
+        matched = False
+        if len(fb_indices) >= 2:
+            max_k = min(_FUSED_TITLE_MAX_PREFIX_FBS, len(fb_indices) - 1)
+            for k in range(1, max_k + 1):
+                prefix = " ".join(
+                    t
+                    for t in (
+                        _fb_text(feature_blocks, fb_indices[j]) for j in range(k)
+                    )
+                    if t
+                )
+                if _fused_title_prefix_kind(prefix, dominant) is None:
+                    continue
+                remainder = " ".join(
+                    t
+                    for t in (
+                        _fb_text(feature_blocks, fb_indices[j])
+                        for j in range(k, len(fb_indices))
+                    )
+                    if t
+                )
+                if not _is_prose_remainder(remainder):
+                    continue
+                ops.append(
+                    ResegmentOp(
+                        op="split",
+                        region_indices=(region_index,),
+                        split_at=(fb_indices[k],),
+                        source_ids=(_region_first_raw(region),),
+                        origin="deterministic",
+                        subtype="fused_title",
+                    )
+                )
+                matched = True
+                break
+        if not matched and _region_intra_fb_fusion(
+            region, feature_blocks, dominant
+        ):
+            intra_fb += 1
+    return ops, intra_fb
+
+
+def _fused_title_op_valid(op: ResegmentOp, regions: list[Region]) -> bool:
+    """Structural validity of a fused-title SPLIT op (interior FB-boundary cuts).
+
+    A wrong split never poisons the pass: this belt (paired with the per-op
+    conservation re-validation in the driver) drops an op whose ``region_indices``
+    is out of range, whose ``split_at`` is empty / out-of-range, or whose cut is
+    NON-INTERIOR (the region's first FB — never a valid boundary). Every cut must
+    be an interior FB boundary of the single target region.
+    """
+    if op.op != "split" or len(op.region_indices) != 1:
+        return False
+    idx = op.region_indices[0]
+    if not (0 <= idx < len(regions)):
+        return False
+    fb_indices = list(regions[idx].feature_block_indices or ())
+    if len(fb_indices) < 2 or not op.split_at:
+        return False
+    interior = set(fb_indices[1:])  # every FB except the first starts a child
+    return all(cut in interior for cut in op.split_at)
+
+
+# ---------------------------------------------------------------------------
 # Cross-kind pedagogical-unit MERGE detection (Phase 2 — uncalled).
 # ---------------------------------------------------------------------------
 
@@ -836,6 +1078,8 @@ def _split_children(
     region: Region,
     split_at: tuple[int, ...],
     feature_blocks: list[FeatureBlock],
+    *,
+    subtype: str = "merge",
 ) -> list[Region]:
     """Cut one region into K children at the FB boundaries in ``split_at``.
 
@@ -843,7 +1087,13 @@ def _split_children(
     derived text slice (``_joined_source_text`` of the slice). Child 0 keeps
     the parent's id (lowest FB index preserved); later children get a
     deterministic id from their slice min (cascade.py:434 recomputes it).
-    Each child carries a ``resegment`` breadcrumb."""
+    Each child carries a ``resegment`` breadcrumb.
+
+    ``subtype`` (lane B) discriminates a fused-title split (``'fused_title'``)
+    from a same-kind split (``'merge'``, the default). It is stamped on the
+    breadcrumb ONLY when non-default, so every EXISTING same-kind split
+    breadcrumb (and its tests) stays byte-identical; the post-Stage-5e promotion
+    hook keys on ``subtype=='fused_title'`` + ``child_index==0``."""
     fb_indices = list(region.feature_block_indices or ())
     cut_set = set(split_at)
     slices: list[list[int]] = []
@@ -872,12 +1122,15 @@ def _split_children(
         child_pages = _region_pages(candidate, feature_blocks)
         if (region.payload or {}).get("pages") is not None and child_pages:
             payload["pages"] = sorted(child_pages)
-        payload["resegment"] = {
+        breadcrumb = {
             "op": "split",
             "source_ids": [parent_id],
             "child_index": slice_idx,
             "conservation_verified": True,
         }
+        if subtype != "merge":
+            breadcrumb["subtype"] = subtype
+        payload["resegment"] = breadcrumb
         children.append(
             dataclasses.replace(
                 region, feature_block_indices=child_fb, payload=payload
@@ -930,7 +1183,11 @@ def apply_resegment(
             continue
         if i in split_by_index:
             op = split_by_index[i]
-            out.extend(_split_children(regions[i], op.split_at, feature_blocks))
+            out.extend(
+                _split_children(
+                    regions[i], op.split_at, feature_blocks, subtype=op.subtype
+                )
+            )
             i += 1
             continue
         out.append(regions[i])
@@ -963,6 +1220,7 @@ def build_resegment_audit_rows(ops: list[ResegmentOp]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for op in ops:
         is_regroup = op.subtype == "regroup"
+        is_fused_title = op.subtype == "fused_title"
         row = {
             "op": "regroup" if is_regroup else op.op,
             "source_ids": list(op.source_ids),
@@ -972,6 +1230,12 @@ def build_resegment_audit_rows(ops: list[ResegmentOp]) -> list[dict[str, Any]]:
         if is_regroup:
             row["semantic_class"] = op.semantic_class
             row["regions_folded"] = max(0, len(op.region_indices) - 1)
+        elif is_fused_title:
+            # A fused-title split records op='split' + subtype so the (still
+            # unwired) block_resegment DecisionCapture can interpolate a
+            # fused-title recovery count; mirrors the regroup-only enrichment,
+            # so a flag-off run (no fused-title op) is BYTE-IDENTICAL.
+            row["subtype"] = "fused_title"
         rows.append(row)
     return rows
 
@@ -1209,6 +1473,44 @@ def resegment_blocks(
     if resolve_unit_regroup_mode() and resolve_reading_order_fix():
         det_ops += _detect_unit_merges(regions, feature_blocks, state)
 
+    # Fused-section-title SPLIT arm (lane B). Precedence: regroup > fused-title >
+    # same-kind. Appended AFTER the regroup detector (so a regroup consuming the
+    # region wins via apply_resegment's first-registered overlap guard) but
+    # BEFORE the same-kind detectors (so a fused-title split beats a colliding
+    # same-kind split/merge on the same region — the label-only box this feature
+    # exists to fix). NOTE: this refines the design's literal
+    # ``det_ops = fused + det_ops`` prepend, which would place fused-title BEFORE
+    # regroup; the design's own §4 precedence statement (regroup > fused-title >
+    # same-kind) is authoritative, and append-in-precedence-order realises it.
+    # Each op is re-validated INDIVIDUALLY (structural belt + the same R-PART +
+    # token-conservation gates apply_proposed_regroups rides) before it joins
+    # det_ops, so a wrong split is dropped alone and never poisons the set.
+    if resolve_split_fused_section_titles_mode():
+        fused_ops, fused_intra = _detect_fused_title_splits(regions, feature_blocks)
+        if fused_intra:
+            logger.info(
+                "block-resegment fused-title: %d intra-FB fusion(s) unsplittable "
+                "(title+prose inside one FeatureBlock; FB is the atom) -> "
+                "detect-only miss",
+                fused_intra,
+            )
+        for op in fused_ops:
+            if not _fused_title_op_valid(op, regions):
+                logger.warning(
+                    "fused-title split op malformed (%r) -> dropped", op
+                )
+                continue
+            try:
+                probe = apply_resegment(regions, feature_blocks, [op])
+                assert_partition_conservation(regions, probe)
+                assert_token_conservation(regions, probe, feature_blocks)
+            except (PartitionConservationError, TokenConservationError) as exc:
+                logger.warning(
+                    "fused-title split op rejected (%s) -> dropped", exc
+                )
+                continue
+            det_ops.append(op)
+
     if resolve_block_resegment_mode():
         det_ops += _detect_merges(regions, feature_blocks, state)
         det_ops += _detect_splits(regions, feature_blocks, state)
@@ -1253,6 +1555,7 @@ __all__ = [
     "resegment_blocks",
     "resolve_block_resegment_llm_mode",
     "resolve_block_resegment_mode",
+    "resolve_split_fused_section_titles_mode",
     "resolve_unit_regroup_mode",
     "resolve_unit_regroup_table_mode",
 ]

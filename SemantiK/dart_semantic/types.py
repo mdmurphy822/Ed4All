@@ -37,6 +37,21 @@ class RawBlock:
     is_italic: bool | None = None
     confidence: float = 1.0
     source: str = "pypdfium2"                   # "pypdfium2" | "tesseract"
+    # P2 VLM structural hint — a NON-AUTHORITATIVE per-block recommendation
+    # minted from the fused VLM markdown shape (heading/list/table + level +
+    # coverage). Populated ONLY when the VLM extract + struct-hints flags are
+    # on (extract_shared.mint_vlm_hint); default None keeps every existing
+    # RawBlock byte-identical. Travels ON the block object (never an
+    # fb-index side-table) so it survives the Stage-2 image-FB interleave.
+    vlm_hint: dict | None = None
+    # P1 VLM-fusion provenance mirrored from the merged block's ``fusion`` key
+    # (``vlm+tesseract`` | ``vlm-only-flagged`` | ``tesseract-only``).
+    # Populated ONLY when SEMANTIK_VLM_FUSION rewrote the tesseract blocks;
+    # default None keeps every existing RawBlock byte-identical. Distinct from
+    # ``source`` (forced ``tesseract`` for the council-input marker) — this is
+    # the fusion lane's own provenance, read by structure typing to keep an
+    # interpolated ``vlm-only-flagged`` insert off the figure track.
+    fusion: str | None = None
 
 
 @dataclass
@@ -70,6 +85,11 @@ class FeatureBlock:
     # claim it under the Stage-5 coverage invariant). Default False keeps
     # every text FB byte-stable.
     is_image: bool = False
+    # P2 VLM structural hint mirrored from ``raw.vlm_hint`` (see RawBlock).
+    # NON-AUTHORITATIVE: consumed as heading-candidate CORROBORATION only,
+    # exactly like a council recommendation — never a kind authority. Default
+    # None -> every existing FeatureBlock snapshot is byte-identical.
+    vlm_hint: dict | None = None
 
 
 @dataclass

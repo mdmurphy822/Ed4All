@@ -125,6 +125,33 @@ def resolve_refine_mode() -> bool:
     return raw in _REFINE_TRUTHY
 
 
+# Truthy strings for SEMANTIK_STAGE6_PROSE_PASSTHROUGH (parse-with-fallback;
+# any other value is falsey/off — mirrors _REFINE_TRUTHY).
+_PROSE_PASSTHROUGH_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def resolve_stage6_prose_passthrough() -> bool:
+    """True when ``SEMANTIK_STAGE6_PROSE_PASSTHROUGH`` skips GGUF generation
+    for AdapterID.PROSE regions in favour of a deterministic verbatim
+    passthrough candidate.
+
+    **Default OFF — byte-stable.** When off, every prose region still runs
+    the normal Stage-6 generation path. When on, regions routed to
+    :attr:`AdapterID.PROSE` receive a single deterministic passthrough
+    Candidate (the region's verbatim text rendered by the canonical
+    per-kind :func:`~dart_semantic.assembler.fallbacks.emit_fallback`) and no
+    GGUF completion is generated for them; TABLE and MATH regions are
+    UNAFFECTED (still generate). This does NOT touch ``runtime_mode`` — a
+    real run stays ``runtime_mode='real'`` (the R4 mock-trap is not tripped).
+
+    Parse-with-fallback: only the truthy set enables it; anything else
+    (unset / blank / garbage) is off."""
+    raw = (
+        os.environ.get("SEMANTIK_STAGE6_PROSE_PASSTHROUGH") or ""
+    ).strip().lower()
+    return raw in _PROSE_PASSTHROUGH_TRUTHY
+
+
 # Falsey strings that disable the (default-ON) endpoint batched lane.
 _BATCH_FALSEY = frozenset({"0", "false", "no", "off"})
 
@@ -263,6 +290,10 @@ class _RegionJob:
     skip_meta: dict[str, Any] = None  # type: ignore[assignment]
     # Phase-1 local draft (one per candidate slot); filled when Phase 1 runs.
     drafts: list[str] = None  # type: ignore[assignment]
+    # Deterministic verbatim passthrough HTML (SEMANTIK_STAGE6_PROSE_PASSTHROUGH
+    # only). Pre-rendered at build time via emit_fallback for a PROSE region so
+    # the region skips GGUF generation entirely; None on every other job.
+    passthrough_html: str | None = None
 
 
 def _load_sampling(
@@ -402,6 +433,50 @@ def _skip_candidate(job: "_RegionJob", seed: int | None) -> list[Candidate]:
             sampling_seed=seed,
             finish_reason="skip_long_table",
             raw_metadata={"skip_reason": job.skip_reason, **(job.skip_meta or {})},
+        )
+    ]
+
+
+def _render_passthrough_html(region: Any, feature_blocks: Sequence[Any]) -> str:
+    """Deterministic verbatim HTML for a PROSE region (no GGUF generation).
+
+    Reuses the canonical per-kind :func:`emit_fallback` — the SAME emitter
+    the Stage-9 assembler uses when a region's candidates all die at the
+    gate — so the passthrough is a small, valid HTML5 fragment carrying the
+    region's verbatim source text in exactly the shape downstream Stage-7
+    (html5 + text_preserve) and Stage-9 assembly expect (heading → ``<h2>``,
+    list → ``<ul><li>``, code_block → ``<pre><code>``, metadata_drop → ``""``,
+    …). Lazy import keeps the assembler package off the runner's import path
+    for the flag-off default."""
+    from ..assembler.fallbacks import emit_fallback  # noqa: WPS433 (lazy)
+
+    return emit_fallback(region, feature_blocks)
+
+
+def _passthrough_candidates(job: "_RegionJob", seed: int | None) -> list[Candidate]:
+    """Build the single deterministic passthrough Candidate (k=1) for a PROSE
+    region under ``SEMANTIK_STAGE6_PROSE_PASSTHROUGH``.
+
+    Mirrors :func:`_wrap_candidates`' shape (builder metadata + candidate
+    index) so the per-region completion the assembler consumes is identical
+    to a generated one, except the text is the pre-rendered verbatim
+    :attr:`_RegionJob.passthrough_html` and ``adapter_version`` /
+    ``stage6_phase`` are stamped ``"passthrough"`` for provenance/audit."""
+    meta = {
+        **((job.request.sampling_overrides or {}).get("metadata") or {}),
+        "candidate_idx": 0,
+        "adapter_version": "passthrough",
+        "stage6_phase": "passthrough",
+        "prose_passthrough": True,
+    }
+    return [
+        Candidate(
+            adapter=job.request.adapter,
+            request_id=job.request.request_id,
+            text=job.passthrough_html or "",
+            sampling_seed=seed,
+            finish_reason="stop",
+            raw_metadata=meta,
         )
     ]
 
@@ -706,6 +781,11 @@ def run_qwen_specialists(
     #   DISPLACE                    -> Phase 2 only.
     refine = resolve_refine_mode()
     displace = resolve_endpoint_displaces_local()
+    # PROSE passthrough (default off): skip GGUF generation for AdapterID.PROSE
+    # regions and emit a deterministic verbatim candidate instead. Resolved once
+    # here; consumed at build time (pre-render) and drained before Phase 1/2.
+    # Does NOT touch runtime_mode (R4 mock-trap unaffected).
+    prose_passthrough = resolve_stage6_prose_passthrough()
     phase2_active = refine or displace
     run_phase1 = (not phase2_active) or refine
     run_phase2 = phase2_active
@@ -782,14 +862,26 @@ def run_qwen_specialists(
             else ""
         ) or ""
         defaults = _defaults_for(adapter)
-        skip_reason, skip_meta = _compute_skip_guard(
-            idx=idx,
-            adapter=adapter,
-            request=request_with_id,
-            defaults=defaults,
-            prompt=prompt,
-            rt=guard_rt,
-        )
+        # PROSE passthrough: pre-render the verbatim HTML and SKIP the
+        # (generation-only) context-overflow guard — there is no prompt to
+        # overflow. The region is drained straight to a deterministic
+        # candidate below. TABLE / MATH run the guard + generate normally.
+        is_prose_passthrough = prose_passthrough and adapter is AdapterID.PROSE
+        if is_prose_passthrough:
+            skip_reason, skip_meta = None, {}
+            passthrough_html: str | None = _render_passthrough_html(
+                region, feature_blocks
+            )
+        else:
+            skip_reason, skip_meta = _compute_skip_guard(
+                idx=idx,
+                adapter=adapter,
+                request=request_with_id,
+                defaults=defaults,
+                prompt=prompt,
+                rt=guard_rt,
+            )
+            passthrough_html = None
         buckets[adapter].append(
             _RegionJob(
                 idx=idx,
@@ -799,10 +891,38 @@ def run_qwen_specialists(
                 prompt=prompt,
                 skip_reason=skip_reason,
                 skip_meta=skip_meta,
+                passthrough_html=passthrough_html,
             )
         )
 
     out: dict[int, list[Candidate]] = {}
+
+    # ------------------------------------------------------------------
+    # PROSE passthrough (SEMANTIK_STAGE6_PROSE_PASSTHROUGH, default off).
+    # Drain the whole PROSE bucket into deterministic verbatim candidates and
+    # CLEAR it so neither Phase 1 nor Phase 2 generates for prose regions —
+    # the ~3h/chapter GGUF prose-generation cost is removed. TABLE + MATH are
+    # untouched (still generate). The passthrough candidate == emit_fallback,
+    # the same deterministic HTML the Stage-9 assembler emits for a prose
+    # region whose candidates all die at the gate, so Stage 7/9 assembly is
+    # well-formed and token-conservation holds.
+    # ------------------------------------------------------------------
+    if prose_passthrough:
+        prose_bucket = buckets.get(AdapterID.PROSE, [])
+        n_prose_pass = len(prose_bucket)
+        for job in prose_bucket:
+            out[job.idx] = _passthrough_candidates(job, seed)
+        buckets[AdapterID.PROSE] = []
+        n_gen = sum(
+            len(buckets.get(a, [])) for a in _PASS_ORDER if a is not AdapterID.PROSE
+        )
+        logger.info(
+            "Stage6 prose passthrough (SEMANTIK_STAGE6_PROSE_PASSTHROUGH on): "
+            "%d prose region(s) passthrough'd (0 GGUF-generated), "
+            "%d table/math region(s) still generate",
+            n_prose_pass,
+            n_gen,
+        )
 
     # ------------------------------------------------------------------
     # Phase 1 — local drafts, batched BY ADAPTER (the swap-thrash fix).
@@ -1074,5 +1194,6 @@ __all__ = [
     "resolve_batch_mode",
     "resolve_batched_endpoint_k",
     "resolve_refine_mode",
+    "resolve_stage6_prose_passthrough",
     "run_qwen_specialists",
 ]

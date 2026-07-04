@@ -178,6 +178,29 @@ def _resolve_structure_review(result: Any) -> Optional[List[Dict[str, Any]]]:
     return out
 
 
+def _resolve_ocr_repair(result: Any) -> Optional[Dict[str, Any]]:
+    """Pull the doc-level SEMANTIK_OCR_CONFUSABLE_REPAIR audit stats off the
+    cascade result and promote it to a top-level bridge key (Phase 5).
+
+    The stats live at ``result.cascade["conformance_audit"]["ocr_repair"]`` (or
+    the ``result.cascade["ocr_repair"]`` top-level arm), a DICT when the pass
+    ran and ``None`` when it was off. The seam reads this to emit ONE
+    ``structure_review`` DecisionCapture (``ocr_confusable_repair`` discriminator)
+    per converted doc; ``None`` (pass off) is preserved.
+    """
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            arm = conformance.get("ocr_repair")
+            if isinstance(arm, dict):
+                return arm
+        arm = cascade.get("ocr_repair")
+        if isinstance(arm, dict):
+            return arm
+    return None
+
+
 def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
     """Assemble the JSON-serializable bridge dict from a cascade result."""
     theta = getattr(result, "theta_score", None)
@@ -196,6 +219,10 @@ def _build_bridge_dict(result: Any, pdf: str) -> Dict[str, Any]:
         # (None when the reviewer was off). The per-region ``review`` keys
         # already ride through ``region_provenance`` verbatim.
         "structure_review": _resolve_structure_review(result),
+        # Phase 5 — the doc-level OCR-confusable repair audit stats (None when
+        # the pass was off). The per-region ``repaired_text`` / ``ocr_repair``
+        # keys already ride through ``region_provenance`` verbatim.
+        "ocr_repair": _resolve_ocr_repair(result),
     }
 
 

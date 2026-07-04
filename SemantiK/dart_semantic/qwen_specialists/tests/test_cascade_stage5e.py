@@ -43,6 +43,7 @@ from dart_semantic import cascade  # noqa: E402,F401  (import-loads the module)
 from dart_semantic.qwen_specialists.block_resegment import (  # noqa: E402
     resegment_blocks,
     resolve_block_resegment_mode,
+    resolve_split_fused_section_titles_mode,
     resolve_unit_regroup_mode,
 )
 from dart_semantic.structure_graph import Region  # noqa: E402
@@ -176,7 +177,11 @@ def _stage5e_seam(structure_regions, fbs, state):
     audit variable stays None when the gate is closed, so result['block_resegment']
     is omitted (byte-stable)."""
     resegment_ops_audit = None
-    if resolve_block_resegment_mode() or resolve_unit_regroup_mode():
+    if (
+        resolve_block_resegment_mode()
+        or resolve_unit_regroup_mode()
+        or resolve_split_fused_section_titles_mode()
+    ):
         regions, ops = resegment_blocks(structure_regions, fbs, state, runtime=None)
         structure_regions = regions
         resegment_ops_audit = [
@@ -246,10 +251,11 @@ def test_cascade_gate_byte_identical_flag_off(monkeypatch):
 
 
 def test_cascade_gate_closed_when_both_flags_off(monkeypatch):
-    """With BOTH resegment + regroup off the gate is byte-identical to a
-    no-Stage-5e run (no key, regions untouched)."""
+    """With resegment + regroup + fused-title all off the gate is byte-identical
+    to a no-Stage-5e run (no key, regions untouched)."""
     monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
     monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.delenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", raising=False)
     fbs = [_fb("EXAMPLE 1"), _fb("solve x")]
     from dart_semantic.structure_graph import Region
 
@@ -260,6 +266,48 @@ def test_cascade_gate_closed_when_both_flags_off(monkeypatch):
     result = _stage5e_seam(regions, fbs, _EmptyState())
     assert "block_resegment" not in result
     assert result["n_regions"] == 2
+
+
+def test_cascade_gate_widened_to_fused_title(monkeypatch):
+    """The widened gate fires Stage-5e on SEMANTIK_SPLIT_FUSED_SECTION_TITLES
+    alone (block-resegment + regroup off)."""
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", "on")
+    assert (
+        resolve_block_resegment_mode()
+        or resolve_unit_regroup_mode()
+        or resolve_split_fused_section_titles_mode()
+    ) is True
+
+
+def test_cascade_fused_title_alone_enters_stage5e(monkeypatch):
+    """Fused-title flag alone drives a real N.M split through the Stage-5e seam,
+    and the audit section is populated (block_resegment key present)."""
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.setenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", "on")
+    prose = "A system of two linear equations can be solved together by substitution."
+    fbs = [_fb("4.2 Solve Linear Systems"), _fb(prose)]
+    regions = [
+        _region("paragraph", [0, 1], text="4.2 Solve Linear Systems " + prose),
+    ]
+    result = _stage5e_seam(regions, fbs, _EmptyState())
+    assert result["n_regions"] == 2  # the fused title split fired
+    assert result["block_resegment"]
+    assert result["block_resegment"][0]["op"] == "split"
+
+
+def test_cascade_all_three_flags_off_no_key(monkeypatch):
+    monkeypatch.delenv("SEMANTIK_BLOCK_RESEGMENT", raising=False)
+    monkeypatch.delenv("SEMANTIK_UNIT_REGROUP", raising=False)
+    monkeypatch.delenv("SEMANTIK_SPLIT_FUSED_SECTION_TITLES", raising=False)
+    prose = "A system of two linear equations can be solved together by substitution."
+    fbs = [_fb("4.2 Solve Linear Systems"), _fb(prose)]
+    regions = [_region("paragraph", [0, 1], text="4.2 Solve Linear Systems " + prose)]
+    result = _stage5e_seam(regions, fbs, _EmptyState())
+    assert "block_resegment" not in result
+    assert result["n_regions"] == 1
 
 
 # ---------------------------------------------------------------------------

@@ -57,7 +57,11 @@ import os
 import re
 from typing import Any
 
-from ..structure_graph import Region, resolve_bert_authoritative
+from ..structure_graph import (
+    Region,
+    _vlm_struct_hints_enabled,
+    resolve_bert_authoritative,
+)
 from ..types import FeatureBlock
 from .reviewer import (
     TokenConservationError,
@@ -72,6 +76,31 @@ from .reviewer import (
 
 _FLAG_ENV = "SEMANTIK_STRUCTURE_CLEAN"
 _FALSEY = {"0", "false", "no", "off"}
+_TRUTHY = {"1", "true", "yes", "on"}
+
+# Defect 3(c) — CONSERVATIVE inline-section-heading PROMOTION gate. Default OFF:
+# a paragraph→heading promotion is behaviour-changing (it re-shapes the chapter
+# structure), so it follows the house flag pattern rather than the always-on
+# default path used by the outright-bug fixes (furniture / OCR-label demotion).
+_PROMOTE_FLAG_ENV = "SEMANTIK_PROMOTE_SECTION_HEADINGS"
+
+
+def resolve_promote_section_headings_mode() -> bool:
+    """Whether the conservative N.M section-heading PROMOTION pass runs.
+
+    Reads ``SEMANTIK_PROMOTE_SECTION_HEADINGS``, DEFAULT OFF (parse-with-
+    fallback). Only an explicit truthy value (``1`` / ``true`` / ``yes`` /
+    ``on``, case-insensitive) enables it; unset / falsey / garbage keeps it off
+    (byte-identical pass-through). Promotes a STANDALONE paragraph region whose
+    whole text is a clean ``"N.M Title-Case Words"`` section heading the council
+    BERT mis-typed as body prose, so a real section heading that was demoted to
+    a ``<p>`` becomes an ``<h2>`` again (and re-enables the cascade_ir
+    section-number chapter derivation).
+    """
+    raw = os.environ.get(_PROMOTE_FLAG_ENV)
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in _TRUTHY
 
 
 def resolve_structure_clean_mode() -> bool:
@@ -140,6 +169,34 @@ def _is_heading(region: Region) -> bool:
 
 # A real chapter heading shape: "Chapter N[: Title]".
 _CHAPTER_HEADING_RE = re.compile(r"^\s*chapter\s+(\d+)\b", re.IGNORECASE)
+# Defect 3(a) — a RUNNING-HEADER heading carrying a trailing page number:
+# "Chapter 9 Roots and Radicals 1039". This is page furniture the
+# FB-position-based ``structure_graph._detect_running_headers`` MISSES when OCR
+# bbox noise pushes the recurring header out of the top/bottom margin band, so
+# it survives as a heading and is promoted to a bogus <h2> (39× on the EA2e
+# scan). Text-based backstop: a "Chapter N <words> <3-4 digit page>" heading is
+# furniture ANYWHERE in the document (not zone-confined). Conservative — the
+# "Chapter N" prefix AND a standalone trailing 3-4-digit page number are BOTH
+# required, so a real chapter title "Chapter 9 Roots and Radicals" (no trailing
+# number) never matches.
+_RUNNING_HEADER_TEXT_RE = re.compile(
+    r"^\s*chapter\s+\d+\b.*\s\d{2,4}\s*$", re.IGNORECASE
+)
+# Defect 3(b) — the LEADING-page-number running-header form the audit surfaced
+# ("188 Chapter 1 Foundations", "686 Chapter 6 Polynomials"): a 2-4-digit page
+# number, then "Chapter N …". Same furniture as the trailing form; caught
+# anywhere in the doc.
+_RUNNING_HEADER_LEADING_PAGE_RE = re.compile(
+    r"^\s*\d{2,4}\s+chapter\s+\d+\b", re.IGNORECASE
+)
+# Defect 3(c) — a STANDALONE "N.M Title-Case Words" section heading a paragraph
+# region carries verbatim (the council mis-typed the section title as prose).
+# Captures N (parent chapter ordinal) + M (section index) so the promotion pass
+# can require N == the document's dominant chapter number and M a small int.
+_STANDALONE_SECTION_RE = re.compile(r"^\s*(\d+)\.(\d+)\s+([A-Z][A-Za-z].*)$")
+# Any "N.M Title" section-shaped text (heading OR paragraph), for computing the
+# document's dominant chapter ordinal N used as the promotion anchor.
+_ANY_SECTION_ORDINAL_RE = re.compile(r"^\s*(\d+)\.(\d+)\s+[A-Za-z]")
 # A bare-ordinal chapter-index shape: "N Title" (no "Chapter", no trailing page).
 _BARE_ORDINAL_HEADING_RE = re.compile(r"^\s*(\d{1,3})\s+(?=[A-Za-z])\S")
 # A real section heading shape: "N.M[.K] Title".
@@ -186,6 +243,80 @@ _MIN_CHAPTER_INDEX_RUN = 3
 # Conservative: only fires inside the early-page front-matter zone.
 _OCR_ALLCAPS_TOKEN_RE = re.compile(r"^[A-Z]+$")
 _OCR_SINGLE_CAP_RE = re.compile(r"^[A-Z]$")
+
+# ---------------------------------------------------------------------------
+# Fused-section-title recovery SoT (lane B — SEMANTIK_SPLIT_FUSED_SECTION_TITLES).
+#
+# When a scan fuses a section's APPARATUS opener into its first body paragraph
+# ("[y| Introduction Suppose a stone falls ...") no standalone heading candidate
+# survives, so the section vanishes from the heading tree. The Stage-5e
+# fused-title SPLIT detector (``block_resegment._detect_fused_title_splits``) and
+# the post-5e promotion hook (:func:`promote_fused_title_children`) BOTH key off
+# this single anchored-pattern tuple + gutter primitive so the split-boundary
+# check and the promotion re-verify can never drift.
+# ---------------------------------------------------------------------------
+
+# The canonical apparatus / front-of-section openers (an anchored-pattern SoT
+# tuple). Each pattern matches the opener at text START.
+_APPARATUS_OPENER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"Introduction\b", re.IGNORECASE),
+    re.compile(r"Key\s+Terms\b", re.IGNORECASE),
+    re.compile(r"Key\s+Concepts\b", re.IGNORECASE),
+    re.compile(r"Chapter\s+Review\b", re.IGNORECASE),
+    re.compile(r"Review\s+Exercises\b", re.IGNORECASE),
+    re.compile(r"Practice\s+Test\b", re.IGNORECASE),
+    re.compile(r"Summary\b", re.IGNORECASE),
+)
+
+# Word ceiling for a WHOLE-prefix apparatus-opener title (gutter + opener).
+_APPARATUS_OPENER_MAX_WORDS = 5
+
+# Gutter-glyph run reusing the defect-3(b) precedent shape (see
+# ``_PEDAGOGICAL_LABEL_CLASSES`` EXAMPLE gutter): up to two stray alphanumerics
+# around >= 1 non-alphanumeric symbol — OR empty (a bare exact opener). The whole
+# run is optional so a clean "Introduction" (no gutter) still matches.
+_APPARATUS_GUTTER_RE = re.compile(
+    r"^\s*(?:[A-Za-z0-9]{0,2}[^A-Za-z0-9]+[A-Za-z0-9]{0,2}[^A-Za-z0-9]*)?"
+)
+
+
+def _apparatus_opener_match_len(text: str) -> int | None:
+    """Char length of a leading ``(optional gutter)(apparatus opener)`` run.
+
+    A PREFIX match — there may be prose AFTER the opener (the intra-FB fusion
+    case). Returns the number of characters the gutter + opener span consumes at
+    the START of ``text``, or ``None`` when no opener is present. The shared
+    prefix primitive behind the whole-match :func:`_matches_apparatus_opener` and
+    the fused-title intra-FB diagnostic.
+    """
+    if not text:
+        return None
+    gm = _APPARATUS_GUTTER_RE.match(text)
+    start = gm.end() if gm else 0
+    rest = text[start:]
+    for pattern in _APPARATUS_OPENER_PATTERNS:
+        m = pattern.match(rest)
+        if m:
+            return start + m.end()
+    return None
+
+
+def _matches_apparatus_opener(text: str) -> bool:
+    """Whether ``text`` is WHOLLY a ``(gutter)(apparatus opener)`` prefix.
+
+    The whole-prefix-match variant (<= ``_APPARATUS_OPENER_MAX_WORDS`` words)
+    used by the fused-title SPLIT title-shape guard and the promotion re-verify.
+    Any trailing remainder after the opener (prose) makes it NOT a whole match.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    n = _apparatus_opener_match_len(stripped)
+    if n is None:
+        return False
+    if stripped[n:].strip():
+        return False  # content after the opener -> not a whole-match title
+    return len(stripped.split()) <= _APPARATUS_OPENER_MAX_WORDS
 
 
 def _toc_entry_page(text: str) -> int | None:
@@ -492,8 +623,31 @@ _PEDAGOGICAL_LABEL_CLASSES: tuple[tuple[re.Pattern[str], str], ...] = (
     # EXAMPLE / EXAMPLE 1 / EXAMPLE 1.2
     (re.compile(r"^\s*EXAMPLE(?:\s+\d+(?:\.\d+)*)?", re.IGNORECASE),
      "pedagogy-example"),
-    (re.compile(r"^\s*Solution\b", re.IGNORECASE), "pedagogy-solution"),
+    # Defect 3(b) — OCR-garbled EXAMPLE label a scan mangles with leading gutter
+    # glyphs ("| EXAMPLE9.9 | PLE 9.9", "[y] EXAMPLE 3"). A short leading run of
+    # OCR gutter artefacts — REQUIRING at least one non-alphanumeric symbol
+    # (pipe / bracket / rule), with up to two stray alphanumeric chars mixed in —
+    # then EXAMPLE. Requiring a symbol is the anti-FP guard: a clean multi-word
+    # heading ("The Example Below", all letters) does NOT match, but a mangled
+    # label the council mis-promoted to <h2> (20× on the EA2e scan) does — and is
+    # routed to the paragraph/pedagogy-example path.
+    (re.compile(
+        r"^\s*[A-Za-z0-9]{0,2}[^A-Za-z0-9]+[A-Za-z0-9]{0,2}[^A-Za-z0-9]*EXAMPLE",
+        re.IGNORECASE),
+     "pedagogy-example"),
+    # Defect 3(a) — a run-in "Solution" label, optionally OCR-decorated with up
+    # to 3 leading gutter glyphs (") Solution", "™ Solution", "“ Solution"; 90×
+    # across the EA2e scan) so the mangled label demotes to pedagogy-solution
+    # instead of surviving as a spurious <h3> section boundary. Anchored so a
+    # real "Solution set of …" heading (trailing words) still matches the label
+    # prefix — intentional: a "Solution" prefix IS the apparatus label.
+    (re.compile(r"^\s*[^A-Za-z0-9]{0,3}\s*Solution\b", re.IGNORECASE),
+     "pedagogy-solution"),
     (re.compile(r"^\s*Try\s+It\b", re.IGNORECASE), "pedagogy-try-it"),
+    # Defect 3(b) — OCR-garbled TRY IT ("TRYIT::", "| TRY IT"): optional leading
+    # gutter glyphs, TRY optionally fused to IT (lost inter-word space).
+    (re.compile(r"^\s*[^A-Za-z0-9]{0,4}\s*TRY\s*IT\b", re.IGNORECASE),
+     "pedagogy-try-it"),
     (re.compile(r"^\s*How\s+To\b", re.IGNORECASE), "pedagogy-how-to"),
     (re.compile(r"^\s*Step\s+\d+\b", re.IGNORECASE), "pedagogy-step"),
     (re.compile(r"^\s*Learning\s+Objectives\b", re.IGNORECASE),
@@ -568,6 +722,190 @@ def _is_pedagogical_label(region: Region) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# (A'') Running-header text backstop (defect 3a) + (E) section promotion (3c).
+# ---------------------------------------------------------------------------
+
+
+def _is_running_header_region(region: Region) -> bool:
+    """Whether a HEADING region's text is a running header with a page number.
+
+    Text-based backstop for the FB-position-based
+    ``structure_graph._detect_running_headers`` (which misses headers OCR bbox
+    noise pushed out of the margin band). A "Chapter N <words> <3-4 digit page>"
+    heading — e.g. "Chapter 9 Roots and Radicals 1039" — is page furniture; a
+    real chapter title ("Chapter 9 Roots and Radicals", no trailing number) is
+    NOT. Non-heading regions are never running headers here.
+    """
+    if not _is_heading(region):
+        return False
+    text = _region_text(region)
+    return bool(
+        _RUNNING_HEADER_TEXT_RE.match(text)
+        or _RUNNING_HEADER_LEADING_PAGE_RE.match(text)
+    )
+
+
+# Defect 3(b) — bare "Chapter N Title" shape (no page number) participating in
+# the repeat-count furniture rule. A SINGLE such heading is a real chapter
+# opener; a running header recurs on every page and repeats many times.
+_BARE_CHAPTER_SHAPE_RE = re.compile(r"^\s*chapter\s+\d+\b", re.IGNORECASE)
+_REPEAT_FURNITURE_THRESHOLD = 3
+
+
+def _detect_repeated_chapter_furniture(regions: list[Region]) -> set[int]:
+    """Indices of REPEATED bare "Chapter N Title" heading regions (furniture).
+
+    A normalized bare chapter heading appearing ``> _REPEAT_FURNITURE_THRESHOLD``
+    times across the heading candidates is a running header the FB-position
+    detector missed (OCR bbox noise). Every occurrence EXCEPT the first
+    (the real chapter opener) is dropped. Anti-FP: a real book never repeats an
+    identical "Chapter N Title" opener 4+ times; the audit's recurred 34×.
+    """
+    order: dict[str, list[int]] = {}
+    for idx, region in enumerate(regions):
+        if not _is_heading(region):
+            continue
+        text = _region_text(region)
+        if not _BARE_CHAPTER_SHAPE_RE.match(text):
+            continue
+        key = re.sub(r"\s+", " ", text).strip().lower()
+        order.setdefault(key, []).append(idx)
+    furniture: set[int] = set()
+    for idxs in order.values():
+        if len(idxs) > _REPEAT_FURNITURE_THRESHOLD:
+            furniture.update(idxs[1:])
+    return furniture
+
+
+def _dominant_chapter_ordinal(regions: list[Region]) -> int | None:
+    """The most common parent chapter ordinal ``N`` across "N.M Title" texts.
+
+    Scans EVERY region's text (heading or paragraph) for the section-shape
+    ``N.M Title``, tallies the ``N`` values, and returns the mode — the
+    document's dominant chapter number (9 for an EA2e ch9 scan). Returns None
+    when no section-shaped text exists or the winner is ambiguous (a tie), so
+    the promotion pass anchors ONLY on an unambiguous single chapter.
+    """
+    counts: dict[int, int] = {}
+    for region in regions:
+        m = _ANY_SECTION_ORDINAL_RE.match(_region_text(region))
+        if not m:
+            continue
+        try:
+            n = int(m.group(1))
+        except (TypeError, ValueError):
+            continue
+        counts[n] = counts.get(n, 0) + 1
+    if not counts:
+        return None
+    top = max(counts.values())
+    winners = [n for n, c in counts.items() if c == top]
+    return winners[0] if len(winners) == 1 else None
+
+
+def _region_seed_vlm_hint(
+    region: Region, feature_blocks: list[FeatureBlock]
+) -> dict | None:
+    """The VLM hint on a region's SEED (min-index) FeatureBlock, if any.
+
+    P2 audit-only accessor for sub-pass E's corroboration breadcrumb. Returns
+    ``None`` when the region owns no in-range FB or the seed carries no hint
+    (every region until the VLM source lands, and all regions when the flags
+    are off)."""
+    idxs = [i for i in (region.feature_block_indices or ()) if 0 <= i < len(feature_blocks)]
+    if not idxs:
+        return None
+    seed = feature_blocks[min(idxs)]
+    hint = getattr(seed, "vlm_hint", None)
+    return hint if isinstance(hint, dict) else None
+
+
+def _detect_section_promotions(
+    regions: list[Region], excluded: set[int]
+) -> set[int]:
+    """Indices of PARAGRAPH regions to promote to section headings (defect 3c/4).
+
+    A conservative promotion. TWO standalone-title shapes qualify:
+
+      * a clean ``"N.M Title-Case Words"`` (<=10 words) where ``N`` equals the
+        document's dominant chapter ordinal and ``M`` is a small int (1..40) —
+        a real section heading the council mis-typed as prose; and
+      * a whole-match end-of-chapter apparatus opener (``Key Terms`` /
+        ``Chapter Review`` / ``Review Exercises`` / ``Practice Test`` /
+        ``Key Concepts`` / ``Introduction`` / ``Summary`` via
+        :func:`_matches_apparatus_opener`) — the Defect-4 recovery for an
+        apparatus heading mis-typed as a ``<p>`` (e.g. ``PRACTICE TEST``).
+
+    Only STANDALONE regions are promoted (the title is the entire region) — a
+    title FUSED into a body paragraph is left to the Stage-5e split. Excludes
+    anything already dropped/demoted.
+    """
+    dominant = _dominant_chapter_ordinal(regions)
+    out: set[int] = set()
+    for i, region in enumerate(regions):
+        if i in excluded or _is_heading(region):
+            continue
+        text = _region_text(region)
+        # Defect 4 — a standalone apparatus opener promotes regardless of the
+        # dominant-ordinal anchor (it carries no N.M ordinal).
+        if _matches_apparatus_opener(text):
+            out.add(i)
+            continue
+        if dominant is None:
+            continue
+        m = _STANDALONE_SECTION_RE.match(text)
+        if not m:
+            continue
+        # The match must span the WHOLE region text (standalone title only).
+        if m.group(0).strip() != text:
+            continue
+        try:
+            n, mm = int(m.group(1)), int(m.group(2))
+        except (TypeError, ValueError):
+            continue
+        if n != dominant or not (1 <= mm <= 40):
+            continue
+        if len(text.split()) > 10:
+            continue
+        out.add(i)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Defect 3 — obviously-FUSED heading demotion (refuse to keep as a heading).
+# ---------------------------------------------------------------------------
+# The page-top mega-heading the audit found (a running footer + two exercise
+# items + a word problem fused into one heading) is NOT a real heading — it
+# swallowed body content. Detect it and demote heading -> paragraph, so the
+# fused prose renders as prose. Conservative thresholds so a genuine short
+# numbered / title-case heading is untouched. Mirrors the
+# ``heading_classifier.is_fused_heading`` adapter-seam twin.
+_FUSED_HEADING_MIN_PROSE_WORDS = 12
+_INLINE_MATH_RUN_RE = re.compile(r"\$[^$]+\$")
+_SENTENCE_TERMINAL_RE = re.compile(r"[.!?]")
+
+
+def _is_fused_prose_heading(region: Region) -> bool:
+    """Whether a HEADING region's text is an obviously-fused blob (defect 3).
+
+    Fires on a heading whose text carries EITHER >= 2 inline ``$…$`` math runs
+    OR a sentence-length prose run (>= ``_FUSED_HEADING_MIN_PROSE_WORDS`` tokens
+    AND a sentence-terminal). A genuine short heading has neither.
+    """
+    if not _is_heading(region):
+        return False
+    text = _region_text(region)
+    if not text:
+        return False
+    if len(_INLINE_MATH_RUN_RE.findall(text)) >= 2:
+        return True
+    return (
+        len(text.split()) >= _FUSED_HEADING_MIN_PROSE_WORDS
+        and bool(_SENTENCE_TERMINAL_RE.search(text))
+    )
+
+
+# ---------------------------------------------------------------------------
 # Re-tag application (FB-partition-immutable, text-verbatim).
 # ---------------------------------------------------------------------------
 
@@ -597,6 +935,115 @@ def _retag(
     return dataclasses.replace(region, kind=new_kind, payload=payload)
 
 
+def _promote_to_heading(region: Region, *, level_hint: int = 2) -> Region:
+    """Return a copy of ``region`` promoted paragraph→heading (defect 3c).
+
+    Stamps ``level_hint`` (the assembler's ``normalize_heading_levels`` owns the
+    final h-level) and a ``structure_clean`` breadcrumb. Text + the FB partition
+    are preserved verbatim (``dataclasses.replace`` of kind + payload only).
+    """
+    payload = dict(region.payload or {})
+    prov = dict(payload.get("structure_clean") or {})
+    prov["from_kind"] = str(region.kind)
+    prov["promoted"] = "section_heading"
+    payload["structure_clean"] = prov
+    payload["level_hint"] = int(level_hint)
+    return dataclasses.replace(region, kind="heading", payload=payload)
+
+
+# ---------------------------------------------------------------------------
+# Post-Stage-5e fused-title child PROMOTION (lane B).
+#
+# The clean_structure sub-pass E promotion (``_detect_section_promotions``) runs
+# at Stage-5d-det — BEFORE Stage-5e — so it can never see a title child the
+# Stage-5e fused-title SPLIT only just carved off. This narrow hook closes that
+# gap: it promotes the split-off title child (``child_index==0`` of a
+# ``subtype='fused_title'`` split) to a section heading, re-verifying the title
+# shape via the SAME SoT (``_STANDALONE_SECTION_RE`` + dominant ordinal, or the
+# apparatus-opener tuple) and reusing ``_promote_to_heading`` verbatim (the
+# assembler owns the final h-level). Fail-closed: any token-conservation failure
+# reverts the WHOLE hook to the input list (never ships a content-losing pass),
+# mirroring ``clean_structure``.
+# ---------------------------------------------------------------------------
+
+
+def _is_promotable_fused_title(text: str, dominant: int | None) -> bool:
+    """Whether ``text`` is a promotable fused-title child (defense in depth).
+
+    Re-verifies the SAME title shape the Stage-5e detector matched: a
+    chapter-consistent standalone ``"N.M Title-Case"`` (N == the document's
+    dominant chapter ordinal, M in 1..40, <= 10 words) OR a whole-match
+    apparatus opener (``_matches_apparatus_opener``). Anything else is left as a
+    paragraph.
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    m = _STANDALONE_SECTION_RE.match(stripped)
+    if m and m.group(0).strip() == stripped and dominant is not None:
+        try:
+            n, mm = int(m.group(1)), int(m.group(2))
+        except (TypeError, ValueError):
+            return False
+        if n == dominant and 1 <= mm <= 40 and len(stripped.split()) <= 10:
+            return True
+    return _matches_apparatus_opener(stripped)
+
+
+def promote_fused_title_children(
+    regions: list[Region],
+    feature_blocks: list[FeatureBlock],
+) -> tuple[list[Region], dict[str, Any]]:
+    """Promote Stage-5e fused-title SPLIT title children (``child_index==0``).
+
+    Selects ONLY regions carrying a ``payload['resegment']`` breadcrumb of the
+    fused-title split's title child (``op=='split'``, ``subtype=='fused_title'``,
+    ``child_index==0``) that is not already a heading and whose text re-verifies
+    as a title shape (:func:`_is_promotable_fused_title`), and promotes each via
+    :func:`_promote_to_heading`. Returns ``(corrected_regions, diagnostics)``.
+    Fail-closed on token-conservation (whole-revert to the input list). Byte-
+    identical pass-through when no such child exists (the caller gates on BOTH
+    ``SEMANTIK_SPLIT_FUSED_SECTION_TITLES`` and ``SEMANTIK_PROMOTE_SECTION_HEADINGS``).
+    """
+    diagnostics: dict[str, Any] = {"enabled": True, "promoted": 0}
+    if not regions:
+        return list(regions), diagnostics
+
+    dominant = _dominant_chapter_ordinal(regions)
+    promote_idx: set[int] = set()
+    for i, region in enumerate(regions):
+        breadcrumb = (region.payload or {}).get("resegment")
+        if not isinstance(breadcrumb, dict):
+            continue
+        if (
+            breadcrumb.get("op") != "split"
+            or breadcrumb.get("subtype") != "fused_title"
+            or breadcrumb.get("child_index") != 0
+        ):
+            continue
+        if _is_heading(region):
+            continue
+        if _is_promotable_fused_title(_region_text(region), dominant):
+            promote_idx.add(i)
+
+    if not promote_idx:
+        return list(regions), diagnostics
+
+    corrected = [
+        _promote_to_heading(region) if i in promote_idx else region
+        for i, region in enumerate(regions)
+    ]
+    try:
+        assert_token_conservation(regions, corrected, feature_blocks)
+    except TokenConservationError as exc:  # pragma: no cover - safety net
+        diagnostics["reverted_for_invariant"] = True
+        diagnostics["revert_reason"] = str(exc)
+        return list(regions), diagnostics
+
+    diagnostics["promoted"] = len(promote_idx)
+    return corrected, diagnostics
+
+
 # ---------------------------------------------------------------------------
 # Public entry point.
 # ---------------------------------------------------------------------------
@@ -623,8 +1070,12 @@ def clean_structure(
     diagnostics: dict[str, Any] = {
         "enabled": resolve_structure_clean_mode(),
         "front_matter_dropped": 0,
+        "running_header_dropped": 0,
+        "repeated_furniture_dropped": 0,
         "fused_toc_dropped": 0,
         "list_item_demoted": 0,
+        "fused_heading_demoted": 0,
+        "section_promoted": 0,
         "pedagogical_demoted": 0,
         "pedagogical_classed": 0,
         "pedagogical_class_counts": {},
@@ -642,6 +1093,28 @@ def clean_structure(
 
     # (A) Front-matter / phantom-TOC / OCR-noise -> metadata_drop.
     fm_drops = _detect_front_matter_drops(regions, feature_blocks, cluster_signals)
+
+    # (A'') Running-header text backstop (defect 3a): a "Chapter N <words>
+    # <page>" heading that escaped the FB-position running-header detector is
+    # page furniture ANYWHERE in the doc -> metadata_drop (never zone-confined;
+    # a running header recurs on every page, deep in the body).
+    running_header_drops = {
+        i
+        for i, region in enumerate(regions)
+        if i not in fm_drops and _is_running_header_region(region)
+    }
+    fm_drops |= running_header_drops
+
+    # (A''') Repeat-count running-header furniture (defect 3b): a bare
+    # "Chapter N Title" recurring >3× is per-page furniture — drop all but the
+    # first (the real chapter opener). Prevents the phantom-chapter run at
+    # build_chapters_ir grouping time.
+    repeated_furniture = {
+        i
+        for i in _detect_repeated_chapter_furniture(regions)
+        if i not in fm_drops
+    }
+    fm_drops |= repeated_furniture
 
     # (A') Fused-TOC headings (>=2 "N.M" entries concatenated into one region)
     # -> metadata_drop. A run of TOC entries is front-matter, not a real
@@ -685,11 +1158,55 @@ def clean_structure(
         and _is_list_item_region(region)
     }
 
+    # (B'') Fused-prose heading -> paragraph (defect 3). A heading region whose
+    # text swallowed body content (sentence-length prose or multiple $…$ runs)
+    # is refused as a heading and demoted to prose. Excludes anything already
+    # dropped/demoted.
+    fused_heading_demote = {
+        i
+        for i, region in enumerate(regions)
+        if i not in fm_drops
+        and i not in peda_demote
+        and i not in list_item_demote
+        and _is_fused_prose_heading(region)
+    }
+
+    # (E) Section-heading PROMOTION (defect 3c) — GATED off by default. A
+    # standalone "N.M Title" paragraph the council mis-typed as prose is
+    # promoted back to a section heading. Excludes anything already
+    # dropped/demoted (a dropped region is furniture, not a section title).
+    if resolve_promote_section_headings_mode():
+        section_promote = _detect_section_promotions(
+            regions,
+            fm_drops | peda_demote | list_item_demote | fused_heading_demote,
+        )
+    else:
+        section_promote: set[int] = set()
+
     corrected: list[Region] = []
     pedagogical_class_counts: dict[str, int] = {}
     for i, region in enumerate(regions):
         if i in fm_drops:
             corrected.append(_retag(region, "metadata_drop"))
+        elif i in section_promote:
+            promoted = _promote_to_heading(region)
+            # P2 — audit-only VLM corroboration breadcrumb (NON-AUTHORITATIVE).
+            # The promotable SET is the deterministic _STANDALONE_SECTION_RE +
+            # dominant-ordinal trigger ALONE (set-equality with hints on/off);
+            # a matching whole-block VLM heading hint on the region's seed FB
+            # only ADDS a `structure_clean` breadcrumb. It NEVER widens the set
+            # (widening = new authority = explicitly deferred).
+            if _vlm_struct_hints_enabled():
+                hint = _region_seed_vlm_hint(region, feature_blocks)
+                if (
+                    isinstance(hint, dict)
+                    and hint.get("kind") == "heading"
+                    and hint.get("coverage") == "whole_block"
+                ):
+                    prov = dict(promoted.payload.get("structure_clean") or {})
+                    prov["vlm_corroborated"] = True
+                    promoted.payload["structure_clean"] = prov
+            corrected.append(promoted)
         elif i in peda_demote:
             # Stamp the matched pedagogical label's semantic class hint so the
             # demoted <p> keeps its worked-example / solution / step / objective
@@ -703,6 +1220,10 @@ def clean_structure(
         elif i in list_item_demote:
             # A bullet/list-item heading -> paragraph (a list/non-heading kind);
             # text preserved verbatim, no pedagogical class hint.
+            corrected.append(_retag(region, "paragraph"))
+        elif i in fused_heading_demote:
+            # Defect 3 — an obviously-fused heading -> paragraph (prose);
+            # text preserved verbatim.
             corrected.append(_retag(region, "paragraph"))
         else:
             corrected.append(region)
@@ -719,8 +1240,12 @@ def clean_structure(
 
     headings_after = _heading_level_histogram(corrected)
     diagnostics["front_matter_dropped"] = len(fm_drops)
+    diagnostics["running_header_dropped"] = len(running_header_drops)
+    diagnostics["repeated_furniture_dropped"] = len(repeated_furniture)
     diagnostics["fused_toc_dropped"] = len(fused_toc_drops)
     diagnostics["list_item_demoted"] = len(list_item_demote)
+    diagnostics["fused_heading_demoted"] = len(fused_heading_demote)
+    diagnostics["section_promoted"] = len(section_promote)
     diagnostics["pedagogical_demoted"] = len(peda_demote)
     diagnostics["pedagogical_classed"] = sum(pedagogical_class_counts.values())
     diagnostics["pedagogical_class_counts"] = pedagogical_class_counts
@@ -767,8 +1292,11 @@ def _count_text_changes(
 
 __all__ = [
     "clean_structure",
+    "promote_fused_title_children",
     "resolve_structure_clean_mode",
+    "resolve_promote_section_headings_mode",
     "_pedagogical_class_for",
     "_is_fused_toc_heading",
     "_is_list_item_heading",
+    "_matches_apparatus_opener",
 ]

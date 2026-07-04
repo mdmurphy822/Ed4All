@@ -46,13 +46,21 @@ e.g. ["pypdfium2", "pdfplumber"] if both agreed on the line, or
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import re
+import shlex
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from . import paths as _semantik_paths
+from . import vlm_extract as _vlm_extract
+from .vlm_fusion import resolve_vlm_fusion_mode
+from .vlm_furniture import (
+    resolve_strip_furniture_mode as _resolve_strip_furniture_mode,
+)
 from .reading_order import (
     _DEFAULT_PAGE_WIDTH,
     column_ids_for_bboxes,
@@ -86,6 +94,15 @@ def _detect_figures_enabled() -> bool:
     if os.environ.get(_DETECT_FIGURES_ENV, "").strip().lower() in _FIG_TRUTHY:
         return True
     return resolve_deploy_profile()
+
+
+# NOTE: the VLM extraction-source gate + provider-agnostic seat resolvers
+# (``resolve_vlm_extract_mode`` / ``resolve_vlm_seat`` / ``VLMSeat`` + the P2
+# ``mint_vlm_hint`` hint channel) live further down this module (see the
+# "P2 — VLM extraction source" section). The P0 per-page HTTP client, disk
+# cache, and unload lifecycle live in the sibling ``vlm_extract.py`` and consume
+# those resolvers — kept there so the heavy image-encode / requests path is
+# isolated from this Stage-1 orchestration module.
 
 
 # Minimum text-layer chars below which we assume the page is scanned.
@@ -189,16 +206,156 @@ def extract_shared(pdf_path: Path) -> dict:
     if meta["is_encrypted"]:
         raise EncryptedPDFError(pdf_path)
 
-    # Per-page extraction.
+    # Per-page extraction. When the VLM source is on, open a per-document
+    # session so the end-of-document unload fires exactly once (and only when
+    # >=1 LIVE POST was actually made).
+    vlm_on = resolve_vlm_extract_mode()
+    # Defect 1 — when the VLM DP fusion is on we DEFER per-page fusion + merge
+    # until AFTER the whole document is extracted, so a document-level repeated
+    # page-furniture strip (``vlm_furniture``) can run over every page's VLM
+    # lines BEFORE any page is fused (furniture detection is inherently
+    # cross-page). Flag-off / no-fusion → ``defer`` is False → the historic
+    # single-loop fuse-and-merge-inline path (byte-identical).
+    defer_finalize = vlm_on and resolve_vlm_fusion_mode()
+    if vlm_on:
+        _vlm_extract.begin_document_session()
     pages: list[dict] = []
-    for page_num in range(1, meta["page_count"] + 1):
-        pages.append(_extract_page(pdf_path, page_num, meta))
+    try:
+        for page_num in range(1, meta["page_count"] + 1):
+            pages.append(
+                _extract_page(
+                    pdf_path, page_num, meta, defer_finalize=defer_finalize
+                )
+            )
+    finally:
+        # Lifecycle unload — hand the card back to the 7B text seat. Gated on
+        # provider==local (a hosted seat has no ollama /api root) AND >=1 live
+        # POST this document (an all-cache-hit run loaded nothing). Best-effort
+        # (never raises); finally-guaranteed so a mid-document raise still frees
+        # the card. SEAM: replace with lib/gpu_lifecycle.py when it lands.
+        if (
+            vlm_on
+            and resolve_vlm_provider() == "local"
+            and _vlm_extract.document_had_live_post()
+        ):
+            seat = resolve_vlm_seat()
+            _vlm_extract.unload_vlm_model(seat.base_url, seat.model)
+
+    # Deferred finalize (VLM fusion on): strip cross-page repeated furniture
+    # from every page's VLM lines (Defect 1), THEN fuse + merge each page. The
+    # per-page ``_apply_vlm_fusion`` + ``_merge_page`` were held back inside
+    # ``_extract_page`` so the furniture detector could see the whole document.
+    if defer_finalize:
+        _strip_document_furniture(pages)
+        for page in pages:
+            _finalize_page(page)
 
     return {
         "pdf_path": str(pdf_path),
         "metadata": meta,
         "pages": pages,
     }
+
+
+def _tesseract_lines_reading_order(page: dict) -> list[str]:
+    """A page's tesseract block texts sorted by bbox ``(y0, x0)`` reading order.
+
+    The furniture detector position-gates on FIRST/LAST list positions, so the
+    list must be in top-to-bottom order — the raw tesseract dict-insertion
+    order is only approximately so. Blocks lacking a bbox sort to the top with
+    a stable secondary order (harmless: they can only vote as page-top, and a
+    recurring signature still needs the cross-page threshold).
+    """
+    tb = page.get("tesseract", {}).get("text_blocks") or []
+
+    def _key(b: dict) -> tuple[float, float]:
+        bbox = b.get("bbox") or []
+        try:
+            return (float(bbox[1]), float(bbox[0]))
+        except (TypeError, ValueError, IndexError):
+            return (0.0, 0.0)
+
+    return [b.get("text", "") for b in sorted(tb, key=_key)]
+
+
+def _strip_document_furniture(pages: list[dict]) -> None:
+    """Detect + strip repeated page-furniture across the document's lines.
+
+    Defect 1: the VLM emits a per-page running footer / header as its own
+    markdown line at the page top / bottom; the P1 fusion then glues it into
+    body prose. Defect A (coordinator follow-up, ch09 live validation):
+    tesseract ALSO reads the footer cleanly on ~36 pages, where it survives as
+    a standalone LAST-position tesseract block regardless of the VLM-markdown
+    strip — and the DP fusion then aligns the VLM footer line onto it
+    (``fusion='vlm+tesseract'``) instead of dropping it. So signatures are
+    detected from BOTH sources — the VLM lines AND the (y-sorted) tesseract
+    blocks — and the UNION is stripped from both sides. The tesseract-side
+    detection also closes the VLM-side position-gate gap: a footer that is not
+    literally the last VLM markdown line on some pages still gets its
+    signature voted in by the tesseract side (footer = last tesseract block),
+    and ``strip_furniture_lines``-style whole-line matching then removes it
+    from the VLM lines ANYWHERE on the page. No-op when the strip is disabled
+    or no furniture recurs. Fail-soft — never aborts extraction.
+    """
+    if not _resolve_strip_furniture_mode():
+        return
+    try:
+        from .vlm_furniture import (
+            detect_furniture_signatures,
+            normalize_furniture_sig,
+        )
+
+        vlm_pages_lines: list[list[str]] = []
+        tess_pages_lines: list[list[str]] = []
+        for page in pages:
+            tb = (page.get("vlm") or {}).get("text_blocks") or []
+            vlm_pages_lines.append([b.get("text", "") for b in tb])
+            tess_pages_lines.append(_tesseract_lines_reading_order(page))
+        sigs = detect_furniture_signatures(vlm_pages_lines)
+        sigs |= detect_furniture_signatures(tess_pages_lines)
+        if not sigs:
+            return
+        for page in pages:
+            vlm = page.get("vlm")
+            if vlm and vlm.get("text_blocks"):
+                kept = [
+                    b
+                    for b in vlm["text_blocks"]
+                    if normalize_furniture_sig(b.get("text", "")) not in sigs
+                ]
+                page["vlm_furniture_dropped"] = len(vlm["text_blocks"]) - len(kept)
+                vlm["text_blocks"] = kept
+            # Strip the tesseract side too (Defect A): on many pages tesseract
+            # reads the footer CLEANLY, so it survives as a standalone block
+            # (and the DP fusion aligns the VLM footer line onto it instead of
+            # dropping it). Only garbled furniture fails to normalize to the
+            # signature — that residue stays and is harmless (it never aligned
+            # anyway).
+            tess_blocks = page.get("tesseract", {}).get("text_blocks")
+            if tess_blocks:
+                kept_tess = [
+                    b
+                    for b in tess_blocks
+                    if normalize_furniture_sig(b.get("text", "")) not in sigs
+                ]
+                n_dropped = len(tess_blocks) - len(kept_tess)
+                if n_dropped:
+                    page["tesseract_furniture_dropped"] = n_dropped
+                page["tesseract"]["text_blocks"] = kept_tess
+    except Exception as exc:  # noqa: BLE001 — furniture strip never aborts extract
+        logger.debug(f"vlm furniture strip failed: {exc}")
+
+
+def _finalize_page(page: dict) -> None:
+    """Run the deferred VLM fusion + merge for one page (Defect 1 second loop).
+
+    Consumes the ``_is_text_ok`` flag ``_extract_page`` stashed when finalize
+    was deferred, then applies fusion + builds ``merged`` — the exact tail
+    ``_extract_page`` runs inline in the non-deferred (byte-identical) path.
+    """
+    is_text_ok = bool(page.pop("_is_text_ok", True))
+    _apply_vlm_fusion(page)
+    page["merged"] = _merge_page(page, is_text_ok)
 
 
 # Bump whenever the extraction *output* changes for the same input PDF
@@ -213,6 +370,72 @@ def extract_shared(pdf_path: Path) -> dict:
 # (_merge_split_first_letters) — pre-fix caches split a bold/colored first
 # letter off its word body ("S ubtraction", "P arentheses", "m ultiplication").
 EXTRACT_CACHE_VERSION = 4
+
+
+def _compute_extract_cache_key(pdf_path: Path) -> str:
+    """The 24-hex whole-document extract-cache key (raises OSError on stat fail).
+
+    Salted by every flag that CHANGES THE EXTRACTED SHAPE:
+
+    * ``fig_key`` — SEMANTIK_DETECT_FIGURES (symmetric fig0/fig1; the Part-F
+      precedent).
+    * ``vlm_key`` — SEMANTIK_VLM_EXTRACT (asymmetric, append-only-when-on): the
+      P0 VLM source adds a per-page ``vlm`` key, so flipping the flag ON must
+      never serve a stale non-VLM extraction — but the flag-OFF key MUST stay
+      byte-identical to the historic ``v{VER}|{fig_key}|...`` key (no ``vlm0``
+      salt), so every existing extract cache survives untouched when the
+      feature is off (the house byte-identical-when-unset rule). Mirrors the
+      sibling ``fuse_key``'s append-only shape.
+    * ``fuse_key`` — SEMANTIK_VLM_FUSION (asymmetric, append-only-when-on): the
+      P1 fusion rewrites the merged tesseract text; append-only keeps the
+      flag-off key byte-identical to the P0 key. ``vlmfuse2``: the fusion-side
+      bbox sanitation (live-fire ch09 fix) changed what ``fuse_page`` can emit
+      — a cache written under ``vlmfuse1`` may carry unsanitized
+      (out-of-page / inverted) interpolated-insert bboxes. ``vlmfuse3``: the
+      Defect-1 document-level repeated-furniture strip (``vlm_furniture``) +
+      Defect-2 markdown code-fence strip change what the fused blocks carry, so
+      a ``vlmfuse2`` cache is invalid. ``vlmfuse4``: the coordinator-follow-up
+      Defect-A tesseract-side furniture detection (signatures now also voted by
+      the y-sorted tesseract blocks and stripped from the tesseract source) +
+      Defect-B ``\\section*{…}`` LaTeX sectioning-wrapper normalization change
+      the fused/merged output again — a ``vlmfuse3`` cache still carries the 36
+      clean-OCR footer blocks and the wrapped apparatus headings. ``vlmfuse5``:
+      the ch02 literal-HTML-entity scrub (``vlm_fusion._strip_markdown_structure``
+      now decodes/drops ``&nbsp;`` / ``&amp;…;``-style entity text from VLM
+      lines before fusion) changes the fused block text — a ``vlmfuse4`` cache
+      may carry literal entity text (corrected downstream by the adapter-seam
+      scrub in ``lib/semantik/adapter.py``, so the CURRENT corpus deliberately
+      stays on its ``vlmfuse4`` caches; the salt protects future fresh
+      conversions). The
+      ``SEMANTIK_VLM_STRIP_FURNITURE`` escape hatch is deliberately kept OUT of
+      the key (the render-scale kept-out-of-key precedent) — flipping the strip
+      off after a warm cache needs a manual extract-cache clear. The P0
+      per-page VLM markdown cache (``vlm_extract_cache``) is keyed
+      independently and survives; only tesseract OCR + fusion re-run.
+    * ``hints_key`` — SEMANTIK_VLM_STRUCT_HINTS (asymmetric, append-only-when-on):
+      the P2 hint mint (`_attach_vlm_struct_hints`) runs INSIDE `_merge_page`, so
+      the `vlm_hint` payload is baked into the cached merged blocks. Without this
+      salt a cache warmed with hints OFF is served (hint-less) after the operator
+      flips hints ON — the exact "ship fusion text-only, flip hints later" flow —
+      and the reverse serves hint-carrying blocks with the flag off. Append-only
+      keeps the flag-off key byte-identical to the fusion key.
+
+    NB the render-scale / tesseract-config / user-words flags are deliberately
+    kept OUT of the key (they do not change the extracted SHAPE and keeping them
+    out avoids invalidating every existing cache — see those flags' rows).
+    """
+    import hashlib
+
+    st = pdf_path.stat()
+    fig_key = "fig1" if _detect_figures_enabled() else "fig0"
+    vlm_key = "|vlm1" if resolve_vlm_extract_mode() else ""
+    fuse_key = "|vlmfuse5" if resolve_vlm_fusion_mode() else ""
+    hints_key = "|vlmhints1" if resolve_vlm_struct_hints_mode() else ""
+    key_raw = (
+        f"v{EXTRACT_CACHE_VERSION}|{fig_key}{vlm_key}{fuse_key}{hints_key}|"
+        f"{pdf_path.resolve()}|{st.st_size}|{int(st.st_mtime)}"
+    )
+    return hashlib.sha256(key_raw.encode()).hexdigest()[:24]
 
 
 def extract_shared_cached(pdf_path: Path, cache_dir: Path | str | None = None) -> dict:
@@ -230,7 +453,6 @@ def extract_shared_cached(pdf_path: Path, cache_dir: Path | str | None = None) -
     worker reads/writes its own cache files independently; last writer
     wins on collision.
     """
-    import hashlib
     import json as _json
 
     pdf_path = Path(pdf_path)
@@ -246,17 +468,7 @@ def extract_shared_cached(pdf_path: Path, cache_dir: Path | str | None = None) -
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        st = pdf_path.stat()
-        # Part F — the figures flag changes the extracted shape (adds the
-        # per-page ``images`` list), so it MUST be part of the cache key,
-        # else flipping the flag would silently read a stale flag-off cache
-        # with no images. Byte-stable to the historic key when off ("fig0").
-        fig_key = "fig1" if _detect_figures_enabled() else "fig0"
-        key_raw = (
-            f"v{EXTRACT_CACHE_VERSION}|{fig_key}|{pdf_path.resolve()}|"
-            f"{st.st_size}|{int(st.st_mtime)}"
-        )
-        key = hashlib.sha256(key_raw.encode()).hexdigest()[:24]
+        key = _compute_extract_cache_key(pdf_path)
     except OSError:
         # If we can't stat the file, skip the cache — let extract_shared
         # raise its normal error.
@@ -727,13 +939,123 @@ def _pdfplumber_page(pdf_path: Path, page_num: int) -> dict:
 
 # ---------- tesseract OCR ----------
 
+# pypdfium2 render scale for the Tesseract OCR raster. A pypdfium2 page renders
+# at 72 DPI * scale, so the default 2.0 is ~144 DPI on a 612x792pt page —
+# adequate for typical body text but MARGINAL for small (~10pt) print on a
+# rasterized/image-only scan, where OCR wants ~300 DPI (scale ~4.0). The env
+# knob lets an operator raise the raster DPI for such a corpus without a code
+# change. NB: the scale is NOT part of the extract disk-cache key
+# (``EXTRACT_CACHE_VERSION`` / ``fig_key``), so changing it does NOT invalidate
+# a prior OCR extraction — clear the extract cache (or use fresh inputs) after
+# a flip.
+_OCR_RENDER_SCALE_ENV = "SEMANTIK_OCR_RENDER_SCALE"
+_DEFAULT_OCR_RENDER_SCALE = 2.0
+
+
+def resolve_ocr_render_scale() -> float:
+    """Parse-with-fallback ``SEMANTIK_OCR_RENDER_SCALE`` (default ``2.0``).
+
+    Returns the pypdfium2 render scale used to raster a page for Tesseract OCR
+    (72 DPI * scale). Read at call time (not import time) so tests / Docker can
+    flip it without a re-import, mirroring ``_detect_figures_enabled`` /
+    ``resolve_structure_review_temperature``. Garbage / non-float / non-finite /
+    non-positive values fall back to ``2.0`` (a run never crashes on a malformed
+    flag; a <= 0 scale would render an empty raster)."""
+    raw = os.environ.get(_OCR_RENDER_SCALE_ENV)
+    if not raw:
+        return _DEFAULT_OCR_RENDER_SCALE
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_OCR_RENDER_SCALE
+    if val <= 0 or val != val or val in (float("inf"), float("-inf")):
+        return _DEFAULT_OCR_RENDER_SCALE
+    return val
+
+
+# Freeform Tesseract CLI config fragment threaded into ``image_to_data`` (e.g.
+# ``--oem 1 -c preserve_interword_spaces=1``). Like ``SEMANTIK_OCR_RENDER_SCALE``
+# this is NOT part of the extract disk-cache key (``EXTRACT_CACHE_VERSION`` /
+# ``fig_key``), so flipping it does NOT invalidate a prior OCR extraction —
+# clear the extract cache (or use fresh inputs) after a flip. Deliberately kept
+# out of the cache key (mirrors the render-scale precedent) to avoid
+# invalidating every existing cache; the A/B script isolates caches itself.
+_TESSERACT_CONFIG_ENV = "SEMANTIK_TESSERACT_CONFIG"
+_TESSERACT_USER_WORDS_ENV = "SEMANTIK_TESSERACT_USER_WORDS"
+
+# Module-level dedup for the user-words missing-file warning so a 400-page doc
+# does not log the same warning 400 times (the resolver is called per page).
+_USER_WORDS_WARNED: set[str] = set()
+
+
+def resolve_tesseract_config() -> str:
+    """Parse-with-fallback ``SEMANTIK_TESSERACT_CONFIG`` (default ``""``).
+
+    Returns a Tesseract CLI config fragment passed to
+    ``pytesseract.image_to_data(config=…)``. Read at CALL time (mirrors
+    ``resolve_ocr_render_scale``) so tests / Docker can flip it without a
+    re-import. Unset / blank → ``""`` (byte-identical default: the call site
+    omits the ``config=`` kwarg entirely). Otherwise the value is stripped and
+    any embedded newlines are collapsed to spaces (it is a single CLI fragment,
+    not a multi-line string). A freeform string, so parse-with-fallback is
+    trivially total — a run never crashes on a malformed flag."""
+    raw = os.environ.get(_TESSERACT_CONFIG_ENV)
+    if not raw or not raw.strip():
+        return ""
+    return " ".join(raw.split())
+
+
+def resolve_tesseract_user_words() -> Path | None:
+    """Parse-with-fallback ``SEMANTIK_TESSERACT_USER_WORDS`` (default ``None``).
+
+    Returns the path to a Tesseract ``--user-words`` file (a domain-vocabulary
+    lexicon, one word per line) or ``None`` when unset. Read at CALL time.
+    Unset / blank → ``None``. A set-but-missing file logs a de-duplicated
+    warning (once per distinct path) and returns ``None`` — a bad path degrades
+    to the byte-identical no-user-words behaviour rather than crashing the run
+    (parse-with-fallback; never raises)."""
+    raw = os.environ.get(_TESSERACT_USER_WORDS_ENV)
+    if not raw or not raw.strip():
+        return None
+    p = Path(raw.strip()).expanduser()
+    if not p.is_file():
+        key = str(p)
+        if key not in _USER_WORDS_WARNED:
+            _USER_WORDS_WARNED.add(key)
+            logger.warning(
+                "SEMANTIK_TESSERACT_USER_WORDS points at a non-existent file "
+                "(%s); ignoring (OCR runs without a user-words lexicon).",
+                key,
+            )
+        return None
+    return p
+
 
 def _tesseract_page_blocks(pdf_path: Path, page_num: int) -> dict:
-    """OCR one page via Tesseract. Rendered via pypdfium2 (Apache-2)."""
+    """OCR one page via Tesseract. Rendered via pypdfium2 (Apache-2).
+
+    The raster DPI is operator-tunable via ``SEMANTIK_OCR_RENDER_SCALE``
+    (default 2.0 ≈ 144 DPI); raise it for small-print image-only scans.
+    """
     import pytesseract
 
-    image = _pypdfium2_render_page_to_image(pdf_path, page_num, scale=2.0)
-    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+    scale = resolve_ocr_render_scale()
+    image = _pypdfium2_render_page_to_image(pdf_path, page_num, scale=scale)
+
+    # Optional operator-tunable Tesseract config (SEMANTIK_TESSERACT_CONFIG) +
+    # a domain-vocabulary user-words file (SEMANTIK_TESSERACT_USER_WORDS). When
+    # BOTH are unset the call shape is byte-identical to the historic
+    # ``image_to_data(image, output_type=…)`` — no ``config=`` kwarg is passed.
+    config = resolve_tesseract_config()
+    user_words = resolve_tesseract_user_words()
+    if user_words is not None:
+        # pytesseract shlex.split()s the config string (POSIX), so the quoting
+        # survives a path containing spaces; composes with SEMANTIK_TESSERACT_CONFIG.
+        config = (config + f" --user-words {shlex.quote(str(user_words))}").strip()
+    kwargs: dict[str, Any] = {"output_type": pytesseract.Output.DICT}
+    if config:
+        kwargs["config"] = config
+    data = pytesseract.image_to_data(image, **kwargs)
     page_w = float(image.width)
     page_h = float(image.height)
 
@@ -798,7 +1120,9 @@ def _tesseract_page_blocks(pdf_path: Path, page_num: int) -> dict:
 # ---------- per-page orchestration ----------
 
 
-def _extract_page(pdf_path: Path, page_num: int, meta: dict) -> dict:
+def _extract_page(
+    pdf_path: Path, page_num: int, meta: dict, *, defer_finalize: bool = False
+) -> dict:
     page: dict[str, Any] = {"page_num": page_num, "sources_used": []}
 
     # pypdfium2 first (primary text extractor)
@@ -839,6 +1163,37 @@ def _extract_page(pdf_path: Path, page_num: int, meta: dict) -> dict:
         except Exception as exc:
             page["tesseract"] = {"text_blocks": [], "error": str(exc)}
 
+    # VLM extraction source (P0) — a FOURTH source on the OCR-routed (scanned)
+    # pages only, ADDITIVE to tesseract (never replacing it). Runs immediately
+    # after the tesseract block, gated on SEMANTIK_VLM_EXTRACT AND ``not
+    # is_text_ok`` so it lands exactly on the scanned pages the OCR arm serves.
+    # The P0 fusion-free invariant: this stamps ``page["vlm"]`` but NEVER enters
+    # ``_merge_page`` (the merged stream the BERTs consume stays tesseract-only
+    # until the P1 DP fusion lands) — so flag-on output through the council is
+    # byte-identical and the structural anti-hallucination tripwire is never
+    # bypassed. Flag-off → no ``vlm`` key anywhere (byte-identical).
+    if resolve_vlm_extract_mode() and not is_text_ok:
+        try:
+            # ``extract_page_markdown`` calls ``seat.require_ready()`` first, so
+            # a misconfigured hosted seat fails loud (VLMSeatError) before any
+            # render or POST.
+            page["vlm"] = _vlm_extract.extract_page_markdown(
+                pdf_path,
+                page_num,
+                seat=resolve_vlm_seat(),
+                render_scale=resolve_ocr_render_scale(),
+                timeout=resolve_vlm_timeout(),
+            )
+            page["sources_used"].append("vlm")
+        except _vlm_extract.VlmExtractError as exc:
+            # TRANSIENT endpoint failure (timeout / conn / 5xx / 429, after
+            # bounded retries) → degrade THIS page's vlm source alone; tesseract
+            # stays authoritative (the additive contract). PERMANENT failures
+            # (400/401/403 / malformed response) propagate (fail-loud).
+            if not exc.transient:
+                raise
+            page["vlm"] = {"markdown": "", "text_blocks": [], "error": str(exc)}
+
     # Image page-objects (Part F) — only when SEMANTIK_DETECT_FIGURES is on.
     # Fail-soft: a per-page extraction failure leaves an empty list so a
     # figure-bearing document never aborts conversion. Absent / empty when
@@ -863,9 +1218,350 @@ def _extract_page(pdf_path: Path, page_num: int, meta: dict) -> dict:
     if widgets or meta.get("is_tagged"):
         page["sources_used"].append("pikepdf")
 
+    # VLM fusion (P1) — deterministically fuse the P0 ``page["vlm"]`` markdown
+    # source onto the tesseract line blocks BEFORE the merge, so features /
+    # FBs / council consume the fused text transparently. No-op (byte-identical)
+    # unless SEMANTIK_VLM_FUSION is on AND both a tesseract source and a P0
+    # ``page["vlm"]`` source exist (P0 = SEMANTIK_VLM_EXTRACT).
+    # Defer fusion + merge to the document-level second loop when the caller
+    # asked (Defect 1 — the cross-page furniture strip must run over every
+    # page's VLM lines BEFORE any page is fused). Stash the merge's is_text_ok
+    # for ``_finalize_page``. Non-deferred (default) → the historic inline
+    # fuse-and-merge, byte-identical.
+    if defer_finalize:
+        page["_is_text_ok"] = is_text_ok
+        return page
+
+    _apply_vlm_fusion(page)
+
     # Merge step.
     page["merged"] = _merge_page(page, is_text_ok)
     return page
+
+
+def _apply_vlm_fusion(page: dict) -> None:
+    """Fuse the P0 ``page["vlm"]`` markdown source onto the tesseract blocks.
+
+    Rewrites ``page["tesseract"]["text_blocks"]`` IN PLACE with the fused
+    blocks (VLM text on the tesseract bbox union + a ``fusion`` provenance key
+    + ``fusion_sim`` + the ``vlm_md`` / ``vlm_coverage`` the P2 hint channel
+    reads), and records the per-page divergence tripwire
+    (``page["vlm_divergence"]`` + ``page["vlm_fusion_stats"]``).
+
+    No-op (byte-identical) unless :func:`resolve_vlm_fusion_mode` is on AND
+    both a tesseract source WITH blocks and a P0 ``page["vlm"]`` source WITH
+    lines exist — so a run with P0 off (no ``vlm`` key) or the flag off is
+    unchanged. Fusion must NEVER abort extraction: any failure degrades to the
+    unfused tesseract blocks (fail-soft, mirroring the P0 additive contract).
+    """
+    if not resolve_vlm_fusion_mode():
+        return
+    tess_blocks = page.get("tesseract", {}).get("text_blocks")
+    vlm = page.get("vlm")
+    if not tess_blocks or not vlm:
+        return
+    vlm_lines = [
+        b.get("text", "")
+        for b in vlm.get("text_blocks", [])
+        if (b.get("text") or "").strip()
+    ]
+    if not vlm_lines:
+        return
+    try:
+        from .vlm_fusion import fuse_page
+
+        page_w = float(page.get("tesseract_width") or page.get("width") or 0.0)
+        page_h = float(page.get("tesseract_height") or page.get("height") or 0.0)
+        fused, stats = fuse_page(tess_blocks, vlm_lines, (page_w, page_h))
+        page["tesseract"]["text_blocks"] = fused
+        page["vlm_fusion_stats"] = stats
+        page["vlm_divergence"] = stats.get("divergence", 0.0)
+    except Exception as exc:  # noqa: BLE001 — fusion never aborts extraction
+        logger.debug(f"vlm fusion failed page {page.get('page_num')}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# P2 — VLM extraction source + NON-AUTHORITATIVE structural hints.
+#
+# Phase-4 (plan scan-conversion-improvements-2026-07.md) fuses a Qwen2.5-VL
+# per-page markdown transcription as a FOURTH extraction source (P0/P1 — the
+# DP aligner in ``data/structure_align`` binds VLM lines onto Tesseract
+# bboxes). THIS module owns the P2 hint side-channel: the merged block dict
+# gains a ``vlm_hint`` — a NON-AUTHORITATIVE per-block recommendation minted
+# from the aligned VLM markdown shape — consumed by ``structure_graph`` /
+# ``deterministic_structure`` exactly like a council recommendation (heading
+# CORROBORATION only; never a kind authority). All gated + byte-identical
+# when the flags are off.
+#
+# Seat is PROVIDER-AGNOSTIC (OpenAI-compatible), mirroring the
+# ``SEMANTIK_SPECIALIST_*`` env-resolution chain in ``endpoint_runtime.py`` —
+# a new provider is env config, never a subclass. Default model
+# ``qwen2.5vl:7b`` on the local ollama endpoint (Apache-2.0; see
+# ``docs/LICENSING.md``).
+# ---------------------------------------------------------------------------
+
+_VLM_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_VLM_EXTRACT_ENV = "SEMANTIK_VLM_EXTRACT"
+_VLM_STRUCT_HINTS_ENV = "SEMANTIK_VLM_STRUCT_HINTS"
+_VLM_PROVIDER_ENV = "SEMANTIK_VLM_PROVIDER"
+_VLM_BASE_URL_ENV = "SEMANTIK_VLM_BASE_URL"
+_VLM_API_KEY_ENV = "SEMANTIK_VLM_API_KEY"
+_VLM_MODEL_ENV = "SEMANTIK_VLM_MODEL"
+_VLM_TIMEOUT_ENV = "SEMANTIK_VLM_TIMEOUT_SECONDS"
+
+# Provider values that explicitly mean "stay local" (mirrors
+# ``runtime._LOCAL_PROVIDER_VALUES``; a local seat needs no credential).
+_VLM_LOCAL_PROVIDER_VALUES = frozenset({"", "local", "gguf", "ollama"})
+# Sane literal defaults — the local ollama Qwen2.5-VL-7B seat (Apache-2.0).
+_DEFAULT_VLM_MODEL = "qwen2.5vl:7b"
+_DEFAULT_VLM_BASE_URL = "http://localhost:11434"
+# Cold-load headroom: 64 s cold + 12 s/page warm (tier-0 probe, ollama 0.31.1).
+_DEFAULT_VLM_TIMEOUT_SECONDS = 180.0
+
+
+def resolve_vlm_extract_mode() -> bool:
+    """Whether the VLM extraction source (P0) is enabled (default OFF).
+
+    Reads ``SEMANTIK_VLM_EXTRACT``. Truthy (``1``/``true``/``yes``/``on``,
+    case-insensitive) → the VLM markdown transcription is fused as a fourth
+    extraction source and the P2 hint channel is live. Unset / blank / falsey
+    / garbage → off (byte-identical: no VLM source, no hints). Read at CALL
+    time (mirrors ``_detect_figures_enabled`` / ``resolve_ocr_render_scale``)
+    so tests / Docker can flip it without a re-import. Parse-with-fallback."""
+    return (os.environ.get(_VLM_EXTRACT_ENV) or "").strip().lower() in _VLM_TRUTHY
+
+
+def resolve_vlm_struct_hints_mode() -> bool:
+    """Whether VLM structural hints are ATTACHED + CONSUMED (default OFF).
+
+    Reads ``SEMANTIK_VLM_STRUCT_HINTS`` and is **subordinate to**
+    ``SEMANTIK_VLM_EXTRACT`` — returns True only when BOTH are truthy (there
+    is no VLM markdown to mint a hint from unless the extract source ran), so
+    the fusion can ship text-only with hints independently revertible (mirrors
+    the SPLIT_FUSED_SECTION_TITLES / PROMOTE_SECTION_HEADINGS dual-gate
+    precedent). Unset / blank / falsey / garbage → off (byte-identical).
+    Parse-with-fallback. Read at CALL time."""
+    hints = (os.environ.get(_VLM_STRUCT_HINTS_ENV) or "").strip().lower() in _VLM_TRUTHY
+    return hints and resolve_vlm_extract_mode()
+
+
+def resolve_vlm_provider() -> str:
+    """Normalized VLM seat provider (default ``"local"``).
+
+    Reads ``SEMANTIK_VLM_PROVIDER``. Blank / ``local`` / GGUF / ``ollama``
+    aliases → ``"local"``; any other non-empty value is the lower-cased,
+    stripped provider name (a new provider is env config, never a subclass —
+    the seat serves any OpenAI-compatible endpoint incl. Spark later).
+    Parse-with-fallback (garbage → treated as a provider name; a non-local
+    provider without a credential fails loud at dispatch, not here)."""
+    v = (os.environ.get(_VLM_PROVIDER_ENV) or "").strip().lower()
+    return "local" if v in _VLM_LOCAL_PROVIDER_VALUES else v
+
+
+def resolve_vlm_base_url() -> str:
+    """VLM seat base URL (default ``http://localhost:11434``).
+
+    Resolution: ``SEMANTIK_VLM_BASE_URL`` (explicit) > the local ollama
+    default. Mirrors ``endpoint_runtime._resolve_base_url`` but with a machine
+    default (the local endpoint) because the seat's default IS local."""
+    return (os.environ.get(_VLM_BASE_URL_ENV) or "").strip() or _DEFAULT_VLM_BASE_URL
+
+
+def resolve_vlm_api_key() -> str | None:
+    """VLM seat bearer token (default ``None`` — the local seat needs none).
+
+    Resolution: ``SEMANTIK_VLM_API_KEY`` (explicit) > ``None``. A non-local
+    hosted provider without a key fails loud at dispatch (see
+    ``resolve_vlm_seat``), never silently."""
+    raw = (os.environ.get(_VLM_API_KEY_ENV) or "").strip()
+    return raw or None
+
+
+def resolve_vlm_model() -> str:
+    """VLM seat model id (default ``qwen2.5vl:7b`` — Apache-2.0).
+
+    Resolution: ``SEMANTIK_VLM_MODEL`` (explicit) > the local Qwen2.5-VL-7B
+    default. Selects an LLM model → carries a ``docs/LICENSING.md`` row."""
+    return (os.environ.get(_VLM_MODEL_ENV) or "").strip() or _DEFAULT_VLM_MODEL
+
+
+def resolve_vlm_timeout() -> float:
+    """Parse-with-fallback ``SEMANTIK_VLM_TIMEOUT_SECONDS`` (default 180.0).
+
+    Per-request HTTP timeout for the P0 VLM image-chat POST. The tier-0 probe
+    measured 64 s cold-load + 12 s/page warm on ollama 0.31.1, so this defaults
+    HIGHER than the specialist seat's 120 s (a cold load on the FIRST scanned
+    page eats load+inference in one request). Read at CALL time. Non-float /
+    non-finite / non-positive / garbage → 180.0 (a run never crashes on a
+    malformed flag; a <=0 timeout would abort every request)."""
+    raw = os.environ.get(_VLM_TIMEOUT_ENV)
+    if not raw:
+        return _DEFAULT_VLM_TIMEOUT_SECONDS
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_VLM_TIMEOUT_SECONDS
+    if val <= 0 or val != val or val in (float("inf"), float("-inf")):
+        return _DEFAULT_VLM_TIMEOUT_SECONDS
+    return val
+
+
+class VLMSeatError(RuntimeError):
+    """Raised when the VLM seat config is unusable (a non-local hosted
+    provider without a credential). Fail-loud — no silent mock fallback,
+    mirroring ``endpoint_runtime.EndpointRuntimeError``."""
+
+
+def _is_loopback_base_url(base_url: str) -> bool:
+    """True iff the URL's HOST is loopback / localhost (no credential required).
+
+    Parses the URL and compares the resolved hostname — NOT a substring scan,
+    which would match ``https://localhost.evil.example`` or a query string
+    containing ``0.0.0.0`` and let a non-local provider skip the fail-loud
+    credential gate. Mirrors ``lib/retrieval/answer_backend._is_loopback_host``.
+    ``0.0.0.0`` is treated as loopback for local-bind parity with the historic
+    check (it is not routable off-box)."""
+    try:
+        parsed = urlparse(base_url)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        # A bare hostname that isn't "localhost" → treat as non-loopback.
+        return False
+    return addr.is_loopback or addr == ipaddress.ip_address("0.0.0.0")
+
+
+class VLMSeat:
+    """Resolved VLM extraction seat (provider-agnostic OpenAI-compatible).
+
+    Pure config object — holds provider / base_url / api_key / model and a
+    fail-loud credential check. The actual per-page HTTP transcription (P0)
+    calls :meth:`require_ready` before dispatch, so a misconfigured hosted
+    seat raises here rather than fabricating content."""
+
+    __slots__ = ("provider", "base_url", "api_key", "model")
+
+    def __init__(self, provider: str, base_url: str, api_key: str | None, model: str) -> None:
+        self.provider = provider
+        self.base_url = base_url
+        self.api_key = api_key
+        self.model = model
+
+    @property
+    def is_local(self) -> bool:
+        return self.provider == "local"
+
+    def require_ready(self) -> "VLMSeat":
+        """Fail loud when a non-local hosted (non-loopback) seat has no key.
+
+        A local seat (``provider == "local"``) or a loopback base_url needs no
+        credential. A non-local provider pointed at a remote host without an
+        api_key raises :class:`VLMSeatError` — the P0 dispatch calls this
+        before any POST (never a live model call in tests)."""
+        if self.is_local:
+            return self
+        if not self.api_key and not _is_loopback_base_url(self.base_url):
+            raise VLMSeatError(
+                f"VLM provider {self.provider!r} at {self.base_url!r} requires a "
+                "credential; set SEMANTIK_VLM_API_KEY (fail-closed, no silent stub)."
+            )
+        return self
+
+
+def resolve_vlm_seat() -> VLMSeat:
+    """Resolve the provider-agnostic VLM seat from the ``SEMANTIK_VLM_*`` env
+    family (parse-with-fallback throughout)."""
+    return VLMSeat(
+        provider=resolve_vlm_provider(),
+        base_url=resolve_vlm_base_url(),
+        api_key=resolve_vlm_api_key(),
+        model=resolve_vlm_model(),
+    )
+
+
+# Ordered list-marker shapes the VLM markdown emits (``-``/``*``/``+`` bullets,
+# ``1.``/``1)`` ordered markers). Deliberately conservative — a hint is minted
+# only for an UNAMBIGUOUS structural shape; plain prose yields None (no hint).
+_VLM_ORDERED_MARKER_RE = re.compile(r"^\s*(\d{1,3})[.)]\s+")
+_VLM_BULLET_MARKER_RE = re.compile(r"^\s*([-*+])\s+")
+_VLM_HEADING_RE = re.compile(r"^\s*(#{1,6})\s+\S")
+_VLM_TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{2,}")
+_VLM_COVERAGE_VALUES = frozenset({"whole_block", "prefix"})
+
+
+def mint_vlm_hint(markdown: str | None, coverage: str = "whole_block") -> dict | None:
+    """Mint a NON-AUTHORITATIVE structural hint from a VLM markdown line.
+
+    Returns ``{"kind", "level", "marker", "coverage"}`` for a recognised
+    structural shape, else ``None`` (plain prose → no hint). ``kind`` is one
+    of ``heading`` / ``list_item`` / ``table``; ``level`` is the ``#``-count
+    for headings (else None); ``marker`` is the list marker string (else
+    None); ``coverage`` records whether the VLM line covered the ``whole_block``
+    or only a head-anchored ``prefix`` of the fused Tesseract block — the
+    load-bearing distinction that keeps a partial (fused-title) alignment from
+    ever re-typing a prose block into an ``<h2>``.
+
+    Parse-with-fallback: ``None`` / blank input → ``None``; a coverage value
+    outside the known set collapses to the CONSERVATIVE ``"prefix"`` (the
+    NON-corroborating reading). Only an EXPLICIT ``"whole_block"`` makes a hint
+    heading-corroboration-eligible, so an unknown / missing coverage can never
+    fail OPEN into re-typing a prose block into an ``<h2>`` — the exact
+    whole_block/prefix conflation the schema must prevent."""
+    if not markdown or not markdown.strip():
+        return None
+    cov = coverage if coverage in _VLM_COVERAGE_VALUES else "prefix"
+    first = markdown.lstrip().splitlines()[0] if markdown.strip() else ""
+
+    m = _VLM_HEADING_RE.match(first)
+    if m:
+        return {"kind": "heading", "level": len(m.group(1)), "marker": None, "coverage": cov}
+
+    # A markdown table: a separator row (``|---|---|``) anywhere, or two+ pipe
+    # cells on the first line. Coverage is irrelevant to table hints (v1 does
+    # not consume them for re-typing) but recorded for audit symmetry.
+    for line in markdown.splitlines():
+        if _VLM_TABLE_SEP_RE.match(line) and "|" in line:
+            return {"kind": "table", "level": None, "marker": None, "coverage": cov}
+    if first.count("|") >= 2:
+        return {"kind": "table", "level": None, "marker": None, "coverage": cov}
+
+    mo = _VLM_ORDERED_MARKER_RE.match(first)
+    if mo:
+        return {"kind": "list_item", "level": None, "marker": mo.group(1), "coverage": cov}
+    mb = _VLM_BULLET_MARKER_RE.match(first)
+    if mb:
+        return {"kind": "list_item", "level": None, "marker": mb.group(1), "coverage": cov}
+
+    return None
+
+
+def _attach_vlm_struct_hints(merged_blocks: list[dict]) -> None:
+    """Stamp ``vlm_hint`` on each merged block from its aligned VLM markdown.
+
+    The P1 fusion stamps ``vlm_md`` (the aligned VLM markdown line(s) for the
+    block) and ``vlm_coverage`` (``whole_block`` / ``prefix``) onto merged
+    block dicts. This mints the hint from that shape IN PLACE. No-op (byte-
+    identical) when a block carries no ``vlm_md`` — which is every block until
+    the P0/P1 VLM source lands, and every block when the flags are off. Gated
+    by the caller under :func:`resolve_vlm_struct_hints_mode`."""
+    for b in merged_blocks:
+        md = b.get("vlm_md")
+        if not md:
+            continue
+        # Default a MISSING vlm_coverage to the conservative NON-corroborating
+        # "prefix" (never fail-open to whole_block) — a future stamper that
+        # omits/typos the key can never make every fused block
+        # heading-corroboration-eligible.
+        hint = mint_vlm_hint(md, b.get("vlm_coverage", "prefix"))
+        if hint is not None:
+            b["vlm_hint"] = hint
 
 
 # ---------- merge / reconcile ----------
@@ -937,6 +1633,13 @@ def _merge_page(page: dict, text_layer_ok: bool) -> dict:
     else:
         # Sort top-to-bottom, left-to-right.
         merged_blocks.sort(key=lambda b: (b["bbox"][1], b["bbox"][0]))
+
+    # P2 — mint NON-AUTHORITATIVE VLM structural hints onto the merged blocks
+    # from the aligned VLM markdown the P1 fusion stamped (``vlm_md`` /
+    # ``vlm_coverage``). Gated + subordinate to SEMANTIK_VLM_EXTRACT; a no-op
+    # (byte-identical) whenever no block carries ``vlm_md`` or the flag is off.
+    if resolve_vlm_struct_hints_mode():
+        _attach_vlm_struct_hints(merged_blocks)
 
     return {
         "text_blocks": merged_blocks,

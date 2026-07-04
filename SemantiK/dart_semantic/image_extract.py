@@ -25,6 +25,7 @@ pixels would need pre-conversion before this stage (not yet wired).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
@@ -32,9 +33,67 @@ from typing import Any
 
 import pypdfium2 as pdfium
 
+logger = logging.getLogger(__name__)
+
 
 class FigureRenderError(RuntimeError):
     """A figure Region's bbox could not be rendered to image bytes."""
+
+
+class _EmptyCropError(ValueError):
+    """A figure Region's bbox produced a degenerate / out-of-page crop.
+
+    A distinct class so the render loop can treat a BAD-GEOMETRY crop (an
+    inverted or out-of-range bbox — e.g. a tesseract IMAGE-PIXEL-space bbox
+    fed to the PDF-point render, or a VLM-fusion-interpolated insert) as a
+    per-region SKIP that is NEVER chapter-fatal, while a genuine rasterizer
+    failure still honours ``fail_soft``. Mirrors the per-page extraction
+    fail-soft idiom (a bad input degrades that unit, it never aborts the doc).
+    """
+
+
+def _degrade_unrenderable_figure(
+    region: Any, feature_blocks: list[Any], *, reason: str
+) -> Any:
+    """Degrade a figure Region whose bbox cannot produce a crop — FOR REAL.
+
+    Downstream consumers must never see the result as a render-expecting
+    figure (Stage 6b's captioner fails closed on a payload-less figure):
+
+    * Source FB carries prose text (the live case: a VLM-fused OCR text block
+      the ``is_image_block`` head demoted) → RE-TYPE to ``kind="paragraph"``
+      so it rides the prose track end-to-end; ``figure_render_degraded``
+      records the reason for audit. FB partition untouched (re-tag only, the
+      deterministic_structure idiom).
+    * No prose form (a synthetic image FB — ``is_image=True``, empty text) →
+      keep ``kind="figure"`` but stamp ``figure_render_skipped``; the
+      captioner skips it with a warning and the assembler ships the honest
+      type-level alt.
+    """
+    fb = None
+    try:
+        fb = feature_blocks[region.feature_block_indices[0]]
+    except Exception:  # noqa: BLE001 — defensive: bad index was the failure
+        pass
+    text = ""
+    if fb is not None and not getattr(fb, "is_image", False):
+        text = (getattr(getattr(fb, "raw", None), "text", "") or "").strip()
+    if text:
+        return replace(
+            region,
+            kind="paragraph",
+            payload={
+                **(region.payload or {}),
+                "figure_render_degraded": reason,
+            },
+        )
+    return replace(
+        region,
+        payload={
+            **(region.payload or {}),
+            "figure_render_skipped": reason,
+        },
+    )
 
 
 def render_figure_regions_to_bytes(
@@ -107,7 +166,7 @@ def render_figure_regions_to_bytes(
                 page_idx_0based = int(fb.raw.page) - 1
                 bbox = tuple(fb.raw.bbox)
                 if len(bbox) != 4 or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
-                    raise ValueError(f"degenerate bbox {bbox!r}")
+                    raise _EmptyCropError(f"degenerate bbox {bbox!r}")
 
                 if page_idx_0based not in page_cache:
                     page = doc[page_idx_0based]
@@ -128,18 +187,52 @@ def render_figure_regions_to_bytes(
                     min(w, pil_box[2]), min(h, pil_box[3]),
                 )
                 if pil_box[2] <= pil_box[0] or pil_box[3] <= pil_box[1]:
-                    raise ValueError(f"crop empty after page-clamp: {pil_box!r}")
+                    raise _EmptyCropError(
+                        f"crop empty after page-clamp: {pil_box!r}"
+                    )
 
                 cropped = page_img.crop(pil_box)
                 buf = BytesIO()
                 cropped.save(buf, format="PNG", optimize=True)
                 png_bytes = buf.getvalue()
                 if not png_bytes:
-                    raise ValueError("empty PNG bytes")
+                    raise _EmptyCropError("empty PNG bytes")
+            except _EmptyCropError as exc:
+                # BAD-GEOMETRY crop → per-region degrade, ALWAYS (independent
+                # of ``fail_soft``). A degenerate / out-of-page bbox (a
+                # tesseract-pixel-space or VLM-fusion-interpolated bbox that
+                # the PDF-point render can't crop) must never be chapter-fatal.
+                # The degrade must be REAL: a region left ``kind="figure"``
+                # without ``image_png_bytes`` is chapter-fatal ONE STAGE LATER
+                # (Stage 6b's captioner fails closed on the missing payload —
+                # the live ch09 second-order defect). A region whose source FB
+                # carries prose text is RE-TYPED to the prose track
+                # (``kind="paragraph"`` via ``dataclasses.replace`` — the
+                # deterministic_structure re-tag idiom; FB partition
+                # untouched); a region with no prose form (synthetic image FB
+                # / empty text) stays a figure but is stamped
+                # ``figure_render_skipped`` so Stage 6b skips it and the
+                # assembler ships the honest type-level alt.
+                logger.warning(
+                    "figure region %d (fb=%r) render skipped, degrading: %s",
+                    i, region.feature_block_indices, exc,
+                )
+                out.append(_degrade_unrenderable_figure(
+                    region, feature_blocks, reason=str(exc),
+                ))
+                continue
             except Exception as exc:  # noqa: BLE001 — surface, don't swallow
                 if fail_soft:
-                    # Part F — degrade this ONE region; keep the rest.
-                    out.append(region)
+                    # Part F — degrade this ONE region; keep the rest. Stamp
+                    # the skip marker so Stage 6b's captioner (when active)
+                    # skips it instead of failing closed on the missing
+                    # ``image_png_bytes`` (the same second-order trap the
+                    # _EmptyCropError arm closes).
+                    out.append(replace(region, payload={
+                        **(region.payload or {}),
+                        "figure_render_skipped":
+                            f"{type(exc).__name__}: {exc}",
+                    }))
                     continue
                 raise FigureRenderError(
                     f"failed to render figure region {i} "

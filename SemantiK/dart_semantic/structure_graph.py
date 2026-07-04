@@ -128,6 +128,46 @@ def resolve_reading_order_fix() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# P2 — VLM structural-hint CONSUMPTION gate (NON-AUTHORITATIVE corroboration).
+#
+# Extract-side mirror of ``extract_shared.resolve_vlm_struct_hints_mode``
+# (structure_graph cannot import extract_shared — extract_shared imports
+# reading_order which imports structure_graph, so the reader is duplicated
+# here, mirroring the ``_detect_figures_enabled`` / ``resolve_detect_figures``
+# extract-vs-cascade split). Subordinate to SEMANTIK_VLM_EXTRACT: a hint is
+# consumed ONLY when BOTH flags are truthy, and even then only as heading-
+# candidate CORROBORATION AFTER every deterministic gate has passed — never a
+# kind authority, never a threshold change, never a new candidate.
+# ---------------------------------------------------------------------------
+
+_VLM_HINT_TRUTHY = frozenset({"1", "true", "yes", "on"})
+# Bounded confidence lift stamped when a whole-block VLM heading hint
+# corroborates a candidate that already cleared every gate. Deterministic +
+# capped at 1.0 so the wire ``region_provenance[].confidence`` stays a sane
+# probability. Only ever RAISES an already-passing candidate's confidence.
+_VLM_CORROBORATION_BOOST = 0.05
+
+
+def _vlm_struct_hints_enabled() -> bool:
+    """True when VLM hints are consumed (SEMANTIK_VLM_STRUCT_HINTS AND
+    SEMANTIK_VLM_EXTRACT both truthy). Parse-with-fallback; default OFF →
+    byte-identical (no hint is ever read, no payload key added)."""
+    hints = (os.environ.get("SEMANTIK_VLM_STRUCT_HINTS") or "").strip().lower() in _VLM_HINT_TRUTHY
+    extract = (os.environ.get("SEMANTIK_VLM_EXTRACT") or "").strip().lower() in _VLM_HINT_TRUTHY
+    return hints and extract
+
+
+def _vlm_corroborated_confidence(conf: float) -> float:
+    """Bounded, deterministic confidence lift for a VLM-corroborated heading
+    candidate. Never exceeds 1.0, never lowers ``conf``."""
+    try:
+        c = float(conf)
+    except (TypeError, ValueError):
+        return conf
+    return min(1.0, c + _VLM_CORROBORATION_BOOST)
+
+
+# ---------------------------------------------------------------------------
 # BERT-authoritative precedence flip (Phase 5).
 #
 # Default OFF. When SEMANTIK_BERT_AUTHORITATIVE is truthy, the council
@@ -663,7 +703,7 @@ def _numbered_section_depth(text: str) -> int | None:
     return None
 
 
-def _level_hint(fb: FeatureBlock) -> int:
+def _level_hint(fb: FeatureBlock, *, vlm_level: int | None = None) -> int:
     """Best-effort heading-level hint from font ratio + numbered-section
     prefix.
 
@@ -705,7 +745,21 @@ def _level_hint(fb: FeatureBlock) -> int:
     text = getattr(getattr(fb, "raw", None), "text", "") or ""
     numbered = _numbered_section_depth(text)
     if numbered is not None:
+        # Deterministic numbered-section depth is an unambiguous signal — it
+        # wins outright; the VLM hint level is NOT consulted here.
         return min(numbered, font_level)
+    # P2 — SECONDARY tiebreak: consult the VLM hint level ONLY when the
+    # deterministic font/number inference is AMBIGUOUS (no numbered prefix AND
+    # a body-sized font that gives no real level signal, i.e. font_level in
+    # {5, 6}). An unambiguous font-derived level (a visibly enlarged heading)
+    # wins over a conflicting hint level. Clamped to a valid h-level.
+    if vlm_level is not None and font_level >= 5:
+        try:
+            lvl = int(vlm_level)
+        except (TypeError, ValueError):
+            return font_level
+        if 1 <= lvl <= 6:
+            return lvl
     return font_level
 
 
@@ -1363,15 +1417,36 @@ def build_structure_graph(
         head_text = (
             _join_dehyphenated(feature_blocks, head_idx, state) if len(head_idx) > 1 else text
         )
+        payload: dict[str, Any] = {
+            "level_hint": _level_hint(fb),
+            "text": head_text,
+            "confidence": conf,
+        }
+        # P2 — VLM heading CORROBORATION (NON-AUTHORITATIVE). This candidate
+        # has already cleared EVERY existing gate above (is_heading threshold,
+        # _plausible_heading, the MergeOrSplit-tie / plain-heading-FP /
+        # forward-merge-demotion guards). A whole-block VLM heading hint only
+        # CORROBORATES that deterministic decision — it never minted this
+        # candidate, lowered a threshold, or bypassed a gate. Effect: stamp an
+        # audit flag, record a bounded confidence lift on the wire-visible
+        # ``confidence`` key, and feed the hint level as a SECONDARY level
+        # tiebreak (only when the deterministic inference is ambiguous). Strict
+        # gate keeps the flag-off path byte-identical (payload unchanged).
+        if _vlm_struct_hints_enabled():
+            hint = getattr(fb, "vlm_hint", None)
+            if (
+                isinstance(hint, dict)
+                and hint.get("kind") == "heading"
+                and hint.get("coverage") == "whole_block"
+            ):
+                payload["vlm_corroborated"] = True
+                payload["confidence"] = _vlm_corroborated_confidence(conf)
+                payload["level_hint"] = _level_hint(fb, vlm_level=hint.get("level"))
         regions_out.append(
             Region(
                 kind="heading",
                 feature_block_indices=tuple(head_idx),
-                payload={
-                    "level_hint": _level_hint(fb),
-                    "text": head_text,
-                    "confidence": conf,
-                },
+                payload=payload,
                 provenance={"pass": "heading", "is_heading_conf": conf},
             )
         )
@@ -1617,6 +1692,17 @@ def build_structure_graph(
             continue
         cand = regions[region_idx]
         for fb_idx in cand.member_block_indices or []:
+            # Root-cause gate — a VLM-fusion ``vlm-only-flagged`` insert is
+            # interpolated TEXT (a gold VLM line with no matching tesseract
+            # line), never a real embedded raster image. Its anomalous feature
+            # signature (null font metadata, an interpolated bbox) can
+            # spuriously trip the council's ``is_image_block`` head; typing it
+            # a figure then feeds the Stage-5c renderer an interpolated bbox
+            # (the observed FigureRenderError). Skip it here so it falls
+            # through to the prose track like any other tesseract line.
+            raw = getattr(feature_blocks[int(fb_idx)], "raw", None)
+            if raw is not None and getattr(raw, "fusion", None) == "vlm-only-flagged":
+                continue
             image_demoted_fbs.add(int(fb_idx))
 
     for i in sorted(image_demoted_fbs):
