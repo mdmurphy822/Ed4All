@@ -106,6 +106,93 @@ class TestTemplateChromeSkip:
         assert "alert" not in text
 
 
+class TestScreenReaderOnlySkip:
+    """SemantiK's gold-shell emits screen-reader-only structural labels —
+    ``<p class="sr-only" hidden>Paragraph block</p>`` — as an accessibility
+    surface. Those labels are NOT document content; left in, thousands of
+    "Paragraph block" / "List block" label tokens leak into chunk ``text`` and
+    pollute the downstream objectives + retrieval pipeline. Keyed on the
+    ``sr-only`` / ``visually-hidden`` class (and ``aria-hidden="true"``), NOT a
+    bare ``hidden`` attribute (progressive-disclosure reveal content stays).
+    """
+
+    def test_sr_only_label_skipped(self):
+        """The exact SemantiK gold-shell label shape
+        (``<p class="sr-only" hidden>...</p>``) must be dropped; real prose
+        survives."""
+        html = (
+            "<section>"
+            '<p id="s0" class="sr-only" hidden>Definition list block</p>'
+            "<p>Whole numbers are the counting numbers plus zero.</p>"
+            '<p id="s1" class="sr-only" hidden>Paragraph block</p>'
+            "<p>A variable stands for a number we do not yet know.</p>"
+            "</section>"
+        )
+        text = _extract(html)
+        assert "Whole numbers are the counting numbers plus zero." in text
+        assert "A variable stands for a number we do not yet know." in text
+        assert "Definition list block" not in text
+        assert "Paragraph block" not in text
+
+    def test_visually_hidden_and_aria_hidden_skipped(self):
+        """``visually-hidden`` class and ``aria-hidden="true"`` are also a11y
+        surfaces that must not reach chunk text."""
+        html = (
+            "<section>"
+            "<p>Real body content.</p>"
+            '<span class="visually-hidden">Metadata drop block</span>'
+            '<span aria-hidden="true">decorative marker</span>'
+            "</section>"
+        )
+        text = _extract(html)
+        assert "Real body content." in text
+        assert "Metadata drop block" not in text
+        assert "decorative marker" not in text
+
+    def test_inline_sr_only_span_skipped_prose_survives(self):
+        """An inline sr-only ``<span>`` inside a real ``<p>`` is dropped while
+        the surrounding prose in the same paragraph is kept."""
+        html = (
+            "<p>Before label "
+            '<span class="sr-only">List block</span>'
+            " after label.</p>"
+        )
+        text = _extract(html)
+        assert "Before label" in text
+        assert "after label." in text
+        assert "List block" not in text
+
+    def test_bare_hidden_reveal_content_still_kept(self):
+        """Control (byte-compat with the curie-skip contract): a BARE
+        ``hidden`` attribute is progressive-disclosure reveal content and
+        stays in text — only the sr-only class / aria-hidden are the opt-in
+        skip signals."""
+        html = (
+            "<section>"
+            "<p>First paragraph.</p>"
+            "<div hidden>genuinely hidden reveal content</div>"
+            "<p>Second paragraph.</p>"
+            "</section>"
+        )
+        text = _extract(html)
+        assert "First paragraph." in text
+        assert "Second paragraph." in text
+        assert "genuinely hidden reveal content" in text
+
+    def test_chunker_plain_text_helper_drops_sr_only_label(self):
+        """Chunk-level surface: the chunker's ``extract_plain_text`` helper
+        (which produces chunk ``text``) must not carry the sr-only label."""
+        html = (
+            "<section><h2>Whole Numbers</h2>"
+            '<p class="sr-only" hidden>Paragraph block</p>'
+            "<p>Whole numbers add zero to the counting numbers.</p>"
+            "</section>"
+        )
+        text = extract_plain_text(html)
+        assert "Whole numbers add zero to the counting numbers." in text
+        assert "Paragraph block" not in text
+
+
 class TestCurieAnchorSkip:
     """The Courseforge rewrite tier's RewriteProvider._force_inject_curies
     appends a hidden ``<span data-cf-curie="...">`` carrying synthetic

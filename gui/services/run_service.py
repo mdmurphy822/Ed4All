@@ -505,6 +505,11 @@ async def _create_workflow(
             courseforge_stage=courseforge_stage,
             force_rerun=bool(options.get("force_rerun", False)),
             skip_training=bool(options.get("skip_training", False)),
+            # Persist the operator's --stop-after intent so a bare resume
+            # honors the halt point (mirrors the CLI create path). Without
+            # this, a GUI-launched run dropped stop_after and a resume ran
+            # past the operator's stop marker.
+            stop_after=options.get("stop_after"),
         )
         created = json.loads(raw)
         params = created.get("params") or {

@@ -87,7 +87,7 @@ def _env_truthy(name: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # Env-var names (single source of truth for the ED4ALL_EMBEDDING_* family).
-# Documented in root CLAUDE.md § "Cross-cutting flags" + gui/env_catalog.py.
+# Documented in docs/operations/behavior-flags.md (indexed in root CLAUDE.md) + gui/env_catalog.py.
 # ---------------------------------------------------------------------------
 ENV_PROVIDER = "ED4ALL_EMBEDDING_PROVIDER"
 ENV_MODEL = "ED4ALL_EMBEDDING_MODEL"

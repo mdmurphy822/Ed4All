@@ -166,7 +166,8 @@ def libv2_path() -> Path:
     """Resolve the LibV2 root directory, honoring ``ED4ALL_LIBV2_ROOT``.
 
     Priority:
-    1. ``ED4ALL_LIBV2_ROOT`` env var (documented in root CLAUDE.md;
+    1. ``ED4ALL_LIBV2_ROOT`` env var (documented in
+       docs/operations/behavior-flags.md, indexed in root CLAUDE.md;
        honored by the MCP / GUI / CLI layers and — as of this change —
        by ``lib/libv2_storage.py`` and ``lib/decision_capture.py`` so a
        test that threads ``libv2_root=tmp`` no longer leaks skeleton

@@ -67,6 +67,69 @@ _FRONT_MATTER_HEADING_TEXTS = frozenset({
     "foreword",
 })
 
+# End-of-chapter (EOC) exercise / review / drill section headings that
+# OpenStax-style textbooks emit AFTER the teaching content of a section or
+# chapter. These are practice/drill material, not primary content —
+# promoting one to a content page produced a spurious "Practice Makes
+# Perfect" course page (week_01_content_12) in a live run. Two match modes
+# keep the predicate high-precision:
+#
+#   * _EOC_EXACT — matched only as a normalized EXACT heading. Used for
+#     short phrases whose words could legitly PREFIX real content
+#     ("Practice Testing as a Study Strategy"), so a prefix rule would
+#     over-reject.
+#   * _EOC_PREFIX — matched as an exact heading OR as a "<phrase><sep>..."
+#     prefix (OpenStax appends the section topic, e.g. "Review Exercises:
+#     Add Whole Numbers"). Reserved for multi-word phrases so distinctive
+#     that a real content title never starts with them. "practice makes
+#     perfect" is NOT a prefix of "Practice Problems in Real Analysis", so
+#     genuine chapter titles survive.
+#
+# DELIBERATELY EXCLUDED — the glossary/summary/metacognition family
+# ("Self Check", "Key Terms", "Key Concepts", "Chapter Summary"). This
+# predicate is SHARED with lib/chunk_heading_sanity.py, whose contract is
+# "NEVER demote a real heading" and whose regression suite treats
+# "Self Check" as a legitimate chunk section heading. Those headings label
+# real glossary/summary CHUNKS in the corpus, so filtering them here would
+# corrupt the chunk display heading (not just the topic→content-page list).
+# The EOC-exercise headings below are drill banners neither path wants and
+# are consistent with chunk_heading_sanity's existing exercise-banner rule.
+_EOC_EXACT = frozenset({
+    "practice test",       # OpenStax per-chapter practice test
+    "everyday math",       # OpenStax applied-exercise category
+})
+_EOC_PREFIX = (
+    "practice makes perfect",   # OpenStax per-section exercise block
+    "chapter review exercises", # (checked before "review exercises")
+    "section exercises",
+    "review exercises",
+    "additional practice",
+    "writing exercises",
+)
+
+
+def _is_eoc_section_heading(normalized: str) -> bool:
+    """Whether ``normalized`` (already lowercased, whitespace-collapsed,
+    trailing-colon-stripped) is an end-of-chapter exercise/review/summary
+    section heading. Exact match for the short glossary/summary phrases;
+    exact-or-space-delimited-prefix for the distinctive exercise phrases."""
+    if normalized in _EOC_EXACT:
+        return True
+    for phrase in _EOC_PREFIX:
+        if normalized == phrase:
+            return True
+        # Prefix form: the phrase must be followed by a NON-alphanumeric
+        # boundary (space / colon / dash), so "Review Exercises: Solve ..."
+        # matches but "Reviewing Exercises" and "Practice Makes Perfection"
+        # (next char is a letter) do not.
+        if (
+            normalized.startswith(phrase)
+            and not normalized[len(phrase):len(phrase) + 1].isalnum()
+        ):
+            return True
+    return False
+
+
 # Circled-letter answer markers (U+24D0..U+24D4 = ⓐⓑⓒⓓⓔ) and the
 # circled-digit block (U+2460..U+2473 = ①..⑳). OpenStax answer-key tables
 # render exercise answers with these glyphs; a heading carrying one is an
@@ -125,7 +188,13 @@ def _is_noncontent_heading(text: Optional[str]) -> bool:
        (ⓐⓑⓒⓓⓔ / circled digits), OR matches the "N. <number>"
        answer-sequence pattern several times.
     2. Front-matter / acknowledgments — exact-ish matches for "Preface",
-       "Acknowledgments", "About the Authors", "Dedication", etc.
+       "Acknowledgments", "About the Authors", "Dedication", etc. Plus
+       end-of-chapter exercise/review/drill section headings (OpenStax
+       EOC family: "Practice Makes Perfect", "Review Exercises", "Practice
+       Test", "Everyday Math", ...) matched exact/prefix. The glossary/
+       summary family ("Key Terms", "Chapter Summary", "Self Check") is
+       deliberately NOT filtered — this predicate is shared with the
+       chunk-heading-sanity path, which treats those as real headings.
     3. Donor / foundation list lines — a phrase naming several capitalized
        proper-name tokens that mentions "Foundation"/"Fund". The
        single-word math chapter title "Foundations" is preserved.
@@ -163,6 +232,13 @@ def _is_noncontent_heading(text: Optional[str]) -> bool:
     # colon, collapse whitespace). Case-insensitive.
     normalized = re.sub(r"\s+", " ", stripped).rstrip(":").strip().lower()
     if normalized in _FRONT_MATTER_HEADING_TEXTS:
+        return True
+
+    # (2b) End-of-chapter exercise / review / summary section headings
+    # (OpenStax EOC family: "Practice Makes Perfect", "Review Exercises",
+    # "Key Terms", "Chapter Summary", ...). Drill/recap material, never a
+    # primary content page. High-precision exact/prefix match only.
+    if _is_eoc_section_heading(normalized):
         return True
 
     # (3) Donor / foundation list line. Requires the funding keyword AND

@@ -5,18 +5,21 @@ description: Audit Ed4All behavior-flag documentation against the actual code re
 
 # behavior-flag-doc-sync
 
-Detect drift between the **Opt-In Behavior Flags** tables in the
-per-subsystem `CLAUDE.md` files (W-D11d C5: split out of root) and the
-actual `os.environ` references in code.
+Detect drift between the documented behavior-flag tables — the
+**Opt-In Behavior Flags** tables in the per-subsystem `CLAUDE.md` files
+plus the root-owned cross-cutting table in
+`docs/operations/behavior-flags.md` (split out of root `CLAUDE.md` for
+context-size reasons; root keeps a one-line index) — and the actual
+`os.environ` references in code.
 
 ## Documented flag prefixes (per subsystem)
 
-| Prefix | Owner CLAUDE.md |
-|--------|-----------------|
-| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` | `Trainforge/CLAUDE.md` |
-| `DART_*` | `DART/CLAUDE.md` |
-| `COURSEFORGE_*` | `Courseforge/CLAUDE.md` |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root `CLAUDE.md` |
+| Prefix | Owner doc |
+|--------|-----------|
+| `TRAINFORGE_*` / `LOCAL_SYNTHESIS_*` / `TOGETHER_*` / `ANTHROPIC_SYNTHESIS_*` / `CURRICULUM_ALIGNMENT_*` / `WAVE18_*` / `NVIDIA_*` | `Trainforge/CLAUDE.md` |
+| `SEMANTIK_*` (also the legacy `DART_THETA_DEVICE` compat env — DART itself is retired) | `SemantiK/CLAUDE.md` |
+| `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | `Courseforge/CLAUDE.md` |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | `docs/operations/behavior-flags.md` (canonical per-flag detail; root `CLAUDE.md` keeps a one-line index) |
 
 (Per-flag rationale also lives in `schemas/ONTOLOGY.md` § 12.)
 
@@ -26,28 +29,37 @@ actual `os.environ` references in code.
    `\K` trick works for clean extraction:
 
    ```bash
-   rg -nP --no-heading 'os\.environ(?:\.get)?\(["\x27](TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|DART_|COURSEFORGE_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+' \
-     lib/ MCP/ cli/ Trainforge/ LibV2/ Courseforge/ DART/
+   rg -nP --no-heading 'os\.environ(?:\.get)?\(["\x27](TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|DART_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+' \
+     lib/ MCP/ cli/ Trainforge/ LibV2/ Courseforge/ SemantiK/
    ```
 
    Also check `os.getenv(...)`:
 
    ```bash
-   rg -nP --no-heading 'os\.getenv\(["\x27](TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|DART_|COURSEFORGE_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+' \
-     lib/ MCP/ cli/ Trainforge/ LibV2/ Courseforge/ DART/
+   rg -nP --no-heading 'os\.getenv\(["\x27](TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|DART_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+' \
+     lib/ MCP/ cli/ Trainforge/ LibV2/ Courseforge/ SemantiK/
    ```
 
    Extract the unique set of flag names. Sort them.
 
-2. **Extract the documented flag set from each subsystem CLAUDE.md.**
-   The tables live under `## Opt-In Behavior Flags`. Flags are in the
-   first column, wrapped in backticks. Pull them across all four files:
+2. **Extract the documented flag set.** In the subsystem `CLAUDE.md`
+   files the tables live under `## Opt-In Behavior Flags`; flags are in
+   the first column, wrapped in backticks. The root-owned cross-cutting
+   flags' canonical per-flag detail lives in
+   `docs/operations/behavior-flags.md` (the whole file is one table);
+   root `CLAUDE.md` also carries a one-line index of the same names.
+   Pull them across all sources:
 
    ```bash
-   for f in CLAUDE.md DART/CLAUDE.md Courseforge/CLAUDE.md Trainforge/CLAUDE.md; do
-     awk '/^## Opt-In Behavior Flags/,/^## [^O]/' "$f" \
-       | grep -oP '`\K(TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|DART_|COURSEFORGE_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+'
-   done | sort -u
+   {
+     # subsystem tables (awk-scoped to the Opt-In section) + root index
+     for f in CLAUDE.md SemantiK/CLAUDE.md Courseforge/CLAUDE.md Trainforge/CLAUDE.md; do
+       awk '/^## Opt-In Behavior Flags/,/^## [^O]/' "$f" \
+         | grep -oP '`\K(TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|DART_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+'
+     done
+     # root-owned cross-cutting canonical doc (whole-file table)
+     grep -oP '`\K(DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+' docs/operations/behavior-flags.md
+   } | sort -u
    ```
 
 3. **Diff the two sets.** Report:
@@ -66,7 +78,7 @@ actual `os.environ` references in code.
 
    ```bash
    awk '/^### Opt-in flags/,/^### [^O]/' schemas/ONTOLOGY.md \
-     | grep -oP '`\K(TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|DART_|COURSEFORGE_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+'
+     | grep -oP '`\K(TRAINFORGE_|LOCAL_SYNTHESIS_|TOGETHER_|ANTHROPIC_SYNTHESIS_|CURRICULUM_ALIGNMENT_|WAVE18_|NVIDIA_|SEMANTIK_|DART_|COURSEFORGE_|COURSEPLANNER_|TEXTBOOK_SYNTHESIS_|DECISION_|ED4ALL_|LOCAL_DISPATCHER_|MCP_ORCHESTRATOR_|LLM_)\w+'
    ```
 
 5. **Report**

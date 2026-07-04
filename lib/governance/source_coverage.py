@@ -28,8 +28,15 @@ Canonical shape::
 
 Invariants:
 
-* ``coverage_pct == emitted_count / consumed_count`` (or ``0.0``
-  when ``consumed_count == 0``).
+* ``coverage_pct == (consumed_count - dropped_count) / consumed_count``
+  (or ``0.0`` when ``consumed_count == 0``) — the SHARE of consumed
+  source artifacts that were COVERED (not dropped), bounded ``[0, 1]``.
+  For a 1:1 filtering stage (``dropped == consumed - emitted``) this is
+  identical to ``emitted / consumed``; at a FAN-OUT stage (one source
+  artifact → many downstream emits, e.g. H1 DART one page-level block →
+  many chunks, or H4 one assessment → many items) ``emitted / consumed``
+  would overshoot ``> 1`` and violate the schema ``maximum: 1``, so the
+  covered-share form is the load-bearing bounded definition.
 * ``dropped_count == sum(drop_reasons.values())`` — when the math
   doesn't balance, ``INTERNAL_DROP_REASON_MISSING`` fires (warning)
   and the histogram is augmented with the missing-count bucket so the
@@ -146,7 +153,19 @@ def build_source_coverage(
         )
         dropped = histogram_total
 
-    coverage_pct = (emitted / consumed) if consumed > 0 else 0.0
+    # coverage_pct = SHARE of consumed source artifacts that were
+    # COVERED (produced ≥1 downstream emit), i.e. NOT dropped — bounded
+    # [0, 1]. The naive emitted/consumed overshoots > 1 at a FAN-OUT
+    # stage where one source artifact yields many downstream emits (H1
+    # DART: one page-level block → many chunks; H4: one assessment →
+    # many items) and then violates the schema ``maximum: 1``. Using
+    # ``covered = consumed - dropped`` is the honest, schema-bounded
+    # signal; for a 1:1 filtering stage (dropped == consumed - emitted)
+    # it is IDENTICAL to emitted/consumed, so no filtering-stage emit
+    # changes. ``dropped`` here is the reconciled value (after the
+    # invariant adjustment above), so covered ∈ [0, consumed].
+    covered = max(0, consumed - dropped)
+    coverage_pct = (covered / consumed) if consumed > 0 else 0.0
 
     # Canonical key order — emit-stable across all 5 sub-tasks so a
     # downstream byte-diff doesn't trip on insertion-order variance.

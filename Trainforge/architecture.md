@@ -352,7 +352,7 @@ Trainforge-specific validators (all under `lib/validators/`):
 
 ## Behavior Flags
 
-Most-relevant Trainforge flags. The full table lives in root `CLAUDE.md` -- see "Opt-In Behavior Flags" there for every flag plus rationale.
+Most-relevant Trainforge flags. The full `TRAINFORGE_*` table lives in `Trainforge/CLAUDE.md` § "Opt-In Behavior Flags" (every flag plus rationale); root `CLAUDE.md` § "Opt-In Behavior Flags" carries the prefix-owner map, and the root-owned cross-cutting flags live in `docs/operations/behavior-flags.md`.
 
 | Flag | One-liner |
 |------|-----------|
@@ -449,7 +449,7 @@ libv2 models eval <course-slug> <model_id>
 ## Cross-References
 
 - Project guide: `Trainforge/CLAUDE.md`
-- Root protocols + Active Gates + full behavior-flag table: `/CLAUDE.md`
+- Root protocols + Active Gates + behavior-flag index: `/CLAUDE.md` (root-owned cross-cutting per-flag detail: `docs/operations/behavior-flags.md`)
 - Ontology + schema map: `schemas/ONTOLOGY.md`
 - Licensing posture (per provider, per model): `docs/LICENSING.md`
 - LibV2 import / model-pointers contract: `LibV2/CLAUDE.md`
