@@ -1743,6 +1743,8 @@ class CourseProcessor:
         curie_anchors: Optional[List[str]] = None,
         forced_curie_anchors: Optional[List[str]] = None,
         dart_source_refs: Optional[List[Dict[str, Any]]] = None,
+        composite_unit: Optional[str] = None,
+        unit_roles: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         words = text.split()
         word_count = len(words)
@@ -2291,6 +2293,14 @@ class CourseProcessor:
         self.stats["chunk_types"][chunk_type] += 1
         self.stats["difficulty_distribution"][difficulty] += 1
         self._all_concept_tags.update(concept_tags)
+
+        # Wave #22 quick-wins: additive pedagogical-role metadata (harvested
+        # from data-dart-unit / data-dart-flow / data-dart-opener). Omit-when-
+        # absent so non-SemantiK IMSCC corpora stay byte-identical.
+        if composite_unit:
+            chunk["composite_unit"] = composite_unit
+        if unit_roles:
+            chunk["unit_roles"] = list(unit_roles)
 
         return chunk
 

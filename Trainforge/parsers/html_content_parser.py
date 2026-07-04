@@ -99,6 +99,33 @@ class ContentSection:
     # than re-deriving from the page-level objective list. Defensive
     # default ``[]`` so legacy emit paths never see ``None``.
     objective_alignment: List[Dict[str, Any]] = field(default_factory=list)
+    # A7 (end-user-HTML audit, 2026-07-04): the ``data-dart-opener`` role
+    # (``objectives`` / ``try_it`` / ``worked_example`` / …) the SemantiK
+    # adapter stamps on a promoted pedagogical-opener ``<h4>`` heading. When
+    # present it marks a pedagogical sub-unit boundary; the chunker
+    # (``chunker._section_is_boundary``) treats it as a soft sub-boundary under
+    # ``ED4ALL_CHUNK_SECTION_HARD_BREAK`` so a chunk never fuses an example, its
+    # solution, and the next example. ``None`` for non-DART / legacy sections.
+    data_dart_opener: Optional[str] = None
+    # Wave #22 Tier-2 (composite units): the ``data-dart-unit`` type
+    # (``worked_example`` / ``section_opener`` / ``exercise_set`` / …) the
+    # SemantiK adapter stamps on the ``<section class="dart-unit">`` wrapper that
+    # coagulates a run of sibling blocks into one pedagogical whole. Harvested
+    # onto the unit's LEAD section (the wrapper's first child). Marks a preferred
+    # chunk boundary — under ``ED4ALL_CHUNK_SECTION_HARD_BREAK`` the chunker
+    # (``chunker._section_is_boundary``) breaks at a unit EDGE so a chunk never
+    # straddles two composite units. ``None`` for non-unit / legacy sections.
+    data_dart_unit: Optional[str] = None
+    # Wave #22 quick-wins (chunk pedagogical-role metadata): the distinct
+    # ``data-dart-flow`` role values (``statement`` / ``solution-steps`` /
+    # ``procedure-steps``) the SemantiK adapter stamps on the BLOCKS inside this
+    # section's body (``lib/semantik/adapter.py`` flow-annotation pass /
+    # ``_block_attrs``). Harvested from the section body HTML (a section may hold
+    # several flow-annotated blocks); sorted + deduped for deterministic
+    # downstream diffs. Unioned with ``data_dart_opener`` at chunk-emit time into
+    # the additive ``unit_roles`` chunk field. Empty list for non-DART /
+    # legacy sections whose body carries no ``data-dart-flow`` attribute.
+    data_dart_flows: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -207,6 +234,23 @@ class HTMLTextExtractor(HTMLParser):
         # Count of currently-open ``data-cf-curie`` ancestors. When nonzero,
         # text data is discarded — mirrors ``_template_chrome_depth``.
         self._curie_anchor_depth = 0
+        # Count of currently-open screen-reader-only / a11y-hidden ancestors.
+        # When nonzero, text data is discarded — mirrors the two counters
+        # above. SemantiK's gold-shell emits screen-reader-only structural
+        # labels (``<p class="sr-only" hidden>Paragraph block</p>``) as an
+        # accessibility surface; those labels are NOT document content, so
+        # left in they leak thousands of "Paragraph block" / "List block"
+        # tokens into chunk ``text`` and pollute objectives + retrieval.
+        self._a11y_hidden_depth = 0
+        # Exemplar-parity wave (A-item pairing): SemantiK now emits real
+        # <ul>/<ol>/<table>/<dl> structural bodies (lib/semantik/structure_emit).
+        # A flat ``' '.join`` would collapse those back to a run-on string, so
+        # the extractor emits lightweight delimiter tokens on the structural
+        # boundaries — a newline per <li> / table row / <dd>, a " | " between
+        # table cells, and a ": " after each <dt> — so the chunk text keeps the
+        # list/table/definition structure signal. Count of cells seen in the
+        # current table row (drives the between-cell pipe).
+        self._row_cell_count = 0
         # Harvested ``data-cf-curie`` tokens. The subtree text is discarded
         # (376b64f contract) but the CURIE values are kept so the downstream
         # ``curie_anchoring`` gate can still see the force-injected anchors.
@@ -231,12 +275,53 @@ class HTMLTextExtractor(HTMLParser):
                 return True
         return False
 
+    def _is_a11y_hidden(self, attrs) -> bool:
+        """Screen-reader-only / a11y-hidden label element?
+
+        Keyed on a screen-reader-only ``class`` token (``sr-only`` /
+        ``visually-hidden`` / …) or ``aria-hidden="true"`` — NOT on a bare
+        ``hidden`` attribute. A bare ``hidden`` marks legitimate
+        progressive-disclosure reveal content that stays content-bearing (the
+        ``data-cf-curie`` force-injection span is skipped by its own signal,
+        not by ``hidden``); see ``test_no_curie_attr_identical_to_before``.
+        The SemantiK gold-shell labels carry ``class="sr-only"`` so they are
+        caught by the class signal regardless of the accompanying ``hidden``.
+        """
+        for name, value in attrs:
+            if name == "class" and value:
+                if any(c in _A11Y_HIDDEN_CLASSES for c in value.lower().split()):
+                    return True
+            elif name == "aria-hidden" and (value or "").strip().lower() == "true":
+                return True
+        return False
+
+    def _in_skipped_region(self) -> bool:
+        """Whether text/delimiters are currently discarded (mirrors handle_data)."""
+        return (
+            self.in_script
+            or self.in_style
+            or self._template_chrome_depth > 0
+            or self._curie_anchor_depth > 0
+            or self._a11y_hidden_depth > 0
+        )
+
     def handle_starttag(self, tag, attrs):
         self.current_tag = tag
         if tag == 'script':
             self.in_script = True
         elif tag == 'style':
             self.in_style = True
+        # A-item pairing — structural delimiters so list/table/dl markup does not
+        # collapse to a run-on string. A between-cell " | " on the 2nd+ cell of a
+        # row; a row-separating newline on <tr>.
+        if tag in ('td', 'th'):
+            if self._row_cell_count > 0 and not self._in_skipped_region():
+                self.text_parts.append('|')
+            self._row_cell_count += 1
+        elif tag == 'tr':
+            self._row_cell_count = 0
+            if not self._in_skipped_region():
+                self.text_parts.append('\n')
         if self._is_template_chrome(attrs):
             self._template_chrome_depth += 1
         if self._is_curie_anchor(attrs):
@@ -257,8 +342,17 @@ class HTMLTextExtractor(HTMLParser):
             if forced_value.strip().lower() == "true":
                 self.forced_curie_anchors.update(tokens)
             self._curie_anchor_depth += 1
+        if self._is_a11y_hidden(attrs):
+            self._a11y_hidden_depth += 1
 
     def handle_endtag(self, tag):
+        # A-item pairing — item / definition delimiters (checked BEFORE the
+        # chrome/curie/a11y depth decrements below so the skip state is current):
+        # a newline per <li> and <dd>, a ": " after each <dt> ("term: definition").
+        if tag in ('li', 'dd') and not self._in_skipped_region():
+            self.text_parts.append('\n')
+        elif tag == 'dt' and not self._in_skipped_region():
+            self.text_parts.append(':')
         if tag == 'script':
             self.in_script = False
         elif tag == 'style':
@@ -279,6 +373,12 @@ class HTMLTextExtractor(HTMLParser):
         # decrements on that tag name while inside a curie-anchor region.
         if self._curie_anchor_depth > 0 and tag in _CURIE_ANCHOR_TAGS:
             self._curie_anchor_depth -= 1
+        # Close screen-reader-only scope. Same html.parser limitation (no
+        # attrs on endtag): SemantiK emits these labels on a leaf ``<p>`` /
+        # ``<span>`` carrying only the label text, so the counter decrements
+        # on those tag names while inside an a11y-hidden region.
+        if self._a11y_hidden_depth > 0 and tag in _A11Y_HIDDEN_TAGS:
+            self._a11y_hidden_depth -= 1
         self.current_tag = None
 
     def handle_startendtag(self, tag, attrs):
@@ -299,6 +399,8 @@ class HTMLTextExtractor(HTMLParser):
         if self._template_chrome_depth > 0:
             return
         if self._curie_anchor_depth > 0:
+            return
+        if self._a11y_hidden_depth > 0:
             return
         text = data.strip()
         if text:
@@ -337,6 +439,22 @@ _CHROME_TAGS = {"header", "footer", "a", "div", "nav", "aside"}
 # attribute on a ``<span>``, so the end-tag counter only needs to match
 # that tag name.
 _CURIE_ANCHOR_TAGS = {"span"}
+
+# Class tokens that mark a screen-reader-only / visually-hidden a11y label
+# (matched case-insensitively against the space-split ``class`` attribute).
+_A11Y_HIDDEN_CLASSES = {
+    "sr-only",
+    "visually-hidden",
+    "visuallyhidden",
+    "screen-reader-only",
+    "screen-reader-text",
+}
+
+# Tags SemantiK's gold-shell emits screen-reader-only labels on. The labels
+# are leaf ``<p>`` (block structural labels) / ``<span>`` (inline labels)
+# carrying only the label text, so — mirroring ``_CURIE_ANCHOR_TAGS`` — the
+# end-tag counter only needs to match those tag names.
+_A11Y_HIDDEN_TAGS = {"p", "span"}
 
 
 class HTMLContentParser:
@@ -994,6 +1112,75 @@ class HTMLContentParser:
             if kt_match:
                 key_terms = [t.strip() for t in kt_match.group(1).split(",") if t.strip()]
 
+            # A7: harvest the ``data-dart-opener`` role the SemantiK adapter
+            # stamps on a promoted pedagogical-opener heading. The adapter puts
+            # it on the enclosing ``<section>`` wrapper (which PRECEDES the
+            # <h4>), so resolve it the same way ``template_type`` is (Wave 81):
+            # walk back to the nearest enclosing ``<section>`` root and read the
+            # attribute there; belt-and-braces, also accept it on the heading
+            # tag itself. Marks a soft sub-boundary for the hard-break chunker.
+            data_dart_opener: Optional[str] = None
+            for sec_open in reversed(section_opens):
+                if sec_open.start() < heading_start:
+                    op_match = re.search(
+                        r'data-dart-opener="([^"]*)"', sec_open.group(1)
+                    )
+                    if op_match and op_match.group(1).strip():
+                        data_dart_opener = op_match.group(1).strip()
+                    break
+            if not data_dart_opener:
+                op_attr = re.search(r'data-dart-opener="([^"]*)"', attrs_str)
+                if op_attr and op_attr.group(1).strip():
+                    data_dart_opener = op_attr.group(1).strip()
+
+            # Wave #22 Tier-2: harvest the ``data-dart-unit`` type off the
+            # ``<section class="dart-unit">`` wrapper that encloses this heading's
+            # block. The wrapper is the SECTION open immediately PRECEDING the
+            # block's own enclosing ``<section>`` (a callout-group ``<div>`` in
+            # between is not a section), so a heading is at a unit EDGE exactly
+            # when its nearest-enclosing section is the unit wrapper's first
+            # child. Marks a preferred chunk boundary.
+            data_dart_unit: Optional[str] = None
+            nearest_idx: Optional[int] = None
+            for j in range(len(section_opens) - 1, -1, -1):
+                if section_opens[j].start() < heading_start:
+                    nearest_idx = j
+                    break
+            if nearest_idx is not None:
+                nearest_attrs = section_opens[nearest_idx].group(1)
+                self_unit = re.search(
+                    r'data-dart-unit="([^"]*)"', nearest_attrs
+                )
+                if self_unit and self_unit.group(1).strip():
+                    # The heading's own enclosing section IS a unit wrapper
+                    # (rare: a headingless-lead unit whose wrapper is nearest).
+                    data_dart_unit = self_unit.group(1).strip()
+                elif nearest_idx >= 1:
+                    prev_attrs = section_opens[nearest_idx - 1].group(1)
+                    prev_unit = re.search(
+                        r'data-dart-unit="([^"]*)"', prev_attrs
+                    )
+                    if prev_unit and prev_unit.group(1).strip():
+                        data_dart_unit = prev_unit.group(1).strip()
+
+            # Wave #22 quick-wins: harvest the distinct ``data-dart-flow`` role
+            # values off the BLOCKS in this section's body (the SemantiK adapter
+            # stamps ``statement`` / ``solution-steps`` / ``procedure-steps`` on
+            # worked-example / solution / how-to body blocks). A section body may
+            # carry several flow-annotated blocks, so collect every distinct
+            # value; sorted for deterministic downstream diffs. Unioned with the
+            # section's ``data_dart_opener`` role into the chunk ``unit_roles``
+            # metadata at chunk-emit time.
+            data_dart_flows = sorted(
+                {
+                    f.strip()
+                    for f in re.findall(
+                        r'data-dart-flow="([^"]*)"', section_html
+                    )
+                    if f.strip()
+                }
+            )
+
             # REC-VOC-02 (Wave 2, Worker K): scan section body for
             # data-cf-teaching-role attributes on flip-card/self-check/
             # activity components. Courseforge emits these deterministically
@@ -1085,6 +1272,9 @@ class HTMLContentParser:
                 objective_refs=distinct_obj_refs,
                 source_references=distinct_source_ids,
                 template_type=template_type,
+                data_dart_opener=data_dart_opener,
+                data_dart_unit=data_dart_unit,
+                data_dart_flows=data_dart_flows,
             ))
 
         return sections

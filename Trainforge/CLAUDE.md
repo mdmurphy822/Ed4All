@@ -427,6 +427,10 @@ The canonical chunker lives at `Trainforge/chunker/` and exposes `chunk_content`
 
 `course_manifest.json` carries a top-level `chunker_version` field, sourced from `Trainforge.chunker.CHUNKER_SCHEMA_VERSION` (currently `"v4"`), so LibV2 audits can pin which chunker shipped each corpus. See root `CLAUDE.md` § "Project Structure" for the canonical location.
 
+### Extraction-text change class (no opt-out by design)
+
+`Trainforge/parsers/html_content_parser.py::HTMLTextExtractor` — the source of the `text` field on every chunk — applies two **deliberate, always-on correctness improvements** that are NOT gated behind a behavior flag: (1) **structural delimiters** so real `<ul>`/`<ol>`/`<table>`/`<dl>` markup (which SemantiK's gold-shell now emits) keeps its structure signal in chunk text — a newline per `<li>` / table row / `<dd>`, a ` | ` between table cells, a `: ` after each `<dt>` — instead of collapsing to a run-on string; and (2) **screen-reader-scaffolding suppression** — subtrees rooted at a screen-reader-only `class` token (`sr-only` / `visually-hidden` / …) or `aria-hidden="true"` are discarded, so SemantiK's accessibility labels (`<p class="sr-only">Paragraph block</p>`, "List block", …) never leak thousands of scaffolding tokens into chunk `text`, objectives, or retrieval. These are correctness properties of the extractor — chunk text should carry structure signal and must never carry screen-reader scaffolding — so they apply to **all** corpora with **no opt-out**. Consequence: a legacy corpus re-chunked under the current extractor will produce different (improved) chunk `text` than an archive built before these changes; this is expected and intended, not a byte-stability regression. Anchor-anchored subtree skips (`data-cf-role="template-chrome"`, `data-cf-curie` force-injection spans) remain precise — corpora carrying none of those attributes are unaffected by them, and a bare `hidden` attribute (progressive-disclosure reveal content) is deliberately NOT suppressed.
+
 ---
 
 ## Concept-graph consumption

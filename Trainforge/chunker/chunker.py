@@ -85,7 +85,9 @@ reaches ``Trainforge.process_course``.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from Trainforge.chunker.boilerplate import strip_boilerplate
@@ -130,6 +132,12 @@ __all__ = [
     "resolve_merge_fragment_floor",
     "MERGE_FRAGMENT_FLOOR_ENV",
     "fold_fragment_results",
+    "fold_fragment_texts",
+    "resolve_chunk_section_hard_break",
+    "CHUNK_SECTION_HARD_BREAK_ENV",
+    "is_section_boundary_heading",
+    "aggregate_composite_unit",
+    "section_unit_signals",
 ]
 
 
@@ -406,11 +414,16 @@ def fold_fragment_results(
     out: List[MergedSectionResult] = []
     for result in merged:
         wc = len(str(result.combined_text or "").split())
-        if wc >= fragment_floor or not out:
-            if wc >= fragment_floor:
+        # A section-boundary result (Fix 1) is NEVER folded backward: folding
+        # it into the prior result would re-fuse across the exact section
+        # boundary the hard break enforced. It stands alone even when sub-floor
+        # (the documented irreducible case) — including a leading one, which is
+        # kept rather than dropped so a section opener is not lost.
+        if wc >= fragment_floor or not out or result.section_boundary:
+            if wc >= fragment_floor or result.section_boundary:
                 out.append(result)
             elif not out:
-                # Leading fragment, nowhere to fold — drop it.
+                # Leading non-boundary fragment, nowhere to fold — drop it.
                 continue
             else:  # pragma: no cover - unreachable (guarded above)
                 out.append(result)
@@ -429,7 +442,289 @@ def fold_fragment_results(
         _merge_objective_alignment_dedup(
             prev.merged_objective_alignment, result.merged_objective_alignment
         )
+        # Wave #22 quick-wins: union the folded fragment's pedagogical roles into
+        # the prior result (sorted, deduped); keep the prior result's unit unless
+        # it had none (the surviving result is the dominant one — no fabrication).
+        if result.merged_unit_roles:
+            prev.merged_unit_roles = sorted(
+                set(prev.merged_unit_roles)
+                | set(result.merged_unit_roles)
+            )
+        if not prev.merged_composite_unit and result.merged_composite_unit:
+            prev.merged_composite_unit = result.merged_composite_unit
     return out
+
+
+# ---------------------------------------------------------------------------
+# W1b.3b — sub-``fragment_floor``-word runt fold for the SENTENCE/CODE-split
+# path (opt-in, shares the ``ED4ALL_CHUNK_MERGE_FRAGMENT_FLOOR`` floor).
+#
+# ``fold_fragment_results`` only runs at the ``merge_small_sections`` seam —
+# i.e. BEFORE ``chunk_text_block`` sentence-splits an over-``max_chunk_size``
+# merged result. A sentence split (or the code-listing line split) accumulates
+# then flushes, so a tiny TRAILING sentence ("Chapter 1 Foundations 7.096.",
+# an orphaned question stem) becomes its own sub-``fragment_floor`` piece that
+# the section-level fold never sees. This helper folds those runt pieces back
+# into an adjacent piece at the TEXT level, before ``ctx.create_chunk`` mints a
+# chunk — so the emitted chunk list carries no split-produced runt.
+# ---------------------------------------------------------------------------
+
+
+def fold_fragment_texts(pieces: List[str], fragment_floor: int) -> List[str]:
+    """Fold sub-``fragment_floor``-word split pieces into an adjacent piece.
+
+    Operates on the ``sub_texts`` list produced by :func:`split_by_sentences`
+    (or :func:`split_code_by_lines`). Any piece whose word count is below
+    ``fragment_floor`` is concatenated onto the PREVIOUS surviving piece; a
+    leading runt with no prior piece is prepended onto the NEXT piece instead
+    (so no content is lost — unlike the section-level fold, which can drop a
+    leading section-fragment because that fragment's provenance is already
+    carried by the merged result). ``fragment_floor <= 0`` or fewer than two
+    pieces → no-op (returns the input unchanged → byte-identical legacy emit).
+
+    The result may still contain a single sub-floor piece when the WHOLE input
+    is below the floor (nothing to fold into) — that is the documented
+    irreducible case (a genuinely tiny section/item is one chunk).
+    """
+    if fragment_floor <= 0 or len(pieces) < 2:
+        return pieces
+    out: List[str] = []
+    pending_prefix = ""
+    for piece in pieces:
+        text = piece if not pending_prefix else f"{pending_prefix}\n\n{piece}"
+        pending_prefix = ""
+        wc = len(text.split())
+        if wc >= fragment_floor:
+            out.append(text)
+        elif out:
+            # Sub-floor piece with a prior surviving piece → fold backward.
+            out[-1] = f"{out[-1]}\n\n{text}"
+        else:
+            # Leading sub-floor piece, nothing before it → carry it forward
+            # onto the next piece so content is never dropped.
+            pending_prefix = text
+    if pending_prefix:
+        if out:
+            out[-1] = f"{out[-1]}\n\n{pending_prefix}"
+        else:
+            out.append(pending_prefix)
+    return out or list(pieces)
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — hard chunk break at SECTION-heading boundaries (opt-in, default off)
+#
+# ``merge_small_sections`` soft-packs an incoming section into the accumulating
+# buffer whenever ``buffer_wc + section.word_count <= max_chunk_size``. On a
+# textbook that leaves a section's closing apparatus (a "Self Check", an
+# exercise tail) FUSED with the next section's opener ("Use the Language of
+# Algebra / Learning Objectives", a "BE PREPARED" readiness quiz) whenever the
+# buffer is still under target. When ``ED4ALL_CHUNK_SECTION_HARD_BREAK`` is on,
+# crossing a SECTION-heading boundary forces a flush before the new section is
+# accumulated, so a chunk never straddles two textbook sections. Default off →
+# byte-identical legacy merge (the RDF/SHACL calibration corpus, whose
+# Courseforge pages carry "Learning Objectives" headings, stays byte-stable).
+# ---------------------------------------------------------------------------
+
+#: Env var gating the section-boundary hard break. Default OFF → byte-identical.
+CHUNK_SECTION_HARD_BREAK_ENV: str = "ED4ALL_CHUNK_SECTION_HARD_BREAK"
+
+#: A numbered top-level section opener (``"1.2 Use the Language of Algebra"``,
+#: ``"4.5"``). Requires TWO dotted numbers so a single-number exercise label
+#: (``"1."``, ``"27."``) never trips it.
+_SECTION_BREAK_NUM_RE = re.compile(r"^\s*\d+\.\d+")
+
+#: Fallback textbook section-opener phrases (matched case-insensitively anywhere
+#: in the heading) used when the canonical lexicon loader is unavailable.
+#: ``learning objective`` covers OpenStax "Learning Objectives" openers;
+#: ``be prepared`` covers the readiness-quiz opener. The live values are
+#: normally derived from ``lib.ontology.taxonomy.get_lexicon_openers`` — see
+#: :func:`_section_opener_substrings` — with this tuple as the no-taxonomy
+#: fallback so the chunker never loses opener detection if the lexicon can't
+#: load.
+_SECTION_OPENER_SUBSTRINGS_FALLBACK = ("learning objective", "be prepared")
+
+#: Opener identities (``role`` / ``association_role``) that mark a new-SECTION
+#: boundary: the objectives header and the readiness ("Be Prepared") quiz. Other
+#: openers (worked_example, try_it, solution, how_to) are interior apparatus, NOT
+#: section boundaries, so they are deliberately excluded here.
+_SECTION_OPENER_ROLES = frozenset({"objectives", "readiness_check"})
+_SECTION_OPENER_ASSOCIATION_ROLES = frozenset({"objectives", "readiness"})
+
+#: Regex metacharacters that make a lexicon ``pattern`` infeasible to reduce to a
+#: plain case-insensitive substring (after whitespace-class normalization).
+_REGEX_META_CHARS = frozenset(r"\^$.|?*+()[]{}")
+
+
+def _pattern_to_substring(pattern: str) -> Optional[str]:
+    """Reduce a lexicon opener ``pattern`` to a plain lowercase substring.
+
+    Normalizes the common whitespace regex classes (``\\s+`` / ``\\s*`` /
+    ``\\s``) to a single space, lowercases, and collapses runs of whitespace.
+    Returns ``None`` when the residue still carries regex metacharacters (so the
+    caller falls back rather than matching a broken literal).
+    """
+    if not pattern:
+        return None
+    sub = re.sub(r"\\s[+*]?", " ", pattern)
+    sub = re.sub(r"\s+", " ", sub).strip().lower()
+    if not sub or any(ch in _REGEX_META_CHARS for ch in sub):
+        return None
+    return sub
+
+
+@lru_cache(maxsize=1)
+def _section_opener_substrings() -> Tuple[str, ...]:
+    """Resolve the section-opener substrings from the canonical lexicon.
+
+    Derives the objectives + readiness opener label substrings from
+    ``lib.ontology.taxonomy.get_lexicon_openers`` (regex patterns reduced to
+    plain lowercase substrings). Falls back to
+    :data:`_SECTION_OPENER_SUBSTRINGS_FALLBACK` when the taxonomy can't be
+    imported/loaded or yields no feasible substrings, so opener detection is
+    never silently lost. Cached — the lexicon is static per process.
+    """
+    try:
+        from lib.ontology.taxonomy import get_lexicon_openers
+
+        derived: List[str] = []
+        for opener in get_lexicon_openers():
+            role = str(opener.get("role", "")).strip()
+            assoc = str(opener.get("association_role", "")).strip()
+            if (
+                role not in _SECTION_OPENER_ROLES
+                and assoc not in _SECTION_OPENER_ASSOCIATION_ROLES
+            ):
+                continue
+            sub = _pattern_to_substring(str(opener.get("pattern", "")))
+            if sub and sub not in derived:
+                derived.append(sub)
+        if derived:
+            return tuple(derived)
+    except Exception:  # pragma: no cover - defensive: never lose detection
+        pass
+    return _SECTION_OPENER_SUBSTRINGS_FALLBACK
+
+
+def resolve_chunk_section_hard_break(env: Optional[Dict[str, str]] = None) -> bool:
+    """Resolve ``ED4ALL_CHUNK_SECTION_HARD_BREAK`` (parse-with-fallback, OFF)."""
+    import os
+
+    src = env if env is not None else os.environ
+    return src.get(CHUNK_SECTION_HARD_BREAK_ENV, "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def is_section_boundary_heading(heading: str) -> bool:
+    """True when ``heading`` reads as a new-SECTION opener (textual signals).
+
+    Fires on a numbered ``N.N`` section title or on a "Learning Objectives" /
+    "BE PREPARED" opener phrase — the unambiguous new-section signals that
+    should never be mid-chunk continuations. Level-based detection (an ``h1``/
+    ``h2`` heading) is handled separately in :func:`_section_is_boundary` where
+    the section object's ``level`` is available; this helper is the text-only
+    arm (also used for openers that render at ``h3``).
+    """
+    if not heading:
+        return False
+    h = heading.strip().lower()
+    if any(sig in h for sig in _section_opener_substrings()):
+        return True
+    return bool(_SECTION_BREAK_NUM_RE.match(heading))
+
+
+def _section_is_boundary(section: Any) -> bool:
+    """Whether ``section`` starts a new textbook SECTION (a hard-break point).
+
+    Two arms: (1) a genuine top-level heading — ``level`` in ``{1, 2}`` (h1
+    chapter / h2 section) — is always a boundary; (2) a heading matching a
+    numbered ``N.N`` title or a "Learning Objectives" / "BE PREPARED" opener
+    phrase (:func:`is_section_boundary_heading`) at any level. ``h3+``
+    subsections that are NOT openers are deliberately NOT boundaries so normal
+    sub-section merging is preserved (breaking every subsection would
+    over-fragment retrieval chunks). Duck-typed: ``level`` is read via
+    ``getattr`` so a section-like without the attribute still resolves on the
+    textual arm.
+    """
+    lvl = getattr(section, "level", None)
+    try:
+        if lvl is not None and 1 <= int(lvl) <= 2:
+            return True
+    except (TypeError, ValueError):
+        pass
+    # A7 (end-user-HTML audit): a section carrying a ``data-dart-opener`` role
+    # (a promoted pedagogical opener — objectives / try_it / worked_example / …
+    # from the SemantiK adapter) is a soft sub-boundary, so a chunk never fuses
+    # a worked example, its solution, and the next example. Attribute-driven —
+    # supersedes literal-string matching for DART openers. Only consulted under
+    # ED4ALL_CHUNK_SECTION_HARD_BREAK (this fn's sole call site is gated on it).
+    if getattr(section, "data_dart_opener", None):
+        return True
+    # Wave #22 Tier-2 (composite units): a section at a composite-unit EDGE
+    # (its ``data-dart-unit`` type harvested from the ``<section class="dart-unit">``
+    # wrapper) is a preferred boundary, so a chunk never straddles two units.
+    # Attribute-driven; only consulted under ED4ALL_CHUNK_SECTION_HARD_BREAK
+    # (this fn's sole call site is gated on it).
+    if getattr(section, "data_dart_unit", None):
+        return True
+    return is_section_boundary_heading(getattr(section, "heading", "") or "")
+
+
+# ---------------------------------------------------------------------------
+# Wave #22 quick-wins — chunk pedagogical-role metadata (additive, no gate)
+#
+# The SemantiK-converted HTML carries ``data-dart-unit`` (composite-unit type)
+# on unit ``<section>``s, ``data-dart-flow`` (statement / solution-steps /
+# procedure-steps) on body blocks, and ``data-dart-opener`` roles on promoted
+# opener headings. The parser harvests these onto ``ContentSection``
+# (``data_dart_unit`` / ``data_dart_flows`` / ``data_dart_opener``). These pure
+# helpers aggregate the section-level signals into the chunk-level
+# ``composite_unit`` (type string or null) + ``unit_roles`` (list) that
+# the create_chunk callbacks stamp additively. Legacy / non-DART sections carry
+# none of the attributes → unit None, roles [] → the chunk fields stay absent
+# (byte-identical). Values are the lexicon role vocabulary (openers) + the flow
+# vocabulary; profile-extensible, so no fixed enum is imposed.
+# ---------------------------------------------------------------------------
+
+
+def section_unit_signals(section: Any) -> Tuple[Optional[str], List[str]]:
+    """Extract ``(composite_unit, roles)`` from one section-like object.
+
+    ``composite_unit`` is the section's ``data_dart_unit`` (or ``None``).
+    ``roles`` is the union of the section's ``data_dart_opener`` role (when
+    present) and its ``data_dart_flows`` list. Duck-typed via ``getattr`` so a
+    legacy ContentSection-like without the attributes yields ``(None, [])``.
+    """
+
+    unit = getattr(section, "data_dart_unit", None) or None
+    roles: List[str] = []
+    opener = getattr(section, "data_dart_opener", None)
+    if opener:
+        roles.append(str(opener).strip())
+    for flow in getattr(section, "data_dart_flows", None) or []:
+        if flow and str(flow).strip():
+            roles.append(str(flow).strip())
+    return unit, [r for r in roles if r]
+
+
+def aggregate_composite_unit(units: List[Optional[str]]) -> Optional[str]:
+    """Resolve a chunk's ``composite_unit`` from its constituent units.
+
+    A single distinct non-null value → that value. Multiple distinct values →
+    the plurality winner, or ``None`` on a tie (honest: no fabricated unit when
+    the merged sections genuinely disagree). All-null / empty → ``None``.
+    """
+
+    present = [u for u in units if u]
+    if not present:
+        return None
+    ranked = Counter(present).most_common()
+    top_val, top_n = ranked[0]
+    if len(ranked) > 1 and ranked[1][1] == top_n:
+        # Tie for the top count → no clear majority unit.
+        return None
+    return top_val
 
 
 # ---------------------------------------------------------------------------
@@ -769,6 +1064,24 @@ class MergedSectionResult:
     merged_headings: List[str] = field(default_factory=list)
     merged_key_claims: List[Dict[str, Any]] = field(default_factory=list)
     merged_objective_alignment: List[Dict[str, Any]] = field(default_factory=list)
+    #: Fix 1 — True when this result's buffer opened on a SECTION-boundary
+    #: section (a new textbook section). Consulted by
+    #: :func:`fold_fragment_results` so a sub-floor boundary result is never
+    #: folded BACKWARD into the prior section (which would re-fuse across the
+    #: exact boundary the hard break just enforced). Default False → legacy
+    #: fold behaviour is unchanged when the hard-break flag is off.
+    section_boundary: bool = False
+    #: Wave #22 quick-wins — the chunk-level pedagogical-unit type aggregated
+    #: from every constituent section's ``data_dart_unit`` (plurality winner /
+    #: ``None`` on tie via :func:`aggregate_composite_unit`). ``None`` when no
+    #: constituent section carried a unit (legacy / non-DART). Attribute-access
+    #: only (not in the legacy 5-tuple ``__iter__``).
+    merged_composite_unit: Optional[str] = None
+    #: Wave #22 quick-wins — distinct pedagogical flow/opener role slugs present
+    #: across the constituent sections (union of ``data_dart_opener`` +
+    #: ``data_dart_flows``), sorted for deterministic diffs. Empty on legacy /
+    #: non-DART sections. Attribute-access only.
+    merged_unit_roles: List[str] = field(default_factory=list)
 
     def __iter__(self):
         # Permit legacy 5-tuple destructure ergonomics:
@@ -805,6 +1118,7 @@ def merge_small_sections(
     max_chunk_size: int = MAX_CHUNK_SIZE,
     type_from_heading_fn: Optional[Callable[[str], str]] = None,
     fragment_floor: int = 0,
+    section_hard_break: bool = False,
 ) -> List[MergedSectionResult]:
     """Merge adjacent sections under MIN_CHUNK_SIZE into combined blocks.
 
@@ -857,7 +1171,10 @@ def merge_small_sections(
     buffer_headings: List[str] = []
     buffer_key_claims: List[Dict[str, Any]] = []
     buffer_objective_alignment: List[Dict[str, Any]] = []
+    buffer_units: List[Optional[str]] = []
+    buffer_roles: List[str] = []
     buffer_started = False
+    buffer_boundary = False
 
     def _resolve_buffer_type() -> str:
         # Wave 81: prefer template_type when present and canonical.
@@ -874,10 +1191,22 @@ def merge_small_sections(
             merged_headings=list(buffer_headings),
             merged_key_claims=list(buffer_key_claims),
             merged_objective_alignment=list(buffer_objective_alignment),
+            section_boundary=buffer_boundary,
+            merged_composite_unit=aggregate_composite_unit(buffer_units),
+            merged_unit_roles=sorted(set(buffer_roles)),
         )
 
     for section in sections:
         section_type = fn(section.heading)
+        # Fix 1: when the hard-break flag is on, crossing into a new textbook
+        # SECTION forces a flush before this section is accumulated, so a chunk
+        # never straddles a section's closing apparatus and the next section's
+        # opener. No-op when the flag is off → byte-identical legacy merge.
+        force_break = (
+            section_hard_break
+            and buffer_started
+            and _section_is_boundary(section)
+        )
         section_src = list(getattr(section, "source_references", []) or [])
         section_template = getattr(section, "template_type", None)
         # W5.F: harvest the W5.A per-section audit fields. ``getattr``
@@ -890,6 +1219,8 @@ def merge_small_sections(
         section_objective_alignment = list(
             getattr(section, "objective_alignment", []) or []
         )
+        # Wave #22 quick-wins: the section's pedagogical unit + flow/opener roles.
+        section_unit, section_roles = section_unit_signals(section)
 
         if not buffer_started:
             buffer_heading = section.heading
@@ -904,8 +1235,11 @@ def merge_small_sections(
             _merge_objective_alignment_dedup(
                 buffer_objective_alignment, section_objective_alignment
             )
+            buffer_boundary = section_hard_break and _section_is_boundary(section)
+            buffer_units = [section_unit]
+            buffer_roles = list(section_roles)
             buffer_started = True
-        elif buffer_wc + section.word_count <= max_chunk_size:
+        elif not force_break and buffer_wc + section.word_count <= max_chunk_size:
             buffer_text += "\n\n" + section.content
             buffer_wc += section.word_count
             if buffer_type == "explanation" and section_type != "explanation":
@@ -924,6 +1258,8 @@ def merge_small_sections(
             _merge_objective_alignment_dedup(
                 buffer_objective_alignment, section_objective_alignment
             )
+            buffer_units.append(section_unit)
+            buffer_roles.extend(section_roles)
         else:
             merged.append(_flush())
             buffer_heading = section.heading
@@ -938,6 +1274,9 @@ def merge_small_sections(
             _merge_objective_alignment_dedup(
                 buffer_objective_alignment, section_objective_alignment
             )
+            buffer_units = [section_unit]
+            buffer_roles = list(section_roles)
+            buffer_boundary = section_hard_break and _section_is_boundary(section)
 
     if buffer_text.strip():
         merged.append(_flush())
@@ -977,6 +1316,9 @@ def chunk_text_block(
     dart_source_refs: Optional[List[Dict[str, Any]]] = None,
     max_chunk_size: int = MAX_CHUNK_SIZE,
     target_chunk_size: int = TARGET_CHUNK_SIZE,
+    fragment_floor: int = 0,
+    composite_unit: Optional[str] = None,
+    unit_roles: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Split a text block into one or more chunks.
 
@@ -1088,6 +1430,14 @@ def chunk_text_block(
         extra_kwargs["curie_anchors"] = curie_anchors
     if forced_curie_anchors:
         extra_kwargs["forced_curie_anchors"] = forced_curie_anchors
+    # Wave #22 quick-wins: additive pedagogical metadata. When a chunk is
+    # sentence-split into sub-chunks, every sub-chunk inherits the same
+    # section-level unit/roles (per-section, not per-sentence — mirrors the
+    # merged key_claims / objective_alignment carry).
+    if composite_unit:
+        extra_kwargs["composite_unit"] = composite_unit
+    if unit_roles:
+        extra_kwargs["unit_roles"] = list(unit_roles)
 
     # DART source-provenance: resolve the block refs that genuinely overlap
     # THIS chunk's char span, in document order. Historically the chunker
@@ -1183,6 +1533,13 @@ def chunk_text_block(
             sub_texts = split_code_by_lines(text, target_chunk_size)
         else:
             sub_texts = split_by_sentences(text, target_chunk_size)
+        # W1b.3b (Fix 3): the section-level fragment fold ran BEFORE this split.
+        # A sentence/code split can flush a tiny trailing piece (an orphaned
+        # question stem, a running-header residue line) that the section-level
+        # fold never saw. Fold those sub-``fragment_floor``-word pieces into an
+        # adjacent piece at the TEXT level so no split-produced runt is emitted.
+        # No-op when ``fragment_floor <= 0`` → byte-identical legacy emit.
+        sub_texts = fold_fragment_texts(sub_texts, fragment_floor)
         prev_end = 0
         last_chunk_id = follows_chunk_id
         for i, sub_text in enumerate(sub_texts):
@@ -1364,6 +1721,9 @@ def chunk_content(
     # W1b.3: resolve the sub-N-word fragment floor once per invocation and
     # thread it into every merge_small_sections call. 0 (default) → no-op.
     _fragment_floor = resolve_merge_fragment_floor()
+    # Fix 1: resolve the section-boundary hard-break gate once. Off (default) →
+    # byte-identical legacy merge.
+    _section_hard_break = resolve_chunk_section_hard_break()
 
     chunks: List[Dict[str, Any]] = []
     chunk_counter = 1
@@ -1426,6 +1786,7 @@ def chunk_content(
                     ctx=ctx,
                     max_chunk_size=max_chunk_size,
                     target_chunk_size=target_chunk_size,
+                    fragment_floor=_fragment_floor,
                 )
                 chunks.extend(item_chunks)
                 chunk_counter += len(item_chunks)
@@ -1439,6 +1800,7 @@ def chunk_content(
             max_chunk_size=max_chunk_size,
             type_from_heading_fn=ctx.type_from_heading_fn if ctx else None,
             fragment_floor=_fragment_floor,
+            section_hard_break=_section_hard_break,
         )
 
         for merged_result in merged:
@@ -1452,6 +1814,8 @@ def chunk_content(
             )
             merged_key_claims = merged_result.merged_key_claims
             merged_objective_alignment = merged_result.merged_objective_alignment
+            merged_composite_unit = merged_result.merged_composite_unit
+            merged_unit_roles = merged_result.merged_unit_roles
             if not text.strip():
                 continue
             if item["resource_type"] == "quiz":
@@ -1535,6 +1899,9 @@ def chunk_content(
                 ctx=ctx,
                 max_chunk_size=max_chunk_size,
                 target_chunk_size=target_chunk_size,
+                fragment_floor=_fragment_floor,
+                composite_unit=merged_composite_unit,
+                unit_roles=merged_unit_roles,
             )
             chunks.extend(item_chunks)
             chunk_counter += len(item_chunks)

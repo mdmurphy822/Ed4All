@@ -138,6 +138,18 @@
       "enum": ["certified", "flagged", "non_certified"],
       "description": "SemantiK migration §4: the SemantiK Stage-13 exit certification mode (ship_with_confidence -> certified, ship_with_flag -> flagged, non_certified_stamp -> non_certified). Doc-level signal — same value across every chunk of a document, recovered from the doc-level sidecar / PipelineV2Result. Optional; absent on legacy corpora. Used for corpus-admission gating + WCAG audit."
     },
+    "composite_unit": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "null" }
+      ],
+      "description": "Wave #22 quick-wins: the composite pedagogical-unit type of this chunk's constituent section(s), harvested from the SemantiK data-dart-unit attribute (e.g. 'worked_example' / 'section_opener' / 'exercise_set'). A chunk whose sections all belong to one unit carries that type; a chunk straddling multiple units carries the plurality winner, or null on a tie (no fabricated unit — Trainforge/chunker/chunker.py::aggregate_composite_unit). Values are drawn from the SemantiK lexicon unit vocabulary (schemas/taxonomies/semantik_lexicon.json), which is profile-extensible, so no fixed enum is imposed. Optional; null/absent on legacy / non-SemantiK corpora whose HTML carries no data-dart-unit attribute (byte-identical, mirrors source_block_role)."
+    },
+    "unit_roles": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Wave #22 quick-wins: distinct pedagogical flow/opener role slugs present across this chunk's constituent section(s) — the union of SemantiK data-dart-flow values (statement / solution-steps / procedure-steps) and data-dart-opener role slugs (objectives / worked_example / try_it / how_to / solution / …). Sorted for deterministic diffs. Drawn from the SemantiK lexicon role vocabulary + the flow vocabulary; profile-extensible, so no fixed enum. Optional; absent on legacy / non-SemantiK corpora (byte-identical)."
+    },
     "bloom_level_source": {
       "type": "string",
       "enum": ["section_jsonld", "page_jsonld", "lo_inherited", "verbs", "default"],
