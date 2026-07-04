@@ -448,7 +448,13 @@ def test_structured_no_ref_unresolved_chunk_still_flagged(tmp_path: Path) -> Non
 
 
 def test_structured_chunk_id_unresolved(tmp_path: Path) -> None:
-    """Case 5: structured shape, one chunk_id unresolved → WARNING."""
+    """Case 5: structured shape, one chunk_id unresolved.
+
+    Still emits the per-LO WARNING ``OBJECTIVE_CHUNK_NOT_IN_DART_MANIFEST``,
+    but now ALSO trips the GAP-1 aggregate CRITICAL ``ORPHANED_CITATIONS``
+    net (unresolvable rate > 0 with a live chunkset) → passed=False,
+    action=block.
+    """
     ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
     chunks_manifest = _write_dart_chunks(
         tmp_path,
@@ -485,9 +491,11 @@ def test_structured_chunk_id_unresolved(tmp_path: Path) -> None:
         "dart_chunks_manifest_path": str(chunks_manifest),
     })
 
-    assert result.passed is True
-    assert result.action == "regenerate"
+    # GAP-1 net trips on any orphan when a live chunkset is present.
+    assert result.passed is False
+    assert result.action == "block"
     codes = [i.code for i in result.issues]
+    # Per-LO warning detail still present.
     assert "OBJECTIVE_CHUNK_NOT_IN_DART_MANIFEST" in codes
     miss = next(
         i for i in result.issues
@@ -495,6 +503,106 @@ def test_structured_chunk_id_unresolved(tmp_path: Path) -> None:
     )
     assert miss.severity == "warning"
     assert "dart:rdf11_primer#sNOPE" in miss.message
+    # Aggregate CRITICAL orphan net.
+    orphan = next(i for i in result.issues if i.code == "ORPHANED_CITATIONS")
+    assert orphan.severity == "critical"
+    assert "1 of 2" in orphan.message  # 1 orphaned of 2 cited
+    assert "dart:rdf11_primer#sNOPE" in orphan.message
+
+
+def test_orphaned_citations_all_renumbered_fires_critical(tmp_path: Path) -> None:
+    """GAP 1: chunkset renumbered after synthesis → 100% orphaned citations
+    trips CRITICAL ORPHANED_CITATIONS with counts + sample ids.
+
+    This is the exact split-brain scenario the net exists for: the
+    objectives cite chunk_ids ``...#s4``/``...#s5`` but the CURRENT
+    chunkset was regenerated and now only contains ``...#s40``/``...#s41``,
+    so every cited id is orphaned.
+    """
+    ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
+    # Renumbered chunkset — none of the originally-cited ids survive.
+    chunks_manifest = _write_dart_chunks(
+        tmp_path,
+        [
+            {
+                "id": "course_chunk_00099",
+                "source": {
+                    "source_references": [
+                        {"sourceId": "dart:rdf11_primer#s40"},
+                        {"sourceId": "dart:rdf11_primer#s41"},
+                    ],
+                },
+            },
+        ],
+    )
+    objectives = _write_objectives(
+        tmp_path,
+        terminal=[],
+        chapter=[
+            {
+                "id": "CO-01",
+                "statement": "Apply RDF triples.",
+                "source_refs": [
+                    {"ref": "ch1", "chunk_ids": ["dart:rdf11_primer#s4"]},
+                ],
+            },
+            {
+                "id": "CO-02",
+                "statement": "Model graphs.",
+                "source_refs": [
+                    {"ref": "ch1", "chunk_ids": ["dart:rdf11_primer#s5"]},
+                ],
+            },
+        ],
+    )
+
+    result = ObjectiveSourceRefValidator().validate({
+        "synthesized_objectives_path": str(objectives),
+        "textbook_structure_path": str(ts),
+        "dart_chunks_manifest_path": str(chunks_manifest),
+    })
+
+    assert result.passed is False
+    assert result.action == "block"
+    orphan = next(i for i in result.issues if i.code == "ORPHANED_CITATIONS")
+    assert orphan.severity == "critical"
+    # 2 of 2 cited chunk_ids orphaned → 100%.
+    assert "2 of 2" in orphan.message
+    assert "100.0%" in orphan.message
+    # Both affected objectives counted.
+    assert "2 objective(s)" in orphan.message
+    # Sample ids present.
+    assert "dart:rdf11_primer#s4" in orphan.message
+    assert "dart:rdf11_primer#s5" in orphan.message
+
+
+def test_orphaned_citations_missing_chunkset_graceful_skip(tmp_path: Path) -> None:
+    """GAP 1: no chunkset input → orphan net skips (graceful, existing
+    behavior). With only a textbook_structure universe, chunk_ids can't
+    be resolved so the net stays silent — passed=True.
+    """
+    ts = _write_textbook_structure(tmp_path, chapter_ids=["ch1"])
+    objectives = _write_objectives(
+        tmp_path,
+        terminal=[],
+        chapter=[{
+            "id": "CO-01",
+            "statement": "Apply RDF triples.",
+            "source_refs": [
+                {"ref": "ch1", "chunk_ids": ["dart:rdf11_primer#s4"]},
+            ],
+        }],
+    )
+
+    result = ObjectiveSourceRefValidator().validate({
+        "synthesized_objectives_path": str(objectives),
+        "textbook_structure_path": str(ts),
+        # No dart_chunks_manifest_path — chunk_ids universe unavailable.
+    })
+
+    codes = [i.code for i in result.issues]
+    assert "ORPHANED_CITATIONS" not in codes
+    assert result.passed is True
 
 
 def test_empty_source_refs_on_co(tmp_path: Path) -> None:

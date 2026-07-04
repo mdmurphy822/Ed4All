@@ -151,6 +151,53 @@ def test_lo_entailed_passes(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------- #
+# Test 1b: LO statement scored as ONE hypothesis (no sentence split) —
+# 2026-07-01 CO-13 false-CONTRADICTED regression. The splitter beheaded
+# "…both U.S. and metric systems…" at the abbreviation period, and NLI
+# scored the fragment "and metric systems…" CONTRADICTED against a
+# perfectly-supporting chunk. The validator now passes split_claims=False.
+# --------------------------------------------------------------------- #
+
+
+def test_lo_statement_scored_as_single_hypothesis_us_abbrev(
+    tmp_path: Path,
+) -> None:
+    manifest = _write_dart_chunks(tmp_path, [_chunk("c1", "dart:rdf#s1")])
+    # [ENTAIL] sits BEFORE the abbreviation: if the statement were split at
+    # "U.S.", the beheaded second fragment ("and metric systems…") would lack
+    # the marker → unsupported → rate 0.5 → OBJECTIVE_UNENTAILED. Scored
+    # whole (single hypothesis) it is entailed and passes.
+    statement = (
+        "[ENTAIL] Apply the process of unit conversions in both U.S. and "
+        "metric systems to solve real-world problems."
+    )
+    objectives = _write_objectives(
+        tmp_path, terminal=[],
+        chapter=[{
+            "id": "CO-13",
+            "statement": statement,
+            "source_refs": [{"ref": "ch1", "chunk_ids": ["dart:rdf#s1"]}],
+        }],
+    )
+    nli = _FakeNli()
+    result = ObjectiveEntailmentValidator(nli=nli).validate({
+        "synthesized_objectives_path": str(objectives),
+        "dart_chunks_manifest_path": str(manifest),
+    })
+    assert result.passed is True
+    assert not any(
+        i.code in (_CODE_OBJECTIVE_UNENTAILED, _CODE_OBJECTIVE_CONTRADICTED)
+        for i in result.issues
+    )
+    # Load-bearing: every hypothesis the NLI saw is the FULL statement —
+    # no abbreviation-beheaded fragment was ever scored.
+    hypotheses = {
+        hyp for batch in nli.batch_calls for (_premise, hyp) in batch
+    }
+    assert hypotheses == {statement}
+
+
+# --------------------------------------------------------------------- #
 # Test 2: LO unentailed (fabricated, valid-resolving chunk_ids) → FAIL
 # --------------------------------------------------------------------- #
 
@@ -360,3 +407,168 @@ def test_decision_capture_dynamic_signals(tmp_path: Path) -> None:
     assert "CO-01" in rationale
     assert "groundedness_rate=" in rationale
     assert "fake-nli-rev-1" in rationale
+
+
+# --------------------------------------------------------------------- #
+# ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD — opt-in math-representation
+# folding of premise + hypothesis before NLI (default OFF)
+# --------------------------------------------------------------------- #
+
+
+class _LatexBlindNli:
+    """Fake NLI that can only entail FOLDED math text.
+
+    Entailment is high iff the premise carries no raw LaTeX control
+    sequences (no backslash) AND shares the statement's content keyword —
+    modelling a scorer defeated by notation but fine on folded content.
+    """
+
+    _revision = "fake-nli-latexblind-1"
+    device = "cpu"
+
+    def __init__(self) -> None:
+        self.batch_calls: List[List[Tuple[str, str]]] = []
+
+    def score_batch(self, *, pairs: List[Tuple[str, str]]) -> List[NliScore]:
+        self.batch_calls.append(list(pairs))
+        out: List[NliScore] = []
+        for premise, _hypothesis in pairs:
+            if "\\" not in premise and "sqrt" in premise:
+                out.append(NliScore(entailment=0.95, neutral=0.03, contradiction=0.02))
+            else:
+                out.append(NliScore(entailment=0.10, neutral=0.85, contradiction=0.05))
+        return out
+
+
+_LATEX_CHUNK_BODY = (
+    "Simplify $\\sqrt{48}$ by factoring: $\\sqrt{48} = \\sqrt{16 \\cdot 3}$ "
+    "square roots of radicals simplify."
+)
+
+
+def _latex_chunk(chunk_id: str, source_id: str) -> Dict[str, Any]:
+    return {
+        "id": chunk_id,
+        "text": _LATEX_CHUNK_BODY,
+        "source": {"source_references": [{"sourceId": source_id}]},
+    }
+
+
+_MATH_LO = {
+    "id": "CO-90",
+    "statement": "Simplify square roots of radicals by factoring.",
+    "source_refs": [{"ref": "ch9", "chunk_ids": ["dart:alg#m1"]}],
+}
+
+
+def test_math_fold_on_rescues_latex_premise(tmp_path: Path, monkeypatch) -> None:
+    """Flag ON: a LaTeX-soup premise is folded before NLI → LO entails."""
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD", "1")
+    manifest = _write_dart_chunks(tmp_path, [_latex_chunk("m1", "dart:alg#m1")])
+    objectives = _write_objectives(tmp_path, terminal=[], chapter=[dict(_MATH_LO)])
+    nli = _LatexBlindNli()
+    result = ObjectiveEntailmentValidator(nli=nli).validate({
+        "synthesized_objectives_path": str(objectives),
+        "dart_chunks_manifest_path": str(manifest),
+    })
+    assert result.passed is True
+    assert not any(
+        i.code in (_CODE_OBJECTIVE_UNENTAILED, _CODE_OBJECTIVE_CONTRADICTED)
+        for i in result.issues
+    )
+    # Every premise the NLI saw was FOLDED (no raw LaTeX control sequences).
+    premises = [p for batch in nli.batch_calls for (p, _h) in batch]
+    assert premises and all("\\" not in p for p in premises)
+
+
+def test_math_fold_off_is_byte_identical_passthrough(tmp_path: Path, monkeypatch) -> None:
+    """Flag OFF (default): premises + hypothesis reach NLI byte-identical
+    (raw LaTeX intact) and the LaTeX-blind scorer fails the LO."""
+    monkeypatch.delenv("ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD", raising=False)
+    manifest = _write_dart_chunks(tmp_path, [_latex_chunk("m1", "dart:alg#m1")])
+    objectives = _write_objectives(tmp_path, terminal=[], chapter=[dict(_MATH_LO)])
+    nli = _LatexBlindNli()
+    result = ObjectiveEntailmentValidator(nli=nli).validate({
+        "synthesized_objectives_path": str(objectives),
+        "dart_chunks_manifest_path": str(manifest),
+    })
+    assert result.passed is False
+    assert any(i.code == _CODE_OBJECTIVE_UNENTAILED for i in result.issues)
+    # Byte-identical pass-through: the whole-chunk premise is EXACTLY the raw
+    # chunk body and the hypothesis is EXACTLY the raw statement.
+    stage1_premises = {p for (p, _h) in nli.batch_calls[0]}
+    assert _LATEX_CHUNK_BODY in stage1_premises
+    hypotheses = {h for batch in nli.batch_calls for (_p, h) in batch}
+    assert hypotheses == {_MATH_LO["statement"]}
+
+
+def test_math_fold_plain_english_unchanged(tmp_path: Path, monkeypatch) -> None:
+    """Flag ON is a strict no-op on plain-English premises (fold_math
+    invariance) — the standard entailed LO still passes with the premise
+    text unchanged."""
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD", "1")
+    manifest = _write_dart_chunks(tmp_path, [_chunk("c1", "dart:rdf#s1")])
+    objectives = _write_objectives(
+        tmp_path, terminal=[],
+        chapter=[{
+            "id": "CO-01",
+            "statement": "Apply RDF triples to model semantic web data [ENTAIL].",
+            "source_refs": [{"ref": "ch1", "chunk_ids": ["dart:rdf#s1"]}],
+        }],
+    )
+    nli = _FakeNli()
+    result = ObjectiveEntailmentValidator(nli=nli).validate({
+        "synthesized_objectives_path": str(objectives),
+        "dart_chunks_manifest_path": str(manifest),
+    })
+    assert result.passed is True
+    # No-op fold: premise reaches NLI exactly as authored.
+    stage1_premises = {p for (p, _h) in nli.batch_calls[0]}
+    assert _CHUNK_BODY in stage1_premises
+
+
+def test_math_fold_on_true_non_entailment_still_fails(tmp_path: Path, monkeypatch) -> None:
+    """Flag ON: folding never fabricates support — a genuinely unrelated
+    statement still fails against a math premise."""
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD", "1")
+    manifest = _write_dart_chunks(tmp_path, [_latex_chunk("m1", "dart:alg#m1")])
+    objectives = _write_objectives(
+        tmp_path, terminal=[],
+        chapter=[{
+            "id": "CO-91",
+            # No keyword overlap with the folded premise → low entailment.
+            "statement": "Compose interpretive jazz music from medieval banners.",
+            "source_refs": [{"ref": "ch9", "chunk_ids": ["dart:alg#m1"]}],
+        }],
+    )
+
+    class _NeverEntails:
+        _revision = "fake-nli-never-1"
+        device = "cpu"
+
+        def score_batch(self, *, pairs: List[Tuple[str, str]]) -> List[NliScore]:
+            return [
+                NliScore(entailment=0.05, neutral=0.90, contradiction=0.05)
+                for _ in pairs
+            ]
+
+    result = ObjectiveEntailmentValidator(nli=_NeverEntails()).validate({
+        "synthesized_objectives_path": str(objectives),
+        "dart_chunks_manifest_path": str(manifest),
+    })
+    assert result.passed is False
+    assert any(i.code == _CODE_OBJECTIVE_UNENTAILED for i in result.issues)
+
+
+def test_math_fold_inputs_override_beats_env(tmp_path: Path, monkeypatch) -> None:
+    """Gate-config seam: inputs['math_fold']=True enables folding with the
+    env unset (per-gate override, mirrors the shadow knob)."""
+    monkeypatch.delenv("ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD", raising=False)
+    manifest = _write_dart_chunks(tmp_path, [_latex_chunk("m1", "dart:alg#m1")])
+    objectives = _write_objectives(tmp_path, terminal=[], chapter=[dict(_MATH_LO)])
+    result = ObjectiveEntailmentValidator(nli=_LatexBlindNli()).validate({
+        "synthesized_objectives_path": str(objectives),
+        "dart_chunks_manifest_path": str(manifest),
+        "math_fold": True,
+    })
+    assert result.passed is True

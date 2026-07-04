@@ -129,3 +129,58 @@ def test_reground_rescue_adopts_adjacent_chunk():
     assert rescued.get("reground") is True
     assert "c2" in rescued["source_chunk_ids"]
     assert result.reground_count == 1
+
+
+# ---------------------------------------------------------------------------
+# entailing_chunk_id stamp (2026-07-04 — the pin downstream citation
+# reshapers honor so the entailment evidence survives dedup/reselect)
+# ---------------------------------------------------------------------------
+def test_cited_path_stamps_entailing_chunk_id():
+    """cited_chunk_entailed → the argmax-entailing chunk id is stamped."""
+    chunks_by_id = {
+        "c1": {"id": "c1", "text": "Photosynthesis converts sunlight into glucose energy."},
+        "c2": {"id": "c2", "text": "Medieval heraldry banners and coats of arms history."},
+    }
+    candidates = [
+        _candidate(
+            "Explain how photosynthesis converts sunlight into glucose.",
+            ["c1", "c2"],
+        ),
+    ]
+    result = ground_candidates(candidates, chunks_by_id, nli=FakeNli())
+    assert len(result.grounded) == 1
+    g = result.grounded[0]
+    assert g["grounding_reason"] == "cited_chunk_entailed"
+    assert g["entailing_chunk_id"] == "c1"
+    # The pin is always among the surviving citations.
+    assert g["entailing_chunk_id"] in g["source_chunk_ids"]
+
+
+def test_reground_path_stamps_entailing_chunk_id():
+    """reground_adjacent_chunk → the ADOPTED chunk id is stamped."""
+    chunks_by_id = {
+        "c1": {"id": "c1", "text": "Unrelated boilerplate navigation footer text.", "chapter_id": "ch1"},
+        "c2": {"id": "c2", "text": "Quadratic equations factor into binomial roots cleanly.", "chapter_id": "ch1"},
+    }
+    candidates = [
+        _candidate("Show how quadratic equations factor into binomial roots.", ["c1"]),
+    ]
+    result = ground_candidates(candidates, chunks_by_id, nli=FakeNli(), reground=True)
+    assert len(result.grounded) == 1
+    rescued = result.grounded[0]
+    assert rescued["grounding_reason"] == "reground_adjacent_chunk"
+    assert rescued["entailing_chunk_id"] == "c2"
+    assert rescued["entailing_chunk_id"] in rescued["source_chunk_ids"]
+
+
+def test_ungrounded_candidate_has_no_entailing_chunk_id():
+    """A dropped candidate never carries the stamp (nothing entailed)."""
+    chunks_by_id = {
+        "c2": {"id": "c2", "text": "Mitochondria produce cellular respiration energy."},
+    }
+    candidates = [
+        _candidate("Describe the rules of medieval heraldry banners.", ["c2"]),
+    ]
+    result = ground_candidates(candidates, chunks_by_id, nli=FakeNli(), reground=False)
+    assert len(result.ungrounded) == 1
+    assert "entailing_chunk_id" not in result.ungrounded[0]

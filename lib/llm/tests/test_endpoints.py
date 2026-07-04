@@ -136,10 +136,14 @@ def test_provenance_names_sorted():
     assert list(names) == sorted(names)
 
 
-def test_groq_fireworks_deepseek_map_to_local_provenance():
+def test_groq_fireworks_deepseek_map_to_together_provenance():
+    # W9.1 (config/endpoints.yaml): the hosted-cloud Llama-3.3-70B seats
+    # (groq / fireworks / deepseek) map their provenance onto the existing
+    # CLOUD "together" Touch value — NEVER the license-clean "local" — so a
+    # hosted-cloud seat can never falsely stamp the license-clean provenance.
     reg = ep.load_endpoint_registry()
     for name in ("groq", "fireworks", "deepseek"):
-        assert reg[name]["provenance_provider"] == "local"
+        assert reg[name]["provenance_provider"] == "together"
     assert ep.resolve_endpoint(
         "together-vision", api_key_override="k"
     ).provenance_provider == "together"

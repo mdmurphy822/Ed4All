@@ -298,20 +298,52 @@ def test_no_fractions_noop_pass() -> None:
 _ALG_BLOCKS = _REPO_ROOT / "inputs" / "contentgen" / "alg_blocks.json"
 
 
+def _fixture_corpus_slugs() -> set:
+    """Course slugs the ``alg_blocks.json`` fixture was measured against.
+
+    Derived from the fixture's own ``data-cf-source-ids`` (e.g.
+    ``sample_course_a_chunk_00043``) — the identity comes from the
+    fixture DATA, not a hardcoded slug in test code — so the regression binds
+    to the SAME corpus it was calibrated against rather than whatever course
+    happens to sort first on disk. The documented flagged-set (exactly the two
+    -40/88 fabrication blocks) is only reproducible against that corpus; any
+    other course's text grounds/flags different literals.
+    """
+    import re
+
+    if not _ALG_BLOCKS.exists():
+        return set()
+    try:
+        data = json.loads(_ALG_BLOCKS.read_text())
+    except (OSError, ValueError):
+        return set()
+    slugs: set = set()
+    for block in data if isinstance(data, list) else []:
+        html = block.get("rewrite_html", "") if isinstance(block, dict) else ""
+        for group in re.findall(r'data-cf-source-ids="([^"]+)"', html):
+            for tok in group.split():
+                stem = re.sub(r"_chunk_.*$", "", tok.strip().rstrip(","))
+                if stem:
+                    slugs.add(stem.replace("_", "-"))
+    return slugs
+
+
 def _discover_chunks_jsonl() -> Optional[Path]:
-    """First ``dart_chunks/chunks.jsonl`` under any LibV2 course.
+    """The ``dart_chunks/chunks.jsonl`` of the corpus the fixture references.
 
     Resolves the LibV2 root via the ``ED4ALL_LIBV2_ROOT`` convention
-    (``lib.paths.libv2_path``) so the real-corpus regression binds to
-    whatever course corpus is present on disk rather than a pinned slug
-    (mirrors ``lib/ontology/tests/test_edge_slug_normalizer.py``).
+    (``lib.paths.libv2_path``) and binds specifically to the course named in
+    the fixture's ``data-cf-source-ids`` (slug-free — discovered from fixture
+    data). Returns ``None`` when that calibrated corpus is absent so the
+    regression SKIPS rather than mis-firing against an unrelated course.
     """
     from lib.paths import libv2_path
 
     courses_root = libv2_path() / "courses"
     if not courses_root.is_dir():
         return None
-    for chunks in sorted(courses_root.glob("*/dart_chunks/chunks.jsonl")):
+    for slug in sorted(_fixture_corpus_slugs()):
+        chunks = courses_root / slug / "dart_chunks" / "chunks.jsonl"
         if chunks.is_file():
             return chunks
     return None

@@ -35,6 +35,26 @@ back-compat ``oneOf`` in
      ``action="regenerate"``. Skipped when no
      ``dart_chunks_manifest_path`` is provided so legacy archives
      don't fail loud against an unavailable universe.
+   * **Split-brain citation-resolution net (GAP 1).** In addition to
+     the per-LO warning above, the validator aggregates every cited
+     ``chunk_ids[*]`` across all structured objectives and, when a
+     chunkset universe IS available (``dart_chunks_manifest_path``
+     resolved + non-empty ``chunks.jsonl``), fires a single
+     CRITICAL-severity ``ORPHANED_CITATIONS`` GateIssue the moment the
+     unresolvable-citation rate exceeds 0. This catches the failure
+     mode where a chunkset is renumbered AFTER objective synthesis so
+     100% of cited chunk_ids point at ids that no longer exist — the
+     old warning-only per-LO codes let that pass every gate. The
+     aggregate issue carries counts (total cited, orphaned, rate,
+     affected-LO count) + a sample of orphaned ids. It is skipped
+     (graceful) whenever the chunkset is absent or empty, preserving
+     legacy-archive behavior. NOTE: because the gate is wired at
+     ``severity: warning`` / ``on_fail: warn`` in
+     ``config/workflows.yaml`` today, ``passed=False`` from this
+     critical issue is surfaced but does NOT yet block the workflow
+     (executor only blocks on ``severity: critical`` gates). Flipping
+     the gate to ``severity: critical`` / ``on_fail: block`` promotes
+     this net to fail-closed.
 3. **Empty ``source_refs[]``.**
    * On a chapter-level objective (CO-NN) → warning-severity
      ``OBJECTIVE_MISSING_SOURCE_REFS``, ``action="regenerate"``.
@@ -538,6 +558,19 @@ class ObjectiveSourceRefValidator:
         # we accept resolution against either.
         union_universe: Set[str] = textbook_universe | chunks_universe
 
+        # GAP 1 — split-brain citation-resolution net. Aggregate every
+        # cited chunk_id across all structured source_refs so a
+        # chunkset renumbered after synthesis (100% orphaned citations)
+        # trips a single CRITICAL ORPHANED_CITATIONS issue instead of
+        # slipping through the per-LO warning arm. Only meaningful when
+        # a chunkset universe is actually available.
+        chunks_universe_available = bool(
+            chunks_path_raw is not None and chunks_universe
+        )
+        total_cited_chunk_ids = 0
+        orphaned_citation_ids: List[str] = []
+        orphaned_citation_lo_ids: Set[str] = set()
+
         for lo in objectives:
             if not isinstance(lo, Mapping):
                 continue
@@ -698,8 +731,13 @@ class ObjectiveSourceRefValidator:
                         cid = chunk_id.strip()
                         if not cid:
                             continue
+                        # Feed the GAP-1 aggregate: this chunk_id is a
+                        # real citation resolved against a live universe.
+                        total_cited_chunk_ids += 1
                         if cid not in chunks_universe:
                             unresolved_chunk_ids_count += 1
+                            orphaned_citation_ids.append(cid)
+                            orphaned_citation_lo_ids.add(lo_id_value)
                             if len(issues) < _ISSUE_LIST_CAP:
                                 issues.append(GateIssue(
                                     severity="warning",
@@ -760,6 +798,67 @@ class ObjectiveSourceRefValidator:
                 decision=decision_label,
                 rationale=rationale,
                 context=context,
+            )
+
+        # GAP 1 — split-brain net. When a chunkset universe is available
+        # and ANY cited chunk_id failed to resolve, fire a single
+        # CRITICAL aggregate ORPHANED_CITATIONS issue with counts +
+        # sample ids. This is the net that catches a chunkset renumbered
+        # after synthesis (unresolvable rate up to 1.0) which the
+        # per-LO warning arm alone let pass every gate.
+        if (
+            chunks_universe_available
+            and total_cited_chunk_ids > 0
+            and orphaned_citation_ids
+        ):
+            orphan_count = len(orphaned_citation_ids)
+            unresolvable_rate = round(orphan_count / total_cited_chunk_ids, 4)
+            # De-dupe for the sample while preserving first-seen order.
+            unique_orphans = list(dict.fromkeys(orphaned_citation_ids))
+            sample_ids = unique_orphans[:10]
+            affected_los = len(orphaned_citation_lo_ids)
+            issues.append(GateIssue(
+                severity="critical",
+                code="ORPHANED_CITATIONS",
+                message=(
+                    f"{orphan_count} of {total_cited_chunk_ids} cited "
+                    f"chunk_ids ({unresolvable_rate:.1%}) across "
+                    f"{affected_los} objective(s) do NOT resolve against "
+                    f"the CURRENT DART chunkset (universe size "
+                    f"{len(chunks_universe)}). This is the split-brain "
+                    f"signature — the chunkset was renumbered / "
+                    f"regenerated after these objectives were synthesized, "
+                    f"orphaning their source citations. Sample orphaned "
+                    f"chunk_ids: {sample_ids}."
+                ),
+                suggestion=(
+                    "Re-synthesize the objectives against the current "
+                    "chunkset, or re-run --reuse-objectives with the "
+                    "chunkset that produced them. Never ship an "
+                    "objectives artifact whose citations point at a "
+                    "stale chunk numbering."
+                ),
+            ))
+            _emit_decision(
+                capture,
+                decision=(
+                    f"orphaned_citations:{orphan_count}/"
+                    f"{total_cited_chunk_ids}"
+                ),
+                rationale=(
+                    f"ObjectiveSourceRefValidator GAP-1 split-brain net: "
+                    f"{orphan_count}/{total_cited_chunk_ids} cited chunk_ids "
+                    f"({unresolvable_rate}) across {affected_los} objectives "
+                    f"failed to resolve against the current chunkset "
+                    f"(universe size {len(chunks_universe)}). Emitting "
+                    f"CRITICAL ORPHANED_CITATIONS. Sample: {sample_ids}."
+                ),
+                context=(
+                    f"total_cited_chunk_ids={total_cited_chunk_ids}; "
+                    f"orphaned_chunk_ids={orphan_count}; "
+                    f"unresolvable_rate={unresolvable_rate}; "
+                    f"affected_los={affected_los}"
+                ),
             )
 
         # Score = pass rate over audited LOs. ``passed`` is True iff no

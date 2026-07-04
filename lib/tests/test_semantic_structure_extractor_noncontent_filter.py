@@ -57,6 +57,28 @@ from lib.semantic_structure_extractor.semantic_structure_extractor import (
         "Bill & Melinda Gates Foundation National Science Foundation",
         "Charles Koch Foundation The Stuart Family Foundation",
         "Laura and John Arnold Foundation The Maxfield Foundation",
+        # End-of-chapter exercise / review / drill section headings
+        # (OpenStax EOC family). Exact matches.
+        "Practice Makes Perfect",
+        "Section Exercises",
+        "Review Exercises",
+        "Chapter Review Exercises",
+        "Practice Test",
+        "Additional Practice",
+        "Everyday Math",
+        "Writing Exercises",
+        # Case / whitespace / trailing-colon variants normalize the same.
+        "practice makes perfect",
+        "PRACTICE MAKES PERFECT",
+        "  Review   Exercises  ",
+        "Everyday Math:",
+        # Prefix form — OpenStax appends the section topic to the
+        # exercise-block phrases. Distinctive enough that a real title
+        # never starts with them.
+        "Practice Makes Perfect: Add Whole Numbers",
+        "Review Exercises: Solve Linear Equations",
+        "Chapter Review Exercises for Chapter 3",
+        "Writing Exercises for This Section",
     ],
 )
 def test_noncontent_headings_are_rejected(text):
@@ -81,6 +103,27 @@ def test_noncontent_headings_are_rejected(text):
         "Section 3.5",
         "Introduction to Whole Numbers",
         "Chapter 2",
+        # Real content titles from the prompt — must NOT be caught by the
+        # EOC exercise/summary filter.
+        "Solve Equations Using the Subtraction Property",
+        "Decimals",
+        "Multiply and Divide Mixed Numbers",
+        # A chapter title that merely shares a leading word with an EOC
+        # phrase — prefix matching must be word-boundary safe, not loose
+        # substring or bare-word.
+        "Practice Problems in Real Analysis",
+        "Practice Makes Perfection a Reality",  # "perfect" is not a prefix
+        "Practice Testing as a Study Strategy",  # "practice test" is EXACT-only
+        "Reviewing Exercises for the Exam",     # not the "review exercises" prefix
+        # DELIBERATELY EXCLUDED glossary/summary/metacognition family — this
+        # predicate is shared with lib/chunk_heading_sanity.py, which treats
+        # these as REAL chunk headings (its regression suite locks in
+        # "Self Check"). They MUST survive here too.
+        "Self Check",
+        "Key Terms",
+        "Key Concepts",
+        "Chapter Summary",
+        "Key Terms in Set Theory",
     ],
 )
 def test_content_headings_survive(text):

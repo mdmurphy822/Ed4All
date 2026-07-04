@@ -249,6 +249,18 @@ def ground_candidates(
             c["grounded"] = True
             c["entailment_score"] = round(float(entailment), 6)
             c["grounding_reason"] = "cited_chunk_entailed"
+            # Record WHICH chunk earned the grounded verdict so downstream
+            # citation reshapers (dedup union prune, citation re-selection)
+            # can PIN it into the kept set. Without this, the cosine-ranked
+            # top-K prune can drop the one NLI-entailing chunk while keeping
+            # topically-similar non-entailing neighbors — the CO then ships
+            # ``grounded=True`` metadata over citations that no longer entail
+            # its statement (the sample-scan objective_entailment gate failure
+            # class, 2026-07-04: 10 COs, each with a recorded
+            # ``entailment_score`` >= 0.77 whose entailing chunk was absent
+            # from the final source_refs).
+            if best_chunk_id:
+                c["entailing_chunk_id"] = str(best_chunk_id)
             # Fix 1B — per-chunk entailment prune (defense-in-depth, prune-only).
             # ``score_groundedness`` collapses the objective's single claim to one
             # argmax-entailing ``best_chunk_id``; that is the only per-passage
@@ -300,6 +312,11 @@ def ground_candidates(
                         c["entailment_score"] = round(float(rescue_ent), 6)
                         c["grounding_reason"] = "reground_adjacent_chunk"
                         c["reground"] = True
+                        # Pin marker (see the cited-path comment above): the
+                        # adopted chunk is the entailment evidence — it must
+                        # survive every downstream citation reshape.
+                        if adopt_id:
+                            c["entailing_chunk_id"] = str(adopt_id)
                         reground_count += 1
                         grounded.append(c)
                         rescued = True

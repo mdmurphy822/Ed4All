@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Tuple
 
@@ -69,6 +70,7 @@ from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.classifiers.nli_classifier import NliClassifier
 from lib.embedding.sentence_embedder import is_strict_mode
 from lib.retrieval.groundedness import score_groundedness
+from lib.semantik.math_fold import fold_math
 from lib.validators.abcd_objective import _flatten_objectives
 from lib.validators.objective_source_refs import (
     _classify_attribution_shape,
@@ -92,6 +94,39 @@ _DEFAULT_OBJECTIVE_ENTAILMENT_RATE_FLOOR: float = 1.0
 
 #: Cap per-LO issue list (mirrors sibling validators).
 _ISSUE_LIST_CAP: int = 50
+
+#: Opt-in math-representation folding of BOTH the premise (cited chunk text)
+#: and the hypothesis (LO statement) before NLI scoring, via the shared
+#: ``lib.semantik.math_fold.fold_math`` (deterministic, stdlib-only, strict
+#: no-op on plain English). Built for VLM-fused-extraction corpora whose
+#: chunk text carries raw LaTeX (``$\\sqrt{48}$``, ``\\frac{...}{...}``).
+#:
+#: DEFAULT OFF — measured justification (sample-scan-01, 2026-07-04 A/B on the
+#: real DeBERTa-v3 NLI): folding rescued 3 LaTeX-dense false failures
+#: (CO-12 / CO-59 / CO-165) but newly failed 3 previously-passing COs
+#: (CO-48 / CO-51 / CO-157) and flipped one verdict to CONTRADICTED — net
+#: zero on the gate (10 critical either way). The NLI model reads LaTeX
+#: natively well enough that folding is NOT a clear correctness win, and the
+#: in-synthesis grounding filter (W2 Pass C) scores UNFOLDED text, so a
+#: folded gate would use a mismatched metric vs the filter that admitted the
+#: objectives. Keep as an opt-in diagnostic until a >=2-corpus calibration
+#: shows a net win (the WS3/W4 deferred-flip pattern).
+ENV_OBJECTIVE_ENTAILMENT_MATH_FOLD: str = "ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD"
+
+
+def resolve_objective_entailment_math_fold(value: Any = None) -> bool:
+    """Resolve the math-fold toggle: explicit arg → env → default OFF.
+
+    Parse-with-fallback: only explicit truthy tokens enable folding; anything
+    else (unset / falsey / garbage) leaves it OFF so legacy behavior is
+    byte-identical.
+    """
+    raw = value if value is not None else os.environ.get(
+        ENV_OBJECTIVE_ENTAILMENT_MATH_FOLD
+    )
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 # --------------------------------------------------------------------- #
@@ -473,6 +508,14 @@ class ObjectiveEntailmentValidator:
 
         fail_severity = "warning" if shadow else "critical"
 
+        # Opt-in math-representation folding (see
+        # ``ENV_OBJECTIVE_ENTAILMENT_MATH_FOLD`` above — default OFF, measured
+        # net-neutral on sample-scan-01). ``inputs["math_fold"]`` (gate config)
+        # overrides the env.
+        math_fold = resolve_objective_entailment_math_fold(
+            inputs.get("math_fold")
+        )
+
         issues: List[GateIssue] = []
         any_regenerate = False
         audited = 0
@@ -544,12 +587,31 @@ class ObjectiveEntailmentValidator:
                 )
                 continue
 
+            # split_claims=False: the LO statement is documented (class
+            # docstring) as "a single hypothesis" — score it whole. The
+            # default sentence splitter beheads a statement at an
+            # abbreviation period ("…both U.S. and metric systems…" →
+            # fragment "and metric systems…" scored CONTRADICTED against a
+            # perfectly-supporting chunk: the CO-13 false failure,
+            # 2026-07-01), so the split path must never run here.
+            scored_statement = statement
+            scored_passages: List[Dict[str, str]] = cited_passages
+            if math_fold:
+                # Fold BOTH sides so LaTeX / unicode-math / plain-text
+                # representations meet in one vocabulary before NLI.
+                # ``fold_math`` is a strict no-op on plain English.
+                scored_statement = fold_math(statement)
+                scored_passages = [
+                    {"chunk_id": p["chunk_id"], "text": fold_math(p["text"])}
+                    for p in cited_passages
+                ]
             report = score_groundedness(
-                statement,
-                cited_passages,
+                scored_statement,
+                scored_passages,
                 nli=nli,
                 entailment_floor=entailment_floor,
                 contradiction_floor=contradiction_floor,
+                split_claims=False,
             )
 
             if not report.available:
@@ -682,6 +744,8 @@ class ObjectiveEntailmentValidator:
 
 __all__ = [
     "ObjectiveEntailmentValidator",
+    "ENV_OBJECTIVE_ENTAILMENT_MATH_FOLD",
+    "resolve_objective_entailment_math_fold",
     "_DEFAULT_ENTAILMENT_FLOOR",
     "_DEFAULT_CONTRADICTION_FLOOR",
     "_DEFAULT_OBJECTIVE_ENTAILMENT_RATE_FLOOR",

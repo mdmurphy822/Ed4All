@@ -185,6 +185,72 @@ class GroundednessReport:
         return out
 
 
+# --------------------------------------------------------------------------- #
+# Abbreviation guard for the sentence splitter (2026-07-01 CO-13 fix)
+# --------------------------------------------------------------------------- #
+# The canonical ``_SENTENCE_SPLIT_RE`` (``(?<=[.!?])\s+``) splits after ANY
+# period+whitespace, so an abbreviation mid-sentence beheads the claim:
+# "…in both U.S. and metric systems…" → fragment 1 "…both U.S." + fragment 2
+# "and metric systems to solve real-world problems." — and NLI then scored the
+# beheaded fragment CONTRADICTED against a perfectly-supporting chunk (the
+# observed OBJECTIVE_CONTRADICTED false failure on CO-13). The guard below
+# re-joins fragments the regex wrongly split at a known abbreviation.
+#
+# Conservative three-tier rule (merge precision over recall — a wrong merge
+# fuses two real sentences into one hypothesis, so ambiguous enders only merge
+# when the next fragment could not plausibly start a new sentence):
+#   * ALWAYS-merge: titles/latinisms that essentially never end a sentence
+#     (e.g., i.e., vs., Dr., Mr., Mrs., Ms., Prof., St.).
+#   * NUMERIC-merge: label abbreviations (Fig., No., Eq.) merge only when the
+#     next fragment starts with a digit ("Fig. 3", "No. 5").
+#   * AMBIGUOUS-merge: enders that CAN legitimately terminate a sentence
+#     (dotted uppercase pairs like U.S. / U.K., and etc.) merge only when the
+#     next fragment starts lowercase or with a digit ("U.S. and metric…"
+#     merges; "…in the U.S. The metric system…" stays split).
+
+_ABBREV_ALWAYS_MERGE_RE = re.compile(
+    r"\b(?:e\.g|i\.e|vs|Dr|Mr|Mrs|Ms|Prof|St)\.$"
+)
+_ABBREV_NUMERIC_MERGE_RE = re.compile(r"\b(?:Fig|No|Eq)\.$")
+_ABBREV_AMBIGUOUS_MERGE_RE = re.compile(r"(?:\b[A-Z]\.[A-Z]\.|\betc\.)$")
+
+
+def _should_merge_abbrev_split(prev: str, nxt: str) -> bool:
+    """True when ``prev``/``nxt`` were wrongly split at an abbreviation."""
+    if not prev or not nxt:
+        return False
+    if _ABBREV_ALWAYS_MERGE_RE.search(prev):
+        return True
+    lead = nxt[0]
+    if _ABBREV_NUMERIC_MERGE_RE.search(prev) and lead.isdigit():
+        return True
+    if _ABBREV_AMBIGUOUS_MERGE_RE.search(prev) and (
+        lead.islower() or lead.isdigit()
+    ):
+        return True
+    return False
+
+
+def _merge_abbreviation_splits(parts: List[str]) -> List[str]:
+    """Re-join sentence fragments wrongly split at a known abbreviation.
+
+    Iterates left-to-right, folding a fragment into its predecessor when
+    :func:`_should_merge_abbrev_split` fires; chained abbreviations
+    ("e.g. U.S. and …") merge naturally because each fold re-checks the
+    accumulated predecessor's tail.
+    """
+    merged: List[str] = []
+    for part in parts:
+        piece = part.strip()
+        if not piece:
+            continue
+        if merged and _should_merge_abbrev_split(merged[-1], piece):
+            merged[-1] = merged[-1] + " " + piece
+            continue
+        merged.append(piece)
+    return merged
+
+
 def split_claims(answer_text: str) -> List[str]:
     """Split an answer into pedagogical claim sentences worth scoring.
 
@@ -196,6 +262,11 @@ def split_claims(answer_text: str) -> List[str]:
     matches alphabetic tokens of length ≥ 2), filtering out fragments,
     headings, and bare references.
 
+    Fragments the regex wrongly split at a known abbreviation (U.S., e.g.,
+    Dr., Fig. 3, …) are re-joined by :func:`_merge_abbreviation_splits` BEFORE
+    the token floor, so an abbreviation mid-sentence no longer beheads a claim
+    into an NLI-contradictable fragment (the CO-13 false-CONTRADICTED bug).
+
     Public, backward-compatible, and reused by ``citation_attribution`` — its
     output is the canonical claim unit there, so the v2 structural-artifact
     filter (:func:`_is_structural_artifact`) is applied only in the
@@ -205,7 +276,10 @@ def split_claims(answer_text: str) -> List[str]:
     if not answer_text:
         return []
     claims: List[str] = []
-    for raw in _SENTENCE_SPLIT_RE.split(answer_text.strip()):
+    parts = _merge_abbreviation_splits(
+        _SENTENCE_SPLIT_RE.split(answer_text.strip())
+    )
+    for raw in parts:
         sentence = raw.strip()
         if not sentence:
             continue
@@ -479,8 +553,18 @@ def score_groundedness(
     contradiction_floor: float = _DEFAULT_CONTRADICTION_FLOOR,
     cited_chunk_ids: Optional[set] = None,
     capture: Optional[Any] = None,
+    split_claims: bool = True,
 ) -> GroundednessReport:
     """Score each answer sentence against the evidence pool via NLI (v2).
+
+    ``split_claims=False`` (2026-07-01, ObjectiveEntailmentValidator) scores
+    the ENTIRE ``answer_text`` as ONE hypothesis — no sentence split, no
+    structural-artifact filter. Callers whose unit of meaning is a single
+    statement (an LO statement is documented as "a single hypothesis") use
+    this so a sentence-splitter artifact (e.g. the abbreviation period in
+    "U.S.") can never behead the statement into an NLI-contradictable
+    fragment. Default ``True`` preserves the grounded-answer path byte-for-
+    byte.
 
     Premise = evidence-pool passage text; hypothesis = answer sentence. v2
     pipeline:
@@ -561,7 +645,13 @@ def score_groundedness(
     # Stage 0: split, drop structural artifacts, and partition out
     # computational claims (NLI-exempt). ``order`` preserves the answer's
     # claim order so the emitted verdict list reads top-to-bottom.
-    all_claims, filtered_count = _split_claims_for_scoring(answer_text)
+    # ``split_claims=False`` → the whole answer_text is the single claim
+    # (single-hypothesis callers, e.g. per-LO entailment).
+    if split_claims:
+        all_claims, filtered_count = _split_claims_for_scoring(answer_text)
+    else:
+        _single = (answer_text or "").strip()
+        all_claims, filtered_count = ([_single] if _single else []), 0
     order: List[Tuple[str, str]] = []  # (kind, claim) — kind in {"comp","score"}
     scorable: List[str] = []
     for claim in all_claims:

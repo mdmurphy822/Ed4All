@@ -62,7 +62,7 @@ def _env_truthy(name: str) -> bool:
 
 # ---------------------------------------------------------------------------
 # Env-var names (single source of truth for the ED4ALL_RERANK_* family).
-# Documented in root CLAUDE.md § "Cross-cutting flags".
+# Documented in docs/operations/behavior-flags.md (indexed in root CLAUDE.md).
 # ---------------------------------------------------------------------------
 ENV_PROVIDER = "ED4ALL_RERANK_PROVIDER"
 ENV_MODEL = "ED4ALL_RERANK_MODEL"

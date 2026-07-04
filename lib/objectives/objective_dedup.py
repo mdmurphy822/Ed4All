@@ -1498,6 +1498,22 @@ def dedup_candidates(
                 cap=resolved_cap,
                 floor=resolved_floor,
             )
+            # PIN the representative's NLI-entailing chunk (Pass-C
+            # ``entailing_chunk_id``): the rep's ``grounded=True`` +
+            # ``entailment_score`` were EARNED by that chunk, but the prune
+            # above ranks by EMBEDDING cosine — a different, weaker metric —
+            # so the one entailing chunk can lose the relevance race to
+            # topically-similar non-entailing neighbors (TOC lists, heading
+            # chunks). Shipping the CO without it fails the downstream
+            # objective_entailment gate (sample-scan-01, 2026-07-04: 10 COs).
+            # The cap widens by <= 1, mirroring citation_reselect's
+            # protected-original widening. ANTI-FABRICATION: the pin is
+            # already ⊆ union_ids (the rep cited it), so we only re-keep,
+            # never add a chunk no cluster member cited.
+            _pin = str(rep.get("entailing_chunk_id") or "").strip()
+            if _pin and _pin in union_ids and _pin not in kept_ids:
+                kept_ids = list(kept_ids) + [_pin]
+                n_dropped = max(0, n_dropped - 1)
             pruned_chunk_total += n_dropped
             if n_dropped and capture is not None:
                 _emit_prune_capture(

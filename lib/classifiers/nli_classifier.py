@@ -111,7 +111,7 @@ logger = logging.getLogger(__name__)
 #: Env var selecting the torch device for the NLI model. Default ``"cpu"``
 #: (determinism + CI hermeticity, byte-identical to the historical
 #: behavior). Accepts ``cpu`` / ``cuda`` / ``cuda:N``. Documented in root
-#: CLAUDE.md § "Cross-cutting flags". Mirrors ``ED4ALL_EMBEDDING_DEVICE``.
+#: docs/operations/behavior-flags.md (indexed in root CLAUDE.md). Mirrors ``ED4ALL_EMBEDDING_DEVICE``.
 ENV_DEVICE = "ED4ALL_NLI_DEVICE"
 
 #: Default device — CPU keeps the load fp32 and the tensors CPU-resident
@@ -147,7 +147,7 @@ _DEFAULT_MIN_FREE_VRAM_MIB = 1024
 #: validation (NLI) do NOT run simultaneously within a phase, so the card
 #: can be handed off — the 7B lazy-reloads on its next generation request.
 #: Set falsey to skip eviction and use the ab0ce44 pure-CPU-fallback
-#: behavior. Documented in root CLAUDE.md § "Cross-cutting flags".
+#: behavior. Documented in docs/operations/behavior-flags.md (indexed in root CLAUDE.md).
 ENV_EVICT_FOR_CUDA = "ED4ALL_NLI_EVICT_FOR_CUDA"
 
 
@@ -309,6 +309,40 @@ def is_cuda_jit_error(exc: BaseException) -> bool:
     if "cuda" in msg and "compil" in msg:
         return True
     return False
+
+
+def _disable_gpu_jit_fuser(torch_module: Any) -> None:
+    """Disable torch's GPU TensorExpr (NNC) JIT pointwise fuser so the
+    DeBERTa CUDA forward pass never triggers nvrtc runtime-compilation.
+
+    WSL2 failure this prevents: torch's TensorExpr fuser JIT-compiles a
+    fused pointwise kernel for DeBERTa's relative-position / log-bucket path
+    (the dumped kernel contains ``aten::where`` / ``aten::log``) through
+    nvrtc, but on this box nvrtc cannot open its matching
+    ``libnvrtc-builtins.so.13.0`` — the ``nvidia/cu13/lib`` wheel dir ships
+    the file yet ``libnvrtc.so.13`` carries no RUNPATH and that dir is not
+    on the loader path, so the very first CUDA forward pass raises
+    ``RuntimeError: nvrtc: error: failed to open
+    libnvrtc-builtins.so.13.0``. Turning the fuser off makes torch execute
+    the forward pass with EAGER (non-fused) CUDA kernels — no JIT, no nvrtc
+    — which is numerically identical (kernel fusion is a pure performance
+    optimization, not a correctness change). Applied once at cuda placement
+    so the JIT is never attempted; the mid-inference degrade-to-CPU latch
+    (:meth:`NliClassifier._downgrade_to_cpu`) stays as the last resort.
+
+    Best-effort + idempotent: ``_jit_set_texpr_fuser_enabled`` /
+    ``_jit_override_can_fuse_on_gpu`` are private, version-varying
+    ``torch._C`` APIs, so each call is individually guarded against
+    ``AttributeError`` (and any other error).
+    """
+    for setter, arg in (
+        ("_jit_set_texpr_fuser_enabled", False),
+        ("_jit_override_can_fuse_on_gpu", False),
+    ):
+        try:
+            getattr(torch_module._C, setter)(arg)
+        except Exception:  # noqa: BLE001 — private torch API, version-dependent
+            pass
 
 
 def resolve_nli_device(device: Optional[str] = None) -> str:
@@ -591,6 +625,18 @@ class NliClassifier:
                     )
                     return "cpu", "float32"
 
+        # Proactively disable torch's GPU TensorExpr JIT fuser BEFORE the
+        # first CUDA forward pass so nvrtc runtime-compilation is NEVER
+        # attempted. On this WSL2 box torch's fuser JIT-compiles a fused
+        # DeBERTa pointwise kernel through nvrtc, which cannot open its
+        # matching libnvrtc-builtins.so.13.0 (RUNPATH/loader-path gap) and
+        # raises "nvrtc: error: failed to open libnvrtc-builtins.so.13.0" on
+        # the first cuda forward — historically forcing the whole process to
+        # degrade to CPU. Disabling the fuser makes torch run eager (non-
+        # fused) CUDA kernels instead — numerically identical — so NLI stays
+        # on cuda. The mid-inference degrade-to-CPU latch remains as the
+        # last-resort fallback if any residual JIT path still fails.
+        _disable_gpu_jit_fuser(torch_module)
         try:
             # fp16 on CUDA keeps the ~184M-param head at ~0.4 GB VRAM so it
             # coexists with a local ollama LLM on an 8 GB card. fp16 is
@@ -693,16 +739,14 @@ class NliClassifier:
         individually guarded because these are private, version-varying
         ``torch._C`` APIs.
         """
-        torch = self._torch
-        for setter, arg in (
-            ("_jit_set_texpr_fuser_enabled", False),
-            ("_jit_override_can_fuse_on_cpu", False),
-            ("_jit_override_can_fuse_on_gpu", False),
-        ):
-            try:
-                getattr(torch._C, setter)(arg)
-            except Exception:  # noqa: BLE001 — private API, version-dependent
-                pass
+        # Disable the TensorExpr + GPU-fuse overrides via the shared module
+        # helper (same setters the proactive cuda-placement path uses), then
+        # additionally disable the on-CPU fuser for the CPU retry path.
+        _disable_gpu_jit_fuser(self._torch)
+        try:
+            self._torch._C._jit_override_can_fuse_on_cpu(False)
+        except Exception:  # noqa: BLE001 — private API, version-dependent
+            pass
 
     @classmethod
     def get_or_load(cls) -> Optional["NliClassifier"]:

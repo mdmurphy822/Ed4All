@@ -27,6 +27,7 @@ import pytest
 from lib.generation.block_planner import (
     _apply_dual_coding_floor,
     _apply_far_transfer_floor,
+    _apply_integration_floor,
     _apply_interleave,
     _apply_w6_within_week_passes,
     _resolve_block_types,
@@ -40,6 +41,9 @@ def _clean_flags(monkeypatch):
     for env in (
         "ED4ALL_PLANNER_INTERLEAVE",
         "ED4ALL_PLANNER_FAR_TRANSFER",
+        "ED4ALL_PLANNER_INTEGRATION",
+        "ED4ALL_PLANNER_INTEGRATION_MAX_OVERLAP",
+        "ED4ALL_PLANNER_INTEGRATION_MAX_PER_WEEK",
         "ED4ALL_PLANNER_DUAL_CODING",
         "ED4ALL_PLANNER_CROSS_WEEK_RETRIEVAL",
         "ED4ALL_DYNAMIC_BLOCK_PLAN",
@@ -187,6 +191,263 @@ def test_far_transfer_no_co_is_noop(monkeypatch, block_types):
 
 
 # --------------------------------------------------------------------------- #
+# Integration floor — weak-membership ("oddball") CO → cross-CO integrated
+# practice (ED4ALL_PLANNER_INTEGRATION).
+# --------------------------------------------------------------------------- #
+from lib.generation.block_planner import (  # noqa: E402
+    _resolve_integration_max_overlap,
+    _resolve_integration_max_per_week,
+)
+
+# TO whose theme an oddball CO only weakly matches. 8 content tokens: apply,
+# properties, of, real, numbers, and, algebraic, expressions.
+_INTEG_TO = {
+    "id": "TO-02",
+    "statement": "Apply properties of real numbers and algebraic expressions",
+}
+
+
+def _integ_cos():
+    """One strong-membership anchor + one weak-membership oddball CO."""
+    return [
+        # High token-overlap with the TO (apply / properties / of / real /
+        # numbers / and) → the anchor.
+        {"id": "CO-11",
+         "statement": "Apply the commutative and associative properties of "
+                      "real numbers",
+         "bloom_level": "apply"},
+        # Moderate overlap (algebraic / expressions / of), still above the floor.
+        {"id": "CO-12",
+         "statement": "Simplify algebraic expressions using order of operations",
+         "bloom_level": "apply"},
+        # Near-zero overlap (only "and") → the oddball.
+        {"id": "CO-14",
+         "statement": "Explain the relationship between Fahrenheit and Celsius "
+                      "temperature scales",
+         "bloom_level": "understand"},
+    ]
+
+
+def _integ_taught_selection():
+    """Each CO taught by a real block (non-empty target_co_ids)."""
+    return [
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-11"], "target_bloom": "apply"},
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-12"], "target_bloom": "apply"},
+        {"block_type": "explanation", "page_type": "content",
+         "target_co_ids": ["CO-14"], "target_bloom": "understand"},
+    ]
+
+
+def test_integration_noop_when_flag_off(block_types):
+    sel = _integ_taught_selection()
+    before = copy.deepcopy(sel)
+    out = _apply_integration_floor(
+        selected=sel, terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_cos(), block_types=block_types)
+    assert out == before
+
+
+def test_integration_injects_for_weak_membership_co(monkeypatch, block_types):
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION", "1")
+    sel = _integ_taught_selection()
+    out = _apply_integration_floor(
+        selected=sel, terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_cos(), block_types=block_types)
+    injected = [b for b in out if b.get("integration")]
+    assert len(injected) == 1
+    blk = injected[0]
+    assert blk["block_type"] in ("problem", "scenario")
+    assert blk["page_type"] == "application"
+    assert blk["target_bloom"] == "apply"
+    # REAL ids only: [oddball, anchor]. Anchor = highest-overlap CO (CO-11, not
+    # CO-12); oddball = the weak-membership CO-14.
+    assert blk["target_co_ids"] == ["CO-14", "CO-11"]
+    # content_focus names BOTH CO statements + directs the rewrite tier.
+    focus = blk["content_focus"]
+    assert "CO-14" in focus and "CO-11" in focus
+    assert "Fahrenheit" in focus          # oddball statement fragment
+    assert "commutative" in focus         # anchor statement fragment
+    assert "cited source chunks" in focus
+
+
+def test_integration_anchor_is_highest_overlap_co(monkeypatch, block_types):
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION", "1")
+    sel = _integ_taught_selection()
+    out = _apply_integration_floor(
+        selected=sel, terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_cos(), block_types=block_types)
+    injected = [b for b in out if b.get("integration")][0]
+    # CO-11 overlaps the TO more than CO-12, so it wins the anchor slot.
+    assert injected["target_co_ids"][1] == "CO-11"
+
+
+def test_integration_skips_already_co_targeted_oddball(monkeypatch, block_types):
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION", "1")
+    sel = _integ_taught_selection() + [
+        # A block already co-targets the oddball together with the anchor.
+        {"block_type": "problem", "page_type": "application",
+         "target_co_ids": ["CO-14", "CO-11"], "target_bloom": "apply"},
+    ]
+    before = copy.deepcopy(sel)
+    out = _apply_integration_floor(
+        selected=sel, terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_cos(), block_types=block_types)
+    assert out == before  # already integrated → no injection
+
+
+def test_integration_noop_when_no_weak_co(monkeypatch, block_types):
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION", "1")
+    # Only the two strong-membership COs are taught (no oddball present).
+    sel = [
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-11"], "target_bloom": "apply"},
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": ["CO-12"], "target_bloom": "apply"},
+    ]
+    before = copy.deepcopy(sel)
+    out = _apply_integration_floor(
+        selected=sel, terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_cos()[:2], block_types=block_types)
+    assert out == before
+
+
+def test_integration_noop_single_co_week(monkeypatch, block_types):
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION", "1")
+    sel = [
+        {"block_type": "explanation", "page_type": "content",
+         "target_co_ids": ["CO-14"], "target_bloom": "understand"},
+    ]
+    before = copy.deepcopy(sel)
+    out = _apply_integration_floor(
+        selected=sel, terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_cos(), block_types=block_types)
+    assert out == before  # < 2 taught COs → no anchor distinct from oddball
+
+
+def test_integration_static_fallback_empty_co_is_noop(monkeypatch, block_types):
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION", "1")
+    # Static fallback plan: real TO + COs, but blocks carry empty target_co_ids.
+    sel = [
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": [], "target_bloom": "understand"},
+        {"block_type": "problem", "page_type": "application",
+         "target_co_ids": [], "target_bloom": "apply"},
+    ]
+    before = copy.deepcopy(sel)
+    out = _apply_integration_floor(
+        selected=sel, terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_cos(), block_types=block_types)
+    assert out == before  # no taught CO → natural no-op
+
+
+# Three distinct weak-membership overlaps (all < 0.10, each shares only "and"
+# with the TO) so weakest-first ordering is observable, plus a strong anchor.
+def _integ_multi_weak_cos():
+    return [
+        {"id": "CO-A",
+         "statement": "Apply the commutative and associative properties of "
+                      "real numbers",
+         "bloom_level": "apply"},                          # strong anchor
+        {"id": "CO-W3",                                    # overlap ~0.083
+         "statement": "Describe historical timelines and events",
+         "bloom_level": "understand"},
+        {"id": "CO-W1",                                    # overlap ~0.056 (weakest)
+         "statement": "Explain the relationship between Fahrenheit and Celsius "
+                      "temperature scales here now",
+         "bloom_level": "understand"},
+        {"id": "CO-W2",                                    # overlap ~0.067
+         "statement": "Convert distance units across measurement systems and "
+                      "contexts",
+         "bloom_level": "apply"},
+    ]
+
+
+def _integ_multi_weak_selection():
+    return [
+        {"block_type": "concept", "page_type": "content",
+         "target_co_ids": [cid], "target_bloom": "apply"}
+        for cid in ("CO-A", "CO-W3", "CO-W1", "CO-W2")
+    ]
+
+
+def test_integration_max_per_week_cap_weakest_first(monkeypatch, block_types):
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION", "1")
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION_MAX_PER_WEEK", "2")
+    out = _apply_integration_floor(
+        selected=_integ_multi_weak_selection(),
+        terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_multi_weak_cos(), block_types=block_types)
+    injected = [b for b in out if b.get("integration")]
+    assert len(injected) == 2  # capped at 2 despite 3 weak COs
+    # Weakest first: CO-W1 (0.056) then CO-W2 (0.067); CO-W3 (0.083) dropped.
+    oddballs = [b["target_co_ids"][0] for b in injected]
+    assert oddballs == ["CO-W1", "CO-W2"]
+    # Anchor is always the strong CO-A.
+    assert all(b["target_co_ids"][1] == "CO-A" for b in injected)
+
+
+def test_integration_max_per_week_cap_one(monkeypatch, block_types):
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION", "1")
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION_MAX_PER_WEEK", "1")
+    out = _apply_integration_floor(
+        selected=_integ_multi_weak_selection(),
+        terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_multi_weak_cos(), block_types=block_types)
+    injected = [b for b in out if b.get("integration")]
+    assert len(injected) == 1
+    assert injected[0]["target_co_ids"][0] == "CO-W1"  # the single weakest
+
+
+def test_integration_max_overlap_satellite_widens_oddball_set(
+    monkeypatch, block_types
+):
+    # Raise the floor so CO-12 (moderate ~0.25 overlap) also counts as weak.
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION", "1")
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION_MAX_OVERLAP", "0.30")
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION_MAX_PER_WEEK", "5")
+    out = _apply_integration_floor(
+        selected=_integ_taught_selection(), terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_cos(), block_types=block_types)
+    oddballs = {b["target_co_ids"][0] for b in out if b.get("integration")}
+    assert oddballs == {"CO-14", "CO-12"}  # both now below the 0.30 floor
+
+
+def test_integration_satellite_env_parse_with_fallback(monkeypatch):
+    # Garbage → defaults.
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION_MAX_OVERLAP", "not-a-float")
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION_MAX_PER_WEEK", "bogus")
+    assert _resolve_integration_max_overlap() == 0.10
+    assert _resolve_integration_max_per_week() == 2
+    # Out-of-range → defaults.
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION_MAX_OVERLAP", "1.5")
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION_MAX_PER_WEEK", "0")
+    assert _resolve_integration_max_overlap() == 0.10
+    assert _resolve_integration_max_per_week() == 2
+    # Valid → parsed.
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION_MAX_OVERLAP", "0.25")
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION_MAX_PER_WEEK", "3")
+    assert _resolve_integration_max_overlap() == 0.25
+    assert _resolve_integration_max_per_week() == 3
+    # Explicit arg wins over env.
+    assert _resolve_integration_max_overlap(0.5) == 0.5
+    assert _resolve_integration_max_per_week(7) == 7
+
+
+def test_integration_is_deterministic(monkeypatch, block_types):
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION", "1")
+    kwargs = dict(
+        terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_multi_weak_cos(), block_types=block_types)
+    out1 = _apply_integration_floor(
+        selected=_integ_multi_weak_selection(), **kwargs)
+    out2 = _apply_integration_floor(
+        selected=_integ_multi_weak_selection(), **kwargs)
+    assert out1 == out2
+
+
+# --------------------------------------------------------------------------- #
 # W6.5 — dual-coding floor.
 # --------------------------------------------------------------------------- #
 def test_dual_coding_noop_when_flag_off(block_types):
@@ -285,6 +546,7 @@ def test_plan_week_blocks_byte_identical_when_all_w6_flags_off():
     # No W6 stamp fields leak onto an all-off run.
     for b in plan_off.selected:
         assert "far_transfer" not in b
+        assert "integration" not in b
         assert "cumulative_retrieval" not in b
 
 
@@ -298,6 +560,30 @@ def test_w6_within_week_passes_identity_when_off(block_types):
     assert out == before
     assert signals == {
         "far_transfer_injected": 0,
+        "integration_injected": 0,
         "dual_coding_injected": 0,
         "interleave_moves": 0,
     }
+
+
+def test_integration_non_practice_co_targeting_does_not_suppress(
+    monkeypatch, block_types
+):
+    """Regression: the first live run injected 0 blocks across 11 weeks because
+    roll-up blocks (objective / summary) co-target several COs as a matter of
+    course and the skip guard counted them. Only PRACTICE-type co-targeting
+    (_INTERLEAVE_PRACTICE_TYPES) marks a CO as already integrated."""
+    monkeypatch.setenv("ED4ALL_PLANNER_INTEGRATION", "1")
+    sel = _integ_taught_selection() + [
+        # An OBJECTIVE roll-up block listing the oddball with other COs —
+        # NOT integrated practice; must not suppress the injection.
+        {"block_type": "objective", "page_type": "overview",
+         "target_co_ids": ["CO-14", "CO-11", "CO-19"],
+         "target_bloom": "understand"},
+    ]
+    out = _apply_integration_floor(
+        selected=sel, terminal_objective=_INTEG_TO,
+        chapter_objectives=_integ_cos(), block_types=block_types)
+    injected = [b for b in out if b.get("integration")]
+    assert injected, "objective-block co-targeting must not suppress injection"
+    assert any("CO-14" in (b.get("target_co_ids") or []) for b in injected)

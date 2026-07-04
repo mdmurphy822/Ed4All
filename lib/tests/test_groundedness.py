@@ -99,6 +99,110 @@ def test_split_claims_empty():
 
 
 # ===========================================================================
+# Abbreviation guard (2026-07-01 CO-13 false-CONTRADICTED regression)
+# ===========================================================================
+
+def test_split_claims_us_abbreviation_verbatim_co13():
+    """The verbatim CO-13 statement must survive as ONE claim.
+
+    The canonical ``_SENTENCE_SPLIT_RE`` split at the abbreviation period in
+    "U.S.", beheading the statement into "…both U.S." + "and metric systems
+    to solve real-world problems." — and NLI scored the beheaded fragment
+    CONTRADICTED against a perfectly-supporting chunk (the observed
+    OBJECTIVE_CONTRADICTED false failure on CO-13).
+    """
+    text = (
+        "Apply the process of unit conversions in both U.S. and metric "
+        "systems to solve real-world problems."
+    )
+    claims = split_claims(text)
+    assert claims == [text]
+
+
+def test_split_claims_abbreviation_variety():
+    """Common abbreviations (e.g., i.e., vs., Dr., Fig. N, No. N) don't split."""
+    cases = [
+        "Solving equations is common, e.g. balancing chemical formulas today.",
+        "Rational numbers, i.e. quotients of integers, form a dense set.",
+        "Compare the substitution method vs. the elimination method carefully.",
+        "Dr. Euler proved this identity using infinite series expansions.",
+        "See Fig. 3 for the graph of the quadratic parent function.",
+        "Problem No. 5 requires the distributive property applied twice.",
+        "Convert between U.K. and metric units in the practice problems.",
+    ]
+    for text in cases:
+        assert split_claims(text) == [text], text
+
+
+def test_split_claims_us_at_sentence_end_still_splits():
+    """Ambiguous enders (U.S., etc.) followed by a capitalized sentence keep
+    the split — the guard only merges when the next fragment starts lowercase
+    or with a digit."""
+    text = (
+        "The customary system is used in the U.S. The metric system is "
+        "used almost everywhere else in the world."
+    )
+    claims = split_claims(text)
+    assert len(claims) == 2
+    assert claims[0].endswith("U.S.")
+    assert claims[1].startswith("The metric system")
+
+
+def test_split_claims_normal_two_sentence_split_unchanged():
+    """The guard does not affect ordinary sentence boundaries."""
+    text = (
+        "A vector store indexes embedding vectors for similarity search. "
+        "The retriever returns the top passages ranked by cosine score."
+    )
+    claims = split_claims(text)
+    assert len(claims) == 2
+
+
+# ===========================================================================
+# split_claims=False (single-hypothesis path, ObjectiveEntailmentValidator)
+# ===========================================================================
+
+def test_score_groundedness_no_split_scores_single_hypothesis():
+    """``split_claims=False`` scores the WHOLE text as one claim."""
+    statement = (
+        "Apply the process of unit conversions in both U.S. and metric "
+        "systems to solve real-world problems."
+    )
+    nli = FakeNli()
+    # Passage contains the full statement → FakeNli entails the whole-text
+    # hypothesis. The load-bearing assertion is the HYPOTHESIS SET the NLI
+    # saw: exactly one, equal to the full statement (no fragment scored).
+    report = score_groundedness(
+        statement,
+        [_passage("c1", f"Unit conversions chapter. {statement} More text.")],
+        nli=nli,
+        split_claims=False,
+    )
+    assert report.available is True
+    assert report.scored_count == 1
+    assert len(report.claims) == 1
+    assert report.claims[0].claim_text == statement
+    assert report.claims[0].verdict == "entailed"
+    hypotheses = {h for batch in nli.batches for (_p, h) in batch}
+    assert hypotheses == {statement}
+
+
+def test_score_groundedness_default_split_unchanged():
+    """Default ``split_claims=True`` still splits multi-sentence answers."""
+    answer = (
+        "A vector store indexes embedding vectors for similarity search. "
+        "The retriever returns the top passages ranked by cosine score."
+    )
+    nli = FakeNli()
+    report = score_groundedness(
+        answer,
+        [_passage("c1", answer)],
+        nli=nli,
+    )
+    assert report.scored_count == 2
+
+
+# ===========================================================================
 # Verdict mapping
 # ===========================================================================
 

@@ -896,3 +896,73 @@ def test_resolve_to_min_clusters_parse_with_fallback(monkeypatch):
     monkeypatch.setenv("ED4ALL_TO_MIN_CLUSTERS", "-1")
     assert od.resolve_to_min_clusters() == od._DEFAULT_TO_MIN_CLUSTERS
     assert od.resolve_to_min_clusters(7) == 7
+
+
+def test_entailing_chunk_pinned_through_union_prune():
+    """2026-07-04 pin — the rep's NLI-entailing chunk survives the cosine prune.
+
+    A merged cluster's representative carries ``entailing_chunk_id`` (Pass-C
+    stamp) pointing at a chunk whose TEXT is cosine-unrelated to the statement
+    (a math-notation worked example). The Fix-1A relevance prune ranks by
+    cosine and would drop it (below floor + out-cosined by topical chunks);
+    the pin re-keeps it — entailment evidence outranks cosine relevance.
+    """
+    rep_statement = "Apply the concept of divisibility to integer division."
+    rep = _cand(rep_statement, ["c_pin", "c_top_a"], ent=0.99)
+    rep["entailing_chunk_id"] = "c_pin"
+    grounded = [
+        rep,
+        _cand("Apply the concept of divisibility carefully.", ["c_top_b", "c_top_c"], ent=0.80),
+        _cand("Apply the concept of divisibility precisely.", ["c_top_d", "c_top_e"], ent=0.70),
+    ]
+    chunks_by_id = {
+        # The entailing chunk reads as math-notation soup — shares NO
+        # vocabulary with the statement, so its fake-embed cosine is ~0.
+        "c_pin": {"id": "c_pin", "text": "sqrt frac latex notation qquad cdot"},
+    }
+    for cid in ("c_top_a", "c_top_b", "c_top_c", "c_top_d", "c_top_e"):
+        chunks_by_id[cid] = {
+            "id": cid,
+            "text": "divisibility of integers division concept applied",
+        }
+    result = dedup_candidates(
+        grounded, embed=FakeEmbed(), threshold=0.5, allow_fake=True,
+        chunks_by_id=chunks_by_id, max_chunks_per_objective=3,
+        chunk_relevance_floor=0.30,
+    )
+    assert result.available is True
+    assert len(result.canonical) == 1
+    merged = result.canonical[0]
+    kept = merged["source_chunk_ids"]
+    # Pin survives despite losing the cosine race.
+    assert "c_pin" in kept
+    # Cap widens by AT MOST one for the pin.
+    assert len(kept) <= 3 + 1
+    # Anti-fabrication: still a subset of the union.
+    union = {"c_pin", "c_top_a", "c_top_b", "c_top_c", "c_top_d", "c_top_e"}
+    assert set(kept).issubset(union)
+    # source_refs mirror the kept set.
+    assert merged["source_refs"][0]["chunk_ids"] == kept
+
+
+def test_no_pin_field_behavior_unchanged():
+    """Without ``entailing_chunk_id`` the prune output is the legacy shape."""
+    grounded = [
+        _cand("Define divisibility of integers.", ["c1", "c2"], ent=0.9),
+        _cand("Define what divisibility of integers means.", ["c3"], ent=0.8),
+    ]
+    chunks_by_id = {
+        "c1": {"id": "c1", "text": "Divisibility of integers and remainders."},
+        "c2": {"id": "c2", "text": "Author list and donor acknowledgements footer."},
+        "c3": {"id": "c3", "text": "Divisibility rules for integers explained."},
+    }
+    result = dedup_candidates(
+        grounded, embed=FakeEmbed(), threshold=0.5, allow_fake=True,
+        chunks_by_id=chunks_by_id, max_chunks_per_objective=5,
+        chunk_relevance_floor=0.30,
+    )
+    assert len(result.canonical) == 1
+    kept = set(result.canonical[0]["source_chunk_ids"])
+    # Off-topic c2 pruned exactly as before; on-topic chunks kept.
+    assert "c1" in kept and "c3" in kept
+    assert "c2" not in kept

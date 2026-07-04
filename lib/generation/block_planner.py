@@ -110,6 +110,7 @@ __all__ = [
     "_apply_alignment_floors",
     "_apply_interleave",
     "_apply_far_transfer_floor",
+    "_apply_integration_floor",
     "_apply_dual_coding_floor",
     "_apply_w6_within_week_passes",
     "build_cross_week_retrieval_blocks",
@@ -558,6 +559,24 @@ _INTERLEAVE_PRACTICE_TYPES: frozenset = frozenset(
 )
 # W6.3 — novel-context application block candidates (first present-in-palette).
 _FAR_TRANSFER_TYPES: Tuple[str, ...] = ("scenario", "problem")
+# Integration floor — ED4ALL_PLANNER_INTEGRATION. Turns a weak-membership
+# ("oddball") CO placed in a week whose TO theme it only weakly matches into ONE
+# integrated application question whose real-world context (the oddball) becomes
+# the VEHICLE to exercise the week's anchor CO / theme, rather than stranding it
+# as an orphaned standalone lesson. Default OFF => byte-stable identity.
+_INTEGRATION_ENV = "ED4ALL_PLANNER_INTEGRATION"
+# Satellite: a CO is weak-membership when its statement's token-overlap with the
+# TO statement is BELOW this floor. Aligned with the token arm of the CO→TO
+# backlink floor (``lo_backlink`` token_floor default 0.10) — same Jaccard
+# tokenizer + semantics, same 0.10 default. Garbage / out-of-[0,1] => default.
+_INTEGRATION_MAX_OVERLAP_ENV = "ED4ALL_PLANNER_INTEGRATION_MAX_OVERLAP"
+_INTEGRATION_DEFAULT_MAX_OVERLAP = 0.10
+# Satellite: hard cap on integrated-practice injections per week (weakest COs
+# first). Garbage / non-positive => default.
+_INTEGRATION_MAX_PER_WEEK_ENV = "ED4ALL_PLANNER_INTEGRATION_MAX_PER_WEEK"
+_INTEGRATION_DEFAULT_MAX_PER_WEEK = 2
+# Integrated-practice application block candidates (first present-in-palette).
+_INTEGRATION_TYPES: Tuple[str, ...] = ("problem", "scenario")
 # W6.5 — co-located visual (dual-coding) block candidates (first present).
 _DUAL_CODING_VISUAL_TYPES: Tuple[str, ...] = ("diagram", "multimedia", "table")
 # W6.5 — verbal exposition block types a dual-coding pairing checks for (a CO
@@ -586,7 +605,9 @@ def _any_w6_within_week_flag_on() -> bool:
     """
     return any(
         _env_floor_on(env)
-        for env in (_INTERLEAVE_ENV, _FAR_TRANSFER_ENV, _DUAL_CODING_ENV)
+        for env in (
+            _INTERLEAVE_ENV, _FAR_TRANSFER_ENV, _DUAL_CODING_ENV, _INTEGRATION_ENV,
+        )
     )
 
 # IB7.3 canonical lifecycle-phase TEMPLATE order (the 100%-frequency
@@ -3114,6 +3135,207 @@ def _apply_far_transfer_floor(
     }]
 
 
+def _resolve_integration_max_overlap(override: Optional[float] = None) -> float:
+    """Resolve the weak-membership token-overlap floor (arg > env > 0.10).
+
+    Parse-with-fallback (mirrors ``lo_backlink.resolve_to_backlink_floor``): an
+    explicit in-[0,1] float wins; else ``ED4ALL_PLANNER_INTEGRATION_MAX_OVERLAP``
+    is read EACH call (so tests can toggle it); any unparseable / out-of-range
+    value falls back to the default 0.10 (aligned with the CO→TO backlink token
+    floor).
+    """
+    import os  # noqa: PLC0415
+
+    if override is not None:
+        try:
+            val = float(override)
+        except (TypeError, ValueError):
+            val = None
+        if val is not None and 0.0 <= val <= 1.0:
+            return val
+    raw = os.environ.get(_INTEGRATION_MAX_OVERLAP_ENV, "").strip()
+    if raw:
+        try:
+            val = float(raw)
+            if 0.0 <= val <= 1.0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    return _INTEGRATION_DEFAULT_MAX_OVERLAP
+
+
+def _resolve_integration_max_per_week(override: Optional[int] = None) -> int:
+    """Resolve the per-week injection cap (arg > env > 2). Garbage / <=0 => default."""
+    import os  # noqa: PLC0415
+
+    if isinstance(override, int) and override > 0:
+        return override
+    raw = os.environ.get(_INTEGRATION_MAX_PER_WEEK_ENV, "").strip()
+    if raw:
+        try:
+            val = int(raw)
+            if val > 0:
+                return val
+        except (TypeError, ValueError):
+            pass
+    return _INTEGRATION_DEFAULT_MAX_PER_WEEK
+
+
+def _truncate_statement(text: str, limit: int = 80) -> str:
+    """Trim a CO statement for the integration ``content_focus`` directive."""
+    t = str(text or "").strip()
+    return t if len(t) <= limit else t[: limit - 1].rstrip() + "…"
+
+
+def _apply_integration_floor(
+    *,
+    selected: List[Dict[str, Any]],
+    terminal_objective: Optional[Dict[str, Any]],
+    chapter_objectives: Sequence[Dict[str, Any]],
+    block_types: frozenset,
+) -> List[Dict[str, Any]]:
+    """Integration floor — weak-membership ("oddball") CO → cross-CO integrated practice.
+
+    Gated on ``ED4ALL_PLANNER_INTEGRATION``; a strict identity NO-OP when off so a
+    default-off run is byte-stable (mirrors :func:`_apply_far_transfer_floor`).
+
+    Bottom-up TO clustering sometimes places a CO in a week whose TO theme it only
+    WEAKLY matches (e.g. a Fahrenheit↔Celsius CO inside an "apply properties of
+    real numbers" TO). Rather than stranding that oddball as an orphaned standalone
+    lesson, this floor injects ONE integrated application question per oddball
+    whose real-world CONTEXT (the oddball) becomes the VEHICLE to exercise the
+    week's ANCHOR CO / theme (e.g. "solve C = 5/9(F−32) for F using the properties
+    of equality"). Fully deterministic — no embeddings, no LLM:
+
+    - A CO is WEAK-MEMBERSHIP when the token-overlap (Jaccard, REUSING
+      ``lo_backlink._token_overlap`` — same tokenizer + semantics as the CO→TO
+      backlink token floor) between its statement and the TO statement is BELOW
+      ``ED4ALL_PLANNER_INTEGRATION_MAX_OVERLAP`` (default 0.10, aligned with the
+      backlink's 0.10 token floor).
+    - Candidate COs are those actually TAUGHT in the week (present in some block's
+      ``target_co_ids``); on the static fallback plan every ``target_co_ids`` is
+      empty, so there are no candidates and the floor is a natural NO-OP.
+    - The ANCHOR is the taught CO with the HIGHEST token-overlap with the TO
+      statement (deterministic tie-break by list order), excluding the oddball.
+
+    For each oddball (weakest first, capped at
+    ``ED4ALL_PLANNER_INTEGRATION_MAX_PER_WEEK``, default 2): skip if some block
+    already co-targets it together with any OTHER CO (already integrated);
+    otherwise APPEND one ``problem`` (or ``scenario`` — first present-in-palette)
+    application block targeting ``[oddball_id, anchor_id]`` (REAL ids only —
+    anti-fabrication), stamped ``integration=True`` (Optional field, hash-excluded
+    — mirrors ``far_transfer=True``) with a ``content_focus`` that names both CO
+    statements and instructs the rewrite tier to author ONE integrated question
+    grounded only in the cited source chunks. Returns a NEW list.
+    """
+    if not _env_floor_on(_INTEGRATION_ENV):
+        return selected
+
+    itype = next((bt for bt in _INTEGRATION_TYPES if bt in block_types), None)
+    if itype is None:
+        return selected
+
+    to_stmt = str((terminal_objective or {}).get("statement") or "").strip()
+    if not to_stmt:
+        return selected
+
+    # Candidate COs = those actually TAUGHT in the week (a real target_co_id on
+    # some block). Fallback-plan blocks carry empty target_co_ids ⇒ no candidates
+    # ⇒ natural NO-OP.
+    taught_ids: set = set()
+    for blk in selected:
+        taught_ids.update(
+            str(c) for c in (blk.get("target_co_ids") or []) if str(c)
+        )
+    if not taught_ids:
+        return selected
+
+    from lib.ontology.lo_backlink import _token_overlap  # noqa: PLC0415
+
+    # (co_id, statement, list-order index) per taught CO, chapter_objectives order.
+    seen: set = set()
+    candidates: List[Tuple[str, str, int]] = []
+    for idx, co in enumerate(chapter_objectives or ()):
+        if not isinstance(co, dict):
+            continue
+        cid = str(co.get("id") or "")
+        stmt = str(co.get("statement") or co.get("text") or "").strip()
+        if cid and stmt and cid in taught_ids and cid not in seen:
+            seen.add(cid)
+            candidates.append((cid, stmt, idx))
+    if len(candidates) < 2:
+        return selected  # need an anchor distinct from the oddball
+
+    max_overlap = _resolve_integration_max_overlap()
+    max_per_week = _resolve_integration_max_per_week()
+
+    overlaps: Dict[str, float] = {
+        cid: _token_overlap(stmt, to_stmt) for cid, stmt, _ in candidates
+    }
+    order_of: Dict[str, int] = {cid: idx for cid, _, idx in candidates}
+    stmt_of: Dict[str, str] = {cid: stmt for cid, stmt, _ in candidates}
+
+    # Oddballs: below the weak-membership floor, WEAKEST first (tie-break: order).
+    oddballs = sorted(
+        (cid for cid, _, _ in candidates if overlaps[cid] < max_overlap),
+        key=lambda cid: (overlaps[cid], order_of[cid]),
+    )
+    if not oddballs:
+        return selected
+
+    # A CO is already integrated iff a PRACTICE block co-targets it with another
+    # CO. Non-practice blocks (objective / overview / summary / self-check) list
+    # several COs as a matter of course — counting those suppressed every
+    # injection on real LLM plans (measured: 0 injections across all 11 weeks on
+    # the first live run, because the plan's roll-up blocks co-target liberally).
+    already_integrated: set = set()
+    for blk in selected:
+        if str(blk.get("block_type") or "") not in _INTERLEAVE_PRACTICE_TYPES:
+            continue
+        cos = {str(c) for c in (blk.get("target_co_ids") or []) if str(c)}
+        if len(cos) >= 2:
+            already_integrated.update(cos)
+
+    injections: List[Dict[str, Any]] = []
+    for oddball_id in oddballs:
+        if len(injections) >= max_per_week:
+            break
+        if oddball_id in already_integrated:
+            continue
+        # Anchor = highest-overlap taught CO != oddball (tie-break by list order:
+        # lower index wins ⇒ larger ``-idx``).
+        anchor_id: Optional[str] = None
+        anchor_key: Optional[Tuple[float, int]] = None
+        for cid, _, idx in candidates:
+            if cid == oddball_id:
+                continue
+            key = (overlaps[cid], -idx)
+            if anchor_key is None or key > anchor_key:
+                anchor_key = key
+                anchor_id = cid
+        if anchor_id is None:
+            continue
+        injections.append({
+            "block_type": itype,
+            "page_type": _BLOCK_TYPE_DEFAULT_PAGE.get(itype, "application"),
+            "target_co_ids": [oddball_id, anchor_id],
+            "content_focus": (
+                "Integration floor: author ONE integrated application question "
+                "that uses the weak-membership objective's real-world context as "
+                "the VEHICLE to exercise the week's anchor objective / theme — "
+                f"vehicle {oddball_id} (\"{_truncate_statement(stmt_of[oddball_id])}\"); "
+                f"anchor {anchor_id} (\"{_truncate_statement(stmt_of[anchor_id])}\"). "
+                "Ground the question ONLY in the cited source chunks."
+            ),
+            "target_bloom": "apply",
+            "integration": True,
+        })
+
+    if not injections:
+        return selected
+    return list(selected) + injections
+
+
 def _apply_dual_coding_floor(
     *,
     selected: List[Dict[str, Any]],
@@ -3280,16 +3502,18 @@ def _apply_w6_within_week_passes(
     chapter_objectives: Sequence[Dict[str, Any]],
     block_types: frozenset,
     signals: Dict[str, Any],
+    terminal_objective: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
-    """Run the three within-week W6 passes in dependency order.
+    """Run the within-week W6 passes in dependency order.
 
-    far-transfer floor → dual-coding floor → interleave. Each pass is a strict
-    identity no-op when its env flag is off, so a default-off run returns
-    ``selected`` byte-identical (the keystone byte-stability contract). The
-    floors run BEFORE the interleave so the interleave permutes the final
-    practice set (including a far-transfer scenario). Records per-pass signals
-    into ``signals`` (extra keys are harmless — the decision emit reads a fixed
-    allowlist).
+    far-transfer floor → integration floor → dual-coding floor → interleave. Each
+    pass is a strict identity no-op when its env flag is off, so a default-off run
+    returns ``selected`` byte-identical (the keystone byte-stability contract). The
+    floors run BEFORE the interleave so the interleave permutes the final practice
+    set (including a far-transfer scenario / integration problem). Records per-pass
+    signals into ``signals`` (extra keys are harmless — the decision emit reads a
+    fixed allowlist). ``terminal_objective`` supplies the week's TO statement the
+    integration floor needs (``None`` on the fallback path — the floor no-ops).
     """
     ft_on = _env_floor_on(_FAR_TRANSFER_ENV)
     n_before = len(selected)
@@ -3299,6 +3523,16 @@ def _apply_w6_within_week_passes(
         block_types=block_types,
     )
     signals["far_transfer_injected"] = (len(selected) - n_before) if ft_on else 0
+
+    integ_on = _env_floor_on(_INTEGRATION_ENV)
+    n_before = len(selected)
+    selected = _apply_integration_floor(
+        selected=selected,
+        terminal_objective=terminal_objective,
+        chapter_objectives=chapter_objectives,
+        block_types=block_types,
+    )
+    signals["integration_injected"] = (len(selected) - n_before) if integ_on else 0
 
     dc_on = _env_floor_on(_DUAL_CODING_ENV)
     n_before = len(selected)
@@ -3743,6 +3977,7 @@ def plan_week_blocks(
         chapter_objectives=chapter_objectives,
         block_types=block_types,
         signals=ib7_signals,
+        terminal_objective=terminal_objective,
     )
 
     # GAP D / GAP C alignment floors run LAST — after every IB7 pass (climb,
@@ -3867,11 +4102,15 @@ def _fallback_plan(
     # when ON unless an upstream injection added a CO-targeted block.
     if _any_w6_within_week_flag_on():
         _w6_signals: Dict[str, Any] = {}
+        # The fixed plan carries empty target_co_ids, so the integration floor
+        # finds no taught CO and no-ops even when ON; the TO statement is absent
+        # on this path (only ``to_id`` is threaded) → terminal_objective=None.
         selected = _apply_w6_within_week_passes(
             selected=selected,
             chapter_objectives=chapter_objectives or [],
             block_types=_resolve_block_types(),
             signals=_w6_signals,
+            terminal_objective=None,
         )
         page_plan = _to_page_plan(selected)
     # GAP D / GAP C alignment floors ALSO run on the fallback path — LAST, after
