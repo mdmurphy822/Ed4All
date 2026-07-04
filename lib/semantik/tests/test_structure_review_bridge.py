@@ -1215,5 +1215,220 @@ def test_verify_resolver_reads_both_arms():
     assert _semantik_resolve_second_pass_verify(off) is None
 
 
+# ---------------------------------------------------------------------------
+# Phase 5 — SEMANTIK_OCR_CONFUSABLE_REPAIR per-doc DecisionCapture (channels 2+3).
+#   Root /CLAUDE.md § LLM call-site instrumentation requires a regression test
+#   asserting the capture fires on the conversion call path (design test 14).
+# ---------------------------------------------------------------------------
+
+
+def _ocr_repair_stats() -> dict:
+    """A synthetic ``ocr_repair`` audit-stats arm matching the shape
+    ``qwen_specialists.ocr_repair.run_ocr_confusable_repair`` emits: flagged /
+    windows / proposals / accepted counts, a per-edit rejected list, and the
+    channel-3 residual-density proxy score."""
+    return {
+        "flagged_blocks": 3,
+        "windows_dispatched": 2,
+        "windows_failed": 0,
+        "proposals": 5,
+        "accepted": 3,
+        "rejected": [
+            {"region_index": 4, "before": "V", "after": "√",
+             "reason": "numeric_context"},
+            {"region_index": 7, "before": "O", "after": "0",
+             "reason": "per_block_cap"},
+        ],
+        "total_content_tokens": 820,
+        "residual_garble_tokens": 4,
+        "unrepairable_defect_density": 0.004878,
+        "repair_stats_score": 0.95,
+    }
+
+
+def _ocr_repair_rows_for(captures_root, course: str) -> list[dict]:
+    """OCR-repair capture rows for a course — filtered on the STRUCTURED
+    ``metadata.ocr_confusable_repair`` field, not the free-text decision."""
+    out = []
+    for r in _read_capture_rows(captures_root):
+        if r.get("decision_type") != "structure_review":
+            continue
+        meta = r.get("metadata") or {}
+        if not meta.get("ocr_confusable_repair"):
+            continue
+        if r.get("course_id") in {course, course.replace("_", "-")}:
+            out.append(r)
+    return out
+
+
+def test_ocr_repair_capture_fires_dynamic_rationale(monkeypatch):
+    monkeypatch.setenv("VALIDATE_DECISIONS", "true")
+    # Strict mode: a non-canonical decision_type would RAISE — this also proves
+    # the reused ``structure_review`` enum carries the OCR-repair row NO schema
+    # edit.
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+    monkeypatch.setenv("SEMANTIK_STRUCTURE_REVIEW_MODEL", "meta/llama-3.3-70b")
+
+    from lib.paths import get_training_captures_dir
+    from MCP.tools.pipeline_tools import _emit_ocr_repair_capture
+
+    captures_root = get_training_captures_dir()
+
+    _emit_ocr_repair_capture(
+        _ocr_repair_stats(),
+        canonical_course_code="OCRREP_CAP_101",
+        pdf_stem="mybook",
+    )
+
+    rows = _ocr_repair_rows_for(captures_root, "OCRREP_CAP_101")
+    assert len(rows) == 1, "expected exactly one per-doc OCR-repair capture row"
+    row = rows[0]
+
+    # Canonical reused decision_type + structured discriminator in METADATA.
+    assert row["decision_type"] == "structure_review"
+    assert row["metadata"]["ocr_confusable_repair"] is True
+    # Dynamic, replayable rationale >= 20 chars interpolating model + counts.
+    assert len(row["rationale"]) >= 20
+    assert "meta/llama-3.3-70b" in row["rationale"]
+    assert "max_tokens=1024" in row["rationale"]
+    assert "3 region(s)" in row["rationale"]
+    assert "numeric_context" in row["rationale"]  # reject-reason distribution
+    # Decision string carries the per-doc tallies.
+    assert "ocr_confusable_repair" in row["decision"]
+    assert "flagged=3" in row["decision"]
+    assert "accepted=3" in row["decision"]
+
+
+def test_ocr_repair_capture_discriminator_field(monkeypatch):
+    """OCR-repair captures share ``decision_type='structure_review'`` with the
+    Pass-1 window + Pass-2 verify rows but split cleanly on the structured
+    ``metadata.ocr_confusable_repair`` FIELD (not the free-text decision)."""
+    monkeypatch.setenv("VALIDATE_DECISIONS", "true")
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+    monkeypatch.setenv("SEMANTIK_STRUCTURE_REVIEW_MODEL", "meta/llama-3.3-70b")
+
+    from lib.paths import get_training_captures_dir
+    from MCP.tools.pipeline_tools import (
+        _emit_ocr_repair_capture,
+        _emit_second_pass_verify_captures,
+    )
+
+    captures_root = get_training_captures_dir()
+
+    _emit_second_pass_verify_captures(
+        _verify_signals(),
+        canonical_course_code="OCRREP_DISC_101",
+        pdf_stem="mybook",
+    )
+    _emit_ocr_repair_capture(
+        _ocr_repair_stats(),
+        canonical_course_code="OCRREP_DISC_101",
+        pdf_stem="mybook",
+    )
+
+    all_sr = [
+        r
+        for r in _read_capture_rows(captures_root)
+        if r.get("decision_type") == "structure_review"
+        and r.get("course_id") in {"OCRREP_DISC_101", "OCRREP-DISC-101"}
+    ]
+    ocr = [r for r in all_sr if (r.get("metadata") or {}).get("ocr_confusable_repair")]
+    verify = [r for r in all_sr if (r.get("metadata") or {}).get("second_pass_verify")]
+    assert len(ocr) == 1, "one OCR-repair row"
+    assert len(verify) == 2, "two Pass-2 verify rows"
+    # The two arms never collide on the discriminator field.
+    assert all(
+        not (r.get("metadata") or {}).get("second_pass_verify") for r in ocr
+    )
+    assert all(
+        not (r.get("metadata") or {}).get("ocr_confusable_repair") for r in verify
+    )
+
+
+def test_ocr_repair_capture_skips_cleanly_when_off():
+    from lib.paths import get_training_captures_dir
+    from MCP.tools.pipeline_tools import _emit_ocr_repair_capture
+
+    captures_root = Path(get_training_captures_dir())
+
+    def _count_for(course: str) -> int:
+        n = 0
+        for r in _read_capture_rows(captures_root):
+            meta = r.get("metadata") or {}
+            if (
+                r.get("decision_type") == "structure_review"
+                and meta.get("ocr_confusable_repair")
+                and r.get("course_id") in {course, course.replace("_", "-")}
+            ):
+                n += 1
+        return n
+
+    before = _count_for("OCRREP_OFF_101")
+    # stats=None => the repair pass did NOT run => NO capture, NO exception.
+    _emit_ocr_repair_capture(
+        None, canonical_course_code="OCRREP_OFF_101", pdf_stem="mybook"
+    )
+    assert _count_for("OCRREP_OFF_101") == before, (
+        "no OCR-repair capture should be written when the pass is off"
+    )
+
+
+def test_ocr_repair_capture_best_effort_no_raise(monkeypatch):
+    """A DecisionCapture failure must NOT raise out of the seam (best-effort)."""
+    import MCP.tools.pipeline_tools as pt
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("simulated capture init failure")
+
+    monkeypatch.setattr(
+        "lib.decision_capture.DecisionCapture", _Boom, raising=True
+    )
+    assert (
+        pt._emit_ocr_repair_capture(
+            _ocr_repair_stats(),
+            canonical_course_code="X",
+            pdf_stem="y",
+        )
+        is None
+    )
+
+
+def test_ocr_repair_resolver_reads_both_arms():
+    """The seam resolver reads ``ocr_repair`` off the bridge attribute, the
+    in-process conformance_audit nesting, AND the in-process result-dict
+    top-level key; returns None when none carries it."""
+    from MCP.tools.pipeline_tools import (
+        _SemantikBridgeResult,
+        _semantik_resolve_ocr_repair,
+    )
+
+    # Bridge arm — top-level attribute.
+    bridge = _SemantikBridgeResult(
+        {"pdf": "x.pdf", "ocr_repair": _ocr_repair_stats()}
+    )
+    resolved = _semantik_resolve_ocr_repair(bridge)
+    assert resolved is not None and resolved["accepted"] == 3
+
+    # In-process arm A — cascade["conformance_audit"]["ocr_repair"].
+    inproc = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    inproc.ocr_repair = None
+    inproc.cascade["conformance_audit"]["ocr_repair"] = _ocr_repair_stats()
+    resolved2 = _semantik_resolve_ocr_repair(inproc)
+    assert resolved2 is not None and resolved2["flagged_blocks"] == 3
+
+    # In-process arm B — cascade["ocr_repair"] (result-dict top level).
+    inproc2 = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    inproc2.ocr_repair = None
+    inproc2.cascade["ocr_repair"] = _ocr_repair_stats()
+    resolved3 = _semantik_resolve_ocr_repair(inproc2)
+    assert resolved3 is not None and resolved3["proposals"] == 5
+
+    # None carries it => None (clean skip).
+    off = _SyntheticCascadeResult(_reviewed_provenance(), None)
+    off.ocr_repair = None
+    assert _semantik_resolve_ocr_repair(off) is None
+
+
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(pytest.main([__file__, "-q"]))

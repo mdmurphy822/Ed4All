@@ -55,6 +55,12 @@ _SECTION_NUMBER_RE = re.compile(r"^\s*(\d+)\.(\d+)(?:\.\d+)*\s+(\S.*)$")
 # L1-opener fixtures).
 _CHAPTER_OPENER_RE = re.compile(r"^\s*chapter\s+(\d+)\b", re.IGNORECASE)
 
+# One-or-more trailing " (cont.)" continuation suffixes. Used to STRIP any
+# existing continuation suffix off a chapter title before appending a single
+# one, so an N-times-overflowing chapter reads "Title (cont.)" — never the
+# accumulating "Title (cont.) (cont.) (cont.)" cascade (defect 2).
+_CONT_SUFFIX_RE = re.compile(r"(?:\s*\(cont\.\))+\s*$")
+
 from lib.semantik.adapter import _AdapterBlock, _AdapterChapter, _esc_text
 
 # Phantom-TOC + front-matter detector (root-cause fix for a PDF's full-book
@@ -391,6 +397,60 @@ def _block_html_for_kind(
     return f"<p>{_esc_text(text)}</p>"
 
 
+def _replay_repaired_text(
+    original: str, repaired: str, edits: Sequence[Mapping[str, Any]]
+) -> bool:
+    """Strict replay check: ``repaired`` must be EXACTLY ``original`` with the
+    recorded ``edits`` applied in order (each replacing the FIRST occurrence of
+    ``before`` with ``after``).
+
+    The render-time fail-closed guard the design pins on the adapter/downstream
+    seam (mirroring ``qwen_specialists.ocr_repair.assert_repair_conservation``,
+    re-implemented locally so this Ed4All-venv seam never imports the SemantiK
+    cascade package). ANY other drift → ``False`` and the caller reverts the
+    block to verbatim ``original`` (the ``data-dart-repair`` exemption is only
+    honored when this passes).
+    """
+    text = original
+    for edit in edits:
+        if not isinstance(edit, Mapping):
+            return False
+        before = str(edit.get("before", ""))
+        after = str(edit.get("after", ""))
+        if not before:
+            return False
+        text = text.replace(before, after, 1)
+    return text == repaired
+
+
+def _resolve_ocr_repair(
+    prov: Mapping[str, Any], raw_text: str
+) -> tuple[Optional[str], int]:
+    """Resolve the render-time (repaired_text, n_edits) for a provenance dict.
+
+    Returns ``(None, 0)`` — the byte-stable no-repair path — when the additive
+    ``repaired_text`` / ``ocr_repair`` keys are absent, malformed, or FAIL the
+    :func:`_replay_repaired_text` conservation check (fail-closed: a drifted
+    repaired string is discarded and the block ships verbatim ``raw_text``).
+    """
+    repaired = prov.get("repaired_text")
+    ocr = prov.get("ocr_repair")
+    if not isinstance(repaired, str) or not repaired:
+        return None, 0
+    if not isinstance(ocr, Mapping):
+        return None, 0
+    edits = ocr.get("edits")
+    if not isinstance(edits, (list, tuple)) or not edits:
+        return None, 0
+    if not _replay_repaired_text(raw_text, repaired, edits):
+        logger.warning(
+            "ocr-repair replay check failed on block %s — reverting to verbatim",
+            prov.get("first_raw_block_index"),
+        )
+        return None, 0
+    return repaired, len(edits)
+
+
 def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
     """Map one ``region_provenance`` dict onto an :class:`_AdapterBlock`.
 
@@ -444,6 +504,12 @@ def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
     cell_roles = prov.get("cell_roles")
     cell_roles = cell_roles if isinstance(cell_roles, list) and cell_roles else None
 
+    # SEMANTIK_OCR_CONFUSABLE_REPAIR — the additive repaired text (replay-checked
+    # fail-closed). When it survives, the emitted body renders the REPAIRED text
+    # (retrieval fidelity), while ``raw_text`` stays verbatim (the sid basis).
+    repaired_text, ocr_repair_count = _resolve_ocr_repair(prov, raw_text)
+    render_text = repaired_text if repaired_text is not None else raw_text
+
     # A heading region carries no inner body HTML (the adapter renders the
     # heading element from heading_text); content regions render their kind.
     inner_html = (
@@ -451,7 +517,7 @@ def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
         if region_kind == "heading"
         else _block_html_for_kind(
             region_kind,
-            raw_text,
+            render_text,
             figure_alt,
             image_src,
             caption_text=caption_text,
@@ -473,6 +539,8 @@ def _block_from_provenance(prov: Mapping[str, Any]) -> _AdapterBlock:
         wcag_status=wcag_status,
         figure_alt=figure_alt,
         image_src=image_src,
+        repaired_text=repaired_text,
+        ocr_repair_count=ocr_repair_count,
     )
 
 
@@ -796,8 +864,22 @@ def build_chapters_ir(result: Any) -> List[_AdapterChapter]:
         # later trimmed by the adapter's non-content filter; this is the
         # belt-and-braces ceiling for pathological un-headed documents.)
         if len(current.blocks) >= _MAX_BLOCKS_PER_CHAPTER:
+            # Strip any existing "(cont.)" suffix off the base title before
+            # appending ONE, so a chapter that overflows the block budget
+            # several times reads "Title (cont.)" every time — NOT the
+            # accumulating "Title (cont.) (cont.) (cont.)" heading cascade
+            # (defect 2: a page-spanning section re-emitting an ever-longer
+            # "(cont.)"-chained heading per overflow).
+            base_title = _CONT_SUFFIX_RE.sub("", current.title).rstrip()
+            # continuation=True — the adapter renders this spill WITHOUT a
+            # visible <h2> (an aria-hidden presentation <div> instead), so the
+            # repeated overflow does not mint a phantom pseudo-section heading
+            # that the downstream SemanticStructureExtractor reads as a new
+            # section (the 8× "Chapter Outline (cont.)" hierarchy-pollution
+            # defect). The SPLIT itself is retained — it is the belt-and-braces
+            # >40-section-collapse ceiling for pathological un-headed documents.
             cont = _AdapterChapter(
-                title=f"{current.title} (cont.)", blocks=[]
+                title=f"{base_title} (cont.)", blocks=[], continuation=True
             )
             chapters.append(cont)
             current = cont

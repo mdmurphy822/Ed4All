@@ -397,6 +397,29 @@ def _p(idx: int, text: str, *, raw: int = 0) -> dict:
     }
 
 
+def prov_result(prov: list[dict]):
+    """Chain a ``region_provenance`` list → IR → a duck-typed adapter result.
+
+    Mirrors the ``chained_out`` fixture but for an inline-built provenance list
+    (used by the overflow-continuation tests): ``build_chapters_ir`` groups the
+    provenance into chapters, then a duck-typed result carrying that IR + the
+    doc-level signals is returned for ``normalize_cascade_to_ed4all``.
+    """
+    chapters = build_chapters_ir(prov)
+
+    class _Res:
+        exit_action = "ship_with_confidence"
+        wcag_status = "passed"
+        theta_score = 0.91
+        flags: list[str] = []
+        lane_used = "fast-lane"
+        lang = "en"
+
+    res = _Res()
+    res.chapters = chapters
+    return res
+
+
 def test_e_derive_chapters_by_section_number_multi_chapter():
     """Content with N.M sections across multiple leading numbers but NO real
     L1 chapter openers groups into one chapter per leading number."""
@@ -547,3 +570,113 @@ def test_f_list_items_are_escaped():
     html = _block_html_for_kind("list", "• a < b • c & d", None)
     assert "&lt;" in html and "&amp;" in html
     assert "<li>a &lt; b</li>" in html
+
+
+# ---------------------------------------------------------------------------
+# Defect 2 — the "(cont.)" heading cascade must not accumulate.
+# ---------------------------------------------------------------------------
+
+
+def test_overflow_continuation_title_does_not_accumulate_cont():
+    """A chapter that overflows the per-chapter block budget several times spills
+    into continuation chapters whose title reads 'Title (cont.)' EVERY time —
+    never the accumulating 'Title (cont.) (cont.) (cont.)' cascade (defect 2:
+    31 EA2e headings carried >=1 '(cont.)', one carried four).
+
+    Uses the LEGACY boundary path (a single real 'Chapter N' L1 opener + a long
+    run of headingless prose, no N.M sections → no section-number derivation),
+    driving the _MAX_BLOCKS_PER_CHAPTER overflow guard repeatedly.
+    """
+    from lib.semantik.cascade_ir import _MAX_BLOCKS_PER_CHAPTER
+
+    prov = [_h(0, "Chapter 9 Higher Roots", level=1, raw=0)]
+    # 3x the per-chapter budget of headingless prose → >=2 overflow spills.
+    for i in range(_MAX_BLOCKS_PER_CHAPTER * 3):
+        prov.append(_p(i + 1, f"Prose body sentence number {i}.", raw=i + 1))
+
+    chapters = build_chapters_ir(prov)
+    titles = [c.title for c in chapters]
+    # The overflow fired (more than one chapter from a single opener).
+    assert len(titles) >= 3, titles
+    # No title ever carries a doubled "(cont.) (cont.)" — the cascade signature.
+    assert all("(cont.) (cont.)" not in t for t in titles), titles
+    # Every continuation title has AT MOST one "(cont.)" suffix.
+    for t in titles:
+        assert t.count("(cont.)") <= 1, t
+    # The base title is preserved on the continuations.
+    assert all(t.startswith("Chapter 9 Higher Roots") for t in titles), titles
+
+
+# ---------------------------------------------------------------------------
+# Overflow continuations must be FLAGGED so the adapter renders them WITHOUT a
+# visible heading (the 8x "Chapter Outline (cont.)" phantom-section defect).
+# ---------------------------------------------------------------------------
+
+
+def test_overflow_spill_flags_continuation_chapters():
+    """The FIRST chapter from an opener is a real chapter (continuation=False);
+    every overflow SPILL is flagged continuation=True so the adapter can demote
+    its heading out of the HTML heading stream (downstream structure extraction
+    reads each heading element as a new section)."""
+    from lib.semantik.cascade_ir import _MAX_BLOCKS_PER_CHAPTER
+
+    prov = [_h(0, "Chapter 9 Higher Roots", level=1, raw=0)]
+    for i in range(_MAX_BLOCKS_PER_CHAPTER * 3):
+        prov.append(_p(i + 1, f"Prose body sentence number {i}.", raw=i + 1))
+
+    chapters = build_chapters_ir(prov)
+    assert len(chapters) >= 3, [c.title for c in chapters]
+    # First chapter is NOT a continuation; all spills ARE continuations.
+    assert chapters[0].continuation is False
+    assert all(c.continuation for c in chapters[1:]), [
+        (c.title, c.continuation) for c in chapters
+    ]
+    # Every continuation carries the "(cont.)" title (the visual-only cue).
+    assert all(c.title.endswith("(cont.)") for c in chapters[1:])
+
+
+def test_overflow_continuation_renders_without_heading_element():
+    """End-to-end: an overflowing chapter emits exactly ONE <h2> for the real
+    section title; the spills render as aria-hidden presentation <div>s (NOT
+    heading elements), so the HTML heading stream carries the title once."""
+    from lib.semantik.cascade_ir import _MAX_BLOCKS_PER_CHAPTER
+
+    prov = [_h(0, "Chapter 9 Higher Roots", level=1, raw=0)]
+    for i in range(_MAX_BLOCKS_PER_CHAPTER * 3):
+        prov.append(_p(i + 1, f"Prose body sentence number {i}.", raw=i + 1))
+
+    out = normalize_cascade_to_ed4all(prov_result(prov), pdf_stem="ea2e_ch9")
+    html = out["html"]
+    # The base title appears as a heading EXACTLY once; no "(cont.)" heading.
+    assert len(re.findall(r"<h2>Chapter 9 Higher Roots</h2>", html)) == 1
+    assert "(cont.)</h2>" not in html
+    assert re.search(r"<h2>[^<]*\(cont\.\)", html) is None
+    # The spills survive as aria-hidden presentation divs (content preserved).
+    assert 'class="dart-continuation"' in html
+    assert 'aria-hidden="true"' in html
+    assert "Chapter 9 Higher Roots (cont.)" in html  # inside the div, not an h2
+    # No content was dropped: every prose sentence is still present.
+    assert "Prose body sentence number 0." in html
+    assert f"Prose body sentence number {_MAX_BLOCKS_PER_CHAPTER * 3 - 1}." in html
+
+
+def test_overflow_continuation_blocks_still_in_sidecar():
+    """Sidecar consistency: continuation-chapter blocks are real content and
+    MUST still appear as sidecar sections (block-id parity for the source_refs
+    gate). The continuation FLAG only suppresses the visible chapter HEADING, it
+    never drops the blocks. build_synthesized_sidecar emits per-BLOCK sections
+    (never chapter titles), so there is no continuation title to dedupe there."""
+    from lib.semantik.cascade_ir import _MAX_BLOCKS_PER_CHAPTER
+
+    n = _MAX_BLOCKS_PER_CHAPTER * 3
+    prov = [_h(0, "Chapter 9 Higher Roots", level=1, raw=0)]
+    for i in range(n):
+        prov.append(_p(i + 1, f"Prose body sentence number {i}.", raw=i + 1))
+
+    out = normalize_cascade_to_ed4all(prov_result(prov), pdf_stem="ea2e_ch9")
+    sidecar = out["synthesized_sidecar"]
+    # All n prose blocks are present in the sidecar (none lost to the spill).
+    assert len(sidecar["sections"]) == n
+    # The chapter title never leaks in as a section (only per-block titles).
+    titles = {s["section_title"] for s in sidecar["sections"]}
+    assert not any("(cont.)" in t for t in titles), titles

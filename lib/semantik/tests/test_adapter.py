@@ -200,43 +200,44 @@ def result_html_and_sidecar():
 
 
 def test_a_single_sid_invariant(result_html_and_sidecar):
-    """aria-labelledby == label-element id == data-dart-block-id == sidecar
-    section_id == #fragment, all from ONE mint fn. The label element is a
-    VISIBLE <h3> for genuine heading blocks and a visually-hidden
-    <p class="sr-only"> for content blocks (no fabricated visible heading)."""
-    from gui.services.source_page import heading_slug
-
+    """The sid anchors ``#{sid}`` == data-dart-block-id == sidecar section_id,
+    all from ONE mint fn. B4 (2026-07-04): a genuine HEADING block names its
+    section via ``aria-labelledby`` → a VISIBLE ``<hN id={sid}>`` (descriptive
+    region landmark). A CONTENT block carries the sid as a bare ``id`` on the
+    ``<section>`` (so ``#{sid}`` deep-links) with NO aria-labelledby and NO
+    sr-only label — so it is not a generic "Paragraph block" region."""
     out = result_html_and_sidecar
     html = out["html"]
 
-    # Harvest every section's (aria-labelledby, data-dart-block-id) and the
-    # aria-labelledby TARGET element id (either <h3 id> or <p ... id>).
     sections = re.findall(r"<section\b[^>]*>.*?</section>", html, re.DOTALL)
     assert sections, "no <section> wrappers emitted"
 
     sidecar_ids = {s["section_id"] for s in out["synthesized_sidecar"]["sections"]}
     assert sidecar_ids, "sidecar carried no sections"
 
+    # B4: no section carries an sr-only "… block" label anymore.
+    assert 'class="sr-only"' not in html
+
     seen_block_ids = set()
     for sec in sections:
-        aria = re.search(r'aria-labelledby="([^"]+)"', sec).group(1)
         block_id = re.search(r'data-dart-block-id="([^"]+)"', sec).group(1)
-        # The aria-labelledby target is the FIRST element carrying id={aria};
-        # it is an <h3> for a heading block, else a <p class="sr-only" hidden>.
-        label_match = re.search(
-            r'<(h3|p)\b[^>]*\bid="([^"]+)"[^>]*>', sec
-        )
-        assert label_match, f"no aria-labelledby target element in section: {sec[:120]}"
-        label_tag, label_id = label_match.group(1), label_match.group(2)
-        assert aria == block_id == label_id, (
-            f"sid divergence: aria={aria} block_id={block_id} label_id={label_id}"
-        )
-        # A content section's label is visually-hidden (sr-only/hidden), NOT a
-        # visible heading; only a genuine heading block gets a visible <h3>.
-        if label_tag == "p":
-            assert 'class="sr-only"' in label_match.group(0)
-            assert "hidden" in label_match.group(0)
-        # Parity with sidecar (§3.3 invariant).
+        aria_m = re.search(r'aria-labelledby="([^"]+)"', sec)
+        if aria_m:
+            # Heading block: aria-labelledby target is a VISIBLE <hN id={sid}>.
+            aria = aria_m.group(1)
+            label_match = re.search(r"<(h[2-6])\b[^>]*\bid=\"([^\"]+)\"[^>]*>", sec)
+            assert label_match, f"no heading target in section: {sec[:120]}"
+            assert aria == block_id == label_match.group(2), (
+                f"sid divergence: aria={aria} block_id={block_id} "
+                f"label_id={label_match.group(2)}"
+            )
+        else:
+            # Content block: the <section> carries id={sid} directly.
+            sec_open = sec[: sec.index(">") + 1]
+            id_m = re.search(r'\bid="([^"]+)"', sec_open)
+            assert id_m and id_m.group(1) == block_id, (
+                f"content section missing id={block_id}: {sec_open}"
+            )
         assert block_id in sidecar_ids, f"{block_id} not in sidecar id universe"
         seen_block_ids.add(block_id)
 
@@ -244,6 +245,8 @@ def test_a_single_sid_invariant(result_html_and_sidecar):
     assert seen_block_ids == sidecar_ids
 
     # Heading-text-derived sids equal heading_slug(text) exactly (heading block).
+    from gui.services.source_page import heading_slug
+
     res = _make_cascade_result()
     heading_block = res.chapters[0].blocks[0]  # the genuine "heading" region
     assert _mint_sid(heading_block) == heading_slug(heading_block.heading_text)
@@ -385,8 +388,10 @@ def test_no_fabricated_heading_no_body_duplication(result_html_and_sidecar):
                 f"heading duplicates body: h3={ht[:40]!r} p={pt[:40]!r}"
             )
 
-    # The content-block label is the terse machine handle, not the body.
-    assert 'class="sr-only" hidden>Paragraph block</p>' in html
+    # B4: content sections carry NO sr-only "Paragraph block" label anymore;
+    # they anchor via a bare id on the <section> instead.
+    assert 'class="sr-only"' not in html
+    assert "Paragraph block" not in html
     # A genuine heading region still renders a VISIBLE heading.
     assert "<h3 id=" in html
     assert "Introduction to Algebra" in html
@@ -440,3 +445,226 @@ def test_figure_and_page_provenance(result_html_and_sidecar):
         if s["data"].get("figure_alt")
     ]
     assert "A number line from -5 to 5." in alts
+
+
+# ---------------------------------------------------------------------------
+# Defect fixes — furniture-emission suppression + honest <h1> selection.
+# ---------------------------------------------------------------------------
+
+
+def test_metadata_drop_furniture_not_emitted_to_body():
+    """A metadata_drop-role block (running header / footer / copyright line) is
+    page furniture — its body text must NOT leak into the emitted HTML nor the
+    synthesized sidecar (defect: SemantiK furniture-emission — 198 metadata_drop
+    bodies leaked into <p>s on the EA2e OCR scan; the footer 61×, the running
+    header 136×). Mirrors the assembler pass_9a metadata_drop drop; filtered
+    from BOTH surfaces so block-id parity (source_refs gate) holds."""
+    footer = "This OpenStax book is available for free at http://cnx.org/x"
+    running = "Chapter 9 Roots and Radicals 1035"
+    result = type("R", (), {})()
+    result.exit_action = "ship_with_confidence"
+    result.wcag_status = "passed"
+    result.lang = "en"
+    result.chapters = [
+        _AdapterChapter(
+            title="Chapter 9 Roots and Radicals",
+            blocks=[
+                _AdapterBlock(
+                    html="<p>The square root of 225 is 15.</p>",
+                    region_kind="paragraph",
+                    raw_block_index=0,
+                    raw_text="The square root of 225 is 15.",
+                    pages=[2],
+                    block_role="paragraph",
+                ),
+                _AdapterBlock(
+                    html=f"<p>{footer}</p>",
+                    region_kind="metadata_drop",
+                    raw_block_index=1,
+                    raw_text=footer,
+                    pages=[2],
+                    block_role="metadata_drop",
+                ),
+                _AdapterBlock(
+                    html=f"<p>{running}</p>",
+                    region_kind="metadata_drop",
+                    raw_block_index=2,
+                    raw_text=running,
+                    pages=[3],
+                    block_role="metadata_drop",
+                ),
+            ],
+        )
+    ]
+    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    html = out["html"]
+    # Real content survives; furniture bodies are gone.
+    assert "The square root of 225 is 15." in html
+    assert footer not in html
+    assert "cnx.org" not in html
+    assert running not in html
+    assert 'data-dart-block-role="metadata_drop"' not in html
+    # Sidecar parity: no metadata_drop section survives either.
+    sidecar_texts = [s["data"]["text"] for s in out["synthesized_sidecar"]["sections"]]
+    assert footer not in sidecar_texts
+    assert running not in sidecar_texts
+
+
+def test_h1_prefers_chapter_n_over_frontmatter_outline():
+    """The document <h1>/<title> prefers a real 'Chapter N <Title>' opener over
+    a leading front-matter 'Chapter Outline' artifact (defect 3d — the h1 was
+    minted from 'Chapter Outline' instead of the chapter title)."""
+    result = type("R", (), {})()
+    result.exit_action = "ship_with_confidence"
+    result.wcag_status = "passed"
+    result.lang = "en"
+    result.chapters = [
+        _AdapterChapter(
+            title="Chapter Outline",
+            blocks=[
+                _AdapterBlock(
+                    html="<p>Outline front matter.</p>",
+                    region_kind="paragraph",
+                    raw_block_index=0,
+                    raw_text="Outline front matter.",
+                    pages=[1],
+                )
+            ],
+        ),
+        _AdapterChapter(
+            title="Chapter 9 Roots and Radicals",
+            blocks=[
+                _AdapterBlock(
+                    html="<p>Radicals content.</p>",
+                    region_kind="paragraph",
+                    raw_block_index=1,
+                    raw_text="Radicals content.",
+                    pages=[2],
+                )
+            ],
+        ),
+    ]
+    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    assert "<h1>Chapter 9 Roots and Radicals</h1>" in out["html"]
+    assert "<title>Chapter 9 Roots and Radicals</title>" in out["html"]
+    assert "<h1>Chapter Outline</h1>" not in out["html"]
+
+
+def _one_block_chapter(title: str, idx: int) -> _AdapterChapter:
+    return _AdapterChapter(
+        title=title,
+        blocks=[
+            _AdapterBlock(
+                html=f"<p>Body for {title}.</p>",
+                region_kind="paragraph",
+                raw_block_index=idx,
+                raw_text=f"Body for {title}.",
+                pages=[idx + 1],
+            )
+        ],
+    )
+
+
+def test_h1_excludes_chapter_n_review_banner():
+    """The end-of-chapter 'CHAPTER 9 REVIEW' banner matches the 'Chapter N …'
+    prefix but is apparatus, NOT the chapter title — it must NOT become the
+    document <h1> (defect: h1 minted 'CHAPTER 9 REVIEW'). A real
+    'Chapter 9 Roots and Radicals' opener wins even when the review banner is
+    the FIRST 'Chapter N' candidate in document order."""
+    result = type("R", (), {})()
+    result.exit_action = "ship_with_confidence"
+    result.wcag_status = "passed"
+    result.lang = "en"
+    result.chapters = [
+        _one_block_chapter("Chapter Outline", 0),
+        _one_block_chapter("CHAPTER 9 REVIEW", 1),
+        _one_block_chapter("Chapter 9 Roots and Radicals", 2),
+    ]
+    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    assert "<h1>Chapter 9 Roots and Radicals</h1>" in out["html"]
+    assert "CHAPTER 9 REVIEW" not in re.findall(r"<h1>(.*?)</h1>", out["html"])[0]
+
+
+@pytest.mark.parametrize(
+    "apparatus",
+    [
+        "Chapter 9 Review",
+        "Chapter 9 Outline",
+        "Chapter 9 Exercises",
+        "Chapter 9 Exercise",
+        "Chapter 9 Key Terms",
+        "Chapter 9 Key Term",
+        "Chapter 9 Practice Test",
+    ],
+)
+def test_h1_excludes_apparatus_suffixes(apparatus: str):
+    """review / outline / exercise(s) / key term(s) / practice test are all
+    end-of-chapter apparatus qualifiers that disqualify a 'Chapter N …' heading
+    from being the document title (case-insensitive)."""
+    result = type("R", (), {})()
+    result.exit_action = "ship_with_confidence"
+    result.wcag_status = "passed"
+    result.lang = "en"
+    result.chapters = [
+        _one_block_chapter(apparatus, 0),
+        _one_block_chapter("Chapter 9 Roots and Radicals", 1),
+    ]
+    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    assert "<h1>Chapter 9 Roots and Radicals</h1>" in out["html"]
+
+
+def test_h1_falls_back_when_no_qualifying_chapter_n():
+    """When NO 'Chapter N <RealTitle>' opener qualifies (all candidates are
+    apparatus / front-matter), fall back to the first chapter title — never
+    fabricate, never pick the excluded review banner."""
+    result = type("R", (), {})()
+    result.exit_action = "ship_with_confidence"
+    result.wcag_status = "passed"
+    result.lang = "en"
+    result.chapters = [
+        _one_block_chapter("Chapter Outline", 0),
+        _one_block_chapter("CHAPTER 9 REVIEW", 1),
+    ]
+    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    h1 = re.findall(r"<h1>(.*?)</h1>", out["html"])[0]
+    assert h1 == "Chapter Outline"
+
+
+def test_continuation_chapter_renders_no_heading_element():
+    """A continuation chapter (§3.4 overflow spill) renders its title as an
+    aria-hidden presentation <div>, NOT a heading element — so a repeated
+    overflow does not mint phantom pseudo-section headings the structure
+    extractor reads as new sections. A NON-continuation chapter still gets a
+    visible <h2>."""
+    result = type("R", (), {})()
+    result.exit_action = "ship_with_confidence"
+    result.wcag_status = "passed"
+    result.lang = "en"
+    real = _one_block_chapter("Higher Roots", 0)
+    cont = _AdapterChapter(
+        title="Higher Roots (cont.)",
+        blocks=[
+            _AdapterBlock(
+                html="<p>More roots.</p>",
+                region_kind="paragraph",
+                raw_block_index=1,
+                raw_text="More roots.",
+                pages=[2],
+            )
+        ],
+        continuation=True,
+    )
+    result.chapters = [real, cont]
+    out = normalize_cascade_to_ed4all(result, pdf_stem="ea2e_ch9")
+    html = out["html"]
+    # The real chapter's title is a visible <h2>; the continuation is NOT.
+    assert "<h2>Higher Roots</h2>" in html
+    assert "<h2>Higher Roots (cont.)</h2>" not in html
+    assert re.search(r"<h2>[^<]*\(cont\.\)", html) is None
+    # The continuation title survives as an aria-hidden presentation div.
+    assert (
+        '<div class="dart-continuation" role="presentation" '
+        'aria-hidden="true">Higher Roots (cont.)</div>' in html
+    )
+    # No content lost.
+    assert "More roots." in html
