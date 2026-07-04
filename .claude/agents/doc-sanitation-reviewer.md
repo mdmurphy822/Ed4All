@@ -98,14 +98,16 @@ tracked `*.md` must resolve in the live tree.
 
 - **Behavior-flag counts** (root `CLAUDE.md` "Opt-In Behavior Flags" prefix
   table): the per-subsystem flag rows are owned by the named subsystem
-  `CLAUDE.md`. Re-derive each prefix's count from the OWNER file's flag table,
-  honoring the documented "distinct flags, multi-flag rows expanded" counting
-  convention (one table row can document several env vars — count once per env
-  var). Owners: `Trainforge/CLAUDE.md` (`TRAINFORGE_*` etc.),
-  `SemantiK/CLAUDE.md` (`SEMANTIK_*`), `Courseforge/CLAUDE.md`
-  (`COURSEFORGE_*`/`COURSEPLANNER_*`/`TEXTBOOK_SYNTHESIS_*`), root `CLAUDE.md`
-  (cross-cutting `ED4ALL_*`/`DECISION_*`/`LOCAL_DISPATCHER_*`/
-  `MCP_ORCHESTRATOR_*`/`LLM_*`). A faster path for code-vs-doc flag COVERAGE is
+  `CLAUDE.md`. Re-derive each prefix's count from the OWNER file's flag table.
+  The SUBSYSTEM tables use the documented "distinct flags, multi-flag rows
+  expanded" convention (one table row can document several env vars — count
+  once per env var); the root-owned cross-cutting table is one row per flag
+  (count equals row count). Owners: `Trainforge/CLAUDE.md` (`TRAINFORGE_*`
+  etc.), `SemantiK/CLAUDE.md` (`SEMANTIK_*`), `Courseforge/CLAUDE.md`
+  (`COURSEFORGE_*`/`COURSEPLANNER_*`/`TEXTBOOK_SYNTHESIS_*`), and
+  `docs/operations/behavior-flags.md` (cross-cutting `ED4ALL_*`/`DECISION_*`/
+  `LOCAL_DISPATCHER_*`/`MCP_ORCHESTRATOR_*`/`LLM_*` — root `CLAUDE.md` holds a
+  one-line index of the same names). A faster path for code-vs-doc flag COVERAGE is
   the `behavior-flag-doc-sync` skill — invoke it for "is every env flag in the
   code documented"; this agent owns the COUNT-vs-table cross-ref and the
   prefix-OWNERSHIP check (a flag documented under the wrong prefix-owner).

@@ -26,9 +26,9 @@ You produce a punch list; you do **not** write code or commit anything.
   - `lib/ontology/bloom.py` → `detect_bloom_*` family.
   - `lib/ontology/teaching_roles.py` → `(component, purpose) → role` mapper.
   - `lib/ontology/taxonomy.py` → `load_taxonomy(name)`.
-- **Validation gate**: `TRAINFORGE_VALIDATE_CHUNKS` (root `CLAUDE.md` flag
-  table). When set, `lib/validators/` enforces `chunk_v4.schema.json` on
-  every chunk write.
+- **Validation gate**: `TRAINFORGE_VALIDATE_CHUNKS` (`Trainforge/CLAUDE.md`
+  § "Opt-In Behavior Flags" table). When set, `lib/validators/` enforces
+  `chunk_v4.schema.json` on every chunk write.
 
 ## Audit checklist
 
@@ -83,7 +83,7 @@ jq '.. | objects | select(has("enum")) | .enum' schemas/knowledge/chunk_v4.schem
 
 If the diff introduces or references a `TRAINFORGE_*` env flag:
 
-- Confirm it's in root `CLAUDE.md` § "Opt-In Behavior Flags" table.
+- Confirm it's in `Trainforge/CLAUDE.md` § "Opt-In Behavior Flags" table.
 - Confirm it's in `schemas/ONTOLOGY.md` § 12 with rationale.
 - Confirm `os.getenv` reads default to the backward-compatible value.
 

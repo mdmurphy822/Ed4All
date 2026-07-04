@@ -345,3 +345,9 @@ SemantiK/scripts/_figure_fetch_lib.py
 
 # Calibration harness generated measurement artifact (scripts/calibration_harness.py)
 /calibration_report.json
+
+# QA harness artifacts (gold-compare reports, scorecards, rendered chapters, page screenshots) — carry licensed course content
+state/qa/
+# Repo-root working scratch (rendered chapter iterations)
+scratchpad/
+scripts/shots/

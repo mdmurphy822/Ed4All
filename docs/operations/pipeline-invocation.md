@@ -98,6 +98,21 @@ Paths are relative to the Courseforge **export root**
 | 15 | `vector_indexing` | **LibV2** vector index under `courses/<slug>/` | embedding model (no authoring seat) | `--stop-after vector_indexing` |
 | 16 | `finalization` | run summary | deterministic | terminal phase |
 
+### 2.1 Pacing (`duration_weeks`) — how weeks are chosen when `--weeks` is unset
+
+- `objective_extraction` first sets a provisional `duration_weeks = max(8, len(chapters))`
+  (chapter-driven).
+- `course_planning` (WS5 §3.2) then **re-scales** to the TERMINAL-objective-driven
+  `max(8, num_tos)` — one week-block per WS1-clustered TO (the TO/cluster count is the
+  authoritative pacing signal). COs distribute WITHIN each TO's week-block via the §2.2
+  coverage-safe **ceil-stride slicer** (no CO dropped). It falls back to the legacy
+  CO-count formula `max(8, ceil(len(chapter_objectives) / WAVE18_COS_PER_WEEK))` only when
+  no TOs are available.
+- The re-scale is **skipped** for `--weeks N` and `--reuse-objectives` runs (the operator's
+  pacing decisions are preserved verbatim).
+- The per-week CO placement cap is the separate, UNCONDITIONAL `ED4ALL_COS_PER_WEEK_CAP`
+  (default auto) — see `docs/operations/behavior-flags.md`.
+
 ---
 
 ## 3. Invocation patterns
@@ -124,10 +139,17 @@ COURSEFORGE_TWO_PASS=true ed4all run textbook-to-course --corpus book.pdf \
 
 **Re-run a single stage** without redoing everything upstream:
 
-- **Reuse upstream artifacts:** `--reuse-conversion` (skip SemantiK), `--skip-dart
-  --dart-output-dir <dir>` (feed pre-converted HTML), `--reuse-objectives <path>` (pin
-  a prior `synthesized_objectives.json`, skip re-synthesis — also removes LLM
-  nondeterminism across re-runs).
+- **Reuse upstream artifacts:** `--reuse-conversion` (skip SemantiK; when set AND the
+  prior `{stem}_accessible.html` + sidecars exist at the conversion output path, the
+  cascade is skipped and the prior artifacts reused — the re-run model-nondeterminism
+  guarantee; mirrors the `ED4ALL_REUSE_CONVERSION` env var, and the flag wins when both
+  are set; see `SemantiK/CLAUDE.md §3.3a`), `--skip-dart --dart-output-dir <dir>` (feed
+  pre-converted HTML), `--reuse-objectives <path>` (pin a prior objectives JSON, skip
+  the course-outliner re-dispatch — removes LLM nondeterminism drift across re-runs that
+  breaks chunk `learning_outcome_refs` continuity). `--reuse-objectives` accepts **both**
+  the Courseforge synthesized form (`terminal_objectives` / `chapter_objectives`) and the
+  LibV2 archive form (`terminal_outcomes` / `component_objectives`); the runner normalizes
+  to the Courseforge form on disk before downstream phases consume it.
 - **Courseforge stage subcommands** (two-pass only) re-drive just the content slice
   against an existing export, pre-populating upstream phases from disk:
   `courseforge-outline` (outline tier only), `courseforge-validate` (both validator
@@ -149,6 +171,33 @@ ed4all run textbook-to-course --resume WF-20260420-abc12345
 ```
 
 **Preflight** without dispatching anything: append `--dry-run`.
+
+### 3.1 NVIDIA 70B-everywhere build profile
+
+SETUP only — gated on a later RUN discussion; **nothing dispatches to NVIDIA by
+default.** `--provider nvidia` (also via `LLM_PROVIDER=nvidia`) on a
+`COURSEFORGE_TWO_PASS=true` run:
+
+- redirects the block-routing YAML to `Courseforge/config/block_routing.nvidia_large.yaml`
+  — the **rewrite** tier runs on the hosted 70B `meta/llama-3.3-70b-instruct`; the
+  **outline** first draft stays local 7B;
+- pins `NVIDIA_LARGE_MODEL` to the 70B (closes the 30B-nano registry-default leak);
+- routes the **textbook-synthesis** seat (`objective_extraction` / `course_planning` /
+  `concept_extraction`) to `nvidia`;
+- pins the **training** seat (`TRAINFORGE_SYNTHESIS_PROVIDER`) **LOCAL** by this branch
+  (licensing — the SLM training corpus must never route through Llama-3.3).
+
+All of the above is `setdefault` (explicit per-phase overrides win). The canonical
+cloud-model knob is `NVIDIA_LARGE_MODEL` / the YAML, **never** `COURSEFORGE_REWRITE_MODEL`
+(dead on the cloud tier). Run `--dry-run` first for the "wired but not firing" routing
+preflight (resolve + assert, no dispatch):
+
+```bash
+export COURSEFORGE_TWO_PASS=true
+ed4all run textbook-to-course --provider nvidia --course-name PHYS_101 \
+  --corpus slice.pdf --skip-dart --skip-training \
+  --stop-after imscc_chunking --dry-run   # preflight: resolve+assert, NO dispatch
+```
 
 ---
 
@@ -204,8 +253,17 @@ The local seat itself:
 export LOCAL_SYNTHESIS_BASE_URL=http://localhost:11434/v1   # Ollama; vLLM :8000/v1
 export LOCAL_SYNTHESIS_MODEL=qwen2.5-7b-16k:latest          # see VRAM note
 export LOCAL_SYNTHESIS_API_KEY=local
+export TEXTBOOK_SYNTHESIS_NUM_CTX=16384                     # the model's TRUE serving window
 unset ANTHROPIC_API_KEY                                     # belt-and-braces
 ```
+
+**`TEXTBOOK_SYNTHESIS_NUM_CTX` is load-bearing on the objective-synthesis path:** unset,
+the Stage-2 window packer falls to the shared `resolve_num_ctx()` default of 4096, and the
+fixed per-window costs (system prompt + the 4096-token response reserve + margins) alone
+exceed that — the window budget goes negative and every chunk becomes its own degenerate
+1-chunk window (one LLM call per chunk, objectives synthesized from isolated ~1500-char
+fragments). Set it to the local model's actual serving window (verify with
+`curl -s http://localhost:11434/api/show -d '{"name":"<model>"}'` → Modelfile `num_ctx`).
 
 **Model window vs VRAM (8 GB card):** the model + its KV cache must fit or it spills to
 CPU and crawls. Measured on an 8 GB card:
@@ -243,6 +301,78 @@ for the licensing rationale behind each seat and the Together fallback for large
   --dart-output-dir <dir>` pointing at a dir with `*_accessible.html`) reuses a prior
   SemantiK conversion so you can iterate on synthesis/authoring without re-running the
   (slow, model-nondeterministic) PDF cascade.
+
+### 6.1 The structure extractor's heading-level contract
+
+`lib/semantic_structure_extractor` maps HTML headings by **level, not by wrapper**:
+
+| Level | Role |
+|---|---|
+| `h1` | **book / document title** (there should be exactly one) |
+| `h2` | **chapter** — an `h1`'s `h2` children become chapters; a bare `h2` is itself a chapter |
+| `h3` | **section** |
+| `h4`–`h6` | subsection |
+
+Getting the level wrong is the single biggest source of over-segmentation when you hand-
+prepare HTML:
+
+- **Emit exactly one `h1`** (the book title). Using `h1` *per chapter* makes the extractor
+  treat each chapter as a *document title* and promote its section `h2`s to chapters —
+  e.g. 10 chapters × ~9 sections → **91 "chapters"**.
+- **Chapter delimiters must be `h2`, section titles `h3`.** If your page bodies put
+  section titles at `h2`, demote every body heading one level (`h2→h3`, `h3→h4`, …; caps
+  at `h6`).
+- **Duplicate heading *text* across chapters** (a generic "Introduction" / "Chapter
+  Outline" on every chapter's intro page) gets bucketed into the *first* chapter (its
+  section count balloons while the rest stay clean). Strip or uniquify generic nav
+  headings.
+- **Verify before you synthesize** (cheap, deterministic — no LLM):
+
+  ```python
+  from lib.semantic_structure_extractor.semantic_structure_extractor import extract_textbook_structure
+  res = extract_textbook_structure("<staged>/<stem>_accessible.html")
+  print(res["chapter_count"], [len(c["sections"]) for c in res["chapters"]])
+  ```
+
+  or `--stop-after objective_extraction` and read `textbook_structure.json`. Confirm the
+  chapter count and per-chapter section counts match the real book before committing to a
+  multi-hour synthesis.
+
+### 6.2 Assembling a pre-converted page corpus into a full-book source
+
+When the source is already a set of **per-page accessible HTML** (a vendor/web export, or
+one JSON-per-page corpus) rather than a PDF, you don't need the SemantiK cascade —
+concatenate the pages into one `*_accessible.html` and feed it via `--skip-dart
+--dart-output-dir <dir>`. Rules that make the assembled doc extract cleanly:
+
+- Group pages into chapters; wrap each chapter under a single `h2`; demote page-body
+  headings so section titles land at `h3` (the §6.1 contract).
+- **Exclude non-content pages** — chapter-level answer-key / "Try It" exercise dumps,
+  term `index`, `preface`. Their aggregated or duplicated headings corrupt the structure
+  (and the answer-key text contaminates `chapter_text`).
+- Staging accepts **plain accessible HTML**; the `data-dart-*` provenance markers are
+  **optional** (the `stage_dart_outputs` sidecars `_synthesized.json` / `.quality.json`
+  are `if …exists()`), needed only for the post-`course_planning` `source_refs` gate.
+- Precedent importers live under gitignored `inputs/*-import/` (co-located with their
+  source materials; each reuses the tracked `scripts/nvidia_corpus_to_dart.py` helpers).
+  Keep the importer and its outputs under `inputs/` — never commit source-corpus content
+  or hard-coded course slugs.
+
+### 6.3 Inspect what actually feeds the model
+
+Before a long synthesis, confirm the two real Stage inputs are clean:
+
+- **`chapter_text`** (Stage-1 draft-TO input) — from `extract_textbook_structure`, per
+  chapter. Check it's real chapter prose, free of front-matter (author/funder/title
+  pages) and answer-key text (`"Try It"`, `"Answer Key"`, `openstax.org`-style vendor
+  chrome). Front-matter bleed is what turns a real chapter into a garbage terminal
+  objective.
+- **Chunks** (Stage-2 grounding) — `--stop-after chunking`, then read **LibV2**
+  `courses/<slug>/dart_chunks/chunks.jsonl`. Confirm the chunk count is *book-scale* and
+  that chunks are attributed across **all** chapters (a book-wide corpus siloed onto ch1
+  is a structure-attribution bug). Stage-2 groups these chunks per chapter into
+  `num_ctx`-sized windows and synthesizes candidate objectives against them, so a wrong
+  chunk→chapter map directly corrupts the objectives.
 
 ---
 
