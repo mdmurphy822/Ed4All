@@ -83,6 +83,7 @@ from lib.semantik.math_fold import (
     sanitize_body_latex,
     sanitize_math_spans,
     strip_latex_commands,
+    strip_tikz_figures,
     wrap_bare_math,
 )
 from lib.semantik.structure_emit import (
@@ -2487,6 +2488,33 @@ def _sanitize_math_spans(chapters: Sequence[_AdapterChapter]) -> None:
                 block.html = sanitize_math_spans(block.html)
 
 
+def _strip_tikz_figures(chapters: Sequence[_AdapterChapter]) -> None:
+    r"""Replace TikZ/pgfplots figure code in math spans with an a11y placeholder (round-10).
+
+    The final visual-convergence pass. The headless render audit surfaced a
+    ``mjx-merror`` family the round-9 span sanitizer does not touch: the VLM
+    transcribed coordinate-plane FIGURES as raw TikZ picture code inside math
+    delimiters (``$$\begin{tikzpicture}…\end{tikzpicture}$$`` — MathJax reds it
+    "Undefined environment tikzpicture"; also the pgfplots ``\begin{axis}…``
+    sibling). This is figure content, not math — the corpus-wide figure story is
+    the accepted scan-corpus limitation (``SEMANTIK_DETECT_FIGURES`` off) — so
+    :func:`~lib.semantik.math_fold.strip_tikz_figures` replaces a pure-figure
+    span with the accessible ``.dart-figure-notation`` placeholder (the raw TikZ
+    source is noise to every reader and never ships visibly) and keeps the math
+    of a mixed span (real math + embedded figure), dropping only the figure env.
+
+    HTML-ONLY (mirrors ``_sanitize_math_spans``): ``raw_text`` / ``repaired_text``
+    keep the plain fused text (TikZ and all) for the chunker/retrieval; only the
+    rendered learner page is repaired. Runs LAST (after the round-9 span
+    sanitizer) so the figure env is intact when this pass looks for it;
+    idempotent (the emitted placeholder carries no ``\begin{tikz…}`` marker).
+    """
+    for ch in chapters:
+        for block in ch.blocks:
+            if block.html:
+                block.html = strip_tikz_figures(block.html)
+
+
 def _strip_body_folios(chapters: Sequence[_AdapterChapter]) -> None:
     """Drop / strip leaked printed folios (page numbers) from BODY blocks (Defect 2).
 
@@ -2758,6 +2786,14 @@ def _normalize_ocr_headings(
     # headless render audit catches. HTML-only; runs LAST so the ``&lt;``/``&gt;``
     # entities the angle-bracket pass just wrote are settled first.
     _sanitize_math_spans(chapters)
+
+    # Round-10 (final) — replace VLM-emitted TikZ / pgfplots FIGURE code inside
+    # math spans (``$$\begin{tikzpicture}…\end{tikzpicture}$$`` coordinate-plane
+    # graphs) with an accessible ``.dart-figure-notation`` placeholder so MathJax
+    # stops emitting "Undefined environment tikzpicture" ``mjx-merror`` nodes and
+    # the raw TikZ source never ships visibly. HTML-only; runs LAST so the round-9
+    # sanitizer's edits are settled and the figure env is intact when found.
+    _strip_tikz_figures(chapters)
 
     return releveled
 

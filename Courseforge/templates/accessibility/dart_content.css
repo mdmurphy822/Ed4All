@@ -318,6 +318,20 @@ main[role="main"] a:focus {
     font-size: 0.875rem;
 }
 
+/* ---- Un-rendered figure-notation placeholder (round-10) ---------------- */
+/* The VLM sometimes transcribes a coordinate-plane FIGURE as raw TikZ code
+   inside math delimiters; MathJax cannot render it, so the adapter substitutes
+   an accessible inline placeholder (role="img" + aria-label). It reads as a
+   quiet, italic, muted inline note in BOTH schemes — the --dart-degraded-text
+   token flips in the prefers-color-scheme: dark block above, so it keeps its
+   contrast on light and dark surfaces alike. Non-text only-styling; the
+   aria-label carries the meaning for assistive tech. */
+.dart-figure-notation {
+    font-style: italic;
+    color: var(--dart-degraded-text);
+    font-size: 0.9375rem;
+}
+
 /* ---- Continuation banner (B10) — stays VISUALLY HIDDEN ----------------- */
 /* Decorative page-break cue (role="presentation" aria-hidden="true"): kept
    off-screen so sighted learners don't see a duplicate "… (cont.)" and SR

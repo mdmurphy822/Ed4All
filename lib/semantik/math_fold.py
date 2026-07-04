@@ -66,6 +66,7 @@ __all__ = [
     "escape_currency_dollars",
     "escape_math_angle_brackets",
     "sanitize_math_spans",
+    "strip_tikz_figures",
     "linkify_urls",
 ]
 
@@ -920,6 +921,98 @@ def sanitize_math_spans(text: str) -> str:
         if not inner.strip():
             return ""  # nothing left → drop the now-empty delimiters
         return f"{o}{inner}{c}"
+
+    return _MATH_SPAN_ANGLE_RE.sub(_fix, text)
+
+
+# ---------------------------------------------------------------------------
+# TikZ / pgfplots FIGURE-code graceful fallback (2026-07-04 round-10 — final).
+# ---------------------------------------------------------------------------
+# The round-10 headless render audit surfaced a NEW ``mjx-merror`` family the
+# round-9 span sanitizer does not touch: the VLM transcribed coordinate-plane
+# FIGURES (the "Identify the x- and y-intercepts on a graph" exercises) as raw
+# TikZ picture code INSIDE math delimiters —
+# ``$$\begin{tikzpicture} \draw[...] ... \end{tikzpicture}$$`` (and the pgfplots
+# ``\begin{axis}…\end{axis}`` sibling). MathJax has no TikZ support, so it emits
+# a red "Undefined environment tikzpicture" error for every such block (12 on
+# ch04). This is FIGURE content, not math: the corpus-wide figure story is the
+# accepted scan-corpus limitation (``SEMANTIK_DETECT_FIGURES`` off), so the
+# honest treatment is an accessible PLACEHOLDER, not a render attempt — and the
+# raw TikZ source (``\draw`` / ``grid`` / ``coordinates`` noise) must NOT ship
+# visibly to any reader.
+#
+# :func:`strip_tikz_figures` operates ONLY on the CONTENT between math delimiters
+# (reusing :data:`_MATH_SPAN_ANGLE_RE`, mirroring the round-8/9 passes) and is
+# CONSERVATIVE by contract:
+#   * A span is only touched when it actually carries a TikZ / pgfplots
+#     environment (:data:`_TIKZ_PRESENT_RE`) — ``\begin{aligned}`` /
+#     ``\begin{array}`` and every other math env are left completely alone (no
+#     false fire).
+#   * A PURE-figure span (the whole delimited run is one tikzpicture/axis block,
+#     with no surviving real math after the env is stripped) is replaced by the
+#     accessible placeholder :data:`_TIKZ_FIGURE_PLACEHOLDER` — the delimiters go
+#     with it (no empty ``$$ $$`` left behind, no visible TikZ source).
+#   * A MIXED span (real math + an embedded TikZ block) keeps its math: only the
+#     tikzpicture/axis environment is stripped, the delimiters + surviving math
+#     are preserved.
+#   * An OCR-TRUNCATED orphan opener (``\begin{tikzpicture}`` with no matching
+#     ``\end``) is figure debris to the span end and is dropped too.
+# HTML-ONLY by contract (mirrors the currency / angle-bracket / round-9 passes):
+# the chunker/retrieval ``raw_text`` / sidecar keep the plain fused text (TikZ
+# and all) for retrieval fidelity; only the rendered learner page is repaired.
+# Idempotent: the emitted placeholder carries no ``\begin{tikz…}`` marker, so a
+# second pass is a strict no-op.
+
+# TikZ / pgfplots environment names the VLM emits as figure code. The
+# backreference in :data:`_TIKZ_ENV_RE` lets an OUTER ``\begin{tikzpicture}``
+# wrapping a nested ``\begin{axis}…\end{axis}`` match to its OWN ``\end`` (the
+# nested ``\end{axis}`` is skipped because the backref pins the env name).
+_TIKZ_ENV_NAMES = r"tikzpicture|axis|pgfplots|pgfpicture|tikzcd"
+_TIKZ_PRESENT_RE = re.compile(r"\\begin\s*\{\s*(?:" + _TIKZ_ENV_NAMES + r")\s*\}")
+_TIKZ_ENV_RE = re.compile(
+    r"\\begin\s*\{\s*(" + _TIKZ_ENV_NAMES + r")\s*\}.*?\\end\s*\{\s*\1\s*\}",
+    re.DOTALL,
+)
+# An OCR-truncated orphan opener (a ``\begin{tikzpicture}`` whose ``\end`` was
+# cut off) — figure debris from the opener to the span's end.
+_TIKZ_ORPHAN_RE = re.compile(
+    r"\\begin\s*\{\s*(?:" + _TIKZ_ENV_NAMES + r")\s*\}.*", re.DOTALL
+)
+_TIKZ_FIGURE_PLACEHOLDER = (
+    '<span class="dart-figure-notation" role="img" '
+    'aria-label="Coordinate-plane figure (notation could not be rendered)">'
+    "[coordinate-plane figure]</span>"
+)
+
+
+def strip_tikz_figures(text: str) -> str:
+    r"""Replace TikZ/pgfplots figure code in math spans with an a11y placeholder.
+
+    The final round-10 visual-convergence pass. A delimited math span carrying a
+    ``\begin{tikzpicture}…\end{tikzpicture}`` (or pgfplots ``\begin{axis}…``)
+    block is a coordinate-plane FIGURE the VLM mis-transcribed as raw TikZ code —
+    MathJax reds it ("Undefined environment tikzpicture"). A PURE-figure span is
+    replaced whole by the accessible :data:`_TIKZ_FIGURE_PLACEHOLDER` (delimiters
+    and TikZ source both gone — the source is noise to every reader). A MIXED
+    span (real math + an embedded figure) keeps its math and drops only the
+    figure env. Conservative per the module docstring: a span with no TikZ /
+    pgfplots environment is untouched (``\begin{aligned}`` never fires). HTML-only
+    (``raw_text``/sidecar keep the plain fused text). Idempotent; a fast guard
+    returns text with no TikZ begin unchanged.
+    """
+    if not text or not _TIKZ_PRESENT_RE.search(text):
+        return text or ""
+
+    def _fix(m: "re.Match[str]") -> str:
+        o, inner, c = _split_math_delims(m.group(0))
+        if not _TIKZ_PRESENT_RE.search(inner):
+            return m.group(0)  # no figure code in THIS span — leave it alone
+        stripped = _TIKZ_ENV_RE.sub(" ", inner)      # balanced env(s)
+        stripped = _TIKZ_ORPHAN_RE.sub(" ", stripped)  # OCR-truncated opener
+        stripped = re.sub(r"[ \t]{2,}", " ", stripped).strip()
+        if not stripped:
+            return _TIKZ_FIGURE_PLACEHOLDER  # pure figure → placeholder, no delims
+        return f"{o}{stripped}{c}"  # mixed → keep the surviving real math
 
     return _MATH_SPAN_ANGLE_RE.sub(_fix, text)
 
