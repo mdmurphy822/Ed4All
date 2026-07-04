@@ -484,6 +484,20 @@ _OUTLINE_SYSTEM_PROMPT: str = (
     "in the block's top-level source_refs[]. PROHIBITED: emitting "
     "key_claims as a flat array of strings; that is the legacy shape "
     "and the new schema rejects it for new authoring."
+    # Objective-echo fix (2026-07): claims are facts FROM the source, not a
+    # restatement of the learning objective. On thin / exercise-grounded
+    # pages the 7B lazily echoes the CO statement verbatim into key_claims
+    # ("Identify the place value of each digit …"), which is vacuous for
+    # grounding, NLI scoring, and downstream assessment/training synthesis.
+    " "
+    "Each key_claims[] entry MUST be a factual, teachable assertion "
+    "EXTRACTED from the source chunks — a specific fact, definition, "
+    "relationship, formula, or worked result. A claim MUST NEVER be a "
+    "restatement or paraphrase of a learning objective itself: the "
+    "objective states what the learner will DO, whereas a claim states "
+    "what is TRUE according to the source (e.g. the objective 'Identify "
+    "the place value of each digit in a number' yields the CLAIM 'The "
+    "place value of the 4 in 51,493 is thousands.')."
     # Wave 1.7 W1.7.B: behavioral-outcome / Bloom-floor directive.
     # The objectives list in the user prompt surfaces the declared
     # Bloom triple `[Bloom: {level}, verb: {verb}]` per objective; the
@@ -1125,6 +1139,186 @@ def _repair_claim_grounding(
         n_fallback_claims=n_fallback,
     )
     candidate["_grounding_repair"] = repair_meta
+    return candidate
+
+
+# Objective-echo repair (2026-07). A key_claim is an OBJECTIVE ECHO when its
+# normalized text is a near-verbatim match of ANY learning-objective statement
+# available to the call. Near-verbatim = normalized exact match OR
+# token-Jaccard >= this threshold (catches word-order shuffles / trivial
+# paraphrases of the CO statement). Such claims are vacuous for grounding, NLI
+# scoring, and downstream assessment/training synthesis, so they are dropped.
+_OBJECTIVE_ECHO_JACCARD_THRESHOLD: float = 0.85
+
+_OBJECTIVE_ECHO_WARNING: str = "OBJECTIVE_ECHO_CLAIMS"
+
+# Word-token splitter shared by the echo normalizer (alphanumerics only, so
+# punctuation / commas in "51,493" don't skew the token-Jaccard).
+_ECHO_TOKEN_RE: "re.Pattern[str]" = re.compile(r"[a-z0-9]+")
+
+
+def _normalize_echo_text(text: Any) -> str:
+    """Normalize claim / objective text for the echo comparison.
+
+    Lowercase, collapse internal whitespace, strip a single trailing period,
+    and trim — so "Identify the place value of each digit in a given number."
+    and a word-order shuffle of the same sentence normalize to comparable
+    forms. Non-string inputs coerce to ``""``.
+    """
+    low = re.sub(r"\s+", " ", str(text or "").strip().lower()).strip()
+    return low[:-1].strip() if low.endswith(".") else low
+
+
+def _echo_tokens(normalized: str) -> frozenset[str]:
+    return frozenset(_ECHO_TOKEN_RE.findall(normalized))
+
+
+def _is_objective_echo(
+    claim_text: str,
+    *,
+    objective_norms: List[str],
+    objective_token_sets: List[frozenset[str]],
+) -> bool:
+    """True when ``claim_text`` near-verbatim-matches any objective statement.
+
+    Near-verbatim = normalized exact match OR token-Jaccard >=
+    :data:`_OBJECTIVE_ECHO_JACCARD_THRESHOLD` against ANY objective. A claim
+    that merely SHARES objective vocabulary but asserts a concrete fact
+    ("The place value of 4 in 51,493 is hundreds") stays well below the
+    Jaccard floor and survives.
+    """
+    norm = _normalize_echo_text(claim_text)
+    if not norm:
+        return False
+    if norm in objective_norms:
+        return True
+    claim_tokens = _echo_tokens(norm)
+    if not claim_tokens:
+        return False
+    for obj_tokens in objective_token_sets:
+        if not obj_tokens:
+            continue
+        union = claim_tokens | obj_tokens
+        if not union:
+            continue
+        jaccard = len(claim_tokens & obj_tokens) / len(union)
+        if jaccard >= _OBJECTIVE_ECHO_JACCARD_THRESHOLD:
+            return True
+    return False
+
+
+def _claim_text_of(claim: Any) -> str:
+    """Extract the prose text from a structured ``{claim, ...}`` object or a
+    legacy flat-string claim."""
+    if isinstance(claim, dict):
+        return str(claim.get("claim") or "")
+    if isinstance(claim, str):
+        return claim
+    return ""
+
+
+def _drop_objective_echo_claims(
+    candidate: Dict[str, Any],
+    *,
+    block_type: str,
+    objectives: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Drop ``key_claims`` that are near-verbatim restatements of an objective.
+
+    A 7B outline tier lazily echoes a learning-objective statement verbatim
+    into ``key_claims`` on thin / exercise-grounded pages (measured: 7% of
+    outline-tier claims on ``sample-full-obj-01``). An objective-echo claim is
+    vacuous for grounding, NLI scoring, and downstream assessment/training
+    synthesis, so it is dropped here (BEFORE the strict validator; same
+    pre-validation point as the sibling ``_repair_*`` helpers).
+
+    Semantics:
+
+    - ``block_type == "objective"`` is EXEMPT (restating the objective is that
+      block's whole job) — no-op.
+    - No-op when ``key_claims`` is absent / not a list / empty, or when no
+      objective statements are in scope.
+    - Handles BOTH the structured ``[{claim, source_chunk_ids}]`` arm and the
+      legacy flat-string arm (echo detection reads the claim TEXT of each).
+    - NEVER drops a block to zero claims: if filtering would empty the array,
+      the highest-information surviving claim is kept — the longest non-echo
+      when one exists; if ALL claims are echoes, the FIRST claim is kept and a
+      structural_warnings entry (``OBJECTIVE_ECHO_CLAIMS``) is appended INSTEAD
+      of dropping.
+
+    No fabrication: this pass only DROPS echo claims; it never mints a claim.
+    Stashes its signals under the transient ``_objective_echo_repair`` key
+    (popped by the caller before validation, mirroring ``_grounding_repair``).
+    """
+    repair_meta: Dict[str, Any] = {
+        "repaired": False,
+        "n_dropped": 0,
+        "n_objective_echo_warned": 0,
+    }
+    if block_type == "objective":
+        candidate["_objective_echo_repair"] = repair_meta
+        return candidate
+
+    key_claims = candidate.get("key_claims")
+    if not isinstance(key_claims, list) or not key_claims:
+        candidate["_objective_echo_repair"] = repair_meta
+        return candidate
+
+    objective_norms: List[str] = []
+    objective_token_sets: List[frozenset[str]] = []
+    for obj in objectives or []:
+        stmt = (obj or {}).get("statement") or (obj or {}).get("text") or ""
+        norm = _normalize_echo_text(stmt)
+        if not norm:
+            continue
+        objective_norms.append(norm)
+        objective_token_sets.append(_echo_tokens(norm))
+    if not objective_norms:
+        candidate["_objective_echo_repair"] = repair_meta
+        return candidate
+
+    non_echoes: List[Any] = []
+    echoes: List[Any] = []
+    for claim in key_claims:
+        text = _claim_text_of(claim)
+        if text and _is_objective_echo(
+            text,
+            objective_norms=objective_norms,
+            objective_token_sets=objective_token_sets,
+        ):
+            echoes.append(claim)
+        else:
+            non_echoes.append(claim)
+
+    if not echoes:
+        candidate["_objective_echo_repair"] = repair_meta
+        return candidate
+
+    n_dropped = 0
+    n_warned = 0
+    if non_echoes:
+        # Some real claims survive → drop every echo.
+        kept = non_echoes
+        n_dropped = len(echoes)
+    else:
+        # ALL claims are echoes → never empty the block. Keep the FIRST claim
+        # and flag the whole block instead of dropping to zero.
+        kept = [key_claims[0]]
+        n_warned = 1
+        warnings = candidate.get("structural_warnings")
+        if not isinstance(warnings, list):
+            warnings = []
+        if _OBJECTIVE_ECHO_WARNING not in warnings:
+            warnings = warnings + [_OBJECTIVE_ECHO_WARNING]
+        candidate["structural_warnings"] = warnings
+
+    candidate["key_claims"] = kept
+    repair_meta.update(
+        repaired=True,
+        n_dropped=n_dropped,
+        n_objective_echo_warned=n_warned,
+    )
+    candidate["_objective_echo_repair"] = repair_meta
     return candidate
 
 
@@ -2219,6 +2413,35 @@ class OutlineProvider(_BaseLLMProvider):
                 candidate, valid_ids=valid_chunk_ids
             )
             repair_meta = candidate.pop("_grounding_repair", None)
+            # 3b. ``_drop_objective_echo_claims`` — drop any key_claim whose
+            #    normalized text near-verbatim matches ANY objective statement
+            #    (the 7B's lazy "restate the CO into a claim" failure on thin /
+            #    exercise-grounded pages). Runs AFTER grounding repair (claims
+            #    are in final shape) and is EXEMPT for objective blocks. Never
+            #    empties the block: keeps the highest-information survivor, or
+            #    the first claim + an OBJECTIVE_ECHO_CLAIMS warning when every
+            #    claim is an echo. No fabrication (drop-only).
+            candidate = _drop_objective_echo_claims(
+                candidate,
+                block_type=block.block_type,
+                objectives=objectives,
+            )
+            objective_echo_repair = candidate.pop(
+                "_objective_echo_repair", None
+            )
+            if (
+                isinstance(objective_echo_repair, dict)
+                and objective_echo_repair.get("repaired")
+            ):
+                logger.warning(
+                    "outline objective-echo repair fired for block %r "
+                    "(type=%s): dropped %d echo claim(s), warned %d block(s) "
+                    "(all-echo → kept 1 + OBJECTIVE_ECHO_CLAIMS)",
+                    block.block_id,
+                    block.block_type,
+                    int(objective_echo_repair.get("n_dropped", 0)),
+                    int(objective_echo_repair.get("n_objective_echo_warned", 0)),
+                )
             # 4. ``_repair_outline_source_refs`` — wraps bare cited
             #    sourceId strings (the live 7B failure) into the canonical
             #    {sourceId, role} object and backfills a missing ``role``;
@@ -2322,6 +2545,10 @@ class OutlineProvider(_BaseLLMProvider):
                     )
                 if bloom_floor_meta is not None:
                     repair_meta["bloom_floor"] = bloom_floor_meta
+                if objective_echo_repair is not None:
+                    repair_meta["objective_echo_repair"] = (
+                        objective_echo_repair
+                    )
             if schema is not None:
                 try:
                     jsonschema.Draft202012Validator(schema).validate(candidate)
@@ -2807,6 +3034,17 @@ class OutlineProvider(_BaseLLMProvider):
                 f"n_fallback_claims="
                 f"{int(grounding_repair.get('n_fallback_claims', 0))}"
             )
+        echo_repair = (
+            grounding_repair.get("objective_echo_repair")
+            if grounding_repair
+            else None
+        )
+        if isinstance(echo_repair, dict) and echo_repair.get("repaired"):
+            rationale_parts.append(
+                "objective_echo="
+                f"dropped={int(echo_repair.get('n_dropped', 0))},"
+                f"warned={int(echo_repair.get('n_objective_echo_warned', 0))}"
+            )
         if last_error:
             # Truncate the last_error to keep the rationale below the
             # decision-capture validator's soft length cap.
@@ -2844,6 +3082,7 @@ __all__ = [
     "_build_block_outline_schema",
     "_block_source_chunk_ids",
     "_repair_claim_grounding",
+    "_drop_objective_echo_claims",
     "_repair_prereq_pages",
     "_extract_prereq_phrases_from_source",
 ]

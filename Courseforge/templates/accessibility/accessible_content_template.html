@@ -51,6 +51,29 @@
             --cf-border: #dee2e6;
         }
 
+        /* Dark scheme — flips the --cf-* token layer so the template chrome
+           (body bg/text, headings, links, callouts, accordion) turns dark in
+           lockstep with dart_content.css's own dark block. Heading + link hues
+           lighten so they keep WCAG AA contrast on the dark surface:
+           text #e0e0e0 on #1a1a1a ~12:1; heading #99ccff / link #66b3ff on
+           #1a1a1a ~7:1; on the #262626 light-bg surface all stay >= 9:1. The
+           Bootstrap utility classes (.bg-light / .border-*) don't read these
+           tokens — the assembler injects their dark overrides. */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --cf-text: #e0e0e0;
+                --cf-background: #1a1a1a;
+                --cf-primary: #66b3ff;
+                --cf-primary-dark: #99ccff;
+                --cf-success: #4ade80;
+                --cf-warning: #e0b341;
+                --cf-danger: #f5a8ad;
+                --cf-info: #4dd0e1;
+                --cf-light-bg: #262626;
+                --cf-border: #404040;
+            }
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             font-size: 1rem;

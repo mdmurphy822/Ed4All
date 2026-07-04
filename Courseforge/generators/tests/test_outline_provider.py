@@ -60,10 +60,12 @@ from Courseforge.generators._outline_provider import (  # noqa: E402
     OutlineProviderError,
     SUPPORTED_PROVIDERS,
     _BLOCK_TYPE_JSON_SCHEMAS,
+    _OBJECTIVE_ECHO_WARNING,
     _OUTLINE_KIND_BOUNDS,
     _OUTLINE_SYSTEM_PROMPT,
     _block_source_chunk_ids,
     _build_block_outline_schema,
+    _drop_objective_echo_claims,
     _match_retry_directive,
     _surface_key_claims_min_items,
     _repair_assessment_item_payload,
@@ -1938,3 +1940,156 @@ def test_content_gap_fix_maxitems_unchanged():
     assert _OUTLINE_KIND_BOUNDS["summary_takeaway"]["key_claims"] == (1, 5)
     assert _OUTLINE_KIND_BOUNDS["activity"]["section_skeleton"] == (0, 3)
     assert _OUTLINE_KIND_BOUNDS["activity"]["key_claims"] == (1, 4)
+
+
+# ---------------------------------------------------------------------------
+# Objective-echo claim repair (2026-07)
+# ---------------------------------------------------------------------------
+
+_ECHO_OBJECTIVE = "Identify the place value of each digit in a given number."
+
+
+def _echo_objectives() -> List[Dict[str, Any]]:
+    return [{"id": "CO-01", "statement": _ECHO_OBJECTIVE, "bloom_level": "apply"}]
+
+
+def _structured(text: str, ids=("dart:slug#blk1",)) -> Dict[str, Any]:
+    return {"claim": text, "source_chunk_ids": list(ids)}
+
+
+def test_objective_echo_claim_dropped_for_concept_block():
+    """A concept-block claim that verbatim restates the CO statement is
+    dropped; the genuine factual claim survives."""
+    fact = "The place value of the 4 in 51,493 is hundreds."
+    candidate = {
+        "key_claims": [_structured(_ECHO_OBJECTIVE), _structured(fact)],
+        "structural_warnings": [],
+    }
+    out = _drop_objective_echo_claims(
+        candidate, block_type="concept", objectives=_echo_objectives()
+    )
+    texts = [c["claim"] for c in out["key_claims"]]
+    assert texts == [fact]
+    meta = out["_objective_echo_repair"]
+    assert meta["repaired"] is True
+    assert meta["n_dropped"] == 1
+    assert meta["n_objective_echo_warned"] == 0
+    assert _OBJECTIVE_ECHO_WARNING not in out["structural_warnings"]
+
+
+def test_objective_echo_claim_dropped_for_example_block():
+    """Same drop behavior on an example block (also non-exempt)."""
+    fact = "Dividing 3/4 by 2/5 gives 15/8 after multiplying by the reciprocal."
+    candidate = {
+        "key_claims": [_structured(fact), _structured(_ECHO_OBJECTIVE)],
+        "structural_warnings": [],
+    }
+    out = _drop_objective_echo_claims(
+        candidate, block_type="example", objectives=_echo_objectives()
+    )
+    assert [c["claim"] for c in out["key_claims"]] == [fact]
+    assert out["_objective_echo_repair"]["n_dropped"] == 1
+
+
+def test_objective_block_is_exempt_from_echo_drop():
+    """An ``objective`` block restating the objective is that block's job —
+    the echo claim is preserved untouched."""
+    candidate = {
+        "key_claims": [_structured(_ECHO_OBJECTIVE)],
+        "structural_warnings": [],
+    }
+    out = _drop_objective_echo_claims(
+        candidate, block_type="objective", objectives=_echo_objectives()
+    )
+    assert [c["claim"] for c in out["key_claims"]] == [_ECHO_OBJECTIVE]
+    meta = out["_objective_echo_repair"]
+    assert meta["repaired"] is False
+    assert meta["n_dropped"] == 0
+
+
+def test_all_echo_block_keeps_one_claim_and_warns():
+    """When EVERY claim is an echo, never empty the block: keep the first
+    claim and append the OBJECTIVE_ECHO_CLAIMS structural warning."""
+    shuffle = "The place value of each digit in a given number identify."
+    candidate = {
+        "key_claims": [_structured(_ECHO_OBJECTIVE), _structured(shuffle)],
+        "structural_warnings": [],
+    }
+    out = _drop_objective_echo_claims(
+        candidate, block_type="concept", objectives=_echo_objectives()
+    )
+    assert len(out["key_claims"]) == 1
+    assert out["key_claims"][0]["claim"] == _ECHO_OBJECTIVE
+    assert _OBJECTIVE_ECHO_WARNING in out["structural_warnings"]
+    meta = out["_objective_echo_repair"]
+    assert meta["repaired"] is True
+    assert meta["n_objective_echo_warned"] == 1
+    assert meta["n_dropped"] == 0
+
+
+def test_jaccard_word_order_shuffle_is_caught():
+    """A pure word-order shuffle of the objective (same token set) exceeds the
+    0.85 Jaccard floor and is dropped as an echo."""
+    shuffle = "digit place value the of each in a given number identify"
+    fact = "A four-digit number has thousands, hundreds, tens, and ones places."
+    candidate = {
+        "key_claims": [_structured(shuffle), _structured(fact)],
+        "structural_warnings": [],
+    }
+    out = _drop_objective_echo_claims(
+        candidate, block_type="concept", objectives=_echo_objectives()
+    )
+    assert [c["claim"] for c in out["key_claims"]] == [fact]
+    assert out["_objective_echo_repair"]["n_dropped"] == 1
+
+
+def test_legit_fact_sharing_objective_vocab_survives():
+    """A concrete factual claim that happens to share objective vocabulary
+    ("place value") but asserts a specific fact stays below the Jaccard floor
+    and is NOT dropped."""
+    fact = "The place value of the 4 in 51,493 is hundreds."
+    candidate = {
+        "key_claims": [_structured(fact)],
+        "structural_warnings": [],
+    }
+    out = _drop_objective_echo_claims(
+        candidate, block_type="concept", objectives=_echo_objectives()
+    )
+    assert [c["claim"] for c in out["key_claims"]] == [fact]
+    meta = out["_objective_echo_repair"]
+    assert meta["repaired"] is False
+    assert meta["n_dropped"] == 0
+
+
+def test_echo_drop_handles_legacy_flat_string_claims():
+    """The drop pass reads claim text from BOTH the structured object arm and
+    the legacy flat-string arm."""
+    fact = "The place value of the 4 in 51,493 is hundreds."
+    candidate = {
+        "key_claims": [_ECHO_OBJECTIVE, fact],
+        "structural_warnings": [],
+    }
+    out = _drop_objective_echo_claims(
+        candidate, block_type="concept", objectives=_echo_objectives()
+    )
+    assert out["key_claims"] == [fact]
+
+
+def test_echo_drop_noop_when_no_objectives():
+    candidate = {
+        "key_claims": [_structured(_ECHO_OBJECTIVE)],
+        "structural_warnings": [],
+    }
+    out = _drop_objective_echo_claims(
+        candidate, block_type="concept", objectives=[]
+    )
+    assert [c["claim"] for c in out["key_claims"]] == [_ECHO_OBJECTIVE]
+    assert out["_objective_echo_repair"]["repaired"] is False
+
+
+def test_outline_system_prompt_carries_objective_echo_directive():
+    """PROMPT arm: the system prompt forbids restating the objective as a
+    claim and demands factual assertions from the source."""
+    prompt = _OUTLINE_SYSTEM_PROMPT.lower()
+    assert "restatement or paraphrase of a learning objective" in prompt
+    assert "factual, teachable assertion" in prompt

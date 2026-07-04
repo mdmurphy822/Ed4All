@@ -1,0 +1,365 @@
+/*
+ * dart_content.css — styling hooks for SemantiK/DART textbook semantics
+ * =====================================================================
+ * End-user-HTML improvement plan (plans/enduser-html-improvements-2026-07.md
+ * item B5). The SemantiK adapter emits accessible, provenance-correct HTML for
+ * converted textbooks, but the Courseforge WCAG template has no rules for the
+ * textbook-semantic classes — so examples, solutions, exercises and glossaries
+ * all render as undifferentiated black-on-white prose. This stylesheet gives
+ * each a visual affordance.
+ *
+ * CONVENTIONS aligned with the DART standalone-export exemplars (linear-
+ * algebra-textbook / nasa-nesc-2024 accessible.html): a semantic custom-property
+ * layer (--bg-color / --text-color / --heading-color / --link-color /
+ * --border-color / --code-bg) WITH a prefers-color-scheme: dark override, a
+ * centered ~900px reading column, bordered h1/h2, figure/figcaption + table +
+ * .toc blocks, and link focus outlines. Box fills flip to dark surfaces in dark
+ * mode so text keeps its contrast in BOTH schemes.
+ *
+ * SELF-CONTAINED: the :root block below defines every token this file uses (the
+ * exemplar semantic vars + the Courseforge accent hues from variables.css) so
+ * it renders standalone when the assembler inlines it. If variables.css is also
+ * loaded, identical values mean the cascade is a no-op either way.
+ *
+ * WCAG 2.2 AA — verified in BOTH schemes:
+ *   Light: text #1a1a1a on #ffffff ~16:1; on box fills (#ebf8ff/#fff3cd/
+ *          #d1ecf1/#f8f9fa) >= 12:1; link #0066cc on #fff ~5.6:1.
+ *   Dark:  text #e0e0e0 on #1a1a1a ~12:1; on dark box surfaces (#14203a/
+ *          #2b2410/#12262b/#2d2d2d) >= 9:1; link #66b3ff on #1a1a1a ~7:1.
+ *   4px role rails are a non-text UI signal (>= 3:1) and never the SOLE meaning
+ *   carrier — an <hN> label always accompanies them. Tables scroll (1.4.10).
+ */
+
+:root {
+    /* Exemplar semantic layer (light). */
+    --bg-color: #ffffff;
+    --text-color: #1a1a1a;
+    --heading-color: #0d0d0d;
+    --link-color: #0066cc;
+    --border-color: #e0e0e0;
+    --code-bg: #f5f5f5;
+
+    /* Box fills (light) — flipped to dark surfaces in the dark block below. */
+    --dart-box-example: #ebf8ff;
+    --dart-box-quiet: #f8f9fa;
+    --dart-box-tryit: #fff3cd;
+    --dart-box-prepared: #d1ecf1;
+    --dart-box-degraded: #f8d7da;
+
+    /* Accent rails (scheme-stable mid-tones from the Courseforge palette). */
+    --dart-rail-example: #007bff;
+    --dart-rail-solution: #28a745;
+    --dart-rail-objectives: #2c5aa0;
+    --dart-rail-tryit: #b35900;
+    --dart-rail-prepared: #17a2b8;
+    --dart-rail-howto: #2c5aa0;
+    --dart-degraded-text: #721c24;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg-color: #1a1a1a;
+        --text-color: #e0e0e0;
+        --heading-color: #ffffff;
+        --link-color: #66b3ff;
+        --border-color: #404040;
+        --code-bg: #2d2d2d;
+
+        /* Dark box surfaces — text (--text-color) keeps >= 9:1 on each. */
+        --dart-box-example: #14203a;
+        --dart-box-quiet: #262626;
+        --dart-box-tryit: #2b2410;
+        --dart-box-prepared: #12262b;
+        --dart-box-degraded: #3a1113;
+
+        /* Brighter accent rails so they stay visible (>= 3:1) on the dark bg. */
+        --dart-rail-example: #4d9fff;
+        --dart-rail-solution: #4ade80;
+        --dart-rail-objectives: #7aa7e0;
+        --dart-rail-tryit: #f0a35a;
+        --dart-rail-prepared: #4dd0e1;
+        --dart-rail-howto: #7aa7e0;
+        --dart-degraded-text: #f5a8ad;
+    }
+}
+
+/* ---- Reading column + typography (exemplar convention) ------------------ */
+/* Scoped to the main landmark with an attribute selector so it out-specifies
+   Bootstrap's ``.container`` max-width without !important. */
+main[role="main"] {
+    max-width: 900px;
+    margin-inline: auto;
+    line-height: 1.8;
+    color: var(--text-color);
+}
+main[role="main"] h1,
+main[role="main"] h2,
+main[role="main"] h3,
+main[role="main"] h4 {
+    color: var(--heading-color);
+    margin-top: 2rem;
+}
+main[role="main"] h1 {
+    text-align: center;
+    border-bottom: 3px solid var(--border-color);
+    padding-bottom: 1rem;
+}
+main[role="main"] h2 {
+    border-bottom: 2px solid var(--border-color);
+    padding-bottom: 0.5rem;
+}
+main[role="main"] a {
+    color: var(--link-color);
+}
+/* Link focus outline (in addition to the template's button/input rules). */
+main[role="main"] a:focus {
+    outline: 2px solid var(--link-color);
+    outline-offset: 2px;
+}
+
+/* ---- Table of contents (feature hook — a TOC wave is queued) ------------ */
+.toc {
+    background: var(--code-bg);
+    padding: 1.5rem;
+    border-radius: 8px;
+    margin: 2rem 0;
+}
+.toc ol {
+    padding-left: 1.5rem;
+}
+
+/* ---- figure / figcaption (exemplar pattern; degraded work reuses it) ---- */
+.dart-document figure,
+.dart-section figure,
+.dart-figure {
+    margin: 2rem 0;
+    padding: 1rem;
+    background: var(--code-bg);
+    border-radius: 8px;
+    text-align: center;
+}
+.dart-document figure img,
+.dart-section figure img {
+    max-width: 100%;
+    height: auto;
+    border: 1px solid var(--border-color);
+}
+.dart-document figcaption,
+.dart-section figcaption {
+    margin-top: 0.5rem;
+    font-style: italic;
+    color: var(--text-color);
+}
+
+/* ---- tables (exemplar pattern) ----------------------------------------- */
+.dart-section table,
+.dart-document table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+}
+.dart-section th,
+.dart-section td,
+.dart-document th,
+.dart-document td {
+    border: 1px solid var(--border-color);
+    padding: 0.75rem;
+    text-align: left;
+    color: var(--text-color);
+}
+.dart-section th,
+.dart-document th {
+    background: var(--code-bg);
+}
+/* Wide tables scroll inside their own container (1.4.10 Reflow). */
+.table-responsive {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: 1rem 0;
+}
+
+/* ---- Base content section ---------------------------------------------- */
+.dart-section {
+    margin-block: 0.75rem;
+    color: var(--text-color);
+    overflow-x: auto; /* runaway display-math scrolls in-block, not the page */
+}
+
+/* ---- Worked EXAMPLE box (A2) ------------------------------------------- */
+.dart-example,
+.dart-section[data-dart-opener="worked_example"],
+.dart-section[data-dart-block-role="worked_example"],
+[data-dart-opener-group="worked_example"] {
+    border-left: 4px solid var(--dart-rail-example);
+    background: var(--dart-box-example);
+    color: var(--text-color);
+    padding: 1rem;
+    border-radius: 0 4px 4px 0;
+    margin-block: 1rem;
+}
+
+/* ---- SOLUTION region --------------------------------------------------- */
+.dart-solution,
+.pedagogy-solution,
+.dart-section[data-dart-opener="solution"],
+.dart-section[data-dart-block-role="solution"],
+[data-dart-opener-group="solution"] {
+    border-left: 4px solid var(--dart-rail-solution);
+    background: var(--dart-box-quiet);
+    color: var(--text-color);
+    padding: 0.75rem;
+    border-radius: 0 4px 4px 0;
+    margin-block: 0.75rem;
+}
+
+/* ---- Learning Objectives opener (A7) ----------------------------------- */
+.dart-section[data-dart-opener="objectives"],
+[data-dart-opener-group="objectives"] {
+    border-left: 4px solid var(--dart-rail-objectives);
+    background: var(--dart-box-example);
+    color: var(--text-color);
+    padding: 0.75rem 1rem;
+    border-radius: 0 4px 4px 0;
+    margin-block: 1rem;
+}
+
+/* ---- TRY IT callout ----------------------------------------------------- */
+.dart-callout--try-it,
+.dart-section[data-dart-opener="try_it"],
+.dart-section[data-dart-block-role="try_it"],
+[data-dart-opener-group="try_it"] {
+    border-left: 4px solid var(--dart-rail-tryit);
+    background: var(--dart-box-tryit);
+    color: var(--text-color);
+    padding: 0.75rem 1rem;
+    border-radius: 0 4px 4px 0;
+    margin-block: 0.75rem;
+}
+
+/* ---- BE PREPARED readiness check --------------------------------------- */
+.dart-callout--be-prepared,
+.dart-section[data-dart-opener="readiness_check"],
+.dart-section[data-dart-block-role="readiness_check"],
+[data-dart-opener-group="readiness_check"] {
+    border-left: 4px solid var(--dart-rail-prepared);
+    background: var(--dart-box-prepared);
+    color: var(--text-color);
+    padding: 0.75rem 1rem;
+    border-radius: 0 4px 4px 0;
+    margin-block: 0.75rem;
+}
+
+/* ---- HOW TO procedure --------------------------------------------------- */
+.dart-callout--how-to,
+.dart-section[data-dart-opener="how_to"],
+.dart-section[data-dart-block-role="how_to"],
+[data-dart-opener-group="how_to"] {
+    border-left: 4px solid var(--dart-rail-howto);
+    background: var(--dart-box-quiet);
+    color: var(--text-color);
+    padding: 0.75rem 1rem;
+    border-radius: 0 4px 4px 0;
+    margin-block: 0.75rem;
+}
+
+/* ---- Callout GROUP container (opener + its following content) ----------- */
+/* The adapter wraps a promoted opener heading and the content blocks that
+   follow it (steps / solution / prose) in ONE ``[data-dart-opener-group]``
+   div, so the per-kind box rules above enclose the WHOLE pedagogical unit.
+   The inner opener SECTION must then NOT re-draw its own box (double-box), and
+   the inner content sections sit transparent on the group fill. */
+[data-dart-opener-group] > .dart-section[data-dart-opener] {
+    border-left: 0;
+    background: transparent;
+    padding: 0;
+    margin-block: 0;
+    border-radius: 0;
+}
+[data-dart-opener-group] > .dart-section {
+    background: transparent;
+}
+
+/* ---- Exercise part lists (A1) ------------------------------------------ */
+.dart-exercise-parts {
+    padding-inline-start: 2rem;
+    margin-block: 0.75rem;
+}
+.dart-exercise-parts > li {
+    margin-block-end: 0.5rem;
+}
+
+/* ---- Key-terms glossary (A5) ------------------------------------------- */
+.dart-key-terms {
+    margin-block: 1rem;
+}
+.dart-key-terms dt {
+    font-weight: 600;
+    color: var(--heading-color);
+    margin-block-start: 0.75rem;
+}
+.dart-key-terms dd {
+    margin-inline-start: 1.5rem;
+    margin-block-end: 0.75rem;
+    color: var(--text-color);
+}
+
+/* ---- Degraded-figure notice (A8/B6) ------------------------------------ */
+.dart-section[data-dart-wcag="failed"] figure,
+.dart-figure-degraded {
+    border: 1px dashed var(--dart-degraded-text);
+    background: var(--dart-box-degraded);
+    padding: 0.75rem;
+    border-radius: 4px;
+    color: var(--dart-degraded-text);
+}
+.dart-section[data-dart-wcag="failed"] figcaption,
+.dart-figure-degraded figcaption {
+    color: var(--dart-degraded-text);
+    font-size: 0.875rem;
+}
+
+/* ---- Continuation banner (B10) — stays VISUALLY HIDDEN ----------------- */
+/* Decorative page-break cue (role="presentation" aria-hidden="true"): kept
+   off-screen so sighted learners don't see a duplicate "… (cont.)" and SR
+   users never hear it. */
+.dart-continuation {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+/* ---- Tier-2 composite units (Wave #22) --------------------------------- */
+/* A composite unit (<section class="dart-unit dart-unit-<type>" role="group">)
+   coagulates the smaller sibling blocks that form one pedagogical whole — a
+   worked example + its solution + practice, an objectives + readiness opener,
+   an exercise set, a definition + its example, a figure group. The container is
+   deliberately SUBTLE: a thin start-rail + light inset that reads as "these
+   belong together" WITHOUT double-boxing the callout-group boxes already inside
+   it. Reuses the existing token layer, so it renders in BOTH color schemes (the
+   tokens flip in the prefers-color-scheme: dark block above). The 3px rail is a
+   non-text UI signal (>= 3:1) and never the sole meaning carrier — each unit
+   carries an accessible group name (aria-labelledby / aria-label). */
+.dart-unit {
+    border-inline-start: 3px solid var(--border-color);
+    padding-inline-start: 0.75rem;
+    margin-block: 1.25rem;
+}
+.dart-unit > .dart-callout-group,
+.dart-unit > .dart-section {
+    margin-block: 0.5rem;
+}
+/* Per-type rail tint — reuses the callout accent rails so a unit's start-rail
+   echoes the pedagogy inside it (worked example -> example rail, section opener
+   -> objectives rail, exercise set / definition / figure -> quiet neutrals). */
+.dart-unit-worked_example { border-inline-start-color: var(--dart-rail-example); }
+.dart-unit-section_opener { border-inline-start-color: var(--dart-rail-objectives); }
+.dart-unit-procedure { border-inline-start-color: var(--dart-rail-howto); }
+.dart-unit-exercise_set { border-inline-start-color: var(--dart-rail-tryit); }
+.dart-unit-definition_group { border-inline-start-color: var(--dart-rail-prepared); }
+.dart-unit-figure_group { border-inline-start-color: var(--border-color); }
