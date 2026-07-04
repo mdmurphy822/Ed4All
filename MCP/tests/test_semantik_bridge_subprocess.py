@@ -50,12 +50,32 @@ def _bridge_json(*, runtime_mode: str = "real", exit_action: str = "ship_with_co
                 "raw_text": "Chapter 1: Foundations",
             },
             {
+                # A SECTION-level heading so the emitted document carries at
+                # least one aria-labelledby section. Post-B4 (anonymous prose
+                # sections no longer get sr-only names) a fixture with only a
+                # chapter title + bare paragraph legitimately emits zero
+                # aria-labelledby, which trips DartMarkersValidator's
+                # MISSING_ARIA_SECTIONS — real corpora always have headed
+                # sections, so the fixture should too.
                 "region_index": 1,
+                "region_kind": "heading",
+                "role": "heading",
+                "confidence": 0.9,
+                "wcag_status": "passed",
+                "first_raw_block_index": 1,
+                "pages": [2],
+                "heading_text": "1.1 Order of Operations",
+                "level": 2,
+                "figure_alt": None,
+                "raw_text": "1.1 Order of Operations",
+            },
+            {
+                "region_index": 2,
                 "region_kind": "paragraph",
                 "role": "body",
                 "confidence": 0.6,
                 "wcag_status": "passed",
-                "first_raw_block_index": 1,
+                "first_raw_block_index": 2,
                 "pages": [2, 3],
                 "heading_text": None,
                 "level": None,
@@ -63,7 +83,7 @@ def _bridge_json(*, runtime_mode: str = "real", exit_action: str = "ship_with_co
                 "raw_text": "The order of operations is PEMDAS, a key foundation.",
             },
         ],
-        "heading_tree": [[1, "Chapter 1: Foundations"]],
+        "heading_tree": [[1, "Chapter 1: Foundations"], [2, "1.1 Order of Operations"]],
         "exit_action": exit_action,
         "theta_score": 0.91,
         "wcag_status": "passed",

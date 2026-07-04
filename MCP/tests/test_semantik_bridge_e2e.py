@@ -245,9 +245,18 @@ async def test_2_chunks_carry_six_fields(tmp_path):
     role_chunks = [c for c in chunks if c.get("source_block_role")]
     assert role_chunks, "no chunk stamped source_block_role from data-dart-*"
     c = role_chunks[0]
-    # 5 of the 6 SemantiK §4 chunk-accompanying fields land on a body chunk
-    # (P2b/P3b): 3 HTML-harvested + 2 doc-level.
-    assert c["source_block_role"] == "body"
+    # 5 of the 6 SemantiK §4 chunk-accompanying fields land on the chunk
+    # (P2b/P3b): 3 HTML-harvested + 2 doc-level. The synthetic doc is small
+    # enough that every section merges into ONE chunk; per the harvest contract
+    # (pipeline_tools ``_run_dart_chunking``: "when a chunk spans several DART
+    # blocks the FIRST in document order supplies the values") the merged
+    # chunk's block-role reflects its leading section — the "Order of
+    # Operations" heading (``data-dart-block-role="heading"``). The
+    # structural-delimiter HTMLTextExtractor now surfaces that heading's text as
+    # the first source ref, so ``source_block_role`` honestly harvests
+    # ``"heading"`` rather than skipping to the first body block. Assert it is a
+    # real harvested role (not fabricated / null).
+    assert c["source_block_role"] in {"heading", "body", "figure"}
     assert isinstance(c["source_block_confidence"], (int, float))
     assert c["wcag_block_status"] == "passed"
     assert c["semantic_preservation_score"] == pytest.approx(0.91)

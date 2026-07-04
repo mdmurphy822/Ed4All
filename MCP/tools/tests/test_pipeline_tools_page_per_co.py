@@ -176,3 +176,87 @@ def test_content_page_per_co_gate_requires_two_pass(monkeypatch):
     assert _pt._content_page_per_co_enabled() is True
     monkeypatch.setenv("ED4ALL_CONTENT_PAGE_PER_CO", "0")
     assert _pt._content_page_per_co_enabled() is False
+
+
+# --------------------------------------------------------------------------- #
+# _content_page_heading_slug — CO-statement slug under page-per-CO
+# --------------------------------------------------------------------------- #
+def _slug(text):
+    """Minimal deterministic slug stand-in for the helper's slug_fn."""
+    return text.strip().lower().replace(" ", "_")
+
+
+def test_heading_slug_bound_co_drives_heading_and_slug():
+    """A page bound to a CO derives heading + first-~8-word slug from the CO
+    statement — NOT the (unrelated) positional topic heading."""
+    stmt = ("Explain the process of cellular respiration in eukaryotic cells "
+            "using the mitochondrial electron transport chain")
+    heading, slug = _pt._content_page_heading_slug(
+        page_bound_co_id="CO-05",
+        page_bound_co_statement=stmt,
+        topic={"heading": "Photosynthesis Overview"},  # drifted, unrelated
+        page_type="content",
+        week_num=3,
+        slug_fn=_slug,
+    )
+    assert heading == stmt
+    # Slug is the first ~8 words (truncated), from the CO statement.
+    assert slug == _slug("Explain the process of cellular respiration in eukaryotic")
+    assert "photosynthesis" not in slug
+
+
+def test_heading_slug_off_path_unchanged_content():
+    """Non-bound content page keeps the legacy topic-heading path (byte-stable)."""
+    heading, slug = _pt._content_page_heading_slug(
+        page_bound_co_id=None,
+        page_bound_co_statement="",
+        topic={"heading": "Real Topic Heading"},
+        page_type="content",
+        week_num=2,
+        slug_fn=_slug,
+    )
+    assert heading == "Real Topic Heading"
+    assert slug == _slug("Real Topic Heading")
+
+
+def test_heading_slug_off_path_content_no_topic():
+    """Content page, no topic → legacy ``week_NN`` heading."""
+    heading, slug = _pt._content_page_heading_slug(
+        page_bound_co_id=None,
+        page_bound_co_statement="",
+        topic=None,
+        page_type="content",
+        week_num=7,
+        slug_fn=_slug,
+    )
+    assert heading == "week_07"
+    assert slug == _slug("week_07")
+
+
+def test_heading_slug_off_path_singleton_page_type():
+    """Non-content singleton page keeps the legacy titled fallback heading."""
+    heading, slug = _pt._content_page_heading_slug(
+        page_bound_co_id=None,
+        page_bound_co_statement="",
+        topic=None,
+        page_type="self_check",
+        week_num=4,
+        slug_fn=_slug,
+    )
+    assert heading == "week_04 Self Check"
+    assert slug == _slug("week_04 Self Check")
+
+
+def test_heading_slug_bound_id_but_empty_statement_falls_back():
+    """A bound CO id with an EMPTY statement must not blank the heading — it
+    falls through to the legacy topic path."""
+    heading, slug = _pt._content_page_heading_slug(
+        page_bound_co_id="CO-01",
+        page_bound_co_statement="",  # no statement text
+        topic={"heading": "Topic Fallback"},
+        page_type="content",
+        week_num=1,
+        slug_fn=_slug,
+    )
+    assert heading == "Topic Fallback"
+    assert slug == _slug("Topic Fallback")

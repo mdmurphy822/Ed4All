@@ -264,6 +264,18 @@ def _run_plan(
     """
     monkeypatch.setattr(pipeline_tools, "_PROJECT_ROOT", fake_root)
     monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", fake_root)
+    # These tests target the legacy draft-TO *reconcile* (Stage-2 fallback)
+    # path — reconciliation markers, per-chapter CO isolation, global CO
+    # minting. The bottom-up TO-derivation path (embeddings present →
+    # provider.author_terminal_for_cluster) is exercised by its own dedicated
+    # suite (MCP/tools/tests/test_pipeline_tools_stage2_bottom_up.py). Pin the
+    # embedding client to None so _run_stage2_window_synthesis deterministically
+    # takes the reconcile fallback here (daf91bb made bottom-up the default when
+    # an embedding client is available, which otherwise bypasses reconcile).
+    import lib.embedding.providers as _emb_providers
+    monkeypatch.setattr(
+        _emb_providers, "build_embedding_client", lambda *a, **k: None
+    )
     # No COURSEPLANNER seam in these tests.
     monkeypatch.delenv("COURSEPLANNER_PROVIDER", raising=False)
     if provider_env is None:

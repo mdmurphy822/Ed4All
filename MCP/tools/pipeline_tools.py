@@ -4170,6 +4170,119 @@ def _annotate_terminals_with_children(
     }
 
 
+_WEEK_TO_GROUPS_ENV = "ED4ALL_WEEK_TO_GROUPS"
+_WEEK_TO_GROUPS_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def resolve_week_to_groups(value: Optional[bool] = None) -> bool:
+    """Resolve the ``ED4ALL_WEEK_TO_GROUPS`` gate (default OFF).
+
+    Explicit arg > env. Truthy tokens ``1``/``true``/``yes``/``on`` (any case)
+    enable; falsey / garbage / unset → off (parse-with-fallback, mirroring
+    ``lib.objectives.citation_reselect.resolve_citation_reselect``).
+    """
+    if value is not None:
+        return bool(value)
+    return (
+        os.environ.get(_WEEK_TO_GROUPS_ENV, "").strip().lower()
+        in _WEEK_TO_GROUPS_TRUTHY
+    )
+
+
+def _week_co_groups(
+    cos: List[Dict[str, Any]],
+    terminal_objectives: List[Dict[str, Any]],
+    duration_weeks: int,
+    *,
+    enabled: Optional[bool] = None,
+) -> Dict[int, List[Dict[str, Any]]]:
+    """SINGLE-SOURCE the per-week chapter-objective (CO) grouping for the
+    outline tier's ``"Week N"`` groups.
+
+    Returns ``{week_num (1-based): [CO dict, ...]}`` for weeks
+    ``1..duration_weeks``. BOTH the persist path (``_plan_course_structure`` →
+    ``synthesized_objectives.json``'s ``chapter_objectives``) and the emit path
+    (``_generate_course_content`` → ``week_chapter_cos``) call THIS helper so
+    the on-disk groups the validator reads and the emitted week membership stay
+    identical by construction.
+
+    Two modes:
+
+    * **TO-membership** (``ED4ALL_WEEK_TO_GROUPS`` on AND
+      ``duration_weeks == len(terminal_objectives)``): week ``N``'s group is
+      TO-``N``'s child COs — every CO in ``cos`` whose parent-terminal id
+      (resolved via :func:`_co_parent_terminal_id`, case-insensitive) matches
+      the ``N``-th terminal objective. TO order = ``terminal_objectives`` order;
+      CO order within a group = stable ``cos`` order. A CO whose parent TO does
+      not resolve among the TOs is appended to the FINAL week (never dropped —
+      coverage-preserving) with a logged warning.
+
+    * **ceil-stride fallback** (flag off, OR weeks != num_tos): the legacy
+      single-sourced ``_slice_cos_for_week`` slicer with a shared cross-week
+      ``placed_ids`` set — byte-identical to the prior inline calls. When the
+      flag is ON but ``weeks != num_tos`` a warning naming BOTH counts is logged
+      before falling back.
+    """
+    groups: Dict[int, List[Dict[str, Any]]] = {
+        w: [] for w in range(1, max(duration_weeks, 0) + 1)
+    }
+    if not cos or duration_weeks < 1:
+        return groups
+
+    flag_on = resolve_week_to_groups(enabled)
+    num_tos = len([t for t in (terminal_objectives or []) if isinstance(t, dict)])
+
+    if flag_on and duration_weeks == num_tos and num_tos > 0:
+        # TO-membership grouping. Map each TO id (lower) → its 1-based week.
+        to_week_by_lower: Dict[str, int] = {}
+        for idx, to in enumerate(terminal_objectives, start=1):
+            if not isinstance(to, dict):
+                continue
+            tid = to.get("id")
+            if isinstance(tid, str) and tid.strip():
+                to_week_by_lower.setdefault(tid.strip().lower(), idx)
+        orphans: List[Dict[str, Any]] = []
+        for co in cos:
+            if not isinstance(co, dict):
+                continue
+            parent = _co_parent_terminal_id(co).lower()
+            wk = to_week_by_lower.get(parent)
+            if wk is None:
+                orphans.append(co)
+            else:
+                groups[wk].append(co)
+        if orphans:
+            logger.warning(
+                "_week_co_groups: %d of %d CO(s) have no resolvable parent "
+                "terminal among the %d TO(s) (ED4ALL_WEEK_TO_GROUPS on); "
+                "appending them to the final week to preserve coverage.",
+                len(orphans), len(cos), num_tos,
+            )
+            groups[duration_weeks].extend(orphans)
+        return groups
+
+    if flag_on and duration_weeks != num_tos:
+        logger.warning(
+            "ED4ALL_WEEK_TO_GROUPS is on but duration_weeks (%d) != number of "
+            "terminal objectives (%d); falling back to ceil-stride CO slicing "
+            "for the per-week groups.",
+            duration_weeks, num_tos,
+        )
+
+    # ceil-stride fallback (also the default flag-off path). Single-sourced via
+    # the Courseforge slicer + a shared placed-ids set (M5 Fix B) — byte-stable.
+    from Courseforge.scripts.generate_course import (  # noqa: PLC0415
+        _slice_cos_for_week as _cf_slice_cos_for_week,
+    )
+
+    placed_ids: set = set()
+    for w in range(1, duration_weeks + 1):
+        groups[w] = _cf_slice_cos_for_week(
+            cos, duration_weeks, w, placed_ids=placed_ids
+        )
+    return groups
+
+
 def _derive_terminals_bottom_up(
     *,
     provider: Any,
@@ -4178,6 +4291,7 @@ def _derive_terminals_bottom_up(
     course_name: str,
     mint_lo_id: Any,
     capture: Optional[Any] = None,
+    checkpoint_path: Optional[Path] = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """WS1 KEYSTONE — derive terminal objectives bottom-up by clustering COs.
 
@@ -4286,11 +4400,45 @@ def _derive_terminals_bottom_up(
     # against the chunks its cluster's COs actually cite (anti-fabrication:
     # union of the member COs' own ``source_chunk_ids`` — never invented).
     to_source_chunk_assignments: Dict[str, List[str]] = {}
+    # Per-cluster resume checkpoint (shared llm_checkpoint store; default ON,
+    # ED4ALL_OBJECTIVE_SYNTHESIS_CHECKPOINT > ED4ALL_GENERATION_CHECKPOINT).
+    # Each authored TO is one 7B call; the fingerprint (sorted member CO
+    # statements + model + course) invalidates whenever clustering / inputs
+    # shift, so a stale cluster never reuses another cluster's TO. Fallback
+    # (author-failed) terminals are deterministic + cheap → NOT checkpointed.
+    _cluster_store = _stage2_cluster_store(checkpoint_path)
+    _cluster_cache = _cluster_store.load() if _cluster_store.enabled else {}
+    _clusters_reused = 0
     for c_idx, member_idxs in enumerate(clusters, start=1):
         cluster_cos = [chapter_cos[i] for i in member_idxs]
-        authored = provider.author_terminal_for_cluster(
-            cluster_cos, course_name=course_name, cluster_index=c_idx
-        )
+        _cl_unit = f"cluster{c_idx:02d}"
+        _cl_fp = _llm_compute_fingerprint({
+            "site": "stage2_clusters",
+            "member_statements": sorted(
+                str(c.get("statement") or c.get("text") or "")
+                for c in cluster_cos
+            ),
+            "model": str(getattr(provider, "_model", "") or ""),
+            "course_name": course_name,
+        })
+        authored: Optional[Dict[str, Any]] = None
+        if _cluster_store.enabled:
+            _cl_cached = _cluster_store.reuse(
+                _cl_unit, _cl_fp, cache=_cluster_cache
+            )
+            if _cl_cached is not None and isinstance(
+                _cl_cached.get("authored"), dict
+            ):
+                authored = dict(_cl_cached["authored"])
+                _clusters_reused += 1
+        if authored is None:
+            authored = provider.author_terminal_for_cluster(
+                cluster_cos, course_name=course_name, cluster_index=c_idx
+            )
+            if authored is not None and _cluster_store.enabled:
+                _cluster_store.append(
+                    _cl_unit, _cl_fp, {"authored": dict(authored)}
+                )
         if authored is None:
             authored = _fallback_terminal_from_cluster(cluster_cos)
         authored["id"] = mint_lo_id("terminal", c_idx)
@@ -4325,7 +4473,16 @@ def _derive_terminals_bottom_up(
         # W7.5 (M-TO) — REAL cluster->chunk assignment ({to_id: [chunk_ids]})
         # consumed by TerminalObjectiveSourceGroundingValidator.
         "to_source_chunk_assignments": to_source_chunk_assignments,
+        # Per-cluster resume-checkpoint reuse (0 when the sidecar is absent /
+        # disabled). Rides the existing objective_grounding_filter event.
+        "to_clusters_reused_from_checkpoint": _clusters_reused,
     }
+    if _clusters_reused:
+        logger.info(
+            "plan_course_structure: bottom-up TO derivation reused %d/%d "
+            "cluster TO(s) from sidecar (skipped their 7B author calls).",
+            _clusters_reused, len(clusters),
+        )
     # P1 — surface the cluster-guard counters (outliers_absorbed /
     # undersize_merged / near_dup_clusters_merged / clusters_before /
     # clusters_after) onto the run's grounding_signals (all-zero when the
@@ -4406,6 +4563,152 @@ def _derive_terminals_bottom_up(
     return terminals, cluster_signals
 
 
+# ---------------------------------------------------------------------------
+# Stage-2 per-window resume checkpoint sidecar.
+# ---------------------------------------------------------------------------
+#
+# A full-book ``course_planning`` phase dispatches one (expensive, minutes-long)
+# 7B ``synthesize_window_objectives`` call per chunk-window. A kill / timeout
+# mid-phase historically lost EVERY completed window (candidates lived only in
+# memory), so a resume re-ran the whole ~20-minute set. This sidecar mirrors the
+# training-synthesis ``.synthesis_pairs_checkpoint.jsonl`` per-item resume
+# contract: each successful window flushes one JSONL record carrying its
+# synthesized candidate objectives + a deterministic WINDOW FINGERPRINT. On
+# phase re-entry a record is REUSED only when its fingerprint matches the
+# recomputed one for the same (chapter_id, window_index); any mismatch (changed
+# chunkset / chunk text / draft block / model / num_ctx / system prompt) silently
+# re-runs that window — a changed input therefore invalidates the whole cache
+# (correct). Default ON; site override ``ED4ALL_OBJECTIVE_SYNTHESIS_CHECKPOINT``
+# > the family ``ED4ALL_GENERATION_CHECKPOINT`` flag (parse-with-fallback). The
+# sidecar lives in the phase's OUTPUT dir (``01_learning_objectives/``), which
+# the workflow ``--resume`` path reuses verbatim (the same dir the phase already
+# reads ``textbook_structure.json`` from), so it survives resume.
+#
+# The mechanism is the shared fingerprinted unit-checkpoint store
+# (``lib/generation/llm_checkpoint.py``); the helpers below are thin site
+# wrappers preserving the stage-2 record shape + call signatures.
+from lib.generation.llm_checkpoint import (  # noqa: E402
+    SCHEMA_VERSION as _LLM_CHECKPOINT_SCHEMA_VERSION,
+    CheckpointStore as _LlmCheckpointStore,
+    checkpoint_enabled as _llm_checkpoint_enabled,
+    compute_fingerprint as _llm_compute_fingerprint,
+    hash_text as _llm_hash_text,
+)
+
+_OBJECTIVE_SYNTHESIS_CHECKPOINT_ENV = "ED4ALL_OBJECTIVE_SYNTHESIS_CHECKPOINT"
+_STAGE2_WINDOWS_CHECKPOINT_NAME = ".stage2_windows_checkpoint.jsonl"
+_STAGE2_CLUSTERS_CHECKPOINT_NAME = ".stage2_clusters_checkpoint.jsonl"
+_STAGE2_CHECKPOINT_SCHEMA_VERSION = _LLM_CHECKPOINT_SCHEMA_VERSION
+
+
+def _stage2_window_store(path: Optional[Path]) -> _LlmCheckpointStore:
+    return _LlmCheckpointStore(
+        path,
+        site_id="stage2_windows",
+        site_env=_OBJECTIVE_SYNTHESIS_CHECKPOINT_ENV,
+    )
+
+
+def _stage2_cluster_store(path: Optional[Path]) -> _LlmCheckpointStore:
+    """Sidecar for the bottom-up per-cluster TO authoring (one 7B call each)."""
+    return _LlmCheckpointStore(
+        path,
+        site_id="stage2_clusters",
+        site_env=_OBJECTIVE_SYNTHESIS_CHECKPOINT_ENV,
+    )
+
+
+def _objective_synthesis_checkpoint_enabled() -> bool:
+    """Stage-2 site gate: site flag (when set) > family flag; default ON."""
+    return _llm_checkpoint_enabled(_OBJECTIVE_SYNTHESIS_CHECKPOINT_ENV)
+
+
+def _stage2_window_key(chapter_id: str, window_index: int) -> str:
+    return f"{chapter_id}#w{int(window_index)}"
+
+
+def _stage2_window_fingerprint(
+    *,
+    chunk_ids: List[Any],
+    chunks: List[Dict[str, Any]],
+    draft_block: str,
+    model: str,
+    num_ctx: int,
+    system_prompt: str,
+) -> str:
+    """Deterministic fingerprint of a stage-2 window's synthesis inputs.
+
+    Hashes over (sorted chunk ids, the window chunk texts, the shared draft-TO
+    block, the model id, the resolved ``num_ctx``, and the synthesis system
+    prompt) so ANY change to what the model would see re-runs the window on
+    resume. The chunk texts are the truncated bodies fed to the model (the
+    ``window['chunks'][*]['text']`` render input), so a re-chunk that changes a
+    body invalidates the cache even when the id set is unchanged.
+    """
+    _text_parts: List[str] = []
+    for _c in chunks:
+        if isinstance(_c, dict):
+            _text_parts.append(
+                f"{_c.get('id')}\x1f{_c.get('text')}"
+            )
+    return _llm_compute_fingerprint({
+        "v": _STAGE2_CHECKPOINT_SCHEMA_VERSION,
+        "chunk_ids": sorted(str(c) for c in (chunk_ids or [])),
+        "chunk_texts_sha": _llm_hash_text("\x1e".join(_text_parts)),
+        "draft_block": draft_block,
+        "model": model,
+        "num_ctx": int(num_ctx),
+        "system_prompt_sha": _llm_hash_text(system_prompt or ""),
+    })
+
+
+def _load_stage2_windows_checkpoint(
+    path: Optional[Path],
+) -> Dict[Tuple[str, int], Dict[str, Any]]:
+    """Tolerant loader for the stage-2 per-window resume sidecar.
+
+    Returns a ``{(chapter_id, window_index): record}`` map (last-line-wins,
+    torn-trailing-line tolerant — the shared store's contract). A missing /
+    unreadable sidecar returns an empty map (first-run case).
+    """
+    out: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    for rec in _stage2_window_store(path).load().values():
+        cid = rec.get("chapter_id")
+        if not isinstance(cid, str):
+            continue
+        try:
+            widx = int(rec.get("window_index"))
+        except (TypeError, ValueError):
+            continue
+        out[(cid, widx)] = rec
+    return out
+
+
+def _append_stage2_window_checkpoint(
+    path: Optional[Path],
+    *,
+    chapter_id: str,
+    window_index: int,
+    fingerprint: str,
+    candidate_objectives: List[Dict[str, Any]],
+) -> None:
+    """Append one completed-window record to the sidecar with flush+fsync.
+
+    Best-effort (the shared store's contract): an OSError only costs a re-run
+    of that one window on resume. No-op when ``path`` is None or the site /
+    family flag is off.
+    """
+    _stage2_window_store(path).append(
+        _stage2_window_key(chapter_id, window_index),
+        fingerprint,
+        {
+            "chapter_id": chapter_id,
+            "window_index": int(window_index),
+            "candidate_objectives": candidate_objectives,
+        },
+    )
+
+
 async def _run_stage2_window_synthesis(
     *,
     provider: Any,
@@ -4421,6 +4724,7 @@ async def _run_stage2_window_synthesis(
     mint_lo_id: Any,
     kwargs: Dict[str, Any],
     capture: Optional[Any] = None,
+    checkpoint_path: Optional[Path] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], str, Dict[str, Any]]:
     """W2 §1.6 + §4.4 — orchestrate Pass B → C → D → E.
 
@@ -4462,6 +4766,9 @@ async def _run_stage2_window_synthesis(
     _loop = _asyncio.get_running_loop()
     candidates_synthesized = 0
     _flat_candidates: List[Dict[str, Any]] = []
+    # Per-window resume-checkpoint counters (0 on the chapter_fallback path).
+    _windows_total = 0
+    _windows_reused = 0
 
     # Draft-TO grounding block shared per chapter (statements only).
     _draft_block_lines = [
@@ -4545,21 +4852,113 @@ async def _run_stage2_window_synthesis(
                 )
                 return None
 
-        # Reuse the generic batch splitter (≤10 per batch).
-        _batches = provider.batch_chapters(_windows)
+        # ---- Per-window resume checkpoint (default ON). ----------------
+        # Load any prior sidecar and partition windows into REUSE (fingerprint
+        # matches a completed record) vs DISPATCH. The reuse splice keeps the
+        # ORIGINAL window order so _flat_candidates is byte-equivalent to an
+        # uninterrupted run.
+        _windows_total = len(_windows)
+        _cp_enabled = (
+            checkpoint_path is not None
+            and _objective_synthesis_checkpoint_enabled()
+        )
+        _cp_model = str(getattr(provider, "_model", "") or "")
+        _cp_cache = (
+            _load_stage2_windows_checkpoint(checkpoint_path)
+            if _cp_enabled else {}
+        )
+        if _cp_cache:
+            logger.info(
+                "plan_course_structure: Stage-2 loaded %d checkpointed "
+                "window record(s) from %s.",
+                len(_cp_cache), checkpoint_path,
+            )
+
+        def _window_key(wd: Dict[str, Any]) -> Tuple[str, int]:
+            try:
+                _wi = int(wd.get("window_index") or 0)
+            except (TypeError, ValueError):
+                _wi = 0
+            return (str(wd.get("chapter_id") or ""), _wi)
+
+        _fp_by_key: Dict[Tuple[str, int], str] = {}
+        _reused: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
+        _to_dispatch: List[Dict[str, Any]] = []
+        for _wd in _windows:
+            _key = _window_key(_wd)
+            _fp = _stage2_window_fingerprint(
+                chunk_ids=_wd.get("chunk_ids") or [],
+                chunks=_wd.get("chunks") or [],
+                draft_block=_draft_block,
+                model=_cp_model,
+                num_ctx=_num_ctx,
+                system_prompt=_TEXTBOOK_SYNTHESIS_SYSTEM_PROMPT,
+            )
+            _fp_by_key[_key] = _fp
+            _rec = _cp_cache.get(_key) if _cp_enabled else None
+            if isinstance(_rec, dict) and _rec.get("fingerprint") == _fp:
+                _reused[_key] = [
+                    c
+                    for c in (_rec.get("candidate_objectives") or [])
+                    if isinstance(c, dict)
+                ]
+            else:
+                _to_dispatch.append(_wd)
+
+        # Dispatch ONLY the un-cached windows (≤10 per batch), keyed by window.
+        _dispatched: Dict[Tuple[str, int], Optional[Dict[str, Any]]] = {}
+        _batches = provider.batch_chapters(_to_dispatch)
         for _batch in _batches:
             _results = await _asyncio.gather(*[
                 _loop.run_in_executor(None, _one_window, w) for w in _batch
             ])
             for _wd, _res in zip(_batch, _results):
-                _label = f"{_wd.get('chapter_id')}#w{_wd.get('window_index')}"
-                if _res is None:
-                    chapter_synthesis_failures.append(_label)
-                    continue
+                _dispatched[_window_key(_wd)] = _res
+
+        # Reassemble candidates in ORIGINAL window order (byte-equivalent to an
+        # uninterrupted run), appending each freshly-dispatched window to the
+        # sidecar so a later resume reuses it.
+        _reused_per_chapter: Dict[str, int] = {}
+        _total_per_chapter: Dict[str, int] = {}
+        for _wd in _windows:
+            _key = _window_key(_wd)
+            _cid = _key[0]
+            _label = f"{_cid}#w{_key[1]}"
+            _total_per_chapter[_cid] = _total_per_chapter.get(_cid, 0) + 1
+            if _key in _reused:
                 candidates_synthesized += 1
-                for _cand in _res.get("candidate_objectives") or []:
-                    if isinstance(_cand, dict):
-                        _flat_candidates.append(_cand)
+                _windows_reused += 1
+                _reused_per_chapter[_cid] = _reused_per_chapter.get(_cid, 0) + 1
+                _flat_candidates.extend(_reused[_key])
+                continue
+            _res = _dispatched.get(_key)
+            if _res is None:
+                chapter_synthesis_failures.append(_label)
+                continue
+            candidates_synthesized += 1
+            _cands = [
+                _c
+                for _c in (_res.get("candidate_objectives") or [])
+                if isinstance(_c, dict)
+            ]
+            _flat_candidates.extend(_cands)
+            if _cp_enabled:
+                _append_stage2_window_checkpoint(
+                    checkpoint_path,
+                    chapter_id=_cid,
+                    window_index=_key[1],
+                    fingerprint=_fp_by_key[_key],
+                    candidate_objectives=_cands,
+                )
+
+        for _cid, _tot in _total_per_chapter.items():
+            _reused_n = _reused_per_chapter.get(_cid, 0)
+            if _reused_n:
+                logger.info(
+                    "plan_course_structure: Stage-2 reused %d/%d window(s) "
+                    "from sidecar for chapter %s (skipped their 7B calls).",
+                    _reused_n, _tot, _cid,
+                )
     else:
         # ---- chapter_fallback: legacy per-chapter dispatch. -----------
         def _one_chapter(chapter_dict: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -4685,6 +5084,137 @@ async def _run_stage2_window_synthesis(
             _backfill.content_bearing_chunks,
         )
 
+    # ---- Feature 1: deterministic Bloom-level RELEVEL (opt-in). ----------
+    # ED4ALL_OBJECTIVE_BLOOM_RELEVEL: for every canonical CO whose declared
+    # bloom_level disagrees with the level its MAIN VERB belongs to in the
+    # canonical verb table (lib/ontology/bloom.py — the same table
+    # abcd_verb_alignment validates against), re-derive bloom_level from the
+    # verb. STATEMENTS are never touched (only the bloom_level field).
+    # Deterministic, no LLM. Default off → no-op (bloom_levels byte-identical).
+    from lib.objectives.bloom_relevel import relevel_objectives
+    _relevel = relevel_objectives(chapter_cos, capture=capture)
+    if _relevel.available and _relevel.releveled_count:
+        logger.info(
+            "plan_course_structure: Feature 1 releveled %d/%d CO bloom_level(s) "
+            "to match the canonical verb table.",
+            _relevel.releveled_count,
+            _relevel.scanned_count,
+        )
+
+    # ---- Feature 2 / PRONG C: Bloom-profile COMPLEMENT (opt-in, LLM). ---
+    # ED4ALL_OBJECTIVE_BLOOM_COMPLEMENT: corpus-scoped (mirrors PRONG B). If the
+    # share of analyze+evaluate+create COs is below MIN_SHARE, synthesize
+    # grounded analyze/evaluate complement COs from the already-cited
+    # instructional chunks via the SAME provider path stage-2 uses
+    # (TEXTBOOK_SYNTHESIS_PROVIDER seat), until the share is met or MAX
+    # additions are made. Runs AFTER dedup + split + backfill + relevel and
+    # BEFORE citation re-selection / CO-id minting, so the appended complements
+    # get minted, re-selected, and clustered into TOs like any other CO.
+    # Anti-fabrication: each complement cites ONLY offered chunk ids, survives
+    # the dedup threshold, and names a distinct skill. Default off → no-op.
+    from lib.objectives.bloom_complement import complement_bloom_profile
+    _complement = complement_bloom_profile(
+        canonical=chapter_cos,
+        chunks_by_id=chunks_by_id,
+        provider=provider,
+        course_name=course_name,
+        capture=capture,
+        embed=_embed,
+    )
+    if _complement.available and _complement.cos_added:
+        logger.info(
+            "plan_course_structure: PRONG C added %d analyze/evaluate "
+            "complement CO(s); higher-order share %.2f -> %.2f.",
+            _complement.cos_added,
+            _complement.share_before,
+            _complement.share_after,
+        )
+
+    # ---- Post-hoc citation RE-SELECTION (opt-in, deterministic). --------
+    # ED4ALL_OBJECTIVE_CITATION_RESELECT: for each CO, re-rank the chunk pool
+    # the model actually SAW — its synthesis window(s) (resolved via the
+    # cited-chunk -> window map since windows partition the joined chunkset)
+    # UNIONED with the CO's chapter bucket and its currently-cited ids — by
+    # cosine(statement, chunk text) and re-cite the strongest supporters,
+    # fixing the measured 7B neighbor-citation sloppiness that Fix 1A's
+    # prune-only pass cannot reach. Runs HERE (after
+    # dedup + split + backfill, BEFORE CO-id minting / TO derivation) so the
+    # backlink, TO source_refs union, and learning_outcome_refs all see the
+    # improved citations — and runs regardless of whether window candidates
+    # came from a live 7B call or the resume sidecar (pure post-processing).
+    from lib.objectives.citation_reselect import (
+        reselect_citations,
+        resolve_citation_reselect,
+    )
+    _reselect = None
+    if resolve_citation_reselect() and grounding_mode == "chunk_window":
+        _window_ids_by_chunk: Dict[str, List[str]] = {}
+        for _w in _windows:
+            _w_ids = [str(c) for c in (_w.get("chunk_ids") or [])]
+            for _cid in _w_ids:
+                _window_ids_by_chunk[_cid] = _w_ids
+        _chunks_by_chapter: Dict[str, List[str]] = {}
+        for _cid, _rec in chunks_by_id.items():
+            if isinstance(_rec, dict):
+                _ch = str(_rec.get("chapter_id") or "")
+                if _ch:
+                    _chunks_by_chapter.setdefault(_ch, []).append(str(_cid))
+        # Widened per-CO pool = window ∪ chapter ∪ cited (stable order: window
+        # chunks first, then the CO's chapter bucket, deduped). The chapter
+        # bucket is unioned UNCONDITIONALLY — not just as a window fallback —
+        # so a dedup-merged CO whose right-window citation was stripped by the
+        # Fix 1A prune (locking window resolution to the WRONG window) can still
+        # reach its true same-chapter supporter. reselect_citations then unions
+        # the currently-cited ids and applies the anti-fabrication
+        # resolve-in-chunks_by_id filter + pool_misses counting.
+        _win_pool_by_co: Dict[int, List[str]] = {}
+        for _i, _co_r in enumerate(chapter_cos):
+            _cited_r = [
+                str(c).strip()
+                for c in (_co_r.get("source_chunk_ids") or [])
+                if str(c).strip()
+            ]
+            if not _cited_r:
+                continue
+            _seen: set = set()
+            _pool: List[str] = []
+            for _cid in _cited_r:
+                for _pid in _window_ids_by_chunk.get(_cid, []):
+                    if _pid not in _seen:
+                        _seen.add(_pid)
+                        _pool.append(_pid)
+            for _cid in _cited_r:
+                _rec = chunks_by_id.get(_cid)
+                _ch = (
+                    str(_rec.get("chapter_id") or "")
+                    if isinstance(_rec, dict) else ""
+                )
+                for _pid in _chunks_by_chapter.get(_ch, []):
+                    if _pid not in _seen:
+                        _seen.add(_pid)
+                        _pool.append(_pid)
+            if _pool:
+                _win_pool_by_co[_i] = _pool
+        _reselect = reselect_citations(
+            chapter_cos,
+            chunks_by_id,
+            _embed,
+            window_chunk_ids_by_co=_win_pool_by_co,
+            capture=capture,
+        )
+        if _reselect.available:
+            logger.info(
+                "plan_course_structure: citation re-selection re-cited "
+                "%d/%d CO(s); citation density %d -> %d distinct chunks "
+                "(pool_misses=%d, kept_original_below_floor=%d).",
+                _reselect.reselected_count,
+                _reselect.scanned_count,
+                _reselect.citation_density_before,
+                _reselect.citation_density_after,
+                _reselect.pool_misses,
+                _reselect.kept_original_below_floor,
+            )
+
     # ---- Mint CO-NN AFTER Pass C + D over the survivors. --------------
     for _idx, _co in enumerate(chapter_cos, start=1):
         _co["id"] = mint_lo_id("chapter", _idx)
@@ -4706,6 +5236,13 @@ async def _run_stage2_window_synthesis(
             course_name=course_name,
             mint_lo_id=mint_lo_id,
             capture=capture,
+            # Per-cluster TO-author resume sidecar, sibling of the window
+            # sidecar in the phase OUTPUT dir (same flag gating).
+            checkpoint_path=(
+                checkpoint_path.parent / _STAGE2_CLUSTERS_CHECKPOINT_NAME
+                if checkpoint_path is not None
+                else None
+            ),
         )
         used_bottom_up = bool(terminal)
 
@@ -4803,6 +5340,50 @@ async def _run_stage2_window_synthesis(
         # M5 Fix A — count of COs re-pointed off a junk-drawer TO (0 unless
         # ED4ALL_TO_BACKLINK_REASSIGN is on).
         "weak_to_link_reassigned": _backlink.reassigned_count,
+        # Per-window resume-checkpoint reuse (0/0 on the chapter_fallback path).
+        # Rides the existing objective_grounding_filter decision event at the
+        # call site — no new decision_type.
+        "windows_total": _windows_total,
+        "windows_reused_from_checkpoint": _windows_reused,
+        # Post-hoc citation re-selection counters (all-zero / before==after
+        # when ED4ALL_OBJECTIVE_CITATION_RESELECT is off or the pass no-ops).
+        "citations_reselected": (
+            _reselect.reselected_count if _reselect is not None else 0
+        ),
+        "citation_density_before": (
+            _reselect.citation_density_before if _reselect is not None else 0
+        ),
+        "citation_density_after": (
+            _reselect.citation_density_after if _reselect is not None else 0
+        ),
+        "reselect_pool_misses": (
+            _reselect.pool_misses if _reselect is not None else 0
+        ),
+        # Feature 1 — deterministic Bloom-relevel signals (0 when off / no-op).
+        "bloom_releveled_count": (
+            _relevel.releveled_count if _relevel is not None else 0
+        ),
+        "bloom_relevel_scanned": (
+            _relevel.scanned_count if _relevel is not None else 0
+        ),
+        # Feature 2 / PRONG C — Bloom-complement signals (0 when off / no-op).
+        "bloom_complement_added": (
+            _complement.cos_added if _complement is not None else 0
+        ),
+        "bloom_complement_share_before": (
+            round(float(_complement.share_before), 6)
+            if _complement is not None else 0
+        ),
+        "bloom_complement_share_after": (
+            round(float(_complement.share_after), 6)
+            if _complement is not None else 0
+        ),
+        "bloom_complement_llm_calls": (
+            _complement.llm_calls if _complement is not None else 0
+        ),
+        "bloom_complement_rejected": (
+            _complement.candidates_rejected if _complement is not None else 0
+        ),
     }
     return chapter_cos, terminal, mint_method, grounding_signals
 
@@ -6161,6 +6742,12 @@ class _SemantikBridgeResult:
         # (``second_pass_verify`` sub-tag) PER verify round.
         spv = bridge.get("second_pass_verify")
         self.second_pass_verify = spv if isinstance(spv, dict) else None
+        # SEMANTIK_OCR_CONFUSABLE_REPAIR audit — the doc-level repair-stats DICT
+        # the cascade surfaces at top level (``None`` when the pass was off). The
+        # seam reads this to emit ONE ``structure_review`` DecisionCapture per
+        # converted doc (``ocr_confusable_repair`` metadata discriminator).
+        ocr = bridge.get("ocr_repair")
+        self.ocr_repair = ocr if isinstance(ocr, dict) else None
 
 
 def _run_semantik_bridge_subprocess(
@@ -6864,6 +7451,10 @@ def _emit_block_resegment_capture(
 # replay rationale (the heavy SemantiK runtime is absent from this venv), never
 # to drive a call; identical posture to ``_semantik_structure_review_model``.
 _SEMANTIK_SECOND_PASS_VERIFY_MAX_TOKENS = 2048
+# Mirror of ``ocr_repair._OCR_REPAIR_MAX_TOKENS`` (the proposer's output budget)
+# for the DecisionCapture rationale — kept as a local constant so the seam never
+# imports the SemantiK cascade package just to name it.
+_SEMANTIK_OCR_REPAIR_MAX_TOKENS = 1024
 
 
 def _semantik_resolve_second_pass_verify(result: Any) -> Optional[Dict[str, Any]]:
@@ -7043,6 +7634,134 @@ def _emit_second_pass_verify_captures(
     except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
         logger.warning(
             "second_pass_verify DecisionCapture failed (non-fatal) on %s: %s",
+            pdf_stem,
+            exc,
+        )
+
+
+def _semantik_resolve_ocr_repair(result: Any) -> Optional[Dict[str, Any]]:
+    """Pull the SEMANTIK_OCR_CONFUSABLE_REPAIR audit stats off a cascade result,
+    from EITHER seam arm (mirrors ``_semantik_resolve_second_pass_verify``).
+
+    Resolution order: ``result.ocr_repair`` (the bridge arm) →
+    ``result.cascade["conformance_audit"]["ocr_repair"]`` (in-process nested) →
+    ``result.cascade["ocr_repair"]`` (in-process top-level). Returns ``None``
+    when the pass did NOT run (flag off / no audit key) so the caller skips.
+    """
+    ocr = getattr(result, "ocr_repair", None)
+    if ocr is not None:
+        return ocr if isinstance(ocr, dict) else None
+    cascade = getattr(result, "cascade", None)
+    if isinstance(cascade, dict):
+        conformance = cascade.get("conformance_audit")
+        if isinstance(conformance, dict):
+            arm = conformance.get("ocr_repair")
+            if isinstance(arm, dict):
+                return arm
+        arm = cascade.get("ocr_repair")
+        if isinstance(arm, dict):
+            return arm
+    return None
+
+
+def _emit_ocr_repair_capture(
+    stats: Optional[Dict[str, Any]],
+    *,
+    canonical_course_code: Optional[str],
+    pdf_stem: str,
+) -> None:
+    """Emit ONE ``structure_review`` DecisionCapture for the OCR-confusable
+    micro-repair pass when it ran (plan Phase 5 channels 2+3).
+
+    Rides the canonical ``decision_type='structure_review'`` enum member (NO
+    schema/enum edit — mirrors ``_emit_second_pass_verify_captures``) but carries
+    an ``ocr_confusable_repair=True`` metadata discriminator so downstream
+    analysis separates repair rows on a FIELD, not the free text. The rationale
+    is DYNAMIC/replayable: it interpolates flagged/accepted/rejected counts, the
+    top rule_ids, the residual defect density + proxy score, the resolved model,
+    and ``max_tokens``. Best-effort by contract — ANY failure logs a warning and
+    returns, NEVER breaking the conversion. Skips cleanly on ``stats is None``.
+    """
+    if not isinstance(stats, dict):
+        return
+    try:
+        from lib.decision_capture import DecisionCapture, normalize_course_code
+
+        course_code = (
+            (canonical_course_code or "").strip()
+            or normalize_course_code(pdf_stem or "unknown")
+        )
+        model = _semantik_structure_review_model()
+        flagged = int(stats.get("flagged_blocks") or 0)
+        proposals = int(stats.get("proposals") or 0)
+        accepted = int(stats.get("accepted") or 0)
+        rejected_rows = stats.get("rejected") or []
+        rejected = len(rejected_rows) if isinstance(rejected_rows, list) else 0
+        density = stats.get("unrepairable_defect_density")
+        score = stats.get("repair_stats_score")
+        windows = int(stats.get("windows_dispatched") or 0)
+        windows_failed = int(stats.get("windows_failed") or 0)
+
+        # Top rule_ids across the accepted edits are not on the stats dict (they
+        # live in region_provenance); the rejected-reason distribution is the
+        # replayable signal we DO have here, so surface it.
+        reason_counts: Dict[str, int] = {}
+        if isinstance(rejected_rows, list):
+            for row in rejected_rows:
+                if isinstance(row, dict):
+                    r = str(row.get("reason") or "unknown")
+                    reason_counts[r] = reason_counts.get(r, 0) + 1
+        reason_str = (
+            ", ".join(f"{k}×{v}" for k, v in sorted(reason_counts.items()))
+            or "none"
+        )
+
+        capture = DecisionCapture(
+            course_code=course_code,
+            phase="dart-conversion",
+            tool="dart",
+        )
+        rationale = (
+            f"OCR-confusable micro-repair ({model}, max_tokens="
+            f"{_SEMANTIK_OCR_REPAIR_MAX_TOKENS}) on {pdf_stem}: {flagged} region(s) "
+            f"flagged, {windows} window(s) dispatched ({windows_failed} failed), "
+            f"{proposals} proposal(s) → {accepted} accepted / {rejected} rejected "
+            f"[reject reasons: {reason_str}]; residual defect density "
+            f"{density}, repair-stats proxy score {score}. Deterministic accept "
+            f"gate (confusable map, edit-distance ≤ 2, char-class safe, never in "
+            f"a number); LLM proposes, auditable code decides. No words rewritten."
+        )
+        capture.log_decision(
+            decision_type="structure_review",
+            decision=(
+                f"ocr_confusable_repair flagged={flagged} proposals={proposals} "
+                f"accepted={accepted} rejected={rejected} score={score}"
+            ),
+            rationale=rationale,
+            alternatives_considered=[
+                {
+                    "option": "let the 7B rewrite the flagged text directly",
+                    "reason_rejected": (
+                        "the reviewer-redesign directive makes LLM editors "
+                        "structural-only; an unconstrained fixer reopens the "
+                        "anti-fabrication hole. The gate accepts only known "
+                        "confusable-map micro-edits, annotated data-dart-repair"
+                    ),
+                },
+            ],
+            # STRUCTURED discriminator (open metadata) so analysis separates
+            # repair rows from Pass-1/Pass-2 reviewer rows on a FIELD.
+            ocr_confusable_repair=True,
+            ocr_flagged=flagged,
+            ocr_proposals=proposals,
+            ocr_accepted=accepted,
+            ocr_rejected=rejected,
+            ocr_defect_density=density,
+            ocr_repair_stats_score=score,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+        logger.warning(
+            "ocr_confusable_repair DecisionCapture failed (non-fatal) on %s: %s",
             pdf_stem,
             exc,
         )
@@ -7299,10 +8018,19 @@ def _run_semantik_v2_conversion(
             else:
                 result = run_pipeline_v2(str(pdf))
         except Exception as exc:  # noqa: BLE001 — cascade error fails closed
-            logger.error("SemantiK cascade raised on %s: %s", pdf, exc)
+            import traceback as _tb
+
+            # Full traceback, not just str(exc) — a bare ``KeyError: 11``
+            # renders as "11" in the phase log and is undiagnosable.
+            logger.error(
+                "SemantiK cascade raised on %s: %r\n%s",
+                pdf,
+                exc,
+                _tb.format_exc(),
+            )
             return {
                 "success": False,
-                "error": f"SemantiK cascade failed: {exc}",
+                "error": f"SemantiK cascade failed: {exc!r}",
                 "method": "semantik_v2",
                 "output_path": str(out_path),
                 "html_path": str(html_path),
@@ -7373,6 +8101,21 @@ def _run_semantik_v2_conversion(
             "second_pass_verify DecisionCapture failed (non-fatal): %s", exc
         )
 
+    # 2e. SEMANTIK_OCR_CONFUSABLE_REPAIR per-doc DecisionCapture (Phase 5
+    # channels 2+3). Fires for BOTH arms (the resolver reads either shape);
+    # skips cleanly when the repair pass was off. Best-effort — a capture failure
+    # logs a warning, never breaks conversion.
+    try:
+        _emit_ocr_repair_capture(
+            _semantik_resolve_ocr_repair(result),
+            canonical_course_code=canonical_course_code,
+            pdf_stem=pdf_stem,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; never break conversion
+        logger.warning(
+            "ocr_confusable_repair DecisionCapture failed (non-fatal): %s", exc
+        )
+
     # 3. cascade result → chapters IR → output-contract adapter.
     # The adapter reads the chapters IR via ``getattr(result, "chapters", ...)``.
     # The in-process ``PipelineV2Result`` is a FROZEN dataclass, so a plain
@@ -7429,6 +8172,47 @@ def _run_semantik_v2_conversion(
         )
     except OSError as exc:
         logger.warning("SemantiK sidecar write failed (non-fatal): %s", exc)
+
+    # 4b. Persist the cascade IR (region_provenance + heading_tree + doc-level
+    # signals) next to the HTML so a FUTURE adapter fix can re-render
+    # {stem}_accessible.html WITHOUT re-running the (model-heavy) cascade. The
+    # {stem}_synthesized.json sidecar is a FLATTENED, lossy downstream contract
+    # (no chapter grouping, region_kind, cell grids, image src, or full page
+    # sets), so it alone cannot drive build_chapters_ir → normalize_cascade. The
+    # IR JSON is exactly the bridge shape _SemantikBridgeResult / from_bridge_json
+    # consume; scripts/semantik_rerender.py reads it back. Best-effort + non-fatal
+    # (a re-render convenience, never a conversion gate).
+    try:
+        from lib.semantik.cascade_ir import (
+            _coerce_heading_tree as _semantik_coerce_heading_tree,
+            _coerce_provenance as _semantik_coerce_provenance,
+        )
+
+        cascade_ir_path = base.parent / f"{base.name}.cascade_ir.json"
+        cascade_ir_doc = {
+            "schema": "semantik_cascade_ir/v1",
+            "pdf": pdf_stem,
+            "region_provenance": list(_semantik_coerce_provenance(result)),
+            "heading_tree": [
+                list(e) for e in _semantik_coerce_heading_tree(result)
+            ],
+            "exit_action": getattr(result, "exit_action", None)
+            or adapter_out.get("exit_action"),
+            "wcag_status": adapter_out.get("wcag_status"),
+            "theta_score": adapter_out.get("theta_score"),
+            "flags": list(adapter_out.get("flags") or []),
+            "lane_used": adapter_out.get("lane_used"),
+            "lang": getattr(result, "lang", None) or "en",
+            "runtime_mode": runtime_mode,
+        }
+        cascade_ir_path.write_text(
+            json.dumps(cascade_ir_doc, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+    except (OSError, TypeError, ValueError, ImportError) as exc:
+        logger.warning(
+            "SemantiK cascade-IR persistence failed (non-fatal): %s", exc
+        )
 
     # 5. Assemble the Ed4All tool JSON contract (workflows.yaml:898 required
     # keys + SemantiK provenance). The adapter already mapped exit_action →
@@ -8725,11 +9509,104 @@ def _checkpoint_enabled(env_name: str) -> bool:
     an explicit falsey value (``0`` / ``false`` / ``no`` / ``off``, any case)
     disables both write + resume; anything else (incl. unset / garbage) keeps
     the default ON. Read each call so tests can toggle it inline.
+
+    Delegates to the shared ``lib/generation/llm_checkpoint.py`` resolver so
+    the family ``ED4ALL_GENERATION_CHECKPOINT`` flag also governs these sites
+    (precedence: site flag, when SET, wins over the family flag).
     """
-    return (
-        os.environ.get(env_name, "").strip().lower()
-        not in _CHECKPOINT_FALSEY
-    )
+    return _llm_checkpoint_enabled(env_name)
+
+
+def _tier_block_fingerprint(
+    blk: Any,
+    *,
+    tier: str,
+    chunks_lookup: Any,
+    objectives_sha: str,
+    router: Any = None,
+) -> str:
+    """Fingerprint of one outline/rewrite block's LLM-relevant inputs.
+
+    Composes (a) the block's INPUT identity — ``Block.compute_content_hash()``
+    (the canonical content+type payload hash) — (b) the source chunks fed to
+    the prompt (``chunks_lookup[block_id]``), (c) the objectives payload sha
+    (objectives feed the prompt), (d) the ROUTING-resolved provider/model spec
+    for ``(block, tier)`` (``router._resolve_spec`` — the same resolution the
+    dispatch uses, so a model/provider swap between resume attempts
+    invalidates), and (e) the tier's serving-window env knobs. Any resolution
+    failure degrades to hashing the raw env knobs (never crashes the loop).
+
+    A checkpoint entry stamped with this fingerprint is reused on resume ONLY
+    when the recomputed value matches; entries with NO stamp (pre-upgrade
+    sidecars) keep the legacy block_id-only reuse (back-compat).
+    """
+    try:
+        _content_sha = str(blk.compute_content_hash())
+    except Exception:  # noqa: BLE001 — never crash the loop on a stub
+        _content_sha = _llm_hash_text(str(getattr(blk, "content", "")))
+    _chunks = []
+    if isinstance(chunks_lookup, dict):
+        _chunks = chunks_lookup.get(getattr(blk, "block_id", ""), []) or []
+    try:
+        _chunks_sha = _llm_hash_text(
+            json.dumps(_chunks, sort_keys=True, default=str)
+        )
+    except (TypeError, ValueError):
+        _chunks_sha = _llm_hash_text(str(_chunks))
+    _spec_desc: Dict[str, Any] = {}
+    if router is not None:
+        try:
+            _spec = router._resolve_spec(blk, tier)
+            _spec_desc = {
+                "provider": getattr(_spec, "provider", None),
+                "model": getattr(_spec, "model", None),
+                "base_url": getattr(_spec, "base_url", None),
+                "max_tokens": getattr(_spec, "max_tokens", None),
+                "temperature": getattr(_spec, "temperature", None),
+            }
+        except Exception:  # noqa: BLE001 — degrade to env-knob description
+            _spec_desc = {}
+    if not _spec_desc:
+        _spec_desc = {
+            "env_provider": os.environ.get(
+                f"COURSEFORGE_{tier.upper()}_PROVIDER", ""
+            ),
+            "env_model": os.environ.get(
+                f"COURSEFORGE_{tier.upper()}_MODEL", ""
+            ),
+            "env_courseforge_provider": os.environ.get(
+                "COURSEFORGE_PROVIDER", ""
+            ),
+            "env_local_model": os.environ.get("LOCAL_SYNTHESIS_MODEL", ""),
+        }
+    return _llm_compute_fingerprint({
+        "site": f"courseforge_{tier}_block",
+        "block_type": str(getattr(blk, "block_type", "")),
+        "content_sha": _content_sha,
+        "chunks_sha": _chunks_sha,
+        "objectives_sha": objectives_sha,
+        "spec": _spec_desc,
+        "technique": os.environ.get("ED4ALL_GENERATION_TECHNIQUE", ""),
+        "num_ctx_env": os.environ.get("ED4ALL_REWRITE_NUM_CTX", ""),
+        "fit_window_env": os.environ.get("ED4ALL_REWRITE_FIT_WINDOW", ""),
+    })
+
+
+def _objectives_payload_sha(objectives_payload: Any) -> str:
+    """Stable sha of the objectives payload fed to the tier prompts."""
+    try:
+        return _llm_hash_text(
+            json.dumps(objectives_payload, sort_keys=True, default=str)
+        )
+    except (TypeError, ValueError):
+        return _llm_hash_text(str(objectives_payload))
+
+
+#: Key under which the per-block input fingerprint is stamped into a tier
+#: checkpoint entry (`.blocks_outline_checkpoint.jsonl` /
+#: `.blocks_final_checkpoint.jsonl`). Entries lacking it (pre-upgrade
+#: sidecars) keep legacy block_id-only reuse.
+_BLOCK_CHECKPOINT_FP_KEY = "checkpoint_fingerprint"
 
 
 def _append_block_checkpoint(path: Path, entry: Dict[str, Any]) -> None:
@@ -10593,6 +11470,39 @@ def _resolve_content_page_count(
     return co_driven
 
 
+def _content_page_heading_slug(
+    *,
+    page_bound_co_id: Optional[str],
+    page_bound_co_statement: str,
+    topic: Optional[Dict[str, Any]],
+    page_type: str,
+    week_num: int,
+    slug_fn: Callable[[str], str],
+) -> Tuple[str, str]:
+    """Resolve a content page's ``(heading, slug_value)`` (page-per-CO fix).
+
+    When the page is bound 1:1 to a CO (``page_bound_co_id`` truthy AND the CO
+    carries a non-empty statement), derive BOTH from the bound CO's statement —
+    the slug is the first ~8 words through ``slug_fn`` — instead of the
+    positional ``topic.heading`` (which routinely belongs to an unrelated
+    section). Otherwise return the exact legacy topic-heading path (byte-stable
+    for every non-page-per-CO page and any content page with no resolvable
+    bound CO / empty statement).
+    """
+    if page_bound_co_id and page_bound_co_statement:
+        heading = page_bound_co_statement
+        slug_value = slug_fn(
+            " ".join(page_bound_co_statement.split()[:8]) or page_type
+        )
+        return heading, slug_value
+    heading = (topic or {}).get("heading") or (
+        f"week_{week_num:02d} {page_type.replace('_', ' ').title()}"
+        if page_type != "content"
+        else f"week_{week_num:02d}"
+    )
+    return heading, slug_fn(heading or page_type)
+
+
 def _build_week_co_chunk_index(
     chapter_objective_groups: List[Dict[str, Any]],
     *,
@@ -11598,19 +12508,32 @@ async def _run_content_generation_outline(**kwargs) -> str:
             # every block of the page (instead of falling back to the week TO),
             # which is what makes the positional CO→page map zero-stranded.
             _page_bound_co_id: Optional[str] = None
+            _page_bound_co_statement: str = ""
             if _page_per_co and page_type == "content":
                 _wk_objs_bind = week_co_objectives_index.get(week_num, [])
                 if 0 <= i < len(_wk_objs_bind):
                     _cid_bind = str(_wk_objs_bind[i].get("id") or "")
                     if _cid_bind in _valid_co_ids:
                         _page_bound_co_id = _cid_bind
-            heading = (topic or {}).get("heading") or (
-                f"week_{week_num:02d} {page_type.replace('_', ' ').title()}"
-                if page_type != "content"
-                else f"week_{week_num:02d}"
+                        _page_bound_co_statement = str(
+                            _wk_objs_bind[i].get("statement") or ""
+                        ).strip()
+            # Under page-per-CO a content page is bound 1:1 to a CO, so derive
+            # its heading + slug from the BOUND CO's statement rather than the
+            # positional ``topic.heading`` (which routinely belongs to an
+            # unrelated section — measured 20/38 pages drifted). Single-sourced
+            # via ``_content_page_heading_slug``; non-page-per-CO (and any
+            # content page with no resolvable bound CO) keeps the exact legacy
+            # topic-heading path — byte-stable.
+            heading, slug_value = _content_page_heading_slug(
+                page_bound_co_id=_page_bound_co_id,
+                page_bound_co_statement=_page_bound_co_statement,
+                topic=topic,
+                page_type=page_type,
+                week_num=week_num,
+                slug_fn=_slug,
             )
             page_id = _page_id_for(week_num, page_type, content_idx)
-            slug_value = _slug(heading or page_type)
             page_key_terms = tuple((topic or {}).get("key_terms") or [])
 
             # ---------------------------------------------------------- #
@@ -12192,22 +13115,56 @@ async def _run_content_generation_outline(**kwargs) -> str:
         _COURSEFORGE_OUTLINE_CHECKPOINT_ENV
     )
     _outline_checkpoint_path = out_dir / _OUTLINE_CHECKPOINT_NAME
+    # ``--force`` (courseforge-outline stage subcommand) WINS over the resume
+    # sidecar: an operator-forced re-run must not silently rehydrate a prior
+    # attempt's blocks, so the sidecar is CLEARED and the resume map ignored
+    # (fresh blocks still checkpoint — a forced re-run keeps crash safety).
+    _outline_force_rerun = bool(kwargs.get("force_rerun"))
+    if _outline_force_rerun:
+        _remove_block_checkpoint(_outline_checkpoint_path)
+        logger.info(
+            "outline phase: --force cleared the resume sidecar %s.",
+            _outline_checkpoint_path,
+        )
     _outline_resume_map: Dict[str, Any] = (
         _load_block_checkpoint(_outline_checkpoint_path)
-        if _outline_checkpoint_on else {}
+        if (_outline_checkpoint_on and not _outline_force_rerun) else {}
     )
+    # Per-block input fingerprints (shared llm_checkpoint discipline): a
+    # sidecar entry is reused ONLY when its stamped fingerprint matches the
+    # recomputed one for the same block_id (a model / chunk / objective /
+    # window-knob change between resume attempts re-authors). Entries with NO
+    # stamp (pre-upgrade sidecars) keep legacy block_id-only reuse.
+    _outline_objectives_sha = _objectives_payload_sha(objectives_payload)
+
+    def _outline_block_fp(_b: Any) -> str:
+        return _tier_block_fingerprint(
+            _b,
+            tier="outline",
+            chunks_lookup=chunks_lookup,
+            objectives_sha=_outline_objectives_sha,
+            router=router,
+        )
+
     _n_outline_resumed = 0
     _n_outline_authored_fresh = 0
 
     outline_blocks: List[Any] = []
     for blk in all_blocks:
+        _blk_fp = (
+            _outline_block_fp(blk) if _outline_checkpoint_on else ""
+        )
         # Resume: skip the LLM dispatch for a block already checkpointed by a
         # prior interrupted attempt. A malformed checkpoint entry rehydrates
         # to None → fall through and re-author (never a duplicate: the fresh
-        # author replaces the same stable block_id).
+        # author replaces the same stable block_id). A fingerprint-stamped
+        # entry whose stamp mismatches the recomputed input fingerprint is
+        # SKIPPED (stale inputs → re-author).
         if _outline_checkpoint_on:
             _cached = _outline_resume_map.get(blk.block_id)
-            if _cached is not None:
+            if _cached is not None and _cached.get(
+                _BLOCK_CHECKPOINT_FP_KEY, _blk_fp
+            ) == _blk_fp:
                 _cached_blk = _block_from_checkpoint_entry(_cached)
                 if _cached_blk is not None:
                     outline_blocks.append(_cached_blk)
@@ -12226,14 +13183,17 @@ async def _run_content_generation_outline(**kwargs) -> str:
             outline_blocks.append(outlined)
             _n_outline_authored_fresh += 1
             # Checkpoint the freshly-authored block (NOT marker-bearing —
-            # those are re-attempted on resume). Append + flush per block.
+            # those are re-attempted on resume). Append + flush per block,
+            # stamped with the INPUT fingerprint for resume validation.
             if (
                 _outline_checkpoint_on
                 and not getattr(outlined, "escalation_marker", None)
             ):
+                _outline_entry = _block_to_snake_case_entry(outlined)
+                _outline_entry[_BLOCK_CHECKPOINT_FP_KEY] = _blk_fp
                 _append_block_checkpoint(
                     _outline_checkpoint_path,
-                    _block_to_snake_case_entry(outlined),
+                    _outline_entry,
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -13614,8 +14574,42 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         _COURSEFORGE_REWRITE_CHECKPOINT_ENV
     )
     _rewrite_checkpoint_path = out_dir / _REWRITE_CHECKPOINT_NAME
-    _n_rewrite_checkpoint_resumed = 0
+    # ``--force`` (courseforge-rewrite stage subcommand) WINS over the crash
+    # sidecar: clear it and skip the merge so a forced re-roll never
+    # rehydrates a prior attempt's blocks from the sidecar. (The separate
+    # ``blocks_final.jsonl`` cache above is UNTOUCHED — the ``--blocks``
+    # byte-identity contract for out-of-scope blocks depends on it.) Fresh
+    # rewrites still checkpoint (crash safety on the forced run itself).
+    _rewrite_force_rerun = bool(kwargs.get("force_rerun"))
+    if _rewrite_force_rerun:
+        _remove_block_checkpoint(_rewrite_checkpoint_path)
+        logger.info(
+            "rewrite phase: --force cleared the resume sidecar %s.",
+            _rewrite_checkpoint_path,
+        )
+    # Per-block INPUT fingerprints (shared llm_checkpoint discipline). A
+    # sidecar entry is merged into the reuse cache ONLY when its stamped
+    # fingerprint matches the recomputed one for the same block_id — so a
+    # model/provider swap, changed source chunks/objectives, or changed
+    # serving-window knobs between resume attempts re-authors instead of
+    # silently reusing a stale rewrite. Entries with NO stamp (pre-upgrade
+    # sidecars) keep the legacy block_id-only reuse (back-compat).
+    _rewrite_objectives_sha = _objectives_payload_sha(objectives_payload)
+    _rewrite_fp_by_id: Dict[str, str] = {}
     if _rewrite_checkpoint_on:
+        for _ob_fp in outline_blocks:
+            _ob_bid = str(getattr(_ob_fp, "block_id", "") or "")
+            if _ob_bid:
+                _rewrite_fp_by_id[_ob_bid] = _tier_block_fingerprint(
+                    _ob_fp,
+                    tier="rewrite",
+                    chunks_lookup=chunks_lookup,
+                    objectives_sha=_rewrite_objectives_sha,
+                    router=router,
+                )
+    _n_rewrite_checkpoint_resumed = 0
+    _n_rewrite_checkpoint_stale = 0
+    if _rewrite_checkpoint_on and not _rewrite_force_rerun:
         for _bid, _ce in _load_block_checkpoint(
             _rewrite_checkpoint_path
         ).items():
@@ -13625,8 +14619,24 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
                 and _ce.get("content", "").strip()
                 and _bid not in _rewrite_cache
             ):
+                _stamped_fp = _ce.get(_BLOCK_CHECKPOINT_FP_KEY)
+                if (
+                    _stamped_fp is not None
+                    and _stamped_fp != _rewrite_fp_by_id.get(_bid)
+                ):
+                    # Stale: inputs / model changed since the entry was
+                    # written → drop it so the block re-authors.
+                    _n_rewrite_checkpoint_stale += 1
+                    continue
                 _rewrite_cache[_bid] = _ce
                 _n_rewrite_checkpoint_resumed += 1
+    if _n_rewrite_checkpoint_stale:
+        logger.info(
+            "rewrite phase: dropped %d stale sidecar entr%s (input "
+            "fingerprint mismatch — block re-authors).",
+            _n_rewrite_checkpoint_stale,
+            "y" if _n_rewrite_checkpoint_stale == 1 else "ies",
+        )
 
     if _rewrite_cache and capture is not None:
         try:
@@ -14158,9 +15168,17 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         _content = getattr(_result, "content", None)
         if not (isinstance(_content, str) and _content.strip()):
             return
+        _cp_entry = _block_to_snake_case_entry(_result)
+        # Stamp the INPUT fingerprint (computed over the outline block set
+        # above) so a later resume validates inputs before reuse.
+        _cp_fp = _rewrite_fp_by_id.get(
+            str(getattr(_result, "block_id", "") or "")
+        )
+        if _cp_fp is not None:
+            _cp_entry[_BLOCK_CHECKPOINT_FP_KEY] = _cp_fp
         _append_block_checkpoint(
             _rewrite_checkpoint_path,
-            _block_to_snake_case_entry(_result),
+            _cp_entry,
         )
 
     # Multi-block BATCHED cloud-lane path (rate-limit defeat). When
@@ -15675,12 +16693,60 @@ def _build_tool_registry() -> dict:
             html_files = _cgh.collect_staged_html(staging_dir, COURSEFORGE_INPUTS)
             topics = _cgh.parse_dart_html_files(html_files) if html_files else []
 
-            # If an objectives JSON already exists (supplied by the user),
-            # use it verbatim — the planner's job is to surface + persist,
-            # not to regenerate over user input.
-            supplied_objectives = (
-                kwargs.get("objectives_path") or config_data.get("objectives_path")
+            # Provenance-aware objectives reuse (self-poisoning guard).
+            #
+            # Only an OPERATOR-supplied objectives pin may short-circuit
+            # synthesis. The pipeline stamps
+            # ``project_config.json::objectives_path`` with THIS phase's own
+            # prior output (``synthesized_objectives.json``) after every
+            # synthesis; treating that self-stamp as a reuse pin on a
+            # re-run silently re-normalizes a possibly-degenerate prior
+            # synthesis instead of re-synthesizing. We therefore:
+            #   1. Honor ``kwargs["objectives_path"]`` verbatim — the
+            #      operator ``--objectives`` task param.
+            #   2. Honor a config-stamped pin ONLY when its provenance is
+            #      operator-supplied: ``objectives_source == "operator"``,
+            #      or (legacy config predating the provenance field) the
+            #      pinned file's ``mint_method`` records an operator origin.
+            # The documented ``--reuse-objectives`` contract is unaffected:
+            # the runner short-circuits course_planning before this closure
+            # ever runs (see
+            # WorkflowRunner._synthesize_course_planning_reuse_output).
+            _OPERATOR_OBJECTIVE_MINTS = frozenset(
+                {"user_supplied_objectives_json", "reuse_objectives"}
             )
+
+            def _config_pin_is_operator_supplied(_pin_path: Any) -> bool:
+                _source = str(
+                    config_data.get("objectives_source") or ""
+                ).strip()
+                if _source == "operator":
+                    return True
+                if _source == "pipeline":
+                    return False
+                # Legacy config (no provenance field): inspect the pinned
+                # file's mint_method. Reuse ONLY when it records an
+                # operator origin; a synthesis mint is this phase's own
+                # prior output → re-synthesize.
+                try:
+                    _pin = Path(str(_pin_path))
+                    if not _pin.is_file():
+                        return False
+                    _pin_doc = json.loads(_pin.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError):
+                    return False
+                if not isinstance(_pin_doc, dict):
+                    return False
+                _mint = str(_pin_doc.get("mint_method") or "").strip()
+                return _mint in _OPERATOR_OBJECTIVE_MINTS
+
+            supplied_objectives = kwargs.get("objectives_path")
+            if not supplied_objectives:
+                _config_pin = config_data.get("objectives_path")
+                if _config_pin and _config_pin_is_operator_supplied(
+                    _config_pin
+                ):
+                    supplied_objectives = _config_pin
             supplied_terminal, supplied_chapter = (
                 _cgh.load_objectives_json(supplied_objectives)
             )
@@ -15692,6 +16758,13 @@ def _build_tool_registry() -> dict:
             # COURSEPLANNER paths where Stage-2 never runs (no stale
             # value leaks into synthesized_objectives.json).
             chapter_synthesis_failures: List[str] = []
+
+            # Stage-2 grounding/citation-reselect counters. Declared at
+            # function scope so the tool return always carries them (an empty
+            # {} on the user-supplied / deterministic / COURSEPLANNER paths
+            # where Stage-2 window synthesis never runs — no invented values).
+            # Populated below only on the chunk_window / chapter_fallback path.
+            _grounding_signals: Dict[str, Any] = {}
 
             if supplied_terminal or supplied_chapter:
                 terminal = list(supplied_terminal)
@@ -15873,6 +16946,15 @@ def _build_tool_registry() -> dict:
                                 mint_lo_id=_mint_lo_id,
                                 kwargs=kwargs,
                                 capture=_stage2_capture,
+                                # Per-window resume sidecar in the phase OUTPUT
+                                # dir (reused verbatim on --resume). Default ON;
+                                # ED4ALL_OBJECTIVE_SYNTHESIS_CHECKPOINT=0 opts
+                                # out. Only the chunk_window path writes/reads.
+                                checkpoint_path=(
+                                    project_path
+                                    / "01_learning_objectives"
+                                    / _STAGE2_WINDOWS_CHECKPOINT_NAME
+                                ),
                             )
 
                             # W2 §4.4 — emit the objective_grounding_filter
@@ -16545,20 +17627,17 @@ def _build_tool_registry() -> dict:
             # the prior empty-list-comprehension result).
             _ws5_week_chapter_groups: List[Dict[str, Any]] = []
             if chapter:
-                from Courseforge.scripts.generate_course import (  # noqa: PLC0415
-                    _slice_cos_for_week as _cf_slice_cos_for_week,
+                # Single-sourced per-week CO grouping (ED4ALL_WEEK_TO_GROUPS):
+                # ceil-stride by default (M5 Fix B shared placed-ids set, so the
+                # PERSISTED groups never carry the same CO id in two weeks), or
+                # TO-membership when the flag is on and weeks == num_tos. The
+                # emit path (_generate_course_content) consumes the SAME helper,
+                # so on-disk groups == emitted weeks by construction.
+                _persist_week_groups = _week_co_groups(
+                    chapter, terminal, duration_weeks,
                 )
-
-                # M5 Fix B — shared placed-ids set so the PERSISTED per-week
-                # groups (the synthesized_objectives.json the validator reads)
-                # never carry the same CO id in two weeks. Mirrors the emit-side
-                # _emit_placed_co_ids threading → on-disk == emitted weeks.
-                _persist_placed_co_ids: set = set()
                 for _w in range(1, duration_weeks + 1):
-                    _week_cos = _cf_slice_cos_for_week(
-                        chapter, duration_weeks, _w,
-                        placed_ids=_persist_placed_co_ids,
-                    )
+                    _week_cos = _persist_week_groups.get(_w, [])
                     _ws5_week_chapter_groups.append({
                         "chapter": f"Week {_w}",
                         "objectives": [dict(_c) for _c in _week_cos],
@@ -16805,6 +17884,16 @@ def _build_tool_registry() -> dict:
             # (_invoke_trainforge) pick it up automatically.
             config_data["objectives_path"] = str(objectives_out_path)
             config_data["synthesized_objectives_path"] = str(objectives_out_path)
+            # Provenance for the self-poisoning reuse guard above: record
+            # whether these objectives came from an operator pin
+            # (``--objectives`` / an operator-provenance config pin) or
+            # from fresh pipeline synthesis. A "pipeline" pin must NOT
+            # short-circuit synthesis when this phase re-runs.
+            config_data["objectives_source"] = (
+                "operator"
+                if mint_method in _OPERATOR_OBJECTIVE_MINTS
+                else "pipeline"
+            )
             config_data["course_name"] = course_name
             config_data["duration_weeks"] = duration_weeks
             config_data["project_id"] = project_id
@@ -16907,6 +17996,13 @@ def _build_tool_registry() -> dict:
                 "mint_method": mint_method,
                 "duration_weeks": duration_weeks,
                 "dart_chunk_lo_backfill": backfill_summary,
+                # Stage-2 grounding + citation-reselect counters (all-zero /
+                # {} when Stage-2 window synthesis did not run). Surfaced so a
+                # post-run audit can read reselect_pool_misses /
+                # citations_reselected from
+                # phase_outputs.course_planning.grounding_signals without
+                # scraping INFO logs. Every value is a plain int/float/bool/str.
+                "grounding_signals": _grounding_signals,
             })
 
         registry["plan_course_structure"] = _plan_course_structure
@@ -17135,10 +18231,20 @@ def _build_tool_registry() -> dict:
             _authorship_stats: Dict[str, int] = {
                 "llm_authored": 0, "template_fallback": 0,
             }
-            # M5 Fix B — shared placed-CO-id set: a CO placed in an earlier week
-            # is never re-placed in a later week (kills the round-robin
-            # trailing-week fallback re-placing CO-12 in both Week 2 and Week 12).
-            _emit_placed_co_ids: set = set()
+            # Single-sourced per-week CO grouping (ED4ALL_WEEK_TO_GROUPS):
+            # computed ONCE over the flat CO list so the emitted week membership
+            # matches the PERSISTED "Week N" groups (built by the same helper in
+            # _plan_course_structure) — emit↔validator parity by construction.
+            # Default flag-off path = the legacy ceil-stride slice with the M5
+            # Fix B shared placed-ids set (a CO placed in an earlier week is
+            # never re-placed later); flag-on + weeks==num_tos = TO-membership.
+            _emit_week_groups = (
+                _week_co_groups(
+                    chapter_objectives, terminal_objectives, duration_weeks
+                )
+                if chapter_objectives
+                else {}
+            )
             for week_num in range(1, duration_weeks + 1):
                 week_topics = (
                     topics_by_week[week_num - 1]
@@ -17152,24 +18258,11 @@ def _build_tool_registry() -> dict:
                 # objective edges in the KG (O(N*D) instead of O(N)).
                 # Now: each week gets only the terminal slice round-robin
                 # assigned to it.
-                week_chapter_cos = []
-                if chapter_objectives:
-                    # WS5 §2.2 — single-sourced ceil-stride slicer (CEIL step
-                    # + slice width ``step`` + ``[:cap]`` where cap defaults to
-                    # ``step``). Lifts the legacy ``[:2]`` truncation that
-                    # silently dropped grounded COs at any weeks < len(COs).
-                    # Consumes the SAME helper the validator's allowed-set
-                    # builder consumes (Courseforge/scripts/generate_course.py)
-                    # so emit-week-N ids == validator-allowed-week-N ids by
-                    # construction.
-                    from Courseforge.scripts.generate_course import (  # noqa: PLC0415
-                        _slice_cos_for_week as _cf_slice_cos_for_week,
-                    )
-
-                    week_chapter_cos = _cf_slice_cos_for_week(
-                        chapter_objectives, duration_weeks, week_num,
-                        placed_ids=_emit_placed_co_ids,
-                    )
+                # Read this week's COs from the pre-computed single-source
+                # grouping (ceil-stride by default, TO-membership under
+                # ED4ALL_WEEK_TO_GROUPS). Persist + emit call the same helper so
+                # emit-week-N ids == validator-allowed-week-N ids by construction.
+                week_chapter_cos = list(_emit_week_groups.get(week_num, []))
 
                 # Scope terminals per week. With N terminals and D weeks,
                 # each week claims ceil(N/D) terminals in source order.
@@ -22094,6 +23187,8 @@ def _build_tool_registry() -> dict:
             section_source_ids: Optional[List[str]] = None,
             merged_headings: Optional[List[str]] = None,
             dart_source_refs: Optional[List[Dict[str, Any]]] = None,
+            composite_unit: Optional[str] = None,
+            unit_roles: Optional[List[str]] = None,
         ) -> Dict[str, Any]:
             words = text.split()
             word_count = len(words)
@@ -22303,6 +23398,15 @@ def _build_tool_registry() -> dict:
                 )
             if _doc_certification_status is not None:
                 chunk["certification_status"] = _doc_certification_status
+
+            # Wave #22 quick-wins: additive pedagogical-role metadata (harvested
+            # from data-dart-unit / data-dart-flow / data-dart-opener by the
+            # parser + chunker). Omit-when-absent so legacy / non-SemantiK
+            # corpora stay byte-identical (mirrors source_block_role).
+            if composite_unit:
+                chunk["composite_unit"] = composite_unit
+            if unit_roles:
+                chunk["unit_roles"] = list(unit_roles)
 
             return chunk
 
@@ -23523,6 +24627,8 @@ def _build_tool_registry() -> dict:
             section_source_ids: Optional[List[str]] = None,
             merged_headings: Optional[List[str]] = None,
             dart_source_refs: Optional[List[Dict[str, Any]]] = None,
+            composite_unit: Optional[str] = None,
+            unit_roles: Optional[List[str]] = None,
         ) -> Dict[str, Any]:
             words = text.split()
             word_count = len(words)
@@ -23665,6 +24771,13 @@ def _build_tool_registry() -> dict:
                     _irt_tag_chunk(chunk, _irt_calibrated_map)
                 except Exception:  # noqa: BLE001 — never break chunk emit
                     logger.warning("IRT chunk tagging failed for %s", chunk.get("id"))
+            # Wave #22 quick-wins: additive pedagogical-role metadata (empty on
+            # non-SemantiK IMSCC → byte-identical; present when a converted DART
+            # IMSCC carries data-dart-unit / -flow / -opener).
+            if composite_unit:
+                chunk["composite_unit"] = composite_unit
+            if unit_roles:
+                chunk["unit_roles"] = list(unit_roles)
             return chunk
 
         # Dispatch to the canonical chunker. ``chunk_content`` is

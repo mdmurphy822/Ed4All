@@ -66,6 +66,63 @@ def test_h1_source_coverage_canonical_shape() -> None:
 
 
 @pytest.mark.unit
+def test_h1_fanout_coverage_pct_never_exceeds_one() -> None:
+    """Regression: a FAN-OUT stage (one block → many chunks) must NOT
+    emit ``coverage_pct > 1``.
+
+    On a coarse-block full-book corpus one page-level DART block splits
+    into several chunks, so ``emitted_count`` (chunks) exceeds
+    ``consumed_count`` (blocks). The naive ``emitted / consumed`` form
+    overshoots the schema ``maximum: 1`` (observed in the field:
+    768 chunks / 661 blocks = 1.161876, which BLOCKED the
+    ``chunkset_manifest`` gate). ``coverage_pct`` is the covered-share
+    ``(consumed - dropped) / consumed``, bounded ``[0, 1]``: with zero
+    drops every block was covered, so coverage is exactly ``1.0``.
+    """
+    block = build_source_coverage(
+        consumed_count=661,
+        emitted_count=768,  # fan-out: more chunks than blocks
+        drop_reasons=None,
+        dropped_count=0,
+        label="dart_chunking",
+    )
+    assert block["coverage_pct"] == pytest.approx(1.0, rel=1e-9)
+    assert 0.0 <= block["coverage_pct"] <= 1.0, block
+    # The emitted shape must still validate against the schema
+    # (coverage_pct maximum is 1).
+    manifest = {
+        "chunks_sha256": "c" * 64,
+        "chunker_version": "v4",
+        "chunkset_kind": "dart",
+        "source_dart_html_sha256": "d" * 64,
+        "chunks_count": 768,
+        "generated_at": "2026-07-01T00:00:00Z",
+        "source_coverage": block,
+    }
+    _validate_against_schema(manifest)
+
+
+@pytest.mark.unit
+def test_h1_fanout_with_boilerplate_drops_bounds_coverage() -> None:
+    """A fan-out stage that also drops some blocks reports covered-share
+    < 1 (dropped blocks were not covered), still bounded ``[0, 1]``."""
+    # 661 blocks in, 768 chunks out, but 61 blocks dropped as boilerplate.
+    # dropped_count passed as 0 (emitted > consumed → naive delta clamps to
+    # 0), but the boilerplate histogram over-attributes, so the helper
+    # reconciles dropped up to 61 → covered = 600 → 600/661 ≈ 0.907716.
+    block = build_source_coverage(
+        consumed_count=661,
+        emitted_count=768,
+        drop_reasons={"boilerplate": 61},
+        dropped_count=0,
+        label="dart_chunking",
+    )
+    assert block["dropped_count"] == 61
+    assert block["coverage_pct"] == pytest.approx(600 / 661, rel=1e-6)
+    assert 0.0 <= block["coverage_pct"] <= 1.0, block
+
+
+@pytest.mark.unit
 def test_h1_internal_drop_reason_missing_fires(caplog: pytest.LogCaptureFixture) -> None:
     """A drop without a reason augments the histogram with the canonical bucket."""
     import logging

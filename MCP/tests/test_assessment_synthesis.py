@@ -301,7 +301,10 @@ def test_new_enum_members_present_in_schema():
     assert enum[i_asg - 1] == "assessment_template_skip"
     assert enum[i_asg + 1] == "base_model_eval_call"
     i_disc = enum.index("discussion_prompt_synthesis")
-    assert enum[i_disc - 1] == "deterministic_pair_audit_stamp"
+    # "difficulty_calibration" (TRAINFORGE_IRT_DIFFICULTY_SCAFFOLD enum member)
+    # sorts alphabetically between deterministic_pair_audit_stamp and
+    # discussion_prompt_synthesis, so it is the immediate predecessor here.
+    assert enum[i_disc - 1] == "difficulty_calibration"
     assert enum[i_disc + 1] == "distractor_generation"
 
 

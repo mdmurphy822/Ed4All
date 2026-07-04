@@ -51,12 +51,30 @@ def _region_provenance() -> list[dict]:
             "raw_text": "Chapter 1: Foundations",
         },
         {
+            # Section-level heading — the adapter renders this as a visible
+            # <h*> that is the aria-labelledby target for its section (the
+            # dart_markers gate requires >=1 aria-labelledby section). A
+            # heading-less body block alone no longer fabricates an sr-only
+            # aria-labelledby label after the _render_section contract change.
             "region_index": 1,
+            "region_kind": "heading",
+            "role": "heading",
+            "confidence": 0.9,
+            "wcag_status": "passed",
+            "first_raw_block_index": 1,
+            "pages": [2],
+            "heading_text": "1.1 Order of Operations",
+            "level": 2,
+            "figure_alt": None,
+            "raw_text": "1.1 Order of Operations",
+        },
+        {
+            "region_index": 2,
             "region_kind": "paragraph",
             "role": "body",
             "confidence": 0.6,
             "wcag_status": "passed",
-            "first_raw_block_index": 1,
+            "first_raw_block_index": 2,
             "pages": [2, 3],
             "heading_text": None,
             "level": None,

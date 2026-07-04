@@ -783,6 +783,33 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         ),
     },
 
+    "run_assessment_synthesis": {
+        "required": [],
+        "optional": [
+            "project_id",
+            "course_name",
+            "course_code",
+            "objectives_path",
+            "synthesized_objectives_path",
+            "dart_chunks_path",
+            "bloom_levels",
+            "question_count",
+        ],
+        "defaults": {},
+        "param_mapping": {
+            "course": "course_name",
+            "name": "course_name",
+            "assessment_count": "question_count",
+        },
+        "description": (
+            "assessment_synthesis phase handler (W10) — synthesizes the "
+            "learner-facing QTI quizzes + discussion + assignment surface "
+            "from the DART chunkset + synthesized objectives, emitting "
+            "<export>/06_assessments/. Routed by phase NAME via "
+            "_PHASE_TOOL_MAPPING; validator-only phase."
+        ),
+    },
+
     "run_vector_indexing": {
         "required": [],
         "optional": [

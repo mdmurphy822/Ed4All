@@ -459,6 +459,10 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         # thread, the outline phase falls back to the empty-validators
         # path (preserving pre-fix behavior on legacy direct calls).
         "workflow_type": ("workflow_params", "workflow_type"),
+        # ``--force`` must beat the crash-resume sidecar: the outline
+        # handler clears + ignores ``.blocks_outline_checkpoint.jsonl``
+        # when force_rerun is set (fresh blocks still checkpoint).
+        "force_rerun": ("workflow_params", "force_rerun"),
     },
     "inter_tier_validation": {
         "blocks_outline_path": (
@@ -501,6 +505,12 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
             "phase_outputs", "content_generation_outline",
             "outline_objectives_path",
         ),
+        # ``--force`` must beat the crash-resume sidecar: the rewrite
+        # handler clears + ignores ``.blocks_final_checkpoint.jsonl``
+        # when force_rerun is set (fresh rewrites still checkpoint; the
+        # separate blocks_final.jsonl --blocks byte-identity cache is
+        # untouched).
+        "force_rerun": ("workflow_params", "force_rerun"),
     },
     "packaging": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
@@ -619,6 +629,11 @@ _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "course_planning": [
         "project_id", "synthesized_objectives_path",
         "objective_ids", "terminal_count", "chapter_count",
+        # Stage-2 grounding + citation-reselect counters (dict; {} when
+        # Stage-2 window synthesis did not run). Mirrors the YAML
+        # course_planning outputs block so a post-run audit reads
+        # phase_outputs.course_planning.grounding_signals directly.
+        "grounding_signals",
     ],
     # Wave 32 Deliverable B: add page_paths + content_dir so the
     # ContentGroundingValidator + PageObjectivesValidator builders
@@ -1341,6 +1356,86 @@ class WorkflowRunner:
             extra=extra,
         )
 
+    async def _gpu_lifecycle_sweep(self, phase_name: str) -> None:
+        """Deterministic phase-boundary GPU lease hand-off (best-effort).
+
+        The lease side of the "VRAM doctor" story: after a phase completes
+        SUCCESSFULLY (post task results + post gates + post checkpoint persist),
+        release the resident local ollama generation model(s) + the torch
+        allocator cache so the NEXT phase's model gets a clean card. This is the
+        deterministic replacement for the shared-8GB contention heuristics
+        (silent CUDA-OOM deaths, council+reviewer coexistence): every GPU model
+        loads, does its job, and hands the card over at the boundary.
+
+        A no-op unless ``ED4ALL_GPU_LIFECYCLE`` is on (default ON — the owner
+        directive wants lease semantics AS the behavior; residency/timing only,
+        never an output byte). When off, this returns IMMEDIATELY — no ollama
+        HTTP call, no worker thread — so control flow is byte-identical.
+
+        When on, the blocking sweep (ollama ``/api/ps`` + ``keep_alive:0``
+        round-trip; a slow/unreachable ollama must not stall the async run loop
+        at a phase boundary) is offloaded via ``asyncio.to_thread`` — the SAME
+        proven pattern as ``_vram_doctor_snapshot``. The whole hook is wrapped
+        best-effort so a sweep failure can NEVER perturb ``final_status`` or the
+        phase results.
+
+        Ordering: the caller runs the doctor ``"after"`` snapshot FIRST (records
+        true end-of-phase residency) and this sweep AFTER, so a trajectory shows
+        end-of-phase residency THEN the lease hand-off. Fires ONLY at a phase
+        boundary for a phase that actually RAN + succeeded this session (never
+        between tasks within a phase; never after a FAILED-phase break — those
+        break out of the loop before this call; never on a resume-skipped
+        phase, which ``continue``s earlier).
+        """
+        try:
+            from lib.gpu_lifecycle import resolve_gpu_lifecycle_mode
+
+            if not resolve_gpu_lifecycle_mode():
+                return
+            run_id = getattr(self.executor, "run_id", None) or "unknown"
+            await asyncio.to_thread(self._gpu_lifecycle_sweep_blocking, run_id, phase_name)
+        except Exception as exc:  # noqa: BLE001 — lease hand-off must never crash the run
+            logger.debug(
+                "gpu_lifecycle: phase-boundary sweep failed for phase %r "
+                "(ignoring): %s",
+                phase_name, exc,
+            )
+
+    @staticmethod
+    def _gpu_lifecycle_sweep_blocking(run_id: str, phase_name: str) -> None:
+        """Synchronous release body, run off the event loop.
+
+        Releases the resident ollama model(s) + torch allocator cache, then —
+        ONLY when ``ED4ALL_VRAM_DOCTOR`` is also on — appends a
+        ``lifecycle_sweep`` event row (carrying the evicted model names) to the
+        SAME ``state/runs/<run_id>/vram_trajectory.jsonl`` the doctor writes, so
+        a trajectory shows the lease hand-offs inline with the residency
+        snapshots. The trajectory write is best-effort; the release arms are
+        themselves never-raising.
+        """
+        from lib.gpu_lifecycle import release_ollama_models, release_torch
+
+        evicted = release_ollama_models(stage=f"phase:{phase_name}")
+        release_torch(stage=f"phase:{phase_name}")
+
+        try:
+            if vram_doctor_enabled():
+                snapshot = snapshot_vram()
+                write_trajectory_row(
+                    run_id,
+                    phase_name,
+                    "after",
+                    snapshot,
+                    event="lifecycle_sweep",
+                    extra={"evicted_models": evicted},
+                )
+        except Exception as exc:  # noqa: BLE001 — observability must never crash the run
+            logger.debug(
+                "gpu_lifecycle: lifecycle_sweep trajectory row failed for "
+                "phase %r (ignoring): %s",
+                phase_name, exc,
+            )
+
     async def run_workflow(self, workflow_id: str) -> Dict[str, Any]:
         """
         Execute all phases of a workflow in dependency order.
@@ -1544,12 +1639,64 @@ class WorkflowRunner:
         # Raises AuthoringProviderRouteError with an actionable message.
         self._enforce_authoring_provider_route(sorted_phases, workflow_params)
 
+        # Bug B (resume stop-after integrity): ``--stop-after`` must halt the
+        # run AFTER the named phase regardless of HOW that phase became
+        # satisfied — executed this run, skipped-as-already-complete on
+        # resume, skipped-optional, or reused (--reuse-objectives). The
+        # in-loop stop check at the bottom of a normal phase execution is only
+        # reached on the EXECUTE path; every early ``continue`` (skip paths)
+        # bypasses it, which let a resumed run march past ``--stop-after
+        # dart_conversion`` into staging→course_planning. This helper is
+        # invoked at each such satisfied/continue point; it records the
+        # deliberate halt marker + persists it and returns True so the caller
+        # can ``break`` out of the phase loop.
+        def _stop_after_now(pname: str, note: str) -> bool:
+            if stop_after_phase and pname == stop_after_phase:
+                logger.info(
+                    "Stopping workflow after phase '%s' (--stop-after)%s; "
+                    "skipping all subsequent phases.",
+                    pname, note,
+                )
+                workflow_state["stopped_after"] = pname
+                self._save_workflow_state(workflow_path, workflow_state)
+                return True
+            return False
+
         for phase_idx, phase in enumerate(sorted_phases):
             phase_name = phase.name
 
-            # Skip already-completed phases (crash recovery)
-            if phase_name in phase_outputs and phase_outputs[phase_name].get("_completed"):
+            # Skip already-completed phases (crash recovery).
+            #
+            # Resume-integrity invariant: a phase whose validation gates
+            # FAILED must NOT be treated as resumable-complete. A prior
+            # (buggy) run could persist a gate-failed phase as
+            # ``_completed=True`` WITH ``_gates_passed=False`` (the stamp
+            # at the bottom of this loop sets ``_completed=True``
+            # unconditionally, then the workflow breaks on the gate
+            # failure AFTER the state was already saved). Skipping such a
+            # phase on ``--resume`` marches the workflow downstream on its
+            # bad output. We therefore require BOTH ``_completed`` AND
+            # gates-not-failed to skip.
+            #
+            # Backward-compat with old + benign state:
+            #   * ``_gates_passed`` absent  -> default True -> skip
+            #     (pre-``_gates_passed`` completed phases; optional-phase
+            #     skip markers that stamp ``_completed`` but no gate flag).
+            #   * ``_gates_passed is True``  -> skip (normal happy resume).
+            #   * ``_gates_passed is False`` -> DO NOT skip -> re-run the
+            #     phase (old buggy gate-failed state + new state alike).
+            recorded_out = phase_outputs.get(phase_name)
+            if (
+                isinstance(recorded_out, dict)
+                and recorded_out.get("_completed")
+                and recorded_out.get("_gates_passed", True) is not False
+            ):
                 logger.info(f"Skipping already-completed phase: {phase_name}")
+                # Bug B: --stop-after must halt AFTER this phase even when it
+                # was satisfied by a skip-as-already-complete on resume, never
+                # advance into downstream phases on the resumed run.
+                if _stop_after_now(phase_name, "; already complete on resume"):
+                    break
                 continue
 
             # Check if this optional phase should be skipped
@@ -1567,6 +1714,11 @@ class WorkflowRunner:
                 }
                 workflow_state["phase_outputs"] = phase_outputs
                 self._save_workflow_state(workflow_path, workflow_state)
+                # Bug B: honour --stop-after when the named phase is an
+                # optional phase that gets skipped (e.g. trainforge_assessment
+                # under --no-assessments) — halt at its slot, don't run on.
+                if _stop_after_now(phase_name, "; optional phase skipped"):
+                    break
                 continue
 
             # Check that all dependencies completed
@@ -1613,6 +1765,10 @@ class WorkflowRunner:
                         "failed": 0,
                         "gates_passed": True,
                     }
+                    # Bug B: --stop-after course_planning must halt even when
+                    # planning was satisfied by --reuse-objectives (no dispatch).
+                    if _stop_after_now(phase_name, "; objectives reused"):
+                        break
                     continue
                 else:
                     # Synthesis failed (e.g. project dir not yet created
@@ -1765,6 +1921,63 @@ class WorkflowRunner:
                 )
                 break
 
+            # Bug A (partial-artifact resume trap): extend the anti-zombie
+            # contract above from "ZERO successful tasks" to "not EVERY
+            # dispatched task succeeded". A non-optional multi-task phase where
+            # SOME tasks COMPLETE-d but others failed / timed out / were
+            # poisoned MUST NOT be persisted as ``_completed=True``. The live
+            # motivating run: a 10-PDF ``dart_conversion`` batch where 1 PDF
+            # converted (ch09) and 9 hit the 24000s batch timeout. The 1
+            # success made ``any_task_succeeded`` True (so the guard above did
+            # not fire) and produced canonical output keys, so the loop stamped
+            # ``_completed=True, _gates_passed=True`` — and a subsequent
+            # ``--resume`` saw a satisfied phase and SKIPPED it whole, so the 9
+            # unfinished conversions never re-ran. Completeness is measured by
+            # COMPLETE-count == dispatched-count (this also catches POISON_PILL,
+            # which the ERROR/TIMEOUT/FAILED ``phase_failed`` check below
+            # misses). Stamp ``_completed=False`` and fail the workflow here so
+            # a later resume re-runs the phase (its per-task checkpoints let the
+            # already-converted units be reused). Excludes optional phases
+            # (partial by design), zero-task phases (nothing dispatched), and
+            # fully-complete phases (byte-stable happy path).
+            completed_count = sum(
+                1 for r in results.values() if r.status == "COMPLETE"
+            )
+            if (
+                not getattr(phase, "optional", False)
+                and len(tasks) > 0
+                and completed_count < len(tasks)
+            ):
+                logger.error(
+                    "phase %s marked failed: partial completion "
+                    "(dispatched=%d, complete=%d); refusing to stamp "
+                    "_completed to avoid a partial-artifact zombie that "
+                    "--resume would skip whole",
+                    phase_name, len(tasks), completed_count,
+                )
+                extracted["_completed"] = False
+                extracted["_gates_passed"] = gates_passed
+                extracted["_gate_results"] = list(gate_results or [])
+                phase_outputs[phase_name] = extracted
+                workflow_state["phase_outputs"] = phase_outputs
+                self._save_workflow_state(workflow_path, workflow_state)
+                all_results[phase_name] = {
+                    "task_count": len(tasks),
+                    "completed": completed_count,
+                    "failed": sum(
+                        1 for r in results.values()
+                        if r.status in ("ERROR", "TIMEOUT", "FAILED", "POISON_PILL")
+                    ),
+                    "gates_passed": gates_passed,
+                }
+                final_status = "FAILED"
+                failed_phase = phase_name
+                failure_reason = (
+                    f"partial completion: {completed_count} of {len(tasks)} "
+                    f"task(s) completed"
+                )
+                break
+
             extracted["_completed"] = True
             extracted["_gates_passed"] = gates_passed
             # Worker W5: stash the per-phase gate_results chain so the
@@ -1849,19 +2062,26 @@ class WorkflowRunner:
                 failure_reason = _summarize_gate_failure(gate_results)
                 break
 
+            # Deterministic GPU lease hand-off. The phase has now completed
+            # SUCCESSFULLY (task results in, gates passed, outputs persisted), so
+            # release the resident local model(s) + torch allocator cache before
+            # the next phase dispatches — every GPU stage loads, runs, and hands
+            # the card over. Ordered AFTER the doctor ``"after"`` snapshot above
+            # (end-of-phase residency stays observable) and BEFORE the next
+            # phase / any early-stop. No-op + zero-overhead unless
+            # ED4ALL_GPU_LIFECYCLE is on (default ON); best-effort so a sweep
+            # failure can never change final_status. Never fires for a
+            # FAILED/partial phase (those break above) or a resume-skipped phase
+            # (skipped earlier via ``continue``).
+            await self._gpu_lifecycle_sweep(phase_name)
+
             # NVIDIA-70b-everywhere GAP-2 fix — clean early-stop. The named
             # phase has now completed successfully (its outputs are persisted +
             # gates passed); halt before any later phase runs. Records a
             # logged reason + a ``stopped_after`` marker on the workflow state
             # so a resume / audit can see the deliberate halt (distinct from a
             # FAILED phase). final_status stays the loop's success value.
-            if stop_after_phase and phase_name == stop_after_phase:
-                logger.info(
-                    "Stopping workflow after phase '%s' (--stop-after); "
-                    "skipping all subsequent phases.",
-                    phase_name,
-                )
-                workflow_state["stopped_after"] = phase_name
+            if _stop_after_now(phase_name, ""):
                 break
 
         # Finalize workflow state
@@ -4061,6 +4281,11 @@ class WorkflowRunner:
                 config_data = {}
         config_data["objectives_path"] = str(objectives_out_path)
         config_data["synthesized_objectives_path"] = str(objectives_out_path)
+        # Provenance for the course_planning self-poisoning reuse guard
+        # (MCP/tools/pipeline_tools.py::_plan_course_structure): this is the
+        # operator ``--reuse-objectives`` path, so the pin is operator-
+        # supplied and MAY short-circuit synthesis on a re-run.
+        config_data["objectives_source"] = "operator"
         config_data["course_name"] = course_name
         config_data["project_id"] = project_id or project_path.name
         config_data["status"] = "planned"

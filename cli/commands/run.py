@@ -919,6 +919,9 @@ def run_command(
             model=model,
             output_json=output_json,
             watch=watch,
+            # Trap-2 hardening: an explicit --stop-after on the resume
+            # command overrides the persisted halt point.
+            stop_after=stop_after,
         )
         return
 
@@ -1447,6 +1450,66 @@ async def _create_and_run(
     return 0
 
 
+def _resolve_resume_stop_after(
+    explicit: Optional[str], persisted: Optional[str],
+) -> Optional[str]:
+    """Resolve the effective ``--stop-after`` for a ``--resume``.
+
+    Trap-2 hardening precedence: an explicit ``--stop-after`` on the
+    resume command wins; else the value persisted at workflow creation;
+    else ``None`` (run to completion).
+    """
+    if explicit:
+        return explicit
+    return persisted or None
+
+
+def _apply_resume_stop_after_override(
+    workflow_id: str, explicit_stop_after: Optional[str],
+) -> Optional[str]:
+    """Persist an explicit resume-time ``--stop-after`` override.
+
+    ``WorkflowRunner.run_workflow`` reads ``stop_after`` from the
+    persisted workflow params, so when the operator passes an explicit
+    ``--stop-after`` on a ``--resume`` we patch ``params.stop_after`` in
+    the state file BEFORE the run so the new halt point takes effect. A
+    no-op (the persisted value already applies) when no explicit override
+    is supplied. Best-effort: a missing / unreadable / unwritable state
+    file is left untouched and the persisted value continues to govern.
+    Returns the effective stop_after, or ``None``.
+    """
+    from lib.paths import STATE_PATH  # noqa: PLC0415
+
+    workflow_path = STATE_PATH / "workflows" / f"{workflow_id}.json"
+    try:
+        state = json.loads(workflow_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return explicit_stop_after or None
+    if not isinstance(state, dict):
+        return explicit_stop_after or None
+    params = state.get("params")
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except ValueError:
+            params = {}
+    if not isinstance(params, dict):
+        params = {}
+    state["params"] = params
+    persisted = params.get("stop_after")
+    effective = _resolve_resume_stop_after(explicit_stop_after, persisted)
+    if explicit_stop_after and effective != persisted:
+        params["stop_after"] = effective
+        try:
+            workflow_path.write_text(
+                json.dumps(state, indent=2, default=str), encoding="utf-8",
+            )
+        except OSError:
+            # Non-fatal: fall back to whatever was already persisted.
+            pass
+    return effective
+
+
 def _resume_workflow(
     *,
     workflow_id: str,
@@ -1455,14 +1518,23 @@ def _resume_workflow(
     model: Optional[str],
     output_json: bool,
     watch: bool,
+    stop_after: Optional[str] = None,
 ) -> None:
     """Resume an existing workflow state through the orchestrator.
 
     Wave 29 Defect 3: ``--resume`` also honours the resumed workflow's
     final gate status — a resumed run that fails gates exits 2.
+
+    Trap-2 hardening: an explicit ``--stop-after`` passed alongside
+    ``--resume`` overrides the persisted halt point before the run; when
+    unset, the value persisted at creation continues to govern.
     """
 
     async def _run() -> int:
+        # Apply the resume-time --stop-after precedence BEFORE the run so
+        # run_workflow (which reads stop_after from persisted params)
+        # honors the effective halt point.
+        _apply_resume_stop_after_override(workflow_id, stop_after)
         orchestrator = _build_orchestrator(mode, provider=provider, model=model)
         if watch:
             click.secho(

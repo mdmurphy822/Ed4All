@@ -672,6 +672,13 @@ class TestRunDartChunkingEmitsChunksJsonl:
             "chunks_count",
             "generated_at",
             "source_coverage",
+            # W1b.5: honest learning-outcome-linkage markers, stamped when a
+            # fresh manifest advertises that LO-linkage was skipped (chunks
+            # emit before course-planning mints the TO-NN/CO-NN id set).
+            "lo_linkage",
+            "lo_refs_unpopulated",
+            # Track K: verbatim chunk-overlap budget (emitted only when > 0).
+            "overlap_words",
         })
 
         # Validator round-trip: the emitted manifest must pass the
@@ -904,6 +911,13 @@ class TestRunImsccChunkingEmitsChunksJsonl:
             "chunks_count",
             "generated_at",
             "source_coverage",
+            # W1b.5: honest learning-outcome-linkage markers, stamped when a
+            # fresh manifest advertises that LO-linkage was skipped (chunks
+            # emit before course-planning mints the TO-NN/CO-NN id set).
+            "lo_linkage",
+            "lo_refs_unpopulated",
+            # Track K: verbatim chunk-overlap budget (emitted only when > 0).
+            "overlap_words",
         })
         # ``source_dart_html_sha256`` MUST be absent on imscc-branch manifests
         # (the schema's allOf branch only requires source_imscc_sha256 when

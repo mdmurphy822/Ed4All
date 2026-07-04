@@ -99,6 +99,12 @@ def _run(tmp_path, monkeypatch, executor: MagicMock) -> Dict[str, Any]:
     state_root = tmp_path / "state"
     monkeypatch.setattr(wr_mod, "STATE_PATH", state_root)
     monkeypatch.setenv("LOCAL_DISPATCHER_ALLOW_STUB", "1")
+    # Isolate the doctor hook from the (default-ON) deterministic GPU-lifecycle
+    # sweep: with the doctor enabled, that sweep ALSO appends a per-phase
+    # ``lifecycle_sweep`` trajectory row + snapshot, which would inflate the
+    # exact snapshot/write counts these tests assert. Disable it so this file
+    # measures ONLY the ``_vram_doctor_snapshot`` before/after hook.
+    monkeypatch.setenv("ED4ALL_GPU_LIFECYCLE", "0")
     _write_workflow_state(state_root)
 
     config = MagicMock()

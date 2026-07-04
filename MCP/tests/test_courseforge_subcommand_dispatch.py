@@ -558,7 +558,7 @@ class TestValidationReportWriter:
         # Plan §6 schema fields.
         assert report["run_id"] == "WF-VALIDATE-REPORT"
         assert report["phase"] == "inter_tier_validation"
-        assert report["schema_version"] == "v1"
+        assert report["schema_version"] == "v2"
         assert report["total_blocks"] == 3  # 2 validated + 1 failed
         assert report["passed"] == 2
         # b3 carries escalation_marker => counted as escalated, not failed.

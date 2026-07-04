@@ -101,6 +101,11 @@ def test_measured_graph_shaping_quartet_is_complete():
         "TRAINFORGE_DROP_FRONTMATTER": "true",
         "TRAINFORGE_LEXICAL_CONCEPT_SEEDS": "true",
         "TRAINFORGE_OBJECTIVE_QUALITY_GATE": "true",
+        # Defensive heading-sanity filter — repairs a chunk's section_heading to
+        # its nearest clean ancestor when the upstream classifier mis-tagged
+        # answer-key / exercise / numeric noise as a heading (chunk + retrieval
+        # display quality; see lib/chunk_heading_sanity.py).
+        "TRAINFORGE_HEADING_SANITY_FILTER": "true",
     }
     assert _CORPUS_GENERALIZATION_ENV_DEFAULTS == expected
 

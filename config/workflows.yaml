@@ -1293,9 +1293,14 @@ workflows:
       - name: dart_conversion
         agents: [dart-converter]
         parallel: true
-        max_concurrent: 4
+        # One 8GB card: a full-cascade conversion holds council BERTs + the
+        # ollama reviewer seat; concurrent cascades OOM the GPU. Serialized
+        # also gives per-chapter artifact landing for mid-flight inspection.
+        max_concurrent: 1
         depends_on: []
-        timeout_minutes: 90
+        # Full-book chapters (up to ~200 pages) through OCR + the full
+        # reviewer/second-pass stack on a local 7B far exceed the old 90m.
+        timeout_minutes: 600
         description: Convert PDF textbooks to accessible HTML via multi-source synthesis
 
         # REC-CTR-05: Explicit parameter routing (was hardcoded in
@@ -1560,6 +1565,12 @@ workflows:
           - objective_ids
           - terminal_count
           - chapter_count
+          # Stage-2 grounding + citation-reselect counters (dict; {} when
+          # Stage-2 window synthesis did not run). Surfaced so a post-run
+          # audit reads reselect_pool_misses / citations_reselected from
+          # phase_outputs.course_planning.grounding_signals without scraping
+          # INFO logs.
+          - grounding_signals
 
         # Phase 6 ST 4.5: gate the synthesized LO set on ABCD verb-Bloom
         # alignment. Phase 6 landed as warning so legacy corpora without
@@ -1599,11 +1610,16 @@ workflows:
           # forbids gate-level inputs blocks.
           - gate_id: objective_source_refs
             validator: lib.validators.objective_source_refs.ObjectiveSourceRefValidator
-            severity: warning
+            # Flipped warning->critical with the ORPHANED_CITATIONS aggregate
+            # net: a 100%-orphaned artifact (chunkset renumbered after
+            # synthesis — the 2026-07-04 split-brain) previously passed every
+            # gate. Per-LO resolution detail stays warning-level; only the
+            # aggregate orphan net emits critical.
+            severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
+              on_fail: block
               on_error: warn
             config:
               require_to_attribution: false
@@ -2076,6 +2092,12 @@ workflows:
           - param: workflow_type
             source: workflow_params
             key: workflow_type
+          # ``--force`` must beat the crash-resume sidecar: the outline
+          # handler clears + ignores ``.blocks_outline_checkpoint.jsonl``
+          # when force_rerun is set (fresh blocks still checkpoint).
+          - param: force_rerun
+            source: workflow_params
+            key: force_rerun
 
         outputs:
           - blocks_outline_path
@@ -2611,6 +2633,14 @@ workflows:
             source: phase_outputs
             phase: content_generation_outline
             output: outline_objectives_path
+          # ``--force`` must beat the crash-resume sidecar: the rewrite
+          # handler clears + ignores ``.blocks_final_checkpoint.jsonl``
+          # when force_rerun is set (fresh rewrites still checkpoint; the
+          # separate blocks_final.jsonl --blocks byte-identity cache is
+          # untouched).
+          - param: force_rerun
+            source: workflow_params
+            key: force_rerun
 
         outputs:
           - content_paths
