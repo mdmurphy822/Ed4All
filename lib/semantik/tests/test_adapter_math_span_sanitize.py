@@ -199,3 +199,47 @@ def test_pass_leaves_clean_block_untouched():
     ch = _AdapterChapter(title="Chapter 9 Solve", blocks=[block])
     _sanitize_math_spans([ch])
     assert block.html == html
+
+
+# --- round-11 (true-final) — the four convergence-loop root fixes ------------
+def test_escaped_underscore_blank_preserved_not_dangling():
+    r"""``\_\_`` (a fill-in-the-blank) at a span end is NOT a dangling subscript.
+
+    The root of the ch06/ch10 literal-``$$`` leak: ``_DANGLING_SUPSUB_RE`` used
+    to strip the ``_`` of a trailing escaped ``\_``, leaving a dangling ``\``
+    that escaped the closing ``$$`` (display close broken → literal ``$$`` ships)
+    or the closing ``$`` (orphaned inline open → swallowed a following bare
+    table ``&`` → "Misplaced &" merror). The ``(?<!\\)`` lookbehind spares it.
+    """
+    for span in (
+        r"$$ 10^2 - \_\_ $$",
+        r"$$x^{2}+6x+\_\_ $$",
+        r"$(a+b)^2 = \_\_ + \_\_ + \_\_ $",
+    ):
+        assert sanitize_math_spans(span) == span
+
+
+def test_bare_dangling_supsub_still_dropped():
+    # A GENUINE bare ``_`` / ``^`` (no preceding ``\``) is still a dangling
+    # operator and is dropped.
+    assert sanitize_math_spans(r"$x_$") == r"$x$"
+    assert sanitize_math_spans(r"$a^2 + x^$") == r"$a^2 + x$"
+
+
+def test_double_wrapped_dfrac_unwrapped():
+    r"""``\dfrac{\dfrac{a}{b}}`` (OCR double-wrap) → the inner fraction.
+
+    The ch08 "Missing argument for \dfrac": a single-arg ``\dfrac`` whose ONE
+    brace body is ITSELF a complete fraction is unwrapped (the bogus outer
+    keyword dropped). A truncated ``\frac{1}`` (bare single arg) is NOT unwrapped
+    — it stays a drop (see ``test_dangling_frac_one_arg_dropped``).
+    """
+    assert (
+        sanitize_math_spans(r"$\dfrac{\dfrac{2+\frac{5}{6}}{\frac{1}{3}+\frac{1}{4}}}$")
+        == r"$\dfrac{2+\frac{5}{6}}{\frac{1}{3}+\frac{1}{4}}$"
+    )
+
+
+def test_valid_two_arg_dfrac_preserved():
+    src = r"$\dfrac{x-\dfrac{3x}{x+5}}{\dfrac{1}{x+5} + \dfrac{1}{x-5}}$"
+    assert sanitize_math_spans(src) == src

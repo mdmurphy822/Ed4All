@@ -67,6 +67,7 @@ __all__ = [
     "escape_math_angle_brackets",
     "sanitize_math_spans",
     "strip_tikz_figures",
+    "separate_adjacent_math_spans",
     "linkify_urls",
 ]
 
@@ -484,7 +485,14 @@ def _pair_dollars(text: str, stash: list[str]) -> str:
                 close = _find_display_close(text, i + 2)
                 if close != -1:
                     content = text[i + 2 : close]
-                    if _is_prose_math_span(content):
+                    if "\x01" in content or _is_prose_math_span(content):
+                        # A ``\x01`` placeholder inside the content means this
+                        # ``$$…$$`` is spuriously gluing across an ALREADY-paired
+                        # nested ``\(..\)`` / ``\[..\]`` span (currency ``$`` on
+                        # either side of a real math cell in an OCR table). Pairing
+                        # it would (a) swallow real math and (b) leak the nested
+                        # placeholder (single-pass restore can't reach it). Refuse:
+                        # drop the opener, rewind — same as a prose refusal.
                         out.append("  ")  # drop orphan/prose opener, rewind
                         i += 2
                         continue
@@ -502,9 +510,12 @@ def _pair_dollars(text: str, stash: list[str]) -> str:
                 j += 1
             if j < n and j > i + 1 and text[j - 1] != "\\":
                 content = text[i + 1 : j]
-                if _is_prose_math_span(content):
-                    # Orphan-derived opener → drop it; rewind to keep the closing
-                    # ``$`` available as the next span's opener.
+                if "\x01" in content or _is_prose_math_span(content):
+                    # Orphan-derived opener, prose, OR a span swallowing an
+                    # already-paired nested ``\(..\)`` / ``\[..\]`` placeholder
+                    # (``\x01`` — currency ``$`` glued across a real math cell in
+                    # an OCR table) → drop it; rewind to keep the closing ``$``
+                    # available as the next span's opener.
                     out.append(" ")
                     i += 1
                     continue
@@ -560,7 +571,17 @@ def _balance_math_delimiters(text: str) -> str:
     # Leftover delimiters are orphans: drop bracket/paren + non-currency dollars.
     s = _BALANCE_ORPHAN_DELIM_RE.sub(" ", s)
     s = _BALANCE_ORPHAN_DOLLAR_RE.sub(" ", s)
-    return _BALANCE_STASH_RE.sub(lambda m: stash[int(m.group(1))], s)
+    # Iterative restore to a fixpoint: a stashed span's text can itself carry an
+    # EARLIER placeholder (a ``$…$`` that legitimately wrapped a nested ``\(..\)``),
+    # and a single-pass ``re.sub`` never re-scans its own substitution — so the
+    # inner placeholder (a raw ``\x01`` control char) would leak to the browser
+    # ("Math input error"). Loop until no placeholder remains; every stash index
+    # references an EARLIER entry, so expansion strictly terminates.
+    for _ in range(len(stash) + 1):
+        if "\x01" not in s:
+            break
+        s = _BALANCE_STASH_RE.sub(lambda m: stash[int(m.group(1))], s)
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -795,9 +816,24 @@ _DANGLING_ARGCMD_RE = re.compile(
 # argument for \frac"). Dropped whole; a well-formed ``\frac{1}{2}`` is NOT at
 # the span end (``{2}`` follows) so it never matches.
 _DANGLING_FRAC1_RE = re.compile(r"\\(?:frac|dfrac|tfrac|cfrac)\s*\{[^{}]*\}\s*\Z")
+# A ``\frac``-family command that heads the WHOLE span and carries only ONE
+# balanced brace group (with arbitrary NESTING) and nothing after it — the OCR
+# double-wrapped a complete fraction (``\dfrac{\dfrac{a}{b}}`` → "Missing
+# argument for \dfrac"). Unlike ``_DANGLING_FRAC1_RE`` (no-nesting ``[^{}]*``),
+# this is brace-depth-aware (:func:`_unwrap_single_arg_frac`) so it fires on a
+# nested single arg; a VALID two-arg ``\dfrac{a}{b}`` has a second group after
+# the first, so it is never unwrapped.
+_SINGLE_ARG_FRAC_HEAD_RE = re.compile(r"^\s*\\(?:d|t|c)?frac\s*")
 # A trailing superscript / subscript operator with no operand (``x^`` / ``a_``
-# at the span end).
-_DANGLING_SUPSUB_RE = re.compile(r"[\^_]\s*\Z")
+# at the span end). The ``(?<!\\)`` lookbehind SPARES an ESCAPED ``\_`` / ``\^``
+# — a LITERAL underscore / caret (an OCR fill-in-the-blank ``$$x^2 + \_\_ $$``),
+# NOT a dangling operator. Without it the trailing ``_`` of ``\_`` was stripped,
+# leaving a dangling ``\`` that ESCAPED the closing ``$$`` / ``$`` delimiter and
+# either leaked a literal ``$$`` (display close broken) or orphaned the inline
+# ``$`` open (desync that swallowed the following bare table ``&`` → a
+# "Misplaced &" ``mjx-merror``). A BARE ``x^`` / ``a_`` (no preceding ``\``) is
+# still a real dangling operator and is dropped.
+_DANGLING_SUPSUB_RE = re.compile(r"(?<!\\)[\^_]\s*\Z")
 # An environment opener (``\begin{array}{|c|c|}`` — with its optional column /
 # option spec groups) and closer, for the unbalanced-env drop.
 _MATH_BEGIN_RE = re.compile(
@@ -827,6 +863,58 @@ def _split_math_delims(span: str) -> "tuple[str, str, str]":
     if span.startswith("\\("):
         return "\\(", span[2:-2], "\\)"
     return "\\[", span[2:-2], "\\]"
+
+
+def _match_balanced_brace(s: str, start: int) -> int:
+    r"""Index just past the ``}`` matching the ``{`` at ``s[start]``, or -1.
+
+    Depth-aware so a nested ``\dfrac{a}{b}`` inside the group is spanned whole.
+    """
+    if start >= len(s) or s[start] != "{":
+        return -1
+    depth = 0
+    for k in range(start, len(s)):
+        if s[k] == "{":
+            depth += 1
+        elif s[k] == "}":
+            depth -= 1
+            if depth == 0:
+                return k + 1
+    return -1
+
+
+def _unwrap_single_arg_frac(inner: str) -> str:
+    r"""Unwrap an OCR-double-wrapped single-arg ``\dfrac{…}`` to its brace body.
+
+    ``\dfrac{\dfrac{a}{b}}`` (a ``\frac``-family command heading the whole span
+    with ONE balanced brace group and nothing after) is missing its second
+    argument → MathJax errors "Missing argument for \dfrac". The bogus outer
+    command keyword is dropped, keeping its (already-valid) brace content. A
+    genuine two-arg ``\dfrac{a}{b}`` has a second group after the first and is
+    left untouched. Iterates so a triple-wrap collapses fully.
+
+    Unwrap fires ONLY when the single brace body is ITSELF a ``\frac``-family
+    expression (the OCR double-wrapped a complete fraction). A truncated
+    ``\frac{1}`` (single arg is a bare atom, not a nested fraction) is left for
+    :func:`_drop_dangling_commands` to DROP — unwrapping it to a bare ``1`` would
+    fabricate content the truncation destroyed.
+    """
+    while True:
+        m = _SINGLE_ARG_FRAC_HEAD_RE.match(inner)
+        if not m:
+            return inner
+        p = m.end()
+        end = _match_balanced_brace(inner, p)
+        if end == -1:
+            return inner
+        if inner[end:].strip() != "":  # a second arg (or trailing math) follows
+            return inner
+        body = inner[p + 1 : end - 1].strip()
+        if not _SINGLE_ARG_FRAC_HEAD_RE.match(body):
+            # Single arg is not itself a fraction → a genuine truncation, not a
+            # double-wrap. Leave it for the dangling-command drop.
+            return inner
+        inner = body  # drop the bogus outer keyword, unwrap the nested fraction
 
 
 def _drop_dangling_commands(inner: str) -> str:
@@ -910,6 +998,7 @@ def sanitize_math_spans(text: str) -> str:
         # Drop orphan environments FIRST so a broken ``\begin{array}`` no longer
         # shields its ``&`` tabs from the misplaced-``&`` fold below.
         inner = _drop_unbalanced_envs(inner)
+        inner = _unwrap_single_arg_frac(inner)
         inner = _drop_dangling_commands(inner)
         inner = _strip_unbalanced_leftright(inner)
         # Misplaced ``&`` (+ orphan row scaffolding) ONLY when the span has no
@@ -1015,6 +1104,74 @@ def strip_tikz_figures(text: str) -> str:
         return f"{o}{stripped}{c}"  # mixed → keep the surviving real math
 
     return _MATH_SPAN_ANGLE_RE.sub(_fix, text)
+
+
+# ---------------------------------------------------------------------------
+# Adjacent inline-math separation (2026-07-04 round-11 — scorecard strip-desync).
+# ---------------------------------------------------------------------------
+# An exercise list emits several math atoms back-to-back with no separator —
+# ``Simplify $4^3$ $7^1$ …`` fuses to ``$4^3$$7^1$…``. The ``$$`` at each
+# close-then-open junction is a FALSE display delimiter: MathJax's left-to-right
+# open-time scan still pairs them as two adjacent INLINE spans (so the headless
+# render is clean), but a downstream ``$$``-display-FIRST strip (the structure
+# scorecard's cleanliness math-strip) mis-pairs across the whole block — it
+# consumes the odd/even junction ``$$`` pairs and STRANDS the intervening span
+# CONTENT (``\left \frac \right``…) as counted "LaTeX leakage" (ch06: 224 phantom
+# leaks → cleanliness 0.0 despite a clean browser render).
+#
+# :func:`separate_adjacent_math_spans` inserts a single space at every inline
+# close-``$`` immediately followed by an opening ``$`` (or ``$$``), mirroring
+# MathJax's own open-time decision: a genuine ``$$…$$`` DISPLAY span (``$$`` with
+# a matching display close) is recognized and passed through verbatim, so only
+# the false close+open junctions gain a separator. The rendered math is
+# byte-identical (two adjacent inline spans with vs. without an inter-span space
+# typeset the same), so this never changes an output glyph — it only removes the
+# lexical ambiguity a naive display-first pairer trips on. HTML-only by contract
+# (mirrors the currency / angle / round-9/10 passes); idempotent (a separated
+# ``$a$ $b$`` has no ``$``-adjacent-``$`` junction left); fast-guarded on ``$``.
+def separate_adjacent_math_spans(text: str) -> str:
+    r"""Insert a space between adjacent inline math spans (``$a$$b$`` → ``$a$ $b$``).
+
+    Walks ``text`` mirroring MathJax's open-time delimiter decision: a genuine
+    ``$$…$$`` display span (opening ``$$`` with a matching display close) is
+    emitted verbatim; an inline ``$…$`` span whose closing ``$`` is immediately
+    followed by another opening ``$`` / ``$$`` gets a single separating space, so
+    the false close+open ``$$`` junction never reads as a display delimiter to a
+    downstream ``$$``-first strip. Renders byte-identically under MathJax. A
+    strict no-op on text with fewer than two ``$``.
+    """
+    if not text or text.count("$") < 2:
+        return text or ""
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "$" and (i == 0 or text[i - 1] != "\\"):
+            if i + 1 < n and text[i + 1] == "$":  # potential display ``$$``
+                close = _find_display_close(text, i + 2)
+                if close != -1:  # genuine display span — pass through verbatim
+                    out.append(text[i : close + 2])
+                    i = close + 2
+                    continue
+                out.append("$$")  # unmatched (post-balance this is rare) — keep
+                i += 2
+                continue
+            # inline ``$…$``
+            j = i + 1
+            while j < n and text[j] != "$":
+                j += 1
+            if j < n and j > i + 1 and text[j - 1] != "\\":
+                out.append(text[i : j + 1])
+                i = j + 1
+                # A close ``$`` immediately followed by an opening ``$`` (the
+                # next span / a display open) → separate so no false ``$$`` forms.
+                if i < n and text[i] == "$" and text[i - 1] != "\\":
+                    out.append(" ")
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 # Control words whose presence marks a run as genuine math worth wrapping.

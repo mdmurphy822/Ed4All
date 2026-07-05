@@ -82,6 +82,7 @@ from lib.semantik.math_fold import (
     linkify_urls,
     sanitize_body_latex,
     sanitize_math_spans,
+    separate_adjacent_math_spans,
     strip_latex_commands,
     strip_tikz_figures,
     wrap_bare_math,
@@ -2515,6 +2516,32 @@ def _strip_tikz_figures(chapters: Sequence[_AdapterChapter]) -> None:
                 block.html = strip_tikz_figures(block.html)
 
 
+def _separate_adjacent_math_spans(chapters: Sequence[_AdapterChapter]) -> None:
+    r"""Space-separate adjacent inline math spans in block HTML (round-11).
+
+    An exercise list fuses several math atoms with no separator
+    (``$4^3$$7^1$…``); the ``$$`` at each close+open junction is a FALSE display
+    delimiter. MathJax's open-time scan still pairs them as adjacent INLINE spans
+    (the browser render is clean), but a downstream ``$$``-display-FIRST strip
+    (the structure scorecard's cleanliness pass) mis-pairs across the block and
+    strands the span content as phantom "LaTeX leakage" (ch06: 224 phantom leaks
+    → cleanliness 0.0 despite a clean render).
+    :func:`~lib.semantik.math_fold.separate_adjacent_math_spans` inserts a space
+    at each inline close-``$`` immediately followed by an opening ``$`` (genuine
+    ``$$…$$`` display spans pass through verbatim), so no false ``$$`` junction
+    survives. The rendered math is byte-identical — this changes no output glyph.
+
+    HTML-ONLY (mirrors ``_strip_tikz_figures``): ``raw_text`` / ``repaired_text``
+    keep the fused text for the chunker/retrieval. Runs LAST (after every
+    span-content sanitizer) so it operates on the final emit-time delimiters;
+    idempotent (a separated ``$a$ $b$`` has no ``$``-adjacent-``$`` left).
+    """
+    for ch in chapters:
+        for block in ch.blocks:
+            if block.html:
+                block.html = separate_adjacent_math_spans(block.html)
+
+
 def _strip_body_folios(chapters: Sequence[_AdapterChapter]) -> None:
     """Drop / strip leaked printed folios (page numbers) from BODY blocks (Defect 2).
 
@@ -2794,6 +2821,14 @@ def _normalize_ocr_headings(
     # the raw TikZ source never ships visibly. HTML-only; runs LAST so the round-9
     # sanitizer's edits are settled and the figure env is intact when found.
     _strip_tikz_figures(chapters)
+
+    # Round-11 (true-final) — space-separate adjacent inline math spans
+    # (``$4^3$$7^1$`` → ``$4^3$ $7^1$``) so the FALSE ``$$`` junction between two
+    # inline spans never desyncs a downstream ``$$``-first math strip (the
+    # structure scorecard). MathJax renders identically; HTML-only. Runs
+    # ABSOLUTELY LAST so every prior span-content edit is settled before the
+    # inter-span separators are stamped.
+    _separate_adjacent_math_spans(chapters)
 
     return releveled
 

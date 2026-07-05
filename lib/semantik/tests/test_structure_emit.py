@@ -11,7 +11,11 @@ from lib.semantik.adapter import (
     _AdapterChapter,
     normalize_cascade_to_ed4all,
 )
-from lib.semantik.math_fold import wrap_bare_math, _balance_math_delimiters
+from lib.semantik.math_fold import (
+    wrap_bare_math,
+    _balance_math_delimiters,
+    separate_adjacent_math_spans,
+)
 from lib.semantik.adapter import _scrub_marker_artifacts
 from lib.semantik.structure_emit import (
     emit_structure,
@@ -363,6 +367,49 @@ def test_balancer_drops_stray_dollar():
 def test_balancer_keeps_balanced_math():
     src = "value $a$ and $$b = c$$ end"
     assert _balance_math_delimiters(src) == src
+
+
+# ---------------------------------------------------------------------------
+# Round-11 (true-final) — nested-placeholder restore leak (ch03/ch05 coin tbl).
+# ---------------------------------------------------------------------------
+def test_balancer_no_sentinel_leak_across_currency_table():
+    r"""Currency ``$`` around a real ``\(d\)`` cell must not leak a U+0001 sentinel.
+
+    An OCR coin table (``| Dimes | \(d\) | $0.10 |``) has currency ``$`` on either
+    side of an already-paired ``\(d\)`` span. The balancer used to (a) pair the
+    currency ``$`` into a bogus span whose CONTENT held the ``\(d\)`` placeholder,
+    then (b) restore it single-pass, stranding the inner ``\x01`` sentinel — which
+    reached MathJax as "Math input error". The refusal guard + iterative restore
+    keep the ``\(d\)`` independent and emit ZERO control chars.
+    """
+    src = r"| Dimes | \(d\) | $0.10 | Nickels | \(d + 9\) | $0.05 |"
+    out = _balance_math_delimiters(src)
+    assert "\x01" not in out  # no leaked stash sentinel
+    assert r"\(d\)" in out and r"\(d + 9\)" in out  # real cells preserved
+
+
+# ---------------------------------------------------------------------------
+# Round-11 (true-final) — adjacent inline-math separation (ch06 scorecard).
+# ---------------------------------------------------------------------------
+def test_separate_adjacent_inline_math_spans():
+    # ``$a$$b$`` — the ``$$`` junction is a FALSE display delimiter → space it.
+    assert (
+        separate_adjacent_math_spans(r"$10^4$$17^1$$\left(\frac{1}{2}\right)^2$")
+        == r"$10^4$ $17^1$ $\left(\frac{1}{2}\right)^2$"
+    )
+
+
+def test_separate_preserves_genuine_display():
+    # A real ``$$…$$`` display span (matched close) is passed through verbatim.
+    src = r"$$10^2 - 2^2$$ Simplify."
+    assert separate_adjacent_math_spans(src) == src
+
+
+def test_separate_idempotent_and_noop_on_separated():
+    src = r"$x$ and $y$"
+    assert separate_adjacent_math_spans(src) == src
+    once = separate_adjacent_math_spans(r"$a$$b$")
+    assert separate_adjacent_math_spans(once) == once  # idempotent
 
 
 def test_balancer_neutralizes_orphan_display_across_split():
