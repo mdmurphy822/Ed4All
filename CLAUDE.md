@@ -702,6 +702,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_COS_PER_WEEK_CAP` | `0` (auto) | WS5 §2.2 per-week chapter-objective placement cap for the single-sourced ceil-stride slicer. |
 | `ED4ALL_WEEK_TO_GROUPS` | unset (off) | WS5 week-grouping override: when on AND `duration_weeks == num_tos`, per-week `"Week N"` groups are built by TO membership (week N = TO-N's `child_co_ids`) instead of the ceil-stride CO slice; else warns + falls back to ceil-stride. |
 | `ED4ALL_CONCEPT_COVERAGE` | unset (off) | W4.1 read-only capability aggregator |
+| `ED4ALL_CONCEPT_EXTRACTION_CHECKPOINT` | `on` | Site override for the concept_extraction Stage-3 per-window (`synthesize_concepts`) resume sidecar (beats `ED4ALL_GENERATION_CHECKPOINT`). |
 | `ED4ALL_INTELLIGENCE_RUBRIC` | unset (off) | W4.6 read-only capability aggregator |
 | `ED4ALL_CONTENT_PAGE_PER_CO` | unset (off) | Page-per-CO content-emit gate |
 | `ED4ALL_CONTENT_PAGE_NUM_CTX` | `4096` (→ `ED4ALL_ANSWER_NUM_CTX` → 4096) | Authoring serving-window token budget for the page-per-CO per-page chunk cap |

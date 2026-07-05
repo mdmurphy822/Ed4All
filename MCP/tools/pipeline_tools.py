@@ -4709,6 +4709,128 @@ def _append_stage2_window_checkpoint(
     )
 
 
+# ---------------------------------------------------------------------------
+# concept_extraction Stage-3 per-window resume checkpoint.
+#
+# Same fingerprinted-JSONL unit-checkpoint contract as the stage-2 window
+# sidecar above (``lib/generation/llm_checkpoint.py``), applied to the
+# ``concept_extraction`` phase's Stage-3 ``synthesize_concepts`` dispatch loop.
+# The natural unit of one 7B call there is one WINDOW (one per-window pseudo-
+# chapter), so the sidecar keys on ``(chapter_id, window_index)`` and caches
+# that window's synthesized ``concepts[]`` list. On phase re-entry a record is
+# REUSED only when its stored fingerprint matches the recomputed one for the
+# same window; any change to what the model saw (chunk id set / joined window
+# text / course name / model / num_ctx / max_tokens / system prompt) silently
+# re-runs that window. Default ON; site override
+# ``ED4ALL_CONCEPT_EXTRACTION_CHECKPOINT`` > the family
+# ``ED4ALL_GENERATION_CHECKPOINT`` flag (parse-with-fallback). The sidecar
+# lives in the phase's OUTPUT dir (``<libv2>/courses/<slug>/concept_graph/``,
+# the same dir the phase writes ``concept_graph_semantic.json`` +
+# ``domain_concept_vocabulary.json`` into) so a workflow ``--resume`` finds it.
+_CONCEPT_EXTRACTION_CHECKPOINT_ENV = "ED4ALL_CONCEPT_EXTRACTION_CHECKPOINT"
+_CONCEPT_EXTRACTION_CHECKPOINT_NAME = ".concept_extraction_checkpoint.jsonl"
+
+
+def _concept_extraction_store(path: Optional[Path]) -> _LlmCheckpointStore:
+    return _LlmCheckpointStore(
+        path,
+        site_id="concept_extraction",
+        site_env=_CONCEPT_EXTRACTION_CHECKPOINT_ENV,
+    )
+
+
+def _concept_extraction_checkpoint_enabled() -> bool:
+    """Stage-3 site gate: site flag (when set) > family flag; default ON."""
+    return _llm_checkpoint_enabled(_CONCEPT_EXTRACTION_CHECKPOINT_ENV)
+
+
+def _concept_window_key(chapter_id: str, window_index: int) -> str:
+    return f"{chapter_id}#w{int(window_index)}"
+
+
+def _concept_window_fingerprint(
+    *,
+    chapter_id: str,
+    window_index: int,
+    chunk_ids: List[Any],
+    chapter_text: str,
+    course_name: str,
+    model: str,
+    num_ctx: int,
+    max_tokens: int,
+    system_prompt: str,
+) -> str:
+    """Deterministic fingerprint of a Stage-3 window's synthesis inputs.
+
+    Hashes over EVERYTHING the model sees for that ``synthesize_concepts``
+    call: the window's real chapter id, its window index, the sorted chunk-id
+    set, the joined window CHUNK TEXT (the ``chapter_text`` field the provider
+    renders — a re-chunk that changes a body invalidates the cache even when
+    the id set is unchanged), the course name (prompt-interpolated), the model
+    id, the resolved ``num_ctx`` + ``max_tokens`` serving-window knobs, and the
+    synthesis system prompt. Any change to any axis re-runs the window.
+    """
+    return _llm_compute_fingerprint({
+        "v": _STAGE2_CHECKPOINT_SCHEMA_VERSION,
+        "chapter_id": str(chapter_id),
+        "window_index": int(window_index),
+        "chunk_ids": sorted(str(c) for c in (chunk_ids or [])),
+        "chapter_text_sha": _llm_hash_text(chapter_text or ""),
+        "course_name": str(course_name or ""),
+        "model": str(model or ""),
+        "num_ctx": int(num_ctx),
+        "max_tokens": int(max_tokens),
+        "system_prompt_sha": _llm_hash_text(system_prompt or ""),
+    })
+
+
+def _load_concept_windows_checkpoint(
+    path: Optional[Path],
+) -> Dict[Tuple[str, int], Dict[str, Any]]:
+    """Tolerant loader for the Stage-3 per-window resume sidecar.
+
+    Returns a ``{(chapter_id, window_index): record}`` map (last-line-wins,
+    torn-trailing-line tolerant — the shared store's contract). A missing /
+    unreadable sidecar returns an empty map (first-run case).
+    """
+    out: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    for rec in _concept_extraction_store(path).load().values():
+        cid = rec.get("chapter_id")
+        if not isinstance(cid, str):
+            continue
+        try:
+            widx = int(rec.get("window_index"))
+        except (TypeError, ValueError):
+            continue
+        out[(cid, widx)] = rec
+    return out
+
+
+def _append_concept_window_checkpoint(
+    path: Optional[Path],
+    *,
+    chapter_id: str,
+    window_index: int,
+    fingerprint: str,
+    concepts: List[Dict[str, Any]],
+) -> None:
+    """Append one completed-window record to the sidecar with flush+fsync.
+
+    Best-effort (the shared store's contract): an OSError only costs a re-run
+    of that one window on resume. No-op when ``path`` is None or the site /
+    family flag is off.
+    """
+    _concept_extraction_store(path).append(
+        _concept_window_key(chapter_id, window_index),
+        fingerprint,
+        {
+            "chapter_id": chapter_id,
+            "window_index": int(window_index),
+            "concepts": concepts,
+        },
+    )
+
+
 async def _run_stage2_window_synthesis(
     *,
     provider: Any,
@@ -20940,6 +21062,22 @@ def _build_tool_registry() -> dict:
         chunks: List[Dict[str, Any]] = []
         chunk_counter = 1
 
+        # Stage-3 per-window resume-checkpoint sidecar path. Resolved eagerly
+        # (well before the graph_dir mkdir below) so ``_run_stage3_concept_synthesis``
+        # can reuse completed 7B window calls on a killed / timed-out re-entry.
+        # Placed in the phase's OUTPUT dir (the same
+        # ``<libv2>/courses/<slug>/concept_graph/`` the graph +
+        # domain_concept_vocabulary land in) so a workflow ``--resume`` finds
+        # it. The append path mkdirs its parent, so this is safe even before
+        # graph_dir exists.
+        _concept_checkpoint_path = (
+            _resolve_libv2_root(kwargs.get("libv2_root"))
+            / "courses"
+            / course_slug
+            / "concept_graph"
+            / _CONCEPT_EXTRACTION_CHECKPOINT_NAME
+        )
+
         # M2 fix: track inline-projection drops so the phase output
         # carries a ``projection_drops_count`` and a structured
         # ``concept_projection_drop`` decision event fires per skip.
@@ -21181,6 +21319,7 @@ def _build_tool_registry() -> dict:
             course_name: str,
             course_slug: str,
             capture: Any,
+            checkpoint_path: Optional[Path] = None,
         ) -> Optional[Dict[str, Any]]:
             """Stage 3 — synthesize a domain-concept vocabulary, re-tag
             chunks in-memory, return the vocabulary dict.
@@ -21367,6 +21506,7 @@ def _build_tool_registry() -> dict:
             _failed_chapter_ids: List[str] = []
             windows_synthesized = 0
             windows_failed = 0
+            windows_reused = 0
 
             def _one_window(spec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 """Synchronous per-window call; runs in an executor.
@@ -21397,11 +21537,72 @@ def _build_tool_registry() -> dict:
                     )
                     return None
 
+            def _window_key(spec: Dict[str, Any]) -> Tuple[str, int]:
+                try:
+                    _wi = int(spec.get("window_index") or 0)
+                except (TypeError, ValueError):
+                    _wi = 0
+                return (str(spec.get("id") or ""), _wi)
+
+            # ---- Per-window resume checkpoint (default ON). ---------------
+            # Load any prior sidecar and partition windows into REUSE
+            # (fingerprint matches a completed record) vs DISPATCH. The reuse
+            # splice reassembles in ORIGINAL window order so
+            # per_chapter_concepts (and every downstream merge/dedup) is
+            # byte-equivalent to an uninterrupted run.
+            _cp_enabled = (
+                checkpoint_path is not None
+                and _concept_extraction_checkpoint_enabled()
+            )
+            _cp_model = str(getattr(provider, "_model", "") or "")
+            _cp_cache = (
+                _load_concept_windows_checkpoint(checkpoint_path)
+                if _cp_enabled else {}
+            )
+            if _cp_cache:
+                logger.info(
+                    "concept_extraction: Stage-3 loaded %d checkpointed "
+                    "window record(s) from %s.",
+                    len(_cp_cache), checkpoint_path,
+                )
+
+            _fp_by_key: Dict[Tuple[str, int], str] = {}
+            _reused: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
+            _to_dispatch: List[Dict[str, Any]] = []
+            for spec in window_specs:
+                _key = _window_key(spec)
+                _fp = _concept_window_fingerprint(
+                    chapter_id=_key[0],
+                    window_index=_key[1],
+                    chunk_ids=spec.get("chunk_ids") or [],
+                    chapter_text=str(spec.get("chapter_text") or ""),
+                    course_name=course_name,
+                    model=_cp_model,
+                    num_ctx=_num_ctx,
+                    max_tokens=_max_tokens,
+                    system_prompt=_CONCEPT_SYSTEM_PROMPT,
+                )
+                _fp_by_key[_key] = _fp
+                _rec = _cp_cache.get(_key) if _cp_enabled else None
+                if isinstance(_rec, dict) and _rec.get("fingerprint") == _fp:
+                    _reused[_key] = [
+                        c
+                        for c in (_rec.get("concepts") or [])
+                        if isinstance(c, dict)
+                    ]
+                else:
+                    _to_dispatch.append(spec)
+
             # ``batch_chapters`` is a staticmethod on the provider class
-            # (generic ≤10 batch splitter); reuse it for the window list so
-            # batching/concurrency stays identical to Stage 2 + the legacy
-            # per-chapter path. Plan §5.3 — batches of ≤10.
-            batches = provider.batch_chapters(window_specs)
+            # (generic ≤10 batch splitter); reuse it for the un-cached window
+            # list so batching/concurrency stays identical to Stage 2 + the
+            # legacy per-chapter path. Plan §5.3 — batches of ≤10. Each
+            # completed window is appended to the sidecar AS ITS BATCH LANDS
+            # (not after the full dispatch loop) so a kill / power-loss
+            # mid-phase only costs the in-flight batch on resume, never the
+            # whole run (mirrors the stage-2 per-batch checkpoint fix).
+            _dispatched: Dict[Tuple[str, int], Optional[Dict[str, Any]]] = {}
+            batches = provider.batch_chapters(_to_dispatch)
             for batch in batches:
                 # Dispatch each batch of ≤10 windows via run_in_executor,
                 # awaiting the whole batch before the next (plan §5.3 —
@@ -21413,16 +21614,42 @@ def _build_tool_registry() -> dict:
                     for spec in batch
                 ])
                 for spec, res in zip(batch, results):
-                    cid = str(spec.get("id") or "")
-                    if res is None:
-                        windows_failed += 1
-                        if cid and cid not in _failed_chapter_ids:
-                            _failed_chapter_ids.append(cid)
-                        continue
+                    _dkey = _window_key(spec)
+                    _dispatched[_dkey] = res
+                    if _cp_enabled and res is not None:
+                        _append_concept_window_checkpoint(
+                            checkpoint_path,
+                            chapter_id=_dkey[0],
+                            window_index=_dkey[1],
+                            fingerprint=_fp_by_key[_dkey],
+                            concepts=[
+                                _c
+                                for _c in (res.get("concepts") or [])
+                                if isinstance(_c, dict)
+                            ],
+                        )
+
+            # Reassemble concepts in ORIGINAL window order (byte-equivalent to
+            # an uninterrupted run; the dispatch loop above already
+            # checkpointed each freshly-dispatched window).
+            for spec in window_specs:
+                _key = _window_key(spec)
+                cid = _key[0]
+                if _key in _reused:
                     windows_synthesized += 1
-                    for concept in res.get("concepts") or []:
-                        if isinstance(concept, dict):
-                            per_chapter_concepts.append(concept)
+                    windows_reused += 1
+                    per_chapter_concepts.extend(_reused[_key])
+                    continue
+                res = _dispatched.get(_key)
+                if res is None:
+                    windows_failed += 1
+                    if cid and cid not in _failed_chapter_ids:
+                        _failed_chapter_ids.append(cid)
+                    continue
+                windows_synthesized += 1
+                for concept in res.get("concepts") or []:
+                    if isinstance(concept, dict):
+                        per_chapter_concepts.append(concept)
 
             chapter_synthesis_failures: List[str] = list(_failed_chapter_ids)
             # ``chapters_synthesized`` retained for the all-fail fallback
@@ -21495,6 +21722,10 @@ def _build_tool_registry() -> dict:
                 "concept_count": len(concepts_out),
                 "concepts": concepts_out,
             }
+            # Underscore-prefixed transient the persist step pops before
+            # writing (the vocabulary schema is additionalProperties:false);
+            # surfaced on the phase-output envelope for operator visibility.
+            vocabulary["_windows_reused_from_checkpoint"] = windows_reused
 
             # Aggregate Stage-3 window-synthesis decision (the provider
             # already emits one ``textbook_concept_call`` per call; this
@@ -21516,6 +21747,9 @@ def _build_tool_registry() -> dict:
                             f"{len(chapters)}, windows={window_call_count}, "
                             f"windows_synthesized={windows_synthesized}, "
                             f"windows_failed={windows_failed}, "
+                            f"windows_reused_from_checkpoint={windows_reused} "
+                            f"(reused windows skipped their 7B call verbatim "
+                            f"from the resume sidecar), "
                             f"failed_chapters={chapter_synthesis_failures!r}, "
                             f"concepts_after_dedup={len(concepts_out)}, "
                             f"num_ctx={_num_ctx}, "
@@ -21526,6 +21760,7 @@ def _build_tool_registry() -> dict:
                             "windows": window_call_count,
                             "windows_synthesized": windows_synthesized,
                             "windows_failed": windows_failed,
+                            "windows_reused_from_checkpoint": windows_reused,
                             "concepts_after_dedup": len(concepts_out),
                             "num_ctx": _num_ctx,
                         },
@@ -21671,6 +21906,7 @@ def _build_tool_registry() -> dict:
                     course_name=course_name,
                     course_slug=course_slug,
                     capture=_capture_concept,
+                    checkpoint_path=_concept_checkpoint_path,
                 )
             except Exception as exc:  # noqa: BLE001 — Stage 3 is best-effort
                 logger.warning(
@@ -22622,9 +22858,19 @@ def _build_tool_registry() -> dict:
         domain_concept_vocabulary_path: str = ""
         domain_concept_count: int = 0
         chunks_retagged: int = 0
+        concept_windows_reused: int = 0
         if isinstance(domain_concept_vocabulary, dict):
             chunks_retagged = int(
                 domain_concept_vocabulary.pop("_chunks_retagged", 0) or 0
+            )
+            # Pop the transient reuse counter before persist (the vocabulary
+            # schema is additionalProperties:false); surface it on the phase
+            # envelope so operators see how many Stage-3 7B window calls a
+            # resume skipped from the checkpoint sidecar.
+            concept_windows_reused = int(
+                domain_concept_vocabulary.pop(
+                    "_windows_reused_from_checkpoint", 0
+                ) or 0
             )
             domain_concept_count = int(
                 domain_concept_vocabulary.get("concept_count", 0) or 0
@@ -22705,6 +22951,12 @@ def _build_tool_registry() -> dict:
             )
             envelope["domain_concept_count"] = domain_concept_count
             envelope["chunks_retagged"] = chunks_retagged
+            # Per-window resume-checkpoint reuse counter (0 on a fresh /
+            # uninterrupted run; > 0 when a resume skipped completed 7B
+            # window calls from the sidecar).
+            envelope["concept_windows_reused_from_checkpoint"] = (
+                concept_windows_reused
+            )
         # Lexical-seed fallback output keys (TRAINFORGE_LEXICAL_CONCEPT_SEEDS).
         # Present only when the flag fired (off by default → absent).
         if lexical_seed_count:
