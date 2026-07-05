@@ -150,6 +150,13 @@
       "items": { "type": "string", "minLength": 1 },
       "description": "Wave #22 quick-wins: distinct pedagogical flow/opener role slugs present across this chunk's constituent section(s) — the union of SemantiK data-dart-flow values (statement / solution-steps / procedure-steps) and data-dart-opener role slugs (objectives / worked_example / try_it / how_to / solution / …). Sorted for deterministic diffs. Drawn from the SemantiK lexicon role vocabulary + the flow vocabulary; profile-extensible, so no fixed enum. Optional; absent on legacy / non-SemantiK corpora (byte-identical)."
     },
+    "unit_subclass": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "null" }
+      ],
+      "description": "Build #23 Tier-3: the finer SUBCLASS of this chunk's composite pedagogical unit (e.g. a worked_example that is an 'application-problem' vs 'symbolic-manipulation'; an exercise_set that is a 'drill' vs 'mixed-review'), harvested from the SemantiK data-dart-subclass attribute the model-assisted subclassifier (lib/semantik/subclassifier.py, gated by SEMANTIK_SEMANTIC_SUBCLASS) stamps on the unit <section> wrapper. The subclass RIDES the composite unit — a chunk carries unit_subclass ONLY when its composite_unit resolved (Trainforge/chunker/chunker.py::aggregate_unit_subclass pairs the subclass with the resolved unit); a chunk straddling multiple units (composite_unit null) carries no subclass. Values are kebab-case labels drawn from the SemantiK lexicon subclass seed vocabulary (schemas/taxonomies/semantik_lexicon.json), profile-extensible plus model-proposed new labels, so no fixed enum is imposed. Adding data-dart-subclass attributes NEVER changes chunk text or chunk ids (payload-only). Optional; null/absent on legacy / non-SemantiK / un-subclassed corpora (byte-identical, mirrors composite_unit)."
+    },
     "bloom_level_source": {
       "type": "string",
       "enum": ["section_jsonld", "page_jsonld", "lo_inherited", "verbs", "default"],

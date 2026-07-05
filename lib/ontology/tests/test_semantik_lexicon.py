@@ -136,3 +136,82 @@ def test_generic_profile_excludes_textbook_openers():
 
 def test_generic_profile_has_no_confusables():
     assert T.get_lexicon_confusables("generic-academic") == ()
+
+
+# ---------------------------------------------------------------------------
+# Task #24 — composite-unit ontology expansion: scholarly + admonition profiles.
+# ---------------------------------------------------------------------------
+
+
+def test_scholarly_and_admonition_profiles_present():
+    profiles = T.load_semantik_lexicon()["profiles"]
+    assert "scholarly" in profiles and "admonition" in profiles
+
+
+def test_scholarly_openers_map_theorem_apparatus_roles():
+    by_role = {
+        o["role"]: o["association_role"]
+        for o in T.get_lexicon_openers("generic-academic+scholarly")
+    }
+    # Statements coagulate a theorem_block; proof / remark / corollary are its
+    # satellites; definition + notation drive the existing definition_group shape.
+    assert by_role["theorem"] == "theorem"
+    assert by_role["lemma"] == "theorem"
+    assert by_role["proposition"] == "theorem"
+    assert by_role["proof"] == "proof"
+    assert by_role["remark"] == "remark"
+    assert by_role["corollary"] == "remark"  # trailing satellite
+    assert by_role["definition"] == "definition"
+    assert by_role["notation"] == "definition"
+
+
+def test_admonition_openers_all_map_to_admonition_role():
+    openers = T.get_lexicon_openers("generic-academic+admonition")
+    admon = {o["role"] for o in openers if o["association_role"] == "admonition"}
+    assert {
+        "note", "warning", "tip", "caution",
+        "important", "danger", "attention", "hint",
+    } <= admon
+
+
+def test_new_profiles_do_not_perturb_default_openers():
+    # The default profile spec is unchanged by the new opt-in overlays.
+    default_roles = [o["role"] for o in T.get_lexicon_openers("generic-academic+openstax")]
+    assert default_roles == [
+        "objectives", "readiness_check", "try_it", "worked_example", "how_to", "solution",
+    ]
+    # No scholarly / admonition vocabulary leaks into the default resolution.
+    assert "theorem" not in default_roles and "note" not in default_roles
+
+
+def test_scholarly_subclass_seed_vocab():
+    sub = T.get_lexicon_subclasses("scholarly")
+    assert "theorem-proof" in sub["theorem_block"]
+    assert "notation-intro" in sub["definition_group"]
+
+
+def test_admonition_subclass_seed_vocab():
+    sub = T.get_lexicon_subclasses("admonition")
+    assert "note" in sub["admonition"] and "warning" in sub["admonition"]
+
+
+def test_subclass_glosses_dict_form():
+    # generic-academic ships {label: gloss} — every seed carries a non-empty
+    # one-line definition, and label ORDER matches get_lexicon_subclasses.
+    glosses = T.get_lexicon_subclass_glosses("generic-academic")
+    seeds = T.get_lexicon_subclasses("generic-academic")
+    assert set(glosses) == set(seeds)
+    for unit_type, labels in seeds.items():
+        assert tuple(glosses[unit_type].keys()) == labels
+        assert all(glosses[unit_type][lab] for lab in labels)
+    assert "real-world" in glosses["worked_example"]["application-problem"]
+
+
+def test_subclass_glosses_list_form_fallback():
+    # A legacy list-form profile yields the labels with EMPTY glosses (the
+    # prompt then falls back to the bare label list). openstax declares no
+    # subclasses of its own, so the merged default spec inherits the
+    # generic-academic glosses unchanged.
+    merged = T.get_lexicon_subclass_glosses("generic-academic+openstax")
+    base = T.get_lexicon_subclass_glosses("generic-academic")
+    assert merged == base

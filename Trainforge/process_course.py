@@ -1745,6 +1745,7 @@ class CourseProcessor:
         dart_source_refs: Optional[List[Dict[str, Any]]] = None,
         composite_unit: Optional[str] = None,
         unit_roles: Optional[List[str]] = None,
+        unit_subclass: Optional[str] = None,
     ) -> Dict[str, Any]:
         words = text.split()
         word_count = len(words)
@@ -2301,6 +2302,10 @@ class CourseProcessor:
             chunk["composite_unit"] = composite_unit
         if unit_roles:
             chunk["unit_roles"] = list(unit_roles)
+        # Build #23 Tier-3: the composite-unit subclass (rides the unit). Omit-
+        # when-absent so non-SemantiK / un-subclassed corpora stay byte-identical.
+        if unit_subclass:
+            chunk["unit_subclass"] = unit_subclass
 
         return chunk
 

@@ -26,6 +26,16 @@ Association rules (each expressed over abstract roles; the concrete opener slug
 * ``exercise_set``    : directive? exercise_list (+ exercise_list)*  [>= 2 members]
 * ``definition_group``: definition (+ example)                   [conservative]
 * ``figure_group``    : figure (+ figure|caption)                [conservative]
+* ``theorem_block``   : theorem (+ proof|remark)+                [>= 2 members]
+* ``admonition``      : admonition (label + its body)            [singleton]
+
+The last two are driven by the ``scholarly`` / ``admonition`` lexicon profiles
+(theorem/lemma/proof scholarly apparatus; note/warning/tip callouts in technical
+docs), added as DATA — the grammar below keys on the abstract roles those
+profiles map their labels onto, never on subject vocabulary. ``admonition`` is
+the sole SINGLETON unit type (a single labelled callout is a complete unit — its
+label + body already fold into one item), so it is exempted from the >= 2 member
+items floor; every other unit type still needs at least :data:`MIN_UNIT_ITEMS`.
 
 GUARDS (anti-fabrication — when in doubt, don't group): adjacency only (a span
 is a contiguous slice), a genuine section/chapter heading (``boundary``) never
@@ -47,6 +57,7 @@ __all__ = [
     "MAX_UNIT_BLOCKS",
     "MIN_UNIT_ITEMS",
     "UNIT_TYPES",
+    "SINGLETON_UNIT_TYPES",
     # Abstract roles (opener association roles + structural roles).
     "ROLE_EXAMPLE",
     "ROLE_SOLUTION",
@@ -60,6 +71,10 @@ __all__ = [
     "ROLE_DIRECTIVE",
     "ROLE_STEP",
     "ROLE_CAPTION",
+    "ROLE_THEOREM",
+    "ROLE_PROOF",
+    "ROLE_REMARK",
+    "ROLE_ADMONITION",
 ]
 
 # Abstract composite-unit roles.
@@ -75,6 +90,12 @@ ROLE_EXERCISE_LIST = "exercise_list"
 ROLE_DIRECTIVE = "directive"
 ROLE_STEP = "step"
 ROLE_CAPTION = "caption"
+# Scholarly / admonition abstract roles (lexicon-profile driven — see the
+# ``scholarly`` and ``admonition`` profiles in ``semantik_lexicon.json``).
+ROLE_THEOREM = "theorem"
+ROLE_PROOF = "proof"
+ROLE_REMARK = "remark"
+ROLE_ADMONITION = "admonition"
 
 #: Hard cap on source blocks aggregated into one unit (guard).
 MAX_UNIT_BLOCKS = 12
@@ -88,7 +109,14 @@ UNIT_TYPES = (
     "exercise_set",
     "definition_group",
     "figure_group",
+    "theorem_block",
+    "admonition",
 )
+
+#: Unit types a SINGLE labelled item may satisfy on its own (exempt from the
+#: :data:`MIN_UNIT_ITEMS` >= 2 items floor). An admonition callout is one label +
+#: its body folded into one item — a complete unit with no sibling to pair with.
+SINGLETON_UNIT_TYPES = frozenset({"admonition"})
 
 
 @dataclass
@@ -169,6 +197,22 @@ def _match_from(items: List[UnitItem], i: int) -> Optional[UnitSpan]:
         if end - i >= MIN_UNIT_ITEMS:
             return UnitSpan(i, end, "worked_example", i)
 
+    # theorem_block: theorem (+ proof|remark)+  — a statement plus its proof
+    # and/or trailing satellites (remark / corollary map to ``remark``). Only a
+    # theorem/lemma/proposition STATEMENT heads the block; a lone theorem with no
+    # proof or remark stays ungrouped (>= 2 items guard).
+    if head.role == ROLE_THEOREM:
+        end = _extend_while(items, i + 1, (ROLE_PROOF, ROLE_REMARK), budget)
+        if end - i >= MIN_UNIT_ITEMS:
+            return UnitSpan(i, end, "theorem_block", i)
+
+    # admonition: one label + its body (a single item — SINGLETON unit type). The
+    # label + body already fold into one callout item; require it to carry a body
+    # block (members >= 2) so a bare label with no content is never wrapped.
+    if head.role == ROLE_ADMONITION and head.members >= 2:
+        lead = i if head.has_heading else None
+        return UnitSpan(i, i + 1, "admonition", lead)
+
     # procedure: procedure (+ step|exercise_list)+
     if head.role == ROLE_PROCEDURE:
         end = _extend_while(
@@ -237,7 +281,13 @@ def plan_units(items: List[UnitItem]) -> List[UnitSpan]:
     n = len(items)
     while i < n:
         span = _match_from(items, i)
-        if span is not None and span.end - span.start >= MIN_UNIT_ITEMS:
+        # A matched span is accepted when it spans >= MIN_UNIT_ITEMS items, OR is
+        # a SINGLETON unit type (admonition) that _match_from already guarded on
+        # its own membership. Every other case is a pass-through single item.
+        if span is not None and (
+            span.end - span.start >= MIN_UNIT_ITEMS
+            or span.unit_type in SINGLETON_UNIT_TYPES
+        ):
             out.append(span)
             i = span.end
         else:

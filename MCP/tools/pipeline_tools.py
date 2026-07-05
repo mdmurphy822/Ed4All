@@ -23197,6 +23197,7 @@ def _build_tool_registry() -> dict:
             dart_source_refs: Optional[List[Dict[str, Any]]] = None,
             composite_unit: Optional[str] = None,
             unit_roles: Optional[List[str]] = None,
+            unit_subclass: Optional[str] = None,
         ) -> Dict[str, Any]:
             words = text.split()
             word_count = len(words)
@@ -23415,6 +23416,9 @@ def _build_tool_registry() -> dict:
                 chunk["composite_unit"] = composite_unit
             if unit_roles:
                 chunk["unit_roles"] = list(unit_roles)
+            # Build #23 Tier-3: the composite-unit subclass (rides the unit).
+            if unit_subclass:
+                chunk["unit_subclass"] = unit_subclass
 
             return chunk
 
@@ -24637,6 +24641,7 @@ def _build_tool_registry() -> dict:
             dart_source_refs: Optional[List[Dict[str, Any]]] = None,
             composite_unit: Optional[str] = None,
             unit_roles: Optional[List[str]] = None,
+            unit_subclass: Optional[str] = None,
         ) -> Dict[str, Any]:
             words = text.split()
             word_count = len(words)

@@ -116,6 +116,14 @@ class ContentSection:
     # (``chunker._section_is_boundary``) breaks at a unit EDGE so a chunk never
     # straddles two composite units. ``None`` for non-unit / legacy sections.
     data_dart_unit: Optional[str] = None
+    # Build #23 Tier-3 (unit subclass): the ``data-dart-subclass`` finer label
+    # (``application-problem`` / ``drill`` / ``algorithm`` / …) the model-assisted
+    # subclassifier stamps on the SAME ``<section class="dart-unit">`` wrapper as
+    # ``data-dart-unit`` (harvested off the same nearest/prev unit-wrapper open
+    # tag as ``data_dart_unit``). Rides the unit → a chunk's ``unit_subclass`` is
+    # its resolved composite unit's subclass. ``None`` for non-unit / legacy /
+    # un-subclassed sections.
+    data_dart_subclass: Optional[str] = None
     # Wave #22 quick-wins (chunk pedagogical-role metadata): the distinct
     # ``data-dart-flow`` role values (``statement`` / ``solution-steps`` /
     # ``procedure-steps``) the SemantiK adapter stamps on the BLOCKS inside this
@@ -1141,6 +1149,9 @@ class HTMLContentParser:
             # when its nearest-enclosing section is the unit wrapper's first
             # child. Marks a preferred chunk boundary.
             data_dart_unit: Optional[str] = None
+            # Build #23 Tier-3: harvest ``data-dart-subclass`` off the SAME unit-
+            # wrapper open tag as the unit type (they co-locate on the wrapper).
+            data_dart_subclass: Optional[str] = None
             nearest_idx: Optional[int] = None
             for j in range(len(section_opens) - 1, -1, -1):
                 if section_opens[j].start() < heading_start:
@@ -1155,6 +1166,11 @@ class HTMLContentParser:
                     # The heading's own enclosing section IS a unit wrapper
                     # (rare: a headingless-lead unit whose wrapper is nearest).
                     data_dart_unit = self_unit.group(1).strip()
+                    sub = re.search(
+                        r'data-dart-subclass="([^"]*)"', nearest_attrs
+                    )
+                    if sub and sub.group(1).strip():
+                        data_dart_subclass = sub.group(1).strip()
                 elif nearest_idx >= 1:
                     prev_attrs = section_opens[nearest_idx - 1].group(1)
                     prev_unit = re.search(
@@ -1162,6 +1178,11 @@ class HTMLContentParser:
                     )
                     if prev_unit and prev_unit.group(1).strip():
                         data_dart_unit = prev_unit.group(1).strip()
+                        sub = re.search(
+                            r'data-dart-subclass="([^"]*)"', prev_attrs
+                        )
+                        if sub and sub.group(1).strip():
+                            data_dart_subclass = sub.group(1).strip()
 
             # Wave #22 quick-wins: harvest the distinct ``data-dart-flow`` role
             # values off the BLOCKS in this section's body (the SemantiK adapter
@@ -1274,6 +1295,7 @@ class HTMLContentParser:
                 template_type=template_type,
                 data_dart_opener=data_dart_opener,
                 data_dart_unit=data_dart_unit,
+                data_dart_subclass=data_dart_subclass,
                 data_dart_flows=data_dart_flows,
             ))
 

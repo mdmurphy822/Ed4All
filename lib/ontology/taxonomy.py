@@ -53,6 +53,7 @@ __all__ = [
     "get_lexicon_interior_apparatus_names",
     "get_lexicon_apparatus_whitelist",
     "get_lexicon_confusables",
+    "get_lexicon_subclasses",
     "DEFAULT_LEXICON_PROFILE",
     "LEXICON_PROFILE_ENV",
 ]
@@ -322,6 +323,73 @@ def get_lexicon_confusables(
     """Return the merged OCR-confusable ``{pattern, canonical}`` entries."""
     spec = profile_spec if profile_spec is not None else resolve_lexicon_profile()
     return tuple(_merged_profile_field(spec, "confusables"))
+
+
+def get_lexicon_subclasses(
+    profile_spec: Optional[str] = None,
+) -> Dict[str, Tuple[str, ...]]:
+    """Return the merged composite-unit SUBCLASS seed vocabulary (Build #23).
+
+    ``subclasses`` is a per-profile ``{unit_type: [label, ...]}`` dict (the
+    Tier-3 seed vocabulary the model-assisted subclassifier picks from). Unlike
+    the other lexicon fields (flat list concatenation), this is a dict-of-lists,
+    so the merge is per-KEY: for each unit type present in any merged profile,
+    the label lists are concatenated left-to-right and de-duplicated first-seen
+    (so an OpenStax overlay can EXTEND ``worked_example``'s seeds without
+    displacing the generic-academic base). Returns a plain dict mapping each
+    unit type to an ordered de-duplicated tuple of kebab-case seed labels.
+    ``profile_spec`` defaults to the resolved env profile.
+    """
+    spec = profile_spec if profile_spec is not None else resolve_lexicon_profile()
+    lex = load_semantik_lexicon()
+    profiles = lex.get("profiles", {})
+    merged: Dict[str, List[str]] = {}
+    seen: Dict[str, set] = {}
+    for key in _profile_keys(spec):
+        sub = profiles.get(key, {}).get("subclasses", {}) or {}
+        if not isinstance(sub, dict):
+            continue
+        for unit_type, labels in sub.items():
+            bucket = merged.setdefault(unit_type, [])
+            seen_set = seen.setdefault(unit_type, set())
+            for label in labels or []:
+                lab = str(label).strip()
+                if lab and lab not in seen_set:
+                    seen_set.add(lab)
+                    bucket.append(lab)
+    return {k: tuple(v) for k, v in merged.items()}
+
+
+def get_lexicon_subclass_glosses(
+    profile_spec: Optional[str] = None,
+) -> Dict[str, Dict[str, str]]:
+    """Return per-label GLOSSES for the subclass seed vocabulary.
+
+    The lexicon ``subclasses`` value per unit type is either the legacy
+    ``[label, ...]`` list (no glosses → empty strings) or a
+    ``{label: gloss}`` mapping (the gloss is a one-line discriminative
+    definition rendered into the subclassifier prompt). Merge mirrors
+    :func:`get_lexicon_subclasses` — per unit type, left-to-right across
+    the profile spec, first profile to define a label's gloss wins.
+    """
+    spec = profile_spec if profile_spec is not None else resolve_lexicon_profile()
+    lex = load_semantik_lexicon()
+    profiles = lex.get("profiles", {})
+    merged: Dict[str, Dict[str, str]] = {}
+    for key in _profile_keys(spec):
+        sub = profiles.get(key, {}).get("subclasses", {}) or {}
+        if not isinstance(sub, dict):
+            continue
+        for unit_type, labels in sub.items():
+            bucket = merged.setdefault(unit_type, {})
+            if isinstance(labels, dict):
+                items = [(str(k).strip(), str(v or "").strip()) for k, v in labels.items()]
+            else:
+                items = [(str(label).strip(), "") for label in labels or []]
+            for lab, gloss in items:
+                if lab and lab not in bucket:
+                    bucket[lab] = gloss
+    return merged
 
 
 def validate_classification(classification: Optional[Dict]) -> List[str]:

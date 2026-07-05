@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ed4all.dev/ns/taxonomies/v1/semantik_lexicon.schema.json",
   "title": "SemantiK Pedagogical Lexicon",
-  "description": "Profile-organized vocabulary of pedagogical opener labels, end-of-chapter apparatus section names, and OCR-confusable normalizations consumed by the SemantiK adapter seam (lib/semantik/opener_classifier.py, lib/semantik/heading_classifier.py, and the marker-normalization pass in lib/semantik/adapter.py). Wave #22 (tiers 1-2 semantic enrichment) lifted these vocabularies out of hardcoded Python constants so a NEW corpus is onboarded by adding a PROFILE / label entry here, never by editing code (the owner's directive 3: lexicon profiles, not corpus-specific code). Profile selection is env-driven via SEMANTIK_LEXICON_PROFILE (default 'generic-academic+openstax'): a '+'-joined list of profile keys merged left-to-right, the later profile OVERLAYING the earlier one.",
-  "$comment": "Vocabularies lifted verbatim (behavior-preserving refactor) from: opener_classifier._OPENERS + _INTERIOR_OPENERS (the six promotable openers and the three interior-split-capable numbered ones); heading_classifier.APPARATUS_HEADING_NAMES (standalone + leading-split apparatus section headings), _INTERIOR_APPARATUS_NAMES (the ALL-CAPS interior-banner subset), and _APPARATUS_WHITELIST (short-heading demotion whitelist); and adapter._CONFUSABLE_TRYIT_RE (the trvit->TRY IT OCR-confusable). The abstract 'association_role' on each opener is the Wave #22 Tier-2 composite-unit vocabulary (worked_example example/solution/practice, procedure, section_opener objectives/readiness) the adapter's _associate_composite_units pass keys on; it maps each concrete opener role slug to the abstract role the association rules are expressed over. label 'pattern' values are regex BODY fragments (word-internal whitespace is \\s+): the classifiers wrap them with the shared gutter / number / anchor scaffolding (opener_classifier._GUTTER / _NUM), so a pattern is corpus VOCAB only, never structural regex.",
+  "description": "Profile-organized vocabulary of pedagogical opener labels, end-of-chapter apparatus section names, and OCR-confusable normalizations consumed by the SemantiK adapter seam (lib/semantik/opener_classifier.py, lib/semantik/heading_classifier.py, and the marker-normalization pass in lib/semantik/adapter.py). Wave #22 (tiers 1-2 semantic enrichment) lifted these vocabularies out of hardcoded Python constants so a NEW corpus is onboarded by adding a PROFILE / label entry here, never by editing code (the owner's directive 3: lexicon profiles, not corpus-specific code). Profile selection is env-driven via SEMANTIK_LEXICON_PROFILE (default 'generic-academic+openstax'): a '+'-joined list of profile keys merged left-to-right, the later profile OVERLAYING the earlier one. Beyond the two default profiles, two composite-unit overlays generalize the tier-2 planner past learning-science textbooks: 'scholarly' (theorem/lemma/proof apparatus -> theorem_block composite units) and 'admonition' (note/warning/tip callouts common in technical docs / mkdocs -> admonition composite units); both are opt-in overlays (e.g. 'generic-academic+scholarly') and change NOTHING for the default profiles.",
+  "$comment": "Vocabularies lifted verbatim (behavior-preserving refactor) from: opener_classifier._OPENERS + _INTERIOR_OPENERS (the six promotable openers and the three interior-split-capable numbered ones); heading_classifier.APPARATUS_HEADING_NAMES (standalone + leading-split apparatus section headings), _INTERIOR_APPARATUS_NAMES (the ALL-CAPS interior-banner subset), and _APPARATUS_WHITELIST (short-heading demotion whitelist); and adapter._CONFUSABLE_TRYIT_RE (the trvit->TRY IT OCR-confusable). The abstract 'association_role' on each opener is the Wave #22 Tier-2 composite-unit vocabulary (worked_example example/solution/practice, procedure, section_opener objectives/readiness) the adapter's _associate_composite_units pass keys on; it maps each concrete opener role slug to the abstract role the association rules are expressed over. Build #23 Tier-3 adds a 'subclasses' section per profile: a dict keyed by composite-unit TYPE (worked_example / exercise_set / definition_group / procedure / section_opener / figure_group) plus the rhetorical 'prose' key, each mapping to the SEED vocabulary of kebab-case subclass labels the model-assisted subclassifier (lib/semantik/subclassifier.py, gated by SEMANTIK_SEMANTIC_SUBCLASS) picks from OR extends. Merged across profiles by per-unit-type list concatenation (get_lexicon_subclasses); a genuinely-new model-proposed label is accepted onto the emitted HTML but LOGGED to a review sidecar, never silently canonized into this file. label 'pattern' values are regex BODY fragments (word-internal whitespace is \\s+): the classifiers wrap them with the shared gutter / number / anchor scaffolding (opener_classifier._GUTTER / _NUM), so a pattern is corpus VOCAB only, never structural regex.",
   "profiles": {
     "generic-academic": {
       "description": "Default academic-textbook vocabulary (Example / Solution / How To openers, the Key-Terms-class end-of-chapter apparatus sections, and the short-heading whitelist). Corpus-agnostic: the labels a mathematics / science / humanities textbook uses regardless of publisher.",
@@ -63,7 +63,40 @@
         "learning objectives",
         "self check"
       ],
-      "confusables": []
+      "confusables": [],
+      "subclasses": {
+        "worked_example": {
+          "application-problem": "the task is posed in a real-world or narrative context (quantities with units, money, objects, people, scenarios), even when the worked solution itself is purely symbolic",
+          "symbolic-manipulation": "pure expression rewriting, simplification, or equation solving with no surrounding real-world context",
+          "conceptual-illustration": "demonstrates WHY an idea or property holds (a pattern, picture, or counterexample) rather than solving a posed task",
+          "multi-step-procedure": "walks through a named multi-stage procedure where the sequence of steps is itself the point"
+        },
+        "exercise_set": {
+          "drill": "repetitive practice of one isolated skill",
+          "word-problems": "practice problems posed in narrative or real-world contexts",
+          "mixed-review": "mixed practice spanning several earlier topics"
+        },
+        "definition_group": {
+          "term-glossary": "introduces vocabulary terms and their meanings",
+          "notation-intro": "introduces symbols or notational conventions"
+        },
+        "procedure": {
+          "algorithm": "a fixed step-by-step method that always runs the same way",
+          "strategy": "a heuristic or decision guide requiring judgment about when and how to apply it"
+        },
+        "section_opener": {
+          "objectives-overview": "lists what the reader will learn in the section",
+          "readiness-check": "a prerequisite self-check to complete before starting the section"
+        },
+        "figure_group": {
+          "diagram-series": "a sequence of related diagrams or illustrations",
+          "data-visualization": "charts, graphs, or plotted data"
+        },
+        "prose": {
+          "claim-evidence": "asserts a claim and supports it with evidence or reasoning",
+          "problem-solution": "describes a problem and then presents its resolution"
+        }
+      }
     },
     "openstax": {
       "description": "OpenStax-specific overlay: the TRY IT (practice) / BE PREPARED (readiness) numbered openers, and the trvit->TRY IT OCR-confusable the sample-algebra scan corpus emits. Overlays the generic-academic profile without displacing it.",
@@ -91,7 +124,208 @@
       "apparatus_whitelist": [],
       "confusables": [
         {"pattern": "tr[vy]it", "canonical": "TRY IT"}
-      ]
+      ],
+      "subclasses": {}
+    },
+    "scholarly": {
+      "description": "Scholarly-apparatus overlay for mathematics / theoretical texts: the theorem-environment openers (Theorem / Lemma / Proposition / Corollary / Proof / Definition / Remark / Notation). Designed to overlay generic-academic (e.g. SEMANTIK_LEXICON_PROFILE=generic-academic+scholarly) so Example / Solution keep flowing through the generic worked_example machinery. A theorem STATEMENT (association_role 'theorem') plus its following proof (association_role 'proof') and any trailing remarks / corollaries (association_role 'remark') coagulate into one theorem_block composite unit; Definition (+ Example) groups via the existing definition_group shape. Corpus-agnostic: these are the labels any scholarly discipline uses, not a publisher's house style.",
+      "openers": [
+        {
+          "role": "theorem",
+          "pattern": "theorem",
+          "display": "Theorem",
+          "numbered": true,
+          "interior_split": false,
+          "association_role": "theorem",
+          "order": 10
+        },
+        {
+          "role": "lemma",
+          "pattern": "lemma",
+          "display": "Lemma",
+          "numbered": true,
+          "interior_split": false,
+          "association_role": "theorem",
+          "order": 11
+        },
+        {
+          "role": "proposition",
+          "pattern": "proposition",
+          "display": "Proposition",
+          "numbered": true,
+          "interior_split": false,
+          "association_role": "theorem",
+          "order": 12
+        },
+        {
+          "role": "corollary",
+          "pattern": "corollary",
+          "display": "Corollary",
+          "numbered": true,
+          "interior_split": false,
+          "association_role": "remark",
+          "order": 13
+        },
+        {
+          "role": "proof",
+          "pattern": "proof",
+          "display": "Proof",
+          "numbered": false,
+          "interior_split": false,
+          "association_role": "proof",
+          "order": 14
+        },
+        {
+          "role": "remark",
+          "pattern": "remark",
+          "display": "Remark",
+          "numbered": false,
+          "interior_split": false,
+          "association_role": "remark",
+          "order": 15
+        },
+        {
+          "role": "definition",
+          "pattern": "definition",
+          "display": "Definition",
+          "numbered": true,
+          "interior_split": false,
+          "association_role": "definition",
+          "order": 16
+        },
+        {
+          "role": "notation",
+          "pattern": "notation",
+          "display": "Notation",
+          "numbered": false,
+          "interior_split": false,
+          "association_role": "definition",
+          "order": 17
+        }
+      ],
+      "apparatus_sections": [],
+      "apparatus_whitelist": [
+        "theorem",
+        "lemma",
+        "proposition",
+        "corollary",
+        "proof",
+        "remark",
+        "definition",
+        "notation"
+      ],
+      "confusables": [],
+      "subclasses": {
+        "theorem_block": {
+          "theorem-proof": "a theorem statement followed by its proof",
+          "lemma-proof": "an auxiliary lemma with proof supporting a larger result",
+          "proposition-proof": "a proposition with its proof",
+          "corollary-remark": "a corollary or remark following from a nearby result"
+        },
+        "definition_group": {
+          "formal-definition": "a rigorous formal definition of a concept",
+          "notation-intro": "introduces symbols or notational conventions"
+        }
+      }
+    },
+    "admonition": {
+      "description": "Admonition-callout overlay for technical documentation / mkdocs-style corpora: the note / warning / tip / caution / important / danger / attention / hint labels. Each admonition label plus its body coagulates into one admonition composite unit (a SINGLETON unit type — a single labelled callout is a complete unit) whose accessible name is the label. Overlay on generic-academic (e.g. SEMANTIK_LEXICON_PROFILE=generic-academic+admonition). Corpus-agnostic: the canonical admonition vocabulary shared across reStructuredText / Material-for-mkdocs / DocBook, not one project's callouts.",
+      "openers": [
+        {
+          "role": "note",
+          "pattern": "note",
+          "display": "Note",
+          "numbered": false,
+          "interior_split": false,
+          "association_role": "admonition",
+          "order": 20
+        },
+        {
+          "role": "warning",
+          "pattern": "warning",
+          "display": "Warning",
+          "numbered": false,
+          "interior_split": false,
+          "association_role": "admonition",
+          "order": 21
+        },
+        {
+          "role": "tip",
+          "pattern": "tip",
+          "display": "Tip",
+          "numbered": false,
+          "interior_split": false,
+          "association_role": "admonition",
+          "order": 22
+        },
+        {
+          "role": "caution",
+          "pattern": "caution",
+          "display": "Caution",
+          "numbered": false,
+          "interior_split": false,
+          "association_role": "admonition",
+          "order": 23
+        },
+        {
+          "role": "important",
+          "pattern": "important",
+          "display": "Important",
+          "numbered": false,
+          "interior_split": false,
+          "association_role": "admonition",
+          "order": 24
+        },
+        {
+          "role": "danger",
+          "pattern": "danger",
+          "display": "Danger",
+          "numbered": false,
+          "interior_split": false,
+          "association_role": "admonition",
+          "order": 25
+        },
+        {
+          "role": "attention",
+          "pattern": "attention",
+          "display": "Attention",
+          "numbered": false,
+          "interior_split": false,
+          "association_role": "admonition",
+          "order": 26
+        },
+        {
+          "role": "hint",
+          "pattern": "hint",
+          "display": "Hint",
+          "numbered": false,
+          "interior_split": false,
+          "association_role": "admonition",
+          "order": 27
+        }
+      ],
+      "apparatus_sections": [],
+      "apparatus_whitelist": [
+        "note",
+        "warning",
+        "tip",
+        "caution",
+        "important",
+        "danger",
+        "attention",
+        "hint"
+      ],
+      "confusables": [],
+      "subclasses": {
+        "admonition": {
+          "note": "supplementary information worth knowing",
+          "warning": "risk of harm, data loss, or serious error",
+          "tip": "a helpful shortcut or best practice",
+          "caution": "requires care; easy to get wrong",
+          "important": "must not be overlooked",
+          "danger": "a severe hazard"
+        }
+      }
     }
   }
 }

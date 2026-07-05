@@ -137,7 +137,9 @@ __all__ = [
     "CHUNK_SECTION_HARD_BREAK_ENV",
     "is_section_boundary_heading",
     "aggregate_composite_unit",
+    "aggregate_unit_subclass",
     "section_unit_signals",
+    "section_subclass_signal",
 ]
 
 
@@ -727,6 +729,39 @@ def aggregate_composite_unit(units: List[Optional[str]]) -> Optional[str]:
     return top_val
 
 
+def section_subclass_signal(section: Any) -> Optional[str]:
+    """Extract the section's ``data_dart_subclass`` Tier-3 label (or ``None``).
+
+    Duck-typed via ``getattr`` so a legacy ContentSection-like without the
+    attribute yields ``None``.
+    """
+
+    return getattr(section, "data_dart_subclass", None) or None
+
+
+def aggregate_unit_subclass(
+    units: List[Optional[str]], subclasses: List[Optional[str]]
+) -> Optional[str]:
+    """Resolve a chunk's ``unit_subclass`` from its constituent sections.
+
+    Build #23 — the subclass RIDES the composite unit (both attributes co-locate
+    on the SemantiK unit wrapper), so no independent plurality vote is needed: a
+    chunk's ``unit_subclass`` is the subclass paired with its RESOLVED
+    ``composite_unit`` (:func:`aggregate_composite_unit`). Returns ``None`` when
+    the unit doesn't resolve (a chunk straddling two units → no confident unit →
+    no subclass) or when the winning unit carried no subclass. ``units`` and
+    ``subclasses`` are parallel per-section lists.
+    """
+
+    resolved = aggregate_composite_unit(units)
+    if resolved is None:
+        return None
+    for unit, subclass in zip(units, subclasses):
+        if unit == resolved and subclass:
+            return subclass
+    return None
+
+
 # ---------------------------------------------------------------------------
 # ChunkerContext — caller-provided callbacks for chunk materialisation
 # ---------------------------------------------------------------------------
@@ -1082,6 +1117,11 @@ class MergedSectionResult:
     #: ``data_dart_flows``), sorted for deterministic diffs. Empty on legacy /
     #: non-DART sections. Attribute-access only.
     merged_unit_roles: List[str] = field(default_factory=list)
+    #: Build #23 Tier-3 — the chunk-level composite-unit SUBCLASS, resolved from
+    #: the constituent sections' ``data_dart_subclass`` PAIRED with the resolved
+    #: ``merged_composite_unit`` (:func:`aggregate_unit_subclass`). ``None`` when
+    #: the unit doesn't resolve or carried no subclass. Attribute-access only.
+    merged_unit_subclass: Optional[str] = None
 
     def __iter__(self):
         # Permit legacy 5-tuple destructure ergonomics:
@@ -1172,6 +1212,7 @@ def merge_small_sections(
     buffer_key_claims: List[Dict[str, Any]] = []
     buffer_objective_alignment: List[Dict[str, Any]] = []
     buffer_units: List[Optional[str]] = []
+    buffer_subclasses: List[Optional[str]] = []
     buffer_roles: List[str] = []
     buffer_started = False
     buffer_boundary = False
@@ -1194,6 +1235,9 @@ def merge_small_sections(
             section_boundary=buffer_boundary,
             merged_composite_unit=aggregate_composite_unit(buffer_units),
             merged_unit_roles=sorted(set(buffer_roles)),
+            merged_unit_subclass=aggregate_unit_subclass(
+                buffer_units, buffer_subclasses
+            ),
         )
 
     for section in sections:
@@ -1221,6 +1265,8 @@ def merge_small_sections(
         )
         # Wave #22 quick-wins: the section's pedagogical unit + flow/opener roles.
         section_unit, section_roles = section_unit_signals(section)
+        # Build #23 Tier-3: the section's unit subclass (rides the unit).
+        section_subclass = section_subclass_signal(section)
 
         if not buffer_started:
             buffer_heading = section.heading
@@ -1237,6 +1283,7 @@ def merge_small_sections(
             )
             buffer_boundary = section_hard_break and _section_is_boundary(section)
             buffer_units = [section_unit]
+            buffer_subclasses = [section_subclass]
             buffer_roles = list(section_roles)
             buffer_started = True
         elif not force_break and buffer_wc + section.word_count <= max_chunk_size:
@@ -1259,6 +1306,7 @@ def merge_small_sections(
                 buffer_objective_alignment, section_objective_alignment
             )
             buffer_units.append(section_unit)
+            buffer_subclasses.append(section_subclass)
             buffer_roles.extend(section_roles)
         else:
             merged.append(_flush())
@@ -1275,6 +1323,7 @@ def merge_small_sections(
                 buffer_objective_alignment, section_objective_alignment
             )
             buffer_units = [section_unit]
+            buffer_subclasses = [section_subclass]
             buffer_roles = list(section_roles)
             buffer_boundary = section_hard_break and _section_is_boundary(section)
 
@@ -1319,6 +1368,7 @@ def chunk_text_block(
     fragment_floor: int = 0,
     composite_unit: Optional[str] = None,
     unit_roles: Optional[List[str]] = None,
+    unit_subclass: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Split a text block into one or more chunks.
 
@@ -1438,6 +1488,9 @@ def chunk_text_block(
         extra_kwargs["composite_unit"] = composite_unit
     if unit_roles:
         extra_kwargs["unit_roles"] = list(unit_roles)
+    # Build #23 Tier-3: the unit subclass rides the unit → carry it alongside.
+    if unit_subclass:
+        extra_kwargs["unit_subclass"] = unit_subclass
 
     # DART source-provenance: resolve the block refs that genuinely overlap
     # THIS chunk's char span, in document order. Historically the chunker
@@ -1816,6 +1869,7 @@ def chunk_content(
             merged_objective_alignment = merged_result.merged_objective_alignment
             merged_composite_unit = merged_result.merged_composite_unit
             merged_unit_roles = merged_result.merged_unit_roles
+            merged_unit_subclass = merged_result.merged_unit_subclass
             if not text.strip():
                 continue
             if item["resource_type"] == "quiz":
@@ -1902,6 +1956,7 @@ def chunk_content(
                 fragment_floor=_fragment_floor,
                 composite_unit=merged_composite_unit,
                 unit_roles=merged_unit_roles,
+                unit_subclass=merged_unit_subclass,
             )
             chunks.extend(item_chunks)
             chunk_counter += len(item_chunks)

@@ -53,9 +53,12 @@ from __future__ import annotations
 
 import hashlib
 import html as _html_module
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 # Ed4All contract helpers (the targets). These are the single sources of
 # truth — REUSE, never re-implement.
@@ -87,6 +90,7 @@ from lib.semantik.math_fold import (
     strip_tikz_figures,
     wrap_bare_math,
 )
+from lib.semantik.tikz_draw import render_tikz_figures
 from lib.semantik.structure_emit import (
     STRUCTURAL_ROLES,
     emit_structure,
@@ -732,6 +736,40 @@ def _standalone_unit_role(block: _AdapterBlock, html: str) -> Optional[str]:
     return None
 
 
+_MEMBER_PAGES_RE = re.compile(r'data-dart-pages="([^"]*)"')
+
+
+def _rollup_unit_pages(parts: Sequence[str]) -> Optional[str]:
+    """Roll up member blocks' ``data-dart-pages`` into a min..max span string.
+
+    Build #23 deterministic bonus (adapter-side, flag-INDEPENDENT provenance):
+    the composite-unit ``<section>`` carries the page span of its members so a
+    unit is deep-linkable to its page range as a whole. Scans every
+    ``data-dart-pages`` value across the rendered member ``parts``, unions the
+    physical page numbers, and formats ``"lo"`` (single page) or ``"lo-hi"``
+    (a contiguous span across min..max — gaps are absorbed since the unit is one
+    pedagogical whole). Returns ``None`` when no member carried a page number
+    (omit the attribute — never fabricate).
+    """
+    pages: List[int] = []
+    for part in parts:
+        for m in _MEMBER_PAGES_RE.finditer(part):
+            for token in m.group(1).split(","):
+                token = token.strip()
+                if "-" in token:
+                    lo, _, hi = token.partition("-")
+                    try:
+                        pages.extend(range(int(lo), int(hi) + 1))
+                    except ValueError:
+                        continue
+                elif token.isdigit():
+                    pages.append(int(token))
+    if not pages:
+        return None
+    lo, hi = min(pages), max(pages)
+    return str(lo) if lo == hi else f"{lo}-{hi}"
+
+
 def _wrap_composite_unit(
     parts: Sequence[str], unit_type: str, lead_sid: Optional[str]
 ) -> str:
@@ -740,15 +778,24 @@ def _wrap_composite_unit(
     Emits ``<section class="dart-unit dart-unit-<type>" data-dart-unit="<type>"
     role="group" …>`` with an accessible name: ``aria-labelledby`` -> the lead
     item's heading id when present, else ``aria-label`` -> the unit-type name.
+    The unit ``<section>`` also carries a ``data-dart-pages`` rollup spanning its
+    members' page range (Build #23, unconditional provenance).
     """
     inner = "\n".join(parts)
     if lead_sid:
         name = f'aria-labelledby="{_esc_attr(lead_sid)}"'
     else:
         name = f'aria-label="{_esc_attr(_UNIT_LABELS.get(unit_type, unit_type))}"'
+    pages_attr = ""
+    rollup = _rollup_unit_pages(parts)
+    if rollup:
+        pages_attr = (
+            f' data-dart-pages="{_esc_attr(rollup)}"'
+            f' data-dart-page-kind="{_DATA_DART_PAGE_KIND}"'
+        )
     return (
         f'<section class="dart-unit dart-unit-{unit_type}" '
-        f'data-dart-unit="{_esc_attr(unit_type)}" role="group" {name}>\n'
+        f'data-dart-unit="{_esc_attr(unit_type)}" role="group" {name}{pages_attr}>\n'
         f"{inner}\n</section>"
     )
 
@@ -2489,6 +2536,44 @@ def _sanitize_math_spans(chapters: Sequence[_AdapterChapter]) -> None:
                 block.html = sanitize_math_spans(block.html)
 
 
+def _resolve_render_tikz_figures() -> bool:
+    """Whether the ``SEMANTIK_RENDER_TIKZ_FIGURES`` re-draw pass is on (default OFF)."""
+    import os
+
+    val = (os.environ.get("SEMANTIK_RENDER_TIKZ_FIGURES") or "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def _render_tikz_figures(chapters: Sequence[_AdapterChapter]) -> None:
+    r"""Re-draw parseable VLM TikZ figure spans as inline SVG (opt-in; before strip).
+
+    The real-figure increment ahead of the round-10 strip. When the opt-in
+    ``SEMANTIK_RENDER_TIKZ_FIGURES`` flag is set,
+    :func:`~lib.semantik.tikz_draw.render_tikz_figures` re-draws the narrow shape
+    grammar the VLM actually emits (grid + ``\draw`` segment paths + ``\filldraw``
+    circle/rectangle + ``\node`` labels + ``[scale=…]``) as a self-contained,
+    accessible inline ``<figure><svg role="img"></figure>`` — replacing the
+    pure-figure math span in place. A span whose notation does NOT parse is left
+    untouched so the following :func:`_strip_tikz_figures` pass substitutes its
+    placeholder unchanged; a mixed math+figure span keeps its surviving math and
+    gains the placeholder (closing the round-10 silent-drop gap where mixed-span
+    figures vanished without a trace).
+
+    Default OFF → strict no-op (byte-identical to the strip-only path) so the
+    validated mid-pipeline corpus is unchanged. HTML-ONLY (mirrors
+    :func:`_strip_tikz_figures`): ``raw_text`` / ``repaired_text`` keep the plain
+    fused TikZ for the chunker/retrieval. Runs immediately BEFORE the strip so an
+    unparseable figure still reaches the placeholder path; idempotent (emitted
+    markup carries no ``\begin{tikz…}`` marker).
+    """
+    if not _resolve_render_tikz_figures():
+        return
+    for ch in chapters:
+        for block in ch.blocks:
+            if block.html:
+                block.html = render_tikz_figures(block.html)
+
+
 def _strip_tikz_figures(chapters: Sequence[_AdapterChapter]) -> None:
     r"""Replace TikZ/pgfplots figure code in math spans with an a11y placeholder (round-10).
 
@@ -2814,6 +2899,15 @@ def _normalize_ocr_headings(
     # entities the angle-bracket pass just wrote are settled first.
     _sanitize_math_spans(chapters)
 
+    # Real-figure increment (opt-in, before the strip) — when
+    # ``SEMANTIK_RENDER_TIKZ_FIGURES`` is set, deterministically RE-DRAW the
+    # narrow shape grammar the VLM emits (grid + segment paths + circle/rectangle
+    # + node labels) as an accessible inline ``<figure><svg role="img">``, and at
+    # minimum leave the placeholder for a mixed span (closes the silent-drop gap).
+    # Default OFF → byte-identical to the strip-only path. Runs BEFORE the strip so
+    # an unparseable figure still falls through to the placeholder below.
+    _render_tikz_figures(chapters)
+
     # Round-10 (final) — replace VLM-emitted TikZ / pgfplots FIGURE code inside
     # math spans (``$$\begin{tikzpicture}…\end{tikzpicture}$$`` coordinate-plane
     # graphs) with an accessible ``.dart-figure-notation`` placeholder so MathJax
@@ -2894,6 +2988,9 @@ def normalize_cascade_to_ed4all(
     canonical_course_code: Optional[str] = None,
     source: Optional[str] = None,
     title_override: Optional[str] = None,
+    subclass_client: Optional[Any] = None,
+    subclass_capture: Optional[Any] = None,
+    subclass_review_sidecar: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Normalize a Semantic v2 cascade RESULT into Ed4All's DART contract.
 
@@ -2969,6 +3066,35 @@ def normalize_cascade_to_ed4all(
     lang = getattr(cascade_result, "lang", None) or "en"
 
     html = _render_html(chapters, title=title, lang=lang, source_value=source_value)
+
+    # Build #23 Tier-3 — model-assisted composite-unit subclassing (opt-in).
+    # Runs WITHIN the render path so the emitted HTML is the fully-rendered
+    # chapter PLUS the payload-only data-dart-subclass / dart-sub-<label>
+    # attributes. Gated on SEMANTIK_SEMANTIC_SUBCLASS (default off → byte-
+    # identical) OR an explicitly injected client (the pilot / corpus-apply
+    # driver forces the pass with a mock or the real local seat). No client
+    # injected + flag on ⇒ the default license-clean local reviewer seat.
+    subclass_report: Optional[Dict[str, Any]] = None
+    try:
+        from lib.semantik.subclassifier import (  # noqa: PLC0415
+            annotate_html_subclasses,
+            build_default_subclass_client,
+            resolve_semantic_subclass_enabled,
+        )
+
+        run_subclass = subclass_client is not None or resolve_semantic_subclass_enabled()
+        if run_subclass:
+            client = subclass_client or build_default_subclass_client()
+            html, subclass_report = annotate_html_subclasses(
+                html,
+                client=client,
+                course_code=canonical_course_code or slug or "SEMANTIK_000",
+                capture=subclass_capture,
+                review_sidecar_path=subclass_review_sidecar,
+            )
+    except Exception as exc:  # noqa: BLE001 — Tier-3 never breaks a conversion
+        logger.warning("normalize_cascade: subclass pass skipped (%s)", exc)
+
     success, certification_status = _resolve_success(exit_action)
 
     synthesized_sidecar = build_synthesized_sidecar(
@@ -3010,6 +3136,9 @@ def normalize_cascade_to_ed4all(
         "quality_sidecar": quality_sidecar,
         # Wave #22 Tier-1 — count of unit-skeleton heading re-derivations.
         "heading_releveling_count": heading_releveling_count,
+        # Build #23 Tier-3 — composite-unit subclass report (None unless the
+        # opt-in pass ran; carries assignments + distribution + fold/new/skip).
+        "subclass_report": subclass_report,
     }
 
 

@@ -292,6 +292,7 @@
         "training_run_planning",
         "typed_edge_inference",
         "udl_coverage_check",
+        "unit_subclass_assignment",
         "validation_result",
         "violation_generation",
         "wcag_compliance_check",

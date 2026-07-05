@@ -79,6 +79,7 @@ DART/batch_output/*
 !DART/batch_output/.gitkeep
 DART/output/*
 !DART/output/.gitkeep
+DART/output_*/
 DART/inputs/*
 !DART/inputs/.gitkeep
 

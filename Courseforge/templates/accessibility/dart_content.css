@@ -332,6 +332,27 @@ main[role="main"] a:focus {
     font-size: 0.9375rem;
 }
 
+/* ---- Re-drawn figure (SEMANTIK_RENDER_TIKZ_FIGURES) -------------------- */
+/* When the opt-in re-draw pass parses the VLM's constrained TikZ notation, the
+   coordinate-plane figure is emitted as a self-contained inline <svg role="img">
+   (accessible name on the <svg> + a <title>) inside a <figure class="dart-figure">
+   instead of the un-rendered placeholder. The SVG paints with currentColor, so
+   binding the figure's color to the --text-color token (which flips in the
+   prefers-color-scheme: dark block above) keeps every stroke / label legible on
+   BOTH light and dark surfaces with no per-element scheme rules. The figure is a
+   quiet, centered block that never overflows its column. */
+.dart-figure {
+    margin: 1rem 0;
+    text-align: center;
+    color: var(--text-color);
+}
+.dart-figure-svg {
+    display: inline-block;
+    max-width: 100%;
+    height: auto;
+    color: var(--text-color);
+}
+
 /* ---- Continuation banner (B10) — stays VISUALLY HIDDEN ----------------- */
 /* Decorative page-break cue (role="presentation" aria-hidden="true"): kept
    off-screen so sighted learners don't see a duplicate "… (cont.)" and SR
