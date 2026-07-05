@@ -24,16 +24,26 @@ The command:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
+import signal
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import click
 
+from lib.generation import stop_control
+
 logger = logging.getLogger(__name__)
+
+#: Signals that request a graceful stop (AMENDMENT #11: ``signal.signal``, NOT
+#: ``loop.add_signal_handler`` — the latter raises NotImplementedError on
+#: Windows event loops). Precedent: ``cli/commands/mailbox_watch.py``.
+_STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT)
 
 
 # Mapping of canonical workflow names accepted by ``ed4all run`` to their
@@ -1375,6 +1385,149 @@ def _any_gate_failed(result) -> bool:
     return False
 
 
+def _resolve_run_id_for_workflow(workflow_id: str) -> str:
+    """Resolve the run_id the orchestrator/runner will use for a workflow.
+
+    Mirrors ``PipelineOrchestrator._build_runner``: prefer the workflow's
+    persisted ``params.run_id`` (textbook pipelines mint ``TTC_...``) and fall
+    back to the workflow_id (generic workflows). Best-effort — an unreadable /
+    malformed state file degrades to the workflow_id so the signal handler
+    still writes SOME sentinel.
+    """
+    from lib.paths import STATE_PATH  # noqa: PLC0415 — per-call for test isolation
+
+    try:
+        state = json.loads(
+            (STATE_PATH / "workflows" / f"{workflow_id}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, ValueError):
+        return workflow_id
+    if not isinstance(state, dict):
+        return workflow_id
+    params = state.get("params")
+    if isinstance(params, str):
+        try:
+            params = json.loads(params)
+        except ValueError:
+            params = {}
+    if isinstance(params, dict) and params.get("run_id"):
+        return str(params["run_id"])
+    return workflow_id
+
+
+def _best_effort_mark_interrupted(workflow_id: str) -> None:
+    """Stamp a still-``RUNNING`` workflow ``paused`` on a hard-kill signal.
+
+    AMENDMENT #9: a hard kill (second signal) never lets the runner update the
+    status, leaving an eternal-``RUNNING`` state file that ``ed4all stop`` would
+    report as live. This best-effort backstop flips a still-RUNNING record to
+    ``paused`` so the staleness heuristic + resume path see the truth. Swallows
+    every error — it runs on the way to process termination.
+    """
+    from lib.paths import STATE_PATH  # noqa: PLC0415 — per-call for test isolation
+
+    try:
+        path = STATE_PATH / "workflows" / f"{workflow_id}.json"
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(state, dict) and str(state.get("status", "")).upper() == "RUNNING":
+            state["status"] = "paused"
+            state["updated_at"] = datetime.now(timezone.utc).isoformat()
+            path.write_text(
+                json.dumps(state, indent=2, default=str), encoding="utf-8"
+            )
+    except Exception:  # noqa: BLE001 — best-effort on the termination path
+        pass
+
+
+def _make_stop_signal_handler(run_id: str, workflow_id: str):
+    """Build the SIGTERM/SIGINT handler for a run (AMENDMENT #11).
+
+    First signal: write the run-scoped stop sentinel + log — the run finishes
+    its current unit, checkpoints, and pauses (exit 3). Second signal: restore
+    the DEFAULT disposition on both stop signals (so a further signal hard-kills)
+    plus best-effort-mark the workflow interrupted, then re-raise so the default
+    terminate disposition fires immediately. Exposed as a factory so the unit
+    test can drive the handler directly without installing it or killing itself.
+    """
+    state = {"fired": False}
+
+    def _handler(signum, frame=None):  # noqa: ARG001 — frame unused
+        if not state["fired"]:
+            state["fired"] = True
+            try:
+                stop_control.request_stop(
+                    run_id, reason="operator_signal", source=f"signal:{signum}"
+                )
+            except Exception:  # noqa: BLE001 — a stop request must never crash the handler
+                logger.warning("stop signal: request_stop failed", exc_info=True)
+            click.secho(
+                f"\nGraceful stop requested (signal {signum}); finishing the "
+                f"current unit then pausing. Signal again to force-quit.",
+                fg="yellow",
+                err=True,
+            )
+            return
+        # Second signal → hard kill: restore default disposition, mark the run
+        # interrupted, then re-raise so the default terminate fires now.
+        for sig in _STOP_SIGNALS:
+            try:
+                signal.signal(sig, signal.SIG_DFL)
+            except (ValueError, OSError):  # pragma: no cover — non-main-thread
+                pass
+        _best_effort_mark_interrupted(workflow_id)
+        signal.raise_signal(signum)
+
+    return _handler
+
+
+@contextlib.contextmanager
+def _install_stop_signals(run_id: str, workflow_id: str):
+    """Install the graceful-stop SIGTERM/SIGINT handler for the run's duration.
+
+    Restores the prior handlers on exit. In a non-main thread (e.g. some test
+    runners) ``signal.signal`` raises ``ValueError`` — swallowed, so the run
+    proceeds without signal handling (tests drive the handler factory directly).
+    """
+    handler = _make_stop_signal_handler(run_id, workflow_id)
+    previous: Dict[Any, Any] = {}
+    for sig in _STOP_SIGNALS:
+        try:
+            previous[sig] = signal.signal(sig, handler)
+        except (ValueError, OSError):  # not the main thread — skip installation
+            pass
+    try:
+        yield handler
+    finally:
+        for sig, prev in previous.items():
+            try:
+                signal.signal(sig, prev)
+            except (ValueError, OSError):  # pragma: no cover
+                pass
+
+
+def _paused_exit_code(result, workflow_id: str, *, output_json: bool) -> Optional[int]:
+    """Return exit code 3 (+ a resume hint) iff the run paused; else ``None``.
+
+    A paused run halted at a unit boundary (``ed4all stop`` / SIGTERM / a
+    timeout that drained to a checkpoint). It is neither success (0) nor a
+    gate/status failure (2) — it is resumable. The resume hint is suppressed in
+    ``--json`` mode so it never pollutes the JSON stdout.
+    """
+    if getattr(result, "status", None) != "paused":
+        return None
+    if not output_json:
+        click.secho(
+            f"Workflow {workflow_id} paused at a checkpoint (graceful stop).",
+            fg="yellow",
+        )
+        click.echo(
+            f"  Resume with: ed4all run <workflow> --resume {workflow_id}"
+        )
+    return 3
+
+
 async def _create_and_run(
     *,
     workflow: str,
@@ -1391,6 +1544,9 @@ async def _create_and_run(
     The top-level ``run_command`` propagates it via ``sys.exit``:
 
     * ``0`` — workflow completed successfully (all gates passed).
+    * ``3`` — workflow PAUSED at a checkpoint (graceful stop via ``ed4all
+      stop`` / SIGTERM / a timeout that drained to a checkpoint); resumable
+      with ``--resume`` (D8).
     * ``2`` — workflow ran to completion but at least one gate failed
       **or** the workflow reported a non-ok status.
     * ``1`` — workflow couldn't be created / initialised (existing
@@ -1420,11 +1576,19 @@ async def _create_and_run(
             fg="cyan",
         )
 
-    result = await orchestrator.run(workflow_id)
+    # Graceful stop: the run_id the runner uses (params.run_id > workflow_id)
+    # is what the run-scoped stop sentinel keys on. Install SIGTERM/SIGINT
+    # handlers for the run's duration (first signal → sentinel + pause; second
+    # → hard kill).
+    run_id = created.get("run_id") or workflow_id
+    with _install_stop_signals(run_id, workflow_id):
+        result = await orchestrator.run(workflow_id)
+
+    paused_code = _paused_exit_code(result, workflow_id, output_json=output_json)
 
     if output_json:
         click.echo(json.dumps(result.to_dict(), indent=2, default=str))
-    else:
+    elif paused_code is None:
         if result.status == "ok":
             click.secho(f"Workflow {workflow_id} completed successfully.", fg="green")
         else:
@@ -1442,6 +1606,11 @@ async def _create_and_run(
                     f"  {name}: {info.get('completed', 0)}/{info.get('task_count', 0)}"
                     f" complete, gates={'pass' if info.get('gates_passed') else 'fail'}"
                 )
+
+    # Graceful stop wins over the gate/status collapse — a paused run is
+    # resumable, not a failure.
+    if paused_code is not None:
+        return paused_code
 
     # Wave 29 Defect 3: exit code propagation.
     gates_failed = _any_gate_failed(result)
@@ -1540,10 +1709,18 @@ def _resume_workflow(
             click.secho(
                 f"Resuming workflow {workflow_id} via {mode} mode...", fg="cyan"
             )
-        result = await orchestrator.run(workflow_id)
+        # Graceful stop: install SIGTERM/SIGINT handlers for the resumed run's
+        # duration, keyed on the persisted run_id (params.run_id > workflow_id).
+        resume_run_id = _resolve_run_id_for_workflow(workflow_id)
+        with _install_stop_signals(resume_run_id, workflow_id):
+            result = await orchestrator.run(workflow_id)
+
+        paused_code = _paused_exit_code(
+            result, workflow_id, output_json=output_json
+        )
         if output_json:
             click.echo(json.dumps(result.to_dict(), indent=2, default=str))
-        else:
+        elif paused_code is None:
             status_color = "green" if result.status == "ok" else "yellow"
             click.secho(
                 f"Workflow {workflow_id} resumed: status={result.status}",
@@ -1551,6 +1728,10 @@ def _resume_workflow(
             )
             if result.error:
                 click.secho(f"  Error: {result.error}", fg="red")
+
+        # A paused resume is resumable again (exit 3), not a failure.
+        if paused_code is not None:
+            return paused_code
 
         gates_failed = _any_gate_failed(result)
         if gates_failed or result.status != "ok":

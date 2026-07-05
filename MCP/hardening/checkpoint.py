@@ -31,7 +31,7 @@ class PhaseCheckpoint:
     workflow_id: str
     phase_name: str
     phase_index: int
-    status: str  # "started", "completed", "failed"
+    status: str  # "started", "completed", "failed", "paused"
     started_at: str
     completed_at: Optional[str] = None
     tasks_completed: List[str] = field(default_factory=list)
@@ -63,9 +63,21 @@ class PhaseCheckpoint:
         return self.status == "failed"
 
     @property
+    def is_paused(self) -> bool:
+        """Check if phase was paused by a graceful-stop request."""
+        return self.status == "paused"
+
+    @property
     def can_resume(self) -> bool:
-        """Check if phase can be resumed."""
-        return self.status == "started" and len(self.tasks_pending) > 0
+        """Check if phase can be resumed.
+
+        A ``paused`` phase (graceful-stop / "checkpoint on command") is
+        resumable exactly like a ``started`` one: some units were
+        checkpointed, some remain in ``tasks_pending``, and a ``--resume``
+        replays only the un-done work. It is deliberately NOT ``failed`` —
+        a paused phase must re-enter cleanly, never trip the failed path.
+        """
+        return self.status in ("started", "paused") and len(self.tasks_pending) > 0
 
     @property
     def progress_percent(self) -> float:
@@ -246,6 +258,55 @@ class CheckpointManager:
 
         self._write_checkpoint(checkpoint)
         logger.error(f"Phase checkpoint failed: {phase_name} - {error}")
+
+        return checkpoint
+
+    def pause_phase(
+        self,
+        phase_name: str,
+        reason: Optional[str] = None,
+        error_details: Optional[Dict] = None,
+    ) -> PhaseCheckpoint:
+        """
+        Mark phase as paused by a graceful-stop request.
+
+        Sibling of ``complete_phase`` / ``fail_phase`` for the "checkpoint on
+        command" contract: a phase that observed a stop sentinel at a unit
+        boundary is stamped ``paused`` (NOT ``failed``) so ``--resume`` re-enters
+        it and replays only the un-done units. ``tasks_pending`` is left intact
+        (it is the resume worklist); ``reason`` is recorded in the ``error``
+        field purely as a diagnostic (paused is not an error state, but the
+        field is the existing free-text slot and keeps the on-disk shape stable).
+
+        Args:
+            phase_name: Name of the phase
+            reason: Optional human-readable stop reason (diagnostic only)
+            error_details: Optional additional stop context (e.g. site_id,
+                units_completed)
+
+        Returns:
+            Updated PhaseCheckpoint
+
+        Raises:
+            ValueError: If no checkpoint exists for phase
+        """
+        checkpoint = self.load_checkpoint(phase_name)
+        if not checkpoint:
+            raise ValueError(f"No checkpoint for phase: {phase_name}")
+
+        checkpoint.status = "paused"
+        checkpoint.completed_at = datetime.now().isoformat()
+        if reason:
+            checkpoint.error = reason
+        if error_details:
+            checkpoint.error_details = error_details
+
+        self._write_checkpoint(checkpoint)
+        logger.info(
+            f"Phase checkpoint paused: {phase_name} "
+            f"({len(checkpoint.tasks_completed)} done, "
+            f"{len(checkpoint.tasks_pending)} pending for resume)"
+        )
 
         return checkpoint
 

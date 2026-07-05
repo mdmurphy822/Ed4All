@@ -49,7 +49,7 @@ class OrchestratorResult:
     """
 
     workflow_id: str
-    status: Literal["ok", "failed", "dry_run"]
+    status: Literal["ok", "failed", "dry_run", "paused"]
     phase_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     phase_outputs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     dispatched_phases: List[str] = field(default_factory=list)
@@ -462,7 +462,17 @@ class PipelineOrchestrator:
         # Post-dispatch hook
         dispatched = await dispatcher.after_run(workflow_id=workflow_id, result=raw)
 
-        status = "ok" if raw.get("status") == "COMPLETE" else "failed"
+        # Status collapse: COMPLETE -> ok, PAUSED (graceful stop) -> paused
+        # (so the CLI can map it to exit code 3 and print a resume hint rather
+        # than treating a deliberate pause as a failure), everything else ->
+        # failed.
+        raw_status = raw.get("status")
+        if raw_status == "COMPLETE":
+            status = "ok"
+        elif raw_status == "PAUSED":
+            status = "paused"
+        else:
+            status = "failed"
         return OrchestratorResult(
             workflow_id=workflow_id,
             status=status,

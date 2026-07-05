@@ -46,6 +46,19 @@ from lib.llm.vram_doctor import (
     write_trajectory_row,
 )
 
+# Graceful stop ("checkpoint on command"): the run loop probes a filesystem
+# stop sentinel between phases and halts to a PAUSED status (never FAILED). The
+# module is stdlib-only, selects no provider/model (no LICENSING / behavior-flag
+# rows), and resolves its sentinel paths through ``lib.paths.get_state_runs_dir``
+# — the SAME parent the executor writes phase checkpoints into. See
+# lib/generation/stop_control.py.
+from lib.generation.stop_control import (
+    GLOBAL_SENTINEL_NAME,
+    clear_stop,
+    stop_requested,
+)
+from lib.paths import get_state_runs_dir
+
 
 class AuthoringProviderRouteError(RuntimeError):
     """Raised when a run would dispatch an LLM-needing phase to an
@@ -1603,6 +1616,36 @@ class WorkflowRunner:
         # empty.
         self._restore_resume_phase_outputs(phase_outputs)
 
+        # Graceful-stop launch handshake ("checkpoint on command"). run_id
+        # resolves from the executor (stop_control falls back to
+        # ED4ALL_RUN_ID internally when this is None).
+        _stop_run_id = getattr(self.executor, "run_id", None)
+
+        # (f) STOP_ALL refusal (D9): the global, operator-owned sentinel is
+        # NEVER auto-cleared. While it exists, refuse to start ANY run — fresh
+        # or --resume — with a loud, actionable error naming the ONLY command
+        # that clears it. This is the master "halt everything" switch; a run
+        # must not sneak past it. Resolved through get_state_runs_dir() so a
+        # non-repo-root CWD sees the same file the CLI wrote (risk R2).
+        _global_sentinel = get_state_runs_dir() / GLOBAL_SENTINEL_NAME
+        if _global_sentinel.exists():
+            msg = (
+                f"Refusing to start workflow {workflow_id}: global stop "
+                f"sentinel present at {_global_sentinel}. Every run is halted "
+                "until an operator clears it with `ed4all stop --clear-all`."
+            )
+            logger.error(msg)
+            return {"error": msg}
+
+        # (e) Clear this run's OWN stale run-scoped sentinel BEFORE the status
+        # flips to RUNNING. A prior attempt under the same run_id could have
+        # left <run_id>/control/STOP_REQUESTED behind; without this clear a
+        # fresh start or a --resume would pause on the FIRST phase boundary.
+        # Only a stop requested AFTER this point (during this run) trips the
+        # between-phase probe below. The operator-owned global STOP_ALL is
+        # untouched (include_global defaults False).
+        clear_stop(_stop_run_id)
+
         # Update workflow status
         workflow_state["status"] = "RUNNING"
         workflow_state["started_at"] = datetime.now().isoformat()
@@ -1621,6 +1664,10 @@ class WorkflowRunner:
         # workflow state and the returned payload. ``None`` on a clean run.
         failed_phase: Optional[str] = None
         failure_reason: Optional[str] = None
+        # Graceful stop: which phase the run paused at (None on a clean or
+        # failed run). Distinct from ``failed_phase`` — a pause is NOT a
+        # failure; the phase is persisted resumable (``_completed=False``).
+        paused_phase: Optional[str] = None
 
         # Wave1-I8 (Finding 7 of plans/dispatch-7-execution-inspection-2026-05.md):
         # emit one banner line per agent in ``AGENT_PROVIDER_ENV_MAP`` so
@@ -1662,8 +1709,42 @@ class WorkflowRunner:
                 return True
             return False
 
+        # Graceful-stop between-phase probe (modeled on ``_stop_after_now``).
+        # At the TOP of every phase iteration — before the next phase
+        # dispatches — probe the stop sentinel (run-scoped OR global STOP_ALL).
+        # When set, the loop halts with ``final_status="PAUSED"`` so downstream
+        # phases never run. Best-effort: stop_control already degrades OSError
+        # to False; the extra guard keeps any unexpected error from crashing
+        # the run.
+        def _stop_requested_now() -> bool:
+            try:
+                return stop_requested(_stop_run_id)
+            except Exception:  # noqa: BLE001 — a stop probe must never crash the run
+                return False
+
         for phase_idx, phase in enumerate(sorted_phases):
             phase_name = phase.name
+
+            # Graceful stop (a): halt cleanly BEFORE dispatching this phase
+            # when a stop was requested mid-run. Downstream phases never run;
+            # status = PAUSED (never FAILED). This phase was not dispatched, so
+            # it is not ``_completed`` — a ``--resume`` re-enters here. The
+            # previous phase already handed the GPU card over on its
+            # success-path sweep, but run an explicit (idempotent, best-effort)
+            # sweep so a pause landing right after a phase boundary still
+            # leaves a clean card for the resume.
+            if _stop_requested_now():
+                logger.info(
+                    "Graceful stop observed before phase '%s'; pausing "
+                    "workflow (this and all subsequent phases skipped).",
+                    phase_name,
+                )
+                final_status = "PAUSED"
+                paused_phase = phase_name
+                workflow_state["paused_phase"] = phase_name
+                self._save_workflow_state(workflow_path, workflow_state)
+                await self._gpu_lifecycle_sweep(phase_name)
+                break
 
             # Skip already-completed phases (crash recovery).
             #
@@ -1850,6 +1931,54 @@ class WorkflowRunner:
 
             # Extract outputs from results
             extracted = self._extract_phase_outputs(phase_name, results)
+
+            # Graceful stop (b): a phase interrupted mid-run comes back with
+            # one or more PAUSED task results (the executor maps
+            # GracefulStopRequested -> ExecutionResult(status="PAUSED"): no
+            # retry, no poison record). This MUST be handled BEFORE the
+            # anti-zombie (zero-success) and Bug-A (partial-completion) guards
+            # below — both would otherwise stamp the phase FAILED, because a
+            # paused phase has completed_count < len(tasks). Persist it
+            # ``_completed=False, _paused=True`` so the completed-phase skip
+            # guard re-runs it on ``--resume`` (its per-unit sidecars replay
+            # the already-finished units — worst-case loss is one in-flight LLM
+            # call). Run an explicit GPU lease sweep (the success-path sweep at
+            # the bottom of the loop is never reached on this break) and halt
+            # with status PAUSED (never FAILED).
+            phase_paused = any(
+                getattr(r, "status", None) == "PAUSED" for r in results.values()
+            )
+            if phase_paused:
+                paused_count = sum(
+                    1 for r in results.values()
+                    if getattr(r, "status", None) == "PAUSED"
+                )
+                completed_now = sum(
+                    1 for r in results.values() if r.status == "COMPLETE"
+                )
+                logger.info(
+                    "Phase %s paused (graceful stop): %d completed, %d paused "
+                    "of %d task(s); halting workflow with status PAUSED.",
+                    phase_name, completed_now, paused_count, len(tasks),
+                )
+                extracted["_completed"] = False
+                extracted["_paused"] = True
+                extracted["_gates_passed"] = gates_passed
+                extracted["_gate_results"] = list(gate_results or [])
+                phase_outputs[phase_name] = extracted
+                workflow_state["phase_outputs"] = phase_outputs
+                workflow_state["paused_phase"] = phase_name
+                self._save_workflow_state(workflow_path, workflow_state)
+                all_results[phase_name] = {
+                    "task_count": len(tasks),
+                    "completed": completed_now,
+                    "paused": paused_count,
+                    "gates_passed": gates_passed,
+                }
+                final_status = "PAUSED"
+                paused_phase = phase_name
+                await self._gpu_lifecycle_sweep(phase_name)
+                break
 
             # Anti-zombie guard: refuse to stamp ``_completed=True`` on a
             # non-optional phase that dispatched at least one task, had
@@ -2093,7 +2222,22 @@ class WorkflowRunner:
         if failed_phase is not None:
             workflow_state["failed_phase"] = failed_phase
             workflow_state["failure_reason"] = failure_reason
+        if paused_phase is not None:
+            workflow_state["paused_phase"] = paused_phase
         self._save_workflow_state(workflow_path, workflow_state)
+
+        # (d) Graceful-stop resume hint. The status was stamped PAUSED above
+        # (never FAILED); tell the operator exactly how to pick the run back
+        # up. The aggregators below still run (D4) — they are read-only
+        # rollups and never alter ``final_status``.
+        if final_status == "PAUSED":
+            logger.info(
+                "Workflow %s PAUSED by graceful stop%s. Resume with: "
+                "ed4all run --resume %s",
+                workflow_id,
+                f" at phase '{paused_phase}'" if paused_phase else "",
+                workflow_id,
+            )
 
         # Worker W5 (GPT-feedback follow-up): post-loop aggregator that
         # walks every per-phase ``02_validation_report/report.json``
@@ -2220,6 +2364,7 @@ class WorkflowRunner:
             "status": final_status,
             "failed_phase": failed_phase,
             "failure_reason": failure_reason,
+            "paused_phase": paused_phase,
             "phase_results": all_results,
             "phase_outputs": {
                 k: {pk: pv for pk, pv in v.items() if not pk.startswith("_")}

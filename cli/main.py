@@ -48,6 +48,21 @@ except ImportError as _run_import_err:  # pragma: no cover
     )
 
 
+# Register 'ed4all stop' command — graceful checkpoint-on-command stop
+# (writes a run-scoped / global stop sentinel that every long loop polls).
+# Lazy try/except so the CLI still loads if the stop_control foundation fails
+# to import.
+try:
+    from cli.commands import register_stop_command
+
+    register_stop_command(cli)
+except ImportError as _stop_import_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.stop unavailable: %s", _stop_import_err
+    )
+
+
 # Register Wave 34 'ed4all mailbox watch' command (outer-session watcher
 # for LocalDispatcher's TaskMailbox bridge).
 try:

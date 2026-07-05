@@ -39,6 +39,12 @@ class TaskStatus(str, Enum):
     ERROR = "ERROR"
     TIMEOUT = "TIMEOUT"
     SKIPPED = "SKIPPED"
+    # Graceful-stop ("checkpoint on command"): a task that hit a stop
+    # sentinel at a unit boundary, checkpointed the in-flight unit, and
+    # bowed out cleanly. Distinct from ERROR/TIMEOUT — it is never retried,
+    # never poison-classified, and marks its phase ``paused`` (resumable),
+    # not ``failed``. Mirrors ``WorkflowStatus.PAUSED`` at the task level.
+    PAUSED = "PAUSED"
 
 
 class WorkflowStatus(str, Enum):

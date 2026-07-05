@@ -34,6 +34,10 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.paths import STATE_PATH, get_state_runs_dir  # noqa: E402
+from lib.generation.stop_control import (  # noqa: E402
+    GracefulStopRequested,
+    stop_requested,
+)
 
 from .config import OrchestratorConfig  # noqa: E402
 from .param_mapper import ParameterMappingError, TaskParameterMapper  # noqa: E402
@@ -503,6 +507,11 @@ class TaskExecutor:
         self.tool_registry = tool_registry or {}
         self.capture = capture
         self.dispatcher = dispatcher
+        # Graceful stop ("checkpoint on command"): the phase currently being
+        # executed, published by ``execute_phase`` so ``_execute_parallel`` /
+        # ``_run_and_record`` can per-task-checkpoint without a signature
+        # change. ``None`` outside a phase (the ``execute_workflow`` path).
+        self._active_phase_name: Optional[str] = None
 
         # Generate or use provided run_id for tracing
         self.run_id = run_id or os.environ.get(
@@ -894,6 +903,43 @@ class TaskExecutor:
                     task_id=task_id,
                     status="COMPLETE",
                     result=result,
+                    retry_count=retry_count,
+                )
+
+            except GracefulStopRequested as e:
+                # Graceful stop ("checkpoint on command"): the tool observed a
+                # stop sentinel at a unit boundary, checkpointed the in-flight
+                # unit, and raised. This is NOT a failure — caught FIRST (before
+                # asyncio.TimeoutError and the generic Exception below, even
+                # though it subclasses RuntimeError) so it can NEVER be retried,
+                # poison-classified, or run through the ErrorClassifier. Surface
+                # a PAUSED result; ``execute_phase`` stamps the phase checkpoint
+                # ``paused`` (resumable) rather than ``failed``.
+                logger.info(
+                    f"[{self.run_id}] Task {task_id} paused at unit boundary "
+                    f"(site={getattr(e, 'site_id', '?')}, "
+                    f"units_completed={getattr(e, 'units_completed', '?')})"
+                )
+                if self.capture:
+                    self.capture.log_decision(
+                        decision_type="task_execution",
+                        decision=(
+                            f"Task {task_id} paused on graceful-stop request"
+                        ),
+                        rationale=(
+                            f"Graceful stop observed at site "
+                            f"'{getattr(e, 'site_id', '?')}' after "
+                            f"{getattr(e, 'units_completed', 0)} unit(s) via tool "
+                            f"'{tool_name}'; the in-flight unit was checkpointed "
+                            f"and GracefulStopRequested raised — no retry, no "
+                            f"poison classification, phase stamped paused"
+                        ),
+                    )
+                return ExecutionResult(
+                    task_id=task_id,
+                    status="PAUSED",
+                    error=str(e),
+                    error_class="paused",
                     retry_count=retry_count,
                 )
 
@@ -1332,7 +1378,10 @@ class TaskExecutor:
 
                 if status == "IN_PROGRESS":
                     task["started_at"] = datetime.now().isoformat()
-                elif status in ("COMPLETE", "ERROR", "FAILED", "TIMEOUT"):
+                elif status in ("COMPLETE", "ERROR", "FAILED", "TIMEOUT", "PAUSED"):
+                    # PAUSED is terminal for the current run leg (the task bowed
+                    # out cleanly at a unit boundary); a --resume re-dispatches
+                    # it fresh from its resume sidecar.
                     task["completed_at"] = datetime.now().isoformat()
 
                 if result is not None:
@@ -1408,6 +1457,39 @@ class TaskExecutor:
 
         return results
 
+    def _checkpoint_task_result(
+        self,
+        phase_name: Optional[str],
+        task_id: str,
+        success: bool,
+        result: Optional["ExecutionResult"] = None,
+    ) -> None:
+        """Record one task's outcome into the phase checkpoint as it resolves.
+
+        Graceful-stop ("checkpoint on command") per-task ledger: called the
+        instant a task finishes so a mid-phase kill leaves an accurate
+        ``tasks_completed`` / ``tasks_failed`` set. Best-effort and idempotent —
+        ``CheckpointManager.complete_task`` only appends a task to a list once,
+        so the end-of-phase sweep re-calling it is a no-op for the ledger. A
+        no-op when there is no checkpoint manager or no ``phase_name`` (the
+        ``execute_workflow`` path). Artifacts are intentionally NOT passed here
+        (the end-of-phase sweep carries them exactly once, avoiding a
+        double-append into ``artifacts_produced``).
+        """
+        if not (self.checkpoint_manager and phase_name):
+            return
+        try:
+            self.checkpoint_manager.complete_task(
+                phase_name=phase_name,
+                task_id=task_id,
+                success=success,
+            )
+        except Exception as e:
+            logger.warning(
+                f"[{self.run_id}] Failed to checkpoint task {task_id} "
+                f"in phase '{phase_name}': {e}"
+            )
+
     async def _execute_parallel(
         self,
         workflow_id: str,
@@ -1416,6 +1498,16 @@ class TaskExecutor:
         results_sink: Optional[Dict[str, "ExecutionResult"]] = None,
     ) -> Dict[str, ExecutionResult]:
         """Execute tasks in parallel batches.
+
+        Graceful-stop ("checkpoint on command") note: the phase this batch
+        belongs to is read from ``self._active_phase_name`` (set by
+        ``execute_phase`` for the duration of the call) rather than a
+        parameter, so the signature stays stable for callers/tests that stub
+        this method. When it is set, each task's outcome is recorded into the
+        phase checkpoint the INSTANT it resolves via ``_checkpoint_task_result``
+        so a mid-phase kill leaves an accurate ``tasks_completed`` /
+        ``tasks_failed`` ledger; ``None`` (the ``execute_workflow`` path, which
+        has no phase checkpoint) skips per-task checkpointing.
 
         Args:
             results_sink: W2.2 — optional caller-owned dict that this method
@@ -1433,6 +1525,10 @@ class TaskExecutor:
                 tasks that already completed within the in-flight batch — only
                 the tasks still awaiting ``execute_task`` are abandoned.
         """
+        # Graceful stop: the active phase (or None on the execute_workflow
+        # path) is threaded via the instance attribute, not a parameter, so
+        # this method's signature stays stable for callers/tests that stub it.
+        phase_name = getattr(self, "_active_phase_name", None)
         results = results_sink if results_sink is not None else {}
         completed_ids = set()
 
@@ -1457,13 +1553,54 @@ class TaskExecutor:
                     error=str(exc),
                 )
                 task["status"] = "ERROR"
+                # Graceful-stop per-task ledger: record the failure the instant
+                # it resolves so a mid-phase kill sees it (ledger only, no
+                # artifacts — the end-of-phase sweep carries artifacts once).
+                self._checkpoint_task_result(phase_name, tid, success=False)
                 return
             results[tid] = res
             if res.status == "COMPLETE":
                 completed_ids.add(tid)
             task["status"] = res.status
+            # Per-task-as-completed checkpointing (graceful stop): stamp the
+            # ledger the INSTANT each task resolves so a mid-phase kill leaves an
+            # accurate tasks_completed/tasks_failed set. PAUSED tasks are LEFT in
+            # tasks_pending (a --resume re-runs them from their resume sidecar).
+            # Idempotent with the end-of-phase complete_task sweep in
+            # execute_phase (that sweep is what carries artifacts, exactly once).
+            if res.status != "PAUSED":
+                self._checkpoint_task_result(
+                    phase_name, tid, success=res.status == "COMPLETE"
+                )
 
         while True:
+            # Graceful stop ("checkpoint on command"): if a stop sentinel is
+            # present, stop dispatching NEW tasks. In-flight tasks from the
+            # previous batch have already drained (asyncio.gather awaited them
+            # below), so this mirrors the poison-pill break — halt-next-batch,
+            # never cancel a mid-flight request. Still-PENDING tasks are marked
+            # PAUSED so ``execute_phase`` detects the stop and stamps the phase
+            # checkpoint ``paused`` (rather than silently reporting success on a
+            # partially-run phase); they stay in the checkpoint's tasks_pending
+            # for --resume.
+            if stop_requested(self.run_id):
+                for task in tasks:
+                    tid = task.get("id")
+                    if task.get("status") == "PENDING" and tid not in results:
+                        results[tid] = ExecutionResult(
+                            task_id=tid,
+                            status="PAUSED",
+                            error="Graceful stop requested; task not dispatched",
+                            error_class="paused",
+                        )
+                        task["status"] = "PAUSED"
+                logger.info(
+                    f"[{self.run_id}] Graceful stop observed"
+                    + (f" in phase '{phase_name}'" if phase_name else "")
+                    + "; halting batch loop (no new tasks dispatched)"
+                )
+                break
+
             # Find tasks that can run (pending + dependencies met)
             runnable = []
             for task in tasks:
@@ -1527,6 +1664,27 @@ class TaskExecutor:
         for task in tasks:
             if task.get("status") != "PENDING":
                 continue
+
+            # Graceful stop ("checkpoint on command"): mirror the parallel
+            # loop-top check — before dispatching the next task, if a stop
+            # sentinel is present, mark the remaining PENDING tasks PAUSED and
+            # halt (never mid-task; the previous task already completed).
+            if stop_requested(self.run_id):
+                for remaining in tasks:
+                    rid = remaining.get("id")
+                    if remaining.get("status") == "PENDING" and rid not in results:
+                        results[rid] = ExecutionResult(
+                            task_id=rid,
+                            status="PAUSED",
+                            error="Graceful stop requested; task not dispatched",
+                            error_class="paused",
+                        )
+                        remaining["status"] = "PAUSED"
+                logger.info(
+                    f"[{self.run_id}] Graceful stop observed; halting "
+                    f"sequential execution (no new tasks dispatched)"
+                )
+                break
 
             result = await self.execute_task(workflow_id, task["id"])
             results[task["id"]] = result
@@ -1653,6 +1811,12 @@ class TaskExecutor:
         # survive the cancellation; on timeout we PRESERVE those and mark only
         # the still-unfinished tasks TIMEOUT (abandoned / retried later).
         partial_results: Dict[str, ExecutionResult] = {}
+        # Graceful stop: publish the active phase for ``_execute_parallel`` /
+        # ``_run_and_record`` (they read ``self._active_phase_name`` rather than
+        # take a new parameter, keeping the signature stubbable). Restored in
+        # ``finally`` so a nested/next phase never inherits a stale name.
+        _prev_active_phase = getattr(self, "_active_phase_name", None)
+        self._active_phase_name = phase_name
         try:
             results = await asyncio.wait_for(
                 self._execute_parallel(
@@ -1704,10 +1868,24 @@ class TaskExecutor:
                         f"retry (ids={timed_out_ids})"
                     ),
                 )
+        finally:
+            # Graceful stop: clear the published active phase so a subsequent
+            # (or nested) phase never inherits a stale name. Per-task
+            # checkpointing only needs it while ``_execute_parallel`` ran above.
+            self._active_phase_name = _prev_active_phase
 
-        # Update checkpoint with task results
+        # Update checkpoint with task results. This end-of-phase sweep is the
+        # idempotent complement to the per-task ``_checkpoint_task_result``
+        # ledger written during ``_execute_parallel``: it is the pass that
+        # carries artifacts into the checkpoint (exactly once), while
+        # ``complete_task``'s "append only if absent" guard keeps the ledger
+        # itself idempotent. PAUSED tasks are SKIPPED — a graceful-stop task is
+        # neither completed nor failed; leaving it out keeps it in the
+        # checkpoint's ``tasks_pending`` for a --resume.
         if self.checkpoint_manager:
             for task_id, result in results.items():
+                if result.status == "PAUSED":
+                    continue
                 try:
                     artifacts = result.artifacts if hasattr(result, 'artifacts') else []
                     self.checkpoint_manager.complete_task(
@@ -1726,6 +1904,46 @@ class TaskExecutor:
             if self.checkpoint_manager:
                 self.checkpoint_manager.fail_phase(phase_name, "Poison pill detected")
             return results, False, None
+
+        # Graceful stop ("checkpoint on command"): any PAUSED task result means
+        # the phase stopped at a unit boundary. Stamp the phase checkpoint
+        # ``paused`` (resumable, NEVER failed), SKIP the validation gates and
+        # ``fail_phase``, and return. The paused signal is surfaced to the
+        # caller (WorkflowRunner) via the presence of ``status == "PAUSED"``
+        # ExecutionResults in the returned ``results`` dict — the least-invasive
+        # widening (no signature change). ``gates_passed`` is returned True and
+        # ``gate_results`` None so the runner does NOT treat a pause as a gate
+        # failure; the runner detects the pause from the results and halts
+        # downstream phases, stamping the workflow PAUSED.
+        paused_detected = any(r.status == "PAUSED" for r in results.values())
+        if paused_detected:
+            n_paused = sum(1 for r in results.values() if r.status == "PAUSED")
+            logger.info(
+                f"[{self.run_id}] Phase {phase_name} paused (graceful stop) — "
+                f"{n_paused} task(s) left pending for --resume"
+            )
+            if self.checkpoint_manager:
+                try:
+                    self.checkpoint_manager.pause_phase(
+                        phase_name, reason="Graceful stop requested"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[{self.run_id}] Failed to stamp phase checkpoint "
+                        f"paused for {phase_name}: {e}"
+                    )
+            if self.capture:
+                self.capture.log_decision(
+                    decision_type="phase_completion",
+                    decision=f"Phase {phase_name} paused on graceful-stop request",
+                    rationale=(
+                        f"Phase {phase_name} (index {phase_index}) observed a stop "
+                        f"sentinel at a unit boundary; {n_paused} task(s) left "
+                        f"PENDING for --resume, validation gates skipped, "
+                        f"checkpoint stamped paused (resumable, not failed)"
+                    ),
+                )
+            return results, True, None
 
         # Run validation gates (Wave 23: per-gate input routing)
         gates_passed = True
