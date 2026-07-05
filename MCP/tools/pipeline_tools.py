@@ -4906,6 +4906,9 @@ async def _run_stage2_window_synthesis(
                 _to_dispatch.append(_wd)
 
         # Dispatch ONLY the un-cached windows (≤10 per batch), keyed by window.
+        # Each completed window is appended to the sidecar AS ITS BATCH LANDS
+        # (not after the full dispatch loop) so a kill / power-loss mid-phase
+        # only costs the in-flight batch on resume, never the whole run.
         _dispatched: Dict[Tuple[str, int], Optional[Dict[str, Any]]] = {}
         _batches = provider.batch_chapters(_to_dispatch)
         for _batch in _batches:
@@ -4913,11 +4916,24 @@ async def _run_stage2_window_synthesis(
                 _loop.run_in_executor(None, _one_window, w) for w in _batch
             ])
             for _wd, _res in zip(_batch, _results):
-                _dispatched[_window_key(_wd)] = _res
+                _dkey = _window_key(_wd)
+                _dispatched[_dkey] = _res
+                if _cp_enabled and _res is not None:
+                    _append_stage2_window_checkpoint(
+                        checkpoint_path,
+                        chapter_id=_dkey[0],
+                        window_index=_dkey[1],
+                        fingerprint=_fp_by_key[_dkey],
+                        candidate_objectives=[
+                            _c
+                            for _c in (_res.get("candidate_objectives") or [])
+                            if isinstance(_c, dict)
+                        ],
+                    )
 
         # Reassemble candidates in ORIGINAL window order (byte-equivalent to an
-        # uninterrupted run), appending each freshly-dispatched window to the
-        # sidecar so a later resume reuses it.
+        # uninterrupted run; the dispatch loop above already checkpointed each
+        # freshly-dispatched window).
         _reused_per_chapter: Dict[str, int] = {}
         _total_per_chapter: Dict[str, int] = {}
         for _wd in _windows:
@@ -4942,14 +4958,6 @@ async def _run_stage2_window_synthesis(
                 if isinstance(_c, dict)
             ]
             _flat_candidates.extend(_cands)
-            if _cp_enabled:
-                _append_stage2_window_checkpoint(
-                    checkpoint_path,
-                    chapter_id=_cid,
-                    window_index=_key[1],
-                    fingerprint=_fp_by_key[_key],
-                    candidate_objectives=_cands,
-                )
 
         for _cid, _tot in _total_per_chapter.items():
             _reused_n = _reused_per_chapter.get(_cid, 0)

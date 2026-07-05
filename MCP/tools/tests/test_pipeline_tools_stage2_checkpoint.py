@@ -177,6 +177,40 @@ def test_sidecar_written_per_window(tmp_path, monkeypatch):
         assert cands[0]["statement"].startswith("Objective for ")
 
 
+def test_sidecar_written_incrementally_per_batch(tmp_path, monkeypatch):
+    """Records land AS EACH BATCH COMPLETES, not after the full dispatch loop.
+
+    A kill / power-loss mid-phase must only cost the in-flight batch on
+    resume. Regression: the 2026-07-04 shutdown lost ~659 window calls
+    because appends only ran after ALL batches finished.
+    """
+    cp = tmp_path / "01_learning_objectives" / ".stage2_windows_checkpoint.jsonl"
+
+    class _SerialProvider(_WindowProvider):
+        """batch_size=1 → 4 sequential batches; each call records how many
+        checkpoint records were ALREADY on disk when it started."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.records_seen: List[int] = []
+
+        def batch_chapters(self, items, batch_size: int = 10):
+            return super().batch_chapters(items, batch_size=1)
+
+        def synthesize_window_objectives(self, window, **kw):
+            self.records_seen.append(
+                len(pt._load_stage2_windows_checkpoint(cp))
+            )
+            return super().synthesize_window_objectives(window, **kw)
+
+    provider = _SerialProvider()
+    _run(provider, checkpoint_path=cp, monkeypatch=monkeypatch)
+    assert len(provider.window_calls) == 4
+    # Call N must see the N-1 previously-completed windows already persisted.
+    assert provider.records_seen == [0, 1, 2, 3]
+    assert len(pt._load_stage2_windows_checkpoint(cp)) == 4
+
+
 # ---------------------------------------------------------------------------
 # (b) resume skips matching windows — provider call-count drops, byte-equivalent
 # ---------------------------------------------------------------------------
