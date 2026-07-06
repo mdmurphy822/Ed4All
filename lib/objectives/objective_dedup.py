@@ -94,6 +94,36 @@ ENV_CHUNK_RELEVANCE_FLOOR = "ED4ALL_OBJECTIVE_CHUNK_RELEVANCE_FLOOR"
 _DEFAULT_DISTINCT_SKILL_SPLIT = False
 ENV_DISTINCT_SKILL_SPLIT = "ED4ALL_OBJECTIVE_DISTINCT_SKILL_SPLIT"
 
+#: Defect E — CROSS-WINDOW lexical-dedup SECOND PASS. Pass B partitions a
+#: chapter into disjoint windows, so a concept restated across a window boundary
+#: yields near-duplicate COs. The single-link cosine pass at the 0.88 dedup
+#: threshold catches near-identical embeddings, but a RESTATEMENT at ~0.80 cosine
+#: (different phrasing of the same skill) slips through — the sample-scan-01 run left
+#: ~35-50 residual dupes, one 50-member cosine chain. This opt-in second pass runs
+#: AFTER ``cluster_by_cosine`` and BEFORE the PRONG-A distinct-skill split (so a
+#: wrongly-chained cosine cluster can still split), merging two clusters iff their
+#: centroid cosine >= ``ED4ALL_OBJECTIVE_DEDUP_LEXICAL_COSINE`` (0.78) AND their
+#: best-grounded members' skill-signature Jaccard >=
+#: ``ED4ALL_OBJECTIVE_DEDUP_LEXICAL_JACCARD`` (0.60) AND they share a Bloom band.
+#: **Complete linkage** (every cross pair must pass both floors) structurally
+#: prevents 50-member chains. Default OFF → byte-identical DedupResult.
+_DEFAULT_DEDUP_LEXICAL = False
+ENV_DEDUP_LEXICAL = "ED4ALL_OBJECTIVE_DEDUP_LEXICAL"
+
+#: Defect E — centroid-cosine floor for a lexical merge edge. Deliberately BELOW
+#: the 0.88 single-link dedup threshold (this pass exists to catch the sub-0.88
+#: restatements the cosine pass missed) but high enough that only genuinely
+#: related clusters are candidates. Env-overridable; default 0.78.
+_DEFAULT_DEDUP_LEXICAL_COSINE = 0.78
+ENV_DEDUP_LEXICAL_COSINE = "ED4ALL_OBJECTIVE_DEDUP_LEXICAL_COSINE"
+
+#: Defect E — skill-signature Jaccard floor for a lexical merge edge. Deliberately
+#: ABOVE PRONG-A's distinctness band (<0.34): two clusters merge only when their
+#: named-skill signatures OVERLAP heavily (same skill, different words), the exact
+#: inverse of the split. Env-overridable; default 0.60.
+_DEFAULT_DEDUP_LEXICAL_JACCARD = 0.60
+ENV_DEDUP_LEXICAL_JACCARD = "ED4ALL_OBJECTIVE_DEDUP_LEXICAL_JACCARD"
+
 #: P1 (clustering rework) — post-cluster GUARDS for bottom-up TO derivation.
 #: ``cluster_to_target_k`` runs Ward at a HARD target K with no guards, which on
 #: a real ~85-CO run produced (1) a semantic-OUTLIER CO getting its OWN
@@ -185,6 +215,12 @@ class DedupResult:
     #: I3 PRONG A — total distinct named-skill groups after the split (== number
     #: of canonical COs the split produced; == len(clusters) when split off).
     distinct_skill_count: int = 0
+    #: Defect E — number of successful cross-window lexical MERGE operations (each
+    #: unions two cosine clusters). 0 when the lexical pass is off / no-op.
+    lexical_merge_pairs: int = 0
+    #: Defect E — number of INPUT cosine clusters absorbed by the lexical pass
+    #: (== clusters_before - clusters_after). 0 when off / no-op.
+    lexical_clusters_merged: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -199,6 +235,8 @@ class DedupResult:
                 self.clusters_split_for_distinct_skill
             ),
             "distinct_skill_count": self.distinct_skill_count,
+            "lexical_merge_pairs": self.lexical_merge_pairs,
+            "lexical_clusters_merged": self.lexical_clusters_merged,
         }
 
 
@@ -487,6 +525,59 @@ def resolve_distinct_skill_split(enabled: Optional[bool] = None) -> bool:
     return _DEFAULT_DISTINCT_SKILL_SPLIT
 
 
+def resolve_dedup_lexical(enabled: Optional[bool] = None) -> bool:
+    """Resolve the Defect-E lexical-merge master gate: arg → env → default.
+
+    Default OFF (opt-in). Truthy env values (``1``/``true``/``yes``/``on``)
+    enable the cross-window lexical second pass; anything else (incl. garbage) →
+    the default. Mirrors :func:`resolve_distinct_skill_split`.
+    """
+    if enabled is not None:
+        return bool(enabled)
+    raw = str(os.environ.get(ENV_DEDUP_LEXICAL, "")).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    return _DEFAULT_DEDUP_LEXICAL
+
+
+def resolve_dedup_lexical_cosine(floor: Optional[float] = None) -> float:
+    """Resolve the Defect-E lexical-merge centroid-cosine floor: arg → env → default.
+
+    Out-of-range / garbage env values fall back to the default (a misconfigured
+    floor must never silently collapse all clusters). Accepts ``0.0 < val <= 1.0``.
+    """
+    if floor is not None:
+        return float(floor)
+    raw = os.environ.get(ENV_DEDUP_LEXICAL_COSINE)
+    if raw:
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return _DEFAULT_DEDUP_LEXICAL_COSINE
+        if 0.0 < val <= 1.0:
+            return val
+    return _DEFAULT_DEDUP_LEXICAL_COSINE
+
+
+def resolve_dedup_lexical_jaccard(floor: Optional[float] = None) -> float:
+    """Resolve the Defect-E lexical-merge skill-signature Jaccard floor.
+
+    Out-of-range / garbage env values fall back to the default. Accepts
+    ``0.0 < val <= 1.0``. Mirrors :func:`resolve_dedup_lexical_cosine`.
+    """
+    if floor is not None:
+        return float(floor)
+    raw = os.environ.get(ENV_DEDUP_LEXICAL_JACCARD)
+    if raw:
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return _DEFAULT_DEDUP_LEXICAL_JACCARD
+        if 0.0 < val <= 1.0:
+            return val
+    return _DEFAULT_DEDUP_LEXICAL_JACCARD
+
+
 #: Tokens that carry no teachable-skill signal — stripped from the keyphrase
 #: signature so "simplify expressions" and "simplify the expression" collapse
 #: but "order operations" stays distinct from "simplify expressions".
@@ -532,13 +623,33 @@ def _skill_keyphrase_tokens(statement: str) -> frozenset:
     return frozenset(out)
 
 
+def _filler_tokens() -> frozenset:
+    """Shared Defect-B/E filler-token set (empty when the lexicon is absent).
+
+    One indirection through :mod:`lib.objectives.filler_lexicon` so BOTH the
+    Defect-E ``_skill_signature`` subtraction here and the Defect-B
+    ``ObjectiveSpecificityValidator`` residual subtract the SAME domain-agnostic
+    filler vocabulary (plan: "one shared helper used by both B and E"). Never
+    raises — a missing lexicon degrades to an empty set (no subtraction).
+    """
+    try:
+        from lib.objectives.filler_lexicon import filler_tokens
+
+        return filler_tokens()
+    except Exception:  # noqa: BLE001 — filler lexicon must never break the split
+        return frozenset()
+
+
 def _skill_signature(candidate: Dict[str, Any]) -> Optional[frozenset]:
     """Return a candidate's distinct-skill signature, or None if empty.
 
     Combines the statement keyphrase tokens with any ``concept_tags`` /
     ``domain_concept_vocabulary`` the candidate carries (those are explicit
-    named-concept signals). An empty residual → ``None`` (no nameable skill;
-    such a candidate never forces a split).
+    named-concept signals), then SUBTRACTS the shared Defect-B/E filler lexicon
+    (:func:`_filler_tokens`) so domain-agnostic scaffolding ("various", "key",
+    "concepts", "techniques") never inflates a signature or props two vacuous
+    restatements apart. An empty residual → ``None`` (no nameable skill; such a
+    candidate never forces a split and is a natural lexical-merge magnet).
     """
     sig: set = set(_skill_keyphrase_tokens(_statement(candidate)))
     for key in ("concept_tags", "domain_concepts", "domain_concept_vocabulary"):
@@ -548,6 +659,7 @@ def _skill_signature(candidate: Dict[str, Any]) -> Optional[frozenset]:
                 tok = str(tag).strip().lower()
                 if tok:
                     sig.add(tok)
+    sig -= _filler_tokens()
     return frozenset(sig) if sig else None
 
 
@@ -637,6 +749,225 @@ def split_clusters_for_distinct_skills(
     # Re-impose the deterministic ordering contract (by min member index).
     new_clusters.sort(key=lambda g: min(g) if g else 0)
     return new_clusters, clusters_split, distinct_skill_count
+
+
+# ---------------------------------------------------------------------------
+# Defect E — CROSS-WINDOW lexical-dedup SECOND PASS (complete-linkage merge).
+# ---------------------------------------------------------------------------
+
+#: Coarse Bloom bands the lexical merge respects (a merge never crosses a band).
+#: remember/understand share the lower-order recall band; apply is its own band;
+#: analyze/evaluate/create share the higher-order band. An unknown level maps to
+#: its own ``"unknown"`` band (only merges with another unknown), so a
+#: level-less restatement pair can still merge but never bleeds a lower-order CO
+#: into a higher-order cluster.
+_BLOOM_BAND_BY_LEVEL: Dict[str, str] = {
+    "remember": "lower",
+    "understand": "lower",
+    "apply": "apply",
+    "analyze": "higher",
+    "evaluate": "higher",
+    "create": "higher",
+}
+
+
+def _bloom_band(candidate: Dict[str, Any]) -> str:
+    """Return a candidate's coarse Bloom band ("lower"|"apply"|"higher"|"unknown").
+
+    Prefers the candidate's DECLARED ``bloom_level`` (real field, no imputation);
+    falls back to detecting the level from the statement's main verb via
+    ``lib.ontology.bloom.detect_bloom_level``. An undetectable level → "unknown"
+    (only band-equal to another unknown).
+    """
+    level = str(candidate.get("bloom_level") or "").strip().lower()
+    if level not in _BLOOM_BAND_BY_LEVEL:
+        try:
+            from lib.ontology.bloom import detect_bloom_level
+
+            detected, _verb = detect_bloom_level(_statement(candidate))
+            level = str(detected or "").strip().lower()
+        except Exception:  # noqa: BLE001 — bloom load must never break the merge
+            level = ""
+    return _BLOOM_BAND_BY_LEVEL.get(level, "unknown")
+
+
+def _best_grounded_member(cluster: List[int], grounded: List[Dict[str, Any]]) -> int:
+    """Index of a cluster's best-grounded member (highest entailment; ties → longer
+    statement; ties → lowest index). Matches ``dedup_candidates``' rep-selection so
+    the lexical signature/band are computed over the SAME member that becomes the
+    canonical representative.
+    """
+    def _key(idx: int) -> Any:
+        return (
+            _entailment_score(grounded[idx]),
+            len(_statement(grounded[idx])),
+            -idx,
+        )
+
+    return max(cluster, key=_key)
+
+
+def _jaccard(a: Optional[frozenset], b: Optional[frozenset]) -> float:
+    """Jaccard overlap of two skill signatures; two empties → 0.0 (never merge)."""
+    if not a or not b:
+        return 0.0
+    union = len(a | b)
+    if union == 0:
+        return 0.0
+    return len(a & b) / union
+
+
+def merge_clusters_lexical(
+    clusters: List[List[int]],
+    grounded: List[Dict[str, Any]],
+    vecs: List[List[float]],
+    *,
+    cosine_floor: Optional[float] = None,
+    jaccard_floor: Optional[float] = None,
+) -> Tuple[List[List[int]], int, int]:
+    """Defect E — COMPLETE-LINKAGE lexical merge of near-restatement clusters.
+
+    Runs after ``cluster_by_cosine`` and BEFORE the PRONG-A distinct-skill split.
+    A merge EDGE between two clusters exists iff ALL three hold:
+
+    * centroid cosine >= ``cosine_floor`` (:func:`resolve_dedup_lexical_cosine`),
+    * best-grounded-member skill-signature Jaccard >= ``jaccard_floor``
+      (:func:`resolve_dedup_lexical_jaccard`), computed via :func:`_skill_signature`
+      (which subtracts the shared filler lexicon), and
+    * the two best-grounded members share a Bloom band (:func:`_bloom_band`).
+
+    Groups are agglomerated GREEDILY in descending ``(jaccard, cosine)`` edge
+    order; a group-merge executes ONLY when EVERY cross pair between the two
+    groups is itself an edge (**complete linkage**) — this structurally prevents
+    a wrongly-chained mega-cluster (the 50-member chain the single-link pass
+    left). Ties break to the lower minimum cluster index (deterministic).
+
+    Returns ``(new_clusters, merge_ops, clusters_absorbed, merged_counts)`` where
+    ``new_clusters`` unions each group's member indices and re-imposes the
+    deterministic min-index ordering contract, ``merge_ops`` counts executed
+    union operations, ``clusters_absorbed`` == ``clusters_before -
+    clusters_after``, and ``merged_counts`` is a list PARALLEL to
+    ``new_clusters`` giving the number of INPUT cosine-clusters folded into each
+    output cluster (1 = untouched; >1 = lexically merged — the stamp source for
+    ``dedup_lexical_merged_count``). PARTITION INVARIANT: the flattened output is
+    a permutation of the flattened input — never adds / drops / invents a CO.
+    """
+    cfloor = resolve_dedup_lexical_cosine(cosine_floor)
+    jfloor = resolve_dedup_lexical_jaccard(jaccard_floor)
+
+    work = [list(c) for c in clusters if c]
+    nc = len(work)
+    if nc <= 1:
+        return _reorder_clusters(work), 0, 0, [1] * len(work)
+
+    # Per-cluster centroid / best-grounded signature / Bloom band.
+    centroids = [_cluster_centroid(vecs, c) for c in work]
+    reps = [_best_grounded_member(c, grounded) for c in work]
+    sigs = [_skill_signature(grounded[r]) for r in reps]
+    bands = [_bloom_band(grounded[r]) for r in reps]
+
+    # Edge matrix: qualifying (i, j) with their (jaccard, cosine).
+    def _edge_ok(i: int, j: int) -> Tuple[bool, float, float]:
+        if bands[i] != bands[j]:
+            return False, 0.0, 0.0
+        jac = _jaccard(sigs[i], sigs[j])
+        if jac < jfloor:
+            return False, jac, 0.0
+        cos = cosine_similarity(centroids[i], centroids[j])
+        if cos < cfloor:
+            return False, jac, cos
+        return True, jac, cos
+
+    edges: List[Tuple[float, float, int, int]] = []
+    ok_pair: Dict[Tuple[int, int], bool] = {}
+    for i in range(nc):
+        for j in range(i + 1, nc):
+            ok, jac, cos = _edge_ok(i, j)
+            ok_pair[(i, j)] = ok
+            if ok:
+                edges.append((jac, cos, i, j))
+
+    # Descending (jaccard, cosine); ties → lower (i, j) for determinism.
+    edges.sort(key=lambda e: (-e[0], -e[1], e[2], e[3]))
+
+    # Greedy complete-linkage agglomeration over cluster indices.
+    groups: List[List[int]] = [[i] for i in range(nc)]
+    group_of: List[int] = list(range(nc))
+    merge_ops = 0
+
+    def _pair_ok(a: int, b: int) -> bool:
+        return ok_pair.get((a, b) if a < b else (b, a), False)
+
+    for _jac, _cos, i, j in edges:
+        gi, gj = group_of[i], group_of[j]
+        if gi == gj:
+            continue
+        members_i, members_j = groups[gi], groups[gj]
+        # Complete linkage: EVERY cross pair must be an edge.
+        if all(_pair_ok(a, b) for a in members_i for b in members_j):
+            # Merge gj into gi; keep the lower group id (lower min-index) as home.
+            keep, drop = (gi, gj) if min(members_i) <= min(members_j) else (gj, gi)
+            groups[keep].extend(groups[drop])
+            for m in groups[drop]:
+                group_of[m] = keep
+            groups[drop] = []
+            merge_ops += 1
+
+    # Union each surviving group's member indices into output clusters, tracking
+    # how many INPUT clusters composed each (for the merged-count stamp). Key by
+    # the output cluster's minimum member index — stable under _reorder_clusters.
+    unmerged: List[List[int]] = []
+    count_by_minidx: Dict[int, int] = {}
+    for grp in groups:
+        if not grp:
+            continue
+        merged: List[int] = []
+        for ci in grp:
+            merged.extend(work[ci])
+        unmerged.append(merged)
+        count_by_minidx[min(merged)] = len(grp)
+
+    ordered = _reorder_clusters(unmerged)
+    merged_counts = [count_by_minidx.get(min(c), 1) for c in ordered]
+    clusters_absorbed = nc - len(ordered)
+    return ordered, merge_ops, clusters_absorbed, merged_counts
+
+
+def _emit_lexical_merge_capture(
+    capture: Any,
+    *,
+    merge_ops: int,
+    clusters_absorbed: int,
+    clusters_before: int,
+    cosine_floor: float,
+    jaccard_floor: float,
+) -> None:
+    """Best-effort ``objective_lexical_merge`` decision-capture (never raises)."""
+    try:
+        capture.log_decision(
+            decision_type="objective_lexical_merge",
+            decision=(
+                f"lexically merged {clusters_absorbed} cross-window "
+                f"restatement cluster(s) via {merge_ops} complete-linkage "
+                f"union(s) ({clusters_before} -> {clusters_before - clusters_absorbed})"
+            ),
+            rationale=(
+                f"Defect E: single-link cosine dedup (0.88) left cross-window "
+                f"restatements at sub-threshold cosine; a complete-linkage second "
+                f"pass merged clusters whose centroid cosine >= {cosine_floor:.2f} "
+                f"AND best-grounded skill-signature Jaccard >= {jaccard_floor:.2f} "
+                f"(filler-subtracted) AND share a Bloom band. Complete linkage "
+                f"(every cross pair must qualify) structurally prevents the "
+                f"50-member cosine chain. Anti-fabrication: unions existing "
+                f"candidate indices only — no statement invented."
+            ),
+            alternatives_considered=[
+                "single-link only (leaves ~35-50 residual cross-window dupes)",
+                "single-link lexical merge (risks a re-chained mega-cluster)",
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001 — capture is best-effort
+        logger.debug("objective_lexical_merge capture failed (%s); continuing", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -1341,6 +1672,7 @@ def dedup_candidates(
     max_chunks_per_objective: Optional[int] = None,
     chunk_relevance_floor: Optional[float] = None,
     distinct_skill_split: Optional[bool] = None,
+    dedup_lexical: Optional[bool] = None,
     capture: Optional[Any] = None,
 ) -> DedupResult:
     """Collapse near-duplicate ``grounded`` candidates into a canonical CO set.
@@ -1424,6 +1756,39 @@ def dedup_candidates(
     ordered_clusters, max_cos, near_dup_pairs = cluster_by_cosine(
         vecs, resolved_threshold
     )
+
+    # Defect E — CROSS-WINDOW lexical-dedup SECOND PASS (opt-in). Runs BEFORE the
+    # PRONG-A split so a wrongly-chained cosine cluster can still split. Merges
+    # two cosine clusters iff centroid cosine >= floor AND best-grounded
+    # skill-signature Jaccard >= floor AND same Bloom band, via COMPLETE linkage
+    # (every cross pair must qualify → no re-chained mega-cluster). Default OFF →
+    # byte-identical clusters. The per-cluster merged-count map is keyed by the
+    # merged cluster's min member index (stable under the PRONG-A split for
+    # high-Jaccard merged clusters — which the <0.34-distinctness split never
+    # touches — so the stamp lands on the right rep).
+    lexical_merge_pairs = 0
+    lexical_clusters_merged = 0
+    lexical_count_by_minidx: Dict[int, int] = {}
+    if resolve_dedup_lexical(dedup_lexical) and ordered_clusters:
+        clusters_before_lex = len(ordered_clusters)
+        (
+            ordered_clusters,
+            lexical_merge_pairs,
+            lexical_clusters_merged,
+            _merged_counts,
+        ) = merge_clusters_lexical(ordered_clusters, grounded, vecs)
+        for cl, cnt in zip(ordered_clusters, _merged_counts):
+            if cnt > 1 and cl:
+                lexical_count_by_minidx[min(cl)] = cnt
+        if lexical_merge_pairs and capture is not None:
+            _emit_lexical_merge_capture(
+                capture,
+                merge_ops=lexical_merge_pairs,
+                clusters_absorbed=lexical_clusters_merged,
+                clusters_before=clusters_before_lex,
+                cosine_floor=resolve_dedup_lexical_cosine(),
+                jaccard_floor=resolve_dedup_lexical_jaccard(),
+            )
 
     # I3 PRONG A — distinct-skill SPLIT (opt-in). Single-link transitively
     # chains distinct-but-related skills into one cluster, so the best-grounded
@@ -1536,6 +1901,12 @@ def dedup_candidates(
             ]
         if len(cluster) > 1:
             rep["dedup_merged_count"] = len(cluster)
+        # Defect E — stamp the number of INPUT cosine-clusters the lexical pass
+        # folded into this rep's cluster (>1 only when a lexical merge landed).
+        if cluster:
+            _lex_cnt = lexical_count_by_minidx.get(min(cluster), 1)
+            if _lex_cnt > 1:
+                rep["dedup_lexical_merged_count"] = _lex_cnt
         canonical.append(rep)
 
     return DedupResult(
@@ -1548,6 +1919,8 @@ def dedup_candidates(
         max_chunks_per_objective=resolved_cap,
         clusters_split_for_distinct_skill=clusters_split,
         distinct_skill_count=distinct_skill_count,
+        lexical_merge_pairs=lexical_merge_pairs,
+        lexical_clusters_merged=lexical_clusters_merged,
     )
 
 
@@ -1557,12 +1930,16 @@ __all__ = [
     "cluster_by_cosine",
     "cluster_to_target_k",
     "split_clusters_for_distinct_skills",
+    "merge_clusters_lexical",
     "consolidate_small_clusters",
     "absorb_outlier_clusters",
     "merge_undersize_clusters",
     "merge_near_duplicate_clusters",
     "apply_cluster_guards",
     "resolve_distinct_skill_split",
+    "resolve_dedup_lexical",
+    "resolve_dedup_lexical_cosine",
+    "resolve_dedup_lexical_jaccard",
     "resolve_to_cluster_guards",
     "resolve_to_outlier_min_size",
     "resolve_to_outlier_absorb_floor",
@@ -1581,12 +1958,18 @@ __all__ = [
     "_DEFAULT_MAX_CHUNKS_PER_OBJECTIVE",
     "_DEFAULT_CHUNK_RELEVANCE_FLOOR",
     "_DEFAULT_DISTINCT_SKILL_SPLIT",
+    "_DEFAULT_DEDUP_LEXICAL",
+    "_DEFAULT_DEDUP_LEXICAL_COSINE",
+    "_DEFAULT_DEDUP_LEXICAL_JACCARD",
     "_DEFAULT_TO_CLUSTER_GUARDS",
     "_DEFAULT_TO_OUTLIER_MIN_SIZE",
     "_DEFAULT_TO_OUTLIER_ABSORB_FLOOR",
     "_DEFAULT_TO_MERGE_NEAR_DUP",
     "_DEFAULT_TO_MERGE_COSINE",
     "ENV_DISTINCT_SKILL_SPLIT",
+    "ENV_DEDUP_LEXICAL",
+    "ENV_DEDUP_LEXICAL_COSINE",
+    "ENV_DEDUP_LEXICAL_JACCARD",
     "ENV_TO_CLUSTER_GUARDS",
     "ENV_TO_OUTLIER_MIN_SIZE",
     "ENV_TO_OUTLIER_ABSORB_FLOOR",

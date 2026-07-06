@@ -966,3 +966,190 @@ def test_no_pin_field_behavior_unchanged():
     # Off-topic c2 pruned exactly as before; on-topic chunks kept.
     assert "c1" in kept and "c3" in kept
     assert "c2" not in kept
+
+
+# --------------------------------------------------------------------------- #
+# Defect E — cross-window lexical-dedup SECOND PASS (complete-linkage merge).
+# --------------------------------------------------------------------------- #
+
+from lib.objectives.objective_dedup import merge_clusters_lexical  # noqa: E402
+
+
+def _lex_cand(statement, chunk_ids, ent=0.9, bloom="understand"):
+    return {
+        "statement": statement,
+        "source_chunk_ids": list(chunk_ids),
+        "entailment_score": ent,
+        "bloom_level": bloom,
+        "chapter_id": "ch1",
+    }
+
+
+def test_lexical_merge_pair_merges_at_floors():
+    """A same-band restatement pair above BOTH floors merges to one cluster."""
+    embed = FakeEmbed()
+    grounded = [
+        _lex_cand("Understand the associative property clearly.", ["c1"], ent=0.95),
+        _lex_cand("Understand associative property fully.", ["c2"], ent=0.80),
+        _lex_cand("Compute the triangle area formula.", ["c3"], bloom="apply"),
+    ]
+    vecs = embed.encode_batch([c["statement"] for c in grounded])
+    clusters = [[0], [1], [2]]
+    out, ops, absorbed, counts = merge_clusters_lexical(
+        clusters, grounded, vecs, cosine_floor=0.6, jaccard_floor=0.6
+    )
+    assert [0, 1] in out          # the two associative-property COs merged
+    assert [2] in out             # the triangle CO stayed separate
+    assert ops == 1 and absorbed == 1
+    # merged_counts is parallel to `out`; the merged cluster reports 2 inputs.
+    merged_pos = out.index([0, 1])
+    assert counts[merged_pos] == 2
+    assert counts[out.index([2])] == 1
+
+
+def test_lexical_merge_complete_linkage_blocks_chain():
+    """A-B-C where the A-C pair fails a floor does NOT fully merge (complete-link).
+
+    A and B share a signature and cosine; B and C share a signature and cosine;
+    but A and C are distinct — complete linkage forbids folding all three into
+    one cluster (that is exactly the single-link mega-chain this pass prevents).
+    """
+    embed = FakeEmbed()
+    # A/B share "associative addition"; B/C share "distributive multiplication";
+    # A/C share only the "property/understand" scaffolding (Jaccard 0.33 < 0.6).
+    grounded = [
+        _lex_cand("Understand associative addition property.", ["c1"], ent=0.95),
+        _lex_cand("Understand associative addition distributive multiplication property.", ["c2"], ent=0.9),
+        _lex_cand("Understand distributive multiplication property.", ["c3"], ent=0.85),
+    ]
+    vecs = embed.encode_batch([c["statement"] for c in grounded])
+    out, ops, absorbed, _counts = merge_clusters_lexical(
+        [[0], [1], [2]], grounded, vecs, cosine_floor=0.3, jaccard_floor=0.6
+    )
+    # NOT one 3-member cluster. At most a single pairwise merge (B with A or C),
+    # never {0,1,2} together.
+    assert [0, 1, 2] not in out
+    assert all(len(c) <= 2 for c in out)
+    # Partition invariant holds regardless of which pair (if any) merged.
+    flat = sorted(i for c in out for i in c)
+    assert flat == [0, 1, 2]
+
+
+def test_lexical_merge_never_crosses_bloom_band():
+    """Two clusters identical in signature + cosine but different Bloom bands
+    never merge (a lower-order CO must not bleed into a higher-order cluster)."""
+    embed = FakeEmbed()
+    grounded = [
+        _lex_cand("Understand associative property clearly.", ["c1"], bloom="understand"),
+        _lex_cand("Apply associative property clearly.", ["c2"], bloom="apply"),
+    ]
+    vecs = embed.encode_batch([c["statement"] for c in grounded])
+    out, ops, absorbed, _counts = merge_clusters_lexical(
+        [[0], [1]], grounded, vecs, cosine_floor=0.3, jaccard_floor=0.3
+    )
+    assert ops == 0 and absorbed == 0
+    assert sorted(out) == [[0], [1]]
+
+
+def test_lexical_merge_partition_invariant_property():
+    """Property: for a range of floors the flattened output is always a
+    permutation of the input indices (never drops/adds/invents a CO)."""
+    embed = FakeEmbed()
+    grounded = [
+        _lex_cand("Understand associative property clearly.", ["c1"]),
+        _lex_cand("Understand associative property fully.", ["c2"]),
+        _lex_cand("Understand commutative property here.", ["c3"]),
+        _lex_cand("Compute triangle area formula.", ["c4"], bloom="apply"),
+        _lex_cand("Compute triangle area precisely.", ["c5"], bloom="apply"),
+    ]
+    vecs = embed.encode_batch([c["statement"] for c in grounded])
+    n = len(grounded)
+    for cf in (0.2, 0.5, 0.8, 0.95):
+        for jf in (0.2, 0.5, 0.8):
+            out, ops, absorbed, counts = merge_clusters_lexical(
+                [[i] for i in range(n)], grounded, vecs,
+                cosine_floor=cf, jaccard_floor=jf,
+            )
+            flat = sorted(i for c in out for i in c)
+            assert flat == list(range(n)), (cf, jf, out)
+            assert absorbed == n - len(out)
+            assert sum(counts) >= len(out)  # each output has >=1 input
+
+
+def test_lexical_merge_flag_off_byte_identical(monkeypatch):
+    """dedup_candidates with the lexical flag OFF is byte-identical to legacy."""
+    monkeypatch.delenv("ED4ALL_OBJECTIVE_DEDUP_LEXICAL", raising=False)
+    grounded = [
+        _lex_cand("Understand the associative property clearly.", ["c1"], ent=0.95),
+        _lex_cand("Understand associative property fully.", ["c2"], ent=0.80),
+        _lex_cand("Compute the triangle area formula.", ["c3"], bloom="apply"),
+    ]
+    baseline = dedup_candidates(
+        grounded, embed=FakeEmbed(), threshold=0.88, allow_fake=True
+    ).to_dict()
+    # Explicit False and env-off must both reproduce the baseline exactly.
+    off_explicit = dedup_candidates(
+        grounded, embed=FakeEmbed(), threshold=0.88, allow_fake=True,
+        dedup_lexical=False,
+    ).to_dict()
+    assert off_explicit == baseline
+    assert baseline["lexical_merge_pairs"] == 0
+    assert baseline["lexical_clusters_merged"] == 0
+
+
+def test_lexical_merge_runs_before_prong_a_split(monkeypatch):
+    """PRONG-A composition: the lexical merge runs BEFORE the distinct-skill split.
+
+    Spy on both passes to assert ordering (E must run first so a wrongly-chained
+    cosine cluster can still be split afterward), and confirm both fire when both
+    flags are on.
+    """
+    call_order = []
+    real_merge = od.merge_clusters_lexical
+    real_split = od.split_clusters_for_distinct_skills
+
+    def _spy_merge(*a, **k):
+        call_order.append("merge")
+        return real_merge(*a, **k)
+
+    def _spy_split(*a, **k):
+        call_order.append("split")
+        return real_split(*a, **k)
+
+    monkeypatch.setattr(od, "merge_clusters_lexical", _spy_merge)
+    monkeypatch.setattr(od, "split_clusters_for_distinct_skills", _spy_split)
+
+    grounded = [
+        _lex_cand("Understand associative property here.", ["c1"], ent=0.95),
+        _lex_cand("Understand associative property now.", ["c2"], ent=0.90),
+        _lex_cand("Understand commutative property today.", ["c3"], ent=0.85),
+    ]
+    dedup_candidates(
+        grounded, embed=FakeEmbed(), threshold=0.99, allow_fake=True,
+        dedup_lexical=True, distinct_skill_split=True,
+    )
+    assert call_order == ["merge", "split"], call_order
+
+
+def test_lexical_merge_fires_under_split_and_stamps(monkeypatch):
+    """With a high cosine threshold the cosine pass leaves restatements as
+    separate clusters; the lexical pass merges them + stamps the rep, even with
+    the PRONG-A split also enabled."""
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_DEDUP_LEXICAL_COSINE", "0.5")
+    monkeypatch.setenv("ED4ALL_OBJECTIVE_DEDUP_LEXICAL_JACCARD", "0.5")
+    grounded = [
+        _lex_cand("Understand associative property here.", ["c1"], ent=0.95),
+        _lex_cand("Understand associative property now.", ["c2"], ent=0.90),
+        _lex_cand("Compute the triangle area formula.", ["c3"], ent=0.85, bloom="apply"),
+    ]
+    # threshold 0.99 → the two associative restatements do NOT co-cluster in the
+    # cosine pass; the lexical pass merges them.
+    result = dedup_candidates(
+        grounded, embed=FakeEmbed(), threshold=0.99, allow_fake=True,
+        dedup_lexical=True, distinct_skill_split=True,
+    )
+    assert result.lexical_merge_pairs >= 1
+    assert result.lexical_clusters_merged >= 1
+    assert any(
+        c.get("dedup_lexical_merged_count", 0) >= 2 for c in result.canonical
+    )

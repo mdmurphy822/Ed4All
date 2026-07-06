@@ -1648,6 +1648,38 @@ workflows:
                 contradiction_floor: 0.50
                 objective_entailment_rate_floor: 1.0
             description: "W4 — LO-statement NLI entailment vs cited chunks. Critical (calibration-validated)."
+          # W2 Defect B — CO-statement specificity / vacuity gate. Composes
+          # with (never re-scores) objective_entailment: that gate scores an
+          # objective's TRUTH (entailed by its cited chunk?), this scores its
+          # INFORMATION (does the statement name a concrete teachable skill?).
+          # A vacuous CO like "Apply various techniques to solve real-world
+          # problems" is on-topic enough to entail but names nothing — it
+          # passes objective_entailment yet fails here. Three deterministic,
+          # embedding-free checks over each CO statement: V1 content-residual
+          # floor (OBJECTIVE_VACUOUS), V2 vague-object + thin residual
+          # (OBJECTIVE_GENERIC_OBJECT), V3 source-token recall vs cited chunk
+          # text (OBJECTIVE_UNANCHORED_STATEMENT). Headline
+          # OBJECTIVE_VACUOUS_RATE_HIGH when vacuous_rate > max_vacuous_rate.
+          # Opt-in via ED4ALL_OBJECTIVE_SPECIFICITY (default OFF → byte-
+          # identical no-op skip-with-pass). Warning day-1; # TODO(calibration)
+          # deferred critical-flip after a >=2-corpus FP measurement (WS3/W4
+          # deferred-flip pattern; NOT IB3). Reuses the
+          # _build_chapter_objective_coverage_inputs builder (surfaces
+          # synthesized_objectives_path + dart_chunks_path).
+          - gate_id: objective_specificity
+            validator: lib.validators.objective_specificity.ObjectiveSpecificityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            config:
+              min_content_residual: 2
+              min_generic_object_residual: 4
+              min_statement_token_recall: 0.5
+              max_vacuous_rate: 0.05
+            description: "W2 Defect B — CO-statement specificity/vacuity gate (opt-in ED4ALL_OBJECTIVE_SPECIFICITY; default OFF no-op). V1 content-residual vacuity + V2 vague-object + V3 source-token recall. Warning day-1; critical flip DEFERRED (TODO calibration)."
           # Three-stage textbook synthesis (plan §8 row 3): gate the
           # Stage-2 per-chapter CO synthesis + reconciliation output.
           # Skips-with-pass when TEXTBOOK_SYNTHESIS_PROVIDER is unset

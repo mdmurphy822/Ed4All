@@ -3263,6 +3263,19 @@ def default_router() -> GateInputRouter:
         "lib.validators.terminal_objective_source_grounding.TerminalObjectiveSourceGroundingValidator",
         _build_chapter_objective_coverage_inputs,
     )
+    # W2 Defect B — ObjectiveSpecificityValidator fires at ``course_planning`` as
+    # the opt-in (``ED4ALL_OBJECTIVE_SPECIFICITY``) warning-severity
+    # ``objective_specificity`` gate (wired AFTER ``objective_entailment``). Its
+    # three deterministic checks (V1 content-residual vacuity, V2 vague-object,
+    # V3 source-token recall) read the SAME two inputs this builder already
+    # surfaces — ``synthesized_objectives_path`` (the CO statements +
+    # source_chunk_ids/source_refs) and ``dart_chunks_path`` (the source-chunk
+    # text universe for V3) — so it reuses that builder verbatim; no new builder.
+    # Default OFF → the validator's own no-op skip-with-pass fires.
+    r.register(
+        "lib.validators.objective_specificity.ObjectiveSpecificityValidator",
+        _build_chapter_objective_coverage_inputs,
+    )
     # Three-stage textbook synthesis (Wave A/B): TextbookOutlineValidator
     # fires at ``textbook_to_course::objective_extraction`` as the
     # critical / block ``textbook_outline_enrichment`` gate. Pre-

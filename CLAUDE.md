@@ -639,9 +639,9 @@ Summary by workflow (counts derived from `config/workflows.yaml`):
 |----------|---------:|--------:|------:|
 | `course_generation` | 30 | 27 | 57 |
 | `rag_training` | 4 | 3 | 7 |
-| `textbook_to_course` | 58 | 70 | 128 |
+| `textbook_to_course` | 58 | 71 | 129 |
 | `trainforge_train` | 2 | 0 | 2 |
-| **Total** | **94** | **100** | **194** |
+| **Total** | **94** | **101** | **195** |
 
 Per-wave gate-landing history (additions, demotions, deferred severity flips, with the intermediate running subtotals at each wave): `docs/validation/gate-history.md`. The table above is the current authoritative count; the history file's per-wave subtotals are provenance-only and do not sum to the current total.
 
@@ -678,7 +678,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `NVIDIA_*` (hosted 70B/large cloud tier — `NVIDIA_API_KEY` / `NVIDIA_BASE_URL` / `NVIDIA_LARGE_MODEL`) | [`Trainforge/CLAUDE.md § Opt-In Behavior Flags`](Trainforge/CLAUDE.md) | 3 |
 | `SEMANTIK_*` (DART replacement — SemantiK semantic-cascade converter; also honors the legacy `DART_THETA_DEVICE` compat env) | [`SemantiK/CLAUDE.md § Opt-In Behavior Flags`](SemantiK/CLAUDE.md) | 80 |
 | `COURSEFORGE_*` / `COURSEPLANNER_*` / `TEXTBOOK_SYNTHESIS_*` | [`Courseforge/CLAUDE.md § Opt-In Behavior Flags`](Courseforge/CLAUDE.md) | 35 |
-| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 164 |
+| `DECISION_*` / `ED4ALL_*` / `LOCAL_DISPATCHER_*` / `MCP_ORCHESTRATOR_*` / `LLM_*` (cross-cutting) | root index (below) + [`docs/operations/behavior-flags.md`](docs/operations/behavior-flags.md) | 169 |
 
 ### Cross-cutting flags (root-owned)
 
@@ -787,6 +787,10 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_OBJECTIVE_ENTAILMENT_MATH_FOLD` | unset (off) | Opt-in LaTeX/unicode-math folding of premise + hypothesis before NLI in the `objective_entailment` gate (measured net-neutral on a math-scan corpus — see behavior-flags.md; deferred-flip candidate). |
 | `ED4ALL_OBJECTIVE_DEDUP_THRESHOLD` | `0.88` | W2 §4.2 cosine clustering threshold for the in-synthesis objective-dedup pass |
 | `ED4ALL_OBJECTIVE_DISTINCT_SKILL_SPLIT` | unset (off) | I3 PRONG A — distinct-skill SPLIT gate for the objective-dedup pass |
+| `ED4ALL_OBJECTIVE_DEDUP_LEXICAL` | unset (off) | W2 Defect E — cross-window lexical-dedup SECOND PASS (complete-linkage merge of near-restatement clusters after single-link cosine, before the PRONG-A split). Default off → byte-identical DedupResult. |
+| `ED4ALL_OBJECTIVE_DEDUP_LEXICAL_COSINE` | `0.78` | W2 Defect E satellite — centroid-cosine floor for a lexical merge edge (below the 0.88 single-link dedup threshold). |
+| `ED4ALL_OBJECTIVE_DEDUP_LEXICAL_JACCARD` | `0.60` | W2 Defect E satellite — best-grounded skill-signature Jaccard floor for a lexical merge edge (above PRONG-A's <0.34 distinctness band). |
+| `ED4ALL_OBJECTIVE_SPECIFICITY` | unset (off) | W2 Defect B — opt-in gate for the CO-statement specificity/vacuity validator (`objective_specificity` at course_planning; V1 content-residual vacuity + V2 vague-object + V3 source-token recall). Default off → byte-identical skip-with-pass. |
 | `ED4ALL_OBJECTIVE_SOURCE_BACKFILL` | unset (off) | I3 PRONG B — source-richness BACKFILL gate |
 | `ED4ALL_OBJECTIVE_BACKFILL_COVERAGE_TARGET` | `1.0` | I3 PRONG B coverage target: min fraction of content-bearing chunks the backfill drives toward. |
 | `ED4ALL_OBJECTIVE_BLOOM_RELEVEL` | unset (off) | Feature 1 — deterministic Bloom-level relevel (re-derive a mislabelled CO/TO `bloom_level` from its main verb's canonical level; statements never change). |
@@ -807,6 +811,7 @@ Per-flag rows live in subsystem CLAUDE.md files (one owner per prefix); the root
 | `ED4ALL_SKIP_ABLATION` | unset | When set, skips the post-training ablation pass. |
 | `ED4ALL_STAGE_MODE` | `symlink` | How `stage_dart_outputs` materialises DART HTML (copy / symlink / hardlink). |
 | `ED4ALL_STATE_RUNS_DIR` | `<repo>/state/runs/` | State-runs directory |
+| `ED4ALL_STRUCTURE_EXTRACT_GUARDS` | unset (off) | SemantiK structure-fidelity Package 1+3 — DPUB-ARIA article-path continuation-merge / headingless-wrapper grouping / noncontent+numbered-apparatus heading filter / structureDiagnostics sanity on the extractor (byte-identical off). |
 | `ED4ALL_TO_BACKLINK_FLOOR` | `0.45` cosine / `0.10` token | WS2 dual weak-link floor for the deterministic CO→TO backlink |
 | `ED4ALL_TO_BACKLINK_REASSIGN` | unset (off) | M5 Fix A anti-junk-drawer reassignment + validator-parity scoring for the CO→TO backlink |
 | `ED4ALL_TO_CLUSTER_K` | `0` (auto) | WS1.1 FIXED target-K for **bottom-up TO derivation** Ward agglomerative clustering |

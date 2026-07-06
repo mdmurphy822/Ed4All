@@ -478,3 +478,29 @@ focused on the current authoritative counts.
 > The count table is re-derived from `config/workflows.yaml` (+1 warning gate ×
 > 2 workflows): `course_generation` 39→40 warning, `textbook_to_course` 83→84
 > warning, Total 125→127 warning / 187→189 total.
+
+### W2 Defect B — `objective_specificity` (CO vacuity gate) — 2026-07-06
+
+Added the opt-in `objective_specificity` gate at `textbook_to_course::course_planning`
+(after `objective_entailment`), severity `warning` / `on_fail: warn` / `on_error: warn`,
+gated behind `ED4ALL_OBJECTIVE_SPECIFICITY` (default OFF → byte-identical skip-with-pass).
+It closes a real silent-pass loophole: `objective_entailment` scores an objective's
+TRUTH, but nothing scored whether a statement names a concrete teachable skill, so a
+vacuous CO ("Apply various techniques to solve real-world problems") passed every
+course_planning gate (~22 such COs on the 2026-07-06 sample-scan-01 TO/CO review). Three
+deterministic, embedding-free checks over each CO statement — V1 content-residual floor
+(`OBJECTIVE_VACUOUS`), V2 vague-object + thin residual (`OBJECTIVE_GENERIC_OBJECT`), V3
+source-token recall vs cited chunk text (`OBJECTIVE_UNANCHORED_STATEMENT`) — plus the
+`OBJECTIVE_VACUOUS_RATE_HIGH` headline. All reuse the shared
+`objective_dedup._skill_keyphrase_tokens` residual minus the new shared
+`lib/objectives/filler_lexicon.py::filler_tokens` domain-agnostic filler lexicon
+(`schemas/taxonomies/objective_filler_lexicon.json`). Registered via the existing
+`_build_chapter_objective_coverage_inputs` builder (no new builder). Warning day-1 with a
+`# TODO(calibration)` deferred critical-flip after a ≥2-corpus FP measurement (WS3/W4
+deferred-flip pattern; NOT IB3). The companion Defect E cross-window lexical-dedup pass
+(`ED4ALL_OBJECTIVE_DEDUP_LEXICAL` + two satellite floors) landed in the same wave but adds
+NO gate (it operates inside `objective_dedup.dedup_candidates`).
+
+The count table is re-derived from `config/workflows.yaml` (+1 warning gate on the
+`textbook_to_course` workflow only; `course_generation` has no `course_planning` phase):
+`textbook_to_course` 70→71 warning / 128→129 total, Total 100→101 warning / 194→195 total.
